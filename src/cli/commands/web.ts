@@ -9,6 +9,7 @@ import {
 } from '../tailscale';
 import type { RpcResponse } from '../../shared/rpc';
 import type { WebTlsConfig } from '../../shared/web';
+import { isPermissionGateInstalled } from './setupHooks';
 
 const DEFAULT_PORT = 7681;
 const LOOPBACK_HOST = '127.0.0.1';
@@ -448,6 +449,16 @@ function report(
     console.log('  Re-run with --allow-input to enable keyboard input.');
   } else {
     console.log('  Input is ENABLED: the browser can type into your panes.');
+    // #970 — --allow-input is what arms the permission gate, but the gate is a
+    // hook in Claude Code's settings, not something this server can switch on.
+    // On the signals-only hook profile no tool call ever raises an approval and
+    // nothing else reports it: the phone just never rings. Say it here, where
+    // the operator is already reading about what input enabled.
+    if (!isPermissionGateInstalled()) {
+      console.log('  ⚠ The PreToolUse permission gate hook is NOT installed (signals-only');
+      console.log('    hook profile), so no tool call will raise a remote approval. Run');
+      console.log('    `wmux setup-hooks --with-gate` and restart your Claude Code sessions.');
+    }
   }
   if (info.allowUpload) {
     console.log('  Photo upload is ENABLED: a paired phone can write JPEG/PNG files');

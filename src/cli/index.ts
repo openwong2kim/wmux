@@ -137,7 +137,10 @@ MCP COMMANDS
   mcp unregister                    Remove wmux entries from ~/.claude.json
 
 CLAUDE CODE INTEGRATION
-  setup-hooks                       Install Claude Code hooks (no plugin needed)
+  setup-hooks [--signals-only]      Install Claude Code hooks (no plugin needed).
+                                    --signals-only omits the wide PreToolUse
+                                    permission gate, so no wmux hook runs per
+                                    tool call; --with-gate puts it back.
               [--remove]            Remove the wmux-owned hook entries
               [--status]            Report hook + bridge install state
   gate --list                       Show tools in the permission gate (#783)

@@ -48,9 +48,11 @@ install the same 4 hooks directly into your Claude Code user settings
 (`~/.claude/settings.json`):
 
 ```
-wmux setup-hooks            # install
-wmux setup-hooks --status   # show install + bridge freshness
-wmux setup-hooks --remove   # uninstall (leaves your other hooks intact)
+wmux setup-hooks                 # install (keeps the profile already on disk)
+wmux setup-hooks --signals-only  # install WITHOUT the per-tool-call gate hook
+wmux setup-hooks --with-gate     # put the gate back
+wmux setup-hooks --status        # show profile, install + bridge freshness
+wmux setup-hooks --remove        # uninstall (leaves your other hooks intact)
 ```
 
 This copies the bridge to a stable path (`~/.wmux/hooks/wmux-bridge.mjs`)
@@ -61,6 +63,40 @@ and references it from settings.json, so it survives app updates. Re-run
 plugin (Option A/B) and the `setup-hooks` settings entries, each turn
 fires the hook twice. wmux dedups hook-vs-detector, but not
 hook-vs-hook, so you'd get double signals. Pick one path.
+
+### Hook profiles — `--signals-only` (#970)
+
+The permission gate is a **wide `PreToolUse` hook**: Claude Code spawns the
+bridge on every single tool call. That costs ~120 ms per call on Windows 11, of
+which ~85 ms is bare `node` startup — so once the hook is registered the cost
+cannot be optimised away, only not paid. `gatedTools: []` does not help; a
+policy of "gate nothing" still spawns the process that asks.
+
+Both things the wide hook does need a web surface to be worth anything:
+
+- it resolves remote permission gates, which arm only under
+  `wmux web --allow-input`, and
+- it feeds `agent.tool_started` liveness, which is fanned out to web clients
+  and is a no-op with no server running.
+
+So a terminal-only operator pays the spawn for neither. `--signals-only`
+installs the turn-boundary signals (`Stop` / `SubagentStop` / `SessionStart`)
+and the `AskUserQuestion` approval pair, and nothing else — no wmux hook then
+runs per tool call. Remote approvals stop working until `--with-gate` puts the
+gate back, and `wmux web --allow-input` says so on startup rather than leaving
+your phone waiting on approvals that will never be raised.
+
+The profile is derived from `settings.json` itself, not stored beside it, so a
+bare `wmux setup-hooks` — including the app-update refresh and the in-app
+"install hooks" button — keeps whatever profile is already installed.
+
+**This is a `setup-hooks` feature only.** A Claude Code plugin ships one
+`hooks/hooks.json`, and this plugin's includes the gate; there is no per-install
+profile switch in the plugin format, and a gate that disabled itself at runtime
+would still pay the spawn that is the actual cost. Running
+`wmux setup-hooks --signals-only` with the plugin active therefore reports that
+it had no effect instead of pretending. To get the signals-only profile,
+uninstall or disable the plugin and use Option C.
 
 ### After either path
 

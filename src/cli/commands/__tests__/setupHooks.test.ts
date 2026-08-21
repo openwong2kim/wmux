@@ -8,6 +8,8 @@ import {
   refreshHookBridge,
   statusHooks,
   findBridgeSourceFrom,
+  detectProfile,
+  isPermissionGateInstalled,
   type SetupHooksPaths,
 } from '../setupHooks';
 
@@ -701,5 +703,167 @@ describe('findBridgeSourceFrom', () => {
     const deep = path.join(tmpDir, 'a', 'b', 'c');
     fs.mkdirSync(deep, { recursive: true });
     expect(findBridgeSourceFrom(deep)).toBeNull();
+  });
+});
+
+/**
+ * #970 — the hook profile. The wide PreToolUse gate costs a node spawn on every
+ * tool call (~85 ms of it before the bridge reads a byte), and both things it
+ * does — resolving permission gates and feeding agent.tool_started liveness —
+ * are useless without a web surface. `--signals-only` lets a terminal-only
+ * operator not pay for it; the profile is DERIVED from settings.json so it
+ * cannot drift, and an absent gate then reads as a configuration, not a defect.
+ */
+describe('hook profile (#970)', () => {
+  const GATE = '--permission-gate';
+
+  it('--signals-only installs no per-tool-call hook', () => {
+    const outcome = installHooks(paths(), 'signals-only');
+    expect(outcome.ok).toBe(true);
+    expect(outcome.profile).toBe('signals-only');
+    expect(allHookCommands().some((c) => c.includes(GATE))).toBe(false);
+  });
+
+  it('keeps the approval card and every turn-boundary signal under --signals-only', () => {
+    installHooks(paths(), 'signals-only');
+    const s = statusHooks(paths());
+    expect(s.features.approvalCard.state).toBe('ok');
+    expect(s.features.turnEnd.state).toBe('ok');
+    expect(s.features.conversationRead.state).toBe('ok');
+    const pre = allHookCommands().filter((c) => c.includes('PreToolUse'));
+    expect(pre).toHaveLength(1);
+    expect(pre[0]).not.toContain(GATE);
+  });
+
+  it('defaults a fresh install to the full profile, gate included', () => {
+    const outcome = installHooks(paths());
+    expect(outcome.profile).toBe('full');
+    expect(allHookCommands().some((c) => c.includes(GATE))).toBe(true);
+  });
+
+  it('★ a bare re-run KEEPS signals-only — a refresh must not re-add the gate', () => {
+    installHooks(paths(), 'signals-only');
+    const again = installHooks(paths());
+    expect(again.profile).toBe('signals-only');
+    expect(allHookCommands().some((c) => c.includes(GATE))).toBe(false);
+  });
+
+  it('--with-gate is the way back from signals-only', () => {
+    installHooks(paths(), 'signals-only');
+    const outcome = installHooks(paths(), 'full');
+    expect(outcome.profile).toBe('full');
+    expect(allHookCommands().filter((c) => c.includes(GATE))).toHaveLength(1);
+  });
+
+  it('--signals-only strips a gate that is already installed', () => {
+    installHooks(paths());
+    expect(allHookCommands().some((c) => c.includes(GATE))).toBe(true);
+    installHooks(paths(), 'signals-only');
+    expect(allHookCommands().some((c) => c.includes(GATE))).toBe(false);
+  });
+
+  it('treats a PARTIAL install as broken-full and repairs it, gate included', () => {
+    installHooks(paths(), 'signals-only');
+    const settings = readSettings();
+    delete (settings.hooks as Record<string, unknown>)['SubagentStop'];
+    fs.writeFileSync(settingsPath, JSON.stringify(settings), 'utf8');
+    expect(detectProfile(readSettings())).toBe('full');
+    installHooks(paths());
+    expect(allHookCommands().some((c) => c.includes(GATE))).toBe(true);
+  });
+
+  it('reads a settings.json with no wmux hooks as the full default', () => {
+    expect(detectProfile({})).toBe('full');
+    const foreign = { hooks: { Stop: [{ hooks: [{ type: 'command', command: 'other.mjs' }] }] } };
+    expect(detectProfile(foreign)).toBe('full');
+  });
+
+  it('reports signals-only as a configuration, not a missing hook', () => {
+    installHooks(paths(), 'signals-only');
+    const s = statusHooks(paths());
+    expect(s.profile).toBe('signals-only');
+    expect(s.features.permissionGate.state).toBe('off');
+    expect(s.features.permissionGate.detail).toContain('signals-only');
+    expect(s.features.permissionGate.detail).toContain('--with-gate');
+    expect(s.features.permissionGate.detail).not.toContain('missing');
+  });
+
+  it('still reports a genuinely missing gate as something to fix', () => {
+    const s = statusHooks(paths());
+    expect(s.profile).toBe('full');
+    expect(s.features.permissionGate.state).toBe('off');
+    expect(s.features.permissionGate.detail).toContain('missing');
+  });
+
+  it('reports the full profile with the gate healthy after a default install', () => {
+    installHooks(paths());
+    const s = statusHooks(paths());
+    expect(s.profile).toBe('full');
+    expect(s.features.permissionGate.state).toBe('ok');
+  });
+
+  it('reports the full default for a corrupted settings.json', () => {
+    fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
+    fs.writeFileSync(settingsPath, '{ not json', 'utf8');
+    const s = statusHooks(paths());
+    expect(s.settingsCorrupted).toBe(true);
+    expect(s.profile).toBe('full');
+  });
+
+  it('refuses --signals-only when the plugin owns the hooks, instead of faking it', () => {
+    writePluginManifest(JSON.stringify({ plugins: ['wmux-claude-integration@wmux'] }));
+    const outcome = installHooks(paths(), 'signals-only');
+    expect(outcome.ok).toBe(true);
+    expect(outcome.pluginDetected).toBe(true);
+    expect(outcome.profile).toBe('full');
+    expect(outcome.warning).toContain('--signals-only had no effect');
+  });
+});
+
+/**
+ * #970 — the guard on the silent half. `wmux web --allow-input` is the only
+ * thing that arms the gate, so it is the only place that can notice the hook is
+ * not installed; without this check the phone simply never rings and nothing
+ * anywhere reports it.
+ */
+describe('isPermissionGateInstalled (#970)', () => {
+  it('is false on the signals-only profile', () => {
+    installHooks(paths(), 'signals-only');
+    expect(isPermissionGateInstalled(settingsPath)).toBe(false);
+  });
+
+  it('is true on the full profile', () => {
+    installHooks(paths());
+    expect(isPermissionGateInstalled(settingsPath)).toBe(true);
+  });
+
+  it('is false before anything is installed', () => {
+    expect(isPermissionGateInstalled(settingsPath)).toBe(false);
+  });
+
+  it('is true when an active marketplace plugin supplies the gate', () => {
+    writePluginManifest(JSON.stringify({ plugins: ['wmux-claude-integration@wmux'] }));
+    expect(isPermissionGateInstalled(settingsPath)).toBe(true);
+  });
+
+  it('is false when the plugin is installed but explicitly disabled', () => {
+    writePluginManifest(JSON.stringify({ plugins: ['wmux-claude-integration@wmux'] }));
+    fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
+    const disabled = { enabledPlugins: { 'wmux-claude-integration@wmux': false } };
+    fs.writeFileSync(settingsPath, JSON.stringify(disabled), 'utf8');
+    expect(isPermissionGateInstalled(settingsPath)).toBe(false);
+  });
+
+  it('fails CLOSED on a corrupted settings.json rather than claiming armed', () => {
+    fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
+    fs.writeFileSync(settingsPath, '{ not json', 'utf8');
+    expect(isPermissionGateInstalled(settingsPath)).toBe(false);
+  });
+
+  it('does not count the AskUserQuestion PreToolUse as the gate', () => {
+    fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
+    const only = { hooks: { PreToolUse: [wmuxHookGroup('PreToolUse', 'AskUserQuestion')] } };
+    fs.writeFileSync(settingsPath, JSON.stringify(only), 'utf8');
+    expect(isPermissionGateInstalled(settingsPath)).toBe(false);
   });
 });
