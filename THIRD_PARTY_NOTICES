@@ -426,7 +426,7 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 ================================================================================
 
-ajv@8.18.0
+ajv@8.20.0
 License: MIT
 Author: Evgeny Poberezkin
 Repository: ajv-validator/ajv
@@ -1907,7 +1907,7 @@ THE SOFTWARE.
 
 ================================================================================
 
-iconv-lite@0.7.2
+iconv-lite@0.7.3
 License: MIT
 Author: Alexander Shtuchkin <ashtuchkin@gmail.com>
 Repository: https://github.com/pillarjs/iconv-lite
@@ -2435,7 +2435,7 @@ SOFTWARE.
 
 ================================================================================
 
-negotiator@1.0.0
+negotiator@1.1.0
 License: MIT
 Repository: jshttp/negotiator
 
