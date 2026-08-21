@@ -63,6 +63,37 @@ export function decodeOsc52Write(payload: string): string | null {
 }
 
 /**
+ * Build the xterm OSC-52 handler. Kept here rather than inline in the hook so
+ * the whole policy — what is refused, and *when* — lives in one DOM-free place
+ * that unit-tests without a terminal.
+ *
+ * `isReplaying` is the part that matters for correctness. Replayed bytes are
+ * not a request: a reconnect, a resync or a scrollback restore writes stored
+ * output back into xterm, and any OSC 52 write inside it would be re-executed
+ * and would overwrite the live clipboard with text the user copied minutes or
+ * days ago (the ring buffer outlives the session that produced it, so this can
+ * resurrect an old token or password off disk). A copy is an act, and an act
+ * cannot be replayed — so while historical bytes are in flight the write half
+ * is closed, exactly as the read half always is.
+ *
+ * The sequence is still consumed (`true`) in every case, so a refused or muted
+ * request cannot fall through to another handler.
+ */
+export function createOsc52Handler(deps: {
+  /** True while xterm is parsing bytes that are a REPLAY of stored output. */
+  isReplaying: () => boolean;
+  /** Called with the decoded text for an accepted write. */
+  writeClipboard: (text: string) => void;
+}): (payload: string) => boolean {
+  return (payload: string): boolean => {
+    if (deps.isReplaying()) return true;
+    const text = decodeOsc52Write(payload);
+    if (text !== null) deps.writeClipboard(text);
+    return true;
+  };
+}
+
+/**
  * Decode standard base64 into a UTF-8 string. `atob` yields one Latin-1 char
  * per byte, so naively returning it mangles any multi-byte UTF-8 (Korean,
  * emoji). Re-read the bytes and decode as UTF-8 so `복사`/😀 survive the round
