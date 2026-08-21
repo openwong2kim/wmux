@@ -1,3 +1,152 @@
+## [3.45.0] — 2026-08-21
+
+### Added
+
+- **The unread-glow dim is now adjustable.** A pane holding an unvisited
+  notification used to drop to 60% opacity — "the inactive terminal is
+  shadowed" — which made a session you were monitoring harder to read at the
+  exact moment it produced output. Settings → Notifications now has an
+  "Unread pane brightness" slider: 100% removes the shadowing entirely (the
+  colored border glow still marks the unread pane), 60% keeps the classic
+  look, and the default is unchanged. (#960)
+
+### Fixed
+
+- **The roster no longer reads a working pane as waiting.** Claude Code's
+  `bypass permissions on` footer is on screen for the whole turn in
+  bypass-permissions mode, and the detector read every repaint of it as
+  "ready for input" — which put a false `waiting` on the pane's roster row
+  and inflated the "N need you" chip while the agent was still working. Once a
+  pane's hook bridge has claimed that pane's lifecycle, the Stop signal owns the
+  lifecycle status outright, on both the local and the packaged daemon path.
+  Approval prompts (`awaiting_input`) are unaffected, and a pane whose hook has
+  not claimed the lifecycle — no bridge at all, or one that has only announced
+  itself — keeps the detector as its backstop.
+
+  Note for anyone running a mixed pair: on the packaged daemon path the fix
+  rides the daemon's own arbitration stamp, so an older daemon with a newer
+  app does not get it until both are updated. (#935, #939)
+
+- **Claude Code panes are detected again.** The Claude gate needed its footer
+  spelled with literal spaces on a line of its own. The shipping product
+  (measured on v2.1.235) provides neither: spaces are cursor advances
+  (`ESC[1C`), so the footer strips to `bypasspermissionson`, and the whole
+  bottom region — input box, statusline, footer — arrives as one newline-free
+  run whose rows are placed with cursor-position escapes. The gate therefore
+  never opened on a real Claude pane, which quietly disabled every Claude
+  detector pattern, `waiting` and the approval `awaiting_input` regexes alike.
+  Whitespace is now optional in the footer fragments (the same treatment the
+  banner pattern already carried) and candidate lines are cut on row-position
+  escapes as well as newlines. (#935)
+
+- **A freshly launched agent no longer reads as busy.** Hook authority answers
+  "a bridge speaks for this pane", which is not the same as "the hook has
+  claimed this pane's lifecycle". A bridge that had sent only `SessionStart`
+  suppressed the detector's true "ready for input" read, leaving the pane on
+  the gate's one-shot `running` until its first turn ended. The status veto now
+  waits for the hook to actually take the lifecycle over. (#935)
+
+- **Korean IME no longer paints the composing syllable over the one just
+  committed.** Since v3.42.0, typing Korean showed syllables disappearing as
+  you typed (`대한민국` read `대한국` until the composition ended) — the
+  candidate-window pin introduced for Chinese/Japanese IMEs dragged the whole
+  helper container, inline preedit included, back onto committed cells. The
+  pin now holds only the hidden textarea that anchors the candidate window,
+  while the visible inline preedit stays on the live cursor, so Korean input
+  reads correctly keystroke by keystroke and the Chinese/Japanese
+  candidate-window behavior is unchanged. The IME diagnostic log (now
+  `ime-anchor2` → `ime-anchor3`) also records mid-composition and
+  composition-end corrections when they change, so a future report of this
+  family is self-diagnosing. (#945)
+
+- **The perf gate's frame-budget metrics are judged in frames, so a two-frame
+  measurement no longer passes by a rounding accident.**
+  `frameBudget.*.frameDeltaMs.p95` only ever lands on whole frame intervals,
+  and the old rule — "more than 2x the blessed baseline" — put its threshold
+  at exactly the top of the two-frame cluster. Every two-frame run passed
+  because the comparison was strictly-greater, not because it was judged. It
+  also meant a baseline blessed from a slow run quietly doubled the allowance.
+  The rule is now "at most one frame interval above the baseline", which
+  reaches the same verdict on every one of the 648 samples in the recorded
+  trend while resting on the measurement instead of on where a threshold
+  happened to fall. (#947)
+
+- **A red perf gate no longer describes its confirmation re-run as an
+  independent measurement.** The re-run happens on the same runner, so it can
+  tell a passing spike from a repeatable one but cannot clear a machine that
+  was slow for its whole life — which is what happened before v3.44.0 was
+  tagged, where the same commit measured clean on a fresh runner twenty
+  minutes later. The summary and the failure line now say "same runner" and
+  say what that does and does not prove. (#947)
+
+- **Codex panes no longer show a second blinking cursor on the status
+  line.** Codex ends some of its synchronized-output frames with the
+  hardware cursor visibly parked after the model/cwd status text or next to
+  the "Working" spinner, and the terminal faithfully painted it there for a
+  frame or two — quasi-periodic flashes that read as a second caret blinking
+  alongside the composer's. The cursor is now rendered only at rest: frame
+  traffic hides it, and it reappears 32 ms after the last frame — at the
+  composer, where the resting position actually is. Classic TUIs (vim, less,
+  htop) never bracket frames, so their cursor behavior is unchanged. (#954)
+
+- **Restored history no longer draws garbled after a restart.** When a pane
+  came back from a dead-process recovery (daemon restart or the local
+  scrollback cache), the restored screen stayed in the viewport while the
+  freshly spawned shell's coordinates started from row 1 — so typed input and
+  PSReadLine repaints landed on top of the restored text, overlapping it until
+  a `clear`. The restored screen now scrolls fully into scrollback before the
+  new prompt paints: the prompt starts on a clean viewport, and the history —
+  commands included — sits intact one wheel-notch above. (#955)
+
+- **A pane's attention ring no longer draws on top of menus and modals.** The
+  green completed-blink ring, the notification pulse, and the pane flash sat
+  at overlay-level z-index without a containing stacking context, so a pane
+  that lit up could paint its ring straight across the new-workspace picker
+  (and the flash briefly over any modal). The decorations now sit above
+  everything inside their pane and below all app chrome. (#956)
+
+- **An approved plugin can no longer read another workspace's private
+  activity by naming it.** The iframe plugin host dispatches through the same
+  trusted in-process channel as the app's own UI, and two read paths —
+  `events.poll` (private `a2a.task` / channel events) and the a2a channel /
+  mission reads — treated that shared channel as "the operator", so a plugin
+  granted an ordinary read capability could aim those reads at any workspace
+  by passing its id (or omitting one). Both paths now bind such a plugin to
+  the workspace it is actually hosted in, matching the scope its approval
+  implied; an unbound plugin read fails closed. This confines an approved
+  plugin — it is not a defense against hostile same-user code, and external
+  (non-plugin) callers are unchanged. (#959)
+
+- **A perf-gate red that reproduces on its own runner is now confirmed on a
+  fresh machine before it blocks anything.** The in-job re-run can absorb a
+  transient spike but cannot tell a real regression from a runner degraded for
+  its whole lifetime — three activations on `main` showed reds that a
+  different machine could not reproduce, and only a human clicking "re-run all
+  jobs" resolved them. That click is now a dependent CI job: reproduced reds
+  escalate to a fresh runner whose verdict is the gate's — green with the
+  reasoning on record when the failure cannot be measured elsewhere, red on
+  the strongest evidence the pipeline can produce when it can. Correctness
+  failures and harness errors still fail closed on the spot. (#961)
+
+### Security
+
+- **A UI plugin can no longer point most browser calls at a workspace you are
+  not in.** An approved iframe plugin could already only *watch* the active
+  workspace — its event feed has been scoped since #719 — but its own
+  `browser.*` calls were forwarded with whatever workspace id the plugin chose.
+  The workspace the plugin host is showing now travels with each request on its
+  own channel, out of the plugin's reach: a browser call that names a different
+  workspace is refused, one that names none resolves to the workspace hosting
+  the plugin instead of being rejected as unresolved, and a plugin whose host
+  has no active workspace is refused rather than falling back to naming its own.
+  This covers the browser methods that resolve a target — navigation,
+  evaluation, extraction, input, capture and the rest. Opening and closing
+  browser surfaces (`browser.open`, `browser.close`) resolve their workspace on
+  a different path and are **not** covered yet; that is the next step on #922.
+  Either way this confines an approved plugin to the scope its approval implied
+  — it is not a defence against hostile code already running as your user, and
+  callers on the local RPC wire are unchanged. (#941)
+
 ## [3.44.0] — 2026-08-18
 
 ### Added
