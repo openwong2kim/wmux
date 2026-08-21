@@ -725,6 +725,9 @@ export const en = {
   'hooks.prompt.install': 'Install hooks',
   'hooks.prompt.installing': 'Installing…',
   'hooks.prompt.later': 'Later',
+  'hooks.prompt.never': "Don't ask again",
+  'hooks.prompt.neverError':
+    'Could not save that preference, so this prompt would return on the next launch.',
   'hooks.prompt.error': 'Install failed.',
   'hooks.prompt.doneTitle': 'Hooks installed',
   'hooks.prompt.doneBody': 'Restart the Claude sessions in your panes to activate the hooks.',
@@ -1122,6 +1125,8 @@ export const en = {
   'integrationSetup.state.error': 'failed',
   'integrationSetup.state.unavailable': 'unavailable',
   'integrationSetup.hooks.title': 'Hook bridge',
+  'integrationSetup.hooks.promptSuppressed': 'The install prompt is turned off.',
+  'integrationSetup.hooks.promptReenable': 'Ask again',
   'integrationSetup.hooks.description':
     'Turn completion, approval prompts, and subagent activity. Without it these are read off the screen instead.',
   'integrationSetup.mcp.title': 'MCP tools',

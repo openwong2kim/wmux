@@ -333,6 +333,8 @@ export const ko = {
   'hooks.prompt.install': 'hook 설치',
   'hooks.prompt.installing': '설치 중…',
   'hooks.prompt.later': '나중에',
+  'hooks.prompt.never': '다시 묻지 않기',
+  'hooks.prompt.neverError': '설정을 저장하지 못해 다음 실행에서 다시 표시됩니다.',
   'hooks.prompt.error': '설치에 실패했습니다.',
   'hooks.prompt.doneTitle': 'hook 설치 완료',
   'hooks.prompt.doneBody': 'pane에서 실행 중인 Claude 세션을 재시작하면 hook이 적용됩니다.',
@@ -643,6 +645,8 @@ export const ko = {
   'integrationSetup.state.error': '실패',
   'integrationSetup.state.unavailable': '사용 불가',
   'integrationSetup.hooks.title': '훅 브리지',
+  'integrationSetup.hooks.promptSuppressed': '설치 안내 창이 꺼져 있습니다.',
+  'integrationSetup.hooks.promptReenable': '다시 묻기',
   'integrationSetup.hooks.description':
     '턴 종료·승인 요청·서브에이전트 활동을 감지합니다. 없으면 화면을 읽어 추정합니다.',
   'integrationSetup.mcp.title': 'MCP 도구',

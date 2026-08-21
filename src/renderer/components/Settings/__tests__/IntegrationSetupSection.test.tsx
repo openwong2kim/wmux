@@ -40,6 +40,9 @@ function fakeApi(over: Partial<{
   hooksInstall: () => Promise<{ ok: boolean; error: string | null }>;
   statuslineInstall: () => Promise<{ ok: boolean; error: string | null; targets: Array<{ outcome: string }> }>;
   hooksStatusThrows: boolean;
+  promptSuppressed: boolean;
+  promptPrefThrows: boolean;
+  omitPromptPref: boolean;
   omit: 'hooks' | 'statusline' | 'mcp';
 }> = {}): IntegrationSetupApi {
   // Probes re-run after a successful install, so the fakes read live flags.
@@ -47,6 +50,7 @@ function fakeApi(over: Partial<{
     hooks: over.hooksInstalled ?? false,
     statusline: over.statuslineInstalled ?? false,
     mcp: over.mcpRegistered ?? false,
+    promptSuppressed: over.promptSuppressed ?? false,
   };
   const api: IntegrationSetupApi = {
     hooks: {
@@ -58,6 +62,18 @@ function fakeApi(over: Partial<{
         };
       },
       install: over.hooksInstall ?? (async () => { flags.hooks = true; return { ok: true, error: null }; }),
+      ...(over.omitPromptPref
+        ? {}
+        : {
+            getPromptPreference: async () => {
+              if (over.promptPrefThrows) throw new Error('ipc down');
+              return { suppressed: flags.promptSuppressed };
+            },
+            setPromptPreference: async (suppressed: boolean) => {
+              flags.promptSuppressed = suppressed;
+              return { suppressed };
+            },
+          }),
     },
     statusline: {
       status: async () => ({ installed: flags.statusline }),
@@ -207,5 +223,85 @@ describe('IntegrationSetupSection', () => {
     cleanups.push(cleanup);
     expect(container.querySelector('[data-integration-setup]')).toBeNull();
     delete (window as unknown as { electronAPI?: unknown }).electronAPI;
+  });
+});
+
+// ─── The install prompt's durable refusal, surfaced here so it is reversible ──
+
+describe('IntegrationSetupSection — hook prompt refusal', () => {
+  const line = (c: HTMLElement) => c.querySelector('[data-hooks-prompt-suppressed]');
+  const reenable = (c: HTMLElement) =>
+    c.querySelector('[data-hooks-prompt-reenable]') as HTMLButtonElement | null;
+
+  it('says nothing when the prompt has not been refused', async () => {
+    const { container, cleanup } = render(<IntegrationSetupSection api={fakeApi()} />);
+    cleanups.push(cleanup);
+    await flush();
+    expect(line(container)).toBeNull();
+  });
+
+  it('surfaces a stored refusal and clears it on request', async () => {
+    const api = fakeApi({ promptSuppressed: true });
+    const { container, cleanup } = render(<IntegrationSetupSection api={api} />);
+    cleanups.push(cleanup);
+    await flush();
+    expect(line(container)).toBeTruthy();
+
+    act(() => reenable(container)!.click());
+    await flush();
+    expect(line(container)).toBeNull();
+  });
+
+  it('keeps the line up when the clear fails — the refusal is still in force', async () => {
+    const api = fakeApi({ promptSuppressed: true });
+    api.hooks!.setPromptPreference = async () => { throw new Error('EACCES'); };
+    const { container, cleanup } = render(<IntegrationSetupSection api={api} />);
+    cleanups.push(cleanup);
+    await flush();
+    act(() => reenable(container)!.click());
+    await flush();
+    expect(line(container)).toBeTruthy();
+  });
+
+  it('a probe answering after "Ask again" cannot bring the line back', async () => {
+    const api = fakeApi({ promptSuppressed: true });
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    let first = true;
+    api.hooks!.getPromptPreference = async () => {
+      if (first) { first = false; return { suppressed: true }; }
+      // The probe the "Ask again" click races: it reads the pre-clear value and
+      // resolves only after the clear has already painted.
+      await gate;
+      return { suppressed: true };
+    };
+    const { container, cleanup } = render(<IntegrationSetupSection api={api} />);
+    cleanups.push(cleanup);
+    await flush();
+    expect(line(container)).toBeTruthy();
+
+    act(() => (container.querySelector('[data-setup-row="hooks"] [data-setup-row-action]') as HTMLButtonElement).click());
+    await flush();
+    act(() => reenable(container)!.click());
+    await flush();
+    expect(line(container)).toBeNull();
+
+    act(() => release());
+    await flush();
+    expect(line(container)).toBeNull();
+  });
+
+  it('shows nothing on an older preload, and nothing when the probe fails', async () => {
+    const older = render(<IntegrationSetupSection api={fakeApi({ omitPromptPref: true })} />);
+    cleanups.push(older.cleanup);
+    await flush();
+    expect(line(older.container)).toBeNull();
+
+    const broken = render(
+      <IntegrationSetupSection api={fakeApi({ promptSuppressed: true, promptPrefThrows: true })} />,
+    );
+    cleanups.push(broken.cleanup);
+    await flush();
+    expect(line(broken.container)).toBeNull();
   });
 });

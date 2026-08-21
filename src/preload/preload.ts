@@ -587,6 +587,17 @@ const electronAPI = {
         ipcRenderer.invoke(IPC.HOOKS_BRIDGE_INSTALL) as Promise<
           import('../cli/commands/setupHooks').InstallOutcome
         >,
+      // Durable "Don't ask again". GET is consulted before the prompt shows;
+      // SET is written only by that explicit click and cleared from Settings.
+      // "Later" never reaches here — it is session-scoped renderer state.
+      getPromptPreference: () =>
+        ipcRenderer.invoke(IPC.HOOKS_BRIDGE_PROMPT_PREF_GET) as Promise<
+          import('../main/hooks/hooksPromptPreference').HooksPromptPreference
+        >,
+      setPromptPreference: (suppressed: boolean) =>
+        ipcRenderer.invoke(IPC.HOOKS_BRIDGE_PROMPT_PREF_SET, suppressed) as Promise<
+          import('../main/hooks/hooksPromptPreference').HooksPromptPreference
+        >,
     },
     // Per-account usage statusline (in-app `wmux setup-statusline`). Mirrors
     // hooksBridge — STATUS feeds the Settings/install prompt; INSTALL is the

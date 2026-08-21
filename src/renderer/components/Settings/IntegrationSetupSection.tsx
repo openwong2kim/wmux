@@ -37,6 +37,10 @@ export interface IntegrationSetupApi {
      *  sit at "not installed" forever while the signals actually flow. */
     status: () => Promise<{ installed: boolean; outcome?: { pluginAlsoInstalled?: boolean } }>;
     install: () => Promise<{ ok: boolean; error: string | null }>;
+    /** The install prompt's durable "Don't ask again". Optional: an older
+     *  preload simply never shows the re-enable line. */
+    getPromptPreference?: () => Promise<{ suppressed: boolean }>;
+    setPromptPreference?: (suppressed: boolean) => Promise<{ suppressed: boolean }>;
   };
   statusline?: {
     status: () => Promise<{ installed: boolean }>;
@@ -110,6 +114,11 @@ export function IntegrationSetupSection({
   const [hooks, setHooks] = useState<RowModel>(INITIAL);
   const [mcp, setMcp] = useState<RowModel>(INITIAL);
   const [statusline, setStatusline] = useState<RowModel>(INITIAL);
+  // The install prompt's durable refusal. `null` means "no answer to show" —
+  // either the preload is too old to have it, or the probe failed. Only a
+  // definite `true` renders the re-enable line, so a hiccup never invents a
+  // control for a preference the user may not have set.
+  const [promptSuppressed, setPromptSuppressed] = useState<boolean | null>(null);
 
   // Every write below lands after an await, and the settings panel is a tab the
   // user closes mid-probe. Without this the card sets state on an unmounted
@@ -152,6 +161,21 @@ export function IntegrationSetupSection({
         }, gen),
       )
       .catch(() => commit(setHooks, INITIAL, gen));
+    // Probed with the rows but kept OUT of RowModel: it is not an install
+    // state, and folding it into the hooks row would make a suppressed prompt
+    // read as a broken install.
+    // Generation-guarded like the rows: "Ask again" bumps the generation, so a
+    // probe still in flight when it lands cannot repaint the stale `true` and
+    // bring the line back after the user cleared it.
+    const commitPref = (v: boolean | null) => {
+      if (!mountedRef.current || gen !== genRef.current) return;
+      setPromptSuppressed(v);
+    };
+    if (!api.hooks?.getPromptPreference) commitPref(null);
+    else api.hooks
+      .getPromptPreference()
+      .then((pref) => commitPref(pref.suppressed))
+      .catch(() => commitPref(null));
     if (!api.statusline) commit(setStatusline, UNAVAILABLE, gen);
     else api.statusline
       .status()
@@ -220,6 +244,21 @@ export function IntegrationSetupSection({
     }
   }, [api, commit, probeAll]);
 
+  // Clearing the durable refusal. Optimism is wrong here: report what the
+  // write actually resolved to, so a failed clear does not hide the line the
+  // user would otherwise click again.
+  const reenablePrompt = useCallback(() => {
+    if (!api.hooks?.setPromptPreference) return;
+    const gen = ++genRef.current;
+    void api.hooks
+      .setPromptPreference(false)
+      .then((pref) => {
+        if (!mountedRef.current || gen !== genRef.current) return;
+        setPromptSuppressed(pref.suppressed);
+      })
+      .catch(() => { /* leave the line up: the refusal is still in force */ });
+  }, [api]);
+
   return (
     <div
       className="rounded-lg p-4 flex flex-col gap-3"
@@ -244,6 +283,22 @@ export function IntegrationSetupSection({
         actionLabel={t('integrationSetup.installButton')}
         onAction={() => { if (api.hooks) void runInstall(setHooks, api.hooks.install); }}
       />
+      {promptSuppressed === true && (
+        <div
+          className="flex items-center justify-between gap-2 text-xs text-[color:var(--text-muted)] -mt-1 pl-1"
+          data-hooks-prompt-suppressed
+        >
+          <span>{t('integrationSetup.hooks.promptSuppressed')}</span>
+          <button
+            type="button"
+            data-hooks-prompt-reenable
+            onClick={reenablePrompt}
+            className="px-2 py-0.5 rounded text-[color:var(--text-sub)] hover:text-[color:var(--text-main)] underline"
+          >
+            {t('integrationSetup.hooks.promptReenable')}
+          </button>
+        </div>
+      )}
       <SetupRow
         id="mcp"
         required
