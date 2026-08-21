@@ -89,6 +89,29 @@ export class DaemonPTYBridge extends EventEmitter {
   private explicitTerminalStatus = false;
   private submittedTurnPending = false;
 
+  /**
+   * Which terminal status settled the pane, while one has. Read only to keep
+   * `awaiting_input` out of the byte-promotion path below: that status means a
+   * HUMAN has to act, and only a human acting — `noteInput`, including the
+   * forceSubmitted approval controls — should retire it. Every other terminal
+   * status is a statement about the agent, which a turn the agent starts by
+   * itself can legitimately contradict.
+   */
+  private settledStatus: AgentEventStatus | null = null;
+
+  /**
+   * Last write to this PTY's stdin, from any client. Only the settled branch
+   * reads it: while a terminal status owns the pane, a burst that starts this
+   * soon after a keystroke is the TUI echoing the user's own typing, and
+   * letting it promote the pane to `running` would paint every draft message
+   * as work. Measured on Claude Code (2026-08-21, 140x41): typing peaks at
+   * ~1.5 KB per 3 s window against a 2 KB threshold, so the threshold alone
+   * already separates echo from work on that TUI — this guard is what keeps
+   * the separation from depending on one agent's repaint economy.
+   */
+  private lastInputAt = 0;
+  private static readonly INPUT_ECHO_QUIET_MS = 1500;
+
   /** Track bracketed-paste input so newlines inside a pasted draft are not
    * mistaken for Enter. The closing marker and the later CR are separate writes
    * in the normal renderer path; only that CR starts a turn. */
@@ -123,10 +146,17 @@ export class DaemonPTYBridge extends EventEmitter {
    * not include Enter but still resume the blocked turn.
    */
   noteInput(data: string, forceSubmitted = false): void {
+    // Stamped for EVERY write, including the ordinary keystrokes that fall out
+    // below. Output that arrives while the user is still typing is the TUI
+    // echoing them, and echo must never be mistaken for the agent working —
+    // see the settled branch in setupDataForwarding's data handler.
+    if (data.length > 0) this.lastInputAt = Date.now();
+
     const hasSubmitBoundary = this.scanSubmittedInput(data);
     if (!forceSubmitted && !hasSubmitBoundary) return;
 
     this.explicitTerminalStatus = false;
+    this.settledStatus = null;
     this.submittedTurnPending = true;
     if (this.resizeGuardTimer) {
       clearTimeout(this.resizeGuardTimer);
@@ -146,14 +176,31 @@ export class DaemonPTYBridge extends EventEmitter {
   noteAgentStatus(status: AgentEventStatus): void {
     if (status === 'running') {
       this.explicitTerminalStatus = false;
+      this.settledStatus = null;
       return;
     }
     this.explicitTerminalStatus = true;
+    this.settledStatus = status;
     this.submittedTurnPending = false;
     if (this.resizeGuardTimer) {
       clearTimeout(this.resizeGuardTimer);
       this.resizeGuardTimer = null;
     }
+    // Re-arm the activity cycle on the turn end so the NEXT burst has to earn
+    // `running` from scratch. Without this the cycle re-arms only after five
+    // seconds of byte silence, which a TUI painting a live counter never gives.
+    if (this.activityMonitor && this.sessionId) {
+      this.activityMonitor.endTurn(this.sessionId);
+    }
+  }
+
+  /**
+   * True when nothing has been written to this PTY's stdin recently enough for
+   * the current output to be an echo of it. `lastInputAt` starts at 0, so a
+   * pane nobody has typed into is quiet from the moment it spawns.
+   */
+  private inputIsQuiet(): boolean {
+    return Date.now() - this.lastInputAt >= DaemonPTYBridge.INPUT_ECHO_QUIET_MS;
   }
 
   private scanSubmittedInput(data: string): boolean {
@@ -224,6 +271,8 @@ export class DaemonPTYBridge extends EventEmitter {
     this.explicitTerminalStatus = false;
     this.submittedTurnPending = false;
     this.inputInBracketedPaste = false;
+    this.lastInputAt = 0;
+    this.settledStatus = null;
 
     const activityMonitor = new ActivityMonitor();
     this.activityMonitor = activityMonitor;
@@ -236,31 +285,59 @@ export class DaemonPTYBridge extends EventEmitter {
       if (this.explicitTerminalStatus) return;
       this.emit('idle', { sessionId: ptyId });
     });
-    // Activity → active notification. Passive bursts are accepted only while
-    // no explicit terminal state owns the pane. A submitted turn is re-armed by
-    // beginTurn(), so its very first output emits running even for a short reply.
+    // Activity → active notification. A submitted turn is re-armed by
+    // beginTurn(), so its very first output emits running even for a short
+    // reply. A settled pane can be promoted too, but only by a burst that
+    // cleared the threshold from a cycle the turn end re-armed, with the user's
+    // keystrokes quiet and outside the resize-redraw window — the three things
+    // that separate an autonomous turn from echo and repaints.
     this.activeUnsubscribe = activityMonitor.onActive((ptyId) => {
-      if (this.explicitTerminalStatus) return;
-
-      const inputStartedTurn = this.submittedTurnPending;
-      this.submittedTurnPending = false;
-
-      // Real submitted input already reset detector dedup in noteInput(). For a
-      // passive startup/autonomous burst, retain the resize-redraw guard: a TUI
-      // repaint is not a new turn and must not make an unchanged footer emit
-      // another waiting notification.
       let likelyRepaint = false;
-      if (!inputStartedTurn) {
-        const elapsed = Date.now() - this.lastResizeAtMs;
-        likelyRepaint = elapsed < RESIZE_REDRAW_GUARD_MS;
-        if (likelyRepaint) {
-          if (this.resizeGuardTimer) clearTimeout(this.resizeGuardTimer);
-          this.resizeGuardTimer = setTimeout(() => {
-            this.resizeGuardTimer = null;
+
+      if (this.explicitTerminalStatus) {
+        // `awaiting_input` is the one settle bytes may never retire — a pane
+        // holding a question stays in the "needs you" count until a human
+        // answers it, however much a subagent paints behind the prompt.
+        if (this.settledStatus === 'awaiting_input') return;
+
+        // Promoting a SETTLED pane. Two things disqualify the burst: the user's
+        // keystrokes are still echoing, or a resize is still repainting. Either
+        // way the cycle is re-armed rather than consumed — a burst that proved
+        // nothing must not spend the one `onActive` this cycle gets, or a real
+        // autonomous turn arriving right behind it would stay silent for as
+        // long as it keeps the idle timer alive.
+        if (!this.inputIsQuiet() || Date.now() - this.lastResizeAtMs < RESIZE_REDRAW_GUARD_MS) {
+          activityMonitor.endTurn(ptyId);
+          return;
+        }
+        this.explicitTerminalStatus = false;
+        this.settledStatus = null;
+        this.submittedTurnPending = false;
+        // Deliberately NOT resetEmissionState(). The unsettled path below
+        // clears the detector's dedup so a new turn's footer can speak again;
+        // doing it here would let the idle chrome that is still on screen
+        // answer the `complete` this pane just recorded with a stale
+        // `waiting` — trading a silent wrong status for a loud one.
+      } else {
+        const inputStartedTurn = this.submittedTurnPending;
+        this.submittedTurnPending = false;
+
+        // Real submitted input already reset detector dedup in noteInput(). For
+        // a passive startup/autonomous burst, retain the resize-redraw guard: a
+        // TUI repaint is not a new turn and must not make an unchanged footer
+        // emit another waiting notification.
+        if (!inputStartedTurn) {
+          const elapsed = Date.now() - this.lastResizeAtMs;
+          likelyRepaint = elapsed < RESIZE_REDRAW_GUARD_MS;
+          if (likelyRepaint) {
+            if (this.resizeGuardTimer) clearTimeout(this.resizeGuardTimer);
+            this.resizeGuardTimer = setTimeout(() => {
+              this.resizeGuardTimer = null;
+              this.agentDetector?.resetEmissionState();
+            }, RESIZE_REDRAW_GUARD_MS - elapsed);
+          } else {
             this.agentDetector?.resetEmissionState();
-          }, RESIZE_REDRAW_GUARD_MS - elapsed);
-        } else {
-          this.agentDetector?.resetEmissionState();
+          }
         }
       }
 
@@ -352,11 +429,18 @@ export class DaemonPTYBridge extends EventEmitter {
       const buf = Buffer.from(data);
 
       // Byte activity is weaker than a detector/hook terminal edge. Process it
-      // FIRST only while the pane is unsettled, so a waiting/complete pattern
-      // found in this same chunk is forwarded last and remains authoritative.
-      // While settled, ignore idle TUI repaints entirely until noteInput() sees
-      // a submitted turn (or an explicit running hook reopens the gate).
-      if (!this.muted && !this.explicitTerminalStatus) {
+      // FIRST, so a waiting/complete pattern found in this same chunk is
+      // forwarded last and remains authoritative.
+      //
+      // While the pane is settled the bytes still count, but only once the
+      // user's own keystrokes have gone quiet (#935). A turn the agent starts
+      // by ITSELF — a background task finishing and the agent picking up —
+      // submits no input and, on a hook install without PostToolUse, produces
+      // no explicit running edge either, so those two openers left the pane
+      // wearing the previous turn's `complete` for the whole autonomous turn.
+      // Echo is what the settled branch has to exclude, and the input stamp
+      // names it directly instead of blocking every byte to be safe.
+      if (!this.muted && (!this.explicitTerminalStatus || this.inputIsQuiet())) {
         try {
           activityMonitor.feed(sessionId, buf.length);
         } catch {
@@ -492,6 +576,8 @@ export class DaemonPTYBridge extends EventEmitter {
     this.explicitTerminalStatus = false;
     this.submittedTurnPending = false;
     this.inputInBracketedPaste = false;
+    this.lastInputAt = 0;
+    this.settledStatus = null;
     this.oscParser = null;
     this.modeTracker = null;
     this.agentDetector = null;
