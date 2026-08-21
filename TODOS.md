@@ -488,3 +488,32 @@
 - **How, when it comes back:** keep the bar visually thin and give the slider a transparent expanded hit area rather than growing the painted bar. The live selector is `.xterm-scrollable-element > .scrollbar.vertical` — note xterm 6 moved this; the pre-#890 rules at `styles.css:200-208` targeted `.xterm-viewport::-webkit-scrollbar`, which xterm 6 no longer scrolls, so they were dead code (#890 retargets them).
 - **Context:** xterm exposes no touch API at all (zero `touch` matches in `xterm.d.ts`); its VS Code `Gesture` helper is internal. Upstream gaps: xterm.js#5377 (no dedicated touch handling), #1007 (swipe should send arrow keys), #594 (momentum impossible — "the viewport is actually underneath the row divs"). Verification harness: `scripts/_dog890-final.mjs`.
 - **Depends on:** #890 landing first. **Effort:** XS. **Priority:** P3.
+
+## Release partial failures report as success (P2, from /autoplan review of #964, 2026-08-21)
+- **What:** `release.yml` carries `continue-on-error: true` in six places — Chocolatey push, the winget job, the macOS and Linux asset uploads, and symbol upload. Each was deliberate ("an upload hiccup must not fail the whole release"), and together they mean a release where WinGet silently failed and macOS assets never attached still reports green.
+- **Why:** the acceptance check people actually run is "did the run go green" plus an eyeball of the asset list. Both survive a partial publish. Nobody learns that Chocolatey is a version behind until a user reports it. This is the release-pipeline instance of the silent-failure class already recorded for this repo.
+- **Shape:** a final step in `build` (or a small aggregate job needing the others) that collects each channel's outcome and writes them to `$GITHUB_STEP_SUMMARY` as a table — channel, attempted?, succeeded?. Fail the run only if a channel that was *supposed* to publish did not. Do not remove the `continue-on-error`s; the point is to stop them being invisible, not to make one hiccup discard a good build.
+- **Context:** `release.yml:243` (choco), `:263` (winget), `:353` (macos), `:497` (linux), plus symbols. #964's dry_run path now exists, so this is testable without burning a tag.
+- **Effort:** S. **Priority:** P2 — cheap, and it is the difference between "the release worked" and "the release reported success".
+
+## `Publish perf history` can still fail without anyone noticing (P3, from /autoplan review of #964, 2026-08-21)
+- **What:** the step that appends to the `bench-history` branch (`perf.yml`, `if: !cancelled() && github.event_name == 'push'`) has no failure surface. #602 fixed the *cause* of a six-week silent outage (the bot cannot push to a protected branch, so the trend went to an unprotected one) but not the *class*: if the push fails again for a different reason, the run is still green and the trend just stops.
+- **Why now:** #964 moved checkout across a change in how credentials are stored (actions/checkout#2286, v6). That specific upgrade was verified — `bench-history` gained a commit on the first main run after #966 — but the verification was a human running one `gh api` call, which is not a mechanism.
+- **Shape:** cheapest useful version is a scheduled job that checks the newest `bench-history` commit is younger than N days and opens/annotates if not. Watching the push step's exit code inside the run is weaker: the step is best-effort by design.
+- **Effort:** S. **Priority:** P3.
+
+## No YAML-level validation of the workflows (P3, from /autoplan review of #964, 2026-08-21)
+- **What:** `workflowSecurity.test.mjs` and `perfWorkflow.test.mjs` are regex contract tests over the file text. Neither parses YAML, so a structurally invalid workflow, a misspelled key, or an expression that references a nonexistent context passes both and is discovered by GitHub at run time.
+- **Shape:** `actionlint` in the `validate` job. It knows the workflow schema, the available contexts, and shellcheck for `run:` blocks. Keep both vitest files — they encode repo-specific contracts (#940's escalation topology, the pin policy) that actionlint knows nothing about.
+- **Effort:** XS. **Priority:** P3.
+
+## Pin comments are not verified against their SHAs (P3, from /autoplan review of #964, 2026-08-21)
+- **What:** `pinConsistencyViolations` (added in #966/#971) enforces one action → one commit → one label across the workflows. What no test can check offline is whether `# v7.0.1` is *true* of the SHA it labels — a typo, a stale comment, or an annotated tag's tag-object SHA (also 40 hex characters, and broken at runtime) all pass.
+- **Shape:** a weekly scheduled job that resolves each pinned tag via the API and compares. Deliberately not in the PR path: it needs network, and a rate limit or an upstream outage must not fail unrelated PRs.
+- **Effort:** S. **Priority:** P3.
+
+## Dependabot action updates have no owner or SLA (P3, from /autoplan review of #964, 2026-08-21)
+- **What:** `.github/dependabot.yml` (#971) schedules monthly grouped PRs, split `ci-actions` / `release-actions`, with signpath ignored. What it does not define: who reviews them, how fast, what happens when a grouped PR goes red, or what to do about a compromised or retargeted upstream release.
+- **Why:** monthly already accepts up to a month of exposure. A bot PR nobody owns becomes a bot PR nobody merges, and six months later the pins are stale again — the same state #964 fixed, but now with the appearance of being covered.
+- **Shape:** CODEOWNERS on `.github/`, plus a decision on whether `ci-actions` is auto-merge-eligible once its PR is green (it is fully exercised by its own PR; `release-actions` is not, and needs a dry_run first).
+- **Effort:** XS. **Priority:** P3.
