@@ -907,12 +907,26 @@ describe('#951 quiet-caret tracker (pure)', () => {
     expect(sel).toMatchObject({ absRow: 640, col: 100, src: 'instant', edge: false });
   });
 
-  it('#953: a line-end park is still snapshotted — the flag drives nothing', () => {
-    // Withholding these cells from the snapshot was the last of three
-    // generations of acting on `edge`, and the reporter measured it worse
-    // than the untouched baseline, so the tracker takes the cell as before.
+  it('#953: a line-end park is refused as a snapshot, keeping the last good one', () => {
+    // The field shape once the streaming path started using the snapshot:
+    // `cursor=(13,36) sel=(127,43) src=caret` — the live cursor mid-line while
+    // the snapshot pointed at the last column, so every composition anchored
+    // bottom-right. A quiet span that finds the TUI parked there must keep the
+    // caret the last real one recorded.
+    const t = createRestingTracker(640, 5, 1000, 40);
+    noteOutputParsed(t, 1600, 237);              // a real caret at (40,5)
+    expect(t).toMatchObject({ hasCaret: true, caretRelRow: 40, caretCol: 5 });
+
+    noteCursorMove(t, 647, 236, 1700, 47);       // TUI parks at the line end
+    noteOutputParsed(t, 2300, 237);              // next quiet span spans it
+    expect(t).toMatchObject({ hasCaret: true, caretRelRow: 40, caretCol: 5 });
+  });
+
+  it('#953: without a column count the refusal is off, not wrongly bounded', () => {
+    // A caller with no geometry must keep the old behaviour rather than have
+    // the check silently pick a bound and drop legitimate caret cells.
     const t = createRestingTracker(647, 236, 1000, 47);
-    noteOutputParsed(t, 1600); // spanning cell is a line-end park
+    noteOutputParsed(t, 1600);
     expect(t).toMatchObject({ hasCaret: true, caretRelRow: 47, caretCol: 236 });
   });
 

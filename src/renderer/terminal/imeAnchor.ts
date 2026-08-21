@@ -85,8 +85,11 @@
  * then certifies that placeholder. A CJK composition can never sit on the
  * last column (the glyph alone is two cells wide), so such a selection is
  * FLAGGED (`edge=1` in the diagnostic), and while output is FLOWING it also
- * defers to the quiet-caret snapshot; the cell is still eligible as a snapshot
- * itself, and while output is quiet the selection is NOT rerouted.
+ * defers to the quiet-caret snapshot; while output is quiet the selection is
+ * NOT rerouted. Such a cell is also refused as a snapshot, so a quiet span
+ * that finds the TUI parked at the line end keeps the caret the last real one
+ * recorded instead of replacing it — without that, deferring to the snapshot
+ * just moves the same wrong cell one step earlier.
  * That last split is the whole lesson of three earlier generations, all of
  * which rerouted a line-end park in every condition and all of which lost to
  * the untouched baseline: re-selecting the quiet snapshot wandered between
@@ -396,19 +399,30 @@ export function noteCursorMove(state: RestingTrackerState, absRow: number, col: 
  * exceeds RESTING_MS by construction) with a promotion clock inside this
  * chunk.
  */
-export function noteOutputParsed(state: RestingTrackerState, now: number): void {
+export function noteOutputParsed(state: RestingTrackerState, now: number, cols?: number): void {
   if (now - state.lastOutputAt >= OUTPUT_QUIET_MS) {
     state.epochStart = now;
+    // A cell on the LAST column is the TUI's line-end park, never a caret: a
+    // CJK composition cannot sit there, since the glyph is two cells wide. It
+    // must not become the snapshot — and specifically must not REPLACE a good
+    // one, which is the shape the field log shows (#953, 2026-08-21):
+    // `cursor=(13,36) sel=(127,43) src=caret`, the live cursor mid-line while
+    // the snapshot points at column 127. Refusing keeps whatever caret the
+    // last real quiet span recorded. `cols` is optional so a caller with no
+    // geometry keeps the old behaviour rather than silently disabling the
+    // check with a wrong bound.
+    const lastCol = cols !== undefined ? cols - 1 : Infinity;
+    const promote = (relRow: number, col: number): void => {
+      if (col >= lastCol) return;
+      state.caretRelRow = relRow;
+      state.caretCol = col;
+      state.caretAt = now;
+      state.hasCaret = true;
+    };
     if (state.currentSince <= state.lastOutputAt) {
-      state.caretRelRow = state.currentRelRow;
-      state.caretCol = state.currentCol;
-      state.caretAt = now;
-      state.hasCaret = true;
+      promote(state.currentRelRow, state.currentCol);
     } else if (state.hasResting && state.lastRestingAt > state.lastOutputAt) {
-      state.caretRelRow = state.lastRestingRelRow;
-      state.caretCol = state.lastRestingCol;
-      state.caretAt = now;
-      state.hasCaret = true;
+      promote(state.lastRestingRelRow, state.lastRestingCol);
     }
   }
   state.lastOutputAt = now;
@@ -946,7 +960,7 @@ export function attachImeAnchor(
   // clock compare plus at most three number writes, so the streaming hot path
   // stays cold. noteOutputParsed tolerates either firing order relative to
   // onCursorMove within a chunk (see its doc comment).
-  const writeParsedSub = terminal.onWriteParsed(() => noteOutputParsed(tracker, now()));
+  const writeParsedSub = terminal.onWriteParsed(() => noteOutputParsed(tracker, now(), terminal.cols));
   // Normal <-> alt buffer switches change what an absolute row means.
   const bufferSub = terminal.buffer.onBufferChange(resetTracker);
 
