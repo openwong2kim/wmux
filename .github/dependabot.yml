@@ -38,3 +38,21 @@ updates:
       # arrive automatically on the path that signs the binaries users install.
       # Revisit when signing is enabled and there is a test-signing canary.
       - dependency-name: "signpath/github-action-submit-signing-request"
+
+  # npm. Version updates are OFF (open-pull-requests-limit: 0) — this block
+  # exists to shape SECURITY updates, which run on their own path and ignore
+  # that limit. Ungrouped, the first wave after alerts were switched on
+  # (#969) arrived as five separate PRs, four of which failed the
+  # THIRD_PARTY_NOTICES version pin — a gate Dependabot cannot clear itself
+  # (it cannot run `npm run notices`). Grouping turns a wave into one PR,
+  # which costs one notices commit instead of one per package (#978).
+  - package-ecosystem: npm
+    directory: "/"
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 0
+    groups:
+      npm-security:
+        applies-to: security-updates
+        patterns:
+          - "*"
