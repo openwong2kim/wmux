@@ -15,6 +15,8 @@ export const th = {
   'workspace.agentComplete': 'เอเจนต์เสร็จสิ้น',
   'workspace.agentError': 'ข้อผิดพลาดของเอเจนต์',
   'workspace.agentWaiting': 'เอเจนต์รออยู่',
+
+  'workspace.agentAwaitingInput': 'เอเจนต์รอการป้อนข้อมูล',
   'workspace.agentIdle': 'เอเจนต์ว่าง',
   'workspace.close': 'ปิดพื้นที่ทำงาน',
   'workspace.copyInfo': 'คัดลอกข้อมูลเซสชัน',

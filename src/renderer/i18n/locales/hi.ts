@@ -15,6 +15,8 @@ export const hi = {
   'workspace.agentComplete': 'एजेंट पूर्ण',
   'workspace.agentError': 'एजेंट त्रुटि',
   'workspace.agentWaiting': 'एजेंट प्रतीक्षारत',
+
+  'workspace.agentAwaitingInput': 'एजेंट को इनपुट चाहिए',
   'workspace.agentIdle': 'एजेंट निष्क्रिय',
   'workspace.close': 'कार्यक्षेत्र बंद करें',
   'workspace.copyInfo': 'सेशन जानकारी कॉपी करें',

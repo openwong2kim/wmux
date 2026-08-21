@@ -15,6 +15,8 @@ export const fr = {
   'workspace.agentComplete': 'Agent terminé',
   'workspace.agentError': 'Erreur de l\'agent',
   'workspace.agentWaiting': 'Agent en attente',
+
+  'workspace.agentAwaitingInput': 'Agent attend une réponse',
   'workspace.agentIdle': 'Agent inactif',
   'workspace.close': 'Fermer l\'espace de travail',
   'workspace.copyInfo': 'Copier les infos de session',

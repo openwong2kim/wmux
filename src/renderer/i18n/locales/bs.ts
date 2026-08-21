@@ -15,6 +15,8 @@ export const bs = {
   'workspace.agentComplete': 'Agent završen',
   'workspace.agentError': 'Greška agenta',
   'workspace.agentWaiting': 'Agent čeka',
+
+  'workspace.agentAwaitingInput': 'Agent traži unos',
   'workspace.agentIdle': 'Agent miruje',
   'workspace.close': 'Zatvori radni prostor',
   'workspace.copyInfo': 'Kopiraj podatke sesije',

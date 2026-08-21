@@ -15,6 +15,8 @@ export const ja = {
   'workspace.agentComplete': 'エージェント完了',
   'workspace.agentError': 'エージェントエラー',
   'workspace.agentWaiting': 'エージェント待機中',
+
+  'workspace.agentAwaitingInput': 'エージェント入力待ち',
   'workspace.agentIdle': 'エージェントアイドル',
   'workspace.close': 'ワークスペースを閉じる',
   'workspace.copyInfo': 'セッション情報をコピー',

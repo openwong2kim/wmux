@@ -15,6 +15,8 @@ export const ar = {
   'workspace.agentComplete': 'اكتمل الوكيل',
   'workspace.agentError': 'خطأ في الوكيل',
   'workspace.agentWaiting': 'الوكيل في الانتظار',
+
+  'workspace.agentAwaitingInput': 'الوكيل يحتاج إدخالاً',
   'workspace.agentIdle': 'الوكيل خامل',
   'workspace.close': 'إغلاق مساحة العمل',
   'workspace.copyInfo': 'نسخ معلومات الجلسة',

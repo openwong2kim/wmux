@@ -15,6 +15,8 @@ export const id = {
   'workspace.agentComplete': 'Agen selesai',
   'workspace.agentError': 'Galat agen',
   'workspace.agentWaiting': 'Agen menunggu',
+
+  'workspace.agentAwaitingInput': 'Agen perlu masukan',
   'workspace.agentIdle': 'Agen menganggur',
   'workspace.close': 'Tutup ruang kerja',
   'workspace.copyInfo': 'Salin info sesi',

@@ -15,6 +15,8 @@ export const nb = {
   'workspace.agentComplete': 'Agent fullført',
   'workspace.agentError': 'Agentfeil',
   'workspace.agentWaiting': 'Agent venter',
+
+  'workspace.agentAwaitingInput': 'Agent venter på input',
   'workspace.agentIdle': 'Agent inaktiv',
   'workspace.close': 'Lukk arbeidsområde',
   'workspace.copyInfo': 'Kopier øktinformasjon',

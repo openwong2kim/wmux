@@ -15,6 +15,8 @@ export const uk = {
   'workspace.agentComplete': 'Агент завершено',
   'workspace.agentError': 'Помилка агента',
   'workspace.agentWaiting': 'Агент очікує',
+
+  'workspace.agentAwaitingInput': 'Агент очікує введення',
   'workspace.agentIdle': 'Агент простоює',
   'workspace.close': 'Закрити робочий простір',
   'workspace.copyInfo': 'Скопіювати дані сесії',

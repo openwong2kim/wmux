@@ -15,6 +15,8 @@ export const ms = {
   'workspace.agentComplete': 'Ejen selesai',
   'workspace.agentError': 'Ralat ejen',
   'workspace.agentWaiting': 'Ejen menunggu',
+
+  'workspace.agentAwaitingInput': 'Ejen perlukan input',
   'workspace.agentIdle': 'Ejen melahu',
   'workspace.close': 'Tutup ruang kerja',
   'workspace.copyInfo': 'Salin maklumat sesi',
