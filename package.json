@@ -57,7 +57,7 @@
     "url": "https://github.com/openwong2kim/wmux/issues"
   },
   "engines": {
-    "node": ">=18.0.0"
+    "node": ">=24.0.0"
   },
   "devDependencies": {
     "@electron-forge/cli": "^7.11.1",

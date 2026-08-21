@@ -15,11 +15,27 @@ jobs:
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: 24
+          # 24.18.1, not a floating 24: the runner's current 24.19.0 kills one
+          # vitest fork silently on windows-latest (reproduced 2/2 on #983's
+          # baseline; macOS/Linux unaffected) and 24.19.0 has an open memory
+          # regression report (nodejs/help#5165, nodejs/node#60482). Float the
+          # major again once a fixed 24.x is on the runners.
+          node-version: 24.18.1
           cache: npm
 
       - name: Install dependencies
         run: npm ci
+
+      # Lockfile lineage guard. npm 11 (this job's npm) accepts an npm-10-shaped
+      # lock without complaint, so a contributor on npm 10 who follows the EUSAGE
+      # error's own advice ("update your lock file with `npm install`") resurrects
+      # the pruned nested entries at whatever the registry serves today — and CI
+      # would stay green while the lineage silently regresses. Renormalizing here
+      # must be a no-op; a diff means the committed lock was not written by npm 11.
+      - name: Lockfile lineage guard (npm 11)
+        run: |
+          npm install --package-lock-only --ignore-scripts
+          git diff --exit-code package-lock.json
 
       - name: Type check
         run: node_modules/.bin/tsc --noEmit
