@@ -35,16 +35,41 @@ export function rosterPrimaryLabel(row: WorkspaceAgentRosterRow): string {
 }
 
 /**
- * The muted trailer: vendor (only when the title took the lead, so it is never
- * printed twice), pane coordinate, and the tab position when the leaf holds
- * more than one surface.
+ * The muted trailer: vendor, pane coordinate, and the tab position when the
+ * leaf holds more than one surface.
+ *
+ * The vendor is dropped in two cases, both because it carries no information
+ * there: when the title did not take the lead (it would be printed twice), and
+ * when every row in this workspace runs the SAME vendor — the common case for
+ * me and, from the issue tracker, for most people running one CLI. In a 240px
+ * sidebar "Claude Code" costs roughly a third of the row so that every line can
+ * repeat what the line above it already said, while the title it pushes out is
+ * the only thing that tells the rows apart. It comes back the moment a
+ * workspace mixes vendors, which is when it starts answering a real question.
  */
-export function rosterSecondaryLabel(row: WorkspaceAgentRosterRow): string {
+export function rosterSecondaryLabel(
+  row: WorkspaceAgentRosterRow,
+  opts: { showVendor?: boolean } = {},
+): string {
+  const showVendor = opts.showVendor ?? true;
   const parts: string[] = [];
-  if (row.surfaceTitle) parts.push(row.agentName);
+  if (showVendor && row.surfaceTitle) parts.push(row.agentName);
   parts.push(row.paneName);
   if (row.surfaceCount > 1) parts.push(`#${row.surfaceIndex + 1}/${row.surfaceCount}`);
   return parts.join(' · ');
+}
+
+/**
+ * True when the roster holds more than one distinct vendor, i.e. when naming
+ * the vendor per row actually distinguishes anything.
+ */
+export function rosterHasMixedVendors(rows: readonly WorkspaceAgentRosterRow[]): boolean {
+  const seen = new Set<string>();
+  for (const row of rows) {
+    seen.add(row.agentName);
+    if (seen.size > 1) return true;
+  }
+  return false;
 }
 
 function WorkspaceAgentRoster({ workspaceId, isActive }: WorkspaceAgentRosterProps) {
@@ -64,6 +89,10 @@ function WorkspaceAgentRoster({ workspaceId, isActive }: WorkspaceAgentRosterPro
   }, [isActive]);
 
   if (roster.agentCount === 0) return null;
+
+  // Computed once per render, not per row: the vendor column earns its width
+  // only when the workspace actually mixes vendors.
+  const mixedVendors = rosterHasMixedVendors(roster.rows);
 
   const countLabel = t('workspace.agentCount', { count: roster.agentCount });
   const disclosureLabel = open
@@ -116,7 +145,7 @@ function WorkspaceAgentRoster({ workspaceId, isActive }: WorkspaceAgentRosterPro
             const statusIcon = AGENT_STATUS_ICON[row.status];
             const statusLabel = t(statusIcon.labelKey);
             const primary = rosterPrimaryLabel(row);
-            const secondary = rosterSecondaryLabel(row);
+            const secondary = rosterSecondaryLabel(row, { showVendor: mixedVendors });
             const detail = row.pendingQuestion ?? row.activity;
             const rowAriaLabel = [primary, secondary, statusLabel, detail]
               .filter(Boolean)

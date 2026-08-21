@@ -11,11 +11,18 @@ export const pl = {
   'sidebar.unreadCount': '{count} nieprzeczytanych',
 
   // Workspace
-  'workspace.agentRunning': 'Agent działa',
-  'workspace.agentComplete': 'Agent ukończony',
-  'workspace.agentError': 'Błąd agenta',
-  'workspace.agentWaiting': 'Agent oczekuje',
-  'workspace.agentIdle': 'Agent bezczynny',
+  // Status labels sit in a narrow column beside a coloured dot, on a row that
+  // already names the agent — so they are bare states, matching en/ko. The
+  // "Agent " prefix repeated the subject of every row and, in a 240px sidebar,
+  // cost the width that the pane title needs.
+  'workspace.agentRunning': 'Pracuje',
+  'workspace.agentComplete': 'Ukończone',
+  'workspace.agentError': 'Błąd',
+  'workspace.agentWaiting': 'Oczekuje',
+  // Was missing entirely, so the one status the user must act on fell back to
+  // English ("Needs input") in an otherwise Polish UI.
+  'workspace.agentAwaitingInput': 'Czeka na Ciebie',
+  'workspace.agentIdle': 'Bezczynny',
   'workspace.close': 'Zamknij obszar roboczy',
   'workspace.copyInfo': 'Kopiuj informacje o sesji',
   'workspace.copied': 'Skopiowano!',

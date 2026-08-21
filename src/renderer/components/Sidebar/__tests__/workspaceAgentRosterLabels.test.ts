@@ -7,6 +7,7 @@ import { describe, expect, it } from 'vitest';
 import {
   rosterPrimaryLabel,
   rosterSecondaryLabel,
+  rosterHasMixedVendors,
 } from '../WorkspaceAgentRoster';
 import type { WorkspaceAgentRosterRow } from '../../../stores/selectors/workspaceAgentRoster';
 
@@ -67,5 +68,48 @@ describe('roster row labels', () => {
     ];
     const primaries = rows.map(rosterPrimaryLabel);
     expect(new Set(primaries).size).toBe(rows.length);
+  });
+
+  // The vendor is worth its width only when it distinguishes rows. In a 240px
+  // sidebar it otherwise pushes out the title, which is the only part that does.
+  describe('vendor column, only when it says something', () => {
+    it('detects a single-vendor roster', () => {
+      expect(rosterHasMixedVendors([row(), row({ ptyId: 'pty-2' })])).toBe(false);
+    });
+
+    it('detects a mixed roster', () => {
+      expect(rosterHasMixedVendors([row(), row({ ptyId: 'pty-2', agentName: 'Codex CLI' })])).toBe(true);
+    });
+
+    it('is false for an empty roster (nothing to distinguish)', () => {
+      expect(rosterHasMixedVendors([])).toBe(false);
+    });
+
+    it('omits the vendor on a single-vendor roster, keeping the coordinate', () => {
+      const r = row({ surfaceTitle: 'Zwroty' });
+      expect(rosterSecondaryLabel(r, { showVendor: false })).toBe('w2-127');
+      expect(rosterSecondaryLabel(r, { showVendor: false, }).includes('Claude Code')).toBe(false);
+    });
+
+    it('keeps the vendor when the roster is mixed', () => {
+      const r = row({ surfaceTitle: 'Zwroty' });
+      expect(rosterSecondaryLabel(r, { showVendor: true })).toBe('Claude Code · w2-127');
+    });
+
+    it('still shows the tab position when the vendor is omitted', () => {
+      const r = row({ surfaceTitle: 'AI', surfaceIndex: 1, surfaceCount: 3 });
+      expect(rosterSecondaryLabel(r, { showVendor: false })).toBe('w2-127 · #2/3');
+    });
+
+    it('a titleless row keeps leading with the vendor even when it is omitted from the trailer', () => {
+      // Otherwise the row would carry no name at all.
+      const r = row();
+      expect(rosterPrimaryLabel(r)).toBe('Claude Code');
+      expect(rosterSecondaryLabel(r, { showVendor: false })).toBe('w2-127');
+    });
+
+    it('defaults to showing the vendor when no option is passed (unchanged callers)', () => {
+      expect(rosterSecondaryLabel(row({ surfaceTitle: 'Zwroty' }))).toBe('Claude Code · w2-127');
+    });
   });
 });
