@@ -316,3 +316,37 @@ jobs:
             out/perf-fresh.json
             perf-summary-fresh.md
           if-no-files-found: ignore
+
+  # The cross-job artifact contract, exercised on every run that reaches it.
+  #
+  # `bench-confirm` is the only other job that downloads, and it is gated on a
+  # reproduced red (`fresh-confirm-needed`), so on a normal green run nothing
+  # ever proves the upload/download round trip still works. That gap is how an
+  # artifact-action upgrade could land "green" while silently breaking the
+  # escalation path — which only shows up later, on the run that actually needs
+  # it. This job closes that gap without touching `bench-confirm`'s trigger:
+  # perfWorkflow.test.mjs pins that `if:` string exactly (#940), and loosening
+  # it to force a run would break the contract it exists to protect.
+  artifact-contract:
+    needs: bench
+    if: always()
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - name: Download the bench job's artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: perf-${{ github.run_id }}
+          path: first
+
+      # Same destination shape bench-confirm uses (`first/out/...`), so this
+      # asserts the exact layout that job depends on, not merely that some
+      # bytes arrived.
+      - name: Assert the artifact survived the round trip
+        shell: pwsh
+        run: |
+          if (-not (Test-Path first/out/perf-current.json)) {
+            Get-ChildItem -Recurse first | ForEach-Object { $_.FullName }
+            throw "first/out/perf-current.json is missing: the cross-job artifact round trip is broken"
+          }
+          Write-Host "artifact contract OK: first/out/perf-current.json present"
