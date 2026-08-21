@@ -27,15 +27,25 @@ const HELP_TEXT = `
 wmux setup-hooks — install official CLI lifecycle integrations
 
 USAGE
-  wmux setup-hooks [--remove | --status] [--json]
+  wmux setup-hooks [--remove | --status] [--signals-only | --with-gate] [--json]
 
 ACTIONS (mutually exclusive; default = install)
   (default)    Install or refresh Claude Code hooks, the Codex notify bridge,
                and the OpenCode lifecycle plugin. Existing foreign hooks,
                notify commands, and plugin files are never overwritten.
+               Re-running KEEPS the hook profile already on disk.
   --remove     Remove only wmux-owned Claude hook entries (legacy behavior;
                Codex/OpenCode files and foreign configuration are untouched).
   --status     Report Claude, Codex, and OpenCode lifecycle integration status.
+
+HOOK PROFILE (install only; mutually exclusive)
+  --signals-only  Install the lifecycle signals and the approval card WITHOUT
+                  the wide PreToolUse permission gate. Nothing wmux owns then
+                  runs per tool call, so the agent pays no hook cost between
+                  turns — at the price of remote approvals, which stop working
+                  until the gate is added back.
+  --with-gate     Install the full profile, gate included (the default for a
+                  fresh install). Use this to undo --signals-only.
 
 GLOBAL FLAGS
   --json       Output raw JSON (useful for scripting).
@@ -83,13 +93,61 @@ const PERMISSION_GATE_SPEC = {
   extraArgs: '--permission-gate',
 };
 
-/** Every wmux-owned hook in settings.json as (event, matcher) specs — the
- *  single source `installHooks` writes and `statusHooks` checks against. */
-const HOOK_SPECS: readonly { event: HookEvent; matcher: string; extraArgs?: string }[] = [
+/** One wmux-owned hook entry in settings.json. */
+interface HookSpec {
+  event: HookEvent;
+  matcher: string;
+  extraArgs?: string;
+}
+
+/**
+ * The turn-boundary signals plus the AskUserQuestion approval pair — every
+ * wmux hook that does NOT fire per tool call. Stop/SubagentStop/SessionStart
+ * are turn boundaries by definition, and the approval pair is scoped to a
+ * single tool name.
+ */
+const SIGNAL_SPECS: readonly HookSpec[] = [
   ...HOOK_EVENTS.map((event) => ({ event, matcher: '' })),
   ...ASK_QUESTION_HOOKS,
-  PERMISSION_GATE_SPEC,
 ];
+
+/**
+ * #970 — which hooks an install writes.
+ *
+ *   'full'         signals + the wide PreToolUse permission gate (default)
+ *   'signals-only' signals alone; nothing wmux owns runs per tool call
+ *
+ * The gate hook is spawned on EVERY PreToolUse, and a node process spawn is
+ * ~85 ms of the ~120 ms that costs before the bridge has read a byte of stdin
+ * — so once the hook exists the cost cannot be optimised away, only not paid.
+ * That matters because both things the wide hook does are useless without a
+ * web surface: it resolves permission gates (armed only under
+ * `wmux web --allow-input`, see WebTerminalServer.canResolveGates) and it
+ * feeds `agent.tool_started` liveness (fanned out by emitAgentLiveness, a
+ * no-op with no web server). A terminal-only operator pays the spawn for
+ * neither. #435 already made this trade once, removing a wide PostToolUse for
+ * the same per-tool-call reason; `gatedTools: []` cannot make it, because a
+ * policy of "gate nothing" still spawns the process that asks.
+ *
+ * This is deliberately NOT a persisted setting: settings.json IS the state, so
+ * the two can never drift. See `detectProfile`.
+ */
+export type HookProfile = 'full' | 'signals-only';
+
+/** Every wmux-owned hook in settings.json as (event, matcher) specs — the
+ *  single source `installHooks` writes and `statusHooks` checks against. */
+const HOOK_SPECS: readonly HookSpec[] = [...SIGNAL_SPECS, PERMISSION_GATE_SPEC];
+
+/** The specs a given profile installs. */
+function specsFor(profile: HookProfile): readonly HookSpec[] {
+  return profile === 'signals-only' ? SIGNAL_SPECS : HOOK_SPECS;
+}
+
+/** Stable identity of a spec — event plus argv tail, since the approval pair
+ *  and the gate share the PreToolUse event and only the tail tells them apart. */
+function specKey(spec: { event: HookEvent; extraArgs?: string }): string {
+  return `${spec.event}${spec.extraArgs ? ` ${spec.extraArgs}` : ''}`;
+}
 
 /** Substring that identifies a wmux-owned hook command in settings.json. */
 const WMUX_BRIDGE_MARKER = 'wmux-bridge.mjs';
@@ -112,10 +170,15 @@ export interface SetupHooksPaths {
   bridgeSource: string | null;
 }
 
+/** `~/.claude/settings.json` — the only path a gate-presence check needs. */
+function defaultSettingsPath(): string {
+  return path.join(os.homedir(), '.claude', 'settings.json');
+}
+
 export function defaultPaths(): SetupHooksPaths {
   const home = os.homedir();
   return {
-    settingsPath: path.join(home, '.claude', 'settings.json'),
+    settingsPath: defaultSettingsPath(),
     bridgeDest: path.join(home, '.wmux', 'hooks', 'wmux-bridge.mjs'),
     bridgeSource: findBridgeSource(),
   };
@@ -257,6 +320,44 @@ function hasArgvTail(
     if (typeof command !== 'string' || !command.includes(WMUX_BRIDGE_MARKER)) return false;
     return command.trim().endsWith(tail);
   });
+}
+
+/**
+ * The wmux specs currently registered in a settings object, keyed by specKey.
+ * Shared by `installHooks` (to keep an existing profile) and `statusHooks`
+ * (to report one), so the two can never disagree about what is installed.
+ */
+function installedSpecsIn(settings: Record<string, unknown>): Set<string> {
+  const found = new Set<string>();
+  const hooks = settings.hooks;
+  if (!hooks || typeof hooks !== 'object' || Array.isArray(hooks)) return found;
+  const hooksMap = hooks as Record<string, unknown>;
+  for (const spec of HOOK_SPECS) {
+    const groups = hooksMap[spec.event];
+    if (Array.isArray(groups) && groups.some((g) => isEffectiveWmuxGroupForSpec(g, spec))) {
+      found.add(specKey(spec));
+    }
+  }
+  return found;
+}
+
+/**
+ * #970 — the profile a settings.json is already on. DERIVED, never stored: the
+ * installed hooks ARE the profile, so no marker file can go stale against them,
+ * and a bare re-run can never resurrect a gate hook the operator removed by
+ * hand — which is the whole point for anyone who wants "wmux cannot participate
+ * in permission decisions" to hold by construction.
+ *
+ * 'signals-only' requires EVERY signal spec present AND the gate absent. A
+ * partial install (some signals missing) is a broken 'full' install to repair,
+ * not a profile to preserve, so it reads as 'full' and a bare `wmux setup-hooks`
+ * heals it. No wmux hooks at all also reads as 'full' — the fresh-install default.
+ */
+export function detectProfile(settings: Record<string, unknown>): HookProfile {
+  const installed = installedSpecsIn(settings);
+  const allSignals = SIGNAL_SPECS.every((spec) => installed.has(specKey(spec)));
+  const gate = installed.has(specKey(PERMISSION_GATE_SPEC));
+  return allSignals && !gate ? 'signals-only' : 'full';
 }
 
 // ----- Settings load (corruption-aware) -----------------------------------
@@ -428,6 +529,12 @@ export interface InstallOutcome {
   bridgeSource: string | null;
   /** Events written into settings.json. */
   events: HookEvent[];
+  /**
+   * #970 — the hook profile this run installed. Absent an explicit
+   * `--signals-only`/`--with-gate`, it is whatever settings.json was already
+   * on, so a refresh never silently changes it.
+   */
+  profile: HookProfile;
   bridgeCopied: boolean;
   /**
    * True when the wmux-claude-integration marketplace plugin was detected. In
@@ -443,13 +550,24 @@ export interface InstallOutcome {
   error: string | null;
 }
 
-export function installHooks(paths: SetupHooksPaths): InstallOutcome {
+/**
+ * @param requestedProfile explicit `--signals-only` / `--with-gate`. Omitted
+ *   (a bare `wmux setup-hooks`) means KEEP whatever profile settings.json is
+ *   already on — a refresh that quietly re-added the gate would undo the
+ *   operator's choice on the next app update, which is exactly the stale-script
+ *   failure `refreshHookBridge` exists to avoid.
+ */
+export function installHooks(
+  paths: SetupHooksPaths,
+  requestedProfile?: HookProfile,
+): InstallOutcome {
   const base: InstallOutcome = {
     ok: false,
     settingsPath: paths.settingsPath,
     bridgeDest: paths.bridgeDest,
     bridgeSource: paths.bridgeSource,
     events: [],
+    profile: requestedProfile ?? 'full',
     bridgeCopied: false,
     pluginDetected: false,
     removedForPlugin: 0,
@@ -471,6 +589,10 @@ export function installHooks(paths: SetupHooksPaths): InstallOutcome {
   }
 
   const settings = load.settings;
+  // Resolved BEFORE any mutation — `stripWmuxHooks` below erases the very
+  // entries the derivation reads.
+  const profile: HookProfile = requestedProfile ?? detectProfile(settings);
+  const specs = specsFor(profile);
 
   // 2. Plugin-aware short-circuit: when the wmux-claude-integration marketplace
   //    plugin is installed AND enabled it already registers these hooks.
@@ -485,7 +607,24 @@ export function installHooks(paths: SetupHooksPaths): InstallOutcome {
     if (removedForPlugin > 0) {
       writeJsonAtomic(paths.settingsPath, settings);
     }
-    return { ...base, ok: true, pluginDetected: true, removedForPlugin };
+    return {
+      ...base,
+      ok: true,
+      pluginDetected: true,
+      removedForPlugin,
+      // The plugin's hooks.json is a fixed profile that includes the gate, and
+      // settings.json entries would only double the signals. Say so instead of
+      // reporting a signals-only install that did not happen (#970).
+      profile: 'full',
+      ...(requestedProfile === 'signals-only'
+        ? {
+            warning:
+              '--signals-only had no effect: the wmux-claude-integration plugin owns these ' +
+              'hooks and its profile includes the permission gate. Disable or uninstall the ' +
+              'plugin and re-run to install the signals-only profile from settings.json.',
+          }
+        : {}),
+    };
   }
 
   // 3. Locate + copy the bridge; without it the hooks would be inert.
@@ -503,7 +642,7 @@ export function installHooks(paths: SetupHooksPaths): InstallOutcome {
       ? (settings.hooks as Record<string, unknown>)
       : {};
 
-  for (const spec of HOOK_SPECS) {
+  for (const spec of specs) {
     const group: HookGroup = {
       matcher: spec.matcher,
       hooks: [{ type: 'command', command: bridgeCommand(paths.bridgeDest, spec.event, spec.extraArgs) }],
@@ -520,7 +659,8 @@ export function installHooks(paths: SetupHooksPaths): InstallOutcome {
     ...base,
     ok: true,
     bridgeCopied: true,
-    events: HOOK_SPECS.map((s) => s.event),
+    profile,
+    events: specs.map((s) => s.event),
   };
 }
 
@@ -651,6 +791,13 @@ export interface StatusOutcome {
   settingsCorrupted: boolean;
   /** wmux hook events currently present in settings.json. */
   installedEvents: HookEvent[];
+  /**
+   * #970 — the hook profile settings.json is on, derived from the installed
+   * specs. 'signals-only' means the wide PreToolUse gate was deliberately not
+   * installed, so `features.permissionGate` being 'off' is a configuration and
+   * not a defect.
+   */
+  profile: HookProfile;
   bridgeDest: string;
   bridgeExists: boolean;
   bridgeSource: string | null;
@@ -719,31 +866,21 @@ export function statusHooks(paths: SetupHooksPaths): StatusOutcome {
     detectPluginViaManifest(paths.settingsPath) &&
     !isPluginExplicitlyDisabled(load.settings);
 
-  const installedEvents: HookEvent[] = [];
   // PreToolUse now carries TWO specs (the AskUserQuestion approval hook and the
   // wide permission gate), so `installedEvents` — an event list — can no longer
   // tell the features apart: the gate hook alone would report the approval card
   // as healthy. Features read this spec-level set instead.
-  const installedSpecs = new Set<string>();
-  const specKey = (spec: { event: HookEvent; extraArgs?: string }): string =>
-    `${spec.event}${spec.extraArgs ? ` ${spec.extraArgs}` : ''}`;
-  if (!load.corrupted) {
-    const hooks = load.settings.hooks;
-    if (hooks && typeof hooks === 'object' && !Array.isArray(hooks)) {
-      const hooksMap = hooks as Record<string, unknown>;
-      for (const spec of HOOK_SPECS) {
-        const groups = hooksMap[spec.event];
-        if (
-          Array.isArray(groups) &&
-          groups.some((group) => isEffectiveWmuxGroupForSpec(group, spec))
-        ) {
-          installedSpecs.add(specKey(spec));
-          // HOOK_SPECS carries each event once, but dedup defensively.
-          if (!installedEvents.includes(spec.event)) installedEvents.push(spec.event);
-        }
-      }
+  const installedSpecs = load.corrupted ? new Set<string>() : installedSpecsIn(load.settings);
+  const installedEvents: HookEvent[] = [];
+  for (const spec of HOOK_SPECS) {
+    // HOOK_SPECS carries PreToolUse twice (approval pair + gate), so dedup.
+    if (installedSpecs.has(specKey(spec)) && !installedEvents.includes(spec.event)) {
+      installedEvents.push(spec.event);
     }
   }
+  // #970 — a corrupt settings file has no derivable profile; report the default
+  // rather than inventing a 'signals-only' the operator never chose.
+  const profile: HookProfile = load.corrupted ? 'full' : detectProfile(load.settings);
 
   const bridgeExists = fs.existsSync(paths.bridgeDest);
   let bridgeStale = false;
@@ -815,11 +952,19 @@ export function statusHooks(paths: SetupHooksPaths): StatusOutcome {
     // real install state now, not a placeholder. It arms only while an
     // answering surface is up (`wmux web`); the detail says so, because a hook
     // that is installed and dormant would otherwise read as broken.
+    // #970 — and an ABSENT gate is now two states, not one. On the signals-only
+    // profile it is the operator's choice, so the detail names the profile and
+    // offers the way back rather than calling it missing. The old copy encoded
+    // "the gate is required" as a string — an answer to a design question that
+    // had not been asked yet.
     permissionGate: featureStatus(
       pluginActive,
       hasSpec('PreToolUse', PERMISSION_GATE_SPEC.extraArgs),
       'PreToolUse (all tools) → remote approval while `wmux web` is running',
-      `PreToolUse permission gate missing → run \`${FIX}\``,
+      profile === 'signals-only'
+        ? 'signals-only profile — no wmux hook runs per tool call; ' +
+          `\`${FIX} --with-gate\` to enable remote approvals`
+        : `PreToolUse permission gate missing → run \`${FIX}\``,
     ),
   };
 
@@ -828,6 +973,7 @@ export function statusHooks(paths: SetupHooksPaths): StatusOutcome {
     settingsExists: load.exists,
     settingsCorrupted: load.corrupted,
     installedEvents,
+    profile,
     bridgeDest: paths.bridgeDest,
     bridgeExists,
     bridgeSource: paths.bridgeSource,
@@ -835,6 +981,35 @@ export function statusHooks(paths: SetupHooksPaths): StatusOutcome {
     pluginAlsoInstalled: detectPluginInstalled(paths.settingsPath),
     features,
   };
+}
+
+/**
+ * #970 — is the wide PreToolUse permission gate hook actually installed?
+ *
+ * `wmux web --allow-input` is the only thing that ARMS the gate, which makes it
+ * the only place that can catch the signals-only mismatch. Without the hook no
+ * tool call ever reaches the broker, so the phone simply never rings: there is
+ * no error, no log line, and no timeout anywhere to notice — the failure is
+ * silent, which is strictly worse than a loud one.
+ *
+ * Deliberately cheaper than `statusHooks`: a settings read plus the plugin
+ * manifest, with no `plugins/` directory walk, no bridge byte-compare, and no
+ * `findBridgeSource` upward walk — it takes the settings path alone rather than
+ * a full `SetupHooksPaths`, because that is all it reads. This runs on a
+ * user-facing startup path.
+ *
+ * A corrupt settings.json returns FALSE. We cannot prove the gate is there, and
+ * a false "armed" reading is exactly the outcome this guard exists to prevent.
+ */
+export function isPermissionGateInstalled(settingsPath: string = defaultSettingsPath()): boolean {
+  const load = loadSettings(settingsPath);
+  if (load.corrupted) return false;
+  // An active marketplace plugin supplies the gate from its own hooks.json,
+  // where it is not optional — settings.json will be empty of wmux hooks then.
+  if (detectPluginViaManifest(settingsPath) && !isPluginExplicitlyDisabled(load.settings)) {
+    return true;
+  }
+  return installedSpecsIn(load.settings).has(specKey(PERMISSION_GATE_SPEC));
 }
 
 // ----- Printing -----------------------------------------------------------
@@ -851,6 +1026,7 @@ function printInstall(outcome: InstallOutcome, jsonMode: boolean): void {
   if (outcome.pluginDetected) {
     console.log('Detected the wmux-claude-integration plugin — it already registers these hooks.');
     console.log('Skipped writing settings.json hook entries to avoid double signals.');
+    if (outcome.warning) console.warn(outcome.warning);
     if (outcome.removedForPlugin > 0) {
       console.log(
         `Removed ${outcome.removedForPlugin} duplicate wmux hook entr${outcome.removedForPlugin === 1 ? 'y' : 'ies'} from ${outcome.settingsPath}.`,
@@ -864,6 +1040,13 @@ function printInstall(outcome: InstallOutcome, jsonMode: boolean): void {
   console.log(`Copied bridge → ${outcome.bridgeDest}`);
   console.log(`Updated settings → ${outcome.settingsPath}`);
   console.log(`Installed hooks for: ${outcome.events.join(', ')}`);
+  console.log(
+    outcome.profile === 'signals-only'
+      ? 'Profile: signals-only — no wmux hook runs per tool call. Remote approvals are OFF; '
+        + 'run `wmux setup-hooks --with-gate` to enable them.'
+      : 'Profile: full — the PreToolUse permission gate is installed; it arms under '
+        + '`wmux web --allow-input`.',
+  );
   if (outcome.warning) console.warn(outcome.warning);
   console.log('Restart your Claude Code session for the hooks to take effect.');
 }
@@ -913,7 +1096,10 @@ function printStatus(outcome: StatusOutcome, jsonMode: boolean): void {
   if (outcome.settingsCorrupted) {
     console.log(`settings: ${outcome.settingsPath} (UNPARSEABLE — fix before installing)`);
   } else if (outcome.installedEvents.length > 0) {
-    console.log(`settings: ${outcome.settingsPath} (hooks: ${outcome.installedEvents.join(', ')})`);
+    console.log(
+      `settings: ${outcome.settingsPath} (profile: ${outcome.profile}; ` +
+        `hooks: ${outcome.installedEvents.join(', ')})`,
+    );
   } else {
     console.log(`settings: ${outcome.settingsPath} (wmux hooks NOT installed)`);
   }
@@ -997,10 +1183,36 @@ export async function handleSetupHooks(args: string[], jsonMode: boolean): Promi
     return;
   }
 
+  // #970 — profile selection. Omitting both keeps whatever profile is already
+  // installed, so a refresh (or the in-app "install hooks" button) never
+  // silently re-adds a gate the operator removed.
+  const signalsOnly = args.includes('--signals-only');
+  const withGate = args.includes('--with-gate');
+  if (signalsOnly && withGate) {
+    console.error('--signals-only and --with-gate are mutually exclusive.');
+    process.exit(1);
+    return;
+  }
+  // Rejected rather than ignored: `--status --signals-only` reads as "report
+  // the signals-only profile", and silently reporting the installed one
+  // instead would answer a question the user did not ask.
+  if ((signalsOnly || withGate) && (remove || status)) {
+    console.error('--signals-only and --with-gate apply to install only; drop --remove/--status.');
+    process.exit(1);
+    return;
+  }
+  const requestedProfile: HookProfile | undefined = signalsOnly
+    ? 'signals-only'
+    : withGate
+      ? 'full'
+      : undefined;
+
   // Reject unknown arguments rather than silently falling through to a full
   // install — a typo like `--remov` must not WRITE hooks the user was trying
   // to delete.
-  const unknown = args.filter((a) => a !== '--remove' && a !== '--status');
+  const unknown = args.filter(
+    (a) => a !== '--remove' && a !== '--status' && a !== '--signals-only' && a !== '--with-gate',
+  );
   if (unknown.length > 0) {
     console.error(`Unknown argument(s): ${unknown.join(', ')}. Run 'wmux setup-hooks --help' for usage.`);
     process.exit(1);
@@ -1059,7 +1271,7 @@ export async function handleSetupHooks(args: string[], jsonMode: boolean): Promi
 
   // Run each integration independently so a corrupt Claude settings file does
   // not prevent safe Codex/OpenCode installation (and vice versa).
-  const claude = installHooks(paths);
+  const claude = installHooks(paths, requestedProfile);
   const integrations = lifecycle.installLifecycleIntegrations(lifecyclePaths);
   const outcome = {
     ...claude,
