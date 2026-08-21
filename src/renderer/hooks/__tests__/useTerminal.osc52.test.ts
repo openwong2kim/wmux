@@ -29,14 +29,18 @@ describe('useTerminal OSC 52 clipboard-write wiring (source-level lock)', () => 
   });
 
   it('routes the OSC 52 payload through the write-only decode policy', () => {
-    expect(SRC).toMatch(/decodeOsc52Write\(payload\)/);
+    // #998 moved the decode + the non-null guard into createOsc52Handler, in
+    // the same module that owns the rest of the policy (reads and clears are
+    // refused there too). What this locks is that the hook does not hand-roll
+    // its own path to the clipboard — it goes through that factory.
+    expect(SRC).toMatch(/createOsc52Handler\(\{/);
+    expect(SRC).toMatch(/import \{ createOsc52Handler \} from '\.\.\/utils\/osc52Clipboard'/);
   });
 
-  it('forwards only a non-null decode (refused reads/clears are dropped)', () => {
-    // decodeOsc52Write returns null to REFUSE (read '?', clear, oversize,
-    // malformed); the wiring must guard on that so a refused request never
-    // reaches the clipboard.
-    expect(SRC).toMatch(/if \(text !== null\)/);
+  it('gates the handler on the replay mute (#998)', () => {
+    // Replayed bytes are stored output, not a request: a reconnect, resync or
+    // scrollback restore must not re-apply an old copy to the live clipboard.
+    expect(SRC).toMatch(/isReplaying:\s*\(\)\s*=>\s*replayMuteRef\.current\.depth\s*>\s*0/);
   });
 
   it('writes the decoded text through the clipboard IPC (1 MB cap + lock handling)', () => {

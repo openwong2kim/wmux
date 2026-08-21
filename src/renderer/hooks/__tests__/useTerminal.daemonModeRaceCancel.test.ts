@@ -32,7 +32,10 @@ describe('A6 — useTerminal async restore race cancel (source-level)', () => {
     // activated during the IPC round-trip.
     expect(body).toMatch(/isDaemonModeActive\(\)\s*\?\s*null\s*:\s*content/);
     // The write call must use the guarded value, not the raw `content`.
-    expect(body).toMatch(/terminal\.write\(\s*restored\s*\)/);
+    // #998: restored scrollback is a replay, so it goes through writeReplayed()
+    // with the OSC 52 clipboard bridge muted. The lock is that the guarded
+    // `restored` value is what gets written — not which function writes it.
+    expect(body).toMatch(/(?:terminal\.write\(\s*restored\s*\)|writeReplayed\(terminal,\s*restored)/);
   });
 
   it('still flushes pending PTY data after the daemon-mode skip', () => {
