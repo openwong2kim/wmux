@@ -84,18 +84,22 @@
  * its real cursor at the LAST column of the line it painted, and a long gap
  * then certifies that placeholder. A CJK composition can never sit on the
  * last column (the glyph alone is two cells wide), so such a selection is
- * FLAGGED (`edge=1` in the diagnostic) and nothing else — the selection is
- * NOT rerouted and the cell is still eligible as a quiet-caret snapshot.
- * Three generations of acting on the flag were field-tested and all lost to
- * this baseline: re-selecting the quiet snapshot wandered between inputs (an
- * idle TUI keeps twitching its cursor, so consecutive quiet spans certify
- * different cells); reusing the previous composition's anchor locked
- * whatever error the first anchor had for the whole session; and merely
- * withholding line-end cells from the snapshot — behaviourally invisible on
- * paper, since it only ever drops a snapshot the streaming path would have
- * used — still measured worse in the field, so the tracker takes the cell
- * exactly as it did before the flag existed. The line-end miss stays a
- * KNOWN, flagged residual. Fixing it for real needs a different signal
+ * FLAGGED (`edge=1` in the diagnostic), and while output is FLOWING it also
+ * defers to the quiet-caret snapshot; the cell is still eligible as a snapshot
+ * itself, and while output is quiet the selection is NOT rerouted.
+ * That last split is the whole lesson of three earlier generations, all of
+ * which rerouted a line-end park in every condition and all of which lost to
+ * the untouched baseline: re-selecting the quiet snapshot wandered between
+ * inputs (an idle TUI keeps twitching its cursor, so consecutive quiet spans
+ * certify different cells); reusing the previous composition's anchor locked
+ * whatever error the first anchor had for the whole session; and withholding
+ * line-end cells from the snapshot measured worse too. What they had in
+ * common was acting while the pane was IDLE, which is exactly where dwell was
+ * already right. The streaming half was still broken after they were reverted
+ * (#953 field log, 2026-08-21: `gap=203ms caretAge=602ms src=instant edge=1`
+ * — a usable snapshot passed over, candidate window pinned to the pane's
+ * bottom-right corner), so the rule now fires only when output arrived within
+ * OUTPUT_QUIET_MS. The idle line-end miss stays a KNOWN, flagged residual. Fixing it for real needs a different signal
  * class than the cursor — the ecosystem contract says the TUI must park
  * its cursor on the caret (Ink's useCursor exists; Claude Code has not
  * shipped it, see anthropics/claude-code#25186), and the content-aware
@@ -506,8 +510,26 @@ export function selectFreezeCell(
   // header for the full account.
   const lastCol = viewport?.cols !== undefined ? viewport.cols - 1 : Infinity;
   const edge = instCol >= lastCol;
+  // The sustain gate exists to stop a COMMIT ECHO from pushing the next
+  // composition onto a stale snapshot — an echo is recent output too, and
+  // there the freshly moved cursor really is the caret. It has nothing to
+  // protect when the cursor is parked on the last column: a commit leaves the
+  // caret where the syllable landed, mid-line, and a CJK composition cannot
+  // sit on the last column at all (the glyph is two cells wide). So while
+  // output is flowing, a line-end park defers to the snapshot even before the
+  // epoch is old enough.
+  //
+  // This is narrower than the three generations the header records as losing.
+  // Each of those rerouted a line-end park in EVERY condition, idle included,
+  // and idle is exactly where dwell was right; this one cannot fire unless
+  // output arrived within OUTPUT_QUIET_MS. Field evidence for the distinction
+  // (#953, 2026-08-21): with idle confirmed good on 5ca90958, streaming still
+  // anchored bottom-right, and the log shows why — `gap=203ms caretAge=602ms
+  // src=instant edge=1`, a usable snapshot passed over because a token-paced
+  // stream pauses longer than OUTPUT_QUIET_MS between bursts, so `epochStart`
+  // kept restarting and never reached STREAM_SUSTAIN_MS.
   if (outputGap < OUTPUT_QUIET_MS
-    && now - state.epochStart >= STREAM_SUSTAIN_MS
+    && (now - state.epochStart >= STREAM_SUSTAIN_MS || edge)
     && state.hasCaret) {
     return {
       absRow: baseY + state.caretRelRow, col: state.caretCol,

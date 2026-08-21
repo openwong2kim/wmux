@@ -881,6 +881,32 @@ describe('#951 quiet-caret tracker (pure)', () => {
     expect(sel).toMatchObject({ absRow: 647, col: 236, src: 'instant', edge: true });
   });
 
+  it('#953: a line-end park defers to the snapshot while output is FLOWING', () => {
+    // The reported streaming failure. A token-paced stream pauses longer than
+    // OUTPUT_QUIET_MS between bursts, so `epochStart` keeps restarting and the
+    // sustain gate is never met — yet a perfectly good snapshot exists, and
+    // the live cursor is the TUI's line-end park. Anchoring there put the
+    // candidate window in the pane's bottom-right corner.
+    const t = createRestingTracker(640, 5, 1000, 40);
+    noteOutputParsed(t, 1600);             // quiet span ends -> caret at (40,5)
+    expect(t).toMatchObject({ hasCaret: true, caretCol: 5 });
+    noteCursorMove(t, 647, 236, 1650, 47); // TUI parks at the line end
+    noteOutputParsed(t, 1700);             // burst resumes; epoch is only 100ms old
+    const sel = selectFreezeCell(t, 647, 236, 1750, { top: 600, rows: 48, cols: 237 }, 600);
+    expect(sel).toMatchObject({ absRow: 640, col: 5, src: 'caret', edge: true });
+  });
+
+  it('#953: a mid-line cursor still waits out the sustain gate (commit echo)', () => {
+    // The gate's actual job: a committed syllable's echo is recent output too,
+    // and there the freshly moved cursor IS the caret. Nothing changes for it.
+    const t = createRestingTracker(640, 5, 1000, 40);
+    noteOutputParsed(t, 1600);
+    noteCursorMove(t, 640, 100, 1650, 40);
+    noteOutputParsed(t, 1700);
+    const sel = selectFreezeCell(t, 640, 100, 1750, { top: 600, rows: 48, cols: 237 }, 600);
+    expect(sel).toMatchObject({ absRow: 640, col: 100, src: 'instant', edge: false });
+  });
+
   it('#953: a line-end park is still snapshotted — the flag drives nothing', () => {
     // Withholding these cells from the snapshot was the last of three
     // generations of acting on `edge`, and the reporter measured it worse
