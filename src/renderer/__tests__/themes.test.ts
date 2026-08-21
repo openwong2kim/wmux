@@ -6,6 +6,7 @@ import {
   migrateCustomThemeColors,
   UI_THEME_TOKENS,
   XTERM_PALETTES,
+  XTERM_PALETTE_OPTIONS,
   BUILTIN_XTERM_PALETTE,
   type BuiltinThemeId,
 } from '../themes';
@@ -167,6 +168,68 @@ describe('themes — 10-token system', () => {
     it('falls back to catppuccin-mocha when palette id is invalid', () => {
       const custom = { ...builtinToCustom('catppuccin-mocha'), xtermPaletteId: 'bogus' };
       expect(extractXtermColors(custom)).toBe(XTERM_PALETTES['catppuccin-mocha']);
+    });
+  });
+
+  // A palette is only as good as the output it has to render. These lock the
+  // two decisions that keep `matrix` usable rather than merely green: the error
+  // channel stays warm, and the cool slots stay apart from green.
+  describe('matrix palette — readable, not just green', () => {
+    const P = XTERM_PALETTES.matrix;
+    const hue = (hex: string): number => {
+      const [r, g, b] = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255);
+      const max = Math.max(r, g, b);
+      const d = max - Math.min(r, g, b);
+      if (d === 0) return 0;
+      const h = max === r ? 60 * (((g - b) / d) % 6)
+        : max === g ? 60 * ((b - r) / d + 2)
+          : 60 * ((r - g) / d + 4);
+      return (h + 360) % 360;
+    };
+
+    it('is offered in the palette picker', () => {
+      expect(XTERM_PALETTE_OPTIONS.some((o) => o.value === 'matrix')).toBe(true);
+    });
+
+    it('every slot is valid hex', () => {
+      for (const [slot, value] of Object.entries(P)) {
+        expect(value, slot).toMatch(/^#[0-9A-Fa-f]{6}$/);
+      }
+    });
+
+    it('foreground and cursor clear WCAG AA on the background', () => {
+      expect(getContrastRatio(P.foreground, P.background)).toBeGreaterThanOrEqual(4.5);
+      expect(getContrastRatio(P.cursor, P.background)).toBeGreaterThanOrEqual(4.5);
+    });
+
+    it('dim text (brightBlack) stays legible — the reason bg is not pure black', () => {
+      expect(getContrastRatio(P.brightBlack, P.background)).toBeGreaterThanOrEqual(3);
+    });
+
+    it('every colour slot is readable on the background', () => {
+      const slots = ['red', 'green', 'yellow', 'blue', 'magenta', 'cyan', 'white',
+        'brightRed', 'brightGreen', 'brightYellow', 'brightBlue', 'brightMagenta',
+        'brightCyan', 'brightWhite'] as const;
+      for (const slot of slots) {
+        expect(getContrastRatio(P[slot], P.background), slot).toBeGreaterThanOrEqual(4.5);
+      }
+    });
+
+    it('keeps red in the red family — the error channel is not decorative', () => {
+      const h = hue(P.red);
+      expect(h < 25 || h > 335).toBe(true);
+      expect(hue(P.brightRed) < 25 || hue(P.brightRed) > 335).toBe(true);
+    });
+
+    it('keeps yellow out of the green band, so warnings do not read as success', () => {
+      expect(hue(P.yellow)).toBeLessThan(100);
+    });
+
+    it('separates blue and cyan from green by hue, not only by lightness', () => {
+      const green = hue(P.green);
+      // A directory (blue) must not look like an executable (green) in `ls`.
+      expect(Math.abs(hue(P.blue) - green)).toBeGreaterThanOrEqual(30);
+      expect(Math.abs(hue(P.cyan) - green)).toBeGreaterThanOrEqual(25);
     });
   });
 

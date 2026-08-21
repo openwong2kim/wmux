@@ -25,6 +25,7 @@ export type XtermPaletteId =
   | 'solarized-dark'
   | 'nord'
   | 'monochrome'
+  | 'matrix'
   | 'sandstone-light'
   | 'paper-light';
 
@@ -87,6 +88,24 @@ export const XTERM_PALETTES: Record<XtermPaletteId, XtermThemeColors> = {
     blue: '#A0A0A0', magenta: '#999999', cyan: '#888888', white: '#B0B0B0',
     brightBlack: '#404040', brightRed: '#FF5555', brightGreen: '#B0B0B0', brightYellow: '#D0D0D0',
     brightBlue: '#B0B0B0', brightMagenta: '#AAAAAA', brightCyan: '#999999', brightWhite: '#888888',
+  },
+  // Phosphor green on a green-tinted black. Two deliberate departures from
+  // "make everything green", both about output staying readable:
+  //   1. red and yellow keep their warmth. A palette where a failing test, a
+  //      `git diff -` line and a warning all render green destroys the one job
+  //      colour does in a terminal. Red is the error channel; it stays red.
+  //   2. blue / cyan / magenta are pulled apart on the hue wheel (185° teal,
+  //      168° aqua, 150° pale mint) instead of all landing on green. The first
+  //      draft had blue and green separated only by lightness, which makes `ls`
+  //      unable to distinguish a directory from an executable.
+  // background is #080D08 rather than pure black so `brightBlack` (dim text:
+  // comments, timestamps) still clears 3.9:1 instead of vanishing.
+  matrix: {
+    background: '#080D08', foreground: '#33FF66', cursor: '#00FF41', selectionBackground: '#163D24',
+    black: '#0E1A12', red: '#FF5F56', green: '#00FF41', yellow: '#C8FF64',
+    blue: '#009E8F', magenta: '#B9FFD8', cyan: '#5FFFE0', white: '#A8E8BC',
+    brightBlack: '#4A7A5C', brightRed: '#FF8A80', brightGreen: '#7CFF9B', brightYellow: '#E4FF8F',
+    brightBlue: '#22D4BE', brightMagenta: '#DFFFEE', brightCyan: '#8FFFEE', brightWhite: '#E8FFF0',
   },
   'sandstone-light': {
     background: '#FAF8F5', foreground: '#2A2522', cursor: '#2A2522', selectionBackground: '#D4CFC6',
@@ -339,6 +358,7 @@ export const XTERM_PALETTE_OPTIONS: Array<{ value: XtermPaletteId; label: string
   { value: 'solarized-dark',   label: 'Solarized Dark' },
   { value: 'nord',             label: 'Nord' },
   { value: 'monochrome',       label: 'Monochrome' },
+  { value: 'matrix',           label: 'Matrix' },
   { value: 'sandstone-light',  label: 'Sandstone (light)' },
   { value: 'paper-light',      label: 'Paper (light)' },
 ];
