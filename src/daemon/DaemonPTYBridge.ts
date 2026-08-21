@@ -110,7 +110,46 @@ export class DaemonPTYBridge extends EventEmitter {
    * the separation from depending on one agent's repaint economy.
    */
   private lastInputAt = 0;
-  private static readonly INPUT_ECHO_QUIET_MS = 1500;
+  /**
+   * At least one full activity window. A shorter one would let bytes banked
+   * before a keystroke combine, inside the same 3 s measurement window, with
+   * the echo that followed it — the guard has to outlast what it is guarding.
+   */
+  private static readonly INPUT_ECHO_QUIET_MS = 3000;
+
+  /**
+   * When the current settle was recorded, and how long a burst must wait
+   * before it may contradict it.
+   *
+   * A turn does not stop painting the moment it ends: the summary line, the
+   * footer and the cursor restore all land after the Stop hook. Promoting on
+   * that tail would be wrong twice over — it reports a finished pane as
+   * running, and it feeds `notePaneWorking`, whose whole job is to rebut an
+   * open completion window, so a real "turn finished" alarm would die
+   * silently (the failure #907 exists to prevent).
+   *
+   * The length is set by a SECOND constraint, which is the tighter one. The
+   * status a promotion writes is cleared by the byte-silence idle that follows
+   * it, and main drops that idle when it lands within 10 s of the pane's last
+   * lifecycle event (`AGENT_EVENT_SUPPRESSION_MS` in DaemonNotificationRouter,
+   * mirrored from PTYBridge). The idle cannot arrive sooner than
+   * IDLE_DELAY_MS (5 s) after the promoting burst, so a cool-down under 5 s
+   * leaves a window where a SHORT autonomous burst is promoted and then has
+   * its clearing idle swallowed — a pane stuck reporting `running` after it
+   * finished, which is the other half of the very bug this fixes. Six seconds
+   * clears 10 s with both delays counted, and is still short next to any turn
+   * worth reporting.
+   */
+  private settledAtMs = 0;
+  private static readonly SETTLE_COOLDOWN_MS = 6000;
+
+  /**
+   * A pane that has been blocked on a human since its last submitted input or
+   * running edge. `settledStatus` alone is not enough: the Claude footer under
+   * an approval box still matches the detector's idle-prompt patterns, and that
+   * `waiting` would otherwise overwrite the `awaiting_input` that must stay.
+   */
+  private awaitingHuman = false;
 
   /** Track bracketed-paste input so newlines inside a pasted draft are not
    * mistaken for Enter. The closing marker and the later CR are separate writes
@@ -157,6 +196,7 @@ export class DaemonPTYBridge extends EventEmitter {
 
     this.explicitTerminalStatus = false;
     this.settledStatus = null;
+    this.awaitingHuman = false;
     this.submittedTurnPending = true;
     if (this.resizeGuardTimer) {
       clearTimeout(this.resizeGuardTimer);
@@ -177,10 +217,18 @@ export class DaemonPTYBridge extends EventEmitter {
     if (status === 'running') {
       this.explicitTerminalStatus = false;
       this.settledStatus = null;
+      // `awaitingHuman` deliberately survives. HookIngest projects
+      // `agent.subagent_stop` and every metadata kind (activity, tool_started,
+      // session_start) as `running`, so a subagent finishing behind an
+      // unanswered approval would otherwise retire the question nobody
+      // answered. Only `noteInput` — a human, including the forceSubmitted
+      // approval controls — clears it.
       return;
     }
     this.explicitTerminalStatus = true;
     this.settledStatus = status;
+    if (status === 'awaiting_input') this.awaitingHuman = true;
+    this.settledAtMs = Date.now();
     this.submittedTurnPending = false;
     if (this.resizeGuardTimer) {
       clearTimeout(this.resizeGuardTimer);
@@ -273,6 +321,8 @@ export class DaemonPTYBridge extends EventEmitter {
     this.inputInBracketedPaste = false;
     this.lastInputAt = 0;
     this.settledStatus = null;
+    this.settledAtMs = 0;
+    this.awaitingHuman = false;
 
     const activityMonitor = new ActivityMonitor();
     this.activityMonitor = activityMonitor;
@@ -295,18 +345,30 @@ export class DaemonPTYBridge extends EventEmitter {
       let likelyRepaint = false;
 
       if (this.explicitTerminalStatus) {
-        // `awaiting_input` is the one settle bytes may never retire — a pane
-        // holding a question stays in the "needs you" count until a human
-        // answers it, however much a subagent paints behind the prompt.
-        if (this.settledStatus === 'awaiting_input') return;
+        // A pane blocked on a human is never retired by bytes — it stays in
+        // the "needs you" count until a person answers, however much a
+        // subagent paints behind the prompt. Read from the sticky flag rather
+        // than `settledStatus`, which a later detector `waiting` off the footer
+        // under the approval box would otherwise overwrite.
+        if (this.awaitingHuman) return;
 
-        // Promoting a SETTLED pane. Two things disqualify the burst: the user's
-        // keystrokes are still echoing, or a resize is still repainting. Either
-        // way the cycle is re-armed rather than consumed — a burst that proved
-        // nothing must not spend the one `onActive` this cycle gets, or a real
-        // autonomous turn arriving right behind it would stay silent for as
-        // long as it keeps the idle timer alive.
-        if (!this.inputIsQuiet() || Date.now() - this.lastResizeAtMs < RESIZE_REDRAW_GUARD_MS) {
+        // Promoting a SETTLED pane. Three things disqualify the burst: the
+        // turn that just ended is still painting its tail, the user's
+        // keystrokes are still echoing, or a resize is still repainting.
+        //
+        // Every rejection re-arms the cycle rather than consuming it. A burst
+        // that proved nothing must not spend the one `onActive` a cycle gets,
+        // or the real autonomous turn arriving right behind it would stay
+        // silent for as long as it kept the idle timer alive — which, for a
+        // TUI painting a live counter, is the whole turn. That applies to the
+        // cool-down too: the tail of the finishing turn is exactly the burst
+        // most likely to arrive just before a genuine one.
+        const now = Date.now();
+        if (
+          now - this.settledAtMs < DaemonPTYBridge.SETTLE_COOLDOWN_MS
+          || !this.inputIsQuiet()
+          || now - this.lastResizeAtMs < RESIZE_REDRAW_GUARD_MS
+        ) {
           activityMonitor.endTurn(ptyId);
           return;
         }
@@ -524,6 +586,13 @@ export class DaemonPTYBridge extends EventEmitter {
    * the caller before forwarding starts) is preserved.
    */
   setMuted(muted: boolean): void {
+    // Unmuting a recovered pane releases a full repaint at the new geometry,
+    // and `noteResize` only stamps when the dimensions actually CHANGED — a
+    // pane recovered at the size it was saved at gets the storm with no guard
+    // behind it. Stamp the same guard here so that repaint cannot be read as
+    // the agent starting a turn. Muted panes feed nothing, so the window is
+    // empty and the storm would otherwise clear the threshold on its own.
+    if (this.muted && !muted) this.lastResizeAtMs = Date.now();
     this.muted = muted;
   }
 
@@ -578,6 +647,8 @@ export class DaemonPTYBridge extends EventEmitter {
     this.inputInBracketedPaste = false;
     this.lastInputAt = 0;
     this.settledStatus = null;
+    this.settledAtMs = 0;
+    this.awaitingHuman = false;
     this.oscParser = null;
     this.modeTracker = null;
     this.agentDetector = null;

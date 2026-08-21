@@ -28,6 +28,8 @@ import { DaemonPTYBridge } from '../DaemonPTYBridge';
 import { RingBuffer } from '../RingBuffer';
 
 const BIG = 'x'.repeat(3000); // > ActivityMonitor's 2 KB active threshold
+// Past the settle cool-down (6 s) and the typing-echo quiet window (3 s).
+const PAST_GUARDS_MS = 6100;
 const PASTE_START = '\x1b[200~';
 const PASTE_END = '\x1b[201~';
 
@@ -88,6 +90,7 @@ describe('DaemonPTYBridge turn priority', () => {
     it('ignores a repaint a resize explains', () => {
       bridge.noteAgentStatus('complete');
       active.length = 0;
+      vi.advanceTimersByTime(PAST_GUARDS_MS);
       bridge.noteResize();
       feed(BIG);
       feed(BIG);
@@ -101,6 +104,7 @@ describe('DaemonPTYBridge turn priority', () => {
       (status) => {
         bridge.noteAgentStatus(status);
         active.length = 0;
+        vi.advanceTimersByTime(PAST_GUARDS_MS);
         feed('.');           // dribble stays under the threshold
         expect(active).toEqual([]);
         feed(BIG);           // a real burst is the agent working again
@@ -108,11 +112,47 @@ describe('DaemonPTYBridge turn priority', () => {
       },
     );
 
+    it('stays settled for the whole cool-down, however much it repaints', () => {
+      // The cool-down is not just about the tail. The status a promotion writes
+      // is cleared by the byte-silence idle 5 s later, and main drops that idle
+      // within 10 s of the pane's last lifecycle event — so a promotion earlier
+      // than 6 s can leave the pane stuck reporting `running` after it
+      // finished. Re-arming (not consuming) the cycle is what lets the burst
+      // after the cool-down still be heard.
+      bridge.noteAgentStatus('complete');
+      active.length = 0;
+      for (let t = 0; t < 5500; t += 500) {
+        feed(BIG);
+        vi.advanceTimersByTime(500);
+      }
+      expect(active).toEqual([]);
+
+      vi.advanceTimersByTime(1000);
+      feed(BIG);
+      expect(active).toEqual(['sess-1']);
+    });
+
+    it('holds the tail of the turn that just ended below the cool-down', () => {
+      // A turn keeps painting after its Stop hook — the summary line, the
+      // footer, the cursor restore. Promoting on that would report a finished
+      // pane as running AND rebut the completion alarm's open window.
+      bridge.noteAgentStatus('complete');
+      active.length = 0;
+      feed(BIG);
+      feed(BIG);
+      expect(active).toEqual([]);
+
+      vi.advanceTimersByTime(PAST_GUARDS_MS);
+      feed(BIG);
+      expect(active).toEqual(['sess-1']);
+    });
+
     it('never lets bytes retire awaiting_input — only a human does', () => {
       // A pane holding a question stays in the "needs you" count however much
       // a subagent paints behind the prompt. Answering it is what ends it.
       bridge.noteAgentStatus('awaiting_input');
       active.length = 0;
+      vi.advanceTimersByTime(PAST_GUARDS_MS);
       feed(BIG);
       feed(BIG);
       vi.advanceTimersByTime(10_000);
@@ -146,8 +186,44 @@ describe('DaemonPTYBridge turn priority', () => {
     it('reports running when the resumed turn produces real output', () => {
       bridge.noteAgentStatus('complete');
       active.length = 0;
+      vi.advanceTimersByTime(PAST_GUARDS_MS);
       feed(BIG);
       expect(active).toEqual(['sess-1']);
+    });
+
+    it('keeps the exemption across a running edge nobody human produced', () => {
+      // HookIngest projects `agent.subagent_stop` and every metadata kind as
+      // `running`, so those edges arrive with the question still unanswered.
+      // Such an edge opens the gate (its own status broadcast has already
+      // moved the pane, which this change does not alter), but it must not
+      // ERASE the fact that a human is owed an answer: once the pane settles
+      // again, bytes still may not retire it.
+      bridge.noteAgentStatus('awaiting_input');
+      bridge.noteAgentStatus('running');       // e.g. a subagent finished
+      bridge.noteAgentStatus('complete');      // and the pane settles again
+      active.length = 0;
+      vi.advanceTimersByTime(PAST_GUARDS_MS);
+      feed(BIG);
+      feed(BIG);
+      expect(active).toEqual([]);
+
+      bridge.noteInput('2', true);             // the human finally answers
+      feed('.');
+      expect(active).toEqual(['sess-1']);
+    });
+
+    it('keeps the exemption when the footer under an approval box says waiting', () => {
+      // The Claude idle-prompt patterns still match while a question is on
+      // screen, so `settledStatus` alone would be downgraded to `waiting` and
+      // the pane would become promotable — silently dropping a real approval
+      // out of the "needs you" count.
+      bridge.noteAgentStatus('awaiting_input');
+      bridge.noteAgentStatus('waiting');
+      active.length = 0;
+      vi.advanceTimersByTime(PAST_GUARDS_MS);
+      feed(BIG);
+      feed(BIG);
+      expect(active).toEqual([]);
     });
 
     it('needs a NEW burst, not the one still in flight at the turn end', () => {
@@ -156,6 +232,7 @@ describe('DaemonPTYBridge turn priority', () => {
       feed('y'.repeat(1900));           // just under the threshold
       bridge.noteAgentStatus('complete');
       active.length = 0;
+      vi.advanceTimersByTime(PAST_GUARDS_MS);
       feed('y'.repeat(200));            // would have crossed 2 KB cumulatively
       expect(active).toEqual([]);
       feed(BIG);
@@ -172,6 +249,7 @@ describe('DaemonPTYBridge turn priority', () => {
       statuses.length = 0;
 
       bridge.noteAgentStatus('complete');
+      vi.advanceTimersByTime(PAST_GUARDS_MS);
       feed(BIG);
       feed('  shift+tab to cycle modes\n');
       expect(statuses).toEqual([]);
@@ -182,6 +260,7 @@ describe('DaemonPTYBridge turn priority', () => {
     it('suppresses a burst that arrives while the user is still typing', () => {
       bridge.noteAgentStatus('complete');
       active.length = 0;
+      vi.advanceTimersByTime(PAST_GUARDS_MS);
       bridge.noteInput('draft message');   // no CR — still composing
       feed(BIG);
       expect(active).toEqual([]);
@@ -190,11 +269,12 @@ describe('DaemonPTYBridge turn priority', () => {
     it('accepts the same burst once the keystrokes have gone quiet', () => {
       bridge.noteAgentStatus('complete');
       active.length = 0;
+      vi.advanceTimersByTime(PAST_GUARDS_MS);
       bridge.noteInput('draft message');
       feed(BIG);
       expect(active).toEqual([]);
 
-      vi.advanceTimersByTime(1600);        // past INPUT_ECHO_QUIET_MS
+      vi.advanceTimersByTime(PAST_GUARDS_MS);   // past INPUT_ECHO_QUIET_MS
       feed(BIG);
       expect(active).toEqual(['sess-1']);
     });
@@ -205,11 +285,12 @@ describe('DaemonPTYBridge turn priority', () => {
       // consumed cycle would keep the pane silent for the whole next turn.
       bridge.noteAgentStatus('complete');
       active.length = 0;
+      vi.advanceTimersByTime(PAST_GUARDS_MS);
       bridge.noteInput('x');
       feed(BIG);                            // rejected: echo
       expect(active).toEqual([]);
 
-      vi.advanceTimersByTime(1600);
+      vi.advanceTimersByTime(PAST_GUARDS_MS);
       feed(BIG);                            // same cycle would be spent already
       expect(active).toEqual(['sess-1']);
     });
