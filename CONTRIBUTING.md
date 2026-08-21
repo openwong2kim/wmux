@@ -12,7 +12,7 @@ npm run start   # dev mode
 npm test        # run tests
 ```
 
-Requires Node.js 22+ and Windows 10/11 (ConPTY).
+Requires Node.js 22+ with **npm 11** (`npm install -g npm@11` if your Node bundles npm 10 — npm 11 owns the lockfile lineage, and `npm ci` under npm 10 rejects the lock) and Windows 10/11 (ConPTY).
 
 ## Pull Requests
 

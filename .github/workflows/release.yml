@@ -52,6 +52,9 @@ jobs:
           # what the privileged job does (setup-node v5+ auto-caches on it).
           cache: npm
 
+      - name: Use npm 11
+        run: npm install -g npm@11
+
       - name: Install dependencies
         run: npm ci
 
@@ -317,6 +320,9 @@ jobs:
           # what the privileged job does (setup-node v5+ auto-caches on it).
           cache: npm
 
+      - name: Use npm 11
+        run: npm install -g npm@11
+
       - name: Install dependencies
         run: npm ci
 
@@ -461,6 +467,9 @@ jobs:
           # future `packageManager` field in package.json would quietly change
           # what the privileged job does (setup-node v5+ auto-caches on it).
           cache: npm
+
+      - name: Use npm 11
+        run: npm install -g npm@11
 
       # build-essential + libxss1 for node-pty/Electron (matches the baseline CI);
       # rpm + fakeroot are required by @electron-forge/maker-rpm.
