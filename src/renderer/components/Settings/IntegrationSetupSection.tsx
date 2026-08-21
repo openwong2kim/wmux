@@ -135,6 +135,12 @@ export function IntegrationSetupSection({
   // repainting "not installed" over a finished install — which would put the
   // Install button back and invite a second write to the same config.
   const genRef = useRef(0);
+  // The preference has its own counter. "Ask again" must invalidate a pref
+  // probe still in flight (or a slow read repaints the cleared line), but it
+  // must NOT invalidate row commits: a bump of the shared counter here would
+  // drop an in-flight install's `error` commit, stranding that row on its
+  // spinner with nothing left to re-issue it. Two domains, two generations.
+  const prefGenRef = useRef(0);
   const commit = useCallback(
     (set: (m: RowModel) => void, model: RowModel, gen: number) => {
       if (!mountedRef.current || gen !== genRef.current) return;
@@ -164,11 +170,12 @@ export function IntegrationSetupSection({
     // Probed with the rows but kept OUT of RowModel: it is not an install
     // state, and folding it into the hooks row would make a suppressed prompt
     // read as a broken install.
-    // Generation-guarded like the rows: "Ask again" bumps the generation, so a
-    // probe still in flight when it lands cannot repaint the stale `true` and
-    // bring the line back after the user cleared it.
+    // Generation-guarded like the rows, on its own counter: "Ask again" bumps
+    // it, so a probe still in flight when it lands cannot repaint the stale
+    // `true` and bring the line back after the user cleared it.
+    const prefGen = ++prefGenRef.current;
     const commitPref = (v: boolean | null) => {
-      if (!mountedRef.current || gen !== genRef.current) return;
+      if (!mountedRef.current || prefGen !== prefGenRef.current) return;
       setPromptSuppressed(v);
     };
     if (!api.hooks?.getPromptPreference) commitPref(null);
@@ -249,11 +256,11 @@ export function IntegrationSetupSection({
   // user would otherwise click again.
   const reenablePrompt = useCallback(() => {
     if (!api.hooks?.setPromptPreference) return;
-    const gen = ++genRef.current;
+    const prefGen = ++prefGenRef.current;
     void api.hooks
       .setPromptPreference(false)
       .then((pref) => {
-        if (!mountedRef.current || gen !== genRef.current) return;
+        if (!mountedRef.current || prefGen !== prefGenRef.current) return;
         setPromptSuppressed(pref.suppressed);
       })
       .catch(() => { /* leave the line up: the refusal is still in force */ });

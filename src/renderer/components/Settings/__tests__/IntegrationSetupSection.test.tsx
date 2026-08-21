@@ -291,6 +291,34 @@ describe('IntegrationSetupSection — hook prompt refusal', () => {
     expect(line(container)).toBeNull();
   });
 
+  // The counter split's reason to exist: "Ask again" mid-install must not
+  // invalidate the install's own commits. With one shared generation the
+  // failure path stranded — the spinner stayed and the error text was thrown
+  // away, on exactly the run where the user most needed to see it.
+  it('"Ask again" during an in-flight install does not strand the row on working', async () => {
+    const api = fakeApi({ promptSuppressed: true });
+    let fail!: () => void;
+    api.hooks!.install = () =>
+      new Promise((_, reject) => { fail = () => reject(new Error('EACCES: settings.json')); });
+    const { container, cleanup } = render(<IntegrationSetupSection api={api} />);
+    cleanups.push(cleanup);
+    await flush();
+
+    act(() => action(container, 'hooks')!.click());
+    await flush();
+    expect(state(container, 'hooks')).toBe('working');
+
+    // The race: the refusal is cleared while the install is still running.
+    act(() => reenable(container)!.click());
+    await flush();
+    expect(line(container)).toBeNull();
+
+    act(() => fail());
+    await flush();
+    expect(state(container, 'hooks')).toBe('error');
+    expect(row(container, 'hooks').querySelector('[data-setup-row-error]')!.textContent).toContain('EACCES');
+  });
+
   it('shows nothing on an older preload, and nothing when the probe fails', async () => {
     const older = render(<IntegrationSetupSection api={fakeApi({ omitPromptPref: true })} />);
     cleanups.push(older.cleanup);
