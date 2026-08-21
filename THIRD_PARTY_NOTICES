@@ -6,7 +6,7 @@ its MCP server and retain their own license terms.
 
 Generated from the package-lock.json production closure (transitive included,
 every platform variant of platform-specific packages included).
-Total packages: 128
+Total packages: 129
 
 Regenerate with: `npm run notices`
 
@@ -146,7 +146,7 @@ WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 ================================================================================
 
-@hono/node-server@1.19.11
+@hono/node-server@2.1.1
 License: MIT
 Author: Yusuke Wada <yusuke@kamawada.com> (https://github.com/yusukebe)
 Repository: https://github.com/honojs/node-server
@@ -175,7 +175,7 @@ SOFTWARE.
 
 ================================================================================
 
-@modelcontextprotocol/sdk@1.29.0
+@modelcontextprotocol/sdk@1.30.0
 License: MIT
 Author: Anthropic, PBC (https://anthropic.com)
 Repository: https://github.com/modelcontextprotocol/typescript-sdk
@@ -484,7 +484,7 @@ SOFTWARE.
 
 ================================================================================
 
-body-parser@2.2.2
+body-parser@2.3.0
 License: MIT
 Repository: expressjs/body-parser
 
@@ -634,6 +634,36 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ================================================================================
 
 content-type@1.0.5
+License: MIT
+Author: Douglas Christopher Wilson <doug@somethingdoug.com>
+Repository: jshttp/content-type
+
+(The MIT License)
+
+Copyright (c) 2015 Douglas Christopher Wilson
+
+Permission is hereby granted, free of charge, to any person obtaining
+a copy of this software and associated documentation files (the
+'Software'), to deal in the Software without restriction, including
+without limitation the rights to use, copy, modify, merge, publish,
+distribute, sublicense, and/or sell copies of the Software, and to
+permit persons to whom the Software is furnished to do so, subject to
+the following conditions:
+
+The above copyright notice and this permission notice shall be
+included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED 'AS IS', WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+================================================================================
+
+content-type@2.1.0
 License: MIT
 Author: Douglas Christopher Wilson <doug@somethingdoug.com>
 Repository: jshttp/content-type
@@ -1518,16 +1548,14 @@ For more information, please refer to <http://unlicense.org>
 
 ================================================================================
 
-fast-uri@3.1.0
+fast-uri@3.1.5
 License: BSD-3-Clause
 Author: Vincent Le Goff <vince.legoff@gmail.com> (https://github.com/zekth)
 Repository: https://github.com/fastify/fast-uri
 
 Copyright (c) 2011-2021, Gary Court until https://github.com/garycourt/uri-js/commit/a1acf730b4bba3f1097c9f52e7d9d3aba8cdcaae
-Copyright (c) 2021-present The Fastify team
+Copyright (c) 2021-present The Fastify team <https://github.com/fastify/fastify#team>
 All rights reserved.
-
-The Fastify team members are listed at https://github.com/fastify/fastify#team.
 
 Redistribution and use in source and binary forms, with or without
 modification, are permitted provided that the following conditions are met:
@@ -1820,7 +1848,7 @@ SOFTWARE.
 
 ================================================================================
 
-hono@4.12.8
+hono@4.13.3
 License: MIT
 Author: Yusuke Wada <yusuke@kamawada.com> (https://github.com/yusukebe)
 Repository: https://github.com/honojs/hono
@@ -2689,7 +2717,7 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 
 ================================================================================
 
-path-to-regexp@8.3.0
+path-to-regexp@8.4.2
 License: MIT
 Repository: https://github.com/pillarjs/path-to-regexp
 
@@ -7081,7 +7109,7 @@ Repository: https://github.com/kazuhikoarase/qrcode-generator
 
 ================================================================================
 
-qs@6.15.0
+qs@6.15.3
 License: BSD-3-Clause
 Repository: https://github.com/ljharb/qs
 
@@ -7499,7 +7527,7 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 
 ================================================================================
 
-side-channel@1.1.0
+side-channel@1.1.1
 License: MIT
 Author: Jordan Harband <ljharb@gmail.com>
 Repository: https://github.com/ljharb/side-channel
@@ -7528,7 +7556,7 @@ SOFTWARE.
 
 ================================================================================
 
-side-channel-list@1.0.0
+side-channel-list@1.0.1
 License: MIT
 Author: Jordan Harband <ljharb@gmail.com>
 Repository: https://github.com/ljharb/side-channel-list
@@ -7743,7 +7771,7 @@ SOFTWARE.
 
 ================================================================================
 
-type-is@2.0.1
+type-is@2.1.0
 License: MIT
 Repository: jshttp/type-is
 
