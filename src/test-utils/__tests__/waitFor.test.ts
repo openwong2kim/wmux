@@ -41,10 +41,14 @@ describe('waitFor', () => {
     // The literal has to be in the arrow's SOURCE, not behind a variable — a
     // long value with a short expression produces a short label, which is
     // correct and is what an earlier version of this test failed to check.
+    // And the expression has to survive the transform: vite 6's esbuild
+    // constant-folds a static concat-and-compare ('xx' + 'yy' === 'z') down
+    // to `() => false`, which un-longs the source. A method call on the
+    // literal is not folded, so the long source reaches toString().
     const predicate = (): boolean =>
-      'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx' +
-        'yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy' ===
-      'z';
+      'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'.includes(
+        'yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy',
+      );
     let message = '';
     await waitFor(predicate, 30).catch((err: Error) => { message = err.message; });
     expect(message).toContain('…');

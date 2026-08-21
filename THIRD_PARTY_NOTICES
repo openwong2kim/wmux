@@ -6,7 +6,7 @@ its MCP server and retain their own license terms.
 
 Generated from the package-lock.json production closure (transitive included,
 every platform variant of platform-specific packages included).
-Total packages: 128
+Total packages: 129
 
 Regenerate with: `npm run notices`
 
@@ -426,7 +426,7 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 ================================================================================
 
-ajv@8.18.0
+ajv@8.20.0
 License: MIT
 Author: Evgeny Poberezkin
 Repository: ajv-validator/ajv
@@ -634,6 +634,36 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ================================================================================
 
 content-type@1.0.5
+License: MIT
+Author: Douglas Christopher Wilson <doug@somethingdoug.com>
+Repository: jshttp/content-type
+
+(The MIT License)
+
+Copyright (c) 2015 Douglas Christopher Wilson
+
+Permission is hereby granted, free of charge, to any person obtaining
+a copy of this software and associated documentation files (the
+'Software'), to deal in the Software without restriction, including
+without limitation the rights to use, copy, modify, merge, publish,
+distribute, sublicense, and/or sell copies of the Software, and to
+permit persons to whom the Software is furnished to do so, subject to
+the following conditions:
+
+The above copyright notice and this permission notice shall be
+included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED 'AS IS', WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+================================================================================
+
+content-type@2.1.0
 License: MIT
 Author: Douglas Christopher Wilson <doug@somethingdoug.com>
 Repository: jshttp/content-type
@@ -1879,7 +1909,7 @@ THE SOFTWARE.
 
 ================================================================================
 
-iconv-lite@0.7.2
+iconv-lite@0.7.3
 License: MIT
 Author: Alexander Shtuchkin <ashtuchkin@gmail.com>
 Repository: https://github.com/pillarjs/iconv-lite
@@ -2407,7 +2437,7 @@ SOFTWARE.
 
 ================================================================================
 
-negotiator@1.0.0
+negotiator@1.1.0
 License: MIT
 Repository: jshttp/negotiator
 
