@@ -45,7 +45,7 @@ jobs:
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: 22
+          node-version: 24
           # Same npm cache the CI workflows use. Release builds ran a cold
           # `npm ci` on every tag until now — and leaving it implicit meant a
           # future `packageManager` field in package.json would quietly change
@@ -310,7 +310,7 @@ jobs:
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: 22
+          node-version: 24
           # Same npm cache the CI workflows use. Release builds ran a cold
           # `npm ci` on every tag until now — and leaving it implicit meant a
           # future `packageManager` field in package.json would quietly change
@@ -455,7 +455,7 @@ jobs:
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: 22
+          node-version: 24
           # Same npm cache the CI workflows use. Release builds ran a cold
           # `npm ci` on every tag until now — and leaving it implicit meant a
           # future `packageManager` field in package.json would quietly change

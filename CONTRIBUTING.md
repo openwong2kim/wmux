@@ -12,7 +12,7 @@ npm run start   # dev mode
 npm test        # run tests
 ```
 
-Requires Node.js 22+ and Windows 10/11 (ConPTY).
+Requires Node.js 24+ (its bundled npm 11 owns the lockfile lineage — `npm ci` under npm 10 rejects the lock) and Windows 10/11 (ConPTY).
 
 ## Pull Requests
 
