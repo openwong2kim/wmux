@@ -406,3 +406,40 @@ describe('buildWaiterScript — the clock has to survive a long uptime (#980)', 
     expect(buildWaiterScript(plan)!).toContain('$h.WaitForExit([int]$left)');
   });
 });
+
+describe('buildWaiterScript — one waiter per install root (#980, coderabbit)', () => {
+  const plan = {
+    pids: [11],
+    setupExePath: 'C:/Temp/Setup.exe',
+    installRoot: 'C:/Root',
+    abortMarkerPath: 'C:/Data/aborted.txt',
+    lockBudgetMs: 60_000,
+  };
+  const script = () => buildWaiterScript(plan)!;
+
+  it('takes a named mutex before doing anything else', () => {
+    // The quit watchdog unlatches after 30s while a spawned waiter can still be
+    // inside its budget, so a retry spawns a second waiter for the same root.
+    // The collision is resolved HERE, not by timing arithmetic between the
+    // watchdog and the budgets: the mutex exists only while some process holds
+    // it, so a live incumbent blocks the newcomer and a dead one blocks nobody.
+    const s = script();
+    const mutexAt = s.indexOf('System.Threading.Mutex');
+    expect(mutexAt).toBeGreaterThan(-1);
+    expect(mutexAt).toBeLessThan(s.indexOf('$handles = @()'));
+    expect(mutexAt).toBeLessThan(s.indexOf('Start-Process'));
+  });
+
+  it('yields silently (exit 5) — the incumbent owns the install AND the marker', () => {
+    const s = script();
+    const yieldAt = s.indexOf('exit 5');
+    expect(yieldAt).toBeGreaterThan(-1);
+    // No marker write on this path: a "refused" marker from the loser would
+    // overwrite or pre-empt whatever the incumbent has to report.
+    expect(s.slice(0, yieldAt)).not.toContain('Set-Content');
+  });
+
+  it('scopes the mutex to the install root, so two installations never collide', () => {
+    expect(script()).toContain(`'wmux-install-waiter-' + ($root -replace '[^A-Za-z0-9]', '_')`);
+  });
+});

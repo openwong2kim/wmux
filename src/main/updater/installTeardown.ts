@@ -290,6 +290,27 @@ export function buildWaiterScript(plan: WaiterPlan): string | null {
     `$setup = ${psQuote(plan.setupExePath)}`,
     `$marker = ${psQuote(plan.abortMarkerPath)}`,
     `$budget = ${plan.lockBudgetMs}`,
+    // Single-instance gate, FIRST — before a handle is captured or anything
+    // else happens. The quit watchdog unlatches `isInstalling` after 30 s so a
+    // refused quit stays retryable, but the waiter it spawned can still be
+    // inside its own budget (up to two lock windows) — so a retry would spawn
+    // a SECOND waiter watching the same root, and two of them can reach
+    // Start-Process on the same Setup.exe. Two concurrent Squirrel installs
+    // against one root is precisely the corruption #866 exists to prevent, so
+    // the guard lives HERE, where the collision happens, not in timing
+    // arithmetic between the watchdog and the budgets (coderabbit, #980).
+    //
+    // A named mutex gives exactly the wanted semantics for free: it exists
+    // only while some process holds a handle to it, so a LIVE earlier waiter
+    // blocks the newcomer (exit 5, silently — the incumbent owns the install
+    // and the marker), while a dead or finished one leaves nothing behind and
+    // the newcomer proceeds. No state file to go stale, nothing to clean up.
+    // The name embeds the install root so two different installations (per
+    // user, portable copies) can never block each other.
+    `$mtxName = 'wmux-install-waiter-' + ($root -replace '[^A-Za-z0-9]', '_')`,
+    `$mtxCreated = $false`,
+    `$mtx = New-Object System.Threading.Mutex -ArgumentList $true, $mtxName, ([ref]$mtxCreated)`,
+    `if (-not $mtxCreated) { exit 5 }`,
     // Capture HANDLES first. GetProcessById opens a handle now, so a later pid
     // recycle cannot make an exited process look alive (or a stranger's
     // process look like ours).

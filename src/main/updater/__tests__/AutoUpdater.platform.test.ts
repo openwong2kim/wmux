@@ -464,6 +464,17 @@ describe('AutoUpdater #502 — quit after launching the installer', () => {
       // And the latch is clear, so the next press is not answered with
       // "an update install is already in progress" forever.
       expect((updater as unknown as { isInstalling: boolean }).isInstalling).toBe(false);
+
+      // The retry is ALLOWED to spawn a second waiter — the first one may
+      // still be inside its budget, and the collision between the two is
+      // resolved by the waiter's own single-instance mutex (a live incumbent
+      // wins, the newcomer exits 5), not by refusing the retry here. Refusing
+      // would trade a solved race for an unretryable updater, which is the
+      // state this watchdog exists to end.
+      const retry = installHandler();
+      await vi.advanceTimersByTimeAsync(1_000);
+      await retry;
+      expect(loaded.teardown.spawnInstallWaiter).toHaveBeenCalledTimes(2);
     } finally {
       vi.useRealTimers();
     }
