@@ -123,7 +123,12 @@ async function loadWin32({ sha = GOOD_SHA }: { sha?: string } = {}) {
   // Stubbed here so the ORDER and the refusal branches stay observable; the
   // real thing is exercised against a sandbox in installTeardown.runtime.test.
   const teardown = {
-    collectInstallRootPids: vi.fn((_root: string): number[] => [4242, 4243]),
+    // #980 — 4242 is a stranger's MCP server, 4243 is the daemon, 4244 is one
+    // of our own Electron helpers. Only the first may be force-killed.
+    collectInstallRootProcesses: vi.fn((_root: string) => ({
+      pids: [4242, 4243, 4244],
+      ownTree: new Set([4244]),
+    })),
     terminatePids: vi.fn((pids: readonly number[]): number[] => [...pids]),
     spawnInstallWaiter: vi.fn((_plan: { setupExePath: string }): string | null =>
       'C:\\Temp\\waiter\\wait-and-install.ps1'),

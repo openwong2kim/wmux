@@ -37,7 +37,7 @@ function quitHooks() {
     onBeforeInstallQuit: vi.fn(),
     onInstallQuitAborted: vi.fn(),
     onInstallRequiresFullShutdown: vi.fn(),
-    getDaemonPid: vi.fn(() => null),
+    getDaemonPid: vi.fn((): number | null => null),
   };
 }
 
@@ -150,9 +150,12 @@ async function loadForPlatform(
   // node processes. Stubbed so the handoff stays observable; the real thing is
   // exercised against a sandbox in installTeardown.runtime.test.
   const teardown = {
-    collectInstallRootPids: vi.fn((_root: string): number[] => [4242]),
+    collectInstallRootProcesses: vi.fn((_root: string) => ({
+      pids: [4242],
+      ownTree: new Set<number>(),
+    })),
     terminatePids: vi.fn((pids: readonly number[]): number[] => [...pids]),
-    spawnInstallWaiter: vi.fn((_plan: { setupExePath: string }): string | null =>
+    spawnInstallWaiter: vi.fn((_plan: { setupExePath: string; pids: number[] }): string | null =>
       'C:\\Temp\\waiter\\wait-and-install.ps1'),
     freeSpaceShortfall: vi.fn(() => null),
     probeVolume: vi.fn(() => ({ volume: 'C:\\', freeBytes: 9e12 })),
@@ -355,10 +358,16 @@ describe('AutoUpdater #502 — quit after launching the installer', () => {
    * registered directly (not via start()) so no stray 15s background-check
    * timer outlives the test.
    */
-  async function downloadUpdateFor(loaded: Awaited<ReturnType<typeof loadForPlatform>>) {
+  async function downloadUpdateFor(
+    loaded: Awaited<ReturnType<typeof loadForPlatform>>,
+    // #980 — the daemon pid reaches the updater through the HOOKS, not through
+    // the teardown module, so a test about which pids get force-killed has to
+    // be able to say what it is.
+    hooks: ReturnType<typeof quitHooks> = quitHooks(),
+  ) {
     const { AutoUpdater, ipcHandlers } = loaded;
     const { win, sent } = makeWin();
-    const updater = new AutoUpdater(() => win as never, quitHooks());
+    const updater = new AutoUpdater(() => win as never, hooks);
     (updater as unknown as { registerIpcHandlers: () => void }).registerIpcHandlers();
 
     const installHandler = ipcHandlers.get(IPC.UPDATE_INSTALL);
@@ -389,6 +398,96 @@ describe('AutoUpdater #502 — quit after launching the installer', () => {
     expect(loaded.appQuit).toHaveBeenCalledTimes(1);
   });
 
+  it('win32: the kill list is what nothing else ends — not our helpers, not the daemon (#980)', async () => {
+    const loaded = await loadForPlatform('win32', downloadRoutes);
+    // 4242 is a stranger's MCP server; 4243 is the daemon; 4244/4245 are our
+    // own renderer and GPU process, which are the same wmux.exe under the same
+    // root and so are indistinguishable by path alone.
+    loaded.teardown.collectInstallRootProcesses.mockReturnValue({
+      pids: [4242, 4243, 4244, 4245],
+      ownTree: new Set([4244, 4245]),
+    });
+    const hooks = { ...quitHooks(), getDaemonPid: vi.fn(() => 4243 as number | null) };
+    const { installHandler } = await downloadUpdateFor(loaded, hooks);
+
+    await installHandler();
+
+    // Only the foreign process is killed. Killing our own renderer is what
+    // broke this path: the very next step is a quit whose before-quit handler
+    // awaits a session save in that renderer, and the quit then never
+    // completed — leaving the main process holding the install root open.
+    expect(loaded.teardown.terminatePids).toHaveBeenCalledWith([4242]);
+
+    // The WAIT list stays broader than the kill list on purpose: our helpers
+    // and the daemon still have to be gone before Setup.exe may run, they just
+    // get there by app.quit() and by the graceful shutdown instead.
+    const plan = loaded.teardown.spawnInstallWaiter.mock.calls[0]![0] as { pids: number[] };
+    expect(plan.pids).toEqual([4242, 4243, 4244, 4245]);
+  });
+
+  it('win32: an unknown daemon pid still fails safe when the daemon is not ours (#980)', async () => {
+    const loaded = await loadForPlatform('win32', downloadRoutes);
+    loaded.teardown.collectInstallRootProcesses.mockReturnValue({
+      pids: [4242, 4243],
+      ownTree: new Set<number>(),
+    });
+    // The pid file was unreadable (quitHooks' getDaemonPid returns null).
+    // Sparing a daemon we cannot identify would leave the root locked;
+    // force-killing it costs a scrollback flush, which is the cheaper failure.
+    const { installHandler } = await downloadUpdateFor(loaded);
+
+    await installHandler();
+
+    expect(loaded.teardown.terminatePids).toHaveBeenCalledWith([4242, 4243]);
+  });
+
+  it('win32: a quit that never happens is reported and unlatched, not silent (#980)', async () => {
+    const loaded = await loadForPlatform('win32', downloadRoutes);
+    const { updater, installHandler, sent } = await downloadUpdateFor(loaded);
+    vi.useFakeTimers();
+    try {
+      const install = installHandler();
+      await vi.advanceTimersByTimeAsync(1_000); // performInstall's session-save wait
+      await install;
+      expect(loaded.appQuit).toHaveBeenCalledTimes(1);
+      // Nothing is claimed while the quit could still be in flight.
+      expect(sent.filter((m) => m.channel === IPC.UPDATE_ERROR)).toHaveLength(0);
+
+      // Still alive well past the deadline: the quit was refused. Nothing else
+      // can notice — the waiter is blocked on OUR process handle, and the UI is
+      // still showing "Install now".
+      await vi.advanceTimersByTimeAsync(30_000);
+
+      const err = sent.find((m) => m.channel === IPC.UPDATE_ERROR);
+      expect(err).toBeDefined();
+      expect(String(err!.data.message)).toContain('restart wmux');
+      // And the latch is clear, so the next press is not answered with
+      // "an update install is already in progress" forever.
+      expect((updater as unknown as { isInstalling: boolean }).isInstalling).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('win32: the waiter reason wins over our guess when it left one (#980)', async () => {
+    const loaded = await loadForPlatform('win32', downloadRoutes);
+    const { installHandler, sent } = await downloadUpdateFor(loaded);
+    // The waiter already refused and said which way. It knows what we do not.
+    loaded.teardown.readAbortMarker.mockReturnValue('install-aborted: install root still locked');
+    vi.useFakeTimers();
+    try {
+      const install = installHandler();
+      await vi.advanceTimersByTimeAsync(1_000);
+      await install;
+      await vi.advanceTimersByTimeAsync(30_000);
+
+      const err = sent.find((m) => m.channel === IPC.UPDATE_ERROR);
+      expect(String(err?.data.message)).toContain('install root still locked');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('win32: a handoff that cannot be prepared reports UPDATE_ERROR and does NOT quit', async () => {
     const loaded = await loadForPlatform('win32', downloadRoutes);
     const { installHandler, sent } = await downloadUpdateFor(loaded);
@@ -415,7 +514,7 @@ describe('AutoUpdater #502 — quit after launching the installer', () => {
 
     await installHandler();
 
-    expect(loaded.teardown.collectInstallRootPids).not.toHaveBeenCalled();
+    expect(loaded.teardown.collectInstallRootProcesses).not.toHaveBeenCalled();
     expect(loaded.teardown.terminatePids).not.toHaveBeenCalled();
     expect(loaded.teardown.spawnInstallWaiter).not.toHaveBeenCalled();
     expect(loaded.appQuit).not.toHaveBeenCalled();
