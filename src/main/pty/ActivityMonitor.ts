@@ -99,6 +99,39 @@ export class ActivityMonitor {
     s.lastReschedule = 0;
   }
 
+  /**
+   * Re-arm a cycle from an authoritative TURN END, so the pane's next turn can
+   * report `running` again.
+   *
+   * `onActive` fires once per cycle and the cycle is otherwise re-armed only
+   * inside the idle timer, which needs IDLE_DELAY_MS of complete byte silence.
+   * A TUI painting a live elapsed counter keeps rescheduling that timer, so the
+   * cycle never re-arms and the `complete` written by the Stop hook survives
+   * the whole next turn.
+   *
+   * Deliberately NOT `beginTurn`: that one is proof a turn is STARTING (the
+   * user pressed Enter), so it lets the very first byte count. A turn end is
+   * proof of the opposite and the pane may keep emitting idle chrome, so this
+   * re-arms the THRESHOLD path instead — the next genuine burst proves the new
+   * turn, a stray repaint does not. No callback fires here.
+   */
+  endTurn(ptyId: string): void {
+    const s = this.states.get(ptyId);
+    if (!s) return;
+    if (s.idleTimer) clearTimeout(s.idleTimer);
+    s.bytes = 0;
+    s.windowStart = Date.now();
+    s.active = false;
+    // `notified` false so feed()'s first gate (`!active && !notified`) is open
+    // again. Leaving it true would route the next burst through the re-arm
+    // branch, which is equivalent here but claims something this edge does not
+    // mean: that an idle callback had already been delivered.
+    s.notified = false;
+    s.activeFired = false;
+    s.idleTimer = null;
+    s.lastReschedule = 0;
+  }
+
   feed(ptyId: string, byteCount: number): void {
     const s = this.states.get(ptyId);
     if (!s) return;
@@ -136,9 +169,15 @@ export class ActivityMonitor {
         this.activeCallbacks.forEach((cb) => cb(ptyId));
       }
 
+      // `s.active` is re-read because a listener may have called endTurn() to
+      // hand the cycle back (a burst it judged to be echo or a repaint). The
+      // outer check ran before the callbacks; scheduling an idle timer for a
+      // cycle that no longer exists would leave a dangling timer behind every
+      // such rejection.
       if (
-        !s.idleTimer ||
-        now - s.lastReschedule >= ActivityMonitor.RESCHEDULE_THROTTLE_MS
+        s.active &&
+        (!s.idleTimer ||
+          now - s.lastReschedule >= ActivityMonitor.RESCHEDULE_THROTTLE_MS)
       ) {
         if (s.idleTimer) clearTimeout(s.idleTimer);
         s.lastReschedule = now;

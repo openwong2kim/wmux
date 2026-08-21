@@ -265,4 +265,72 @@ describe('ActivityMonitor', () => {
       expect(fired).toEqual([]);
     });
   });
+  describe('endTurn — re-arming from an authoritative turn end', () => {
+    let activeFired: string[];
+
+    beforeEach(() => {
+      activeFired = [];
+      monitor.onActive((id) => activeFired.push(id));
+    });
+
+    it('lets a NEW burst report running without waiting out byte silence', () => {
+      monitor.start('p1');
+      monitor.feed('p1', 5000);
+      expect(activeFired).toEqual(['p1']);
+
+      // The turn ends while the TUI is still painting, so the idle timer that
+      // normally re-arms the cycle keeps being rescheduled and never fires.
+      monitor.endTurn('p1');
+      activeFired.length = 0;
+      monitor.feed('p1', 5000);
+      expect(activeFired).toEqual(['p1']);
+    });
+
+    it('re-arms the THRESHOLD, not the first byte', () => {
+      // Unlike beginTurn, a turn END is not proof that a turn is starting, so
+      // idle chrome must not be enough to report running.
+      monitor.start('p1');
+      monitor.endTurn('p1');
+      monitor.feed('p1', 10);
+      expect(activeFired).toEqual([]);
+      monitor.feed('p1', 5000);
+      expect(activeFired).toEqual(['p1']);
+    });
+
+    it('drops bytes already counted toward the finishing turn', () => {
+      monitor.start('p1');
+      monitor.feed('p1', 1900);
+      monitor.endTurn('p1');
+      monitor.feed('p1', 200);   // 2100 cumulative, but the window was zeroed
+      expect(activeFired).toEqual([]);
+    });
+
+    it('fires no callback of its own', () => {
+      monitor.start('p1');
+      monitor.feed('p1', 5000);
+      activeFired.length = 0;
+      monitor.endTurn('p1');
+      vi.advanceTimersByTime(10_000);
+      expect(activeFired).toEqual([]);
+      expect(fired).toEqual([]);
+    });
+
+    it('leaves no dangling idle timer when a listener re-arms mid-callback', () => {
+      // The bridge calls endTurn() from inside onActive to hand back a cycle it
+      // judged to be echo. feed() re-reads `active` after the callbacks so it
+      // does not schedule an idle timer for a cycle that no longer exists.
+      const monitor2 = new ActivityMonitor();
+      const seen: string[] = [];
+      monitor2.onActive((id) => { seen.push(id); monitor2.endTurn(id); });
+      monitor2.onActiveToIdle((id) => seen.push(`idle:${id}`));
+      monitor2.start('p1');
+      monitor2.feed('p1', 5000);
+      vi.advanceTimersByTime(10_000);
+      expect(seen).toEqual(['p1']);
+    });
+
+    it('is a no-op for an unknown pty', () => {
+      expect(() => monitor.endTurn('does-not-exist')).not.toThrow();
+    });
+  });
 });
