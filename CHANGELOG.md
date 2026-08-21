@@ -16,11 +16,12 @@
   `bypass permissions on` footer is on screen for the whole turn in
   bypass-permissions mode, and the detector read every repaint of it as
   "ready for input" — which put a false `waiting` on the pane's roster row
-  and inflated the "N need you" chip while the agent was still working. On a
-  pane with a live hook bridge the Stop signal now owns the lifecycle status
-  outright, on both the local and the packaged daemon path. Approval prompts
-  (`awaiting_input`) are unaffected, and a pane with no hook bridge keeps the
-  detector as its backstop.
+  and inflated the "N need you" chip while the agent was still working. Once a
+  pane's hook bridge has claimed that pane's lifecycle, the Stop signal owns the
+  lifecycle status outright, on both the local and the packaged daemon path.
+  Approval prompts (`awaiting_input`) are unaffected, and a pane whose hook has
+  not claimed the lifecycle — no bridge at all, or one that has only announced
+  itself — keeps the detector as its backstop.
 
   Note for anyone running a mixed pair: on the packaged daemon path the fix
   rides the daemon's own arbitration stamp, so an older daemon with a newer
@@ -129,8 +130,8 @@
 
 ### Security
 
-- **A UI plugin can no longer drive a browser surface in a workspace you are not
-  in.** An approved iframe plugin could already only *watch* the active
+- **A UI plugin can no longer point most browser calls at a workspace you are
+  not in.** An approved iframe plugin could already only *watch* the active
   workspace — its event feed has been scoped since #719 — but its own
   `browser.*` calls were forwarded with whatever workspace id the plugin chose.
   The workspace the plugin host is showing now travels with each request on its
