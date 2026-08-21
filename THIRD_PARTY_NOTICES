@@ -1459,7 +1459,7 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 ================================================================================
 
-express-rate-limit@8.3.1
+express-rate-limit@8.6.2
 License: MIT
 Author: Nathan Friedly (http://nfriedly.com/)
 Repository: https://github.com/express-rate-limit/express-rate-limit
@@ -1986,10 +1986,10 @@ PERFORMANCE OF THIS SOFTWARE.
 
 ================================================================================
 
-ip-address@10.1.0
+ip-address@10.5.0
 License: MIT
 Author: Beau Gunderson <beau@beaugunderson.com> (https://beaugunderson.com/)
-Repository: git://github.com/beaugunderson/ip-address
+Repository: https://github.com/beaugunderson/ip-address
 
 Copyright (C) 2011 by Beau Gunderson
 
