@@ -45,12 +45,15 @@ jobs:
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: 24.18.1
+          node-version: 22
           # Same npm cache the CI workflows use. Release builds ran a cold
           # `npm ci` on every tag until now — and leaving it implicit meant a
           # future `packageManager` field in package.json would quietly change
           # what the privileged job does (setup-node v5+ auto-caches on it).
           cache: npm
+
+      - name: Use npm 11
+        run: npm install -g npm@11
 
       - name: Install dependencies
         run: npm ci
@@ -310,12 +313,15 @@ jobs:
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: 24.18.1
+          node-version: 22
           # Same npm cache the CI workflows use. Release builds ran a cold
           # `npm ci` on every tag until now — and leaving it implicit meant a
           # future `packageManager` field in package.json would quietly change
           # what the privileged job does (setup-node v5+ auto-caches on it).
           cache: npm
+
+      - name: Use npm 11
+        run: npm install -g npm@11
 
       - name: Install dependencies
         run: npm ci
@@ -455,12 +461,15 @@ jobs:
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: 24.18.1
+          node-version: 22
           # Same npm cache the CI workflows use. Release builds ran a cold
           # `npm ci` on every tag until now — and leaving it implicit meant a
           # future `packageManager` field in package.json would quietly change
           # what the privileged job does (setup-node v5+ auto-caches on it).
           cache: npm
+
+      - name: Use npm 11
+        run: npm install -g npm@11
 
       # build-essential + libxss1 for node-pty/Electron (matches the baseline CI);
       # rpm + fakeroot are required by @electron-forge/maker-rpm.
