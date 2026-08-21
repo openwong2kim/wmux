@@ -42,11 +42,11 @@ jobs:
     outputs:
       fresh-confirm-needed: ${{ steps.escalation.outputs.needed }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 1
 
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
           cache: npm
@@ -125,7 +125,7 @@ jobs:
 
       - name: Upload artifacts
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: perf-${{ github.run_id }}
           path: |
@@ -270,12 +270,12 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 1
           ref: ${{ github.sha }}
 
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
           cache: npm
@@ -287,7 +287,7 @@ jobs:
         run: npm run package
 
       - name: Download first-run artifacts
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: perf-${{ github.run_id }}
           path: first
@@ -309,10 +309,44 @@ jobs:
       # the evidence a runner-health investigation needs.
       - name: Upload artifacts
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: perf-fresh-${{ github.run_id }}
           path: |
             out/perf-fresh.json
             perf-summary-fresh.md
           if-no-files-found: ignore
+
+  # The cross-job artifact contract, exercised on every run that reaches it.
+  #
+  # `bench-confirm` is the only other job that downloads, and it is gated on a
+  # reproduced red (`fresh-confirm-needed`), so on a normal green run nothing
+  # ever proves the upload/download round trip still works. That gap is how an
+  # artifact-action upgrade could land "green" while silently breaking the
+  # escalation path — which only shows up later, on the run that actually needs
+  # it. This job closes that gap without touching `bench-confirm`'s trigger:
+  # perfWorkflow.test.mjs pins that `if:` string exactly (#940), and loosening
+  # it to force a run would break the contract it exists to protect.
+  artifact-contract:
+    needs: bench
+    if: always()
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - name: Download the bench job's artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: perf-${{ github.run_id }}
+          path: first
+
+      # Same destination shape bench-confirm uses (`first/out/...`), so this
+      # asserts the exact layout that job depends on, not merely that some
+      # bytes arrived.
+      - name: Assert the artifact survived the round trip
+        shell: pwsh
+        run: |
+          if (-not (Test-Path first/out/perf-current.json)) {
+            Get-ChildItem -Recurse first | ForEach-Object { $_.FullName }
+            throw "first/out/perf-current.json is missing: the cross-job artifact round trip is broken"
+          }
+          Write-Host "artifact contract OK: first/out/perf-current.json present"

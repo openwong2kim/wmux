@@ -100,7 +100,71 @@ export function runExpressionViolations(fileName, text) {
     );
 }
 
+// One action, one commit, one version comment — across every workflow.
+//
+// actionPinViolations checks each `uses:` line on its own: 40 hex characters
+// and a comment that starts with a version. Both of those held while
+// actions/checkout sat pinned to two different commits for six months, each
+// labelled `# v4`, because nothing ever compared the lines to each other. The
+// comment is the only human-readable part of a pin and it is not machine-read,
+// so it drifts silently; this is what reads it (#964).
+export function pinConsistencyViolations(workflows) {
+  const seen = new Map(); // action spec -> { sha, comment, where }
+  const violations = [];
+  for (const { name, text } of workflows) {
+    for (const use of externalActionUses(text)) {
+      const at = use.spec.lastIndexOf('@');
+      if (at === -1) continue;
+      const action = use.spec.slice(0, at);
+      const sha = use.spec.slice(at + 1);
+      const comment = use.comment.trim();
+      const where = `${name}:${use.line}`;
+      const first = seen.get(action);
+      if (!first) {
+        seen.set(action, { sha, comment, where });
+        continue;
+      }
+      if (first.sha !== sha) {
+        violations.push(
+          `${where} pins ${action} to ${sha} but ${first.where} pins it to ${first.sha}: one action, one commit`,
+        );
+      } else if (first.comment !== comment) {
+        violations.push(
+          `${where} labels ${action}@${sha} "${comment}" but ${first.where} labels the same commit "${first.comment}"`,
+        );
+      }
+    }
+  }
+  return violations;
+}
+
 describe('GitHub Actions workflow security contracts', () => {
+  // The contract this enables — pinConsistencyViolations(WORKFLOWS) === [] —
+  // turns on in the release.yml half of #964. It cannot pass before then: the
+  // CI workflows move to v7 here while release.yml is still on v4, so the two
+  // halves are legitimately split for as long as that PR is open. Landing the
+  // assertion now would make a green tree red for a state we chose on purpose.
+  // The detectors below prove the function works in the meantime.
+  it('detects an action pinned to two different commits', () => {
+    const drifted = [
+      { name: 'a.yml', text: '      - uses: actions/checkout@' + 'a'.repeat(40) + ' # v7.0.1\n' },
+      { name: 'b.yml', text: '      - uses: actions/checkout@' + 'b'.repeat(40) + ' # v7.0.1\n' },
+    ];
+    expect(pinConsistencyViolations(drifted).join(' | ')).toContain(
+      'one action, one commit',
+    );
+  });
+
+  it('detects one commit wearing two different version labels', () => {
+    const mislabelled = [
+      { name: 'a.yml', text: '      - uses: actions/checkout@' + 'a'.repeat(40) + ' # v7.0.1\n' },
+      { name: 'b.yml', text: '      - uses: actions/checkout@' + 'a'.repeat(40) + ' # v4\n' },
+    ];
+    expect(pinConsistencyViolations(mislabelled).join(' | ')).toContain(
+      'labels the same commit',
+    );
+  });
+
   it('pins every external action to an immutable commit with a version comment', () => {
     const violations = WORKFLOWS.flatMap(({ name, text }) =>
       actionPinViolations(name, text),
@@ -117,10 +181,14 @@ describe('GitHub Actions workflow security contracts', () => {
   it('detects a mutable action tag even with trailing whitespace', () => {
     const ci = WORKFLOWS.find(({ name }) => name === 'ci.yml');
     expect(ci).toBeDefined();
-    const mutated = ci.text.replace(
-      /actions\/checkout@[0-9a-f]{40} # v4/,
-      'actions/checkout@v4 ',
-    );
+    // Match the pin by shape, never by the version it happens to carry today.
+    // This fixture hardcoded `# v4`, so bumping checkout turned the replace
+    // into a no-op and failed the assertion below — on a change with nothing
+    // wrong with it. The lookahead keeps the comment out of the match, so the
+    // mutation still leaves the trailing whitespace this test is about (#964).
+    const pin = /actions\/checkout@[0-9a-f]{40}(?= # v)/;
+    expect(ci.text).toMatch(pin);
+    const mutated = ci.text.replace(pin, 'actions/checkout@v4 ');
     expect(mutated).not.toBe(ci.text);
     expect(actionPinViolations(ci.name, mutated).join(' | ')).toContain(
       'not pinned to a full commit SHA',
