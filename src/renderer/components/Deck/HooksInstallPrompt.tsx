@@ -119,7 +119,10 @@ export function HooksInstallPrompt({
           if (dismissEpochRef.current !== epoch) return;
           setPhase((p) => (p === 'hidden' ? 'prompt' : p));
         })
-        .catch(() => {});
+        .catch(() => {
+          // Fail-soft: a broken status check must never nag a user whose hooks
+          // are fine.
+        });
     // Older preload: no durable preference to consult, behave as before.
     if (!api.getPromptPreference) {
       void checkStatus();
@@ -269,7 +272,7 @@ export function HooksInstallPrompt({
                 'Without hooks, wmux falls back to screen-reading to guess when an agent finishes — it can miss completions and approvals. Installing the hook bridge into your Claude Code settings makes these signals exact.'}
             </p>
             {phase === 'error' && (
-              <p className="text-[var(--accent)] mb-2" data-hooks-error>
+              <p className="text-[var(--accent)] mb-2" role="alert" data-hooks-error>
                 {errorKind === 'never'
                   ? t('hooks.prompt.neverError') ||
                     'Could not save that preference, so this prompt would return on the next launch.'

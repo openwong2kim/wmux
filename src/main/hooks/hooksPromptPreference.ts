@@ -18,10 +18,21 @@
 // wmux data dir, atomic-written and WMUX_DATA_SUFFIX-isolated — the same
 // storage shape as deck-autonomy.json / deck-schedules.json.
 //
-// DEFAULT ON DOUBT IS "ASK". A missing, torn, or unparsable file resolves to
-// `suppressed: false`, so a corrupt file resurrects the prompt rather than
-// silently disabling onboarding for a user who never asked for that. The
-// recovery is one click; the opposite failure is invisible.
+// DEFAULT ON DOUBT IS "ASK", where doubt means "no trustworthy answer survives".
+// A missing file, an unparsable one with nothing behind it, a non-object, or
+// anything that is not a literal `true` resolves to `suppressed: false`: a
+// corrupt store resurrects the prompt rather than silently disabling onboarding
+// for someone who never asked for that. The recovery is one click; the opposite
+// failure is invisible.
+//
+// A torn primary WITH a valid `.bak` is deliberately NOT doubt.
+// `atomicReadJSONSync` walks `BACKUP_SUFFIXES` when the primary yields nothing,
+// and that backup is the last value the operator actually chose — recovering it
+// is the entire point of writing one. Re-asking there would discard a real
+// refusal because of an unrelated write tear, which is the regression the
+// backup exists to prevent. Pinned by a test, because the mismatch between this
+// paragraph and a naive reading of "torn resolves to ask" is exactly what an
+// automated reviewer flagged.
 
 import path from 'node:path';
 import { getWmuxDir } from '../../daemon/config';

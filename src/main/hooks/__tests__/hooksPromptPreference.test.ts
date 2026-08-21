@@ -52,6 +52,24 @@ describe('loadHooksPromptPreference', () => {
     }
   });
 
+  // The behaviour an automated reviewer read as a fail-open violation. It is
+  // not: the backup is the last value the operator actually chose, and
+  // discarding a real refusal because an unrelated write tore is the exact
+  // regression `atomicWriteJSON`'s backup exists to prevent. The "unparsable →
+  // ask" case above passes only because no backup exists there, so without this
+  // test the distinction is untested and looks like an accident.
+  it('recovers a refusal from the backup when the primary is torn', () => {
+    fs.writeFileSync(getHooksPromptPreferencePath(dir) + '.bak', '{"suppressed":true}', 'utf-8');
+    write('{ not json');
+    expect(loadHooksPromptPreference(dir)).toEqual({ suppressed: true });
+  });
+
+  it('still asks when neither the primary nor the backup is readable', () => {
+    fs.writeFileSync(getHooksPromptPreferencePath(dir) + '.bak', '{ also not json', 'utf-8');
+    write('{ not json');
+    expect(loadHooksPromptPreference(dir)).toEqual({ suppressed: false });
+  });
+
   it('reads a stored refusal', () => {
     write('{"suppressed":true}');
     expect(loadHooksPromptPreference(dir)).toEqual({ suppressed: true });
