@@ -61,7 +61,19 @@ export function composePaneClassName(opts: {
   completeBlink?: boolean;
 }): string {
   const { hasUnread, ringState, paneRingEnabled, flashing, completeBlink } = opts;
-  const classes = ['flex', 'flex-col', 'h-full', 'w-full', 'relative', 'box-border'];
+  // `isolate` gives the pane root its own stacking context (#957). Without it
+  // a pane is `relative` with no z-index, so every z value inside one competes
+  // document-wide: the pane decorations painting over modals (#946) was that
+  // leak surfacing, and lowering them below `--z-overlay` closed the case
+  // rather than the hole. Contained, the scale inside a pane is purely local
+  // and no future pane-internal element can express the collision at all.
+  //
+  // Safe only because nothing inside a pane needs to escape it any more. The
+  // agent toolbar's popovers used to and were the stated blocker, but the bar
+  // moved out to the workspace column on 2026-08-18 (DESIGN.md) and now sits
+  // in ToolbarHost's own `absolute z-20` context; the terminal context menu
+  // was the last one, and it portals to document.body as of this change.
+  const classes = ['flex', 'flex-col', 'h-full', 'w-full', 'relative', 'isolate', 'box-border'];
   if (hasUnread) classes.push('notification-ring');
   if (completeBlink) {
     classes.push('pane-complete-blink');

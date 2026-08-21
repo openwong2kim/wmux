@@ -44,6 +44,26 @@ describe('composePaneClassName — base classes', () => {
     expect(cls).toContain('box-border');
   });
 
+  it('isolates the pane so its z-indexes cannot reach app chrome (#957)', () => {
+    // `relative` alone creates no stacking context, so every z value inside a
+    // pane used to compete document-wide — that leak is what let the pane
+    // decorations paint over modals (#946). This class is what makes the
+    // collision inexpressible rather than merely absent, so it is pinned on
+    // every ring state: dropping it from any branch reopens the hole.
+    for (const ringState of [null, 'flash', 'glow'] as const) {
+      for (const completeBlink of [false, true]) {
+        const cls = composePaneClassName({
+          hasUnread: true,
+          ringState,
+          paneRingEnabled: true,
+          flashing: true,
+          completeBlink,
+        });
+        expect(cls).toContain('isolate');
+      }
+    }
+  });
+
   it('emits no ring classes when nothing is active', () => {
     const cls = composePaneClassName({
       hasUnread: false,

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import { useT } from '../../hooks/useT';
 
 interface ContextMenuProps {
@@ -58,7 +59,15 @@ export default function ContextMenu({ x, y, hasSelection, selectedText, linkUrl,
     onClose();
   }, [onClose]);
 
-  return (
+  // Portalled to document.body (#957). The menu is viewport-positioned, so it
+  // never needed to be a descendant of the pane — and being one was the last
+  // thing inside a pane that had to out-z its siblings to be seen, which is
+  // what kept the pane root from owning a stacking context. Two things it
+  // fixes on its own: a `position: fixed` element resolves against a
+  // transformed ancestor rather than the viewport, and panes carry animated
+  // rings; and a menu clipped by an `overflow` ancestor is a bug waiting for
+  // whoever adds one to a pane.
+  return createPortal((
     <div
       ref={menuRef}
       className="fixed z-[var(--z-popover-top)] min-w-[168px] p-[5px]"
@@ -139,7 +148,7 @@ export default function ContextMenu({ x, y, hasSelection, selectedText, linkUrl,
         </>
       )}
     </div>
-  );
+  ), document.body);
 }
 
 function MenuItem({ label, shortcut, onClick }: { label: string; shortcut?: string; onClick: () => void }) {
