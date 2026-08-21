@@ -1,6 +1,23 @@
 name: Build & Release
 
 on:
+  # A rehearsal path. Until this existed, the only way to run any of this was to
+  # push a `v*` tag — which creates a real public release, pushes to Chocolatey
+  # and WinGet, and burns a version number that cannot be reused if it fails. So
+  # every change to this file, including every future dependabot bump of the
+  # actions it pins, had production as its first test.
+  #
+  # dry_run builds, packages, checksums and uploads artifacts exactly as a real
+  # run does; only the four publishing steps stand down. That covers the
+  # checkout / setup-node / upload-artifact pins in all three jobs. It does NOT
+  # cover action-gh-release, which by definition only runs when something is
+  # actually published — that one still gets its first exercise on a real tag.
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Build and package without publishing anything'
+        type: boolean
+        default: true
   push:
     tags: ['v*']
 
@@ -23,11 +40,16 @@ jobs:
       # See docs.signpath.io/trusted-build-systems/github.
       SIGNPATH_ENABLED: ${{ secrets.SIGNPATH_API_TOKEN != '' }}
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
+          # Same npm cache the CI workflows use. Release builds ran a cold
+          # `npm ci` on every tag until now — and leaving it implicit meant a
+          # future `packageManager` field in package.json would quietly change
+          # what the privileged job does (setup-node v5+ auto-caches on it).
+          cache: npm
 
       - name: Install dependencies
         run: npm ci
@@ -43,7 +65,7 @@ jobs:
       - name: Upload unsigned Setup.exe for signing
         id: upload-unsigned
         if: env.SIGNPATH_ENABLED == 'true'
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: wmux-setup-unsigned
           path: out/make/squirrel.windows/x64/*.Setup.exe
@@ -187,13 +209,14 @@ jobs:
         shell: pwsh
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: wmux-windows
           path: out/make/**/*
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
+        if: inputs.dry_run != true
+        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
         with:
           files: |
             out/make/squirrel.windows/x64/*.exe
@@ -222,7 +245,7 @@ jobs:
         shell: pwsh
 
       - name: Push to Chocolatey
-        if: env.CHOCO_API_KEY != ''
+        if: inputs.dry_run != true && env.CHOCO_API_KEY != ''
         continue-on-error: true
         run: choco push "out/choco/wmux.$env:PKG_VERSION.nupkg" --source https://push.chocolatey.org --api-key $env:CHOCO_API_KEY
         shell: pwsh
@@ -240,7 +263,7 @@ jobs:
       WINGET_TOKEN: ${{ secrets.WINGET_TOKEN }}
     steps:
       - name: Publish to winget
-        if: env.WINGET_TOKEN != ''
+        if: inputs.dry_run != true && env.WINGET_TOKEN != ''
         continue-on-error: true
         uses: vedantmgoyal9/winget-releaser@4ffc7888bffd451b357355dc214d43bb9f23917e # v2
         with:
@@ -282,11 +305,16 @@ jobs:
       APPLE_CERT_PASSWORD: ${{ secrets.APPLE_CERT_PASSWORD }}
       KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
+          # Same npm cache the CI workflows use. Release builds ran a cold
+          # `npm ci` on every tag until now — and leaving it implicit meant a
+          # future `packageManager` field in package.json would quietly change
+          # what the privileged job does (setup-node v5+ auto-caches on it).
+          cache: npm
 
       - name: Install dependencies
         run: npm ci
@@ -333,7 +361,7 @@ jobs:
       #
       # continue-on-error: an upload hiccup must not fail the whole release.
       - name: Upload macOS artifacts to the release
-        if: always()
+        if: always() && inputs.dry_run != true
         continue-on-error: true
         shell: bash
         env:
@@ -422,11 +450,16 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
+          # Same npm cache the CI workflows use. Release builds ran a cold
+          # `npm ci` on every tag until now — and leaving it implicit meant a
+          # future `packageManager` field in package.json would quietly change
+          # what the privileged job does (setup-node v5+ auto-caches on it).
+          cache: npm
 
       # build-essential + libxss1 for node-pty/Electron (matches the baseline CI);
       # rpm + fakeroot are required by @electron-forge/maker-rpm.
@@ -474,7 +507,7 @@ jobs:
       # Same reasoning as the macOS upload: deb/rpm/AppImage are made in
       # sequence, so one failing maker must not discard the ones that succeeded.
       - name: Upload Linux artifacts to the release
-        if: always()
+        if: always() && inputs.dry_run != true
         continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

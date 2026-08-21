@@ -1,0 +1,40 @@
+# Who owns the action pins from here on.
+#
+# Every pin in .github/workflows is a full commit SHA (#642), which is what
+# makes third-party action code immutable — and also what makes it invisible
+# when it ages. actions/checkout sat four majors behind, on two different
+# commits both labelled `# v4`, until a release build's deprecation warning
+# happened to be read by a human (#964). That is not a process; that is luck.
+#
+# Grouped by blast radius, not by convenience. A single catch-all group would
+# put a bump to the action that publishes every wmux installer in the same pull
+# request as a checkout patch bump — and the whole point of splitting #964 into
+# two PRs was that those two things earn very different amounts of scrutiny.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 3
+    groups:
+      # Everyday CI plumbing. Fully exercised by the pull request that carries
+      # it: checkout and setup-node run in every job, upload/download-artifact
+      # are covered by perf.yml's artifact-contract job.
+      ci-actions:
+        patterns:
+          - "actions/*"
+      # The publishing path. release.yml only runs on a `v*` tag, so a bump
+      # here cannot be proven by its own PR. Run the workflow's dry_run first
+      # (Actions → Build & Release → Run workflow), then merge.
+      release-actions:
+        patterns:
+          - "softprops/*"
+          - "vedantmgoyal9/*"
+    ignore:
+      # Code signing. The SignPath steps are no-ops until SIGNPATH_API_TOKEN is
+      # configured, so nothing — not CI, not dry_run, not a real release —
+      # exercises this action today. An update nobody can verify should not
+      # arrive automatically on the path that signs the binaries users install.
+      # Revisit when signing is enabled and there is a test-signing canary.
+      - dependency-name: "signpath/github-action-submit-signing-request"

@@ -139,12 +139,14 @@ export function pinConsistencyViolations(workflows) {
 }
 
 describe('GitHub Actions workflow security contracts', () => {
-  // The contract this enables — pinConsistencyViolations(WORKFLOWS) === [] —
-  // turns on in the release.yml half of #964. It cannot pass before then: the
-  // CI workflows move to v7 here while release.yml is still on v4, so the two
-  // halves are legitimately split for as long as that PR is open. Landing the
-  // assertion now would make a green tree red for a state we chose on purpose.
-  // The detectors below prove the function works in the meantime.
+  // Now true, so now enforced. The CI workflows moved to v7 in #966 while
+  // release.yml stayed on v4, which this would have flagged — correctly, but
+  // for a split we had chosen on purpose. This PR closes that split, so the
+  // assertion lands with it.
+  it('pins the same action to the same commit, labelled the same way, everywhere', () => {
+    expect(pinConsistencyViolations(WORKFLOWS)).toEqual([]);
+  });
+
   it('detects an action pinned to two different commits', () => {
     const drifted = [
       { name: 'a.yml', text: '      - uses: actions/checkout@' + 'a'.repeat(40) + ' # v7.0.1\n' },
