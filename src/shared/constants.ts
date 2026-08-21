@@ -245,6 +245,13 @@ export const IPC = {
   //   2026-07-17). Renderer-only trust boundary.
   HOOKS_BRIDGE_STATUS: 'hooks:bridge:status',
   HOOKS_BRIDGE_INSTALL: 'hooks:bridge:install',
+  //   PROMPT_PREF_* — the durable "Don't ask again" for the install prompt.
+  //   GET is read by the prompt before it decides to show; SET is written only
+  //   by that explicit click, and cleared again from Settings. Refusing the
+  //   install is an operator decision and must outlive the process that heard
+  //   it — "Later" stays renderer-local and session-scoped.
+  HOOKS_BRIDGE_PROMPT_PREF_GET: 'hooks:bridge:prompt-pref:get',
+  HOOKS_BRIDGE_PROMPT_PREF_SET: 'hooks:bridge:prompt-pref:set',
   //   STATUSLINE_BRIDGE — mirrors HOOKS_BRIDGE for the per-account usage
   //   statusline (`wmux setup-statusline`). STATUS reports per-target install
   //   state; INSTALL performs the same idempotent install as the CLI. Same

@@ -25,6 +25,11 @@ import {
   type StatusOutcome,
   type InstallOutcome,
 } from '../../../cli/commands/setupHooks';
+import {
+  loadHooksPromptPreference,
+  setHooksPromptSuppressed,
+  type HooksPromptPreference,
+} from '../../hooks/hooksPromptPreference';
 
 /** The one bit the renderer prompt needs, plus the full outcome for detail UI. */
 export interface HooksBridgeStatus {
@@ -57,5 +62,32 @@ export function registerHooksBridgeHandlers(): void {
     wrapHandler(IPC.HOOKS_BRIDGE_INSTALL, async (): Promise<InstallOutcome> => {
       return installHooks(defaultPaths());
     }),
+  );
+
+  // The durable half of the prompt's refusal. A read failure resolves to "ask"
+  // inside the store, so this handler has no error branch of its own; the WRITE
+  // propagates, because a refusal the renderer reports as saved but that never
+  // reached disk would re-nag on the next launch with no explanation.
+  ipcMain.removeHandler(IPC.HOOKS_BRIDGE_PROMPT_PREF_GET);
+  ipcMain.handle(
+    IPC.HOOKS_BRIDGE_PROMPT_PREF_GET,
+    wrapHandler(IPC.HOOKS_BRIDGE_PROMPT_PREF_GET, async (): Promise<HooksPromptPreference> => {
+      return loadHooksPromptPreference();
+    }),
+  );
+
+  ipcMain.removeHandler(IPC.HOOKS_BRIDGE_PROMPT_PREF_SET);
+  ipcMain.handle(
+    IPC.HOOKS_BRIDGE_PROMPT_PREF_SET,
+    wrapHandler(
+      IPC.HOOKS_BRIDGE_PROMPT_PREF_SET,
+      async (_event, suppressed: unknown): Promise<HooksPromptPreference> => {
+        // Only a literal boolean writes. Anything else is a caller bug: report
+        // what is actually stored rather than writing a coerced value OR
+        // claiming a default the disk does not agree with.
+        if (typeof suppressed !== 'boolean') return loadHooksPromptPreference();
+        return setHooksPromptSuppressed(suppressed);
+      },
+    ),
   );
 }
