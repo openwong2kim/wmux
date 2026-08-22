@@ -106,3 +106,61 @@ export function validateManifest(raw: unknown, offeredVersion: string): Manifest
     manifest: { version: o.version, fileName, sha256: o.sha256.trim(), url: o.url },
   };
 }
+
+/**
+ * A verified installer is parked in temp as `wmux-update-<version>-<pid>-<file>`.
+ * That name is the ONLY record of what the file is: the downloaded path lives in
+ * memory and a restart clears it, so a later run has to read the name back to
+ * recognize an installer it already has (#995). Format and parse therefore live
+ * together — they are one contract, and a drift between them silently turns
+ * every parked artifact into garbage.
+ */
+export const TEMP_ARTIFACT_PREFIX = 'wmux-update-';
+
+export interface ParsedArtifactName {
+  version: string;
+  pid: number;
+  /** Artifact name as sanitized when it was written, e.g. `wmux-3.45.0.Setup.exe`. */
+  fileName: string;
+}
+
+/** The manifest's artifact name, reduced to characters a temp file name may hold. */
+export function sanitizeArtifactFileName(fileName: string): string {
+  return fileName.replace(/[^A-Za-z0-9._-]/g, '_');
+}
+
+/** Build the temp file name for a downloaded artifact (sanitizing the manifest's name). */
+export function artifactTempName(version: string, pid: number, fileName: string): string {
+  return `${TEMP_ARTIFACT_PREFIX}${version}-${pid}-${sanitizeArtifactFileName(fileName)}`;
+}
+
+/** Read `<version>`, `<pid>` and `<file>` back out of a temp artifact name. */
+export function parseArtifactName(name: string): ParsedArtifactName | null {
+  // Non-greedy version so a prerelease ("3.45.0-rc.1") backtracks correctly:
+  // the pid is the first all-digit segment that is followed by the file name.
+  const m = new RegExp(`^${TEMP_ARTIFACT_PREFIX}(.+?)-(\\d+)-(.+)$`).exec(name);
+  if (!m) return null;
+  return { version: m[1], pid: Number(m[2]), fileName: m[3] };
+}
+
+/**
+ * True when `candidate` is a strictly newer release than `current`, comparing
+ * the numeric MAJOR.MINOR.PATCH core only.
+ *
+ * Anything that does not read as three numbers answers FALSE, which is the
+ * conservative side: the caller treats such an artifact as ordinary garbage on
+ * the normal sweep schedule instead of keeping it around indefinitely.
+ */
+export function isVersionNewer(candidate: string, current: string): boolean {
+  const core = (v: string): number[] | null => {
+    const m = /^(\d+)\.(\d+)\.(\d+)$/.exec(normalizeVersion(v));
+    return m ? [Number(m[1]), Number(m[2]), Number(m[3])] : null;
+  };
+  const a = core(candidate);
+  const b = core(current);
+  if (!a || !b) return false;
+  for (let i = 0; i < 3; i++) {
+    if (a[i] !== b[i]) return a[i] > b[i];
+  }
+  return false;
+}

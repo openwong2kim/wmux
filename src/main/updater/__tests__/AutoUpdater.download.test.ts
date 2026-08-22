@@ -40,8 +40,13 @@ afterEach(() => {
 
 interface Sent { channel: string; data: Record<string, unknown>; }
 
+/** A file parked in the fake temp dir (#995 adoption paths). */
+interface TempFile { body: Buffer; mtimeMs?: number }
+
 /** Load AutoUpdater (win32) with a URL-routing net mock, fs mocked, window capture. */
-async function loadWin32({ sha = GOOD_SHA }: { sha?: string } = {}) {
+async function loadWin32(
+  { sha = GOOD_SHA, tempFiles = {} }: { sha?: string; tempFiles?: Record<string, TempFile> } = {},
+) {
   vi.resetModules();
   Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
 
@@ -101,6 +106,11 @@ async function loadWin32({ sha = GOOD_SHA }: { sha?: string } = {}) {
   // Mock fs so no real installer file is written; capture the streamed bytes.
   // `once('close')` fires synchronously on destroy so the fail-path cleanup
   // (unlink of a partial/mismatched download) runs inside the test.
+  //
+  // The read side backs the fake temp dir `tempFiles` describes: readdir/stat
+  // list it and createReadStream replays a parked artifact's bytes, which is
+  // what the adoption path (#995) hashes.
+  const baseName = (p: string) => String(p).split(/[\\/]/).pop() ?? '';
   vi.doMock('node:fs', () => ({
     createWriteStream: () => {
       const closeCbs: Array<() => void> = [];
@@ -112,9 +122,28 @@ async function loadWin32({ sha = GOOD_SHA }: { sha?: string } = {}) {
         once: (ev: string, cb: () => void) => { if (ev === 'close') closeCbs.push(cb); },
       };
     },
+    createReadStream: (p: string) => {
+      const entry = tempFiles[baseName(p)];
+      const cbs: Record<string, (a?: unknown) => void> = {};
+      const stream = { on(ev: string, cb: (a?: unknown) => void) { cbs[ev] = cb; return stream; } };
+      Promise.resolve().then(() => {
+        if (!entry) { cbs['error']?.(new Error(`ENOENT: ${p}`)); return; }
+        cbs['data']?.(entry.body);
+        cbs['end']?.();
+      });
+      return stream;
+    },
   }));
-  const unlinkMock = vi.fn(async (_path: string) => undefined);
-  vi.doMock('node:fs/promises', () => ({ unlink: unlinkMock }));
+  const unlinkMock = vi.fn(async (path: string) => { delete tempFiles[baseName(path)]; });
+  vi.doMock('node:fs/promises', () => ({
+    unlink: unlinkMock,
+    readdir: async (_dir: string) => Object.keys(tempFiles),
+    stat: async (p: string) => {
+      const entry = tempFiles[baseName(p)];
+      if (!entry) throw new Error(`ENOENT: ${p}`);
+      return { mtimeMs: entry.mtimeMs ?? Date.now() };
+    },
+  }));
 
   // #866: the install path enumerates and force-kills every process under the
   // install root, which is derived from process.execPath. Under test that is
@@ -155,7 +184,7 @@ async function loadWin32({ sha = GOOD_SHA }: { sha?: string } = {}) {
   }));
 
   const mod = await import('../AutoUpdater');
-  return { AutoUpdater: mod.AutoUpdater, requestUrls, ipcHandlers, sent, openPath, quit, win, feed, unlinkMock, teardown };
+  return { AutoUpdater: mod.AutoUpdater, requestUrls, ipcHandlers, sent, openPath, quit, win, feed, unlinkMock, teardown, tempFiles };
 }
 
 /** Flush queued microtasks so the chained net responses (feed→manifest→download) settle. */
@@ -373,5 +402,79 @@ describe('AutoUpdater two-step flow (win32)', () => {
     expect(unlinkMock.mock.calls.some((c) => String(c[0]).includes(`wmux-update-${NEW_VERSION}`))).toBe(true);
     const downloadsAfter = sent.filter((s) => s.channel === IPC.UPDATE_AVAILABLE && s.data.status === 'downloaded').length;
     expect(downloadsAfter).toBe(downloadsBefore + 1);
+  });
+});
+
+/**
+ * #995 — `downloadedPath` is in-memory, so a restart (or an aborted install)
+ * used to throw away a perfectly good ~150 MB installer and fetch it again.
+ * The artifact's name plus the manifest hash is the record that lets the next
+ * run pick it back up — and re-verification is what makes that safe.
+ */
+describe('AutoUpdater temp artifact reuse (win32)', () => {
+  const backgroundCheck = (updater: unknown) =>
+    (updater as { check: (oneShot?: boolean) => Promise<void> }).check();
+  const parkedName = `wmux-update-${NEW_VERSION}-4242-wmux-${NEW_VERSION}.Setup.exe`;
+
+  it('reuses a verified installer left in temp instead of downloading it again', async () => {
+    const { AutoUpdater, requestUrls, sent, win } = await loadWin32({
+      tempFiles: { [parkedName]: { body: INSTALLER_BODY } },
+    });
+    const updater = new AutoUpdater(() => win as never, quitHooks());
+
+    await backgroundCheck(updater);
+    await flush();
+
+    // The manifest is still fetched (that is where the hash to verify against
+    // comes from) — the 150 MB installer download is what must not happen.
+    expect(requestUrls.some((u) => u.includes('update-manifest.json'))).toBe(true);
+    expect(requestUrls).not.toContain(DL_URL);
+    expect(sent.map((s) => `${s.channel}:${s.data.status}`)).toContain(`${IPC.UPDATE_AVAILABLE}:downloaded`);
+  });
+
+  it('re-verifies before reusing: a tampered artifact is discarded and the installer downloaded', async () => {
+    const { AutoUpdater, requestUrls, sent, unlinkMock, win } = await loadWin32({
+      tempFiles: { [parkedName]: { body: Buffer.from('TAMPERED'), mtimeMs: Date.now() - 10 * 60_000 } },
+    });
+    const updater = new AutoUpdater(() => win as never, quitHooks());
+
+    await backgroundCheck(updater);
+    await flush();
+
+    expect(unlinkMock.mock.calls.some((c) => String(c[0]).includes(parkedName))).toBe(true);
+    expect(requestUrls).toContain(DL_URL);
+    expect(sent.map((s) => `${s.channel}:${s.data.status}`)).toContain(`${IPC.UPDATE_AVAILABLE}:downloaded`);
+  });
+
+  it('leaves a just-written mismatching artifact alone — that is another instance downloading', async () => {
+    const { AutoUpdater, unlinkMock, win } = await loadWin32({
+      tempFiles: { [parkedName]: { body: Buffer.from('PARTIAL'), mtimeMs: Date.now() } },
+    });
+    const updater = new AutoUpdater(() => win as never, quitHooks());
+
+    await backgroundCheck(updater);
+    await flush();
+
+    expect(unlinkMock.mock.calls.some((c) => String(c[0]).includes(parkedName))).toBe(false);
+  });
+
+  it('the startup sweep keeps an installer for a newer version and drops one for the running version', async () => {
+    const threeDaysAgo = Date.now() - 3 * 24 * 60 * 60 * 1000;
+    const pending = `wmux-update-${NEW_VERSION}-1-wmux-${NEW_VERSION}.Setup.exe`;
+    const alreadyInstalled = `wmux-update-${FAKE_VERSION}-1-wmux-${FAKE_VERSION}.Setup.exe`;
+    const { AutoUpdater, unlinkMock, win } = await loadWin32({
+      tempFiles: {
+        [pending]: { body: INSTALLER_BODY, mtimeMs: threeDaysAgo },
+        [alreadyInstalled]: { body: INSTALLER_BODY, mtimeMs: threeDaysAgo },
+      },
+    });
+    const updater = new AutoUpdater(() => win as never, quitHooks());
+
+    updater.start();
+    await flush();
+
+    const swept = unlinkMock.mock.calls.map((c) => String(c[0]));
+    expect(swept.some((p) => p.includes(alreadyInstalled))).toBe(true);
+    expect(swept.some((p) => p.includes(pending))).toBe(false);
   });
 });

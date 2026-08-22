@@ -12,12 +12,23 @@
  */
 
 import { autoUpdater, app, type BrowserWindow, ipcMain, net, shell } from 'electron';
-import { createWriteStream } from 'node:fs';
+import { createReadStream, createWriteStream } from 'node:fs';
 import { readdir, stat, unlink } from 'node:fs/promises';
 import { join, dirname, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
 import { IPC } from '../../shared/constants';
-import { isAllowedDownloadUrl, digestsEqual, validateManifest, type UpdateManifest } from './verifyUpdate';
+import {
+  artifactTempName,
+  digestsEqual,
+  isAllowedDownloadUrl,
+  isVersionNewer,
+  normalizeVersion,
+  parseArtifactName,
+  sanitizeArtifactFileName,
+  TEMP_ARTIFACT_PREFIX,
+  validateManifest,
+  type UpdateManifest,
+} from './verifyUpdate';
 import { LocalUpdateFeed } from './LocalUpdateFeed';
 import {
   collectInstallRootPids,
@@ -70,12 +81,22 @@ const INSTALL_LOCK_BUDGET_MS = 60_000;
 // makes this minutes, and aborting a healthy update is worse than waiting.
 const INSTALL_STAGING_TIMEOUT_MS = 10 * 60 * 1000;
 
-// Verified installers are named `wmux-update-<version>-<pid>-<artifact>`. A
-// stage-then-stall leaves one behind (only the supersede and error paths
-// unlink), so they accumulate at ~120 MB each. Swept at startup; the age floor
-// keeps a concurrent instance's in-flight download safe.
-const TEMP_ARTIFACT_PREFIX = 'wmux-update-';
+// Verified installers are named `wmux-update-<version>-<pid>-<artifact>` (see
+// artifactTempName). A stage-then-stall leaves one behind (only the supersede
+// and error paths unlink), so they accumulate at ~120 MB each. Swept at
+// startup; the age floor keeps a concurrent instance's in-flight download safe.
 const TEMP_ARTIFACT_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+// #995: an artifact for a version NEWER than the one running is not garbage —
+// it is the installer for an update we have not taken yet, and the next check
+// re-verifies and adopts it instead of pulling ~150 MB down again. Sweeping it
+// on the 24 h floor is what made every aborted install cost a fresh download.
+// It still expires, just far later: if auto-update is off the poll that would
+// consume it never runs, and nothing should sit in temp forever.
+const TEMP_ARTIFACT_PENDING_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+// An artifact whose bytes fail the hash is either a corrupted leftover (delete)
+// or another instance's download in flight (leave alone). Recent writes mean
+// the second, so only a file that has been quiet this long is removed.
+const TEMP_ARTIFACT_QUIET_MS = 60 * 1000;
 
 // In-app auto-update runs on Windows (Squirrel.Windows `.Setup.exe`) and on
 // Apple Silicon macOS (Squirrel.Mac, signed+notarized ZIP). Everything else —
@@ -273,6 +294,11 @@ export class AutoUpdater {
    * completed. Best-effort and never blocks startup: a failure here costs disk,
    * not correctness. Only files older than TEMP_ARTIFACT_MAX_AGE_MS are removed
    * so a second instance downloading right now keeps its artifact.
+   *
+   * #995: an artifact whose version is NEWER than the running app is held far
+   * longer, because it is the one thing adoptExistingArtifact can reuse. The
+   * old rule deleted it at 24 h and the next check paid for the same 150 MB
+   * again — on the #980 failure loop, three times over.
    */
   private async sweepStaleArtifacts(): Promise<void> {
     const tempDir = app.getPath('temp');
@@ -282,19 +308,83 @@ export class AutoUpdater {
     } catch {
       return;
     }
-    const cutoff = Date.now() - TEMP_ARTIFACT_MAX_AGE_MS;
+    const now = Date.now();
+    const current = app.getVersion();
     for (const name of names) {
       if (!name.startsWith(TEMP_ARTIFACT_PREFIX)) continue;
+      const parsed = parseArtifactName(name);
+      const isPendingInstaller = parsed !== null && isVersionNewer(parsed.version, current);
+      const maxAge = isPendingInstaller ? TEMP_ARTIFACT_PENDING_MAX_AGE_MS : TEMP_ARTIFACT_MAX_AGE_MS;
       const full = join(tempDir, name);
       try {
         const info = await stat(full);
-        if (info.mtimeMs >= cutoff) continue;
+        if (info.mtimeMs >= now - maxAge) continue;
         await unlink(full);
         console.log(`[AutoUpdater] swept stale update artifact ${name}`);
       } catch {
         /* best-effort — another instance may own it, or it vanished mid-sweep */
       }
     }
+  }
+
+  /**
+   * Reuse an installer this machine already downloaded and verified (#995).
+   *
+   * `downloadedPath` is in-memory only, so a quit-for-install that aborted (or
+   * simply a restart) leaves a perfectly good ~150 MB Setup.exe in temp with
+   * nothing pointing at it, and the next check downloads it all over again.
+   * The file name carries the version, so the artifact plus the freshly fetched
+   * manifest hash is all the record needed — no new state on disk.
+   *
+   * NEVER trusted on its name: the file sat in a world-writable temp dir across
+   * a restart, so the SHA-256 is re-computed and compared to the manifest exactly
+   * as a fresh download's is. A mismatch is dropped (unless it is still being
+   * written — that is another instance's download, not our garbage) and the
+   * caller falls through to a normal download.
+   */
+  private async adoptExistingArtifact(manifest: UpdateManifest): Promise<string | null> {
+    const tempDir = app.getPath('temp');
+    let names: string[];
+    try {
+      names = await readdir(tempDir);
+    } catch {
+      return null;
+    }
+    const wantVersion = normalizeVersion(manifest.version);
+    const wantFile = sanitizeArtifactFileName(manifest.fileName);
+    for (const name of names) {
+      const parsed = parseArtifactName(name);
+      if (!parsed) continue;
+      if (normalizeVersion(parsed.version) !== wantVersion) continue;
+      if (parsed.fileName !== wantFile) continue;
+      const full = join(tempDir, name);
+      try {
+        const actual = await this.hashFile(full);
+        if (digestsEqual(actual, manifest.sha256)) {
+          console.log(`[AutoUpdater] reusing verified installer already in temp (${name}) — skipping download`);
+          return full;
+        }
+        const info = await stat(full);
+        if (info.mtimeMs < Date.now() - TEMP_ARTIFACT_QUIET_MS) {
+          await unlink(full);
+          console.warn(`[AutoUpdater] discarded temp artifact ${name}: sha256 does not match the manifest`);
+        }
+      } catch {
+        /* unreadable or vanished mid-scan — fall through to a fresh download */
+      }
+    }
+    return null;
+  }
+
+  /** Stream a file through SHA-256. Streamed, not read: these artifacts are ~150 MB. */
+  private hashFile(path: string): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const hash = createHash('sha256');
+      const stream = createReadStream(path);
+      stream.on('data', (chunk: Buffer | string) => hash.update(chunk));
+      stream.on('error', (err: Error) => reject(err));
+      stream.on('end', () => resolve(hash.digest('hex')));
+    });
   }
 
   setEnabled(enabled: boolean): void {
@@ -399,9 +489,16 @@ export class AutoUpdater {
       if (!validated.ok) {
         throw new Error(`update manifest rejected: ${validated.reason}`);
       }
-      tempPath = await this.downloadAndVerify(validated.manifest, (percent) => {
-        this.sendToRenderer(IPC.UPDATE_DOWNLOAD, { status: 'downloading', percent });
-      });
+      // #995: this machine may already hold a verified installer for exactly
+      // this version (an aborted install, or a restart before the user pressed
+      // Restart). Re-verify it against the manifest we just fetched and reuse
+      // it rather than pulling the same ~150 MB down again.
+      tempPath = await this.adoptExistingArtifact(validated.manifest);
+      if (!tempPath) {
+        tempPath = await this.downloadAndVerify(validated.manifest, (percent) => {
+          this.sendToRenderer(IPC.UPDATE_DOWNLOAD, { status: 'downloading', percent });
+        });
+      }
       if (this.pendingUpdate?.name !== pending.name) {
         // A newer release superseded this download mid-flight (check() replaced
         // pendingUpdate). Committing it would let a one-shot install restart the
@@ -520,8 +617,7 @@ export class AutoUpdater {
       // Keep the manifest's artifact name (sanitized) so the temp file carries
       // the right extension on every platform (.Setup.exe on Windows, .zip on
       // macOS) instead of a hardcoded Windows one.
-      const safeName = manifest.fileName.replace(/[^A-Za-z0-9._-]/g, '_');
-      const dest = join(app.getPath('temp'), `wmux-update-${manifest.version}-${process.pid}-${safeName}`);
+      const dest = join(app.getPath('temp'), artifactTempName(manifest.version, process.pid, manifest.fileName));
       const hash = createHash('sha256');
       const out = createWriteStream(dest);
       let settled = false;

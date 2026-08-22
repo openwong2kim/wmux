@@ -5,6 +5,9 @@ import {
   digestsEqual,
   sha256Hex,
   validateManifest,
+  artifactTempName,
+  parseArtifactName,
+  isVersionNewer,
 } from '../verifyUpdate';
 
 // NN2-T4 — the fail-closed verification core. The pre-fix updater launched an
@@ -120,5 +123,58 @@ describe('validateManifest', () => {
     expect(validateManifest(darwin({ url: 'https://evil.com/x.zip' }), '2.14.1').ok).toBe(false);
     expect(validateManifest(darwin({ sha256: 'deadbeef' }), '2.14.1').ok).toBe(false);
     expect(validateManifest(darwin(), '2.99.0').ok).toBe(false);
+  });
+});
+
+// #995 — the temp artifact's NAME is the only record that a verified installer
+// already exists (the path is in-memory and a restart clears it), so format and
+// parse have to survive each other.
+describe('temp artifact naming', () => {
+  it('round-trips version, pid and file name', () => {
+    const name = artifactTempName('3.45.0', 25728, 'wmux-3.45.0.Setup.exe');
+    expect(name).toBe('wmux-update-3.45.0-25728-wmux-3.45.0.Setup.exe');
+    expect(parseArtifactName(name)).toEqual({
+      version: '3.45.0',
+      pid: 25728,
+      fileName: 'wmux-3.45.0.Setup.exe',
+    });
+  });
+
+  it('round-trips a prerelease version, whose own hyphens must not be read as the pid', () => {
+    const name = artifactTempName('3.45.0-rc.1', 42, 'wmux-3.45.0-rc.1.Setup.exe');
+    expect(parseArtifactName(name)).toEqual({
+      version: '3.45.0-rc.1',
+      pid: 42,
+      fileName: 'wmux-3.45.0-rc.1.Setup.exe',
+    });
+  });
+
+  it('sanitizes the manifest file name into the temp name', () => {
+    expect(artifactTempName('3.45.0', 7, 'wmux 3.45.0/../Setup.exe'))
+      .toBe('wmux-update-3.45.0-7-wmux_3.45.0_.._Setup.exe');
+  });
+
+  it('returns null for anything that is not one of our artifacts', () => {
+    expect(parseArtifactName('some-other-temp-file')).toBeNull();
+    expect(parseArtifactName('wmux-update-3.45.0.Setup.exe')).toBeNull();
+  });
+});
+
+describe('isVersionNewer', () => {
+  it('compares the numeric core', () => {
+    expect(isVersionNewer('3.45.0', '3.44.0')).toBe(true);
+    expect(isVersionNewer('3.44.1', '3.44.0')).toBe(true);
+    expect(isVersionNewer('4.0.0', '3.99.99')).toBe(true);
+    expect(isVersionNewer('3.44.0', '3.44.0')).toBe(false);
+    expect(isVersionNewer('3.43.0', '3.44.0')).toBe(false);
+    expect(isVersionNewer('v3.45.0', '3.44.0')).toBe(true);
+  });
+
+  it('answers false for anything it cannot read as three numbers', () => {
+    // Conservative on purpose: the caller keeps "newer" artifacts around for
+    // days, so an unreadable version must fall back to the ordinary sweep.
+    expect(isVersionNewer('3.45.0-rc.1', '3.44.0')).toBe(false);
+    expect(isVersionNewer('nightly', '3.44.0')).toBe(false);
+    expect(isVersionNewer('3.45', '3.44.0')).toBe(false);
   });
 });
