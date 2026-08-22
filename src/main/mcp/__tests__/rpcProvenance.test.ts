@@ -1,7 +1,15 @@
-// The source-level invariant — which production files may write the
-// externalWire marker at all — is pinned by
-// src/main/pipe/__tests__/RpcDispatchProvenance.sourceInvariant.test.ts. This
-// file stays a unit test of the predicate itself (#958).
+// Two other tests hold the externalWire boundary, and they hold different
+// halves of it (#958):
+//   • WHICH production files may write the marker at all —
+//     src/main/pipe/__tests__/RpcDispatchProvenance.sourceInvariant.test.ts,
+//     which pins the file set (PipeServer + RpcRouter) over every property
+//     assignment and shorthand, whatever the initializer.
+//   • THAT RpcRouter's write stays conditional — RpcRouter.dispatchProvenance
+//     .test.ts ('does not inherit external-wire provenance into an unmarked
+//     nested dispatch'), which is the test that fails if that ternary is ever
+//     widened to a bare `true`. The source invariant would not: the file set
+//     is unchanged by that edit.
+// This file stays a unit test of the predicate itself.
 
 import { describe, expect, it } from 'vitest';
 import { isLocalExternalWireContext } from '../rpcProvenance';
