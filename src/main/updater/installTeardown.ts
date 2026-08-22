@@ -153,6 +153,10 @@ export function selectInstallRootPids(
   installRoot: string,
   ownPid: number,
 ): number[] {
+  // NOTE (#980): this stays the WAIT list and deliberately keeps our own
+  // helpers and the daemon in it. Everything here has to be gone before
+  // Setup.exe may run; which of them we kill ourselves is a separate question,
+  // answered by `selectOwnTreePids`.
   // Backslash explicitly, not `path.sep`. Every input here is a Windows path
   // read out of Win32_Process, and this only ever runs on win32 — but the
   // function is pure, so it is unit-tested on the Linux and macOS CI legs too,
@@ -166,8 +170,23 @@ export function selectInstallRootPids(
     .map((r) => r.pid);
 }
 
+/**
+ * One row of the install-root process enumeration.
+ *
+ * `parentPid` is carried because #980 turned on a distinction the original
+ * query could not make: every Electron helper is the SAME `wmux.exe` under the
+ * SAME root as the process doing the update, so an executable-path match cannot
+ * tell our own renderer from a stranger's MCP server. Parentage can.
+ */
+export interface InstallRootProcess {
+  pid: number;
+  /** 0 when the enumeration did not report one — treated as "not ours". */
+  parentPid: number;
+  executablePath: string;
+}
+
 /** Parse `Get-CimInstance ... | ConvertTo-Json` rows. Tolerates the single-object form. */
-export function parseProcessRows(stdout: string): Array<{ pid: number; executablePath: string }> {
+export function parseProcessRows(stdout: string): InstallRootProcess[] {
   const trimmed = stdout.trim();
   if (!trimmed) return [];
   let parsed: unknown;
@@ -177,18 +196,77 @@ export function parseProcessRows(stdout: string): Array<{ pid: number; executabl
     return [];
   }
   const items = Array.isArray(parsed) ? parsed : [parsed];
-  const out: Array<{ pid: number; executablePath: string }> = [];
+  const out: InstallRootProcess[] = [];
   for (const item of items) {
     if (!item || typeof item !== 'object') continue;
     const o = item as Record<string, unknown>;
     const pid = typeof o.ProcessId === 'number' ? o.ProcessId : NaN;
     if (!Number.isInteger(pid) || pid <= 0) continue;
+    // A missing or malformed parent reads as 0, which belongs to no tree — so
+    // an unreadable parentage can only ever make a process look FOREIGN, never
+    // make a stranger's process look like one of ours.
+    const rawParent = o.ParentProcessId;
+    const parentPid =
+      typeof rawParent === 'number' && Number.isInteger(rawParent) && rawParent > 0
+        ? rawParent
+        : 0;
     out.push({
       pid,
+      parentPid,
       executablePath: typeof o.ExecutablePath === 'string' ? o.ExecutablePath : '',
     });
   }
   return out;
+}
+
+/**
+ * #980 — the pids that belong to OUR OWN process tree, transitively.
+ *
+ * The force-kill on the install path was documented as "the processes nothing
+ * else takes down" — the MCP servers, which run out of the install root but are
+ * owned by agent hosts rather than by us. It was IMPLEMENTED as "every process
+ * under the root except the daemon", and on Windows every Electron helper is
+ * the same `wmux.exe` under the same root, so it swept up our own renderer, GPU
+ * and utility children as well.
+ *
+ * That is not a cosmetic over-reach. The next thing the install path does is
+ * `app.quit()`, whose `before-quit` handler awaits a session save IN THE
+ * RENDERER — the renderer that was just force-killed. The await never settles,
+ * the quit never completes, and the main process stays alive holding the very
+ * install root the waiter is waiting to see released. Measured on the reporter's
+ * machine: the main process survived a full day across two install attempts.
+ *
+ * Our own children need no killing. `app.quit()` takes them down, and they stay
+ * in the waiter's WAIT list either way — so the installer still cannot start
+ * before they are gone. Sparing them costs nothing and buys back the quit.
+ */
+export function selectOwnTreePids(
+  rows: ReadonlyArray<{ pid: number; parentPid: number }>,
+  ownPid: number,
+): Set<number> {
+  const childrenOf = new Map<number, number[]>();
+  for (const r of rows) {
+    if (r.parentPid <= 0) continue;
+    const siblings = childrenOf.get(r.parentPid);
+    if (siblings) siblings.push(r.pid);
+    else childrenOf.set(r.parentPid, [r.pid]);
+  }
+  // Breadth-first from ourselves. `seen` doubles as the cycle guard: Windows
+  // recycles pids, so a stale parent reference can close a loop and an
+  // unguarded walk would never terminate.
+  const own = new Set<number>();
+  const queue = [ownPid];
+  const seen = new Set<number>([ownPid]);
+  while (queue.length > 0) {
+    const pid = queue.shift() as number;
+    for (const child of childrenOf.get(pid) ?? []) {
+      if (seen.has(child)) continue;
+      seen.add(child);
+      own.add(child);
+      queue.push(child);
+    }
+  }
+  return own;
 }
 
 /**
@@ -212,6 +290,27 @@ export function buildWaiterScript(plan: WaiterPlan): string | null {
     `$setup = ${psQuote(plan.setupExePath)}`,
     `$marker = ${psQuote(plan.abortMarkerPath)}`,
     `$budget = ${plan.lockBudgetMs}`,
+    // Single-instance gate, FIRST — before a handle is captured or anything
+    // else happens. The quit watchdog unlatches `isInstalling` after 30 s so a
+    // refused quit stays retryable, but the waiter it spawned can still be
+    // inside its own budget (up to two lock windows) — so a retry would spawn
+    // a SECOND waiter watching the same root, and two of them can reach
+    // Start-Process on the same Setup.exe. Two concurrent Squirrel installs
+    // against one root is precisely the corruption #866 exists to prevent, so
+    // the guard lives HERE, where the collision happens, not in timing
+    // arithmetic between the watchdog and the budgets (coderabbit, #980).
+    //
+    // A named mutex gives exactly the wanted semantics for free: it exists
+    // only while some process holds a handle to it, so a LIVE earlier waiter
+    // blocks the newcomer (exit 5, silently — the incumbent owns the install
+    // and the marker), while a dead or finished one leaves nothing behind and
+    // the newcomer proceeds. No state file to go stale, nothing to clean up.
+    // The name embeds the install root so two different installations (per
+    // user, portable copies) can never block each other.
+    `$mtxName = 'wmux-install-waiter-' + ($root -replace '[^A-Za-z0-9]', '_')`,
+    `$mtxCreated = $false`,
+    `$mtx = New-Object System.Threading.Mutex -ArgumentList $true, $mtxName, ([ref]$mtxCreated)`,
+    `if (-not $mtxCreated) { exit 5 }`,
     // Capture HANDLES first. GetProcessById opens a handle now, so a later pid
     // recycle cannot make an exited process look alive (or a stranger's
     // process look like ours).
@@ -222,12 +321,20 @@ export function buildWaiterScript(plan: WaiterPlan): string | null {
     // and by then wmux has already quit — so the update would silently stall
     // with no marker and nothing to tell the user on the next boot. The whole
     // wait shares one deadline rather than giving each handle a fresh budget.
-    `$waitDeadline = [Environment]::TickCount + $budget`,
+    // A Stopwatch, not [Environment]::TickCount. TickCount is a signed 32-bit
+    // millisecond counter that WRAPS every ~24.9 days of uptime and then runs
+    // negative: past the wrap, `TickCount + $budget` widens to Int64 while
+    // TickCount itself is still negative, so `$left` comes out larger than
+    // Int32.MaxValue, WaitForExit throws ArgumentOutOfRange, the `catch {}`
+    // below swallows it, and every handle is skipped without ever setting
+    // $stuck. The wait silently becomes a no-op on exactly the long-uptime
+    // machines that most need it. A Stopwatch is monotonic and 64-bit (#980).
+    `$clock = [System.Diagnostics.Stopwatch]::StartNew()`,
     `$stuck = $false`,
     `foreach ($h in $handles) {`,
-    `  $left = $waitDeadline - [Environment]::TickCount`,
+    `  $left = $budget - $clock.ElapsedMilliseconds`,
     `  if ($left -le 0) { $stuck = $true; break }`,
-    `  try { if (-not $h.WaitForExit($left)) { $stuck = $true; break } } catch { }`,
+    `  try { if (-not $h.WaitForExit([int]$left)) { $stuck = $true; break } } catch { }`,
     `}`,
     `if ($stuck) {`,
     `  Set-Content -LiteralPath $marker -Value 'install-aborted: a process under the install root would not exit' -Encoding utf8`,
@@ -251,8 +358,11 @@ export function buildWaiterScript(plan: WaiterPlan): string | null {
     `  }`,
     `  return $false`,
     `}`,
-    `$deadline = [Environment]::TickCount + $budget`,
-    `while ((Test-RootLocked) -and ([Environment]::TickCount -lt $deadline)) { Start-Sleep -Milliseconds 500 }`,
+    // Same clock, same reason. This loop is the gate that decides whether the
+    // installer runs at all, so a wrapped counter here does not merely mistime
+    // it — it collapses the whole budget into a single pass.
+    `$lockClock = [System.Diagnostics.Stopwatch]::StartNew()`,
+    `while ((Test-RootLocked) -and ($lockClock.ElapsedMilliseconds -lt $budget)) { Start-Sleep -Milliseconds 500 }`,
     `if (Test-RootLocked) {`,
     // Refusing leaves a working old version. Launching anyway is precisely the
     // failure this module exists to prevent, so there is no "best effort" here.
@@ -273,28 +383,60 @@ export function buildWaiterScript(plan: WaiterPlan): string | null {
   ].join('\n');
 }
 
+/**
+ * What the install path needs to know about the tree it is about to take down.
+ *
+ * `pids` is the WAIT list — everything under the install root except ourselves.
+ * `ownTree` is the subset of those that are our own descendants, which the
+ * caller must NOT force-kill (see `selectOwnTreePids`). Both come from ONE
+ * enumeration on purpose: two queries would be two different moments, and a
+ * process that appeared between them would land in the kill list without ever
+ * having been classified.
+ */
+export interface InstallRootSurvey {
+  /** Everything under the root except us — what the waiter waits for. */
+  pids: number[];
+  /** Of those, our own descendants. They exit with `app.quit()`. */
+  ownTree: Set<number>;
+}
+
 /** Enumerate, best-effort. win32-only; never throws into the update path. */
-export function collectInstallRootPids(installRoot: string): number[] {
-  if (process.platform !== 'win32') return [];
+export function collectInstallRootProcesses(installRoot: string): InstallRootSurvey {
+  const empty: InstallRootSurvey = { pids: [], ownTree: new Set() };
+  if (process.platform !== 'win32') return empty;
   try {
     const systemRoot = process.env.SystemRoot || 'C:\\Windows';
     const powershell = path.join(
       systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe',
     );
     const exeName = path.basename(process.execPath);
-    if (!/^[\w][\w .-]*\.exe$/i.test(exeName)) return [];
+    if (!/^[\w][\w .-]*\.exe$/i.test(exeName)) return empty;
     const stdout = execFileSync(
       powershell,
       [
         '-NoProfile', '-NonInteractive', '-Command',
-        `Get-CimInstance Win32_Process -Filter "Name='${exeName}'" -ErrorAction SilentlyContinue | Select-Object ProcessId,ExecutablePath | ConvertTo-Json -Compress`,
+        `Get-CimInstance Win32_Process -Filter "Name='${exeName}'" -ErrorAction SilentlyContinue | Select-Object ProcessId,ParentProcessId,ExecutablePath | ConvertTo-Json -Compress`,
       ],
       { encoding: 'utf-8', timeout: 10_000, windowsHide: true },
     );
-    return selectInstallRootPids(parseProcessRows(stdout), installRoot, process.pid);
+    const rows = parseProcessRows(stdout);
+    const pids = selectInstallRootPids(rows, installRoot, process.pid);
+    // Intersect: a descendant of ours that does NOT run out of the install root
+    // is not on the wait list either, so it has no business in this survey.
+    const under = new Set(pids);
+    const ownTree = new Set(
+      [...selectOwnTreePids(rows, process.pid)].filter((p) => under.has(p)),
+    );
+    return { pids, ownTree };
   } catch {
-    return [];
+    return empty;
   }
+}
+
+/** Wait-list only. Kept for callers (and the runtime suite) that never needed
+ *  the ownership split. */
+export function collectInstallRootPids(installRoot: string): number[] {
+  return collectInstallRootProcesses(installRoot).pids;
 }
 
 /**

@@ -20,7 +20,7 @@ import { IPC } from '../../shared/constants';
 import { isAllowedDownloadUrl, digestsEqual, validateManifest, type UpdateManifest } from './verifyUpdate';
 import { LocalUpdateFeed } from './LocalUpdateFeed';
 import {
-  collectInstallRootPids,
+  collectInstallRootProcesses,
   clearAbortMarker,
   freeSpaceShortfall,
   INSTALL_ABORT_MARKER,
@@ -65,6 +65,12 @@ const INSTALL_STAGING_HEADROOM_BYTES = 200 * 1024 * 1024;
 // can hold files for a while, and waiting is free while refusing costs the user
 // their update.
 const INSTALL_LOCK_BUDGET_MS = 60_000;
+// #980 — how long we give our own quit before concluding it did not happen.
+// Longer than main's before-quit hard deadline (20 s), so on any path where
+// that deadline is armed the process is already gone and this never fires. It
+// exists for the paths where it is NOT armed — a quit that never reaches a
+// before-quit handler at all leaves nothing else to notice.
+const INSTALL_QUIT_WATCHDOG_MS = 30_000;
 // Squirrel downloading and unpacking a ~120 MB bundle before it reports
 // 'update-downloaded'. Generous on purpose: a slow disk or an antivirus scan
 // makes this minutes, and aborting a healthy update is worse than waiting.
@@ -719,13 +725,30 @@ export class AutoUpdater {
       return;
     }
 
-    // Everything running out of the install root, minus ourselves. The daemon
-    // is in here too: it is handed to the waiter so the installer waits for its
-    // graceful shutdown to finish, but it is NOT force-killed below — the full
-    // shutdown branch flushes its scrollback first.
-    const pids = collectInstallRootPids(installRoot);
+    // #980 — the WAIT list and the KILL list are different sets on purpose, and
+    // conflating them is what broke this path:
+    //
+    //   wait : everything under the root. Nothing may hold the tree open when
+    //          Setup.exe starts, regardless of who is responsible for ending it.
+    //   kill : only what nothing else ends — the MCP servers, which run out of
+    //          the install root but are owned by agent hosts rather than by us.
+    //
+    // Our own Electron helpers (renderer, GPU, utility) are the same wmux.exe
+    // under the same root, so the old "everything except the daemon" filter
+    // force-killed them too — and the very next thing this function does is
+    // quit, into a before-quit handler that awaits a session save IN THE
+    // RENDERER it had just killed. They exit with `app.quit()`; they stay on the
+    // wait list, so sparing them cannot let the installer start early.
+    //
+    // The daemon is spared for its own, older reason: the full-shutdown branch
+    // flushes its scrollback first. A null daemon pid still fails safe — it is
+    // force-killed like anything else foreign, costing a flush but not the
+    // install — unless it is one of our descendants, in which case app.quit()
+    // is already taking it down.
+    const survey = collectInstallRootProcesses(installRoot);
+    const pids = survey.pids;
     const daemonPid = this.hooks.getDaemonPid();
-    const forceKillPids = pids.filter((p) => p !== daemonPid);
+    const forceKillPids = pids.filter((p) => p !== daemonPid && !survey.ownTree.has(p));
 
     // ORDER MATTERS, and it is the reverse of the obvious one.
     //
@@ -768,7 +791,9 @@ export class AutoUpdater {
     // update goes wrong, and the log is the only place to answer it from.
     console.log(
       `[AutoUpdater] install handoff: waiter=${waiterPath} watching ${pids.length} process(es) under ${installRoot}; ` +
-      `force-killed ${killed.length}/${forceKillPids.length}, daemon pid ${daemonPid ?? 'unknown'} left to the graceful shutdown`,
+      `force-killed ${killed.length}/${forceKillPids.length} foreign, ` +
+      `${survey.ownTree.size} of our own left to app.quit(), ` +
+      `daemon pid ${daemonPid ?? 'unknown'} left to the graceful shutdown`,
     );
 
     // Sessions do NOT survive this install. The daemon holds the install root
@@ -777,6 +802,50 @@ export class AutoUpdater {
     // reason the failure looked so surprising.
     console.log('[AutoUpdater] quitting for install — the daemon goes down with us so the installer runs against a dead tree');
     app.quit();
+    this.armInstallQuitWatchdog(abortMarkerPath);
+  }
+
+  /**
+   * #980 — `app.quit()` is a request, and on this path nothing else notices when
+   * it is refused.
+   *
+   * Everything downstream assumes we die: the waiter is blocked on our own
+   * process handles, so a surviving wmux holds the install root open until the
+   * lock budget expires and the installer is refused. Meanwhile `isInstalling`
+   * stays latched — it is deliberately never cleared on the success path,
+   * because on the success path there is no process left to clear it in — so
+   * every retry answers "an update install is already in progress" and the UI
+   * keeps offering an "Install now" that can no longer do anything. That
+   * combination is what turned one failed install into a permanently stuck
+   * updater in the field, recoverable only by restarting the app by hand.
+   *
+   * Still being here at the deadline IS the failure signal. Report it, and
+   * unlatch so the next attempt is at least possible. No attempt is made to
+   * put the app back together: unlike the macOS path, by this point
+   * `before-quit` has already stopped the pipe server, destroyed the tray and
+   * disposed the IPC handlers, so "recovery" would hand the user a hollow
+   * window. Say what happened and name the restart instead of pretending.
+   */
+  private armInstallQuitWatchdog(abortMarkerPath: string): void {
+    const timer = setTimeout(() => {
+      // The waiter may already have refused and left a reason; prefer it over
+      // our own guess, since it knows WHICH process would not let go.
+      const reason = readAbortMarker(abortMarkerPath);
+      this.isInstalling = false;
+      console.error(
+        `[AutoUpdater] still running ${INSTALL_QUIT_WATCHDOG_MS}ms after quitting for install — ` +
+        `the installer never started${reason ? ` (${reason})` : ''}`,
+      );
+      this.sendToRenderer(IPC.UPDATE_ERROR, {
+        status: 'error',
+        message: reason
+          ? `The update did not install (${reason}). Your current version is unchanged — restart wmux and try again.`
+          : 'The update did not install: wmux could not shut down to let the installer run. Your current version is unchanged — restart wmux and try again.',
+      });
+    }, INSTALL_QUIT_WATCHDOG_MS);
+    // A healthy quit is long gone before this fires, and an unref'd timer must
+    // never be the reason the process stays up.
+    timer.unref();
   }
 
   /**

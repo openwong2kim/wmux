@@ -1910,10 +1910,50 @@ async function abortInstallQuit(): Promise<void> {
   });
 }
 
+/**
+ * #980 — outer bound on the whole before-quit teardown.
+ *
+ * Generous on purpose: daemon.shutdown alone is budgeted 8 s and the renderer
+ * save adds ~0.5 s, so a healthy quit never comes close. This is not a
+ * performance knob — it is the guarantee that a quit ALWAYS ends in an exit.
+ */
+const QUIT_HARD_DEADLINE_MS = 20_000;
+
+/**
+ * #980 — how long the renderer gets to run its beforeunload save. Short: the
+ * save is a synchronous dispatch, so anything past this is a renderer that is
+ * not going to answer at all.
+ */
+const RENDERER_SAVE_TIMEOUT_MS = 3_000;
+
 app.on('before-quit', async (e) => {
   if (isQuitting) return; // second pass — let quit proceed
   e.preventDefault();
   isQuitting = true;
+
+  // #980 — everything below is a sequence of awaits, and the force-exit
+  // fallback at the BOTTOM is only armed once they have all resolved. Anything
+  // that never settles therefore leaves a process that has preventDefault'ed
+  // its own quit, latched `isQuitting`, and armed no timer: alive indefinitely,
+  // with 'second-instance' and 'activate' both early-returning on that latch.
+  //
+  // Not hypothetical. On the install path the updater force-killed our own
+  // renderer and then quit, so the session-save await below was addressing a
+  // process that no longer existed — and the main process stayed up for a day
+  // holding the install root the installer was waiting to see released. The
+  // renderer kill is fixed at its source (AutoUpdater), but a quit that can
+  // wedge AT ALL is the more expensive defect: it strands the user with a live
+  // process no click can reach, and on the update path it silently blocks every
+  // future release. So the deadline is armed FIRST, before anything can hang.
+  //
+  // Deliberately never cleared: a normal quit exits long before it fires, and
+  // clearing it anywhere would reintroduce a window in which nothing is armed.
+  const quitDeadline = setTimeout(() => {
+    console.error(`[Main] before-quit did not finish within ${QUIT_HARD_DEADLINE_MS}ms — forcing app.exit(0)`);
+    logLine('error', 'main', `before-quit hard deadline (${QUIT_HARD_DEADLINE_MS}ms) fired — forcing exit`);
+    app.exit(0);
+  }, QUIT_HARD_DEADLINE_MS);
+  quitDeadline.unref();
 
   // Broker dies with the app: shims exit and hosts mark the server down,
   // same visible behavior as the old per-agent child dying with wmux.
@@ -1933,15 +1973,26 @@ app.on('before-quit', async (e) => {
     }
   }
 
-  // Attempt session save from renderer
+  // Attempt session save from renderer.
+  //
+  // #980 — bounded. `isCrashed()` only reports a renderer Electron has already
+  // noticed is gone; between an external kill and that notification the guard
+  // passes and this call goes to a process that will never answer. The periodic
+  // save is the fallback the catch below already relies on, so waiting longer
+  // than the save itself needs buys nothing and risks everything.
   if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.webContents.isCrashed()) {
     try {
-      await mainWindow.webContents.executeJavaScript(
-        `try { window.dispatchEvent(new Event('beforeunload')); } catch(e) {}`
-      );
+      await Promise.race([
+        mainWindow.webContents.executeJavaScript(
+          `try { window.dispatchEvent(new Event('beforeunload')); } catch(e) {}`
+        ),
+        new Promise((_, reject) =>
+          setTimeout(() => reject(new Error('renderer session-save timed out')), RENDERER_SAVE_TIMEOUT_MS),
+        ),
+      ]);
       await new Promise(resolve => setTimeout(resolve, 500));
     } catch {
-      // Renderer unavailable — rely on last periodic save
+      // Renderer unavailable, or too slow to answer — rely on last periodic save
     }
   }
 

@@ -13,6 +13,7 @@ import {
   isSafePsPathLiteral,
   freeSpaceShortfall,
   selectInstallRootPids,
+  selectOwnTreePids,
   parseProcessRows,
   buildWaiterScript,
   readDaemonPid,
@@ -134,12 +135,22 @@ describe('selectInstallRootPids', () => {
 });
 
 describe('parseProcessRows', () => {
-  it('parses the array form and the single-object form', () => {
-    expect(parseProcessRows('[{"ProcessId":1,"ExecutablePath":"C:\\\\a.exe"}]')).toEqual([
-      { pid: 1, executablePath: 'C:\\a.exe' },
+  it('parses the array form and the single-object form, carrying parentage', () => {
+    expect(parseProcessRows('[{"ProcessId":1,"ParentProcessId":7,"ExecutablePath":"C:\\\\a.exe"}]')).toEqual([
+      { pid: 1, parentPid: 7, executablePath: 'C:\\a.exe' },
     ]);
-    expect(parseProcessRows('{"ProcessId":2,"ExecutablePath":"C:\\\\b.exe"}')).toEqual([
-      { pid: 2, executablePath: 'C:\\b.exe' },
+    expect(parseProcessRows('{"ProcessId":2,"ParentProcessId":7,"ExecutablePath":"C:\\\\b.exe"}')).toEqual([
+      { pid: 2, parentPid: 7, executablePath: 'C:\\b.exe' },
+    ]);
+    // #980 — an absent or malformed parent reads as 0, which belongs to no
+    // tree. Unreadable parentage can only make a process look FOREIGN, and a
+    // foreign process is the one case it is safe to be wrong about: it gets
+    // force-killed, which is what the old code did to everything anyway.
+    expect(parseProcessRows('[{"ProcessId":3,"ExecutablePath":"C:\\\\c.exe"}]')).toEqual([
+      { pid: 3, parentPid: 0, executablePath: 'C:\\c.exe' },
+    ]);
+    expect(parseProcessRows('[{"ProcessId":4,"ParentProcessId":-1,"ExecutablePath":""}]')).toEqual([
+      { pid: 4, parentPid: 0, executablePath: '' },
     ]);
   });
 
@@ -149,8 +160,8 @@ describe('parseProcessRows', () => {
     expect(parseProcessRows('[{"ProcessId":0},{"ExecutablePath":"x"}]')).toEqual([]);
     // A null ExecutablePath (access denied) still yields a row, with '' — which
     // selectInstallRootPids then filters out rather than treating as a match.
-    expect(parseProcessRows('[{"ProcessId":9,"ExecutablePath":null}]')).toEqual([
-      { pid: 9, executablePath: '' },
+    expect(parseProcessRows('[{"ProcessId":9,"ParentProcessId":1,"ExecutablePath":null}]')).toEqual([
+      { pid: 9, parentPid: 1, executablePath: '' },
     ]);
   });
 });
@@ -309,5 +320,126 @@ describe('buildWaiterScript — the lock probe covers loadable images, not just 
     expect(s).toContain(".node");
     expect(s).toContain(".asar");
     expect(s).not.toContain('-Filter *.exe');
+  });
+});
+
+/**
+ * #980 — who may be force-killed on the install path.
+ *
+ * Every Electron helper is the same wmux.exe under the same install root as the
+ * process running the update, so an executable-path match cannot tell our own
+ * renderer from a stranger's MCP server. Parentage can, and the distinction is
+ * load-bearing: the install path force-killed our own renderer and then quit
+ * into a before-quit handler that awaits a session save in it. The quit never
+ * completed, and the main process held the install root open for a day.
+ */
+describe('selectOwnTreePids (#980)', () => {
+  // 100 = us. 101/102 are our helpers, 103 is a helper's own child, 200 is a
+  // stranger's MCP server that merely runs out of the same directory.
+  const rows = [
+    { pid: 101, parentPid: 100 },
+    { pid: 102, parentPid: 100 },
+    { pid: 103, parentPid: 101 },
+    { pid: 200, parentPid: 999 },
+  ];
+
+  it('claims our children and their children, and nothing else', () => {
+    expect(selectOwnTreePids(rows, 100)).toEqual(new Set([101, 102, 103]));
+  });
+
+  it('never claims ourselves — the caller already excludes us from the wait list', () => {
+    expect(selectOwnTreePids(rows, 100).has(100)).toBe(false);
+  });
+
+  it('leaves a foreign process foreign, which is the one the kill list is FOR', () => {
+    expect(selectOwnTreePids(rows, 100).has(200)).toBe(false);
+  });
+
+  it('treats an unreadable parent (0) as foreign rather than adopting it', () => {
+    // Fails in the safe direction: an unclassifiable process gets force-killed,
+    // which is exactly what the old code did to everything.
+    expect(selectOwnTreePids([{ pid: 5, parentPid: 0 }], 100)).toEqual(new Set());
+    expect(selectOwnTreePids([{ pid: 5, parentPid: 0 }], 0)).toEqual(new Set());
+  });
+
+  it('terminates on a pid-recycle cycle instead of walking forever', () => {
+    // Windows recycles pids, so a stale parent reference can close a loop.
+    const cyclic = [
+      { pid: 101, parentPid: 100 },
+      { pid: 100, parentPid: 101 },
+    ];
+    expect(selectOwnTreePids(cyclic, 100)).toEqual(new Set([101]));
+  });
+
+  it('is empty when nothing descends from us', () => {
+    expect(selectOwnTreePids(rows, 555)).toEqual(new Set());
+  });
+});
+
+describe('buildWaiterScript — the clock has to survive a long uptime (#980)', () => {
+  const plan = {
+    pids: [11, 12],
+    setupExePath: 'C:/Temp/Setup.exe',
+    installRoot: 'C:/Root',
+    abortMarkerPath: 'C:/Data/aborted.txt',
+    lockBudgetMs: 60_000,
+  };
+
+  it('uses a monotonic Stopwatch, never [Environment]::TickCount', () => {
+    const script = buildWaiterScript(plan)!;
+    // TickCount is a signed 32-bit ms counter: it wraps every ~24.9 days and
+    // then runs negative, at which point `TickCount + budget` widens past
+    // Int32.MaxValue, WaitForExit throws on the timeout argument, the catch
+    // swallows it, and the wait silently becomes a no-op — on exactly the
+    // long-uptime machines that most need it.
+    expect(script).not.toContain('TickCount');
+    expect(script).toContain('[System.Diagnostics.Stopwatch]::StartNew()');
+  });
+
+  it('measures both the handle wait and the lock loop against that clock', () => {
+    const script = buildWaiterScript(plan)!;
+    expect(script).toContain('$left = $budget - $clock.ElapsedMilliseconds');
+    expect(script).toContain('$lockClock.ElapsedMilliseconds -lt $budget');
+  });
+
+  it('hands WaitForExit an int, so a widened remainder cannot throw the wait away', () => {
+    expect(buildWaiterScript(plan)!).toContain('$h.WaitForExit([int]$left)');
+  });
+});
+
+describe('buildWaiterScript — one waiter per install root (#980, coderabbit)', () => {
+  const plan = {
+    pids: [11],
+    setupExePath: 'C:/Temp/Setup.exe',
+    installRoot: 'C:/Root',
+    abortMarkerPath: 'C:/Data/aborted.txt',
+    lockBudgetMs: 60_000,
+  };
+  const script = () => buildWaiterScript(plan)!;
+
+  it('takes a named mutex before doing anything else', () => {
+    // The quit watchdog unlatches after 30s while a spawned waiter can still be
+    // inside its budget, so a retry spawns a second waiter for the same root.
+    // The collision is resolved HERE, not by timing arithmetic between the
+    // watchdog and the budgets: the mutex exists only while some process holds
+    // it, so a live incumbent blocks the newcomer and a dead one blocks nobody.
+    const s = script();
+    const mutexAt = s.indexOf('System.Threading.Mutex');
+    expect(mutexAt).toBeGreaterThan(-1);
+    expect(mutexAt).toBeLessThan(s.indexOf('$handles = @()'));
+    expect(mutexAt).toBeLessThan(s.indexOf('Start-Process'));
+  });
+
+  it('yields silently (exit 5) — the incumbent owns the install AND the marker', () => {
+    const s = script();
+    const yieldAt = s.indexOf('exit 5');
+    expect(yieldAt).toBeGreaterThan(-1);
+    // No marker write on this path: a "refused" marker from the loser would
+    // overwrite or pre-empt whatever the incumbent has to report.
+    expect(s.slice(0, yieldAt)).not.toContain('Set-Content');
+  });
+
+  it('scopes the mutex to the install root, so two installations never collide', () => {
+    expect(script()).toContain(`'wmux-install-waiter-' + ($root -replace '[^A-Za-z0-9]', '_')`);
   });
 });

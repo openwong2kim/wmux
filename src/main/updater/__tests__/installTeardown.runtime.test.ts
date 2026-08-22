@@ -10,7 +10,8 @@
 // script, but the test observes an exit code instead of racing a background
 // process against afterEach teardown — an earlier detached version of this file
 // produced inverted, timing-dependent results that said nothing about the code.
-// Exit codes are the contract: 0 = installer launched, 2 = refused.
+// Exit codes are the contract: 0 = installer launched, 2 = refused,
+// 5 = another waiter already owns this install root (#980).
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -234,4 +235,92 @@ describe.skipIf(!onWindows)('probeVolume', () => {
     expect(ratio).toBeGreaterThan(0.9);
     expect(ratio).toBeLessThan(1.1);
   }, 30_000);
+});
+
+describe.skipIf(!onWindows)('concurrent waiters (#980)', () => {
+  let sandbox: string;
+  let root: string;
+  let heldExe: string;
+  let setupStamp: string;
+  let fakeSetup: string;
+  const children: ChildProcess[] = [];
+
+  beforeEach(() => {
+    sandbox = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-waiter2-')));
+    root = path.join(sandbox, 'wmux');
+    fs.mkdirSync(path.join(root, 'app-1.0.0'), { recursive: true });
+    heldExe = path.join(root, 'app-1.0.0', 'held.exe');
+    fs.writeFileSync(heldExe, 'x');
+    setupStamp = path.join(sandbox, 'setup-ran.txt');
+    fakeSetup = path.join(sandbox, 'fake-setup.cmd');
+    fs.writeFileSync(fakeSetup, `@echo off\r\necho ran > "${setupStamp}"\r\n`);
+  });
+
+  afterEach(() => {
+    for (const c of children.splice(0)) { try { c.kill(); } catch { /* already gone */ } }
+    try { fs.rmSync(sandbox, { recursive: true, force: true }); } catch { /* lock lingers */ }
+  });
+
+  it('a second waiter for the same root yields to the incumbent instead of racing it', () => {
+    // The quit watchdog unlatches isInstalling after 30s so a refused quit
+    // stays retryable — but the first waiter can still be inside its own
+    // budget. Without the mutex both reach Start-Process on the same
+    // Setup.exe: two concurrent Squirrel installs against one root, which is
+    // the exact corruption #866 exists to prevent.
+    const holderA = spawn(
+      PS,
+      ['-NoProfile', '-NonInteractive', '-Command',
+        `$s=[System.IO.File]::Open(${q(heldExe)},'Open','Read','None'); Start-Sleep -Seconds 120; $s.Close()`],
+      { windowsHide: true, stdio: 'ignore' },
+    );
+    children.push(holderA);
+
+    const planFor = (marker: string): WaiterPlan => ({
+      pids: [holderA.pid as number],
+      setupExePath: fakeSetup,
+      installRoot: root,
+      abortMarkerPath: marker,
+      lockBudgetMs: 90_000,
+    });
+
+    // Waiter A: async, long budget — parked in WaitForExit holding the mutex.
+    const scriptA = path.join(sandbox, 'waiter-a.ps1');
+    fs.writeFileSync(scriptA, buildWaiterScript(planFor(path.join(sandbox, 'abort-a.txt'))) as string, 'utf-8');
+    const waiterA = spawn(
+      PS,
+      ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', scriptA],
+      { windowsHide: true, stdio: 'ignore' },
+    );
+    children.push(waiterA);
+
+    // Deterministic gate, not a sleep: proceed only once A actually HOLDS the
+    // mutex — otherwise B could win the race and this test would invert.
+    const mtxName = 'wmux-install-waiter-' + root.replace(/[^A-Za-z0-9]/g, '_');
+    const deadline = Date.now() + 15_000;
+    let held = false;
+    while (Date.now() < deadline) {
+      const probe = spawnSync(
+        PS,
+        ['-NoProfile', '-NonInteractive', '-Command',
+          `try { $m=[System.Threading.Mutex]::OpenExisting('${mtxName}'); exit 0 } catch { exit 1 }`],
+        { windowsHide: true, timeout: 10_000 },
+      );
+      if (probe.status === 0) { held = true; break; }
+    }
+    expect(held).toBe(true);
+
+    // Waiter B, same root: must yield IMMEDIATELY (exit 5), touch neither the
+    // installer nor its own marker, and leave reporting to the incumbent.
+    const markerB = path.join(sandbox, 'abort-b.txt');
+    const scriptB = path.join(sandbox, 'waiter-b.ps1');
+    fs.writeFileSync(scriptB, buildWaiterScript(planFor(markerB)) as string, 'utf-8');
+    const resB = spawnSync(
+      PS,
+      ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', scriptB],
+      { encoding: 'utf-8', timeout: 20_000, windowsHide: true },
+    );
+    expect(resB.status).toBe(5);
+    expect(fs.existsSync(markerB)).toBe(false);
+    expect(fs.existsSync(setupStamp)).toBe(false);
+  }, 120_000);
 });
