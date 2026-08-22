@@ -129,16 +129,29 @@ export function sanitizeArtifactFileName(fileName: string): string {
   return fileName.replace(/[^A-Za-z0-9._-]/g, '_');
 }
 
-/** Build the temp file name for a downloaded artifact (sanitizing the manifest's name). */
+/**
+ * Build the temp file name for a downloaded artifact.
+ *
+ * BOTH halves are sanitized. The manifest is fetched over the network, and this
+ * name is join()ed onto the temp dir — a `version` carrying a path separator
+ * would place the "temp file" wherever it liked. The version is attacker-
+ * controlled in exactly the scenario this module exists for.
+ */
 export function artifactTempName(version: string, pid: number, fileName: string): string {
-  return `${TEMP_ARTIFACT_PREFIX}${version}-${pid}-${sanitizeArtifactFileName(fileName)}`;
+  return `${TEMP_ARTIFACT_PREFIX}${sanitizeArtifactFileName(version)}-${pid}-${sanitizeArtifactFileName(fileName)}`;
 }
 
 /** Read `<version>`, `<pid>` and `<file>` back out of a temp artifact name. */
 export function parseArtifactName(name: string): ParsedArtifactName | null {
-  // Non-greedy version so a prerelease ("3.45.0-rc.1") backtracks correctly:
-  // the pid is the first all-digit segment that is followed by the file name.
-  const m = new RegExp(`^${TEMP_ARTIFACT_PREFIX}(.+?)-(\\d+)-(.+)$`).exec(name);
+  // The version is matched as semver, not as "anything", and its optional
+  // prerelease is greedy: `3.46.0-1-12345-wmux.Setup.exe` has to read as
+  // version 3.46.0-1 / pid 12345, not version 3.46.0 / pid 1 with the rest
+  // swallowed into the file name. A name this cannot parse is simply not one
+  // of ours — the caller then downloads instead of adopting, which is the safe
+  // direction.
+  const m = new RegExp(
+    `^${TEMP_ARTIFACT_PREFIX}(\\d+\\.\\d+\\.\\d+(?:[-+][0-9A-Za-z.-]*)?)-(\\d+)-(.+)$`,
+  ).exec(name);
   if (!m) return null;
   return { version: m[1], pid: Number(m[2]), fileName: m[3] };
 }
@@ -147,13 +160,18 @@ export function parseArtifactName(name: string): ParsedArtifactName | null {
  * True when `candidate` is a strictly newer release than `current`, comparing
  * the numeric MAJOR.MINOR.PATCH core only.
  *
- * Anything that does not read as three numbers answers FALSE, which is the
- * conservative side: the caller treats such an artifact as ordinary garbage on
- * the normal sweep schedule instead of keeping it around indefinitely.
+ * A prerelease or build suffix on either side is ignored, so 3.46.0-rc.1 and
+ * 3.46.0 compare equal. Anything that does not read as three numbers answers
+ * FALSE, which is the conservative side: the caller treats such an artifact as
+ * ordinary garbage on the normal sweep schedule instead of keeping it around.
  */
 export function isVersionNewer(candidate: string, current: string): boolean {
   const core = (v: string): number[] | null => {
-    const m = /^(\d+)\.(\d+)\.(\d+)$/.exec(normalizeVersion(v));
+    // A prerelease/build suffix is read past, not rejected. Requiring a bare
+    // X.Y.Z on BOTH sides meant a nightly or rc build of wmux — where
+    // app.getVersion() carries a suffix — answered false for every artifact
+    // and silently switched this whole mechanism off.
+    const m = /^(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$/.exec(normalizeVersion(v));
     return m ? [Number(m[1]), Number(m[2]), Number(m[3])] : null;
   };
   const a = core(candidate);

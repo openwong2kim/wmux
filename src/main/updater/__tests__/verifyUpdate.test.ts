@@ -157,6 +157,24 @@ describe('temp artifact naming', () => {
   it('returns null for anything that is not one of our artifacts', () => {
     expect(parseArtifactName('some-other-temp-file')).toBeNull();
     expect(parseArtifactName('wmux-update-3.45.0.Setup.exe')).toBeNull();
+    // Not a semver core → not ours. Adoption then downloads instead, which is
+    // the safe direction.
+    expect(parseArtifactName('wmux-update-nightly-42-wmux.Setup.exe')).toBeNull();
+  });
+
+  it('keeps a numeric prerelease attached to the version instead of reading it as the pid', () => {
+    const name = artifactTempName('3.46.0-1', 12345, 'wmux-3.46.0-1.Setup.exe');
+    expect(parseArtifactName(name)).toEqual({
+      version: '3.46.0-1',
+      pid: 12345,
+      fileName: 'wmux-3.46.0-1.Setup.exe',
+    });
+  });
+
+  it('sanitizes the version too — it is fetched over the network and joined onto a path', () => {
+    const name = artifactTempName('3.45.0/../../etc', 7, 'wmux.Setup.exe');
+    expect(name).not.toContain('/');
+    expect(name).toBe('wmux-update-3.45.0_.._.._etc-7-wmux.Setup.exe');
   });
 });
 
@@ -170,11 +188,20 @@ describe('isVersionNewer', () => {
     expect(isVersionNewer('v3.45.0', '3.44.0')).toBe(true);
   });
 
+  it('reads past a prerelease or build suffix on either side', () => {
+    // Requiring a bare X.Y.Z on both sides switched the whole mechanism off on
+    // any build whose own version carries a suffix (a nightly, an rc).
+    expect(isVersionNewer('3.45.0-rc.1', '3.44.0')).toBe(true);
+    expect(isVersionNewer('3.45.0', '3.44.0-rc.1')).toBe(true);
+    expect(isVersionNewer('3.44.0-rc.1', '3.44.0')).toBe(false); // same core
+    expect(isVersionNewer('3.45.0+build.7', '3.44.0')).toBe(true);
+  });
+
   it('answers false for anything it cannot read as three numbers', () => {
     // Conservative on purpose: the caller keeps "newer" artifacts around for
     // days, so an unreadable version must fall back to the ordinary sweep.
-    expect(isVersionNewer('3.45.0-rc.1', '3.44.0')).toBe(false);
     expect(isVersionNewer('nightly', '3.44.0')).toBe(false);
     expect(isVersionNewer('3.45', '3.44.0')).toBe(false);
+    expect(isVersionNewer('3.45.0', 'unknown')).toBe(false);
   });
 });

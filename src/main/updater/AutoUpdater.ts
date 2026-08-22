@@ -13,7 +13,7 @@
 
 import { autoUpdater, app, type BrowserWindow, ipcMain, net, shell } from 'electron';
 import { createReadStream, createWriteStream } from 'node:fs';
-import { readdir, stat, unlink } from 'node:fs/promises';
+import { lstat, readdir, stat, unlink } from 'node:fs/promises';
 import { join, dirname, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
 import { IPC } from '../../shared/constants';
@@ -93,10 +93,12 @@ const TEMP_ARTIFACT_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 // It still expires, just far later: if auto-update is off the poll that would
 // consume it never runs, and nothing should sit in temp forever.
 const TEMP_ARTIFACT_PENDING_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
-// An artifact whose bytes fail the hash is either a corrupted leftover (delete)
-// or another instance's download in flight (leave alone). Recent writes mean
-// the second, so only a file that has been quiet this long is removed.
-const TEMP_ARTIFACT_QUIET_MS = 60 * 1000;
+// An artifact whose bytes fail the hash is either a corrupted leftover or
+// another instance's download in flight. Only age tells them apart, and the
+// age that means "nobody is writing this" is the sweep's own floor — a shorter
+// one would delete a slow download out from under the instance that owns it,
+// which on POSIX leaves that instance verifying a file whose path is gone.
+const TEMP_ARTIFACT_MISMATCH_DELETE_AFTER_MS = TEMP_ARTIFACT_MAX_AGE_MS;
 
 // In-app auto-update runs on Windows (Squirrel.Windows `.Setup.exe`) and on
 // Apple Silicon macOS (Squirrel.Mac, signed+notarized ZIP). Everything else —
@@ -179,6 +181,12 @@ export class AutoUpdater {
   private enabled = true;
   private pendingUpdate: UpdateInfo | null = null;
   private downloadedPath: string | null = null;
+  // The digest `downloadedPath` was accepted under. Kept so the bytes can be
+  // re-checked immediately before they are executed: verification happens when
+  // the update is found, the install happens when the user presses Restart —
+  // which can be days later, in a temp dir any process running as this user can
+  // write to. Verifying once and then trusting a path is not verifying.
+  private downloadedSha: string | null = null;
   private isDownloading = false;
   // When a user presses "check for updates" it reads as an "update now" intent:
   // once an update is detected + verified, install it (restart) automatically
@@ -310,10 +318,27 @@ export class AutoUpdater {
     }
     const now = Date.now();
     const current = app.getVersion();
+    // Only the single newest pending version is worth keeping. wmux ships every
+    // few days, so a user who postpones restarting collects one ~150 MB
+    // installer per release — and the older ones can never be installed anyway,
+    // because a check always offers the latest. Without this, replacing the
+    // 24 h floor with a 7-day one removes the only bound on that pile.
+    let newestPending: string | null = null;
     for (const name of names) {
       if (!name.startsWith(TEMP_ARTIFACT_PREFIX)) continue;
       const parsed = parseArtifactName(name);
-      const isPendingInstaller = parsed !== null && isVersionNewer(parsed.version, current);
+      if (!parsed || !isVersionNewer(parsed.version, current)) continue;
+      if (newestPending === null || isVersionNewer(parsed.version, newestPending)) {
+        newestPending = parsed.version;
+      }
+    }
+    for (const name of names) {
+      if (!name.startsWith(TEMP_ARTIFACT_PREFIX)) continue;
+      const parsed = parseArtifactName(name);
+      const isPendingInstaller =
+        parsed !== null &&
+        newestPending !== null &&
+        normalizeVersion(parsed.version) === normalizeVersion(newestPending);
       const maxAge = isPendingInstaller ? TEMP_ARTIFACT_PENDING_MAX_AGE_MS : TEMP_ARTIFACT_MAX_AGE_MS;
       const full = join(tempDir, name);
       try {
@@ -338,9 +363,13 @@ export class AutoUpdater {
    *
    * NEVER trusted on its name: the file sat in a world-writable temp dir across
    * a restart, so the SHA-256 is re-computed and compared to the manifest exactly
-   * as a fresh download's is. A mismatch is dropped (unless it is still being
-   * written — that is another instance's download, not our garbage) and the
-   * caller falls through to a normal download.
+   * as a fresh download's is — and again immediately before the install, because
+   * this check and that install are separated by however long the user takes to
+   * press Restart (see verifyArtifactStillMatches).
+   *
+   * A mismatch is only deleted once it is older than the sweep's own floor:
+   * anything newer may be an in-flight download owned by another instance, and
+   * unlinking that would leave its owner verifying a path that no longer exists.
    */
   private async adoptExistingArtifact(manifest: UpdateManifest): Promise<string | null> {
     const tempDir = app.getPath('temp');
@@ -359,21 +388,59 @@ export class AutoUpdater {
       if (parsed.fileName !== wantFile) continue;
       const full = join(tempDir, name);
       try {
+        // lstat, not stat: a symlink planted under one of these names would
+        // otherwise be hashed through and then handed to the installer as if
+        // it were the verified artifact — and a symlink can be re-pointed
+        // atomically afterwards, without rewriting 150 MB. Only a regular file
+        // is a candidate.
+        const info = await lstat(full);
+        if (!info.isFile()) {
+          console.warn(`[AutoUpdater] ignoring temp entry ${name}: not a regular file`);
+          continue;
+        }
         const actual = await this.hashFile(full);
         if (digestsEqual(actual, manifest.sha256)) {
           console.log(`[AutoUpdater] reusing verified installer already in temp (${name}) — skipping download`);
           return full;
         }
-        const info = await stat(full);
-        if (info.mtimeMs < Date.now() - TEMP_ARTIFACT_QUIET_MS) {
+        if (info.mtimeMs < Date.now() - TEMP_ARTIFACT_MISMATCH_DELETE_AFTER_MS) {
           await unlink(full);
           console.warn(`[AutoUpdater] discarded temp artifact ${name}: sha256 does not match the manifest`);
+        } else {
+          console.warn(`[AutoUpdater] ignoring temp artifact ${name}: sha256 does not match (too recent to delete — may be another instance's download)`);
         }
       } catch {
         /* unreadable or vanished mid-scan — fall through to a fresh download */
       }
     }
     return null;
+  }
+
+  /**
+   * Re-check an artifact against the digest it was accepted under, immediately
+   * before it is executed. Fail-closed in every direction: an unreadable file,
+   * a non-regular one, or a missing recorded digest all answer false.
+   */
+  private async verifyArtifactStillMatches(artifactPath: string): Promise<boolean> {
+    const expected = this.downloadedSha;
+    if (!expected) {
+      console.error('[AutoUpdater] refusing install: no recorded digest for the staged installer');
+      return false;
+    }
+    try {
+      const info = await lstat(artifactPath);
+      if (!info.isFile()) {
+        console.error('[AutoUpdater] refusing install: staged installer is not a regular file');
+        return false;
+      }
+      const actual = await this.hashFile(artifactPath);
+      if (digestsEqual(actual, expected)) return true;
+      console.error('[AutoUpdater] refusing install: staged installer no longer matches its verified digest');
+      return false;
+    } catch (err) {
+      console.error('[AutoUpdater] refusing install: staged installer could not be re-verified:', err);
+      return false;
+    }
   }
 
   /** Stream a file through SHA-256. Streamed, not read: these artifacts are ~150 MB. */
@@ -435,6 +502,7 @@ export class AutoUpdater {
           // artifact from disk too, or every release leaves one behind in temp.
           void unlink(this.downloadedPath).catch(() => { /* best-effort cleanup */ });
           this.downloadedPath = null;
+          this.downloadedSha = null;
         }
         this.sendToRenderer(IPC.UPDATE_AVAILABLE, {
           status: 'available',
@@ -512,6 +580,7 @@ export class AutoUpdater {
         return;
       }
       this.downloadedPath = tempPath;
+      this.downloadedSha = validated.manifest.sha256;
       console.log('[AutoUpdater] Update downloaded + verified (sha256 match) — ready to install');
       this.sendToRenderer(IPC.UPDATE_AVAILABLE, {
         status: 'downloaded',
@@ -533,6 +602,7 @@ export class AutoUpdater {
         await unlink(tempPath).catch(() => { /* best-effort cleanup */ });
       }
       this.downloadedPath = null;
+      this.downloadedSha = null;
       this.sendToRenderer(IPC.UPDATE_ERROR, {
         status: 'error',
         message: `Update could not be downloaded or verified: ${message}`,
@@ -751,6 +821,24 @@ export class AutoUpdater {
       } catch {
         console.warn('[AutoUpdater] Could not trigger session save before update');
       }
+    }
+
+    // Verify the bytes AGAIN, as late as possible, against the digest they were
+    // accepted under. Everything before this happened when the update was
+    // FOUND: minutes ago for a background download, potentially days for an
+    // adopted artifact — and all of it in a directory any process running as
+    // this user can write to. Hashing once and then launching a path is not a
+    // check, it is a window; this closes it for both paths at the cost of one
+    // read of an already-warm file.
+    if (!(await this.verifyArtifactStillMatches(tempPath))) {
+      this.isInstalling = false;
+      this.downloadedPath = null;
+      this.downloadedSha = null;
+      this.sendToRenderer(IPC.UPDATE_ERROR, {
+        status: 'error',
+        message: 'The staged installer no longer matches the release it was verified against, so it was not run. Check for updates again to fetch a fresh copy.',
+      });
+      return;
     }
 
     if (isDarwin) {
