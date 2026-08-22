@@ -443,9 +443,34 @@ export function migrateThemeId(id: string): ThemeId {
 }
 
 /**
+ * Keep only the override slots that exist on XtermThemeColors and carry a
+ * string value — the same rule `extractXtermColors` applies at render time
+ * ("unknown override keys are ignored"), enforced once here at the load
+ * boundary so a hand-edited session.json cannot smuggle junk into the store.
+ * Returns undefined when nothing survives, so callers can omit the key rather
+ * than persist an empty object.
+ */
+function sanitizeXtermOverrides(input: unknown): Partial<XtermThemeColors> | undefined {
+  if (!input || typeof input !== 'object') return undefined;
+  const src = input as Record<string, unknown>;
+  const reference = XTERM_PALETTES['catppuccin-mocha'];
+  const out: Partial<XtermThemeColors> = {};
+  let kept = 0;
+  for (const key of Object.keys(reference) as (keyof XtermThemeColors)[]) {
+    const value = src[key];
+    if (typeof value === 'string' && value) {
+      out[key] = value;
+      kept += 1;
+    }
+  }
+  return kept > 0 ? out : undefined;
+}
+
+/**
  * Migrate a legacy CustomThemeColors (37 fields: 17 UI + 20 xterm) to the new
- * shape (10 UI + xtermPaletteId). Detects the xterm palette by matching the
- * stored xtermBackground. Idempotent on already-migrated shapes.
+ * shape (10 UI + xtermPaletteId + optional per-slot xtermOverrides). Detects
+ * the xterm palette by matching the stored xtermBackground. Idempotent on
+ * already-migrated shapes — including their overrides.
  */
 export function migrateCustomThemeColors(input: unknown): CustomThemeColors {
   if (!input || typeof input !== 'object') return DEFAULT_CUSTOM_THEME;
@@ -469,7 +494,17 @@ export function migrateCustomThemeColors(input: unknown): CustomThemeColors {
       danger: String(obj.danger ?? DEFAULT_CUSTOM_THEME.danger),
       warning: String(obj.warning ?? DEFAULT_CUSTOM_THEME.warning),
     };
-    return { ...ui, xtermPaletteId: obj.xtermPaletteId as XtermPaletteId };
+    // Carry the per-slot overrides through. This branch rebuilds the object
+    // from a fixed whitelist, so anything not named here was silently dropped —
+    // and since loadSession runs this on EVERY load, a user's terminal colour
+    // overrides survived only until the next launch. The doc comment above
+    // already promised idempotence on migrated shapes; this makes it true.
+    const overrides = sanitizeXtermOverrides(obj.xtermOverrides);
+    return {
+      ...ui,
+      xtermPaletteId: obj.xtermPaletteId as XtermPaletteId,
+      ...(overrides ? { xtermOverrides: overrides } : {}),
+    };
   }
 
   // Legacy 37-field shape. Map old keys to new tokens.

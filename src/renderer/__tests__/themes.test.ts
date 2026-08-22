@@ -267,6 +267,52 @@ describe('themes — 10-token system', () => {
       expect(migrated).toEqual(fresh);
     });
 
+    // The test above passed while the bug was live: `builtinToCustom` produces
+    // no `xtermOverrides`, so the one field the migrated branch dropped was
+    // absent from the fixture asserting idempotence. loadSession runs this on
+    // every load, so a user's terminal colour overrides survived until the
+    // next launch and no further.
+    it('is idempotent on an already-migrated shape THAT CARRIES overrides', () => {
+      const withOverrides = {
+        ...builtinToCustom('catppuccin-mocha'),
+        xtermPaletteId: 'tokyo-night' as const,
+        xtermOverrides: { background: '#000000', foreground: '#4AFF00', cursor: '#4AFF00' },
+      };
+      const migrated = migrateCustomThemeColors(withOverrides);
+      expect(migrated).toEqual(withOverrides);
+      // And a second pass must not erode it either.
+      expect(migrateCustomThemeColors(migrated)).toEqual(withOverrides);
+    });
+
+    it('keeps only real palette slots with string values', () => {
+      const migrated = migrateCustomThemeColors({
+        ...builtinToCustom('catppuccin-mocha'),
+        xtermOverrides: {
+          background: '#101010',
+          notAPaletteSlot: '#ffffff',
+          foreground: 42,
+          cursor: '',
+        },
+      });
+      expect(migrated.xtermOverrides).toEqual({ background: '#101010' });
+    });
+
+    it('omits the key entirely when no override survives', () => {
+      const migrated = migrateCustomThemeColors({
+        ...builtinToCustom('catppuccin-mocha'),
+        xtermOverrides: { nope: 'x', alsoNope: 1 },
+      });
+      expect('xtermOverrides' in migrated).toBe(false);
+    });
+
+    it('the legacy shape still produces no overrides (it had no such concept)', () => {
+      const migrated = migrateCustomThemeColors({
+        bgBase: '#1E1E2E', textMain: '#CDD6F4', accentBlue: '#89B4FA',
+        xtermBackground: '#1E1E2E',
+      });
+      expect(migrated.xtermOverrides).toBeUndefined();
+    });
+
     it('falls back to default on null / invalid input', () => {
       const fallback = migrateCustomThemeColors(null);
       expect(fallback.bgBase).toMatch(/^#[0-9A-Fa-f]{6}$/);
