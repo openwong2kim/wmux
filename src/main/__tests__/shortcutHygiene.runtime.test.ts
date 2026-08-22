@@ -10,7 +10,12 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { repairInstalledShortcuts, stageRootIcon, type RepairLocations } from '../shortcutHygiene';
+import {
+  runShortcutRepairPass,
+  stageRootIcon,
+  type RepairLocations,
+  type ShortcutRepairAction,
+} from '../shortcutHygiene';
 
 const onWindows = process.platform === 'win32';
 
@@ -45,6 +50,11 @@ function makeLnk(lnkPath: string, target: string): void {
     `$l.TargetPath = ${q(target)}`,
     `$l.Save()`,
   ].join('\n'));
+  // Save() is synchronous, but this suite's whole job is to catch the cases
+  // where the shell layer disagrees with the filesystem. If the link is not
+  // there, say THAT rather than letting the pass report "nothing to repair"
+  // three lines later (#962).
+  if (!fs.existsSync(lnkPath)) throw new Error(`.lnk was not written: ${lnkPath}`);
 }
 
 function readLnk(lnkPath: string): { target: string; icon: string; workdir: string } {
@@ -94,6 +104,21 @@ describe.skipIf(!onWindows)('shortcutHygiene end-to-end (real .lnk, real PowerSh
     fs.rmSync(sandbox, { recursive: true, force: true });
   });
 
+  /**
+   * Run the pass and surface WHY it produced nothing.
+   *
+   * `repairInstalledShortcuts` returns `[]` both when nothing needed repair
+   * and when the pass could not run at all, and a CI flake landed on the
+   * second (#962): the failure read as `expected [] to deeply equal [...]`
+   * with nothing to go on. Every assertion below goes through here, so a
+   * refused COM object or a powershell that died says so instead.
+   */
+  const repair = (exec = execPath, at = loc): ShortcutRepairAction[] => {
+    const { actions, failure } = runShortcutRepairPass(exec, at);
+    if (failure) throw new Error(`shortcut repair pass did not run: ${failure}`);
+    return actions;
+  };
+
   it('retargets a dead versioned pin to the stub and pins its icon to app.ico', () => {
     const pin = path.join(pinDir, 'wmux-pin.lnk');
     makeLnk(pin, path.join(root, 'app-0.9.0', 'wmux.exe')); // dir never existed → dead
@@ -101,7 +126,7 @@ describe.skipIf(!onWindows)('shortcutHygiene end-to-end (real .lnk, real PowerSh
     expect(iconPath).toBe(path.join(root, 'app.ico'));
     expect(fs.existsSync(iconPath ?? '')).toBe(true);
 
-    const actions = repairInstalledShortcuts(execPath, loc);
+    const actions = repair();
     expect(actions).toEqual([{ path: pin, action: 'retargeted' }]);
 
     const after = readLnk(pin);
@@ -113,7 +138,7 @@ describe.skipIf(!onWindows)('shortcutHygiene end-to-end (real .lnk, real PowerSh
   it('retargets a live-but-versioned pin (it would die on the next update)', () => {
     const pin = path.join(pinDir, 'wmux-pin.lnk');
     makeLnk(pin, execPath); // app-1.0.0 exists today
-    const actions = repairInstalledShortcuts(execPath, loc);
+    const actions = repair();
     expect(actions).toEqual([{ path: pin, action: 'retargeted' }]);
     expect(readLnk(pin).target.toLowerCase()).toBe(path.join(root, 'wmux.exe').toLowerCase());
   });
@@ -123,7 +148,7 @@ describe.skipIf(!onWindows)('shortcutHygiene end-to-end (real .lnk, real PowerSh
     makeLnk(legacy, path.join(root, 'app-0.5.0', 'wmux.exe'));
     makeLnk(path.join(programs, 'someauthor', 'wmux.lnk'), path.join(root, 'wmux.exe'));
 
-    const actions = repairInstalledShortcuts(execPath, loc);
+    const actions = repair();
     expect(actions).toEqual([{ path: legacy, action: 'removed' }]);
     expect(fs.existsSync(legacy)).toBe(false);
   });
@@ -132,7 +157,7 @@ describe.skipIf(!onWindows)('shortcutHygiene end-to-end (real .lnk, real PowerSh
     const legacy = loc.legacyLnks[0];
     makeLnk(legacy, path.join(root, 'app-0.5.0', 'wmux.exe'));
 
-    const actions = repairInstalledShortcuts(execPath, loc);
+    const actions = repair();
     expect(actions).toEqual([{ path: legacy, action: 'retargeted' }]);
     expect(fs.existsSync(legacy)).toBe(true);
     expect(readLnk(legacy).target.toLowerCase()).toBe(path.join(root, 'wmux.exe').toLowerCase());
@@ -147,7 +172,7 @@ describe.skipIf(!onWindows)('shortcutHygiene end-to-end (real .lnk, real PowerSh
     fs.writeFileSync(foreignTarget, 'x');
     makeLnk(foreign, foreignTarget);
 
-    const actions = repairInstalledShortcuts(execPath, loc);
+    const actions = repair();
     expect(actions).toEqual([]);
     expect(readLnk(foreign).target.toLowerCase()).toBe(foreignTarget.toLowerCase());
   });
@@ -160,7 +185,7 @@ describe.skipIf(!onWindows)('shortcutHygiene end-to-end (real .lnk, real PowerSh
     makeLnk(pin, path.join(root, 'app-0.9.0', 'wmux.exe'));
     expect(fs.existsSync(path.join(root, 'app.ico'))).toBe(false); // not staged
 
-    const actions = repairInstalledShortcuts(execPath, loc);
+    const actions = repair();
     expect(actions).toEqual([{ path: pin, action: 'retargeted' }]);
 
     const after = readLnk(pin);
@@ -178,7 +203,7 @@ describe.skipIf(!onWindows)('shortcutHygiene end-to-end (real .lnk, real PowerSh
     fs.chmodSync(pin, 0o444);
     ps(`Set-ItemProperty -LiteralPath ${q(pin)} -Name IsReadOnly -Value $true`);
     try {
-      expect(repairInstalledShortcuts(execPath, loc)).toEqual([]);
+      expect(repair()).toEqual([]);
       expect(readLnk(pin).target.toLowerCase()).toBe(deadTarget.toLowerCase());
     } finally {
       ps(`Set-ItemProperty -LiteralPath ${q(pin)} -Name IsReadOnly -Value $false`);
@@ -213,7 +238,7 @@ describe.skipIf(!onWindows)('shortcutHygiene end-to-end (real .lnk, real PowerSh
       makeLnk(pin, path.join(oddRoot, 'app-0.9.0', 'wmux.exe'));
       expect(stageRootIcon(oddExec)).toBe(path.join(oddRoot, 'app.ico'));
 
-      expect(repairInstalledShortcuts(oddExec, oddLoc)).toEqual([
+      expect(repair(oddExec, oddLoc)).toEqual([
         { path: pin, action: 'retargeted' },
       ]);
       const after = readLnk(pin);
@@ -228,7 +253,7 @@ describe.skipIf(!onWindows)('shortcutHygiene end-to-end (real .lnk, real PowerSh
     fs.rmSync(path.join(root, 'wmux.exe'));
     const pin = path.join(pinDir, 'wmux-pin.lnk');
     makeLnk(pin, path.join(root, 'app-0.9.0', 'wmux.exe'));
-    expect(repairInstalledShortcuts(execPath, loc)).toEqual([]);
+    expect(repair()).toEqual([]);
     expect(readLnk(pin).target.toLowerCase()).toContain('app-0.9.0');
   });
 
@@ -270,7 +295,7 @@ describe.skipIf(!onWindows)('shortcutHygiene end-to-end (real .lnk, real PowerSh
       `[H.Api]::SetAumid(${q(pin)}, 'com.squirrel.wmux.wmux')`,
     ].join('\n'));
 
-    const actions = repairInstalledShortcuts(execPath, loc);
+    const actions = repair();
     expect(actions).toEqual([{ path: pin, action: 'retargeted' }]);
 
     const aumid = ps([

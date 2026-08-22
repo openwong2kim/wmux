@@ -9,6 +9,7 @@ import {
   buildRepairScript,
   parseRepairOutput,
   defaultRepairLocations,
+  runShortcutRepairPass,
 } from '../shortcutHygiene';
 
 const LOC = {
@@ -115,5 +116,39 @@ describe('defaultRepairLocations', () => {
       path.join(pinned, 'StartMenu'),
     ]);
     expect(loc.publisherLnk).toBe(path.join(programs, '*', 'wmux.lnk'));
+  });
+});
+
+// #962 — an empty action list used to mean two different things: nothing
+// needed repair, and the pass never ran. A CI flake landed on the second and
+// left `expected [] to deeply equal [...]` as the entire evidence.
+describe('repair pass diagnostics', () => {
+  it('makes the script exit non-zero, with a marker, when the COM object is refused', () => {
+    const s = buildRepairScript('C:\\Users\\u\\AppData\\Local\\wmux', LOC) ?? '';
+    // Without this the SilentlyContinue preference turns every read through a
+    // null $sh into a skipped candidate, and the script prints a clean `[]`.
+    expect(s).toContain('if (-not $sh)');
+    expect(s).toContain('exit 3');
+    // The marker, not the exit code, is what the retry is allowed to key on —
+    // a runtime abort also exits 3. It goes to stdout via Write-Output because
+    // ConstrainedLanguage (a likely reason COM was refused in the first place)
+    // blocks [Console]::Error.WriteLine.
+    expect(s).toContain("Write-Output 'WMUX_COM_UNAVAILABLE'");
+    expect(s).not.toContain('[Console]::Error');
+  });
+
+  it('fails the pass when candidate links existed and none could be opened', () => {
+    const s = buildRepairScript('C:\\Users\\u\\AppData\\Local\\wmux', LOC) ?? '';
+    // The COM guard only covers CreateShortcut being unavailable at all. A
+    // per-link failure (locked/corrupt .lnk, WSH policy, a COM server that
+    // died mid-loop) leaves $l null, and skipping every candidate would emit
+    // the same misleading `[]`.
+    expect(s).toContain('if (-not $l) { $unopened++; continue }');
+    expect(s).toContain("if ($opened -eq 0 -and $unopened -gt 0) { Write-Output 'WMUX_NO_LINKS_READABLE'; exit 4 }");
+  });
+
+  it('reports no failure off win32 — there is nothing to repair, not a broken pass', () => {
+    if (process.platform === 'win32') return;
+    expect(runShortcutRepairPass('/tmp/app-1.0.0/wmux')).toEqual({ actions: [], failure: null });
   });
 });

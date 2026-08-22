@@ -188,6 +188,15 @@ if (process.platform === 'win32') {
     // mid-update on the version being superseded, where the NEWER version's
     // install/updated hook owns the takeover. Best-effort — a kill failure
     // must never block the install itself.
+    // The hook branches below are the ONLY production callers of the shortcut
+    // hygiene pass, and they run in a packaged Windows process with no parent
+    // console: without the sink, every console.warn they emit — including the
+    // one that now says WHY a repair pass could not run (#962) — goes nowhere
+    // at all. initLogSink is idempotent and resolves its path lazily, so
+    // calling it here just makes install-time output land in
+    // %APPDATA%\wmux\logs alongside everything else.
+    try { initLogSink(); } catch { /* best-effort — never block an install */ }
+
     if (squirrelCmd !== '--squirrel-obsolete') {
       try {
         const killed = terminateRunningAppInstances();
