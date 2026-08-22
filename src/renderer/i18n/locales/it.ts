@@ -15,6 +15,8 @@ export const it = {
   'workspace.agentComplete': 'Agente completato',
   'workspace.agentError': 'Errore agente',
   'workspace.agentWaiting': 'Agente in attesa',
+
+  'workspace.agentAwaitingInput': 'Agente richiede input',
   'workspace.agentIdle': 'Agente inattivo',
   'workspace.close': 'Chiudi area di lavoro',
   'workspace.copyInfo': 'Copia info sessione',

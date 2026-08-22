@@ -15,6 +15,8 @@ export const da = {
   'workspace.agentComplete': 'Agent fuldført',
   'workspace.agentError': 'Agentfejl',
   'workspace.agentWaiting': 'Agent venter',
+
+  'workspace.agentAwaitingInput': 'Agent afventer input',
   'workspace.agentIdle': 'Agent inaktiv',
   'workspace.close': 'Luk arbejdsområde',
   'workspace.copyInfo': 'Kopier sessionsoplysninger',

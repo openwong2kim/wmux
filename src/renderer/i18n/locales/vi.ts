@@ -15,6 +15,8 @@ export const vi = {
   'workspace.agentComplete': 'Tác nhân hoàn tất',
   'workspace.agentError': 'Lỗi tác nhân',
   'workspace.agentWaiting': 'Tác nhân đang chờ',
+
+  'workspace.agentAwaitingInput': 'Tác nhân cần phản hồi',
   'workspace.agentIdle': 'Tác nhân nhàn rỗi',
   'workspace.close': 'Đóng không gian làm việc',
   'workspace.copyInfo': 'Sao chép thông tin phiên',

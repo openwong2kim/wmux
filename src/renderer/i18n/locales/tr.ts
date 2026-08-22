@@ -15,6 +15,8 @@ export const tr = {
   'workspace.agentComplete': 'Aracı tamamlandı',
   'workspace.agentError': 'Aracı hatası',
   'workspace.agentWaiting': 'Aracı bekliyor',
+
+  'workspace.agentAwaitingInput': 'Aracı girdi bekliyor',
   'workspace.agentIdle': 'Aracı boşta',
   'workspace.close': 'Çalışma alanını kapat',
   'workspace.copyInfo': 'Oturum bilgilerini kopyala',

@@ -15,6 +15,8 @@ export const ru = {
   'workspace.agentComplete': 'Агент завершён',
   'workspace.agentError': 'Ошибка агента',
   'workspace.agentWaiting': 'Агент ожидает',
+
+  'workspace.agentAwaitingInput': 'Агент ждёт ввода',
   'workspace.agentIdle': 'Агент простаивает',
   'workspace.close': 'Закрыть рабочее пространство',
   'workspace.copyInfo': 'Копировать данные сессии',

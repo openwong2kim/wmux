@@ -15,6 +15,8 @@ export const zhTW = {
   'workspace.agentComplete': '代理已完成',
   'workspace.agentError': '代理發生錯誤',
   'workspace.agentWaiting': '代理等待中',
+
+  'workspace.agentAwaitingInput': '代理等待輸入',
   'workspace.agentIdle': '代理閒置',
   'workspace.close': '關閉工作區',
   'workspace.copyInfo': '複製工作階段資訊',
