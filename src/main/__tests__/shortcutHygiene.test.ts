@@ -9,6 +9,7 @@ import {
   buildRepairScript,
   parseRepairOutput,
   defaultRepairLocations,
+  runShortcutRepairPass,
 } from '../shortcutHygiene';
 
 const LOC = {
@@ -115,5 +116,23 @@ describe('defaultRepairLocations', () => {
       path.join(pinned, 'StartMenu'),
     ]);
     expect(loc.publisherLnk).toBe(path.join(programs, '*', 'wmux.lnk'));
+  });
+});
+
+// #962 — an empty action list used to mean two different things: nothing
+// needed repair, and the pass never ran. A CI flake landed on the second and
+// left `expected [] to deeply equal [...]` as the entire evidence.
+describe('repair pass diagnostics', () => {
+  it('makes the script exit non-zero when the COM object is refused', () => {
+    const s = buildRepairScript('C:\\Users\\u\\AppData\\Local\\wmux', LOC) ?? '';
+    // Without this the SilentlyContinue preference turns every read through a
+    // null $sh into a skipped candidate, and the script prints a clean `[]`.
+    expect(s).toContain('if (-not $sh)');
+    expect(s).toContain('exit 3');
+  });
+
+  it('reports no failure off win32 — there is nothing to repair, not a broken pass', () => {
+    if (process.platform === 'win32') return;
+    expect(runShortcutRepairPass('/tmp/app-1.0.0/wmux')).toEqual({ actions: [], failure: null });
   });
 });

@@ -68,6 +68,22 @@ export interface ShortcutRepairAction {
   action: 'retargeted' | 'removed';
 }
 
+/** Exit code the script uses for "the COM object could not be created" (#962). */
+const COM_UNAVAILABLE_EXIT = 3;
+
+/**
+ * Outcome of one repair pass.
+ *
+ * `failure` separates the two states an empty `actions` used to conflate:
+ * nothing needed repair (failure `null`) and the pass could not run at all.
+ * Callers still cannot be made to care — repairInstalledShortcuts drops it —
+ * but the log line and the runtime test can now say which one happened.
+ */
+export interface RepairPassResult {
+  actions: ShortcutRepairAction[];
+  failure: string | null;
+}
+
 /** Locations the repair pass reads. Overridable so tests use temp dirs. */
 export interface RepairLocations {
   /** Explicit .lnk paths to examine (the legacy top-level link). */
@@ -145,6 +161,12 @@ export function buildRepairScript(rootDir: string, loc: RepairLocations): string
     `foreach ($d in @(${pinArray})) { if (Test-Path $d) { $cands += @(Get-ChildItem -LiteralPath $d -Filter *.lnk | ForEach-Object { $_.FullName }) } }`,
     `$pubExists = @(Get-Item ${psQuote(loc.publisherLnk)}).Count -gt 0`,
     `$sh = New-Object -ComObject WScript.Shell`,
+    // A refused COM class factory (a loaded machine, an antivirus holding the
+    // registration) leaves $sh null, and with SilentlyContinue every read
+    // through it then fails quietly: the pass emits `[]` and reads exactly like
+    // "nothing needed repair". Fail loudly instead — a broken icon that never
+    // got fixed and a pass that never ran must not look the same (#962).
+    `if (-not $sh) { [Console]::Error.WriteLine('WScript.Shell COM object unavailable'); exit ${COM_UNAVAILABLE_EXIT} }`,
     `$out = @()`,
     `foreach ($p in $cands) {`,
     `  if (-not (Test-Path -LiteralPath $p)) { continue }`,
@@ -216,6 +238,69 @@ export function stageRootIcon(execPath: string): string | null {
   }
 }
 
+/** One powershell run: the script's stdout, or why it did not produce any. */
+function runRepairScript(script: string): { stdout: string } | { failure: string; comUnavailable: boolean } {
+  const systemRoot = process.env.SystemRoot || 'C:\\Windows';
+  const powershell = path.join(
+    systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe',
+  );
+  try {
+    const stdout = execFileSync(powershell, ['-NoProfile', '-NonInteractive', '-Command', script], {
+      encoding: 'utf-8',
+      timeout: 15_000,
+      windowsHide: true,
+    });
+    return { stdout };
+  } catch (err) {
+    const e = err as { status?: number; stderr?: string | Buffer; message?: string };
+    const stderr = e.stderr ? String(e.stderr).trim() : '';
+    const status = typeof e.status === 'number' ? e.status : null;
+    return {
+      failure: `powershell exited ${status ?? 'abnormally'}${stderr ? `: ${stderr}` : `: ${e.message ?? 'unknown error'}`}`,
+      comUnavailable: status === COM_UNAVAILABLE_EXIT,
+    };
+  }
+}
+
+/**
+ * Run the repair pass and report whether it actually ran. win32-only,
+ * best-effort, never throws — a hygiene failure must never block the install.
+ *
+ * Retries once when the COM object was refused: that failure is transient (a
+ * class-factory request lost to load or to an antivirus), and a second
+ * powershell start is its own backoff. Anything else is reported as-is; a
+ * retry would just double the cost of a real problem.
+ */
+export function runShortcutRepairPass(
+  execPath: string,
+  locations?: RepairLocations,
+): RepairPassResult {
+  if (process.platform !== 'win32') return { actions: [], failure: null };
+  try {
+    const appData = process.env.APPDATA;
+    const loc = locations ?? (appData ? defaultRepairLocations(appData) : null);
+    if (!loc) return { actions: [], failure: 'no repair locations (APPDATA unset)' };
+    const script = buildRepairScript(rootFromExecPath(execPath), loc);
+    if (!script) return { actions: [], failure: 'a path could not be embedded in the script safely' };
+
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const run = runRepairScript(script);
+      if ('stdout' in run) return { actions: parseRepairOutput(run.stdout), failure: null };
+      if (run.comUnavailable && attempt === 0) {
+        console.warn('[shortcutHygiene] COM refused the repair pass — retrying once');
+        continue;
+      }
+      console.warn(`[shortcutHygiene] shortcut repair pass did not run: ${run.failure}`);
+      return { actions: [], failure: run.failure };
+    }
+    return { actions: [], failure: 'the repair pass exhausted its retries' };
+  } catch (err) {
+    const failure = err instanceof Error ? err.message : String(err);
+    console.warn(`[shortcutHygiene] shortcut repair pass did not run: ${failure}`);
+    return { actions: [], failure };
+  }
+}
+
 /**
  * Run the repair pass. win32-only, best-effort, never throws — a hygiene
  * failure must never block the install itself.
@@ -224,24 +309,5 @@ export function repairInstalledShortcuts(
   execPath: string,
   locations?: RepairLocations,
 ): ShortcutRepairAction[] {
-  if (process.platform !== 'win32') return [];
-  try {
-    const appData = process.env.APPDATA;
-    const loc = locations ?? (appData ? defaultRepairLocations(appData) : null);
-    if (!loc) return [];
-    const script = buildRepairScript(rootFromExecPath(execPath), loc);
-    if (!script) return [];
-    const systemRoot = process.env.SystemRoot || 'C:\\Windows';
-    const powershell = path.join(
-      systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe',
-    );
-    const stdout = execFileSync(powershell, ['-NoProfile', '-NonInteractive', '-Command', script], {
-      encoding: 'utf-8',
-      timeout: 15_000,
-      windowsHide: true,
-    });
-    return parseRepairOutput(stdout);
-  } catch {
-    return [];
-  }
+  return runShortcutRepairPass(execPath, locations).actions;
 }
