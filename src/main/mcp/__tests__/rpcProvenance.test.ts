@@ -1,48 +1,18 @@
-import * as fs from 'fs';
-import * as path from 'path';
-import * as ts from 'typescript';
+// Two other tests hold the externalWire boundary, and they hold different
+// halves of it (#958):
+//   • WHICH production files may write the marker at all —
+//     src/main/pipe/__tests__/RpcDispatchProvenance.sourceInvariant.test.ts,
+//     which pins the file set (PipeServer + RpcRouter) over every property
+//     assignment and shorthand, whatever the initializer.
+//   • THAT RpcRouter's write stays conditional — RpcRouter.dispatchProvenance
+//     .test.ts ('does not inherit external-wire provenance into an unmarked
+//     nested dispatch'), which is the test that fails if that ternary is ever
+//     widened to a bare `true`. The source invariant would not: the file set
+//     is unchanged by that edit.
+// This file stays a unit test of the predicate itself.
+
 import { describe, expect, it } from 'vitest';
 import { isLocalExternalWireContext } from '../rpcProvenance';
-
-const MAIN_DIR = path.resolve(__dirname, '..', '..');
-
-function collectProductionTsFiles(dir: string): string[] {
-  const out: string[] = [];
-  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-    const full = path.join(dir, entry.name);
-    if (entry.isDirectory()) {
-      if (entry.name === '__tests__') continue;
-      out.push(...collectProductionTsFiles(full));
-    } else if (entry.name.endsWith('.ts') && !entry.name.endsWith('.test.ts')) {
-      out.push(full);
-    }
-  }
-  return out;
-}
-
-function writesExternalWireTrue(file: string): boolean {
-  const source = ts.createSourceFile(
-    file,
-    fs.readFileSync(file, 'utf8'),
-    ts.ScriptTarget.Latest,
-    true,
-  );
-  let found = false;
-  const visit = (node: ts.Node): void => {
-    if (
-      ts.isPropertyAssignment(node) &&
-      (ts.isIdentifier(node.name) || ts.isStringLiteral(node.name)) &&
-      node.name.text === 'externalWire' &&
-      node.initializer.kind === ts.SyntaxKind.TrueKeyword
-    ) {
-      found = true;
-      return;
-    }
-    ts.forEachChild(node, visit);
-  };
-  visit(source);
-  return found;
-}
 
 describe('local external-wire provenance', () => {
   it('requires the positive PipeServer marker and excludes other sources', () => {
@@ -67,14 +37,5 @@ describe('local external-wire provenance', () => {
         operator: true,
       }),
     ).toBe(false);
-  });
-
-  it('keeps PipeServer as the only production writer of externalWire authority', () => {
-    const writers = collectProductionTsFiles(MAIN_DIR)
-      .filter(writesExternalWireTrue)
-      .map((file) => path.relative(MAIN_DIR, file).replaceAll('\\', '/'))
-      .sort();
-
-    expect(writers).toEqual(['pipe/PipeServer.ts']);
   });
 });
