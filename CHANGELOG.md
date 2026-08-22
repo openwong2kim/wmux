@@ -1,3 +1,147 @@
+## [3.46.0] — 2026-08-22
+
+### Added
+
+- **`wmux setup-hooks --signals-only` installs the lifecycle signals without
+  the per-tool-call permission gate.** The remote-approval gate is a wide
+  `PreToolUse` hook, so Claude Code spawns the bridge on every single tool call
+  — ~120 ms on Windows 11, of which ~85 ms is bare `node` startup. That cost
+  cannot be optimised away once the hook is registered, and `gatedTools: []`
+  does not help: a policy of "gate nothing" still spawns the process that asks.
+  It buys nothing for a terminal-only operator either, because both things the
+  wide hook does need a web surface — approvals arm only under
+  `wmux web --allow-input`, and the tool-name liveness it feeds is fanned out
+  only to web clients. `--signals-only` installs the turn-boundary signals and
+  the approval-card pair and stops there; `--with-gate` puts the gate back. The
+  profile is derived from `settings.json` rather than stored beside it, so a
+  bare `wmux setup-hooks` — the app-update refresh and the in-app install
+  button included — keeps whatever is already installed instead of quietly
+  re-adding the gate.
+
+- **`wmux web --allow-input` now says when the permission-gate hook is
+  missing.** Enabling input is what arms the gate, so it is the only place that
+  can catch a signals-only install: without the hook no tool call ever raises
+  an approval, and nothing else reports it — the phone simply never rings.
+  `wmux setup-hooks --status` also stops calling an absent gate a defect when
+  the signals-only profile is the reason it is absent.
+
+- **A `Matrix` terminal palette** — phosphor green on green-tinted black, in
+  Settings → Terminal Palette. Green carries the identity (foreground, cursor,
+  the green slot and a green-cast white), but red and yellow keep their warmth
+  so a failing test, a removed diff line and a warning still read as
+  themselves, and blue/cyan/magenta are separated on the hue wheel rather than
+  collapsed into green, so `ls` can still tell a directory from an executable.
+
+### Changed
+
+- **The agent roster spends its width on the name, not on repetition.** In a
+  workspace where every session runs the same agent, the vendor name is no
+  longer printed on each row — it returns as soon as a workspace mixes vendors,
+  which is when it answers something. Polish status labels lost their "Agent "
+  prefix (the row already names the agent) and gained the missing
+  awaiting-input label, which had been falling back to English.
+
+### Fixed
+
+- **A pane reports that it is working when the agent starts a turn by itself.**
+  A background task finishes, the agent picks up and works for a minute — and
+  the pane kept wearing the previous turn's `complete` for the whole thing,
+  because the only two things that could start a turn were you pressing Enter
+  and a hook that a plugin-less install does not wire. Byte activity now counts
+  while a pane is settled, held back by a cool-down after the turn end, by your
+  own keystrokes still echoing, and by a resize still repainting. A pane waiting
+  on an approval is left alone: only answering it retires a question.
+
+- **A pane's own overlays can no longer paint over app chrome.** The pane box
+  did not contain its layering, so anything inside one — a decoration badge, a
+  terminal find bar — could land on top of a dialog or an overlay elsewhere in
+  the app. Panes now stack independently, and the terminal's right-click menu
+  opens above everything instead of being clipped or misplaced by the pane
+  around it.
+
+- **"Don't ask again" now sticks on the Claude Code hook-install prompt.**
+  Dismissing the modal only ever hid it for that process, so anyone who had
+  decided against installing hooks was asked again on every launch and on every
+  raise of agent mode. The prompt now carries a durable refusal that survives
+  restart and upgrade and silences both of those moments. "Later" is unchanged —
+  it hides that showing, and raising agent mode still warns you that lifecycle
+  signals are degraded. Turn prompting back on from Settings → integration
+  setup. (#968)
+
+- **The in-app update installs again.** Clicking "Install now" downloaded and
+  verified the release, restarted wmux, and came back on the old version — with
+  Settings still offering an install that then did nothing at all until the app
+  was restarted by hand. The installer is launched by a detached waiter that
+  refuses to run until every process under the install root is gone, and wmux
+  was holding that root open itself: the handoff force-killed every `wmux.exe`
+  under the root except the daemon, and on Windows our own renderer, GPU and
+  utility processes are that same `wmux.exe`. The very next step quits, and the
+  quit handler waits for a session save in the renderer that was just killed, so
+  the quit never finished. The main process stayed alive for a full day across
+  two attempts, holding the tree the waiter was waiting to see released.
+  The force-kill now takes only what nothing else ends — the MCP servers, which
+  run out of the install root but belong to agent hosts. Our own processes exit
+  with the app, and the waiter still waits for all of them, so the installer
+  still cannot start against a live tree.
+
+- **A quit can no longer wedge the app.** The teardown's force-exit fallback was
+  armed only after every teardown step had finished, so a step that never
+  settled left a process that had cancelled its own quit, latched the quit flag,
+  and armed no timer — alive, window-less, and ignoring taskbar clicks and
+  relaunches, recoverable only by killing it. The deadline is now armed before
+  anything can hang, and the renderer's session save is bounded rather than
+  waited on indefinitely.
+
+- **A refused install says so instead of going quiet.** If wmux is still running
+  well after it asked to quit for an install, it now reports what happened —
+  including the waiter's own reason when it left one — and clears the
+  in-progress latch, so the next attempt is not answered with "an update install
+  is already in progress" forever. And a retry cannot race the first attempt's
+  waiter into launching the installer twice: only one waiter per install root
+  ever runs — a newcomer finds a live incumbent and yields to it.
+
+- **The install waiter no longer goes blind after 24 days of uptime.** Its
+  budget was measured with a 32-bit millisecond counter that wraps and turns
+  negative, at which point the remaining time overflowed, the wait threw, the
+  error was swallowed, and the whole guard silently became a no-op. It is
+  measured with a monotonic clock now.
+
+- **Terminal colour overrides survive a restart.** Customising individual ANSI
+  colours on top of a palette preset (Settings → Terminal Palette → Customize
+  terminal colors) worked for the rest of the session and was then lost at the
+  next launch: the custom-theme migration that runs on every session load
+  rebuilt the theme from a fixed field list that did not include the overrides,
+  while documenting itself as idempotent. The preset id survived, so only users
+  who tuned individual colours were affected.
+
+- **"Needs input" is translated again.** The status that means an agent is
+  blocked waiting for you was missing from every locale but English, Korean and
+  Chinese, so in the other nineteen it rendered in English inside an otherwise
+  translated sidebar — the one status a user has to act on being the one that
+  looked out of place.
+
+- **An update you already downloaded is no longer downloaded again.** The
+  verified installer's path lived only in memory, so a restart — or an install
+  that aborted — forgot about the ~150 MB Setup.exe sitting in temp, and the
+  cleanup sweep deleted it a day later. wmux now recognizes an installer it
+  already has, re-checks its SHA-256 against the current manifest before
+  trusting it, and keeps the installer for the version you have not taken yet.
+
+- **An installer is checked again in the moment it is run.** Verification used
+  to happen when an update was found, and the install could be days later —
+  long enough for the file in the shared temp directory to become a different
+  file. wmux now re-checks the bytes against the release digest immediately
+  before handing them to the installer, and refuses to run them if they do not
+  match.
+
+- **A shortcut repair that could not run no longer reports success.** If
+  Windows refused the COM object the icon-repair pass used, the pass quietly
+  reported "nothing needed fixing" — so a taskbar icon that stayed blank after
+  an update left no trace of why. The pass now says it failed — whether COM
+  was refused outright or not one shortcut could be opened — retries a refused
+  COM object once inside the same time budget, and writes what Windows
+  returned to the install log.
+
 ## [3.45.0] — 2026-08-21
 
 ### Added
