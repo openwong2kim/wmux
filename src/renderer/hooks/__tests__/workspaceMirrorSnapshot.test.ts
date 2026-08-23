@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   findActivePtyId,
-  collectAllPtyIds,
+  collectOwnedPtyIds,
   buildWorkspaceListEntries,
   buildFleetSnapshots,
   buildWorkspaceMirrorPayload,
@@ -64,14 +64,30 @@ function state(): FleetSelectorState {
   };
 }
 
-describe('findActivePtyId / collectAllPtyIds', () => {
+describe('findActivePtyId / collectOwnedPtyIds', () => {
   it('resolves the active pane + active surface pty', () => {
     expect(findActivePtyId(w1.rootPane, w1.activePaneId)).toBe('pty-1');
     // p2a active surface is s2a → pty-2a (NOT surfaces[0]).
     expect(findActivePtyId(w2.rootPane, w2.activePaneId)).toBe('pty-2a');
   });
   it('collects every surface pty across the whole tree', () => {
-    expect(collectAllPtyIds(w2.rootPane)).toEqual(['pty-2a-first', 'pty-2a', 'pty-2b']);
+    expect(collectOwnedPtyIds(w2)).toEqual(['pty-2a-first', 'pty-2a', 'pty-2b']);
+  });
+
+  it('includes STASHED panes, visible ones first (#977)', () => {
+    // Main's resolvePtyIdForSignal uses this array as the membership test for a
+    // hook's WMUX_PTY_ID. A stashed pane missing from it does not fail loudly —
+    // the resolver falls through to the workspace's ACTIVE pane, and the
+    // stashed agent's turn-end lands on whichever pane the user is looking at.
+    const stashed = { ...w1, stashedPanes: [{
+      pane: leaf('p1-stashed', [surface('s-stashed', 'pty-stashed')]) as Extract<Pane, { type: 'leaf' }>,
+      stashedAt: 1,
+    }] };
+    expect(collectOwnedPtyIds(stashed)).toEqual(['pty-1', 'pty-stashed']);
+    // Visible first, so the `ptyIds[0]` fallbacks around resolvePtyIdForSignal
+    // still land on an on-screen pane.
+    expect(collectOwnedPtyIds(stashed)[0]).toBe('pty-1');
+    expect(buildWorkspaceListEntries([stashed])[0].ptyIds).toEqual(['pty-1', 'pty-stashed']);
   });
 });
 

@@ -4,12 +4,12 @@
 // Extracted here — with no store/window imports — so the payload construction is
 // unit-testable directly (the useWorkspaceMirrorPush hook itself pulls in the
 // store/window and can't be imported under vitest). `findActivePtyId` /
-// `collectAllPtyIds` were lifted out of useRpcBridge.ts so the mirror's `entries`
+// `collectOwnedPtyIds` were lifted out of useRpcBridge.ts so the mirror's `entries`
 // payload is byte-identical to the `workspace.list` reply, with a single source
 // of truth for the two helpers.
 
 import type { AgentStatus, Pane, PaneLeaf, Workspace } from '../../shared/types';
-import { collectPaneTreePtyIds, getLeafPanes } from '../../shared/paneUtils';
+import { getLeafPanes, getWorkspacePtyIds, type WorkspacePaneOwner } from '../../shared/paneUtils';
 import type {
   WorkspaceListEntry,
   FleetSnapshot,
@@ -60,16 +60,22 @@ export function findActivePtyId(rootPane: Pane | undefined, activePaneId: string
 }
 
 /**
- * All ptyIds in a workspace's VISIBLE tree (every leaf, every surface).
+ * All ptyIds a workspace OWNS (every leaf, every surface — visible or stashed).
  *
- * Scoped to the tree on purpose (#977). This feeds the `workspace.list` reply's
- * `ptyIds`, which is an external contract: quietly folding stashed panes into
- * it would change what an existing client believes that array means. The
- * teardown consumer is the one that needs the workspace-wide set, and it calls
- * `getWorkspacePtyIds` directly — the two questions look identical and are not.
+ * Workspace-wide, and it has to be (#977). This array is not just a wire field:
+ * main's `resolvePtyIdForSignal` treats it as the MEMBERSHIP test for a hook's
+ * `WMUX_PTY_ID`, and a miss falls through to the workspace's active pane. Scope
+ * it to the visible tree and a stashed agent's every hook — turn-end, awaiting
+ * input, resume binding — silently lands on whichever pane the user happens to
+ * be looking at. That is a wrong answer delivered confidently, which is worse
+ * than none.
+ *
+ * The field's own contract already said "the whole workspace"; this makes it
+ * true. Visible leaves come first, so the `ptyIds[0]` fallbacks around
+ * `resolvePtyIdForSignal` still land on an on-screen pane.
  */
-export function collectAllPtyIds(root: Pane): string[] {
-  return collectPaneTreePtyIds(root);
+export function collectOwnedPtyIds(ws: WorkspacePaneOwner): string[] {
+  return getWorkspacePtyIds(ws);
 }
 
 /**
@@ -93,7 +99,7 @@ export function buildWorkspaceListEntries(workspaces: Workspace[]): WorkspaceLis
     // cwd → workspace → activePtyId. activePtyId is the active pane's active
     // surface; ptyIds is the union over the whole workspace.
     activePtyId: findActivePtyId(w.rootPane, w.activePaneId),
-    ptyIds: collectAllPtyIds(w.rootPane),
+    ptyIds: collectOwnedPtyIds(w),
   }));
 }
 
