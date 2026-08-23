@@ -1,5 +1,14 @@
 import { describe, it, expect } from 'vitest';
-import { findLeaf, findPane, findParent, collectLeafIds, getLeafPanes } from '../paneUtils';
+import {
+  findLeaf,
+  findPane,
+  findParent,
+  collectLeafIds,
+  getLeafPanes,
+  getWorkspaceLeafPanes,
+  collectPaneTreePtyIds,
+  getWorkspacePtyIds,
+} from '../paneUtils';
 import type { Pane, PaneLeaf, PaneBranch } from '../types';
 
 // Test fixture:
@@ -100,5 +109,67 @@ describe('getLeafPanes', () => {
     const leaves = getLeafPanes(leaf1);
     expect(leaves).toHaveLength(1);
     expect(leaves[0].id).toBe('leaf-1');
+  });
+});
+
+// ─── Workspace-wide walks (visible tree + stash) ─────────────────────────────
+
+const surfaced: PaneLeaf = {
+  id: 'leaf-s',
+  type: 'leaf',
+  activeSurfaceId: 's1',
+  surfaces: [
+    { id: 's1', ptyId: 'pty-1', title: '', shell: '', cwd: '' },
+    { id: 's2', ptyId: '', title: '', shell: '', cwd: '' },
+    { id: 's3', ptyId: 'pty-2', title: '', shell: '', cwd: '' },
+  ],
+};
+
+describe('getWorkspaceLeafPanes', () => {
+  it('returns only the visible tree when nothing is stashed', () => {
+    expect(getWorkspaceLeafPanes({ rootPane: root }).map((l) => l.id))
+      .toEqual(['leaf-1', 'leaf-2', 'leaf-3']);
+    expect(getWorkspaceLeafPanes({ rootPane: root, stashedPanes: [] }).map((l) => l.id))
+      .toEqual(['leaf-1', 'leaf-2', 'leaf-3']);
+  });
+
+  it('appends stashed panes after the visible ones', () => {
+    const stashed: PaneLeaf = { id: 'leaf-x', type: 'leaf', surfaces: [], activeSurfaceId: '' };
+    const leaves = getWorkspaceLeafPanes({ rootPane: root, stashedPanes: [{ pane: stashed }] });
+    expect(leaves.map((l) => l.id)).toEqual(['leaf-1', 'leaf-2', 'leaf-3', 'leaf-x']);
+  });
+
+  it('skips malformed stash entries instead of throwing', () => {
+    const stashed: PaneLeaf = { id: 'leaf-x', type: 'leaf', surfaces: [], activeSurfaceId: '' };
+    const leaves = getWorkspaceLeafPanes({
+      rootPane: leaf1,
+      stashedPanes: [
+        null,
+        undefined,
+        {} as { pane?: Pane },
+        { pane: subBranch },
+        { pane: stashed },
+      ],
+    });
+    expect(leaves.map((l) => l.id)).toEqual(['leaf-1', 'leaf-x']);
+  });
+});
+
+describe('collectPaneTreePtyIds / getWorkspacePtyIds', () => {
+  it('collects every bound ptyId and skips the unbound ones', () => {
+    expect(collectPaneTreePtyIds(surfaced)).toEqual(['pty-1', 'pty-2']);
+    expect(collectPaneTreePtyIds(root)).toEqual([]);
+  });
+
+  it('includes stashed panes at the workspace level', () => {
+    const stashed: PaneLeaf = {
+      id: 'leaf-x',
+      type: 'leaf',
+      activeSurfaceId: 'sx',
+      surfaces: [{ id: 'sx', ptyId: 'pty-stashed', title: '', shell: '', cwd: '' }],
+    };
+    expect(getWorkspacePtyIds({ rootPane: surfaced })).toEqual(['pty-1', 'pty-2']);
+    expect(getWorkspacePtyIds({ rootPane: surfaced, stashedPanes: [{ pane: stashed }] }))
+      .toEqual(['pty-1', 'pty-2', 'pty-stashed']);
   });
 });
