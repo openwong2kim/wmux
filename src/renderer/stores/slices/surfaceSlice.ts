@@ -3,6 +3,7 @@ import type { StoreState } from '../index';
 import type { Pane, PaneLeaf, Surface, Workspace } from '../../../shared/types';
 import { createSurface, generateId } from '../../../shared/types';
 import { isPlausibleCwd } from '../../../shared/cwdShape';
+import { getWorkspaceLeafPanes } from '../../../shared/paneUtils';
 import { isSafeBrowserUrl } from '../../utils/browserPane';
 import { clearNudgesFor } from '../../hooks/channelMentionRateLimit';
 import { saveSessionNow } from '../../utils/sessionSaveBridge';
@@ -54,6 +55,25 @@ export interface SurfaceSlice {
    */
   updateBrowserUrl: (surfaceId: string, url: string) => void;
   updateBrowserPartition: (partition: string, surfaceId?: string) => void;
+}
+
+/**
+ * Locate a leaf by id anywhere a workspace OWNS it — visible tree or stash.
+ *
+ * This is the write seam (#977). Widening only the READ paths would have made
+ * the feature look correct and behave broken: reconcile decides a stashed pty
+ * is dead, calls updateSurfacePtyId to clear it, the visible-tree lookup misses,
+ * the CAS logs a SKIP, and the derived `exited` state — the whole reason the
+ * user is told a stashed session died — never arrives for any pane.
+ */
+function findOwnedLeafPane(ws: Workspace, id: string): PaneLeaf | null {
+  const visible = findLeafPane(ws.rootPane, id);
+  if (visible) return visible;
+  for (const entry of ws.stashedPanes ?? []) {
+    const pane = entry?.pane;
+    if (pane && pane.type === 'leaf' && pane.id === id) return pane;
+  }
+  return null;
 }
 
 function findLeafPane(root: Pane, id: string): PaneLeaf | null {
@@ -206,10 +226,13 @@ export const createSurfaceSlice: StateCreator<StoreState, [['zustand/immer', nev
     pane.activeSurfaceId = surface.id;
   }),
 
+  // A stashed pane's tabs are still closable — the surface is an ADDRESS, not
+  // a position, and pane.close/surface.close on a stashed pane must work or the
+  // agent that created it cannot clean it up (E-7).
   closeSurface: (paneId, surfaceId, workspaceId) => set((state: StoreState) => {
     const ws = state.workspaces.find((w: Workspace) => w.id === (workspaceId || state.activeWorkspaceId));
     if (!ws) return;
-    const pane = findLeafPane(ws.rootPane, paneId);
+    const pane = findOwnedLeafPane(ws, paneId);
     if (!pane) return;
 
     const idx = pane.surfaces.findIndex((s) => s.id === surfaceId);
@@ -282,7 +305,7 @@ export const createSurfaceSlice: StateCreator<StoreState, [['zustand/immer', nev
   updateSurfacePtyId: (paneId, surfaceId, ptyId) => {
     set((state: StoreState) => {
       for (const ws of state.workspaces) {
-        const pane = findLeafPane(ws.rootPane, paneId);
+        const pane = findOwnedLeafPane(ws, paneId);
         if (!pane) continue;
         const surface = pane.surfaces.find((s) => s.id === surfaceId);
         if (surface) {
@@ -296,15 +319,10 @@ export const createSurfaceSlice: StateCreator<StoreState, [['zustand/immer', nev
 
   updateSurfaceTitle: (surfaceId, title) => set((state: StoreState) => {
     for (const ws of state.workspaces) {
-      const updateInPane = (pane: Pane): boolean => {
-        if (pane.type === 'leaf') {
-          const surface = pane.surfaces.find((s) => s.id === surfaceId);
-          if (surface) { surface.title = title; surface.titleLocked = true; return true; }
-          return false;
-        }
-        return pane.children.some(updateInPane);
-      };
-      if (updateInPane(ws.rootPane)) return;
+      for (const pane of getWorkspaceLeafPanes(ws)) {
+        const surface = pane.surfaces.find((s) => s.id === surfaceId);
+        if (surface) { surface.title = title; surface.titleLocked = true; return; }
+      }
     }
   }),
 
@@ -314,34 +332,25 @@ export const createSurfaceSlice: StateCreator<StoreState, [['zustand/immer', nev
     // 불가능한 모양의 경로(맥에서 "C:\…")는 기존 cwd를 덮지 않는다.
     if (!isPlausibleCwd(cwd)) return;
     for (const ws of state.workspaces) {
-      const updateInPane = (pane: Pane): boolean => {
-        if (pane.type === 'leaf') {
-          const surface = pane.surfaces.find((s) => s.ptyId === ptyId);
-          if (surface) { surface.cwd = cwd; return true; }
-          return false;
-        }
-        return pane.children.some(updateInPane);
-      };
-      if (updateInPane(ws.rootPane)) return;
+      for (const pane of getWorkspaceLeafPanes(ws)) {
+        const surface = pane.surfaces.find((s) => s.ptyId === ptyId);
+        if (surface) { surface.cwd = cwd; return; }
+      }
     }
   }),
 
   updateSurfaceTitleByPty: (ptyId, title) => set((state: StoreState) => {
     if (!ptyId) return;
     for (const ws of state.workspaces) {
-      const updateInPane = (pane: Pane): boolean => {
-        if (pane.type === 'leaf') {
-          const surface = pane.surfaces.find((s) => s.ptyId === ptyId);
-          if (!surface) return false;
-          // Terminal surfaces only, and never override a user's manual rename.
-          if ((surface.surfaceType ?? 'terminal') === 'terminal' && !surface.titleLocked) {
-            surface.title = title;
-          }
-          return true;
+      for (const pane of getWorkspaceLeafPanes(ws)) {
+        const surface = pane.surfaces.find((s) => s.ptyId === ptyId);
+        if (!surface) continue;
+        // Terminal surfaces only, and never override a user's manual rename.
+        if ((surface.surfaceType ?? 'terminal') === 'terminal' && !surface.titleLocked) {
+          surface.title = title;
         }
-        return pane.children.some(updateInPane);
-      };
-      if (updateInPane(ws.rootPane)) return;
+        return;
+      }
     }
   }),
 

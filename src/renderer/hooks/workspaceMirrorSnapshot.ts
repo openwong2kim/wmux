@@ -59,7 +59,15 @@ export function findActivePtyId(rootPane: Pane | undefined, activePaneId: string
   return surface?.ptyId ?? null;
 }
 
-/** All ptyIds in a workspace (every leaf, every surface). */
+/**
+ * All ptyIds in a workspace's VISIBLE tree (every leaf, every surface).
+ *
+ * Scoped to the tree on purpose (#977). This feeds the `workspace.list` reply's
+ * `ptyIds`, which is an external contract: quietly folding stashed panes into
+ * it would change what an existing client believes that array means. The
+ * teardown consumer is the one that needs the workspace-wide set, and it calls
+ * `getWorkspacePtyIds` directly — the two questions look identical and are not.
+ */
 export function collectAllPtyIds(root: Pane): string[] {
   return collectPaneTreePtyIds(root);
 }

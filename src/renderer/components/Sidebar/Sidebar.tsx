@@ -6,8 +6,8 @@ import WorkspaceItem from './WorkspaceItem';
 import RemoteWorkspaceItem from './RemoteWorkspaceItem';
 import MissionsSection from './MissionsSection';
 import PresetPicker from './PresetPicker';
-import type { Pane } from '../../../shared/types';
-import { collectPaneTreePtyIds } from '../../../shared/paneUtils';
+import type { Workspace } from '../../../shared/types';
+import { getWorkspacePtyIds } from '../../../shared/paneUtils';
 import { useT } from '../../hooks/useT';
 import { buildWorkspaceMarkdown } from '../../utils/sessionInfoMarkdown';
 import { tokenAttrs } from '../../themes';
@@ -18,10 +18,14 @@ import PluginPanels from '../../plugins/PluginPanels';
 import CompanyPanel from './CompanyPanel';
 import { COMPANY_MODE_ENABLED } from '../../../shared/featureFlags';
 
-// Pane 트리에서 모든 leaf의 PTY를 dispose
+// 워크스페이스가 소유한 모든 PTY를 dispose
 // (traversal is the shared canonical walk; the dispose policy stays local)
-function disposeAllPtys(pane: Pane) {
-  for (const ptyId of collectPaneTreePtyIds(pane)) window.electronAPI.pty.dispose(ptyId);
+//
+// Workspace-wide (#977): closing a workspace kills everything it owns, and a
+// stashed pane's session is very much owned. Missing it would leave an orphan
+// daemon session burning tokens with no window left to show it.
+function disposeAllPtys(ws: Workspace) {
+  for (const ptyId of getWorkspacePtyIds(ws)) window.electronAPI.pty.dispose(ptyId);
 }
 
 export default function Sidebar() {
@@ -105,7 +109,7 @@ export default function Sidebar() {
   const handleClose = useCallback((wsId: string) => {
     // 삭제 전 해당 워크스페이스의 모든 PTY 정리
     const ws = useStore.getState().workspaces.find((w) => w.id === wsId);
-    if (ws) disposeAllPtys(ws.rootPane);
+    if (ws) disposeAllPtys(ws);
 
     removeWorkspace(wsId);
   }, [removeWorkspace]);

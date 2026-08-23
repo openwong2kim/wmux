@@ -21,8 +21,8 @@ import {
   type ForegroundTokenKey,
   type ContrastReport,
 } from '../../contrastSafety';
-import type { CustomThemeColors, NotificationCategory, Pane, XtermThemeColors } from '../../../shared/types';
-import { collectPaneTreePtyIds } from '../../../shared/paneUtils';
+import type { CustomThemeColors, NotificationCategory, Workspace, XtermThemeColors } from '../../../shared/types';
+import { getWorkspacePtyIds } from '../../../shared/paneUtils';
 import type { ChromePreset } from '../../../shared/chromePresets';
 import { NOTIFICATION_CATEGORIES } from '../../../shared/types';
 import { ORCH_ROLES, launcherSupportsModelFlag } from '../../../shared/orchestratorRole';
@@ -561,7 +561,7 @@ function ResetSection() {
     const workspaces = useStore.getState().workspaces;
     // Dispose all PTYs across all workspaces
     for (const ws of workspaces) {
-      disposePaneTree(ws.rootPane);
+      disposeWorkspacePtys(ws);
     }
 
     // Remove all workspaces except the last one (store requires at least 1)
@@ -619,10 +619,12 @@ function ResetSection() {
   );
 }
 
-/** Recursively dispose all PTYs in a pane tree
- *  (traversal is the shared canonical walk; the dispose policy stays local) */
-function disposePaneTree(pane: Pane) {
-  for (const ptyId of collectPaneTreePtyIds(pane)) window.electronAPI.pty.dispose(ptyId);
+/** Dispose every PTY a workspace owns — visible tree AND stash (#977).
+ *  (traversal is the shared canonical walk; the dispose policy stays local)
+ *  "Reset everything" that quietly spares stashed sessions would leave orphans
+ *  behind the one action whose whole promise is a clean slate. */
+function disposeWorkspacePtys(ws: Workspace) {
+  for (const ptyId of getWorkspacePtyIds(ws)) window.electronAPI.pty.dispose(ptyId);
 }
 
 // ─── Orchestrator (deck brain) settings ──────────────────────────────────────

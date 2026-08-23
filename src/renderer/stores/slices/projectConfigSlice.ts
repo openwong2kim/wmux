@@ -15,6 +15,9 @@ import type { StateCreator } from 'zustand';
 import type { StoreState } from '../index';
 import { createLeafPane, assignPaneOrdinals, generateId, type Pane, type PaneBranch, type Workspace } from '../../../shared/types';
 import type { ProjectConfigState, WmuxProjectLayoutNode } from '../../../shared/wmuxProjectConfig';
+import { collectLeafIds, collectPaneTreePtyIds, getWorkspaceLeafPanes } from '../../../shared/paneUtils';
+import { MAX_PANES_PER_WORKSPACE } from './paneSlice';
+import { t } from '../../i18n';
 
 /** Per-pane bootstrap payload recorded at layout-apply time. `cwd` is already
  * resolved to an ABSOLUTE path (root + relative) so the funnel can pass it to
@@ -78,13 +81,6 @@ export interface ProjectConfigSlice {
    * caller to dispose.
    */
   applyProjectLayout: (workspaceId: string) => ApplyProjectLayoutResult;
-}
-
-function collectPtyIds(pane: Pane): string[] {
-  if (pane.type === 'leaf') {
-    return pane.surfaces.map((s) => s.ptyId).filter((id): id is string => Boolean(id));
-  }
-  return pane.children.flatMap(collectPtyIds);
 }
 
 function firstLeafId(pane: Pane): string {
@@ -197,16 +193,30 @@ export const createProjectConfigSlice: StateCreator<
     }
     let disposedPtyIds: string[] = [];
     let applied = false;
+    let blockedAtCap: { count: number; stashed: number } | null = null;
     set((draft: StoreState) => {
       const ws = draft.workspaces.find((w: Workspace) => w.id === workspaceId);
       if (!ws) return;
-      disposedPtyIds = collectPtyIds(ws.rootPane);
+      // rootPane only, deliberately (#977): the layout replaces what is on
+      // SCREEN. Stashed panes are not being replaced by it and must not be
+      // disposed — the whole promise is that a stashed session keeps running.
+      disposedPtyIds = collectPaneTreePtyIds(ws.rootPane);
       const seeds: Record<string, ProjectPaneSeed> = {};
       // Consent is re-read from the (trusted) project state here, so revoking it
       // (re-trust without the checkbox) makes the next layout-apply omit restore.
       const newRoot = buildTree(layout, project.root as string, seeds, project.unattended === true);
-      // P2: full-tree replace → number leaves fresh 1..n (parallels applyLayoutTemplate).
-      ws.nextPaneOrdinal = assignPaneOrdinals(newRoot, 1);
+      // #977 — same reasoning as applyLayoutTemplate: a wmux.json layout
+      // replaces the VISIBLE tree, stashed panes survive it, so the cap counts
+      // them and ordinals continue past the workspace-wide high-water. Fresh
+      // 1..n numbering would collide with a stashed pane's auto name, which is
+      // also its A2A address.
+      const ownedOrdinal = getWorkspaceLeafPanes(ws).reduce((m, l) => Math.max(m, l.ordinal ?? 0), 0);
+      const stashedCount = (ws.stashedPanes ?? []).length;
+      if (stashedCount + collectLeafIds(newRoot).length > MAX_PANES_PER_WORKSPACE) {
+        blockedAtCap = { count: MAX_PANES_PER_WORKSPACE, stashed: stashedCount };
+        return;
+      }
+      ws.nextPaneOrdinal = assignPaneOrdinals(newRoot, ownedOrdinal + 1);
       ws.rootPane = newRoot;
       ws.activePaneId = firstLeafId(newRoot);
       for (const [paneId, seed] of Object.entries(seeds)) {
@@ -217,6 +227,13 @@ export const createProjectConfigSlice: StateCreator<
       draft.zoomedPaneId = null;
       applied = true;
     });
+    if (blockedAtCap) {
+      const cap = blockedAtCap as { count: number; stashed: number };
+      get().pushToast({
+        message: t('pane.maxLeavesReachedWithStash', { count: cap.count, stashed: cap.stashed }),
+        level: 'warn',
+      });
+    }
     return { ok: applied, disposedPtyIds: applied ? disposedPtyIds : [] };
   },
 });

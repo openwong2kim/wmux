@@ -228,8 +228,14 @@ export default function FleetView() {
   const jump = useCallback((card: FleetPane) => {
     const getState = () => useStore.getState();
     if (card.ptyId) {
+      // focusPaneByPtyId unstashes on the way (#977).
       focusPaneByPtyId(getState, card.ptyId);
     } else if (card.surfaceId) {
+      // No ptyId — an unspawned surface, or a stashed pane whose session died.
+      // activatePaneTarget only works on the visible tree, so put the pane back
+      // first; the dead-pane recovery offer then renders in its own slot, which
+      // is where the user can see what is being recovered.
+      if (card.stashed) useStore.getState().unstashPane(card.paneId, card.workspaceId);
       activatePaneTarget(getState, {
         workspaceId: card.workspaceId,
         paneId: card.paneId,

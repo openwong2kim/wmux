@@ -9,7 +9,12 @@ import {
   type NotifPayload,
   type PolicyContext,
 } from './useNotificationPolicy';
-import { findSurfaceByPtyId, findSurfaceById, findActiveLeaf } from '../utils/paneTraversal';
+import {
+  findSurfaceByPtyId,
+  findActiveLeaf,
+  findWorkspaceSurfaceByPtyId,
+  findWorkspaceSurfaceById,
+} from '../utils/paneTraversal';
 import { FrameCoalescer } from '../utils/frameCoalescer';
 import { normalizeWorktreePath } from '../../shared/workTask';
 import { isBrainPtyId } from '../../shared/constants';
@@ -56,8 +61,11 @@ export function resolveNotificationTarget(
   workspaceIdHint: string | undefined,
 ): { workspaceId: string; surfaceId?: string; paneId?: string } | null {
   if (ptyId) {
+    // Workspace-wide (#977): a notification from a stashed agent must be filed
+    // against its real pane, or the toast/panel row loses the coordinates that
+    // let the click jump back to it.
     for (const ws of state.workspaces) {
-      const found = findSurfaceByPtyId(ws.rootPane, ptyId);
+      const found = findWorkspaceSurfaceByPtyId(ws, ptyId);
       if (found) return { workspaceId: ws.id, surfaceId: found.surfaceId, paneId: found.paneId };
     }
     return null;
@@ -93,6 +101,11 @@ export interface FocusTargetState {
   notifications: Array<{ id: string; read: boolean; surfaceId?: string }>;
   markRead: (id: string) => void;
   setPaneNotificationRing: (paneId: string, ring: 'flash' | 'glow' | null) => void;
+  /**
+   * #977 — bring a stashed pane back before focusing it. Optional so the
+   * existing minimal test fixtures stay terse; the live store always has it.
+   */
+  unstashPane?: (paneId: string, workspaceId?: string) => boolean;
 }
 
 /**
@@ -153,7 +166,16 @@ export function focusNotificationTarget(
   // Shared tail of both resolver branches: jump (workspace + pane +
   // surface + zoom coherence), then mark this surface's unread
   // notifications read and clear the ring iff something was marked.
-  const jumpToSurface = (workspaceId: string, paneId: string, surfaceId: string): void => {
+  const jumpToSurface = (workspaceId: string, paneId: string, surfaceId: string, stashed = false): void => {
+    // Unstash BEFORE activating (#977). Every focus path — setActivePane,
+    // focusPaneSurface, the zoom reconciler — filters on the visible tree, so a
+    // jump to a stashed pane would switch the workspace and then do nothing,
+    // with no error to explain it. Automatic unstash is the right call here and
+    // only here: the user clicked "take me to this agent", so putting the pane
+    // back is what they asked for, not a surprise. (An RPC caller gets a
+    // PANE_STASHED refusal instead — an agent rearranging the layout as a side
+    // effect IS the surprise this feature exists to prevent.)
+    if (stashed) state.unstashPane?.(paneId, workspaceId);
     const fresh = activatePaneTarget(getState, { workspaceId, paneId, surfaceId });
     let markedAny = false;
     for (const n of fresh.notifications) {
@@ -168,9 +190,9 @@ export function focusNotificationTarget(
   };
   if (payload.ptyId) {
     for (const ws of state.workspaces) {
-      const found = findSurfaceByPtyId(ws.rootPane, payload.ptyId);
+      const found = findWorkspaceSurfaceByPtyId(ws, payload.ptyId);
       if (!found) continue;
-      jumpToSurface(ws.id, found.paneId, found.surfaceId);
+      jumpToSurface(ws.id, found.paneId, found.surfaceId, found.stashed);
       return true;
     }
     // PTY closed since the notification fired — fall through to surfaceId
@@ -178,9 +200,9 @@ export function focusNotificationTarget(
   }
   if (payload.surfaceId) {
     for (const ws of state.workspaces) {
-      const found = findSurfaceById(ws.rootPane, payload.surfaceId);
+      const found = findWorkspaceSurfaceById(ws, payload.surfaceId);
       if (!found) continue;
-      jumpToSurface(ws.id, found.paneId, payload.surfaceId);
+      jumpToSurface(ws.id, found.paneId, payload.surfaceId, found.stashed);
       return true;
     }
   }
@@ -700,8 +722,12 @@ export function useNotificationListener() {
         if (typeof pendingQuestion === 'string') {
           state.setSurfacePendingQuestion(ptyId, pendingQuestion);
         }
+        // Workspace-wide (#977): the one-shot agent-name backfill below lands
+        // HERE and nowhere else. A stashed pane that missed the original
+        // session:agent emit would never get a name, and a nameless pane is
+        // invisible to the roster — the very list it now lives in.
         for (const ws of state.workspaces) {
-          const found = findSurfaceByPtyId(ws.rootPane, ptyId);
+          const found = findWorkspaceSurfaceByPtyId(ws, ptyId);
           if (found) {
             // X1 — ports: store per-surface, publish the workspace union.
             if (Array.isArray(rest.listeningPorts)) {

@@ -10,6 +10,7 @@ import { EmptyLeafFunnel } from './EmptyLeafFunnel';
 import { selectProjectCwdSignature } from '../../stores/selectors/appLayout';
 import { registerSessionSaver, saveSessionNow } from '../../utils/sessionSaveBridge';
 import { resolveReconcileRebind } from '../../hooks/resolveReconcileRebind';
+import { getLeafPanes, getWorkspaceLeafPanes } from '../../../shared/paneUtils';
 import NotificationPanel from '../Notification/NotificationPanel';
 import FleetView from '../FleetView/FleetView';
 // TASK-2: the 4 always-mounted overlays are lazy-loaded + render-gated below so
@@ -55,7 +56,7 @@ import { useMissionsPolling } from '../../hooks/useMissionsPolling';
 import { useColdParkSweep } from '../../hooks/useColdParkSweep';
 import { usePaneDecorationChannel } from '../../plugins/usePaneDecorationChannel';
 import { useIpc } from '../../hooks/useIpc';
-import type { SessionData, PaneLeaf, Pane, Surface } from '../../../shared/types';
+import type { SessionData, PaneLeaf, Pane, StashedPane, Surface, Workspace } from '../../../shared/types';
 import { FIRST_RUN_REOPEN_EVENT } from '../../../shared/firstRun';
 import { isFileDrag } from '../../../shared/dragDrop';
 import { terminalRegistry } from '../../hooks/useTerminal';
@@ -162,6 +163,10 @@ function dumpScrollbackBuffersSync(): Map<string, boolean> {
   const dumped = new Map<string, boolean>();
   const state = useStore.getState();
   for (const ws of state.workspaces) {
+    // rootPane only, deliberately (#977): a stashed pane's terminal is
+    // unmounted, so it has no entry in terminalRegistry to serialize — and
+    // stashing requires a daemon connection, which means this whole function
+    // has already returned above. There is nothing to dump for them.
     const surfaces = collectTerminalSurfaces(ws.rootPane);
     for (const surface of surfaces) {
       if (!surface.ptyId) continue;
@@ -212,6 +217,61 @@ function cloneWithScrollback(pane: Pane, dumped: Map<string, boolean>): Pane {
   };
 }
 
+/**
+ * Serialize a workspace's stashed panes (#977).
+ *
+ * The `...ws` spread would carry `stashedPanes` through untouched, which is
+ * exactly the wrong thing: they'd skip the scrollback sanitization every
+ * visible pane goes through, so a stale `scrollbackFile` could round-trip into
+ * a daemon-mode session. They are put through the SAME cloneWithScrollback the
+ * tree gets. (There is nothing to dump for them — a stashed pane's terminal is
+ * unmounted, so it isn't in terminalRegistry, and stashing requires a daemon
+ * connection, so the ring already holds its scrollback.)
+ *
+ * On failure the entry is NOT dropped. A dropped entry is a permanently lost
+ * pane plus an orphaned daemon session — strictly worse than a failed save,
+ * which leaves the previous file intact. So: minimally-sanitized fallback
+ * first, and if even that throws, let it propagate and abort the whole save.
+ */
+function cloneStashedPanes(
+  ws: Workspace,
+  dumped: Map<string, boolean>,
+): StashedPane[] | undefined {
+  const stashed = ws.stashedPanes;
+  if (!stashed || stashed.length === 0) return undefined;
+  return stashed.map((entry) => {
+    try {
+      return { ...entry, pane: cloneWithScrollback(entry.pane, dumped) as PaneLeaf };
+    } catch (err) {
+      console.warn(
+        `[wmux:stash] serialize failed for stashed pane=${entry?.pane?.id ?? '?'} — `
+        + `falling back to a minimal entry: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      // Everything derived is dropped; identity, surfaces and their ptyIds are
+      // what the pane needs to come back alive.
+      const pane = entry.pane;
+      return {
+        pane: {
+          id: pane.id,
+          type: 'leaf',
+          activeSurfaceId: pane.activeSurfaceId,
+          ordinal: pane.ordinal,
+          surfaces: pane.surfaces.map((s) => ({
+            id: s.id,
+            ptyId: s.ptyId,
+            title: s.title,
+            shell: s.shell,
+            cwd: s.cwd,
+            surfaceType: s.surfaceType,
+            browserUrl: s.browserUrl,
+          })),
+        },
+        stashedAt: entry.stashedAt,
+      };
+    }
+  });
+}
+
 /** Build a consistent SessionData snapshot for save operations */
 function buildSessionData(dumped: Map<string, boolean>): SessionData {
   const state = useStore.getState();
@@ -220,6 +280,7 @@ function buildSessionData(dumped: Map<string, boolean>): SessionData {
     workspaces: state.workspaces.map((ws) => ({
       ...ws,
       rootPane: cloneWithScrollback(ws.rootPane, dumped),
+      stashedPanes: cloneStashedPanes(ws, dumped),
     })),
     activeWorkspaceId: state.activeWorkspaceId,
     // P2: persist the global workspace-ordinal high-water so wsOrdinals are
@@ -886,13 +947,9 @@ export default function AppLayout() {
         // deliberate exception: includeDead gives us authoritative tombstones,
         // so a pane explicitly present in deadPtys may continue through the
         // recovery path even when it is the only saved session.
-        const hasSavedPtyIds = useStore.getState().workspaces.some(ws => {
-          const walk = (p: Pane): boolean =>
-            p.type === 'leaf'
-              ? p.surfaces.some(s => !!s.ptyId)
-              : p.children.some(walk);
-          return walk(ws.rootPane);
-        });
+        const hasSavedPtyIds = useStore.getState().workspaces.some(ws =>
+          getWorkspaceLeafPanes(ws).some(leaf => leaf.surfaces.some(s => !!s.ptyId)),
+        );
         const preserveUnconfirmedOnEmpty = activeIds.size === 0 && hasSavedPtyIds;
         if (preserveUnconfirmedOnEmpty) {
           console.warn(`[lifecycle] reconcile: daemon returned 0 live sessions with saved ptyIds — preserving unconfirmed ids; ${deadPtys.size} confirmed dead tombstone(s) may recover`);
@@ -921,31 +978,24 @@ export default function AppLayout() {
         // does not cover: a single snapshot can be partial (daemon
         // mid-rehydrate), so clearing on the first cycle could destroy a live
         // session. We defer the destructive decision to a 2-strike re-query.
-        const absentCandidates: { paneId: string; surfaceId: string; ptyId: string }[] = [];
-        const collect = (pane: Pane) => {
+        const absentCandidates: { paneId: string; surfaceId: string; ptyId: string; stashed: boolean }[] = [];
+        const collect = (pane: PaneLeaf, stashed: boolean) => {
           if (signal?.aborted) return;
-          if (pane.type === 'leaf') {
-            for (const surface of pane.surfaces) {
-              if (signal?.aborted) return;
-              // browser/editor/diff는 PTY를 갖지 않음 — 재조정·자가생성 대상에서 제외(J2).
-              if (surface.surfaceType === 'browser' || surface.surfaceType === 'editor' || surface.surfaceType === 'diff') continue;
-              if (!surface.ptyId) {
-                console.log(`[AppLayout] Surface ${surface.id}: no ptyId, Terminal will self-create`);
-                continue;
-              }
-              if (activeIds.has(surface.ptyId)) {
-                console.log(`[AppLayout] Surface ${surface.id}: ptyId ${surface.ptyId} alive in daemon, Terminal will reconnect on mount`);
-                // Leave ptyId in place. useTerminal mount reconnects.
-              } else if (preserveUnconfirmedOnEmpty && !deadPtys.has(surface.ptyId)) {
-                console.warn(`[lifecycle] reconcile preserving unconfirmed ptyId=${surface.ptyId} surface=${surface.id} while live list is empty`);
-              } else {
-                absentCandidates.push({ paneId: pane.id, surfaceId: surface.id, ptyId: surface.ptyId });
-              }
+          for (const surface of pane.surfaces) {
+            if (signal?.aborted) return;
+            // browser/editor/diff는 PTY를 갖지 않음 — 재조정·자가생성 대상에서 제외(J2).
+            if (surface.surfaceType === 'browser' || surface.surfaceType === 'editor' || surface.surfaceType === 'diff') continue;
+            if (!surface.ptyId) {
+              console.log(`[AppLayout] Surface ${surface.id}: no ptyId, Terminal will self-create`);
+              continue;
             }
-          } else {
-            for (const child of pane.children) {
-              if (signal?.aborted) return;
-              collect(child);
+            if (activeIds.has(surface.ptyId)) {
+              console.log(`[AppLayout] Surface ${surface.id}: ptyId ${surface.ptyId} alive in daemon, Terminal will reconnect on mount`);
+              // Leave ptyId in place. useTerminal mount reconnects.
+            } else if (preserveUnconfirmedOnEmpty && !deadPtys.has(surface.ptyId)) {
+              console.warn(`[lifecycle] reconcile preserving unconfirmed ptyId=${surface.ptyId} surface=${surface.id} while live list is empty`);
+            } else {
+              absentCandidates.push({ paneId: pane.id, surfaceId: surface.id, ptyId: surface.ptyId, stashed });
             }
           }
         };
@@ -955,11 +1005,27 @@ export default function AppLayout() {
         // loop, which froze the view of workspaces for the duration of
         // the walk — any concurrent store update (e.g. a fast-spawned
         // surface) was invisible until the next reconcile cycle.
+        // #977 — getWorkspaceLeafPanes, not the visible tree: a stashed pane's
+        // session is still running, so it must get the same liveness check and
+        // the same dead-pane recovery. Skipping it would leave that PTY in a
+        // permanent limbo — never confirmed dead, never offered for recovery,
+        // and its `exited` state (derived from ptyId presence) would never
+        // arrive. Visible panes come first in that order, which is what the
+        // promote step below relies on.
         for (const ws of useStore.getState().workspaces) {
           if (signal?.aborted) return;
           console.log(`[AppLayout] Reconciling workspace: ${ws.name}`);
-          collect(ws.rootPane);
+          const visibleIds = new Set(getLeafPanes(ws.rootPane).map((l) => l.id));
+          for (const leaf of getWorkspaceLeafPanes(ws)) {
+            if (signal?.aborted) return;
+            collect(leaf, !visibleIds.has(leaf.id));
+          }
         }
+        // Visible panes first, ACROSS workspaces. Promotion below competes for
+        // the daemon's limited live-session slots, and a session the user
+        // cannot see must never take a slot from one they are looking at.
+        // Array.prototype.sort is stable, so tree order survives within a tier.
+        absentCandidates.sort((a, b) => Number(a.stashed) - Number(b.stashed));
 
         // RCA A1/A9 — partial-list 2-strike guard. Before destructively
         // clearing any live ptyId absent from the first non-empty snapshot,
@@ -1041,18 +1107,17 @@ export default function AppLayout() {
             // self-created a FRESH ptyId — stomping it would orphan a live
             // session (or wrong-bind). Apply only if the surface still holds
             // the exact stale ptyId the decision was made against.
+            // Workspace-wide (#977): the decision may name a stashed pane, and
+            // a visible-tree-only re-query would report it as "gone" and SKIP
+            // every clear — which would silently strand the whole liveness
+            // model for stashed panes.
             const wsNow = useStore.getState().workspaces;
             let currentPtyId: string | undefined;
             for (const ws of wsNow) {
-              const walk = (p: Pane): boolean => {
-                if (p.type === 'leaf') {
-                  if (p.id !== a.paneId) return false;
-                  currentPtyId = p.surfaces.find((s) => s.id === a.surfaceId)?.ptyId;
-                  return true;
-                }
-                return p.children.some(walk);
-              };
-              if (walk(ws.rootPane)) break;
+              const leaf = getWorkspaceLeafPanes(ws).find((l) => l.id === a.paneId);
+              if (!leaf) continue;
+              currentPtyId = leaf.surfaces.find((s) => s.id === a.surfaceId)?.ptyId;
+              break;
             }
             if (currentPtyId !== a.stalePtyId) {
               console.warn(`[lifecycle] reconcile ${a.kind} SKIPPED surface=${a.surfaceId}: ptyId moved (${a.stalePtyId} → ${currentPtyId ?? 'gone'}) since snapshot`);

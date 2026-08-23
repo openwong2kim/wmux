@@ -9,7 +9,7 @@ import { AGENT_STATUS_ICON } from './agentStatusIcon';
 import { IconCopy, IconX, IconGear, IconPlay, IconPause, IconChevron, IconBell, IconFolder, IconTerminal, IconExternalLink } from '../icons';
 import { tokenAttrs } from '../../themes';
 import { buildWorkspaceMarkdown } from '../../utils/sessionInfoMarkdown';
-import { collectTerminalSurfaces } from '../../utils/paneTraversal';
+import { collectTerminalSurfaces, collectWorkspaceTerminalSurfaces } from '../../utils/paneTraversal';
 import { openUrlInBrowserPane } from '../../utils/browserPaneActions';
 import WorkspaceProfileModal from './WorkspaceProfileModal';
 import WorkspaceAccountMenu from './WorkspaceAccountMenu';
@@ -306,7 +306,10 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
     const ws = s.workspaces.find((w) => w.id === workspaceId);
     if (!ws) return 0;
     let last = 0;
-    for (const surf of collectTerminalSurfaces(ws.rootPane)) {
+    // Workspace-wide (#977): if the only thing working in this workspace is a
+    // stashed agent, a visible-tree scan reports "idle 2h" while an agent is
+    // mid-turn — a badge that is not just missing information but wrong.
+    for (const surf of collectWorkspaceTerminalSurfaces(ws)) {
       if (!surf.ptyId) continue;
       const at = Math.max(s.surfaceActivityAt[surf.ptyId] ?? 0, s.surfaceOutputAt[surf.ptyId] ?? 0);
       if (at > last) last = at;
@@ -1008,7 +1011,10 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
             {t('workspace.closeConfirm', { name: workspace.name })}
           </div>
           {(() => {
-            const count = collectTerminalSurfaces(workspace.rootPane).length;
+            // Workspace-wide (#977): closing the workspace disposes stashed
+            // PTYs too, so a visible-only count promises to close fewer panes
+            // than it actually kills.
+            const count = collectWorkspaceTerminalSurfaces(workspace).length;
             if (count === 0) return null;
             return (
               <div className="px-3 pb-2 text-caption text-[var(--text-muted)]">

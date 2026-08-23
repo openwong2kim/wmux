@@ -26,8 +26,7 @@ import { tokenAttrs } from '../../themes';
 import { FOCUS_RING } from '../focusRing';
 import { formatChatTime, selectReportRail, type DeckLimitNotice } from './deckBrain';
 import DeckFleet from './DeckFleet';
-import { findLeafPanes } from '../../hooks/a2aAddressing';
-import { getLeafPanes } from '../../../shared/paneUtils';
+import { getWorkspaceLeafPanes } from '../../../shared/paneUtils';
 import { generateId } from '../../../shared/types';
 import type { ChannelMention, ChannelMessage } from '../../../shared/channels';
 import {
@@ -1118,7 +1117,10 @@ export function CommanderView(): React.ReactElement {
     const ws = s.workspaces.find((w) => w.id === s.activeWorkspaceId);
     if (!ws) return '';
     const parts: string[] = [`~${ws.metadata?.agentStatus ?? ''}`];
-    for (const leaf of getLeafPanes(ws.rootPane)) {
+    // Workspace-wide (#977) — paired with deckBrain.countAgentPanes. If only
+    // one of the two sees stashed panes, the briefing goes stale exactly when a
+    // stashed agent changes state, which is when it matters most.
+    for (const leaf of getWorkspaceLeafPanes(ws)) {
       for (const surface of leaf.surfaces) {
         if (!surface.ptyId) continue;
         parts.push(`${surface.ptyId}:${s.surfaceAgentStatus[surface.ptyId] ?? ''}`);
@@ -1155,7 +1157,9 @@ export function CommanderView(): React.ReactElement {
   const resolvePtyPane = useCallback(
     (ptyId: string): { workspaceId: string; paneId: string } | null => {
       for (const w of workspaces) {
-        for (const leaf of findLeafPanes(w.rootPane)) {
+        // Workspace-wide (#977): a stashed pane is a legitimate jump target —
+        // onJumpToPane unstashes it on the way.
+        for (const leaf of getWorkspaceLeafPanes(w)) {
           if (leaf.surfaces.some((sf) => sf.surfaceType !== 'browser' && sf.ptyId === ptyId)) {
             return { workspaceId: w.id, paneId: leaf.id };
           }
@@ -1169,6 +1173,12 @@ export function CommanderView(): React.ReactElement {
   const onJumpToPane = useCallback(
     (workspaceId: string, paneId: string) => {
       setActiveWorkspace(workspaceId);
+      // #977 — unstash first. setActivePane only accepts panes in the visible
+      // tree, so jumping to a stashed pane would otherwise be a silent no-op:
+      // the workspace switches, nothing else happens, and the user is left
+      // looking at the wrong pane with no explanation. Idempotent when the pane
+      // is already on screen.
+      useStore.getState().unstashPane(paneId, workspaceId);
       setActivePane(paneId);
     },
     [setActiveWorkspace, setActivePane],

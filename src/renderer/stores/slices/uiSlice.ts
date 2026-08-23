@@ -1,6 +1,8 @@
 import type { StateCreator } from 'zustand';
 import type { StoreState } from '../index';
-import { setLocale as i18nSetLocale, type Locale } from '../../i18n';
+import { setLocale as i18nSetLocale, t, type Locale } from '../../i18n';
+import { collectLeafIds, getWorkspaceLeafPanes } from '../../../shared/paneUtils';
+import { MAX_PANES_PER_WORKSPACE } from './paneSlice';
 import { markRetentionMigrationDone } from '../retentionMigration';
 import { DEFAULT_BROWSER_BACKEND, isBrowserBackend, type BrowserBackend } from '../../../shared/browserBackend';
 import { CHROME_PRESET_VALUES } from '../../../shared/chromePresets';
@@ -1705,20 +1707,40 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
     state.layoutTemplates = state.layoutTemplates.filter((t) => t.id !== id);
   }),
 
-  applyLayoutTemplate: (templateId, workspaceId) => set((state) => {
+  applyLayoutTemplate: (templateId, workspaceId) => {
+    let blockedAtCap: { count: number; stashed: number } | null = null;
+    set((state) => {
     const targetWsId = workspaceId || state.activeWorkspaceId;
     const ws = state.workspaces.find((w) => w.id === targetWsId);
     if (!ws) return;
     const tmpl = state.layoutTemplates.find((t) => t.id === templateId);
     if (!tmpl) return;
     const newRoot = buildPaneFromLayout(tmpl.tree);
-    // P2: a template REPLACES the whole tree → number the new leaves fresh
-    // 1..n (the old panes are gone) and restart the per-ws counter.
-    ws.nextPaneOrdinal = assignPaneOrdinals(newRoot, 1);
+    // #977 — a template replaces the VISIBLE tree; stashed panes survive it.
+    // So the cap has to count them (a template applied over 18 stashed panes
+    // would otherwise blow straight past 20), and ordinals have to continue
+    // past the highest one the workspace still owns. Restarting at 1 here
+    // would hand a new pane the auto name of a stashed one — and that name is
+    // the A2A address, so the collision routes messages to the wrong agent.
+    const ownedOrdinal = getWorkspaceLeafPanes(ws).reduce((m, l) => Math.max(m, l.ordinal ?? 0), 0);
+    const stashedCount = (ws.stashedPanes ?? []).length;
+    if (stashedCount + collectLeafIds(newRoot).length > MAX_PANES_PER_WORKSPACE) {
+      blockedAtCap = { count: MAX_PANES_PER_WORKSPACE, stashed: stashedCount };
+      return;
+    }
+    ws.nextPaneOrdinal = assignPaneOrdinals(newRoot, ownedOrdinal + 1);
     ws.rootPane = newRoot;
     ws.activePaneId = collectFirstLeafId(newRoot);
     state.zoomedPaneId = null;
-  }),
+    });
+    if (blockedAtCap) {
+      const cap = blockedAtCap as { count: number; stashed: number };
+      get().pushToast({
+        message: t('pane.maxLeavesReachedWithStash', { count: cap.count, stashed: cap.stashed }),
+        level: 'warn',
+      });
+    }
+  },
 
   // ─── Recent terminal commands ─────────────────────────────────────
   recentCommands: [],

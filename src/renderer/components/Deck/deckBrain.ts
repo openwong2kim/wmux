@@ -12,7 +12,7 @@ import type { BrainEvent } from '../../../main/deck/BrainAdapter';
 import type { Workspace } from '../../../shared/types';
 import type { AgentSlug } from '../../../shared/events';
 import type { Channel } from '../../../shared/channels';
-import { findLeafPanes } from '../../hooks/a2aAddressing';
+import { getWorkspaceLeafPanes } from '../../../shared/paneUtils';
 import { computePaneAutoName, paneDisplayName } from '../../utils/paneNaming';
 
 /** A tool call the brain made, shown as a chip. `ok` undefined = still running
@@ -254,9 +254,13 @@ export function buildWorkspaceContextSummary(args: {
       : 'Your workspace:',
   ];
   const paneLines: string[] = [];
+  // Workspace-wide (#977): a stashed agent is still working. Counting only the
+  // visible tree here would tell the orchestrator a busy workspace is idle —
+  // and CommanderView's fleetSignature (which decides when to re-brief) is
+  // widened in the same change, so the two cannot report different fleets.
   const countAgentPanes = (w: Workspace): number => {
     let n = 0;
-    for (const leaf of findLeafPanes(w.rootPane)) {
+    for (const leaf of getWorkspaceLeafPanes(w)) {
       if (
         leaf.surfaces.some(
           (s) => s.surfaceType !== 'browser' && !!s.ptyId && !!surfaceAgent[s.ptyId]?.name,
@@ -269,7 +273,7 @@ export function buildWorkspaceContextSummary(args: {
   };
   if (own) {
     const wsOrdinal = own.wsOrdinal ?? 0;
-    for (const leaf of findLeafPanes(own.rootPane)) {
+    for (const leaf of getWorkspaceLeafPanes(own)) {
       const agentSurfaces = leaf.surfaces.filter(
         (s) => s.surfaceType !== 'browser' && !!s.ptyId && !!surfaceAgent[s.ptyId]?.name,
       );

@@ -1,5 +1,5 @@
 import type { AgentStatus, Task } from '../../../shared/types';
-import { getLeafPanes } from '../../../shared/paneUtils';
+import { getLeafPanes, getWorkspaceLeafPanes } from '../../../shared/paneUtils';
 import { isBrainPtyId } from '../../../shared/constants';
 import type { StoreState } from '../index';
 
@@ -48,6 +48,15 @@ export interface FleetPane {
    * human is needed).
    */
   supervision?: { status: 'armed' | 'stopped'; restartCount: number };
+  /**
+   * True when this pane is stashed (#977) — owned and running, but not in the
+   * layout. Fleet is deliberately layout-independent (README: "every roster in
+   * the app derives from this one selector"), so a stashed agent that starts
+   * waiting on the user must still light the workspace dot and the "N need you"
+   * chip. Consumers use the flag to unstash before jumping, since every focus
+   * path filters on the visible tree and would otherwise no-op in silence.
+   */
+  stashed?: boolean;
 }
 
 /** Minimal store surface the selector reads — keeps the fixture trivial and the
@@ -178,7 +187,10 @@ export function selectFleetPanes(state: FleetSelectorState): FleetPane[] {
   const result: FleetPane[] = [];
   for (const ws of state.workspaces) {
     const wsMeta = ws.metadata;
-    for (const leaf of getLeafPanes(ws.rootPane)) {
+    // Workspace-wide (#977): a stashed agent is off-screen, not off-duty.
+    const visibleIds = new Set(getLeafPanes(ws.rootPane).map((l) => l.id));
+    for (const leaf of getWorkspaceLeafPanes(ws)) {
+      const stashed = !visibleIds.has(leaf.id);
       const surf = leaf.surfaces.find((s) => s.id === leaf.activeSurfaceId) ?? leaf.surfaces[0];
       const ptyId = surf?.ptyId ?? '';
       // The orchestrator's own brain pty is never a fleet member. It should
@@ -266,6 +278,7 @@ export function selectFleetPanes(state: FleetSelectorState): FleetPane[] {
         // pane badge). Only supervised panes have an entry; unsupervised →
         // undefined. An unspawned surface (empty ptyId) never carries one.
         supervision: ptyId ? state.supervisionByPtyId?.[ptyId] : undefined,
+        ...(stashed ? { stashed: true } : {}),
       });
     }
   }
