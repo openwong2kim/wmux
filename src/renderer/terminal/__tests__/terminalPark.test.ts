@@ -47,7 +47,7 @@ describe('terminalPark', () => {
     expect(adopted?.terminal).toBe(asTerminal(term));
     expect(dispose).not.toHaveBeenCalled();
     // Claiming transfers ownership: the pending dispose must be cancelled, or
-    // the adopting mount's terminal dies 250 ms into its life.
+    // the adopting mount's terminal dies the moment the task ends.
     vi.advanceTimersByTime(PARK_TTL_MS * 4);
     expect(dispose).not.toHaveBeenCalled();
     expect(__isParked('pty-1')).toBe(false);
@@ -137,6 +137,34 @@ describe('terminalPark', () => {
 
       expect(term.scrollToLine).toHaveBeenCalledWith(120);
       expect(term.scrollToBottom).not.toHaveBeenCalled();
+    });
+
+    it('measures against the CURRENT bottom, so a reflow does not misplace the reader', () => {
+      // The split changes the pane's width, and on a reflow-capable buffer that
+      // rewraps every line — the absolute row the user was reading is not the
+      // same row afterwards. Restoring by distance-from-bottom lands them near
+      // what they were reading instead of somewhere else entirely.
+      const term = fakeTerminal(400, 500); // 100 rows up from the bottom
+      parkTerminal('pty-1', asTerminal(term), fakeElement(), vi.fn());
+      const adopted = adoptTerminal('pty-1');
+
+      term.buffer.active.baseY = 620; // the fit rewrapped: 120 more rows exist
+
+      restoreParkedViewport(adopted!);
+
+      expect(term.scrollToLine).toHaveBeenCalledWith(520);
+    });
+
+    it('never scrolls above the top of the buffer', () => {
+      const term = fakeTerminal(10, 500);
+      parkTerminal('pty-1', asTerminal(term), fakeElement(), vi.fn());
+      const adopted = adoptTerminal('pty-1');
+
+      term.buffer.active.baseY = 30; // rewrapped far shorter than the offset
+
+      restoreParkedViewport(adopted!);
+
+      expect(term.scrollToLine).toHaveBeenCalledWith(0);
     });
 
     it('does not take the adopting mount down when scrolling throws', () => {

@@ -617,6 +617,13 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
   // reattach path, which is keyed on ptyId alone and would otherwise capture a
   // stale value. Seeded to the same optimistic default the daemon holds.
   const viewerVisibleRef = useRef(true);
+  // #1002 — true while this pane's daemon reattach is still retrying. The park
+  // decision reads it: reconnectPtyWithRetry bails the moment terminalRef goes
+  // null, so a restructure mid-reconnect kills the attempt, and an adopting
+  // mount that also skips its own active-at-mount reconnect would leave the
+  // pane with no session pipe at all. Reset per effect run, like the local
+  // in-flight guard it mirrors.
+  const reconnectInFlightRef = useRef(false);
   // #1002 — set by the main effect when this mount adopted a parked terminal.
   // Read by the daemon reattach effect (which runs later in the same commit)
   // to skip its active-at-mount reconnect: the session pipe never detached, so
@@ -1709,7 +1716,12 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     // so the paste branch can suppress a paste that lands within
     // RIGHT_CLICK_PASTE_SUPPRESS_MS — the fix for the copy↔paste collision.
     let lastRightClickCopyAt = 0;
-    terminal.element?.addEventListener('contextmenu', (e) => {
+    // Named, and removed on teardown (#1002): this listener lives on
+    // terminal.element, which survives a park. terminal.dispose() used to take
+    // the element with it, so an anonymous handler was safe; with adoption it
+    // is not — each restructure would stack another handler, and one
+    // right-click would paste the clipboard into the shell once per split.
+    const onTerminalContextMenu = (e: MouseEvent) => {
       e.preventDefault();
 
       // Detect if right-click target is a link element
@@ -1806,7 +1818,8 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
           }
         }
       })().catch((err) => console.error('[wmux:clipboard] right-click error:', err));
-    });
+    };
+    terminal.element?.addEventListener('contextmenu', onTerminalContextMenu);
 
     // Drag-and-drop is handled globally in preload via webUtils.getPathForFile()
 
@@ -1880,6 +1893,13 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     // for `daemon:connected` — when it fires, clear + reset the terminal
     // before SessionPipe replay arrives, so the daemon flush lands on a
     // fresh xterm with no stale prefix.
+    // #1002 — has the scrollback restore finished with this terminal? The park
+    // decision reads it: the restore's own callbacks bail on
+    // `terminalRef.current !== terminal`, so parking mid-restore drops both the
+    // `.txt` content and the pendingData buffered behind it, and the adopting
+    // mount skips the restore entirely — a pane with no history that the
+    // autosave then writes back over the file it lost.
+    let restoreSettled = !(scrollbackFile && !adopted);
     let didRestoreTxt = false;
     let removeDaemonConnectedForRestore: (() => void) | null = null;
     // Flush-marker reset gating (see docs/internal/scrollback-restore-design.md).
@@ -2149,6 +2169,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
           });
         }
         scrollbackLoaded = true;
+        restoreSettled = true;
         // P0-1 (app-weight review, Codex Eng #1): route the buffered boot
         // bytes through routePtyData — NOT terminal.write — so a hidden
         // boot-restored pane obeys retention (queue, don't parse) and a
@@ -2180,6 +2201,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         console.error(`[useTerminal] scrollback.load FAILED surfaceFile=${scrollbackFile} ptyId=${ptyId} err=${msg}`);
         if (terminalRef.current !== terminal) return;
         scrollbackLoaded = true;
+        restoreSettled = true;
         // Same retention-aware routing as the success path above (P0-1).
         for (const data of pendingData) {
           routePtyData(data);
@@ -2280,13 +2302,34 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
 
     return () => {
       // #1002: can this terminal be handed to the next mount instead of being
-      // disposed? Only when its buffer is a faithful copy of the session — a
-      // dirty pane or one mid-resync is exactly the case that NEEDS the replay,
-      // and adopting it would leave a stale screen with nothing to repair it.
+      // disposed? Only when every source of truth for this pane has settled on
+      // it. Each clause below is a state where the adopting mount — which skips
+      // the restore AND the reconnect — would inherit a screen that nothing is
+      // coming to repair, which is strictly worse than the replay this fix
+      // removes. Refusing just falls back to the old behaviour.
       const parkElement = terminal.element ?? null;
       const canPark = parkElement !== null
+        // Mid-resync or dirty: exactly the pane that NEEDS the replay.
         && !resyncRef.current.pending
-        && !isTerminalDirty(terminal);
+        && !isTerminalDirty(terminal)
+        // Restore still in flight: its callbacks bail on the null terminalRef
+        // we are about to write, dropping the .txt content and the pendingData
+        // behind it, and the adopting mount would not redo either.
+        && restoreSettled
+        // A .txt cache is on screen awaiting the daemon's verdict. The
+        // late-connect listener that clears it before the ring replay lands
+        // dies with this mount, so an adopted pane would compose the replay on
+        // top of the cache — the corruption A6 exists to prevent.
+        && !didRestoreTxt
+        // A reconnect is still retrying. It aborts the moment terminalRef goes
+        // null (reconnectPtyWithRetry's isCurrent guard), and the adopting
+        // mount skips its own active-at-mount attempt, so the pane would end up
+        // with no session pipe at all.
+        && !reconnectInFlightRef.current
+        // Two live instances on one ptyId (the fast unmount→remount ordering
+        // the WebGL pool note describes): if the registry no longer points at
+        // us, a later mount already owns this pane and ours is the stale copy.
+        && terminalRegistry.get(ptyId) === terminal;
 
       if (resizeDebounceTimer) clearTimeout(resizeDebounceTimer);
       if (pendingFitRaf !== null) cancelAnimationFrame(pendingFitRaf);
@@ -2294,6 +2337,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       detachAltScreenWheel();
       terminal.textarea?.removeEventListener('focus', onTextareaFocus);
       terminal.textarea?.removeEventListener('keydown', onWatchdogKeyDown);
+      terminal.element?.removeEventListener('contextmenu', onTerminalContextMenu);
       glyphRepaint.dispose();
       glyphRepaintRef.current = null;
       unregisterAtlasGuard();
@@ -2377,9 +2421,9 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         searchAddon.dispose();
         webLinksAddon.dispose();
         // parkTerminal owns the dispose from here: it runs it if no mount
-        // claims the terminal inside the park window, which is every case
-        // except a tree restructure — a closed pane still disposes, just 250 ms
-        // later than it used to.
+        // claims the terminal before this task ends, which is every case except
+        // a tree restructure — a closed pane still disposes, one task later
+        // than it used to.
         parkTerminal(ptyId, terminal, parkElement, disposeTerminal);
       } else {
         disposeWhenDragEnds(() => terminal.dispose());
@@ -2414,9 +2458,11 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     // permanent latch — once an attempt settles, a later connect/respawn
     // reattaches again. Lives in the effect-run closure so it resets per ptyId.
     let inFlight = false;
+    reconnectInFlightRef.current = false;
     const reattach = (reason: string) => {
       if (inFlight) return;
       inFlight = true;
+      reconnectInFlightRef.current = true;
       console.log(`[useTerminal] daemon reattach ptyId=${id} (${reason})`);
       void reconnectPtyWithRetry(id, () => ptyIdRef.current === id && terminalRef.current !== null)
         .then(() => {
@@ -2430,7 +2476,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
           if (ptyIdRef.current !== id) return;
           reportViewerVisibility(id, viewerVisibleRef.current);
         })
-        .finally(() => { inFlight = false; });
+        .finally(() => { inFlight = false; reconnectInFlightRef.current = false; });
     };
     // Daemon already connected when we mounted: its daemon:connected fired before
     // the renderer could listen, so we reattach now off the module flag (set by
