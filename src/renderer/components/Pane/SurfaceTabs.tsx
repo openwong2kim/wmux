@@ -1,6 +1,7 @@
 import { useRef, useState, useEffect } from 'react';
 import type { AgentStatus, Surface, Workspace } from '../../../shared/types';
 import { useT } from '../../hooks/useT';
+import { useDaemonModeActive } from '../../hooks/useDaemonMode';
 import { useStore } from '../../stores';
 import {
   buildExportPayload,
@@ -11,18 +12,19 @@ import { computePaneAutoName, paneDisplayName } from '../../utils/paneNaming';
 import { findPane } from '../../../shared/paneUtils';
 import PaneDragGrip from './PaneDragGrip';
 import { FOCUS_RING } from '../focusRing';
-import { IconSplitRight, IconSplitDown, IconBrowser } from '../icons';
+import { IconSplitRight, IconSplitDown, IconBrowser, IconArchive } from '../icons';
 import { displayPath } from '../../utils/displayPath';
 
-/** Rendered width (px) of the pane-action half of the cluster (split / browser / zoom).
+/** Rendered width (px) of the pane-action half of the cluster (split / browser /
+ *  stash / zoom).
  *  Deterministic because every child is fixed-size. Tracing the markup below
- *  (split-right, split-down, new-browser, zoom):
+ *  (split-right, split-down, new-browser, stash, zoom):
  *    outer div  border-l 1 + pl-1 4 ................................. 5
- *    4 × w-6 buttons (24 each) ...................................... 96
- *    3 × gap-0.5 (2 each, between the 4 flex children) ............... 6
+ *    5 × w-6 buttons (24 each) ..................................... 120
+ *    4 × gap-0.5 (2 each, between the 5 flex children) ............... 8
  *    zoom wrapper  ml-0.5 2 + border-l 1 + pl-1 4 ................... 7
  *    outer div  pr-0.5 2 ............................................. 2
- *                                                             total = 116
+ *                                                             total = 142
  *  (The button gaps + the wrapper's own ml-0.5 both apply between the browser
  *  button and the divider — flex `gap` and `margin` stack.) Exported so
  *  Pane.tsx can offset the absolute supervision badge just left of the cluster
@@ -32,7 +34,7 @@ import { displayPath } from '../../utils/displayPath';
  *  The tab-strip `+` is NOT part of this cluster and does not affect the
  *  width: it is opt-in (see the note at its render site) and lives on the
  *  left, with the tabs. */
-export const PANE_ACTIONS_CLUSTER_WIDTH = 116;
+export const PANE_ACTIONS_CLUSTER_WIDTH = 142;
 
 /** Cluster width for the current chrome matrix. The agent verbs went back to
  *  the bottom toolbar (2026-08-18), so the cluster is the action half only. */
@@ -52,6 +54,21 @@ const SC_SPLIT_RIGHT = IS_MAC ? '⌘D' : 'Ctrl+D';
 const SC_SPLIT_DOWN = IS_MAC ? '⇧⌘D' : 'Ctrl+Shift+D';
 /** Mirrors the `cmdOrCtrl && key === 't'` binding in useKeyboard.ts. */
 const SC_NEW_TERMINAL = IS_MAC ? '⌘T' : 'Ctrl+T';
+
+/** Human-readable form of the prefix chord bound to an action, e.g. "Ctrl+B !".
+ *  Read from the live config rather than hardcoded: the prefix key and the
+ *  binding are both user-editable, and a tooltip advertising a chord the user
+ *  rebound is worse than no tooltip. Returns null when nothing is bound. */
+function prefixChordFor(
+  config: { key: string; bindings: Record<string, string> },
+  actionId: string,
+): string | null {
+  const bound = Object.entries(config.bindings).find(([, id]) => id === actionId)?.[0];
+  if (!bound) return null;
+  const m = /^Key([A-Z])$/.exec(config.key);
+  const prefix = IS_MAC ? `⌘${m ? m[1] : config.key}` : `Ctrl+${m ? m[1] : config.key}`;
+  return `${prefix} ${bound}`;
+}
 
 /** B8: dot color for a completed/awaiting surface tab. Status-dot vocabulary
  *  (DESIGN.md): green = complete, red = needs-you (awaiting/waiting). */
@@ -134,6 +151,11 @@ export default function SurfaceTabs({
   // and reflects the current state (pressed when zoomed). Subscribing here (same
   // pattern as Pane.tsx) keeps the button in sync without prop threading.
   const isZoomed = useStore((s) => s.zoomedPaneId === paneId);
+  // #977 — stash needs a live daemon connection (it is what holds the session
+  // and replays it), and it needs a sibling to be left behind.
+  const daemonConnected = useDaemonModeActive();
+  const prefixConfig = useStore((s) => s.prefixConfig);
+  const stashDisabled = !daemonConnected;
   // P2: pane-level identity + rename (distinct from the per-surface tab rename
   // below). The pane's display name is its user label (paneLabel mirror) or the
   // stable auto coordinate `w<ws>-<pane>(<agent>)`. Narrowed to THIS pane's
@@ -426,6 +448,36 @@ export default function SurfaceTabs({
             data-pane-action="new-browser"
           >
             <IconBrowser size={14} />
+          </button>
+          {/* Stash — take this pane out of the layout, keep the session (#977).
+              It sits next to ✕ with the same visual weight while one is fully
+              reversible and the other kills an agent, so the tooltip says what
+              happens rather than naming the verb: "the session keeps running"
+              is the whole difference between the two buttons. */}
+          <button
+            className={`ui-icon-btn ${FOCUS_RING} w-6 h-6 ${stashDisabled ? 'opacity-40' : ''}`}
+            // aria-disabled, not disabled: a disabled button drops out of the
+            // tab order, so a keyboard user cannot reach it to READ why it is
+            // unavailable. It stays focusable and explains itself.
+            aria-disabled={stashDisabled || undefined}
+            onClick={(e) => {
+              e.stopPropagation();
+              if (stashDisabled) return;
+              useStore.getState().stashPane(paneId, workspace.id);
+            }}
+            title={
+              stashDisabled
+                ? t('pane.stashNoDaemon')
+                : (() => {
+                    const chord = prefixChordFor(prefixConfig, 'stashPane');
+                    const label = `${t('pane.stash')} — ${t('pane.stashHint')}`;
+                    return chord ? withShortcut(label, chord) : label;
+                  })()
+            }
+            aria-label={t('pane.stash')}
+            data-pane-action="stash"
+          >
+            <IconArchive size={14} />
           </button>
           {/* Zoom/maximize — fourth action, visually separated from the surface
               actions by the same border-l divider the cluster uses against the

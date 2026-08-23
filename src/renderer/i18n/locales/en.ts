@@ -342,6 +342,7 @@ export const en = {
   'palette.cmd.newSurface': 'New Surface',
   'palette.cmd.splitRight': 'Split Right',
   'palette.cmd.splitDown': 'Split Down',
+  'palette.cmd.stashPane': 'Stash Pane (keep the session running)',
   'palette.cmd.movePane.left': 'Move Pane Left',
   'palette.cmd.movePane.right': 'Move Pane Right',
   'palette.cmd.movePane.up': 'Move Pane Up',

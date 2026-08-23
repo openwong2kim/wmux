@@ -223,6 +223,19 @@ export default function CommandPalette() {
           setVisible(false);
         },
       },
+      {
+        // #977 — stash the ACTIVE pane. There is no "unstash" command here on
+        // purpose: unstashing needs a target, and the roster already lists the
+        // stashed panes with a click that brings each one back. A palette entry
+        // would have to invent a second picker for a list that already exists.
+        label: t('palette.cmd.stashPane'),
+        action: () => {
+          const state = useStore.getState();
+          const ws = state.workspaces.find((w) => w.id === state.activeWorkspaceId);
+          if (ws) state.stashPane(ws.activePaneId, ws.id);
+          setVisible(false);
+        },
+      },
       // #645 — move the active pane. Four entries rather than one "move pane"
       // with a follow-up prompt: the palette is a single-stage list, and
       // typing "move pane l" should just do it.

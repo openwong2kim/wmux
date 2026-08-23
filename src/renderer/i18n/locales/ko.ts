@@ -99,6 +99,7 @@ export const ko = {
   'palette.cmd.newSurface': '새 서피스',
   'palette.cmd.splitRight': '오른쪽 분할',
   'palette.cmd.splitDown': '아래 분할',
+  'palette.cmd.stashPane': '현재 페인 치우기 (세션은 계속 실행)',
   'palette.cmd.movePane.left': '페인 왼쪽으로 이동',
   'palette.cmd.movePane.right': '페인 오른쪽으로 이동',
   'palette.cmd.movePane.up': '페인 위로 이동',
