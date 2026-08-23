@@ -164,6 +164,31 @@ describe('installHooks', () => {
     }
   });
 
+  it('keeps a foreign leaf the user added inside a wmux group across a re-install', () => {
+    installHooks(paths());
+    // Claude Code's schema allows several command leaves under one matcher, so
+    // the user hand-adds theirs to the group wmux wrote for Stop.
+    const seeded = readSettings();
+    const stopGroups = (seeded.hooks as Record<string, { hooks: unknown[] }[]>).Stop;
+    stopGroups[0].hooks.push({ type: 'command', command: 'echo mine' });
+    fs.writeFileSync(settingsPath, JSON.stringify(seeded), 'utf8');
+
+    installHooks(paths()); // clear-then-add — the strip runs over that group
+
+    expect(allHookCommands()).toContain('echo mine');
+    const stop = (readSettings().hooks as Record<
+      string,
+      { matcher?: string; hooks: { command: string }[] }[]
+    >).Stop;
+    // The user's leaf keeps its group (and its matcher); wmux's own hook is
+    // re-added beside it, exactly once, in a group of its own.
+    expect(stop.filter((g) => g.hooks.some((h) => h.command === 'echo mine'))).toHaveLength(1);
+    expect(
+      stop.filter((g) => g.hooks.some((h) => h.command === `node "${bridgeDest}" Stop`)),
+    ).toHaveLength(1);
+    expect(stop.every((g) => g.hooks.length === 1)).toBe(true);
+  });
+
   it('aborts without writing when settings.json is corrupted', () => {
     fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
     const corrupt = '{ this is not json';
@@ -368,6 +393,62 @@ describe('removeHooks', () => {
     expect(outcome.ok).toBe(false);
     expect(outcome.error).toContain('not valid JSON');
     expect(fs.readFileSync(settingsPath, 'utf8')).toBe(corrupt);
+  });
+
+  it('removes only the wmux leaf from a group it shares with a foreign hook', () => {
+    fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
+    fs.writeFileSync(
+      settingsPath,
+      JSON.stringify({
+        hooks: {
+          PreToolUse: [
+            {
+              matcher: 'AskUserQuestion',
+              hooks: [
+                { type: 'command', command: `node "${bridgeDest}" PreToolUse` },
+                { type: 'command', command: 'echo mine' },
+              ],
+            },
+          ],
+        },
+      }),
+      'utf8',
+    );
+
+    const outcome = removeHooks(paths());
+    expect(outcome.ok).toBe(true);
+    expect(outcome.removed).toBe(1);
+    // The group survives, carrying the user's leaf and its matcher unchanged.
+    expect((readSettings().hooks as Record<string, unknown[]>).PreToolUse).toEqual([
+      { matcher: 'AskUserQuestion', hooks: [{ type: 'command', command: 'echo mine' }] },
+    ]);
+  });
+
+  it('counts the wmux leaves it removes, not the groups they sat in', () => {
+    fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
+    fs.writeFileSync(
+      settingsPath,
+      JSON.stringify({
+        hooks: {
+          // Two wmux leaves in one group: the current install plus a stale copy
+          // from an older bridge path the user merged in by hand.
+          Stop: [
+            {
+              matcher: '',
+              hooks: [
+                { type: 'command', command: `node "${bridgeDest}" Stop` },
+                { type: 'command', command: 'node "/old/.wmux/hooks/wmux-bridge.mjs" Stop' },
+              ],
+            },
+          ],
+        },
+      }),
+      'utf8',
+    );
+
+    expect(removeHooks(paths()).removed).toBe(2);
+    // Nothing foreign was in that group, so it goes, and the empty map with it.
+    expect(readSettings().hooks).toBeUndefined();
   });
 });
 

@@ -264,18 +264,29 @@ interface HookGroup {
   [k: string]: unknown;
 }
 
-/** True when a hook group contains a wmux-owned command leaf. */
+/** True when a single hook leaf is a wmux-owned command. */
+function isWmuxLeaf(leaf: unknown): boolean {
+  return (
+    !!leaf &&
+    typeof leaf === 'object' &&
+    typeof (leaf as HookLeaf).command === 'string' &&
+    (leaf as HookLeaf).command.includes(WMUX_BRIDGE_MARKER)
+  );
+}
+
+/**
+ * True when a hook group contains a wmux-owned command leaf.
+ *
+ * Ownership is per GROUP here because that is what DETECTION needs: a group
+ * carrying our leaf provides the spec no matter what else the user put beside
+ * it. REMOVAL asks a different question and answers it per leaf — see
+ * `stripWmuxHooks`.
+ */
 function isWmuxGroup(group: unknown): boolean {
   if (!group || typeof group !== 'object') return false;
   const hooks = (group as HookGroup).hooks;
   if (!Array.isArray(hooks)) return false;
-  return hooks.some(
-    (h) =>
-      h &&
-      typeof h === 'object' &&
-      typeof (h as HookLeaf).command === 'string' &&
-      (h as HookLeaf).command.includes(WMUX_BRIDGE_MARKER),
-  );
+  return hooks.some(isWmuxLeaf);
 }
 
 /**
@@ -404,17 +415,23 @@ function loadSettings(settingsPath: string): LoadResult {
 }
 
 /**
- * Strip all wmux-owned hook groups from a settings.hooks map, dropping any event
- * arrays (and the `hooks` key itself) left empty. Returns the count removed.
- * Mutates `settings` in place. Used by both install (clear-then-add) and remove.
+ * Strip every wmux-owned hook LEAF from a settings.hooks map, dropping any
+ * group, event array (and the `hooks` key itself) left empty. Returns the
+ * number of leaves removed. Mutates `settings` in place. Used by both install
+ * (clear-then-add) and remove.
  *
- * PRESERVES every foreign (non-wmux) hook group: a group is removed only when
- * `isWmuxGroup` confirms it carries a wmux-bridge.mjs command leaf. A user's
- * hand-registered foreign PreToolUse pointing at a DIFFERENT script is never
- * touched — `installHooks` then re-adds only wmux's own specs. (#781: the
- * report of "setup-hooks wiped my PreToolUse" was a group whose command
- * pointed at wmux-bridge.mjs itself, which is correctly wmux-owned and thus
- * refreshed, not a foreign hook destroyed.)
+ * PRESERVES every foreign (non-wmux) hook, including one the user put INSIDE a
+ * group of ours. Claude Code's schema lets a single matcher group hold several
+ * command leaves, so "is this group wmux's?" and "is this command wmux's?" are
+ * different questions: filtering whole groups answers the first and takes the
+ * user's own leaf as collateral — on `--remove`, and on every reinstall, since
+ * install is clear-then-add through this same function. Every group wmux
+ * writes holds exactly one leaf and nothing else, so for wmux's own output the
+ * two granularities are byte-identical; they diverge only in the hand-mixed
+ * case, which is the one worth getting right. (#781: the report of
+ * "setup-hooks wiped my PreToolUse" was a group whose command pointed at
+ * wmux-bridge.mjs itself, which is correctly wmux-owned and thus refreshed,
+ * not a foreign hook destroyed.)
  */
 function stripWmuxHooks(settings: Record<string, unknown>): number {
   const hooks = settings.hooks;
@@ -424,8 +441,21 @@ function stripWmuxHooks(settings: Record<string, unknown>): number {
   for (const event of Object.keys(hooksMap)) {
     const groups = hooksMap[event];
     if (!Array.isArray(groups)) continue;
-    const kept = groups.filter((g) => !isWmuxGroup(g));
-    removed += groups.length - kept.length;
+    const kept: unknown[] = [];
+    for (const group of groups) {
+      if (!isWmuxGroup(group)) {
+        kept.push(group);
+        continue;
+      }
+      const leaves = (group as HookGroup).hooks as unknown[];
+      const foreign = leaves.filter((leaf) => !isWmuxLeaf(leaf));
+      removed += leaves.length - foreign.length;
+      // Ours alone: the group goes with the leaf, exactly as before.
+      if (foreign.length === 0) continue;
+      // Hand-mixed: keep the group, the matcher, and the user's leaves.
+      (group as HookGroup).hooks = foreign as HookLeaf[];
+      kept.push(group);
+    }
     if (kept.length === 0) {
       delete hooksMap[event];
     } else {
