@@ -1,6 +1,6 @@
 import type { StateCreator } from 'zustand';
 import type { StoreState } from '../index';
-import type { Pane, PaneLeaf, PaneBranch, Workspace, AgentStatus } from '../../../shared/types';
+import type { Pane, PaneLeaf, PaneBranch, StashedPane, Workspace, AgentStatus } from '../../../shared/types';
 import type { AgentSlug } from '../../../shared/events';
 import {
   createLeafPane,
@@ -11,7 +11,13 @@ import {
   findParent,
   collectLeafIds,
   getLeafPanes,
+  getWorkspaceLeafPanes,
 } from '../../../shared/paneUtils';
+import {
+  canStashPaneSurfaces,
+  findStashedEntry,
+} from '../../../shared/paneStash';
+import { isDaemonModeActive } from '../../daemon/daemonMode';
 import {
   publishPaneCreated,
   publishPaneClosed,
@@ -20,7 +26,7 @@ import {
 import { t } from '../../i18n';
 import { clearNudgesFor } from '../../hooks/channelMentionRateLimit';
 import { panePrincipalId } from '../../../shared/principals';
-import { computePaneAutoName } from '../../utils/paneNaming';
+import { computePaneAutoName, paneDisplayName } from '../../utils/paneNaming';
 import { saveSessionNow } from '../../utils/sessionSaveBridge';
 
 // Per-workspace leaf cap. xterm.js + node-pty memory scales linearly with
@@ -51,6 +57,42 @@ export interface PaneSlice {
    * non-active workspace (defaults to the active one — existing callers are
    * unchanged). */
   closePane: (paneId: string, workspaceId?: string) => void;
+  /**
+   * Take a leaf OUT of the layout without killing it (issue #977).
+   *
+   * The opposite of `closePane` in the one way that matters: none of the
+   * destructive teardown runs. No `pty.dispose`, no `surfaceAgent` /
+   * `surfaceActivity` / `surfacePorts` eviction, no label or role drop, no
+   * principal or channel-membership purge. The daemon keeps the session, the
+   * pane keeps its identity, and `unstashPane` puts it back.
+   *
+   * Refuses — with a toast explaining why — when the daemon is not connected
+   * (without the ring, output produced while unmounted is simply lost), when
+   * the target is the last visible leaf (nothing would be left to look at), or
+   * when the pane holds an editor/diff/git/review surface (unmounting those
+   * drops unsaved edits the ring cannot replay).
+   */
+  stashPane: (paneId: string, workspaceId?: string) => boolean;
+  /**
+   * Put a stashed pane back beside its former neighbour.
+   *
+   * Not "back where it was": `origin` records an anchor leaf and a direction,
+   * not the original tree shape, so the pane is re-attached in a fresh branch
+   * next to that anchor. When the anchor is gone it lands beside the active
+   * pane instead. Idempotent for the undo-toast race — a pane that is no longer
+   * stashed is a silent success, not an error.
+   */
+  unstashPane: (paneId: string, workspaceId?: string) => boolean;
+  /**
+   * One-shot "a pane just moved into the roster" signal for the sidebar.
+   *
+   * Stashing takes a pane off the screen; if the list it moved into is
+   * collapsed, the whole gesture reads as a delete. The roster consumes this to
+   * open itself and flash the new row once, then the pulse is cleared — it is
+   * transient view state, never persisted.
+   */
+  stashPulse: { workspaceId: string; paneId: string; at: number } | null;
+  clearStashPulse: () => void;
   /**
    * Issue #645 — move a leaf next to another leaf, tmux `join-pane` style.
    *
@@ -345,8 +387,91 @@ function detachPane(ws: Workspace, paneId: string): Pane | null {
   return detached;
 }
 
+/**
+ * Insert `node` next to the leaf `targetLeafId`, wrapping the target in a fresh
+ * binary branch — the structural half of both `movePane` (#645) and
+ * `unstashPane` (#977). The mirror image of `detachPane`, and the reason the
+ * two features cannot drift: a moved pane and an unstashed pane land in exactly
+ * the same shape.
+ *
+ * `sizes` is `[nodeShare, targetShare]` and is IGNORED unless it has exactly two
+ * entries. A `sizes` array out of step with `children` is the precise bug
+ * detachPane exists to prevent in the other direction (every survivor renders
+ * one slot off), and origin sizes come from persisted, user-editable state.
+ *
+ * Returns false — having mutated nothing — when the target is no longer in the
+ * tree, so the caller can keep the node where it was instead of dropping it.
+ */
+function attachBeside(
+  ws: Workspace,
+  targetLeafId: string,
+  node: Pane,
+  direction: 'horizontal' | 'vertical',
+  sourceFirst: boolean,
+  sizes?: number[],
+): boolean {
+  const targetParent = findParent(ws.rootPane, targetLeafId);
+  const liveTarget = findPane(ws.rootPane, targetLeafId);
+  if (!liveTarget) return false;
+
+  const [nodeShare, targetShare] = sizes && sizes.length === 2 ? sizes : [50, 50];
+  const branch: PaneBranch = {
+    id: generateId('pane'),
+    type: 'branch',
+    direction,
+    children: sourceFirst ? [node, liveTarget] : [liveTarget, node],
+    sizes: sourceFirst ? [nodeShare, targetShare] : [targetShare, nodeShare],
+  };
+
+  if (targetParent) {
+    const idx = targetParent.children.findIndex((c) => c.id === targetLeafId);
+    if (idx === -1) return false;
+    targetParent.children[idx] = branch;
+  } else {
+    ws.rootPane = branch;
+  }
+  return true;
+}
+
+/** Why a stash was refused. `notFound` is silent (a stale id, not a user error). */
+type StashRefusalReason = 'daemon' | 'lastPane' | 'notFound' | { surfaceType: string };
+
+/**
+ * Where a pane sat, recorded at stash time. Anchors on a LEAF: when the sibling
+ * is a branch we take that branch's first leaf, which is why unstash promises
+ * "next to its former neighbour" rather than "back where it was" — the parent
+ * topology is not recoverable from this.
+ */
+function captureStashOrigin(ws: Workspace, paneId: string): StashedPane['origin'] {
+  const parent = findParent(ws.rootPane, paneId);
+  if (!parent) return undefined;
+  const idx = parent.children.findIndex((c) => c.id === paneId);
+  if (idx === -1) return undefined;
+  // The adjacent sibling — the next child, or the previous one at the end.
+  const siblingIdx = idx + 1 < parent.children.length ? idx + 1 : idx - 1;
+  const sibling = parent.children[siblingIdx];
+  if (!sibling) return undefined;
+  const anchorLeaf = sibling.type === 'leaf' ? sibling : getLeafPanes(sibling)[0];
+  if (!anchorLeaf) return undefined;
+  const sizes = parent.sizes;
+  return {
+    anchorPaneId: anchorLeaf.id,
+    direction: parent.direction,
+    sourceFirst: idx < siblingIdx,
+    ...(sizes && sizes.length === parent.children.length
+      ? { sizes: [sizes[idx], sizes[siblingIdx]] }
+      : {}),
+  };
+}
+
 export const createPaneSlice: StateCreator<StoreState, [['zustand/immer', never]], [], PaneSlice> = (set, get) => ({
   paneNotificationRing: {},
+
+  stashPulse: null,
+
+  clearStashPulse: () => set((state: StoreState) => {
+    state.stashPulse = null;
+  }),
 
   setPaneNotificationRing: (paneId, ring) => set((state: StoreState) => {
     if (ring === null) {
@@ -502,6 +627,7 @@ export const createPaneSlice: StateCreator<StoreState, [['zustand/immer', never]
   splitPane: (paneId, direction, workspaceId, position = 'after') => {
     let event: { wsId: string; newPaneId: string; branchId: string; previousActiveId: string; focusMoved: boolean } | null = null;
     let blockedAtCap = false;
+    let stashedAtCap = 0;
     let createdPaneId: string | false = false;
     set((state: StoreState) => {
       const targetWsId = workspaceId || state.activeWorkspaceId;
@@ -513,9 +639,11 @@ export const createPaneSlice: StateCreator<StoreState, [['zustand/immer', never]
 
       // Cap leaf growth — every callsite (Ctrl+D, prefix-mode split, palette,
       // browser-pane shortcut, sample-task wizard) funnels through here, so a
-      // single guard is enough.
-      if (collectLeafIds(ws.rootPane).length >= MAX_PANES_PER_WORKSPACE) {
+      // single guard is enough. Stashed panes COUNT: the cap exists to bound
+      // xterm + node-pty memory, and a stashed pane's session is still running.
+      if (getWorkspaceLeafPanes(ws).length >= MAX_PANES_PER_WORKSPACE) {
         blockedAtCap = true;
+        stashedAtCap = (ws.stashedPanes ?? []).length;
         return;
       }
 
@@ -537,7 +665,7 @@ export const createPaneSlice: StateCreator<StoreState, [['zustand/immer', never]
       // renumbering the existing tree, so live panes keep their names.
       const paneOrdinal =
         ws.nextPaneOrdinal ??
-        (getLeafPanes(ws.rootPane).reduce((m, l) => Math.max(m, l.ordinal ?? 0), 0) + 1);
+        (getWorkspaceLeafPanes(ws).reduce((m, l) => Math.max(m, l.ordinal ?? 0), 0) + 1);
       const newPane = createLeafPane(undefined, paneOrdinal);
       createdPaneId = newPane.id;
       ws.nextPaneOrdinal = paneOrdinal + 1;
@@ -612,7 +740,15 @@ export const createPaneSlice: StateCreator<StoreState, [['zustand/immer', never]
       // Toast emitted outside the immer producer so the slice doesn't recurse
       // into another set() while the producer is still running.
       get().pushToast({
-        message: t('pane.maxLeavesReached', { count: MAX_PANES_PER_WORKSPACE }),
+        // Name the stash when it is part of why the cap was hit — otherwise the
+        // message points at panes the user can see and count, and the ones
+        // actually consuming the budget are off-screen.
+        message: stashedAtCap > 0
+          ? t('pane.maxLeavesReachedWithStash', {
+              count: MAX_PANES_PER_WORKSPACE,
+              stashed: stashedAtCap,
+            })
+          : t('pane.maxLeavesReached', { count: MAX_PANES_PER_WORKSPACE }),
         level: 'warn',
       });
     }
@@ -633,7 +769,11 @@ export const createPaneSlice: StateCreator<StoreState, [['zustand/immer', never]
       const s = get();
       const wsSnap = s.workspaces.find((w: Workspace) => w.id === (workspaceId || s.activeWorkspaceId));
       const parentSnap = wsSnap ? findParent(wsSnap.rootPane, paneId) : null;
-      const subtree = parentSnap?.children.find((c) => c.id === paneId);
+      // A stashed pane is still owned, so the roster's ✕ must be able to kill
+      // it for real — same teardown, same principal purge. Falling back to the
+      // stash here is what makes closePane the single destructive path.
+      const subtree = parentSnap?.children.find((c) => c.id === paneId)
+        ?? findStashedEntry(wsSnap?.stashedPanes, paneId)?.pane;
       if (wsSnap && subtree) {
         for (const leaf of getLeafPanes(subtree)) {
           const agentSurface = leaf.surfaces.find(
@@ -658,13 +798,17 @@ export const createPaneSlice: StateCreator<StoreState, [['zustand/immer', never]
       if (!ws) return;
 
       const parent = findParent(ws.rootPane, paneId);
-      if (!parent) {
+      const stashedIdx = parent
+        ? -1
+        : (ws.stashedPanes ?? []).findIndex((entry) => entry?.pane?.id === paneId);
+      if (!parent && stashedIdx === -1) {
         // Can't close root pane, but can clear its surfaces
         return;
       }
 
-      const idx = parent.children.findIndex((c) => c.id === paneId);
-      if (idx === -1) return;
+      const idx = parent ? parent.children.findIndex((c) => c.id === paneId) : -1;
+      if (parent && idx === -1) return;
+      const closingSubtree: Pane = parent ? parent.children[idx] : ws.stashedPanes![stashedIdx].pane;
 
       // Part A: drop per-surface agent identity for every surface under the
       // closing subtree (leaf or branch) so the surfaceAgent map doesn't leak
@@ -672,7 +816,7 @@ export const createPaneSlice: StateCreator<StoreState, [['zustand/immer', never]
       // is keyed the same way and is one of the two REAL teardown sites (the
       // other is closeSurface) — clear it here too so a closed pane's last
       // activity string can't linger on a re-used ptyId.
-      for (const leaf of getLeafPanes(parent.children[idx])) {
+      for (const leaf of getLeafPanes(closingSubtree)) {
         // P2: drop the closed pane's label mirror immediately. The main-side
         // onPaneDeleted relay also clears it, but this keeps the renderer
         // consistent without waiting for the round-trip.
@@ -698,8 +842,14 @@ export const createPaneSlice: StateCreator<StoreState, [['zustand/immer', never]
       const previousActiveId = ws.activePaneId;
       // Structural removal lives in detachPane (shared with movePane, #645);
       // everything above and below this line is the destructive teardown that
-      // only closing does.
-      detachPane(ws, paneId);
+      // only closing does. A stashed pane has no place in the tree to detach
+      // from — dropping its stash entry IS the structural removal.
+      if (parent) {
+        detachPane(ws, paneId);
+      } else {
+        ws.stashedPanes!.splice(stashedIdx, 1);
+        if (ws.stashedPanes!.length === 0) delete ws.stashedPanes;
+      }
 
       // Update active pane
       const leaves = getLeafPanes(ws.rootPane);
@@ -745,6 +895,157 @@ export const createPaneSlice: StateCreator<StoreState, [['zustand/immer', never]
     }
   },
 
+  stashPane: (paneId, workspaceId) => {
+    // Everything the post-producer effects need, captured as PLAIN values.
+    // A draft leaks out of the producer as a revoked proxy, so the undo toast
+    // must never close over `ws` or the pane node itself.
+    let refusal: StashRefusalReason | null = null;
+    let stashed: { wsId: string; paneId: string; paneName: string } | null = null;
+    set((state: StoreState) => {
+      const ws = state.workspaces.find((w: Workspace) => w.id === (workspaceId || state.activeWorkspaceId));
+      if (!ws) { refusal = 'notFound'; return; }
+
+      // Gate on the daemon CONNECTION, not on a "mode": without the ring, every
+      // byte the pane produces while unmounted is gone. Same guarantee cold-park
+      // relies on, asked for at pane granularity.
+      if (!isDaemonModeActive()) { refusal = 'daemon'; return; }
+
+      const target = findPane(ws.rootPane, paneId);
+      if (!target || target.type !== 'leaf') { refusal = 'notFound'; return; }
+
+      const visible = getLeafPanes(ws.rootPane);
+      if (visible.length <= 1) { refusal = 'lastPane'; return; }
+
+      // The daemon ring holds PTY bytes and nothing else — an editor/diff tab
+      // would lose its unsaved buffer on unmount with nothing to replay it from.
+      const allowed = canStashPaneSurfaces(target);
+      if (!allowed.ok) { refusal = { surfaceType: allowed.surfaceType }; return; }
+
+      const origin = captureStashOrigin(ws, paneId);
+      const detached = detachPane(ws, paneId);
+      if (!detached || detached.type !== 'leaf') { refusal = 'notFound'; return; }
+
+      // Created HERE rather than in createWorkspace: every workspace that has
+      // never stashed anything stays byte-identical on disk, and the field's
+      // absence keeps meaning "nothing stashed" instead of "empty array".
+      if (!ws.stashedPanes) ws.stashedPanes = [];
+      ws.stashedPanes.push({ pane: detached, origin, stashedAt: Date.now() });
+
+      // Same hygiene split/move/close apply (#182): a zoom pinned to a pane
+      // that just left the layout would read as an un-zoom on the next toggle.
+      if (state.zoomedPaneId === paneId) state.zoomedPaneId = null;
+      if (ws.activePaneId === paneId) {
+        const remaining = getLeafPanes(ws.rootPane);
+        if (remaining.length > 0) ws.activePaneId = remaining[0].id;
+      }
+
+      // Nudge the sidebar: the pane just left the screen, so the roster it
+      // moved into has to be open for the move to be legible at all.
+      state.stashPulse = { workspaceId: ws.id, paneId, at: Date.now() };
+
+      stashed = {
+        wsId: ws.id,
+        paneId,
+        paneName: paneDisplayName(
+          state.paneLabel[paneId],
+          computePaneAutoName(ws.wsOrdinal ?? 0, detached.ordinal ?? 0),
+        ),
+      };
+    });
+
+    if (refusal) {
+      const r = refusal as StashRefusalReason;
+      if (r === 'notFound') return false;
+      get().pushToast({
+        level: 'warn',
+        message:
+          r === 'daemon' ? t('pane.stashNoDaemon')
+          : r === 'lastPane' ? t('pane.stashLastPane')
+          : t('pane.stashBlockedSurface', { type: r.surfaceType }),
+      });
+      return false;
+    }
+    if (!stashed) return false;
+
+    const done = stashed as { wsId: string; paneId: string; paneName: string };
+    console.log(`[wmux:stash] stashed pane=${done.paneId} ws=${done.wsId}`);
+    // Pane-tree mutations otherwise ride only the 5s autosave (movePane's
+    // reasoning): a stash followed by an immediate quit must not come back
+    // as a pane that is both gone from the layout and missing from the stash.
+    saveSessionNow();
+    get().pushToast({
+      level: 'info',
+      message: t('pane.stashed', { name: done.paneName }),
+      // Ten seconds, not five: undo is the whole reason the toast exists, and
+      // the action it offers is the one thing five seconds is a coin flip on.
+      durationMs: 10_000,
+      action: {
+        label: t('common.undo'),
+        onClick: () => { get().unstashPane(done.paneId, done.wsId); },
+      },
+    });
+    return true;
+  },
+
+  unstashPane: (paneId, workspaceId) => {
+    let restored: { wsId: string; paneId: string; toOrigin: boolean } | null = null;
+    let alreadyVisible = false;
+    set((state: StoreState) => {
+      const ws = state.workspaces.find((w: Workspace) => w.id === (workspaceId || state.activeWorkspaceId));
+      if (!ws) return;
+
+      const idx = (ws.stashedPanes ?? []).findIndex((entry) => entry?.pane?.id === paneId);
+      if (idx === -1) {
+        // Undo-toast race: the roster's ✕ already killed it, or another caller
+        // already brought it back. Both are "the pane is not stashed", which is
+        // what the caller asked for — a silent success, not an error.
+        alreadyVisible = !!findPane(ws.rootPane, paneId);
+        return;
+      }
+      const entry = ws.stashedPanes![idx];
+
+      // Anchor resolution, most → least faithful: the recorded neighbour if it
+      // is still a leaf on screen, then the active pane, then whatever is first.
+      const originAnchor = entry.origin?.anchorPaneId;
+      const anchorLive = originAnchor ? findPane(ws.rootPane, originAnchor) : null;
+      const toOrigin = !!anchorLive && anchorLive.type === 'leaf';
+      const fallback = findPane(ws.rootPane, ws.activePaneId);
+      const anchorId = toOrigin
+        ? originAnchor!
+        : (fallback && fallback.type === 'leaf' ? fallback.id : getLeafPanes(ws.rootPane)[0]?.id);
+      if (!anchorId) return;
+
+      const attached = attachBeside(
+        ws,
+        anchorId,
+        entry.pane,
+        toOrigin ? (entry.origin?.direction ?? 'horizontal') : 'horizontal',
+        toOrigin ? (entry.origin?.sourceFirst ?? false) : false,
+        toOrigin ? entry.origin?.sizes : undefined,
+      );
+      // Splice ONLY after the re-attach lands. Removing first and failing to
+      // attach would delete a live pane from both the tree and the stash — the
+      // one outcome this whole feature exists to prevent.
+      if (!attached) return;
+      ws.stashedPanes!.splice(idx, 1);
+      if (ws.stashedPanes!.length === 0) delete ws.stashedPanes;
+
+      ws.activePaneId = paneId;
+      if (state.zoomedPaneId !== null && state.zoomedPaneId !== paneId) state.zoomedPaneId = null;
+      restored = { wsId: ws.id, paneId, toOrigin };
+    });
+
+    if (!restored) return alreadyVisible;
+    const done = restored as { wsId: string; paneId: string; toOrigin: boolean };
+    console.log(`[wmux:stash] unstashed pane=${done.paneId} ws=${done.wsId} toOrigin=${done.toOrigin}`);
+    saveSessionNow();
+    get().pushToast({
+      level: 'info',
+      message: done.toOrigin ? t('pane.unstashedToNeighbor') : t('pane.unstashedFallback'),
+    });
+    return true;
+  },
+
   movePane: (workspaceId, sourceId, targetId, edge, opts) => {
     let event: { wsId: string; paneId: string; previousActiveId: string } | null = null;
     let moved = false;
@@ -763,29 +1064,13 @@ export const createPaneSlice: StateCreator<StoreState, [['zustand/immer', never]
       const detached = detachPane(ws, sourceId);
       if (!detached) return;
 
-      // Re-resolve the target AFTER the detach: collapsing the source's former
-      // parent can replace the node that held it, so a reference captured
-      // before the splice may no longer be the one in the tree.
-      const targetParent = findParent(ws.rootPane, targetId);
-      const liveTarget = findPane(ws.rootPane, targetId);
-      if (!liveTarget) return; // unreachable: only the source was removed
-
+      // attachBeside re-resolves the target AFTER the detach: collapsing the
+      // source's former parent can replace the node that held it, so a
+      // reference captured before the splice may no longer be the one in the
+      // tree.
       const direction = edge === 'left' || edge === 'right' ? 'horizontal' : 'vertical';
       const sourceFirst = edge === 'left' || edge === 'top';
-      const branch: PaneBranch = {
-        id: generateId('pane'),
-        type: 'branch',
-        direction,
-        children: sourceFirst ? [detached, liveTarget] : [liveTarget, detached],
-        sizes: [50, 50],
-      };
-
-      if (targetParent) {
-        const idx = targetParent.children.findIndex((c) => c.id === targetId);
-        if (idx !== -1) targetParent.children[idx] = branch;
-      } else {
-        ws.rootPane = branch;
-      }
+      if (!attachBeside(ws, targetId, detached, direction, sourceFirst)) return;
 
       // #182: a move re-flows the layout, so a pane hidden behind the zoom would
       // reappear somewhere unexpected. Same reasoning as splitPane.

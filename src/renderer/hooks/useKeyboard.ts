@@ -195,6 +195,14 @@ export function createPrefixActions(deps: PrefixActionDeps): Record<string, () =
     // layout order, wrapping at the ends like cyclePane does.
     swapPanePrev: () => { swapActiveWithAdjacentLeaf(store, 'prev'); },
     swapPaneNext: () => { swapActiveWithAdjacentLeaf(store, 'next'); },
+    // #977 — take the active pane out of the layout without killing it. The
+    // slice owns every guard (daemon connection, last visible leaf, surface
+    // type) and reports refusals as toasts, so there is nothing to check here.
+    stashPane: () => {
+      const state = store.getState();
+      const ws = state.workspaces.find((w) => w.id === state.activeWorkspaceId);
+      if (ws) state.stashPane(ws.activePaneId, ws.id);
+    },
     renameWorkspace: () => {
       doc.dispatchEvent(new CustomEvent('wmux:rename-workspace'));
     },
