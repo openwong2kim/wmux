@@ -48,7 +48,7 @@ import {
   promoteTerminalToPriorityDrain,
 } from '../terminal/terminalOutputScheduler';
 import { reconnectPtyWithRetry as reconnectPtyWithRetryImpl } from './reconnectPtyWithRetry';
-import { adoptTerminal, parkTerminal, restoreParkedViewport } from '../terminal/terminalPark';
+import { adoptTerminal, parkTerminal, restoreParkedViewport, type ParkedTerminal } from '../terminal/terminalPark';
 
 // Module-level terminal registry for scrollback persistence
 const terminalRegistry = new Map<string, Terminal>();
@@ -1334,6 +1334,10 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     // If the workspace starts hidden (display:none), skip the initial fit so we
     // don't corrupt the terminal with 0 cols/rows. The visibility-watcher effect
     // below will trigger a proper fit when the workspace is shown.
+    // #1002: an adoption whose container has no size yet (a restructure on a
+    // hidden workspace — an agent splitting a background pane, say) has no
+    // valid fit to restore against. Hold the parked viewport until one runs.
+    let pendingAdoptViewport: ParkedTerminal | null = null;
     if (container.offsetWidth > 0 && container.offsetHeight > 0) {
       fitAddon.fit();
       // #1002: the fit runs AFTER the adopted element is back in the DOM and
@@ -1343,6 +1347,8 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       // the bottom, not scrolled up by the height difference between the
       // pre-split and post-split panel.
       if (adopted) restoreParkedViewport(adopted);
+    } else if (adopted) {
+      pendingAdoptViewport = adopted;
     }
 
     // Wait for fonts to fully load, then rebuild the WebGL glyph atlas.
@@ -1431,6 +1437,14 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
           const newYBase = term.buffer.active.baseY;
           const targetYDisp = Math.max(0, newYBase - distFromBottom);
           term.scrollToLine(targetYDisp);
+        }
+
+        // #1002: first real fit after adopting into a hidden container. The
+        // park's own reading wins over the one taken above, which was measured
+        // against a viewport that had no size to be scrolled in.
+        if (pendingAdoptViewport) {
+          restoreParkedViewport(pendingAdoptViewport);
+          pendingAdoptViewport = null;
         }
 
         const { cols, rows } = term;
