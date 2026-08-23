@@ -1022,7 +1022,17 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
     // caller these ids — an API that lists something it then cannot close is
     // just a leak with extra steps.
     const owned = findOwnedPane(store.workspaces, paneId);
-    if (!owned) return { error: `pane.close: pane ${paneId} not found` };
+    if (!owned) {
+      // Keep the branch case distinguishable from a genuinely unknown id: a
+      // caller that passed a branch id has a real pane, just not a closable one,
+      // and "not found" would send it hunting for the wrong problem.
+      const isBranch = store.workspaces.some((w) => !!findPaneById(w.rootPane, paneId));
+      return {
+        error: isBranch
+          ? `pane.close: pane ${paneId} is not a closable leaf`
+          : `pane.close: pane ${paneId} not found`,
+      };
+    }
     const targetWs = owned.ws;
 
     // Only leaf panes are closable, and never the root: closePane is a no-op for

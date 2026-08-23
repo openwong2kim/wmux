@@ -176,7 +176,10 @@ function WorkspaceAgentRoster({ workspaceId, isActive }: WorkspaceAgentRosterPro
             // "session ended" is both the status and the reason the row looks
             // different from its neighbours.
             const statusLabel = exited ? t('roster.stashedExited') : t(statusIcon.labelKey);
-            const primary = rosterPrimaryLabel(row);
+            // A stashed SHELL pane has no agent name, and a shell surface often has
+            // no title either — without this the row would render with no text at
+            // all. Visible rows always carry an agent name, so it is a no-op there.
+            const primary = rosterPrimaryLabel(row) || t('surface.terminal');
             const secondary = rosterSecondaryLabel(row, { showVendor: mixedVendors });
             const detail = row.pendingQuestion ?? row.activity;
             // The verb rides the accessible name and the tooltip, NOT the

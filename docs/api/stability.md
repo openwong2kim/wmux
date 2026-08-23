@@ -34,15 +34,15 @@ This is the heart of the substrate contract — the surface RFC #15 was about.
 - `asOfSeq` is the EventBus seq at snapshot time. Clients reconciling after `resync: true` must drain events with `seq > asOfSeq`.
 - `bootId` is stable for the lifetime of the main-process run. Mismatch ⇒ client drops all cached pane ids, pty ids, and cursors.
 - Each `PaneListEntry` contains pane tree info plus `metadata: PaneMetadata` (with `version` in v3.0+).
-- **`stashed: boolean` (v3.47+)** is present on every entry, always — never omitted. A stashed pane has been taken out of the layout by the user but is still owned by the workspace and its session is still running.
-- **`includeStashed?: boolean` (v3.47+, default `false`)** opts the response into stashed panes. The DEFAULT membership is unchanged: without it, `panes` still means "what is in the layout". Adding a field is forward-compatible; changing who is in the array is not, so this is opt-in.
+- **`stashed: boolean` (#977)** is present on every entry, always — never omitted. A stashed pane has been taken out of the layout by the user but is still owned by the workspace and its session is still running.
+- **`includeStashed?: boolean` (#977, default `false`)** opts the response into stashed panes. The DEFAULT membership is unchanged: without it, `panes` still means "what is in the layout". Adding a field is forward-compatible; changing who is in the array is not, so this is opt-in.
 - **`stashedLiveness: 'alive' | 'exited'`** appears on stashed entries only. `exited` means every terminal surface in that pane has lost its PTY — the daemon confirmed the session is gone. The user sees the same thing in the sidebar; an agent must be able to see it too, or it will keep addressing a pane whose session no longer exists.
 
 `pane.list` is the snapshot-reconciliation primitive for the event bus. Combined with `events.poll`, it gives external tools a complete recovery path under burst writes or daemon restarts. `pane.stashed` / `pane.unstashed` exist so that path stays complete: a pane leaving the default listing is always explained by an event, never by silence.
 
 **`stashed` is not the only reason a pane may be off-screen.** A cold-parked workspace's panes are `stashed: false` and equally unmounted — parking is an automatic, whole-workspace RAM reclaim that the user never asked for and never sees, while stashing is a per-pane thing the user did on purpose and can undo from the sidebar. Do not treat the two as interchangeable.
 
-### `pane.stash` / `pane.unstash` (v3.47+)
+### `pane.stash` / `pane.unstash` (#977)
 
 **Methods:** `pane.stash` / `pane.unstash`
 **Params:** `{ id: string }`
@@ -59,6 +59,10 @@ Which operations work on a stashed pane:
 | Address ops — `input.send`, `input.sendKey`, `input.readScreen`, A2A delivery | **work** | The PTY is alive in the daemon and stdin needs no coordinates. Refusing here would mean a running agent silently stops receiving its teammates' messages. |
 | Destructive address ops — `pane.close`, `surface.close` | **work** | A list that hands you an id you then cannot close is a leak with extra steps. |
 | Position ops — `pane.focus`, `surface.focus` | refused | There is no slot to act on. |
+
+A stashed pane whose session has EXITED (`stashedLiveness: 'exited'`) refuses writes too, but for a different reason and with a different shape: its surfaces no longer carry a ptyId, so there is nothing to address. That is target absence, not position — the one named exception to the address-ops rule above. Bring it back with `pane.unstash` and the pane re-attaches showing wmux's dead-pane recovery offer; it never silently self-creates a fresh shell under the old pane's name.
+
+While the daemon connection is DOWN, stashed panes are left exactly as they are: nothing is auto-unstashed, the reported state is the last known one, and the next reconcile after reconnect settles it. Same contract cold-park already has.
 
 A refused position op returns `code: 'PANE_STASHED'` with a `recovery` payload the caller can invoke verbatim:
 
