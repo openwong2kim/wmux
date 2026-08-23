@@ -325,11 +325,20 @@ export function registerPaneRpc(
    * The renderer owns the guards (daemon connection, last visible leaf,
    * unmountable surface types) and answers with the reason when it refuses.
    */
-  router.register('pane.stash', (params) => {
+  router.register('pane.stash', (params, ctx) => {
     if (typeof params['id'] !== 'string') {
       return Promise.reject(new Error('pane.stash: missing required param "id"'));
     }
-    return sendToRenderer(getWindow, 'pane.stash', { id: params['id'] });
+    // BYOB P4, same shape as pane.focus: a validated commander is confined to
+    // its own workspace. These take a globally-unique paneId that the renderer
+    // resolves across ALL workspaces, so without the confinement id a confined
+    // brain could rearrange another workspace's layout — the §4.0 blast-radius
+    // invariant. The id is stamped by MAIN from the validated token binding and
+    // never read off the wire.
+    return sendToRenderer(getWindow, 'pane.stash', {
+      id: params['id'],
+      ...(ctx?.commanderWorkspace ? { confineWorkspaceId: ctx.commanderWorkspace } : {}),
+    });
   });
 
   /**
@@ -340,11 +349,14 @@ export function registerPaneRpc(
    * This is the remedy every PANE_STASHED refusal names, so it has to exist and
    * has to be callable by whoever received the refusal.
    */
-  router.register('pane.unstash', (params) => {
+  router.register('pane.unstash', (params, ctx) => {
     if (typeof params['id'] !== 'string') {
       return Promise.reject(new Error('pane.unstash: missing required param "id"'));
     }
-    return sendToRenderer(getWindow, 'pane.unstash', { id: params['id'] });
+    return sendToRenderer(getWindow, 'pane.unstash', {
+      id: params['id'],
+      ...(ctx?.commanderWorkspace ? { confineWorkspaceId: ctx.commanderWorkspace } : {}),
+    });
   });
 
   /**

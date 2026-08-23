@@ -33,7 +33,7 @@ import { submitBracketedPasteToPty } from '../utils/ptyMessageDelivery';
 import { publishA2aTask } from '../events/publisher';
 import { resolvePaneAddress, activePaneTerminalPty, decideSameWsSend, decideReplyDelivery, REPLY_SUPPRESS_HINTS, countRoundTrips, maxSideMessages, REPLY_ROUND_CAP, isTerminalPtyInLeaves, resolveSelfPaneIdentity, resolveSenderPaneAddress, resolvePaneRole, findLeafPanes, type PaneAddress } from './a2aAddressing';
 import { resolveWorkspaceTarget } from './workspaceTargeting';
-import { findActivePtyId, collectAllPtyIds, buildWorkspaceListEntries } from './workspaceMirrorSnapshot';
+import { findActivePtyId, buildWorkspaceListEntries } from './workspaceMirrorSnapshot';
 
 // ---------------------------------------------------------------------------
 // Cold-park (TASK-9) daemon-backed read fallback
@@ -115,7 +115,7 @@ function rowsToSearchableBuffer(rows: DaemonTextRow[]): SearchableBuffer {
 // Pane tree utilities
 // ---------------------------------------------------------------------------
 
-// `findActivePtyId` / `collectAllPtyIds` were lifted to
+// `findActivePtyId` / `collectOwnedPtyIds` were lifted to
 // ./workspaceMirrorSnapshot so the WorkspaceMirror push payload (which mirrors
 // the `workspace.list` reply) shares one source of truth for them. Imported
 // above; the workspace.list handler and line-492 pty sweep use them unchanged.
@@ -173,9 +173,16 @@ function findOwnedPane(
   return null;
 }
 
-/** True when `paneId` is stashed in `ws`. */
-function isPaneStashed(ws: Workspace, paneId: string): boolean {
-  return !!findStashedEntry(ws.stashedPanes, paneId);
+/**
+ * The commander-confinement workspace id MAIN stamps onto a request from a
+ * VALIDATED per-spawn token — never read from the wire, so a caller cannot
+ * widen its own blast radius by supplying one. Absent for every ordinary
+ * caller, which is why the confinement checks are all `confine && …`.
+ */
+function readConfineWorkspaceId(params: Record<string, unknown>): string | null {
+  return typeof params.confineWorkspaceId === 'string' && params.confineWorkspaceId.length > 0
+    ? params.confineWorkspaceId
+    : null;
 }
 
 /**
@@ -1060,6 +1067,10 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
     if (!paneId) return { error: 'pane.stash: missing required param "id"' };
     const owned = findOwnedPane(store.workspaces, paneId);
     if (!owned) return { error: `pane.stash: pane ${paneId} not found` };
+    const stashConfine = readConfineWorkspaceId(params);
+    if (stashConfine && owned.ws.id !== stashConfine) {
+      return { error: `pane.stash: pane ${paneId} is outside the commander's workspace` };
+    }
     if (owned.stashed) return { ok: true, stashed: true };
     const ok = store.stashPane(paneId, owned.ws.id);
     if (!ok) {
@@ -1084,6 +1095,10 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
     if (!paneId) return { error: 'pane.unstash: missing required param "id"' };
     const owned = findOwnedPane(store.workspaces, paneId);
     if (!owned) return { error: `pane.unstash: pane ${paneId} not found` };
+    const unstashConfine = readConfineWorkspaceId(params);
+    if (unstashConfine && owned.ws.id !== unstashConfine) {
+      return { error: `pane.unstash: pane ${paneId} is outside the commander's workspace` };
+    }
     if (!owned.stashed) return { ok: true, stashed: false };
     const ok = store.unstashPane(paneId, owned.ws.id);
     if (!ok) return { error: `pane.unstash: pane ${paneId} could not be re-attached to the layout` };
@@ -1209,10 +1224,7 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
     // `confineWorkspaceId` is stamped by MAIN from the VALIDATED commander
     // token binding (never caller-supplied): a brain focusing a pane it does
     // not own is refused instead of mutating another workspace's focus state.
-    const confine =
-      typeof params.confineWorkspaceId === 'string' && params.confineWorkspaceId.length > 0
-        ? params.confineWorkspaceId
-        : null;
+    const confine = readConfineWorkspaceId(params);
     if (confine && ownerWs.id !== confine) {
       return { error: `pane.focus: pane ${paneId} is outside the commander's workspace` };
     }

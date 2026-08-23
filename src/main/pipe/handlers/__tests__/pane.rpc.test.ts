@@ -5,6 +5,7 @@ import { registerPaneRpc } from '../pane.rpc';
 import { PANE_METADATA_MAX_BYTES } from '../../../../shared/types';
 import { EventBus } from '../../../events/EventBus';
 import { MetadataStore } from '../../../metadata/MetadataStore';
+import { mintCommanderToken, revokeCommanderToken } from '../../../deck/commanderTrust';
 
 const { sendToRendererMock } = vi.hoisted(() => ({
   sendToRendererMock: vi.fn(),
@@ -1753,4 +1754,87 @@ describe('pane.rpc — pane.close (#236 follow-up)', () => {
     expect(res.ok).toBe(false);
     expect(sendToRendererMock).not.toHaveBeenCalled();
   });
+});
+
+// ─── Commander confinement for the stash verbs (#977) ───────────────────────
+//
+// pane.stash / pane.unstash take a globally-unique paneId that the renderer
+// resolves across ALL workspaces, and both are on COMMANDER_TOOL_SURFACE. So
+// they need the same confinement stamp pane.focus gets: without it a validated
+// commander could rearrange another workspace's layout, which is the §4.0
+// blast-radius invariant. The renderer refuses on the mismatch; main's job is
+// to put the VALIDATED id on the request in the first place (it comes from the
+// per-spawn token binding, never from the wire).
+
+describe('pane.rpc — commander confinement on stash/unstash', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    sendToRendererMock.mockResolvedValue({ ok: true });
+  });
+
+  it.each(['pane.stash', 'pane.unstash'] as const)(
+    '%s forwards the VALIDATED commander workspace as confineWorkspaceId',
+    async (method) => {
+      // Through the real gate: ctx.commanderWorkspace comes from a minted
+      // per-spawn token, never from anything the caller can set.
+      const token = mintCommanderToken('ws-brain');
+      try {
+        const router = register();
+        await router.dispatch({ id: `t-${method}`, method, params: { id: 'pane-1' }, commanderToken: token });
+        expect(sendToRendererMock).toHaveBeenCalledWith(
+          expect.anything(),
+          method,
+          { id: 'pane-1', confineWorkspaceId: 'ws-brain' },
+        );
+      } finally {
+        revokeCommanderToken(token);
+      }
+    },
+  );
+
+  it.each(['pane.stash', 'pane.unstash'] as const)(
+    '%s omits the field entirely for an ordinary caller',
+    async (method) => {
+      // Absence is what makes every renderer-side check `confine && …`; a
+      // stray empty string would read as "confined to nothing".
+      const router = register();
+      await router.dispatch({ id: `t-${method}`, method, params: { id: 'pane-1' } });
+      expect(sendToRendererMock).toHaveBeenCalledWith(expect.anything(), method, { id: 'pane-1' });
+    },
+  );
+
+  it.each(['pane.stash', 'pane.unstash'] as const)(
+    '%s never trusts a caller-supplied confineWorkspaceId',
+    async (method) => {
+      // The wire field is overwritten by the stamp, not merged with it —
+      // otherwise a caller could widen its own confinement by supplying one.
+      const token = mintCommanderToken('ws-brain');
+      try {
+        const router = register();
+        await router.dispatch({
+          id: `t-${method}-forged`,
+          method,
+          params: { id: 'pane-1', confineWorkspaceId: 'ws-other' },
+          commanderToken: token,
+        });
+        expect(sendToRendererMock).toHaveBeenCalledWith(
+          expect.anything(),
+          method,
+          expect.objectContaining({ confineWorkspaceId: 'ws-brain' }),
+        );
+      } finally {
+        revokeCommanderToken(token);
+      }
+    },
+  );
+
+  it.each(['pane.stash', 'pane.unstash'] as const)(
+    '%s rejects a missing id before any renderer call',
+    async (method) => {
+      const router = register();
+      const res = await router.dispatch({ id: 'x', method, params: {} });
+      expect(res.ok).toBe(false);
+      expect(sendToRendererMock).not.toHaveBeenCalled();
+    },
+  );
 });

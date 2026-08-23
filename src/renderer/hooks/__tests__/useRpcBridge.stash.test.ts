@@ -144,6 +144,20 @@ describe('pane.stash / pane.unstash', () => {
     expect(block).toContain('editor/diff tab');
   });
 
+  it.each([
+    ['pane.stash', "method === 'pane\\.stash'", "method === 'pane\\.unstash'"],
+    ['pane.unstash', "method === 'pane\\.unstash'", "method === 'surface\\.close'"],
+  ])('%s refuses a pane outside the commander workspace', (name, start, end) => {
+    // Both take a globally-unique paneId the renderer resolves across ALL
+    // workspaces, and both are on COMMANDER_TOOL_SURFACE. Without this check a
+    // validated commander could rearrange another workspace's layout — the
+    // §4.0 blast-radius invariant that pane.focus and pane.split already hold.
+    const block = region(start, end);
+    expect(block).toMatch(/readConfineWorkspaceId\(params\)/);
+    expect(block).toMatch(/owned\.ws\.id !== \w+Confine/);
+    expect(block).toContain(`${name}: pane \${paneId} is outside the commander`);
+  });
+
   it('unstash is idempotent — the retry it asks for must always be safe', () => {
     const block = region("method === 'pane\\.unstash'", "method === 'surface\\.close'");
     expect(block).toMatch(/if \(!owned\.stashed\) return \{ ok: true, stashed: false \}/);
