@@ -45,7 +45,7 @@ The MCP host hosts these as tools (see [MCP tools](#mcp-tools) below). An *in-pa
 
 | Method | Params | Tier | Notes |
 |---|---|---|---|
-| `surface.list` | `{ workspaceId? }` | stable | Surfaces (terminals/browsers) in a workspace. Omitted ⇒ active workspace. |
+| `surface.list` | `{ workspaceId?, includeStashed? }` | stable | Surfaces (terminals/browsers) in a workspace. Omitted ⇒ active workspace. `includeStashed: true` (v3.47+) also returns surfaces of stashed panes; every row carries an explicit `stashed` boolean either way, and a stashed pane's surfaces always report `isActive: false` (nothing off-screen is focused). |
 | `surface.new` | `{ workspaceId?, shell?, cwd? }` | stable | Opens a new surface in the active pane. External MCP callers SHOULD pass `workspaceId` to target their own workspace (#236 family); omitted ⇒ active workspace. Fails closed on an explicit unknown id. |
 | `surface.focus` | `{ id }` | stable | Focuses a surface (resolved across all workspaces). |
 | `surface.close` | `{ id }` | stable | Closes a surface by globally-unique id (all-workspace). |
@@ -54,9 +54,11 @@ The MCP host hosts these as tools (see [MCP tools](#mcp-tools) below). An *in-pa
 
 | Method | Params | Tier | Notes |
 |---|---|---|---|
-| `pane.list` | `{ workspaceId? }` | stable | Returns `{ asOfSeq, bootId, panes }` envelope. `asOfSeq` is the EventBus seq at snapshot time; clients reconciling after `resync: true` drain events with `seq > asOfSeq`. `bootId` mismatch ⇒ drop all caches. |
+| `pane.list` | `{ workspaceId?, includeStashed? }` | stable | Returns `{ asOfSeq, bootId, panes }` envelope. `includeStashed: true` (v3.47+) also returns stashed panes — off-layout but still owned and still running. Every row carries an explicit `stashed` boolean; stashed rows add `stashedLiveness: 'alive' \| 'exited'`. NOTE: `stashed` is not the only reason a pane may be unmounted — a cold-parked workspace's panes are `stashed: false` and equally off-screen. `asOfSeq` is the EventBus seq at snapshot time; clients reconciling after `resync: true` drain events with `seq > asOfSeq`. `bootId` mismatch ⇒ drop all caches. |
 | `pane.focus` | `{ id }` | stable | Focuses a leaf pane. |
 | `pane.split` | `{ direction: 'horizontal' \| 'vertical', workspaceId? }` | stable | Splits a leaf pane. External MCP callers SHOULD pass `workspaceId` to target their own workspace (#236 family); omitted ⇒ active workspace. Fails closed on an explicit unknown id. |
+| `pane.stash` | `{ id }` | stable (v3.47+) | Takes a leaf pane out of the layout WITHOUT killing it — the daemon keeps the session and replays it on return. Refused when the pane is the only visible one, when there is no daemon connection, or when it holds an editor/diff tab whose unsaved state cannot be replayed. |
+| `pane.unstash` | `{ id }` | stable (v3.47+) | Puts a stashed pane back beside its former neighbour. Idempotent — an already-visible pane is a success, so the retry a `PANE_STASHED` error asks for is always safe. Position ops (`pane.focus`, `surface.focus`) on a stashed pane are refused with `code: 'PANE_STASHED'` and a `recovery` payload naming this method; address ops (`input.send`, `input.readScreen`, `pane.close`, A2A delivery) work unchanged. |
 | `pane.setMetadata` | `{ paneId?, workspaceId?, label?, role?, status?, custom?, mergeMode?, merge?, expectedVersion? }` | stable | External MCP callers SHOULD pass `workspaceId` (see `mcp.claimWorkspace`). **Shipped in v2.9.0:** `mergeMode: 'merge'\|'replace'\|'replaceShared'` (default `'merge'`; `custom` deep-merges one level on `'merge'`), the `expectedVersion` optimistic-concurrency guard, and a post-commit `version` echoed in the reply. Legacy `merge: boolean` still works (`true`→`merge`, `false`→`replace`); `mergeMode` wins when both are present. An `expectedVersion` mismatch returns `{ ok:false, error }` whose message contains `VERSION_CONFLICT` (with `currentVersion`). See [`../PROTOCOL.md`](../PROTOCOL.md) §1.3–§1.4. |
 | `pane.getMetadata` | `{ paneId?, workspaceId? }` | stable | Reads metadata for a leaf pane. Returns `{ metadata, version }` — `version` is `0` when nothing was ever set (v2.9.0+). |
 | `pane.clearMetadata` | `{ paneId?, workspaceId? }` | stable | Drops all metadata for a leaf pane; reply echoes the post-clear `version` (bumped monotonically, v2.9.0+). |
@@ -166,6 +168,8 @@ The wmux MCP server (hosted in-process, named-pipe transport to the daemon) expo
 | `pane_focus` | `pane.focus` | Focus a leaf pane by `paneId` — **non-yank** (does not switch the on-screen workspace; use `workspace.focus` for that). Issue #285. |
 | `surface_new` | `surface.new` | Open a new surface (CREATE family — optional `workspaceId`/`shell`/`cwd`, defaults to the caller's own workspace). Issue #285. |
 | `surface_close` | `surface.close` | Close a surface by globally-unique `surfaceId` (resolved across all workspaces). Issue #285. |
+| `pane_stash` | `pane.stash` | Take a leaf pane out of the layout, keeping its session running. Issue #977. |
+| `pane_unstash` | `pane.unstash` | Put a stashed pane back. Idempotent — the remedy named by every `PANE_STASHED` error. Issue #977. |
 | `terminal_read` | `input.readScreen` | |
 | `terminal_read_events` | `terminal.readEvents` | Structured prompt-detected events. |
 | `terminal_send` | `input.send` | |
@@ -218,6 +222,8 @@ The EventBus (`src/main/events/EventBus.ts`) is an in-memory ring buffer of `RIN
 | `pane.created` | stable | `paneId`, `parentBranchId?` |
 | `pane.closed` | stable | `paneId` |
 | `pane.focused` | stable | `paneId`, `previousPaneId?` |
+| `pane.stashed` | stable (v3.47+) | `paneId`. The pane left the LAYOUT; it still belongs to the workspace and its session is still running. Deliberately **not** `pane.closed` — a poller reading it as "gone" would drop a live session. The pane disappears from a default `pane.list` but is still returned with `includeStashed: true`, and stays addressable via `input.send` / `input.readScreen` / A2A. |
+| `pane.unstashed` | stable (v3.47+) | `paneId`. The pane is back in the layout. Paired with `pane.stashed` so the `pane.list` + `events.poll` recovery path never has an unexplained membership change. |
 | `pane.metadata.changed` | stable | `paneId`, `metadata: PaneMetadata`, `version?` (monotonic; present from the main-process MetadataStore (v2.9.0+), absent from legacy renderer publishes — ignore events with `version` ≤ a previously seen value for the same `paneId`) |
 | `workspace.metadata.changed` | stable | `metadata: WorkspaceMetadata`, `patch: Partial<WorkspaceMetadata>` |
 | `process.started` | stable | `ptyId`, `pid?`, `shell` |

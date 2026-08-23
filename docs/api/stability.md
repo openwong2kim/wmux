@@ -34,8 +34,43 @@ This is the heart of the substrate contract — the surface RFC #15 was about.
 - `asOfSeq` is the EventBus seq at snapshot time. Clients reconciling after `resync: true` must drain events with `seq > asOfSeq`.
 - `bootId` is stable for the lifetime of the main-process run. Mismatch ⇒ client drops all cached pane ids, pty ids, and cursors.
 - Each `PaneListEntry` contains pane tree info plus `metadata: PaneMetadata` (with `version` in v3.0+).
+- **`stashed: boolean` (v3.47+)** is present on every entry, always — never omitted. A stashed pane has been taken out of the layout by the user but is still owned by the workspace and its session is still running.
+- **`includeStashed?: boolean` (v3.47+, default `false`)** opts the response into stashed panes. The DEFAULT membership is unchanged: without it, `panes` still means "what is in the layout". Adding a field is forward-compatible; changing who is in the array is not, so this is opt-in.
+- **`stashedLiveness: 'alive' | 'exited'`** appears on stashed entries only. `exited` means every terminal surface in that pane has lost its PTY — the daemon confirmed the session is gone. The user sees the same thing in the sidebar; an agent must be able to see it too, or it will keep addressing a pane whose session no longer exists.
 
-`pane.list` is the snapshot-reconciliation primitive for the event bus. Combined with `events.poll`, it gives external tools a complete recovery path under burst writes or daemon restarts.
+`pane.list` is the snapshot-reconciliation primitive for the event bus. Combined with `events.poll`, it gives external tools a complete recovery path under burst writes or daemon restarts. `pane.stashed` / `pane.unstashed` exist so that path stays complete: a pane leaving the default listing is always explained by an event, never by silence.
+
+**`stashed` is not the only reason a pane may be off-screen.** A cold-parked workspace's panes are `stashed: false` and equally unmounted — parking is an automatic, whole-workspace RAM reclaim that the user never asked for and never sees, while stashing is a per-pane thing the user did on purpose and can undo from the sidebar. Do not treat the two as interchangeable.
+
+### `pane.stash` / `pane.unstash` (v3.47+)
+
+**Methods:** `pane.stash` / `pane.unstash`
+**Params:** `{ id: string }`
+**Returns:** `{ ok: true, stashed: boolean }`
+
+`pane.stash` takes a leaf pane out of the layout WITHOUT killing it — the daemon keeps the session and replays it on return. It is refused when the pane is the only visible one, when there is no daemon connection (nothing would hold the session), or when the pane holds an editor/diff tab whose unsaved state the ring cannot replay.
+
+`pane.unstash` puts it back next to its former neighbour. It is **idempotent**: a pane that is already in the layout is a success, not an error — the retry that a `PANE_STASHED` error asks for must always be safe to run.
+
+Which operations work on a stashed pane:
+
+| Operation family | Stashed | Why |
+|---|---|---|
+| Address ops — `input.send`, `input.sendKey`, `input.readScreen`, A2A delivery | **work** | The PTY is alive in the daemon and stdin needs no coordinates. Refusing here would mean a running agent silently stops receiving its teammates' messages. |
+| Destructive address ops — `pane.close`, `surface.close` | **work** | A list that hands you an id you then cannot close is a leak with extra steps. |
+| Position ops — `pane.focus`, `surface.focus` | refused | There is no slot to act on. |
+
+A refused position op returns `code: 'PANE_STASHED'` with a `recovery` payload the caller can invoke verbatim:
+
+```json
+{
+  "error": "pane.focus: pane <id> is stashed (not in the layout). Call pane.unstash({ id: \"<id>\" }) to bring it back, then retry — or read/write it in place with input.readScreen / input.send, which work while stashed.",
+  "code": "PANE_STASHED",
+  "recovery": { "method": "pane.unstash", "params": { "id": "<id>" } }
+}
+```
+
+**Feature detection:** `system.capabilities` reports `features.paneStash: true`.
 
 ### `pane.setMetadata`
 
