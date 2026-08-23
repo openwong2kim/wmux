@@ -42,6 +42,13 @@ export type WmuxEventType =
   | 'pane.created'
   | 'pane.closed'
   | 'pane.focused'
+  // #977 — a pane leaving / re-entering the layout without being destroyed.
+  // NOT reported as pane.closed: an external poller would read that as "the
+  // pane is gone" and drop a session that is still running. And not folded into
+  // pane.metadata.changed either — a structural transition disguised as a
+  // metadata edit is a lie that costs the next reader an afternoon.
+  | 'pane.stashed'
+  | 'pane.unstashed'
   | 'pane.metadata.changed'
   | 'workspace.metadata.changed'
   | 'process.started'
@@ -101,6 +108,8 @@ export const WMUX_EVENT_TYPES: readonly WmuxEventType[] = [
   'pane.created',
   'pane.closed',
   'pane.focused',
+  'pane.stashed',
+  'pane.unstashed',
   'pane.metadata.changed',
   'workspace.metadata.changed',
   'process.started',
@@ -140,6 +149,16 @@ export interface PaneFocusedEvent extends WmuxEventBase {
   type: 'pane.focused';
   paneId: string;
   previousPaneId?: string;
+}
+
+export interface PaneStashedEvent extends WmuxEventBase {
+  type: 'pane.stashed';
+  paneId: string;
+}
+
+export interface PaneUnstashedEvent extends WmuxEventBase {
+  type: 'pane.unstashed';
+  paneId: string;
 }
 
 export interface PaneMetadataChangedEvent extends WmuxEventBase {
@@ -520,6 +539,8 @@ export type WmuxEvent =
   | PaneCreatedEvent
   | PaneClosedEvent
   | PaneFocusedEvent
+  | PaneStashedEvent
+  | PaneUnstashedEvent
   | PaneMetadataChangedEvent
   | WorkspaceMetadataChangedEvent
   | ProcessStartedEvent

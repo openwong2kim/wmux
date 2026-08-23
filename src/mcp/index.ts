@@ -139,12 +139,20 @@ const DECK_RESOLVE_DECISION_SHAPE = {
     .describe('How the decision is settled — MUST state the binding rule / standing convention that resolves it. Not a bare "yes"/"done"; the server rejects an insubstantial answer.'),
 };
 
+const INCLUDE_STASHED_DESCRIBE =
+  'Also list panes that are STASHED — taken out of the layout but still owned by the workspace and still running. '
+  + 'Default false, so the response keeps meaning "what is on screen". Every row carries an explicit `stashed` boolean either way; '
+  + 'stashed rows add `stashedLiveness` ("alive" | "exited"). You can read and write a stashed pane in place with terminal_read / '
+  + 'terminal_send; call pane_unstash first for anything positional.';
+
 const SURFACE_LIST_SHAPE = {
   workspaceId: z.string().optional().describe("Target a specific workspace by ID. Omit to use your own (the caller's) workspace."),
+  includeStashed: z.boolean().optional().describe(INCLUDE_STASHED_DESCRIBE),
 };
 
 const PANE_LIST_SHAPE = {
   workspaceId: z.string().optional().describe("Target a specific workspace by ID. Omit to use your own (the caller's) workspace."),
+  includeStashed: z.boolean().optional().describe(INCLUDE_STASHED_DESCRIBE),
 };
 
 const PANE_SET_METADATA_SHAPE = {
@@ -1085,7 +1093,7 @@ server.tool(
   'surface_list',
   'List all surfaces (terminals and browsers) in a workspace. Returns surfaceId, ptyId, shell, CWD, git branch for each surface. Omit workspaceId to list your own workspace.',
   SURFACE_LIST_SHAPE,
-  async ({ workspaceId }) => {
+  async ({ workspaceId, includeStashed }) => {
     // Scope to the CALLER's own workspace when omitted, not the GUI-focused one
     // (the a2a_whoami-vs-surface_list divergence). resolveScopedReadWorkspaceId
     // is fail-soft (returns '' on identity miss, never throws — unlike a write
@@ -1093,7 +1101,10 @@ server.tool(
     // prefers an external caller's pin (#243); an empty resolution falls back to
     // the renderer's active-ws default, preserving the old behavior.
     const resolved = workspaceId || (await resolveScopedReadWorkspaceId());
-    return callRpc('surface.list', resolved ? { workspaceId: resolved } : {});
+    return callRpc('surface.list', {
+      ...(resolved ? { workspaceId: resolved } : {}),
+      ...(includeStashed !== undefined ? { includeStashed } : {}),
+    });
   },
 );
 
@@ -1101,11 +1112,14 @@ server.tool(
   'pane_list',
   'List all panes in a workspace with CWD, git branch, and metadata. Omit workspaceId to list your own workspace.',
   PANE_LIST_SHAPE,
-  async ({ workspaceId }) => {
+  async ({ workspaceId, includeStashed }) => {
     // Caller-scoped when omitted (see surface_list) — fail-soft via
     // resolveScopedReadWorkspaceId so a read never throws on identity miss.
     const resolved = workspaceId || (await resolveScopedReadWorkspaceId());
-    return callRpc('pane.list', resolved ? { workspaceId: resolved } : {});
+    return callRpc('pane.list', {
+      ...(resolved ? { workspaceId: resolved } : {}),
+      ...(includeStashed !== undefined ? { includeStashed } : {}),
+    });
   },
 );
 

@@ -8,7 +8,8 @@ import type { Message, Part, TaskState, Artifact, AgentSkill, Task, CompletionEv
 import { normalizeCompletionEvidenceWire, isVerifiedItem } from '../../shared/completionEvidence';
 import type { PaneSearchResult, PaneSearchResponse } from '../../shared/types';
 import { generateId } from '../../shared/types';
-import { getLeafPanes } from '../../shared/paneUtils';
+import { getLeafPanes, getWorkspaceLeafPanes, getWorkspacePtyIds } from '../../shared/paneUtils';
+import { findStashedEntry, paneStashedError, stashedPaneLiveness } from '../../shared/paneStash';
 import { applyRoleAgent, bindingEnforcesModel, normalizeRoleBinding, sanitizeOrchRole } from '../../shared/orchestratorRole';
 import { handleCompanyRpc } from '../../company/renderer/rpcHandlers';
 import { formatA2aMessage, formatA2aBroadcast, sanitizeA2aName } from '../utils/a2aFormat';
@@ -150,6 +151,34 @@ function findOwningWorkspace(workspaces: Workspace[], paneId: string): Workspace
 }
 
 /**
+ * #977 — resolve a pane across everything a workspace OWNS, reporting whether
+ * it is stashed.
+ *
+ * The split matters because the two answers drive different behavior. An
+ * ADDRESS operation (write, read, close, deliver) works on a stashed pane: the
+ * PTY is alive in the daemon and stdin does not need coordinates. A POSITION
+ * operation (focus, split, resize, swap, add a tab) does not: there is no slot
+ * to act on, and it gets a PANE_STASHED refusal that names pane.unstash.
+ */
+function findOwnedPane(
+  workspaces: Workspace[],
+  paneId: string,
+): { ws: Workspace; leaf: PaneLeaf; stashed: boolean } | null {
+  for (const ws of workspaces) {
+    const visible = findPaneById(ws.rootPane, paneId);
+    if (visible && visible.type === 'leaf') return { ws, leaf: visible, stashed: false };
+    const entry = findStashedEntry(ws.stashedPanes, paneId);
+    if (entry) return { ws, leaf: entry.pane, stashed: true };
+  }
+  return null;
+}
+
+/** True when `paneId` is stashed in `ws`. */
+function isPaneStashed(ws: Workspace, paneId: string): boolean {
+  return !!findStashedEntry(ws.stashedPanes, paneId);
+}
+
+/**
  * Find the workspace + leaf owning `surfaceId` (surfaceIds are globally unique).
  * The surface counterpart to findOwningWorkspace, mirroring `surface.close`'s
  * all-ws scan. Returns `{ ws, leaf }` for the first owner or null.
@@ -161,6 +190,24 @@ function findOwningWorkspaceBySurface(
   for (const ws of workspaces) {
     const leaf = findLeafBySurfaceId(ws.rootPane, surfaceId);
     if (leaf) return { ws, leaf };
+  }
+  return null;
+}
+
+/** Surface counterpart of {@link findOwnedPane} — visible tree plus stash. */
+function findOwnedSurface(
+  workspaces: Workspace[],
+  surfaceId: string,
+): { ws: Workspace; leaf: PaneLeaf; stashed: boolean } | null {
+  for (const ws of workspaces) {
+    const visible = findLeafBySurfaceId(ws.rootPane, surfaceId);
+    if (visible) return { ws, leaf: visible, stashed: false };
+    for (const entry of ws.stashedPanes ?? []) {
+      const pane = entry?.pane;
+      if (pane && pane.type === 'leaf' && pane.surfaces.some((s) => s.id === surfaceId)) {
+        return { ws, leaf: pane, stashed: true };
+      }
+    }
   }
   return null;
 }
@@ -359,12 +406,16 @@ export function useRpcBridge(): void {
 // of assuming success (review 2-MODEL finding: the unconditional
 // `notified:true` was the same false receipt this PR set out to remove).
 function deliverPtyNotification(
-  targetWs: { rootPane: Pane; activePaneId: string; name: string },
+  targetWs: { rootPane: Pane; activePaneId: string; name: string; stashedPanes?: Workspace['stashedPanes'] },
   senderName: string,
   message: string,
   explicitPtyId?: string,
 ): boolean {
-  const ptyId = explicitPtyId ?? activePaneTerminalPty(findLeafPanes(targetWs.rootPane), targetWs.activePaneId);
+  // getWorkspaceLeafPanes puts VISIBLE leaves first, so the "first leaf with a
+  // live terminal" fallback still prefers something on screen (#977); a stashed
+  // pane only catches the message when nothing visible can take it, which beats
+  // dropping it.
+  const ptyId = explicitPtyId ?? activePaneTerminalPty(getWorkspaceLeafPanes(targetWs), targetWs.activePaneId);
   if (ptyId) {
     submitToPty(ptyId, formatA2aMessage(senderName, targetWs.name, message));
     return true;
@@ -383,11 +434,15 @@ function deliverPtyNotification(
 
 // Returns whether a pty was actually written to — see deliverPtyNotification.
 function deliverPtyNudge(
-  targetWs: { rootPane: Pane; activePaneId: string },
+  targetWs: { rootPane: Pane; activePaneId: string; stashedPanes?: Workspace['stashedPanes'] },
   nudge: string,
   explicitPtyId?: string,
 ): boolean {
-  const ptyId = explicitPtyId ?? activePaneTerminalPty(findLeafPanes(targetWs.rootPane), targetWs.activePaneId);
+  // getWorkspaceLeafPanes puts VISIBLE leaves first, so the "first leaf with a
+  // live terminal" fallback still prefers something on screen (#977); a stashed
+  // pane only catches the message when nothing visible can take it, which beats
+  // dropping it.
+  const ptyId = explicitPtyId ?? activePaneTerminalPty(getWorkspaceLeafPanes(targetWs), targetWs.activePaneId);
   if (ptyId) {
     submitToPty(ptyId, nudge);
     return true;
@@ -578,7 +633,12 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
           'and wmux always keeps one open. Create another workspace first.',
       };
     }
-    for (const ptyId of collectAllPtyIds(ws.rootPane)) {
+    // #977 — getWorkspacePtyIds, not the visible tree: closing a workspace
+    // kills everything it owns, and a stashed pane left running would be an
+    // orphan daemon session with no window left to reach it. This is the RPC
+    // mirror of the Sidebar close button, and this repo's most expensive bug
+    // class is exactly a teardown that one of the two paths forgot.
+    for (const ptyId of getWorkspacePtyIds(ws)) {
       // dispose() returns an IPC Promise, so a daemon-side failure (mid-
       // respawn, session already dead) rejects asynchronously — a plain
       // try/catch wouldn't catch it and workspace.close would emit an
@@ -819,7 +879,14 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
     const ws = store.workspaces.find((w) => w.id === targetWsId);
     if (!ws) return [];
     // Search ALL leaf panes, not just active — so MCP can find browser surfaces anywhere
-    const leaves = findLeafPanes(ws.rootPane);
+    //
+    // #977 — stashed panes are OPT-IN. Membership of a default list response is
+    // not a forward-compatible thing to change: an existing client that reads
+    // this array as "what is on screen" would silently start acting on panes it
+    // cannot see. Adding a FIELD is safe; changing who is in the array is not.
+    const includeStashed = params.includeStashed === true;
+    const stashedIds = new Set((ws.stashedPanes ?? []).map((e) => e?.pane?.id).filter(Boolean));
+    const leaves = includeStashed ? getWorkspaceLeafPanes(ws) : findLeafPanes(ws.rootPane);
     // X1 cwd-staleness fix: the per-surface cwd (live-updated via OSC 7 /
     // prompt scrape through updateSurfaceCwd) is authoritative. The
     // workspace-level metadata cwd is whichever ACTIVE surface last changed
@@ -843,9 +910,19 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
           surfaceType: s.surfaceType || 'terminal',
           browserUrl: s.browserUrl,
           paneId: leaf.id,
-          isActive: s.id === leaf.activeSurfaceId,
+          // A stashed pane has no active tab ON SCREEN. Reporting its stored
+          // activeSurfaceId as `isActive: true` would tell a client that a
+          // surface nobody can see is the focused one.
+          isActive: !stashedIds.has(leaf.id) && s.id === leaf.activeSurfaceId,
           agentName: agent?.name ?? null,
           agentStatus: agent?.status ?? null,
+          // Always a boolean, never omitted: "key absent" and "false" must not
+          // be the same wire shape, or a client has to guess whether it is
+          // talking to a build that knows about stashing at all.
+          stashed: stashedIds.has(leaf.id),
+          ...(stashedIds.has(leaf.id)
+            ? { stashedLiveness: stashedPaneLiveness(leaf) }
+            : {}),
         });
       }
     }
@@ -923,7 +1000,12 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
     // surface without stealing the user's screen.
     const surfaceId = String(params.id ?? '');
     const owner = findOwningWorkspaceBySurface(store.workspaces, surfaceId);
-    if (!owner) return { error: `surface.focus: surface ${surfaceId} not found` };
+    if (!owner) {
+      // #977 — same split as pane.focus: focusing is positional.
+      const ownedSurface = findOwnedSurface(store.workspaces, surfaceId);
+      if (ownedSurface?.stashed) return paneStashedError('surface.focus', ownedSurface.leaf.id);
+      return { error: `surface.focus: surface ${surfaceId} not found` };
+    }
     store.focusPaneSurface(owner.ws.id, owner.leaf.id, surfaceId);
     return { ok: true };
   }
@@ -935,20 +1017,19 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
     const paneId = String(params.id ?? '');
     if (!paneId) return { error: 'pane.close: missing required param "id"' };
 
-    let targetWs: Workspace | null = null;
-    for (const ws of store.workspaces) {
-      if (findPaneById(ws.rootPane, paneId)) { targetWs = ws; break; }
-    }
-    if (!targetWs) return { error: `pane.close: pane ${paneId} not found` };
+    // #977 — workspace-wide: a stashed pane is a legitimate close target. It is
+    // an ADDRESS operation, and `pane.list({ includeStashed: true })` hands the
+    // caller these ids — an API that lists something it then cannot close is
+    // just a leak with extra steps.
+    const owned = findOwnedPane(store.workspaces, paneId);
+    if (!owned) return { error: `pane.close: pane ${paneId} not found` };
+    const targetWs = owned.ws;
 
     // Only leaf panes are closable, and never the root: closePane is a no-op for
     // the root pane (findParent returns null), so disposing its PTYs would orphan
     // live surfaces with dead PTYs (CodeRabbit). Reject non-leaf / root up front.
-    const pane = findPaneById(targetWs.rootPane, paneId);
-    if (!pane || pane.type !== 'leaf') {
-      return { error: `pane.close: pane ${paneId} is not a closable leaf` };
-    }
-    if (paneId === targetWs.rootPane.id) {
+    const pane = owned.leaf;
+    if (!owned.stashed && paneId === targetWs.rootPane.id) {
       return { error: 'pane.close: cannot close the root pane' };
     }
     const ptyIds = pane.surfaces.map((s) => s.ptyId).filter((p): p is string => !!p);
@@ -961,6 +1042,44 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
     return { ok: true };
   }
 
+  if (method === 'pane.stash') {
+    // #977 — the layout verb, exposed. Guards live in the slice (daemon
+    // connection, last visible leaf, unmountable surface types) so the RPC and
+    // the ✕-adjacent button cannot disagree about what is stashable.
+    const paneId = String(params.id ?? '');
+    if (!paneId) return { error: 'pane.stash: missing required param "id"' };
+    const owned = findOwnedPane(store.workspaces, paneId);
+    if (!owned) return { error: `pane.stash: pane ${paneId} not found` };
+    if (owned.stashed) return { ok: true, stashed: true };
+    const ok = store.stashPane(paneId, owned.ws.id);
+    if (!ok) {
+      // The slice already surfaced the specific reason as a toast to the human.
+      // The agent gets the same information in the one form it can act on.
+      return {
+        error:
+          `pane.stash: pane ${paneId} could not be stashed — it is the only visible pane, `
+          + 'the daemon is not connected, or it holds an editor/diff tab whose unsaved '
+          + 'state the daemon ring cannot replay. Split another pane, reconnect, or close '
+          + 'the non-terminal tab first.',
+      };
+    }
+    return { ok: true, stashed: true };
+  }
+
+  if (method === 'pane.unstash') {
+    // Idempotent by contract: this is the remedy named in every PANE_STASHED
+    // error, and a remedy that errors when the situation is ALREADY fixed makes
+    // the retry loop the caller was told to run fail on its second pass.
+    const paneId = String(params.id ?? '');
+    if (!paneId) return { error: 'pane.unstash: missing required param "id"' };
+    const owned = findOwnedPane(store.workspaces, paneId);
+    if (!owned) return { error: `pane.unstash: pane ${paneId} not found` };
+    if (!owned.stashed) return { ok: true, stashed: false };
+    const ok = store.unstashPane(paneId, owned.ws.id);
+    if (!ok) return { error: `pane.unstash: pane ${paneId} could not be re-attached to the layout` };
+    return { ok: true, stashed: false };
+  }
+
   if (method === 'surface.close') {
     const surfaceId = String(params.id ?? '');
 
@@ -968,17 +1087,12 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
     // target — search every workspace, not just the UI-active one. The old
     // active-only lookup made CLI/MCP closes of a background workspace's
     // surface fail with "surface not found" (see cli/utils.ts).
-    let targetWs: Workspace | null = null;
-    let targetLeaf: PaneLeaf | null = null;
-    for (const ws of store.workspaces) {
-      const leaf = findLeafBySurfaceId(ws.rootPane, surfaceId);
-      if (leaf) {
-        targetWs = ws;
-        targetLeaf = leaf;
-        break;
-      }
-    }
-    if (!targetWs || !targetLeaf) return { error: `surface ${surfaceId} not found` };
+    // #977 — workspace-wide, same reasoning as pane.close: closing a tab is an
+    // address operation, not a layout one.
+    const ownedSurface = findOwnedSurface(store.workspaces, surfaceId);
+    if (!ownedSurface) return { error: `surface ${surfaceId} not found` };
+    const targetWs = ownedSurface.ws;
+    const targetLeaf = ownedSurface.leaf;
 
     const surface = targetLeaf.surfaces.find((s) => s.id === surfaceId);
     const ptyId = surface?.ptyId;
@@ -1006,15 +1120,25 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
     if (!ws) return [];
     const liveCwd = ws.metadata?.cwd;
     const liveGitBranch = ws.metadata?.gitBranch;
-    const leaves = findLeafPanes(ws.rootPane);
+    // #977 — opt-in membership; see the surface.list note above.
+    const includeStashed = params.includeStashed === true;
+    const stashedIds = new Set((ws.stashedPanes ?? []).map((e) => e?.pane?.id).filter(Boolean));
+    const leaves = includeStashed ? getWorkspaceLeafPanes(ws) : findLeafPanes(ws.rootPane);
     return leaves.map((l) => {
       // X1 cwd-staleness fix (same as surface.list): per-surface cwd is
       // authoritative; workspace metadata cwd is only the fallback.
       const firstSurface = l.surfaces.find((s) => s.surfaceType !== 'browser');
+      const isStashed = stashedIds.has(l.id);
       return {
         id: l.id,
         surfaceCount: l.surfaces.length,
-        active: l.id === ws.activePaneId,
+        active: !isStashed && l.id === ws.activePaneId,
+        // Explicit boolean on every row — see surface.list.
+        stashed: isStashed,
+        // The human sees "session ended" in the roster; an agent polling this
+        // list must be able to see the same thing, or it will keep addressing a
+        // pane whose session is gone.
+        ...(isStashed ? { stashedLiveness: stashedPaneLiveness(l) } : {}),
         cwd: firstSurface?.cwd || liveCwd,
         gitBranch: liveGitBranch,
         metadata: l.metadata,
@@ -1060,7 +1184,16 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
     // success); resolve-then-error surfaces the miss via getResultError.
     const paneId = String(params.id ?? '');
     const ownerWs = findOwningWorkspace(store.workspaces, paneId);
-    if (!ownerWs) return { error: `pane.focus: pane ${paneId} not found` };
+    if (!ownerWs) {
+      // #977 — distinguish "no such pane" from "alive but not in the layout".
+      // A POSITION operation has nothing to act on for a stashed pane, but the
+      // pane is right there and the caller can have it back for the asking, so
+      // the refusal names the exact call that fixes it rather than reporting a
+      // missing id the caller can see in pane.list.
+      const owned = findOwnedPane(store.workspaces, paneId);
+      if (owned?.stashed) return paneStashedError('pane.focus', paneId);
+      return { error: `pane.focus: pane ${paneId} not found` };
+    }
     // BYOB P4: an orchestrator brain is confined to its own workspace (the
     // §4.0 blast-radius invariant, generalized server-side — eng review P1).
     // `confineWorkspaceId` is stamped by MAIN from the VALIDATED commander
@@ -1218,9 +1351,13 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
     // pane in another workspace and then claiming it belonged to the
     // caller's). When workspaceId is omitted, we scan every workspace so
     // a legacy paneId-only call still works.
+    // #977 — workspace-wide. This gates pane metadata reads/writes, which are
+    // ADDRESS operations: a stashed pane still has a label, a role and an owner,
+    // and refusing them here would make a stashed pane's metadata unreachable
+    // while its terminal stayed writable.
     const ws = workspaceId.length > 0
       ? store.workspaces.find((w) => w.id === workspaceId)
-      : store.workspaces.find((w) => findPaneById(w.rootPane, paneId) !== null);
+      : store.workspaces.find((w) => getWorkspaceLeafPanes(w).some((l) => l.id === paneId));
     if (!ws) {
       return {
         error: workspaceId.length > 0
@@ -1228,8 +1365,8 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
           : `pane.validateWorkspace: paneId "${paneId}" not in any workspace`,
       };
     }
-    const target = findPaneById(ws.rootPane, paneId);
-    if (!target || target.type !== 'leaf') {
+    const target = getWorkspaceLeafPanes(ws).find((l) => l.id === paneId);
+    if (!target) {
       return {
         error: `pane.validateWorkspace: leaf "${paneId}" not in workspace "${ws.id}"`,
       };
@@ -1286,7 +1423,10 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
     // paneLabel is ignored. Each surface's own agent slug names its suffix.
     const ptyToPaneLabel = new Map<string, string>();
     const wsOrdinal = ws.wsOrdinal ?? 0;
-    const leaves = findLeafPanes(ws.rootPane);
+    // Workspace-wide (#977) so a hit from a stashed pane is labelled with its
+    // real pane, not left unattributed. Stashed panes have no mounted terminal
+    // to search, so this only affects how results are named.
+    const leaves = getWorkspaceLeafPanes(ws);
     for (const leaf of leaves) {
       const leafLabel = store.paneLabel[leaf.id];
       const paneOrdinal = leaf.ordinal ?? 0;
@@ -1501,8 +1641,13 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
   if (method === 'input.findOwnerWorkspace') {
     const ptyId = typeof params.ptyId === 'string' ? params.ptyId : '';
     if (!ptyId) return { workspaceId: null };
+    // #977 — workspace-wide. This is the gate main uses for input.send, so a
+    // visible-tree walk would reject writes to a stashed agent as "PTY not
+    // owned by workspace … cross-workspace terminal access is not allowed" —
+    // a false SECURITY refusal about a pane the workspace does own. Writing is
+    // an address operation; the PTY is alive and stdin needs no position.
     for (const ws of store.workspaces) {
-      const leaves = findLeafPanes(ws.rootPane);
+      const leaves = getWorkspaceLeafPanes(ws);
       for (const leaf of leaves) {
         for (const s of leaf.surfaces) {
           if (s.ptyId === ptyId) {
@@ -1544,9 +1689,14 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
     } else if (typeof params.workspaceId === 'string' && params.workspaceId.length > 0) {
       // Caller passed both — validate the PTY belongs to that workspace.
       const targetWs = store.workspaces.find((w) => w.id === callerWsId);
+      // #977 — workspace-wide. A stashed pane's PTY is alive in the daemon and
+      // reading it needs no coordinates, so a visible-tree check here would
+      // reject a legitimate read with a FALSE security message ("not in
+      // workspace") about a pane the workspace owns. The ownership boundary is
+      // unchanged: still this workspace's own leaves, just all of them.
       const owned =
         targetWs &&
-        findLeafPanes(targetWs.rootPane).some((leaf) =>
+        getWorkspaceLeafPanes(targetWs).some((leaf) =>
           leaf.surfaces.some((s) => s.ptyId === ptyId),
         );
       if (!owned) {
@@ -1728,7 +1878,10 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
     const ws = store.workspaces.find((w) => w.id === decision.workspaceId);
     if (!ws) return { error: 'browser.close: workspace not found' };
     let targetSurfaceId: string | null = null;
-    for (const leaf of findLeafPanes(ws.rootPane)) {
+    // Workspace-wide (#977): a stashed pane's agent missing from the
+    // ptyId → paneLabel map is a silent A2A misroute — this repo's most
+    // expensive failure shape.
+    for (const leaf of getWorkspaceLeafPanes(ws)) {
       const surface = leaf.surfaces.find((s) => s.surfaceType === 'browser');
       if (surface) {
         targetSurfaceId = surface.id;
@@ -1799,8 +1952,11 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
     // client-supplied selector as trusted identity). Read-only: these fields grant
     // no capability — whoami output never flows into terminal routing.
     const rawSenderPtyId = typeof params.senderPtyId === 'string' ? params.senderPtyId : '';
+    // Workspace-wide (#977). The ownership boundary — "this workspace's own
+    // leaves" — is what makes a forged/foreign ptyId fail closed, and that is
+    // unchanged; what widens is the OWNED set, not the trust level.
     const self = resolveSelfPaneIdentity(
-      findLeafPanes(ws.rootPane),
+      getWorkspaceLeafPanes(ws),
       (ptyId) => store.surfaceAgent[ptyId],
       rawSenderPtyId,
     );
@@ -1840,7 +1996,10 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
           agentName: string | null;
           agentStatus: string | null;
         }> = [];
-        for (const leaf of findLeafPanes(w.rootPane)) {
+        // Workspace-wide (#977): pane_list and a2a_discover are read side by
+        // side as the same address source. A pane in one and not the other
+        // reads as "it disappeared", and acting on that is a silent misroute.
+        for (const leaf of getWorkspaceLeafPanes(w)) {
           for (const s of leaf.surfaces) {
             if (s.surfaceType === 'browser' || !s.ptyId) continue;
             const a = store.surfaceAgent[s.ptyId];
@@ -1942,7 +2101,7 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
       // (absent/forged senderPtyId, or a ws-only task side) → ws-level role
       // fallback, preserving cross-ws behavior exactly.
       const callerWsForReply = store.workspaces.find((w) => w.id === workspaceId);
-      const callerLeaves = callerWsForReply ? findLeafPanes(callerWsForReply.rootPane) : [];
+      const callerLeaves = callerWsForReply ? getWorkspaceLeafPanes(callerWsForReply) : [];
       const rawCallerPtyId = typeof params.senderPtyId === 'string' ? params.senderPtyId : '';
       const callerPtyId = isTerminalPtyInLeaves(callerLeaves, rawCallerPtyId) ? rawCallerPtyId : '';
       const callerAddr = resolveSenderPaneAddress(callerLeaves, callerPtyId);
@@ -2024,7 +2183,7 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
           let explicitPty: string | undefined;
           let pinnedAddressLost = false;
           if (hasAnchor) {
-            const addr = resolvePaneAddress(findLeafPanes(targetWs.rootPane), pinAnchor.paneId ?? '', pinAnchor.surfaceId ?? '');
+            const addr = resolvePaneAddress(getWorkspaceLeafPanes(targetWs), pinAnchor.paneId ?? '', pinAnchor.surfaceId ?? '');
             if ('error' in addr) pinnedAddressLost = true;
             else explicitPty = addr.ptyId;
           }
@@ -2137,7 +2296,7 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
     const reqSurfaceId = typeof params.surfaceId === 'string' ? params.surfaceId : '';
     let resolvedAddr: PaneAddress | undefined;
     if (reqPaneId || reqSurfaceId) {
-      const addr = resolvePaneAddress(findLeafPanes(target.rootPane), reqPaneId, reqSurfaceId);
+      const addr = resolvePaneAddress(getWorkspaceLeafPanes(target), reqPaneId, reqSurfaceId);
       if ('error' in addr) return { error: `a2a.task.send: ${addr.error}` };
       resolvedAddr = addr;
     }
@@ -2150,7 +2309,14 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
     // resolves to a real terminal pty in the SENDER's own workspace — a bogus /
     // foreign value is treated as ABSENT (→ silent), never as a loud-paste enabler.
     const rawSenderPtyId = typeof params.senderPtyId === 'string' ? params.senderPtyId : '';
-    const senderLeaves = sender ? findLeafPanes(sender.rootPane) : [];
+    // #977 — intended consequence, recorded so it is not mistaken for a slip:
+    // widening this to the workspace's stashed panes means a sender whose OWN
+    // pane is stashed now VALIDATES, where before it fell through to the
+    // fail-closed silent path (suppressPaste, decideSameWsSend). That is the
+    // correct answer — the sender is a real, running, owned pane and the guard
+    // exists to reject FORGED ids, not off-screen ones — but it does move a
+    // sibling-pane send from silent to loud paste for that case.
+    const senderLeaves = sender ? getWorkspaceLeafPanes(sender) : [];
     const senderPtyId = isTerminalPtyInLeaves(senderLeaves, rawSenderPtyId) ? rawSenderPtyId : '';
     const sameWsDecision = decideSameWsSend(target.id === workspaceId, resolvedAddr?.ptyId, senderPtyId);
     if (sameWsDecision.kind === 'reject') return { error: `a2a.task.send: ${sameWsDecision.error}` };
@@ -2343,7 +2509,7 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
     // working→completed with no senderPtyId, so pane-gating on `to.paneId` alone
     // would lock it out and hang every pane-addressed execute task in `working`.
     const callerWsUpdate = store.workspaces.find((w) => w.id === workspaceId);
-    const callerLeavesUpdate = callerWsUpdate ? findLeafPanes(callerWsUpdate.rootPane) : [];
+    const callerLeavesUpdate = callerWsUpdate ? getWorkspaceLeafPanes(callerWsUpdate) : [];
     const rawCallerPtyIdUpdate = typeof params.senderPtyId === 'string' ? params.senderPtyId : '';
     const callerPtyIdUpdate = isTerminalPtyInLeaves(callerLeavesUpdate, rawCallerPtyIdUpdate) ? rawCallerPtyIdUpdate : '';
     const callerAddrUpdate = resolveSenderPaneAddress(callerLeavesUpdate, callerPtyIdUpdate);
@@ -2417,7 +2583,7 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
         let explicitPty: string | undefined;
         let pinnedAddressLost = false;
         if (hasAnchor) {
-          const addr = resolvePaneAddress(findLeafPanes(targetWs.rootPane), pinAnchor.paneId ?? '', pinAnchor.surfaceId ?? '');
+          const addr = resolvePaneAddress(getWorkspaceLeafPanes(targetWs), pinAnchor.paneId ?? '', pinAnchor.surfaceId ?? '');
           if ('error' in addr) pinnedAddressLost = true;
           else explicitPty = addr.ptyId;
         }
@@ -2515,7 +2681,9 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
     let sent = 0;
     for (const ws of store.workspaces) {
       if (ws.id === workspaceId) continue;
-      const leaves = findLeafPanes(ws.rootPane);
+      // Workspace-wide (#977) — visible leaves first, so a broadcast still
+      // lands on an on-screen terminal when there is one.
+      const leaves = getWorkspaceLeafPanes(ws);
       for (const leaf of leaves) {
         const termSurface = leaf.surfaces.find((s) => s.surfaceType !== 'browser' && s.ptyId);
         if (termSurface) {

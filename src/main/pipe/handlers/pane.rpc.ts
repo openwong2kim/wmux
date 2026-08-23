@@ -317,6 +317,37 @@ export function registerPaneRpc(
   });
 
   /**
+   * pane.stash — take a leaf pane out of the layout WITHOUT killing it (#977).
+   * params: { id: string }
+   *
+   * The session keeps running in the daemon and the pane keeps its identity, so
+   * input.send / input.readScreen / A2A delivery all keep working against it.
+   * The renderer owns the guards (daemon connection, last visible leaf,
+   * unmountable surface types) and answers with the reason when it refuses.
+   */
+  router.register('pane.stash', (params) => {
+    if (typeof params['id'] !== 'string') {
+      return Promise.reject(new Error('pane.stash: missing required param "id"'));
+    }
+    return sendToRenderer(getWindow, 'pane.stash', { id: params['id'] });
+  });
+
+  /**
+   * pane.unstash — put a stashed pane back into the layout.
+   * params: { id: string }
+   *
+   * Idempotent: a pane that is already on screen is a success, not an error.
+   * This is the remedy every PANE_STASHED refusal names, so it has to exist and
+   * has to be callable by whoever received the refusal.
+   */
+  router.register('pane.unstash', (params) => {
+    if (typeof params['id'] !== 'string') {
+      return Promise.reject(new Error('pane.unstash: missing required param "id"'));
+    }
+    return sendToRenderer(getWindow, 'pane.unstash', { id: params['id'] });
+  });
+
+  /**
    * Resolves the target pane for a metadata RPC. Two paths:
    *
    *   - `paneId` provided: ask the renderer to confirm the paneId actually

@@ -53,6 +53,11 @@ export function registerSystemRpc(router: RpcRouter): void {
       methods: ALL_RPC_METHODS.filter((m) => registered.has(m)),
       features: {
         paneMetadata,
+        // #977 — a boolean, not an object: unlike paneMetadata there are no
+        // sub-modes to negotiate. Its presence tells a client that panes can be
+        // off-layout-but-alive, that list rows carry `stashed`, and that
+        // `includeStashed` and PANE_STASHED exist.
+        paneStash: true,
         events: {
           types: WMUX_EVENT_TYPES,
           maxRingSize: RING_CAPACITY,

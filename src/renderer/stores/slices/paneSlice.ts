@@ -22,6 +22,8 @@ import {
   publishPaneCreated,
   publishPaneClosed,
   publishPaneFocused,
+  publishPaneStashed,
+  publishPaneUnstashed,
 } from '../../events/publisher';
 import { t } from '../../i18n';
 import { clearNudgesFor } from '../../hooks/channelMentionRateLimit';
@@ -969,6 +971,9 @@ export const createPaneSlice: StateCreator<StoreState, [['zustand/immer', never]
 
     const done = stashed as { wsId: string; paneId: string; paneName: string };
     console.log(`[wmux:stash] stashed pane=${done.paneId} ws=${done.wsId}`);
+    // NOT pane.closed — an external poller would read that as "this pane is
+    // gone" and drop a session that is still running.
+    publishPaneStashed(done.wsId, done.paneId);
     // Pane-tree mutations otherwise ride only the 5s autosave (movePane's
     // reasoning): a stash followed by an immediate quit must not come back
     // as a pane that is both gone from the layout and missing from the stash.
@@ -1038,6 +1043,8 @@ export const createPaneSlice: StateCreator<StoreState, [['zustand/immer', never]
     if (!restored) return alreadyVisible;
     const done = restored as { wsId: string; paneId: string; toOrigin: boolean };
     console.log(`[wmux:stash] unstashed pane=${done.paneId} ws=${done.wsId} toOrigin=${done.toOrigin}`);
+    publishPaneUnstashed(done.wsId, done.paneId);
+    publishPaneFocused(done.wsId, done.paneId);
     saveSessionNow();
     get().pushToast({
       level: 'info',

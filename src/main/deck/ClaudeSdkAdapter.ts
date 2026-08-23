@@ -255,6 +255,11 @@ export const DEFAULT_ALLOWED_TOOLS: string[] = [
   WMUX('pane_split'),
   WMUX('pane_focus'),
   WMUX('pane_set_metadata'),
+  // #977 — layout, not teardown: stash takes a pane off the screen and keeps
+  // its session running. pane_unstash has to be here because pane_focus is:
+  // a stashed target answers focus with a PANE_STASHED error naming unstash.
+  WMUX('pane_stash'),
+  WMUX('pane_unstash'),
   WMUX('surface_new'),
   WMUX('terminal_send'),
   WMUX('terminal_send_key'),

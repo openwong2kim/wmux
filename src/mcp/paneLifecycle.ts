@@ -100,6 +100,16 @@ const SURFACE_CLOSE_SHAPE = {
   surfaceId: z.string().describe('Surface id to close (from surface_list).'),
 };
 
+const PANE_STASH_SHAPE = {
+  paneId: z.string().describe('Leaf pane id to stash (from pane_list).'),
+};
+
+const PANE_UNSTASH_SHAPE = {
+  paneId: z
+    .string()
+    .describe('Stashed pane id to bring back (from pane_list({ includeStashed: true }), or from the recovery payload of a PANE_STASHED error).'),
+};
+
 /**
  * Build the first typed-catalog domain. The ordering is the public MCP ordering
  * and must remain stable: the raw protocol probe pins it for both profiles.
@@ -170,6 +180,30 @@ export function createPaneLifecycleToolCatalog(
       inputSchema: SURFACE_CLOSE_SHAPE,
       profiles: ['full'],
       invoke: async ({ surfaceId }) => callRpc('surface.close', { id: surfaceId }),
+    }),
+
+    // ── pane_stash / pane_unstash (LAYOUT family, #977) ──────────────
+    // Appended after the original five so the public ordering stays a stable
+    // prefix. Neither destroys anything, which is why both are in the commander
+    // profile alongside pane_split while pane_close is not: they move a pane
+    // between the layout and the workspace's stash, and the session runs either
+    // way.
+    defineWmuxTool({
+      name: 'pane_stash',
+      description:
+        'Take a leaf pane OUT of the layout without killing it. The session keeps running in the daemon, so terminal_send / terminal_read / A2A delivery all keep working against the pane while it is stashed; only position-dependent operations (pane_focus, splits) are refused, with a PANE_STASHED error naming pane_unstash. Refused when the pane is the only visible one, when the daemon is not connected (nothing would hold the session), or when the pane holds an editor/diff tab whose unsaved state cannot be replayed.',
+      inputSchema: PANE_STASH_SHAPE,
+      profiles: ['full', 'commander'],
+      invoke: async ({ paneId }) => callRpc('pane.stash', { id: paneId }),
+    }),
+
+    defineWmuxTool({
+      name: 'pane_unstash',
+      description:
+        'Put a stashed pane back into the layout, next to its former neighbour (or next to the active pane when that neighbour is gone). Idempotent: a pane that is already visible is a success, not an error — so the retry a PANE_STASHED error asks for is always safe to run.',
+      inputSchema: PANE_UNSTASH_SHAPE,
+      profiles: ['full', 'commander'],
+      invoke: async ({ paneId }) => callRpc('pane.unstash', { id: paneId }),
     }),
   ]);
 }

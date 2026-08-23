@@ -65,6 +65,13 @@ export const COMMANDER_TOOL_SURFACE: readonly string[] = [
   'pane_split',
   'pane_focus',
   'pane_set_metadata',
+  // #977 — layout, not teardown. Stashing takes a pane off the screen and keeps
+  // its session running; unstashing puts it back. pane_unstash in particular is
+  // NOT optional here: pane_focus is on this surface, a stashed target answers
+  // it with a PANE_STASHED error naming pane_unstash as the fix, and a remedy
+  // the caller is not allowed to invoke is not a remedy.
+  'pane_stash',
+  'pane_unstash',
   'surface_new',
   'terminal_send',
   'terminal_send_key',
@@ -125,6 +132,8 @@ export const COMMANDER_RPC_METHODS: ReadonlySet<string> = new Set<string>([
   'meta.setSkills',
   'pane.split',
   'pane.focus',
+  'pane.stash',
+  'pane.unstash',
   // terminal IO
   'input.send',
   'input.sendKey',

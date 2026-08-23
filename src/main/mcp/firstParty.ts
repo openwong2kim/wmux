@@ -181,6 +181,11 @@ export const FIRST_PARTY_METHODS: ReadonlySet<RpcMethod> = new Set<RpcMethod>([
   'pane.split',
   'pane.close',
   'pane.focus',
+  // #977 — the bundled server must be able to undo a stash it is told to undo:
+  // every PANE_STASHED refusal names pane.unstash as the remedy, and a remedy
+  // the caller is not allowed to invoke is not a remedy.
+  'pane.stash',
+  'pane.unstash',
   // terminal IO
   'input.send',
   'input.sendKey',
