@@ -95,6 +95,15 @@ describe('#1002 — pane-restructure terminal adoption (source-level)', () => {
     expect(canParkBlock).toMatch(pattern as RegExp);
   });
 
+  it('defers the viewport restore when the adopting container has no size yet', () => {
+    // A restructure on a hidden workspace (an agent splitting a background
+    // pane) adopts into a zero-size container, where there is no valid fit to
+    // restore against. Dropping the parked reading there would leave the pane
+    // wherever the reveal fit happened to land it.
+    expect(mainEffect).toMatch(/\} else if \(adopted\) \{\s*\n\s*pendingAdoptViewport = adopted;/);
+    expect(mainEffect).toMatch(/if \(pendingAdoptViewport\) \{\s*\n\s*restoreParkedViewport\(pendingAdoptViewport\);\s*\n\s*pendingAdoptViewport = null;/);
+  });
+
   it('hands the park the element it captured, not a fresh lookup', () => {
     expect(mainEffect).toMatch(/parkTerminal\(ptyId, terminal, parkElement, disposeTerminal\)/);
   });
