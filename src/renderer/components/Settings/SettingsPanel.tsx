@@ -21,7 +21,8 @@ import {
   type ForegroundTokenKey,
   type ContrastReport,
 } from '../../contrastSafety';
-import type { CustomThemeColors, NotificationCategory, XtermThemeColors } from '../../../shared/types';
+import type { CustomThemeColors, NotificationCategory, Pane, XtermThemeColors } from '../../../shared/types';
+import { collectPaneTreePtyIds } from '../../../shared/paneUtils';
 import type { ChromePreset } from '../../../shared/chromePresets';
 import { NOTIFICATION_CATEGORIES } from '../../../shared/types';
 import { ORCH_ROLES, launcherSupportsModelFlag } from '../../../shared/orchestratorRole';
@@ -618,15 +619,10 @@ function ResetSection() {
   );
 }
 
-/** Recursively dispose all PTYs in a pane tree */
-function disposePaneTree(pane: { type: string; surfaces?: Array<{ ptyId?: string }>; children?: Array<typeof pane> }) {
-  if (pane.type === 'leaf' && pane.surfaces) {
-    for (const s of pane.surfaces) {
-      if (s.ptyId) window.electronAPI.pty.dispose(s.ptyId);
-    }
-  } else if (pane.children) {
-    for (const child of pane.children) disposePaneTree(child);
-  }
+/** Recursively dispose all PTYs in a pane tree
+ *  (traversal is the shared canonical walk; the dispose policy stays local) */
+function disposePaneTree(pane: Pane) {
+  for (const ptyId of collectPaneTreePtyIds(pane)) window.electronAPI.pty.dispose(ptyId);
 }
 
 // ─── Orchestrator (deck brain) settings ──────────────────────────────────────

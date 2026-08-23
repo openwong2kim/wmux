@@ -7,6 +7,7 @@ import RemoteWorkspaceItem from './RemoteWorkspaceItem';
 import MissionsSection from './MissionsSection';
 import PresetPicker from './PresetPicker';
 import type { Pane } from '../../../shared/types';
+import { collectPaneTreePtyIds } from '../../../shared/paneUtils';
 import { useT } from '../../hooks/useT';
 import { buildWorkspaceMarkdown } from '../../utils/sessionInfoMarkdown';
 import { tokenAttrs } from '../../themes';
@@ -18,14 +19,9 @@ import CompanyPanel from './CompanyPanel';
 import { COMPANY_MODE_ENABLED } from '../../../shared/featureFlags';
 
 // Pane 트리에서 모든 leaf의 PTY를 dispose
+// (traversal is the shared canonical walk; the dispose policy stays local)
 function disposeAllPtys(pane: Pane) {
-  if (pane.type === 'leaf') {
-    for (const s of pane.surfaces) {
-      if (s.ptyId) window.electronAPI.pty.dispose(s.ptyId);
-    }
-  } else {
-    for (const child of pane.children) disposeAllPtys(child);
-  }
+  for (const ptyId of collectPaneTreePtyIds(pane)) window.electronAPI.pty.dispose(ptyId);
 }
 
 export default function Sidebar() {

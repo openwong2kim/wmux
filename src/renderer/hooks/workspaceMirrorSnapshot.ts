@@ -9,7 +9,7 @@
 // of truth for the two helpers.
 
 import type { AgentStatus, Pane, PaneLeaf, Workspace } from '../../shared/types';
-import { getLeafPanes } from '../../shared/paneUtils';
+import { collectPaneTreePtyIds, getLeafPanes } from '../../shared/paneUtils';
 import type {
   WorkspaceListEntry,
   FleetSnapshot,
@@ -61,18 +61,7 @@ export function findActivePtyId(rootPane: Pane | undefined, activePaneId: string
 
 /** All ptyIds in a workspace (every leaf, every surface). */
 export function collectAllPtyIds(root: Pane): string[] {
-  const ids: string[] = [];
-  const walk = (pane: Pane): void => {
-    if (pane.type === 'leaf') {
-      for (const s of pane.surfaces) {
-        if (s.ptyId) ids.push(s.ptyId);
-      }
-      return;
-    }
-    for (const child of pane.children) walk(child);
-  };
-  walk(root);
-  return ids;
+  return collectPaneTreePtyIds(root);
 }
 
 /**

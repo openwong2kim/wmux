@@ -1,4 +1,5 @@
-import type { Pane, PaneLeaf, Surface, Workspace } from '../../shared/types';
+import type { PaneLeaf, Surface, Workspace } from '../../shared/types';
+import { getLeafPanes } from '../../shared/paneUtils';
 import {
   BROWSER_TABS_ACTIONS,
   browserTabsError,
@@ -39,11 +40,6 @@ interface BrowserTabTarget {
   surface: Surface;
 }
 
-function collectLeafPanes(pane: Pane): PaneLeaf[] {
-  if (pane.type === 'leaf') return [pane];
-  return pane.children.flatMap(collectLeafPanes);
-}
-
 function descriptor(target: BrowserTabTarget): BrowserTabDescriptor {
   return {
     surfaceId: target.surface.id,
@@ -63,7 +59,7 @@ function findBrowserTab(
 ): BrowserTabTarget | null {
   const workspace = workspaces.find((candidate) => candidate.id === workspaceId);
   if (!workspace) return null;
-  for (const pane of collectLeafPanes(workspace.rootPane)) {
+  for (const pane of getLeafPanes(workspace.rootPane)) {
     const surface = pane.surfaces.find(
       (candidate) => candidate.id === surfaceId && candidate.surfaceType === 'browser',
     );
@@ -91,7 +87,7 @@ export function listBrowserTabs(
   if (!workspace) return null;
 
   const tabs: BrowserTabDescriptor[] = [];
-  for (const pane of collectLeafPanes(workspace.rootPane)) {
+  for (const pane of getLeafPanes(workspace.rootPane)) {
     for (const surface of pane.surfaces) {
       if (surface.surfaceType !== 'browser') continue;
       tabs.push(descriptor({ workspace, pane, surface }));

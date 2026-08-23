@@ -1,6 +1,6 @@
 import type { StateCreator } from 'zustand';
 import type { StoreState } from '../index';
-import { createWorkspace, clonePaneTreeFresh, assignPaneOrdinals, generateId, BUILTIN_TEMPLATES, DEFAULT_PREFIX_CONFIG, buildDefaultCustomKeybindings, upgradeDefaultKeybindingsForPlatform, TERMINAL_STATES, NOTIFICATION_CATEGORIES, type Pane, type PaneLeaf, type SessionData, type Workspace, type WorkspaceMetadata, type WorkspaceProfile } from '../../../shared/types';
+import { createWorkspace, clonePaneTreeFresh, assignPaneOrdinals, generateId, BUILTIN_TEMPLATES, DEFAULT_PREFIX_CONFIG, buildDefaultCustomKeybindings, upgradeDefaultKeybindingsForPlatform, TERMINAL_STATES, NOTIFICATION_CATEGORIES, type Pane, type SessionData, type Workspace, type WorkspaceMetadata, type WorkspaceProfile } from '../../../shared/types';
 import { normalizeWorkspaceProfile } from '../../../shared/workspaceProfile';
 import { normalizeWorkspaceColor, type WorkspaceColorId } from '../../../shared/workspaceColors';
 import { normalizeRoleBindings } from '../../../shared/orchestratorRole';
@@ -15,12 +15,10 @@ import { publishWorkspaceMetadataChanged, publishA2aTask } from '../../events/pu
 import { retentionMigrationDone, markRetentionMigrationDone } from '../retentionMigration';
 import { decUnread } from './notificationSlice';
 import { mergeDeadPaneRecovery, type DeadPaneRecovery } from '../../../shared/ptyRecovery';
+import { collectLeafIds, collectPaneTreePtyIds, getLeafPanes } from '../../../shared/paneUtils';
 
-/** Collect all leaf panes from a pane tree */
-function collectLeafPanes(pane: Pane): PaneLeaf[] {
-  if (pane.type === 'leaf') return [pane];
-  return pane.children.flatMap(collectLeafPanes);
-}
+/** Collect all leaf panes from a pane tree (canonical walk, aliased locally). */
+const collectLeafPanes = getLeafPanes;
 
 /**
  * Cold-park (TASK-9) is safe ONLY for terminal-only workspaces. Unmounting a
@@ -401,9 +399,7 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       // so stale paneIds can't render a phantom ring after their tree is gone.
       if (state.paneNotificationRing) {
         const removedWs = state.workspaces[idx];
-        const collectLeafIdsFromPane = (p: Pane): string[] =>
-          p.type === 'leaf' ? [p.id] : p.children.flatMap(collectLeafIdsFromPane);
-        for (const pid of collectLeafIdsFromPane(removedWs.rootPane)) {
+        for (const pid of collectLeafIds(removedWs.rootPane)) {
           delete state.paneNotificationRing[pid];
         }
       }
@@ -414,9 +410,7 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       if (state.departedPaneGroups) delete state.departedPaneGroups[id];
       if (state.taskPtyRegistry) {
         const removedWs = state.workspaces[idx];
-        const collectPtyIds = (p: Pane): string[] =>
-          p.type === 'leaf' ? p.surfaces.map((s) => s.ptyId).filter(Boolean) : p.children.flatMap(collectPtyIds);
-        for (const pid of collectPtyIds(removedWs.rootPane)) delete state.taskPtyRegistry[pid];
+        for (const pid of collectPaneTreePtyIds(removedWs.rootPane)) delete state.taskPtyRegistry[pid];
       }
       // #650 recovery metadata is transient but hydration-sticky. A removed
       // workspace must evict both surface-keyed pending hand-offs and offers
@@ -561,9 +555,7 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       if (state.paneNotificationRing) {
         const activatedWs = state.workspaces.find((w: Workspace) => w.id === id);
         if (activatedWs) {
-          const collectLeafIdsFromPane = (p: Pane): string[] =>
-            p.type === 'leaf' ? [p.id] : p.children.flatMap(collectLeafIdsFromPane);
-          for (const pid of collectLeafIdsFromPane(activatedWs.rootPane)) {
+          for (const pid of collectLeafIds(activatedWs.rootPane)) {
             delete state.paneNotificationRing[pid];
           }
         }

@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react';
 import { useStore } from '../stores';
 import { useIpc } from './useIpc';
-import { findLeaf, getLeafPanes } from '../../shared/paneUtils';
+import { collectPaneTreePtyIds, findLeaf, getLeafPanes } from '../../shared/paneUtils';
 import { terminalRegistry } from './useTerminal';
 import { t } from '../i18n';
 import { pastePtyChunked } from '../utils/clipboardChunk';
@@ -76,13 +76,7 @@ export function ctrlByteForKeyCode(code: string): string | null {
 
 /** Dispose all PTYs inside a pane tree */
 function disposePanePtys(pane: import('../../shared/types').Pane): void {
-  if (pane.type === 'leaf') {
-    for (const s of pane.surfaces) {
-      if (s.ptyId) window.electronAPI.pty.dispose(s.ptyId);
-    }
-  } else {
-    for (const child of pane.children) disposePanePtys(child);
-  }
+  for (const ptyId of collectPaneTreePtyIds(pane)) window.electronAPI.pty.dispose(ptyId);
 }
 
 /**
@@ -139,14 +133,10 @@ function swapActiveWithAdjacentLeaf(
 export function createPrefixActions(deps: PrefixActionDeps): Record<string, () => void> {
   const { store, electronAPI, doc } = deps;
 
+  // Traversal is the shared canonical walk; the dispose policy (this registry's
+  // injected electronAPI, not the window global) stays local.
   const disposeTree = (pane: import('../../shared/types').Pane): void => {
-    if (pane.type === 'leaf') {
-      for (const s of pane.surfaces) {
-        if (s.ptyId) electronAPI.pty.dispose(s.ptyId);
-      }
-    } else {
-      for (const child of pane.children) disposeTree(child);
-    }
+    for (const ptyId of collectPaneTreePtyIds(pane)) electronAPI.pty.dispose(ptyId);
   };
 
   return {

@@ -8,6 +8,7 @@ import type { Message, Part, TaskState, Artifact, AgentSkill, Task, CompletionEv
 import { normalizeCompletionEvidenceWire, isVerifiedItem } from '../../shared/completionEvidence';
 import type { PaneSearchResult, PaneSearchResponse } from '../../shared/types';
 import { generateId } from '../../shared/types';
+import { getLeafPanes } from '../../shared/paneUtils';
 import { applyRoleAgent, bindingEnforcesModel, normalizeRoleBinding, sanitizeOrchRole } from '../../shared/orchestratorRole';
 import { handleCompanyRpc } from '../../company/renderer/rpcHandlers';
 import { formatA2aMessage, formatA2aBroadcast, sanitizeA2aName } from '../utils/a2aFormat';
@@ -2572,12 +2573,7 @@ function findActiveBrowserWebview(
   if (!ws) return { error: 'browser: no active workspace' };
 
   // Walk through all leaf panes and look for a browser surface.
-  function findLeaves(pane: import('../../shared/types').Pane): import('../../shared/types').PaneLeaf[] {
-    if (pane.type === 'leaf') return [pane];
-    return pane.children.flatMap(findLeaves);
-  }
-
-  const leaves = findLeaves(ws.rootPane);
+  const leaves = getLeafPanes(ws.rootPane);
   for (const leaf of leaves) {
     const activeSurface = leaf.surfaces.find((s) => s.id === leaf.activeSurfaceId);
     if (activeSurface?.surfaceType === 'browser') {
