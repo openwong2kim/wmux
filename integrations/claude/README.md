@@ -59,6 +59,12 @@ This copies the bridge to a stable path (`~/.wmux/hooks/wmux-bridge.mjs`)
 and references it from settings.json, so it survives app updates. Re-run
 `wmux setup-hooks` after a wmux update to refresh the copied bridge.
 
+"Leaves your other hooks intact" is per **command**, not per matcher group.
+Claude Code allows several commands under one matcher, so if you have added one
+of your own beside wmux's, `--remove` — and every re-install, including the
+bridge refresh above — takes out only the wmux command and leaves your group,
+its matcher, and your commands exactly where they are (#1008).
+
 **Caveat — do not combine with the plugin.** If you install BOTH this
 plugin (Option A/B) and the `setup-hooks` settings entries, each turn
 fires the hook twice. wmux dedups hook-vs-detector, but not
