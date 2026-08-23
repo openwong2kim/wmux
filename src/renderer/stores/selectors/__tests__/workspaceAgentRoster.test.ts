@@ -55,7 +55,7 @@ function state(overrides: StateOverrides = {}): StoreState {
 describe('selectWorkspaceAgentRoster', () => {
   it('returns an empty projection for an unknown workspace', () => {
     const r = selectWorkspaceAgentRoster(state(), 'nope');
-    expect(r).toEqual({ rows: [], agentCount: 0, needsAttentionCount: 0 });
+    expect(r).toEqual({ rows: [], agentCount: 0, needsAttentionCount: 0, stashedCount: 0 });
   });
 
   it('lists only surfaces that actually carry a detected agent', () => {
@@ -344,5 +344,156 @@ describe('createWorkspaceAgentRosterSelector memoization', () => {
     const second = select(state({ workspaces: [ws], surfaceAgent: {} }));
     expect(second).not.toBe(first);
     expect(second.agentCount).toBe(0);
+  });
+});
+
+// ─── Stashed panes (#977) ───────────────────────────────────────────────────
+//
+// Stashed rows differ from the visible ones in two deliberate ways: the agent
+// gate is relaxed, and there is one row per PANE rather than per surface.
+
+function stashed(pane: Pane, stashedAt = NOW - 7_200_000) {
+  return { pane: pane as Extract<Pane, { type: 'leaf' }>, stashedAt };
+}
+
+describe('selectWorkspaceAgentRoster — stashed panes', () => {
+  it('gives a stashed shell pane a row even with no detected agent', () => {
+    // A visible shell pane is excluded so the roster does not flood with plain
+    // terminals — the user can see those. A stashed one appears NOWHERE else in
+    // the app, so excluding it would make a running session a ghost.
+    const visibleShell = leaf('p1', [surface('s1', 'pty-1')]);
+    const stashedShell = leaf('p2', [surface('s2', 'pty-2')]);
+    const ws = { ...workspace('ws-1', visibleShell, 'p1'), stashedPanes: [stashed(stashedShell)] };
+
+    const r = selectWorkspaceAgentRoster(state({ workspaces: [ws], activeWorkspaceId: 'ws-1' }), 'ws-1');
+
+    expect(r.agentCount).toBe(0);
+    expect(r.stashedCount).toBe(1);
+    expect(r.rows.map((row) => row.paneId)).toEqual(['p2']);
+    expect(r.rows[0].stashed).toBe(true);
+    expect(r.rows[0].stashedAt).toBe(NOW - 7_200_000);
+  });
+
+  it('emits ONE row per stashed pane, not one per surface', () => {
+    const stashedPane = leaf('p2', [surface('s2a', 'pty-2a'), surface('s2b', 'pty-2b')], 's2b');
+    const ws = { ...workspace('ws-1', leaf('p1', [surface('s1', 'pty-1')]), 'p1'), stashedPanes: [stashed(stashedPane)] };
+
+    const r = selectWorkspaceAgentRoster(
+      state({
+        workspaces: [ws],
+        activeWorkspaceId: 'ws-1',
+        surfaceAgent: { 'pty-2a': { name: 'Claude Code', status: 'idle' }, 'pty-2b': { name: 'Codex', status: 'idle' } },
+      }),
+      'ws-1',
+    );
+
+    expect(r.stashedCount).toBe(1);
+    // The pane's ACTIVE surface represents it, with the #n/m trailer showing
+    // there is more behind the row.
+    expect(r.rows[0].surfaceId).toBe('s2b');
+    expect(r.rows[0].surfaceCount).toBe(2);
+  });
+
+  it('appends stashed rows AFTER the visible agents', () => {
+    const visible = leaf('p1', [surface('s1', 'pty-1')]);
+    const ws = {
+      ...workspace('ws-1', visible, 'p1'),
+      stashedPanes: [stashed(leaf('p2', [surface('s2', 'pty-2')]))],
+    };
+
+    const r = selectWorkspaceAgentRoster(
+      state({
+        workspaces: [ws],
+        activeWorkspaceId: 'ws-1',
+        surfaceAgent: { 'pty-1': { name: 'Claude Code', status: 'idle' } },
+      }),
+      'ws-1',
+    );
+
+    expect(r.rows.map((row) => row.paneId)).toEqual(['p1', 'p2']);
+    expect(r.rows[0].stashed).toBeUndefined();
+    expect(r.rows[1].stashed).toBe(true);
+  });
+
+  it('derives liveness from surface ptyIds, never from a stored field', () => {
+    const alive = leaf('p2', [surface('s2', ''), surface('s3', 'pty-3')]);
+    const dead = leaf('p3', [surface('s4', ''), surface('s5', '')]);
+    const ws = {
+      ...workspace('ws-1', leaf('p1', [surface('s1', 'pty-1')]), 'p1'),
+      stashedPanes: [stashed(alive), stashed(dead)],
+    };
+
+    const r = selectWorkspaceAgentRoster(state({ workspaces: [ws], activeWorkspaceId: 'ws-1' }), 'ws-1');
+
+    // ONE live terminal is enough — same rule a visible multi-tab pane follows.
+    expect(r.rows.find((row) => row.paneId === 'p2')!.stashedLiveness).toBe('alive');
+    expect(r.rows.find((row) => row.paneId === 'p3')!.stashedLiveness).toBe('exited');
+  });
+
+  it('flags an exited pane as needing attention — the session died off-screen', () => {
+    const dead = leaf('p2', [surface('s2', '')]);
+    const ws = { ...workspace('ws-1', leaf('p1', [surface('s1', 'pty-1')]), 'p1'), stashedPanes: [stashed(dead)] };
+
+    const r = selectWorkspaceAgentRoster(state({ workspaces: [ws], activeWorkspaceId: 'ws-1' }), 'ws-1');
+
+    expect(r.rows[0].needsAttention).toBe(true);
+    expect(r.needsAttentionCount).toBe(1);
+  });
+
+  it('carries a stashed agent’s pending question through', () => {
+    const stashedPane = leaf('p2', [surface('s2', 'pty-2')]);
+    const ws = { ...workspace('ws-1', leaf('p1', [surface('s1', 'pty-1')]), 'p1'), stashedPanes: [stashed(stashedPane)] };
+
+    const r = selectWorkspaceAgentRoster(
+      state({
+        workspaces: [ws],
+        activeWorkspaceId: 'ws-1',
+        surfaceAgent: { 'pty-2': { name: 'Claude Code', status: 'idle' } },
+        surfacePendingQuestion: { 'pty-2': 'Apply this patch?' },
+      }),
+      'ws-1',
+    );
+
+    expect(r.rows[0].status).toBe('awaiting_input');
+    expect(r.rows[0].pendingQuestion).toBe('Apply this patch?');
+    expect(r.rows[0].needsAttention).toBe(true);
+  });
+
+  it('never marks a stashed row focused — it is not on screen', () => {
+    const stashedPane = leaf('p2', [surface('s2', 'pty-2')]);
+    const ws = { ...workspace('ws-1', leaf('p1', [surface('s1', 'pty-1')]), 'p1'), stashedPanes: [stashed(stashedPane)] };
+
+    const r = selectWorkspaceAgentRoster(state({ workspaces: [ws], activeWorkspaceId: 'ws-1' }), 'ws-1');
+
+    expect(r.rows[0].isFocused).toBe(false);
+  });
+
+  it('skips malformed stash entries instead of throwing', () => {
+    const ws = {
+      ...workspace('ws-1', leaf('p1', [surface('s1', 'pty-1')]), 'p1'),
+      stashedPanes: [
+        null,
+        { stashedAt: NOW },
+        stashed(leaf('p2', [surface('s2', 'pty-2')])),
+      ],
+    } as unknown as Workspace;
+
+    const r = selectWorkspaceAgentRoster(state({ workspaces: [ws], activeWorkspaceId: 'ws-1' }), 'ws-1');
+
+    expect(r.stashedCount).toBe(1);
+    expect(r.rows[0].paneId).toBe('p2');
+  });
+
+  it('keeps the memoised projection stable until the stash changes', () => {
+    const stashedPane = leaf('p2', [surface('s2', 'pty-2')]);
+    const ws = { ...workspace('ws-1', leaf('p1', [surface('s1', 'pty-1')]), 'p1'), stashedPanes: [stashed(stashedPane)] };
+    const select = createWorkspaceAgentRosterSelector('ws-1');
+    const s = state({ workspaces: [ws], activeWorkspaceId: 'ws-1' });
+
+    const first = select(s);
+    expect(select(state({ workspaces: [ws], activeWorkspaceId: 'ws-1' }))).toBe(first);
+
+    const unstashed = { ...ws, stashedPanes: [] };
+    expect(select(state({ workspaces: [unstashed], activeWorkspaceId: 'ws-1' }))).not.toBe(first);
   });
 });

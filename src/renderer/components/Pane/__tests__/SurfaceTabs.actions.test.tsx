@@ -107,7 +107,7 @@ describe('SurfaceTabs pane action cluster', () => {
     const actions = Array.from(
       container.querySelectorAll('[data-pane-action]'),
     ).map((el) => el.getAttribute('data-pane-action'));
-    expect(actions).toEqual(['split-right', 'split-down', 'new-browser', 'zoom']);
+    expect(actions).toEqual(['split-right', 'split-down', 'new-browser', 'stash', 'zoom']);
     expect(container.querySelector('[data-pane-action="new-terminal"]')).toBeNull();
   });
 
@@ -121,7 +121,7 @@ describe('SurfaceTabs pane action cluster', () => {
     ).map((el) => el.getAttribute('data-pane-action'));
     // On the tab strip, BEFORE the cluster — it adds a surface, it does not
     // act on the pane.
-    expect(actions).toEqual(['new-terminal', 'split-right', 'split-down', 'new-browser', 'zoom']);
+    expect(actions).toEqual(['new-terminal', 'split-right', 'split-down', 'new-browser', 'stash', 'zoom']);
     const btn = container.querySelector('[data-pane-action="new-terminal"]');
     // One click, no menu — with the browser back in the cluster there is only
     // one thing left for it to do.

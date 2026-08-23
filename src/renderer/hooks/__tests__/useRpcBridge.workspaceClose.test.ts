@@ -76,7 +76,12 @@ describe('useRpcBridge — workspace.close receipt honesty (#799)', () => {
 
   it('still disposes the workspace PTYs before dropping it', () => {
     const block = closeHandler();
-    expect(block).toMatch(/collectAllPtyIds\(ws\.rootPane\)/);
+    // #977 — everything the workspace OWNS, not just what is on screen. A
+    // stashed pane left running after its workspace is gone is an orphan daemon
+    // session nothing can reach. This is the RPC mirror of the sidebar's close
+    // button, and a teardown that one of the two paths forgets is precisely the
+    // bug class this pin exists to catch.
+    expect(block).toMatch(/getWorkspacePtyIds\(ws\)/);
     expect(block).toMatch(/window\.electronAPI\.pty\.dispose\(ptyId\)/);
     expect(block.indexOf('pty.dispose')).toBeLessThan(
       block.indexOf('store.removeWorkspace(id)'),
