@@ -78,21 +78,33 @@ describe('#1002 — pane-restructure terminal adoption (source-level)', () => {
   // is coming to repair. Each is pinned separately: a single regex over the
   // whole condition breaks on formatting and says nothing about WHICH guard
   // went missing.
-  const canParkBlock = mainEffect.slice(
+  const refusalLadder = mainEffect.slice(
+    mainEffect.indexOf('const parkRefusal ='),
     mainEffect.indexOf('const canPark ='),
-    mainEffect.indexOf(';', mainEffect.indexOf('const canPark =')),
   );
 
   it.each([
-    ['the element still exists', /parkElement !== null/],
-    ['no resync is in flight', /&& !resyncRef\.current\.pending/],
-    ['the buffer is not dirty', /&& !isTerminalDirty\(terminal\)/],
-    ['the scrollback restore settled', /&& restoreSettled/],
-    ['no .txt cache awaits the daemon verdict', /&& !didRestoreTxt/],
-    ['no daemon reconnect is retrying', /&& !reconnectInFlightRef\.current/],
-    ['this instance still owns the ptyId', /&& terminalRegistry\.get\(ptyId\) === terminal/],
-  ])('parks only when %s', (_label, pattern) => {
-    expect(canParkBlock).toMatch(pattern as RegExp);
+    ['no-element', /parkElement === null \? 'no-element'/],
+    ['resync-pending', /resyncRef\.current\.pending \? 'resync-pending'/],
+    ['dirty', /isTerminalDirty\(terminal\) \? 'dirty'/],
+    ['restore-unsettled', /!restoreSettled \? 'restore-unsettled'/],
+    ['txt-awaiting-verdict', /didRestoreTxt \? 'txt-awaiting-verdict'/],
+    ['reconnect-in-flight', /reconnectInFlightRef\.current \? 'reconnect-in-flight'/],
+    ['not-registry-owner', /terminalRegistry\.get\(ptyId\) !== terminal \? 'not-registry-owner'/],
+  ])('refuses to park with reason %s', (_reason, pattern) => {
+    expect(refusalLadder).toMatch(pattern as RegExp);
+  });
+
+  it('parks exactly when the ladder found no reason not to', () => {
+    expect(mainEffect).toMatch(/const canPark = parkRefusal === null;/);
+  });
+
+  it('logs the mount and teardown decision where another machine can read it', () => {
+    // Adoption can only be validated where the bug reproduces. Without the
+    // reason on the teardown line, "the split still replays" over there is
+    // indistinguishable from "one of seven guards refused".
+    expect(mainEffect).toMatch(/\[wmux:pane-adopt\] ptyId=\$\{ptyId\} mount=\$\{adopted \? 'adopted' : 'fresh'\}/);
+    expect(mainEffect).toMatch(/teardown=\$\{canPark \? 'parked' : `disposed reason=\$\{parkRefusal\}`\}/);
   });
 
   it('defers the viewport restore when the adopting container has no size yet', () => {
@@ -155,7 +167,7 @@ describe('#1002 — pane-restructure terminal adoption (source-level)', () => {
     // terminal.dispose() is what normally disposes them, and a parked terminal
     // never reaches it — the adopting mount loads its own set, so without this
     // the instance accumulates one per restructure.
-    expect(mainEffect).toMatch(/if \(canPark\) \{[\s\S]*fitAddon\.dispose\(\);[\s\S]*searchAddon\.dispose\(\);[\s\S]*webLinksAddon\.dispose\(\);[\s\S]*parkTerminal\(/);
+    expect(mainEffect).toMatch(/if \(canPark && parkElement\) \{[\s\S]*fitAddon\.dispose\(\);[\s\S]*searchAddon\.dispose\(\);[\s\S]*webLinksAddon\.dispose\(\);[\s\S]*parkTerminal\(/);
   });
 
   it('still disposes directly when the terminal cannot be parked', () => {

@@ -955,6 +955,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     // come with it, so there is no ring-buffer replay for the user to watch.
     const adopted = adoptTerminal(ptyId);
     adoptedAtMountRef.current = adopted !== null;
+    console.log(`[wmux:pane-adopt] ptyId=${ptyId} mount=${adopted ? 'adopted' : 'fresh'}`);
 
     const terminal = adopted ? adopted.terminal : new Terminal({
       cursorBlink: true,
@@ -2393,33 +2394,45 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
 
       // #1002: can this terminal be handed to the next mount instead of being
       // disposed? Only when every source of truth for this pane has settled on
-      // it. Each clause below is a state where the adopting mount — which skips
+      // it. Each rung below is a state where the adopting mount — which skips
       // the restore AND the reconnect — would inherit a screen that nothing is
       // coming to repair, which is strictly worse than the replay this fix
       // removes. Refusing just falls back to the old behaviour.
+      //
+      // A ladder rather than one `&&` chain because the REASON is the useful
+      // part: adoption can only be validated on the platform that reproduces
+      // the bug, and "the split still replays" is indistinguishable from "a
+      // guard refused" without knowing which one fired.
       const parkElement = terminal.element ?? null;
-      const canPark = parkElement !== null
+      const parkRefusal =
+        parkElement === null ? 'no-element'
         // Mid-resync or dirty: exactly the pane that NEEDS the replay.
-        && !resyncRef.current.pending
-        && !isTerminalDirty(terminal)
+        : resyncRef.current.pending ? 'resync-pending'
+        : isTerminalDirty(terminal) ? 'dirty'
         // Restore still in flight: its callbacks bail on the null terminalRef
         // we are about to write, dropping the .txt content and the pendingData
         // behind it, and the adopting mount would not redo either.
-        && restoreSettled
+        : !restoreSettled ? 'restore-unsettled'
         // A .txt cache is on screen awaiting the daemon's verdict. The
         // late-connect listener that clears it before the ring replay lands
         // dies with this mount, so an adopted pane would compose the replay on
         // top of the cache — the corruption A6 exists to prevent.
-        && !didRestoreTxt
+        : didRestoreTxt ? 'txt-awaiting-verdict'
         // A reconnect is still retrying. It aborts the moment terminalRef goes
         // null (reconnectPtyWithRetry's isCurrent guard), and the adopting
         // mount skips its own active-at-mount attempt, so the pane would end up
         // with no session pipe at all.
-        && !reconnectInFlightRef.current
+        : reconnectInFlightRef.current ? 'reconnect-in-flight'
         // Two live instances on one ptyId (the fast unmount→remount ordering
         // the WebGL pool note describes): if the registry no longer points at
         // us, a later mount already owns this pane and ours is the stale copy.
-        && terminalRegistry.get(ptyId) === terminal;
+        : terminalRegistry.get(ptyId) !== terminal ? 'not-registry-owner'
+        : null;
+      const canPark = parkRefusal === null;
+      // Mirrored into the main log by the webContents console-message relay,
+      // so a dogfood pass on another machine can read the decision instead of
+      // inferring it from what the screen did.
+      console.log(`[wmux:pane-adopt] ptyId=${ptyId} teardown=${canPark ? 'parked' : `disposed reason=${parkRefusal}`}`);
 
       if (resizeDebounceTimer) clearTimeout(resizeDebounceTimer);
       if (pendingFitRaf !== null) cancelAnimationFrame(pendingFitRaf);
@@ -2502,7 +2515,9 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         discardTerminalOutput(terminal);
         disposeWhenDragEnds(() => terminal.dispose());
       };
-      if (canPark) {
+      // The `parkElement` re-test is for the type checker: the ladder above
+      // already refuses with 'no-element' when it is null.
+      if (canPark && parkElement) {
         // The addons above outlive terminal.dispose() only because it disposes
         // them; a parked terminal never reaches that call, and the adopting
         // mount loads its own fit/search/links addons. Release ours here or the
