@@ -19,19 +19,29 @@ import type { Terminal } from '@xterm/xterm';
 // adopts it — moving its DOM element into the new container, buffer, scroll
 // position and all — so there is nothing to replay.
 //
-// The window is deliberately tiny. React flushes a commit's passive UNMOUNT
-// effects before its passive MOUNT effects, so a restructure parks and adopts
-// inside one synchronous flush; no timer can fire in between. The TTL is slack
-// for a commit that gets split, not a cache: a pane the user actually closed
-// never comes back for its terminal, and 250 ms later it is disposed exactly as
-// before.
+// The window is exactly one task, and that is a safety property rather than a
+// tuning choice. React flushes a commit's passive UNMOUNT effects before its
+// passive MOUNT effects, so a restructure parks and adopts inside one
+// synchronous flush — a `setTimeout(…, 0)` armed during the park cannot run
+// until after the adopting mount has had its turn.
+//
+// Holding the park open any longer would be the dangerous direction. Between
+// park and adopt this pane has no PTY data listener, and the adopting mount
+// skips the reconnect that would replay what it missed; bytes arriving in a gap
+// would be lost with nothing coming to repair the screen. Confining adoption to
+// the same task means a restructure that somehow spanned two of them simply
+// fails to adopt and disposes as it always did — no improvement, but never a
+// silently wrong screen.
 
 export interface ParkedTerminal {
   terminal: Terminal;
   /** xterm's root element, detached with the old container but still intact. */
   element: HTMLElement;
-  /** Viewport row at park time, restored after the adopting mount fits. */
-  viewportY: number;
+  /** Rows between the viewport and the bottom at park time. Absolute buffer
+   *  indices do not survive the reflow a width change causes, and a split
+   *  always changes width — the offset does, well enough to land the reader
+   *  near what they were reading. */
+  fromBottom: number;
   /** Whether the pane was pinned to the bottom (the common case). */
   atBottom: boolean;
 }
@@ -41,8 +51,8 @@ interface ParkEntry extends ParkedTerminal {
   dispose: () => void;
 }
 
-/** Slack for a split commit, not a cache lifetime. See the note above. */
-export const PARK_TTL_MS = 250;
+/** One task. Not a cache lifetime — see the note above before raising it. */
+export const PARK_TTL_MS = 0;
 
 const parked = new Map<string, ParkEntry>();
 
@@ -71,12 +81,12 @@ export function parkTerminal(
   // older one is unreachable, so let it go rather than leaking it.
   evict(ptyId);
 
-  let viewportY = 0;
+  let fromBottom = 0;
   let atBottom = true;
   try {
     const buffer = terminal.buffer.active;
-    viewportY = buffer.viewportY;
-    atBottom = buffer.viewportY >= buffer.baseY;
+    fromBottom = Math.max(0, buffer.baseY - buffer.viewportY);
+    atBottom = fromBottom === 0;
   } catch {
     // A terminal too far into teardown to read still parks — the adopting
     // mount just falls back to scrolling to the bottom.
@@ -87,7 +97,7 @@ export function parkTerminal(
     dispose();
   }, ttlMs);
 
-  parked.set(ptyId, { terminal, element, viewportY, atBottom, timer, dispose });
+  parked.set(ptyId, { terminal, element, fromBottom, atBottom, timer, dispose });
 }
 
 /**
@@ -100,8 +110,8 @@ export function adoptTerminal(ptyId: string): ParkedTerminal | null {
   if (!entry) return null;
   parked.delete(ptyId);
   clearTimeout(entry.timer);
-  const { terminal, element, viewportY, atBottom } = entry;
-  return { terminal, element, viewportY, atBottom };
+  const { terminal, element, fromBottom, atBottom } = entry;
+  return { terminal, element, fromBottom, atBottom };
 }
 
 /**
@@ -111,8 +121,11 @@ export function adoptTerminal(ptyId: string): ParkedTerminal | null {
  */
 export function restoreParkedViewport(entry: ParkedTerminal): void {
   try {
-    if (entry.atBottom) entry.terminal.scrollToBottom();
-    else entry.terminal.scrollToLine(entry.viewportY);
+    if (entry.atBottom) { entry.terminal.scrollToBottom(); return; }
+    // Measured against the CURRENT bottom: the fit that just ran can have
+    // rewrapped the buffer, moving every absolute row number.
+    const baseY = entry.terminal.buffer.active.baseY;
+    entry.terminal.scrollToLine(Math.max(0, baseY - entry.fromBottom));
   } catch {
     // Scroll restoration is cosmetic; a disposed or unsized terminal must not
     // take the mount down with it.

@@ -73,11 +73,55 @@ describe('#1002 — pane-restructure terminal adoption (source-level)', () => {
     expect(afterMainEffect).not.toMatch(/adoptedAtMountRef[\s\S]{0,80}daemon:connected/);
   });
 
-  it('parks on teardown only when the buffer is a faithful copy of the session', () => {
-    // A dirty pane, or one mid-resync, is exactly the case that needs the
-    // replay: adopting it would leave a stale screen with nothing to repair it.
-    expect(mainEffect).toMatch(/const canPark = parkElement !== null\s*\n\s*&& !resyncRef\.current\.pending\s*\n\s*&& !isTerminalDirty\(terminal\);/);
+  // Every clause of canPark is a state in which the adopting mount — which
+  // skips both the restore and the reconnect — would inherit a screen nothing
+  // is coming to repair. Each is pinned separately: a single regex over the
+  // whole condition breaks on formatting and says nothing about WHICH guard
+  // went missing.
+  const canParkBlock = mainEffect.slice(
+    mainEffect.indexOf('const canPark ='),
+    mainEffect.indexOf(';', mainEffect.indexOf('const canPark =')),
+  );
+
+  it.each([
+    ['the element still exists', /parkElement !== null/],
+    ['no resync is in flight', /&& !resyncRef\.current\.pending/],
+    ['the buffer is not dirty', /&& !isTerminalDirty\(terminal\)/],
+    ['the scrollback restore settled', /&& restoreSettled/],
+    ['no .txt cache awaits the daemon verdict', /&& !didRestoreTxt/],
+    ['no daemon reconnect is retrying', /&& !reconnectInFlightRef\.current/],
+    ['this instance still owns the ptyId', /&& terminalRegistry\.get\(ptyId\) === terminal/],
+  ])('parks only when %s', (_label, pattern) => {
+    expect(canParkBlock).toMatch(pattern as RegExp);
+  });
+
+  it('hands the park the element it captured, not a fresh lookup', () => {
     expect(mainEffect).toMatch(/parkTerminal\(ptyId, terminal, parkElement, disposeTerminal\)/);
+  });
+
+  it('settles the restore flag on BOTH the success and the failure path', () => {
+    // A rejected scrollback.load that left restoreSettled false would refuse
+    // every later park on that pane — the fix would silently stop applying.
+    expect(mainEffect.match(/restoreSettled = true;/g)).toHaveLength(2);
+    expect(mainEffect).toMatch(/let restoreSettled = !\(scrollbackFile && !adopted\);/);
+  });
+
+  it('removes the contextmenu listener that outlives a park', () => {
+    // It lives on terminal.element, which a park keeps alive. An anonymous
+    // handler was safe only because terminal.dispose() took the element with
+    // it: without this removal each restructure stacks another handler and one
+    // right-click pastes the clipboard into the shell once per split.
+    expect(mainEffect).toMatch(/const onTerminalContextMenu = \(e: MouseEvent\) =>/);
+    expect(mainEffect).toMatch(/addEventListener\('contextmenu', onTerminalContextMenu\)/);
+    expect(mainEffect).toMatch(/removeEventListener\('contextmenu', onTerminalContextMenu\)/);
+  });
+
+  it('tracks the in-flight reconnect where the park decision can read it', () => {
+    expect(afterMainEffect).toMatch(/reconnectInFlightRef\.current = true;/);
+    expect(afterMainEffect).toMatch(/inFlight = false; reconnectInFlightRef\.current = false;/);
+    // Reset per effect run, mirroring the local guard — a ref left true from a
+    // previous ptyId would disable parking for the rest of the session.
+    expect(afterMainEffect).toMatch(/let inFlight = false;\s*\n\s*reconnectInFlightRef\.current = false;/);
   });
 
   it('reads the resync flag before teardown clears it', () => {

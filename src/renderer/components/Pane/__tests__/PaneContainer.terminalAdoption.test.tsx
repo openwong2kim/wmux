@@ -8,7 +8,7 @@
 // commit, and React flushes that commit's passive UNMOUNT effects before its
 // passive MOUNT effects. If that order were reversed — or if the two landed in
 // different commits — the mount would find nothing parked, adoption would never
-// fire, and the whole change would degrade to "dispose the terminal 250 ms
+// fire, and the whole change would degrade to "dispose the terminal one task
 // later" while the user still watched the conversation replay.
 //
 // So this mounts the REAL PaneContainer against the REAL store and splits with
@@ -131,7 +131,7 @@ describe('#1002 — terminal adoption across a pane-tree restructure', () => {
     act(() => { vi.advanceTimersByTime(PARK_TTL_MS * 4); });
 
     // Adoption cancelled the pending dispose. Without that, the adopting mount's
-    // terminal would die a quarter-second into its life.
+    // terminal would die the moment the task that handed it over ended.
     expect(only('dispose')).toEqual([]);
     expect(only('adopt')).toEqual([`adopt:${rootId}`]);
   });
@@ -175,7 +175,7 @@ describe('#1002 — terminal adoption across a pane-tree restructure', () => {
     act(() => { vi.advanceTimersByTime(PARK_TTL_MS); });
 
     // A closed pane never comes back for its terminal — the park window just
-    // moves the dispose 250 ms later, it does not cancel it.
+    // moves the dispose to the end of the task, it does not cancel it.
     expect(only('dispose')).toEqual([`dispose:${rootId}`]);
   });
 });
