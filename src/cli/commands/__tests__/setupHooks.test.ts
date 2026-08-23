@@ -169,7 +169,8 @@ describe('installHooks', () => {
     // Claude Code's schema allows several command leaves under one matcher, so
     // the user hand-adds theirs to the group wmux wrote for Stop.
     const seeded = readSettings();
-    const stopGroups = (seeded.hooks as Record<string, { hooks: unknown[] }[]>).Stop;
+    const stopGroups = (seeded.hooks as Record<string, { matcher?: string; hooks: unknown[] }[]>).Stop;
+    const seededMatcher = stopGroups[0].matcher;
     stopGroups[0].hooks.push({ type: 'command', command: 'echo mine' });
     fs.writeFileSync(settingsPath, JSON.stringify(seeded), 'utf8');
 
@@ -182,7 +183,11 @@ describe('installHooks', () => {
     >).Stop;
     // The user's leaf keeps its group (and its matcher); wmux's own hook is
     // re-added beside it, exactly once, in a group of its own.
-    expect(stop.filter((g) => g.hooks.some((h) => h.command === 'echo mine'))).toHaveLength(1);
+    const mine = stop.filter((g) => g.hooks.some((h) => h.command === 'echo mine'));
+    expect(mine).toHaveLength(1);
+    // Asserted explicitly: the group is handed back whole, so a strip that
+    // rebuilt it and dropped the matcher would otherwise pass here.
+    expect(mine[0].matcher).toBe(seededMatcher);
     expect(
       stop.filter((g) => g.hooks.some((h) => h.command === `node "${bridgeDest}" Stop`)),
     ).toHaveLength(1);
