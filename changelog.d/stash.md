@@ -42,13 +42,21 @@
 
 ### Changed
 
-- **The pane header hides its action buttons on a narrow pane.** The split /
-  browser / stash / zoom cluster is fixed-width, so below roughly 220px it was
-  squeezing the tab strip — the coordinate, the title and the ✕ — down to
-  nothing, leaving a header that was all buttons and no identity. Narrow panes
-  now fall back to the same minimal chrome the "hide pane actions" setting
-  produces: a maximize control that appears on hover. Every action is still on
-  its keyboard shortcut, and stash is also in the sidebar and the palette.
+- **The pane header collapses its action buttons into a menu on a narrow
+  pane.** The split / browser / stash / zoom cluster is fixed-width, so below
+  roughly 220px it was squeezing the tab strip — the coordinate, the title and
+  the ✕ — down to nothing, leaving a header that was all buttons and no
+  identity. Such a pane now shows a single `⋮` that opens the same five actions
+  as a vertical menu: one button's worth of chrome instead of five, which fits
+  down to about 110px. Below even that, the header falls back to the minimal
+  chrome the "hide pane actions" setting produces — a maximize control that
+  appears on hover — and **right-clicking a pane header opens the action menu at
+  any width**, so a pane is never too narrow to reach its own actions.
+
+  This matters most where it used to hurt most: a crowded layout is exactly when
+  you want stash and zoom, and one of the five — adding a browser tab to *this*
+  pane — had no other entry point at all. The palette's Open Browser splits off
+  a new pane, which is the opposite of what a cramped layout is asking for.
 
 ### Notes
 

@@ -76,17 +76,17 @@ describe('enforcedModelBadgeOffset — never lands on a corner control', () => {
   /** The `right` each existing control claims, mirrored from Pane.tsx. */
   const zoomBtn = 6;
   const maximizeBtn = (supervised: boolean) => (supervised ? 32 : 6);
-  const supervisionBadge = (paneActionsVisible: boolean, isZoomed: boolean) =>
-    paneActionsVisible ? PANE_ACTIONS_CLUSTER_WIDTH + 6 : isZoomed ? 54 : 6;
+  const supervisionBadge = (clusterShown: boolean, isZoomed: boolean) =>
+    clusterShown ? PANE_ACTIONS_CLUSTER_WIDTH + 6 : isZoomed ? 54 : 6;
 
   it('clears the action cluster when it is visible', () => {
-    expect(enforcedModelBadgeOffset({ paneActionsVisible: true, isZoomed: false, supervised: false }))
+    expect(enforcedModelBadgeOffset({ mode: 'full', isZoomed: false, supervised: false }))
       .toBeGreaterThan(PANE_ACTIONS_CLUSTER_WIDTH);
   });
 
   it('clears the supervision badge parked beside the action cluster', () => {
     const offset = enforcedModelBadgeOffset({
-      paneActionsVisible: true,
+      mode: 'full',
       isZoomed: false,
       supervised: true,
     });
@@ -95,14 +95,14 @@ describe('enforcedModelBadgeOffset — never lands on a corner control', () => {
 
   it('clears the corner zoom/maximize button when the cluster is hidden', () => {
     for (const isZoomed of [true, false]) {
-      const offset = enforcedModelBadgeOffset({ paneActionsVisible: false, isZoomed, supervised: false });
+      const offset = enforcedModelBadgeOffset({ mode: 'none', isZoomed, supervised: false });
       expect(offset).toBeGreaterThan(isZoomed ? zoomBtn : maximizeBtn(false));
     }
   });
 
   it('clears BOTH the button and the supervision badge when supervised', () => {
     const zoomedOffset = enforcedModelBadgeOffset({
-      paneActionsVisible: false,
+      mode: 'none',
       isZoomed: true,
       supervised: true,
     });
@@ -110,7 +110,7 @@ describe('enforcedModelBadgeOffset — never lands on a corner control', () => {
     expect(zoomedOffset).toBeGreaterThan(zoomBtn);
 
     const unzoomedOffset = enforcedModelBadgeOffset({
-      paneActionsVisible: false,
+      mode: 'none',
       isZoomed: false,
       supervised: true,
     });
@@ -119,11 +119,11 @@ describe('enforcedModelBadgeOffset — never lands on a corner control', () => {
   });
 
   it('never returns the bare corner (right: 6) — the original collision', () => {
-    for (const paneActionsVisible of [true, false]) {
+    for (const mode of ['full', 'overflow', 'none'] as const) {
       for (const isZoomed of [true, false]) {
         for (const supervised of [true, false]) {
           expect(
-            enforcedModelBadgeOffset({ paneActionsVisible, isZoomed, supervised }),
+            enforcedModelBadgeOffset({ mode, isZoomed, supervised }),
           ).toBeGreaterThan(6);
         }
       }

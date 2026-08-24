@@ -10,7 +10,7 @@ import TerminalComponent from '../Terminal/Terminal';
 import BrowserPanel from '../Browser/BrowserPanel';
 import EditorPanel from '../Editor/EditorPanel';
 import DiffPanel from '../Diff/DiffPanel';
-import SurfaceTabs, { paneClusterWidth, paneFitsActionCluster } from './SurfaceTabs';
+import SurfaceTabs, { paneClusterWidth, paneActionsMode, type PaneActionsMode } from './SurfaceTabs';
 import { useElementWidth } from '../../hooks/useElementWidth';
 import { ErrorBoundary } from '../ErrorBoundary';
 import { agentSupportsPermissionFlag, permissionFlagFor, resumeGrammarFor } from '../../../shared/agentResume';
@@ -116,25 +116,26 @@ export function showsEnforcedModelBadge(opts: {
  * D2 — the `right` offset at which the enforced-model badge can sit without
  * covering the pane's top-right controls, which are all absolutely positioned
  * at `top: 4` with `zIndex: 20`:
- *   - action cluster ON  → SurfaceTabs owns the strip (PANE_ACTIONS_CLUSTER_WIDTH),
+ *   - cluster `full`     → SurfaceTabs owns the strip (PANE_ACTIONS_CLUSTER_WIDTH),
  *     with the supervision badge parked just left of it.
- *   - action cluster OFF → the zoom (`right: 6`) or maximize button takes the
+ *   - cluster `overflow` → the same, 31px wide (the ⋮ trigger alone).
+ *   - cluster `none`     → the zoom (`right: 6`) or maximize button takes the
  *     corner, and the supervision badge sits at 6 (un-zoomed, pushing maximize
  *     out to 32) or 54 (zoomed).
  * The badge lands past whichever of those is rightmost. Pure so the arithmetic
  * is testable without a DOM — the same reason composePaneClassName is extracted.
  */
 export function enforcedModelBadgeOffset(opts: {
-  paneActionsVisible: boolean;
+  mode: PaneActionsMode;
   isZoomed: boolean;
   supervised: boolean;
 }): number {
-  const { paneActionsVisible, isZoomed, supervised } = opts;
+  const { mode, isZoomed, supervised } = opts;
   /** Rendered width of the supervision badge (10px glyph + 6px side padding). */
   const SUPERVISION_W = 28;
   /** Rendered width of a corner icon button plus its 6px gutter. */
   const CORNER_BTN_W = 26;
-  const cluster = paneClusterWidth({ paneActionsVisible });
+  const cluster = paneClusterWidth({ mode });
   if (cluster > 0) {
     return cluster + 6 + (supervised ? SUPERVISION_W : 0);
   }
@@ -420,15 +421,18 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
   // below are then redundant AND overlap the cluster, so they render only when
   // the cluster is absent. Subscribe the same way SurfaceTabs does.
   const paneActionsSetting = useStore((s) => s.paneActionsVisible);
-  // #977 follow-up — width-based auto-collapse. The cluster is fixed-width and
-  // shrink-0, so on a narrow pane every pixel it takes comes out of the tab
-  // strip, which is flex-1 min-w-0 and therefore collapses to NOTHING: at ~200px
-  // the header was 100% buttons and 0% identity, with the last button clipped.
-  // Below the threshold we fall back to the EXISTING cluster-off chrome (the
-  // hover-revealed corner ⤢) rather than inventing a small-pane layout. Stash
-  // stays reachable from the sidebar, the palette and the prefix key.
+  // #977 follow-up — width-based collapse in two steps. The cluster is
+  // fixed-width and shrink-0, so on a narrow pane every pixel it takes comes out
+  // of the tab strip, which is flex-1 min-w-0 and therefore collapses to
+  // NOTHING: at ~200px the header was 100% buttons and 0% identity, with the
+  // last button clipped. Below 222px the five buttons become one ⋮ that opens
+  // them as a vertical menu (31px, so it fits down to 111px); below THAT the
+  // pane falls back to the existing cluster-off chrome, the hover-revealed
+  // corner ⤢, with the header's right-click menu as the mouse path.
   const [paneRootRef, paneWidth] = useElementWidth<HTMLDivElement>();
-  const paneActionsVisible = paneActionsSetting && paneFitsActionCluster(paneWidth);
+  const actionsMode: PaneActionsMode = paneActionsSetting
+    ? paneActionsMode(paneWidth)
+    : 'none';
 
   // X8 supervision badge. Resolve the pane's active-surface ptyId → supervision
   // slice. `⟳` when armed (auto-restarting); `⟳!` in a warning colour when the
@@ -439,7 +443,7 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
   );
 
   const enforcedModelBadgeRight = enforcedModelBadgeOffset({
-    paneActionsVisible,
+    mode: actionsMode,
     isZoomed,
     supervised: !!supervision,
   });
@@ -548,7 +552,7 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
       <ErrorBoundary name="pane">
       {/* Plugin badges (B-1 ui.pane-decoration) — host-rendered data only */}
       <PaneDecorations paneId={pane.id} />
-      {!paneActionsVisible && isZoomed && (
+      {actionsMode === 'none' && isZoomed && (
         <button
           onClick={(e) => {
             e.stopPropagation();
@@ -580,7 +584,7 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
           button (hover-revealed via .wmux-pane-maximize-btn in globals.css) so
           the zoom feature isn't keyboard-only. Clicking it zooms the pane; once
           zoomed, the always-visible ZOOM badge above takes over as the toggle. */}
-      {!paneActionsVisible && !isZoomed && (
+      {actionsMode === 'none' && !isZoomed && (
         <button
           className="wmux-pane-maximize-btn"
           onClick={(e) => {
@@ -631,8 +635,8 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
             // avoid overlap — using the exported constant beside the cluster
             // rather than a hardcoded pixel guess. Cluster-off keeps the prior
             // behaviour: sit left of the ZOOM badge when both are present.
-            right: paneClusterWidth({ paneActionsVisible }) > 0
-              ? paneClusterWidth({ paneActionsVisible }) + 6
+            right: paneClusterWidth({ mode: actionsMode }) > 0
+              ? paneClusterWidth({ mode: actionsMode }) + 6
               : isZoomed
                 ? 54
                 : 6,
@@ -933,7 +937,7 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
         workspace={workspace}
         paneId={pane.id}
         paneActive={isActive}
-        actionsVisible={paneActionsVisible}
+        actionsMode={actionsMode}
         onSelect={(surfaceId) => setActiveSurface(pane.id, surfaceId)}
         onClose={handleCloseSurface}
         onSplitHorizontal={handleSplitHorizontal}

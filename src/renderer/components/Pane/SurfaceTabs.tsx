@@ -1,4 +1,4 @@
-import { useRef, useState, useEffect } from 'react';
+import { useRef, useState, useEffect, useMemo, useCallback } from 'react';
 import type { AgentStatus, Surface, Workspace } from '../../../shared/types';
 import { useT } from '../../hooks/useT';
 import { useDaemonModeActive } from '../../hooks/useDaemonMode';
@@ -14,6 +14,7 @@ import PaneDragGrip from './PaneDragGrip';
 import { FOCUS_RING } from '../focusRing';
 import { IconSplitRight, IconSplitDown, IconBrowser, IconEyeOff } from '../icons';
 import { displayPath } from '../../utils/displayPath';
+import PaneActionsMenu, { type PaneActionItem } from './PaneActionsMenu';
 
 /** Rendered width (px) of the pane-action half of the cluster (split / browser /
  *  stash / zoom).
@@ -36,10 +37,28 @@ import { displayPath } from '../../utils/displayPath';
  *  left, with the tabs. */
 export const PANE_ACTIONS_CLUSTER_WIDTH = 142;
 
+/** Rendered width (px) of the COLLAPSED cluster: the ⋮ trigger alone, which
+ *  opens the same actions as a vertical menu. Same outer box as the full
+ *  cluster, one child instead of five and no zoom divider:
+ *    outer div  border-l 1 + pl-1 4 ................................. 5
+ *    1 × w-6 button ................................................ 24
+ *    outer div  pr-0.5 2 ............................................. 2
+ *                                                    overflow total = 31 */
+export const PANE_ACTIONS_OVERFLOW_WIDTH = 31;
+
+/** How the pane header renders its actions at a given width.
+ *  - `full`     — the five-button cluster.
+ *  - `overflow` — one ⋮ that opens them as a vertical menu.
+ *  - `none`     — not even ⋮ fits; the hover-revealed corner ⤢ is all that's
+ *                 left. Also what the "hide pane actions" setting produces. */
+export type PaneActionsMode = 'full' | 'overflow' | 'none';
+
 /** Cluster width for the current chrome matrix. The agent verbs went back to
  *  the bottom toolbar (2026-08-18), so the cluster is the action half only. */
-export function paneClusterWidth(opts: { paneActionsVisible: boolean }): number {
-  return opts.paneActionsVisible ? PANE_ACTIONS_CLUSTER_WIDTH : 0;
+export function paneClusterWidth(opts: { mode: PaneActionsMode }): number {
+  if (opts.mode === 'full') return PANE_ACTIONS_CLUSTER_WIDTH;
+  if (opts.mode === 'overflow') return PANE_ACTIONS_OVERFLOW_WIDTH;
+  return 0;
 }
 
 /** The narrowest tab strip that still says which pane you are looking at: the
@@ -49,28 +68,47 @@ export function paneClusterWidth(opts: { paneActionsVisible: boolean }): number 
 export const MIN_TAB_STRIP_WIDTH = 80;
 
 /**
- * The pane width at which the action cluster stops being affordable.
+ * The pane width at which the full action cluster stops being affordable.
  *
  * Derived, never a second hardcoded number: the cluster is fixed-width and
- * shrink-0, so every pixel below this comes out of the tab strip. Panes narrower
- * than this fall back to the existing cluster-off chrome (the hover-revealed
- * corner ⤢), which is the same path the paneActionsVisible setting turns on —
- * reused rather than rebuilt. Stash stays reachable from the sidebar, the
- * palette and the prefix key.
+ * shrink-0, so every pixel below this comes out of the tab strip.
  */
 export const PANE_ACTIONS_MIN_PANE_WIDTH = PANE_ACTIONS_CLUSTER_WIDTH + MIN_TAB_STRIP_WIDTH;
 
 /**
- * Whether a pane of `width` can afford the action cluster.
+ * The pane width at which even the ⋮ trigger stops being affordable.
  *
- * `null` means "not measured yet" and answers YES: most panes are wide, and
- * assuming otherwise would flash the fallback chrome on every mount. A measured
+ * The gap between this and PANE_ACTIONS_MIN_PANE_WIDTH is why ⋮ exists: 111px
+ * to 222px is a real, reachable band (a 1536px screen with the deck open gives
+ * the grid ~996px, so a five-way horizontal split lands at ~199px, and the
+ * resize handles go lower still — Panel minSize is 10%). Dropping every action
+ * there took them away exactly when a crowded layout needs stash and zoom most,
+ * and one of them — "add a browser tab to THIS pane" — had no other entry point
+ * at all: the palette's Open Browser passes forceNew, which splits off another
+ * pane and makes the cramped layout worse.
+ */
+export const PANE_ACTIONS_OVERFLOW_MIN_PANE_WIDTH = PANE_ACTIONS_OVERFLOW_WIDTH + MIN_TAB_STRIP_WIDTH;
+
+/**
+ * How a pane of `width` should render its actions.
+ *
+ * `null` means "not measured yet" and answers `full`: most panes are wide, and
+ * assuming otherwise would flash collapsed chrome on every mount. A measured
  * 0 is a genuinely hidden pane (a background workspace), which also keeps the
  * cluster so it is correct the instant it becomes visible.
  */
+export function paneActionsMode(width: number | null): PaneActionsMode {
+  if (width === null || width === 0) return 'full';
+  if (width >= PANE_ACTIONS_MIN_PANE_WIDTH) return 'full';
+  if (width >= PANE_ACTIONS_OVERFLOW_MIN_PANE_WIDTH) return 'overflow';
+  return 'none';
+}
+
+/** Whether a pane of `width` can afford the full cluster. Kept as its own
+ *  predicate because that is the question the badge offset and the tests ask;
+ *  it is the `full` arm of paneActionsMode, never a second threshold. */
 export function paneFitsActionCluster(width: number | null): boolean {
-  if (width === null || width === 0) return true;
-  return width >= PANE_ACTIONS_MIN_PANE_WIDTH;
+  return paneActionsMode(width) === 'full';
 }
 
 /** Ctrl on Windows/Linux, ⌘ on macOS — mirrors the OS-aware mapping in
@@ -149,13 +187,13 @@ interface SurfaceTabsProps {
   /** New browser surface (tab) in this pane. */
   onAddBrowser: () => void;
   /**
-   * Whether the pane-action cluster renders. Pane.tsx owns this because it is
-   * the Settings toggle AND the width check — the cluster is fixed-width and
+   * How the pane-action cluster renders. Pane.tsx owns this because it is the
+   * Settings toggle AND the width check — the cluster is fixed-width and
    * shrink-0, so on a narrow pane it eats the tab strip whole. Optional so the
    * component keeps working standalone (tests mount it directly); omitted falls
-   * back to the setting alone.
+   * back to the setting alone, at full width.
    */
-  actionsVisible?: boolean;
+  actionsMode?: PaneActionsMode;
 }
 
 export default function SurfaceTabs({
@@ -170,7 +208,7 @@ export default function SurfaceTabs({
   onSplitVertical,
   onAddTerminal,
   onAddBrowser,
-  actionsVisible,
+  actionsMode,
 }: SurfaceTabsProps) {
   const t = useT();
   // Same 200ms threshold pattern WorkspaceItem uses so a fast click never
@@ -189,7 +227,7 @@ export default function SurfaceTabs({
   // setups, AND by the pane being wide enough to afford it — Pane.tsx combines
   // the two and passes the answer down.
   const paneActionsSetting = useStore((s) => s.paneActionsVisible);
-  const paneActionsVisible = actionsVisible ?? paneActionsSetting;
+  const mode: PaneActionsMode = actionsMode ?? (paneActionsSetting ? 'full' : 'none');
   // Zoom/maximize state for this pane — the cluster's fifth button toggles it
   // and reflects the current state (pressed when zoomed). Subscribing here (same
   // pattern as Pane.tsx) keeps the button in sync without prop threading.
@@ -199,6 +237,96 @@ export default function SurfaceTabs({
   const daemonConnected = useDaemonModeActive();
   const prefixConfig = useStore((s) => s.prefixConfig);
   const stashDisabled = !daemonConnected;
+
+  // The two actions the cluster drives through the store rather than a prop.
+  // Named so the buttons and the menu invoke the SAME thing — a menu that
+  // reimplements an action is a menu that drifts from it.
+  const stashThisPane = useCallback(() => {
+    if (stashDisabled) return;
+    useStore.getState().stashPane(paneId, workspace.id);
+  }, [stashDisabled, paneId, workspace.id]);
+  const toggleZoom = useCallback(() => {
+    useStore.getState().togglePaneZoom(paneId);
+  }, [paneId]);
+  const stashChord = prefixChordFor(prefixConfig, 'stashPane');
+  const stashTooltip = stashDisabled
+    ? t('pane.stashNoDaemon')
+    : `${t('pane.stash')} — ${t('pane.stashHint')}`;
+
+  // ── Overflow menu ─────────────────────────────────────────────────────────
+  // Open either from the ⋮ trigger (narrow panes) or by right-clicking the
+  // header (any width). One anchor rect covers both: a button's own rect, or a
+  // zero-size rect at the pointer.
+  const [menuAnchor, setMenuAnchor] = useState<
+    { top: number; left: number; right: number; bottom: number } | null
+  >(null);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const overflowBtnRef = useRef<HTMLButtonElement>(null);
+  const closeMenu = useCallback(() => setMenuOpen(false), []);
+
+  const openMenuAt = useCallback((rect: { top: number; left: number; right: number; bottom: number }) => {
+    setMenuAnchor(rect);
+    setMenuOpen(true);
+  }, []);
+
+  const menuItems: PaneActionItem[] = useMemo(() => [
+    {
+      key: 'split-right',
+      label: t('pane.splitRight'),
+      shortcut: SC_SPLIT_RIGHT,
+      icon: <IconSplitRight size={14} />,
+      onSelect: onSplitHorizontal,
+    },
+    {
+      key: 'split-down',
+      label: t('pane.splitDown'),
+      shortcut: SC_SPLIT_DOWN,
+      icon: <IconSplitDown size={14} />,
+      onSelect: onSplitVertical,
+    },
+    {
+      key: 'new-browser',
+      label: t('pane.newBrowser'),
+      icon: <IconBrowser size={14} />,
+      onSelect: onAddBrowser,
+    },
+    {
+      key: 'stash',
+      label: t('pane.stash'),
+      shortcut: stashChord ?? undefined,
+      icon: <IconEyeOff size={14} />,
+      disabled: stashDisabled,
+      title: stashTooltip,
+      onSelect: stashThisPane,
+    },
+    {
+      key: 'zoom',
+      label: t('settings.prefix.toggleZoom'),
+      icon: (
+        <span aria-hidden="true" className="font-mono text-[13px] leading-none">
+          {isZoomed ? '⤡' : '⤢'}
+        </span>
+      ),
+      active: isZoomed,
+      separatorBefore: true,
+      onSelect: toggleZoom,
+    },
+  ], [
+    t, onSplitHorizontal, onSplitVertical, onAddBrowser,
+    stashChord, stashDisabled, stashTooltip, stashThisPane, isZoomed, toggleZoom,
+  ]);
+
+  // Right-click anywhere on the header opens the same menu. Free at any width,
+  // and the only reason the `none` mode (a pane too narrow even for ⋮, or the
+  // "hide pane actions" setting) is not a dead end for the mouse.
+  const handleHeaderContextMenu = useCallback((e: React.MouseEvent) => {
+    if (mode === 'none' && !paneActionsSetting) return;
+    // A tab's own right-click is not claimed here; only empty header space and
+    // the action area open the menu.
+    e.preventDefault();
+    e.stopPropagation();
+    openMenuAt({ top: e.clientY, left: e.clientX, right: e.clientX, bottom: e.clientY });
+  }, [mode, paneActionsSetting, openMenuAt]);
   // P2: pane-level identity + rename (distinct from the per-surface tab rename
   // below). The pane's display name is its user label (paneLabel mirror) or the
   // stable auto coordinate `w<ws>-<pane>(<agent>)`. Narrowed to THIS pane's
@@ -333,6 +461,9 @@ export default function SurfaceTabs({
         ...(paneActive ? { boxShadow: 'inset 0 -2px 0 var(--accent-blue)' } : {}),
       }}
       data-pane-tabs-active={paneActive ? 'true' : undefined}
+      // Right-click the header for the same actions at any width. This is what
+      // keeps a pane too narrow even for ⋮ from being a dead end for the mouse.
+      onContextMenu={handleHeaderContextMenu}
       {...tokenAttrs('bgMantle', 'bg')}
       {...tokenAttrs('bgSurface', 'border')}
     >
@@ -456,7 +587,7 @@ export default function SurfaceTabs({
           hover, a keyboard-focus ring, and monochrome line icons from the
           shared system. Each button drives an EXISTING store action and its
           tooltip carries the same shortcut the keyboard already binds. */}
-      {paneActionsVisible && (
+      {mode === 'full' && (
         <div
           className="flex items-center shrink-0 h-full pl-1 pr-0.5 gap-0.5 border-l border-[var(--border-soft)]"
           data-pane-actions
@@ -509,19 +640,11 @@ export default function SurfaceTabs({
             // tab order, so a keyboard user cannot reach it to READ why it is
             // unavailable. It stays focusable and explains itself.
             aria-disabled={stashDisabled || undefined}
-            onClick={(e) => {
-              e.stopPropagation();
-              if (stashDisabled) return;
-              useStore.getState().stashPane(paneId, workspace.id);
-            }}
+            onClick={(e) => { e.stopPropagation(); stashThisPane(); }}
             title={
-              stashDisabled
-                ? t('pane.stashNoDaemon')
-                : (() => {
-                    const chord = prefixChordFor(prefixConfig, 'stashPane');
-                    const label = `${t('pane.stash')} — ${t('pane.stashHint')}`;
-                    return chord ? withShortcut(label, chord) : label;
-                  })()
+              !stashDisabled && stashChord
+                ? withShortcut(stashTooltip, stashChord)
+                : stashTooltip
             }
             aria-label={t('pane.stash')}
             data-pane-action="stash"
@@ -536,7 +659,7 @@ export default function SurfaceTabs({
           <div className="flex items-center border-l border-[var(--border-soft)] ml-0.5 pl-1">
             <button
               className={`ui-icon-btn ${FOCUS_RING} w-6 h-6 ${isZoomed ? 'ui-icon-btn-active' : ''}`}
-              onClick={(e) => { e.stopPropagation(); useStore.getState().togglePaneZoom(paneId); }}
+              onClick={(e) => { e.stopPropagation(); toggleZoom(); }}
               title={t('settings.prefix.toggleZoom')}
               aria-label={t('settings.prefix.toggleZoom')}
               aria-pressed={isZoomed}
@@ -550,6 +673,43 @@ export default function SurfaceTabs({
             </button>
           </div>
         </div>
+      )}
+
+      {/* Collapsed cluster — 31px instead of 142px. The same five actions, one
+          click deeper, on a pane that cannot afford to show them side by side.
+          Kept OUTSIDE the tab strip's scroll region and shrink-0 like the full
+          cluster, so it stays pinned to the right edge. */}
+      {mode === 'overflow' && (
+        <div
+          className="flex items-center shrink-0 h-full pl-1 pr-0.5 border-l border-[var(--border-soft)]"
+          data-pane-actions="overflow"
+        >
+          <button
+            ref={overflowBtnRef}
+            className={`ui-icon-btn ${FOCUS_RING} w-6 h-6 ${menuOpen ? 'ui-icon-btn-active' : ''}`}
+            onClick={(e) => {
+              e.stopPropagation();
+              if (menuOpen) { closeMenu(); return; }
+              openMenuAt(e.currentTarget.getBoundingClientRect());
+            }}
+            title={t('pane.moreActions')}
+            aria-label={t('pane.moreActions')}
+            aria-haspopup="menu"
+            aria-expanded={menuOpen}
+            data-pane-overflow-trigger
+          >
+            <span aria-hidden="true" className="font-mono text-[13px] leading-none">⋮</span>
+          </button>
+        </div>
+      )}
+
+      {menuOpen && (
+        <PaneActionsMenu
+          anchor={menuAnchor}
+          triggerRef={overflowBtnRef}
+          items={menuItems}
+          onClose={closeMenu}
+        />
       )}
     </div>
   );

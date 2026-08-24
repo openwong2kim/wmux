@@ -282,6 +282,10 @@ export const en = {
   'pane.splitDown': 'Split down',
   'pane.newTerminal': 'New terminal',
   'pane.newBrowser': 'New browser',
+  // Label for the ⋮ that replaces the five-button cluster on a pane too
+  // narrow to hold it, and for the header's right-click menu. Names the SET of
+  // actions, not the glyph — it is the accessible name a screen reader reads.
+  'pane.moreActions': 'Pane actions',
   // Label for the tab-strip `+` and its menu. "tab" not "surface": the UI
   // calls them tabs everywhere the user can see (cf. surface.closeTab).
   'pane.addSurface': 'New tab',

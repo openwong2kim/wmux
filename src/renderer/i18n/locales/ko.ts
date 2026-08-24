@@ -47,6 +47,7 @@ export const ko = {
   'pane.empty': '빈 창',
   'pane.splitRight': '오른쪽 분할',
   'pane.splitDown': '아래 분할',
+  'pane.moreActions': '페인 작업',
   'pane.maxLeavesReached': '창 분할 한도 도달 ({count}개). 창을 닫고 다시 시도하세요.',
   'pane.maxLeavesReachedWithStash': '페인 한도 도달 ({count}개, 보관 {stashed}개 포함). 보관함에서 꺼내 닫거나, 보이는 페인을 닫으세요.',
 
