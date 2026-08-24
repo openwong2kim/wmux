@@ -56,6 +56,67 @@
  * selected and why — the field log is the discriminator before any further
  * complexity is added.
  *
+ * That limit is exactly what #951 hit (field logs, WeChat IME + Microsoft
+ * Pinyin, Claude Code streaming into a 128x45 pane): `src=instant` selections
+ * at (127,43), (53,43), (127,38) — screen corners and output rows, never the
+ * user's input line. While an agent streams, output arrives in bursts with
+ * inter-burst gaps far above RESTING_MS (token pacing, network), and between
+ * bursts the cursor sits wherever the last write left it. Dwell time
+ * certifies that parked cursor as "at rest"; the resting fallback is derived
+ * from the same buffer cursor and is just as blind. The missing signal is
+ * output recency: a cell the cursor held through a period with NO parsed PTY
+ * output is where the TUI deliberately parked it — the caret at rest — while
+ * any cursor position observed with output still flowing is repaint state.
+ * So the tracker also records the last "quiet caret": the cell the cursor
+ * held across the most recent >= OUTPUT_QUIET_MS output-free span, stored
+ * ybase-RELATIVE (screen row), because a TUI addresses its input line by
+ * screen position and scrolling output changes that line's absolute row while
+ * its screen row stays put. A composition starting while output is recent
+ * AND has been flowing for STREAM_SUSTAIN_MS anchors there (`src=caret`)
+ * instead of trusting dwell. The sustain gate is what keeps the quiet-shell
+ * typing flow intact: a committed syllable's echo is also "recent output",
+ * but it is an isolated burst — without the gate, every commit would push
+ * the next composition onto the stale snapshot instead of the correctly
+ * advanced cursor, and a fluid typist's candidate window would drift further
+ * from the caret with every word (3-model panel finding on the first cut).
+ * Dwell has one more blind spot even when quiet (#953 field cases 1-3): a
+ * TUI with nothing to point at — empty input box, mid-edit redraw — parks
+ * its real cursor at the LAST column of the line it painted, and a long gap
+ * then certifies that placeholder. A CJK composition can never sit on the
+ * last column (the glyph alone is two cells wide), so such a selection is
+ * FLAGGED (`edge=1` in the diagnostic), and while output is FLOWING it also
+ * defers to the quiet-caret snapshot; while output is quiet the selection is
+ * NOT rerouted. Such a cell is also refused as a snapshot, so a quiet span
+ * that finds the TUI parked at the line end keeps the caret the last real one
+ * recorded instead of replacing it — without that, deferring to the snapshot
+ * just moves the same wrong cell one step earlier.
+ * That last split is the whole lesson of three earlier generations, all of
+ * which rerouted a line-end park in every condition and all of which lost to
+ * the untouched baseline: re-selecting the quiet snapshot wandered between
+ * inputs (an idle TUI keeps twitching its cursor, so consecutive quiet spans
+ * certify different cells); reusing the previous composition's anchor locked
+ * whatever error the first anchor had for the whole session; and withholding
+ * line-end cells from the snapshot measured worse too. What they had in
+ * common was acting while the pane was IDLE, which is exactly where dwell was
+ * already right. The streaming half was still broken after they were reverted
+ * (#953 field log, 2026-08-21: `gap=203ms caretAge=602ms src=instant edge=1`
+ * — a usable snapshot passed over, candidate window pinned to the pane's
+ * bottom-right corner), so the rule now fires only when output arrived within
+ * OUTPUT_QUIET_MS. The idle line-end miss stays a KNOWN, flagged residual. Fixing it for real needs a different signal
+ * class than the cursor — the ecosystem contract says the TUI must park
+ * its cursor on the caret (Ink's useCursor exists; Claude Code has not
+ * shipped it, see anthropics/claude-code#25186), and the content-aware
+ * fallback proven by other terminals (detect the agent's input-line marker
+ * in the buffer, gated per known agent) is follow-up work, not another
+ * cursor heuristic.
+ * Known residuals, all identifiable in a field log via the src/gap/
+ * caretAge/edge fields: the line-end park above; a mid-stream pause longer
+ * than OUTPUT_QUIET_MS with the cursor parked mid-line on repaint state
+ * re-snapshots a wrong caret; a resize or clear mid-stream drops (resize)
+ * or strands (clear — no reset event fires) the snapshot until output next
+ * goes quiet; and a caret deliberately moved by the very chunk that ends a
+ * quiet span is snapshotted at its pre-move cell.
+ *
  * All of this lives in upstream xterm and this repo does not patch
  * node_modules, so the correction is applied downstream as a `transform` that
  * composes with the `style.top` / `style.left` xterm keeps writing, instead of
@@ -82,11 +143,15 @@
  * (typing 대한민국 reads 대한국, #942). The composition ending cleared the
  * transform and the WebGL repaint restored the real cells, which is why the
  * buffer was never wrong, only the paint. So the pin applies to the textarea
- * alone, and the preedit gets the same anchor math against the live cursor,
- * never frozen — applied at xterm's own composition-event cadence (not per
- * render frame, see syncPreedit) so it lands on the painted caret when the
- * viewport is scrolled (cause 1 applies to it too) without chasing mid-repaint
- * transient cursors.
+ * alone, and the preedit gets the same anchor math against the live cursor —
+ * applied at xterm's own composition-event cadence (not per render frame, see
+ * syncPreedit) so it lands on the painted caret when the viewport is scrolled
+ * (cause 1 applies to it too) without chasing mid-repaint transient cursors.
+ * One exception (#951 field report on the first quiet-caret build): when the
+ * freeze cell came from the quiet caret, the live cursor is the streaming
+ * agent's repaint cursor, so the preedit pins to the same frozen point as the
+ * textarea — otherwise the pinyin rides the agent's output rows while its
+ * candidate list sits at the input line, and the two IME surfaces tear apart.
  *
  * The correction is computed as `desired - actual`, where `actual` is read back
  * from the styles xterm wrote rather than re-derived from the buffer. That
@@ -213,6 +278,25 @@ export function parsePxOrNull(value: string | undefined | null): number | null {
 export const RESTING_MS = 32;
 
 /**
+ * Output silence required before the buffer cursor is trusted again (#951).
+ * Streaming agents keep their spinner/stream repaints under a few hundred ms
+ * apart, so mid-turn gaps stay below this; a pane whose agent has finished (or
+ * that never streamed) crosses it almost immediately. A cell the cursor held
+ * through a span this long with no parsed output is the TUI's parked caret.
+ */
+export const OUTPUT_QUIET_MS = 500;
+
+/**
+ * How long output must have been flowing (sub-quiet gaps, measured from the
+ * chunk that ended the last quiet span) before the quiet-caret snapshot
+ * outranks the live cursor. An isolated burst — a committed syllable's echo,
+ * a prompt redraw — stays well under this, so ordinary typing keeps trusting
+ * the freshly advanced cursor; an agent streaming output crosses it within
+ * the first second of its turn.
+ */
+export const STREAM_SUSTAIN_MS = 700;
+
+/**
  * Mutable tracker record. The transition functions below mutate it in place —
  * that is how "pure-function testability" and an allocation-free hot path
  * coexist: each function is deterministic in (state, args), returns scalars,
@@ -222,14 +306,35 @@ export interface RestingTrackerState {
   /** Cell the cursor is in right now (absolute row = ybase + buffer.y). */
   currentAbsRow: number;
   currentCol: number;
+  /** Screen row of the current cell at entry (xterm's `buffer.y`). */
+  currentRelRow: number;
   /** Clock reading when the current cell was entered. */
   currentSince: number;
   /** Last cell that was held for >= RESTING_MS before the cursor left it. */
   lastRestingAbsRow: number;
   lastRestingCol: number;
+  /** Screen row of the resting cell at its entry. */
+  lastRestingRelRow: number;
   /** Clock reading when the resting cell was promoted. */
   lastRestingAt: number;
   hasResting: boolean;
+  /** Clock reading of the last parsed PTY output (#951). */
+  lastOutputAt: number;
+  /** Clock reading of the chunk that ended the last quiet span — the start
+   *  of the current output epoch. Age >= STREAM_SUSTAIN_MS means the output
+   *  is a sustained stream, not an isolated echo burst. */
+  epochStart: number;
+  /**
+   * Cell the cursor held through the most recent >= OUTPUT_QUIET_MS
+   * output-free span — the TUI's parked caret. Screen-row coordinates: a TUI
+   * addresses its input line by screen position, so this survives the buffer
+   * scrolling underneath it, which an absolute row would not.
+   */
+  caretRelRow: number;
+  caretCol: number;
+  /** Clock reading when the caret snapshot was taken. */
+  caretAt: number;
+  hasCaret: boolean;
 }
 
 /**
@@ -237,48 +342,122 @@ export interface RestingTrackerState {
  * means an idle caret that never moves still reads as "at rest", so the
  * pre-first-move window has no hole where the selection could do nothing.
  */
-export function createRestingTracker(absRow: number, col: number, now: number): RestingTrackerState {
+export function createRestingTracker(absRow: number, col: number, now: number, relRow: number = absRow): RestingTrackerState {
   return {
     currentAbsRow: absRow,
     currentCol: col,
+    currentRelRow: relRow,
     currentSince: now,
     lastRestingAbsRow: 0,
     lastRestingCol: 0,
+    lastRestingRelRow: 0,
     lastRestingAt: 0,
     hasResting: false,
+    // Seeded with the creation clock: "no output since attach" reads as quiet,
+    // matching the seeded-at-rest semantics of the cell fields above.
+    lastOutputAt: now,
+    epochStart: now,
+    caretRelRow: 0,
+    caretCol: 0,
+    caretAt: 0,
+    hasCaret: false,
   };
 }
 
 /** Record a cursor movement. Promotes the cell being left if it had rested. */
-export function noteCursorMove(state: RestingTrackerState, absRow: number, col: number, now: number): void {
-  if (absRow === state.currentAbsRow && col === state.currentCol) return;
+export function noteCursorMove(state: RestingTrackerState, absRow: number, col: number, now: number, relRow: number = absRow): void {
+  if (absRow === state.currentAbsRow && col === state.currentCol) {
+    // Same buffer cell, so the dwell clock keeps running — but a scroll can
+    // move the screen row under a stationary absolute cell (baseY up, cursorY
+    // down by the same amount), and the caret snapshot records SCREEN rows,
+    // so the screen coordinate must stay fresh.
+    state.currentRelRow = relRow;
+    return;
+  }
   if (now - state.currentSince >= RESTING_MS) {
     state.lastRestingAbsRow = state.currentAbsRow;
     state.lastRestingCol = state.currentCol;
+    state.lastRestingRelRow = state.currentRelRow;
     state.lastRestingAt = now;
     state.hasResting = true;
   }
   state.currentAbsRow = absRow;
   state.currentCol = col;
+  state.currentRelRow = relRow;
   state.currentSince = now;
 }
 
 /**
- * Invalidate everything and re-seed. Resize reflow and buffer switches
- * (alt-screen) change what an absolute row means, so a resting cell recorded
- * before either event must never be selected after it.
+ * Record a parsed PTY write (#951). When this chunk ends an output-free span
+ * of >= OUTPUT_QUIET_MS, the cell that held the cursor through that span is
+ * promoted to the quiet caret. Which tracker field holds that cell depends on
+ * event order inside the chunk, and both orders are covered: if the cursor
+ * has not (yet) been reported moved this chunk, the current cell still spans
+ * the quiet period (`currentSince <= lastOutputAt` — the cursor cannot move
+ * without output); if the move was already reported, the spanning cell was
+ * just promoted to the resting slot (its dwell covered the whole span, which
+ * exceeds RESTING_MS by construction) with a promotion clock inside this
+ * chunk.
  */
-export function resetRestingTracker(state: RestingTrackerState, absRow: number, col: number, now: number): void {
+export function noteOutputParsed(state: RestingTrackerState, now: number, cols?: number): void {
+  if (now - state.lastOutputAt >= OUTPUT_QUIET_MS) {
+    state.epochStart = now;
+    // A cell on the LAST column is the TUI's line-end park, never a caret: a
+    // CJK composition cannot sit there, since the glyph is two cells wide. It
+    // must not become the snapshot — and specifically must not REPLACE a good
+    // one, which is the shape the field log shows (#953, 2026-08-21):
+    // `cursor=(13,36) sel=(127,43) src=caret`, the live cursor mid-line while
+    // the snapshot points at column 127. Refusing keeps whatever caret the
+    // last real quiet span recorded. `cols` is optional so a caller with no
+    // geometry keeps the old behaviour rather than silently disabling the
+    // check with a wrong bound.
+    const lastCol = cols !== undefined ? cols - 1 : Infinity;
+    const promote = (relRow: number, col: number): void => {
+      if (col >= lastCol) return;
+      state.caretRelRow = relRow;
+      state.caretCol = col;
+      state.caretAt = now;
+      state.hasCaret = true;
+    };
+    if (state.currentSince <= state.lastOutputAt) {
+      promote(state.currentRelRow, state.currentCol);
+    } else if (state.hasResting && state.lastRestingAt > state.lastOutputAt) {
+      promote(state.lastRestingRelRow, state.lastRestingCol);
+    }
+  }
+  state.lastOutputAt = now;
+}
+
+/**
+ * Invalidate everything and re-seed. Resize reflow and buffer switches
+ * (alt-screen) change what both an absolute and a screen row mean, so neither
+ * a resting cell nor a quiet caret recorded before either event may be
+ * selected after it. The output clock is re-seeded too: without that, the
+ * chunk ending the first post-reset quiet span would see
+ * `currentSince > lastOutputAt` (the reset stamped `currentSince`) and could
+ * never take the current-cell branch of noteOutputParsed, so a pane that
+ * kept streaming after a resize would not regain a caret snapshot until the
+ * cursor happened to move in exactly the right chunk (2-model panel
+ * finding). Re-seeding makes the quiet clock start fresh in the new
+ * coordinate frame, which is also the conservative reading: only silence
+ * observed entirely after the reflow counts toward a new snapshot.
+ */
+export function resetRestingTracker(state: RestingTrackerState, absRow: number, col: number, now: number, relRow: number = absRow): void {
   state.currentAbsRow = absRow;
   state.currentCol = col;
+  state.currentRelRow = relRow;
   state.currentSince = now;
   state.hasResting = false;
+  state.hasCaret = false;
+  state.lastOutputAt = now;
+  state.epochStart = now;
 }
 
 /** Where the freeze cell came from. `scrolled_out` is `instant` chosen because
  *  the resting cell had left the viewport — kept distinct so a field log can
- *  tell that rejection apart from a cursor that was simply at rest. */
-export type FreezeCellSource = 'instant' | 'resting' | 'scrolled_out';
+ *  tell that rejection apart from a cursor that was simply at rest. `caret` is
+ *  the quiet-caret snapshot, chosen because output was still flowing (#951). */
+export type FreezeCellSource = 'instant' | 'resting' | 'scrolled_out' | 'caret';
 
 export interface FreezeCellSelection {
   absRow: number;
@@ -288,13 +467,32 @@ export interface FreezeCellSelection {
   held: number;
   /** Age of the resting cell at selection time; -1 when none exists. */
   restAge: number;
+  /** Time since the last parsed PTY output when selection ran (#951). */
+  outputGap: number;
+  /** Age of the caret snapshot at selection time; -1 when none exists. */
+  caretAge: number;
+  /** True when the instantaneous cursor sat on the last column — a TUI
+   *  line-end park (#953). Diagnostic only; the selection is not rerouted. */
+  edge: boolean;
 }
 
 /**
- * Pick the cell the composition should anchor to. A cursor that has held its
- * cell for RESTING_MS is at rest — trust it. A cursor that moved more recently
- * is mid-repaint, so fall back to the last cell that did rest. With no resting
- * cell recorded (fresh tracker), the instantaneous cursor is all there is.
+ * Pick the cell the composition should anchor to. When output has been quiet
+ * for OUTPUT_QUIET_MS the buffer cursor is where the TUI parked it — trust it
+ * when at rest (RESTING_MS), fall back to the resting cell mid-burst. While
+ * output is recent AND sustained (STREAM_SUSTAIN_MS since the current epoch
+ * began), dwell time certifies nothing (#951: a streaming agent parks its
+ * cursor on screen corners between bursts for far longer than RESTING_MS),
+ * so the quiet-caret snapshot wins over both. Recent-but-isolated output —
+ * a committed syllable's echo — keeps the normal dwell selection, because
+ * there the freshly moved cursor IS the caret and the snapshot is one word
+ * stale. The snapshot's
+ * screen row is rebased onto the CURRENT ybase: the TUI keeps its input line
+ * at a fixed screen position while output scrolls the buffer underneath.
+ * `pointFromCell` clamps the result into the viewport, which for a scrolled-up
+ * user pins the candidate window to the nearest visible edge — same contract
+ * as every other off-screen anchor here. With no snapshot (pane streamed from
+ * the moment it attached), selection degrades to the pre-#951 behavior.
  *
  * `viewport` guards the one case where the resting cell is the WORSE of the
  * two. A resting cell is by definition a past cell, so output that scrolls the
@@ -312,18 +510,54 @@ export function selectFreezeCell(
   instAbsRow: number,
   instCol: number,
   now: number,
-  viewport?: { top: number; rows: number },
+  viewport?: { top: number; rows: number; cols?: number },
+  baseY = 0,
 ): FreezeCellSelection {
   const held = now - state.currentSince;
   const restAge = state.hasResting ? now - state.lastRestingAt : -1;
+  const outputGap = now - state.lastOutputAt;
+  const caretAge = state.hasCaret ? now - state.caretAt : -1;
+  // Diagnostic only (#953): a last-column cursor is a TUI line-end park, not
+  // a caret — but every generation of acting on it (reroute to the quiet
+  // snapshot, reuse the previous anchor, withhold the snapshot) field-tested
+  // worse than leaving it alone, so it is flagged and nothing more. See the
+  // header for the full account.
+  const lastCol = viewport?.cols !== undefined ? viewport.cols - 1 : Infinity;
+  const edge = instCol >= lastCol;
+  // The sustain gate exists to stop a COMMIT ECHO from pushing the next
+  // composition onto a stale snapshot — an echo is recent output too, and
+  // there the freshly moved cursor really is the caret. It has nothing to
+  // protect when the cursor is parked on the last column: a commit leaves the
+  // caret where the syllable landed, mid-line, and a CJK composition cannot
+  // sit on the last column at all (the glyph is two cells wide). So while
+  // output is flowing, a line-end park defers to the snapshot even before the
+  // epoch is old enough.
+  //
+  // This is narrower than the three generations the header records as losing.
+  // Each of those rerouted a line-end park in EVERY condition, idle included,
+  // and idle is exactly where dwell was right; this one cannot fire unless
+  // output arrived within OUTPUT_QUIET_MS. Field evidence for the distinction
+  // (#953, 2026-08-21): with idle confirmed good on 5ca90958, streaming still
+  // anchored bottom-right, and the log shows why — `gap=203ms caretAge=602ms
+  // src=instant edge=1`, a usable snapshot passed over because a token-paced
+  // stream pauses longer than OUTPUT_QUIET_MS between bursts, so `epochStart`
+  // kept restarting and never reached STREAM_SUSTAIN_MS.
+  if (outputGap < OUTPUT_QUIET_MS
+    && (now - state.epochStart >= STREAM_SUSTAIN_MS || edge)
+    && state.hasCaret) {
+    return {
+      absRow: baseY + state.caretRelRow, col: state.caretCol,
+      src: 'caret', held, restAge, outputGap, caretAge, edge,
+    };
+  }
   if (held >= RESTING_MS || !state.hasResting) {
-    return { absRow: instAbsRow, col: instCol, src: 'instant', held, restAge };
+    return { absRow: instAbsRow, col: instCol, src: 'instant', held, restAge, outputGap, caretAge, edge };
   }
   if (viewport && (state.lastRestingAbsRow < viewport.top
     || state.lastRestingAbsRow >= viewport.top + viewport.rows)) {
-    return { absRow: instAbsRow, col: instCol, src: 'scrolled_out', held, restAge };
+    return { absRow: instAbsRow, col: instCol, src: 'scrolled_out', held, restAge, outputGap, caretAge, edge };
   }
-  return { absRow: state.lastRestingAbsRow, col: state.lastRestingCol, src: 'resting', held, restAge };
+  return { absRow: state.lastRestingAbsRow, col: state.lastRestingCol, src: 'resting', held, restAge, outputGap, caretAge, edge };
 }
 
 // ---------------------------------------------------------------------------
@@ -353,6 +587,8 @@ export interface ImeAnchorTerminal {
   onScroll: EventEmitterLike<unknown>;
   onResize: EventEmitterLike<unknown>;
   onCursorMove: EventEmitterLike<unknown>;
+  /** Fires after each PTY chunk is parsed — the output-recency signal (#951). */
+  onWriteParsed: EventEmitterLike<unknown>;
 }
 
 export interface ImeAnchorOptions {
@@ -382,6 +618,15 @@ export interface ImeAnchorOptions {
     src: FreezeCellSource;
     held: number;
     restAge: number;
+    /** Output silence at compositionstart — the #951 discriminator. */
+    outputGap: number;
+    /** Age of the caret snapshot at compositionstart; -1 when none existed.
+     *  A large value on a src=caret record means the anchor came from a
+     *  long-past quiet span — the stale-snapshot residual in action. */
+    caretAge: number;
+    /** True when the cursor sat on the last column — a TUI line-end park
+     *  (#953). Diagnostic only; the selection is not rerouted. */
+    edge: boolean;
     /** Selected cell, ybase-relative like cursorY/cursorX. */
     selY: number;
     selX: number;
@@ -457,6 +702,7 @@ export function attachImeAnchor(
     bufferState().baseY + bufferState().cursorY,
     bufferState().cursorX,
     now(),
+    bufferState().cursorY,
   );
 
   let frozen: ImeAnchorPoint | null = null;
@@ -527,9 +773,21 @@ export function attachImeAnchor(
   };
 
   /**
-   * The preedit is NEVER pinned (#942): while composing it gets the same
-   * anchor math against the live cursor — the ydisp term xterm forgot —
-   * and outside a composition it carries no transform (xterm hides it).
+   * The preedit follows the live cursor in a quiet pane (#942): while
+   * composing it gets the same anchor math against the live cursor — the
+   * ydisp term xterm forgot — so a committed syllable's echo advances the
+   * composing syllable with the caret (Korean inline input). Outside a
+   * composition it carries no transform (xterm hides it).
+   *
+   * The one exception is a composition whose freeze cell came from the quiet
+   * caret (`src=caret`, #951/#953 field report): there the live cursor IS the
+   * streaming agent's repaint cursor, and following it split the two IME
+   * surfaces apart — the candidate window pinned at the input line while the
+   * inline pinyin chased the agent's output rows. Both surfaces must anchor
+   * to the same cell, so a caret-sourced composition pins the preedit to the
+   * same frozen point as the textarea. The quiet case is untouched: there the
+   * selection is instant/resting and the live follow stays (#942 stays
+   * fixed).
    *
    * Deliberately called only from the composition handlers, NOT from
    * onRender/onScroll: at a composition event xterm has just written the
@@ -550,13 +808,16 @@ export function attachImeAnchor(
     if (!isUsableGeometry(geometry)) return;
     const actualPreedit = readStyledPoint(compositionView);
     if (!actualPreedit) return;
-    const c = computeImeAnchorCorrection(paintedCursorPosition(bufferState(), geometry), actualPreedit);
+    const desired = frozen !== null && lastSel?.src === 'caret'
+      ? frozen
+      : paintedCursorPosition(bufferState(), geometry);
+    const c = computeImeAnchorCorrection(desired, actualPreedit);
     preeditTransform.set(c.dx, c.dy);
   };
 
   const resetTracker = (): void => {
     const b = bufferState();
-    resetRestingTracker(tracker, b.baseY + b.cursorY, b.cursorX, now());
+    resetRestingTracker(tracker, b.baseY + b.cursorY, b.cursorX, now(), b.cursorY);
   };
 
   const onRefreshGeometry = (): void => {
@@ -570,6 +831,11 @@ export function attachImeAnchor(
 
   // Freeze-cell selection of the current composition, for the diagnostic.
   let lastSel: FreezeCellSelection | null = null;
+  // Screen row of the selection, fixed at compositionstart: update/end records
+  // fire after the stream may have scrolled the buffer on, and re-deriving
+  // against the emission-time ybase would corrupt the very field the log
+  // exists to discriminate on (panel finding).
+  let lastSelRelY = 0;
   // Last corrections the diagnostic reported: update/end records fire only on
   // change, so a healthy composition costs one record and a developing offset
   // is captured the moment it develops (#942's field log was all
@@ -612,7 +878,10 @@ export function attachImeAnchor(
       src: lastSel.src,
       held: lastSel.held,
       restAge: lastSel.restAge,
-      selY: lastSel.absRow - b.baseY,
+      outputGap: lastSel.outputGap,
+      caretAge: lastSel.caretAge,
+      edge: lastSel.edge,
+      selY: lastSelRelY,
       selX: lastSel.col,
     });
   };
@@ -629,8 +898,10 @@ export function attachImeAnchor(
     const sel = selectFreezeCell(tracker, b.baseY + b.cursorY, b.cursorX, now(), {
       top: b.viewportY,
       rows: geometry.rows,
-    });
+      cols: geometry.cols,
+    }, b.baseY);
     lastSel = sel;
+    lastSelRelY = sel.absRow - b.baseY;
     frozen = isUsableGeometry(geometry)
       ? pointFromCell(sel.absRow, sel.col, b, geometry)
       : null;
@@ -683,8 +954,13 @@ export function attachImeAnchor(
   // number writes, so the streaming hot path stays cold.
   const cursorSub = terminal.onCursorMove(() => {
     const b = bufferState();
-    noteCursorMove(tracker, b.baseY + b.cursorY, b.cursorX, now());
+    noteCursorMove(tracker, b.baseY + b.cursorY, b.cursorX, now(), b.cursorY);
   });
+  // Per parsed PTY chunk — the output-recency signal (#951). The handler is a
+  // clock compare plus at most three number writes, so the streaming hot path
+  // stays cold. noteOutputParsed tolerates either firing order relative to
+  // onCursorMove within a chunk (see its doc comment).
+  const writeParsedSub = terminal.onWriteParsed(() => noteOutputParsed(tracker, now(), terminal.cols));
   // Normal <-> alt buffer switches change what an absolute row means.
   const bufferSub = terminal.buffer.onBufferChange(resetTracker);
 
@@ -700,6 +976,7 @@ export function attachImeAnchor(
       scrollSub.dispose();
       resizeSub.dispose();
       cursorSub.dispose();
+      writeParsedSub.dispose();
       bufferSub.dispose();
       textarea.removeEventListener('compositionstart', onCompositionStart);
       textarea.removeEventListener('compositionupdate', onCompositionUpdate);

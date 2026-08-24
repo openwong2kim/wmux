@@ -22,6 +22,8 @@ import {
   createRestingTracker,
   isUsableGeometry,
   noteCursorMove,
+  noteOutputParsed,
+  OUTPUT_QUIET_MS,
   paintedCursorPosition,
   parsePxOrNull,
   pointFromCell,
@@ -172,6 +174,7 @@ function makeTerminal(dom: ReturnType<typeof buildTerminalDom>, rows = 39, cols 
   onScroll: FakeEmitter<unknown>;
   onResize: FakeEmitter<unknown>;
   onCursorMove: FakeEmitter<unknown>;
+  onWriteParsed: FakeEmitter<unknown>;
   onBufferChange: FakeEmitter<unknown>;
   state: ImeAnchorBufferState;
 } {
@@ -179,6 +182,7 @@ function makeTerminal(dom: ReturnType<typeof buildTerminalDom>, rows = 39, cols 
   const onScroll = new FakeEmitter<unknown>();
   const onResize = new FakeEmitter<unknown>();
   const onCursorMove = new FakeEmitter<unknown>();
+  const onWriteParsed = new FakeEmitter<unknown>();
   const onBufferChange = new FakeEmitter<unknown>();
   const state = buf();
   const terminal: ImeAnchorTerminal = {
@@ -190,8 +194,9 @@ function makeTerminal(dom: ReturnType<typeof buildTerminalDom>, rows = 39, cols 
     onScroll: onScroll.event,
     onResize: onResize.event,
     onCursorMove: onCursorMove.event,
+    onWriteParsed: onWriteParsed.event,
   };
-  return { terminal, onRender, onScroll, onResize, onCursorMove, onBufferChange, state };
+  return { terminal, onRender, onScroll, onResize, onCursorMove, onWriteParsed, onBufferChange, state };
 }
 
 describe('#874 attachImeAnchor', () => {
@@ -390,7 +395,7 @@ describe('#874 attachImeAnchor', () => {
 
   it('dispose unsubscribes everything and clears the transform', () => {
     const dom = buildTerminalDom();
-    const { terminal, onRender, onScroll, onResize, onCursorMove, onBufferChange, state } = makeTerminal(dom);
+    const { terminal, onRender, onScroll, onResize, onCursorMove, onWriteParsed, onBufferChange, state } = makeTerminal(dom);
     const handle = attachImeAnchor(terminal);
     Object.assign(state, { baseY: 10, viewportY: 5, cursorY: 4, cursorX: 0 });
     dom.textarea.style.top = `${4 * 17.6}px`;
@@ -405,6 +410,7 @@ describe('#874 attachImeAnchor', () => {
     expect(onScroll.size).toBe(0);
     expect(onResize.size).toBe(0);
     expect(onCursorMove.size).toBe(0);
+    expect(onWriteParsed.size).toBe(0);
     expect(onBufferChange.size).toBe(0);
     // A composition after dispose must not resurrect the transform.
     dom.textarea.dispatchEvent(new Event('compositionstart'));
@@ -422,6 +428,7 @@ describe('#874 attachImeAnchor', () => {
       onScroll: new FakeEmitter<unknown>().event,
       onResize: new FakeEmitter<unknown>().event,
       onCursorMove: new FakeEmitter<unknown>().event,
+      onWriteParsed: new FakeEmitter<unknown>().event,
     } as ImeAnchorTerminal;
     expect(() => attachImeAnchor(terminal).dispose()).not.toThrow();
   });
@@ -635,7 +642,7 @@ describe('#874 resting-cell tracker (cause 3, pure)', () => {
     noteCursorMove(t, 49, 113, 1100); // caret promoted, cursor parked at 49,113
     // 5ms after the park: mid-burst -> resting cell.
     const midBurst = selectFreezeCell(t, 49, 113, 1105);
-    expect(midBurst).toEqual({ absRow: 30, col: 8, src: 'resting', held: 5, restAge: 5 });
+    expect(midBurst).toEqual({ absRow: 30, col: 8, src: 'resting', held: 5, restAge: 5, outputGap: 105, caretAge: -1, edge: false });
     // 100ms after the park: the parked cell is now at rest -> trusted as-is
     // (the documented cause-3 residual: dwell cannot tell a caret from a parked
     // cell — the diagnostic fields are the field-log discriminator).
@@ -778,6 +785,229 @@ describe('#874 resting-cell wiring (cause 3)', () => {
     setClock(1105);
     dom.textarea.dispatchEvent(new Event('compositionstart'));
     expect(diag.mock.calls[0][0]).toMatchObject({ src: 'scrolled_out', selY: 49, selX: 113 });
+    handle.dispose();
+  });
+});
+
+describe('#951 quiet-caret tracker (pure)', () => {
+  it('an output-free span promotes the spanning cell to the caret (no move yet this chunk)', () => {
+    const t = createRestingTracker(640, 5, 1000, 40);
+    // First chunk after 600ms of silence, onWriteParsed before any cursor
+    // move was reported: the current cell spanned the quiet period.
+    noteOutputParsed(t, 1000 + OUTPUT_QUIET_MS + 100);
+    expect(t).toMatchObject({ hasCaret: true, caretRelRow: 40, caretCol: 5 });
+  });
+
+  it('covers the real xterm order too: cursor moves during the parse, writeParsed at batch end', () => {
+    const t = createRestingTracker(640, 5, 1000, 40);
+    // The batch's parse already parked the cursor elsewhere; the spanning cell
+    // was promoted to the resting slot inside this same batch.
+    noteCursorMove(t, 643, 127, 2000, 43);
+    noteOutputParsed(t, 2000);
+    expect(t).toMatchObject({ hasCaret: true, caretRelRow: 40, caretCol: 5 });
+  });
+
+  it('sub-quiet gaps never snapshot a caret', () => {
+    const t = createRestingTracker(640, 5, 1000, 40);
+    noteOutputParsed(t, 1000 + OUTPUT_QUIET_MS - 100);
+    expect(t.hasCaret).toBe(false);
+    // The clock still advanced — the next chunk measures from here.
+    noteOutputParsed(t, 1000 + OUTPUT_QUIET_MS + 200);
+    expect(t.hasCaret).toBe(false);
+  });
+
+  it('REGRESSION #951: a corner cell parked between stream bursts loses to the quiet caret', () => {
+    // The field log scenario: 128x45 pane, caret on the input line (row 40),
+    // Claude Code streaming. Between bursts the cursor sits on (127,43) far
+    // longer than RESTING_MS — pre-#951 that dwell made it src=instant.
+    const t = createRestingTracker(640, 5, 1000, 40);
+    noteCursorMove(t, 643, 127, 2000, 43); // stream's first parse parks the corner
+    noteOutputParsed(t, 2000);             // quiet span ended -> caret snapshot
+    noteOutputParsed(t, 2300);             // stream keeps flowing…
+    noteOutputParsed(t, 2700);             // …past the sustain threshold
+    const sel = selectFreezeCell(t, 643, 127, 2760, { top: 600, rows: 45 }, 600);
+    // held=760ms >= RESTING_MS would have certified the corner; output is only
+    // 60ms old and has streamed for 760ms, so the caret wins.
+    expect(sel).toMatchObject({ absRow: 640, col: 5, src: 'caret', outputGap: 60, caretAge: 760 });
+  });
+
+  it('an isolated echo burst keeps the freshly advanced cursor (fast-typist regression lock)', () => {
+    // Quiet shell, user commits a syllable: the echo advances the cursor 4
+    // cols. The echo IS recent output, but it is not a sustained stream — the
+    // next composition must anchor on the advanced cursor, not the snapshot
+    // taken before the word (which would drift further left every word).
+    const t = createRestingTracker(640, 5, 1000, 40);
+    noteCursorMove(t, 640, 9, 3000, 40); // echo parse advances the caret
+    noteOutputParsed(t, 3000);           // snapshot exists, but epoch is fresh
+    const sel = selectFreezeCell(t, 640, 9, 3200, { top: 600, rows: 45 }, 600);
+    expect(sel).toMatchObject({ absRow: 640, col: 9, src: 'instant' });
+  });
+
+  it('the caret snapshot is a screen row: scrolled output rebases it onto the current ybase', () => {
+    const t = createRestingTracker(640, 5, 1000, 40);
+    noteOutputParsed(t, 1600); // snapshot at screen row 40 while ybase=600
+    noteOutputParsed(t, 2000); // this output scrolled the buffer 10 rows on
+    noteOutputParsed(t, 2300);
+    const sel = selectFreezeCell(t, 655, 0, 2350, undefined, 610);
+    expect(sel).toMatchObject({ absRow: 650, col: 5, src: 'caret' });
+  });
+
+  it('quiet output keeps the pre-#951 selection (regression lock)', () => {
+    const t = createRestingTracker(30, 8, 1000, 30);
+    noteOutputParsed(t, 1600); // a snapshot exists…
+    // …but the last output is OUTPUT_QUIET_MS old: the parked cursor is the
+    // TUI's own final position — trust it exactly as before.
+    const sel = selectFreezeCell(t, 30, 8, 1600 + OUTPUT_QUIET_MS);
+    expect(sel).toMatchObject({ absRow: 30, col: 8, src: 'instant', outputGap: OUTPUT_QUIET_MS });
+  });
+
+  it('streaming without a snapshot degrades to the resting/instant selection', () => {
+    const t = createRestingTracker(640, 5, 1000, 40);
+    noteCursorMove(t, 643, 127, 1100, 43); // mid-burst from the very first chunk
+    noteOutputParsed(t, 1100);             // gap 100ms < quiet -> no caret ever
+    const sel = selectFreezeCell(t, 643, 127, 1105, { top: 600, rows: 45 }, 600);
+    expect(sel).toMatchObject({ absRow: 640, col: 5, src: 'resting' });
+  });
+
+  it('#953: a quiet line-end park is flagged edge=1 but NOT rerouted', () => {
+    // Claude Code idling with an empty input box parks its real cursor at
+    // the line end — (236,47) on a 237-col pane. Two fallback generations
+    // (quiet snapshot, previous-composition anchor) both field-tested worse
+    // than leaving the selection alone, so the park is only flagged for the
+    // field log and the selection stays the instant cell.
+    const t = createRestingTracker(640, 5, 1000, 40);
+    noteCursorMove(t, 647, 236, 1100, 47);
+    const sel = selectFreezeCell(t, 647, 236, 3000, { top: 600, rows: 48, cols: 237 }, 600);
+    expect(sel).toMatchObject({ absRow: 647, col: 236, src: 'instant', edge: true });
+  });
+
+  it('#953: a line-end park defers to the snapshot while output is FLOWING', () => {
+    // The reported streaming failure. A token-paced stream pauses longer than
+    // OUTPUT_QUIET_MS between bursts, so `epochStart` keeps restarting and the
+    // sustain gate is never met — yet a perfectly good snapshot exists, and
+    // the live cursor is the TUI's line-end park. Anchoring there put the
+    // candidate window in the pane's bottom-right corner.
+    const t = createRestingTracker(640, 5, 1000, 40);
+    noteOutputParsed(t, 1600);             // quiet span ends -> caret at (40,5)
+    expect(t).toMatchObject({ hasCaret: true, caretCol: 5 });
+    noteCursorMove(t, 647, 236, 1650, 47); // TUI parks at the line end
+    noteOutputParsed(t, 1700);             // burst resumes; epoch is only 100ms old
+    const sel = selectFreezeCell(t, 647, 236, 1750, { top: 600, rows: 48, cols: 237 }, 600);
+    expect(sel).toMatchObject({ absRow: 640, col: 5, src: 'caret', edge: true });
+  });
+
+  it('#953: a mid-line cursor still waits out the sustain gate (commit echo)', () => {
+    // The gate's actual job: a committed syllable's echo is recent output too,
+    // and there the freshly moved cursor IS the caret. Nothing changes for it.
+    const t = createRestingTracker(640, 5, 1000, 40);
+    noteOutputParsed(t, 1600);
+    noteCursorMove(t, 640, 100, 1650, 40);
+    noteOutputParsed(t, 1700);
+    const sel = selectFreezeCell(t, 640, 100, 1750, { top: 600, rows: 48, cols: 237 }, 600);
+    expect(sel).toMatchObject({ absRow: 640, col: 100, src: 'instant', edge: false });
+  });
+
+  it('#953: a line-end park is refused as a snapshot, keeping the last good one', () => {
+    // The field shape once the streaming path started using the snapshot:
+    // `cursor=(13,36) sel=(127,43) src=caret` — the live cursor mid-line while
+    // the snapshot pointed at the last column, so every composition anchored
+    // bottom-right. A quiet span that finds the TUI parked there must keep the
+    // caret the last real one recorded.
+    const t = createRestingTracker(640, 5, 1000, 40);
+    noteOutputParsed(t, 1600, 237);              // a real caret at (40,5)
+    expect(t).toMatchObject({ hasCaret: true, caretRelRow: 40, caretCol: 5 });
+
+    noteCursorMove(t, 647, 236, 1700, 47);       // TUI parks at the line end
+    noteOutputParsed(t, 2300, 237);              // next quiet span spans it
+    expect(t).toMatchObject({ hasCaret: true, caretRelRow: 40, caretCol: 5 });
+  });
+
+  it('#953: without a column count the refusal is off, not wrongly bounded', () => {
+    // A caller with no geometry must keep the old behaviour rather than have
+    // the check silently pick a bound and drop legitimate caret cells.
+    const t = createRestingTracker(647, 236, 1000, 47);
+    noteOutputParsed(t, 1600);
+    expect(t).toMatchObject({ hasCaret: true, caretRelRow: 47, caretCol: 236 });
+  });
+
+  it('#953: a mid-line at-rest cursor keeps the instant selection, unflagged', () => {
+    const t = createRestingTracker(640, 100, 1000, 40);
+    noteOutputParsed(t, 1600);
+    const sel = selectFreezeCell(t, 640, 100, 3400, { top: 600, rows: 48, cols: 237 }, 600);
+    expect(sel).toMatchObject({ absRow: 640, col: 100, src: 'instant', edge: false });
+  });
+
+  it('a same-cell report still refreshes the screen row (scroll under a stationary cursor)', () => {
+    // baseY up + cursorY down by the same amount keeps the absolute cell
+    // identical while the screen row moves; the snapshot records screen rows,
+    // so a quiet span after such a scroll must capture the fresh one.
+    const t = createRestingTracker(640, 5, 1000, 40);
+    noteCursorMove(t, 640, 5, 1010, 38); // same abs cell, screen row moved up 2
+    expect(t.currentSince).toBe(1000);   // dwell clock untouched
+    noteOutputParsed(t, 1600);
+    expect(t).toMatchObject({ hasCaret: true, caretRelRow: 38, caretCol: 5 });
+  });
+
+  it('resetRestingTracker drops the caret across a reflow boundary and re-seeds the quiet clock', () => {
+    const t = createRestingTracker(640, 5, 1000, 40);
+    noteOutputParsed(t, 1600);
+    expect(t.hasCaret).toBe(true);
+    resetRestingTracker(t, 320, 0, 1650, 20);
+    expect(t.hasCaret).toBe(false);
+    // The quiet clock restarts at the reset: only silence observed entirely
+    // in the new coordinate frame counts, AND the first post-reset quiet
+    // chunk must be able to take the current-cell branch (currentSince ===
+    // lastOutputAt) — preserving the old clock left `currentSince >
+    // lastOutputAt` forever and the snapshot could never re-form on a pane
+    // whose cursor stayed put (2-model panel finding).
+    expect(t.lastOutputAt).toBe(1650);
+    noteOutputParsed(t, 1650 + OUTPUT_QUIET_MS);
+    expect(t).toMatchObject({ hasCaret: true, caretRelRow: 20, caretCol: 0 });
+  });
+});
+
+describe('#951 quiet-caret wiring', () => {
+  beforeEach(() => { document.body.innerHTML = ''; });
+
+  it('a composition mid-stream anchors the candidate window to the quiet caret', () => {
+    const dom = buildTerminalDom(10, 17.6, 45, 128);
+    const t = makeTerminal(dom, 45, 128);
+    let clock = 1000;
+    const diag = vi.fn();
+    // Caret parked on the TUI's input line (screen row 40) while idle.
+    Object.assign(t.state, { baseY: 600, viewportY: 600, cursorY: 40, cursorX: 5 });
+    const handle = attachImeAnchor(t.terminal, { now: () => clock, onCompositionDiagnostic: diag });
+    // Stream's first batch after 1s of silence, in xterm's real order: the
+    // parse parks the cursor on the corner, then onWriteParsed fires.
+    clock = 2000;
+    Object.assign(t.state, { cursorY: 43, cursorX: 127 });
+    t.onCursorMove.fire(undefined);
+    t.onWriteParsed.fire(undefined);
+    // Stand in for xterm's own (instantaneous) anchoring of the textarea.
+    dom.textarea.style.top = `${43 * 17.6}px`;
+    dom.textarea.style.left = `${127 * 10}px`;
+    clock = 2400;
+    t.onWriteParsed.fire(undefined); // stream keeps flowing…
+    clock = 2750;
+    t.onWriteParsed.fire(undefined); // …past the sustain threshold
+    clock = 2800; // corner held 800ms >= RESTING_MS — dwell alone would trust it
+    dom.textarea.dispatchEvent(new Event('compositionstart'));
+    expect(diag.mock.calls[0][0]).toMatchObject({
+      src: 'caret', selY: 40, selX: 5, cursorY: 43, cursorX: 127, outputGap: 50, caretAge: 800,
+    });
+    expect(translateOf(dom.textarea)?.dy).toBeCloseTo((40 - 43) * 17.6, 6);
+    expect(translateOf(dom.textarea)?.dx).toBeCloseTo((5 - 127) * 10, 6);
+    // xterm re-anchors the inline preedit to the live cursor on every
+    // compositionupdate. A caret-sourced composition must pull it back onto
+    // the same frozen point as the textarea — the first quiet-caret build
+    // left it on the live cursor, and the field report showed the pinyin
+    // riding the agent's output rows while its candidate list sat at the
+    // input line (the two IME surfaces torn apart).
+    dom.compView.style.top = `${43 * 17.6}px`;
+    dom.compView.style.left = `${127 * 10}px`;
+    dom.textarea.dispatchEvent(new Event('compositionupdate'));
+    expect(translateOf(dom.compView)?.dy).toBeCloseTo((40 - 43) * 17.6, 6);
+    expect(translateOf(dom.compView)?.dx).toBeCloseTo((5 - 127) * 10, 6);
     handle.dispose();
   });
 });
