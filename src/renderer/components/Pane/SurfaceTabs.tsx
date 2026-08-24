@@ -12,7 +12,7 @@ import { computePaneAutoName, paneDisplayName } from '../../utils/paneNaming';
 import { findPane } from '../../../shared/paneUtils';
 import PaneDragGrip from './PaneDragGrip';
 import { FOCUS_RING } from '../focusRing';
-import { IconSplitRight, IconSplitDown, IconBrowser, IconArchive } from '../icons';
+import { IconSplitRight, IconSplitDown, IconBrowser, IconEyeOff } from '../icons';
 import { displayPath } from '../../utils/displayPath';
 
 /** Rendered width (px) of the pane-action half of the cluster (split / browser /
@@ -40,6 +40,37 @@ export const PANE_ACTIONS_CLUSTER_WIDTH = 142;
  *  the bottom toolbar (2026-08-18), so the cluster is the action half only. */
 export function paneClusterWidth(opts: { paneActionsVisible: boolean }): number {
   return opts.paneActionsVisible ? PANE_ACTIONS_CLUSTER_WIDTH : 0;
+}
+
+/** The narrowest tab strip that still says which pane you are looking at: the
+ *  coordinate, a truncated title, and the ✕. Below this the strip is not small,
+ *  it is absent — flex-1 min-w-0 collapses it to nothing and the header becomes
+ *  100% buttons, 0% identity. */
+export const MIN_TAB_STRIP_WIDTH = 80;
+
+/**
+ * The pane width at which the action cluster stops being affordable.
+ *
+ * Derived, never a second hardcoded number: the cluster is fixed-width and
+ * shrink-0, so every pixel below this comes out of the tab strip. Panes narrower
+ * than this fall back to the existing cluster-off chrome (the hover-revealed
+ * corner ⤢), which is the same path the paneActionsVisible setting turns on —
+ * reused rather than rebuilt. Stash stays reachable from the sidebar, the
+ * palette and the prefix key.
+ */
+export const PANE_ACTIONS_MIN_PANE_WIDTH = PANE_ACTIONS_CLUSTER_WIDTH + MIN_TAB_STRIP_WIDTH;
+
+/**
+ * Whether a pane of `width` can afford the action cluster.
+ *
+ * `null` means "not measured yet" and answers YES: most panes are wide, and
+ * assuming otherwise would flash the fallback chrome on every mount. A measured
+ * 0 is a genuinely hidden pane (a background workspace), which also keeps the
+ * cluster so it is correct the instant it becomes visible.
+ */
+export function paneFitsActionCluster(width: number | null): boolean {
+  if (width === null || width === 0) return true;
+  return width >= PANE_ACTIONS_MIN_PANE_WIDTH;
 }
 
 /** Ctrl on Windows/Linux, ⌘ on macOS — mirrors the OS-aware mapping in
@@ -117,6 +148,14 @@ interface SurfaceTabsProps {
   onAddTerminal: () => void;
   /** New browser surface (tab) in this pane. */
   onAddBrowser: () => void;
+  /**
+   * Whether the pane-action cluster renders. Pane.tsx owns this because it is
+   * the Settings toggle AND the width check — the cluster is fixed-width and
+   * shrink-0, so on a narrow pane it eats the tab strip whole. Optional so the
+   * component keeps working standalone (tests mount it directly); omitted falls
+   * back to the setting alone.
+   */
+  actionsVisible?: boolean;
 }
 
 export default function SurfaceTabs({
@@ -131,6 +170,7 @@ export default function SurfaceTabs({
   onSplitVertical,
   onAddTerminal,
   onAddBrowser,
+  actionsVisible,
 }: SurfaceTabsProps) {
   const t = useT();
   // Same 200ms threshold pattern WorkspaceItem uses so a fast click never
@@ -145,8 +185,11 @@ export default function SurfaceTabs({
   // Settings.
   const newTerminalButtonVisible = useStore((s) => s.paneNewTerminalButton);
   // Right-aligned pane action cluster (split right / split down / new browser
-  // / zoom). Gated by a Settings toggle (default ON) for minimal-chrome setups.
-  const paneActionsVisible = useStore((s) => s.paneActionsVisible);
+  // / stash / zoom). Gated by a Settings toggle (default ON) for minimal-chrome
+  // setups, AND by the pane being wide enough to afford it — Pane.tsx combines
+  // the two and passes the answer down.
+  const paneActionsSetting = useStore((s) => s.paneActionsVisible);
+  const paneActionsVisible = actionsVisible ?? paneActionsSetting;
   // Zoom/maximize state for this pane — the cluster's fifth button toggles it
   // and reflects the current state (pressed when zoomed). Subscribing here (same
   // pattern as Pane.tsx) keeps the button in sync without prop threading.
@@ -453,7 +496,13 @@ export default function SurfaceTabs({
               It sits next to ✕ with the same visual weight while one is fully
               reversible and the other kills an agent, so the tooltip says what
               happens rather than naming the verb: "the session keeps running"
-              is the whole difference between the two buttons. */}
+              is the whole difference between the two buttons.
+
+              Eye-off, not an archive box: the sidebar roster marks the stashed
+              rows with the same eye pair (off = out of view, on = bring back),
+              and this app already spends the archive glyph on channel archive —
+              a one-way DEACTIVATION, which is the opposite of what stashing
+              does. One pair, one meaning. */}
           <button
             className={`ui-icon-btn ${FOCUS_RING} w-6 h-6 ${stashDisabled ? 'opacity-40' : ''}`}
             // aria-disabled, not disabled: a disabled button drops out of the
@@ -477,7 +526,7 @@ export default function SurfaceTabs({
             aria-label={t('pane.stash')}
             data-pane-action="stash"
           >
-            <IconArchive size={14} />
+            <IconEyeOff size={14} />
           </button>
           {/* Zoom/maximize — fourth action, visually separated from the surface
               actions by the same border-l divider the cluster uses against the

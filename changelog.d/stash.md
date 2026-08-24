@@ -7,8 +7,10 @@
   so tidying a split and killing an agent were the same gesture. The pane
   header's new archive button (and `prefix` + `!`, tmux's break-pane) removes a
   pane from the layout and leaves its session running. It shows up in the
-  workspace's sidebar list, where its status keeps updating as proof it is still
-  working, and one click brings it back next to its former neighbour with its
+  workspace's sidebar list — gathered under a divider below the running agents,
+  each row marked with a crossed-out eye — where its status keeps updating as
+  proof it is still working. Hovering or focusing a row turns the eye back on:
+  one click brings the pane back next to its former neighbour with its
   scrollback replayed. A ten-second undo rides the confirmation toast.
 
   Stashing is refused, with the reason, when the pane is the only one on screen,
@@ -37,6 +39,16 @@
   the `pane_list` + `wmux_events_poll` recovery path complete: a pane leaving the
   default listing is always explained by an event, never by silence. Feature
   detection: `system.capabilities` → `features.paneStash`.
+
+### Changed
+
+- **The pane header hides its action buttons on a narrow pane.** The split /
+  browser / stash / zoom cluster is fixed-width, so below roughly 220px it was
+  squeezing the tab strip — the coordinate, the title and the ✕ — down to
+  nothing, leaving a header that was all buttons and no identity. Narrow panes
+  now fall back to the same minimal chrome the "hide pane actions" setting
+  produces: a maximize control that appears on hover. Every action is still on
+  its keyboard shortcut, and stash is also in the sidebar and the palette.
 
 ### Notes
 

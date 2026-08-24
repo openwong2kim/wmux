@@ -6,7 +6,7 @@ import {
 } from '../../stores/selectors/workspaceAgentRoster';
 import { focusNotificationTarget, focusPaneByPtyId } from '../../hooks/useNotificationListener';
 import { useT } from '../../hooks/useT';
-import { IconArchive, IconChevron } from '../icons';
+import { IconEye, IconEyeOff, IconChevron } from '../icons';
 import { FOCUS_RING } from '../focusRing';
 import { timeAgo } from '../../utils/timeAgo';
 import { AGENT_STATUS_ICON } from './agentStatusIcon';
@@ -180,7 +180,14 @@ function WorkspaceAgentRoster({ workspaceId, isActive }: WorkspaceAgentRosterPro
 
       {open && (
         <div className="mt-0.5 ml-1 border-l border-[var(--border-soft)] pl-1.5">
-          {roster.rows.map((row) => {
+          {roster.rows.map((row, index) => {
+            // The one-line group header, immediately before the FIRST stashed
+            // row. With six of seven panes stashed the list otherwise looked
+            // untouched — same rows, same red "Waiting" labels — because an 8px
+            // glyph and a relative time are not enough to carry "these are not
+            // on your screen". A rule and a count are. It costs one line, and
+            // only when there is something below it.
+            const startsStashedGroup = !!row.stashed && !roster.rows[index - 1]?.stashed;
             const exited = row.stashedLiveness === 'exited';
             const statusIcon = AGENT_STATUS_ICON[row.status];
             // An exited stashed pane has no agent state left to report; saying
@@ -209,10 +216,22 @@ function WorkspaceAgentRoster({ workspaceId, isActive }: WorkspaceAgentRosterPro
               // Keyed by paneId for stashed rows: an exited pane has no ptyId
               // left, and two of them would collide on the empty string.
               <div key={row.stashed ? row.paneId : row.ptyId} className="min-w-0">
+                {startsStashedGroup && (
+                  <div
+                    className="mt-1 flex items-center gap-1.5 border-t border-[var(--border-soft)] pt-1 pr-1 text-[8px] font-mono uppercase tracking-widest text-[var(--text-muted)]"
+                    // Not a heading: the rows below it are already listed under
+                    // the disclosure's own accessible name, and announcing a
+                    // second level would imply a nesting that is not there.
+                    aria-hidden="true"
+                  >
+                    <IconEyeOff size={9} />
+                    <span className="truncate">{t('roster.stashedCount', { count: roster.stashedCount })}</span>
+                  </div>
+                )}
                 <button
                   type="button"
                   draggable={false}
-                  className={`flex w-full min-w-0 items-center gap-1.5 rounded px-1 py-[3px] text-left transition-colors ${FOCUS_RING} ${
+                  className={`group/roster-row flex w-full min-w-0 items-center gap-1.5 rounded px-1 py-[3px] text-left transition-colors ${FOCUS_RING} ${
                     row.isFocused
                       ? 'bg-[var(--bg-overlay)]'
                       : 'hover:bg-[rgba(var(--bg-surface-rgb),0.65)]'
@@ -265,8 +284,19 @@ function WorkspaceAgentRoster({ workspaceId, isActive }: WorkspaceAgentRosterPro
                     </span>
                   </span>
                   {row.stashed && (
+                    // The ICON is the verb slot: eye-off at rest ("not on your
+                    // screen"), eye-on under the pointer or keyboard focus
+                    // ("bring it back"). The STATUS LABEL beside it never moves
+                    // — that is the row's proof of life, and hiding it on hover
+                    // would take it away exactly when the user is looking.
+                    // CSS-only so it works identically for pointer and keyboard.
                     <span className="flex-none text-[var(--text-muted)]" aria-hidden="true">
-                      <IconArchive size={9} />
+                      <span className="block group-hover/roster-row:hidden group-focus-visible/roster-row:hidden">
+                        <IconEyeOff size={9} />
+                      </span>
+                      <span className="hidden text-[var(--text-sub)] group-hover/roster-row:block group-focus-visible/roster-row:block">
+                        <IconEye size={9} />
+                      </span>
                     </span>
                   )}
                   <span
