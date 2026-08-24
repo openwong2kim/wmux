@@ -40,6 +40,11 @@
 
 ### Notes
 
+- An orchestrator brain running under a commander binding can stash and unstash
+  only inside its own workspace, the same confinement `pane_focus` and
+  `pane_split` already have. A pane elsewhere is refused by name rather than
+  quietly rearranging a workspace the brain has no business touching.
+
 - Stashed panes count against the 20-pane-per-workspace limit. The cap exists to
   bound memory, and a stashed session is still running; when the stash is part of
   why you hit the limit, the message says so.

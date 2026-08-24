@@ -191,7 +191,7 @@ export function createPaneLifecycleToolCatalog(
     defineWmuxTool({
       name: 'pane_stash',
       description:
-        'Take a leaf pane OUT of the layout without killing it. The session keeps running in the daemon, so terminal_send / terminal_read / A2A delivery all keep working against the pane while it is stashed; only position-dependent operations (pane_focus, splits) are refused, with a PANE_STASHED error naming pane_unstash. Refused when the pane is the only visible one, when the daemon is not connected (nothing would hold the session), or when the pane holds an editor/diff tab whose unsaved state cannot be replayed.',
+        'Take a leaf pane OUT of the layout without killing it. The session keeps running in the daemon, so terminal_send / terminal_read / pane_close / A2A delivery all keep working against the pane while it is stashed; pane_focus is refused with a PANE_STASHED error naming pane_unstash. Refused when the pane is the only visible one, when it is empty (no session to keep), when the daemon is not connected (nothing would hold the session), or when the pane holds an editor/diff tab whose unsaved state cannot be replayed.',
       inputSchema: PANE_STASH_SHAPE,
       profiles: ['full', 'commander'],
       invoke: async ({ paneId }) => callRpc('pane.stash', { id: paneId }),

@@ -48,7 +48,9 @@ This is the heart of the substrate contract — the surface RFC #15 was about.
 **Params:** `{ id: string }`
 **Returns:** `{ ok: true, stashed: boolean }`
 
-`pane.stash` takes a leaf pane out of the layout WITHOUT killing it — the daemon keeps the session and replays it on return. It is refused when the pane is the only visible one, when there is no daemon connection (nothing would hold the session), or when the pane holds an editor/diff tab whose unsaved state the ring cannot replay.
+`pane.stash` takes a leaf pane out of the layout WITHOUT killing it — the daemon keeps the session and replays it on return. It is refused when the pane is the only visible one, when it is empty (there is no session to keep and nothing to bring back), when there is no daemon connection (nothing would hold the session), or when the pane holds an editor/diff tab whose unsaved state the ring cannot replay.
+
+Both methods take a globally-unique `id` resolved across every workspace, so a caller holding a validated commander binding is confined to its own workspace: a pane outside it is refused with `pane.stash: pane <id> is outside the commander's workspace`. The confinement id is stamped by the host from the caller's token binding and is never read off the wire.
 
 `pane.unstash` puts it back next to its former neighbour. It is **idempotent**: a pane that is already in the layout is a success, not an error — the retry that a `PANE_STASHED` error asks for must always be safe to run.
 

@@ -1026,6 +1026,45 @@ describe('loadSession — stashedPanes', () => {
     expect(store.getState().workspaces).toHaveLength(1);
   });
 
+  it.each([
+    ['bad direction', { anchorPaneId: 'pane-root', direction: 'diagonal', sourceFirst: true }],
+    ['bad sourceFirst', { anchorPaneId: 'pane-root', direction: 'vertical', sourceFirst: 'yes' }],
+    ['missing anchor', { direction: 'vertical', sourceFirst: true }],
+    ['not an object', 'nope'],
+  ])('drops a malformed origin (%s) but KEEPS the pane', (_name, origin) => {
+    // The origin is a hint about placement. A bad one costs a position; the
+    // entry it rides on is a running session.
+    const store = createTestStore();
+    store.getState().loadSession(sessionWithStash([
+      { pane: stashLeaf('p2', 'pty-2'), origin, stashedAt: 1 },
+    ]));
+
+    const entry = store.getState().workspaces[0].stashedPanes![0];
+    expect(entry.pane.id).toBe('p2');
+    expect(entry.origin).toBeUndefined();
+  });
+
+  it.each([
+    ['wrong length', [50, 30, 20]],
+    ['non-numeric', ['a', 'b']],
+    ['zero', [0, 100]],
+  ])('drops malformed origin sizes (%s) but keeps the placement', (_name, sizes) => {
+    // attachBeside ignores anything that is not exactly two entries anyway; a
+    // sizes/children mismatch is the bug that renders every survivor one slot
+    // off, so it is discarded at the door rather than carried around.
+    const store = createTestStore();
+    store.getState().loadSession(sessionWithStash([
+      {
+        pane: stashLeaf('p2', 'pty-2'),
+        origin: { anchorPaneId: 'pane-root', direction: 'vertical', sourceFirst: true, sizes },
+        stashedAt: 1,
+      },
+    ]));
+
+    const entry = store.getState().workspaces[0].stashedPanes![0];
+    expect(entry.origin).toEqual({ anchorPaneId: 'pane-root', direction: 'vertical', sourceFirst: true });
+  });
+
   it('drops a non-array stashedPanes outright', () => {
     const store = createTestStore();
     store.getState().loadSession(sessionWithStash('not-an-array'));

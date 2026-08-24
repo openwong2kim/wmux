@@ -8,7 +8,7 @@ import { validateMessage } from '../../shared/types';
 import { formatMessage, formatBroadcast } from '../core/messageTemplates';
 import { submitBracketedPasteToPty } from '../../renderer/utils/ptyMessageDelivery';
 import { spawnCompany, spawnMember } from './provisioner';
-import { getLeafPanes } from '../../shared/paneUtils';
+import { getWorkspaceLeafPanes } from '../../shared/paneUtils';
 
 type Store = ReturnType<typeof useStore.getState>;
 
@@ -63,7 +63,10 @@ function deliverToCeo(store: Store, from: string, message: string): void {
   if (!c?.ceoWorkspaceId) return;
   const ws = store.workspaces.find((w) => w.id === c.ceoWorkspaceId);
   if (!ws) return;
-  const leaves = getLeafPanes(ws.rootPane);
+  // Workspace-wide (#977): delivery is an address question. A stashed CEO pane
+  // is still running and still reachable, and scoping this to the layout would
+  // drop the message with no error anywhere.
+  const leaves = getWorkspaceLeafPanes(ws);
   for (const leaf of leaves) {
     const surface = leaf.surfaces.find((s) => s.surfaceType !== 'browser' && s.ptyId);
     if (surface) {

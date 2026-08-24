@@ -80,6 +80,56 @@ export function pruneMultiviewMembership(state: {
   state.multiviewIds = live.length <= 1 ? [] : live;
 }
 
+/**
+ * Validate a persisted `StashedPane.origin` (#977).
+ *
+ * session.json is user-editable and can come from a newer build, so every field
+ * is checked rather than trusted — a bad `direction` would build a branch in an
+ * axis that does not exist, and a `sizes` array of the wrong length is exactly
+ * the sizes/children mismatch that renders every survivor one slot off.
+ * Returns undefined when anything is off, which degrades unstash to the
+ * active-pane fallback instead of failing it.
+ */
+function normalizeStashOrigin(
+  raw: unknown,
+  wsId: string,
+  paneId: string,
+): StashedPane['origin'] | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const o = raw as Partial<NonNullable<StashedPane['origin']>>;
+  if (typeof o.anchorPaneId !== 'string' || o.anchorPaneId.length === 0) {
+    console.warn(`[wmux:stash] dropping origin on ws=${wsId} pane=${paneId}: bad anchorPaneId`);
+    return undefined;
+  }
+  if (o.direction !== 'horizontal' && o.direction !== 'vertical') {
+    console.warn(`[wmux:stash] dropping origin on ws=${wsId} pane=${paneId}: bad direction`);
+    return undefined;
+  }
+  if (typeof o.sourceFirst !== 'boolean') {
+    console.warn(`[wmux:stash] dropping origin on ws=${wsId} pane=${paneId}: bad sourceFirst`);
+    return undefined;
+  }
+  const sizes = o.sizes;
+  if (sizes !== undefined) {
+    const usable =
+      Array.isArray(sizes)
+      && sizes.length === 2
+      && sizes.every((n) => typeof n === 'number' && Number.isFinite(n) && n > 0);
+    if (!usable) {
+      // Keep the placement, drop the proportions — attachBeside already falls
+      // back to [50,50] for anything that is not exactly two entries.
+      console.warn(`[wmux:stash] dropping origin sizes on ws=${wsId} pane=${paneId}`);
+      return { anchorPaneId: o.anchorPaneId, direction: o.direction, sourceFirst: o.sourceFirst };
+    }
+  }
+  return {
+    anchorPaneId: o.anchorPaneId,
+    direction: o.direction,
+    sourceFirst: o.sourceFirst,
+    ...(sizes ? { sizes: [...sizes] } : {}),
+  };
+}
+
 function isTerminalOnlyWorkspace(ws: Workspace): boolean {
   // Workspace-wide (#977): a stashed browser surface still belongs to this
   // workspace, and cold-parking on the strength of the visible tree alone would
@@ -748,9 +798,15 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
           // or a retired git/review surface must not survive in the stash just
           // because it was off-screen when the rule landed.
           sanitizePanes(pane);
+          // The origin is a HINT, not the pane. A malformed one costs the user
+          // a placement ("next to the active pane" instead of "next to its
+          // former neighbour"); dropping the whole entry over it would cost
+          // them a running session. So it is validated separately and only it
+          // is discarded.
+          const origin = normalizeStashOrigin(candidate?.origin, ws.id, pane.id);
           kept.push({
             pane,
-            ...(candidate?.origin ? { origin: candidate.origin } : {}),
+            ...(origin ? { origin } : {}),
             stashedAt: typeof candidate?.stashedAt === 'number' ? candidate.stashedAt : Date.now(),
           });
         }

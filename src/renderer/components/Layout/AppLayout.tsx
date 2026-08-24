@@ -256,6 +256,11 @@ function cloneStashedPanes(
           type: 'leaf',
           activeSurfaceId: pane.activeSurfaceId,
           ordinal: pane.ordinal,
+          // `metadata` rides along here and NOT in cloneWithScrollback, which
+          // strips it on purpose (MetadataStore owns pane labels). This path is
+          // the opposite case: the normal serializer just failed, so anything
+          // dropped here is dropped for good.
+          ...(pane.metadata ? { metadata: pane.metadata } : {}),
           surfaces: pane.surfaces.map((s) => ({
             id: s.id,
             ptyId: s.ptyId,
@@ -264,8 +269,12 @@ function cloneStashedPanes(
             cwd: s.cwd,
             surfaceType: s.surfaceType,
             browserUrl: s.browserUrl,
+            // Without this a user's manual tab rename comes back as a shell
+            // title on the next OSC 0 — a small loss, but a silent one.
+            titleLocked: s.titleLocked,
           })),
         },
+        ...(entry.origin ? { origin: entry.origin } : {}),
         stashedAt: entry.stashedAt,
       };
     }
