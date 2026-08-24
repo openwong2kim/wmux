@@ -350,7 +350,7 @@ describe('SurfaceTabs — actionsMode override', () => {
     expect(container.querySelector('[data-pane-action="stash"]')).not.toBeNull();
   });
 
-  it('drops even the ⋮ when the pane cannot afford that either', () => {
+  it("renders nothing at `none` — the Settings toggle's mode", () => {
     mount(rootLeafId(), { actionsMode: 'none' });
     expect(container.querySelector('[data-pane-overflow-trigger]')).toBeNull();
     expect(container.querySelector('[data-pane-action]')).toBeNull();
@@ -438,9 +438,10 @@ describe('SurfaceTabs — the ⋮ overflow menu', () => {
     expect(useStore.getState().zoomedPaneId).not.toBe(paneId);
   });
 
-  it('opens from a right-click on the header even at `none` — the mouse is never stranded', () => {
-    mount(rootLeafId(), { actionsMode: 'none' });
+  it('opens from a right-click on a full-width header too — no ⋮ required', () => {
+    mount(rootLeafId());
     expect(container.querySelector('[data-pane-overflow-trigger]')).toBeNull();
+    expect(container.querySelector('[data-pane-action="stash"]')).not.toBeNull();
 
     act(() => {
       container.firstElementChild!.dispatchEvent(

@@ -421,14 +421,14 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
   // below are then redundant AND overlap the cluster, so they render only when
   // the cluster is absent. Subscribe the same way SurfaceTabs does.
   const paneActionsSetting = useStore((s) => s.paneActionsVisible);
-  // #977 follow-up — width-based collapse in two steps. The cluster is
-  // fixed-width and shrink-0, so on a narrow pane every pixel it takes comes out
-  // of the tab strip, which is flex-1 min-w-0 and therefore collapses to
-  // NOTHING: at ~200px the header was 100% buttons and 0% identity, with the
-  // last button clipped. Below 222px the five buttons become one ⋮ that opens
-  // them as a vertical menu (31px, so it fits down to 111px); below THAT the
-  // pane falls back to the existing cluster-off chrome, the hover-revealed
-  // corner ⤢, with the header's right-click menu as the mouse path.
+  // #977 follow-up — width-based collapse. The cluster is fixed-width and
+  // shrink-0, so on a narrow pane every pixel it takes comes out of the tab
+  // strip, which is flex-1 min-w-0 and therefore collapses to NOTHING: at
+  // ~200px the header was 100% buttons and 0% identity, with the last button
+  // clipped. Below 222px the five buttons become one ⋮ that opens them as a
+  // vertical menu — and the ⋮ persists to ANY width (the strip scrolls, and
+  // the menu holds the ways out of a pane that narrow: zoom, stash). 'none'
+  // is the Settings toggle's mode, never a width verdict.
   const [paneRootRef, paneWidth] = useElementWidth<HTMLDivElement>();
   const actionsMode: PaneActionsMode = paneActionsSetting
     ? paneActionsMode(paneWidth)

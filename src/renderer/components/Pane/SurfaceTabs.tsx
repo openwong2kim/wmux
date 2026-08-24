@@ -46,11 +46,12 @@ export const PANE_ACTIONS_CLUSTER_WIDTH = 142;
  *                                                    overflow total = 31 */
 export const PANE_ACTIONS_OVERFLOW_WIDTH = 31;
 
-/** How the pane header renders its actions at a given width.
+/** How the pane header renders its actions.
  *  - `full`     — the five-button cluster.
  *  - `overflow` — one ⋮ that opens them as a vertical menu.
- *  - `none`     — not even ⋮ fits; the hover-revealed corner ⤢ is all that's
- *                 left. Also what the "hide pane actions" setting produces. */
+ *  - `none`     — the "hide pane actions" setting: no cluster, no ⋮; the
+ *                 hover-revealed corner ⤢ is all that's left. Never produced
+ *                 by width (see paneActionsMode). */
 export type PaneActionsMode = 'full' | 'overflow' | 'none';
 
 /** Cluster width for the current chrome matrix. The agent verbs went back to
@@ -76,21 +77,24 @@ export const MIN_TAB_STRIP_WIDTH = 80;
 export const PANE_ACTIONS_MIN_PANE_WIDTH = PANE_ACTIONS_CLUSTER_WIDTH + MIN_TAB_STRIP_WIDTH;
 
 /**
- * The pane width at which even the ⋮ trigger stops being affordable.
- *
- * The gap between this and PANE_ACTIONS_MIN_PANE_WIDTH is why ⋮ exists: 111px
- * to 222px is a real, reachable band (a 1536px screen with the deck open gives
- * the grid ~996px, so a five-way horizontal split lands at ~199px, and the
- * resize handles go lower still — Panel minSize is 10%). Dropping every action
- * there took them away exactly when a crowded layout needs stash and zoom most,
- * and one of them — "add a browser tab to THIS pane" — had no other entry point
- * at all: the palette's Open Browser passes forceNew, which splits off another
- * pane and makes the cramped layout worse.
- */
-export const PANE_ACTIONS_OVERFLOW_MIN_PANE_WIDTH = PANE_ACTIONS_OVERFLOW_WIDTH + MIN_TAB_STRIP_WIDTH;
-
-/**
  * How a pane of `width` should render its actions.
+ *
+ * ONE width threshold, two modes: at PANE_ACTIONS_MIN_PANE_WIDTH and above the
+ * full cluster shows, anything narrower gets the ⋮. The sub-222px band is
+ * reachable, not theoretical: a 1536px screen with the deck open gives the
+ * grid ~996px, so a five-way horizontal split lands at ~199px, and the resize
+ * handles go lower still (Panel minSize is 10%). Dropping actions there took
+ * them away exactly when a crowded layout needs stash and zoom most, and one
+ * of them — "add a browser tab to THIS pane" — had no other entry point at
+ * all: the palette's Open Browser passes forceNew, which splits off another
+ * pane and makes the cramped layout worse.
+ *
+ * The ⋮ never collapses by width. Below ~111px it does eat into
+ * MIN_TAB_STRIP_WIDTH, but the strip scrolls (overflow-x-auto), so the
+ * identity it protects stays reachable — while the menu holds the only ways
+ * OUT of a pane that narrow (zoom, stash). An earlier cut dropped the ⋮ there
+ * too, which hid the exit precisely where it was needed; `none` is the
+ * Settings toggle's mode alone, never a width verdict.
  *
  * `null` means "not measured yet" and answers `full`: most panes are wide, and
  * assuming otherwise would flash collapsed chrome on every mount. A measured
@@ -99,9 +103,7 @@ export const PANE_ACTIONS_OVERFLOW_MIN_PANE_WIDTH = PANE_ACTIONS_OVERFLOW_WIDTH 
  */
 export function paneActionsMode(width: number | null): PaneActionsMode {
   if (width === null || width === 0) return 'full';
-  if (width >= PANE_ACTIONS_MIN_PANE_WIDTH) return 'full';
-  if (width >= PANE_ACTIONS_OVERFLOW_MIN_PANE_WIDTH) return 'overflow';
-  return 'none';
+  return width >= PANE_ACTIONS_MIN_PANE_WIDTH ? 'full' : 'overflow';
 }
 
 /** Whether a pane of `width` can afford the full cluster. Kept as its own
@@ -317,11 +319,9 @@ export default function SurfaceTabs({
     stashChord, stashDisabled, stashTooltip, stashThisPane, isZoomed, toggleZoom,
   ]);
 
-  // Right-click anywhere on the header — tabs included — opens the same menu.
-  // Free at any width, and the only reason the `none` mode (a pane too narrow
-  // even for ⋮) is not a dead end for the mouse. Suppressed when the operator
-  // turned pane actions OFF in Settings: that is a deliberate no-pane-chrome
-  // choice, not a width accident.
+  // Right-click anywhere on the header — tabs included — opens the same menu
+  // at any width. Suppressed when the operator turned pane actions OFF in
+  // Settings: that is a deliberate no-pane-chrome choice.
   const handleHeaderContextMenu = useCallback((e: React.MouseEvent) => {
     if (mode === 'none' && !paneActionsSetting) return;
     // A rename field keeps its NATIVE context menu: claiming right-click on an

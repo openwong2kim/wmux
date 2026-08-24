@@ -5,7 +5,6 @@ import {
   PANE_ACTIONS_CLUSTER_WIDTH,
   PANE_ACTIONS_MIN_PANE_WIDTH,
   PANE_ACTIONS_OVERFLOW_WIDTH,
-  PANE_ACTIONS_OVERFLOW_MIN_PANE_WIDTH,
   MIN_TAB_STRIP_WIDTH,
   paneClusterWidth,
   paneActionsMode,
@@ -150,26 +149,24 @@ describe('PANE_ACTIONS_OVERFLOW_WIDTH tracks the ⋮ markup', () => {
 });
 
 describe('paneActionsMode', () => {
-  it('derives the ⋮ threshold from the trigger, never a second hardcoded number', () => {
-    expect(PANE_ACTIONS_OVERFLOW_MIN_PANE_WIDTH).toBe(
-      PANE_ACTIONS_OVERFLOW_WIDTH + MIN_TAB_STRIP_WIDTH,
-    );
-  });
-
   it('keeps the full cluster at and above its threshold', () => {
     expect(paneActionsMode(PANE_ACTIONS_MIN_PANE_WIDTH)).toBe('full');
     expect(paneActionsMode(PANE_ACTIONS_MIN_PANE_WIDTH + 400)).toBe('full');
   });
 
-  it('collapses to ⋮ across the whole band between the two thresholds', () => {
+  it('collapses to ⋮ below the threshold', () => {
     expect(paneActionsMode(PANE_ACTIONS_MIN_PANE_WIDTH - 1)).toBe('overflow');
     expect(paneActionsMode(200)).toBe('overflow');
-    expect(paneActionsMode(PANE_ACTIONS_OVERFLOW_MIN_PANE_WIDTH)).toBe('overflow');
   });
 
-  it('gives up only when even ⋮ would eat the identity the strip exists to show', () => {
-    expect(paneActionsMode(PANE_ACTIONS_OVERFLOW_MIN_PANE_WIDTH - 1)).toBe('none');
-    expect(paneActionsMode(40)).toBe('none');
+  it('never gives up by width — the ⋮ persists however narrow the pane gets', () => {
+    // Below ~111px the ⋮ eats into MIN_TAB_STRIP_WIDTH, but the strip scrolls,
+    // so identity stays reachable — while the menu holds the only ways OUT of
+    // a pane this narrow (zoom, stash). `none` is the Settings toggle's mode,
+    // never a width verdict.
+    for (const w of [PANE_ACTIONS_OVERFLOW_WIDTH + MIN_TAB_STRIP_WIDTH - 1, 98, 40, PANE_ACTIONS_OVERFLOW_WIDTH, 10]) {
+      expect(paneActionsMode(w)).toBe('overflow');
+    }
   });
 
   it('agrees with paneFitsActionCluster, which is its `full` arm', () => {

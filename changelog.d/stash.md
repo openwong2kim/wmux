@@ -47,11 +47,11 @@
   roughly 220px it was squeezing the tab strip — the coordinate, the title and
   the ✕ — down to nothing, leaving a header that was all buttons and no
   identity. Such a pane now shows a single `⋮` that opens the same five actions
-  as a vertical menu: one button's worth of chrome instead of five, which fits
-  down to about 110px. Below even that, the header falls back to the minimal
-  chrome the "hide pane actions" setting produces — a maximize control that
-  appears on hover — and **right-clicking a pane header opens the action menu at
-  any width**, so a pane is never too narrow to reach its own actions.
+  as a vertical menu: one button's worth of chrome instead of five. The `⋮`
+  stays however narrow the pane gets — the tab strip scrolls, so the pane's
+  identity is never lost to it, and the menu holds the ways out of a layout
+  that cramped (zoom, stash). **Right-clicking a pane header opens the same
+  menu at any width**, so the actions are never more than one click away.
 
   This matters most where it used to hurt most: a crowded layout is exactly when
   you want stash and zoom, and one of the five — adding a browser tab to *this*
