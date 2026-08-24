@@ -47,6 +47,7 @@ const PTY = 'daemon-plain-shell';
 interface Captured {
   idle?: (payload: { sessionId: string }) => void;
   agent?: (payload: { sessionId: string; event: unknown }) => void;
+  active?: (payload: { sessionId: string; agentName?: string }) => void;
 }
 
 function makeRouter() {
@@ -55,12 +56,22 @@ function makeRouter() {
     on: vi.fn((event: string, cb: (payload: never) => void) => {
       if (event === 'session:idle') captured.idle = cb as Captured['idle'];
       if (event === 'session:agent') captured.agent = cb as Captured['agent'];
+      if (event === 'session:active') captured.active = cb as Captured['active'];
     }),
     off: vi.fn(),
   } as unknown as DaemonClient;
   const router = new DaemonNotificationRouter(fakeDaemon, () => null);
   router.start();
   return { router, captured };
+}
+
+/** Last agentStatus this pane was broadcast, or undefined if never. */
+function lastStatus(): string | undefined {
+  const calls = broadcastMetadataUpdateMock.mock.calls.filter(
+    ([, patch]) => (patch as { ptyId?: string }).ptyId === PTY,
+  );
+  const last = calls.at(-1)?.[1] as { agentStatus?: string } | undefined;
+  return last?.agentStatus;
 }
 
 /** Did the handler broadcast the status clear for this pane? */
@@ -123,6 +134,27 @@ describe('DaemonNotificationRouter status clear (#733)', () => {
     broadcastMetadataUpdateMock.mockClear();
     captured.idle?.({ sessionId: PTY });
     expect(clearedIdle()).toBe(false);
+    router.stop();
+  });
+
+  it('#935 direction 3 — still clears when a burst overwrote the precise status with running', () => {
+    // The wedge: a precise 'complete' lands, then a short burst inside the
+    // suppression window re-fires session:active ('running') on top of it —
+    // exactly what a final chrome repaint or keystroke echo does. Byte
+    // silence never returns because the pane really is done, so onIdle is the
+    // ONLY thing that can still self-heal this. Before the fix it deferred to
+    // the (no longer true) precise status and left the pane wedged forever.
+    const { router, captured } = makeRouter();
+    captured.agent?.({
+      sessionId: PTY,
+      event: { agent: 'Claude Code', status: 'complete', message: 'Done' },
+    });
+    expect(lastStatus()).toBe('complete');
+    captured.active?.({ sessionId: PTY, agentName: 'Claude Code' });
+    expect(lastStatus()).toBe('running');
+    broadcastMetadataUpdateMock.mockClear();
+    captured.idle?.({ sessionId: PTY }); // still inside AGENT_EVENT_SUPPRESSION_MS
+    expect(clearedIdle()).toBe(true);
     router.stop();
   });
 });

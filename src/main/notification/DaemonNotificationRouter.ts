@@ -170,6 +170,23 @@ export class DaemonNotificationRouter {
    * `lastAgentEventAt`) so stale agent labels never leak across PTY reuse.
    */
   private lastAgentNameByPty = new Map<string, string>();
+  /**
+   * Last `agentStatus` this router actually broadcast for a PTY — precise
+   * agent event, `session:active`'s 'running', or the idle/dead clear.
+   * (#935 direction 3.) `AGENT_EVENT_SUPPRESSION_MS` below assumes the
+   * precise status it protects is still live, but `onActive` broadcasts
+   * 'running' unconditionally, with no deference to a recent precise event —
+   * so a short burst inside the suppression window overwrites a correct
+   * 'complete'/'waiting' with 'running', and then this same window blocks the
+   * only thing that could undo it (`onIdle`'s clear), because
+   * `ActivityMonitor` already consumed its active→idle transition and a quiet
+   * pane never produces another burst to re-fire it. Tracking what actually
+   * went out lets `onIdle` tell "a precise status is still standing, defer to
+   * it" apart from "a precise status was standing, then 'running' clobbered
+   * it, so the clear must go through anyway" — the two cases the shared
+   * timestamp cannot distinguish on its own.
+   */
+  private lastBroadcastStatus = new Map<string, AgentStatus>();
   private workspaceCache: { value: WorkspaceListEntry[]; ts: number } | null = null;
   /**
    * Fleet View activity rate limit for the hook-activity replay. Same window as
@@ -749,6 +766,14 @@ export class DaemonNotificationRouter {
           // is the display name; mirrors the PTYBridge local-mode broadcast.
           agentSlug: statusSlug ?? null,
         });
+        // #935 direction 3: only a status actually written counts as "the
+        // precise system has this handled" for onIdle's suppression window
+        // below. A withheld status (governed pane) must not be recorded here
+        // — the roster still shows whatever it showed before, so nothing
+        // "landed" that a later clear would need to defer to.
+        if (!withholdStatus) {
+          this.lastBroadcastStatus.set(payload.sessionId, ev.status);
+        }
         // Cache the agent display name for any subsequent OSC 133
         // command_end on this PTY. Daemon mode has no direct equivalent
         // of `agentDetector.getLastAgent()` because the detector lives in
@@ -967,6 +992,7 @@ export class DaemonNotificationRouter {
             ? { agentName: payload.agentName, agentSlug: agentDisplayToSlug(payload.agentName) ?? null }
             : {}),
         });
+        this.lastBroadcastStatus.set(payload.sessionId, 'running');
       } catch (err) {
         console.warn('[DaemonNotificationRouter] session:active error:', err);
       }
@@ -975,7 +1001,16 @@ export class DaemonNotificationRouter {
     const onIdle = (payload: { sessionId: string }) => {
       const now = Date.now();
       const lastAgentAt = this.lastAgentEventAt.get(payload.sessionId) ?? 0;
-      if (now - lastAgentAt < AGENT_EVENT_SUPPRESSION_MS) return;
+      // #935 direction 3: the suppression window defers to a recent precise
+      // status ONLY while that status is still what is actually showing.
+      // `onActive` broadcasts 'running' unconditionally — no deference of its
+      // own — so a burst inside this window overwrites a correct
+      // 'complete'/'waiting' with 'running', and this pane would then wedge
+      // at 'running' forever if the clear below kept deferring to a status
+      // that 'running' already clobbered. Once the live status IS 'running',
+      // there is nothing left to defer to, so the window no longer applies.
+      const stillPrecise = this.lastBroadcastStatus.get(payload.sessionId) !== 'running';
+      if (stillPrecise && now - lastAgentAt < AGENT_EVENT_SUPPRESSION_MS) return;
       // No resize/typing gate here: this handler's only job is the status
       // clear, and dropping it wedges the pane at `running` permanently
       // (ActivityMonitor has already consumed the transition, and a quiet pane
@@ -994,6 +1029,7 @@ export class DaemonNotificationRouter {
           agentStatus: 'idle',
           agentName: '',
         });
+        this.lastBroadcastStatus.set(payload.sessionId, 'idle');
       } catch (err) {
         console.warn('[DaemonNotificationRouter] session:idle error:', err);
       }
@@ -1015,6 +1051,7 @@ export class DaemonNotificationRouter {
         });
         this.lastAgentEventAt.delete(payload.sessionId);
         this.lastAgentNameByPty.delete(payload.sessionId);
+        this.lastBroadcastStatus.delete(payload.sessionId);
         clearSuppression(payload.sessionId);
         // Release the dedup ledger AND the hook authority for this pane.
         // Daemon-backed panes never pass through PTYBridge.cleanupInstance
@@ -1143,6 +1180,7 @@ export class DaemonNotificationRouter {
     this.cleanups.length = 0;
     this.lastAgentEventAt.clear();
     this.lastAgentNameByPty.clear();
+    this.lastBroadcastStatus.clear();
     this.activityThrottle.clear();
     this.workspaceCache = null;
   }
