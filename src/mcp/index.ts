@@ -167,6 +167,7 @@ const PANE_SET_METADATA_SHAPE = {
 
 const PANE_GET_METADATA_SHAPE = {
   paneId: z.string().optional().describe('Target leaf pane id. Omit to use the active pane in the calling workspace.'),
+  workspaceId: z.string().optional().describe('#1018 — read another workspace\'s pane metadata (READ-ONLY; pane_set_metadata has no equivalent and stays confined to the calling workspace). Pass the workspace id from a2a_discover / workspace_list along with paneId (from that same workspace\'s panes[]/a2a_discover panes[]). Omit to read the calling workspace, unchanged from before.'),
 };
 
 const WMUX_SEARCH_PANES_SHAPE = {
@@ -1143,10 +1144,16 @@ server.tool(
 
 server.tool(
   'pane_get_metadata',
-  'Read the metadata attached to a leaf pane in the calling workspace. Returns { paneId, metadata, version }. A version of 0 means no metadata has ever been written for this pane (the "never written" sentinel — pair with expectedVersion: 0 on pane_set_metadata to claim a fresh pane atomically).',
+  'Read the metadata attached to a leaf pane. Defaults to the calling workspace; pass workspaceId (#1018) to READ another workspace\'s pane metadata instead — this tool is read-only, so that cross-workspace reach never extends to pane_set_metadata. Returns { paneId, metadata, version }. A version of 0 means no metadata has ever been written for this pane (the "never written" sentinel — pair with expectedVersion: 0 on pane_set_metadata to claim a fresh pane atomically).',
   PANE_GET_METADATA_SHAPE,
-  async ({ paneId }) => {
-    const workspaceId = await requireWorkspaceId();
+  async ({ paneId, workspaceId: targetWorkspaceId }) => {
+    // #1018 — an explicit workspaceId reads that workspace's pane instead of
+    // the caller's own. requireWorkspaceId() still runs first: pane.rpc's
+    // resolveTarget accepts any workspaceId already (it only checks that
+    // paneId belongs to it), so the ONLY thing gating cross-workspace reads
+    // before this change was this tool always forcing its own id here. Read
+    // path only — pane_set_metadata takes no such override.
+    const workspaceId = targetWorkspaceId || (await requireWorkspaceId());
     const params: Record<string, unknown> = { workspaceId };
     if (paneId !== undefined) params['paneId'] = paneId;
     return callRpc('pane.getMetadata', params);
@@ -1229,7 +1236,7 @@ server.tool(
 // 2. a2a_discover — Agent Card discovery
 server.tool(
   'a2a_discover',
-  'List all available workspaces/agents and their names. ALWAYS call this first when the user references a workspace by number or name (e.g. "3번", "Workspace 1") so you know valid targets.',
+  'List all available workspaces/agents and their names. ALWAYS call this first when the user references a workspace by number or name (e.g. "3번", "Workspace 1") so you know valid targets. Each entry in agents[].panes carries paneTitle (the pane\'s own title, e.g. a task name — null when untitled) alongside the generic agentName, so a workspace running several same-vendor sessions (e.g. multiple "Claude Code" panes) can still be told apart before addressing one with send_message/a2a_task_send.',
   {},
   async () => {
     // elapsedMs: measured at the MCP tool entry, i.e. the caller-visible round

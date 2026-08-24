@@ -2017,6 +2017,7 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
           ptyId: string;
           agentName: string | null;
           agentStatus: string | null;
+          paneTitle: string | null;
         }> = [];
         // Workspace-wide (#977): pane_list and a2a_discover are read side by
         // side as the same address source. A pane in one and not the other
@@ -2025,12 +2026,19 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
           for (const s of leaf.surfaces) {
             if (s.surfaceType === 'browser' || !s.ptyId) continue;
             const a = store.surfaceAgent[s.ptyId];
+            // #1018 — same source as the sidebar roster (#934): the surface's
+            // own title, not the generic vendor `agentName`. A workspace running
+            // several same-vendor sessions is otherwise indistinguishable to a
+            // caller picking a pane from this list. Additive only — `agentName`
+            // is unchanged for back-compat callers.
+            const paneTitle = s.title?.trim() || null;
             panes.push({
               paneId: leaf.id,
               surfaceId: s.id,
               ptyId: s.ptyId,
               agentName: a?.name ?? null,
               agentStatus: a?.status ?? null,
+              paneTitle,
             });
           }
         }

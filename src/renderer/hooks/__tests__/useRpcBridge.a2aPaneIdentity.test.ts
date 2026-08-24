@@ -71,6 +71,23 @@ describe('useRpcBridge — pane-level A2A identity wiring', () => {
     expect(block).toMatch(/surfaceId:/);
   });
 
+  /**
+   * #1018 — a2a_discover only ever labeled a pane with the generic vendor
+   * `agentName` ("Claude Code"), so a workspace running two or more sessions
+   * of the same vendor is indistinguishable to another agent picking a
+   * target. The sidebar roster (#934) solved the identical problem by
+   * leading with `surface.title`; this locks the same source being threaded
+   * into the a2a.discover payload as an ADDITIVE `paneTitle` field (never
+   * replacing `agentName`, so existing callers keep working unchanged).
+   */
+  it('a2a.discover carries each pane\'s own title (#1018), additive to agentName', () => {
+    const block = region("method === 'a2a\\.discover'", "method === 'a2a\\.task\\.send'");
+    expect(block).toMatch(/paneTitle/);
+    expect(block).toMatch(/s\.title/);
+    // agentName stays wired exactly as before — this is an addition, not a swap
+    expect(block).toMatch(/agentName: a\?\.name \?\? null/);
+  });
+
   it('a2a.task.send resolves an explicit address and HARD-rejects an invalid one (no active-pane fallback)', () => {
     const block = region("method === 'a2a\\.task\\.send'", "method === 'a2a\\.task\\.query'");
     // #977 — getWorkspaceLeafPanes: A2A delivery is an ADDRESS operation, so a
