@@ -40,7 +40,19 @@ describe('useTerminal OSC 52 clipboard-write wiring (source-level lock)', () => 
   it('gates the handler on the replay mute (#998)', () => {
     // Replayed bytes are stored output, not a request: a reconnect, resync or
     // scrollback restore must not re-apply an old copy to the live clipboard.
-    expect(SRC).toMatch(/isReplaying:\s*\(\)\s*=>\s*replayMuteRef\.current\.depth\s*>\s*0/);
+    // Pinned on the predicate reaching the shared state machine, not on how the
+    // boolean is spelled — replayMute.ts owns the WHEN, and its own tests cover
+    // the windows.
+    expect(SRC).toMatch(/isReplaying:\s*\(\)\s*=>\s*isReplayMuted\(replayMuteRef\.current\)/);
+    expect(SRC).toMatch(/from '\.\.\/terminal\/replayMute'/);
+  });
+
+  it('opens a mute window around the reattach replay (#998)', () => {
+    // The daemon RingBuffer flush after a reattach arrives as ordinary pty:data,
+    // so there is no write of ours to hang the mute on. This is the gap the
+    // maintainer's live dogfood found; the window is what closes it.
+    expect(SRC).toMatch(/openReattachWindow\(replayMuteRef\.current\)/);
+    expect(SRC).toMatch(/noteReplayData\(replayMuteRef\.current\)/);
   });
 
   it('writes the decoded text through the clipboard IPC (1 MB cap + lock handling)', () => {
