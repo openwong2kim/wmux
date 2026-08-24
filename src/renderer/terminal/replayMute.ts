@@ -22,6 +22,13 @@
 // made inside that window is swallowed — deliberate, and the lesser evil: a lost
 // copy is a retry the user notices immediately, a resurrected one is corruption
 // they discover after pasting the wrong thing somewhere.
+//
+// The quiet timer tracks silence in the REPLAY, not silence since the window
+// opened: it only starts once the first chunk arrives (noteReplayData). A
+// daemon that takes longer than REATTACH_QUIET_MS to answer the reconnect
+// request would otherwise let a quiet-from-open timer close the window before
+// its own flush landed — the leak this module exists to prevent, just moved
+// later. The cap timer alone covers "the replay never came at all".
 
 /** No data for this long ends the reattach window (the flush arrives as a burst). */
 export const REATTACH_QUIET_MS = 250;
@@ -88,10 +95,13 @@ export function openReattachWindow(m: ReplayMute): void {
     clearTimers(m);
     m.depth = Math.max(0, m.depth - 1);
   };
-  // Both timers are armed up front: `quiet` covers "the replay never came"
-  // (failed reconnect, empty ring) and `cap` covers "this pane never stops
-  // printing", which would otherwise hold the bridge shut indefinitely.
-  m.quiet = setTimeout(close, REATTACH_QUIET_MS);
+  // Only `cap` is armed here — the backstop for "the replay never came"
+  // (failed reconnect, empty ring), which would otherwise hold the bridge
+  // shut indefinitely. `quiet` is NOT armed until the first chunk actually
+  // arrives (see noteReplayData): arming it from open() measured silence
+  // from the RECONNECT REQUEST, not from the replay, so a daemon slower than
+  // REATTACH_QUIET_MS to answer closed the window before its own flush
+  // landed — the exact leak this module exists to prevent, just moved later.
   m.cap = setTimeout(close, REATTACH_CAP_MS);
   m.closeReattach = close;
 }

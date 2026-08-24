@@ -71,9 +71,28 @@ describe('replayMute', () => {
   });
 
   describe('openReattachWindow — the replay that arrives as pty:data', () => {
-    it('mutes immediately and closes after a quiet period', () => {
+    it('mutes immediately, and closes after a quiet period once data has arrived', () => {
       const m = createReplayMute();
       openReattachWindow(m);
+      expect(isReplayMuted(m)).toBe(true);
+      noteReplayData(m);
+      vi.advanceTimersByTime(REATTACH_QUIET_MS - 1);
+      expect(isReplayMuted(m)).toBe(true);
+      vi.advanceTimersByTime(1);
+      expect(isReplayMuted(m)).toBe(false);
+    });
+
+    it('a daemon slower than the quiet window to answer does not leak the flush (CodeRabbit #999)', () => {
+      // Before this fix, `quiet` was armed from open() — silence since the
+      // RECONNECT REQUEST, not since the replay. A daemon slower than
+      // REATTACH_QUIET_MS to send its first byte closed the window before the
+      // flush landed, and the flush then went through unmuted: the same
+      // clipboard leak the module exists to prevent, just moved later.
+      const m = createReplayMute();
+      openReattachWindow(m);
+      vi.advanceTimersByTime(REATTACH_QUIET_MS + 50); // no data yet — must still be muted
+      expect(isReplayMuted(m)).toBe(true);
+      noteReplayData(m); // the flush finally lands
       expect(isReplayMuted(m)).toBe(true);
       vi.advanceTimersByTime(REATTACH_QUIET_MS - 1);
       expect(isReplayMuted(m)).toBe(true);
@@ -110,7 +129,7 @@ describe('replayMute', () => {
       const m = createReplayMute();
       openReattachWindow(m);
       openReattachWindow(m);
-      vi.advanceTimersByTime(REATTACH_QUIET_MS);
+      vi.advanceTimersByTime(REATTACH_CAP_MS);
       expect(isReplayMuted(m)).toBe(false);
     });
 
@@ -122,16 +141,21 @@ describe('replayMute', () => {
       expect(isReplayMuted(m)).toBe(false);
     });
 
-    it('closes even when the replay never arrives (failed reconnect, empty ring)', () => {
+    it('closes on the hard cap when the replay never arrives (failed reconnect, empty ring)', () => {
+      // No noteReplayData call at all: the quiet timer never arms, so only
+      // the cap can end this window.
       const m = createReplayMute();
       openReattachWindow(m);
-      vi.advanceTimersByTime(REATTACH_QUIET_MS);
+      vi.advanceTimersByTime(REATTACH_CAP_MS - 1);
+      expect(isReplayMuted(m)).toBe(true);
+      vi.advanceTimersByTime(1);
       expect(isReplayMuted(m)).toBe(false);
     });
 
     it('coexists with a write mute: both must clear', () => {
       const m = createReplayMute();
       openReattachWindow(m);
+      noteReplayData(m);
       const release = beginReplayWrite(m);
       vi.advanceTimersByTime(REATTACH_QUIET_MS);
       expect(isReplayMuted(m)).toBe(true); // window closed, write still parsing
