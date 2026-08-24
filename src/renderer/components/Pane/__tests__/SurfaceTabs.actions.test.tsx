@@ -42,7 +42,7 @@ function branchDirection(pane: Pane): string | undefined {
   return pane.type === 'branch' ? pane.direction : undefined;
 }
 
-function mount(paneId: string): void {
+function mount(paneId: string, props: { actionsVisible?: boolean } = {}): void {
   container = document.createElement('div');
   document.body.appendChild(container);
   root = createRoot(container);
@@ -55,6 +55,7 @@ function mount(paneId: string): void {
         workspace: ws,
         paneId,
         paneActive: true,
+        ...props,
         onSelect: () => undefined,
         onClose: () => undefined,
         onSplitHorizontal: () => useStore.getState().splitPane(paneId, 'horizontal', ws.id),
@@ -301,5 +302,35 @@ describe('SurfaceTabs pane cluster', () => {
     act(() => { useStore.getState().setAgentToolbarEnabled(false); });
     mountWithTerminal(rootLeafId(), true);
     expect(container.querySelector('[data-pane-action="split-right"]')).not.toBeNull();
+  });
+});
+
+// ─── Narrow panes drop the cluster entirely ─────────────────────────────────
+//
+// Pane.tsx measures itself and combines the Settings toggle with the width
+// check; SurfaceTabs just honors the answer. The fallback is the EXISTING
+// cluster-off chrome (Pane's hover-revealed corner ⤢), not a new small layout.
+
+describe('SurfaceTabs — actionsVisible override', () => {
+  it('renders no cluster when the pane cannot afford it', () => {
+    mount(rootLeafId(), { actionsVisible: false });
+
+    const actions = Array.from(
+      container.querySelectorAll('[data-pane-action]'),
+    ).map((el) => el.getAttribute('data-pane-action'));
+    expect(actions).toEqual([]);
+    // Including stash: it stays reachable from the sidebar, the palette and the
+    // prefix key, which is why dropping the button here is affordable at all.
+    expect(container.querySelector('[data-pane-action="stash"]')).toBeNull();
+  });
+
+  it('still renders the tab strip — the thing the collapse exists to protect', () => {
+    mount(rootLeafId(), { actionsVisible: false });
+    expect(container.querySelector('[data-pane-tab]') ?? container.textContent).toBeTruthy();
+  });
+
+  it('falls back to the Settings toggle when the prop is omitted', () => {
+    mount(rootLeafId());
+    expect(container.querySelector('[data-pane-action="stash"]')).not.toBeNull();
   });
 });

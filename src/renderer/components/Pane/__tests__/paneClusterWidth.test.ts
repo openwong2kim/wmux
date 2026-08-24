@@ -1,7 +1,13 @@
 import { describe, it, expect } from 'vitest';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { PANE_ACTIONS_CLUSTER_WIDTH, paneClusterWidth } from '../SurfaceTabs';
+import {
+  PANE_ACTIONS_CLUSTER_WIDTH,
+  PANE_ACTIONS_MIN_PANE_WIDTH,
+  MIN_TAB_STRIP_WIDTH,
+  paneClusterWidth,
+  paneFitsActionCluster,
+} from '../SurfaceTabs';
 
 describe('paneClusterWidth', () => {
   it('reports the cluster constant when pane actions show', () => {
@@ -54,5 +60,44 @@ describe('PANE_ACTIONS_CLUSTER_WIDTH tracks the cluster markup', () => {
     // The comment IS the derivation; a stale one is how the number goes wrong.
     const doc = source.slice(0, source.indexOf('export const PANE_ACTIONS_CLUSTER_WIDTH'));
     expect(doc).toContain(`total = ${PANE_ACTIONS_CLUSTER_WIDTH}`);
+  });
+});
+
+// ─── Width-based auto-collapse ──────────────────────────────────────────────
+//
+// The cluster is fixed-width and shrink-0; the tab strip beside it is flex-1
+// min-w-0. So on a narrow pane the strip does not shrink gracefully, it
+// collapses to NOTHING — at ~200px the header was 100% buttons and 0% identity,
+// with the last button clipped. Below the threshold the pane falls back to the
+// existing cluster-off chrome instead.
+
+describe('paneFitsActionCluster', () => {
+  it('derives the threshold from the cluster, never a second hardcoded number', () => {
+    expect(PANE_ACTIONS_MIN_PANE_WIDTH).toBe(PANE_ACTIONS_CLUSTER_WIDTH + MIN_TAB_STRIP_WIDTH);
+  });
+
+  it('keeps the cluster at and above the threshold', () => {
+    expect(paneFitsActionCluster(PANE_ACTIONS_MIN_PANE_WIDTH)).toBe(true);
+    expect(paneFitsActionCluster(PANE_ACTIONS_MIN_PANE_WIDTH + 400)).toBe(true);
+  });
+
+  it('drops it below the threshold — the reported ~200px case', () => {
+    expect(paneFitsActionCluster(PANE_ACTIONS_MIN_PANE_WIDTH - 1)).toBe(false);
+    expect(paneFitsActionCluster(200)).toBe(false);
+  });
+
+  it('keeps the cluster while unmeasured, so mounting does not flash the fallback', () => {
+    expect(paneFitsActionCluster(null)).toBe(true);
+  });
+
+  it('treats a zero width as hidden, not narrow', () => {
+    // A pane in a background workspace measures 0. Collapsing its chrome would
+    // be a change the user never sees happen and then sees undone.
+    expect(paneFitsActionCluster(0)).toBe(true);
+  });
+
+  it('leaves room for the identity the strip exists to show', () => {
+    // The floor is a real budget: coordinate + truncated title + ✕.
+    expect(MIN_TAB_STRIP_WIDTH).toBeGreaterThanOrEqual(64);
   });
 });

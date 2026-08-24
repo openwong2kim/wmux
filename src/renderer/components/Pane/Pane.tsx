@@ -10,7 +10,8 @@ import TerminalComponent from '../Terminal/Terminal';
 import BrowserPanel from '../Browser/BrowserPanel';
 import EditorPanel from '../Editor/EditorPanel';
 import DiffPanel from '../Diff/DiffPanel';
-import SurfaceTabs, { paneClusterWidth } from './SurfaceTabs';
+import SurfaceTabs, { paneClusterWidth, paneFitsActionCluster } from './SurfaceTabs';
+import { useElementWidth } from '../../hooks/useElementWidth';
 import { ErrorBoundary } from '../ErrorBoundary';
 import { agentSupportsPermissionFlag, permissionFlagFor, resumeGrammarFor } from '../../../shared/agentResume';
 import { applyRoleBinding, bindingEnforcesModel, type RoleBinding } from '../../../shared/orchestratorRole';
@@ -418,7 +419,16 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
   // the cluster's fifth button. The absolute corner maximize/restore controls
   // below are then redundant AND overlap the cluster, so they render only when
   // the cluster is absent. Subscribe the same way SurfaceTabs does.
-  const paneActionsVisible = useStore((s) => s.paneActionsVisible);
+  const paneActionsSetting = useStore((s) => s.paneActionsVisible);
+  // #977 follow-up — width-based auto-collapse. The cluster is fixed-width and
+  // shrink-0, so on a narrow pane every pixel it takes comes out of the tab
+  // strip, which is flex-1 min-w-0 and therefore collapses to NOTHING: at ~200px
+  // the header was 100% buttons and 0% identity, with the last button clipped.
+  // Below the threshold we fall back to the EXISTING cluster-off chrome (the
+  // hover-revealed corner ⤢) rather than inventing a small-pane layout. Stash
+  // stays reachable from the sidebar, the palette and the prefix key.
+  const [paneRootRef, paneWidth] = useElementWidth<HTMLDivElement>();
+  const paneActionsVisible = paneActionsSetting && paneFitsActionCluster(paneWidth);
 
   // X8 supervision badge. Resolve the pane's active-surface ptyId → supervision
   // slice. `⟳` when armed (auto-restarting); `⟳!` in a warning colour when the
@@ -496,6 +506,7 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
 
   return (
     <div
+      ref={paneRootRef}
       className={composePaneClassName({ hasUnread, ringState, paneRingEnabled, flashing, completeBlink })}
       style={{
         // #949: dim level for the unread glow — consumed by .pane-ring-glow's
@@ -922,6 +933,7 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
         workspace={workspace}
         paneId={pane.id}
         paneActive={isActive}
+        actionsVisible={paneActionsVisible}
         onSelect={(surfaceId) => setActiveSurface(pane.id, surfaceId)}
         onClose={handleCloseSurface}
         onSplitHorizontal={handleSplitHorizontal}
