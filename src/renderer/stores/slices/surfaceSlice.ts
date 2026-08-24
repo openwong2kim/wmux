@@ -272,6 +272,25 @@ export const createSurfaceSlice: StateCreator<StoreState, [['zustand/immer', nev
     if (pane.activeSurfaceId === surfaceId) {
       pane.activeSurfaceId = pane.surfaces[Math.min(idx, pane.surfaces.length - 1)]?.id || '';
     }
+
+    // #977 — a STASHED pane that just lost its last surface has to go with it.
+    // An empty leaf is a legitimate thing on screen (the funnel backfills it),
+    // but an empty STASHED pane is unreachable: the roster builds its row from a
+    // surface and skips it, so the pane would sit there holding an ordinal and a
+    // slot against the pane cap with no way to click it back. The teardown above
+    // already ran for the surface that was removed; what is left is dropping the
+    // entry and the pane-level mirrors.
+    if (pane.surfaces.length === 0) {
+      const stashIdx = (ws.stashedPanes ?? []).findIndex((e) => e?.pane?.id === paneId);
+      if (stashIdx !== -1) {
+        ws.stashedPanes!.splice(stashIdx, 1);
+        if (ws.stashedPanes!.length === 0) delete ws.stashedPanes;
+        if (state.paneLabel) delete state.paneLabel[paneId];
+        if (state.paneRole) delete state.paneRole[paneId];
+        if (state.paneNotificationRing) delete state.paneNotificationRing[paneId];
+        console.log(`[wmux:stash] dropped empty stashed pane=${paneId} (last surface closed)`);
+      }
+    }
   }),
 
   setActiveSurface: (paneId, surfaceId, workspaceId) => set((state: StoreState) => {

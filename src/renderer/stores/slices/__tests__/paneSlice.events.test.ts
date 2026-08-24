@@ -1,8 +1,10 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { create } from 'zustand';
 import { immer } from 'zustand/middleware/immer';
 import { createPaneSlice, type PaneSlice } from '../paneSlice';
 import { createWorkspace, type Workspace } from '../../../../shared/types';
+import { getLeafPanes } from '../../../../shared/paneUtils';
+import { setDaemonModeActive, resetDaemonModeForTests } from '../../../daemon/daemonMode';
 
 // Capture publisher calls — paneSlice imports from this module.
 const publishCalls: Array<{ fn: string; args: unknown[] }> = [];
@@ -10,11 +12,16 @@ vi.mock('../../../events/publisher', () => ({
   publishPaneCreated: (...args: unknown[]) => { publishCalls.push({ fn: 'pane.created', args }); },
   publishPaneClosed: (...args: unknown[]) => { publishCalls.push({ fn: 'pane.closed', args }); },
   publishPaneFocused: (...args: unknown[]) => { publishCalls.push({ fn: 'pane.focused', args }); },
+  publishPaneStashed: (...args: unknown[]) => { publishCalls.push({ fn: 'pane.stashed', args }); },
+  publishPaneUnstashed: (...args: unknown[]) => { publishCalls.push({ fn: 'pane.unstashed', args }); },
 }));
 
 type TestState = PaneSlice & {
   workspaces: Workspace[];
   activeWorkspaceId: string;
+  // stashPane reports its outcome through a toast (undo lives there).
+  pushToast: ReturnType<typeof vi.fn>;
+  zoomedPaneId: string | null;
 };
 
 function createTestStore() {
@@ -23,6 +30,8 @@ function createTestStore() {
     immer((...args) => ({
       workspaces: [ws],
       activeWorkspaceId: ws.id,
+      pushToast: vi.fn(),
+      zoomedPaneId: null,
       // @ts-expect-error — minimal test store doesn't match full StoreState
       ...createPaneSlice(...args),
     }))
@@ -365,5 +374,81 @@ describe('paneSlice — event publication', () => {
       expect(() => store.getState().closePane(newPaneId)).not.toThrow();
       expect(store.getState().paneNotificationRing[newPaneId]).toBeUndefined();
     });
+  });
+});
+
+// ─── Stash transitions on the event bus (#977) ──────────────────────────────
+
+describe('paneSlice — stash events', () => {
+  let store: ReturnType<typeof createTestStore>;
+  let wsId: string;
+  let stashedId: string;
+  let survivorId: string;
+
+  beforeEach(() => {
+    setDaemonModeActive(true);
+    publishCalls.length = 0;
+    store = createTestStore();
+    const ws = store.getState().workspaces[0];
+    wsId = ws.id;
+    store.getState().splitPane(ws.rootPane.id, 'horizontal');
+    store.setState((s) => {
+      const active = s.workspaces.find((w) => w.id === s.activeWorkspaceId)!;
+      for (const leaf of getLeafPanes(active.rootPane)) {
+        leaf.surfaces = [{ id: `sf-${leaf.id}`, ptyId: `pty-${leaf.id}`, title: '', shell: '', cwd: '' }];
+        leaf.activeSurfaceId = `sf-${leaf.id}`;
+      }
+    });
+    const leaves = getLeafPanes(store.getState().workspaces[0].rootPane);
+    survivorId = leaves[0].id;
+    stashedId = leaves[1].id;
+    publishCalls.length = 0;
+  });
+
+  afterEach(() => {
+    resetDaemonModeForTests();
+  });
+
+  it('emits pane.stashed, never pane.closed', () => {
+    store.getState().stashPane(stashedId);
+
+    expect(publishCalls.map((c) => c.fn)).toContain('pane.stashed');
+    // pane.closed would tell an external poller the pane is GONE and cost it a
+    // session that is still running.
+    expect(publishCalls.map((c) => c.fn)).not.toContain('pane.closed');
+  });
+
+  it('reports the focus move when the ACTIVE pane is the one stashed', () => {
+    store.setState((s) => {
+      s.workspaces.find((w) => w.id === s.activeWorkspaceId)!.activePaneId = stashedId;
+    });
+    publishCalls.length = 0;
+
+    store.getState().stashPane(stashedId);
+
+    // Same as closePane: the selection really moved, and staying silent would
+    // leave a poller's idea of the focused pane on one no longer in the layout.
+    const focused = publishCalls.find((c) => c.fn === 'pane.focused');
+    expect(focused?.args).toEqual([wsId, survivorId, stashedId]);
+  });
+
+  it('stays quiet about focus when a BACKGROUND pane is stashed', () => {
+    store.setState((s) => {
+      s.workspaces.find((w) => w.id === s.activeWorkspaceId)!.activePaneId = survivorId;
+    });
+    publishCalls.length = 0;
+
+    store.getState().stashPane(stashedId);
+
+    expect(publishCalls.find((c) => c.fn === 'pane.focused')).toBeUndefined();
+  });
+
+  it('emits pane.unstashed + pane.focused on the way back', () => {
+    store.getState().stashPane(stashedId);
+    publishCalls.length = 0;
+
+    store.getState().unstashPane(stashedId);
+
+    expect(publishCalls.map((c) => c.fn)).toEqual(['pane.unstashed', 'pane.focused']);
   });
 });

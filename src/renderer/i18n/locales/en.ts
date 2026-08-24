@@ -300,6 +300,7 @@ export const en = {
   'pane.unstashedToNeighbor': 'Back next to its former neighbour.',
   'pane.unstashedFallback': 'Its former neighbour is gone — placed next to the active pane.',
   'pane.stashLastPane': 'This is the only pane on screen. Stashing it would leave nothing to look at.',
+  'pane.stashEmptyPane': 'This pane is empty — there is no session to keep running, and nothing to bring back.',
   'pane.stashNoDaemon': 'No daemon connection. A stashed pane needs the daemon to keep its session and replay it — output would be lost.',
   'pane.stashBlockedSurface': 'This pane holds a {type} tab. Only terminals and browsers can be stashed — an unmounted editor would lose unsaved edits.',
 

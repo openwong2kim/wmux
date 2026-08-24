@@ -16,6 +16,7 @@ import {
 import {
   canStashPaneSurfaces,
   findStashedEntry,
+  type StashRefusal,
 } from '../../../shared/paneStash';
 import { isDaemonModeActive } from '../../daemon/daemonMode';
 import {
@@ -436,7 +437,11 @@ function attachBeside(
 }
 
 /** Why a stash was refused. `notFound` is silent (a stale id, not a user error). */
-type StashRefusalReason = 'daemon' | 'lastPane' | 'notFound' | { surfaceType: string };
+type StashRefusalReason =
+  | 'daemon'
+  | 'lastPane'
+  | 'notFound'
+  | Extract<StashRefusal, { ok: false }>;
 
 /**
  * Where a pane sat, recorded at stash time. Anchors on a LEAF: when the sibling
@@ -902,7 +907,13 @@ export const createPaneSlice: StateCreator<StoreState, [['zustand/immer', never]
     // A draft leaks out of the producer as a revoked proxy, so the undo toast
     // must never close over `ws` or the pane node itself.
     let refusal: StashRefusalReason | null = null;
-    let stashed: { wsId: string; paneId: string; paneName: string } | null = null;
+    let stashed: {
+      wsId: string;
+      paneId: string;
+      paneName: string;
+      previousActiveId: string;
+      newActiveId: string | null;
+    } | null = null;
     set((state: StoreState) => {
       const ws = state.workspaces.find((w: Workspace) => w.id === (workspaceId || state.activeWorkspaceId));
       if (!ws) { refusal = 'notFound'; return; }
@@ -921,11 +932,24 @@ export const createPaneSlice: StateCreator<StoreState, [['zustand/immer', never]
       // The daemon ring holds PTY bytes and nothing else — an editor/diff tab
       // would lose its unsaved buffer on unmount with nothing to replay it from.
       const allowed = canStashPaneSurfaces(target);
-      if (!allowed.ok) { refusal = { surfaceType: allowed.surfaceType }; return; }
+      if (!allowed.ok) { refusal = allowed; return; }
 
+      // Every guard is above this line on purpose: past it the pane is out of
+      // the tree, and a refusal that returns without re-homing it would delete
+      // a live pane — the one outcome this whole feature exists to prevent.
       const origin = captureStashOrigin(ws, paneId);
       const detached = detachPane(ws, paneId);
-      if (!detached || detached.type !== 'leaf') { refusal = 'notFound'; return; }
+      // Nothing was removed (unknown id, or the root) — the tree is untouched.
+      if (!detached) { refusal = 'notFound'; return; }
+      if (detached.type !== 'leaf') {
+        // Unreachable: `target` was verified a leaf above and detachPane removes
+        // exactly that node. Should it ever happen, the node has ALREADY left
+        // the tree, so putting it back is the only non-destructive answer.
+        const anchor = getLeafPanes(ws.rootPane)[0];
+        if (anchor) attachBeside(ws, anchor.id, detached, 'horizontal', false);
+        refusal = 'notFound';
+        return;
+      }
 
       // Created HERE rather than in createWorkspace: every workspace that has
       // never stashed anything stays byte-identical on disk, and the field's
@@ -936,6 +960,7 @@ export const createPaneSlice: StateCreator<StoreState, [['zustand/immer', never]
       // Same hygiene split/move/close apply (#182): a zoom pinned to a pane
       // that just left the layout would read as an un-zoom on the next toggle.
       if (state.zoomedPaneId === paneId) state.zoomedPaneId = null;
+      const previousActiveId = ws.activePaneId;
       if (ws.activePaneId === paneId) {
         const remaining = getLeafPanes(ws.rootPane);
         if (remaining.length > 0) ws.activePaneId = remaining[0].id;
@@ -952,6 +977,8 @@ export const createPaneSlice: StateCreator<StoreState, [['zustand/immer', never]
           state.paneLabel[paneId],
           computePaneAutoName(ws.wsOrdinal ?? 0, detached.ordinal ?? 0),
         ),
+        previousActiveId,
+        newActiveId: ws.activePaneId !== previousActiveId ? ws.activePaneId : null,
       };
     });
 
@@ -963,17 +990,30 @@ export const createPaneSlice: StateCreator<StoreState, [['zustand/immer', never]
         message:
           r === 'daemon' ? t('pane.stashNoDaemon')
           : r === 'lastPane' ? t('pane.stashLastPane')
+          : r.reason === 'empty' ? t('pane.stashEmptyPane')
           : t('pane.stashBlockedSurface', { type: r.surfaceType }),
       });
       return false;
     }
     if (!stashed) return false;
 
-    const done = stashed as { wsId: string; paneId: string; paneName: string };
+    const done = stashed as {
+      wsId: string;
+      paneId: string;
+      paneName: string;
+      previousActiveId: string;
+      newActiveId: string | null;
+    };
     console.log(`[wmux:stash] stashed pane=${done.paneId} ws=${done.wsId}`);
     // NOT pane.closed — an external poller would read that as "this pane is
     // gone" and drop a session that is still running.
     publishPaneStashed(done.wsId, done.paneId);
+    // Stashing the ACTIVE pane moves the selection, exactly as closing it does,
+    // and closePane reports that. Staying silent here would leave a poller's
+    // idea of the focused pane pointing at one that is no longer in the layout.
+    if (done.newActiveId) {
+      publishPaneFocused(done.wsId, done.newActiveId, done.previousActiveId);
+    }
     // Pane-tree mutations otherwise ride only the 5s autosave (movePane's
     // reasoning): a stash followed by an immediate quit must not come back
     // as a pane that is both gone from the layout and missing from the stash.
@@ -1036,7 +1076,17 @@ export const createPaneSlice: StateCreator<StoreState, [['zustand/immer', never]
       if (ws.stashedPanes!.length === 0) delete ws.stashedPanes;
 
       ws.activePaneId = paneId;
-      if (state.zoomedPaneId !== null && state.zoomedPaneId !== paneId) state.zoomedPaneId = null;
+      // Scoped to THIS workspace's tree, like splitPane and movePane: a global
+      // id belonging to another workspace must not be cleared by a re-attach
+      // over here (zoomedPaneId is one global slot, and clearing a stranger's
+      // would silently un-zoom a pane the user left zoomed elsewhere).
+      if (
+        state.zoomedPaneId !== null
+        && state.zoomedPaneId !== paneId
+        && findPane(ws.rootPane, state.zoomedPaneId)
+      ) {
+        state.zoomedPaneId = null;
+      }
       restored = { wsId: ws.id, paneId, toOrigin };
     });
 

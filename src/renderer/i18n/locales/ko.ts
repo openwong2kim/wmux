@@ -57,6 +57,7 @@ export const ko = {
   'pane.unstashedToNeighbor': '치우기 전 이웃 옆으로 돌아왔습니다.',
   'pane.unstashedFallback': '치우기 전 이웃이 없어 활성 페인 옆에 두었습니다.',
   'pane.stashLastPane': '화면에 남은 유일한 페인입니다. 치우면 볼 것이 없어집니다.',
+  'pane.stashEmptyPane': '빈 페인입니다 — 계속 돌릴 세션도, 다시 꺼낼 것도 없습니다.',
   'pane.stashNoDaemon': '데몬 연결이 없습니다. 치운 동안 세션을 붙들고 재생하는 건 데몬이라, 지금 치우면 출력이 유실됩니다.',
   'pane.stashBlockedSurface': '이 페인에 {type} 탭이 있습니다. 터미널과 브라우저만 치울 수 있습니다 — 에디터는 언마운트되면 저장 안 된 내용이 사라집니다.',
 

@@ -48,10 +48,25 @@ function draftWs(s: TestState): Workspace {
   return s.workspaces.find((w) => w.id === s.activeWorkspaceId)!;
 }
 
+/** Give every visible leaf a terminal surface, as the AppLayout funnel does a
+ *  tick after a split. A pane with no surfaces has no session to keep running,
+ *  so stash refuses it — fixtures have to be as real as that guard. */
+function seedSurfaces(store: ReturnType<typeof createTestStore>): void {
+  store.setState((s) => {
+    for (const leaf of getLeafPanes(draftWs(s).rootPane)) {
+      if (leaf.surfaces.length === 0) {
+        leaf.surfaces = [surface(`sf-${leaf.id}`, `pty-${leaf.id}`)];
+        leaf.activeSurfaceId = `sf-${leaf.id}`;
+      }
+    }
+  });
+}
+
 /** Split the root once and return [firstLeafId, secondLeafId]. */
 function splitOnce(store: ReturnType<typeof createTestStore>): [string, string] {
   const rootId = ws(store).rootPane.id;
   store.getState().splitPane(rootId, 'horizontal');
+  seedSurfaces(store);
   const leaves = getLeafPanes(ws(store).rootPane);
   return [leaves[0].id, leaves[1].id];
 }
@@ -156,6 +171,7 @@ describe('paneSlice — stash', () => {
     it('records the former neighbour, direction, order and a two-element sizes', () => {
       const rootId = ws(store).rootPane.id;
       store.getState().splitPane(rootId, 'vertical');
+      seedSurfaces(store);
       const [a, b] = getLeafPanes(ws(store).rootPane).map((l) => l.id);
       store.setState((s) => {
         const root = draftWs(s).rootPane;
@@ -178,6 +194,7 @@ describe('paneSlice — stash', () => {
       store.getState().splitPane(rootId, 'horizontal');
       const [a, b] = getLeafPanes(ws(store).rootPane).map((l) => l.id);
       store.getState().splitPane(b, 'vertical');
+      seedSurfaces(store);
       const afterSplit = getLeafPanes(ws(store).rootPane).map((l) => l.id);
       const firstOfBranch = afterSplit[1];
 
@@ -234,6 +251,7 @@ describe('paneSlice — stash', () => {
     it('re-attaches beside the recorded neighbour with its direction and sizes', () => {
       const rootId = ws(store).rootPane.id;
       store.getState().splitPane(rootId, 'vertical');
+      seedSurfaces(store);
       const [a, b] = getLeafPanes(ws(store).rootPane).map((l) => l.id);
       store.setState((s) => {
         const root = draftWs(s).rootPane;
@@ -260,6 +278,7 @@ describe('paneSlice — stash', () => {
       store.getState().splitPane(rootId, 'horizontal');
       const [a, b] = getLeafPanes(ws(store).rootPane).map((l) => l.id);
       store.getState().splitPane(b, 'horizontal');
+      seedSurfaces(store);
       const c = getLeafPanes(ws(store).rootPane).map((l) => l.id).find((id) => id !== a && id !== b)!;
       store.getState().stashPane(a);
       store.getState().closePane(b);
@@ -349,6 +368,7 @@ describe('paneSlice — stash', () => {
         target = created as string;
       }
       expect(getLeafPanes(ws(store).rootPane)).toHaveLength(MAX_PANES_PER_WORKSPACE);
+      seedSurfaces(store);
 
       const stashTargets = getLeafPanes(ws(store).rootPane).slice(0, 5).map((l) => l.id);
       for (const id of stashTargets) store.getState().stashPane(id);
@@ -399,5 +419,57 @@ describe('paneSlice — stash', () => {
       expect(createWorkspace('Fresh').stashedPanes).toBeUndefined();
       expect(createLeafPane()).toMatchObject({ type: 'leaf' });
     });
+  });
+});
+
+// ─── Review follow-ups ──────────────────────────────────────────────────────
+
+describe('paneSlice — stash, review follow-ups', () => {
+  let store: ReturnType<typeof createTestStore>;
+
+  beforeEach(() => {
+    store = createTestStore();
+    setDaemonModeActive(true);
+  });
+
+  afterEach(() => {
+    resetDaemonModeForTests();
+  });
+
+  it('refuses to stash a pane with no surfaces', () => {
+    const [, b] = splitOnce(store);
+    store.setState((s) => {
+      const leaf = findPane(draftWs(s).rootPane, b);
+      if (leaf && leaf.type === 'leaf') leaf.surfaces = [];
+    });
+
+    expect(store.getState().stashPane(b)).toBe(false);
+    // Not stashed and not lost — still right where it was.
+    expect(ws(store).stashedPanes).toBeUndefined();
+    expect(getLeafPanes(ws(store).rootPane).map((l) => l.id)).toContain(b);
+  });
+
+  it('only clears a zoom that belongs to THIS workspace on unstash', () => {
+    const [, b] = splitOnce(store);
+    store.getState().stashPane(b);
+    // A pane the user left zoomed in a DIFFERENT workspace. zoomedPaneId is one
+    // global slot, so an unguarded clear would silently un-zoom it.
+    store.setState((s) => { s.zoomedPaneId = 'pane-in-another-workspace'; });
+
+    store.getState().unstashPane(b);
+
+    expect(store.getState().zoomedPaneId).toBe('pane-in-another-workspace');
+  });
+
+  it('clears a zoom on a pane of this workspace when unstashing beside it', () => {
+    const [a, b] = splitOnce(store);
+    store.getState().stashPane(b);
+    store.setState((s) => { s.zoomedPaneId = a; });
+
+    store.getState().unstashPane(b);
+
+    // The re-attach re-flows the layout, so a pane hidden behind the zoom would
+    // reappear somewhere unexpected — same rule split and move follow.
+    expect(store.getState().zoomedPaneId).toBeNull();
   });
 });

@@ -552,3 +552,66 @@ describe('surfaceSlice.closeSurface — surfacePorts / surfaceAgentStatus cleanu
     expect(state.surfaceAgentStatus['pty-reused']).toBeUndefined();
   });
 });
+
+// ─── A stashed pane that loses its last tab must go with it (#977) ──────────
+//
+// An empty leaf is a legitimate thing ON SCREEN — the AppLayout funnel backfills
+// it. An empty STASHED pane is a ghost: the roster builds its row from a surface
+// and skips it, so the pane sits there holding an ordinal and a slot against the
+// pane cap with no way for anyone to click it back.
+
+describe('surfaceSlice.closeSurface — stashed panes', () => {
+  function harnessWithStash() {
+    const { state, slice } = createHarness();
+    const ws = state.workspaces[0];
+    ws.stashedPanes = [{
+      pane: {
+        id: 'p-stashed',
+        type: 'leaf',
+        activeSurfaceId: 'sf-a',
+        ordinal: 7,
+        surfaces: [
+          { id: 'sf-a', ptyId: 'pty-a', title: 'a', shell: 'pwsh', cwd: 'C:\repo' },
+          { id: 'sf-b', ptyId: 'pty-b', title: 'b', shell: 'pwsh', cwd: 'C:\repo' },
+        ],
+      },
+      stashedAt: 1,
+    }];
+    return { state, slice, ws };
+  }
+
+  it('closes a tab of a stashed pane without dropping the pane', () => {
+    const { state, slice, ws } = harnessWithStash();
+    state.surfaceAgent['pty-a'] = { name: 'Claude Code', status: 'idle' };
+
+    slice.closeSurface('p-stashed', 'sf-a');
+
+    expect(ws.stashedPanes).toHaveLength(1);
+    expect(ws.stashedPanes![0].pane.surfaces.map((s) => s.id)).toEqual(['sf-b']);
+    // The closed surface's identity is torn down; the pane's is not.
+    expect(state.surfaceAgent['pty-a']).toBeUndefined();
+  });
+
+  it('drops the stash entry when the LAST tab is closed', () => {
+    const { slice, ws } = harnessWithStash();
+
+    slice.closeSurface('p-stashed', 'sf-a');
+    slice.closeSurface('p-stashed', 'sf-b');
+
+    // Not an empty stashed leaf holding an ordinal nobody can reach.
+    expect(ws.stashedPanes).toBeUndefined();
+  });
+
+  it('leaves an empty VISIBLE pane alone — the funnel backfills those', () => {
+    const { state, slice } = createHarness();
+    const ws = state.workspaces[0];
+    const root = ws.rootPane as Extract<Workspace['rootPane'], { type: 'leaf' }>;
+    root.surfaces = [{ id: 'sf-v', ptyId: 'pty-v', title: 'v', shell: 'pwsh', cwd: 'C:\repo' }];
+    root.activeSurfaceId = 'sf-v';
+
+    slice.closeSurface(root.id, 'sf-v');
+
+    expect(root.surfaces).toHaveLength(0);
+    expect(ws.stashedPanes).toBeUndefined();
+  });
+});

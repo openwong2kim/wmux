@@ -92,14 +92,25 @@ function WorkspaceAgentRoster({ workspaceId, isActive }: WorkspaceAgentRosterPro
   const stashPulse = useStore((s) => s.stashPulse);
   const pulsedPaneId = stashPulse?.workspaceId === workspaceId ? stashPulse.paneId : null;
   const [pulsingPaneId, setPulsingPaneId] = useState<string | null>(null);
+
+  // TWO effects on purpose. Consuming the pulse and owning its timeout in one
+  // effect is self-defeating: clearStashPulse() nulls `pulsedPaneId` on the very
+  // next render, the effect re-runs, its cleanup clears the pending timeout, and
+  // the highlight never turns off — a permanent bar identical to the focused
+  // style. Splitting them lets the consume run once and the timeout live on its
+  // own key.
   useEffect(() => {
     if (!pulsedPaneId) return;
     setOpen(true);
     setPulsingPaneId(pulsedPaneId);
     useStore.getState().clearStashPulse();
+  }, [pulsedPaneId]);
+
+  useEffect(() => {
+    if (!pulsingPaneId) return;
     const timer = setTimeout(() => setPulsingPaneId(null), STASH_PULSE_MS);
     return () => clearTimeout(timer);
-  }, [pulsedPaneId]);
+  }, [pulsingPaneId]);
 
   // Newly selected workspaces reveal their agents automatically; workspaces
   // that move to the background collapse back to the compact summary. The user

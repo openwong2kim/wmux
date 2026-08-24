@@ -24,10 +24,16 @@ export const STASHABLE_SURFACE_TYPES: ReadonlySet<string> = new Set(['terminal',
 
 export type StashRefusal =
   | { ok: true }
-  | { ok: false; reason: 'surface'; surfaceType: string };
+  | { ok: false; reason: 'surface'; surfaceType: string }
+  | { ok: false; reason: 'empty' };
 
 /** Whether this pane's contents survive being unmounted. */
 export function canStashPaneSurfaces(pane: PaneLeaf): StashRefusal {
+  // A pane with no surfaces has nothing to keep alive, and stashing it would
+  // make it unreachable: it holds an ordinal and a slot against the cap, the
+  // roster has no surface to build a row from, and no click can bring it back.
+  // The layout shows empty leaves; the stash cannot.
+  if (pane.surfaces.length === 0) return { ok: false, reason: 'empty' };
   for (const s of pane.surfaces) {
     const type = s.surfaceType ?? 'terminal';
     if (!STASHABLE_SURFACE_TYPES.has(type)) {

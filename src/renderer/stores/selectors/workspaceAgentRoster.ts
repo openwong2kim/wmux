@@ -159,8 +159,19 @@ export function selectWorkspaceAgentRoster(
     const leaf = entry?.pane;
     if (!leaf || leaf.type !== 'leaf') continue;
     const terminals = leaf.surfaces.filter((s) => (s.surfaceType ?? 'terminal') === 'terminal');
+    // Which tab represents the pane in its single row. The remembered active
+    // tab wins WHILE IT IS ALIVE — that was the user's last choice. But
+    // activeness alone is not enough: it points at whatever was on top when the
+    // pane left the screen, so if THAT session died while a sibling is still
+    // running, deferring to it would report the whole pane as exited with an
+    // agent working behind it. Order: the active tab if live, then a live tab
+    // that has a detected agent, then any live tab, then the dead remnants.
+    const live = terminals.filter((s) => !!s.ptyId);
     const surface =
-      terminals.find((s) => s.id === leaf.activeSurfaceId)
+      live.find((s) => s.id === leaf.activeSurfaceId)
+      ?? live.find((s) => !!state.surfaceAgent[s.ptyId]?.name)
+      ?? live[0]
+      ?? terminals.find((s) => s.id === leaf.activeSurfaceId)
       ?? terminals[0]
       ?? leaf.surfaces[0];
     if (!surface) continue;

@@ -394,6 +394,46 @@ describe('selectWorkspaceAgentRoster — stashed panes', () => {
     expect(r.rows[0].surfaceCount).toBe(2);
   });
 
+  it('represents the pane with a LIVE tab, not a dead remembered-active one', () => {
+    // activeSurfaceId points at whatever was on top when the pane left the
+    // screen. If THAT session died while a sibling is still running, showing the
+    // dead one reports the pane as exited while an agent works behind it.
+    const stashedPane = leaf('p2', [surface('s2a', ''), surface('s2b', 'pty-2b')], 's2a');
+    const ws = { ...workspace('ws-1', leaf('p1', [surface('s1', 'pty-1')]), 'p1'), stashedPanes: [stashed(stashedPane)] };
+
+    const r = selectWorkspaceAgentRoster(state({ workspaces: [ws], activeWorkspaceId: 'ws-1' }), 'ws-1');
+
+    expect(r.rows[0].surfaceId).toBe('s2b');
+    expect(r.rows[0].stashedLiveness).toBe('alive');
+  });
+
+  it('prefers a live tab with a detected agent when the active tab is dead', () => {
+    const stashedPane = leaf('p2', [surface('s2a', 'pty-2a'), surface('s2b', 'pty-2b')], 's2-gone');
+    const ws = { ...workspace('ws-1', leaf('p1', [surface('s1', 'pty-1')]), 'p1'), stashedPanes: [stashed(stashedPane)] };
+
+    const r = selectWorkspaceAgentRoster(
+      state({
+        workspaces: [ws],
+        activeWorkspaceId: 'ws-1',
+        surfaceAgent: { 'pty-2b': { name: 'Claude Code', status: 'idle' } },
+      }),
+      'ws-1',
+    );
+
+    expect(r.rows[0].surfaceId).toBe('s2b');
+    expect(r.rows[0].agentName).toBe('Claude Code');
+  });
+
+  it('still falls back to the remembered active tab when nothing is live', () => {
+    const stashedPane = leaf('p2', [surface('s2a', ''), surface('s2b', '')], 's2b');
+    const ws = { ...workspace('ws-1', leaf('p1', [surface('s1', 'pty-1')]), 'p1'), stashedPanes: [stashed(stashedPane)] };
+
+    const r = selectWorkspaceAgentRoster(state({ workspaces: [ws], activeWorkspaceId: 'ws-1' }), 'ws-1');
+
+    expect(r.rows[0].surfaceId).toBe('s2b');
+    expect(r.rows[0].stashedLiveness).toBe('exited');
+  });
+
   it('appends stashed rows AFTER the visible agents', () => {
     const visible = leaf('p1', [surface('s1', 'pty-1')]);
     const ws = {

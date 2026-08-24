@@ -15,6 +15,7 @@ import {
   findWorkspaceSurfaceByPtyId,
   findWorkspaceSurfaceById,
 } from '../utils/paneTraversal';
+import { getWorkspacePtyIds } from '../../shared/paneUtils';
 import { FrameCoalescer } from '../utils/frameCoalescer';
 import { normalizeWorktreePath } from '../../shared/workTask';
 import { isBrainPtyId } from '../../shared/constants';
@@ -733,12 +734,12 @@ export function useNotificationListener() {
             if (Array.isArray(rest.listeningPorts)) {
               state.setSurfacePorts(ptyId, rest.listeningPorts);
               const merged = new Set<number>();
-              const collectPtyIds = (pane: Pane): string[] =>
-                pane.type === 'leaf'
-                  ? pane.surfaces.map((s) => s.ptyId).filter(Boolean)
-                  : pane.children.flatMap(collectPtyIds);
+              // Workspace-wide (#977): this branch now runs for stashed panes
+              // too, so a visible-tree union would report the workspace's ports
+              // MINUS whatever the stashed pane is serving — including the
+              // stashed pane's own ports on the very update that announced them.
               const freshPorts = useStore.getState().surfacePorts;
-              for (const id of collectPtyIds(ws.rootPane)) {
+              for (const id of getWorkspacePtyIds(ws)) {
                 for (const p of freshPorts[id] ?? []) merged.add(p);
               }
               rest.listeningPorts = [...merged].sort((a, b) => a - b);

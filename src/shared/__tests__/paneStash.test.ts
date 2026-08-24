@@ -42,6 +42,15 @@ describe('canStashPaneSurfaces', () => {
     expect(canStashPaneSurfaces(mixed)).toMatchObject({ ok: false, surfaceType: 'editor' });
   });
 
+  it('refuses a pane with no surfaces at all', () => {
+    // Vacuously "ok" before: nothing in the loop to reject. But an empty stashed
+    // pane is unreachable — it holds an ordinal and a slot against the pane cap
+    // while the roster, which builds its row from a surface, skips it entirely.
+    // An empty leaf is fine ON SCREEN (the funnel backfills it); in the stash it
+    // is a ghost.
+    expect(canStashPaneSurfaces(leaf('p', []))).toEqual({ ok: false, reason: 'empty' });
+  });
+
   it('keeps the allow-list to the two types the ring can actually restore', () => {
     expect([...STASHABLE_SURFACE_TYPES].sort()).toEqual(['browser', 'terminal']);
   });
