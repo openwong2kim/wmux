@@ -842,7 +842,13 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
                 className={`absolute top-0 ${menuPos.x > window.innerWidth * 0.6 ? 'right-full mr-0.5' : 'left-full ml-0.5'} py-1.5 px-2 rounded-[7px] shadow-xl sidebar-popover-enter`}
                 style={{ background: 'var(--bg-surface)', border: '1px solid color-mix(in srgb, var(--bg-overlay) 70%, transparent)' }}
               >
-                <div className="flex items-center gap-1">
+                {/* Wraps at 8 per row: with 15 ids + the "none" swatch a single
+                    row would run to ~320px and could overflow the sidebar's
+                    edge (the ternary above already flips the popover to
+                    open leftward near the right edge, but there is no
+                    equivalent flip for width). Two rows of 8 stays inside the
+                    same footprint the original eight used. */}
+                <div className="flex flex-wrap items-center gap-1 w-[164px]">
                   {WORKSPACE_COLOR_IDS.map((id) => {
                     const selected = workspace.color === id;
                     return (

@@ -18,6 +18,7 @@ import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
 import PaneContainer from '../Pane/PaneContainer';
 import { multiviewGridStyle, type MultiviewArrangement } from '../../utils/multiviewGrid';
+import { workspaceColorHex } from '../../../shared/workspaceColors';
 import type { Workspace } from '../../../shared/types';
 
 /** One single-view workspace pane subtree. Inactive → display:none (kept mounted).
@@ -58,7 +59,7 @@ export const WorkspaceSlot = memo(function WorkspaceSlot({
 /** One multiview grid tile. Memoized on the SAME terms as WorkspaceSlot so
  *  metadata churn re-renders only the changed tile (eng review — the multiview
  *  grid previously rendered PaneContainer directly and re-ran every tile). */
-const MultiviewWorkspaceSlot = memo(function MultiviewWorkspaceSlot({
+export const MultiviewWorkspaceSlot = memo(function MultiviewWorkspaceSlot({
   workspace,
   isActive,
   multiviewCount,
@@ -87,6 +88,9 @@ const MultiviewWorkspaceSlot = memo(function MultiviewWorkspaceSlot({
   useEffect(() => {
     if (isActive) tileRef.current?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
   }, [isActive, arrangement, multiviewCount]);
+  // Purely visual tag (see shared/workspaceColors.ts) — undefined for the
+  // untagged majority, so most tiles render exactly as before.
+  const tagColor = workspaceColorHex(workspace.color);
 
   return (
     <div
@@ -106,7 +110,16 @@ const MultiviewWorkspaceSlot = memo(function MultiviewWorkspaceSlot({
           fontFamily: 'ui-monospace, monospace',
         }}
       >
-        <span className="flex-1">{workspace.name}</span>
+        <span className="flex-1 flex items-center gap-1.5 min-w-0">
+          {tagColor && (
+            <span
+              className="w-1.5 h-1.5 rounded-full shrink-0"
+              style={{ background: tagColor }}
+              aria-hidden="true"
+            />
+          )}
+          <span className="truncate">{workspace.name}</span>
+        </span>
         <button
           onClick={(e) => {
             e.stopPropagation();

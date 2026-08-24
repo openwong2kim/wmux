@@ -14,6 +14,7 @@ import PaneDragGrip from './PaneDragGrip';
 import { FOCUS_RING } from '../focusRing';
 import { IconSplitRight, IconSplitDown, IconBrowser, IconEyeOff } from '../icons';
 import { displayPath } from '../../utils/displayPath';
+import { workspaceColorHex } from '../../../shared/workspaceColors';
 import PaneActionsMenu, { PANE_ACTIONS_MENU_WIDTH, type PaneActionItem } from './PaneActionsMenu';
 
 /** Rendered width (px) of the pane-action half of the cluster (split / browser /
@@ -399,6 +400,12 @@ export default function SurfaceTabs({
   const paneOrdinal = leaf && leaf.type === 'leaf' ? (leaf.ordinal ?? 0) : 0;
   const paneAutoName = computePaneAutoName(workspace.wsOrdinal ?? 0, paneOrdinal, activeSlug);
   const paneDisplay = paneDisplayName(paneLabel, paneAutoName);
+  // Purely visual (shared/workspaceColors.ts) — undefined for the untagged
+  // majority, so an untagged workspace's tabs render exactly as before. This
+  // is independent of the pane-focus indicator below (an inset box-shadow on
+  // the whole header row, not on any one tab) and of the active/inactive tab
+  // background swap, so the three signals never compete for the same pixels.
+  const tabTagColor = workspaceColorHex(workspace.color);
 
   const startPaneRename = () => {
     // Suppress the rename a double-click triggers right after a tab drag.
@@ -558,7 +565,12 @@ export default function SurfaceTabs({
               onDoubleClick={(e) => e.stopPropagation()}
             />
           ) : (
-            <span className="truncate max-w-[120px]">{s.title || t('surface.terminal')}</span>
+            <span
+              className="truncate max-w-[120px]"
+              style={tabTagColor ? { boxShadow: `inset 0 -2px 0 ${tabTagColor}` } : undefined}
+            >
+              {s.title || t('surface.terminal')}
+            </span>
           )}
           {/* X close button — always visible, not just on hover */}
           <button
