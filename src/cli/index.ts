@@ -19,6 +19,7 @@ import { handleSetupStatusline } from './commands/setupStatusline';
 import { handleDoctor } from './commands/doctor';
 import { handleChannel } from './commands/channel';
 import { handleWeb } from './commands/web';
+import { handleDaemon } from './commands/daemon';
 
 const HELP_TEXT = `
 wmux CLI
@@ -55,6 +56,11 @@ INPUT COMMANDS
 
 BROWSER PANE
   open <url> [--workspace <id>]     Open/reuse a browser pane at <url>
+
+DAEMON (headless lifecycle, no Electron/GUI required)
+  daemon start                      Start the daemon if not already running
+  daemon status                     Ping the daemon; reports whether it's up
+  daemon stop                       Gracefully shut the daemon down
 
 WEB ACCESS (browser / PWA)
   web                               Serve wmux panes to a browser (read-only,
@@ -230,6 +236,8 @@ async function main(): Promise<void> {
       await handleBrowser(rest, jsonMode);
     } else if (cmd === 'web') {
       await handleWeb(rest, jsonMode);
+    } else if (cmd === 'daemon') {
+      await handleDaemon(rest[0], rest.slice(1), jsonMode);
     } else if (cmd === 'mcp') {
       await handleMcp(rest, jsonMode);
     } else if (cmd === 'setup-hooks') {
