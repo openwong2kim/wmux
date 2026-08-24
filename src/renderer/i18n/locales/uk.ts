@@ -26,6 +26,7 @@ export const uk = {
   'pane.empty': 'Порожня панель',
   'pane.splitRight': 'Розділити праворуч',
   'pane.splitDown': 'Розділити вниз',
+  'pane.moreActions': 'Дії панелі',
 
   // Surface
   'surface.terminal': 'Термінал',

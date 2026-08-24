@@ -31,6 +31,7 @@ export const pl = {
   'pane.empty': 'Pusty panel',
   'pane.splitRight': 'Podziel w prawo',
   'pane.splitDown': 'Podziel w dół',
+  'pane.moreActions': 'Akcje panelu',
 
   // Surface
   'surface.terminal': 'Terminal',

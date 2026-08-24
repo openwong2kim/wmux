@@ -187,6 +187,7 @@ export const zh = {
   'pane.empty': '空面板',
   'pane.splitRight': '向右分割',
   'pane.splitDown': '向下分割',
+  'pane.moreActions': '面板操作',
 
   // Surface
   'surface.terminal': '终端',

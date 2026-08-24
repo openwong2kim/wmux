@@ -14,7 +14,7 @@ import PaneDragGrip from './PaneDragGrip';
 import { FOCUS_RING } from '../focusRing';
 import { IconSplitRight, IconSplitDown, IconBrowser, IconEyeOff } from '../icons';
 import { displayPath } from '../../utils/displayPath';
-import PaneActionsMenu, { type PaneActionItem } from './PaneActionsMenu';
+import PaneActionsMenu, { PANE_ACTIONS_MENU_WIDTH, type PaneActionItem } from './PaneActionsMenu';
 
 /** Rendered width (px) of the pane-action half of the cluster (split / browser /
  *  stash / zoom).
@@ -255,8 +255,9 @@ export default function SurfaceTabs({
 
   // ── Overflow menu ─────────────────────────────────────────────────────────
   // Open either from the ⋮ trigger (narrow panes) or by right-clicking the
-  // header (any width). One anchor rect covers both: a button's own rect, or a
-  // zero-size rect at the pointer.
+  // header (any width). One anchor rect covers both: the trigger passes its own
+  // rect (menu right-aligns under it), a right-click passes the pointer widened
+  // by the menu's width (menu left-aligns AT it — native convention).
   const [menuAnchor, setMenuAnchor] = useState<
     { top: number; left: number; right: number; bottom: number } | null
   >(null);
@@ -316,16 +317,26 @@ export default function SurfaceTabs({
     stashChord, stashDisabled, stashTooltip, stashThisPane, isZoomed, toggleZoom,
   ]);
 
-  // Right-click anywhere on the header opens the same menu. Free at any width,
-  // and the only reason the `none` mode (a pane too narrow even for ⋮, or the
-  // "hide pane actions" setting) is not a dead end for the mouse.
+  // Right-click anywhere on the header — tabs included — opens the same menu.
+  // Free at any width, and the only reason the `none` mode (a pane too narrow
+  // even for ⋮) is not a dead end for the mouse. Suppressed when the operator
+  // turned pane actions OFF in Settings: that is a deliberate no-pane-chrome
+  // choice, not a width accident.
   const handleHeaderContextMenu = useCallback((e: React.MouseEvent) => {
     if (mode === 'none' && !paneActionsSetting) return;
-    // A tab's own right-click is not claimed here; only empty header space and
-    // the action area open the menu.
+    // A rename field keeps its NATIVE context menu: claiming right-click on an
+    // <input> would trade cut/copy/paste for verbs that cannot apply to text.
+    if ((e.target as HTMLElement).closest('input, textarea')) return;
     e.preventDefault();
     e.stopPropagation();
-    openMenuAt({ top: e.clientY, left: e.clientX, right: e.clientX, bottom: e.clientY });
+    openMenuAt({
+      top: e.clientY,
+      left: e.clientX,
+      // Widened by the menu's width so placePopover's right-alignment puts the
+      // menu's LEFT edge at the cursor; the viewport clamp still applies.
+      right: e.clientX + PANE_ACTIONS_MENU_WIDTH,
+      bottom: e.clientY,
+    });
   }, [mode, paneActionsSetting, openMenuAt]);
   // P2: pane-level identity + rename (distinct from the per-surface tab rename
   // below). The pane's display name is its user label (paneLabel mirror) or the

@@ -26,6 +26,7 @@ export const vi = {
   'pane.empty': 'Khung trống',
   'pane.splitRight': 'Chia sang phải',
   'pane.splitDown': 'Chia xuống dưới',
+  'pane.moreActions': 'Thao tác khung',
 
   // Surface
   'surface.terminal': 'Terminal',

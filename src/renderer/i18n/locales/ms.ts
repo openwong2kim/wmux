@@ -26,6 +26,7 @@ export const ms = {
   'pane.empty': 'Panel kosong',
   'pane.splitRight': 'Bahagi ke kanan',
   'pane.splitDown': 'Bahagi ke bawah',
+  'pane.moreActions': 'Tindakan panel',
 
   // Surface
   'surface.terminal': 'Terminal',

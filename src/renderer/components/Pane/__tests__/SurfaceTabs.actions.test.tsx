@@ -450,6 +450,72 @@ describe('SurfaceTabs — the ⋮ overflow menu', () => {
     expect(document.querySelector('[data-pane-actions-menu]')).not.toBeNull();
   });
 
+  it('leaves the native context menu alone on a rename input', () => {
+    mount(rootLeafId(), { actionsMode: 'overflow' });
+    // Enter pane-rename mode the way a user does: double-click the label.
+    act(() => {
+      container.querySelector('[data-pane-label]')!.dispatchEvent(
+        new MouseEvent('dblclick', { bubbles: true }),
+      );
+    });
+    const input = container.querySelector<HTMLInputElement>('[data-pane-label-input]');
+    expect(input, 'rename input should be editing').not.toBeNull();
+
+    let notCanceled = true;
+    act(() => {
+      notCanceled = input!.dispatchEvent(
+        new MouseEvent('contextmenu', { bubbles: true, cancelable: true }),
+      );
+    });
+    // Not preventDefault-ed (the native cut/copy/paste menu would show), and
+    // the pane menu did not open over it.
+    expect(notCanceled).toBe(true);
+    expect(document.querySelector('[data-pane-actions-menu]')).toBeNull();
+  });
+
+  it('moves focus into the menu and hands it back to the trigger on close', () => {
+    mount(rootLeafId(), { actionsMode: 'overflow' });
+    const trigger = container.querySelector<HTMLButtonElement>('[data-pane-overflow-trigger]')!;
+    // A real click focuses the button before the click handler runs; jsdom's
+    // dispatchEvent does not, so establish that state explicitly.
+    act(() => { trigger.focus(); });
+    openOverflowMenu();
+
+    const first = document.querySelector<HTMLButtonElement>('[data-pane-menu-action]');
+    expect(document.activeElement).toBe(first);
+
+    act(() => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    });
+    expect(document.querySelector('[data-pane-actions-menu]')).toBeNull();
+    expect(document.activeElement).toBe(trigger);
+  });
+
+  it('walks the items with the arrow keys, wrapping at both ends', () => {
+    mount(rootLeafId(), { actionsMode: 'overflow' });
+    openOverflowMenu();
+    const items = [...document.querySelectorAll<HTMLButtonElement>('[data-pane-menu-action]')];
+    expect(items.length).toBe(5);
+    const press = (key: string) => act(() => {
+      document.activeElement!.dispatchEvent(
+        new KeyboardEvent('keydown', { key, bubbles: true }),
+      );
+    });
+
+    expect(document.activeElement).toBe(items[0]);
+    press('ArrowDown');
+    expect(document.activeElement).toBe(items[1]);
+    press('ArrowUp');
+    press('ArrowUp'); // wraps 0 → last
+    expect(document.activeElement).toBe(items[4]);
+    press('ArrowDown'); // wraps last → 0
+    expect(document.activeElement).toBe(items[0]);
+    press('End');
+    expect(document.activeElement).toBe(items[4]);
+    press('Home');
+    expect(document.activeElement).toBe(items[0]);
+  });
+
   // The Settings toggle is a deliberate "I want no pane chrome" choice, not a
   // width accident: honour it on right-click too.
   it('stays closed on right-click when the operator turned pane actions off', () => {

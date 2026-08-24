@@ -26,6 +26,7 @@ export const id = {
   'pane.empty': 'Panel kosong',
   'pane.splitRight': 'Bagi ke kanan',
   'pane.splitDown': 'Bagi ke bawah',
+  'pane.moreActions': 'Aksi panel',
 
   // Surface
   'surface.terminal': 'Terminal',

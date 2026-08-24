@@ -26,6 +26,7 @@ export const nb = {
   'pane.empty': 'Tomt panel',
   'pane.splitRight': 'Del til høyre',
   'pane.splitDown': 'Del nedover',
+  'pane.moreActions': 'Panelhandlinger',
 
   // Surface
   'surface.terminal': 'Terminal',

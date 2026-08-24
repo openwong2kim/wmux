@@ -26,6 +26,7 @@ export const tr = {
   'pane.empty': 'Boş bölme',
   'pane.splitRight': 'Sağa böl',
   'pane.splitDown': 'Aşağı böl',
+  'pane.moreActions': 'Bölme işlemleri',
 
   // Surface
   'surface.terminal': 'Terminal',

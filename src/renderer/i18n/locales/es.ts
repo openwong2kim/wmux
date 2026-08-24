@@ -26,6 +26,7 @@ export const es = {
   'pane.empty': 'Panel vacío',
   'pane.splitRight': 'Dividir a la derecha',
   'pane.splitDown': 'Dividir hacia abajo',
+  'pane.moreActions': 'Acciones del panel',
 
   // Surface
   'surface.terminal': 'Terminal',

@@ -40,8 +40,10 @@ export interface PaneActionItem {
 }
 
 interface PaneActionsMenuProps {
-  /** Viewport rect of whatever opened the menu: the ⋮ button, or a 0×0 rect at
-   *  the pointer for a right-click on the header. */
+  /** Viewport rect of whatever opened the menu. placePopover right-aligns the
+   *  menu to `anchor.right`, so a trigger button passes its own rect, and a
+   *  right-click passes the pointer widened by PANE_ACTIONS_MENU_WIDTH — which
+   *  left-aligns the menu at the cursor, the native context-menu convention. */
   anchor: { top: number; left: number; right: number; bottom: number } | null;
   /** Excluded from the outside-click test so the trigger's own click toggles
    *  rather than double-toggles (mousedown would close, click would reopen). */
@@ -53,7 +55,10 @@ interface PaneActionsMenuProps {
 /** Item box: px-2.5 py-1.5 around a 12px line — matches ContextMenu's MenuItem.
  *  Only an opening estimate; the real height is measured before paint. */
 const ESTIMATED_ITEM_HEIGHT = 27;
-const MENU_WIDTH = 216;
+/** Exported so a right-click opener can left-align the menu at the pointer:
+ *  placePopover right-aligns to `anchor.right`, so passing the pointer plus
+ *  this width puts the menu's left edge at the cursor (see SurfaceTabs). */
+export const PANE_ACTIONS_MENU_WIDTH = 216;
 
 export default function PaneActionsMenu({ anchor, triggerRef, items, onClose }: PaneActionsMenuProps) {
   const menuRef = useRef<HTMLDivElement>(null);
@@ -62,10 +67,6 @@ export default function PaneActionsMenu({ anchor, triggerRef, items, onClose }: 
   const [height, setHeight] = useState(
     items.length * ESTIMATED_ITEM_HEIGHT + separators * 9 + 10,
   );
-  // Re-place on resize: the position is derived from the viewport, so it goes
-  // stale the moment the window changes size under an open menu (a snap layout,
-  // a display change) and the menu can end up clipped or off screen.
-  const [, bumpOnResize] = useState(0);
 
   // Measure before paint and re-place with the real height, so a menu opened
   // near the bottom edge flips ABOVE its anchor on the first frame rather than
@@ -77,17 +78,51 @@ export default function PaneActionsMenu({ anchor, triggerRef, items, onClose }: 
     setHeight((prev) => (Math.abs(prev - measured) < 1 ? prev : measured));
   }, [items.length]);
 
+  // Close on window resize — native menu behavior. The anchor this menu was
+  // placed against has moved, and re-placing against its stale rect would pin
+  // the menu to where the trigger USED to be.
   useEffect(() => {
-    const onResize = () => bumpOnResize((n) => n + 1);
+    const onResize = () => onClose();
     window.addEventListener('resize', onResize);
     return () => window.removeEventListener('resize', onResize);
+  }, [onClose]);
+
+  // Focus: remember where it was, move it into the menu, hand it back on
+  // close. A menu that opens under the cursor but leaves focus in the terminal
+  // is a menu a keyboard user cannot use — and one that swallows focus on
+  // close strands them on <body>. The remembered element may be gone by then
+  // (the menu just split or stashed the pane); focus() on a detached element
+  // is a no-op, and the next Tab starts from the document as it always did.
+  const restoreFocusRef = useRef<Element | null>(null);
+  useEffect(() => {
+    restoreFocusRef.current = document.activeElement;
+    firstItemRef.current?.focus();
+    return () => {
+      const el = restoreFocusRef.current;
+      if (el instanceof HTMLElement) el.focus();
+    };
   }, []);
 
-  // A menu that opens under the cursor but leaves focus in the terminal is a
-  // menu a keyboard user cannot use. The terminal takes focus back on close.
-  useEffect(() => {
-    firstItemRef.current?.focus();
-  }, []);
+  // Arrow-key traversal, wrapping — the half of the menu pattern Tab does not
+  // give (Tab walks every focusable on the page; arrows walk THIS menu).
+  // Disabled items stay in the path on purpose: they are focusable so their
+  // title can explain why they are unavailable (see aria-disabled below).
+  const onMenuKeyDown = (e: React.KeyboardEvent) => {
+    if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(e.key)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const buttons = Array.from(
+      menuRef.current?.querySelectorAll<HTMLButtonElement>('[data-pane-menu-action]') ?? [],
+    );
+    if (buttons.length === 0) return;
+    const current = buttons.indexOf(document.activeElement as HTMLButtonElement);
+    const next =
+      e.key === 'Home' ? 0
+      : e.key === 'End' ? buttons.length - 1
+      : e.key === 'ArrowDown' ? (current + 1) % buttons.length
+      : current <= 0 ? buttons.length - 1 : current - 1;
+    buttons[next].focus();
+  };
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -113,7 +148,7 @@ export default function PaneActionsMenu({ anchor, triggerRef, items, onClose }: 
     };
   }, [onClose, triggerRef]);
 
-  const pos = placePopover(anchor, { width: MENU_WIDTH, height });
+  const pos = placePopover(anchor, { width: PANE_ACTIONS_MENU_WIDTH, height });
 
   return createPortal(
     <div
@@ -121,10 +156,11 @@ export default function PaneActionsMenu({ anchor, triggerRef, items, onClose }: 
       role="menu"
       data-pane-actions-menu
       className="fixed p-[5px]"
+      onKeyDown={onMenuKeyDown}
       style={{
         top: pos.top,
         left: pos.left,
-        width: MENU_WIDTH,
+        width: PANE_ACTIONS_MENU_WIDTH,
         zIndex: 'var(--z-popover-top)',
         background: 'var(--bg-surface)',
         border: '1px solid color-mix(in srgb, var(--text-main) 9%, transparent)',
@@ -144,13 +180,16 @@ export default function PaneActionsMenu({ anchor, triggerRef, items, onClose }: 
           )}
           <button
             ref={i === 0 ? firstItemRef : undefined}
-            role="menuitem"
+            // A toggle (zoom) is a menuitemcheckbox with aria-checked — the
+            // pattern's toggle vocabulary. aria-pressed belongs to standalone
+            // buttons and is undefined inside a menu.
+            role={item.active !== undefined ? 'menuitemcheckbox' : 'menuitem'}
+            aria-checked={item.active}
             data-pane-menu-action={item.key}
             // aria-disabled, not disabled: a disabled button drops out of the
             // tab order, so a keyboard user cannot reach it to READ why it is
             // unavailable. Same call the cluster's stash button makes.
             aria-disabled={item.disabled || undefined}
-            aria-pressed={item.active}
             title={item.title}
             className={`w-full flex items-center gap-2 px-2.5 py-1.5 text-xs text-left rounded-[5px] transition-colors hover:bg-[color-mix(in_srgb,var(--accent-blue)_14%,transparent)] ${
               item.disabled ? 'opacity-40' : ''

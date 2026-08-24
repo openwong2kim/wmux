@@ -26,6 +26,7 @@ export const fr = {
   'pane.empty': 'Panneau vide',
   'pane.splitRight': 'Diviser à droite',
   'pane.splitDown': 'Diviser en bas',
+  'pane.moreActions': 'Actions du panneau',
 
   // Surface
   'surface.terminal': 'Terminal',

@@ -26,6 +26,7 @@ export const th = {
   'pane.empty': 'พาเนลว่าง',
   'pane.splitRight': 'แบ่งไปทางขวา',
   'pane.splitDown': 'แบ่งลงล่าง',
+  'pane.moreActions': 'การดำเนินการพาเนล',
 
   // Surface
   'surface.terminal': 'เทอร์มินัล',

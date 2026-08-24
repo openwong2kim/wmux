@@ -26,6 +26,7 @@ export const ptBR = {
   'pane.empty': 'Painel vazio',
   'pane.splitRight': 'Dividir à direita',
   'pane.splitDown': 'Dividir abaixo',
+  'pane.moreActions': 'Ações do painel',
 
   // Surface
   'surface.terminal': 'Terminal',

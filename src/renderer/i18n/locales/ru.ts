@@ -26,6 +26,7 @@ export const ru = {
   'pane.empty': 'Пустая панель',
   'pane.splitRight': 'Разделить вправо',
   'pane.splitDown': 'Разделить вниз',
+  'pane.moreActions': 'Действия панели',
 
   // Surface
   'surface.terminal': 'Терминал',

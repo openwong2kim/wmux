@@ -26,6 +26,7 @@ export const hi = {
   'pane.empty': 'खाली पैनल',
   'pane.splitRight': 'दाईं ओर विभाजित करें',
   'pane.splitDown': 'नीचे विभाजित करें',
+  'pane.moreActions': 'पैनल क्रियाएँ',
 
   // Surface
   'surface.terminal': 'टर्मिनल',

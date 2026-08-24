@@ -26,6 +26,7 @@ export const ja = {
   'pane.empty': '空のペイン',
   'pane.splitRight': '右に分割',
   'pane.splitDown': '下に分割',
+  'pane.moreActions': 'ペイン操作',
 
   // Surface
   'surface.terminal': 'ターミナル',

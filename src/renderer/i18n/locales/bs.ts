@@ -26,6 +26,7 @@ export const bs = {
   'pane.empty': 'Prazan panel',
   'pane.splitRight': 'Podijeli desno',
   'pane.splitDown': 'Podijeli dolje',
+  'pane.moreActions': 'Radnje panela',
 
   // Surface
   'surface.terminal': 'Terminal',

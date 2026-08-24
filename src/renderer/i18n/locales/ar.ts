@@ -26,6 +26,7 @@ export const ar = {
   'pane.empty': 'جزء فارغ',
   'pane.splitRight': 'تقسيم إلى اليمين',
   'pane.splitDown': 'تقسيم إلى الأسفل',
+  'pane.moreActions': 'إجراءات الجزء',
 
   // Surface
   'surface.terminal': 'الطرفية',

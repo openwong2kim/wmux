@@ -26,6 +26,7 @@ export const de = {
   'pane.empty': 'Leerer Bereich',
   'pane.splitRight': 'Nach rechts teilen',
   'pane.splitDown': 'Nach unten teilen',
+  'pane.moreActions': 'Bereichsaktionen',
 
   // Surface
   'surface.terminal': 'Terminal',
