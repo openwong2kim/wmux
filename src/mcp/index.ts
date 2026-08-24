@@ -140,10 +140,8 @@ const DECK_RESOLVE_DECISION_SHAPE = {
 };
 
 const INCLUDE_STASHED_DESCRIBE =
-  'Also list panes that are STASHED — taken out of the layout but still owned by the workspace and still running. '
-  + 'Default false, so the response keeps meaning "what is on screen". Every row carries an explicit `stashed` boolean either way; '
-  + 'stashed rows add `stashedLiveness` ("alive" | "exited"). You can read and write a stashed pane in place with terminal_read / '
-  + 'terminal_send; call pane_unstash first for anything positional.';
+  'Also list STASHED panes — out of the layout, still running. Rows carry `stashed`; '
+  + 'stashed ones add `stashedLiveness` ("alive"|"exited").';
 
 const SURFACE_LIST_SHAPE = {
   workspaceId: z.string().optional().describe("Target a specific workspace by ID. Omit to use your own (the caller's) workspace."),
@@ -164,7 +162,7 @@ const PANE_SET_METADATA_SHAPE = {
   custom: z.record(z.string(), z.string()).optional().describe('Additional string→string properties for tool-specific data. Deep-merged with existing custom map when mergeMode="merge". Recommended convention: namespace your keys with a tool prefix (e.g. "orchestrator.taskId", "qa.status") to avoid semantic collisions with other cooperating tools.'),
   merge: z.boolean().optional().describe('Legacy v2.8.x flag; prefer mergeMode. true → merge, false → replace. When both `merge` and `mergeMode` are provided, `mergeMode` wins.'),
   mergeMode: z.enum(['merge', 'replace', 'replaceShared']).optional().describe('Explicit merge semantics (v2.9.0+). "merge" patches and deep-merges custom (default). "replace" wipes the metadata object and writes only the provided fields. "replaceShared" overwrites label/status but preserves another tool\'s custom keys. Overrides legacy `merge` boolean when both are provided.'),
-  expectedVersion: z.number().int().nonnegative().optional().describe('Optimistic concurrency guard (v2.9.0+). If the pane\'s current metadata version differs, the call fails with VERSION_CONFLICT and does not mutate. Read the current version from pane_get_metadata or pane_list. Omit for unconditional writes (legacy v2.8.x behavior). expectedVersion: 0 is the correct guard for a pane that has never been written; it succeeds iff no concurrent writer has set anything on this pane yet (useful for "claim a fresh pane" patterns).'),
+  expectedVersion: z.number().int().nonnegative().optional().describe('Optimistic concurrency guard: if the current metadata version differs the call fails with VERSION_CONFLICT and does not mutate. Read the version from pane_get_metadata or pane_list; omit for unconditional writes. 0 is the guard for a never-written pane, succeeding only if no writer has set anything yet.'),
 };
 
 const PANE_GET_METADATA_SHAPE = {
@@ -212,7 +210,7 @@ const WMUX_EVENTS_POLL_SHAPE = {
       'a2a.task',
     ]))
     .optional()
-    .describe('Filter to specific event types. Omit to receive all types. `notification.received` fires when a terminal program emits a desktop-notification escape sequence (OSC 9, OSC 777 notify, kitty OSC 99) and carries ptyId, source (osc9|osc777|osc99), title (nullable), and body. `agent.lifecycle` carries ptyId, kind (agent.stop|agent.subagent_stop|agent.awaiting_input), source (hook|detector|osc133), agent slug (nullable when source=osc133 and no agent context), decision (emit|dedup|internal), and optional exitCode (osc133 only). It fires on three signals: (1) an inner agent (Claude Code, Codex CLI, ...) finishes a turn (source=hook|detector, kind=agent.stop), (2) an agent surfaces a y/N approval prompt mid-turn (source=detector, kind=agent.awaiting_input), or (3) any OSC 133-instrumented shell command completes (source=osc133, kind=agent.stop, with exitCode). Orchestrators that previously polled `terminal_read_events` for OSC 133 boundaries can switch to ring-buffer polling here at the same cadence. `a2a.task` fires on agent-to-agent task lifecycle and carries taskId, from (sender workspaceId), to (receiver workspaceId), kind (created|updated|cancelled), state (submitted|working|input-required|completed|failed|canceled), and an optional messagePreview (≤200 chars). On completed/failed transitions it additionally carries verifiedItemCount (count of verified completion-evidence items; 0 = unverified completion). It is a POINTER, not the payload — the body is omitted by default; follow up with a2a_task_query to fetch it. UNLIKE every other event type (scoped strictly to the calling workspace), `a2a.task` is DUAL-PARTY: visible to BOTH the sending (from) and receiving (to) workspace, and to no third workspace. An unscoped poll receives zero a2a.task events.'),
+    .describe('Filter to specific event types. Omit for all. `notification.received` — a terminal emitted OSC 9/777/99; carries ptyId, source, title, body. `agent.lifecycle` — carries ptyId, kind (agent.stop|agent.subagent_stop|agent.awaiting_input), source (hook|detector|osc133), agent, decision, and exitCode (osc133 only); fires when an inner agent ends a turn, surfaces a y/N prompt mid-turn, or an OSC 133 command completes. `a2a.task` — carries taskId, from, to, kind, state, messagePreview, plus verifiedItemCount on completed/failed (0 = unverified). A POINTER, not the payload: fetch the body with a2a_task_query. DUAL-PARTY — visible to both the sending and receiving workspace, unlike every other type (caller-scoped); an unscoped poll receives zero a2a.task events.'),
   max: z.number().int().positive().max(1024).optional().describe('Max events to return per poll. Default 256.'),
   blockMs: z.number().int().nonnegative().max(600_000).optional().describe('Wait this long (ms) for a match instead of returning an empty page; 0 (default) = immediate. With ptyId+kinds it replaces a terminal_read loop waiting for a pane to block. Add process.exited to types so the wait ends if the pane dies (pane.closed is paneId-keyed, so ptyId drops it). parkedCapReached=true means it did NOT wait; back off. Use one cursor chain per filter combination — nextCursor passes events your filter skipped.'),
   ptyId: z.string().optional().describe('Only events about this pane. Events without a ptyId are excluded, which is every pane.* event (paneId-keyed); use process.exited to see the pane go away.'),
@@ -270,7 +268,7 @@ const A2A_TASK_UPDATE_SHAPE = {
       files: z.array(z.string()).optional().describe('Repository-relative paths only.'),
     })
     .optional()
-    .describe('Structured completion evidence. status:"completed" requires it (summary + >=1 item: command|inspection|artifact); status:"failed" requires evidence.summary (the failure reason). Verified items = command+passed or inspection/artifact+verified; zero verified => completion is accepted but graded unverified (verifiedItemCount=0). Rejections return completion_evidence_* reason codes (failed without a reason: failure_reason_missing).'),
+    .describe('Completion evidence. Required for completed (summary + >=1 item: command|inspection|artifact) and for failed (summary = the failure reason). Grading and reason codes: see the tool description.'),
 };
 
 const A2A_TASK_CANCEL_SHAPE = {

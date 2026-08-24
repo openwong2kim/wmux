@@ -3,7 +3,7 @@
   "profiles": {
     "full": {
       "maxListBytes": 80000,
-      "wireResultSha256": "d24628b27e5ba60053f117ae94bb361b19d2a1bcefd4f90776c5524d6995dfaa",
+      "wireResultSha256": "51d9869892df1a01665b3eb09fafd5ded6b151c5bab99209fae968d6a87c0ba0",
       "instructionSha256": "f18849bb1ea62bcf5a1e46a73d633c787b4e08e763cc04b01c4e557df8f833eb",
       "toolNames": [
         "browser_open",
@@ -92,12 +92,14 @@
         "pane_close",
         "pane_focus",
         "surface_new",
-        "surface_close"
+        "surface_close",
+        "pane_stash",
+        "pane_unstash"
       ]
     },
     "commander": {
       "maxListBytes": 48000,
-      "wireResultSha256": "da12a77cda541008331035ce462d903595f334d36eedfc1a1b7e24a2ba7fadf6",
+      "wireResultSha256": "88dab076b5766013e0a43de9089b12c2c737b9cae76340eb6a2357783cf88a72",
       "instructionSha256": "5a97f851c892326eba7cbcf46292f6925834d5794172461d1ced997d90ac1deb",
       "toolNames": [
         "terminal_read",
@@ -138,7 +140,9 @@
         "fanout_start",
         "pane_split",
         "pane_focus",
-        "surface_new"
+        "surface_new",
+        "pane_stash",
+        "pane_unstash"
       ]
     }
   }
