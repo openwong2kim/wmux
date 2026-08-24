@@ -27,6 +27,9 @@ export const id = {
   'roster.stashedOnly': '{count} disisihkan',
   'roster.stashedExited': 'Sesi berakhir',
   'roster.unstashAction': 'Kembalikan ke tata letak',
+  'roster.recoverAction': 'Kembalikan dan pulihkan',
+  // The stash undo toast's button — the safety net the whole gesture leans on.
+  'common.undo': 'Urungkan',
 
   // Pane
   'pane.empty': 'Panel kosong',

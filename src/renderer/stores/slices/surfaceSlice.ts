@@ -7,6 +7,9 @@ import { getWorkspaceLeafPanes } from '../../../shared/paneUtils';
 import { isSafeBrowserUrl } from '../../utils/browserPane';
 import { clearNudgesFor } from '../../hooks/channelMentionRateLimit';
 import { saveSessionNow } from '../../utils/sessionSaveBridge';
+import { publishPaneClosed } from '../../events/publisher';
+import { panePrincipalId } from '../../../shared/principals';
+import { computePaneAutoName } from '../../utils/paneNaming';
 
 export interface SurfaceSlice {
   /** Add a terminal surface to a pane. `workspaceId` lets RPC / eager-spawn
@@ -229,7 +232,17 @@ export const createSurfaceSlice: StateCreator<StoreState, [['zustand/immer', nev
   // A stashed pane's tabs are still closable — the surface is an ADDRESS, not
   // a position, and pane.close/surface.close on a stashed pane must work or the
   // agent that created it cannot clean it up (E-7).
-  closeSurface: (paneId, surfaceId, workspaceId) => set((state: StoreState) => {
+  closeSurface: (paneId, surfaceId, workspaceId) => {
+    // Captured for the post-producer teardown of a stashed pane that just lost
+    // its LAST tab. closePane publishes pane.closed and purges the channel
+    // principal for exactly this destruction; doing less here left pollers and
+    // channel membership holding a pane that no longer exists (review).
+    let stashDropped: {
+      wsId: string;
+      paneId: string;
+      principal: { principalId: string; autoName: string } | null;
+    } | null = null;
+    set((state: StoreState) => {
     const ws = state.workspaces.find((w: Workspace) => w.id === (workspaceId || state.activeWorkspaceId));
     if (!ws) return;
     const pane = findOwnedLeafPane(ws, paneId);
@@ -246,6 +259,11 @@ export const createSurfaceSlice: StateCreator<StoreState, [['zustand/immer', nev
     // the OTHER real teardown site — clear it here too so a closed surface's
     // last activity string doesn't survive on a re-used ptyId.
     const closedPtyId = pane.surfaces[idx].ptyId;
+    const closedSurfaceType = pane.surfaces[idx].surfaceType ?? 'terminal';
+    // Read BEFORE the evictions below: the principal-purge gate needs to know
+    // whether the tab that is closing was an agent — the same test closePane
+    // applies per leaf, asked here about the one surface being destroyed.
+    const closedAgent = closedPtyId ? state.surfaceAgent?.[closedPtyId] : undefined;
     if (state.pendingDeadPaneRecoveryBySurfaceId) {
       delete state.pendingDeadPaneRecoveryBySurfaceId[surfaceId];
     }
@@ -289,9 +307,41 @@ export const createSurfaceSlice: StateCreator<StoreState, [['zustand/immer', nev
         if (state.paneRole) delete state.paneRole[paneId];
         if (state.paneNotificationRing) delete state.paneNotificationRing[paneId];
         console.log(`[wmux:stash] dropped empty stashed pane=${paneId} (last surface closed)`);
+        stashDropped = {
+          wsId: ws.id,
+          paneId,
+          principal:
+            closedSurfaceType !== 'browser' && closedPtyId && closedAgent?.name
+              ? {
+                  principalId: panePrincipalId(ws.id, paneId),
+                  autoName: computePaneAutoName(ws.wsOrdinal ?? 0, pane.ordinal ?? 0, closedAgent.slug),
+                }
+              : null,
+        };
       }
     }
-  }),
+    });
+    if (stashDropped) {
+      const d = stashDropped as {
+        wsId: string;
+        paneId: string;
+        principal: { principalId: string; autoName: string } | null;
+      };
+      // The pane is genuinely gone now — not stashed, GONE — so this is the one
+      // stash-adjacent path that DOES report pane.closed (stash/unstash have
+      // their own event pair precisely because they are not this).
+      publishPaneClosed(d.wsId, d.paneId);
+      // Same R2 cleanup closePane runs, gated the same way (the closed tab was
+      // an agent): channel member rows by canonical principalId, legacy rows by
+      // autoName, then the principal itself. Optional-chained for test stores
+      // composed without the channels slice.
+      if (d.principal) {
+        void get().purgeMembershipDaemon?.({ workspaceId: d.wsId, principalId: d.principal.principalId });
+        void get().purgeMembershipDaemon?.({ workspaceId: d.wsId, memberId: d.principal.autoName });
+        void get().principalRemoveDaemon?.(d.principal.principalId);
+      }
+    }
+  },
 
   setActiveSurface: (paneId, surfaceId, workspaceId) => set((state: StoreState) => {
     const ws = state.workspaces.find((w: Workspace) => w.id === (workspaceId || state.activeWorkspaceId));

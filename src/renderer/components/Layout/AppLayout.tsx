@@ -269,6 +269,12 @@ function cloneStashedPanes(
             cwd: s.cwd,
             surfaceType: s.surfaceType,
             browserUrl: s.browserUrl,
+            // A browser tab that loses its partition comes back logged out —
+            // browser surfaces ARE stashable, so the salvage path must carry
+            // it (review). scrollbackFile likewise: the last dump on record
+            // makes this a degraded restore instead of an empty one.
+            browserPartition: s.browserPartition,
+            scrollbackFile: s.scrollbackFile,
             // Without this a user's manual tab rename comes back as a shell
             // title on the next OSC 0 — a small loss, but a silent one.
             titleLocked: s.titleLocked,

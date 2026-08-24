@@ -786,6 +786,23 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
           delete ws.stashedPanes;
           continue;
         }
+        // Duplicate/collision guards (review). session.json is hand-editable:
+        // a stashed id that ALSO lives in the visible tree would be reconciled
+        // and rendered twice, and a duplicated ordinal makes two panes share an
+        // auto-name — which is the A2A address. Duplicate ids are dropped (the
+        // stash copy loses; the visible one is the one on screen), colliding
+        // ordinals are reassigned past the workspace's high-water mark.
+        const visibleLeaves = getLeafPanes(ws.rootPane);
+        const visibleIds = new Set(visibleLeaves.map((l) => l.id));
+        const seenStashIds = new Set<string>();
+        const usedOrdinals = new Set<number>();
+        let ordinalHigh = 0;
+        for (const l of visibleLeaves) {
+          if (typeof l.ordinal === 'number') {
+            usedOrdinals.add(l.ordinal);
+            if (l.ordinal > ordinalHigh) ordinalHigh = l.ordinal;
+          }
+        }
         const kept: StashedPane[] = [];
         for (const entry of raw as unknown[]) {
           const candidate = entry as Partial<StashedPane> | null;
@@ -793,6 +810,28 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
           if (!pane || pane.type !== 'leaf' || typeof pane.id !== 'string' || !Array.isArray(pane.surfaces)) {
             console.warn(`[wmux:stash] dropping malformed stash entry on ws=${ws.id}`);
             continue;
+          }
+          if (pane.surfaces.length === 0) {
+            // canStashPaneSurfaces refuses an empty pane at stash time for the
+            // same reason this boundary must: the roster builds its row from a
+            // surface, so an empty stashed pane is an unreachable ghost holding
+            // an ordinal and a slot against the pane cap.
+            console.warn(`[wmux:stash] dropping empty stash entry on ws=${ws.id} pane=${pane.id}`);
+            continue;
+          }
+          if (visibleIds.has(pane.id) || seenStashIds.has(pane.id)) {
+            console.warn(`[wmux:stash] dropping duplicate stash entry on ws=${ws.id} pane=${pane.id}`);
+            continue;
+          }
+          seenStashIds.add(pane.id);
+          if (typeof pane.ordinal === 'number' && usedOrdinals.has(pane.ordinal)) {
+            const next = ordinalHigh + 1;
+            console.warn(`[wmux:stash] reassigning colliding ordinal on ws=${ws.id} pane=${pane.id}: ${pane.ordinal} -> ${next}`);
+            pane.ordinal = next;
+          }
+          if (typeof pane.ordinal === 'number') {
+            usedOrdinals.add(pane.ordinal);
+            if (pane.ordinal > ordinalHigh) ordinalHigh = pane.ordinal;
           }
           // The same pass the visible tree gets — a blocked browser URL scheme
           // or a retired git/review surface must not survive in the stash just

@@ -4,7 +4,7 @@ import { getLeafPanes } from '../../../shared/paneUtils';
 import { stashedPaneLiveness, type StashedLiveness } from '../../../shared/paneStash';
 import type { StoreState } from '../index';
 import { computePaneAutoName, paneDisplayName } from '../../utils/paneNaming';
-import { HOOK_RUNNING_TTL_MS } from './fleet';
+import { HOOK_RUNNING_TTL_MS, pickStashedRepresentativeSurface } from './fleet';
 
 /** One detected agent session, kept attached to the terminal surface that owns it. */
 export interface WorkspaceAgentRosterRow {
@@ -158,22 +158,10 @@ export function selectWorkspaceAgentRoster(
   for (const entry of workspace.stashedPanes ?? []) {
     const leaf = entry?.pane;
     if (!leaf || leaf.type !== 'leaf') continue;
-    const terminals = leaf.surfaces.filter((s) => (s.surfaceType ?? 'terminal') === 'terminal');
-    // Which tab represents the pane in its single row. The remembered active
-    // tab wins WHILE IT IS ALIVE — that was the user's last choice. But
-    // activeness alone is not enough: it points at whatever was on top when the
-    // pane left the screen, so if THAT session died while a sibling is still
-    // running, deferring to it would report the whole pane as exited with an
-    // agent working behind it. Order: the active tab if live, then a live tab
-    // that has a detected agent, then any live tab, then the dead remnants.
-    const live = terminals.filter((s) => !!s.ptyId);
-    const surface =
-      live.find((s) => s.id === leaf.activeSurfaceId)
-      ?? live.find((s) => !!state.surfaceAgent[s.ptyId]?.name)
-      ?? live[0]
-      ?? terminals.find((s) => s.id === leaf.activeSurfaceId)
-      ?? terminals[0]
-      ?? leaf.surfaces[0];
+    // Which tab represents the pane in its single row — the shared #977 picker
+    // (fleet.ts), so this roster and the fleet cards can never disagree about
+    // the same stashed pane.
+    const surface = pickStashedRepresentativeSurface(leaf, state.surfaceAgent);
     if (!surface) continue;
     const ptyId = surface.ptyId;
     if (isBrainPtyId(ptyId)) continue;

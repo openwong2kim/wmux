@@ -1079,9 +1079,9 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
       return {
         error:
           `pane.stash: pane ${paneId} could not be stashed — it is the only visible pane, `
-          + 'the daemon is not connected, or it holds an editor/diff tab whose unsaved '
-          + 'state the daemon ring cannot replay. Split another pane, reconnect, or close '
-          + 'the non-terminal tab first.',
+          + 'it is empty (no session to keep), the daemon is not connected, or it holds '
+          + 'an editor/diff tab whose unsaved state the daemon ring cannot replay. '
+          + 'Split another pane, reconnect, or close the non-terminal tab first.',
       };
     }
     return { ok: true, stashed: true };

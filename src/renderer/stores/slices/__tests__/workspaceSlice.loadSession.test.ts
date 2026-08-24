@@ -1202,3 +1202,92 @@ describe('loadSession — downgrade round-trip', () => {
     expect(store2.getState().workspaces[0].stashedPanes![0].stashedAt).toBe(42);
   });
 });
+
+// ─── stashedPanes load guards (#977 review) ──────────────────────────────────
+//
+// session.json is hand-editable, and the entry-by-entry validation exists for
+// exactly that: these pin the three holes the three-way review found in it —
+// an empty pane (a ghost holding an ordinal), a paneId duplicated against the
+// visible tree (reconciled and rendered twice), and a colliding ordinal (two
+// panes sharing an auto-name, which is the A2A address).
+
+function stashLoadData(stashedPanes: unknown): SessionData {
+  const ws = {
+    id: 'ws-sg',
+    name: 'StashGuards',
+    rootPane: {
+      id: 'p-vis',
+      type: 'leaf',
+      activeSurfaceId: 's-v',
+      ordinal: 1,
+      surfaces: [{ id: 's-v', ptyId: 'pty-v', title: 'v', shell: 'pwsh', cwd: 'C:/r' }],
+    },
+    activePaneId: 'p-vis',
+    stashedPanes,
+  } as unknown as Workspace;
+  return {
+    workspaces: [ws],
+    activeWorkspaceId: ws.id,
+    sidebarVisible: true,
+  } as unknown as SessionData;
+}
+
+function stashEntry(paneId: string, ordinal: number) {
+  return {
+    pane: {
+      id: paneId,
+      type: 'leaf',
+      activeSurfaceId: `${paneId}-s`,
+      ordinal,
+      surfaces: [{ id: `${paneId}-s`, ptyId: `${paneId}-pty`, title: 't', shell: 'pwsh', cwd: 'C:/r' }],
+    },
+    stashedAt: 1,
+  };
+}
+
+describe('WorkspaceSlice.loadSession — stashedPanes guards (#977 review)', () => {
+  it('drops a stash entry with an empty surfaces array — same rule as canStashPaneSurfaces', () => {
+    const store = createTestStore();
+    const empty = { ...stashEntry('p-empty', 5), pane: { ...stashEntry('p-empty', 5).pane, surfaces: [] } };
+    store.getState().loadSession(stashLoadData([empty, stashEntry('p-ok', 6)]));
+
+    const ws = store.getState().workspaces[0];
+    expect(ws.stashedPanes?.map((e) => e.pane.id)).toEqual(['p-ok']);
+  });
+
+  it('drops a stash entry whose id also lives in the visible tree', () => {
+    const store = createTestStore();
+    store.getState().loadSession(stashLoadData([stashEntry('p-vis', 5), stashEntry('p-ok', 6)]));
+
+    const ws = store.getState().workspaces[0];
+    // The visible copy is the one on screen; the stash copy loses.
+    expect(ws.stashedPanes?.map((e) => e.pane.id)).toEqual(['p-ok']);
+  });
+
+  it('drops the second copy of an id duplicated inside the stash itself', () => {
+    const store = createTestStore();
+    store.getState().loadSession(stashLoadData([stashEntry('p-dup', 5), stashEntry('p-dup', 6)]));
+
+    expect(store.getState().workspaces[0].stashedPanes).toHaveLength(1);
+  });
+
+  it('reassigns a stashed ordinal that collides with a visible one — auto-names are A2A addresses', () => {
+    const store = createTestStore();
+    // Visible pane holds ordinal 1; this stash entry claims 1 too.
+    store.getState().loadSession(stashLoadData([stashEntry('p-coll', 1)]));
+
+    const ws = store.getState().workspaces[0];
+    const kept = ws.stashedPanes![0].pane;
+    expect(kept.id).toBe('p-coll');
+    expect(kept.ordinal).not.toBe(1);
+    expect(typeof kept.ordinal).toBe('number');
+  });
+
+  it('keeps a well-formed entry untouched', () => {
+    const store = createTestStore();
+    store.getState().loadSession(stashLoadData([stashEntry('p-keep', 9)]));
+
+    const ws = store.getState().workspaces[0];
+    expect(ws.stashedPanes![0].pane.ordinal).toBe(9);
+  });
+});

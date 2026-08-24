@@ -492,6 +492,31 @@ describe('SurfaceTabs — the ⋮ overflow menu', () => {
     expect(document.activeElement).toBe(trigger);
   });
 
+  it('lets an outside click KEEP the focus it earned — no snatch-back to the trigger', () => {
+    mount(rootLeafId(), { actionsMode: 'overflow' });
+    const trigger = container.querySelector<HTMLButtonElement>('[data-pane-overflow-trigger]')!;
+    act(() => { trigger.focus(); });
+    openOverflowMenu();
+
+    // A real outside mousedown focuses its target BEFORE the menu's cleanup
+    // runs (focus is the browser's default mousedown action). Model that
+    // order: focus the outside element, then deliver the closing mousedown.
+    const outside = container.querySelector<HTMLButtonElement>('[data-pane-label]')
+      ? container.querySelector<HTMLElement>('[data-pane-label]')!
+      : container.firstElementChild as HTMLElement;
+    const outsideBtn = document.createElement('button');
+    container.appendChild(outsideBtn);
+    act(() => {
+      outsideBtn.focus();
+      outside.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+    });
+
+    expect(document.querySelector('[data-pane-actions-menu]')).toBeNull();
+    // Measured live before the fix: focus bounced back to the ⋮ trigger here.
+    expect(document.activeElement).toBe(outsideBtn);
+    outsideBtn.remove();
+  });
+
   it('walks the items with the arrow keys, wrapping at both ends', () => {
     mount(rootLeafId(), { actionsMode: 'overflow' });
     openOverflowMenu();

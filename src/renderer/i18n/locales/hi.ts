@@ -27,6 +27,9 @@ export const hi = {
   'roster.stashedOnly': 'किनारे {count}',
   'roster.stashedExited': 'सेशन समाप्त',
   'roster.unstashAction': 'लेआउट में वापस लाएँ',
+  'roster.recoverAction': 'वापस लाकर पुनर्प्राप्त करें',
+  // The stash undo toast's button — the safety net the whole gesture leans on.
+  'common.undo': 'पूर्ववत करें',
 
   // Pane
   'pane.empty': 'खाली पैनल',

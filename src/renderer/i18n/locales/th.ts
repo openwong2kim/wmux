@@ -27,6 +27,9 @@ export const th = {
   'roster.stashedOnly': 'เก็บไว้ {count}',
   'roster.stashedExited': 'เซสชันสิ้นสุดแล้ว',
   'roster.unstashAction': 'นำกลับเข้าเลย์เอาต์',
+  'roster.recoverAction': 'นำกลับมาและกู้คืน',
+  // The stash undo toast's button — the safety net the whole gesture leans on.
+  'common.undo': 'เลิกทำ',
 
   // Pane
   'pane.empty': 'พาเนลว่าง',

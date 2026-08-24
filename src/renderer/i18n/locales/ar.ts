@@ -27,6 +27,9 @@ export const ar = {
   'roster.stashedOnly': '{count} موضوعة جانبًا',
   'roster.stashedExited': 'انتهت الجلسة',
   'roster.unstashAction': 'إعادته إلى التخطيط',
+  'roster.recoverAction': 'الإرجاع والاستعادة',
+  // The stash undo toast's button — the safety net the whole gesture leans on.
+  'common.undo': 'تراجع',
 
   // Pane
   'pane.empty': 'جزء فارغ',

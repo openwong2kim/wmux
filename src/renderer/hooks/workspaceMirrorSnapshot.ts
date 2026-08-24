@@ -9,7 +9,7 @@
 // of truth for the two helpers.
 
 import type { AgentStatus, Pane, PaneLeaf, Workspace } from '../../shared/types';
-import { getLeafPanes, getWorkspacePtyIds, type WorkspacePaneOwner } from '../../shared/paneUtils';
+import { getWorkspaceLeafPanes, getWorkspacePtyIds, type WorkspacePaneOwner } from '../../shared/paneUtils';
 import type {
   WorkspaceListEntry,
   FleetSnapshot,
@@ -151,7 +151,11 @@ export function buildFleetSnapshots(state: FleetSelectorState, ts: number): Flee
 
   const byWs = new Map<string, FleetSnapshot>();
   for (const ws of state.workspaces) {
-    for (const leaf of getLeafPanes(ws.rootPane)) {
+    // Workspace-OWNED, not visible-only (#977): selectFleetPanes already walks
+    // the stash, and a snapshot that dropped those rows told the deck's
+    // heartbeat and completion gate that a workspace with a running stashed
+    // worker was quiescent — the gate would finish over an agent mid-task.
+    for (const leaf of getWorkspaceLeafPanes(ws)) {
       const derived = derivedByPane.get(leaf.id);
       if (!derived) continue; // selectFleetPanes emits every leaf → always present
       let snap = byWs.get(ws.id);
@@ -202,6 +206,12 @@ export function buildFleetSnapshots(state: FleetSelectorState, ts: number): Flee
  * (paneRole[leaf.id] → orchestratorRoleBindings[role], normalized), so the
  * mirror and the round-trip can never disagree on a binding. The map is
  * COMPLETE by construction: a ptyId absent from it has no binding.
+ *
+ * That completeness is why the walk below is workspace-OWNED (#977). The
+ * ownership entries beside this map already list a stashed pane's ptys, and
+ * resolveRoleBindingForPty treats absence as authoritative exactly when the
+ * same snapshot owns the pty — so a visible-only walk here answered "unbound"
+ * for a role-bound stashed pane, and input.send skipped the enforced model.
  */
 export function buildRoleBindings(state: MirrorSnapshotState): Record<string, unknown> {
   const out: Record<string, unknown> = {};
@@ -211,7 +221,7 @@ export function buildRoleBindings(state: MirrorSnapshotState): Record<string, un
   // ws×leaf×surface walk this builder otherwise pays on every mirror push.
   if (Object.keys(paneRole).length === 0 || Object.keys(bindings).length === 0) return out;
   for (const w of state.workspaces) {
-    for (const leaf of getLeafPanes(w.rootPane)) {
+    for (const leaf of getWorkspaceLeafPanes(w)) {
       const role = paneRole[leaf.id];
       if (!role) continue;
       const binding = normalizeRoleBinding(bindings[role]);

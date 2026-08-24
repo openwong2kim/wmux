@@ -1,4 +1,4 @@
-import type { AgentStatus, Task } from '../../../shared/types';
+import type { AgentStatus, Task, PaneLeaf, Surface } from '../../../shared/types';
 import { getLeafPanes, getWorkspaceLeafPanes } from '../../../shared/paneUtils';
 import { isBrainPtyId } from '../../../shared/constants';
 import type { StoreState } from '../index';
@@ -183,6 +183,32 @@ const STATUS_RANK: Record<AgentStatus, number> = {
  * `agentName` is likewise workspace-level (active-pane-derived), so it is
  * exposed only for the active pane to avoid mislabeling background panes.
  */
+/**
+ * The tab that represents a STASHED pane in single-row rollups (#977) — shared
+ * by the sidebar roster and the fleet selector so the two can never disagree
+ * about the same pane. The remembered active tab wins WHILE IT IS ALIVE; if
+ * that session died with a sibling still running, deferring to it would report
+ * the whole pane as exited with an agent working behind it. Order: the active
+ * tab if live, then a live tab with a detected agent, then any live tab, then
+ * the dead remnants. Visible panes keep the plain active-tab rule — on screen,
+ * the dead active tab IS the thing the user is looking at.
+ */
+export function pickStashedRepresentativeSurface(
+  leaf: PaneLeaf,
+  surfaceAgent: Record<string, { name?: string } | undefined>,
+): Surface | undefined {
+  const terminals = leaf.surfaces.filter((s) => (s.surfaceType ?? 'terminal') === 'terminal');
+  const live = terminals.filter((s) => !!s.ptyId);
+  return (
+    live.find((s) => s.id === leaf.activeSurfaceId)
+    ?? live.find((s) => !!surfaceAgent[s.ptyId]?.name)
+    ?? live[0]
+    ?? terminals.find((s) => s.id === leaf.activeSurfaceId)
+    ?? terminals[0]
+    ?? leaf.surfaces[0]
+  );
+}
+
 export function selectFleetPanes(state: FleetSelectorState): FleetPane[] {
   const result: FleetPane[] = [];
   for (const ws of state.workspaces) {
@@ -191,7 +217,12 @@ export function selectFleetPanes(state: FleetSelectorState): FleetPane[] {
     const visibleIds = new Set(getLeafPanes(ws.rootPane).map((l) => l.id));
     for (const leaf of getWorkspaceLeafPanes(ws)) {
       const stashed = !visibleIds.has(leaf.id);
-      const surf = leaf.surfaces.find((s) => s.id === leaf.activeSurfaceId) ?? leaf.surfaces[0];
+      // Stashed rows use the shared #977 picker (see above) so this card and
+      // the sidebar roster can never disagree; visible rows keep the plain
+      // active-tab rule the tests pin.
+      const surf = stashed
+        ? pickStashedRepresentativeSurface(leaf, state.surfaceAgent ?? {})
+        : leaf.surfaces.find((s) => s.id === leaf.activeSurfaceId) ?? leaf.surfaces[0];
       const ptyId = surf?.ptyId ?? '';
       // The orchestrator's own brain pty is never a fleet member. It should
       // never reach a surface at all (pty.list filters it), so this is the

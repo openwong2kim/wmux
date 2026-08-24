@@ -27,6 +27,9 @@ export const bs = {
   'roster.stashedOnly': 'Sklonjeno {count}',
   'roster.stashedExited': 'Sesija završena',
   'roster.unstashAction': 'Vrati u izgled',
+  'roster.recoverAction': 'Vrati i oporavi',
+  // The stash undo toast's button — the safety net the whole gesture leans on.
+  'common.undo': 'Poništi',
 
   // Pane
   'pane.empty': 'Prazan panel',

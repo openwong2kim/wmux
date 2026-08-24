@@ -27,6 +27,9 @@ export const tr = {
   'roster.stashedOnly': '{count} kenarda',
   'roster.stashedExited': 'Oturum sona erdi',
   'roster.unstashAction': 'Düzene geri getir',
+  'roster.recoverAction': 'Geri getir ve kurtar',
+  // The stash undo toast's button — the safety net the whole gesture leans on.
+  'common.undo': 'Geri al',
 
   // Pane
   'pane.empty': 'Boş bölme',

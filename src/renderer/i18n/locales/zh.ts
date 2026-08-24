@@ -690,6 +690,9 @@ export const zh = {
   'roster.stashedOnly': '已收起 {count}',
   'roster.stashedExited': '会话已结束',
   'roster.unstashAction': '取回到布局中',
+  'roster.recoverAction': '取回并恢复',
+  // The stash undo toast's button — the safety net the whole gesture leans on.
+  'common.undo': '撤销',
 
   'workspace.rename': '重命名工作区',
   'workspace.configureProfile': '配置配置文件…',

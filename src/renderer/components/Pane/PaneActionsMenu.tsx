@@ -63,6 +63,10 @@ export const PANE_ACTIONS_MENU_WIDTH = 216;
 export default function PaneActionsMenu({ anchor, triggerRef, items, onClose }: PaneActionsMenuProps) {
   const menuRef = useRef<HTMLDivElement>(null);
   const firstItemRef = useRef<HTMLButtonElement>(null);
+  // Where focus was when the menu opened — nulled by the outside-click closer,
+  // because that path's focus belongs to whatever was clicked. Declared here
+  // (not in the focus effect) so the outside-click listener can reach it.
+  const restoreFocusRef = useRef<Element | null>(null);
   const separators = items.filter((i) => i.separatorBefore).length;
   const [height, setHeight] = useState(
     items.length * ESTIMATED_ITEM_HEIGHT + separators * 9 + 10,
@@ -82,18 +86,27 @@ export default function PaneActionsMenu({ anchor, triggerRef, items, onClose }: 
   // placed against has moved, and re-placing against its stale rect would pin
   // the menu to where the trigger USED to be.
   useEffect(() => {
-    const onResize = () => onClose();
-    window.addEventListener('resize', onResize);
-    return () => window.removeEventListener('resize', onResize);
+    const onMoved = () => onClose();
+    window.addEventListener('resize', onMoved);
+    // Scroll too, and captured — the tab strip's own overflow-x scroll does
+    // not bubble. A fixed-position menu whose anchor scrolled away would stay
+    // behind, floating detached from the header that opened it.
+    window.addEventListener('scroll', onMoved, true);
+    return () => {
+      window.removeEventListener('resize', onMoved);
+      window.removeEventListener('scroll', onMoved, true);
+    };
   }, [onClose]);
 
   // Focus: remember where it was, move it into the menu, hand it back on
   // close. A menu that opens under the cursor but leaves focus in the terminal
   // is a menu a keyboard user cannot use — and one that swallows focus on
-  // close strands them on <body>. The remembered element may be gone by then
-  // (the menu just split or stashed the pane); focus() on a detached element
-  // is a no-op, and the next Tab starts from the document as it always did.
-  const restoreFocusRef = useRef<Element | null>(null);
+  // close strands them on <body>. Escape, item-selection, resize and scroll
+  // all close with focus still on a menu item, so restoring is right for every
+  // path except the outside click, which disarms the ref above. The remembered
+  // element may be gone by then (the menu just split or stashed the pane);
+  // focus() on a detached element is a no-op, and the next Tab starts from the
+  // document as it always did.
   useEffect(() => {
     restoreFocusRef.current = document.activeElement;
     firstItemRef.current?.focus();
@@ -136,6 +149,13 @@ export default function PaneActionsMenu({ anchor, triggerRef, items, onClose }: 
       const target = e.target as Node;
       if (menuRef.current?.contains(target)) return;
       if (triggerRef?.current?.contains(target)) return;
+      // The click that closes the menu also decides where focus goes — the
+      // browser focuses the clicked element on mousedown. Restoring on this
+      // path would snatch that focus straight back to the trigger (measured
+      // live as exactly that bug), so the restore is disarmed BEFORE closing.
+      // Ref-null-ness cannot express this: React detaches refs before passive
+      // cleanups run, so by cleanup time menuRef is null on EVERY close.
+      restoreFocusRef.current = null;
       onClose();
     };
     // Capture on keydown: the terminal swallows keys, and Escape must close the

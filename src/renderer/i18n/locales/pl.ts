@@ -32,6 +32,9 @@ export const pl = {
   'roster.stashedOnly': 'Odłożone {count}',
   'roster.stashedExited': 'Sesja zakończona',
   'roster.unstashAction': 'Przywróć do układu',
+  'roster.recoverAction': 'Przywróć i odzyskaj',
+  // The stash undo toast's button — the safety net the whole gesture leans on.
+  'common.undo': 'Cofnij',
 
   // Pane
   'pane.empty': 'Pusty panel',

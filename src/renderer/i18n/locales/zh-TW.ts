@@ -27,6 +27,9 @@ export const zhTW = {
   'roster.stashedOnly': '已收起 {count}',
   'roster.stashedExited': '工作階段已結束',
   'roster.unstashAction': '取回到版面中',
+  'roster.recoverAction': '取回並恢復',
+  // The stash undo toast's button — the safety net the whole gesture leans on.
+  'common.undo': '復原',
 
   // Pane
   'pane.empty': '空面板',

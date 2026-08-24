@@ -27,6 +27,9 @@ export const da = {
   'roster.stashedOnly': '{count} lagt til side',
   'roster.stashedExited': 'Sessionen er afsluttet',
   'roster.unstashAction': 'Hent tilbage i layoutet',
+  'roster.recoverAction': 'Bring tilbage og gendan',
+  // The stash undo toast's button — the safety net the whole gesture leans on.
+  'common.undo': 'Fortryd',
 
   // Pane
   'pane.empty': 'Tomt panel',

@@ -27,6 +27,9 @@ export const ptBR = {
   'roster.stashedOnly': '{count} guardado(s)',
   'roster.stashedExited': 'Sessão encerrada',
   'roster.unstashAction': 'Trazer de volta ao layout',
+  'roster.recoverAction': 'Trazer de volta e recuperar',
+  // The stash undo toast's button — the safety net the whole gesture leans on.
+  'common.undo': 'Desfazer',
 
   // Pane
   'pane.empty': 'Painel vazio',

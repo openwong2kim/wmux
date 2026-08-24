@@ -27,6 +27,9 @@ export const ja = {
   'roster.stashedOnly': '退避 {count}',
   'roster.stashedExited': 'セッション終了',
   'roster.unstashAction': 'レイアウトに戻す',
+  'roster.recoverAction': '戻して復旧',
+  // The stash undo toast's button — the safety net the whole gesture leans on.
+  'common.undo': '元に戻す',
 
   // Pane
   'pane.empty': '空のペイン',

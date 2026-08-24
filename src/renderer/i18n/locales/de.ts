@@ -27,6 +27,9 @@ export const de = {
   'roster.stashedOnly': '{count} beiseitegelegt',
   'roster.stashedExited': 'Sitzung beendet',
   'roster.unstashAction': 'Zurück ins Layout holen',
+  'roster.recoverAction': 'Zurückholen und wiederherstellen',
+  // The stash undo toast's button — the safety net the whole gesture leans on.
+  'common.undo': 'Rückgängig',
 
   // Pane
   'pane.empty': 'Leerer Bereich',

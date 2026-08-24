@@ -27,6 +27,9 @@ export const vi = {
   'roster.stashedOnly': 'Đã cất {count}',
   'roster.stashedExited': 'Phiên đã kết thúc',
   'roster.unstashAction': 'Đưa trở lại bố cục',
+  'roster.recoverAction': 'Đưa về và khôi phục',
+  // The stash undo toast's button — the safety net the whole gesture leans on.
+  'common.undo': 'Hoàn tác',
 
   // Pane
   'pane.empty': 'Khung trống',

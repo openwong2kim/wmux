@@ -27,6 +27,9 @@ export const uk = {
   'roster.stashedOnly': 'Відкладено {count}',
   'roster.stashedExited': 'Сесію завершено',
   'roster.unstashAction': 'Повернути в макет',
+  'roster.recoverAction': 'Повернути й відновити',
+  // The stash undo toast's button — the safety net the whole gesture leans on.
+  'common.undo': 'Повернути',
 
   // Pane
   'pane.empty': 'Порожня панель',

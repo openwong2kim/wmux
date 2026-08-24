@@ -195,12 +195,14 @@ const WMUX_SEARCH_PANES_SHAPE = {
 const EVENTS_POLL_BLOCK_MARGIN_MS = 150_000;
 
 const WMUX_EVENTS_POLL_SHAPE = {
-  cursor: z.number().int().nonnegative().optional().describe('Last seen seq number. Default 0 = replay all events still in the ring.'),
+  cursor: z.number().int().nonnegative().optional().describe('Last seen seq; 0 (default) replays the ring.'),
   types: z
     .array(z.enum([
       'pane.created',
       'pane.closed',
       'pane.focused',
+      'pane.stashed',
+      'pane.unstashed',
       'pane.metadata.changed',
       'workspace.metadata.changed',
       'process.started',
@@ -210,8 +212,8 @@ const WMUX_EVENTS_POLL_SHAPE = {
       'a2a.task',
     ]))
     .optional()
-    .describe('Filter to specific event types. Omit for all. `notification.received` — a terminal emitted OSC 9/777/99; carries ptyId, source, title, body. `agent.lifecycle` — carries ptyId, kind (agent.stop|agent.subagent_stop|agent.awaiting_input), source (hook|detector|osc133), agent, decision, and exitCode (osc133 only); fires when an inner agent ends a turn, surfaces a y/N prompt mid-turn, or an OSC 133 command completes. `a2a.task` — carries taskId, from, to, kind, state, messagePreview, plus verifiedItemCount on completed/failed (0 = unverified). A POINTER, not the payload: fetch the body with a2a_task_query. DUAL-PARTY — visible to both the sending and receiving workspace, unlike every other type (caller-scoped); an unscoped poll receives zero a2a.task events.'),
-  max: z.number().int().positive().max(1024).optional().describe('Max events to return per poll. Default 256.'),
+    .describe('Event-type filter; omit for all. `notification.received` — a terminal emitted OSC 9/777/99; carries ptyId, source, title, body. `agent.lifecycle` — carries ptyId, kind (agent.stop|agent.subagent_stop|agent.awaiting_input), source (hook|detector|osc133), agent, decision, and exitCode (osc133 only); fires when an inner agent ends a turn, surfaces a y/N prompt mid-turn, or an OSC 133 command completes. `a2a.task` — carries taskId, from, to, kind, state, messagePreview, plus verifiedItemCount on completed/failed (0 = unverified). A POINTER, not the payload: fetch the body with a2a_task_query. DUAL-PARTY — visible to both the sending and receiving workspace, unlike every other type (caller-scoped); an unscoped poll receives zero a2a.task events.'),
+  max: z.number().int().positive().max(1024).optional().describe('Max events per poll (default 256).'),
   blockMs: z.number().int().nonnegative().max(600_000).optional().describe('Wait this long (ms) for a match instead of returning an empty page; 0 (default) = immediate. With ptyId+kinds it replaces a terminal_read loop waiting for a pane to block. Add process.exited to types so the wait ends if the pane dies (pane.closed is paneId-keyed, so ptyId drops it). parkedCapReached=true means it did NOT wait; back off. Use one cursor chain per filter combination — nextCursor passes events your filter skipped.'),
   ptyId: z.string().optional().describe('Only events about this pane. Events without a ptyId are excluded, which is every pane.* event (paneId-keyed); use process.exited to see the pane go away.'),
   kinds: z.array(z.string()).optional().describe('Narrow agent.lifecycle by kind; other types pass through. agent.subagent_stop is a nested subagent returning, not the pane\'s own turn ending.'),
