@@ -51,13 +51,16 @@ describe('wmux daemon status', () => {
     expect(output).toContain('pid: 4242');
   });
 
-  it('reports not running when the pipe is unreachable, without throwing', async () => {
+  it('reports not running when the pipe is unreachable, without throwing, and exits non-zero', async () => {
     sendDaemonStringRequestMock.mockRejectedValue(new Error('connect ENOENT'));
 
     await handleDaemon('status', [], false);
 
     expect(logLines.join('\n')).toContain('wmux daemon is not running.');
-    expect(process.exitCode).toBeUndefined();
+    // #1019 CodeRabbit finding: a transport failure IS "not running" for a
+    // human, but a script needs the exit code to tell it apart from a
+    // clean, healthy status check.
+    expect(process.exitCode).toBe(1);
   });
 
   it('--json mode passes the raw RPC envelope through on failure too', async () => {

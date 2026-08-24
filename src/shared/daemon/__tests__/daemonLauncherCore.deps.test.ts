@@ -40,6 +40,7 @@ describe('daemonLauncherCore — DaemonLauncherDeps seam', () => {
       resolveDaemonScriptCandidates: () => candidates,
       resolveSpawnedByVersion: () => '9.9.9-test',
       askUserToRecoverFromStalePid: async () => false,
+      isElectronHost: () => false,
     };
   }
 
@@ -77,6 +78,7 @@ describe('daemonLauncherCore — DaemonLauncherDeps seam', () => {
         askedWith = opts;
         return false;
       },
+      isElectronHost: () => false,
     };
     // This particular run never reaches the stale-PID branch (no daemon.pid
     // file exists), so askUserToRecoverFromStalePid must NOT have been

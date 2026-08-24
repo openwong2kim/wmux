@@ -148,6 +148,7 @@ const electronDeps: DaemonLauncherDeps = {
   resolveDaemonScriptCandidates,
   resolveSpawnedByVersion: () => app.getVersion(),
   askUserToRecoverFromStalePid,
+  isElectronHost: () => true,
 };
 
 /**

@@ -89,6 +89,9 @@ const cliDaemonDeps: DaemonLauncherDeps = {
   resolveDaemonScriptCandidates,
   resolveSpawnedByVersion,
   askUserToRecoverFromStalePid,
+  // The headless CLI is never Electron — plain `node`/`node.exe` already
+  // understands the daemon bundle without ELECTRON_RUN_AS_NODE.
+  isElectronHost: () => false,
 };
 
 function printText(lines: string[]): void {
@@ -103,13 +106,13 @@ async function runStart(jsonMode: boolean): Promise<void> {
       // token via resolveDaemonAuthToken() and never need it echoed back,
       // and printing a live credential to stdout risks it landing in shell
       // history or a captured log.
-      console.log(JSON.stringify({ ok: true, pid: info.pid, pipeName: info.pipeName, spawned: info.spawned }, null, 2));
+      console.log(JSON.stringify({ ok: true, pid: info.pid ?? null, pipeName: info.pipeName, spawned: info.spawned }, null, 2));
       return;
     }
     printText([
       info.spawned
-        ? `wmux daemon started (PID ${info.pid})`
-        : `wmux daemon already running (PID ${info.pid})`,
+        ? `wmux daemon started (PID ${info.pid ?? 'unknown'})`
+        : `wmux daemon already running (PID ${info.pid ?? 'unknown'})`,
       `pipe: ${info.pipeName}`,
     ]);
   } catch (err) {
@@ -134,6 +137,10 @@ async function runStatus(jsonMode: boolean): Promise<void> {
     } else {
       console.log('wmux daemon is not running.');
     }
+    // A transport failure IS the answer "not running" for a human, but a
+    // script needs the exit code to tell it apart from a clean, healthy
+    // status check — otherwise `wmux daemon status || restart` never fires.
+    process.exitCode = 1;
     return;
   }
   if (jsonMode) {

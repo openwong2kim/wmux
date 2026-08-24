@@ -1,7 +1,7 @@
 import * as net from 'net';
 import * as fs from 'fs';
 import * as path from 'path';
-import { spawn } from 'child_process';
+import { spawn, execFileSync } from 'child_process';
 import * as crypto from 'crypto';
 import { getWmuxDir } from '../../daemon/config';
 import { getDaemonPipeName, readDaemonAuthToken } from '../../main/DaemonClient';
@@ -10,7 +10,14 @@ import { markBoot } from '../../main/util/bootTrace';
 import { classifyTasklistOutput, classifyKillOutcome, type ProcessLiveness } from '../processLiveness';
 
 export interface DaemonInfo {
-  pid: number;
+  /**
+   * `null` only on the yield-and-reconnect path (`spawned: false`): our spawn
+   * lost the race to an already-live daemon, and that daemon's ping omitted
+   * `pid` (pre-Step-③ daemon) with no `daemon.pid` file to fall back to
+   * either. Every `spawned: true` result carries a real, verified pid from
+   * the child we just spawned — never null.
+   */
+  pid: number | null;
   authToken: string;
   pipeName: string;
   spawned: boolean;
@@ -46,6 +53,17 @@ export interface DaemonLauncherDeps {
    * never guess "probably dead" and spawn over it.
    */
   askUserToRecoverFromStalePid(opts: { reason: string; pid: number; pidFile: string }): Promise<boolean>;
+  /**
+   * Whether THIS host is Electron. Previously inferred as
+   * `nodePath === process.execPath && !nodePath.toLowerCase().includes('node.exe')`
+   * — a heuristic that happened to work when this module only ever ran
+   * inside Electron. Since #1001 a headless CLI process also calls
+   * `spawnDaemon`, and on non-Windows hosts the plain Node binary is named
+   * `node`, not `node.exe`, so the substring check would misclassify a
+   * headless CLI spawn as Electron and set `ELECTRON_RUN_AS_NODE=1` on a
+   * process that doesn't understand it. Explicit and unambiguous instead.
+   */
+  isElectronHost(): boolean;
 }
 
 // `ProcessLiveness` + the pure classifiers now live in shared/processLiveness so
@@ -69,7 +87,6 @@ export function checkProcessLiveness(pid: number): ProcessLiveness {
   if (process.platform === 'win32') {
     let stdout: string | null = null;
     try {
-      const { execFileSync } = require('child_process');
       const systemRoot = process.env.SystemRoot || 'C:\\Windows';
       const tasklist = path.join(systemRoot, 'System32', 'tasklist.exe');
       stdout = execFileSync(tasklist, ['/fi', `PID eq ${pid}`, '/fo', 'csv', '/nh'], {
@@ -102,7 +119,6 @@ export function checkProcessLiveness(pid: number): ProcessLiveness {
 function getProcessImageName(pid: number): string | null {
   if (process.platform === 'win32') {
     try {
-      const { execFileSync } = require('child_process');
       const systemRoot = process.env.SystemRoot || 'C:\\Windows';
       const tasklist = path.join(systemRoot, 'System32', 'tasklist.exe');
       const result = execFileSync(tasklist, ['/fi', `PID eq ${pid}`, '/fo', 'csv', '/nh'], {
@@ -127,7 +143,6 @@ function getProcessImageName(pid: number): string | null {
   // returned null and the launcher threw on every unresponsive daemon
   // instead of recovering.)
   try {
-    const { execFileSync } = require('child_process');
     const result = execFileSync('/bin/ps', ['-p', String(pid), '-o', 'comm='], {
       encoding: 'utf-8', timeout: 3000,
     });
@@ -156,7 +171,6 @@ function getProcessImageName(pid: number): string | null {
 function getProcessCommandLine(pid: number): string | null {
   if (process.platform === 'win32') {
     try {
-      const { execFileSync } = require('child_process');
       const systemRoot = process.env.SystemRoot || 'C:\\Windows';
       const powershell = path.join(
         systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe',
@@ -186,7 +200,6 @@ function getProcessCommandLine(pid: number): string | null {
   // review #5 — Darwin builds need this path so the daemon verifier
   // can confirm cmdline carries the daemon-script path.)
   try {
-    const { execFileSync } = require('child_process');
     const result = execFileSync('/bin/ps', ['-p', String(pid), '-o', 'command='], {
       encoding: 'utf-8', timeout: 3000,
     });
@@ -246,7 +259,7 @@ function daemonPing(pipeName: string, token: string, timeoutMs = 3000): Promise<
             finish((resp.result as DaemonPingResult) ?? { status: 'ok' });
             return;
           }
-        } catch {}
+        } catch { /* not a complete/valid JSON ping line yet — keep buffering */ }
       }
     });
 
@@ -631,12 +644,11 @@ function spawnDaemon(deps: DaemonLauncherDeps): Promise<number> {
     }
 
     const nodePath = findNodePath();
-    const isElectron = nodePath === process.execPath && !nodePath.toLowerCase().includes('node.exe');
 
     console.log(`[launcher] Spawning daemon: ${nodePath} ${daemonScript}`);
 
     const env: Record<string, string | undefined> = { ...process.env };
-    if (isElectron) {
+    if (deps.isElectronHost()) {
       env.ELECTRON_RUN_AS_NODE = '1';
     }
     // Clear Electron-specific vars that interfere with plain Node
@@ -652,6 +664,14 @@ function spawnDaemon(deps: DaemonLauncherDeps): Promise<number> {
       stdio: 'ignore',
       windowsHide: true,
       env,
+    });
+
+    // `spawn` reports failures asynchronously via 'error' (e.g. EMFILE,
+    // EACCES). Without a listener that emission throws an uncaught exception,
+    // bypassing the reject() contract every caller — including the headless
+    // CLI's `runStart` — relies on to report a clean, non-crashing message.
+    child.on('error', (err) => {
+      reject(new Error(`Failed to spawn daemon: ${err instanceof Error ? err.message : String(err)}`));
     });
 
     child.unref();
@@ -788,7 +808,7 @@ export async function ensureDaemon(deps: DaemonLauncherDeps): Promise<DaemonInfo
   try {
     const pidStr = fs.readFileSync(pidFile, 'utf8').trim();
     existingPid = parseInt(pidStr, 10);
-  } catch {}
+  } catch { /* no readable daemon.pid file — fall through to the spawn path */ }
 
   // 2. If the PID is alive OR its liveness is unknown (a probe timeout must
   //    NOT be read as "dead" — Defect 1), enter the ping/reuse path. Only a
@@ -834,13 +854,16 @@ export async function ensureDaemon(deps: DaemonLauncherDeps): Promise<DaemonInfo
     // reused that PID for an unrelated user process (Chrome, an IDE,
     // an unrelated Electron app). Sending SIGKILL blindly would take
     // out whatever now owns the recycled PID. Verify the process image
-    // matches the wmux executable before killing. wmux daemons always
-    // run via `process.execPath` (Electron in dev, the packaged exe in
-    // prod with `ELECTRON_RUN_AS_NODE=1`), so the image basename of a
-    // genuine daemon equals `path.basename(process.execPath)`. If it
-    // doesn't match, treat the PID as a stale-reuse victim and skip
-    // the kill — the launcher still cleans the stale files below and
-    // spawns a fresh daemon, so the user-visible recovery is unchanged.
+    // matches a wmux host's executable before killing.
+    //
+    // `expectedImage` below is THIS CALLER's own image (Electron in dev, the
+    // packaged exe in prod, or node/node.exe for the headless CLI, #1001) —
+    // it is a fast pre-filter and a diagnostic label, NOT the authoritative
+    // check. Since #1001, a daemon can be spawned by a DIFFERENT host than
+    // the one now checking status (Electron spawned it, CLI reconnects, or
+    // vice versa), so an image mismatch no longer proves the PID is a
+    // stale-reuse victim — it only means "check the command line before
+    // deciding," which the code below always does regardless of match.
     //
     // (Codex review #2/#3/#4 hardening sequence on the original issue
     // #54 fix.) Three categories the gate logic must distinguish:
@@ -852,12 +875,12 @@ export async function ensureDaemon(deps: DaemonLauncherDeps): Promise<DaemonInfo
     //       Electron app whose cmdline doesn't carry the daemon script
     //       path) → don't kill, but the stale-files cleanup + spawn
     //       path below is safe because the actual daemon is gone.
-    //   (c) Unverified-live (process is alive AND has the wmux image
-    //       basename, but we couldn't read its image or command line at
-    //       all) → refuse to act. Spawning over an unverified live
-    //       daemon would orphan its PTYs and produce duplicate sessions.
-    //       Throw so the respawn controller surfaces the failure via
-    //       its budget + IPC, instead of silently corrupting state.
+    //   (c) Unverified-live (process is alive but we couldn't read its
+    //       image or command line at all) → refuse to act. Spawning over
+    //       an unverified live daemon would orphan its PTYs and produce
+    //       duplicate sessions. Throw so the respawn controller surfaces
+    //       the failure via its budget + IPC, instead of silently
+    //       corrupting state.
     const expectedImage = path.basename(process.execPath);
     // Markers must cover ALL the daemon-script candidate paths
     // spawnDaemon() picks from, in both `/` and `\\` form (Windows
@@ -914,14 +937,24 @@ export async function ensureDaemon(deps: DaemonLauncherDeps): Promise<DaemonInfo
         console.warn(
           `[launcher] user approved cleanup of unverified PID ${existingPid} (image lookup failed)`,
         );
-      } else if (imageName.toLowerCase() !== expectedImage.toLowerCase()) {
-        // (b) Different program owns this PID now — daemon is gone.
-        console.warn(
-          `[launcher] PID ${existingPid} image "${imageName}" != "${expectedImage}" — stale-PID reuse by another program, cleaning + spawning fresh`,
-        );
       } else {
-        // Image matches — could be the real daemon or another Electron
-        // app. Use the command line to decide.
+        // Do NOT let an image-name mismatch alone decide "stale, someone
+        // else's program": a genuine wmux daemon's image is whichever host
+        // spawned it (this host's own Electron binary, OR node/node.exe if
+        // the headless CLI spawned it, #1001) — and the process checking
+        // status here can be a DIFFERENT host than the one that originally
+        // spawned the daemon. Treating that cross-host mismatch as proof of
+        // staleness would spawn a second daemon over a still-live one
+        // (split-brain) without ever consulting the one signal that IS
+        // host-independent: whether the command line invokes the daemon
+        // script. So a mismatch here only downgrades confidence — cmdline is
+        // still checked below rather than skipped.
+        if (imageName.toLowerCase() !== expectedImage.toLowerCase()) {
+          console.warn(
+            `[launcher] PID ${existingPid} image "${imageName}" != this host's own "${expectedImage}" — ` +
+              `could be a daemon spawned by a different host (Electron vs headless CLI); checking cmdline before deciding`,
+          );
+        }
         const cmdline = getProcessCommandLine(existingPid);
         if (cmdline === null) {
           // (c) Lookup failed — same recovery dance as the image path, and the
@@ -1113,11 +1146,16 @@ export async function ensureDaemon(deps: DaemonLauncherDeps): Promise<DaemonInfo
           // live daemon's reported pid, so the NEXT launch hits the cheap reuse
           // branch (existingPid → ping → reuse) instead of repeating this
           // spawn-yield-reconnect dance every launch.
-          const livePid = typeof pong.pid === 'number' && pong.pid > 0 ? pong.pid : (existingPid ?? 0);
-          if (livePid > 0) {
+          const livePid =
+            typeof pong.pid === 'number' && pong.pid > 0 ? pong.pid : (existingPid ?? null);
+          if (livePid !== null) {
             try {
               fs.writeFileSync(pidFile, String(livePid), { encoding: 'utf-8', mode: 0o600 });
             } catch { /* best effort — reconnect still succeeds without it */ }
+          } else {
+            console.warn(
+              '[launcher] reconnected daemon did not report a pid — daemon.pid not restored',
+            );
           }
           console.log(
             '[launcher] spawned daemon yielded to a live daemon — reconnected to the existing daemon',
@@ -1208,12 +1246,19 @@ export function killVerifiedDaemonPid(
     // proceeds to verification — the image/cmdline guards below decide.
     if (checkProcessLiveness(pid) === 'dead') return false;
 
+    // `expectedImage` is THIS caller's own image — a diagnostic pre-filter,
+    // not authoritative (see the comment on the equivalent check in
+    // `ensureDaemon` above). Since #1001 a daemon may have been spawned by a
+    // different host than the one asking to kill it here (Electron killing a
+    // CLI-spawned daemon, or vice versa), so a mismatch alone must not
+    // refuse the kill — only the cmdline check below is host-independent.
     const expectedImage = path.basename(process.execPath);
     const image = getProcessImageName(pid);
     if (image === null) {
       if (opts.definitiveOnly) return false; // indeterminate — refuse
     } else if (image.toLowerCase() !== expectedImage.toLowerCase()) {
-      return false; // definitive: a different program owns this PID now
+      // Cross-host image mismatch is inconclusive, not definitive — fall
+      // through to the cmdline check instead of refusing outright.
     }
     const cmdline = getProcessCommandLine(pid);
     const markers = [
