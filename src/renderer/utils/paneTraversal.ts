@@ -7,6 +7,7 @@
 // the routing semantics, so any change here must preserve them exactly.
 
 import type { Pane, PaneLeaf, Surface } from '../../shared/types';
+import { getWorkspaceLeafPanes, type WorkspacePaneOwner } from '../../shared/paneUtils';
 
 /**
  * Locate the surface that owns a given ptyId anywhere in a pane tree.
@@ -72,6 +73,60 @@ export function findActiveLeaf(pane: Pane, activePaneId: string): PaneLeaf | nul
   for (const child of pane.children) {
     const found = findActiveLeaf(child, activePaneId);
     if (found) return found;
+  }
+  return null;
+}
+
+// ─── Workspace-wide variants (visible tree + stash) ──────────────────────────
+//
+// A stashed pane is unmounted but still owned and still running, so anything
+// asking "what does this workspace hold" must see it. The tree-scoped functions
+// above stay for the questions that are genuinely about the layout.
+
+/**
+ * Every terminal surface a workspace owns, visible panes first.
+ * Used by the idle badge and the close-confirmation count — both would lie if
+ * they only saw the layout (a stashed agent working alone would read as "idle
+ * 2h", and the dialog would promise to close fewer panes than it kills).
+ */
+export function collectWorkspaceTerminalSurfaces(ws: WorkspacePaneOwner): Surface[] {
+  return getWorkspaceLeafPanes(ws).flatMap((leaf) =>
+    leaf.surfaces.filter((s) => !s.surfaceType || s.surfaceType === 'terminal'),
+  );
+}
+
+/**
+ * Locate the surface bound to `ptyId` anywhere a workspace owns it, reporting
+ * whether the owning pane is stashed. Jump surfaces use the flag to unstash
+ * before focusing — without it a notification for a stashed agent lands on a
+ * silent no-op, because every focus path filters on the visible tree.
+ */
+export function findWorkspaceSurfaceByPtyId(
+  ws: WorkspacePaneOwner,
+  ptyId: string,
+): { surfaceId: string; paneId: string; stashed: boolean } | null {
+  const visible = findSurfaceByPtyId(ws.rootPane, ptyId);
+  if (visible) return { ...visible, stashed: false };
+  for (const entry of ws.stashedPanes ?? []) {
+    const pane = entry?.pane;
+    if (!pane || pane.type !== 'leaf') continue;
+    const surface = pane.surfaces.find((s) => s.ptyId === ptyId);
+    if (surface) return { surfaceId: surface.id, paneId: pane.id, stashed: true };
+  }
+  return null;
+}
+
+/** Surface-id counterpart of {@link findWorkspaceSurfaceByPtyId}. */
+export function findWorkspaceSurfaceById(
+  ws: WorkspacePaneOwner,
+  surfaceId: string,
+): { paneId: string; stashed: boolean } | null {
+  const visible = findSurfaceById(ws.rootPane, surfaceId);
+  if (visible) return { ...visible, stashed: false };
+  for (const entry of ws.stashedPanes ?? []) {
+    const pane = entry?.pane;
+    if (!pane || pane.type !== 'leaf') continue;
+    if (pane.surfaces.some((s) => s.id === surfaceId)) return { paneId: pane.id, stashed: true };
   }
   return null;
 }

@@ -1,4 +1,5 @@
 import type { Pane, PaneLeaf, Workspace } from '../../shared/types';
+import { getLeafPanes } from '../../shared/paneUtils';
 
 // MIME types for drag-and-drop payloads.
 // External AI chats (Claude Desktop, ChatGPT, Cursor) read text/plain.
@@ -18,11 +19,9 @@ export interface WmuxExportPayload {
 }
 
 // Collect every leaf pane in a tree, depth-first, preserving on-screen order.
-// Hoisted out of Sidebar.tsx so SurfaceTabs / drag handlers can reuse it.
-export function collectLeaves(pane: Pane): PaneLeaf[] {
-  if (pane.type === 'leaf') return [pane];
-  return pane.children.flatMap(collectLeaves);
-}
+// Alias for the canonical `getLeafPanes`; the name is kept because SurfaceTabs /
+// drag handlers import it from here.
+export const collectLeaves = getLeafPanes;
 
 function findLeaf(pane: Pane, paneId: string): PaneLeaf | null {
   if (pane.type === 'leaf') return pane.id === paneId ? pane : null;

@@ -1,5 +1,21 @@
 # TODOS
 
+## 보관된 에이전트의 비용 가시성 (#977 follow-up, P2)
+- **What:** 페인 보관함(#977)은 세션을 계속 돌린 채 화면에서 치운다. 3일쯤 지나면 사용자가 몇 개를 잊는데, **토큰·CPU를 얼마나 태우고 있는지 보여주는 곳이 앱 어디에도 없다.** 로스터 행의 "2h 전" 상대시각이 신규 인프라 0으로 일부를 덮지만, 그건 시간이지 비용이 아니다.
+- **왜 이번에 안 했나:** 실측 인프라(per-pty 토큰/CPU 집계)가 없다. #977의 blast radius 밖이고, 미터를 급조하면 틀린 숫자를 권위 있게 보여주는 쪽이 침묵보다 나쁘다.
+- **Priority:** P2
+
+## session-owned shelf — 보관함의 장기 모델 (#977 / #1011, P3)
+- **What:** #977은 `Workspace.stashedPanes` 배열로 "레이아웃 트리 = 소유한 페인" 등식을 깼다. 12개월 이상향은 **데몬 세션이 정본이고 레이아웃은 세션에 대한 attachment**인 모델 — attached / detached / exited 상태를 한 곳에서 다룬다.
+- **묶어서 설계할 것:** #1011 "Archive / Recently Closed Workspaces"가 한 층 위의 같은 기능이고, TODOS의 cross-workspace pane move epic이 identity·profile·ordinal 때문에 막혀 있는 것도 같은 뿌리다. 셋을 따로 풀면 세 번째 페인 상태가 또 생긴다.
+- **어휘 주의:** 페인 쪽은 `stash`를 유지한다. 채널의 `archive`는 **비활성화**를 뜻해서 "계속 실행 중"과 정반대다 — 이름을 합치면 의미가 충돌한다(`docs/api/inventory.md`에 구분 문장 있음).
+- **Priority:** P3
+
+## ✕ 유예 파괴 + 되돌리기 (#977 fast-follow, P2)
+- **What:** 보관함이 들어간 지금 `✕`(즉사)와 치우기 버튼이 같은 시각 무게로 나란히 있다. 한쪽은 완전 복구, 다른 쪽은 에이전트 즉사인데 되돌리기 토스트는 치우기 쪽만 받아준다. `✕`도 "5초 유예 후 파괴 + 되돌리기"로 만드는 게 맞다.
+- **왜 싸졌나:** stash가 선행되면 undo-close = **stash + 타이머**다. 데몬 세션 파괴를 유예하는 별도 메커니즘이 필요 없다.
+- **Priority:** P2
+
 ## 오케스트레이터 자리를 Claude Code TUI 로 — 조사 완료, 다음은 도그푸드 (P1)
 - **What:** 커맨더(Command Deck)가 원래 Agent SDK 자리라 채팅 UI 다. 오너 구상은 **오케스트레이터 자리를 진짜 Claude Code TUI 로** 바꾸고, 기존 자리는 그대로 둔 채 **옵션 선택 시 통짜 교체**.
 - **조사 결과(2026-07-28, `plans/deck-commander-pty-survey.md` 23KB):** **거의 다 만들어져 있고 이미 출시됐다.** Settings 에서 **"Claude Code (terminal)"** 을 고르면 된다. 스위치·어댑터(`ClaudePtyBrainAdapter`, 벤더 `claude-pty`)·터미널 임베드(`BrainTerminalEmbed`)·훅 레인·벤더별 스레드 분리가 전부 존재. **판정 S — 단 셸 정책을 안 건드리는 경우.**

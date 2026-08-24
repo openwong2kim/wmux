@@ -9,6 +9,7 @@ import {
   isPaneAgentBusy,
   HOOK_RUNNING_TTL_MS,
   type FleetPane,
+  pickStashedRepresentativeSurface,
 } from '../fleet';
 import type { Workspace, Pane, Surface, AgentStatus, Task, TaskState, EvidenceItem } from '../../../../shared/types';
 
@@ -830,5 +831,62 @@ describe("selectFleetPanes — workspace 'running' is not borrowed by the active
       surfaceActivity: {},
     });
     expect(byPane(panes, 'p-shell').agentStatus).toBe('awaiting_input');
+  });
+});
+
+// ─── Stashed representative surface (#977 review) ────────────────────────────
+//
+// The roster grew a liveness-aware picker for stashed rows; the fleet card kept
+// the plain active-tab rule and could represent a stashed pane by its DEAD
+// remembered-active tab while a sibling agent worked on. One picker, shared,
+// pinned here from the fleet side.
+
+describe('pickStashedRepresentativeSurface', () => {
+  const dead = (id: string) => ({ id, ptyId: '', title: id, shell: 'pwsh', cwd: 'C:/r' });
+  const liveS = (id: string, pty: string) => ({ id, ptyId: pty, title: id, shell: 'pwsh', cwd: 'C:/r' });
+
+  it('prefers a LIVE sibling over the dead remembered-active tab', () => {
+    const l = leaf('p', [dead('s-dead'), liveS('s-live', 'pty-live')], 's-dead');
+    const picked = pickStashedRepresentativeSurface(l as never, {});
+    expect(picked?.id).toBe('s-live');
+  });
+
+  it('keeps the remembered-active tab while it is alive', () => {
+    const l = leaf('p', [liveS('s-a', 'pty-a'), liveS('s-b', 'pty-b')], 's-b');
+    expect(pickStashedRepresentativeSurface(l as never, {})?.id).toBe('s-b');
+  });
+
+  it('prefers the live tab with a detected agent over an anonymous live tab', () => {
+    const l = leaf('p', [dead('s-dead'), liveS('s-shell', 'pty-shell'), liveS('s-agent', 'pty-agent')], 's-dead');
+    const picked = pickStashedRepresentativeSurface(l as never, { 'pty-agent': { name: 'Claude Code' } });
+    expect(picked?.id).toBe('s-agent');
+  });
+
+  it('falls back to the dead remembered-active when nothing is alive', () => {
+    const l = leaf('p', [dead('s-x'), dead('s-y')], 's-y');
+    expect(pickStashedRepresentativeSurface(l as never, {})?.id).toBe('s-y');
+  });
+});
+
+describe('selectFleetPanes — stashed pane representative (#977)', () => {
+  it('shows the live sibling agent, not the dead active tab, on a stashed row', () => {
+    const stashedLeaf = leaf('p-st', [
+      { id: 's-dead', ptyId: '', title: 'dead', shell: 'pwsh', cwd: 'C:/r' },
+      { id: 's-live', ptyId: 'pty-live', title: 'live', shell: 'pwsh', cwd: 'C:/r' },
+    ], 's-dead');
+    const st = {
+      workspaces: [{
+        id: 'ws-x', name: 'x',
+        rootPane: leaf('p-vis', [{ id: 's-v', ptyId: 'pty-v', title: 'v', shell: 'pwsh', cwd: 'C:/r' }]),
+        activePaneId: 'p-vis',
+        stashedPanes: [{ pane: stashedLeaf, stashedAt: 1 }],
+      }],
+      surfaceAgentStatus: {},
+      surfaceActivity: {},
+      surfaceAgent: { 'pty-live': { name: 'Claude Code', status: 'running' } },
+    };
+    const rows = selectFleetPanes(st as never);
+    const stRow = rows.find((r) => r.paneId === 'p-st');
+    expect(stRow?.ptyId).toBe('pty-live');
   });
 });

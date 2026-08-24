@@ -42,7 +42,7 @@ function branchDirection(pane: Pane): string | undefined {
   return pane.type === 'branch' ? pane.direction : undefined;
 }
 
-function mount(paneId: string): void {
+function mount(paneId: string, props: { actionsMode?: 'full' | 'overflow' | 'none' } = {}): void {
   container = document.createElement('div');
   document.body.appendChild(container);
   root = createRoot(container);
@@ -55,6 +55,7 @@ function mount(paneId: string): void {
         workspace: ws,
         paneId,
         paneActive: true,
+        ...props,
         onSelect: () => undefined,
         onClose: () => undefined,
         onSplitHorizontal: () => useStore.getState().splitPane(paneId, 'horizontal', ws.id),
@@ -71,6 +72,25 @@ function click(action: string): void {
   expect(btn, `button [data-pane-action="${action}"] should be present`).not.toBeNull();
   act(() => {
     btn!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+  });
+}
+
+/** Open the collapsed cluster's vertical menu. */
+function openOverflowMenu(): void {
+  const trigger = container.querySelector<HTMLButtonElement>('[data-pane-overflow-trigger]');
+  expect(trigger, 'the ⋮ trigger should be present').not.toBeNull();
+  act(() => {
+    trigger!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+  });
+}
+
+/** Click an item in the menu. Queries the DOCUMENT: the menu portals out of
+ *  the pane (#957), which is the whole reason it can escape a narrow one. */
+function clickMenu(action: string): void {
+  const item = document.querySelector<HTMLButtonElement>(`[data-pane-menu-action="${action}"]`);
+  expect(item, `menu item [data-pane-menu-action="${action}"] should be present`).not.toBeNull();
+  act(() => {
+    item!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
   });
 }
 
@@ -107,7 +127,7 @@ describe('SurfaceTabs pane action cluster', () => {
     const actions = Array.from(
       container.querySelectorAll('[data-pane-action]'),
     ).map((el) => el.getAttribute('data-pane-action'));
-    expect(actions).toEqual(['split-right', 'split-down', 'new-browser', 'zoom']);
+    expect(actions).toEqual(['split-right', 'split-down', 'new-browser', 'stash', 'zoom']);
     expect(container.querySelector('[data-pane-action="new-terminal"]')).toBeNull();
   });
 
@@ -121,7 +141,7 @@ describe('SurfaceTabs pane action cluster', () => {
     ).map((el) => el.getAttribute('data-pane-action'));
     // On the tab strip, BEFORE the cluster — it adds a surface, it does not
     // act on the pane.
-    expect(actions).toEqual(['new-terminal', 'split-right', 'split-down', 'new-browser', 'zoom']);
+    expect(actions).toEqual(['new-terminal', 'split-right', 'split-down', 'new-browser', 'stash', 'zoom']);
     const btn = container.querySelector('[data-pane-action="new-terminal"]');
     // One click, no menu — with the browser back in the cluster there is only
     // one thing left for it to do.
@@ -301,5 +321,240 @@ describe('SurfaceTabs pane cluster', () => {
     act(() => { useStore.getState().setAgentToolbarEnabled(false); });
     mountWithTerminal(rootLeafId(), true);
     expect(container.querySelector('[data-pane-action="split-right"]')).not.toBeNull();
+  });
+});
+
+// ─── Narrow panes drop the cluster entirely ─────────────────────────────────
+//
+// Pane.tsx measures itself and combines the Settings toggle with the width
+// check; SurfaceTabs just honors the answer. The fallback is the EXISTING
+// cluster-off chrome (Pane's hover-revealed corner ⤢), not a new small layout.
+
+describe('SurfaceTabs — actionsMode override', () => {
+  it('renders no full cluster when the pane cannot afford it', () => {
+    mount(rootLeafId(), { actionsMode: 'overflow' });
+
+    const actions = Array.from(
+      container.querySelectorAll('[data-pane-action]'),
+    ).map((el) => el.getAttribute('data-pane-action'));
+    expect(actions).toEqual([]);
+  });
+
+  it('still renders the tab strip — the thing the collapse exists to protect', () => {
+    mount(rootLeafId(), { actionsMode: 'overflow' });
+    expect(container.querySelector('[data-pane-tab]') ?? container.textContent).toBeTruthy();
+  });
+
+  it('falls back to the Settings toggle when the prop is omitted', () => {
+    mount(rootLeafId());
+    expect(container.querySelector('[data-pane-action="stash"]')).not.toBeNull();
+  });
+
+  it("renders nothing at `none` — the Settings toggle's mode", () => {
+    mount(rootLeafId(), { actionsMode: 'none' });
+    expect(container.querySelector('[data-pane-overflow-trigger]')).toBeNull();
+    expect(container.querySelector('[data-pane-action]')).toBeNull();
+  });
+});
+
+// ─── The collapsed cluster ──────────────────────────────────────────────────
+//
+// One ⋮ instead of five buttons, opening the same actions as a vertical menu.
+// The menu portals to document.body (a pane owns its stacking context and
+// clips its overflow, #957), so every assertion here queries the DOCUMENT, not
+// the container.
+
+describe('SurfaceTabs — the ⋮ overflow menu', () => {
+  it('offers one trigger in place of the cluster', () => {
+    mount(rootLeafId(), { actionsMode: 'overflow' });
+    const trigger = container.querySelectorAll('[data-pane-overflow-trigger]');
+    expect(trigger).toHaveLength(1);
+    expect(document.querySelector('[data-pane-actions-menu]')).toBeNull();
+  });
+
+  it('opens the menu with every action the full cluster has', () => {
+    mount(rootLeafId(), { actionsMode: 'overflow' });
+    openOverflowMenu();
+
+    const menu = document.querySelector('[data-pane-actions-menu]');
+    expect(menu).not.toBeNull();
+    const keys = Array.from(menu!.querySelectorAll('[data-pane-menu-action]')).map((el) =>
+      el.getAttribute('data-pane-menu-action'),
+    );
+    expect(keys.sort()).toEqual(['new-browser', 'split-down', 'split-right', 'stash', 'zoom']);
+  });
+
+  it('splits this pane from the menu', () => {
+    mount(rootLeafId(), { actionsMode: 'overflow' });
+    openOverflowMenu();
+    clickMenu('split-right');
+
+    const ws = activeWs();
+    expect(getLeafPanes(ws.rootPane)).toHaveLength(2);
+    expect(branchDirection(ws.rootPane)).toBe('horizontal');
+  });
+
+  // The action that had NO other entry point: the palette's Open Browser passes
+  // forceNew, which splits off another pane. On a pane already too narrow to
+  // hold its own buttons, that is the opposite of what was asked for.
+  it('adds a browser tab to THIS pane from the menu', () => {
+    const paneId = rootLeafId();
+    mount(paneId, { actionsMode: 'overflow' });
+    openOverflowMenu();
+    clickMenu('new-browser');
+
+    const leaf = getLeafPanes(activeWs().rootPane).find((p) => p.id === paneId);
+    expect(leaf!.surfaces.some((s) => s.surfaceType === 'browser')).toBe(true);
+    // Still ONE pane: the layout did not get more crowded to answer the click.
+    expect(getLeafPanes(activeWs().rootPane)).toHaveLength(1);
+  });
+
+  it('zooms this pane from the menu', () => {
+    const paneId = rootLeafId();
+    mount(paneId, { actionsMode: 'overflow' });
+    openOverflowMenu();
+    clickMenu('zoom');
+    expect(useStore.getState().zoomedPaneId).toBe(paneId);
+  });
+
+  it('closes after a selection', () => {
+    mount(rootLeafId(), { actionsMode: 'overflow' });
+    openOverflowMenu();
+    clickMenu('zoom');
+    expect(document.querySelector('[data-pane-actions-menu]')).toBeNull();
+  });
+
+  it('closes on Escape without acting', () => {
+    const paneId = rootLeafId();
+    mount(paneId, { actionsMode: 'overflow' });
+    // zoomedPaneId is app-global and survives the workspace swap in beforeEach,
+    // so assert this pane was never zoomed rather than that nothing is.
+    expect(useStore.getState().zoomedPaneId).not.toBe(paneId);
+    openOverflowMenu();
+    act(() => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    });
+    expect(document.querySelector('[data-pane-actions-menu]')).toBeNull();
+    expect(useStore.getState().zoomedPaneId).not.toBe(paneId);
+  });
+
+  it('opens from a right-click on a full-width header too — no ⋮ required', () => {
+    mount(rootLeafId());
+    expect(container.querySelector('[data-pane-overflow-trigger]')).toBeNull();
+    expect(container.querySelector('[data-pane-action="stash"]')).not.toBeNull();
+
+    act(() => {
+      container.firstElementChild!.dispatchEvent(
+        new MouseEvent('contextmenu', { bubbles: true, cancelable: true }),
+      );
+    });
+    expect(document.querySelector('[data-pane-actions-menu]')).not.toBeNull();
+  });
+
+  it('leaves the native context menu alone on a rename input', () => {
+    mount(rootLeafId(), { actionsMode: 'overflow' });
+    // Enter pane-rename mode the way a user does: double-click the label.
+    act(() => {
+      container.querySelector('[data-pane-label]')!.dispatchEvent(
+        new MouseEvent('dblclick', { bubbles: true }),
+      );
+    });
+    const input = container.querySelector<HTMLInputElement>('[data-pane-label-input]');
+    expect(input, 'rename input should be editing').not.toBeNull();
+
+    let notCanceled = true;
+    act(() => {
+      notCanceled = input!.dispatchEvent(
+        new MouseEvent('contextmenu', { bubbles: true, cancelable: true }),
+      );
+    });
+    // Not preventDefault-ed (the native cut/copy/paste menu would show), and
+    // the pane menu did not open over it.
+    expect(notCanceled).toBe(true);
+    expect(document.querySelector('[data-pane-actions-menu]')).toBeNull();
+  });
+
+  it('moves focus into the menu and hands it back to the trigger on close', () => {
+    mount(rootLeafId(), { actionsMode: 'overflow' });
+    const trigger = container.querySelector<HTMLButtonElement>('[data-pane-overflow-trigger]')!;
+    // A real click focuses the button before the click handler runs; jsdom's
+    // dispatchEvent does not, so establish that state explicitly.
+    act(() => { trigger.focus(); });
+    openOverflowMenu();
+
+    const first = document.querySelector<HTMLButtonElement>('[data-pane-menu-action]');
+    expect(document.activeElement).toBe(first);
+
+    act(() => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    });
+    expect(document.querySelector('[data-pane-actions-menu]')).toBeNull();
+    expect(document.activeElement).toBe(trigger);
+  });
+
+  it('lets an outside click KEEP the focus it earned — no snatch-back to the trigger', () => {
+    mount(rootLeafId(), { actionsMode: 'overflow' });
+    const trigger = container.querySelector<HTMLButtonElement>('[data-pane-overflow-trigger]')!;
+    act(() => { trigger.focus(); });
+    openOverflowMenu();
+
+    // A real outside mousedown focuses its target BEFORE the menu's cleanup
+    // runs (focus is the browser's default mousedown action). Model that
+    // order: focus the outside element, then deliver the closing mousedown.
+    const outside = container.querySelector<HTMLButtonElement>('[data-pane-label]')
+      ? container.querySelector<HTMLElement>('[data-pane-label]')!
+      : container.firstElementChild as HTMLElement;
+    const outsideBtn = document.createElement('button');
+    container.appendChild(outsideBtn);
+    act(() => {
+      outsideBtn.focus();
+      outside.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+    });
+
+    expect(document.querySelector('[data-pane-actions-menu]')).toBeNull();
+    // Measured live before the fix: focus bounced back to the ⋮ trigger here.
+    expect(document.activeElement).toBe(outsideBtn);
+    outsideBtn.remove();
+  });
+
+  it('walks the items with the arrow keys, wrapping at both ends', () => {
+    mount(rootLeafId(), { actionsMode: 'overflow' });
+    openOverflowMenu();
+    const items = [...document.querySelectorAll<HTMLButtonElement>('[data-pane-menu-action]')];
+    expect(items.length).toBe(5);
+    const press = (key: string) => act(() => {
+      document.activeElement!.dispatchEvent(
+        new KeyboardEvent('keydown', { key, bubbles: true }),
+      );
+    });
+
+    expect(document.activeElement).toBe(items[0]);
+    press('ArrowDown');
+    expect(document.activeElement).toBe(items[1]);
+    press('ArrowUp');
+    press('ArrowUp'); // wraps 0 → last
+    expect(document.activeElement).toBe(items[4]);
+    press('ArrowDown'); // wraps last → 0
+    expect(document.activeElement).toBe(items[0]);
+    press('End');
+    expect(document.activeElement).toBe(items[4]);
+    press('Home');
+    expect(document.activeElement).toBe(items[0]);
+  });
+
+  // The Settings toggle is a deliberate "I want no pane chrome" choice, not a
+  // width accident: honour it on right-click too.
+  it('stays closed on right-click when the operator turned pane actions off', () => {
+    act(() => {
+      useStore.getState().setPaneActionsVisible(false);
+    });
+    mount(rootLeafId());
+
+    act(() => {
+      container.firstElementChild!.dispatchEvent(
+        new MouseEvent('contextmenu', { bubbles: true, cancelable: true }),
+      );
+    });
+    expect(document.querySelector('[data-pane-actions-menu]')).toBeNull();
   });
 });

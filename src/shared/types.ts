@@ -127,6 +127,40 @@ export interface PaneBranch {
 
 export type Pane = PaneLeaf | PaneBranch;
 
+// === Stashed pane: owned by a workspace, absent from its layout ===
+/**
+ * A pane the user took OUT of the layout without killing it. The daemon session
+ * keeps running and replays on the way back; only the React tree lets go. Every
+ * "what does this workspace own" question (PTY reconcile, teardown, the pane
+ * cap, ordinal high-water, A2A address resolution) must count these — see
+ * `getWorkspaceLeafPanes`.
+ *
+ * There is deliberately no `liveness` field: whether a stashed pane is still
+ * alive is DERIVED from its surfaces' ptyIds (see `stashedPaneLiveness`).
+ * Storing it would create a second truth that reconcile could drift from.
+ */
+export interface StashedPane {
+  pane: PaneLeaf;
+  /**
+   * Where it sat when it was stashed. Enough to put it back NEXT TO ITS FORMER
+   * NEIGHBOUR — not to rebuild the original topology. When the sibling was a
+   * branch we anchor on that branch's first leaf, which loses the parent shape,
+   * so unstash creates a fresh branch beside the anchor rather than restoring
+   * the old one. The UI copy says "next to its former neighbour" for that
+   * reason; anything stronger would be a promise the data cannot keep.
+   */
+  origin?: {
+    /** The sibling leaf it was attached beside. */
+    anchorPaneId: string;
+    direction: 'horizontal' | 'vertical';
+    /** True when the stashed pane was the FIRST child of the split. */
+    sourceFirst: boolean;
+    /** Exactly two entries: [stashed, anchor] in child order. */
+    sizes?: number[];
+  };
+  stashedAt: number;
+}
+
 // === Workspace Profile ===
 // Per-workspace process profile applied to NEW panes only. Generic by design:
 // it carries environment variables and an optional startup command, so it can
@@ -194,6 +228,13 @@ export interface Workspace {
    * backward-compat.
    */
   nextPaneOrdinal?: number;
+  /**
+   * Panes the user stashed out of the layout. They are NOT in `rootPane`, but
+   * the workspace still owns them and their daemon sessions are still running.
+   * Optional for backward-compat with pre-stash sessions (the `wsOrdinal`
+   * precedent) — loadSession normalizes it and stashPane creates it on demand.
+   */
+  stashedPanes?: StashedPane[];
 }
 
 // === Cross-Pane Search (T-A) ===
@@ -604,6 +645,9 @@ export const DEFAULT_PREFIX_CONFIG: PrefixConfig = {
     // arrows pair with the lowercase ones above (focus vs move the pane).
     '{': 'swapPanePrev',
     '}': 'swapPaneNext',
+    // #977 — stash the active pane. `!` is tmux's break-pane, which is the
+    // closest gesture in muscle memory: take this pane out of the layout.
+    '!': 'stashPane',
     'K': 'movePaneUp',
     'J': 'movePaneDown',
     'H': 'movePaneLeft',

@@ -186,6 +186,12 @@ export const METHOD_CAPABILITY: Record<RpcMethod, RequiredCapability> = {
   'pane.focus':  { capability: 'pane.read', riskClass: 'pane-lifecycle' },
   'pane.split':  { capability: 'pane.create', riskClass: 'pane-lifecycle' },
   'pane.close':  { capability: 'pane.create', riskClass: 'pane-lifecycle' },
+  // #977 — stash/unstash change the LAYOUT, not the pane's existence. They sit
+  // under pane.create (the pane-lifecycle capability) because they rearrange
+  // what pane.split arranged; neither destroys anything, so neither needs a
+  // stronger grant than the split that created the pane.
+  'pane.stash':   { capability: 'pane.create', riskClass: 'pane-lifecycle' },
+  'pane.unstash': { capability: 'pane.create', riskClass: 'pane-lifecycle' },
   'pane.search': { capability: 'pane.search', riskClass: 'terminal-content' },
 
   // --- Metadata (spec §3.4) ---

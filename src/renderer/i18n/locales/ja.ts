@@ -22,10 +22,33 @@ export const ja = {
   'workspace.copyInfo': 'セッション情報をコピー',
   'workspace.copied': 'コピーしました！',
 
+  // Roster
+  'roster.stashedCount': '退避 {count}',
+  'roster.stashedOnly': '退避 {count}',
+  'roster.stashedExited': 'セッション終了',
+  'roster.unstashAction': 'レイアウトに戻す',
+  'roster.recoverAction': '戻して復旧',
+  // The stash undo toast's button — the safety net the whole gesture leans on.
+  'common.undo': '元に戻す',
+
   // Pane
   'pane.empty': '空のペイン',
   'pane.splitRight': '右に分割',
   'pane.splitDown': '下に分割',
+  'pane.moreActions': 'ペイン操作',
+  'pane.maxLeavesReachedWithStash': 'ペイン数の上限に達しました（{count}、うち退避 {stashed}）。退避中のペインを戻して閉じるか、表示中のペインを閉じてください。',
+
+  // Pane stash (#977) — the pane leaves the layout, its session keeps running.
+  'pane.stash': 'ペインを退避',
+  'pane.stashHint': 'レイアウトから外します — セッションは動き続けます',
+  'pane.unstash': '戻す',
+  'pane.stashed': '{name} を退避しました。セッションは動き続けています。',
+  'pane.unstashedToNeighbor': '退避前の隣のペインの横に戻しました。',
+  'pane.unstashedFallback': '退避前の隣のペインがないため、アクティブなペインの横に配置しました。',
+  'pane.stashLastPane': '画面に残っている唯一のペインです。退避すると何も表示されなくなります。',
+  'pane.stashEmptyPane': 'このペインは空です — 動かし続けるセッションも、戻すものもありません。',
+  'pane.stashNoDaemon': 'デーモンに接続していません。退避中のセッションを保持して再生するのはデーモンなので、いま退避すると出力が失われます。',
+  'pane.stashBlockedSurface': 'このペインには {type} タブがあります。退避できるのはターミナルとブラウザだけです — エディタはアンマウントされると未保存の変更が失われます。',
 
   // Surface
   'surface.terminal': 'ターミナル',
@@ -66,6 +89,7 @@ export const ja = {
   'palette.cmd.newSurface': '新しいサーフェス',
   'palette.cmd.splitRight': '右に分割',
   'palette.cmd.splitDown': '下に分割',
+  'palette.cmd.stashPane': 'ペインを退避 (セッションは動き続けます)',
   'palette.cmd.showNotifications': '通知を表示',
   'palette.cmd.openSettings': '設定を開く',
   'palette.cmd.openBrowser': 'ブラウザを開く',
@@ -214,6 +238,7 @@ export const ja = {
   'settings.prefix.focusDown': '下にフォーカス',
   'settings.prefix.focusLeft': '左にフォーカス',
   'settings.prefix.focusRight': '右にフォーカス',
+  'settings.prefix.stashPane': 'ペインを退避',
 
   // Custom keybindings
   'settings.customKeybindings': 'カスタムキーバインド',

@@ -31,7 +31,13 @@ export interface WorkspaceListEntry {
   };
   /** The active pane's active surface PTY id. Null when none has spawned. */
   activePtyId?: string | null;
-  /** Union of every surface's PTY id across the whole workspace. */
+  /**
+   * Union of every surface's PTY id the workspace OWNS — including panes the
+   * user has STASHED out of the layout, whose sessions are still running
+   * (#977). Main's hook router uses this as the membership test for a signal's
+   * `WMUX_PTY_ID`, so a stashed pane missing here would have its hooks
+   * misrouted to the workspace's active pane. Visible panes come first.
+   */
   ptyIds?: string[];
 }
 

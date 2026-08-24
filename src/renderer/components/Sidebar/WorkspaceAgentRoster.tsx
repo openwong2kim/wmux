@@ -4,10 +4,16 @@ import {
   createWorkspaceAgentRosterSelector,
   type WorkspaceAgentRosterRow,
 } from '../../stores/selectors/workspaceAgentRoster';
-import { focusPaneByPtyId } from '../../hooks/useNotificationListener';
+import { focusNotificationTarget, focusPaneByPtyId } from '../../hooks/useNotificationListener';
 import { useT } from '../../hooks/useT';
-import { IconChevron } from '../icons';
+import { IconEye, IconEyeOff, IconChevron } from '../icons';
+import { FOCUS_RING } from '../focusRing';
+import { timeAgo } from '../../utils/timeAgo';
 import { AGENT_STATUS_ICON } from './agentStatusIcon';
+
+/** How long the just-stashed row stays highlighted. Long enough to catch the
+ *  eye after the pane vanishes from the layout, short enough not to linger. */
+const STASH_PULSE_MS = 1500;
 
 interface WorkspaceAgentRosterProps {
   workspaceId: string;
@@ -80,6 +86,31 @@ function WorkspaceAgentRoster({ workspaceId, isActive }: WorkspaceAgentRosterPro
   );
   const roster = useStore(selector);
   const [open, setOpen] = useState(isActive);
+  // #977 — a pane that was just stashed disappeared from the layout. If the
+  // list it moved into is collapsed, the gesture is indistinguishable from a
+  // delete, so open the list and flash the row once.
+  const stashPulse = useStore((s) => s.stashPulse);
+  const pulsedPaneId = stashPulse?.workspaceId === workspaceId ? stashPulse.paneId : null;
+  const [pulsingPaneId, setPulsingPaneId] = useState<string | null>(null);
+
+  // TWO effects on purpose. Consuming the pulse and owning its timeout in one
+  // effect is self-defeating: clearStashPulse() nulls `pulsedPaneId` on the very
+  // next render, the effect re-runs, its cleanup clears the pending timeout, and
+  // the highlight never turns off — a permanent bar identical to the focused
+  // style. Splitting them lets the consume run once and the timeout live on its
+  // own key.
+  useEffect(() => {
+    if (!pulsedPaneId) return;
+    setOpen(true);
+    setPulsingPaneId(pulsedPaneId);
+    useStore.getState().clearStashPulse();
+  }, [pulsedPaneId]);
+
+  useEffect(() => {
+    if (!pulsingPaneId) return;
+    const timer = setTimeout(() => setPulsingPaneId(null), STASH_PULSE_MS);
+    return () => clearTimeout(timer);
+  }, [pulsingPaneId]);
 
   // Newly selected workspaces reveal their agents automatically; workspaces
   // that move to the background collapse back to the compact summary. The user
@@ -88,13 +119,21 @@ function WorkspaceAgentRoster({ workspaceId, isActive }: WorkspaceAgentRosterPro
     setOpen(isActive);
   }, [isActive]);
 
-  if (roster.agentCount === 0) return null;
+  if (roster.agentCount === 0 && roster.stashedCount === 0) return null;
 
   // Computed once per render, not per row: the vendor column earns its width
   // only when the workspace actually mixes vendors.
   const mixedVendors = rosterHasMixedVendors(roster.rows);
 
-  const countLabel = t('workspace.agentCount', { count: roster.agentCount });
+  // A workspace whose only roster entries are stashed panes leads with the
+  // stash, not with "Agents 0" — the zero is the least useful number on the row
+  // and would push the count that matters off the end of a 240px sidebar.
+  const countLabel =
+    roster.agentCount === 0
+      ? t('roster.stashedOnly', { count: roster.stashedCount })
+      : roster.stashedCount > 0
+        ? `${t('workspace.agentCount', { count: roster.agentCount })} · ${t('roster.stashedCount', { count: roster.stashedCount })}`
+        : t('workspace.agentCount', { count: roster.agentCount });
   const disclosureLabel = open
     ? t('workspace.hideAgents')
     : t('workspace.showAgents');
@@ -141,29 +180,79 @@ function WorkspaceAgentRoster({ workspaceId, isActive }: WorkspaceAgentRosterPro
 
       {open && (
         <div className="mt-0.5 ml-1 border-l border-[var(--border-soft)] pl-1.5">
-          {roster.rows.map((row) => {
+          {roster.rows.map((row, index) => {
+            // The one-line group header, immediately before the FIRST stashed
+            // row. With six of seven panes stashed the list otherwise looked
+            // untouched — same rows, same red "Waiting" labels — because an 8px
+            // glyph and a relative time are not enough to carry "these are not
+            // on your screen". A rule and a count are. It costs one line, and
+            // only when there is something below it.
+            const startsStashedGroup = !!row.stashed && !roster.rows[index - 1]?.stashed;
+            const exited = row.stashedLiveness === 'exited';
             const statusIcon = AGENT_STATUS_ICON[row.status];
-            const statusLabel = t(statusIcon.labelKey);
-            const primary = rosterPrimaryLabel(row);
+            // An exited stashed pane has no agent state left to report; saying
+            // "session ended" is both the status and the reason the row looks
+            // different from its neighbours.
+            const statusLabel = exited ? t('roster.stashedExited') : t(statusIcon.labelKey);
+            // A stashed SHELL pane has no agent name, and a shell surface often has
+            // no title either — without this the row would render with no text at
+            // all. Visible rows always carry an agent name, so it is a no-op there.
+            const primary = rosterPrimaryLabel(row) || t('surface.terminal');
             const secondary = rosterSecondaryLabel(row, { showVendor: mixedVendors });
             const detail = row.pendingQuestion ?? row.activity;
-            const rowAriaLabel = [primary, secondary, statusLabel, detail]
+            // The verb rides the accessible name and the tooltip, NOT the
+            // visible status slot. Swapping the status text on hover would hide
+            // the one thing a stashed row exists to prove — that the session is
+            // still alive and still moving — at exactly the moment the user is
+            // looking at it, and would leave keyboard users with no verb at all.
+            const verb = row.stashed
+              ? (exited ? t('roster.recoverAction') : t('roster.unstashAction'))
+              : undefined;
+            const stashedAgo = row.stashedAt ? timeAgo(row.stashedAt) : undefined;
+            const rowAriaLabel = [primary, secondary, statusLabel, stashedAgo, detail, verb]
               .filter(Boolean)
               .join(', ');
             return (
-              <div key={row.ptyId} className="min-w-0">
+              // Keyed by paneId for stashed rows: an exited pane has no ptyId
+              // left, and two of them would collide on the empty string.
+              <div key={row.stashed ? row.paneId : row.ptyId} className="min-w-0">
+                {startsStashedGroup && (
+                  <div
+                    className="mt-1 flex items-center gap-1.5 border-t border-[var(--border-soft)] pt-1 pr-1 text-[8px] font-mono uppercase tracking-widest text-[var(--text-muted)]"
+                    // Not a heading: the rows below it are already listed under
+                    // the disclosure's own accessible name, and announcing a
+                    // second level would imply a nesting that is not there.
+                    aria-hidden="true"
+                  >
+                    <IconEyeOff size={9} />
+                    <span className="truncate">{t('roster.stashedCount', { count: roster.stashedCount })}</span>
+                  </div>
+                )}
                 <button
                   type="button"
                   draggable={false}
-                  className={`flex w-full min-w-0 items-center gap-1.5 rounded px-1 py-[3px] text-left transition-colors ${
+                  className={`group/roster-row flex w-full min-w-0 items-center gap-1.5 rounded px-1 py-[3px] text-left transition-colors ${FOCUS_RING} ${
                     row.isFocused
                       ? 'bg-[var(--bg-overlay)]'
                       : 'hover:bg-[rgba(var(--bg-surface-rgb),0.65)]'
-                  }`}
+                  } ${pulsingPaneId === row.paneId ? 'bg-[var(--bg-overlay)]' : ''}`}
+                  style={pulsingPaneId === row.paneId ? { transition: 'background-color 150ms ease-out' } : undefined}
                   title={rowAriaLabel}
                   aria-label={rowAriaLabel}
                   onClick={(event) => {
                     event.stopPropagation();
+                    if (row.stashed) {
+                      // focusNotificationTarget resolves ptyId → surfaceId and
+                      // unstashes on the way, so an exited pane (no ptyId left)
+                      // still lands: it re-attaches into the layout and the
+                      // existing dead-pane recovery offer renders in its spot,
+                      // which is where the user can see WHAT is being recovered.
+                      focusNotificationTarget(() => useStore.getState(), {
+                        ptyId: row.ptyId || null,
+                        surfaceId: row.surfaceId,
+                      });
+                      return;
+                    }
                     focusPaneByPtyId(() => useStore.getState(), row.ptyId);
                   }}
                   onDoubleClick={(event) => event.stopPropagation()}
@@ -172,6 +261,12 @@ function WorkspaceAgentRoster({ workspaceId, isActive }: WorkspaceAgentRosterPro
                     event.stopPropagation();
                   }}
                 >
+                  {/* Filled, not a hollow ring. A ring drawn with box-shadow
+                      disappears entirely under forced-colors, taking the row's
+                      only status signal with it — and dimming would say "dead"
+                      about a pane whose whole claim is the opposite. The stash
+                      is signalled by the archive glyph, the list position, and
+                      the label instead. */}
                   <span
                     className={`sidebar-dot h-1.5 w-1.5 flex-none rounded-full ${statusIcon.glowClass}`}
                     style={{ backgroundColor: statusIcon.dotVar }}
@@ -188,12 +283,36 @@ function WorkspaceAgentRoster({ workspaceId, isActive }: WorkspaceAgentRosterPro
                       {secondary}
                     </span>
                   </span>
+                  {row.stashed && (
+                    // The ICON is the verb slot: eye-off at rest ("not on your
+                    // screen"), eye-on under the pointer or keyboard focus
+                    // ("bring it back"). The STATUS LABEL beside it never moves
+                    // — that is the row's proof of life, and hiding it on hover
+                    // would take it away exactly when the user is looking.
+                    // CSS-only so it works identically for pointer and keyboard.
+                    <span className="flex-none text-[var(--text-muted)]" aria-hidden="true">
+                      <span className="block group-hover/roster-row:hidden group-focus-visible/roster-row:hidden">
+                        <IconEyeOff size={9} />
+                      </span>
+                      <span className="hidden text-[var(--text-sub)] group-hover/roster-row:block group-focus-visible/roster-row:block">
+                        <IconEye size={9} />
+                      </span>
+                    </span>
+                  )}
                   <span
-                    className={`flex-none whitespace-nowrap text-[8px] ${statusIcon.className}`}
+                    className={`flex-none whitespace-nowrap text-[8px] ${exited ? 'text-[var(--text-muted)]' : statusIcon.className}`}
                   >
                     {statusLabel}
                   </span>
                 </button>
+                {/* How long it has been off-screen. Free cost visibility: a
+                    stashed agent burns tokens whether or not anyone remembers
+                    it, and "3d ago" is the cheapest possible reminder. */}
+                {row.stashed && stashedAgo && (
+                  <div className="truncate pl-[18px] pr-1 text-[8px] text-[var(--text-muted)]">
+                    {stashedAgo}
+                  </div>
+                )}
                 {/* 확인 필요일 때만 질문을 빨강 2번째 줄로 편다(실제로 봐야 하는 신호). */}
                 {row.pendingQuestion && (
                   <div

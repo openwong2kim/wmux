@@ -2,6 +2,9 @@ export const ko = {
   // App lifecycle
   'app.restoringPanes': '패널 복원 중…',
 
+  // Common
+  'common.undo': '되돌리기',
+
   // Sidebar
   'sidebar.workspaces': '워크스페이스',
   'sidebar.newWorkspace': '새 워크스페이스',
@@ -28,6 +31,11 @@ export const ko = {
   'workspace.agentNeedsAttention': '확인 필요 {count}',
   'workspace.showAgents': '에이전트 목록 펼치기',
   'workspace.hideAgents': '에이전트 목록 접기',
+  'roster.stashedCount': '보관 {count}',
+  'roster.stashedOnly': '보관함 {count}',
+  'roster.stashedExited': '세션 종료됨',
+  'roster.unstashAction': '레이아웃으로 꺼내기',
+  'roster.recoverAction': '꺼내서 복구하기',
   'workspace.close': '워크스페이스 닫기',
   'workspace.copyInfo': '세션 정보 복사',
   'workspace.copied': '복사됨!',
@@ -39,7 +47,20 @@ export const ko = {
   'pane.empty': '빈 창',
   'pane.splitRight': '오른쪽 분할',
   'pane.splitDown': '아래 분할',
+  'pane.moreActions': '페인 작업',
   'pane.maxLeavesReached': '창 분할 한도 도달 ({count}개). 창을 닫고 다시 시도하세요.',
+  'pane.maxLeavesReachedWithStash': '페인 한도 도달 ({count}개, 보관 {stashed}개 포함). 보관함에서 꺼내 닫거나, 보이는 페인을 닫으세요.',
+
+  'pane.stash': '페인 치우기',
+  'pane.stashHint': '레이아웃에서 치웁니다 — 세션은 계속 실행됩니다',
+  'pane.unstash': '꺼내기',
+  'pane.stashed': '{name} 치웠습니다. 세션은 계속 실행 중입니다.',
+  'pane.unstashedToNeighbor': '치우기 전 이웃 옆으로 돌아왔습니다.',
+  'pane.unstashedFallback': '치우기 전 이웃이 없어 활성 페인 옆에 두었습니다.',
+  'pane.stashLastPane': '화면에 남은 유일한 페인입니다. 치우면 볼 것이 없어집니다.',
+  'pane.stashEmptyPane': '빈 페인입니다 — 계속 돌릴 세션도, 다시 꺼낼 것도 없습니다.',
+  'pane.stashNoDaemon': '데몬 연결이 없습니다. 치운 동안 세션을 붙들고 재생하는 건 데몬이라, 지금 치우면 출력이 유실됩니다.',
+  'pane.stashBlockedSurface': '이 페인에 {type} 탭이 있습니다. 터미널과 브라우저만 치울 수 있습니다 — 에디터는 언마운트되면 저장 안 된 내용이 사라집니다.',
 
   // Surface
   'surface.terminal': '터미널',
@@ -80,6 +101,7 @@ export const ko = {
   'palette.cmd.newSurface': '새 서피스',
   'palette.cmd.splitRight': '오른쪽 분할',
   'palette.cmd.splitDown': '아래 분할',
+  'palette.cmd.stashPane': '현재 페인 치우기 (세션은 계속 실행)',
   'palette.cmd.movePane.left': '페인 왼쪽으로 이동',
   'palette.cmd.movePane.right': '페인 오른쪽으로 이동',
   'palette.cmd.movePane.up': '페인 위로 이동',
@@ -510,6 +532,7 @@ export const ko = {
   'settings.prefix.movePaneRight': '페인 오른쪽으로 이동',
   'settings.prefix.swapPanePrev': '이전 페인과 교환',
   'settings.prefix.swapPaneNext': '다음 페인과 교환',
+  'settings.prefix.stashPane': '페인 치우기',
 
   // Custom keybindings
   'settings.customKeybindings': '커스텀 키바인딩',

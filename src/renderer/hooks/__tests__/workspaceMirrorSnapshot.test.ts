@@ -1,10 +1,11 @@
 import { describe, it, expect } from 'vitest';
 import {
   findActivePtyId,
-  collectAllPtyIds,
+  collectOwnedPtyIds,
   buildWorkspaceListEntries,
   buildFleetSnapshots,
   buildWorkspaceMirrorPayload,
+  buildRoleBindings,
 } from '../workspaceMirrorSnapshot';
 import type { Workspace, Pane, Surface, AgentStatus } from '../../../shared/types';
 import type { FleetSelectorState } from '../../stores/selectors/fleet';
@@ -64,14 +65,30 @@ function state(): FleetSelectorState {
   };
 }
 
-describe('findActivePtyId / collectAllPtyIds', () => {
+describe('findActivePtyId / collectOwnedPtyIds', () => {
   it('resolves the active pane + active surface pty', () => {
     expect(findActivePtyId(w1.rootPane, w1.activePaneId)).toBe('pty-1');
     // p2a active surface is s2a → pty-2a (NOT surfaces[0]).
     expect(findActivePtyId(w2.rootPane, w2.activePaneId)).toBe('pty-2a');
   });
   it('collects every surface pty across the whole tree', () => {
-    expect(collectAllPtyIds(w2.rootPane)).toEqual(['pty-2a-first', 'pty-2a', 'pty-2b']);
+    expect(collectOwnedPtyIds(w2)).toEqual(['pty-2a-first', 'pty-2a', 'pty-2b']);
+  });
+
+  it('includes STASHED panes, visible ones first (#977)', () => {
+    // Main's resolvePtyIdForSignal uses this array as the membership test for a
+    // hook's WMUX_PTY_ID. A stashed pane missing from it does not fail loudly —
+    // the resolver falls through to the workspace's ACTIVE pane, and the
+    // stashed agent's turn-end lands on whichever pane the user is looking at.
+    const stashed = { ...w1, stashedPanes: [{
+      pane: leaf('p1-stashed', [surface('s-stashed', 'pty-stashed')]) as Extract<Pane, { type: 'leaf' }>,
+      stashedAt: 1,
+    }] };
+    expect(collectOwnedPtyIds(stashed)).toEqual(['pty-1', 'pty-stashed']);
+    // Visible first, so the `ptyIds[0]` fallbacks around resolvePtyIdForSignal
+    // still land on an on-screen pane.
+    expect(collectOwnedPtyIds(stashed)[0]).toBe('pty-1');
+    expect(buildWorkspaceListEntries([stashed])[0].ptyIds).toEqual(['pty-1', 'pty-stashed']);
   });
 });
 
@@ -235,5 +252,65 @@ describe('buildWorkspaceMirrorPayload', () => {
     expect(payload.ts).toBe(5555);
     expect(payload.entries).toHaveLength(2);
     expect(payload.fleets.every((f) => f.ts === 5555)).toBe(true);
+  });
+});
+
+// ─── Workspace-OWNED walks (#977 review) ─────────────────────────────────────
+//
+// Both P1s from the three-way review had the same shape: selectFleetPanes and
+// collectOwnedPtyIds went workspace-wide with the stash feature, but these two
+// builders kept walking the visible tree. These tests reproduce each bypass
+// against the OLD behavior, so a future visible-only regression fails loudly.
+
+function stashedWorkspace(): Workspace {
+  const w = workspace(
+    'ws-s', 'stashy',
+    leaf('p-vis', [surface('s-vis', 'pty-vis')]),
+    'p-vis',
+  );
+  return {
+    ...w,
+    stashedPanes: [{
+      pane: leaf('p-st', [surface('s-st', 'pty-st')]) as Extract<Pane, { type: 'leaf' }>,
+      stashedAt: 1,
+    }],
+  };
+}
+
+describe('buildRoleBindings — stashed panes (#977)', () => {
+  it("maps a stashed pane's pty, so the mirror can never answer 'unbound' for it", () => {
+    const st = {
+      workspaces: [stashedWorkspace()],
+      surfaceAgentStatus: {},
+      surfaceActivity: {},
+      surfaceAgent: {},
+      paneRole: { 'p-st': 'builder', 'p-vis': 'builder' },
+      orchestratorRoleBindings: { builder: { agent: 'claude', model: 'sonnet' } },
+    };
+    const bindings = buildRoleBindings(st);
+    // The visible pane was always mapped; the stashed one is the regression.
+    // Ownership (collectOwnedPtyIds) lists pty-st, and resolveRoleBindingForPty
+    // treats absence as authoritative exactly when ownership knows the pty — so
+    // leaving it out let input.send skip the enforced model while stashed.
+    expect(Object.keys(bindings).sort()).toEqual(['pty-st', 'pty-vis']);
+  });
+});
+
+describe('buildFleetSnapshots — stashed panes (#977)', () => {
+  it('keeps a running stashed worker in the snapshot the deck gates read', () => {
+    const st: FleetSelectorState = {
+      workspaces: [stashedWorkspace()],
+      surfaceAgentStatus: { 'pty-st': 'running' as AgentStatus },
+      surfaceActivity: {},
+      surfaceAgent: { 'pty-st': { name: 'Claude Code', status: 'running' } },
+    };
+    const snaps = buildFleetSnapshots(st, 1);
+    const ptys = snaps.flatMap((f) => f.panes.map((p) => p.ptyId));
+    // Dropping this row told DeckHeartbeat / deck.completeWork the workspace
+    // was quiescent while a stashed agent was still mid-task.
+    expect(ptys).toContain('pty-st');
+    expect(
+      snaps.flatMap((f) => f.panes).find((p) => p.ptyId === 'pty-st')?.agentStatus,
+    ).toBe('running');
   });
 });

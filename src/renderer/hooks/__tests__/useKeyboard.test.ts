@@ -24,6 +24,7 @@ import * as path from 'node:path';
 import {
   ctrlByteForKeyCode,
   createPrefixActions,
+  resolvePrefixActionId,
   clampFontSize,
   type PrefixActionDeps,
 } from '../useKeyboard';
@@ -81,6 +82,7 @@ interface MockState {
   toggleCommandPalette: ReturnType<typeof vi.fn>;
   focusPaneDirection: ReturnType<typeof vi.fn>;
   setCheatSheetForceShown: ReturnType<typeof vi.fn>;
+  stashPane: ReturnType<typeof vi.fn>;
 }
 
 function makeLeaf(paneId: string, ptyIds: string[]): Pane {
@@ -128,6 +130,7 @@ function makeMockStore(overrides: Partial<MockState> = {}): {
     toggleCommandPalette: vi.fn(),
     focusPaneDirection: vi.fn(),
     setCheatSheetForceShown: vi.fn(),
+    stashPane: vi.fn(),
     ...overrides,
   };
   const store = {
@@ -538,5 +541,73 @@ describe('useTerminal — zoom combos bubble past xterm (#171)', () => {
     // letting useKeyboard zoom. Match the guard that lists the keys + codes.
     expect(src).toMatch(/e\.key === '=' \|\| e\.key === '-' \|\| e\.key === '0'/);
     expect(src).toMatch(/e\.code === 'Equal' \|\| e\.code === 'Minus' \|\| e\.code === 'Digit0'/);
+  });
+});
+
+// ─── Prefix key → action lookup (#977 prefix+! dogfood report) ──────────────
+//
+// Reported: Ctrl+B then `!` did not stash. The dispatch is keyed on the
+// CHARACTER (e.key), which is the only thing that can work for a map whose
+// shifted half is written as '%', '"', '&', '?', ':', '{', 'K', '!'. These pin
+// that: a Shift-reached binding must resolve exactly like an unshifted one, and
+// `!` must not be special among them.
+
+describe('resolvePrefixActionId', () => {
+  const bindings = DEFAULT_PREFIX_CONFIG.bindings;
+
+  it('resolves ! to stashPane, as a real Shift+1 press produces it', () => {
+    // A Shift+1 keydown is { key: '!', code: 'Digit1', shiftKey: true }. The
+    // lookup sees only `key`, so the modifier state cannot change the answer.
+    expect(resolvePrefixActionId(bindings, '!')).toBe('stashPane');
+  });
+
+  it('treats ! exactly like every other shift-reached default', () => {
+    // If `!` were somehow special, this is where it would show.
+    expect(resolvePrefixActionId(bindings, '%')).toBe('splitHorizontal');
+    expect(resolvePrefixActionId(bindings, '"')).toBe('splitVertical');
+    expect(resolvePrefixActionId(bindings, '&')).toBe('killWorkspace');
+    expect(resolvePrefixActionId(bindings, '?')).toBe('showCheatSheet');
+    expect(resolvePrefixActionId(bindings, '{')).toBe('swapPanePrev');
+    expect(resolvePrefixActionId(bindings, 'K')).toBe('movePaneUp');
+  });
+
+  it('never resolves a bare modifier — the user is mid-chord', () => {
+    for (const key of ['Shift', 'Control', 'Alt', 'Meta']) {
+      expect(resolvePrefixActionId(bindings, key)).toBeNull();
+    }
+  });
+
+  it('does NOT resolve the physical code — bindings are characters', () => {
+    // Matching on e.code would break every shifted binding and every non-US
+    // layout: Shift+1 is Digit1, which is bound to nothing.
+    expect(resolvePrefixActionId(bindings, 'Digit1')).toBeNull();
+  });
+
+  it('returns null for an unbound key', () => {
+    expect(resolvePrefixActionId(bindings, 'q')).toBeNull();
+  });
+
+  it('honors a user rebind over the default', () => {
+    expect(resolvePrefixActionId({ ...bindings, '!': 'toggleZoom' }, '!')).toBe('toggleZoom');
+  });
+});
+
+describe('createPrefixActions — stashPane', () => {
+  it('stashes the ACTIVE pane of the ACTIVE workspace', () => {
+    const stashPane = vi.fn();
+    const { deps, state } = makeMockDeps({ stashPane } as never);
+    const actions = createPrefixActions(deps);
+
+    actions[resolvePrefixActionId(DEFAULT_PREFIX_CONFIG.bindings, '!')!]();
+
+    expect(stashPane).toHaveBeenCalledWith(state.workspaces[0].activePaneId, 'w1');
+  });
+
+  it('is a no-op with no active workspace rather than throwing', () => {
+    const stashPane = vi.fn();
+    const { deps } = makeMockDeps({ stashPane, activeWorkspaceId: 'gone' } as never);
+
+    expect(() => createPrefixActions(deps).stashPane()).not.toThrow();
+    expect(stashPane).not.toHaveBeenCalled();
   });
 });

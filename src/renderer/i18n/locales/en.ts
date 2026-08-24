@@ -8,6 +8,7 @@ export const en = {
   'common.remove': 'Remove',
   'common.copy': 'Copy',
   'common.copied': 'Copied',
+  'common.undo': 'Undo',
 
   // Sidebar
   'sidebar.workspaces': 'Workspaces',
@@ -194,6 +195,13 @@ export const en = {
   'workspace.agentNeedsAttention': 'Needs you {count}',
   'workspace.showAgents': 'Show agent list',
   'workspace.hideAgents': 'Hide agent list',
+  // Roster — the stashed panes live in the same list as the running agents,
+  // after them, because clicking either one means "take me to this pane".
+  'roster.stashedCount': 'Stashed {count}',
+  'roster.stashedOnly': 'Stashed {count}',
+  'roster.stashedExited': 'Session ended',
+  'roster.unstashAction': 'Bring back into the layout',
+  'roster.recoverAction': 'Bring back and recover',
   'workspace.close': 'Close workspace',
   'workspace.copyInfo': 'Copy session info',
   'workspace.copied': 'Copied!',
@@ -274,10 +282,31 @@ export const en = {
   'pane.splitDown': 'Split down',
   'pane.newTerminal': 'New terminal',
   'pane.newBrowser': 'New browser',
+  // Label for the ⋮ that replaces the five-button cluster on a pane too
+  // narrow to hold it, and for the header's right-click menu. Names the SET of
+  // actions, not the glyph — it is the accessible name a screen reader reads.
+  'pane.moreActions': 'Pane actions',
   // Label for the tab-strip `+` and its menu. "tab" not "surface": the UI
   // calls them tabs everywhere the user can see (cf. surface.closeTab).
   'pane.addSurface': 'New tab',
   'pane.maxLeavesReached': 'Pane limit reached ({count}). Close a pane before splitting again.',
+  'pane.maxLeavesReachedWithStash': 'Pane limit reached ({count}), including {stashed} stashed. Unstash and close one, or close a visible pane.',
+
+  // Pane stash (#977) — taking a pane out of the layout WITHOUT killing it.
+  // The wording carries the whole promise: "stash" removes, "close" destroys,
+  // and every string here says which one is happening.
+  'pane.stash': 'Stash pane',
+  'pane.stashHint': 'Remove from layout — the session keeps running',
+  'pane.unstash': 'Bring back',
+  'pane.stashed': 'Stashed {name}. It is still running.',
+  // Deliberately NOT "back where it was": origin records a neighbour, not the
+  // original tree shape. See StashedPane.origin.
+  'pane.unstashedToNeighbor': 'Back next to its former neighbour.',
+  'pane.unstashedFallback': 'Its former neighbour is gone — placed next to the active pane.',
+  'pane.stashLastPane': 'This is the only pane on screen. Stashing it would leave nothing to look at.',
+  'pane.stashEmptyPane': 'This pane is empty — there is no session to keep running, and nothing to bring back.',
+  'pane.stashNoDaemon': 'No daemon connection. A stashed pane needs the daemon to keep its session and replay it — output would be lost.',
+  'pane.stashBlockedSurface': 'This pane holds a {type} tab. Only terminals and browsers can be stashed — an unmounted editor would lose unsaved edits.',
 
   // Surface
   'surface.terminal': 'Terminal',
@@ -318,6 +347,7 @@ export const en = {
   'palette.cmd.newSurface': 'New Surface',
   'palette.cmd.splitRight': 'Split Right',
   'palette.cmd.splitDown': 'Split Down',
+  'palette.cmd.stashPane': 'Stash Pane (keep the session running)',
   'palette.cmd.movePane.left': 'Move Pane Left',
   'palette.cmd.movePane.right': 'Move Pane Right',
   'palette.cmd.movePane.up': 'Move Pane Up',
@@ -954,6 +984,7 @@ export const en = {
   'settings.prefix.movePaneRight': 'Move pane right',
   'settings.prefix.swapPanePrev': 'Swap with previous pane',
   'settings.prefix.swapPaneNext': 'Swap with next pane',
+  'settings.prefix.stashPane': 'Stash pane',
 
   // Custom keybindings
   'settings.customKeybindings': 'Custom Keybindings',

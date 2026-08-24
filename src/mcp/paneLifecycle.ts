@@ -100,6 +100,16 @@ const SURFACE_CLOSE_SHAPE = {
   surfaceId: z.string().describe('Surface id to close (from surface_list).'),
 };
 
+const PANE_STASH_SHAPE = {
+  paneId: z.string().describe('Leaf pane id (pane_list).'),
+};
+
+const PANE_UNSTASH_SHAPE = {
+  paneId: z
+    .string()
+    .describe('Stashed pane id — pane_list({includeStashed:true}), or a PANE_STASHED recovery payload.'),
+};
+
 /**
  * Build the first typed-catalog domain. The ordering is the public MCP ordering
  * and must remain stable: the raw protocol probe pins it for both profiles.
@@ -170,6 +180,30 @@ export function createPaneLifecycleToolCatalog(
       inputSchema: SURFACE_CLOSE_SHAPE,
       profiles: ['full'],
       invoke: async ({ surfaceId }) => callRpc('surface.close', { id: surfaceId }),
+    }),
+
+    // ── pane_stash / pane_unstash (LAYOUT family, #977) ──────────────
+    // Appended after the original five so the public ordering stays a stable
+    // prefix. Neither destroys anything, which is why both are in the commander
+    // profile alongside pane_split while pane_close is not: they move a pane
+    // between the layout and the workspace's stash, and the session runs either
+    // way.
+    defineWmuxTool({
+      name: 'pane_stash',
+      description:
+        'Take a leaf pane out of the layout without killing it. The session keeps running, so terminal_send / terminal_read / pane_close / A2A still reach it; pane_focus is refused with PANE_STASHED naming pane_unstash. Refusals explain themselves.',
+      inputSchema: PANE_STASH_SHAPE,
+      profiles: ['full', 'commander'],
+      invoke: async ({ paneId }) => callRpc('pane.stash', { id: paneId }),
+    }),
+
+    defineWmuxTool({
+      name: 'pane_unstash',
+      description:
+        'Put a stashed pane back into the layout, next to its former neighbour. Idempotent: an already-visible pane is success, so the retry PANE_STASHED asks for is always safe.',
+      inputSchema: PANE_UNSTASH_SHAPE,
+      profiles: ['full', 'commander'],
+      invoke: async ({ paneId }) => callRpc('pane.unstash', { id: paneId }),
     }),
   ]);
 }

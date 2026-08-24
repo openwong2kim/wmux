@@ -22,10 +22,33 @@ export const bs = {
   'workspace.copyInfo': 'Kopiraj podatke sesije',
   'workspace.copied': 'Kopirano!',
 
+  // Roster
+  'roster.stashedCount': 'Sklonjeno {count}',
+  'roster.stashedOnly': 'Sklonjeno {count}',
+  'roster.stashedExited': 'Sesija završena',
+  'roster.unstashAction': 'Vrati u izgled',
+  'roster.recoverAction': 'Vrati i oporavi',
+  // The stash undo toast's button — the safety net the whole gesture leans on.
+  'common.undo': 'Poništi',
+
   // Pane
   'pane.empty': 'Prazan panel',
   'pane.splitRight': 'Podijeli desno',
   'pane.splitDown': 'Podijeli dolje',
+  'pane.moreActions': 'Radnje panela',
+  'pane.maxLeavesReachedWithStash': 'Dostignut limit panela ({count}), uključujući {stashed} sklonjenih. Vratite jedan i zatvorite ga ili zatvorite vidljivi panel.',
+
+  // Pane stash (#977) — the pane leaves the layout, its session keeps running.
+  'pane.stash': 'Skloni panel',
+  'pane.stashHint': 'Uklanja se iz izgleda — sesija nastavlja raditi',
+  'pane.unstash': 'Vrati nazad',
+  'pane.stashed': '{name} sklonjen. Sesija još uvijek radi.',
+  'pane.unstashedToNeighbor': 'Vraćen pored svog nekadašnjeg susjeda.',
+  'pane.unstashedFallback': 'Nekadašnjeg susjeda više nema — smješten pored aktivnog panela.',
+  'pane.stashLastPane': 'Ovo je jedini panel na ekranu. Ako ga sklonite, neće ostati ništa za gledanje.',
+  'pane.stashEmptyPane': 'Ovaj panel je prazan — nema sesije koju bi trebalo održati i nema šta vratiti.',
+  'pane.stashNoDaemon': 'Nema veze s daemonom. Sklonjenom panelu treba daemon da zadrži njegovu sesiju i reproducira je — izlaz bi bio izgubljen.',
+  'pane.stashBlockedSurface': 'Ovaj panel sadrži {type} karticu. Skloniti se mogu samo terminali i preglednici — demontirani uređivač bi izgubio nesačuvane izmjene.',
 
   // Surface
   'surface.terminal': 'Terminal',
@@ -66,6 +89,7 @@ export const bs = {
   'palette.cmd.newSurface': 'Nova površina',
   'palette.cmd.splitRight': 'Podijeli desno',
   'palette.cmd.splitDown': 'Podijeli dolje',
+  'palette.cmd.stashPane': 'Skloni panel (sesija nastavlja raditi)',
   'palette.cmd.showNotifications': 'Prikaži obavještenja',
   'palette.cmd.openSettings': 'Otvori postavke',
   'palette.cmd.openBrowser': 'Otvori preglednik',
@@ -215,6 +239,7 @@ export const bs = {
   'settings.prefix.focusDown': 'Fokus dolje',
   'settings.prefix.focusLeft': 'Fokus lijevo',
   'settings.prefix.focusRight': 'Fokus desno',
+  'settings.prefix.stashPane': 'Skloni panel',
 
   // Custom keybindings
   'settings.customKeybindings': 'Prilagođena vezivanja tipki',

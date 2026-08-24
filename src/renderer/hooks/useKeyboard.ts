@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react';
 import { useStore } from '../stores';
 import { useIpc } from './useIpc';
-import { findLeaf, getLeafPanes } from '../../shared/paneUtils';
+import { collectPaneTreePtyIds, findLeaf, getLeafPanes, getWorkspacePtyIds } from '../../shared/paneUtils';
 import { terminalRegistry } from './useTerminal';
 import { t } from '../i18n';
 import { pastePtyChunked } from '../utils/clipboardChunk';
@@ -76,13 +76,35 @@ export function ctrlByteForKeyCode(code: string): string | null {
 
 /** Dispose all PTYs inside a pane tree */
 function disposePanePtys(pane: import('../../shared/types').Pane): void {
-  if (pane.type === 'leaf') {
-    for (const s of pane.surfaces) {
-      if (s.ptyId) window.electronAPI.pty.dispose(s.ptyId);
-    }
-  } else {
-    for (const child of pane.children) disposePanePtys(child);
-  }
+  for (const ptyId of collectPaneTreePtyIds(pane)) window.electronAPI.pty.dispose(ptyId);
+}
+
+/**
+ * Keys that are a MODIFIER being held, not a command. In prefix mode the user is
+ * mid-chord reaching for a Shift-reached binding ('%', '"', '&', '?', ':', '!',
+ * '{', 'K', …), so these must not resolve to an action or count as unknown.
+ */
+export const PREFIX_MODIFIER_KEYS: readonly string[] = ['Shift', 'Control', 'Alt', 'Meta'];
+
+/**
+ * The action a key runs in prefix mode, or null for "nothing bound".
+ *
+ * Keyed on `e.key` — the CHARACTER produced — and NOT on modifier state. That
+ * is what lets the Shift-reached bindings work at all: `!` is Shift+1, `%` is
+ * Shift+5, `K` is Shift+k, and every one of them arrives as its own `e.key`
+ * with `shiftKey: true`. Consulting `e.shiftKey` here, or matching on `e.code`,
+ * would break the whole shifted half of the default map (and every non-US
+ * layout with it).
+ *
+ * Exported so the key→action contract is testable without mounting the hook:
+ * the handler owns the side effects, this owns the lookup.
+ */
+export function resolvePrefixActionId(
+  bindings: Record<string, string>,
+  key: string,
+): string | null {
+  if (PREFIX_MODIFIER_KEYS.includes(key)) return null;
+  return bindings[key] ?? null;
 }
 
 /**
@@ -139,14 +161,10 @@ function swapActiveWithAdjacentLeaf(
 export function createPrefixActions(deps: PrefixActionDeps): Record<string, () => void> {
   const { store, electronAPI, doc } = deps;
 
+  // Traversal is the shared canonical walk; the dispose policy (this registry's
+  // injected electronAPI, not the window global) stays local.
   const disposeTree = (pane: import('../../shared/types').Pane): void => {
-    if (pane.type === 'leaf') {
-      for (const s of pane.surfaces) {
-        if (s.ptyId) electronAPI.pty.dispose(s.ptyId);
-      }
-    } else {
-      for (const child of pane.children) disposeTree(child);
-    }
+    for (const ptyId of collectPaneTreePtyIds(pane)) electronAPI.pty.dispose(ptyId);
   };
 
   return {
@@ -205,6 +223,14 @@ export function createPrefixActions(deps: PrefixActionDeps): Record<string, () =
     // layout order, wrapping at the ends like cyclePane does.
     swapPanePrev: () => { swapActiveWithAdjacentLeaf(store, 'prev'); },
     swapPaneNext: () => { swapActiveWithAdjacentLeaf(store, 'next'); },
+    // #977 — take the active pane out of the layout without killing it. The
+    // slice owns every guard (daemon connection, last visible leaf, surface
+    // type) and reports refusals as toasts, so there is nothing to check here.
+    stashPane: () => {
+      const state = store.getState();
+      const ws = state.workspaces.find((w) => w.id === state.activeWorkspaceId);
+      if (ws) state.stashPane(ws.activePaneId, ws.id);
+    },
     renameWorkspace: () => {
       doc.dispatchEvent(new CustomEvent('wmux:rename-workspace'));
     },
@@ -212,7 +238,9 @@ export function createPrefixActions(deps: PrefixActionDeps): Record<string, () =
       const state = store.getState();
       const ws = state.workspaces.find((w) => w.id === state.activeWorkspaceId);
       if (!ws) return;
-      disposeTree(ws.rootPane);
+      // Workspace-wide (#977) — see Sidebar.disposeAllPtys: a stashed pane's
+      // session dies with its workspace or it becomes an orphan.
+      for (const ptyId of getWorkspacePtyIds(ws)) electronAPI.pty.dispose(ptyId);
       state.removeWorkspace(state.activeWorkspaceId);
     },
     showCheatSheet: () => {
@@ -328,7 +356,7 @@ export function useKeyboard() {
         // the next keypress — even minutes later — would be treated as a prefix
         // command. Exiting outright instead would make the Shift-reached
         // bindings unreachable, so re-arming is the behavior-preserving fix.
-        if (['Shift', 'Control', 'Alt', 'Meta'].includes(key)) {
+        if (PREFIX_MODIFIER_KEYS.includes(key)) {
           prefixTimeoutRef.current = setTimeout(() => {
             store.getState().setPrefixMode(false);
             prefixTimeoutRef.current = null;
@@ -336,9 +364,10 @@ export function useKeyboard() {
           return;
         }
 
-        // Look up action from store's prefix bindings
+        // Look up action from store's prefix bindings. Keyed on the CHARACTER
+        // (e.key), never on modifier state — see resolvePrefixActionId.
         const { prefixConfig } = store.getState();
-        const actionId = prefixConfig.bindings[key];
+        const actionId = resolvePrefixActionId(prefixConfig.bindings, key);
         const action = actionId ? prefixActions[actionId] : undefined;
         if (action) {
           action();
@@ -408,17 +437,11 @@ export function useKeyboard() {
         const state = store.getState();
         const ws = state.workspaces.find((w) => w.id === state.activeWorkspaceId);
         if (ws) {
-          // 워크스페이스 내 모든 PTY 정리
-          const disposePtys = (pane: import('../../shared/types').Pane) => {
-            if (pane.type === 'leaf') {
-              for (const s of pane.surfaces) {
-                if (s.ptyId) window.electronAPI.pty.dispose(s.ptyId);
-              }
-            } else {
-              for (const child of pane.children) disposePtys(child);
-            }
-          };
-          disposePtys(ws.rootPane);
+          // 워크스페이스가 소유한 모든 PTY 정리 — 보관된 페인 포함(#977).
+          // Same reasoning as Sidebar's close button and the prefix
+          // killWorkspace action: a stashed session outliving its workspace is
+          // an orphan nothing can reach.
+          for (const ptyId of getWorkspacePtyIds(ws)) window.electronAPI.pty.dispose(ptyId);
         }
         state.removeWorkspace(state.activeWorkspaceId);
         return;

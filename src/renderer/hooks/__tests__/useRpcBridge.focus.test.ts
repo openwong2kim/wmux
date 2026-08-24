@@ -69,7 +69,12 @@ describe('useRpcBridge — focus-path workspace scoping (#236 follow-up)', () =>
 
     it('returns {error} when the pane belongs to no workspace (false-ok removed)', () => {
       const b = block();
-      expect(b).toMatch(/if \(!ownerWs\) return \{ error:/);
+      expect(b).toMatch(/return \{ error: `pane\.focus: pane \$\{paneId\} not found` \}/);
+      // #977 — a STASHED pane is not "not found": it is alive and one call away
+      // from being focusable. It gets a structured PANE_STASHED refusal naming
+      // the fix, instead of a missing-id error the caller can disprove from the
+      // pane.list response it is already holding.
+      expect(b).toMatch(/paneStashedError\('pane\.focus', paneId\)/);
       // The old direct no-op call is gone.
       expect(b).not.toMatch(/store\.setActivePane\(paneId\)/);
     });
@@ -97,7 +102,10 @@ describe('useRpcBridge — focus-path workspace scoping (#236 follow-up)', () =>
 
     it('returns {error} when the surface belongs to no workspace', () => {
       const b = block();
-      expect(b).toMatch(/if \(!owner\) return \{ error:/);
+      expect(b).toMatch(/return \{ error: `surface\.focus: surface \$\{surfaceId\} not found` \}/);
+      // #977 — same split as pane.focus: focusing is positional, so a stashed
+      // surface is refused with the call that makes it focusable.
+      expect(b).toMatch(/paneStashedError\('surface\.focus'/);
     });
 
     it('delegates the active pane + surface set to focusPaneSurface in one call', () => {

@@ -297,6 +297,11 @@ export type RpcMethod =
   | 'pane.focus'
   | 'pane.split'
   | 'pane.close'
+  // #977 — take a pane out of the layout / put it back. Both are needed:
+  // refusing a position operation with "call pane.unstash" and then not
+  // shipping pane.unstash is a contract that contradicts itself.
+  | 'pane.stash'
+  | 'pane.unstash'
   | 'pane.setMetadata'
   | 'pane.getMetadata'
   | 'pane.clearMetadata'
@@ -474,6 +479,8 @@ export const ALL_RPC_METHODS = [
   'pane.focus',
   'pane.split',
   'pane.close',
+  'pane.stash',
+  'pane.unstash',
   'pane.setMetadata',
   'pane.getMetadata',
   'pane.clearMetadata',

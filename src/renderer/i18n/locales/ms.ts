@@ -22,10 +22,33 @@ export const ms = {
   'workspace.copyInfo': 'Salin maklumat sesi',
   'workspace.copied': 'Disalin!',
 
+  // Roster
+  'roster.stashedCount': '{count} diketepikan',
+  'roster.stashedOnly': '{count} diketepikan',
+  'roster.stashedExited': 'Sesi tamat',
+  'roster.unstashAction': 'Bawa kembali ke susun atur',
+  'roster.recoverAction': 'Kembalikan dan pulihkan',
+  // The stash undo toast's button — the safety net the whole gesture leans on.
+  'common.undo': 'Buat asal',
+
   // Pane
   'pane.empty': 'Panel kosong',
   'pane.splitRight': 'Bahagi ke kanan',
   'pane.splitDown': 'Bahagi ke bawah',
+  'pane.moreActions': 'Tindakan panel',
+  'pane.maxLeavesReachedWithStash': 'Had panel dicapai ({count}), termasuk {stashed} yang diketepikan. Bawa satu kembali dan tutupnya, atau tutup panel yang kelihatan.',
+
+  // Pane stash (#977) — the pane leaves the layout, its session keeps running.
+  'pane.stash': 'Ketepikan panel',
+  'pane.stashHint': 'Dikeluarkan dari susun atur — sesi terus berjalan',
+  'pane.unstash': 'Bawa kembali',
+  'pane.stashed': '{name} diketepikan. Sesinya masih berjalan.',
+  'pane.unstashedToNeighbor': 'Kembali di sebelah jirannya yang dahulu.',
+  'pane.unstashedFallback': 'Jirannya yang dahulu sudah tiada — diletakkan di sebelah panel aktif.',
+  'pane.stashLastPane': 'Ini satu-satunya panel pada skrin. Mengetepikannya akan meninggalkan skrin kosong.',
+  'pane.stashEmptyPane': 'Panel ini kosong — tiada sesi untuk diteruskan, dan tiada apa-apa untuk dibawa kembali.',
+  'pane.stashNoDaemon': 'Tiada sambungan daemon. Panel yang diketepikan memerlukan daemon untuk mengekalkan sesinya dan memainkannya semula — output akan hilang.',
+  'pane.stashBlockedSurface': 'Panel ini mengandungi tab {type}. Hanya terminal dan pelayar boleh diketepikan — penyunting yang dinyahlekap akan kehilangan suntingan yang belum disimpan.',
 
   // Surface
   'surface.terminal': 'Terminal',
@@ -66,6 +89,7 @@ export const ms = {
   'palette.cmd.newSurface': 'Permukaan baharu',
   'palette.cmd.splitRight': 'Bahagi ke kanan',
   'palette.cmd.splitDown': 'Bahagi ke bawah',
+  'palette.cmd.stashPane': 'Ketepikan panel (sesi terus berjalan)',
   'palette.cmd.showNotifications': 'Tunjuk pemberitahuan',
   'palette.cmd.openSettings': 'Buka tetapan',
   'palette.cmd.openBrowser': 'Buka pelayar',
@@ -215,6 +239,7 @@ export const ms = {
   'settings.prefix.focusDown': 'Fokus ke bawah',
   'settings.prefix.focusLeft': 'Fokus ke kiri',
   'settings.prefix.focusRight': 'Fokus ke kanan',
+  'settings.prefix.stashPane': 'Ketepikan panel',
 
   // Custom keybindings
   'settings.customKeybindings': 'Pengikatan kekunci tersuai',

@@ -80,6 +80,38 @@ export function IconArchive({ size = 14 }: { size?: number }) {
   );
 }
 
+/** Eye — "this is visible / bring it back into view". Paired with IconEyeOff.
+ *
+ *  The stash vocabulary (#977): eye-off removes a pane from the layout, eye
+ *  brings it back. Deliberately NOT IconArchive, which this file already spends
+ *  on channel archive — a one-way DEACTIVATION, the opposite of a stashed pane's
+ *  "still running". Reusing it would have made the two states look alike in a
+ *  sidebar that shows both. */
+export function IconEye({ size = 14 }: { size?: number }) {
+  return (
+    <Icon size={size}>
+      <path d="M1 7 C2.8 4.2 4.7 3 7 3 C9.3 3 11.2 4.2 13 7 C11.2 9.8 9.3 11 7 11 C4.7 11 2.8 9.8 1 7 Z" />
+      <circle cx="7" cy="7" r="1.9" />
+    </Icon>
+  );
+}
+
+/** Eye with a slash — "take this out of view". See IconEye for the pairing.
+ *
+ *  The slash runs corner to corner so the two icons are distinguishable at 9px
+ *  in the sidebar roster, where the difference between them carries the whole
+ *  hidden/visible signal. */
+export function IconEyeOff({ size = 14 }: { size?: number }) {
+  return (
+    <Icon size={size}>
+      <path d="M2.2 4.6 C1.7 5.3 1.3 6.1 1 7 C2.8 9.8 4.7 11 7 11 C7.9 11 8.7 10.8 9.5 10.4" />
+      <path d="M11.4 9 C12 8.4 12.5 7.8 13 7 C11.2 4.2 9.3 3 7 3 C6.5 3 6.1 3.05 5.7 3.15" />
+      <path d="M5.7 5.7 a1.9 1.9 0 0 0 2.6 2.6" />
+      <line x1="1.9" y1="1.9" x2="12.1" y2="12.1" />
+    </Icon>
+  );
+}
+
 export function IconChevron({ size = 14 }: { size?: number }) {
   // Points right; rotate 90° via transform for an expanded/down state.
   return <Icon size={size}><polyline points="5.5,3 9.5,7 5.5,11" /></Icon>;

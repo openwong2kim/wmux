@@ -22,10 +22,33 @@ export const hi = {
   'workspace.copyInfo': 'सेशन जानकारी कॉपी करें',
   'workspace.copied': 'कॉपी हो गया!',
 
+  // Roster
+  'roster.stashedCount': 'किनारे {count}',
+  'roster.stashedOnly': 'किनारे {count}',
+  'roster.stashedExited': 'सेशन समाप्त',
+  'roster.unstashAction': 'लेआउट में वापस लाएँ',
+  'roster.recoverAction': 'वापस लाकर पुनर्प्राप्त करें',
+  // The stash undo toast's button — the safety net the whole gesture leans on.
+  'common.undo': 'पूर्ववत करें',
+
   // Pane
   'pane.empty': 'खाली पैनल',
   'pane.splitRight': 'दाईं ओर विभाजित करें',
   'pane.splitDown': 'नीचे विभाजित करें',
+  'pane.moreActions': 'पैनल क्रियाएँ',
+  'pane.maxLeavesReachedWithStash': 'पैनल की सीमा पूरी हो गई ({count}), जिसमें {stashed} किनारे रखे हुए हैं। एक को वापस लाकर बंद करें, या कोई दिखने वाला पैनल बंद करें।',
+
+  // Pane stash (#977) — the pane leaves the layout, its session keeps running.
+  'pane.stash': 'पैनल किनारे रखें',
+  'pane.stashHint': 'लेआउट से हटता है — सेशन चलता रहता है',
+  'pane.unstash': 'वापस लाएँ',
+  'pane.stashed': '{name} किनारे रख दिया गया। सेशन अब भी चल रहा है।',
+  'pane.unstashedToNeighbor': 'अपने पुराने पड़ोसी के बगल में वापस आ गया।',
+  'pane.unstashedFallback': 'इसका पुराना पड़ोसी अब नहीं है — सक्रिय पैनल के बगल में रखा गया।',
+  'pane.stashLastPane': 'स्क्रीन पर यही एकमात्र पैनल है। इसे किनारे रखने पर देखने के लिए कुछ नहीं बचेगा।',
+  'pane.stashEmptyPane': 'यह पैनल खाली है — न कोई सेशन चलता रहेगा, न वापस लाने के लिए कुछ है।',
+  'pane.stashNoDaemon': 'डेमन से कोई कनेक्शन नहीं। किनारे रखे पैनल का सेशन बनाए रखने और उसे फिर से चलाने के लिए डेमन ज़रूरी है — आउटपुट खो जाएगा।',
+  'pane.stashBlockedSurface': 'इस पैनल में {type} टैब है। केवल टर्मिनल और ब्राउज़र ही किनारे रखे जा सकते हैं — अनमाउंट हुआ एडिटर बिना सहेजे बदलाव खो देगा।',
 
   // Surface
   'surface.terminal': 'टर्मिनल',
@@ -66,6 +89,7 @@ export const hi = {
   'palette.cmd.newSurface': 'नया सरफ़ेस',
   'palette.cmd.splitRight': 'दाईं ओर विभाजित करें',
   'palette.cmd.splitDown': 'नीचे विभाजित करें',
+  'palette.cmd.stashPane': 'पैनल किनारे रखें (सेशन चलता रहेगा)',
   'palette.cmd.showNotifications': 'सूचनाएँ दिखाएँ',
   'palette.cmd.openSettings': 'सेटिंग्स खोलें',
   'palette.cmd.openBrowser': 'ब्राउज़र खोलें',
@@ -215,6 +239,7 @@ export const hi = {
   'settings.prefix.focusDown': 'नीचे फ़ोकस',
   'settings.prefix.focusLeft': 'बाएँ फ़ोकस',
   'settings.prefix.focusRight': 'दाएँ फ़ोकस',
+  'settings.prefix.stashPane': 'पैनल किनारे रखें',
 
   // Custom keybindings
   'settings.customKeybindings': 'कस्टम कीबाइंडिंग',

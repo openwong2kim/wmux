@@ -48,6 +48,22 @@ export function publishPaneFocused(workspaceId: string, paneId: string, previous
   publish({ type: 'pane.focused', workspaceId, paneId, ...(previousPaneId ? { previousPaneId } : {}) });
 }
 
+/**
+ * #977 — the pane left the layout but NOT the workspace, and its session is
+ * still running. `docs/api/stability.md` documents pane.list + events.poll as a
+ * complete recovery path, so a structural transition that never reaches the
+ * stream would silently break that promise: a poller would see the pane vanish
+ * from the default list with no event explaining why.
+ */
+export function publishPaneStashed(workspaceId: string, paneId: string): void {
+  publish({ type: 'pane.stashed', workspaceId, paneId });
+}
+
+/** The pane is back in the layout. Paired with {@link publishPaneStashed}. */
+export function publishPaneUnstashed(workspaceId: string, paneId: string): void {
+  publish({ type: 'pane.unstashed', workspaceId, paneId });
+}
+
 export function publishWorkspaceMetadataChanged(
   workspaceId: string,
   metadata: WorkspaceMetadata,

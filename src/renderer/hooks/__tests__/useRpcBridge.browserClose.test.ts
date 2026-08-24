@@ -126,7 +126,11 @@ describe('useRpcBridge close-path workspace routing', () => {
 
   it('surface.close resolves an explicit surface id across all workspaces', () => {
     const block = blockBetween("method === 'surface\\.close'", "method === 'pane\\.list'");
-    expect(block).toMatch(/for \(const ws of store\.workspaces\)/);
+    // #977 — the all-workspace search moved into findOwnedSurface, which also
+    // reaches STASHED panes. Closing a tab is an address operation, not a
+    // layout one: an API that lists a pane and then cannot close it is a leak
+    // with extra steps.
+    expect(block).toMatch(/findOwnedSurface\(store\.workspaces,\s*surfaceId\)/);
     expect(block).toMatch(/store\.closeSurface\(targetLeaf\.id,\s*surfaceId,\s*targetWs\.id\)/);
   });
 

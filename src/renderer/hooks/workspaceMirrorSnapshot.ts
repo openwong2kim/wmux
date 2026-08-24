@@ -4,12 +4,12 @@
 // Extracted here — with no store/window imports — so the payload construction is
 // unit-testable directly (the useWorkspaceMirrorPush hook itself pulls in the
 // store/window and can't be imported under vitest). `findActivePtyId` /
-// `collectAllPtyIds` were lifted out of useRpcBridge.ts so the mirror's `entries`
+// `collectOwnedPtyIds` were lifted out of useRpcBridge.ts so the mirror's `entries`
 // payload is byte-identical to the `workspace.list` reply, with a single source
 // of truth for the two helpers.
 
 import type { AgentStatus, Pane, PaneLeaf, Workspace } from '../../shared/types';
-import { getLeafPanes } from '../../shared/paneUtils';
+import { getWorkspaceLeafPanes, getWorkspacePtyIds, type WorkspacePaneOwner } from '../../shared/paneUtils';
 import type {
   WorkspaceListEntry,
   FleetSnapshot,
@@ -59,20 +59,23 @@ export function findActivePtyId(rootPane: Pane | undefined, activePaneId: string
   return surface?.ptyId ?? null;
 }
 
-/** All ptyIds in a workspace (every leaf, every surface). */
-export function collectAllPtyIds(root: Pane): string[] {
-  const ids: string[] = [];
-  const walk = (pane: Pane): void => {
-    if (pane.type === 'leaf') {
-      for (const s of pane.surfaces) {
-        if (s.ptyId) ids.push(s.ptyId);
-      }
-      return;
-    }
-    for (const child of pane.children) walk(child);
-  };
-  walk(root);
-  return ids;
+/**
+ * All ptyIds a workspace OWNS (every leaf, every surface — visible or stashed).
+ *
+ * Workspace-wide, and it has to be (#977). This array is not just a wire field:
+ * main's `resolvePtyIdForSignal` treats it as the MEMBERSHIP test for a hook's
+ * `WMUX_PTY_ID`, and a miss falls through to the workspace's active pane. Scope
+ * it to the visible tree and a stashed agent's every hook — turn-end, awaiting
+ * input, resume binding — silently lands on whichever pane the user happens to
+ * be looking at. That is a wrong answer delivered confidently, which is worse
+ * than none.
+ *
+ * The field's own contract already said "the whole workspace"; this makes it
+ * true. Visible leaves come first, so the `ptyIds[0]` fallbacks around
+ * `resolvePtyIdForSignal` still land on an on-screen pane.
+ */
+export function collectOwnedPtyIds(ws: WorkspacePaneOwner): string[] {
+  return getWorkspacePtyIds(ws);
 }
 
 /**
@@ -96,7 +99,7 @@ export function buildWorkspaceListEntries(workspaces: Workspace[]): WorkspaceLis
     // cwd → workspace → activePtyId. activePtyId is the active pane's active
     // surface; ptyIds is the union over the whole workspace.
     activePtyId: findActivePtyId(w.rootPane, w.activePaneId),
-    ptyIds: collectAllPtyIds(w.rootPane),
+    ptyIds: collectOwnedPtyIds(w),
   }));
 }
 
@@ -148,7 +151,11 @@ export function buildFleetSnapshots(state: FleetSelectorState, ts: number): Flee
 
   const byWs = new Map<string, FleetSnapshot>();
   for (const ws of state.workspaces) {
-    for (const leaf of getLeafPanes(ws.rootPane)) {
+    // Workspace-OWNED, not visible-only (#977): selectFleetPanes already walks
+    // the stash, and a snapshot that dropped those rows told the deck's
+    // heartbeat and completion gate that a workspace with a running stashed
+    // worker was quiescent — the gate would finish over an agent mid-task.
+    for (const leaf of getWorkspaceLeafPanes(ws)) {
       const derived = derivedByPane.get(leaf.id);
       if (!derived) continue; // selectFleetPanes emits every leaf → always present
       let snap = byWs.get(ws.id);
@@ -199,6 +206,12 @@ export function buildFleetSnapshots(state: FleetSelectorState, ts: number): Flee
  * (paneRole[leaf.id] → orchestratorRoleBindings[role], normalized), so the
  * mirror and the round-trip can never disagree on a binding. The map is
  * COMPLETE by construction: a ptyId absent from it has no binding.
+ *
+ * That completeness is why the walk below is workspace-OWNED (#977). The
+ * ownership entries beside this map already list a stashed pane's ptys, and
+ * resolveRoleBindingForPty treats absence as authoritative exactly when the
+ * same snapshot owns the pty — so a visible-only walk here answered "unbound"
+ * for a role-bound stashed pane, and input.send skipped the enforced model.
  */
 export function buildRoleBindings(state: MirrorSnapshotState): Record<string, unknown> {
   const out: Record<string, unknown> = {};
@@ -208,7 +221,7 @@ export function buildRoleBindings(state: MirrorSnapshotState): Record<string, un
   // ws×leaf×surface walk this builder otherwise pays on every mirror push.
   if (Object.keys(paneRole).length === 0 || Object.keys(bindings).length === 0) return out;
   for (const w of state.workspaces) {
-    for (const leaf of getLeafPanes(w.rootPane)) {
+    for (const leaf of getWorkspaceLeafPanes(w)) {
       const role = paneRole[leaf.id];
       if (!role) continue;
       const binding = normalizeRoleBinding(bindings[role]);

@@ -22,10 +22,33 @@ export const th = {
   'workspace.copyInfo': 'คัดลอกข้อมูลเซสชัน',
   'workspace.copied': 'คัดลอกแล้ว!',
 
+  // Roster
+  'roster.stashedCount': 'เก็บไว้ {count}',
+  'roster.stashedOnly': 'เก็บไว้ {count}',
+  'roster.stashedExited': 'เซสชันสิ้นสุดแล้ว',
+  'roster.unstashAction': 'นำกลับเข้าเลย์เอาต์',
+  'roster.recoverAction': 'นำกลับมาและกู้คืน',
+  // The stash undo toast's button — the safety net the whole gesture leans on.
+  'common.undo': 'เลิกทำ',
+
   // Pane
   'pane.empty': 'พาเนลว่าง',
   'pane.splitRight': 'แบ่งไปทางขวา',
   'pane.splitDown': 'แบ่งลงล่าง',
+  'pane.moreActions': 'การดำเนินการพาเนล',
+  'pane.maxLeavesReachedWithStash': 'ถึงขีดจำกัดจำนวนพาเนลแล้ว ({count}) รวมที่เก็บไว้ {stashed} นำกลับมาหนึ่งพาเนลแล้วปิด หรือปิดพาเนลที่แสดงอยู่',
+
+  // Pane stash (#977) — the pane leaves the layout, its session keeps running.
+  'pane.stash': 'เก็บพาเนลไว้ก่อน',
+  'pane.stashHint': 'นำออกจากเลย์เอาต์ — เซสชันยังทำงานต่อ',
+  'pane.unstash': 'นำกลับมา',
+  'pane.stashed': 'เก็บ {name} ไว้แล้ว เซสชันยังทำงานอยู่',
+  'pane.unstashedToNeighbor': 'กลับมาอยู่ข้างพาเนลที่เคยอยู่ติดกัน',
+  'pane.unstashedFallback': 'พาเนลที่เคยอยู่ติดกันหายไปแล้ว — จึงวางไว้ข้างพาเนลที่ใช้งานอยู่',
+  'pane.stashLastPane': 'นี่เป็นพาเนลเดียวบนหน้าจอ ถ้าเก็บไว้ก็จะไม่เหลืออะไรให้ดู',
+  'pane.stashEmptyPane': 'พาเนลนี้ว่างเปล่า — ไม่มีเซสชันให้ทำงานต่อ และไม่มีอะไรให้นำกลับมา',
+  'pane.stashNoDaemon': 'ไม่มีการเชื่อมต่อกับ daemon พาเนลที่เก็บไว้ต้องอาศัย daemon เพื่อคงเซสชันและเล่นย้อนกลับ — ผลลัพธ์จะสูญหาย',
+  'pane.stashBlockedSurface': 'พาเนลนี้มีแท็บ {type} อยู่ เก็บได้เฉพาะเทอร์มินัลและเบราว์เซอร์เท่านั้น — ตัวแก้ไขที่ถูกถอดออกจะสูญเสียการแก้ไขที่ยังไม่ได้บันทึก',
 
   // Surface
   'surface.terminal': 'เทอร์มินัล',
@@ -66,6 +89,7 @@ export const th = {
   'palette.cmd.newSurface': 'พื้นผิวใหม่',
   'palette.cmd.splitRight': 'แบ่งไปทางขวา',
   'palette.cmd.splitDown': 'แบ่งลงล่าง',
+  'palette.cmd.stashPane': 'เก็บพาเนลไว้ก่อน (เซสชันยังทำงานต่อ)',
   'palette.cmd.showNotifications': 'แสดงการแจ้งเตือน',
   'palette.cmd.openSettings': 'เปิดการตั้งค่า',
   'palette.cmd.openBrowser': 'เปิดเบราว์เซอร์',
@@ -215,6 +239,7 @@ export const th = {
   'settings.prefix.focusDown': 'โฟกัสลง',
   'settings.prefix.focusLeft': 'โฟกัสซ้าย',
   'settings.prefix.focusRight': 'โฟกัสขวา',
+  'settings.prefix.stashPane': 'เก็บพาเนลไว้ก่อน',
 
   // Custom keybindings
   'settings.customKeybindings': 'การผูกแป้นแบบกำหนดเอง',

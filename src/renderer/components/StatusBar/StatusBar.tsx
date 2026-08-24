@@ -134,6 +134,11 @@ export default function StatusBar() {
     const target = panes[0];
     if (!target) return;
     s.setActiveWorkspace(target.workspaceId);
+    // #977 — the chip counts stashed panes (they are still agents and they
+    // still get blocked), so the jump has to be able to REACH one. setActivePane
+    // only accepts panes in the visible tree, so without this the chip would
+    // count a pane it cannot take you to and the click would do nothing.
+    if (target.stashed) s.unstashPane(target.paneId, target.workspaceId);
     s.setActivePane(target.paneId);
   };
   const toggleNotificationPanel = useStore((s) => s.toggleNotificationPanel);

@@ -1,14 +1,24 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi, beforeEach } from 'vitest';
+
+// The one stash-adjacent path that genuinely destroys a pane must run the same
+// teardown closePane does — assert the publish instead of trusting a comment.
+vi.mock('../../../events/publisher', () => ({
+  publishPaneClosed: vi.fn(),
+}));
+import { publishPaneClosed } from '../../../events/publisher';
 import { createWorkspace, type Workspace } from '../../../../shared/types';
 import { createSurfaceSlice } from '../surfaceSlice';
+import { panePrincipalId } from '../../../../shared/principals';
 
 type TestState = {
   workspaces: Workspace[];
   activeWorkspaceId: string;
-  surfaceAgent: Record<string, { name: string; status: string }>;
+  surfaceAgent: Record<string, { name: string; status: string; slug?: string }>;
   surfaceActivity: Record<string, string>;
   surfacePorts: Record<string, number[]>;
   surfaceAgentStatus: Record<string, string>;
+  purgeMembershipDaemon: ReturnType<typeof vi.fn>;
+  principalRemoveDaemon: ReturnType<typeof vi.fn>;
 };
 
 function createHarness() {
@@ -20,6 +30,8 @@ function createHarness() {
     surfaceActivity: {},
     surfacePorts: {},
     surfaceAgentStatus: {},
+    purgeMembershipDaemon: vi.fn(),
+    principalRemoveDaemon: vi.fn(),
   };
 
   const set = (updater: (state: TestState) => void) => {
@@ -550,5 +562,114 @@ describe('surfaceSlice.closeSurface — surfacePorts / surfaceAgentStatus cleanu
     slice.addSurface(paneId, 'pty-reused', 'pwsh', 'C:\\a');
 
     expect(state.surfaceAgentStatus['pty-reused']).toBeUndefined();
+  });
+});
+
+// ─── A stashed pane that loses its last tab must go with it (#977) ──────────
+//
+// An empty leaf is a legitimate thing ON SCREEN — the AppLayout funnel backfills
+// it. An empty STASHED pane is a ghost: the roster builds its row from a surface
+// and skips it, so the pane sits there holding an ordinal and a slot against the
+// pane cap with no way for anyone to click it back.
+
+describe('surfaceSlice.closeSurface — stashed panes', () => {
+  beforeEach(() => {
+    vi.mocked(publishPaneClosed).mockClear();
+  });
+
+  function harnessWithStash() {
+    const { state, slice } = createHarness();
+    const ws = state.workspaces[0];
+    ws.stashedPanes = [{
+      pane: {
+        id: 'p-stashed',
+        type: 'leaf',
+        activeSurfaceId: 'sf-a',
+        ordinal: 7,
+        surfaces: [
+          { id: 'sf-a', ptyId: 'pty-a', title: 'a', shell: 'pwsh', cwd: 'C:\repo' },
+          { id: 'sf-b', ptyId: 'pty-b', title: 'b', shell: 'pwsh', cwd: 'C:\repo' },
+        ],
+      },
+      stashedAt: 1,
+    }];
+    return { state, slice, ws };
+  }
+
+  it('closes a tab of a stashed pane without dropping the pane', () => {
+    const { state, slice, ws } = harnessWithStash();
+    state.surfaceAgent['pty-a'] = { name: 'Claude Code', status: 'idle' };
+
+    slice.closeSurface('p-stashed', 'sf-a');
+
+    expect(ws.stashedPanes).toHaveLength(1);
+    expect(ws.stashedPanes![0].pane.surfaces.map((s) => s.id)).toEqual(['sf-b']);
+    // The closed surface's identity is torn down; the pane's is not.
+    expect(state.surfaceAgent['pty-a']).toBeUndefined();
+  });
+
+  it('drops the stash entry when the LAST tab is closed', () => {
+    const { slice, ws } = harnessWithStash();
+
+    slice.closeSurface('p-stashed', 'sf-a');
+    slice.closeSurface('p-stashed', 'sf-b');
+
+    // Not an empty stashed leaf holding an ordinal nobody can reach.
+    expect(ws.stashedPanes).toBeUndefined();
+  });
+
+  it('publishes pane.closed when the LAST tab goes — the pane is gone, not stashed', () => {
+    const { slice, ws } = harnessWithStash();
+
+    slice.closeSurface('p-stashed', 'sf-a');
+    expect(publishPaneClosed).not.toHaveBeenCalled();
+
+    slice.closeSurface('p-stashed', 'sf-b');
+    expect(ws.stashedPanes).toBeUndefined();
+    // Without this, an external poller (and stability.md's "leaving a listing
+    // is always explained by an event") is left holding a paneId that silently
+    // stopped existing.
+    expect(publishPaneClosed).toHaveBeenCalledWith(ws.id, 'p-stashed');
+  });
+
+  it('purges the channel principal when the closed tab was an agent', () => {
+    const { state, slice, ws } = harnessWithStash();
+    state.surfaceAgent['pty-b'] = { name: 'Claude Code', status: 'idle', slug: 'claude' };
+
+    slice.closeSurface('p-stashed', 'sf-a');
+    slice.closeSurface('p-stashed', 'sf-b');
+
+    // Same R2 cleanup closePane runs: canonical principalId, legacy autoName
+    // row, then the principal itself. The id comes from the SAME helper the
+    // slice uses — a hand-built format string is how this assertion was wrong
+    // on its first run.
+    const principalId = panePrincipalId(ws.id, 'p-stashed');
+    expect(state.purgeMembershipDaemon).toHaveBeenCalledWith(
+      expect.objectContaining({ workspaceId: ws.id, principalId }),
+    );
+    expect(state.principalRemoveDaemon).toHaveBeenCalledWith(principalId);
+  });
+
+  it('does NOT purge a principal when the closed tab was a plain shell', () => {
+    const { state, slice } = harnessWithStash();
+
+    slice.closeSurface('p-stashed', 'sf-a');
+    slice.closeSurface('p-stashed', 'sf-b');
+
+    expect(state.purgeMembershipDaemon).not.toHaveBeenCalled();
+    expect(state.principalRemoveDaemon).not.toHaveBeenCalled();
+  });
+
+  it('leaves an empty VISIBLE pane alone — the funnel backfills those', () => {
+    const { state, slice } = createHarness();
+    const ws = state.workspaces[0];
+    const root = ws.rootPane as Extract<Workspace['rootPane'], { type: 'leaf' }>;
+    root.surfaces = [{ id: 'sf-v', ptyId: 'pty-v', title: 'v', shell: 'pwsh', cwd: 'C:\repo' }];
+    root.activeSurfaceId = 'sf-v';
+
+    slice.closeSurface(root.id, 'sf-v');
+
+    expect(root.surfaces).toHaveLength(0);
+    expect(ws.stashedPanes).toBeUndefined();
   });
 });

@@ -305,3 +305,59 @@ describe('projectConfigSlice', () => {
     });
   });
 });
+
+// ─── Stashed panes survive a layout apply (#977) ────────────────────────────
+//
+// A wmux.json layout replaces what is ON SCREEN. Stashed panes are not being
+// replaced by it, so they must not be disposed — and because they survive, they
+// keep their ordinals, which means the fresh tree cannot restart numbering at 1.
+// A pane's auto name IS its A2A address, so a collision routes messages to the
+// wrong agent.
+
+describe('applyProjectLayout — stashed panes', () => {
+  function storeWithStash() {
+    const ws = createWorkspace('Test');
+    const stashedLeaf = {
+      id: 'stashed-1',
+      type: 'leaf' as const,
+      ordinal: 9,
+      activeSurfaceId: 'sf-9',
+      surfaces: [{ ...createSurface('pty-stashed', 'pwsh', 'C:\repo'), id: 'sf-9' }],
+    };
+    const store = create<TestState & { pushToast: (t: unknown) => void }>()(
+      immer((...args) => ({
+        workspaces: [{ ...ws, stashedPanes: [{ pane: stashedLeaf, stashedAt: 1 }] }],
+        activeWorkspaceId: ws.id,
+        zoomedPaneId: null,
+        pushToast: () => undefined,
+        // @ts-expect-error — minimal test store doesn't match full StoreState
+        ...createProjectConfigSlice(...args),
+      }))
+    );
+    return { store, wsId: ws.id };
+  }
+
+  it('numbers the new tree PAST every stashed ordinal', () => {
+    const { store, wsId } = storeWithStash();
+    store.setState((s) => { s.projectConfigs[wsId] = trustedState(); });
+
+    const result = store.getState().applyProjectLayout(wsId);
+
+    expect(result.ok).toBe(true);
+    const ws = store.getState().workspaces[0];
+    const ordinals = collectLeaves(ws.rootPane).map((l) => l.ordinal);
+    // Fresh 1..n would collide with the stashed pane's 9.
+    expect(Math.min(...(ordinals as number[]))).toBe(10);
+    expect(ws.nextPaneOrdinal).toBe(10 + ordinals.length);
+  });
+
+  it('never disposes a stashed pane’s PTY', () => {
+    const { store, wsId } = storeWithStash();
+    store.setState((s) => { s.projectConfigs[wsId] = trustedState(); });
+
+    const result = store.getState().applyProjectLayout(wsId);
+
+    expect(result.disposedPtyIds).not.toContain('pty-stashed');
+    expect(store.getState().workspaces[0].stashedPanes).toHaveLength(1);
+  });
+});

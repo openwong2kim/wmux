@@ -63,7 +63,7 @@ import {
 } from './channelMentionHandled';
 import { HUMAN_WORKSPACE_ID } from '../../shared/channels';
 import { isNudgeRateLimited, recordNudge, shouldWarnLoopSuspect } from './channelMentionRateLimit';
-import { findLeafPanes } from './a2aAddressing';
+import { getWorkspaceLeafPanes } from '../../shared/paneUtils';
 import { panePrincipalId } from '../../shared/principals';
 import { publishA2aTask } from '../events/publisher';
 import { flushMentions, type FlushOpts } from './channelMentionFlush';
@@ -286,11 +286,16 @@ export function useChannelsEventSubscription(): void {
       // mention queued for a pane that read as 'unknown' (fail-closed busy) at
       // arrival is retried once that pane's status resolves to idle. Cheap
       // early-out when nothing is queued so the per-poll sweep skips the
-      // findLeafPanes DFS on an empty queue.
+      // pane DFS on an empty queue.
       if (st.getUndeliveredChannelMentionTasks(wsId).length === 0) return;
       const selfWs = st.workspaces.find((w) => w.id === wsId);
       if (!selfWs) return;
-      const selfLeaves = findLeafPanes(selfWs.rootPane);
+      // Workspace-wide (#977): a stashed agent is still a channel member and
+      // still reachable — its PTY is alive in the daemon. Scoping this to the
+      // layout would strand its queued mentions forever AND miscount the
+      // "exactly one agent in this workspace" rule that decides ws-level
+      // delivery, silently redirecting someone else's mention.
+      const selfLeaves = getWorkspaceLeafPanes(selfWs);
       // 2b: ptys currently hosting a detected agent — the ws-level single-agent
       // delivery rule needs to know when the workspace has exactly one.
       const agentPtys = new Set<string>();
@@ -415,7 +420,10 @@ export function useChannelsEventSubscription(): void {
       for (const wsId of localIds) {
         const ws = st.workspaces.find((w) => w.id === wsId);
         if (ws) {
-          for (const leaf of findLeafPanes(ws.rootPane)) {
+          // Workspace-wide (#977): this set is "which ptys still exist", and a
+          // stashed pane's pty does. A visible-tree walk would prune a live
+          // pane's paste-gate state as if the pane had been closed.
+          for (const leaf of getWorkspaceLeafPanes(ws)) {
             for (const s of leaf.surfaces) if (s.ptyId) live.add(s.ptyId);
           }
         }
@@ -535,7 +543,8 @@ export function useChannelsEventSubscription(): void {
             const cached = batchLeaves.get(wsId);
             if (cached) return cached;
             const ws = useStore.getState().workspaces.find((w) => w.id === wsId);
-            const leaves = ws ? findLeafPanes(ws.rootPane) : [];
+            // Workspace-wide (#977) — mention routing is an address question.
+            const leaves = ws ? getWorkspaceLeafPanes(ws) : [];
             batchLeaves.set(wsId, leaves);
             return leaves;
           };

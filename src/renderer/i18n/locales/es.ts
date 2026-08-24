@@ -22,10 +22,33 @@ export const es = {
   'workspace.copyInfo': 'Copiar información de sesión',
   'workspace.copied': '¡Copiado!',
 
+  // Roster
+  'roster.stashedCount': '{count} apartados',
+  'roster.stashedOnly': '{count} apartados',
+  'roster.stashedExited': 'Sesión finalizada',
+  'roster.unstashAction': 'Devolver al diseño',
+  'roster.recoverAction': 'Devolver y recuperar',
+  // The stash undo toast's button — the safety net the whole gesture leans on.
+  'common.undo': 'Deshacer',
+
   // Pane
   'pane.empty': 'Panel vacío',
   'pane.splitRight': 'Dividir a la derecha',
   'pane.splitDown': 'Dividir hacia abajo',
+  'pane.moreActions': 'Acciones del panel',
+  'pane.maxLeavesReachedWithStash': 'Límite de paneles alcanzado ({count}), incluidos {stashed} apartados. Recupera uno y ciérralo, o cierra un panel visible.',
+
+  // Pane stash (#977) — the pane leaves the layout, its session keeps running.
+  'pane.stash': 'Apartar panel',
+  'pane.stashHint': 'Se quita del diseño — la sesión sigue en ejecución',
+  'pane.unstash': 'Recuperar',
+  'pane.stashed': '{name} apartado. La sesión sigue en ejecución.',
+  'pane.unstashedToNeighbor': 'De vuelta junto a su antiguo vecino.',
+  'pane.unstashedFallback': 'Su antiguo vecino ya no está — colocado junto al panel activo.',
+  'pane.stashLastPane': 'Es el único panel en pantalla. Apartarlo no dejaría nada que mirar.',
+  'pane.stashEmptyPane': 'Este panel está vacío — no hay sesión que mantener en ejecución ni nada que recuperar.',
+  'pane.stashNoDaemon': 'No hay conexión con el daemon. Un panel apartado necesita el daemon para mantener su sesión y reproducirla — se perdería la salida.',
+  'pane.stashBlockedSurface': 'Este panel contiene una pestaña de {type}. Solo se pueden apartar terminales y navegadores — un editor desmontado perdería los cambios sin guardar.',
 
   // Surface
   'surface.terminal': 'Terminal',
@@ -66,6 +89,7 @@ export const es = {
   'palette.cmd.newSurface': 'Nueva superficie',
   'palette.cmd.splitRight': 'Dividir a la derecha',
   'palette.cmd.splitDown': 'Dividir hacia abajo',
+  'palette.cmd.stashPane': 'Apartar panel (la sesión sigue en ejecución)',
   'palette.cmd.showNotifications': 'Mostrar notificaciones',
   'palette.cmd.openSettings': 'Abrir ajustes',
   'palette.cmd.openBrowser': 'Abrir navegador',
@@ -215,6 +239,7 @@ export const es = {
   'settings.prefix.focusDown': 'Foco abajo',
   'settings.prefix.focusLeft': 'Foco izquierda',
   'settings.prefix.focusRight': 'Foco derecha',
+  'settings.prefix.stashPane': 'Apartar panel',
 
   // Custom keybindings
   'settings.customKeybindings': 'Atajos personalizados',

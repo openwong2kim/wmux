@@ -373,3 +373,57 @@ describe('findWorkspaceIdForPty', () => {
     expect(findWorkspaceIdForPty('p1', [])).toBeNull();
   });
 });
+
+// ─── Stashed panes route by their own ptyId (#977) ──────────────────────────
+//
+// A stashed pane is off the layout but still owned and still running, so its
+// hooks still fire. The routing does not fail loudly when its ptyId is missing
+// from `ptyIds` — it falls through to the workspace's ACTIVE pane, and the
+// stashed agent's turn-end, awaiting-input and resume binding all land on
+// whichever pane the user happens to be looking at. A confidently wrong answer,
+// which is worse than none. Hence the membership array is workspace-wide.
+
+describe('resolvePtyIdForSignal — stashed panes (#977)', () => {
+  // What buildWorkspaceListEntries now produces: activePtyId is the visible
+  // active surface, ptyIds is everything the workspace OWNS, visible first.
+  const workspaces = [
+    {
+      id: 'ws-1',
+      name: 'Workspace 1',
+      metadata: { cwd: '/repo' },
+      activePtyId: 'pty-visible',
+      ptyIds: ['pty-visible', 'pty-stashed'],
+    },
+  ];
+
+  it('routes a stashed pane’s hook to that pane, not the active one', () => {
+    const got = resolvePtyIdForSignal(
+      signal({ ptyId: 'pty-stashed', workspaceId: 'ws-1', cwd: '/repo' }),
+      workspaces,
+    );
+    expect(got).toBe('pty-stashed');
+  });
+
+  it('would have misattributed it to the active pane if ptyIds were visible-only', () => {
+    // The exact regression this widening exists to prevent, pinned so a future
+    // "the external contract means on-screen" argument has to face it.
+    const visibleOnly = [{ ...workspaces[0], ptyIds: ['pty-visible'] }];
+    const got = resolvePtyIdForSignal(
+      signal({ ptyId: 'pty-stashed', workspaceId: 'ws-1', cwd: '/repo' }),
+      visibleOnly,
+    );
+    expect(got).toBe('pty-visible');
+  });
+
+  it('resolves the owning workspace for a stashed ptyId', () => {
+    expect(findWorkspaceIdForPty('pty-stashed', workspaces)).toBe('ws-1');
+  });
+
+  it('keeps the ptyIds[0] fallback on a VISIBLE pane', () => {
+    // Visible entries come first, so a workspaceId-only signal against a
+    // workspace with no activePtyId still lands on screen.
+    const noActive = [{ ...workspaces[0], activePtyId: null }];
+    expect(resolvePtyIdForSignal(signal({ workspaceId: 'ws-1', cwd: '/repo' }), noActive))
+      .toBe('pty-visible');
+  });
+});

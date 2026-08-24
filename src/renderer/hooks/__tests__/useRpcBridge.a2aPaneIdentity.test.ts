@@ -73,11 +73,16 @@ describe('useRpcBridge — pane-level A2A identity wiring', () => {
 
   it('a2a.task.send resolves an explicit address and HARD-rejects an invalid one (no active-pane fallback)', () => {
     const block = region("method === 'a2a\\.task\\.send'", "method === 'a2a\\.task\\.query'");
-    expect(block).toMatch(/resolvePaneAddress\(findLeafPanes\(target\.rootPane\)/);
+    // #977 — getWorkspaceLeafPanes: A2A delivery is an ADDRESS operation, so a
+    // stashed pane is still a legal target (its PTY is alive in the daemon and
+    // stdin needs no coordinates). Dropping out of this set the moment a pane is
+    // stashed is a silent misroute — the caller gets "pane not found" for an
+    // agent that is running and reachable.
+    expect(block).toMatch(/resolvePaneAddress\(getWorkspaceLeafPanes\(target\)/);
     // an 'error' from the resolver short-circuits the send
     expect(block).toMatch(/if \('error' in addr\) return \{ error: `a2a\.task\.send:/);
     // reply pins to the originally-addressed pane
-    expect(block).toMatch(/resolvePaneAddress\(findLeafPanes\(targetWs\.rootPane\)/);
+    expect(block).toMatch(/resolvePaneAddress\(getWorkspaceLeafPanes\(targetWs\)/);
     // reply fails CLOSED when the pinned address no longer resolves (no
     // active-pane fallback that could land on the wrong agent)
     expect(block).toMatch(/pinnedAddressLost/);
@@ -129,7 +134,10 @@ describe('useRpcBridge — pane-level A2A identity wiring', () => {
   it('a2a.task.send validates senderPtyId provenance against the sender workspace', () => {
     const block = region("method === 'a2a\\.task\\.send'", "method === 'a2a\\.task\\.query'");
     // a foreign/bogus senderPtyId is treated as absent (→ safe silent fallback)
-    expect(block).toMatch(/const senderLeaves = sender \? findLeafPanes\(sender\.rootPane\) : \[\]/);
+    // Workspace-wide (#977). The ownership boundary is unchanged — still the
+    // SENDER's own leaves, so a foreign ptyId still fails closed; what widens
+    // is the owned set, not the trust level.
+    expect(block).toMatch(/const senderLeaves = sender \? getWorkspaceLeafPanes\(sender\) : \[\]/);
     expect(block).toMatch(/isTerminalPtyInLeaves\(senderLeaves, rawSenderPtyId\)/);
     // S-C2: the validated senderPtyId is captured as the `from` pane anchor
     expect(block).toMatch(/const senderAddr = resolveSenderPaneAddress\(senderLeaves, senderPtyId\)/);

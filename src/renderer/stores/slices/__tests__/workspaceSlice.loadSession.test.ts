@@ -54,6 +54,11 @@ type TestState = WorkspaceSlice & {
   // Orchestrator brain vendor — loadSession re-coerces it on every load.
   deckBrainVendor: BrainVendor;
   deckBrainVendorMigrated: boolean;
+  // paneSlice / workTaskSlice registries that removeWorkspace evicts. Declared
+  // here (rather than composing those slices) because loadSession never writes
+  // them — only the teardown path reads and deletes.
+  paneNotificationRing: Record<string, 'flash' | 'glow'>;
+  taskPtyRegistry: Record<string, string>;
 };
 
 function createTestStore() {
@@ -106,6 +111,8 @@ function createTestStore() {
       // Seeded false (not the uiSlice default) so the marker assertions prove
       // loadSession sets it rather than reading back the fixture.
       deckBrainVendorMigrated: false,
+      paneNotificationRing: {},
+      taskPtyRegistry: {},
     }))
   );
 }
@@ -940,5 +947,347 @@ describe('loadSession — orchestrator brain vendor coercion', () => {
       store.getState().loadSession(sessionWithVendor('gpt-9', migrated));
       expect(store.getState().deckBrainVendor).toBe('claude-pty');
     }
+  });
+});
+
+// ─── Stashed panes (#977) ───────────────────────────────────────────────────
+//
+// session.json is user-editable and can come from a newer build, so the array is
+// validated entry by entry. A bad row is dropped with a warning rather than
+// failing the load: the point of the feature is that a stashed pane is
+// recoverable, and losing an entire session over one malformed row would be
+// exactly backwards.
+
+describe('loadSession — stashedPanes', () => {
+  function stashLeaf(id: string, ptyId: string, extra: Record<string, unknown> = {}) {
+    return {
+      id,
+      type: 'leaf' as const,
+      activeSurfaceId: `sf-${id}`,
+      surfaces: [{ id: `sf-${id}`, ptyId, title: id, shell: 'pwsh', cwd: 'C:\repo', ...extra }],
+    };
+  }
+
+  function sessionWithStash(stashedPanes: unknown, wsExtra: Record<string, unknown> = {}): SessionData {
+    return {
+      workspaces: [{
+        id: 'ws-1',
+        name: 'WS',
+        rootPane: { id: 'pane-root', type: 'leaf', surfaces: [], activeSurfaceId: '' },
+        activePaneId: 'pane-root',
+        stashedPanes,
+        ...wsExtra,
+      }],
+      activeWorkspaceId: 'ws-1',
+      sidebarVisible: true,
+    } as unknown as SessionData;
+  }
+
+  it('round-trips a well-formed entry', () => {
+    const store = createTestStore();
+    store.getState().loadSession(sessionWithStash([
+      { pane: stashLeaf('p2', 'pty-2'), origin: { anchorPaneId: 'pane-root', direction: 'vertical', sourceFirst: true, sizes: [30, 70] }, stashedAt: 1234 },
+    ]));
+
+    const ws = store.getState().workspaces[0];
+    expect(ws.stashedPanes).toHaveLength(1);
+    expect(ws.stashedPanes![0].pane.id).toBe('p2');
+    expect(ws.stashedPanes![0].pane.surfaces[0].ptyId).toBe('pty-2');
+    expect(ws.stashedPanes![0].origin).toEqual({
+      anchorPaneId: 'pane-root', direction: 'vertical', sourceFirst: true, sizes: [30, 70],
+    });
+    expect(ws.stashedPanes![0].stashedAt).toBe(1234);
+  });
+
+  it('applies the SAME sanitize pass the visible tree gets', () => {
+    const store = createTestStore();
+    store.getState().loadSession(sessionWithStash([
+      { pane: stashLeaf('p2', '', { surfaceType: 'browser', browserUrl: 'javascript:alert(1)' }), stashedAt: 1 },
+    ]));
+
+    // A blocked scheme must not survive in the stash just because it was
+    // off-screen when the rule landed.
+    expect(store.getState().workspaces[0].stashedPanes![0].pane.surfaces[0].browserUrl).toBe('about:blank');
+  });
+
+  it('drops malformed entries and still loads the session', () => {
+    const store = createTestStore();
+    store.getState().loadSession(sessionWithStash([
+      null,
+      { stashedAt: 1 },                                   // no pane
+      { pane: { id: 'b', type: 'branch', children: [] } }, // not a leaf
+      { pane: { id: 'p9', type: 'leaf' } },                // no surfaces array
+      { pane: stashLeaf('p2', 'pty-2'), stashedAt: 5 },
+    ]));
+
+    const ws = store.getState().workspaces[0];
+    expect(ws.stashedPanes).toHaveLength(1);
+    expect(ws.stashedPanes![0].pane.id).toBe('p2');
+    expect(store.getState().workspaces).toHaveLength(1);
+  });
+
+  it.each([
+    ['bad direction', { anchorPaneId: 'pane-root', direction: 'diagonal', sourceFirst: true }],
+    ['bad sourceFirst', { anchorPaneId: 'pane-root', direction: 'vertical', sourceFirst: 'yes' }],
+    ['missing anchor', { direction: 'vertical', sourceFirst: true }],
+    ['not an object', 'nope'],
+  ])('drops a malformed origin (%s) but KEEPS the pane', (_name, origin) => {
+    // The origin is a hint about placement. A bad one costs a position; the
+    // entry it rides on is a running session.
+    const store = createTestStore();
+    store.getState().loadSession(sessionWithStash([
+      { pane: stashLeaf('p2', 'pty-2'), origin, stashedAt: 1 },
+    ]));
+
+    const entry = store.getState().workspaces[0].stashedPanes![0];
+    expect(entry.pane.id).toBe('p2');
+    expect(entry.origin).toBeUndefined();
+  });
+
+  it.each([
+    ['wrong length', [50, 30, 20]],
+    ['non-numeric', ['a', 'b']],
+    ['zero', [0, 100]],
+  ])('drops malformed origin sizes (%s) but keeps the placement', (_name, sizes) => {
+    // attachBeside ignores anything that is not exactly two entries anyway; a
+    // sizes/children mismatch is the bug that renders every survivor one slot
+    // off, so it is discarded at the door rather than carried around.
+    const store = createTestStore();
+    store.getState().loadSession(sessionWithStash([
+      {
+        pane: stashLeaf('p2', 'pty-2'),
+        origin: { anchorPaneId: 'pane-root', direction: 'vertical', sourceFirst: true, sizes },
+        stashedAt: 1,
+      },
+    ]));
+
+    const entry = store.getState().workspaces[0].stashedPanes![0];
+    expect(entry.origin).toEqual({ anchorPaneId: 'pane-root', direction: 'vertical', sourceFirst: true });
+  });
+
+  it('drops a non-array stashedPanes outright', () => {
+    const store = createTestStore();
+    store.getState().loadSession(sessionWithStash('not-an-array'));
+    expect(store.getState().workspaces[0].stashedPanes).toBeUndefined();
+  });
+
+  it('leaves the field absent when nothing was stashed', () => {
+    const store = createTestStore();
+    store.getState().loadSession(sessionWithStash(undefined));
+    expect(store.getState().workspaces[0].stashedPanes).toBeUndefined();
+  });
+
+  it('counts stashed ordinals in the high-water mark (duplicate-ordinal regression)', () => {
+    // The stashed pane holds the HIGHEST ordinal. If the recompute only walked
+    // the visible tree, nextPaneOrdinal would land at 2 and the next split would
+    // reissue 7 — two panes answering to the same auto name, which is also the
+    // A2A address.
+    const store = createTestStore();
+    store.getState().loadSession(sessionWithStash(
+      [{ pane: { ...stashLeaf('p2', 'pty-2'), ordinal: 7 }, stashedAt: 1 }],
+      { rootPane: { id: 'pane-root', type: 'leaf', surfaces: [], activeSurfaceId: '', ordinal: 1 }, nextPaneOrdinal: 2 },
+    ));
+
+    expect(store.getState().workspaces[0].nextPaneOrdinal).toBe(8);
+  });
+
+  it('backfills a missing ordinal PAST every stashed one', () => {
+    const store = createTestStore();
+    store.getState().loadSession(sessionWithStash(
+      [{ pane: { ...stashLeaf('p2', 'pty-2'), ordinal: 4 }, stashedAt: 1 }],
+      { rootPane: { id: 'pane-root', type: 'leaf', surfaces: [], activeSurfaceId: '' } },
+    ));
+
+    const ws = store.getState().workspaces[0];
+    const root = ws.rootPane as { ordinal?: number };
+    expect(root.ordinal).toBe(5);
+    expect(ws.nextPaneOrdinal).toBe(6);
+  });
+
+  it('clearAllPtyState wipes stashed ptyIds too', () => {
+    // This is the "we could not reconcile anything" fallback. Leaving stashed
+    // panes bound to ptyIds we just declared untrustworthy would make them the
+    // only surfaces still claiming a live session.
+    const store = createTestStore();
+    store.getState().loadSession(sessionWithStash([{ pane: stashLeaf('p2', 'pty-2'), stashedAt: 1 }]));
+
+    store.getState().clearAllPtyState();
+
+    expect(store.getState().workspaces[0].stashedPanes![0].pane.surfaces[0].ptyId).toBe('');
+  });
+
+  it('clearSurfacePtyIdByPty reaches a stashed pane and logs the transition', () => {
+    // Reconcile confirming a stashed session dead is what flips its DERIVED
+    // liveness to `exited`. A visible-tree-only clear leaves the model stranded.
+    // The log matters more here than for a visible pane: this one happened
+    // off-screen, so without the line there is no trace at all that an agent
+    // died except a sidebar label nobody was watching.
+    const store = createTestStore();
+    store.getState().loadSession(sessionWithStash([{ pane: stashLeaf('p2', 'pty-2'), stashedAt: 1 }]));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    store.getState().clearSurfacePtyIdByPty('pty-2');
+
+    expect(store.getState().workspaces[0].stashedPanes![0].pane.surfaces[0].ptyId).toBe('');
+    expect(warn.mock.calls.map(([m]) => String(m)).join(' | ')).toContain('[wmux:stash]');
+    warn.mockRestore();
+  });
+
+  it('removeWorkspace evicts registry entries keyed by a stashed pane', () => {
+    const store = createTestStore();
+    store.getState().loadSession(sessionWithStash([{ pane: stashLeaf('p2', 'pty-2'), stashedAt: 1 }]));
+    store.getState().addWorkspace('Second');
+    store.setState((s) => {
+      s.paneNotificationRing = { p2: 'glow' };
+      s.taskPtyRegistry = { 'pty-2': 'task-1' };
+    });
+
+    store.getState().removeWorkspace('ws-1');
+
+    expect(store.getState().paneNotificationRing['p2']).toBeUndefined();
+    expect(store.getState().taskPtyRegistry['pty-2']).toBeUndefined();
+  });
+});
+
+// ─── Downgrade round-trip (#977, E-6) ───────────────────────────────────────
+//
+// The "boot fallback" idea does not work — an old binary cannot run new code.
+// What ACTUALLY protects a downgraded user is duller and more reliable: the old
+// buildSessionData spreads `...ws` and only overrides rootPane, so a field it
+// has never heard of round-trips untouched. This pins that mechanism, because
+// the changelog's downgrade note is a promise resting on it.
+
+describe('loadSession — downgrade round-trip', () => {
+  /** The pre-stash builder, reproduced exactly: spread the workspace, replace
+   *  the tree, know nothing about anything else. */
+  function oldBuildSessionData(workspaces: Workspace[]): SessionData {
+    return {
+      workspaces: workspaces.map((w) => ({ ...w, rootPane: w.rootPane })),
+      activeWorkspaceId: workspaces[0].id,
+      sidebarVisible: true,
+    } as unknown as SessionData;
+  }
+
+  it('an old writer preserves stashedPanes it does not understand', () => {
+    const store = createTestStore();
+    const stashEntry = {
+      pane: {
+        id: 'p2',
+        type: 'leaf' as const,
+        activeSurfaceId: 'sf-p2',
+        surfaces: [{ id: 'sf-p2', ptyId: 'pty-2', title: 'p2', shell: 'pwsh', cwd: 'C:\repo' }],
+      },
+      stashedAt: 42,
+    };
+    store.getState().loadSession({
+      workspaces: [{
+        id: 'ws-1',
+        name: 'WS',
+        rootPane: { id: 'pane-root', type: 'leaf', surfaces: [], activeSurfaceId: '' },
+        activePaneId: 'pane-root',
+        stashedPanes: [stashEntry],
+      }],
+      activeWorkspaceId: 'ws-1',
+      sidebarVisible: true,
+    } as unknown as SessionData);
+
+    // …downgrade: the old build writes the session back out…
+    const written = oldBuildSessionData(store.getState().workspaces);
+    // …upgrade: the new build reads it again.
+    const store2 = createTestStore();
+    store2.getState().loadSession(written);
+
+    expect(store2.getState().workspaces[0].stashedPanes).toHaveLength(1);
+    expect(store2.getState().workspaces[0].stashedPanes![0].pane.surfaces[0].ptyId).toBe('pty-2');
+    expect(store2.getState().workspaces[0].stashedPanes![0].stashedAt).toBe(42);
+  });
+});
+
+// ─── stashedPanes load guards (#977 review) ──────────────────────────────────
+//
+// session.json is hand-editable, and the entry-by-entry validation exists for
+// exactly that: these pin the three holes the three-way review found in it —
+// an empty pane (a ghost holding an ordinal), a paneId duplicated against the
+// visible tree (reconciled and rendered twice), and a colliding ordinal (two
+// panes sharing an auto-name, which is the A2A address).
+
+function stashLoadData(stashedPanes: unknown): SessionData {
+  const ws = {
+    id: 'ws-sg',
+    name: 'StashGuards',
+    rootPane: {
+      id: 'p-vis',
+      type: 'leaf',
+      activeSurfaceId: 's-v',
+      ordinal: 1,
+      surfaces: [{ id: 's-v', ptyId: 'pty-v', title: 'v', shell: 'pwsh', cwd: 'C:/r' }],
+    },
+    activePaneId: 'p-vis',
+    stashedPanes,
+  } as unknown as Workspace;
+  return {
+    workspaces: [ws],
+    activeWorkspaceId: ws.id,
+    sidebarVisible: true,
+  } as unknown as SessionData;
+}
+
+function stashEntry(paneId: string, ordinal: number) {
+  return {
+    pane: {
+      id: paneId,
+      type: 'leaf',
+      activeSurfaceId: `${paneId}-s`,
+      ordinal,
+      surfaces: [{ id: `${paneId}-s`, ptyId: `${paneId}-pty`, title: 't', shell: 'pwsh', cwd: 'C:/r' }],
+    },
+    stashedAt: 1,
+  };
+}
+
+describe('WorkspaceSlice.loadSession — stashedPanes guards (#977 review)', () => {
+  it('drops a stash entry with an empty surfaces array — same rule as canStashPaneSurfaces', () => {
+    const store = createTestStore();
+    const empty = { ...stashEntry('p-empty', 5), pane: { ...stashEntry('p-empty', 5).pane, surfaces: [] } };
+    store.getState().loadSession(stashLoadData([empty, stashEntry('p-ok', 6)]));
+
+    const ws = store.getState().workspaces[0];
+    expect(ws.stashedPanes?.map((e) => e.pane.id)).toEqual(['p-ok']);
+  });
+
+  it('drops a stash entry whose id also lives in the visible tree', () => {
+    const store = createTestStore();
+    store.getState().loadSession(stashLoadData([stashEntry('p-vis', 5), stashEntry('p-ok', 6)]));
+
+    const ws = store.getState().workspaces[0];
+    // The visible copy is the one on screen; the stash copy loses.
+    expect(ws.stashedPanes?.map((e) => e.pane.id)).toEqual(['p-ok']);
+  });
+
+  it('drops the second copy of an id duplicated inside the stash itself', () => {
+    const store = createTestStore();
+    store.getState().loadSession(stashLoadData([stashEntry('p-dup', 5), stashEntry('p-dup', 6)]));
+
+    expect(store.getState().workspaces[0].stashedPanes).toHaveLength(1);
+  });
+
+  it('reassigns a stashed ordinal that collides with a visible one — auto-names are A2A addresses', () => {
+    const store = createTestStore();
+    // Visible pane holds ordinal 1; this stash entry claims 1 too.
+    store.getState().loadSession(stashLoadData([stashEntry('p-coll', 1)]));
+
+    const ws = store.getState().workspaces[0];
+    const kept = ws.stashedPanes![0].pane;
+    expect(kept.id).toBe('p-coll');
+    expect(kept.ordinal).not.toBe(1);
+    expect(typeof kept.ordinal).toBe('number');
+  });
+
+  it('keeps a well-formed entry untouched', () => {
+    const store = createTestStore();
+    store.getState().loadSession(stashLoadData([stashEntry('p-keep', 9)]));
+
+    const ws = store.getState().workspaces[0];
+    expect(ws.stashedPanes![0].pane.ordinal).toBe(9);
   });
 });

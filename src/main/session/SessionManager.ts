@@ -343,6 +343,12 @@ export class SessionManager {
     };
     for (const ws of data.workspaces ?? []) {
       walk((ws as { rootPane?: unknown }).rootPane);
+      // #977 — stashed panes hold live ptyIds too. A reboot postmortem that
+      // cannot see them reads as "these sessions were never persisted", which
+      // is exactly the wrong conclusion to draw about a pane that was alive.
+      for (const entry of (ws as { stashedPanes?: unknown[] }).stashedPanes ?? []) {
+        walk((entry as { pane?: unknown } | null)?.pane);
+      }
     }
     return ids;
   }

@@ -22,10 +22,33 @@ export const uk = {
   'workspace.copyInfo': 'Скопіювати дані сесії',
   'workspace.copied': 'Скопійовано!',
 
+  // Roster
+  'roster.stashedCount': 'Відкладено {count}',
+  'roster.stashedOnly': 'Відкладено {count}',
+  'roster.stashedExited': 'Сесію завершено',
+  'roster.unstashAction': 'Повернути в макет',
+  'roster.recoverAction': 'Повернути й відновити',
+  // The stash undo toast's button — the safety net the whole gesture leans on.
+  'common.undo': 'Повернути',
+
   // Pane
   'pane.empty': 'Порожня панель',
   'pane.splitRight': 'Розділити праворуч',
   'pane.splitDown': 'Розділити вниз',
+  'pane.moreActions': 'Дії панелі',
+  'pane.maxLeavesReachedWithStash': 'Досягнуто ліміт панелей ({count}), зокрема відкладених: {stashed}. Поверніть одну й закрийте її або закрийте видиму панель.',
+
+  // Pane stash (#977) — the pane leaves the layout, its session keeps running.
+  'pane.stash': 'Відкласти панель',
+  'pane.stashHint': 'Прибрати з макета — сесія продовжить працювати',
+  'pane.unstash': 'Повернути',
+  'pane.stashed': 'Панель {name} відкладено. Вона все ще працює.',
+  'pane.unstashedToNeighbor': 'Повернулася поруч із колишнім сусідом.',
+  'pane.unstashedFallback': 'Колишнього сусіда вже немає — розміщено поруч з активною панеллю.',
+  'pane.stashLastPane': 'Це єдина панель на екрані. Якщо її відкласти, не буде на що дивитися.',
+  'pane.stashEmptyPane': 'Ця панель порожня — немає сесії, яку треба тримати запущеною, і нічого повертати.',
+  'pane.stashNoDaemon': 'Немає з’єднання з демоном. Відкладеній панелі потрібен демон, щоб утримувати її сесію та відтворити її — вивід буде втрачено.',
+  'pane.stashBlockedSurface': 'У цій панелі вкладка {type}. Відкласти можна лише термінали та браузери — демонтований редактор втратить незбережені зміни.',
 
   // Surface
   'surface.terminal': 'Термінал',
@@ -66,6 +89,7 @@ export const uk = {
   'palette.cmd.newSurface': 'Нова поверхня',
   'palette.cmd.splitRight': 'Розділити праворуч',
   'palette.cmd.splitDown': 'Розділити вниз',
+  'palette.cmd.stashPane': 'Відкласти панель (сесія продовжить працювати)',
   'palette.cmd.showNotifications': 'Показати сповіщення',
   'palette.cmd.openSettings': 'Відкрити налаштування',
   'palette.cmd.openBrowser': 'Відкрити браузер',
@@ -215,6 +239,7 @@ export const uk = {
   'settings.prefix.focusDown': 'Фокус униз',
   'settings.prefix.focusLeft': 'Фокус ліворуч',
   'settings.prefix.focusRight': 'Фокус праворуч',
+  'settings.prefix.stashPane': 'Відкласти панель',
 
   // Custom keybindings
   'settings.customKeybindings': 'Користувацькі прив’язки клавіш',

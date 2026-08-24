@@ -1,6 +1,6 @@
 import type { StateCreator } from 'zustand';
 import type { StoreState } from '../index';
-import { createWorkspace, clonePaneTreeFresh, assignPaneOrdinals, generateId, BUILTIN_TEMPLATES, DEFAULT_PREFIX_CONFIG, buildDefaultCustomKeybindings, upgradeDefaultKeybindingsForPlatform, TERMINAL_STATES, NOTIFICATION_CATEGORIES, type Pane, type PaneLeaf, type SessionData, type Workspace, type WorkspaceMetadata, type WorkspaceProfile } from '../../../shared/types';
+import { createWorkspace, clonePaneTreeFresh, assignPaneOrdinals, generateId, BUILTIN_TEMPLATES, DEFAULT_PREFIX_CONFIG, buildDefaultCustomKeybindings, upgradeDefaultKeybindingsForPlatform, TERMINAL_STATES, NOTIFICATION_CATEGORIES, type Pane, type PaneLeaf, type SessionData, type StashedPane, type Workspace, type WorkspaceMetadata, type WorkspaceProfile } from '../../../shared/types';
 import { normalizeWorkspaceProfile } from '../../../shared/workspaceProfile';
 import { normalizeWorkspaceColor, type WorkspaceColorId } from '../../../shared/workspaceColors';
 import { normalizeRoleBindings } from '../../../shared/orchestratorRole';
@@ -15,12 +15,16 @@ import { publishWorkspaceMetadataChanged, publishA2aTask } from '../../events/pu
 import { retentionMigrationDone, markRetentionMigrationDone } from '../retentionMigration';
 import { decUnread } from './notificationSlice';
 import { mergeDeadPaneRecovery, type DeadPaneRecovery } from '../../../shared/ptyRecovery';
+import { stashedPaneLiveness } from '../../../shared/paneStash';
+import {
+  collectLeafIds,
+  getLeafPanes,
+  getWorkspaceLeafPanes,
+  getWorkspacePtyIds,
+} from '../../../shared/paneUtils';
 
-/** Collect all leaf panes from a pane tree */
-function collectLeafPanes(pane: Pane): PaneLeaf[] {
-  if (pane.type === 'leaf') return [pane];
-  return pane.children.flatMap(collectLeafPanes);
-}
+/** Collect all leaf panes from a pane tree (canonical walk, aliased locally). */
+const collectLeafPanes = getLeafPanes;
 
 /**
  * Cold-park (TASK-9) is safe ONLY for terminal-only workspaces. Unmounting a
@@ -76,8 +80,61 @@ export function pruneMultiviewMembership(state: {
   state.multiviewIds = live.length <= 1 ? [] : live;
 }
 
+/**
+ * Validate a persisted `StashedPane.origin` (#977).
+ *
+ * session.json is user-editable and can come from a newer build, so every field
+ * is checked rather than trusted — a bad `direction` would build a branch in an
+ * axis that does not exist, and a `sizes` array of the wrong length is exactly
+ * the sizes/children mismatch that renders every survivor one slot off.
+ * Returns undefined when anything is off, which degrades unstash to the
+ * active-pane fallback instead of failing it.
+ */
+function normalizeStashOrigin(
+  raw: unknown,
+  wsId: string,
+  paneId: string,
+): StashedPane['origin'] | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const o = raw as Partial<NonNullable<StashedPane['origin']>>;
+  if (typeof o.anchorPaneId !== 'string' || o.anchorPaneId.length === 0) {
+    console.warn(`[wmux:stash] dropping origin on ws=${wsId} pane=${paneId}: bad anchorPaneId`);
+    return undefined;
+  }
+  if (o.direction !== 'horizontal' && o.direction !== 'vertical') {
+    console.warn(`[wmux:stash] dropping origin on ws=${wsId} pane=${paneId}: bad direction`);
+    return undefined;
+  }
+  if (typeof o.sourceFirst !== 'boolean') {
+    console.warn(`[wmux:stash] dropping origin on ws=${wsId} pane=${paneId}: bad sourceFirst`);
+    return undefined;
+  }
+  const sizes = o.sizes;
+  if (sizes !== undefined) {
+    const usable =
+      Array.isArray(sizes)
+      && sizes.length === 2
+      && sizes.every((n) => typeof n === 'number' && Number.isFinite(n) && n > 0);
+    if (!usable) {
+      // Keep the placement, drop the proportions — attachBeside already falls
+      // back to [50,50] for anything that is not exactly two entries.
+      console.warn(`[wmux:stash] dropping origin sizes on ws=${wsId} pane=${paneId}`);
+      return { anchorPaneId: o.anchorPaneId, direction: o.direction, sourceFirst: o.sourceFirst };
+    }
+  }
+  return {
+    anchorPaneId: o.anchorPaneId,
+    direction: o.direction,
+    sourceFirst: o.sourceFirst,
+    ...(sizes ? { sizes: [...sizes] } : {}),
+  };
+}
+
 function isTerminalOnlyWorkspace(ws: Workspace): boolean {
-  for (const leaf of collectLeafPanes(ws.rootPane)) {
+  // Workspace-wide (#977): a stashed browser surface still belongs to this
+  // workspace, and cold-parking on the strength of the visible tree alone would
+  // unload it under an eligibility test that never looked at it.
+  for (const leaf of getWorkspaceLeafPanes(ws)) {
     for (const s of leaf.surfaces) {
       if (s.surfaceType !== undefined && s.surfaceType !== 'terminal') return false;
     }
@@ -401,10 +458,8 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       // so stale paneIds can't render a phantom ring after their tree is gone.
       if (state.paneNotificationRing) {
         const removedWs = state.workspaces[idx];
-        const collectLeafIdsFromPane = (p: Pane): string[] =>
-          p.type === 'leaf' ? [p.id] : p.children.flatMap(collectLeafIdsFromPane);
-        for (const pid of collectLeafIdsFromPane(removedWs.rootPane)) {
-          delete state.paneNotificationRing[pid];
+        for (const leaf of getWorkspaceLeafPanes(removedWs)) {
+          delete state.paneNotificationRing[leaf.id];
         }
       }
       // J3 F4: 이 ws가 태스크 워크스페이스(paneGroupId=이 ws id)였다면 이탈 뱃지·
@@ -414,9 +469,7 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       if (state.departedPaneGroups) delete state.departedPaneGroups[id];
       if (state.taskPtyRegistry) {
         const removedWs = state.workspaces[idx];
-        const collectPtyIds = (p: Pane): string[] =>
-          p.type === 'leaf' ? p.surfaces.map((s) => s.ptyId).filter(Boolean) : p.children.flatMap(collectPtyIds);
-        for (const pid of collectPtyIds(removedWs.rootPane)) delete state.taskPtyRegistry[pid];
+        for (const pid of getWorkspacePtyIds(removedWs)) delete state.taskPtyRegistry[pid];
       }
       // #650 recovery metadata is transient but hydration-sticky. A removed
       // workspace must evict both surface-keyed pending hand-offs and offers
@@ -424,11 +477,10 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       // them alive forever.
       {
         const removedWs = state.workspaces[idx];
-        const collectSurfaces = (p: Pane): Array<{ id: string; ptyId: string }> =>
-          p.type === 'leaf'
-            ? p.surfaces.map((s) => ({ id: s.id, ptyId: s.ptyId }))
-            : p.children.flatMap(collectSurfaces);
-        for (const surface of collectSurfaces(removedWs.rootPane)) {
+        const allSurfaces = getWorkspaceLeafPanes(removedWs).flatMap((leaf) =>
+          leaf.surfaces.map((s) => ({ id: s.id, ptyId: s.ptyId })),
+        );
+        for (const surface of allSurfaces) {
           if (state.pendingDeadPaneRecoveryBySurfaceId) {
             delete state.pendingDeadPaneRecoveryBySurfaceId[surface.id];
           }
@@ -561,9 +613,7 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       if (state.paneNotificationRing) {
         const activatedWs = state.workspaces.find((w: Workspace) => w.id === id);
         if (activatedWs) {
-          const collectLeafIdsFromPane = (p: Pane): string[] =>
-            p.type === 'leaf' ? [p.id] : p.children.flatMap(collectLeafIdsFromPane);
-          for (const pid of collectLeafIdsFromPane(activatedWs.rootPane)) {
+          for (const pid of collectLeafIds(activatedWs.rootPane)) {
             delete state.paneNotificationRing[pid];
           }
         }
@@ -722,6 +772,87 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       };
       for (const ws of data.workspaces) sanitizePanes(ws.rootPane);
 
+      // ── Stashed panes (#977) ─────────────────────────────────────────────
+      // session.json is user-editable and can come from a newer build, so the
+      // array is validated entry by entry rather than trusted. A malformed
+      // entry is DROPPED with a warning instead of failing the load: the whole
+      // point of the feature is that a stashed pane is recoverable, and losing
+      // the entire session over one bad row would be the opposite.
+      for (const ws of data.workspaces) {
+        const raw = (ws as { stashedPanes?: unknown }).stashedPanes;
+        if (raw === undefined) continue;
+        if (!Array.isArray(raw)) {
+          console.warn(`[wmux:stash] dropping stashedPanes on ws=${ws.id}: not an array`);
+          delete ws.stashedPanes;
+          continue;
+        }
+        // Duplicate/collision guards (review). session.json is hand-editable:
+        // a stashed id that ALSO lives in the visible tree would be reconciled
+        // and rendered twice, and a duplicated ordinal makes two panes share an
+        // auto-name — which is the A2A address. Duplicate ids are dropped (the
+        // stash copy loses; the visible one is the one on screen), colliding
+        // ordinals are reassigned past the workspace's high-water mark.
+        const visibleLeaves = getLeafPanes(ws.rootPane);
+        const visibleIds = new Set(visibleLeaves.map((l) => l.id));
+        const seenStashIds = new Set<string>();
+        const usedOrdinals = new Set<number>();
+        let ordinalHigh = 0;
+        for (const l of visibleLeaves) {
+          if (typeof l.ordinal === 'number') {
+            usedOrdinals.add(l.ordinal);
+            if (l.ordinal > ordinalHigh) ordinalHigh = l.ordinal;
+          }
+        }
+        const kept: StashedPane[] = [];
+        for (const entry of raw as unknown[]) {
+          const candidate = entry as Partial<StashedPane> | null;
+          const pane = candidate?.pane as PaneLeaf | undefined;
+          if (!pane || pane.type !== 'leaf' || typeof pane.id !== 'string' || !Array.isArray(pane.surfaces)) {
+            console.warn(`[wmux:stash] dropping malformed stash entry on ws=${ws.id}`);
+            continue;
+          }
+          if (pane.surfaces.length === 0) {
+            // canStashPaneSurfaces refuses an empty pane at stash time for the
+            // same reason this boundary must: the roster builds its row from a
+            // surface, so an empty stashed pane is an unreachable ghost holding
+            // an ordinal and a slot against the pane cap.
+            console.warn(`[wmux:stash] dropping empty stash entry on ws=${ws.id} pane=${pane.id}`);
+            continue;
+          }
+          if (visibleIds.has(pane.id) || seenStashIds.has(pane.id)) {
+            console.warn(`[wmux:stash] dropping duplicate stash entry on ws=${ws.id} pane=${pane.id}`);
+            continue;
+          }
+          seenStashIds.add(pane.id);
+          if (typeof pane.ordinal === 'number' && usedOrdinals.has(pane.ordinal)) {
+            const next = ordinalHigh + 1;
+            console.warn(`[wmux:stash] reassigning colliding ordinal on ws=${ws.id} pane=${pane.id}: ${pane.ordinal} -> ${next}`);
+            pane.ordinal = next;
+          }
+          if (typeof pane.ordinal === 'number') {
+            usedOrdinals.add(pane.ordinal);
+            if (pane.ordinal > ordinalHigh) ordinalHigh = pane.ordinal;
+          }
+          // The same pass the visible tree gets — a blocked browser URL scheme
+          // or a retired git/review surface must not survive in the stash just
+          // because it was off-screen when the rule landed.
+          sanitizePanes(pane);
+          // The origin is a HINT, not the pane. A malformed one costs the user
+          // a placement ("next to the active pane" instead of "next to its
+          // former neighbour"); dropping the whole entry over it would cost
+          // them a running session. So it is validated separately and only it
+          // is discarded.
+          const origin = normalizeStashOrigin(candidate?.origin, ws.id, pane.id);
+          kept.push({
+            pane,
+            ...(origin ? { origin } : {}),
+            stashedAt: typeof candidate?.stashedAt === 'number' ? candidate.stashedAt : Date.now(),
+          });
+        }
+        if (kept.length > 0) ws.stashedPanes = kept;
+        else delete ws.stashedPanes;
+      }
+
       // Sanitize each workspace profile from the (untrusted) saved session:
       // drop invalid env keys/values, reserved WMUX_* keys, and collapse an
       // empty profile so it doesn't linger as `{ env: {} }`. Deliberately NOT
@@ -753,7 +884,11 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       // nextPaneOrdinal can never sit below the actual max (which would recycle
       // a number on the next split).
       for (const ws of state.workspaces) {
-        const wsLeaves = collectLeafPanes(ws.rootPane);
+        // Workspace-wide (#977): a stashed pane holding the highest ordinal
+        // would otherwise be invisible to the high-water recompute, and the
+        // next split would reissue its number — two panes called `w1-4`, with
+        // the auto name doubling as the A2A address.
+        const wsLeaves = getWorkspaceLeafPanes(ws);
         // Backfill ONLY leaves missing an ordinal, numbering them PAST the current
         // max — a partial gap (e.g. one freshly-added leaf) must NOT renumber panes
         // that already have stable ordinals, which would shuffle their auto-names
@@ -1076,8 +1211,8 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
     // mount and creates fresh PTYs — the well-tested new-pane path.
     clearSurfacePtyIdByPty: (ptyId: string, recovery?: DeadPaneRecovery) => set((state: StoreState) => {
       if (!ptyId) return;
-      const walk = (pane: Pane) => {
-        if (pane.type === 'leaf') {
+      const walk = (pane: PaneLeaf, stashed: boolean) => {
+        {
           for (const s of pane.surfaces) {
             // 유틸 surface(git·review)는 pty 없음 — 명시적으로 제외해 방어.
             if (s.ptyId === ptyId && s.surfaceType !== 'browser' && s.surfaceType !== 'editor' && s.surfaceType !== 'diff' && s.surfaceType !== 'git' && s.surfaceType !== 'review') {
@@ -1094,30 +1229,43 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
                 delete state.resumeBindingByPtyId[ptyId];
               }
               s.ptyId = '';
+              // #977 — a stashed pane's liveness is DERIVED from its surfaces'
+              // ptyIds, so this clear IS the alive→exited transition. Log it:
+              // the pane is off-screen, so without this line the only trace of
+              // a stashed agent dying is a roster label nobody was watching.
+              if (stashed && stashedPaneLiveness(pane) === 'exited') {
+                console.warn(`[wmux:stash] stashed pane=${pane.id} is now exited (last terminal pty ${ptyId} confirmed gone)`);
+              }
             }
           }
-        } else {
-          for (const child of pane.children) walk(child);
         }
       };
-      for (const ws of state.workspaces) walk(ws.rootPane);
+      for (const ws of state.workspaces) {
+        // Workspace-wide (#977): reconcile can name a stashed pane's ptyId, and
+        // a visible-tree-only clear would leave it bound to a session the
+        // daemon has already confirmed dead.
+        const visibleIds = new Set(getLeafPanes(ws.rootPane).map((l) => l.id));
+        for (const leaf of getWorkspaceLeafPanes(ws)) walk(leaf, !visibleIds.has(leaf.id));
+      }
     }),
 
     clearAllPtyState: () => set((state: StoreState) => {
       // 1. Terminal surface ptyId across all workspaces + nested split panes.
-      const walkAndClearPtyIds = (pane: Pane) => {
-        if (pane.type === 'leaf') {
-          for (const s of pane.surfaces) {
-            // 유틸 surface(git·review)는 pty 없음 — 명시적으로 제외해 방어.
-            if (s.surfaceType !== 'browser' && s.surfaceType !== 'editor' && s.surfaceType !== 'diff' && s.surfaceType !== 'git' && s.surfaceType !== 'review') {
-              s.ptyId = '';
-            }
+      const clearLeafPtyIds = (pane: PaneLeaf) => {
+        for (const s of pane.surfaces) {
+          // 유틸 surface(git·review)는 pty 없음 — 명시적으로 제외해 방어.
+          if (s.surfaceType !== 'browser' && s.surfaceType !== 'editor' && s.surfaceType !== 'diff' && s.surfaceType !== 'git' && s.surfaceType !== 'review') {
+            s.ptyId = '';
           }
-        } else {
-          for (const child of pane.children) walkAndClearPtyIds(child);
         }
       };
-      for (const ws of state.workspaces) walkAndClearPtyIds(ws.rootPane);
+      // Workspace-wide (#977): this is the "we could not reconcile anything"
+      // fallback, so leaving stashed panes bound to ptyIds we just declared
+      // untrustworthy would make them the ONLY surfaces still claiming a live
+      // session.
+      for (const ws of state.workspaces) {
+        for (const leaf of getWorkspaceLeafPanes(ws)) clearLeafPtyIds(leaf);
+      }
 
       // 2. uiSlice fields (cross-slice mutation within the same immer set).
       state.floatingPanePtyId = null;

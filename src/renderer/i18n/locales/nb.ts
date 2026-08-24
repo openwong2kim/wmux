@@ -22,10 +22,33 @@ export const nb = {
   'workspace.copyInfo': 'Kopier øktinformasjon',
   'workspace.copied': 'Kopiert!',
 
+  // Roster
+  'roster.stashedCount': '{count} lagt til side',
+  'roster.stashedOnly': '{count} lagt til side',
+  'roster.stashedExited': 'Økten er avsluttet',
+  'roster.unstashAction': 'Hent tilbake i oppsettet',
+  'roster.recoverAction': 'Hent tilbake og gjenopprett',
+  // The stash undo toast's button — the safety net the whole gesture leans on.
+  'common.undo': 'Angre',
+
   // Pane
   'pane.empty': 'Tomt panel',
   'pane.splitRight': 'Del til høyre',
   'pane.splitDown': 'Del nedover',
+  'pane.moreActions': 'Panelhandlinger',
+  'pane.maxLeavesReachedWithStash': 'Panelgrensen er nådd ({count}), inkludert {stashed} lagt til side. Hent ett tilbake og lukk det, eller lukk et synlig panel.',
+
+  // Pane stash (#977) — the pane leaves the layout, its session keeps running.
+  'pane.stash': 'Legg panelet til side',
+  'pane.stashHint': 'Fjernes fra oppsettet — økten fortsetter å kjøre',
+  'pane.unstash': 'Hent tilbake',
+  'pane.stashed': '{name} lagt til side. Økten kjører fortsatt.',
+  'pane.unstashedToNeighbor': 'Tilbake ved siden av den tidligere naboen.',
+  'pane.unstashedFallback': 'Den tidligere naboen finnes ikke lenger — plassert ved siden av det aktive panelet.',
+  'pane.stashLastPane': 'Dette er det eneste panelet på skjermen. Legger du det til side, blir det ingenting igjen å se på.',
+  'pane.stashEmptyPane': 'Dette panelet er tomt — det finnes ingen økt å holde i gang, og ingenting å hente tilbake.',
+  'pane.stashNoDaemon': 'Ingen daemon-tilkobling. Et panel som er lagt til side, trenger daemonen for å holde på økten og spille den av igjen — utdata ville gått tapt.',
+  'pane.stashBlockedSurface': 'Dette panelet inneholder en {type}-fane. Bare terminaler og nettlesere kan legges til side — en avmontert editor ville mistet ulagrede endringer.',
 
   // Surface
   'surface.terminal': 'Terminal',
@@ -66,6 +89,7 @@ export const nb = {
   'palette.cmd.newSurface': 'Ny overflate',
   'palette.cmd.splitRight': 'Del til høyre',
   'palette.cmd.splitDown': 'Del nedover',
+  'palette.cmd.stashPane': 'Legg panelet til side (økten fortsetter å kjøre)',
   'palette.cmd.showNotifications': 'Vis varsler',
   'palette.cmd.openSettings': 'Åpne innstillinger',
   'palette.cmd.openBrowser': 'Åpne nettleser',
@@ -215,6 +239,7 @@ export const nb = {
   'settings.prefix.focusDown': 'Fokus ned',
   'settings.prefix.focusLeft': 'Fokus venstre',
   'settings.prefix.focusRight': 'Fokus høyre',
+  'settings.prefix.stashPane': 'Legg panelet til side',
 
   // Custom keybindings
   'settings.customKeybindings': 'Egendefinerte tastebindinger',

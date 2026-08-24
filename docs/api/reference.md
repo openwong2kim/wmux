@@ -26,7 +26,7 @@ returns `EPERM`. Wire framing: newline-delimited JSON, one object per line.
 
 ## RPC methods
 
-Total: **149** methods (`ALL_RPC_METHODS` in
+Total: **151** methods (`ALL_RPC_METHODS` in
 `src/shared/rpc.ts`). Capability and risk class are read from
 `src/main/mcp/methodCapabilityMap.ts`:
 
@@ -64,6 +64,8 @@ Total: **149** methods (`ALL_RPC_METHODS` in
 | `pane.focus` | `pane.read` | `pane-lifecycle` |
 | `pane.split` | `pane.create` | `pane-lifecycle` |
 | `pane.close` | `pane.create` | `pane-lifecycle` |
+| `pane.stash` | `pane.create` | `pane-lifecycle` |
+| `pane.unstash` | `pane.create` | `pane-lifecycle` |
 | `pane.setMetadata` | `meta.write` | `metadata` |
 | `pane.getMetadata` | `meta.read` | `metadata` |
 | `pane.clearMetadata` | `meta.write` | `metadata` |
@@ -280,7 +282,7 @@ Total: **149** methods (`ALL_RPC_METHODS` in
 
 ## Event types
 
-The EventBus exposes **18** event types
+The EventBus exposes **20** event types
 (`WMUX_EVENT_TYPES` in `src/shared/events.ts`), polled via `events.poll`.
 Wire shapes (the fields beyond the common `seq` / `ts` / `workspaceId` /
 `type`) are documented in [`inventory.md`](./inventory.md#event-types) and
@@ -291,6 +293,8 @@ typed in `src/shared/events.ts`.
 | `pane.created` |
 | `pane.closed` |
 | `pane.focused` |
+| `pane.stashed` |
+| `pane.unstashed` |
 | `pane.metadata.changed` |
 | `workspace.metadata.changed` |
 | `process.started` |

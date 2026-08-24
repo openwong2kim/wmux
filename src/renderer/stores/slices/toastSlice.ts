@@ -46,6 +46,12 @@ export interface Toast {
    * this — a screen of undismissable notices is its own bug.
    */
   persist?: boolean;
+  /**
+   * Override the auto-dismiss window (ms). For toasts whose ACTION is the point
+   * — the stash undo — where the default five seconds is a coin flip on whether
+   * the user was looking. Ignored when `persist` is set.
+   */
+  durationMs?: number;
 }
 
 export interface ToastSlice {

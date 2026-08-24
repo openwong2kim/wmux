@@ -21,7 +21,8 @@ import {
   type ForegroundTokenKey,
   type ContrastReport,
 } from '../../contrastSafety';
-import type { CustomThemeColors, NotificationCategory, XtermThemeColors } from '../../../shared/types';
+import type { CustomThemeColors, NotificationCategory, Workspace, XtermThemeColors } from '../../../shared/types';
+import { getWorkspacePtyIds } from '../../../shared/paneUtils';
 import type { ChromePreset } from '../../../shared/chromePresets';
 import { NOTIFICATION_CATEGORIES } from '../../../shared/types';
 import { ORCH_ROLES, launcherSupportsModelFlag } from '../../../shared/orchestratorRole';
@@ -560,7 +561,7 @@ function ResetSection() {
     const workspaces = useStore.getState().workspaces;
     // Dispose all PTYs across all workspaces
     for (const ws of workspaces) {
-      disposePaneTree(ws.rootPane);
+      disposeWorkspacePtys(ws);
     }
 
     // Remove all workspaces except the last one (store requires at least 1)
@@ -618,15 +619,12 @@ function ResetSection() {
   );
 }
 
-/** Recursively dispose all PTYs in a pane tree */
-function disposePaneTree(pane: { type: string; surfaces?: Array<{ ptyId?: string }>; children?: Array<typeof pane> }) {
-  if (pane.type === 'leaf' && pane.surfaces) {
-    for (const s of pane.surfaces) {
-      if (s.ptyId) window.electronAPI.pty.dispose(s.ptyId);
-    }
-  } else if (pane.children) {
-    for (const child of pane.children) disposePaneTree(child);
-  }
+/** Dispose every PTY a workspace owns — visible tree AND stash (#977).
+ *  (traversal is the shared canonical walk; the dispose policy stays local)
+ *  "Reset everything" that quietly spares stashed sessions would leave orphans
+ *  behind the one action whose whole promise is a clean slate. */
+function disposeWorkspacePtys(ws: Workspace) {
+  for (const ptyId of getWorkspacePtyIds(ws)) window.electronAPI.pty.dispose(ptyId);
 }
 
 // ─── Orchestrator (deck brain) settings ──────────────────────────────────────
@@ -4144,6 +4142,7 @@ const PREFIX_ACTION_IDS = [
   'focusUp', 'focusDown', 'focusLeft', 'focusRight',
   'movePaneUp', 'movePaneDown', 'movePaneLeft', 'movePaneRight',
   'swapPanePrev', 'swapPaneNext',
+  'stashPane',
 ] as const;
 
 function prefixActionLabel(actionId: string, t: (key: string) => string): string {

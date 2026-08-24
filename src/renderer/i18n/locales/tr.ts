@@ -22,10 +22,33 @@ export const tr = {
   'workspace.copyInfo': 'Oturum bilgilerini kopyala',
   'workspace.copied': 'Kopyalandı!',
 
+  // Roster
+  'roster.stashedCount': '{count} kenarda',
+  'roster.stashedOnly': '{count} kenarda',
+  'roster.stashedExited': 'Oturum sona erdi',
+  'roster.unstashAction': 'Düzene geri getir',
+  'roster.recoverAction': 'Geri getir ve kurtar',
+  // The stash undo toast's button — the safety net the whole gesture leans on.
+  'common.undo': 'Geri al',
+
   // Pane
   'pane.empty': 'Boş bölme',
   'pane.splitRight': 'Sağa böl',
   'pane.splitDown': 'Aşağı böl',
+  'pane.moreActions': 'Bölme işlemleri',
+  'pane.maxLeavesReachedWithStash': 'Bölme sınırına ulaşıldı ({count}); bunların {stashed} tanesi kenara alınmış. Birini geri getirip kapatın ya da görünen bir bölmeyi kapatın.',
+
+  // Pane stash (#977) — the pane leaves the layout, its session keeps running.
+  'pane.stash': 'Bölmeyi kenara al',
+  'pane.stashHint': 'Düzenden çıkarılır — oturum çalışmaya devam eder',
+  'pane.unstash': 'Geri getir',
+  'pane.stashed': '{name} kenara alındı. Oturum hâlâ çalışıyor.',
+  'pane.unstashedToNeighbor': 'Eski komşusunun yanına geri döndü.',
+  'pane.unstashedFallback': 'Eski komşusu artık yok — etkin bölmenin yanına yerleştirildi.',
+  'pane.stashLastPane': 'Bu, ekrandaki tek bölme. Kenara alırsanız bakacak bir şey kalmaz.',
+  'pane.stashEmptyPane': 'Bu bölme boş — çalışmaya devam edecek bir oturum da, geri getirilecek bir şey de yok.',
+  'pane.stashNoDaemon': 'Daemon bağlantısı yok. Kenara alınan bir bölmenin oturumunu tutup yeniden oynatmak için daemon gerekir — çıktı kaybolurdu.',
+  'pane.stashBlockedSurface': 'Bu bölmede bir {type} sekmesi var. Yalnızca terminaller ve tarayıcılar kenara alınabilir — bağlantısı kesilen bir düzenleyici kaydedilmemiş değişiklikleri kaybeder.',
 
   // Surface
   'surface.terminal': 'Terminal',
@@ -66,6 +89,7 @@ export const tr = {
   'palette.cmd.newSurface': 'Yeni yüzey',
   'palette.cmd.splitRight': 'Sağa böl',
   'palette.cmd.splitDown': 'Aşağı böl',
+  'palette.cmd.stashPane': 'Bölmeyi kenara al (oturum çalışmaya devam eder)',
   'palette.cmd.showNotifications': 'Bildirimleri göster',
   'palette.cmd.openSettings': 'Ayarları aç',
   'palette.cmd.openBrowser': 'Tarayıcıyı aç',
@@ -215,6 +239,7 @@ export const tr = {
   'settings.prefix.focusDown': 'Aşağı odakla',
   'settings.prefix.focusLeft': 'Sola odakla',
   'settings.prefix.focusRight': 'Sağa odakla',
+  'settings.prefix.stashPane': 'Bölmeyi kenara al',
 
   // Custom keybindings
   'settings.customKeybindings': 'Özel tuş bağlamaları',

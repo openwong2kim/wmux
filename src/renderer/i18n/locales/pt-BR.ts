@@ -22,10 +22,33 @@ export const ptBR = {
   'workspace.copyInfo': 'Copiar info da sessão',
   'workspace.copied': 'Copiado!',
 
+  // Roster
+  'roster.stashedCount': '{count} guardado(s)',
+  'roster.stashedOnly': '{count} guardado(s)',
+  'roster.stashedExited': 'Sessão encerrada',
+  'roster.unstashAction': 'Trazer de volta ao layout',
+  'roster.recoverAction': 'Trazer de volta e recuperar',
+  // The stash undo toast's button — the safety net the whole gesture leans on.
+  'common.undo': 'Desfazer',
+
   // Pane
   'pane.empty': 'Painel vazio',
   'pane.splitRight': 'Dividir à direita',
   'pane.splitDown': 'Dividir abaixo',
+  'pane.moreActions': 'Ações do painel',
+  'pane.maxLeavesReachedWithStash': 'Limite de painéis atingido ({count}), incluindo {stashed} guardado(s). Traga um de volta e feche-o, ou feche um painel visível.',
+
+  // Pane stash (#977) — the pane leaves the layout, its session keeps running.
+  'pane.stash': 'Guardar painel',
+  'pane.stashHint': 'Sai do layout — a sessão continua rodando',
+  'pane.unstash': 'Trazer de volta',
+  'pane.stashed': '{name} guardado. A sessão continua rodando.',
+  'pane.unstashedToNeighbor': 'De volta ao lado do antigo vizinho.',
+  'pane.unstashedFallback': 'O antigo vizinho não existe mais — colocado ao lado do painel ativo.',
+  'pane.stashLastPane': 'Este é o único painel na tela. Guardá-lo não deixaria nada para ver.',
+  'pane.stashEmptyPane': 'Este painel está vazio — não há sessão para continuar rodando nem nada para trazer de volta.',
+  'pane.stashNoDaemon': 'Sem conexão com o daemon. Um painel guardado precisa do daemon para manter a sessão e reproduzi-la — a saída seria perdida.',
+  'pane.stashBlockedSurface': 'Este painel tem uma aba {type}. Só terminais e navegadores podem ser guardados — um editor desmontado perderia as edições não salvas.',
 
   // Surface
   'surface.terminal': 'Terminal',
@@ -66,6 +89,7 @@ export const ptBR = {
   'palette.cmd.newSurface': 'Nova superfície',
   'palette.cmd.splitRight': 'Dividir à direita',
   'palette.cmd.splitDown': 'Dividir abaixo',
+  'palette.cmd.stashPane': 'Guardar painel (a sessão continua rodando)',
   'palette.cmd.showNotifications': 'Mostrar notificações',
   'palette.cmd.openSettings': 'Abrir configurações',
   'palette.cmd.openBrowser': 'Abrir navegador',
@@ -215,6 +239,7 @@ export const ptBR = {
   'settings.prefix.focusDown': 'Foco para baixo',
   'settings.prefix.focusLeft': 'Foco para esquerda',
   'settings.prefix.focusRight': 'Foco para direita',
+  'settings.prefix.stashPane': 'Guardar painel',
 
   // Custom keybindings
   'settings.customKeybindings': 'Atalhos personalizados',

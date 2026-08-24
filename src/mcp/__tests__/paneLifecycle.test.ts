@@ -74,24 +74,32 @@ beforeEach(() => {
 });
 
 describe('paneLifecycle tools: registration', () => {
-  it('registers all five lifecycle tools', () => {
-    for (const name of ['pane_split', 'pane_close', 'pane_focus', 'surface_new', 'surface_close']) {
+  it('registers every lifecycle tool', () => {
+    for (const name of ['pane_split', 'pane_close', 'pane_focus', 'surface_new', 'surface_close', 'pane_stash', 'pane_unstash']) {
       expect(tools.get(name), `${name} should be registered`).toBeDefined();
     }
   });
 
   it('preserves the full ordering and narrows commander without a monkey-patch', () => {
+    // #977 — the two layout tools are APPENDED, so the original five keep
+    // their positions and the public ordering stays a stable prefix.
     const fullNames = [
       'pane_split',
       'pane_close',
       'pane_focus',
       'surface_new',
       'surface_close',
+      'pane_stash',
+      'pane_unstash',
     ];
     const commanderNames = [...collectTools('commander').keys()];
 
     expect([...tools.keys()]).toEqual(fullNames);
-    expect(commanderNames).toEqual(['pane_split', 'pane_focus', 'surface_new']);
+    // Both layout tools are in the commander profile while pane_close is not:
+    // neither destroys anything, and unstash is the remedy pane_focus names.
+    expect(commanderNames).toEqual([
+      'pane_split', 'pane_focus', 'surface_new', 'pane_stash', 'pane_unstash',
+    ]);
   });
 
   it('keeps the legacy commander manifest and migrated profiles in lockstep', () => {
