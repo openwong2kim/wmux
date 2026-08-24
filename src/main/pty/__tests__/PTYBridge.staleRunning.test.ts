@@ -53,7 +53,8 @@ function makeMockProcess(): MockProcess {
   let dataCb: ((data: string) => void) | null = null;
   return {
     onData: (cb) => { dataCb = cb; },
-    onExit: () => {},
+    // No-op: this fixture is never exercised through the exit path.
+    onExit: () => undefined,
     emitData: (d) => { dataCb?.(d); },
   };
 }
