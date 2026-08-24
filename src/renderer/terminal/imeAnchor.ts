@@ -102,13 +102,24 @@
  * (#953 field log, 2026-08-21: `gap=203ms caretAge=602ms src=instant edge=1`
  * — a usable snapshot passed over, candidate window pinned to the pane's
  * bottom-right corner), so the rule now fires only when output arrived within
- * OUTPUT_QUIET_MS. The idle line-end miss stays a KNOWN, flagged residual. Fixing it for real needs a different signal
- * class than the cursor — the ecosystem contract says the TUI must park
- * its cursor on the caret (Ink's useCursor exists; Claude Code has not
- * shipped it, see anthropics/claude-code#25186), and the content-aware
- * fallback proven by other terminals (detect the agent's input-line marker
- * in the buffer, gated per known agent) is follow-up work, not another
- * cursor heuristic.
+ * OUTPUT_QUIET_MS. The idle line-end miss stays a KNOWN, flagged residual.
+ * The 2026-08-23 field round (#953, final report) then showed the snapshot
+ * side of the same shape: the SNAPSHOT is sometimes the park, and a park is
+ * "wherever the painted text ended", which can be any column at all — the
+ * log holds snapshots at column 137 of a 139-column pane and at column 53
+ * mid-line — so the last-column refusal only catches a painted line that
+ * happens to fill the row. Underneath both: while an agent streams, its
+ * cursor never visits the input caret at all — the ecosystem contract says
+ * the TUI must park its cursor on the caret (Ink's useCursor exists; Claude
+ * Code has not shipped it, see anthropics/claude-code#25186) — so no
+ * cursor-derived rule, in any combination, can find the caret mid-stream.
+ * That is why the streaming anchor has a second signal class (#1016): at
+ * compositionstart, when the pane's agent is recognized and output is
+ * flowing, the input line is read out of the buffer by its chrome
+ * (scanClaudeInputLine) and outranks every cursor source (`src=marker`).
+ * The cursor path remains for unrecognized agents, for a scan that finds
+ * nothing, and for the idle pane, which stays cursor-driven on purpose —
+ * idle is field-verified correct and every generation that touched it lost.
  * Known residuals, all identifiable in a field log via the src/gap/
  * caretAge/edge fields: the line-end park above; a mid-stream pause longer
  * than OUTPUT_QUIET_MS with the cursor parked mid-line on repaint state
@@ -320,6 +331,13 @@ export interface RestingTrackerState {
   hasResting: boolean;
   /** Clock reading of the last parsed PTY output (#951). */
   lastOutputAt: number;
+  /** True once a PTY chunk has actually been parsed since creation/reset.
+   *  `lastOutputAt` is SEEDED with the creation clock (so "no output since
+   *  attach" reads as quiet), but that same seed would read as "output 0ms
+   *  ago" — i.e. flowing — for the first OUTPUT_QUIET_MS after an attach or
+   *  resize. The streaming branch must not fire on a seed (panel finding):
+   *  gate it on output that was actually observed. */
+  hasOutput: boolean;
   /** Clock reading of the chunk that ended the last quiet span — the start
    *  of the current output epoch. Age >= STREAM_SUSTAIN_MS means the output
    *  is a sustained stream, not an isolated echo burst. */
@@ -356,6 +374,7 @@ export function createRestingTracker(absRow: number, col: number, now: number, r
     // Seeded with the creation clock: "no output since attach" reads as quiet,
     // matching the seeded-at-rest semantics of the cell fields above.
     lastOutputAt: now,
+    hasOutput: false,
     epochStart: now,
     caretRelRow: 0,
     caretCol: 0,
@@ -426,6 +445,7 @@ export function noteOutputParsed(state: RestingTrackerState, now: number, cols?:
     }
   }
   state.lastOutputAt = now;
+  state.hasOutput = true;
 }
 
 /**
@@ -450,14 +470,87 @@ export function resetRestingTracker(state: RestingTrackerState, absRow: number, 
   state.hasResting = false;
   state.hasCaret = false;
   state.lastOutputAt = now;
+  state.hasOutput = false;
   state.epochStart = now;
+}
+
+// ---------------------------------------------------------------------------
+// Agent input-line content scan (#1016)
+// ---------------------------------------------------------------------------
+
+/** The agent's input line, found by content rather than cursor behavior. */
+export interface AgentInputLineMarker {
+  /** Screen row of the prompt row, ybase-RELATIVE like the quiet-caret
+   *  snapshot. The scan reads the LIVE screen (baseY + relRow), not the
+   *  viewport: a user scrolled up mid-stream sees history, and history can
+   *  quote the box chrome — matching there would anchor into old transcript
+   *  (3-model panel finding). Reading the live rows finds the real box even
+   *  while scrolled, and `pointFromCell` then clamps the off-screen anchor
+   *  to the nearest visible edge, same contract as every other off-screen
+   *  anchor here. */
+  relRow: number;
+  /** Column where typed input begins — just after the `> ` prompt. Used as
+   *  the anchor floor rather than the exact caret: the exact caret would need
+   *  cell-accurate width math over typed CJK, and a candidate window at the
+   *  input's start is already on the right row, which is what field reports
+   *  complain about. */
+  col: number;
+}
+
+// Claude Code draws its input as a rounded box; the prompt row is the first
+// row inside it:            ╭──────────────╮
+//                           │ > typed text │
+//                           ╰──────────────╯
+// The prompt glyph varies by mode — `>` normal, `!` bash mode, `#` memory
+// mode — and all three mark the same caret row. Matching only `>` would let
+// a quoted `│ > ` in the transcript win bottom-most while the live box sits
+// in another mode (panel finding). The lead-in is pure ASCII/box-drawing
+// (single-cell glyphs), so a string index below IS the buffer column — typed
+// CJK only ever appears after it.
+const CLAUDE_PROMPT_ROW = /^(\s*)│ [>!#] /;
+const CLAUDE_BOX_TOP = /^\s*╭─/;
+
+/**
+ * Find Claude Code's input line in the visible rows (#1016).
+ *
+ * Bottom-up, because the input box is the bottom-most chrome that matches —
+ * streamed transcript ABOVE it may quote the same glyphs (an agent printing
+ * its own UI), and the rows BELOW it (`? for shortcuts`, status hints) match
+ * nothing. A prompt row only counts with the box's top border directly above
+ * it, which is true for single- and multi-line input alike (the `│ > ` row
+ * is always the first row inside the box; wrapped continuation rows carry no
+ * `>`), and false for a bare quoted prompt line in scrolled output.
+ *
+ * `readLine` returns the trimmed text of a viewport row, or undefined when
+ * the row cannot be read; unreadable rows are skipped rather than trusted.
+ * Runs at compositionstart only — user-paced, so a full-viewport scan is
+ * free.
+ */
+export function scanClaudeInputLine(
+  readLine: (relRow: number) => string | undefined,
+  rows: number,
+): AgentInputLineMarker | null {
+  for (let r = rows - 1; r >= 1; r--) {
+    const line = readLine(r);
+    if (line === undefined) continue;
+    const m = CLAUDE_PROMPT_ROW.exec(line);
+    if (!m) continue;
+    const above = readLine(r - 1);
+    if (above === undefined || !CLAUDE_BOX_TOP.test(above)) continue;
+    // `│ > x`: border, space, prompt, space — input begins 4 cells past the
+    // border.
+    return { relRow: r, col: m[1].length + 4 };
+  }
+  return null;
 }
 
 /** Where the freeze cell came from. `scrolled_out` is `instant` chosen because
  *  the resting cell had left the viewport — kept distinct so a field log can
  *  tell that rejection apart from a cursor that was simply at rest. `caret` is
- *  the quiet-caret snapshot, chosen because output was still flowing (#951). */
-export type FreezeCellSource = 'instant' | 'resting' | 'scrolled_out' | 'caret';
+ *  the quiet-caret snapshot, chosen because output was still flowing (#951).
+ *  `marker` is the agent's input line found by content (#1016), chosen over
+ *  every cursor source while output flows. */
+export type FreezeCellSource = 'instant' | 'resting' | 'scrolled_out' | 'caret' | 'marker';
 
 export interface FreezeCellSelection {
   absRow: number;
@@ -483,7 +576,9 @@ export interface FreezeCellSelection {
  * output is recent AND sustained (STREAM_SUSTAIN_MS since the current epoch
  * began), dwell time certifies nothing (#951: a streaming agent parks its
  * cursor on screen corners between bursts for far longer than RESTING_MS),
- * so the quiet-caret snapshot wins over both. Recent-but-isolated output —
+ * so the quiet-caret snapshot wins over both — and an input line found by
+ * content (`marker`, #1016) wins over the snapshot, which the 2026-08-23
+ * field round proved is itself sometimes a park. Recent-but-isolated output —
  * a committed syllable's echo — keeps the normal dwell selection, because
  * there the freshly moved cursor IS the caret and the snapshot is one word
  * stale. The snapshot's
@@ -512,6 +607,7 @@ export function selectFreezeCell(
   now: number,
   viewport?: { top: number; rows: number; cols?: number },
   baseY = 0,
+  getMarker?: () => AgentInputLineMarker | null,
 ): FreezeCellSelection {
   const held = now - state.currentSince;
   const restAge = state.hasResting ? now - state.lastRestingAt : -1;
@@ -542,13 +638,47 @@ export function selectFreezeCell(
   // src=instant edge=1`, a usable snapshot passed over because a token-paced
   // stream pauses longer than OUTPUT_QUIET_MS between bursts, so `epochStart`
   // kept restarting and never reached STREAM_SUSTAIN_MS.
-  if (outputGap < OUTPUT_QUIET_MS
-    && (now - state.epochStart >= STREAM_SUSTAIN_MS || edge)
-    && state.hasCaret) {
-    return {
-      absRow: baseY + state.caretRelRow, col: state.caretCol,
-      src: 'caret', held, restAge, outputGap, caretAge, edge,
-    };
+  if (state.hasOutput && outputGap < OUTPUT_QUIET_MS
+    && (now - state.epochStart >= STREAM_SUSTAIN_MS || edge)) {
+    // #1016: the input line found by CONTENT outranks the snapshot. The
+    // 2026-08-23 field round proved the snapshot itself is sometimes a park
+    // ("wherever the painted text ended" — any column, so no column check
+    // can classify it), while the marker is read from the frame currently on
+    // screen. The scan is a thunk so it runs ONLY when this branch is taken:
+    // the quiet and echo-burst paths never pay for it, and the scan gate can
+    // never drift from the selection gate (panel finding).
+    const marker = getMarker?.() ?? null;
+    // One shape reaches this branch that is NOT an agent stream: fluid CJK
+    // typing, where each committed syllable's echo is output and a fast
+    // typist keeps every gap under OUTPUT_QUIET_MS for longer than the
+    // sustain. There the snapshot sits ON the prompt row at the caret's
+    // last-pause column — better than the marker's input-start floor (which
+    // would drag the Korean inline preedit back over already-typed text,
+    // panel finding). So a snapshot on the marker's own row keeps its
+    // column, UNLESS it sits in the border zone (the last two columns): a
+    // prompt-row cell there is the box's right border where the repaint
+    // parked, which is the 2026-08-23 field shape (col 137 of 139) and
+    // exactly what the marker exists to override. Without a column count
+    // the zone is unknowable and the snapshot is kept — the conservative,
+    // shipped behavior.
+    if (marker !== null) {
+      const borderZone = viewport?.cols !== undefined ? viewport.cols - 2 : Infinity;
+      const typingSnapshot = state.hasCaret
+        && state.caretRelRow === marker.relRow
+        && state.caretCol < borderZone;
+      if (!typingSnapshot) {
+        return {
+          absRow: baseY + marker.relRow, col: marker.col,
+          src: 'marker', held, restAge, outputGap, caretAge, edge,
+        };
+      }
+    }
+    if (state.hasCaret) {
+      return {
+        absRow: baseY + state.caretRelRow, col: state.caretCol,
+        src: 'caret', held, restAge, outputGap, caretAge, edge,
+      };
+    }
   }
   if (held >= RESTING_MS || !state.hasResting) {
     return { absRow: instAbsRow, col: instCol, src: 'instant', held, restAge, outputGap, caretAge, edge };
@@ -572,6 +702,11 @@ interface EventEmitterLike<T> {
   (listener: (arg: T) => void): Disposable;
 }
 
+/** One buffer row, as xterm's IBufferLine exposes it (#1016). */
+export interface ImeAnchorBufferLine {
+  translateToString(trimRight?: boolean): string;
+}
+
 /** The slice of xterm's public Terminal API this needs. */
 export interface ImeAnchorTerminal {
   readonly rows: number;
@@ -579,7 +714,12 @@ export interface ImeAnchorTerminal {
   readonly textarea: HTMLTextAreaElement | undefined;
   readonly element: HTMLElement | undefined;
   readonly buffer: {
-    active: ImeAnchorBufferState;
+    active: ImeAnchorBufferState & {
+      /** Row content lookup (xterm's IBuffer.getLine), indexed from the top
+       *  of the scrollback. Optional: a caller without it (minimal fakes)
+       *  simply has the #1016 content scan disabled. */
+      getLine?(y: number): ImeAnchorBufferLine | undefined;
+    };
     /** Fires on normal <-> alt buffer switches. */
     onBufferChange: EventEmitterLike<unknown>;
   };
@@ -631,6 +771,14 @@ export interface ImeAnchorOptions {
     selY: number;
     selX: number;
   }) => void;
+  /**
+   * Slug of the agent running in this pane, when known (#1016). Gates the
+   * input-line content scan to agents whose chrome the scanner understands —
+   * today `'claude'`. Read at compositionstart, so a pane whose agent is
+   * recognized mid-session starts scanning without a re-attach, and a pane
+   * whose agent exits stops.
+   */
+  getAgentSlug?: () => string | undefined;
   /** Clock override for tests. Defaults to performance.now. */
   now?: () => number;
 }
@@ -780,14 +928,14 @@ export function attachImeAnchor(
    * composition it carries no transform (xterm hides it).
    *
    * The one exception is a composition whose freeze cell came from the quiet
-   * caret (`src=caret`, #951/#953 field report): there the live cursor IS the
-   * streaming agent's repaint cursor, and following it split the two IME
-   * surfaces apart — the candidate window pinned at the input line while the
-   * inline pinyin chased the agent's output rows. Both surfaces must anchor
-   * to the same cell, so a caret-sourced composition pins the preedit to the
-   * same frozen point as the textarea. The quiet case is untouched: there the
-   * selection is instant/resting and the live follow stays (#942 stays
-   * fixed).
+   * caret or the content marker (`src=caret`/`src=marker`, #951/#953/#1016
+   * field reports): there the live cursor IS the streaming agent's repaint
+   * cursor, and following it split the two IME surfaces apart — the candidate
+   * window pinned at the input line while the inline pinyin chased the
+   * agent's output rows. Both surfaces must anchor to the same cell, so those
+   * compositions pin the preedit to the same frozen point as the textarea.
+   * The quiet case is untouched: there the selection is instant/resting and
+   * the live follow stays (#942 stays fixed).
    *
    * Deliberately called only from the composition handlers, NOT from
    * onRender/onScroll: at a composition event xterm has just written the
@@ -808,7 +956,7 @@ export function attachImeAnchor(
     if (!isUsableGeometry(geometry)) return;
     const actualPreedit = readStyledPoint(compositionView);
     if (!actualPreedit) return;
-    const desired = frozen !== null && lastSel?.src === 'caret'
+    const desired = frozen !== null && (lastSel?.src === 'caret' || lastSel?.src === 'marker')
       ? frozen
       : paintedCursorPosition(bufferState(), geometry);
     const c = computeImeAnchorCorrection(desired, actualPreedit);
@@ -895,11 +1043,25 @@ export function attachImeAnchor(
     // composition starts inside a repaint burst (cause 3).
     composing = true;
     const b = bufferState();
+    // #1016: while output flows, the cursor never visits the input caret
+    // (Claude Code parks it at the end of painted content — any column), so
+    // for a recognized agent the input line is read out of the buffer
+    // instead. A thunk: selectFreezeCell invokes it only inside the
+    // streaming branch, so the idle pane — field-verified correct on the
+    // cursor path — never scans. The scan reads the LIVE screen (baseY),
+    // not the viewport: a user scrolled up mid-stream sees history, which
+    // can quote the very chrome being scanned for.
+    const getMarker = options.getAgentSlug?.() === 'claude'
+      ? (): AgentInputLineMarker | null => scanClaudeInputLine(
+          (relRow) => terminal.buffer.active.getLine?.(b.baseY + relRow)?.translateToString(true),
+          geometry.rows,
+        )
+      : undefined;
     const sel = selectFreezeCell(tracker, b.baseY + b.cursorY, b.cursorX, now(), {
       top: b.viewportY,
       rows: geometry.rows,
       cols: geometry.cols,
-    }, b.baseY);
+    }, b.baseY, getMarker);
     lastSel = sel;
     lastSelRelY = sel.absRow - b.baseY;
     frozen = isUsableGeometry(geometry)

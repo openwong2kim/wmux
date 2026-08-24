@@ -29,6 +29,7 @@ import {
   pointFromCell,
   resetRestingTracker,
   RESTING_MS,
+  scanClaudeInputLine,
   selectFreezeCell,
   type ImeAnchorBufferState,
   type ImeAnchorGeometry,
@@ -1008,6 +1009,306 @@ describe('#951 quiet-caret wiring', () => {
     dom.textarea.dispatchEvent(new Event('compositionupdate'));
     expect(translateOf(dom.compView)?.dy).toBeCloseTo((40 - 43) * 17.6, 6);
     expect(translateOf(dom.compView)?.dx).toBeCloseTo((5 - 127) * 10, 6);
+    handle.dispose();
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+describe('#1016 input-line content scan (pure)', () => {
+  const lines = (rows: string[]) => (r: number): string | undefined => rows[r];
+
+  it('finds the prompt row under the box top border', () => {
+    const screen = [
+      'Some streamed output',
+      '',
+      '╭──────────────╮',
+      '│ > 你好       │',
+      '╰──────────────╯',
+      '  ? for shortcuts',
+    ];
+    expect(scanClaudeInputLine(lines(screen), screen.length)).toEqual({ relRow: 3, col: 4 });
+  });
+
+  it('keeps the column honest on an indented box', () => {
+    const screen = ['  ╭────╮', '  │ > x│'];
+    expect(scanClaudeInputLine(lines(screen), screen.length)).toEqual({ relRow: 1, col: 6 });
+  });
+
+  it('the bottom-most match wins over quoted chrome in the transcript', () => {
+    // An agent can print its own UI into the transcript; the live box is
+    // always the bottom-most match.
+    const screen = [
+      '╭────────────╮',
+      '│ > quoted   │',
+      '╰────────────╯',
+      'more output',
+      '╭────────────╮',
+      '│ > live     │',
+      '╰────────────╯',
+    ];
+    expect(scanClaudeInputLine(lines(screen), screen.length)).toEqual({ relRow: 5, col: 4 });
+  });
+
+  it('a bare prompt-like line without the box top above is not matched', () => {
+    const screen = ['output', '│ > printed by a program', 'output'];
+    expect(scanClaudeInputLine(lines(screen), screen.length)).toBeNull();
+  });
+
+  it('wrapped multi-line input still anchors on the prompt row', () => {
+    const screen = [
+      '╭──────────────╮',
+      '│ > first line │',
+      '│   wrapped    │',
+      '╰──────────────╯',
+    ];
+    expect(scanClaudeInputLine(lines(screen), screen.length)).toEqual({ relRow: 1, col: 4 });
+  });
+
+  it('bash and memory mode prompts are the same caret row', () => {
+    // The live box must keep winning bottom-most while the user is in `!`
+    // (bash) or `#` (memory) mode — otherwise a quoted `│ > ` in the
+    // transcript above would take over.
+    const bash = ['│ > quoted', '╭────╮', '│ ! ls│', '╰────╯'];
+    expect(scanClaudeInputLine(lines(bash), bash.length)).toEqual({ relRow: 2, col: 4 });
+    const memory = ['╭────╮', '│ # note│', '╰────╯'];
+    expect(scanClaudeInputLine(lines(memory), memory.length)).toEqual({ relRow: 1, col: 4 });
+  });
+
+  it('returns null on an unreadable or markerless screen', () => {
+    expect(scanClaudeInputLine(() => undefined, 40)).toBeNull();
+    expect(scanClaudeInputLine(lines(['plain shell $']), 1)).toBeNull();
+  });
+});
+
+describe('#1016 marker selection (pure)', () => {
+  /** The 2026-08-23 field shape: the pane parked at (137,36) from the start,
+   *  so the quiet span certifies the park itself as the snapshot — at column
+   *  137 of a 139-column pane, which no column bound can refuse. */
+  const parkSnapshotTracker = (): ReturnType<typeof createRestingTracker> => {
+    const t = createRestingTracker(676, 137, 1000, 36);
+    noteOutputParsed(t, 1600, 139); // quiet span ends -> the park IS the snapshot
+    noteOutputParsed(t, 1900, 139); // stream keeps flowing (sub-quiet gaps)…
+    noteOutputParsed(t, 2300, 139); // …past the sustain threshold
+    return t;
+  };
+
+  it('the marker outranks a snapshot that is itself a park', () => {
+    const t = parkSnapshotTracker();
+    // Without the marker, the selection faithfully anchors to the park — the
+    // exact bug in the 2026-08-23 log (137 passes the 138 last-column bound).
+    expect(selectFreezeCell(t, 676, 137, 2350, { top: 640, rows: 41, cols: 139 }, 640))
+      .toMatchObject({ absRow: 676, col: 137, src: 'caret' });
+    // With it, content wins: the park sits on the prompt row's border zone
+    // (col 137 of 139), which is repaint state, not a caret.
+    const sel = selectFreezeCell(t, 676, 137, 2350, { top: 640, rows: 41, cols: 139 }, 640,
+      () => ({ relRow: 36, col: 4 }));
+    expect(sel).toMatchObject({ absRow: 676, col: 4, src: 'marker' });
+  });
+
+  it('the marker also covers a stream that never produced a snapshot', () => {
+    const t = createRestingTracker(676, 137, 1000, 36);
+    noteOutputParsed(t, 1300, 139); // sub-quiet from the start: no snapshot ever
+    noteOutputParsed(t, 1600, 139);
+    noteOutputParsed(t, 1900, 139);
+    expect(t.hasCaret).toBe(false);
+    const sel = selectFreezeCell(t, 676, 137, 1950, { top: 640, rows: 41, cols: 139 }, 640,
+      () => ({ relRow: 31, col: 4 }));
+    expect(sel).toMatchObject({ absRow: 671, col: 4, src: 'marker' });
+  });
+
+  it('a quiet pane ignores the marker — idle stays cursor-driven', () => {
+    const t = createRestingTracker(640, 8, 1000, 30);
+    noteOutputParsed(t, 1200, 139); // real output once, long quiet since
+    const scan = vi.fn(() => ({ relRow: 31, col: 4 }));
+    const sel = selectFreezeCell(t, 640, 8, 1200 + OUTPUT_QUIET_MS + 200,
+      { top: 600, rows: 45, cols: 139 }, 600, scan);
+    expect(sel).toMatchObject({ absRow: 640, col: 8, src: 'instant' });
+    expect(scan).not.toHaveBeenCalled();
+  });
+
+  it('a fluid typist\'s snapshot on the prompt row keeps its column', () => {
+    // Fluid CJK typing: every commit echo lands under OUTPUT_QUIET_MS for
+    // longer than the sustain, so the streaming branch opens — but the
+    // snapshot is the caret at the last pause, ON the prompt row, left of
+    // the border zone. The marker's input-start floor must not drag the
+    // preedit back over already-typed text (panel finding).
+    const t = createRestingTracker(671, 20, 1000, 31);
+    noteOutputParsed(t, 1600, 139); // snapshot: (20,31) — the typing caret
+    noteOutputParsed(t, 1900, 139);
+    noteOutputParsed(t, 2300, 139);
+    const sel = selectFreezeCell(t, 671, 22, 2350, { top: 640, rows: 41, cols: 139 }, 640,
+      () => ({ relRow: 31, col: 4 }));
+    expect(sel).toMatchObject({ absRow: 671, col: 20, src: 'caret' });
+  });
+
+  it('a seeded output clock never opens the streaming branch', () => {
+    // createRestingTracker seeds lastOutputAt with the creation clock; for
+    // OUTPUT_QUIET_MS after an attach/reset that reads as "output just
+    // arrived" even though nothing was parsed. With the cursor on the last
+    // column (edge), the branch would open on the seed alone (panel
+    // finding) — hasOutput keeps it shut until real output is observed.
+    const t = createRestingTracker(676, 138, 1000, 36);
+    const scan = vi.fn(() => ({ relRow: 31, col: 4 }));
+    const sel = selectFreezeCell(t, 676, 138, 1100, { top: 640, rows: 41, cols: 139 }, 640, scan);
+    expect(sel).toMatchObject({ src: 'instant' });
+    expect(scan).not.toHaveBeenCalled();
+  });
+});
+
+describe('#1016 input-line marker wiring', () => {
+  beforeEach(() => { document.body.innerHTML = ''; });
+
+  /** Viewport content with Claude Code's input box at `promptRow`. */
+  const claudeScreen = (rows: number, promptRow: number): string[] => {
+    const s: string[] = [];
+    for (let i = 0; i < rows; i++) s.push(`output line ${i}`);
+    s[promptRow - 1] = '╭──────────────╮';
+    s[promptRow] = '│ > 你好       │';
+    s[promptRow + 1] = '╰──────────────╯';
+    return s;
+  };
+
+  /** Wire LIVE-screen content (baseY-relative rows) into the fake buffer's
+   *  getLine — the scan must read the live screen, not the viewport. */
+  const installLines = (
+    active: ImeAnchorTerminal['buffer']['active'],
+    content: string[],
+  ): ReturnType<typeof vi.fn> => {
+    const getLine = vi.fn((y: number) => {
+      const line = content[y - active.baseY];
+      return line === undefined ? undefined : { translateToString: () => line };
+    });
+    active.getLine = getLine;
+    return getLine;
+  };
+
+  /** The #951 wiring scenario: idle caret at (5,40), then a stream parks the
+   *  cursor on (127,43) and sustains past the threshold. */
+  const streamTo2800 = (t: ReturnType<typeof makeTerminal>, dom: ReturnType<typeof buildTerminalDom>, setClock: (v: number) => void): void => {
+    setClock(2000);
+    Object.assign(t.state, { cursorY: 43, cursorX: 127 });
+    t.onCursorMove.fire(undefined);
+    t.onWriteParsed.fire(undefined);
+    dom.textarea.style.top = `${43 * 17.6}px`;
+    dom.textarea.style.left = `${127 * 10}px`;
+    setClock(2400);
+    t.onWriteParsed.fire(undefined);
+    setClock(2750);
+    t.onWriteParsed.fire(undefined);
+    setClock(2800);
+  };
+
+  it('a recognized agent mid-stream anchors to the input line found by content', () => {
+    const dom = buildTerminalDom(10, 17.6, 45, 128);
+    const t = makeTerminal(dom, 45, 128);
+    let clock = 1000;
+    const diag = vi.fn();
+    Object.assign(t.state, { baseY: 600, viewportY: 600, cursorY: 40, cursorX: 5 });
+    installLines(t.terminal.buffer.active, claudeScreen(45, 31));
+    const handle = attachImeAnchor(t.terminal, {
+      now: () => clock,
+      getAgentSlug: () => 'claude',
+      onCompositionDiagnostic: diag,
+    });
+    streamTo2800(t, dom, (v) => { clock = v; });
+    dom.textarea.dispatchEvent(new Event('compositionstart'));
+    expect(diag.mock.calls[0][0]).toMatchObject({
+      src: 'marker', selY: 31, selX: 4, cursorY: 43, cursorX: 127,
+    });
+    expect(translateOf(dom.textarea)?.dy).toBeCloseTo((31 - 43) * 17.6, 6);
+    expect(translateOf(dom.textarea)?.dx).toBeCloseTo((4 - 127) * 10, 6);
+    // A marker-sourced composition pins the preedit like a caret-sourced one:
+    // the live cursor is the agent's repaint cursor, and following it tears
+    // the two IME surfaces apart (#951 field report).
+    dom.compView.style.top = `${43 * 17.6}px`;
+    dom.compView.style.left = `${127 * 10}px`;
+    dom.textarea.dispatchEvent(new Event('compositionupdate'));
+    expect(translateOf(dom.compView)?.dy).toBeCloseTo((31 - 43) * 17.6, 6);
+    expect(translateOf(dom.compView)?.dx).toBeCloseTo((4 - 127) * 10, 6);
+    handle.dispose();
+  });
+
+  it('a scrolled-up viewport still scans the live screen, not history', () => {
+    // The 3-model panel finding: a viewport-relative scan while scrolled up
+    // reads history, which can quote the very chrome being scanned for. The
+    // live rows keep the real box; the off-screen anchor then clamps to the
+    // visible edge via pointFromCell, same as every other off-screen anchor.
+    const dom = buildTerminalDom(10, 17.6, 45, 128);
+    const t = makeTerminal(dom, 45, 128);
+    let clock = 1000;
+    const diag = vi.fn();
+    // Scrolled up 20 rows: the viewport shows history.
+    Object.assign(t.state, { baseY: 600, viewportY: 580, cursorY: 40, cursorX: 5 });
+    installLines(t.terminal.buffer.active, claudeScreen(45, 31));
+    const handle = attachImeAnchor(t.terminal, {
+      now: () => clock,
+      getAgentSlug: () => 'claude',
+      onCompositionDiagnostic: diag,
+    });
+    streamTo2800(t, dom, (v) => { clock = v; });
+    dom.textarea.dispatchEvent(new Event('compositionstart'));
+    // The live box's prompt row (screen row 31) was found even though the
+    // viewport is 20 rows up; absRow = 600 + 31 = 631, reported ybase-rel.
+    expect(diag.mock.calls[0][0]).toMatchObject({ src: 'marker', selY: 31, selX: 4 });
+    handle.dispose();
+  });
+
+  it('an unrecognized agent never scans and keeps the quiet-caret selection', () => {
+    const dom = buildTerminalDom(10, 17.6, 45, 128);
+    const t = makeTerminal(dom, 45, 128);
+    let clock = 1000;
+    const diag = vi.fn();
+    Object.assign(t.state, { baseY: 600, viewportY: 600, cursorY: 40, cursorX: 5 });
+    const getLine = installLines(t.terminal.buffer.active, claudeScreen(45, 31));
+    const handle = attachImeAnchor(t.terminal, {
+      now: () => clock,
+      getAgentSlug: () => 'codex',
+      onCompositionDiagnostic: diag,
+    });
+    streamTo2800(t, dom, (v) => { clock = v; });
+    dom.textarea.dispatchEvent(new Event('compositionstart'));
+    expect(diag.mock.calls[0][0]).toMatchObject({ src: 'caret', selY: 40, selX: 5 });
+    expect(getLine).not.toHaveBeenCalled();
+    handle.dispose();
+  });
+
+  it('a scan that finds nothing falls back to the quiet-caret selection', () => {
+    const dom = buildTerminalDom(10, 17.6, 45, 128);
+    const t = makeTerminal(dom, 45, 128);
+    let clock = 1000;
+    const diag = vi.fn();
+    Object.assign(t.state, { baseY: 600, viewportY: 600, cursorY: 40, cursorX: 5 });
+    const plain: string[] = [];
+    for (let i = 0; i < 45; i++) plain.push(`output line ${i}`);
+    installLines(t.terminal.buffer.active, plain);
+    const handle = attachImeAnchor(t.terminal, {
+      now: () => clock,
+      getAgentSlug: () => 'claude',
+      onCompositionDiagnostic: diag,
+    });
+    streamTo2800(t, dom, (v) => { clock = v; });
+    dom.textarea.dispatchEvent(new Event('compositionstart'));
+    expect(diag.mock.calls[0][0]).toMatchObject({ src: 'caret', selY: 40, selX: 5 });
+    handle.dispose();
+  });
+
+  it('an idle composition never scans even for a recognized agent', () => {
+    const dom = buildTerminalDom(10, 17.6, 45, 128);
+    const t = makeTerminal(dom, 45, 128);
+    let clock = 1000;
+    const diag = vi.fn();
+    Object.assign(t.state, { baseY: 600, viewportY: 600, cursorY: 40, cursorX: 5 });
+    const getLine = installLines(t.terminal.buffer.active, claudeScreen(45, 31));
+    const handle = attachImeAnchor(t.terminal, {
+      now: () => clock,
+      getAgentSlug: () => 'claude',
+      onCompositionDiagnostic: diag,
+    });
+    clock = 5000; // no output since attach: quiet pane
+    dom.textarea.dispatchEvent(new Event('compositionstart'));
+    expect(diag.mock.calls[0][0]).toMatchObject({ src: 'instant', selY: 40, selX: 5 });
+    expect(getLine).not.toHaveBeenCalled();
     handle.dispose();
   });
 });
