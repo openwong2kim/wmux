@@ -41,6 +41,15 @@ if (CAN_RUN && !HAVE_OPENSSL) {
   console.warn('[#764 restart test] SKIPPED native TLS case — OpenSSL is unavailable');
 }
 
+/**
+ * Set by the one CI job that promises to build the bundle before running the
+ * suites. Without it a skip is indistinguishable from a pass: this file spent
+ * its whole life skipped in CI because no workflow ran `npm run build:daemon`,
+ * so it could not have caught a #596 regression at any point. The guard below
+ * turns a broken promise into a red test instead of silence.
+ */
+const BUNDLE_PROMISED = process.env.WMUX_REQUIRE_DAEMON_BUNDLE === '1';
+
 const SUFFIX = '-webrestart-test';
 const WMUX_DIR = path.join(os.homedir(), `.wmux${SUFFIX}`);
 const PIPE = `\\\\.\\pipe\\wmux-daemon${SUFFIX}-${os.userInfo().username || 'default'}`;
@@ -200,14 +209,30 @@ function freePort(): Promise<number> {
 
 const spawned: ChildProcess[] = [];
 
+/**
+ * Everything a spawned daemon printed. A boot's own log is the only witness
+ * that says WHICH code path ran — a filesystem side effect cannot, because
+ * more than one writer touches the same file (see awaitWebStateReHarden).
+ */
+const daemonOutput = new WeakMap<ChildProcess, string[]>();
+
+function outputOf(child: ChildProcess): string {
+  return (daemonOutput.get(child) ?? []).join('');
+}
+
 async function startDaemon(): Promise<ChildProcess> {
   const child = spawn(process.execPath, [BUNDLE], {
     env: { ...process.env, WMUX_DATA_SUFFIX: SUFFIX },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   spawned.push(child);
-  child.stdout?.resume();
-  child.stderr?.resume();
+  const chunks: string[] = [];
+  daemonOutput.set(child, chunks);
+  // Attaching a 'data' listener also resumes the stream, so this replaces the
+  // resume() that used to drop every line on the floor.
+  const capture = (chunk: Buffer): void => void chunks.push(chunk.toString());
+  child.stdout?.on('data', capture);
+  child.stderr?.on('data', capture);
   for (let i = 0; i < 60; i++) {
     await sleep(500);
     try {
@@ -218,6 +243,43 @@ async function startDaemon(): Promise<ChildProcess> {
     }
   }
   throw new Error('daemon never became ready');
+}
+
+/** What `secureWriteTokenFile` prints when it hardens a NEW record inline. */
+const SYNC_HARDEN = '[security] fresh token ACL harden';
+/** What the boot's deferred, off-event-loop re-harden of an EXISTING record prints. */
+const DEFERRED_HARDEN = '[security] deferred token ACL re-harden';
+
+/** Lines this daemon printed about hardening `web-state.json` specifically —
+ *  the same primitive also hardens the auth token and the device store. */
+function hardenLines(child: ChildProcess, marker: string): string[] {
+  return outputOf(child)
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.includes(marker) && line.includes('(web-state.json)'));
+}
+
+/**
+ * Wait for the restore's deferred ACL re-harden of `web-state.json` to finish.
+ *
+ * This is why a filesystem check cannot be the evidence here. The re-harden
+ * rewrites the record through a FRESH INODE, so mtime and inode both move
+ * ~80 ms into every boot whether or not the restore wrote anything itself. An
+ * earlier revision asserted `mtimeMs` was unchanged and passed only by
+ * observing the file before that rewrite landed — inserting a 1.5 s sleep
+ * ahead of the same assertion failed it every time.
+ *
+ * Waiting for the completion line puts the observation AFTER both candidate
+ * writers, and doubles as proof the restore path ran at all.
+ */
+async function awaitWebStateReHarden(child: ChildProcess): Promise<void> {
+  for (let attempt = 0; attempt < 100; attempt++) {
+    if (hardenLines(child, DEFERRED_HARDEN).length > 0) return;
+    await sleep(100);
+  }
+  throw new Error(
+    `restored daemon never logged a deferred re-harden of web-state.json:\n${outputOf(child)}`,
+  );
 }
 
 /** SIGKILL — no graceful shutdown, which is what a crash or a reboot looks like. */
@@ -277,6 +339,15 @@ async function resetFixture(): Promise<void> {
 beforeEach(resetFixture);
 afterAll(resetFixture);
 
+// Deliberately OUTSIDE the skipIf above: it has to run precisely in the case
+// where the suite itself cannot. A green log that says nothing is how this file
+// went unrun for its whole life.
+describe.runIf(BUNDLE_PROMISED)('#596 restart suite prerequisites', () => {
+  it('has the daemon bundle the promising job was supposed to build', () => {
+    expect(HAVE_BUNDLE).toBe(true);
+  });
+});
+
 describe.skipIf(!CAN_RUN)('#596 — wmux web survives a daemon restart', () => {
   it(
     'restores the listener AND the token after the daemon is killed and replaced',
@@ -296,15 +367,13 @@ describe.skipIf(!CAN_RUN)('#596 — wmux web survives a daemon restart', () => {
       const token = started.token as string;
       expect(token).toBeTruthy();
       expect(await probe(port, '/api/config', token)).toEqual({ status: 200 });
-      const statePath = path.join(WMUX_DIR, 'web-state.json');
-      const persistedMtime = fs.statSync(statePath).mtimeMs;
 
       // ── crash / reboot / one-click update restart ──
       await killDaemon(d1);
       expect((await probe(port, '/api/config', token)).error).toBeTruthy();
 
       // ── a fresh daemon against the same data dir ──
-      await startDaemon();
+      const d2 = await startDaemon();
       const after = await rpc('daemon.web.status');
 
       // The listener is back...
@@ -319,8 +388,11 @@ describe.skipIf(!CAN_RUN)('#596 — wmux web survives a daemon restart', () => {
       expect(await probe(port, '/api/config', token)).toEqual({ status: 200 });
       // Restore must not rewrite an identical state record: on Windows that
       // no-op would synchronously shell out for ACL hardening and freeze the
-      // daemon event loop for seconds. Async ACL re-hardening leaves mtime put.
-      expect(fs.statSync(statePath).mtimeMs).toBe(persistedMtime);
+      // daemon event loop for seconds. The daemon's own log is the witness —
+      // that synchronous harden is exactly what a saveWebState would print,
+      // and the deferred re-harden a restore DOES perform is a different line.
+      await awaitWebStateReHarden(d2);
+      expect(hardenLines(d2, SYNC_HARDEN)).toEqual([]);
     },
     120_000,
   );
@@ -366,7 +438,6 @@ describe.skipIf(!CAN_RUN)('#596 — wmux web survives a daemon restart', () => {
           keyPath: fixture.keyPath,
         });
         expect(rawState).not.toContain(fs.readFileSync(fixture.keyPath, 'utf8').trim());
-        const persistedMtime = fs.statSync(statePath).mtimeMs;
 
         await killDaemon(d1);
         expect((await probe(port, '/api/config', token, true)).error).toBeTruthy();
@@ -379,7 +450,9 @@ describe.skipIf(!CAN_RUN)('#596 — wmux web survives a daemon restart', () => {
         expect(restored.token).toBe(token);
         expect(await probe(port, '/api/config', token, true)).toEqual({ status: 200 });
         expect((await probe(port, '/api/config', token)).error).toBeTruthy();
-        expect(fs.statSync(statePath).mtimeMs).toBe(persistedMtime);
+        // Same contract as the plaintext case, same witness — see above.
+        await awaitWebStateReHarden(d2);
+        expect(hardenLines(d2, SYNC_HARDEN)).toEqual([]);
 
         // Losing a persisted key must leave no listener at all after restart;
         // silently replaying the same port as HTTP would expose the bearer token.
