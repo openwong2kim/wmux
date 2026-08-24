@@ -80,6 +80,34 @@ function disposePanePtys(pane: import('../../shared/types').Pane): void {
 }
 
 /**
+ * Keys that are a MODIFIER being held, not a command. In prefix mode the user is
+ * mid-chord reaching for a Shift-reached binding ('%', '"', '&', '?', ':', '!',
+ * '{', 'K', …), so these must not resolve to an action or count as unknown.
+ */
+export const PREFIX_MODIFIER_KEYS: readonly string[] = ['Shift', 'Control', 'Alt', 'Meta'];
+
+/**
+ * The action a key runs in prefix mode, or null for "nothing bound".
+ *
+ * Keyed on `e.key` — the CHARACTER produced — and NOT on modifier state. That
+ * is what lets the Shift-reached bindings work at all: `!` is Shift+1, `%` is
+ * Shift+5, `K` is Shift+k, and every one of them arrives as its own `e.key`
+ * with `shiftKey: true`. Consulting `e.shiftKey` here, or matching on `e.code`,
+ * would break the whole shifted half of the default map (and every non-US
+ * layout with it).
+ *
+ * Exported so the key→action contract is testable without mounting the hook:
+ * the handler owns the side effects, this owns the lookup.
+ */
+export function resolvePrefixActionId(
+  bindings: Record<string, string>,
+  key: string,
+): string | null {
+  if (PREFIX_MODIFIER_KEYS.includes(key)) return null;
+  return bindings[key] ?? null;
+}
+
+/**
  * Minimal dependency surface used by {@link createPrefixActions} — pulled out so
  * unit tests can inject lightweight stand-ins without touching `window` or the
  * real Zustand store. Tests instantiate the registry with a fake store/electron
@@ -328,7 +356,7 @@ export function useKeyboard() {
         // the next keypress — even minutes later — would be treated as a prefix
         // command. Exiting outright instead would make the Shift-reached
         // bindings unreachable, so re-arming is the behavior-preserving fix.
-        if (['Shift', 'Control', 'Alt', 'Meta'].includes(key)) {
+        if (PREFIX_MODIFIER_KEYS.includes(key)) {
           prefixTimeoutRef.current = setTimeout(() => {
             store.getState().setPrefixMode(false);
             prefixTimeoutRef.current = null;
@@ -336,9 +364,10 @@ export function useKeyboard() {
           return;
         }
 
-        // Look up action from store's prefix bindings
+        // Look up action from store's prefix bindings. Keyed on the CHARACTER
+        // (e.key), never on modifier state — see resolvePrefixActionId.
         const { prefixConfig } = store.getState();
-        const actionId = prefixConfig.bindings[key];
+        const actionId = resolvePrefixActionId(prefixConfig.bindings, key);
         const action = actionId ? prefixActions[actionId] : undefined;
         if (action) {
           action();
