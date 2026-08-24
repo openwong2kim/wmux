@@ -22,11 +22,30 @@ export const it = {
   'workspace.copyInfo': 'Copia info sessione',
   'workspace.copied': 'Copiato!',
 
+  // Roster
+  'roster.stashedCount': '{count} da parte',
+  'roster.stashedOnly': '{count} da parte',
+  'roster.stashedExited': 'Sessione terminata',
+  'roster.unstashAction': 'Riporta nel layout',
+
   // Pane
   'pane.empty': 'Pannello vuoto',
   'pane.splitRight': 'Dividi a destra',
   'pane.splitDown': 'Dividi in basso',
   'pane.moreActions': 'Azioni del pannello',
+  'pane.maxLeavesReachedWithStash': 'Limite di pannelli raggiunto ({count}), inclusi {stashed} messi da parte. Riportane indietro uno e chiudilo, oppure chiudi un pannello visibile.',
+
+  // Pane stash (#977) — the pane leaves the layout, its session keeps running.
+  'pane.stash': 'Metti da parte il pannello',
+  'pane.stashHint': 'Rimosso dal layout — la sessione resta in esecuzione',
+  'pane.unstash': 'Riporta indietro',
+  'pane.stashed': '{name} messo da parte. La sessione è ancora in esecuzione.',
+  'pane.unstashedToNeighbor': 'Tornato accanto al suo vecchio vicino.',
+  'pane.unstashedFallback': 'Il suo vecchio vicino non c\'è più — collocato accanto al pannello attivo.',
+  'pane.stashLastPane': 'È l\'unico pannello sullo schermo. Metterlo da parte non lascerebbe nulla da guardare.',
+  'pane.stashEmptyPane': 'Questo pannello è vuoto — non c\'è nessuna sessione da mantenere in esecuzione, né nulla da riportare indietro.',
+  'pane.stashNoDaemon': 'Nessuna connessione al daemon. Un pannello messo da parte ha bisogno del daemon per conservare la sessione e riprodurla — l\'output andrebbe perso.',
+  'pane.stashBlockedSurface': 'Questo pannello contiene una scheda {type}. Solo terminali e browser possono essere messi da parte — un editor smontato perderebbe le modifiche non salvate.',
 
   // Surface
   'surface.terminal': 'Terminale',
@@ -67,6 +86,7 @@ export const it = {
   'palette.cmd.newSurface': 'Nuova superficie',
   'palette.cmd.splitRight': 'Dividi a destra',
   'palette.cmd.splitDown': 'Dividi in basso',
+  'palette.cmd.stashPane': 'Metti da parte il pannello (la sessione resta in esecuzione)',
   'palette.cmd.showNotifications': 'Mostra notifiche',
   'palette.cmd.openSettings': 'Apri impostazioni',
   'palette.cmd.openBrowser': 'Apri browser',
@@ -216,6 +236,7 @@ export const it = {
   'settings.prefix.focusDown': 'Focus in basso',
   'settings.prefix.focusLeft': 'Focus a sinistra',
   'settings.prefix.focusRight': 'Focus a destra',
+  'settings.prefix.stashPane': 'Metti da parte il pannello',
 
   // Custom keybindings
   'settings.customKeybindings': 'Associazioni tasti personalizzate',

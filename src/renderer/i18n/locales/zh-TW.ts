@@ -22,11 +22,30 @@ export const zhTW = {
   'workspace.copyInfo': '複製工作階段資訊',
   'workspace.copied': '已複製!',
 
+  // Roster
+  'roster.stashedCount': '已收起 {count}',
+  'roster.stashedOnly': '已收起 {count}',
+  'roster.stashedExited': '工作階段已結束',
+  'roster.unstashAction': '取回到版面中',
+
   // Pane
   'pane.empty': '空面板',
   'pane.splitRight': '向右分割',
   'pane.splitDown': '向下分割',
   'pane.moreActions': '面板操作',
+  'pane.maxLeavesReachedWithStash': '已達面板數量上限（{count}，其中已收起 {stashed}）。請取回一個並關閉，或關閉一個可見的面板。',
+
+  // Pane stash (#977) — the pane leaves the layout, its session keeps running.
+  'pane.stash': '收起面板',
+  'pane.stashHint': '從版面移除 — 工作階段會繼續執行',
+  'pane.unstash': '取回',
+  'pane.stashed': '已收起 {name}。它仍在執行。',
+  'pane.unstashedToNeighbor': '已放回原本相鄰的面板旁邊。',
+  'pane.unstashedFallback': '原本相鄰的面板已不存在 — 改放在使用中的面板旁邊。',
+  'pane.stashLastPane': '這是畫面上唯一的面板。收起後就沒有東西可看了。',
+  'pane.stashEmptyPane': '這個面板是空的 — 沒有需要繼續執行的工作階段，也沒有可取回的內容。',
+  'pane.stashNoDaemon': '沒有 daemon 連線。收起的面板需要 daemon 保留工作階段並重播輸出 — 現在收起會遺失輸出。',
+  'pane.stashBlockedSurface': '此面板中是 {type} 分頁。只有終端機和瀏覽器可以收起 — 編輯器一旦卸載會遺失未儲存的修改。',
 
   // Surface
   'surface.terminal': '終端機',
@@ -67,6 +86,7 @@ export const zhTW = {
   'palette.cmd.newSurface': '新增介面',
   'palette.cmd.splitRight': '向右分割',
   'palette.cmd.splitDown': '向下分割',
+  'palette.cmd.stashPane': '收起面板（工作階段繼續執行）',
   'palette.cmd.showNotifications': '顯示通知',
   'palette.cmd.openSettings': '開啟設定',
   'palette.cmd.openBrowser': '開啟瀏覽器',
@@ -216,6 +236,7 @@ export const zhTW = {
   'settings.prefix.focusDown': '焦點向下',
   'settings.prefix.focusLeft': '焦點向左',
   'settings.prefix.focusRight': '焦點向右',
+  'settings.prefix.stashPane': '收起面板',
 
   // Custom keybindings
   'settings.customKeybindings': '自訂按鍵繫結',

@@ -22,11 +22,30 @@ export const ar = {
   'workspace.copyInfo': 'نسخ معلومات الجلسة',
   'workspace.copied': 'تم النسخ!',
 
+  // Roster
+  'roster.stashedCount': '{count} موضوعة جانبًا',
+  'roster.stashedOnly': '{count} موضوعة جانبًا',
+  'roster.stashedExited': 'انتهت الجلسة',
+  'roster.unstashAction': 'إعادته إلى التخطيط',
+
   // Pane
   'pane.empty': 'جزء فارغ',
   'pane.splitRight': 'تقسيم إلى اليمين',
   'pane.splitDown': 'تقسيم إلى الأسفل',
   'pane.moreActions': 'إجراءات الجزء',
+  'pane.maxLeavesReachedWithStash': 'تم بلوغ حد الأجزاء ({count})، منها {stashed} موضوعة جانبًا. أعد واحدًا وأغلقه، أو أغلق جزءًا ظاهرًا.',
+
+  // Pane stash (#977) — the pane leaves the layout, its session keeps running.
+  'pane.stash': 'وضع الجزء جانبًا',
+  'pane.stashHint': 'يُزال من التخطيط — تستمر الجلسة في العمل',
+  'pane.unstash': 'إعادة',
+  'pane.stashed': 'تم وضع {name} جانبًا. لا تزال الجلسة تعمل.',
+  'pane.unstashedToNeighbor': 'عاد بجوار جاره السابق.',
+  'pane.unstashedFallback': 'لم يعد جاره السابق موجودًا — وُضع بجوار الجزء النشط.',
+  'pane.stashLastPane': 'هذا هو الجزء الوحيد على الشاشة. وضعه جانبًا لن يترك شيئًا لعرضه.',
+  'pane.stashEmptyPane': 'هذا الجزء فارغ — لا توجد جلسة لإبقائها قيد التشغيل، ولا شيء لإعادته.',
+  'pane.stashNoDaemon': 'لا يوجد اتصال بالـ daemon. الجزء الموضوع جانبًا يحتاج إلى الـ daemon للحفاظ على جلسته وإعادة عرضها — وإلا فسيُفقد الإخراج.',
+  'pane.stashBlockedSurface': 'هذا الجزء يحتوي على علامة تبويب {type}. يمكن وضع الطرفيات والمتصفحات فقط جانبًا — المحرر الذي يُزال من العرض سيفقد التعديلات غير المحفوظة.',
 
   // Surface
   'surface.terminal': 'الطرفية',
@@ -67,6 +86,7 @@ export const ar = {
   'palette.cmd.newSurface': 'سطح جديد',
   'palette.cmd.splitRight': 'تقسيم إلى اليمين',
   'palette.cmd.splitDown': 'تقسيم إلى الأسفل',
+  'palette.cmd.stashPane': 'وضع الجزء جانبًا (مع استمرار تشغيل الجلسة)',
   'palette.cmd.showNotifications': 'عرض الإشعارات',
   'palette.cmd.openSettings': 'فتح الإعدادات',
   'palette.cmd.openBrowser': 'فتح المتصفح',
@@ -216,6 +236,7 @@ export const ar = {
   'settings.prefix.focusDown': 'التركيز للأسفل',
   'settings.prefix.focusLeft': 'التركيز لليسار',
   'settings.prefix.focusRight': 'التركيز لليمين',
+  'settings.prefix.stashPane': 'وضع الجزء جانبًا',
 
   // Custom keybindings
   'settings.customKeybindings': 'ارتباطات مفاتيح مخصصة',

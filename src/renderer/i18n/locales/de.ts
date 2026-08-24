@@ -22,11 +22,30 @@ export const de = {
   'workspace.copyInfo': 'Sitzungsinfo kopieren',
   'workspace.copied': 'Kopiert!',
 
+  // Roster
+  'roster.stashedCount': '{count} beiseitegelegt',
+  'roster.stashedOnly': '{count} beiseitegelegt',
+  'roster.stashedExited': 'Sitzung beendet',
+  'roster.unstashAction': 'Zurück ins Layout holen',
+
   // Pane
   'pane.empty': 'Leerer Bereich',
   'pane.splitRight': 'Nach rechts teilen',
   'pane.splitDown': 'Nach unten teilen',
   'pane.moreActions': 'Bereichsaktionen',
+  'pane.maxLeavesReachedWithStash': 'Bereichslimit erreicht ({count}), davon {stashed} beiseitegelegt. Holen Sie einen zurück und schließen Sie ihn, oder schließen Sie einen sichtbaren Bereich.',
+
+  // Pane stash (#977) — the pane leaves the layout, its session keeps running.
+  'pane.stash': 'Bereich beiseitelegen',
+  'pane.stashHint': 'Aus dem Layout entfernen — die Sitzung läuft weiter',
+  'pane.unstash': 'Zurückholen',
+  'pane.stashed': '{name} beiseitegelegt. Die Sitzung läuft weiter.',
+  'pane.unstashedToNeighbor': 'Zurück neben dem früheren Nachbarn.',
+  'pane.unstashedFallback': 'Der frühere Nachbar ist nicht mehr da — neben dem aktiven Bereich platziert.',
+  'pane.stashLastPane': 'Dies ist der einzige Bereich auf dem Bildschirm. Wenn Sie ihn beiseitelegen, bleibt nichts mehr zu sehen.',
+  'pane.stashEmptyPane': 'Dieser Bereich ist leer — es gibt keine Sitzung, die weiterlaufen könnte, und nichts zum Zurückholen.',
+  'pane.stashNoDaemon': 'Keine Daemon-Verbindung. Ein beiseitegelegter Bereich braucht den Daemon, um seine Sitzung zu halten und wiederzugeben — die Ausgabe ginge verloren.',
+  'pane.stashBlockedSurface': 'Dieser Bereich enthält einen {type}-Tab. Nur Terminals und Browser lassen sich beiseitelegen — ein ausgehängter Editor würde ungespeicherte Änderungen verlieren.',
 
   // Surface
   'surface.terminal': 'Terminal',
@@ -67,6 +86,7 @@ export const de = {
   'palette.cmd.newSurface': 'Neue Oberfläche',
   'palette.cmd.splitRight': 'Nach rechts teilen',
   'palette.cmd.splitDown': 'Nach unten teilen',
+  'palette.cmd.stashPane': 'Bereich beiseitelegen (Sitzung läuft weiter)',
   'palette.cmd.showNotifications': 'Benachrichtigungen anzeigen',
   'palette.cmd.openSettings': 'Einstellungen öffnen',
   'palette.cmd.openBrowser': 'Browser öffnen',
@@ -216,6 +236,7 @@ export const de = {
   'settings.prefix.focusDown': 'Fokus nach unten',
   'settings.prefix.focusLeft': 'Fokus nach links',
   'settings.prefix.focusRight': 'Fokus nach rechts',
+  'settings.prefix.stashPane': 'Bereich beiseitelegen',
 
   // Custom keybindings
   'settings.customKeybindings': 'Benutzerdefinierte Tastenbindungen',

@@ -22,11 +22,30 @@ export const vi = {
   'workspace.copyInfo': 'Sao chép thông tin phiên',
   'workspace.copied': 'Đã sao chép!',
 
+  // Roster
+  'roster.stashedCount': 'Đã cất {count}',
+  'roster.stashedOnly': 'Đã cất {count}',
+  'roster.stashedExited': 'Phiên đã kết thúc',
+  'roster.unstashAction': 'Đưa trở lại bố cục',
+
   // Pane
   'pane.empty': 'Khung trống',
   'pane.splitRight': 'Chia sang phải',
   'pane.splitDown': 'Chia xuống dưới',
   'pane.moreActions': 'Thao tác khung',
+  'pane.maxLeavesReachedWithStash': 'Đã đạt giới hạn khung ({count}), bao gồm {stashed} khung đã cất. Hãy đưa một khung trở lại rồi đóng, hoặc đóng một khung đang hiển thị.',
+
+  // Pane stash (#977) — the pane leaves the layout, its session keeps running.
+  'pane.stash': 'Cất khung',
+  'pane.stashHint': 'Gỡ khỏi bố cục — phiên vẫn tiếp tục chạy',
+  'pane.unstash': 'Đưa trở lại',
+  'pane.stashed': 'Đã cất {name}. Phiên vẫn đang chạy.',
+  'pane.unstashedToNeighbor': 'Đã trở lại cạnh khung liền kề trước đây.',
+  'pane.unstashedFallback': 'Khung liền kề trước đây không còn — đã đặt cạnh khung đang hoạt động.',
+  'pane.stashLastPane': 'Đây là khung duy nhất trên màn hình. Cất nó đi thì không còn gì để xem.',
+  'pane.stashEmptyPane': 'Khung này trống — không có phiên nào cần giữ chạy, cũng không có gì để đưa trở lại.',
+  'pane.stashNoDaemon': 'Không có kết nối daemon. Khung đã cất cần daemon để giữ phiên và phát lại — kết quả đầu ra sẽ bị mất.',
+  'pane.stashBlockedSurface': 'Khung này chứa tab {type}. Chỉ terminal và trình duyệt mới có thể cất — trình soạn thảo bị gỡ khỏi giao diện sẽ mất các thay đổi chưa lưu.',
 
   // Surface
   'surface.terminal': 'Terminal',
@@ -67,6 +86,7 @@ export const vi = {
   'palette.cmd.newSurface': 'Bề mặt mới',
   'palette.cmd.splitRight': 'Chia sang phải',
   'palette.cmd.splitDown': 'Chia xuống dưới',
+  'palette.cmd.stashPane': 'Cất khung (phiên vẫn tiếp tục chạy)',
   'palette.cmd.showNotifications': 'Hiện thông báo',
   'palette.cmd.openSettings': 'Mở cài đặt',
   'palette.cmd.openBrowser': 'Mở trình duyệt',
@@ -216,6 +236,7 @@ export const vi = {
   'settings.prefix.focusDown': 'Tập trung xuống',
   'settings.prefix.focusLeft': 'Tập trung trái',
   'settings.prefix.focusRight': 'Tập trung phải',
+  'settings.prefix.stashPane': 'Cất khung',
 
   // Custom keybindings
   'settings.customKeybindings': 'Ràng buộc phím tuỳ chỉnh',

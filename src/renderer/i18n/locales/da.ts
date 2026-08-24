@@ -22,11 +22,30 @@ export const da = {
   'workspace.copyInfo': 'Kopier sessionsoplysninger',
   'workspace.copied': 'Kopieret!',
 
+  // Roster
+  'roster.stashedCount': '{count} lagt til side',
+  'roster.stashedOnly': '{count} lagt til side',
+  'roster.stashedExited': 'Sessionen er afsluttet',
+  'roster.unstashAction': 'Hent tilbage i layoutet',
+
   // Pane
   'pane.empty': 'Tomt panel',
   'pane.splitRight': 'Opdel til højre',
   'pane.splitDown': 'Opdel nedad',
   'pane.moreActions': 'Panelhandlinger',
+  'pane.maxLeavesReachedWithStash': 'Panelgrænsen er nået ({count}), heraf {stashed} lagt til side. Hent ét tilbage og luk det, eller luk et synligt panel.',
+
+  // Pane stash (#977) — the pane leaves the layout, its session keeps running.
+  'pane.stash': 'Læg panelet til side',
+  'pane.stashHint': 'Fjernes fra layoutet — sessionen kører videre',
+  'pane.unstash': 'Hent tilbage',
+  'pane.stashed': '{name} lagt til side. Sessionen kører stadig.',
+  'pane.unstashedToNeighbor': 'Tilbage ved siden af sin tidligere nabo.',
+  'pane.unstashedFallback': 'Den tidligere nabo findes ikke længere — placeret ved siden af det aktive panel.',
+  'pane.stashLastPane': 'Dette er det eneste panel på skærmen. Lægger du det til side, er der ikke noget tilbage at se på.',
+  'pane.stashEmptyPane': 'Dette panel er tomt — der er ingen session at holde kørende og intet at hente tilbage.',
+  'pane.stashNoDaemon': 'Ingen daemon-forbindelse. Et panel, der er lagt til side, har brug for daemonen til at holde på sessionen og afspille den igen — outputtet ville gå tabt.',
+  'pane.stashBlockedSurface': 'Dette panel indeholder en {type}-fane. Kun terminaler og browsere kan lægges til side — en afmonteret editor ville miste ikke-gemte ændringer.',
 
   // Surface
   'surface.terminal': 'Terminal',
@@ -67,6 +86,7 @@ export const da = {
   'palette.cmd.newSurface': 'Ny overflade',
   'palette.cmd.splitRight': 'Opdel til højre',
   'palette.cmd.splitDown': 'Opdel nedad',
+  'palette.cmd.stashPane': 'Læg panelet til side (sessionen kører videre)',
   'palette.cmd.showNotifications': 'Vis notifikationer',
   'palette.cmd.openSettings': 'Åbn indstillinger',
   'palette.cmd.openBrowser': 'Åbn browser',
@@ -216,6 +236,7 @@ export const da = {
   'settings.prefix.focusDown': 'Fokus ned',
   'settings.prefix.focusLeft': 'Fokus venstre',
   'settings.prefix.focusRight': 'Fokus højre',
+  'settings.prefix.stashPane': 'Læg panelet til side',
 
   // Custom keybindings
   'settings.customKeybindings': 'Brugerdefinerede tastbindinger',

@@ -228,6 +228,7 @@ export const zh = {
   'palette.cmd.newSurface': '新建界面',
   'palette.cmd.splitRight': '向右分割',
   'palette.cmd.splitDown': '向下分割',
+  'palette.cmd.stashPane': '收起面板（会话继续运行）',
   'palette.cmd.showNotifications': '显示通知',
   'palette.cmd.openSettings': '打开设置',
   'palette.cmd.openBrowser': '打开浏览器',
@@ -683,6 +684,13 @@ export const zh = {
   'workspace.agentNeedsAttention': '需要你处理 {count}',
   'workspace.showAgents': '显示智能体列表',
   'workspace.hideAgents': '隐藏智能体列表',
+
+  // Roster
+  'roster.stashedCount': '已收起 {count}',
+  'roster.stashedOnly': '已收起 {count}',
+  'roster.stashedExited': '会话已结束',
+  'roster.unstashAction': '取回到布局中',
+
   'workspace.rename': '重命名工作区',
   'workspace.configureProfile': '配置配置文件…',
   'workspace.duplicate': '复制工作区',
@@ -743,6 +751,20 @@ export const zh = {
   'pane.newBrowser': '新建浏览器',
   'pane.addSurface': '新建标签页',
   'pane.maxLeavesReached': '已达到面板数量上限（{count}）。请先关闭一个面板再分割。',
+  'pane.maxLeavesReachedWithStash': '已达到面板数量上限（{count}，其中已收起 {stashed}）。请取回一个并关闭，或关闭一个可见面板。',
+
+  // Pane stash (#977) — the pane leaves the layout, its session keeps running.
+  'pane.stash': '收起面板',
+  'pane.stashHint': '从布局中移除 — 会话继续运行',
+  'pane.unstash': '取回',
+  'pane.stashed': '已收起 {name}。它仍在运行。',
+  'pane.unstashedToNeighbor': '已放回原来的相邻面板旁边。',
+  'pane.unstashedFallback': '原来的相邻面板已不存在 — 放到了当前活动面板旁边。',
+  'pane.stashLastPane': '这是屏幕上唯一的面板。收起它就什么都看不到了。',
+  'pane.stashEmptyPane': '这个面板是空的 — 没有需要继续运行的会话，也没有可取回的内容。',
+  'pane.stashNoDaemon': '没有守护进程连接。收起的面板需要守护进程保留会话并回放输出 — 现在收起会丢失输出。',
+  'pane.stashBlockedSurface': '此面板中是 {type} 标签页。只有终端和浏览器可以收起 — 编辑器一旦卸载会丢失未保存的修改。',
+
   'palette.cmd.movePane.left': '将面板左移',
   'palette.cmd.movePane.right': '将面板右移',
   'palette.cmd.movePane.up': '将面板上移',
@@ -1088,6 +1110,7 @@ export const zh = {
   'settings.prefix.movePaneRight': '面板右移',
   'settings.prefix.swapPanePrev': '与上一个面板交换',
   'settings.prefix.swapPaneNext': '与下一个面板交换',
+  'settings.prefix.stashPane': '收起面板',
   'settings.token.accentSecondary': '链接强调色',
   'firstRunWizard.title': '欢迎使用 wmux',
   'firstRunWizard.subtitle': '让我们来打造你的第一个神奇时刻。',

@@ -22,11 +22,30 @@ export const ru = {
   'workspace.copyInfo': 'Копировать данные сессии',
   'workspace.copied': 'Скопировано!',
 
+  // Roster
+  'roster.stashedCount': 'Отложено {count}',
+  'roster.stashedOnly': 'Отложено {count}',
+  'roster.stashedExited': 'Сессия завершена',
+  'roster.unstashAction': 'Вернуть в макет',
+
   // Pane
   'pane.empty': 'Пустая панель',
   'pane.splitRight': 'Разделить вправо',
   'pane.splitDown': 'Разделить вниз',
   'pane.moreActions': 'Действия панели',
+  'pane.maxLeavesReachedWithStash': 'Достигнут лимит панелей ({count}), включая отложенные: {stashed}. Верните одну и закройте её либо закройте видимую панель.',
+
+  // Pane stash (#977) — the pane leaves the layout, its session keeps running.
+  'pane.stash': 'Отложить панель',
+  'pane.stashHint': 'Убрать из макета — сессия продолжит работать',
+  'pane.unstash': 'Вернуть',
+  'pane.stashed': 'Панель {name} отложена. Она всё ещё работает.',
+  'pane.unstashedToNeighbor': 'Вернулась рядом с прежним соседом.',
+  'pane.unstashedFallback': 'Прежнего соседа больше нет — размещена рядом с активной панелью.',
+  'pane.stashLastPane': 'Это единственная панель на экране. Если её отложить, смотреть будет не на что.',
+  'pane.stashEmptyPane': 'Эта панель пуста — нет сессии, которую нужно сохранить работающей, и нечего возвращать.',
+  'pane.stashNoDaemon': 'Нет соединения с демоном. Отложенной панели нужен демон, чтобы удерживать её сессию и воспроизвести её — вывод будет потерян.',
+  'pane.stashBlockedSurface': 'В этой панели вкладка {type}. Отложить можно только терминалы и браузеры — размонтированный редактор потеряет несохранённые правки.',
 
   // Surface
   'surface.terminal': 'Терминал',
@@ -67,6 +86,7 @@ export const ru = {
   'palette.cmd.newSurface': 'Новая поверхность',
   'palette.cmd.splitRight': 'Разделить вправо',
   'palette.cmd.splitDown': 'Разделить вниз',
+  'palette.cmd.stashPane': 'Отложить панель (сессия продолжит работать)',
   'palette.cmd.showNotifications': 'Показать уведомления',
   'palette.cmd.openSettings': 'Открыть настройки',
   'palette.cmd.openBrowser': 'Открыть браузер',
@@ -216,6 +236,7 @@ export const ru = {
   'settings.prefix.focusDown': 'Фокус вниз',
   'settings.prefix.focusLeft': 'Фокус влево',
   'settings.prefix.focusRight': 'Фокус вправо',
+  'settings.prefix.stashPane': 'Отложить панель',
 
   // Custom keybindings
   'settings.customKeybindings': 'Пользовательские привязки клавиш',

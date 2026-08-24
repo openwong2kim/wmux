@@ -22,11 +22,30 @@ export const fr = {
   'workspace.copyInfo': 'Copier les infos de session',
   'workspace.copied': 'Copié !',
 
+  // Roster
+  'roster.stashedCount': '{count} mis de côté',
+  'roster.stashedOnly': '{count} mis de côté',
+  'roster.stashedExited': 'Session terminée',
+  'roster.unstashAction': 'Ramener dans la disposition',
+
   // Pane
   'pane.empty': 'Panneau vide',
   'pane.splitRight': 'Diviser à droite',
   'pane.splitDown': 'Diviser en bas',
   'pane.moreActions': 'Actions du panneau',
+  'pane.maxLeavesReachedWithStash': 'Limite de panneaux atteinte ({count}), dont {stashed} mis de côté. Ramenez-en un et fermez-le, ou fermez un panneau visible.',
+
+  // Pane stash (#977) — the pane leaves the layout, its session keeps running.
+  'pane.stash': 'Mettre le panneau de côté',
+  'pane.stashHint': 'Retiré de la disposition — la session continue de tourner',
+  'pane.unstash': 'Ramener',
+  'pane.stashed': '{name} mis de côté. La session continue de tourner.',
+  'pane.unstashedToNeighbor': 'De retour à côté de son ancien voisin.',
+  'pane.unstashedFallback': 'Son ancien voisin a disparu — placé à côté du panneau actif.',
+  'pane.stashLastPane': 'C\'est le seul panneau à l\'écran. Le mettre de côté ne laisserait rien à regarder.',
+  'pane.stashEmptyPane': 'Ce panneau est vide — aucune session à faire tourner, et rien à ramener.',
+  'pane.stashNoDaemon': 'Aucune connexion au démon. Un panneau mis de côté a besoin du démon pour conserver sa session et la rejouer — la sortie serait perdue.',
+  'pane.stashBlockedSurface': 'Ce panneau contient un onglet {type}. Seuls les terminaux et les navigateurs peuvent être mis de côté — un éditeur démonté perdrait les modifications non enregistrées.',
 
   // Surface
   'surface.terminal': 'Terminal',
@@ -67,6 +86,7 @@ export const fr = {
   'palette.cmd.newSurface': 'Nouvelle surface',
   'palette.cmd.splitRight': 'Diviser à droite',
   'palette.cmd.splitDown': 'Diviser en bas',
+  'palette.cmd.stashPane': 'Mettre le panneau de côté (la session continue de tourner)',
   'palette.cmd.showNotifications': 'Afficher les notifications',
   'palette.cmd.openSettings': 'Ouvrir les paramètres',
   'palette.cmd.openBrowser': 'Ouvrir le navigateur',
@@ -216,6 +236,7 @@ export const fr = {
   'settings.prefix.focusDown': 'Focus en bas',
   'settings.prefix.focusLeft': 'Focus à gauche',
   'settings.prefix.focusRight': 'Focus à droite',
+  'settings.prefix.stashPane': 'Mettre le panneau de côté',
 
   // Custom keybindings
   'settings.customKeybindings': 'Raccourcis personnalisés',

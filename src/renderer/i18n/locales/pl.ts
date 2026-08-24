@@ -27,11 +27,30 @@ export const pl = {
   'workspace.copyInfo': 'Kopiuj informacje o sesji',
   'workspace.copied': 'Skopiowano!',
 
+  // Roster
+  'roster.stashedCount': 'Odłożone {count}',
+  'roster.stashedOnly': 'Odłożone {count}',
+  'roster.stashedExited': 'Sesja zakończona',
+  'roster.unstashAction': 'Przywróć do układu',
+
   // Pane
   'pane.empty': 'Pusty panel',
   'pane.splitRight': 'Podziel w prawo',
   'pane.splitDown': 'Podziel w dół',
   'pane.moreActions': 'Akcje panelu',
+  'pane.maxLeavesReachedWithStash': 'Osiągnięto limit paneli ({count}), w tym {stashed} odłożonych. Przywróć jeden i zamknij go albo zamknij widoczny panel.',
+
+  // Pane stash (#977) — the pane leaves the layout, its session keeps running.
+  'pane.stash': 'Odłóż panel',
+  'pane.stashHint': 'Znika z układu — sesja działa dalej',
+  'pane.unstash': 'Przywróć',
+  'pane.stashed': 'Odłożono {name}. Sesja nadal działa.',
+  'pane.unstashedToNeighbor': 'Wrócił obok dawnego sąsiada.',
+  'pane.unstashedFallback': 'Dawnego sąsiada już nie ma — umieszczono obok aktywnego panelu.',
+  'pane.stashLastPane': 'To jedyny panel na ekranie. Po odłożeniu nie zostanie nic do oglądania.',
+  'pane.stashEmptyPane': 'Ten panel jest pusty — nie ma sesji do podtrzymania ani niczego do przywrócenia.',
+  'pane.stashNoDaemon': 'Brak połączenia z demonem. Odłożony panel potrzebuje demona, aby utrzymać sesję i ją odtworzyć — dane wyjściowe zostałyby utracone.',
+  'pane.stashBlockedSurface': 'Ten panel zawiera kartę {type}. Odłożyć można tylko terminale i przeglądarki — odmontowany edytor utraciłby niezapisane zmiany.',
 
   // Surface
   'surface.terminal': 'Terminal',
@@ -72,6 +91,7 @@ export const pl = {
   'palette.cmd.newSurface': 'Nowa powierzchnia',
   'palette.cmd.splitRight': 'Podziel w prawo',
   'palette.cmd.splitDown': 'Podziel w dół',
+  'palette.cmd.stashPane': 'Odłóż panel (sesja działa dalej)',
   'palette.cmd.showNotifications': 'Pokaż powiadomienia',
   'palette.cmd.openSettings': 'Otwórz ustawienia',
   'palette.cmd.openBrowser': 'Otwórz przeglądarkę',
@@ -221,6 +241,7 @@ export const pl = {
   'settings.prefix.focusDown': 'Fokus w dół',
   'settings.prefix.focusLeft': 'Fokus w lewo',
   'settings.prefix.focusRight': 'Fokus w prawo',
+  'settings.prefix.stashPane': 'Odłóż panel',
 
   // Custom keybindings
   'settings.customKeybindings': 'Niestandardowe przypisania klawiszy',
