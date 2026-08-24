@@ -42,9 +42,13 @@ describe('Phase 3 PR-A — useTerminal hidden-pane retention wiring (source-leve
   it('resync completion resets BEFORE writing the held replay (no early-parse race)', () => {
     const idx = src.indexOf('const completeResyncFromFlush');
     expect(idx).toBeGreaterThan(0);
-    const body = src.slice(idx, idx + 1200);
+    // Window widened (was 1200) and the write spelling changed: #998 mutes the
+    // OSC 52 bridge for this flush, because on the raw-fallback path the
+    // reconnect replay itself lands in st.buffer. The ordering contract this
+    // test exists for — reset BEFORE the held bytes are parsed — is unchanged.
+    const body = src.slice(idx, idx + 2400);
     const resetIdx = body.indexOf('terminal.reset()');
-    const writeIdx = body.indexOf('for (const chunk of st.buffer) terminal.write(chunk)');
+    const writeIdx = body.indexOf('for (const chunk of st.buffer) writeReplayed(terminal, chunk');
     expect(resetIdx).toBeGreaterThan(0);
     expect(writeIdx).toBeGreaterThan(resetIdx);
     // Stale retained backlog + dirty flag die with the old screen state.
@@ -162,11 +166,13 @@ describe('Phase 3 PR-B — useTerminal snapshot-resync ladder (source-level)', (
   it('dead-snapshot paint mirrors the flush-complete contract', () => {
     const idx = src.indexOf('const paintDeadSnapshot');
     expect(idx).toBeGreaterThan(0);
-    const paint = src.slice(idx, idx + 1600);
+    const paint = src.slice(idx, idx + 2200);
     // discard stale backlog → reset → write payload → write held bytes → clean.
+    // The payload write is writeReplayed() since #998 (clipboard bridge muted
+    // while stored bytes are parsed); the order is what this locks.
     const discard = paint.indexOf('discardTerminalOutput(term)');
     const reset = paint.indexOf('term.reset()');
-    const write = paint.indexOf('term.write(bytes)');
+    const write = paint.indexOf('writeReplayed(term, bytes');
     const clean = paint.indexOf('markTerminalClean(term)');
     expect(discard).toBeGreaterThan(0);
     expect(reset).toBeGreaterThan(discard);

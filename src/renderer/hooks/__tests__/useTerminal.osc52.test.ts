@@ -29,14 +29,30 @@ describe('useTerminal OSC 52 clipboard-write wiring (source-level lock)', () => 
   });
 
   it('routes the OSC 52 payload through the write-only decode policy', () => {
-    expect(SRC).toMatch(/decodeOsc52Write\(payload\)/);
+    // #998 moved the decode + the non-null guard into createOsc52Handler, in
+    // the same module that owns the rest of the policy (reads and clears are
+    // refused there too). What this locks is that the hook does not hand-roll
+    // its own path to the clipboard — it goes through that factory.
+    expect(SRC).toMatch(/createOsc52Handler\(\{/);
+    expect(SRC).toMatch(/import \{ createOsc52Handler \} from '\.\.\/utils\/osc52Clipboard'/);
   });
 
-  it('forwards only a non-null decode (refused reads/clears are dropped)', () => {
-    // decodeOsc52Write returns null to REFUSE (read '?', clear, oversize,
-    // malformed); the wiring must guard on that so a refused request never
-    // reaches the clipboard.
-    expect(SRC).toMatch(/if \(text !== null\)/);
+  it('gates the handler on the replay mute (#998)', () => {
+    // Replayed bytes are stored output, not a request: a reconnect, resync or
+    // scrollback restore must not re-apply an old copy to the live clipboard.
+    // Pinned on the predicate reaching the shared state machine, not on how the
+    // boolean is spelled — replayMute.ts owns the WHEN, and its own tests cover
+    // the windows.
+    expect(SRC).toMatch(/isReplaying:\s*\(\)\s*=>\s*isReplayMuted\(replayMuteRef\.current\)/);
+    expect(SRC).toMatch(/from '\.\.\/terminal\/replayMute'/);
+  });
+
+  it('opens a mute window around the reattach replay (#998)', () => {
+    // The daemon RingBuffer flush after a reattach arrives as ordinary pty:data,
+    // so there is no write of ours to hang the mute on. This is the gap the
+    // maintainer's live dogfood found; the window is what closes it.
+    expect(SRC).toMatch(/openReattachWindow\(replayMuteRef\.current\)/);
+    expect(SRC).toMatch(/noteReplayData\(replayMuteRef\.current\)/);
   });
 
   it('writes the decoded text through the clipboard IPC (1 MB cap + lock handling)', () => {

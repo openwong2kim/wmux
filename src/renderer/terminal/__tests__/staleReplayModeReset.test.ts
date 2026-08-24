@@ -268,15 +268,24 @@ describe('useTerminal stale-replay reset wiring (source-level lock)', () => {
     // The resync completion path must include it (regression lock for PR-A).
     const resyncIdx = src.indexOf('const completeResyncFromFlush');
     expect(resyncIdx).toBeGreaterThan(-1);
-    expect(src.slice(resyncIdx, resyncIdx + 1200)).toMatch(/resetStaleReplayModes\(recoveredBytes\)/);
+    // Window widened from 1200: the function gained the #998 comment block
+    // explaining why its buffer flush is muted. The assertion is "the reset is
+    // in this function", not "within N characters of its opening brace".
+    expect(src.slice(resyncIdx, resyncIdx + 2400)).toMatch(/resetStaleReplayModes\(recoveredBytes\)/);
   });
 
   it('pairs STALE_REPLAY_DISPLAY_RESETS with STALE_REPLAY_INPUT_MODE_RESETS at both call sites (frozen-scroll-window fix)', () => {
     // Site 1: the dead-snapshot paint (no resumeAgent gate — dead is dead).
     const deadSnapshotIdx = src.indexOf('const paintDeadSnapshot');
     expect(deadSnapshotIdx).toBeGreaterThan(-1);
-    const deadSnapshotBody = src.slice(deadSnapshotIdx, deadSnapshotIdx + 900);
-    expect(deadSnapshotBody).toMatch(/terminal\.write\(bytes\)|term\.write\(bytes\)/);
+    const deadSnapshotBody = src.slice(deadSnapshotIdx, deadSnapshotIdx + 1400);
+    // The payload write, however it is spelled: #998 routes replay payloads
+    // through writeReplayed() so the OSC 52 clipboard bridge stays muted while
+    // stored bytes are parsed. What this locks is the ORDER — payload first,
+    // then the mode resets — not the identity of the call.
+    expect(deadSnapshotBody).toMatch(
+      /terminal\.write\(bytes\)|term\.write\(bytes\)|writeReplayed\(term(?:inal)?, bytes/,
+    );
     expect(deadSnapshotBody).toMatch(/STALE_REPLAY_INPUT_MODE_RESETS/);
     expect(deadSnapshotBody).toMatch(/STALE_REPLAY_DISPLAY_RESETS/);
 

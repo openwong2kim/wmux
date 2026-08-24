@@ -16,7 +16,11 @@ import { openTerminalUrl } from '../utils/browserPaneActions';
 import { runCopyWithFeedback } from '../utils/copyWithFeedback';
 import { claimFit } from '../utils/fitGuard';
 import { createAutoSelectionCopy } from '../utils/autoSelectionCopy';
-import { decodeOsc52Write } from '../utils/osc52Clipboard';
+import { createOsc52Handler } from '../utils/osc52Clipboard';
+import {
+  createReplayMute, isReplayMuted, beginReplayWrite, openReattachWindow,
+  noteReplayData, resetReplayMute, type ReplayMute,
+} from '../terminal/replayMute';
 import { terminalFontFamilyCss } from '../utils/terminalFont';
 import { createPathLinkProvider } from '../terminal/pathLinkProvider';
 import { resolveNewlineKeyByte } from '../terminal/newlineKeys';
@@ -336,6 +340,28 @@ export function subscribePaneSyncUi(ptyId: string, listener: (s: PaneSyncUiState
 
 /** Retention applies only to daemon-backed sessions: dirtiness is recoverable
  *  precisely because the daemon RingBuffer retains the authoritative bytes. */
+/**
+ * Write a REPLAY payload into xterm with the OSC 52 clipboard bridge muted for
+ * the duration (#998). The mute is released in xterm write CALLBACK — after the
+ * bytes are parsed — because releasing synchronously would unmute while the
+ * escape sequences are still queued, which is the bug itself.
+ *
+ * Live bytes must NOT come through here: a copy the user makes while a pane is
+ * busy is real. The one exception is the reattach window, which has its own
+ * mechanism in replayMute.ts because that replay arrives as ordinary pty:data.
+ */
+function writeReplayed(term: Terminal, data: string | Uint8Array, mute: ReplayMute): void {
+  const release = beginReplayWrite(mute);
+  try {
+    term.write(data, release);
+  } catch (err) {
+    // Disposed mid-write: the callback never arrives, so release here or the
+    // bridge stays muted for the rest of this terminal life.
+    release();
+    throw err;
+  }
+}
+
 function hiddenRetentionActive(): boolean {
   return isDaemonModeActive() && useStore.getState().hiddenPaneRetentionEnabled;
 }
@@ -675,6 +701,21 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     degradedUntil: 0, viaRawFallback: false,
   });
 
+  /**
+   * Depth of in-flight REPLAY writes (#998). Non-zero means xterm is parsing
+   * stored output rather than something happening now, which the OSC 52 handler
+   * reads to keep a replayed clipboard write from overwriting the live
+   * clipboard. A counter, not a boolean, because the replay paths write several
+   * payloads back to back.
+   *
+   * Decremented in xterm's write callback, i.e. after the bytes are parsed —
+   * decrementing synchronously would unmute while the escape sequences are
+   * still queued, which is the entire bug. Callbacks are generation-scoped and
+   * teardown bumps the generation, so a terminal disposed mid-parse can neither
+   * leave the bridge muted nor unmute the terminal that replaces it.
+   */
+  const replayMuteRef = useRef<ReplayMute>(createReplayMute());
+
   /** Degrade: release whatever was buffered as-is (no reset — no replay came).
    *  P0-2 (app-weight review): the pane STAYS DIRTY — a failed resync must not
    *  bless a stale screen as clean, or reveals/reads silently return
@@ -738,10 +779,14 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         console.log(`[wmux:reveal] ptyId=${ptyIdRef.current} mechanism=dead-snapshot payload=${bytes.length}`);
         discardTerminalOutput(term);
         term.reset();
-        term.write(bytes);
+        // Historical bytes — clipboard bridge muted (#998).
+        writeReplayed(term, bytes, replayMuteRef.current);
         term.write(STALE_REPLAY_INPUT_MODE_RESETS);
         term.write(STALE_REPLAY_DISPLAY_RESETS);
-        for (const chunk of st.buffer) term.write(chunk);
+        // Same mixed-buffer reasoning as completeResyncFromFlush below: the
+        // renderer cannot separate held-live bytes from a replay that arrived
+        // as pty:data, so the flush is muted rather than trusted (#998).
+        for (const chunk of st.buffer) writeReplayed(term, chunk, replayMuteRef.current);
         markTerminalClean(term);
       } catch { /* disposed mid-paint — teardown owns cleanup */ }
     }
@@ -994,20 +1039,18 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     // — the app says "copied" but the system clipboard never changes. We open
     // the WRITE half only (decodeOsc52Write refuses reads/clears/oversize) and
     // route through the existing clipboard IPC (1 MB cap + lock handling).
-    const osc52Disposable = terminal.parser.registerOscHandler(52, (payload) => {
-      const text = decodeOsc52Write(payload);
-      // Consume the sequence either way (return true): a refused read/clear must
-      // not fall through to another handler. Only a decoded write is forwarded.
-      if (text !== null) {
+    const osc52Disposable = terminal.parser.registerOscHandler(52, createOsc52Handler({
+      // Replayed bytes are stored output, not a request — see writeReplayed().
+      isReplaying: () => isReplayMuted(replayMuteRef.current),
+      writeClipboard: (text) => {
         void window.clipboardAPI.writeText(text).catch(() => {
           // OSC 52 is fire-and-forget from the app's view (it already drew its
           // own "copied" UI); a size-cap/lock rejection has no app-visible
           // channel, so swallow it rather than surfacing a wmux toast the user
           // didn't trigger.
         });
-      }
-      return true;
-    });
+      },
+    }));
     // Activate Unicode 11 width tables — required for correct CJK / emoji
     // width. Without this, xterm defaults to v6 and TUI apps that use cursor
     // positioning (Claude Code, vim, etc.) collide frames over Korean text.
@@ -1909,7 +1952,18 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       console.log(`[wmux:reveal] ptyId=${ptyId} mechanism=${mechanism} recoveredBytes=${recoveredBytes} buffered=${st.bufferedChars} chunks=${st.buffer.length}`);
       discardTerminalOutput(terminal); // stale retained backlog + dirty flag
       terminal.reset();
-      for (const chunk of st.buffer) terminal.write(chunk);
+      // #998: this buffer is MIXED. On the raw-fallback path the reconnect
+      // replay itself arrives as pty:data and lands here (hence "the held
+      // replay" in the comment above), alongside any genuinely live bytes that
+      // came in during the window. The renderer cannot tell them apart — no
+      // marker crosses the IPC boundary — so the whole flush is muted.
+      //
+      // That trades a real copy made inside a resync window (rare, ~1s, and the
+      // user can copy again) against silently replacing the clipboard with
+      // history (invisible, and the value can be days old). The first failure
+      // is a retry; the second is corruption you only notice after pasting the
+      // wrong thing somewhere.
+      for (const chunk of st.buffer) writeReplayed(terminal, chunk, replayMuteRef.current);
       st.buffer.length = 0;
       st.bufferedChars = 0;
       resetStaleReplayModes(recoveredBytes);
@@ -1944,6 +1998,10 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     const restingCursor = new RestingCursorGuard((seq) => deliverPtyData(seq));
     const routePtyData = (data: string) => deliverPtyData(restingCursor.process(data));
     const deliverPtyData = (data: string) => {
+      // #998: while a reattach window is open these bytes ARE the daemon
+      // RingBuffer flush, not something happening now. Each chunk extends the
+      // window; it closes when the burst goes quiet, or at the hard cap.
+      noteReplayData(replayMuteRef.current);
       const st = resyncRef.current;
       if (st.pending) {
         st.buffer.push(data);
@@ -2077,7 +2135,9 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         // Pending PTY data still flushes through unchanged.
         const restored = isDaemonModeActive() ? null : content;
         if (restored) {
-          terminal.write(restored);
+          // Restored scrollback is the oldest replay of all — bytes from a
+          // previous run of this pane. Muted (#998).
+          writeReplayed(terminal, restored, replayMuteRef.current);
           // #952: the fresh PTY about to connect starts from an empty ConPTY
           // whose absolute coordinates begin at row 1 — restored rows left in
           // the viewport get overdrawn by its first absolute repaint
@@ -2239,6 +2299,10 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     resizeObserver.observe(container);
 
     return () => {
+      // #998: a terminal disposed mid-parse never delivers its write callback,
+      // so release the replay mute here rather than leaving the next terminal
+      // that reuses this hook unable to accept a clipboard write.
+      resetReplayMute(replayMuteRef.current);
       if (resizeDebounceTimer) clearTimeout(resizeDebounceTimer);
       if (pendingFitRaf !== null) cancelAnimationFrame(pendingFitRaf);
       if (isMac) { container.removeEventListener('paste', blockNativePaste, true); }
@@ -2347,6 +2411,10 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     const reattach = (reason: string) => {
       if (inFlight) return;
       inFlight = true;
+      // #998: the RingBuffer replay this triggers arrives as ordinary
+      // pty:data, so there is no write of ours to hang the mute on — open a
+      // window here and let the data flow close it.
+      openReattachWindow(replayMuteRef.current);
       console.log(`[useTerminal] daemon reattach ptyId=${id} (${reason})`);
       void reconnectPtyWithRetry(id, () => ptyIdRef.current === id && terminalRef.current !== null)
         .then(() => {
