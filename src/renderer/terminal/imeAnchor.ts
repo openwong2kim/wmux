@@ -331,6 +331,13 @@ export interface RestingTrackerState {
   hasResting: boolean;
   /** Clock reading of the last parsed PTY output (#951). */
   lastOutputAt: number;
+  /** True once a PTY chunk has actually been parsed since creation/reset.
+   *  `lastOutputAt` is SEEDED with the creation clock (so "no output since
+   *  attach" reads as quiet), but that same seed would read as "output 0ms
+   *  ago" — i.e. flowing — for the first OUTPUT_QUIET_MS after an attach or
+   *  resize. The streaming branch must not fire on a seed (panel finding):
+   *  gate it on output that was actually observed. */
+  hasOutput: boolean;
   /** Clock reading of the chunk that ended the last quiet span — the start
    *  of the current output epoch. Age >= STREAM_SUSTAIN_MS means the output
    *  is a sustained stream, not an isolated echo burst. */
@@ -367,6 +374,7 @@ export function createRestingTracker(absRow: number, col: number, now: number, r
     // Seeded with the creation clock: "no output since attach" reads as quiet,
     // matching the seeded-at-rest semantics of the cell fields above.
     lastOutputAt: now,
+    hasOutput: false,
     epochStart: now,
     caretRelRow: 0,
     caretCol: 0,
@@ -437,6 +445,7 @@ export function noteOutputParsed(state: RestingTrackerState, now: number, cols?:
     }
   }
   state.lastOutputAt = now;
+  state.hasOutput = true;
 }
 
 /**
@@ -461,6 +470,7 @@ export function resetRestingTracker(state: RestingTrackerState, absRow: number, 
   state.hasResting = false;
   state.hasCaret = false;
   state.lastOutputAt = now;
+  state.hasOutput = false;
   state.epochStart = now;
 }
 
@@ -470,7 +480,14 @@ export function resetRestingTracker(state: RestingTrackerState, absRow: number, 
 
 /** The agent's input line, found by content rather than cursor behavior. */
 export interface AgentInputLineMarker {
-  /** Viewport-relative row of the prompt row. */
+  /** Screen row of the prompt row, ybase-RELATIVE like the quiet-caret
+   *  snapshot. The scan reads the LIVE screen (baseY + relRow), not the
+   *  viewport: a user scrolled up mid-stream sees history, and history can
+   *  quote the box chrome — matching there would anchor into old transcript
+   *  (3-model panel finding). Reading the live rows finds the real box even
+   *  while scrolled, and `pointFromCell` then clamps the off-screen anchor
+   *  to the nearest visible edge, same contract as every other off-screen
+   *  anchor here. */
   relRow: number;
   /** Column where typed input begins — just after the `> ` prompt. Used as
    *  the anchor floor rather than the exact caret: the exact caret would need
@@ -484,10 +501,13 @@ export interface AgentInputLineMarker {
 // row inside it:            ╭──────────────╮
 //                           │ > typed text │
 //                           ╰──────────────╯
-// The prompt's lead-in is pure ASCII/box-drawing (single-cell glyphs), so a
-// string index below IS the buffer column — typed CJK only ever appears
-// after it.
-const CLAUDE_PROMPT_ROW = /^(\s*)│ > /;
+// The prompt glyph varies by mode — `>` normal, `!` bash mode, `#` memory
+// mode — and all three mark the same caret row. Matching only `>` would let
+// a quoted `│ > ` in the transcript win bottom-most while the live box sits
+// in another mode (panel finding). The lead-in is pure ASCII/box-drawing
+// (single-cell glyphs), so a string index below IS the buffer column — typed
+// CJK only ever appears after it.
+const CLAUDE_PROMPT_ROW = /^(\s*)│ [>!#] /;
 const CLAUDE_BOX_TOP = /^\s*╭─/;
 
 /**
@@ -587,7 +607,7 @@ export function selectFreezeCell(
   now: number,
   viewport?: { top: number; rows: number; cols?: number },
   baseY = 0,
-  marker: AgentInputLineMarker | null = null,
+  getMarker?: () => AgentInputLineMarker | null,
 ): FreezeCellSelection {
   const held = now - state.currentSince;
   const restAge = state.hasResting ? now - state.lastRestingAt : -1;
@@ -618,19 +638,40 @@ export function selectFreezeCell(
   // src=instant edge=1`, a usable snapshot passed over because a token-paced
   // stream pauses longer than OUTPUT_QUIET_MS between bursts, so `epochStart`
   // kept restarting and never reached STREAM_SUSTAIN_MS.
-  if (outputGap < OUTPUT_QUIET_MS
+  if (state.hasOutput && outputGap < OUTPUT_QUIET_MS
     && (now - state.epochStart >= STREAM_SUSTAIN_MS || edge)) {
     // #1016: the input line found by CONTENT outranks the snapshot. The
     // 2026-08-23 field round proved the snapshot itself is sometimes a park
     // ("wherever the painted text ended" — any column, so no column check
     // can classify it), while the marker is read from the frame currently on
-    // screen. Marker rows are viewport-relative, so placing one needs the
-    // viewport; without it the marker is ignored rather than mis-rebased.
-    if (marker !== null && viewport !== undefined) {
-      return {
-        absRow: viewport.top + marker.relRow, col: marker.col,
-        src: 'marker', held, restAge, outputGap, caretAge, edge,
-      };
+    // screen. The scan is a thunk so it runs ONLY when this branch is taken:
+    // the quiet and echo-burst paths never pay for it, and the scan gate can
+    // never drift from the selection gate (panel finding).
+    const marker = getMarker?.() ?? null;
+    // One shape reaches this branch that is NOT an agent stream: fluid CJK
+    // typing, where each committed syllable's echo is output and a fast
+    // typist keeps every gap under OUTPUT_QUIET_MS for longer than the
+    // sustain. There the snapshot sits ON the prompt row at the caret's
+    // last-pause column — better than the marker's input-start floor (which
+    // would drag the Korean inline preedit back over already-typed text,
+    // panel finding). So a snapshot on the marker's own row keeps its
+    // column, UNLESS it sits in the border zone (the last two columns): a
+    // prompt-row cell there is the box's right border where the repaint
+    // parked, which is the 2026-08-23 field shape (col 137 of 139) and
+    // exactly what the marker exists to override. Without a column count
+    // the zone is unknowable and the snapshot is kept — the conservative,
+    // shipped behavior.
+    if (marker !== null) {
+      const borderZone = viewport?.cols !== undefined ? viewport.cols - 2 : Infinity;
+      const typingSnapshot = state.hasCaret
+        && state.caretRelRow === marker.relRow
+        && state.caretCol < borderZone;
+      if (!typingSnapshot) {
+        return {
+          absRow: baseY + marker.relRow, col: marker.col,
+          src: 'marker', held, restAge, outputGap, caretAge, edge,
+        };
+      }
     }
     if (state.hasCaret) {
       return {
@@ -1002,24 +1043,25 @@ export function attachImeAnchor(
     // composition starts inside a repaint burst (cause 3).
     composing = true;
     const b = bufferState();
-    const tNow = now();
     // #1016: while output flows, the cursor never visits the input caret
     // (Claude Code parks it at the end of painted content — any column), so
     // for a recognized agent the input line is read out of the buffer
-    // instead. Scanned only while output is flowing: the idle pane is
-    // field-verified correct on the cursor path and stays there.
-    const marker = tNow - tracker.lastOutputAt < OUTPUT_QUIET_MS
-      && options.getAgentSlug?.() === 'claude'
-      ? scanClaudeInputLine(
-          (relRow) => terminal.buffer.active.getLine?.(b.viewportY + relRow)?.translateToString(true),
+    // instead. A thunk: selectFreezeCell invokes it only inside the
+    // streaming branch, so the idle pane — field-verified correct on the
+    // cursor path — never scans. The scan reads the LIVE screen (baseY),
+    // not the viewport: a user scrolled up mid-stream sees history, which
+    // can quote the very chrome being scanned for.
+    const getMarker = options.getAgentSlug?.() === 'claude'
+      ? (): AgentInputLineMarker | null => scanClaudeInputLine(
+          (relRow) => terminal.buffer.active.getLine?.(b.baseY + relRow)?.translateToString(true),
           geometry.rows,
         )
-      : null;
-    const sel = selectFreezeCell(tracker, b.baseY + b.cursorY, b.cursorX, tNow, {
+      : undefined;
+    const sel = selectFreezeCell(tracker, b.baseY + b.cursorY, b.cursorX, now(), {
       top: b.viewportY,
       rows: geometry.rows,
       cols: geometry.cols,
-    }, b.baseY, marker);
+    }, b.baseY, getMarker);
     lastSel = sel;
     lastSelRelY = sel.absRow - b.baseY;
     frozen = isUsableGeometry(geometry)

@@ -1065,6 +1065,16 @@ describe('#1016 input-line content scan (pure)', () => {
     expect(scanClaudeInputLine(lines(screen), screen.length)).toEqual({ relRow: 1, col: 4 });
   });
 
+  it('bash and memory mode prompts are the same caret row', () => {
+    // The live box must keep winning bottom-most while the user is in `!`
+    // (bash) or `#` (memory) mode — otherwise a quoted `│ > ` in the
+    // transcript above would take over.
+    const bash = ['│ > quoted', '╭────╮', '│ ! ls│', '╰────╯'];
+    expect(scanClaudeInputLine(lines(bash), bash.length)).toEqual({ relRow: 2, col: 4 });
+    const memory = ['╭────╮', '│ # note│', '╰────╯'];
+    expect(scanClaudeInputLine(lines(memory), memory.length)).toEqual({ relRow: 1, col: 4 });
+  });
+
   it('returns null on an unreadable or markerless screen', () => {
     expect(scanClaudeInputLine(() => undefined, 40)).toBeNull();
     expect(scanClaudeInputLine(lines(['plain shell $']), 1)).toBeNull();
@@ -1089,10 +1099,11 @@ describe('#1016 marker selection (pure)', () => {
     // exact bug in the 2026-08-23 log (137 passes the 138 last-column bound).
     expect(selectFreezeCell(t, 676, 137, 2350, { top: 640, rows: 41, cols: 139 }, 640))
       .toMatchObject({ absRow: 676, col: 137, src: 'caret' });
-    // With it, content wins.
+    // With it, content wins: the park sits on the prompt row's border zone
+    // (col 137 of 139), which is repaint state, not a caret.
     const sel = selectFreezeCell(t, 676, 137, 2350, { top: 640, rows: 41, cols: 139 }, 640,
-      { relRow: 31, col: 4 });
-    expect(sel).toMatchObject({ absRow: 671, col: 4, src: 'marker' });
+      () => ({ relRow: 36, col: 4 }));
+    expect(sel).toMatchObject({ absRow: 676, col: 4, src: 'marker' });
   });
 
   it('the marker also covers a stream that never produced a snapshot', () => {
@@ -1102,21 +1113,46 @@ describe('#1016 marker selection (pure)', () => {
     noteOutputParsed(t, 1900, 139);
     expect(t.hasCaret).toBe(false);
     const sel = selectFreezeCell(t, 676, 137, 1950, { top: 640, rows: 41, cols: 139 }, 640,
-      { relRow: 31, col: 4 });
+      () => ({ relRow: 31, col: 4 }));
     expect(sel).toMatchObject({ absRow: 671, col: 4, src: 'marker' });
   });
 
   it('a quiet pane ignores the marker — idle stays cursor-driven', () => {
     const t = createRestingTracker(640, 8, 1000, 30);
-    const sel = selectFreezeCell(t, 640, 8, 1000 + OUTPUT_QUIET_MS + 200,
-      { top: 600, rows: 45, cols: 139 }, 600, { relRow: 31, col: 4 });
+    noteOutputParsed(t, 1200, 139); // real output once, long quiet since
+    const scan = vi.fn(() => ({ relRow: 31, col: 4 }));
+    const sel = selectFreezeCell(t, 640, 8, 1200 + OUTPUT_QUIET_MS + 200,
+      { top: 600, rows: 45, cols: 139 }, 600, scan);
     expect(sel).toMatchObject({ absRow: 640, col: 8, src: 'instant' });
+    expect(scan).not.toHaveBeenCalled();
   });
 
-  it('a marker without a viewport cannot be placed and is ignored', () => {
-    const t = parkSnapshotTracker();
-    const sel = selectFreezeCell(t, 676, 137, 2350, undefined, 640, { relRow: 31, col: 4 });
-    expect(sel).toMatchObject({ src: 'caret' });
+  it('a fluid typist\'s snapshot on the prompt row keeps its column', () => {
+    // Fluid CJK typing: every commit echo lands under OUTPUT_QUIET_MS for
+    // longer than the sustain, so the streaming branch opens — but the
+    // snapshot is the caret at the last pause, ON the prompt row, left of
+    // the border zone. The marker's input-start floor must not drag the
+    // preedit back over already-typed text (panel finding).
+    const t = createRestingTracker(671, 20, 1000, 31);
+    noteOutputParsed(t, 1600, 139); // snapshot: (20,31) — the typing caret
+    noteOutputParsed(t, 1900, 139);
+    noteOutputParsed(t, 2300, 139);
+    const sel = selectFreezeCell(t, 671, 22, 2350, { top: 640, rows: 41, cols: 139 }, 640,
+      () => ({ relRow: 31, col: 4 }));
+    expect(sel).toMatchObject({ absRow: 671, col: 20, src: 'caret' });
+  });
+
+  it('a seeded output clock never opens the streaming branch', () => {
+    // createRestingTracker seeds lastOutputAt with the creation clock; for
+    // OUTPUT_QUIET_MS after an attach/reset that reads as "output just
+    // arrived" even though nothing was parsed. With the cursor on the last
+    // column (edge), the branch would open on the seed alone (panel
+    // finding) — hasOutput keeps it shut until real output is observed.
+    const t = createRestingTracker(676, 138, 1000, 36);
+    const scan = vi.fn(() => ({ relRow: 31, col: 4 }));
+    const sel = selectFreezeCell(t, 676, 138, 1100, { top: 640, rows: 41, cols: 139 }, 640, scan);
+    expect(sel).toMatchObject({ src: 'instant' });
+    expect(scan).not.toHaveBeenCalled();
   });
 });
 
@@ -1133,13 +1169,14 @@ describe('#1016 input-line marker wiring', () => {
     return s;
   };
 
-  /** Wire viewport-relative content into the fake buffer's getLine. */
+  /** Wire LIVE-screen content (baseY-relative rows) into the fake buffer's
+   *  getLine — the scan must read the live screen, not the viewport. */
   const installLines = (
     active: ImeAnchorTerminal['buffer']['active'],
     content: string[],
   ): ReturnType<typeof vi.fn> => {
     const getLine = vi.fn((y: number) => {
-      const line = content[y - active.viewportY];
+      const line = content[y - active.baseY];
       return line === undefined ? undefined : { translateToString: () => line };
     });
     active.getLine = getLine;
@@ -1189,6 +1226,31 @@ describe('#1016 input-line marker wiring', () => {
     dom.textarea.dispatchEvent(new Event('compositionupdate'));
     expect(translateOf(dom.compView)?.dy).toBeCloseTo((31 - 43) * 17.6, 6);
     expect(translateOf(dom.compView)?.dx).toBeCloseTo((4 - 127) * 10, 6);
+    handle.dispose();
+  });
+
+  it('a scrolled-up viewport still scans the live screen, not history', () => {
+    // The 3-model panel finding: a viewport-relative scan while scrolled up
+    // reads history, which can quote the very chrome being scanned for. The
+    // live rows keep the real box; the off-screen anchor then clamps to the
+    // visible edge via pointFromCell, same as every other off-screen anchor.
+    const dom = buildTerminalDom(10, 17.6, 45, 128);
+    const t = makeTerminal(dom, 45, 128);
+    let clock = 1000;
+    const diag = vi.fn();
+    // Scrolled up 20 rows: the viewport shows history.
+    Object.assign(t.state, { baseY: 600, viewportY: 580, cursorY: 40, cursorX: 5 });
+    installLines(t.terminal.buffer.active, claudeScreen(45, 31));
+    const handle = attachImeAnchor(t.terminal, {
+      now: () => clock,
+      getAgentSlug: () => 'claude',
+      onCompositionDiagnostic: diag,
+    });
+    streamTo2800(t, dom, (v) => { clock = v; });
+    dom.textarea.dispatchEvent(new Event('compositionstart'));
+    // The live box's prompt row (screen row 31) was found even though the
+    // viewport is 20 rows up; absRow = 600 + 31 = 631, reported ybase-rel.
+    expect(diag.mock.calls[0][0]).toMatchObject({ src: 'marker', selY: 31, selX: 4 });
     handle.dispose();
   });
 
