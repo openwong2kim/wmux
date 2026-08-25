@@ -142,6 +142,21 @@ describe('pane_get_metadata — cross-workspace read (#1018), behavioral', () =>
     }
   });
 
+  it('an empty-string paneId is rejected by the schema, not silently treated as "omitted" (active-pane fallback)', async () => {
+    // CodeRabbit, PR #1020: paneId: '' passed the old `paneId === undefined`
+    // check (it's not undefined) and fell through to resolveTarget's active-leaf
+    // fallback — the exact silent-wrong-target read the workspaceId-without-paneId
+    // guard above exists to prevent, just reached through the other field.
+    const { client, close } = await connectClient('ws-caller');
+    try {
+      const res = await callPaneGetMetadata(client, { workspaceId: 'ws-other', paneId: '' });
+      expect(res.isError).toBe(true);
+      expect(mockSendRpc).not.toHaveBeenCalledWith('pane.getMetadata', expect.anything(), expect.anything());
+    } finally {
+      await close();
+    }
+  });
+
   it('an identified caller with a valid override reads the OTHER workspace, not its own', async () => {
     const { client, close } = await connectClient('ws-caller');
     try {

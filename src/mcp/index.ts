@@ -166,7 +166,7 @@ const PANE_SET_METADATA_SHAPE = {
 };
 
 const PANE_GET_METADATA_SHAPE = {
-  paneId: z.string().optional().describe('Target leaf pane id. Omit to use the active pane in the calling workspace. Required when workspaceId is set.'),
+  paneId: z.string().min(1).optional().describe('Target leaf pane id. Omit to use the active pane in the calling workspace. Required when workspaceId is set.'),
   workspaceId: z.string().min(1).optional().describe('#1018 — read another workspace\'s pane metadata (READ-ONLY; pane_set_metadata has no equivalent and stays confined to the calling workspace). Pass the workspace id from a2a_discover / workspace_list along with paneId (from that same workspace\'s panes[]/a2a_discover panes[]). Omit to read the calling workspace, unchanged from before.'),
 };
 
