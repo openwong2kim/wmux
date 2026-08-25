@@ -7,14 +7,15 @@ const { sendDaemonStringRequestMock, ensureDaemonMock } = vi.hoisted(() => ({
 
 vi.mock('../../client', () => ({
   sendDaemonStringRequest: sendDaemonStringRequestMock,
-  // Real implementation, not a mock: `runStop` (#1019 review) needs the
-  // actual connect-vs-other-failure classification to be exercised, and it
-  // is pure (reads only `err.code`) so re-declaring it here carries no risk
-  // of drifting from `client.ts` in a way a test would fail to catch —
-  // any behavior change there is a one-line diff to mirror.
-  isConnectFailure: (err: unknown) => {
+  // Real implementation, not a mock: `runStop` needs the actual
+  // definitely-absent classification to be exercised, and it is pure (reads
+  // only `err.code`) so re-declaring it here carries no risk of drifting
+  // from `client.ts` in a way a test would fail to catch — any behavior
+  // change there is a one-line diff to mirror. Deliberately narrower than
+  // `isConnectFailure` (no EPERM) — see that function's doc comment.
+  isDefinitelyNotRunning: (err: unknown) => {
     const code = (err as { code?: string })?.code;
-    return code === 'ENOENT' || code === 'ECONNREFUSED' || code === 'EPERM';
+    return code === 'ENOENT' || code === 'ECONNREFUSED';
   },
 }));
 
@@ -123,6 +124,21 @@ describe('wmux daemon stop', () => {
     // `wmux daemon stop && rm -rf $DATA_DIR` would proceed against a daemon
     // that never actually shut down.
     sendDaemonStringRequestMock.mockRejectedValue(new Error('Request timed out after 5 seconds.'));
+
+    await handleDaemon('stop', [], false);
+
+    expect(logLines.join('\n')).not.toContain('wmux daemon is not running.');
+    expect(errorLines.join('\n')).toContain('wmux daemon stop:');
+    expect(process.exitCode).toBe(1);
+  });
+
+  it('#1019 second review: EPERM is NOT treated as "already stopped" (a permission error is not proof of absence)', async () => {
+    // EPERM is a member of isConnectFailure's set (it triggers the pipe->TCP
+    // retry inside sendRequest), but it does NOT mean "no daemon listening" —
+    // it can mean a daemon owned by another user/session IS listening and
+    // refused the connection. Before this fix runStop conflated the two
+    // predicates and reported a clean "not running" here.
+    sendDaemonStringRequestMock.mockRejectedValue(Object.assign(new Error('EPERM, connect'), { code: 'EPERM' }));
 
     await handleDaemon('stop', [], false);
 

@@ -98,4 +98,32 @@ describe('killVerifiedDaemonPid — cross-host image mismatch (#1019)', () => {
     const killed = killVerifiedDaemonPid(pid as number, { definitiveOnly: false });
     expect(killed).toBe(false);
   }, 15_000);
+
+  it('#1019 second review: a path merely CONTAINING the marker as a substring is not a match (segment boundary, not substring)', async () => {
+    // CodeRabbit's exact false-positive shape: `.includes('daemon-bundle')`
+    // on the whole raw cmdline string matches `/.../my-daemon-bundle-backup/
+    // index.js` too, because that string genuinely contains 'daemon-bundle'
+    // — just with a `my-` prefix glued onto it, not as wmux's own directory.
+    // Segment-based matching must tell these apart: 'my-daemon-bundle-backup'
+    // is one path segment that does not START WITH 'daemon-bundle', so it
+    // must not be read as "wmux's daemon-bundle directory, renamed."
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-crosshost-substring-'));
+    const renamedNodeName = process.platform === 'win32' ? 'other-host-node.exe' : 'other-host-node';
+    const renamedNodePath = path.join(tmpDir, renamedNodeName);
+    fs.copyFileSync(process.execPath, renamedNodePath);
+    if (process.platform !== 'win32') fs.chmodSync(renamedNodePath, 0o755);
+
+    const lookalikeDir = path.join(tmpDir, 'my-daemon-bundle-backup');
+    fs.mkdirSync(lookalikeDir);
+    const scriptPath = path.join(lookalikeDir, 'index.js');
+    fs.writeFileSync(scriptPath, 'setTimeout(() => {}, 30000);\n');
+
+    child = spawn(renamedNodePath, [scriptPath], { stdio: 'ignore' });
+    const pid = child.pid;
+    expect(pid).toBeTruthy();
+    await new Promise((resolve) => setTimeout(resolve, 300));
+
+    const killed = killVerifiedDaemonPid(pid as number, { definitiveOnly: false });
+    expect(killed).toBe(false);
+  }, 15_000);
 });

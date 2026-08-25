@@ -74,6 +74,21 @@ export interface DaemonLauncherDeps {
    * real one; the headless CLI omits it and gets a silent no-op via `?.`.
    */
   markBoot?(name: string): void;
+  /**
+   * Diagnostic logging for the spawn/reuse/recovery chain — candidate paths
+   * tried, PID found, recovery decisions. Omit to get the historical
+   * `console.log`/`console.warn` behavior (what Electron's launcher still
+   * gets, unchanged). The headless CLI supplies its own here instead of
+   * omitting: this module is invoked from `runStart`'s `--json` branch,
+   * where the ONLY thing allowed on stdout is the final JSON object — a
+   * bare `console.log` diagnostic printed ahead of it would corrupt any
+   * `wmux daemon start --json | jq .` pipeline. Routing both `log` and
+   * `warn` to stderr (not just `warn`) keeps that contract regardless of
+   * `--json` vs text mode, since neither CLI output shape has room for
+   * launcher-internal chatter mixed into it.
+   */
+  log?(...args: unknown[]): void;
+  warn?(...args: unknown[]): void;
 }
 
 // `ProcessLiveness` + the pure classifiers now live in shared/processLiveness so
@@ -216,6 +231,60 @@ function getProcessCommandLine(pid: number): string | null {
     const trimmed = result.trim();
     return trimmed.length > 0 ? trimmed : null;
   } catch { return null; }
+}
+
+/** Quote-aware split of a raw command line into argv-shaped tokens, so a
+ * Windows path containing spaces (inside `"..."`) survives as one token
+ * instead of fragmenting on its internal whitespace. */
+function tokenizeCommandLine(cmdline: string): string[] {
+  const tokens: string[] = [];
+  const re = /"([^"]*)"|(\S+)/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(cmdline)) !== null) {
+    tokens.push(m[1] !== undefined ? m[1] : m[2]);
+  }
+  return tokens;
+}
+
+/**
+ * Does this command line invoke one of wmux's daemon entry-script paths?
+ *
+ * #1019 review: `.includes()` on the whole raw string has no path-boundary
+ * awareness, so the bare `'daemon-bundle'` marker matches an unrelated
+ * `/srv/my-daemon-bundle-backup/index.js` (that string genuinely contains
+ * `daemon-bundle` as a substring) on a recycled PID. Segment-based matching
+ * fixes exactly that: tokenize the cmdline (quote-aware, so a Windows path
+ * with spaces in one argument isn't split apart), split each token on `/`
+ * or `\`, and require the KNOWN marker to occupy its own path segment(s) —
+ * `my-daemon-bundle-backup` is one segment, not two, so it can never equal
+ * the segment `'daemon-bundle'` no matter what substring it contains.
+ *
+ * This does not (and cannot) resolve the adjacent, fuzzier case of a
+ * genuinely unrelated program that happens to be installed at a path whose
+ * LAST TWO segments are literally `daemon/index.js` — that is a real path
+ * shape collision, not a substring artifact, and is accepted as a residual
+ * false-positive risk the way it always has been (this marker was never the
+ * only signal; image-name checks and `definitiveOnly` gate what a match is
+ * allowed to authorize).
+ */
+function cmdlineMatchesDaemonScript(cmdline: string): boolean {
+  for (const token of tokenizeCommandLine(cmdline)) {
+    const segments = token.replace(/\\/g, '/').split('/').filter(Boolean);
+    for (let i = 0; i < segments.length; i++) {
+      // 'daemon-bundle' needs to START this segment, not equal it exactly —
+      // a build/test variant may suffix it (`daemon-bundle-fake-index.js`,
+      // a hashed hot-reload dir, etc), and `startsWith` still accepts that.
+      // It still rejects the false positive this fix exists for: a `my-`
+      // PREFIX before the marker (`my-daemon-bundle-backup`) fails
+      // `startsWith('daemon-bundle')`, because the marker isn't at the
+      // segment's start there — that's the actual boundary that matters,
+      // not "is this the ENTIRE segment".
+      if (segments[i].startsWith('daemon-bundle')) return true;
+      if (segments[i] === 'daemon' && segments[i + 1] === 'daemon' && segments[i + 2] === 'index.js') return true;
+      if (segments[i] === 'daemon' && segments[i + 1] === 'index.js') return true;
+    }
+  }
+  return false;
 }
 
 export interface DaemonPingResult {
@@ -655,8 +724,8 @@ function spawnDaemon(deps: DaemonLauncherDeps): Promise<number> {
     // eslint-disable-next-line prefer-const
     let readiness: { promise: Promise<void>; cancel: (err: Error) => void } | undefined;
     const candidates = deps.resolveDaemonScriptCandidates();
-    console.log(`[launcher] Daemon script candidates:`, candidates);
-    console.log(`[launcher] Exists:`, candidates.map(c => fs.existsSync(c)));
+    (deps.log ?? console.log)(`[launcher] Daemon script candidates:`, candidates);
+    (deps.log ?? console.log)(`[launcher] Exists:`, candidates.map(c => fs.existsSync(c)));
     const daemonScript = candidates.find(c => fs.existsSync(c));
     if (!daemonScript) {
       reject(new Error(`Daemon script not found in: ${candidates.join(', ')}. Run 'npm run build:daemon' first.`));
@@ -665,7 +734,7 @@ function spawnDaemon(deps: DaemonLauncherDeps): Promise<number> {
 
     const nodePath = findNodePath();
 
-    console.log(`[launcher] Spawning daemon: ${nodePath} ${daemonScript}`);
+    (deps.log ?? console.log)(`[launcher] Spawning daemon: ${nodePath} ${daemonScript}`);
 
     const env: Record<string, string | undefined> = { ...process.env };
     if (deps.isElectronHost()) {
@@ -709,7 +778,7 @@ function spawnDaemon(deps: DaemonLauncherDeps): Promise<number> {
     }
 
     deps.markBoot?.('daemon-spawned');
-    console.log(`[launcher] Daemon spawned with PID: ${child.pid}`);
+    (deps.log ?? console.log)(`[launcher] Daemon spawned with PID: ${child.pid}`);
 
     // Wait for daemon to be ready. Adaptive cadence + the pipe-file zombie
     // guard live in pollDaemonReady (extracted so the chain is unit-testable
@@ -728,7 +797,7 @@ function spawnDaemon(deps: DaemonLauncherDeps): Promise<number> {
       hardCeilingMs: DAEMON_READY_HARD_CEILING_MS,
       onSlowStart: () => {
         deps.markBoot?.('daemon-recovery-slow');
-        console.warn(
+        (deps.warn ?? console.warn)(
           `[launcher] daemon (PID ${child.pid}) still booting past 15 s but alive — waiting up to ` +
             `${Math.round(DAEMON_READY_HARD_CEILING_MS / 1000)} s (large session recovery in progress)`,
         );
@@ -863,7 +932,7 @@ export async function ensureDaemon(deps: DaemonLauncherDeps): Promise<DaemonInfo
       }
       if (alive) {
         deps.markBoot?.('daemon-reused');
-        console.log(`[launcher] Daemon already running (PID: ${existingPid})`);
+        (deps.log ?? console.log)(`[launcher] Daemon already running (PID: ${existingPid})`);
         return { pid: existingPid, authToken: token, pipeName, spawned: false };
       }
     }
@@ -909,24 +978,10 @@ export async function ensureDaemon(deps: DaemonLauncherDeps): Promise<DaemonInfo
     //       the failure via its budget + IPC, instead of silently
     //       corrupting state.
     const expectedImage = path.basename(process.execPath);
-    // Markers must cover ALL the daemon-script candidate paths
-    // spawnDaemon() picks from, in both `/` and `\\` form (Windows
-    // command lines may carry either). Without the bare
-    // `daemon/index.js` variant, a daemon spawned from the fallback
-    // tsc-output layout would fail cmdline verification and the
-    // launcher would silently spawn a second daemon over the live one.
-    // (Codex review #5 finding.)
-    const daemonScriptMarkers = [
-      'daemon-bundle',
-      'daemon/daemon/index.js',
-      'daemon\\daemon\\index.js',
-      'daemon/index.js',
-      'daemon\\index.js',
-    ];
     if (existingPid === process.pid) {
       // (b) PID file points back at ourselves — the real daemon must be
       // gone (the OS recycled its PID into us). Safe to clean + spawn.
-      console.warn(
+      (deps.warn ?? console.warn)(
         `[launcher] daemon.pid=${existingPid} equals current process pid — stale, cleaning + spawning fresh`,
       );
     } else {
@@ -951,7 +1006,7 @@ export async function ensureDaemon(deps: DaemonLauncherDeps): Promise<DaemonInfo
             }),
         });
         if (outcome === 'reuse') {
-          console.log(
+          (deps.log ?? console.log)(
             `[launcher] Daemon (PID ${existingPid}) answered escalated re-ping despite a blocked image lookup — reusing, no kill`,
           );
           return { pid: existingPid, authToken: token, pipeName, spawned: false };
@@ -961,7 +1016,7 @@ export async function ensureDaemon(deps: DaemonLauncherDeps): Promise<DaemonInfo
             `[launcher] daemon.pid=${existingPid} alive but image lookup failed; refusing to spawn over an unverified live process. Manually delete ${pidFile} if you have verified the daemon is gone (or in elevated PowerShell: taskkill /F /PID ${existingPid}).`,
           );
         }
-        console.warn(
+        (deps.warn ?? console.warn)(
           `[launcher] user approved cleanup of unverified PID ${existingPid} (image lookup failed)`,
         );
       } else {
@@ -977,7 +1032,7 @@ export async function ensureDaemon(deps: DaemonLauncherDeps): Promise<DaemonInfo
         // script. So a mismatch here only downgrades confidence — cmdline is
         // still checked below rather than skipped.
         if (imageName.toLowerCase() !== expectedImage.toLowerCase()) {
-          console.warn(
+          (deps.warn ?? console.warn)(
             `[launcher] PID ${existingPid} image "${imageName}" != this host's own "${expectedImage}" — ` +
               `could be a daemon spawned by a different host (Electron vs headless CLI); checking cmdline before deciding`,
           );
@@ -1002,7 +1057,7 @@ export async function ensureDaemon(deps: DaemonLauncherDeps): Promise<DaemonInfo
               }),
           });
           if (outcome === 'reuse') {
-            console.log(
+            (deps.log ?? console.log)(
               `[launcher] Daemon (PID ${existingPid}) answered escalated re-ping despite a blocked command-line lookup — reusing, no kill`,
             );
             return { pid: existingPid, authToken: token, pipeName, spawned: false };
@@ -1012,15 +1067,15 @@ export async function ensureDaemon(deps: DaemonLauncherDeps): Promise<DaemonInfo
               `[launcher] daemon.pid=${existingPid} alive (image "${imageName}" matches wmux) but command-line lookup failed; refusing to spawn over an unverified live process. Manually delete ${pidFile} if you have verified the daemon is gone (or in elevated PowerShell: taskkill /F /PID ${existingPid}).`,
             );
           }
-          console.warn(
+          (deps.warn ?? console.warn)(
             `[launcher] user approved cleanup of unverified PID ${existingPid} (cmdline lookup failed)`,
           );
         } else {
-          const cmdlineMatches = daemonScriptMarkers.some((m) => cmdline.includes(m));
+          const cmdlineMatches = cmdlineMatchesDaemonScript(cmdline);
           if (!cmdlineMatches) {
             // (b) Same image but different app (e.g. another Electron
             // tool). Don't kill, but the cleanup path below is safe.
-            console.warn(
+            (deps.warn ?? console.warn)(
               `[launcher] PID ${existingPid} image matches but cmdline does not reference daemon script — stale-PID reuse by sibling Electron app, cleaning + spawning fresh`,
             );
           } else {
@@ -1048,7 +1103,7 @@ export async function ensureDaemon(deps: DaemonLauncherDeps): Promise<DaemonInfo
                 (ms) => new Promise<void>((resolve) => setTimeout(resolve, ms)),
               );
               if (recovered) {
-                console.log(
+                (deps.log ?? console.log)(
                   `[launcher] Daemon (PID ${existingPid}) recovered on escalated re-ping — reusing, no kill`,
                 );
                 return { pid: existingPid, authToken: token, pipeName, spawned: false };
@@ -1068,14 +1123,14 @@ export async function ensureDaemon(deps: DaemonLauncherDeps): Promise<DaemonInfo
                   now: () => Date.now(),
                   ceilingMs: DAEMON_READY_HARD_CEILING_MS,
                   onWaiting: () => {
-                    console.log(
+                    (deps.log ?? console.log)(
                       `[launcher] Daemon (PID ${existingPid}) is still cold-recovering (boot marker present) — waiting up to ` +
                         `${Math.round(DAEMON_READY_HARD_CEILING_MS / 1000)} s instead of killing it (#546)`,
                     );
                   },
                 });
                 if (outcome === 'alive') {
-                  console.log(
+                  (deps.log ?? console.log)(
                     `[launcher] Daemon (PID ${existingPid}) finished recovery and answered — reusing, no kill`,
                   );
                   return { pid: existingPid, authToken: token, pipeName, spawned: false };
@@ -1092,13 +1147,13 @@ export async function ensureDaemon(deps: DaemonLauncherDeps): Promise<DaemonInfo
                     (ms) => new Promise<void>((resolve) => setTimeout(resolve, ms)),
                   );
                   if (readyNow) {
-                    console.log(
+                    (deps.log ?? console.log)(
                       `[launcher] Daemon (PID ${existingPid}) became ready as its boot marker cleared — reusing, no kill`,
                     );
                     return { pid: existingPid, authToken: token, pipeName, spawned: false };
                   }
                 } else {
-                  console.warn(
+                  (deps.warn ?? console.warn)(
                     `[launcher] Daemon (PID ${existingPid}) still claimed to be booting after ` +
                       `${Math.round(DAEMON_READY_HARD_CEILING_MS / 1000)} s — treating as hung (#546)`,
                   );
@@ -1106,7 +1161,7 @@ export async function ensureDaemon(deps: DaemonLauncherDeps): Promise<DaemonInfo
               }
             }
             // (a) Verified wmux daemon → kill before respawning.
-            console.warn(
+            (deps.warn ?? console.warn)(
               `[launcher] PID ${existingPid} verified wmux daemon (image+cmdline) but unresponsive${token ? ' after escalated re-ping' : ' (no auth token to ping)'} — terminating before respawn`,
             );
             let killSucceeded = true;
@@ -1126,7 +1181,7 @@ export async function ensureDaemon(deps: DaemonLauncherDeps): Promise<DaemonInfo
                 // needs to run in an elevated shell. RespawnController
                 // catches the throw and burns a budget unit.
                 killSucceeded = false;
-                console.warn(`[launcher] failed to terminate PID ${existingPid}:`, err);
+                (deps.warn ?? console.warn)(`[launcher] failed to terminate PID ${existingPid}:`, err);
                 throw new Error(
                   `[launcher] verified wmux daemon at PID ${existingPid} alive but SIGKILL failed (${code ?? 'unknown'}); refusing to spawn a second daemon. Run in an elevated PowerShell:  taskkill /F /PID ${existingPid}  — then retry.`,
                 );
@@ -1146,7 +1201,7 @@ export async function ensureDaemon(deps: DaemonLauncherDeps): Promise<DaemonInfo
 
   // 3. Clean stale files before spawning — prevents new daemon from seeing
   //    zombie lock/pipe state left by a crashed predecessor.
-  console.log('[launcher] No running daemon found. Cleaning stale files...');
+  (deps.log ?? console.log)('[launcher] No running daemon found. Cleaning stale files...');
   // 'daemon-booting' (#546) joins the list: a marker left by a daemon that
   // crashed mid-recovery must not outlive it into the fresh spawn.
   const staleFiles = ['daemon.lock', 'daemon.pid', 'daemon-pipe', 'daemon-booting'];
@@ -1180,11 +1235,11 @@ export async function ensureDaemon(deps: DaemonLauncherDeps): Promise<DaemonInfo
               fs.writeFileSync(pidFile, String(livePid), { encoding: 'utf-8', mode: 0o600 });
             } catch { /* best effort — reconnect still succeeds without it */ }
           } else {
-            console.warn(
+            (deps.warn ?? console.warn)(
               '[launcher] reconnected daemon did not report a pid — daemon.pid not restored',
             );
           }
-          console.log(
+          (deps.log ?? console.log)(
             '[launcher] spawned daemon yielded to a live daemon — reconnected to the existing daemon',
           );
           return {
@@ -1290,24 +1345,6 @@ export function killVerifiedDaemonPid(
       if (opts.definitiveOnly) return false; // indeterminate — refuse
     }
     const cmdline = getProcessCommandLine(pid);
-    // #1019 review flagged these as generic enough to match an unrelated
-    // `node /srv/anything/daemon/index.js` on a recycled PID. Tried
-    // anchoring the single-segment markers with a leading separator
-    // (`/daemon/index.js`) — it does NOT actually narrow anything: that
-    // string is still a substring of `/srv/anything/daemon/index.js`, since
-    // `.includes()` has no path-boundary awareness. A real fix needs to
-    // tokenize the cmdline and compare path segments, not substring-match
-    // the whole string — left as a follow-up (flagged in the PR) rather
-    // than shipping an anchor that reads safer without being safer, and
-    // breaking the cross-host test fixture that (correctly) relies on the
-    // bare 'daemon-bundle' marker in the meantime.
-    const markers = [
-      'daemon-bundle',
-      'daemon/daemon/index.js',
-      'daemon\\daemon\\index.js',
-      'daemon/index.js',
-      'daemon\\index.js',
-    ];
     if (cmdline === null) {
       // `definitiveOnly` already refuses on any indeterminate cmdline. Below
       // that threshold, a null cmdline COMBINED with an already-confirmed
@@ -1317,7 +1354,7 @@ export function killVerifiedDaemonPid(
       // mismatch blocks the kill — it just needs the second, cmdline signal
       // to also fail to clear it, rather than mismatch alone.
       if (opts.definitiveOnly || imageDefinitivelyMismatched) return false;
-    } else if (!markers.some((m) => cmdline.includes(m))) {
+    } else if (!cmdlineMatchesDaemonScript(cmdline)) {
       return false; // definitive: same image but not our daemon script
     }
 

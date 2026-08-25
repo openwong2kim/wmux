@@ -1,6 +1,6 @@
 import { readFileSync } from 'fs';
 import { join } from 'path';
-import { sendDaemonStringRequest, isConnectFailure } from '../client';
+import { sendDaemonStringRequest, isDefinitelyNotRunning } from '../client';
 import { printResult, ensureOk } from '../utils';
 import {
   ensureDaemon,
@@ -101,6 +101,13 @@ const cliDaemonDeps: DaemonLauncherDeps = {
   // The headless CLI is never Electron — plain `node`/`node.exe` already
   // understands the daemon bundle without ELECTRON_RUN_AS_NODE.
   isElectronHost: () => false,
+  // Both routed to stderr, in both --json and text mode: `runStart --json`
+  // prints exactly one JSON object on stdout as its contract, and text mode
+  // already has its own human-readable status lines — neither has room for
+  // launcher-internal diagnostics mixed in. console.error is stderr in Node
+  // regardless of platform, so this needs no further branching on jsonMode.
+  log: (...args: unknown[]) => console.error(...args),
+  warn: (...args: unknown[]) => console.error(...args),
 };
 
 function printText(lines: string[]): void {
@@ -180,14 +187,15 @@ async function runStop(jsonMode: boolean): Promise<void> {
     response = await sendDaemonStringRequest('daemon.shutdown', {});
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    // Only a connect-level failure (no daemon listening at all) means
-    // "already stopped" — that is genuinely idempotent success. A timeout,
-    // a permission error, or a connection dropped mid-request all mean the
-    // daemon may well still be alive; reporting those as a clean stop would
-    // let `wmux daemon stop && something` proceed against a daemon that
-    // never shut down. Mirrors the connect/timeout split `sendRequest`
-    // itself already draws for retry purposes.
-    const alreadyStopped = isConnectFailure(err);
+    // Only a DEFINITIVE absence (no pipe file, or a pipe file nothing accepts
+    // on) means "already stopped" — that is genuinely idempotent success. A
+    // timeout, an EPERM, or a connection dropped mid-request all mean the
+    // daemon may well still be alive (EPERM in particular can mean a daemon
+    // owned by another user/session IS listening); reporting those as a
+    // clean stop would let `wmux daemon stop && something` proceed against a
+    // daemon that never shut down. `isDefinitelyNotRunning` is deliberately
+    // narrower than `isConnectFailure` — see its doc comment in `client.ts`.
+    const alreadyStopped = isDefinitelyNotRunning(err);
     if (jsonMode) {
       console.log(JSON.stringify({ ok: alreadyStopped, error: message }, null, 2));
     } else if (alreadyStopped) {

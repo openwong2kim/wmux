@@ -602,6 +602,31 @@ describe('DaemonRespawnController stale-daemon replacement', () => {
     expect(h.controller.isHealthy).toBe(true);
   });
 
+  it('#1019 second review: still disconnects the old client on the no-verifiable-pid bail-out', async () => {
+    // The #1001 yield-and-reconnect edge case: a spawn that lost the race to
+    // an already-live daemon whose ping omitted pid, with no daemon.pid file
+    // to fall back to either — `oldInfo.pid` is null, so replacement can't
+    // verify-and-kill and bails before ever reaching runDaemonReplacement's
+    // own disconnectClient hook. Before the fix that early return skipped
+    // cleanup entirely, leaking the socket to the (still-live, still-old)
+    // daemon this controller was about to abandon.
+    const hooks = makeReplacementHooks();
+    const h = makeHarness({
+      replacement: hooks,
+      config: { healthIntervalMs: 0 },
+      ensureDaemonImpl: async () => ({ pid: null, authToken: 'tok', pipeName: 'pipe', spawned: false }),
+    });
+    const oldClient = new FakeDaemonClient();
+    oldClient.rpcImpl = async () => OLD_PONG;
+    h.clientQueue.push(oldClient);
+
+    const result = await h.controller.bootstrap();
+
+    expect(result).toBeNull();
+    expect(hooks.raceShutdownCalls).toBe(0); // never got far enough to shut anything down
+    expect(oldClient.disconnectCalls).toBe(1);
+  });
+
   it('does NOT fire for a freshly spawned daemon even if the pong looks old', async () => {
     const hooks = makeReplacementHooks();
     const h = makeHarness({

@@ -140,6 +140,23 @@ export function isConnectFailure(err: unknown): boolean {
   return code === 'ENOENT' || code === 'ECONNREFUSED' || code === 'EPERM';
 }
 
+/**
+ * Narrower than `isConnectFailure` on purpose — that predicate also answers
+ * "should the next transport in the fallback chain be tried", where `EPERM`
+ * belongs (a Windows named-pipe ACL issue that TCP can route around). Here
+ * the question is "is no daemon listening at all", and `EPERM` does not
+ * answer yes to that: it can mean a daemon owned by another user/session IS
+ * listening and refused the connection, or a leftover ACL on a pipe file
+ * from a daemon that's actually gone. Either way it is not proof of absence,
+ * so a caller cannot report it as a clean "already stopped" — only ENOENT
+ * (no pipe file) and ECONNREFUSED (pipe file exists, nothing accepts on it)
+ * are that.
+ */
+export function isDefinitelyNotRunning(err: unknown): boolean {
+  const code = (err as { code?: string })?.code;
+  return code === 'ENOENT' || code === 'ECONNREFUSED';
+}
+
 export async function sendRequest(
   method: RpcMethod,
   params: Record<string, unknown> = {},

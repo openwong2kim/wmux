@@ -327,6 +327,12 @@ export class DaemonRespawnController {
       // pid, with no daemon.pid to fall back to). Replacement needs a real
       // pid to verify-and-kill against; without one, surface the failure
       // through the normal budget/IPC path instead of guessing a pid.
+      // The normal path's `disconnectClient` hook (wired into
+      // runDaemonReplacement below) never runs for this early return, so it
+      // must be done here explicitly — otherwise this connection to the
+      // stale daemon leaks: never disconnected, and the caller (`ensure()`)
+      // already has `null` back and no other handle to clean it up with.
+      oldClient.disconnect();
       this.lastError = 'stale-daemon replacement skipped: old daemon info carries no verifiable pid';
       return null;
     }
