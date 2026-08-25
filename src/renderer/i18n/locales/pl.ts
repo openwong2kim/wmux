@@ -1303,8 +1303,8 @@ export const pl = {
   'toolbar.addSnippet': 'Dodaj fragment',
   'toolbar.snippetLabel': 'Etykieta',
   'toolbar.snippetText': 'Tekst promptu',
-  'settings.agentToolbar': 'Chrome wstrzykiwania agenta',
-  'settings.agentToolbarShow': 'Chrome wstrzykiwania agenta',
+  'settings.agentToolbar': 'Pasek narzędzi agenta',
+  'settings.agentToolbarShow': 'Pasek narzędzi agenta',
   'settings.agentToolbarShowDesc': 'Pokaż tworzenie, załączanie i Multi Task. Ctrl+G zawsze działa.',
   'settings.agentToolbarNewCommand': 'Polecenie nowej rozmowy',
 
