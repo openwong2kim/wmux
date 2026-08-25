@@ -302,6 +302,7 @@ export const en = {
   // Pane stash (#977) — taking a pane out of the layout WITHOUT killing it.
   // The wording carries the whole promise: "stash" removes, "close" destroys,
   // and every string here says which one is happening.
+  'pane.rename': 'Rename pane',
   'pane.stash': 'Stash pane',
   'pane.stashHint': 'Remove from layout — the session keeps running',
   'pane.unstash': 'Bring back',

@@ -39,6 +39,7 @@ export const hi = {
   'pane.maxLeavesReachedWithStash': 'पैनल की सीमा पूरी हो गई ({count}), जिसमें {stashed} किनारे रखे हुए हैं। एक को वापस लाकर बंद करें, या कोई दिखने वाला पैनल बंद करें।',
 
   // Pane stash (#977) — the pane leaves the layout, its session keeps running.
+  'pane.rename': 'पैनल का नाम बदलें',
   'pane.stash': 'पैनल किनारे रखें',
   'pane.stashHint': 'लेआउट से हटता है — सेशन चलता रहता है',
   'pane.unstash': 'वापस लाएँ',

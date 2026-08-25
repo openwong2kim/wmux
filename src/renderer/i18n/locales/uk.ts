@@ -39,6 +39,7 @@ export const uk = {
   'pane.maxLeavesReachedWithStash': 'Досягнуто ліміт панелей ({count}), зокрема відкладених: {stashed}. Поверніть одну й закрийте її або закрийте видиму панель.',
 
   // Pane stash (#977) — the pane leaves the layout, its session keeps running.
+  'pane.rename': 'Перейменувати панель',
   'pane.stash': 'Відкласти панель',
   'pane.stashHint': 'Прибрати з макета — сесія продовжить працювати',
   'pane.unstash': 'Повернути',

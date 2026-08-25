@@ -39,6 +39,7 @@ export const fr = {
   'pane.maxLeavesReachedWithStash': 'Limite de panneaux atteinte ({count}), dont {stashed} mis de côté. Ramenez-en un et fermez-le, ou fermez un panneau visible.',
 
   // Pane stash (#977) — the pane leaves the layout, its session keeps running.
+  'pane.rename': 'Renommer le panneau',
   'pane.stash': 'Mettre le panneau de côté',
   'pane.stashHint': 'Retiré de la disposition — la session continue de tourner',
   'pane.unstash': 'Ramener',

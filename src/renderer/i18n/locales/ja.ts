@@ -39,6 +39,7 @@ export const ja = {
   'pane.maxLeavesReachedWithStash': 'ペイン数の上限に達しました（{count}、うち退避 {stashed}）。退避中のペインを戻して閉じるか、表示中のペインを閉じてください。',
 
   // Pane stash (#977) — the pane leaves the layout, its session keeps running.
+  'pane.rename': 'ペインの名前を変更',
   'pane.stash': 'ペインを退避',
   'pane.stashHint': 'レイアウトから外します — セッションは動き続けます',
   'pane.unstash': '戻す',

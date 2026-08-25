@@ -39,6 +39,7 @@ export const vi = {
   'pane.maxLeavesReachedWithStash': 'Đã đạt giới hạn khung ({count}), bao gồm {stashed} khung đã cất. Hãy đưa một khung trở lại rồi đóng, hoặc đóng một khung đang hiển thị.',
 
   // Pane stash (#977) — the pane leaves the layout, its session keeps running.
+  'pane.rename': 'Đổi tên khung',
   'pane.stash': 'Cất khung',
   'pane.stashHint': 'Gỡ khỏi bố cục — phiên vẫn tiếp tục chạy',
   'pane.unstash': 'Đưa trở lại',

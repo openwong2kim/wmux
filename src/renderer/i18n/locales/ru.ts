@@ -39,6 +39,7 @@ export const ru = {
   'pane.maxLeavesReachedWithStash': 'Достигнут лимит панелей ({count}), включая отложенные: {stashed}. Верните одну и закройте её либо закройте видимую панель.',
 
   // Pane stash (#977) — the pane leaves the layout, its session keeps running.
+  'pane.rename': 'Переименовать панель',
   'pane.stash': 'Отложить панель',
   'pane.stashHint': 'Убрать из макета — сессия продолжит работать',
   'pane.unstash': 'Вернуть',

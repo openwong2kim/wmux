@@ -273,53 +273,6 @@ export default function SurfaceTabs({
     setMenuOpen(true);
   }, []);
 
-  const menuItems: PaneActionItem[] = useMemo(() => [
-    {
-      key: 'split-right',
-      label: t('pane.splitRight'),
-      shortcut: SC_SPLIT_RIGHT,
-      icon: <IconSplitRight size={14} />,
-      onSelect: onSplitHorizontal,
-    },
-    {
-      key: 'split-down',
-      label: t('pane.splitDown'),
-      shortcut: SC_SPLIT_DOWN,
-      icon: <IconSplitDown size={14} />,
-      onSelect: onSplitVertical,
-    },
-    {
-      key: 'new-browser',
-      label: t('pane.newBrowser'),
-      icon: <IconBrowser size={14} />,
-      onSelect: onAddBrowser,
-    },
-    {
-      key: 'stash',
-      label: t('pane.stash'),
-      shortcut: stashChord ?? undefined,
-      icon: <IconEyeOff size={14} />,
-      disabled: stashDisabled,
-      title: stashTooltip,
-      onSelect: stashThisPane,
-    },
-    {
-      key: 'zoom',
-      label: t('settings.prefix.toggleZoom'),
-      icon: (
-        <span aria-hidden="true" className="font-mono text-[13px] leading-none">
-          {isZoomed ? '⤡' : '⤢'}
-        </span>
-      ),
-      active: isZoomed,
-      separatorBefore: true,
-      onSelect: toggleZoom,
-    },
-  ], [
-    t, onSplitHorizontal, onSplitVertical, onAddBrowser,
-    stashChord, stashDisabled, stashTooltip, stashThisPane, isZoomed, toggleZoom,
-  ]);
-
   // Right-click anywhere on the header — tabs included — opens the same menu
   // at any width. Suppressed when the operator turned pane actions OFF in
   // Settings: that is a deliberate no-pane-chrome choice.
@@ -400,6 +353,9 @@ export default function SurfaceTabs({
   const paneOrdinal = leaf && leaf.type === 'leaf' ? (leaf.ordinal ?? 0) : 0;
   const paneAutoName = computePaneAutoName(workspace.wsOrdinal ?? 0, paneOrdinal, activeSlug);
   const paneDisplay = paneDisplayName(paneLabel, paneAutoName);
+  // Mirrors paneDisplayName's own blank-label rule, so "named" here means
+  // exactly "the display name is the user's, not the auto coordinate".
+  const hasUserLabel = !!paneLabel && paneLabel.trim().length > 0;
   // Purely visual (shared/workspaceColors.ts) — undefined for the untagged
   // majority, so an untagged workspace's header renders exactly as before.
   // Rendered as ONE dot at the strip's start (same idiom as the multiview
@@ -410,7 +366,7 @@ export default function SurfaceTabs({
   // repeating it per tab adds nothing.
   const tabTagColor = workspaceColorHex(workspace.color);
 
-  const startPaneRename = () => {
+  const startPaneRename = useCallback(() => {
     // Suppress the rename a double-click triggers right after a tab drag.
     if (Date.now() - dragStartTimeRef.current < 300) return;
     // Clear any stale cancel flag from a prior edit whose unmount-blur didn't
@@ -418,7 +374,68 @@ export default function SurfaceTabs({
     paneRenameCancelRef.current = false;
     setPaneEditName(paneLabel ?? '');
     setPaneEditing(true);
-  };
+  }, [paneLabel]);
+
+  // Below startPaneRename (not with the other useCallbacks above) because the
+  // rename item needs it in scope — a const arrow is TDZ-dead until defined.
+  const menuItems: PaneActionItem[] = useMemo(() => [
+    {
+      key: 'split-right',
+      label: t('pane.splitRight'),
+      shortcut: SC_SPLIT_RIGHT,
+      icon: <IconSplitRight size={14} />,
+      onSelect: onSplitHorizontal,
+    },
+    {
+      key: 'split-down',
+      label: t('pane.splitDown'),
+      shortcut: SC_SPLIT_DOWN,
+      icon: <IconSplitDown size={14} />,
+      onSelect: onSplitVertical,
+    },
+    {
+      key: 'new-browser',
+      label: t('pane.newBrowser'),
+      icon: <IconBrowser size={14} />,
+      onSelect: onAddBrowser,
+    },
+    {
+      key: 'rename-pane',
+      label: t('pane.rename'),
+      // Zoom's precedent: a mono glyph span where no drawn icon exists yet.
+      icon: (
+        <span aria-hidden="true" className="font-mono text-[13px] leading-none">
+          ✎
+        </span>
+      ),
+      onSelect: startPaneRename,
+    },
+    {
+      key: 'stash',
+      label: t('pane.stash'),
+      shortcut: stashChord ?? undefined,
+      icon: <IconEyeOff size={14} />,
+      disabled: stashDisabled,
+      title: stashTooltip,
+      onSelect: stashThisPane,
+    },
+    {
+      key: 'zoom',
+      label: t('settings.prefix.toggleZoom'),
+      icon: (
+        <span aria-hidden="true" className="font-mono text-[13px] leading-none">
+          {isZoomed ? '⤡' : '⤢'}
+        </span>
+      ),
+      active: isZoomed,
+      separatorBefore: true,
+      onSelect: toggleZoom,
+    },
+  ], [
+    t, onSplitHorizontal, onSplitVertical, onAddBrowser, startPaneRename,
+    stashChord, stashDisabled, stashTooltip, stashThisPane, isZoomed, toggleZoom,
+  ]);
+
   const commitPaneRename = () => {
     // Escape set the cancel flag — discard without persisting and reset it.
     if (paneRenameCancelRef.current) {
@@ -510,7 +527,15 @@ export default function SurfaceTabs({
       {/* P2 — pane identity + double-click rename. A distinct element/handler
           from the surface tabs (different store: pane label via MetadataStore vs
           surface.title), so the two renames never collide. */}
-      {paneEditing ? (
+      {/* #1021 — with exactly one tab and no user rename, the auto label
+          (`w{ws}-{ordinal}`) is a second name for the thing the tab already
+          names, on a segment that owns reserved width and answers only
+          double-click. Fold it away in that case; it comes back the moment
+          the pane gains a second tab (a deliberate structural act, so the
+          layout shift lands on an interaction, not on idle chrome), when the
+          user names the pane (explicit intent to see it), or while the rename
+          editor is open (reachable from the pane-actions menu). */}
+      {(paneEditing || hasUserLabel || surfaces.length > 1) && (paneEditing ? (
         <input
           ref={paneInputRef}
           data-pane-label-input
@@ -543,7 +568,7 @@ export default function SurfaceTabs({
         >
           {paneDisplay}
         </span>
-      )}
+      ))}
       {surfaces.map((s) => (
         <div
           key={s.id}

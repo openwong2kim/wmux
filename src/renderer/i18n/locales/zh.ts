@@ -757,6 +757,7 @@ export const zh = {
   'pane.maxLeavesReachedWithStash': '已达到面板数量上限（{count}，其中已收起 {stashed}）。请取回一个并关闭，或关闭一个可见面板。',
 
   // Pane stash (#977) — the pane leaves the layout, its session keeps running.
+  'pane.rename': '重命名面板',
   'pane.stash': '收起面板',
   'pane.stashHint': '从布局中移除 — 会话继续运行',
   'pane.unstash': '取回',

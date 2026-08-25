@@ -39,6 +39,7 @@ export const bs = {
   'pane.maxLeavesReachedWithStash': 'Dostignut limit panela ({count}), uključujući {stashed} sklonjenih. Vratite jedan i zatvorite ga ili zatvorite vidljivi panel.',
 
   // Pane stash (#977) — the pane leaves the layout, its session keeps running.
+  'pane.rename': 'Preimenuj panel',
   'pane.stash': 'Skloni panel',
   'pane.stashHint': 'Uklanja se iz izgleda — sesija nastavlja raditi',
   'pane.unstash': 'Vrati nazad',

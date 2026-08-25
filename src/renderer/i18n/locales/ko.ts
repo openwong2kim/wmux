@@ -51,6 +51,8 @@ export const ko = {
   'pane.maxLeavesReached': '창 분할 한도 도달 ({count}개). 창을 닫고 다시 시도하세요.',
   'pane.maxLeavesReachedWithStash': '페인 한도 도달 ({count}개, 보관 {stashed}개 포함). 보관함에서 꺼내 닫거나, 보이는 페인을 닫으세요.',
 
+  'pane.rename': '페인 이름 바꾸기',
+
   'pane.stash': '페인 치우기',
   'pane.stashHint': '레이아웃에서 치웁니다 — 세션은 계속 실행됩니다',
   'pane.unstash': '꺼내기',

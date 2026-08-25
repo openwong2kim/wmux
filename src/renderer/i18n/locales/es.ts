@@ -39,6 +39,7 @@ export const es = {
   'pane.maxLeavesReachedWithStash': 'Límite de paneles alcanzado ({count}), incluidos {stashed} apartados. Recupera uno y ciérralo, o cierra un panel visible.',
 
   // Pane stash (#977) — the pane leaves the layout, its session keeps running.
+  'pane.rename': 'Renombrar panel',
   'pane.stash': 'Apartar panel',
   'pane.stashHint': 'Se quita del diseño — la sesión sigue en ejecución',
   'pane.unstash': 'Recuperar',
