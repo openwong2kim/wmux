@@ -39,6 +39,7 @@ export const ptBR = {
   'pane.maxLeavesReachedWithStash': 'Limite de painéis atingido ({count}), incluindo {stashed} guardado(s). Traga um de volta e feche-o, ou feche um painel visível.',
 
   // Pane stash (#977) — the pane leaves the layout, its session keeps running.
+  'pane.rename': 'Renomear painel',
   'pane.stash': 'Guardar painel',
   'pane.stashHint': 'Sai do layout — a sessão continua rodando',
   'pane.unstash': 'Trazer de volta',

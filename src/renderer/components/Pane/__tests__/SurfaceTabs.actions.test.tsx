@@ -381,7 +381,10 @@ describe('SurfaceTabs — the ⋮ overflow menu', () => {
     const keys = Array.from(menu!.querySelectorAll('[data-pane-menu-action]')).map((el) =>
       el.getAttribute('data-pane-menu-action'),
     );
-    expect(keys.sort()).toEqual(['new-browser', 'split-down', 'split-right', 'stash', 'zoom']);
+    // rename-pane is menu-only by design (#1021): the fold removed the
+    // label's double-click in the single-tab case, and the menu is the
+    // affordance that replaces it — the cluster stays icon-sized actions.
+    expect(keys.sort()).toEqual(['new-browser', 'rename-pane', 'split-down', 'split-right', 'stash', 'zoom']);
   });
 
   it('splits this pane from the menu', () => {
@@ -452,6 +455,9 @@ describe('SurfaceTabs — the ⋮ overflow menu', () => {
   });
 
   it('leaves the native context menu alone on a rename input', () => {
+    // #1021 folds the label away on an unnamed single-tab pane, so name it
+    // first — a labelled pane still renames the way it always did.
+    useStore.getState().setPaneLabel(rootLeafId(), 'named');
     mount(rootLeafId(), { actionsMode: 'overflow' });
     // Enter pane-rename mode the way a user does: double-click the label.
     act(() => {
@@ -521,7 +527,7 @@ describe('SurfaceTabs — the ⋮ overflow menu', () => {
     mount(rootLeafId(), { actionsMode: 'overflow' });
     openOverflowMenu();
     const items = [...document.querySelectorAll<HTMLButtonElement>('[data-pane-menu-action]')];
-    expect(items.length).toBe(5);
+    expect(items.length).toBe(6);
     const press = (key: string) => act(() => {
       document.activeElement!.dispatchEvent(
         new KeyboardEvent('keydown', { key, bubbles: true }),
@@ -533,11 +539,11 @@ describe('SurfaceTabs — the ⋮ overflow menu', () => {
     expect(document.activeElement).toBe(items[1]);
     press('ArrowUp');
     press('ArrowUp'); // wraps 0 → last
-    expect(document.activeElement).toBe(items[4]);
+    expect(document.activeElement).toBe(items[5]);
     press('ArrowDown'); // wraps last → 0
     expect(document.activeElement).toBe(items[0]);
     press('End');
-    expect(document.activeElement).toBe(items[4]);
+    expect(document.activeElement).toBe(items[5]);
     press('Home');
     expect(document.activeElement).toBe(items[0]);
   });

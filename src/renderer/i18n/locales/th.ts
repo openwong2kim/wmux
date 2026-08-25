@@ -39,6 +39,7 @@ export const th = {
   'pane.maxLeavesReachedWithStash': 'ถึงขีดจำกัดจำนวนพาเนลแล้ว ({count}) รวมที่เก็บไว้ {stashed} นำกลับมาหนึ่งพาเนลแล้วปิด หรือปิดพาเนลที่แสดงอยู่',
 
   // Pane stash (#977) — the pane leaves the layout, its session keeps running.
+  'pane.rename': 'เปลี่ยนชื่อพาเนล',
   'pane.stash': 'เก็บพาเนลไว้ก่อน',
   'pane.stashHint': 'นำออกจากเลย์เอาต์ — เซสชันยังทำงานต่อ',
   'pane.unstash': 'นำกลับมา',

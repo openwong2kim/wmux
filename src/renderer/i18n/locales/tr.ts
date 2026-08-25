@@ -39,6 +39,7 @@ export const tr = {
   'pane.maxLeavesReachedWithStash': 'Bölme sınırına ulaşıldı ({count}); bunların {stashed} tanesi kenara alınmış. Birini geri getirip kapatın ya da görünen bir bölmeyi kapatın.',
 
   // Pane stash (#977) — the pane leaves the layout, its session keeps running.
+  'pane.rename': 'Bölmeyi yeniden adlandır',
   'pane.stash': 'Bölmeyi kenara al',
   'pane.stashHint': 'Düzenden çıkarılır — oturum çalışmaya devam eder',
   'pane.unstash': 'Geri getir',

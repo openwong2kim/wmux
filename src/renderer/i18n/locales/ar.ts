@@ -39,6 +39,7 @@ export const ar = {
   'pane.maxLeavesReachedWithStash': 'تم بلوغ حد الأجزاء ({count})، منها {stashed} موضوعة جانبًا. أعد واحدًا وأغلقه، أو أغلق جزءًا ظاهرًا.',
 
   // Pane stash (#977) — the pane leaves the layout, its session keeps running.
+  'pane.rename': 'إعادة تسمية الجزء',
   'pane.stash': 'وضع الجزء جانبًا',
   'pane.stashHint': 'يُزال من التخطيط — تستمر الجلسة في العمل',
   'pane.unstash': 'إعادة',

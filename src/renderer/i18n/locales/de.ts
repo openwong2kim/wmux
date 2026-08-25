@@ -39,6 +39,7 @@ export const de = {
   'pane.maxLeavesReachedWithStash': 'Bereichslimit erreicht ({count}), davon {stashed} beiseitegelegt. Holen Sie einen zurück und schließen Sie ihn, oder schließen Sie einen sichtbaren Bereich.',
 
   // Pane stash (#977) — the pane leaves the layout, its session keeps running.
+  'pane.rename': 'Bereich umbenennen',
   'pane.stash': 'Bereich beiseitelegen',
   'pane.stashHint': 'Aus dem Layout entfernen — die Sitzung läuft weiter',
   'pane.unstash': 'Zurückholen',

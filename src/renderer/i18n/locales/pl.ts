@@ -44,6 +44,7 @@ export const pl = {
   'pane.maxLeavesReachedWithStash': 'Osiągnięto limit paneli ({count}), w tym {stashed} odłożonych. Przywróć jeden i zamknij go albo zamknij widoczny panel.',
 
   // Pane stash (#977) — the pane leaves the layout, its session keeps running.
+  'pane.rename': 'Zmień nazwę panelu',
   'pane.stash': 'Odłóż panel',
   'pane.stashHint': 'Znika z układu — sesja działa dalej',
   'pane.unstash': 'Przywróć',

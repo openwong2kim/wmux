@@ -39,6 +39,7 @@ export const nb = {
   'pane.maxLeavesReachedWithStash': 'Panelgrensen er nådd ({count}), inkludert {stashed} lagt til side. Hent ett tilbake og lukk det, eller lukk et synlig panel.',
 
   // Pane stash (#977) — the pane leaves the layout, its session keeps running.
+  'pane.rename': 'Gi panelet nytt navn',
   'pane.stash': 'Legg panelet til side',
   'pane.stashHint': 'Fjernes fra oppsettet — økten fortsetter å kjøre',
   'pane.unstash': 'Hent tilbake',

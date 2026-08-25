@@ -39,6 +39,7 @@ export const id = {
   'pane.maxLeavesReachedWithStash': 'Batas panel tercapai ({count}), termasuk {stashed} yang disisihkan. Kembalikan satu lalu tutup, atau tutup panel yang terlihat.',
 
   // Pane stash (#977) — the pane leaves the layout, its session keeps running.
+  'pane.rename': 'Ubah nama panel',
   'pane.stash': 'Sisihkan panel',
   'pane.stashHint': 'Dikeluarkan dari tata letak — sesi tetap berjalan',
   'pane.unstash': 'Kembalikan',

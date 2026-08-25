@@ -39,6 +39,7 @@ export const it = {
   'pane.maxLeavesReachedWithStash': 'Limite di pannelli raggiunto ({count}), inclusi {stashed} messi da parte. Riportane indietro uno e chiudilo, oppure chiudi un pannello visibile.',
 
   // Pane stash (#977) — the pane leaves the layout, its session keeps running.
+  'pane.rename': 'Rinomina pannello',
   'pane.stash': 'Metti da parte il pannello',
   'pane.stashHint': 'Rimosso dal layout — la sessione resta in esecuzione',
   'pane.unstash': 'Riporta indietro',

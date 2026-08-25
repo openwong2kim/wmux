@@ -211,9 +211,19 @@ describe('the ⋮ menu offers exactly what the cluster does', () => {
     return [...region.matchAll(/key: '([a-z-]+)'/g)].map((m) => m[1]).sort();
   }
 
-  it('names the same actions in both places', () => {
+  it('offers every cluster action in the menu, and pins the menu-only set', () => {
     const cluster = clusterActions();
     expect(cluster.length).toBeGreaterThan(0);
-    expect(menuActions()).toEqual(cluster);
+    const menu = menuActions();
+    // The failure this guards is directional: the menu is the surface that
+    // must never LOSE an action, because at a width where only the ⋮ (or the
+    // header right-click) fits, the menu is all the user has. The menu may
+    // carry more — pinned exactly, so a menu-only addition is a deliberate
+    // decision here rather than silent drift. rename-pane is menu-only by
+    // design (#1021): the label fold removed the double-click target on
+    // unnamed single-tab panes, and the menu replaces that affordance; the
+    // cluster keeps to icon-sized layout actions.
+    for (const key of cluster) expect(menu).toContain(key);
+    expect(menu.filter((k) => !cluster.includes(k))).toEqual(['rename-pane']);
   });
 });
