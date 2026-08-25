@@ -401,10 +401,13 @@ export default function SurfaceTabs({
   const paneAutoName = computePaneAutoName(workspace.wsOrdinal ?? 0, paneOrdinal, activeSlug);
   const paneDisplay = paneDisplayName(paneLabel, paneAutoName);
   // Purely visual (shared/workspaceColors.ts) — undefined for the untagged
-  // majority, so an untagged workspace's tabs render exactly as before. This
-  // is independent of the pane-focus indicator below (an inset box-shadow on
-  // the whole header row, not on any one tab) and of the active/inactive tab
-  // background swap, so the three signals never compete for the same pixels.
+  // majority, so an untagged workspace's header renders exactly as before.
+  // Rendered as ONE dot at the strip's start (same idiom as the multiview
+  // tile header), never as a per-tab underline: the 2px bottom underline is
+  // DESIGN.md's steel-exclusive "where you are" grammar (focused-pane edge /
+  // active-tab), so a blue-ish tag underline on an unfocused pane would read
+  // as focus — and the tag is workspace identity, identical on every tab, so
+  // repeating it per tab adds nothing.
   const tabTagColor = workspaceColorHex(workspace.color);
 
   const startPaneRename = () => {
@@ -490,6 +493,17 @@ export default function SurfaceTabs({
           itself: tabs own an HTML5 drag that exports terminal text. */}
       <PaneDragGrip paneId={paneId} workspaceId={workspace.id} />
 
+      {/* Workspace tag dot — outside the scroll region so it stays visible
+          however many tabs there are (it identifies the workspace, not a tab). */}
+      {tabTagColor && (
+        <span
+          data-pane-tag-dot
+          className="w-1.5 h-1.5 rounded-full shrink-0 ml-1"
+          style={{ background: tabTagColor }}
+          aria-hidden="true"
+        />
+      )}
+
       {/* Scroll region: pane label + tabs share the horizontal overflow so the
           action cluster below stays pinned to the right on narrow panes. */}
       <div className="flex items-center flex-1 min-w-0 overflow-x-auto h-full">
@@ -565,10 +579,7 @@ export default function SurfaceTabs({
               onDoubleClick={(e) => e.stopPropagation()}
             />
           ) : (
-            <span
-              className="truncate max-w-[120px]"
-              style={tabTagColor ? { boxShadow: `inset 0 -2px 0 ${tabTagColor}` } : undefined}
-            >
+            <span className="truncate max-w-[120px]">
               {s.title || t('surface.terminal')}
             </span>
           )}

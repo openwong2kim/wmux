@@ -81,4 +81,14 @@ describe('MultiviewWorkspaceSlot — workspace color tag dot', () => {
     expect(el!.style.background).toBe(hexToRgb(WORKSPACE_COLOR_HEX.teal));
     expect(container.textContent).toContain('cto');
   });
+
+  it('rings the dot with --bg-base so it survives the active tile\'s accent-blue header fill', () => {
+    // Against the active header's --accent-blue fill every tag hue lands at
+    // ~1.0–1.45 contrast (teal/green at exactly 1.0) — the raw dot vanishes
+    // on the one tile being looked at. The ring is the legibility guarantee,
+    // so it must be present regardless of isActive (the fill can change
+    // under the dot without a re-render of this span).
+    mount(ws('cto', 'teal'));
+    expect(dot()!.style.boxShadow).toContain('var(--bg-base)');
+  });
 });

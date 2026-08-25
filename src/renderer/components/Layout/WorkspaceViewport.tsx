@@ -114,7 +114,13 @@ export const MultiviewWorkspaceSlot = memo(function MultiviewWorkspaceSlot({
           {tagColor && (
             <span
               className="w-1.5 h-1.5 rounded-full shrink-0"
-              style={{ background: tagColor }}
+              // The 1px --bg-base ring is what keeps the dot legible on the
+              // ACTIVE tile, whose header is filled with --accent-blue: every
+              // tag hue lands at ~1.0–1.45 contrast against that fill (teal
+              // and green at exactly 1.0), so the raw dot vanishes precisely
+              // on the tile being looked at. --bg-base matches the active
+              // header's text color, so the ring reuses its foreground.
+              style={{ background: tagColor, boxShadow: '0 0 0 1px var(--bg-base)' }}
               aria-hidden="true"
             />
           )}
