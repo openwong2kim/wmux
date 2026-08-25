@@ -249,54 +249,39 @@ function tokenizeCommandLine(cmdline: string): string[] {
 /**
  * Does this command line invoke one of wmux's daemon entry-script paths?
  *
- * Two signals, strongest first.
+ * #1019 review: `.includes()` on the whole raw string has no path-boundary
+ * awareness, so the bare `'daemon-bundle'` marker matches an unrelated
+ * `/srv/my-daemon-bundle-backup/index.js` (that string genuinely contains
+ * `daemon-bundle` as a substring) on a recycled PID. Segment-based matching
+ * fixes exactly that: tokenize the cmdline (quote-aware, so a Windows path
+ * with spaces in one argument isn't split apart), split each token on `/`
+ * or `\`, and require the KNOWN marker to occupy its own path segment(s) —
+ * `my-daemon-bundle-backup` is one segment, not two, so it can never equal
+ * the segment `'daemon-bundle'` no matter what substring it contains.
  *
- * **Identity (#1025).** `scriptCandidates` are the exact paths THIS host
- * would spawn (`deps.resolveDaemonScriptCandidates()`). If a cmdline token
- * equals one of them, the process is running the very script we launch —
- * that is proof, not a pattern. Marker matching cannot reach this bar: the
- * previous generic markers accepted any argv carrying `<anything>/daemon/
- * index.js`, an extremely common project layout, so an unrelated
- * `node /srv/app/daemon/index.js` inheriting a recycled PID was verified as
- * ours and SIGKILLed (reproduced by execution in #1025). Those markers are
- * gone; the dev-checkout layouts they existed for (`dist/daemon/daemon/
- * index.js`, `dist/daemon/index.js`) are candidates, so identity covers them.
- *
- * **Cross-host fallback.** Since #1001 a daemon may have been spawned by a
- * different host than the one asking — Electron killing a CLI-spawned
- * daemon, or the reverse — and the two resolve their scripts from different
- * roots, so the asking host's candidate list will not contain the other's
- * path. A path segment beginning `daemon-bundle` keeps that case working:
- * the name is wmux's own (package.json's `build:daemon` esbuild outfile),
- * not a generic layout, and it is what every packaged install runs. The
- * segment must BEGIN with it (a build/test variant may suffix it), which is
- * what keeps `/srv/my-daemon-bundle-backup/index.js` out — there the marker
- * is not at the segment's start.
- *
- * Callers that cannot supply candidates get the fallback alone. That is a
- * deliberate narrowing: refusing to kill degrades to the respawn budget and
- * a manual-recovery message, while a false positive kills a stranger's
- * process, so the asymmetry belongs on the refusing side.
+ * This does not (and cannot) resolve the adjacent, fuzzier case of a
+ * genuinely unrelated program that happens to be installed at a path whose
+ * LAST TWO segments are literally `daemon/index.js` — that is a real path
+ * shape collision, not a substring artifact, and is accepted as a residual
+ * false-positive risk the way it always has been (this marker was never the
+ * only signal; image-name checks and `definitiveOnly` gate what a match is
+ * allowed to authorize).
  */
-function cmdlineMatchesDaemonScript(cmdline: string, scriptCandidates: string[] = []): boolean {
-  const tokens = tokenizeCommandLine(cmdline);
-  // Windows path comparison is case-insensitive; POSIX is not, and folding
-  // case there would accept a genuinely different file.
-  const normalize = (raw: string): string => {
-    const slashed = raw.replace(/\\/g, '/');
-    return process.platform === 'win32' ? slashed.toLowerCase() : slashed;
-  };
-
-  if (scriptCandidates.length > 0) {
-    const wanted = new Set(scriptCandidates.map(normalize));
-    for (const token of tokens) {
-      if (wanted.has(normalize(token))) return true;
-    }
-  }
-
-  for (const token of tokens) {
-    for (const segment of normalize(token).split('/')) {
-      if (segment.startsWith('daemon-bundle')) return true;
+function cmdlineMatchesDaemonScript(cmdline: string): boolean {
+  for (const token of tokenizeCommandLine(cmdline)) {
+    const segments = token.replace(/\\/g, '/').split('/').filter(Boolean);
+    for (let i = 0; i < segments.length; i++) {
+      // 'daemon-bundle' needs to START this segment, not equal it exactly —
+      // a build/test variant may suffix it (`daemon-bundle-fake-index.js`,
+      // a hashed hot-reload dir, etc), and `startsWith` still accepts that.
+      // It still rejects the false positive this fix exists for: a `my-`
+      // PREFIX before the marker (`my-daemon-bundle-backup`) fails
+      // `startsWith('daemon-bundle')`, because the marker isn't at the
+      // segment's start there — that's the actual boundary that matters,
+      // not "is this the ENTIRE segment".
+      if (segments[i].startsWith('daemon-bundle')) return true;
+      if (segments[i] === 'daemon' && segments[i + 1] === 'daemon' && segments[i + 2] === 'index.js') return true;
+      if (segments[i] === 'daemon' && segments[i + 1] === 'index.js') return true;
     }
   }
   return false;
@@ -1086,7 +1071,7 @@ export async function ensureDaemon(deps: DaemonLauncherDeps): Promise<DaemonInfo
             `[launcher] user approved cleanup of unverified PID ${existingPid} (cmdline lookup failed)`,
           );
         } else {
-          const cmdlineMatches = cmdlineMatchesDaemonScript(cmdline, deps.resolveDaemonScriptCandidates());
+          const cmdlineMatches = cmdlineMatchesDaemonScript(cmdline);
           if (!cmdlineMatches) {
             // (b) Same image but different app (e.g. another Electron
             // tool). Don't kill, but the cleanup path below is safe.
@@ -1300,7 +1285,7 @@ export async function ensureDaemon(deps: DaemonLauncherDeps): Promise<DaemonInfo
  * Best-effort: never throws. Returns true only when a verified daemon was
  * signalled.
  */
-export function killDaemonByPidFile(scriptCandidates: string[] = []): boolean {
+export function killDaemonByPidFile(): boolean {
   try {
     const wmuxDir = getWmuxDir();
     const pidStr = fs.readFileSync(path.join(wmuxDir, 'daemon.pid'), 'utf8').trim();
@@ -1308,7 +1293,7 @@ export function killDaemonByPidFile(scriptCandidates: string[] = []): boolean {
     // Before-quit mode: indeterminate verification still proceeds — this
     // path runs seconds after we were actively talking to that PID, so
     // reuse is near-impossible and an orphan is the worse outcome.
-    return killVerifiedDaemonPid(pid, { definitiveOnly: false, scriptCandidates });
+    return killVerifiedDaemonPid(pid, { definitiveOnly: false });
   } catch {
     return false;
   }
@@ -1335,7 +1320,7 @@ export function killDaemonByPidFile(scriptCandidates: string[] = []): boolean {
  */
 export function killVerifiedDaemonPid(
   pid: number,
-  opts: { definitiveOnly: boolean; scriptCandidates?: string[] },
+  opts: { definitiveOnly: boolean },
 ): boolean {
   try {
     if (!Number.isFinite(pid) || pid <= 0 || pid === process.pid) return false;
@@ -1369,7 +1354,7 @@ export function killVerifiedDaemonPid(
       // mismatch blocks the kill — it just needs the second, cmdline signal
       // to also fail to clear it, rather than mismatch alone.
       if (opts.definitiveOnly || imageDefinitivelyMismatched) return false;
-    } else if (!cmdlineMatchesDaemonScript(cmdline, opts.scriptCandidates ?? [])) {
+    } else if (!cmdlineMatchesDaemonScript(cmdline)) {
       return false; // definitive: same image but not our daemon script
     }
 
