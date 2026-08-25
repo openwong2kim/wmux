@@ -25,9 +25,11 @@ const SRC = readFileSync(
   'utf8',
 );
 
-// Slice just the contextmenu handler: from its registration to the catch that
-// logs '[wmux:clipboard] right-click error:'.
-const handlerStart = SRC.indexOf("addEventListener('contextmenu'");
+// Slice just the contextmenu handler: from its declaration to the catch that
+// logs '[wmux:clipboard] right-click error:'. Anchored on the declaration, not
+// the addEventListener call — #1002 named the handler so teardown can remove
+// it, which moved the registration below the body.
+const handlerStart = SRC.indexOf('const onTerminalContextMenu =');
 const handlerEnd = SRC.indexOf('right-click error:', handlerStart);
 const HANDLER = SRC.slice(handlerStart, handlerEnd);
 

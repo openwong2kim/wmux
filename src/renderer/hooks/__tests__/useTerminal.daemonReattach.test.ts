@@ -65,7 +65,10 @@ describe('Fix D — daemon session reattach (source-level)', () => {
 
   it('gates only the at-mount reattach on isDaemonModeActive(), never the event path (Codex P2)', () => {
     // active-at-mount has no event to ride, so it reads the module flag once.
-    expect(afterMainEffect).toMatch(/if\s*\(\s*isDaemonModeActive\(\)\s*\)\s*reattach\(/);
+    // The condition may carry additional terms (#1002 adds an adopted-mount
+    // suppression); what matters is that this call, and only this call, is
+    // behind the module flag.
+    expect(afterMainEffect).toMatch(/if\s*\([^;\n]*isDaemonModeActive\(\)[^;\n]*\)\s*reattach\('active-at-mount'\)/);
     // The reattach helper itself must NOT re-check the flag — a daemon:connected
     // that races AppLayout's flag flip would otherwise be dropped.
     const reIdx = afterMainEffect.indexOf('const reattach =');

@@ -52,6 +52,7 @@ import {
   promoteTerminalToPriorityDrain,
 } from '../terminal/terminalOutputScheduler';
 import { reconnectPtyWithRetry as reconnectPtyWithRetryImpl } from './reconnectPtyWithRetry';
+import { adoptTerminal, parkTerminal, restoreParkedViewport, type ParkedTerminal } from '../terminal/terminalPark';
 
 // Module-level terminal registry for scrollback persistence
 const terminalRegistry = new Map<string, Terminal>();
@@ -642,6 +643,18 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
   // reattach path, which is keyed on ptyId alone and would otherwise capture a
   // stale value. Seeded to the same optimistic default the daemon holds.
   const viewerVisibleRef = useRef(true);
+  // #1002 — true while this pane's daemon reattach is still retrying. The park
+  // decision reads it: reconnectPtyWithRetry bails the moment terminalRef goes
+  // null, so a restructure mid-reconnect kills the attempt, and an adopting
+  // mount that also skips its own active-at-mount reconnect would leave the
+  // pane with no session pipe at all. Reset per effect run, like the local
+  // in-flight guard it mirrors.
+  const reconnectInFlightRef = useRef(false);
+  // #1002 — set by the main effect when this mount adopted a parked terminal.
+  // Read by the daemon reattach effect (which runs later in the same commit)
+  // to skip its active-at-mount reconnect: the session pipe never detached, so
+  // asking for one only buys the ring-buffer replay adoption exists to avoid.
+  const adoptedAtMountRef = useRef(false);
   const onFirstDataRef = useRef(onFirstData);
   onFirstDataRef.current = onFirstData;
   const onContextMenuRef = useRef(onContextMenu);
@@ -935,7 +948,16 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     // pays the addEventListener cost.
     _ensureDragListeners();
 
-    const terminal = new Terminal({
+    // #1002: a pane-tree restructure (split, drag-move, sibling collapse)
+    // unmounts and remounts this leaf inside ONE React commit. If the previous
+    // mount parked its terminal on the way out, take it back instead of
+    // building a fresh one — the buffer, the screen and the scroll position
+    // come with it, so there is no ring-buffer replay for the user to watch.
+    const adopted = adoptTerminal(ptyId);
+    adoptedAtMountRef.current = adopted !== null;
+    console.log(`[wmux:pane-adopt] ptyId=${ptyId} mount=${adopted ? 'adopted' : 'fresh'}`);
+
+    const terminal = adopted ? adopted.terminal : new Terminal({
       cursorBlink: true,
       cursorStyle: terminalCursorStyle,
       fontSize: terminalFontSize,
@@ -1051,15 +1073,22 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         });
       },
     }));
-    // Activate Unicode 11 width tables — required for correct CJK / emoji
-    // width. Without this, xterm defaults to v6 and TUI apps that use cursor
-    // positioning (Claude Code, vim, etc.) collide frames over Korean text.
-    // Shared with the daemon's snapshot terminals through this helper; if the
-    // two sides ever measure differently, a restored snapshot paints
-    // cell-shifted against the live screen.
-    applyUnicodeWidthModel(terminal);
-    terminal.open(container);
-
+    if (adopted) {
+      // Adoption is a DOM move, not an open(): xterm keeps its element, and
+      // re-opening would rebuild the screen we are trying to preserve. The
+      // element is detached at this point (React removed the old container
+      // before flushing passive effects), so appending is all that is left.
+      container.appendChild(adopted.element);
+    } else {
+      // Activate Unicode 11 width tables — required for correct CJK / emoji
+      // width. Without this, xterm defaults to v6 and TUI apps that use cursor
+      // positioning (Claude Code, vim, etc.) collide frames over Korean text.
+      // Shared with the daemon's snapshot terminals through this helper; if the
+      // two sides ever measure differently, a restored snapshot paints
+      // cell-shifted against the live screen.
+      applyUnicodeWidthModel(terminal);
+      terminal.open(container);
+    }
     // Grok lives on the alt screen, where xterm has no scrollback and turns the
     // wheel into Up/Down — which Grok's prompt-focused view reads as history,
     // not conversation scroll. PageUp/PageDown is what Grok documents instead.
@@ -1360,8 +1389,21 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     // If the workspace starts hidden (display:none), skip the initial fit so we
     // don't corrupt the terminal with 0 cols/rows. The visibility-watcher effect
     // below will trigger a proper fit when the workspace is shown.
+    // #1002: an adoption whose container has no size yet (a restructure on a
+    // hidden workspace — an agent splitting a background pane, say) has no
+    // valid fit to restore against. Hold the parked viewport until one runs.
+    let pendingAdoptViewport: ParkedTerminal | null = null;
     if (container.offsetWidth > 0 && container.offsetHeight > 0) {
       fitAddon.fit();
+      // #1002: the fit runs AFTER the adopted element is back in the DOM and
+      // can change how many rows the viewport holds, which moves what "the
+      // bottom" means — so put the user's scroll position back on this side of
+      // it. A pane parked at the bottom (the case the issue is about) lands at
+      // the bottom, not scrolled up by the height difference between the
+      // pre-split and post-split panel.
+      if (adopted) restoreParkedViewport(adopted);
+    } else if (adopted) {
+      pendingAdoptViewport = adopted;
     }
 
     // Wait for fonts to fully load, then rebuild the WebGL glyph atlas.
@@ -1450,6 +1492,14 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
           const newYBase = term.buffer.active.baseY;
           const targetYDisp = Math.max(0, newYBase - distFromBottom);
           term.scrollToLine(targetYDisp);
+        }
+
+        // #1002: first real fit after adopting into a hidden container. The
+        // park's own reading wins over the one taken above, which was measured
+        // against a viewport that had no size to be scrolled in.
+        if (pendingAdoptViewport) {
+          restoreParkedViewport(pendingAdoptViewport);
+          pendingAdoptViewport = null;
         }
 
         const { cols, rows } = term;
@@ -1735,7 +1785,12 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     // so the paste branch can suppress a paste that lands within
     // RIGHT_CLICK_PASTE_SUPPRESS_MS — the fix for the copy↔paste collision.
     let lastRightClickCopyAt = 0;
-    terminal.element?.addEventListener('contextmenu', (e) => {
+    // Named, and removed on teardown (#1002): this listener lives on
+    // terminal.element, which survives a park. terminal.dispose() used to take
+    // the element with it, so an anonymous handler was safe; with adoption it
+    // is not — each restructure would stack another handler, and one
+    // right-click would paste the clipboard into the shell once per split.
+    const onTerminalContextMenu = (e: MouseEvent) => {
       e.preventDefault();
 
       // Detect if right-click target is a link element
@@ -1832,7 +1887,8 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
           }
         }
       })().catch((err) => console.error('[wmux:clipboard] right-click error:', err));
-    });
+    };
+    terminal.element?.addEventListener('contextmenu', onTerminalContextMenu);
 
     // Drag-and-drop is handled globally in preload via webUtils.getPathForFile()
 
@@ -1906,6 +1962,13 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     // for `daemon:connected` — when it fires, clear + reset the terminal
     // before SessionPipe replay arrives, so the daemon flush lands on a
     // fresh xterm with no stale prefix.
+    // #1002 — has the scrollback restore finished with this terminal? The park
+    // decision reads it: the restore's own callbacks bail on
+    // `terminalRef.current !== terminal`, so parking mid-restore drops both the
+    // `.txt` content and the pendingData buffered behind it, and the adopting
+    // mount skips the restore entirely — a pane with no history that the
+    // autosave then writes back over the file it lost.
+    let restoreSettled = !(scrollbackFile && !adopted);
     let didRestoreTxt = false;
     let removeDaemonConnectedForRestore: (() => void) | null = null;
     // Flush-marker reset gating (see docs/internal/scrollback-restore-design.md).
@@ -2063,7 +2126,11 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       });
     };
 
-    if (scrollbackFile) {
+    // #1002: an adopted terminal carries its own buffer across the restructure,
+    // so the `.txt` restore below would write a second copy of the scrollback
+    // over the screen it is meant to reproduce. It takes the fresh-terminal
+    // branch instead: listeners and registry, no replay.
+    if (scrollbackFile && !adopted) {
       // Register PTY listeners immediately to avoid data loss during scrollback load.
       // scrollback.load() is async (IPC round-trip). If PTY sends data before it
       // resolves, connectPty() would not yet be called and data would be lost.
@@ -2188,6 +2255,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
           });
         }
         scrollbackLoaded = true;
+        restoreSettled = true;
         // P0-1 (app-weight review, Codex Eng #1): route the buffered boot
         // bytes through routePtyData — NOT terminal.write — so a hidden
         // boot-restored pane obeys retention (queue, don't parse) and a
@@ -2219,6 +2287,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         console.error(`[useTerminal] scrollback.load FAILED surfaceFile=${scrollbackFile} ptyId=${ptyId} err=${msg}`);
         if (terminalRef.current !== terminal) return;
         scrollbackLoaded = true;
+        restoreSettled = true;
         // Same retention-aware routing as the success path above (P0-1).
         for (const data of pendingData) {
           routePtyData(data);
@@ -2229,8 +2298,15 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       });
     } else {
       connectPty();
-      // No scrollback to restore — register immediately for fresh terminals.
+      // Nothing to restore (fresh terminal, or one adopted with its buffer
+      // intact) — register immediately.
       registerTerminal(ptyId, terminal);
+      // #1002: an adopted terminal is already showing the session, so the
+      // restore overlay Terminal.tsx raises for a scrollbackFile pane has
+      // nothing to wait for. Clearing it here instead of leaving it to the 3 s
+      // fallback keeps a split from drawing a "restoring" curtain over a screen
+      // that never went away — the exact flash this fix exists to remove.
+      if (adopted) fireFirstData();
       // Fix D — daemon (re)attach is owned by the daemon-mode effect below
       // (fires at mount if active, or on a later daemon:connected). connectPty
       // above has already registered pty.onData/onExit, so replay lands safely.
@@ -2262,7 +2338,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
 
     // Terminal registry registration is now per-branch above:
     //   - scrollback branch: after restore completes (Race B guard)
-    //   - fresh branch: immediately after connectPty()
+    //   - fresh/adopted branch: immediately after connectPty()
 
     terminalRef.current = terminal;
     fitAddonRef.current = fitAddon;
@@ -2315,12 +2391,56 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       // so release the replay mute here rather than leaving the next terminal
       // that reuses this hook unable to accept a clipboard write.
       resetReplayMute(replayMuteRef.current);
+
+      // #1002: can this terminal be handed to the next mount instead of being
+      // disposed? Only when every source of truth for this pane has settled on
+      // it. Each rung below is a state where the adopting mount — which skips
+      // the restore AND the reconnect — would inherit a screen that nothing is
+      // coming to repair, which is strictly worse than the replay this fix
+      // removes. Refusing just falls back to the old behaviour.
+      //
+      // A ladder rather than one `&&` chain because the REASON is the useful
+      // part: adoption can only be validated on the platform that reproduces
+      // the bug, and "the split still replays" is indistinguishable from "a
+      // guard refused" without knowing which one fired.
+      const parkElement = terminal.element ?? null;
+      const parkRefusal =
+        parkElement === null ? 'no-element'
+        // Mid-resync or dirty: exactly the pane that NEEDS the replay.
+        : resyncRef.current.pending ? 'resync-pending'
+        : isTerminalDirty(terminal) ? 'dirty'
+        // Restore still in flight: its callbacks bail on the null terminalRef
+        // we are about to write, dropping the .txt content and the pendingData
+        // behind it, and the adopting mount would not redo either.
+        : !restoreSettled ? 'restore-unsettled'
+        // A .txt cache is on screen awaiting the daemon's verdict. The
+        // late-connect listener that clears it before the ring replay lands
+        // dies with this mount, so an adopted pane would compose the replay on
+        // top of the cache — the corruption A6 exists to prevent.
+        : didRestoreTxt ? 'txt-awaiting-verdict'
+        // A reconnect is still retrying. It aborts the moment terminalRef goes
+        // null (reconnectPtyWithRetry's isCurrent guard), and the adopting
+        // mount skips its own active-at-mount attempt, so the pane would end up
+        // with no session pipe at all.
+        : reconnectInFlightRef.current ? 'reconnect-in-flight'
+        // Two live instances on one ptyId (the fast unmount→remount ordering
+        // the WebGL pool note describes): if the registry no longer points at
+        // us, a later mount already owns this pane and ours is the stale copy.
+        : terminalRegistry.get(ptyId) !== terminal ? 'not-registry-owner'
+        : null;
+      const canPark = parkRefusal === null;
+      // Mirrored into the main log by the webContents console-message relay,
+      // so a dogfood pass on another machine can read the decision instead of
+      // inferring it from what the screen did.
+      console.log(`[wmux:pane-adopt] ptyId=${ptyId} teardown=${canPark ? 'parked' : `disposed reason=${parkRefusal}`}`);
+
       if (resizeDebounceTimer) clearTimeout(resizeDebounceTimer);
       if (pendingFitRaf !== null) cancelAnimationFrame(pendingFitRaf);
       if (isMac) { container.removeEventListener('paste', blockNativePaste, true); }
       detachAltScreenWheel();
       terminal.textarea?.removeEventListener('focus', onTextareaFocus);
       terminal.textarea?.removeEventListener('keydown', onWatchdogKeyDown);
+      terminal.element?.removeEventListener('contextmenu', onTerminalContextMenu);
       glyphRepaint.dispose();
       glyphRepaintRef.current = null;
       unregisterAtlasGuard();
@@ -2379,8 +2499,10 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       }
       // Drop any output still queued in the shared scheduler — the terminal
       // is being disposed, parsing the backlog would be wasted work and a
-      // post-dispose drain write would throw.
-      discardTerminalOutput(terminal);
+      // post-dispose drain write would throw. A PARKED terminal keeps its
+      // queue: it is the same instance the next mount will drain, and there is
+      // no resync behind it to replace what we would discard here (#1002).
+      if (!canPark) discardTerminalOutput(terminal);
       // #582: defer terminal.dispose() if a mouse drag is active on any
       // terminal. xterm nullifies _renderService before removing its
       // document-level mouseup/mousemove listeners — a mouseup landing on the
@@ -2389,7 +2511,28 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       // (including onData, so no stray input flows during the wait), so
       // deferring only the internal dispose is safe. See disposeWhenDragEnds
       // for the wait/force policy.
-      disposeWhenDragEnds(() => terminal.dispose());
+      const disposeTerminal = () => {
+        discardTerminalOutput(terminal);
+        disposeWhenDragEnds(() => terminal.dispose());
+      };
+      // The `parkElement` re-test is for the type checker: the ladder above
+      // already refuses with 'no-element' when it is null.
+      if (canPark && parkElement) {
+        // The addons above outlive terminal.dispose() only because it disposes
+        // them; a parked terminal never reaches that call, and the adopting
+        // mount loads its own fit/search/links addons. Release ours here or the
+        // instance accumulates one set per restructure.
+        fitAddon.dispose();
+        searchAddon.dispose();
+        webLinksAddon.dispose();
+        // parkTerminal owns the dispose from here: it runs it if no mount
+        // claims the terminal before this task ends, which is every case except
+        // a tree restructure — a closed pane still disposes, one task later
+        // than it used to.
+        parkTerminal(ptyId, terminal, parkElement, disposeTerminal);
+      } else {
+        disposeWhenDragEnds(() => terminal.dispose());
+      }
       terminalRef.current = null;
       fitAddonRef.current = null;
       searchAddonRef.current = null;
@@ -2420,9 +2563,11 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     // permanent latch — once an attempt settles, a later connect/respawn
     // reattaches again. Lives in the effect-run closure so it resets per ptyId.
     let inFlight = false;
+    reconnectInFlightRef.current = false;
     const reattach = (reason: string) => {
       if (inFlight) return;
       inFlight = true;
+      reconnectInFlightRef.current = true;
       // #998: the RingBuffer replay this triggers arrives as ordinary
       // pty:data, so there is no write of ours to hang the mute on — open a
       // window here and let the data flow close it.
@@ -2440,12 +2585,16 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
           if (ptyIdRef.current !== id) return;
           reportViewerVisibility(id, viewerVisibleRef.current);
         })
-        .finally(() => { inFlight = false; });
+        .finally(() => { inFlight = false; reconnectInFlightRef.current = false; });
     };
     // Daemon already connected when we mounted: its daemon:connected fired before
     // the renderer could listen, so we reattach now off the module flag (set by
     // AppLayout's serialized startup before the pane gate opens).
-    if (isDaemonModeActive()) reattach('active-at-mount');
+    // #1002: an adopting mount is still attached — its predecessor unmounted
+    // microseconds ago and nothing detached the session. Only the fresh-mount
+    // case needs the reconnect. Later connect/respawn events below are NOT
+    // gated: those are real daemon generations that must reattach.
+    if (isDaemonModeActive() && !adoptedAtMountRef.current) reattach('active-at-mount');
     // Every LATER connect/respawn reattaches to the new daemon generation.
     // Codex P2: do NOT gate this on isDaemonModeActive() and do NOT latch it —
     // (a) our listener can run before AppLayout's flips the module flag true, so
