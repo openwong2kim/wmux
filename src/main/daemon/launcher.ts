@@ -15,8 +15,8 @@ import {
   pollDaemonReady,
   isDaemonPipeGone,
   ensureDaemon as ensureDaemonCore,
-  killDaemonByPidFile as killDaemonByPidFileCore,
-  killVerifiedDaemonPid as killVerifiedDaemonPidCore,
+  killDaemonByPidFile,
+  killVerifiedDaemonPid,
   type DaemonInfo,
   type DaemonLauncherDeps,
   type ProcessLiveness,
@@ -48,6 +48,8 @@ export {
   DAEMON_READY_HARD_CEILING_MS,
   pollDaemonReady,
   isDaemonPipeGone,
+  killDaemonByPidFile,
+  killVerifiedDaemonPid,
 };
 export type {
   DaemonInfo,
@@ -150,28 +152,6 @@ const electronDeps: DaemonLauncherDeps = {
   isElectronHost: () => true,
   markBoot,
 };
-
-/**
- * #1025 — the kill gate identifies a PID by comparing its command line
- * against the exact daemon scripts this host would spawn, so both entry
- * points have to hand the resolver's answer down. Wrapping here (rather than
- * at each of main/index.ts's four call sites) keeps the Electron-specific
- * knowledge in the Electron seam, which is what this module is for.
- */
-export function killDaemonByPidFile(): boolean {
-  return killDaemonByPidFileCore(resolveDaemonScriptCandidates());
-}
-
-export function killVerifiedDaemonPid(
-  pid: number,
-  opts: { definitiveOnly: boolean },
-): boolean {
-  return killVerifiedDaemonPidCore(pid, {
-    ...opts,
-    scriptCandidates: resolveDaemonScriptCandidates(),
-  });
-}
-
 
 /**
  * `ensureDaemon()` — same zero-argument signature every existing caller
