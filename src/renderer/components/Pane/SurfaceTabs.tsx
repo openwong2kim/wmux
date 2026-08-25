@@ -14,6 +14,7 @@ import PaneDragGrip from './PaneDragGrip';
 import { FOCUS_RING } from '../focusRing';
 import { IconSplitRight, IconSplitDown, IconBrowser, IconEyeOff } from '../icons';
 import { displayPath } from '../../utils/displayPath';
+import { workspaceColorHex } from '../../../shared/workspaceColors';
 import PaneActionsMenu, { PANE_ACTIONS_MENU_WIDTH, type PaneActionItem } from './PaneActionsMenu';
 
 /** Rendered width (px) of the pane-action half of the cluster (split / browser /
@@ -399,6 +400,15 @@ export default function SurfaceTabs({
   const paneOrdinal = leaf && leaf.type === 'leaf' ? (leaf.ordinal ?? 0) : 0;
   const paneAutoName = computePaneAutoName(workspace.wsOrdinal ?? 0, paneOrdinal, activeSlug);
   const paneDisplay = paneDisplayName(paneLabel, paneAutoName);
+  // Purely visual (shared/workspaceColors.ts) — undefined for the untagged
+  // majority, so an untagged workspace's header renders exactly as before.
+  // Rendered as ONE dot at the strip's start (same idiom as the multiview
+  // tile header), never as a per-tab underline: the 2px bottom underline is
+  // DESIGN.md's steel-exclusive "where you are" grammar (focused-pane edge /
+  // active-tab), so a blue-ish tag underline on an unfocused pane would read
+  // as focus — and the tag is workspace identity, identical on every tab, so
+  // repeating it per tab adds nothing.
+  const tabTagColor = workspaceColorHex(workspace.color);
 
   const startPaneRename = () => {
     // Suppress the rename a double-click triggers right after a tab drag.
@@ -483,6 +493,17 @@ export default function SurfaceTabs({
           itself: tabs own an HTML5 drag that exports terminal text. */}
       <PaneDragGrip paneId={paneId} workspaceId={workspace.id} />
 
+      {/* Workspace tag dot — outside the scroll region so it stays visible
+          however many tabs there are (it identifies the workspace, not a tab). */}
+      {tabTagColor && (
+        <span
+          data-pane-tag-dot
+          className="w-1.5 h-1.5 rounded-full shrink-0 ml-1"
+          style={{ background: tabTagColor }}
+          aria-hidden="true"
+        />
+      )}
+
       {/* Scroll region: pane label + tabs share the horizontal overflow so the
           action cluster below stays pinned to the right on narrow panes. */}
       <div className="flex items-center flex-1 min-w-0 overflow-x-auto h-full">
@@ -558,7 +579,9 @@ export default function SurfaceTabs({
               onDoubleClick={(e) => e.stopPropagation()}
             />
           ) : (
-            <span className="truncate max-w-[120px]">{s.title || t('surface.terminal')}</span>
+            <span className="truncate max-w-[120px]">
+              {s.title || t('surface.terminal')}
+            </span>
           )}
           {/* X close button — always visible, not just on hover */}
           <button
