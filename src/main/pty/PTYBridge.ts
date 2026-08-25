@@ -7,7 +7,15 @@ import { ActivityMonitor } from './ActivityMonitor';
 import { parseOsc7Cwd, detectPromptCwd } from './cwdDetect';
 import { sanitizeTitle } from './titleDetect';
 import { IPC } from '../../shared/constants';
-import { updateCwd, removeCwd, updateBranch, removeBranch, broadcastMetadataUpdate } from '../ipc/handlers/metadata.handler';
+import {
+  updateCwd,
+  removeCwd,
+  updateBranch,
+  removeBranch,
+  broadcastMetadataUpdate,
+  getLastBroadcastAgentStatus,
+  clearLastBroadcastAgentStatus,
+} from '../ipc/handlers/metadata.handler';
 import { dispatchNotification } from '../notification/dispatchNotification';
 import { recentlyResized, RESIZE_REDRAW_GUARD_MS, clearPty as clearSuppression } from '../notification/idleSuppression';
 import { eventBus } from '../events/EventBus';
@@ -86,7 +94,27 @@ export class PTYBridge {
     this.activityMonitor.onActiveToIdle((ptyId) => {
       const now = Date.now();
       const lastAgentAt = this.lastAgentEventAt.get(ptyId) ?? 0;
-      if (now - lastAgentAt < AGENT_EVENT_SUPPRESSION_MS) return;
+      // #935 direction 3: defer to a recent precise status ONLY while that
+      // status is still what is actually showing. `onActive` broadcasts
+      // 'running' unconditionally, so a burst inside this window can
+      // overwrite a correct 'complete'/'waiting' with 'running' — once the
+      // live status IS 'running', there is nothing precise left to defer to,
+      // and continuing to defer would wedge the pane at 'running' forever.
+      // #935 direction 3: recorded at the broadcastMetadataUpdate funnel
+      // (metadata.handler.ts), not locally — hooks.rpc's turn-boundary and
+      // awaiting-input broadcasts go through the same funnel, so a
+      // hook-governed pane's precise status is visible here too, not just
+      // the ones this class broadcasts itself.
+      const stillPrecise = getLastBroadcastAgentStatus(ptyId) !== 'running';
+      if (stillPrecise && now - lastAgentAt < AGENT_EVENT_SUPPRESSION_MS) return;
+      // Accepted cost of #935 direction 3, do not "fix": a turn that is
+      // genuinely still running (a long silent tool call, quiet generation)
+      // and happens to cross IDLE_DELAY_MS of byte silence while inside this
+      // window now clears to 'idle' with no deferral — roster/stopGate see a
+      // brief false idle until the next burst. The alternative (deferring
+      // once more here) reopens exactly the wedge this direction closes: the
+      // deferred clear would need another burst to retry, and a pane that
+      // stays quiet because it is actually done never produces one.
       // No resize/typing gate here: this handler's only job is the status
       // clear, and dropping it wedges the pane at `running` permanently
       // (ActivityMonitor has already consumed the transition, and a quiet pane
@@ -180,6 +208,7 @@ export class PTYBridge {
       this.agentDetectorCleanups.delete(ptyId);
     }
     this.lastAgentEventAt.delete(ptyId);
+    clearLastBroadcastAgentStatus(ptyId);
     clearSuppression(ptyId);
 
     this.oscParsers.delete(ptyId);
@@ -446,6 +475,9 @@ export class PTYBridge {
           // suffix without importing the main-only display→slug map.
           agentSlug: agentDisplayToSlug(agentEvent.agent) ?? null,
         });
+        // #935 direction 3: recorded at the broadcastMetadataUpdate funnel —
+        // withheld statuses never reach `agentStatus` in that payload, so
+        // they never land in the tracker either. No local bookkeeping needed.
 
         // Verdict-gate feed: a 'running' detection is working evidence — it
         // arms the turn gate on an ungoverned pane and clears `announced`
@@ -614,6 +646,7 @@ export class PTYBridge {
           // detected yet → agentDisplayToSlug returns undefined → null).
           agentSlug: agentDisplayToSlug(lastAgent) ?? null,
         });
+        // #935 direction 3: recorded at the broadcastMetadataUpdate funnel.
         // Resize-redraw guard: a workspace switch / split / zoom refits xterm,
         // fires pty:resize, and TUI agents answer with a multi-KB full redraw —
         // a burst indistinguishable from real activity. Resetting the emission

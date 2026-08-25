@@ -1,7 +1,7 @@
 import { ipcMain, BrowserWindow } from 'electron';
 import fs from 'node:fs';
 import { IPC } from '../../../shared/constants';
-import type { MetadataUpdatePayload } from '../../../shared/types';
+import type { AgentStatus, MetadataUpdatePayload } from '../../../shared/types';
 import { isWindowDisplayed } from '../../window/windowDisplayed';
 import { MetadataCollector } from '../../metadata/MetadataCollector';
 import { prStatusCache } from '../../metadata/PrStatusCache';
@@ -35,6 +35,41 @@ interface WorkspaceListEntry {
 }
 
 /**
+ * Last `agentStatus` actually broadcast for a PTY (#935 direction 3),
+ * recorded at the one funnel every agentStatus broadcast passes through
+ * rather than at each of the half-dozen call sites that construct one
+ * (PTYBridge's detector/burst paths, hooks.rpc's turn-boundary + awaiting
+ * input broadcasts, DaemonNotificationRouter's arbitrated + replay paths).
+ * A withheld status (governed pane — see hooks.rpc's `withholdStatus`) never
+ * reaches this map because it never reaches `payload.agentStatus` either: the
+ * call site omits the field rather than sending it, so "nothing landed that a
+ * later idle clear would need to defer to" falls out of the funnel for free
+ * instead of needing a `if (!withheld)` at every site that writes here.
+ *
+ * Consumed by `PTYBridge`/`DaemonNotificationRouter`'s idle-clear suppression
+ * window to tell "a precise status is still standing, defer to it" apart from
+ * "a precise status was standing, then a burst's unconditional 'running'
+ * clobbered it, so the clear must go through anyway" — a distinction the
+ * shared suppression timestamp alone cannot make.
+ */
+const lastBroadcastAgentStatus = new Map<string, AgentStatus>();
+
+/** Read side of {@link lastBroadcastAgentStatus} for the idle-clear deferral check. */
+export function getLastBroadcastAgentStatus(ptyId: string): AgentStatus | undefined {
+  return lastBroadcastAgentStatus.get(ptyId);
+}
+
+/** Drop a PTY's entry on cleanup, so a reused id never inherits a stale status. */
+export function clearLastBroadcastAgentStatus(ptyId: string): void {
+  lastBroadcastAgentStatus.delete(ptyId);
+}
+
+/** Test-only: reset between PTYs when a suite reuses the same id across cases. */
+export function resetLastBroadcastAgentStatusForTests(): void {
+  lastBroadcastAgentStatus.clear();
+}
+
+/**
  * Single source for IPC.METADATA_UPDATE outgoing messages. All metadata-like
  * channels (this handler's CWD/git polling, PTYBridge's agent status events,
  * meta.rpc's status/progress RPCs) send through `MetadataUpdatePayload` so
@@ -44,6 +79,16 @@ export function broadcastMetadataUpdate(
   window: BrowserWindow | null,
   payload: MetadataUpdatePayload,
 ): void {
+  // #935 direction 3: record regardless of whether the send below actually
+  // goes out. This mirrors what the call sites did before the funnel existed
+  // (the .set() ran right after calling this function, unconditionally) — the
+  // record's job is "what status does this component believe is current",
+  // not "what the renderer actually received"; a window-less/destroyed
+  // window is a transport detail the idle-clear deferral logic doesn't need
+  // to know about.
+  if (payload.ptyId && payload.agentStatus !== undefined) {
+    lastBroadcastAgentStatus.set(payload.ptyId, payload.agentStatus);
+  }
   if (!window || window.isDestroyed()) return;
   window.webContents.send(IPC.METADATA_UPDATE, payload);
 }

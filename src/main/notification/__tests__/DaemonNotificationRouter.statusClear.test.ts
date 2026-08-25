@@ -24,8 +24,30 @@ vi.mock('../../pipe/handlers/notify.rpc', () => ({
   toastManager: { show: vi.fn() },
 }));
 
+const metadataHandlerMocks = vi.hoisted(() => {
+  // Faithful stand-in for metadata.handler.ts's real funnel (#935 direction
+  // 3): this suite mocks the whole module, so the recording behavior has to
+  // be reproduced here — a bare `vi.fn()` would leave DaemonNotificationRouter's
+  // `getLastBroadcastAgentStatus`/`clearLastBroadcastAgentStatus` imports
+  // undefined and every call site that uses them would throw.
+  const lastBroadcastAgentStatus = new Map<string, string>();
+  const broadcastMetadataUpdate = vi.fn(
+    (_win: unknown, payload: { ptyId?: string; agentStatus?: string }) => {
+      if (payload.ptyId && payload.agentStatus !== undefined) {
+        lastBroadcastAgentStatus.set(payload.ptyId, payload.agentStatus);
+      }
+    },
+  );
+  return { broadcastMetadataUpdate, lastBroadcastAgentStatus };
+});
+
 vi.mock('../../ipc/handlers/metadata.handler', () => ({
-  broadcastMetadataUpdate: vi.fn(),
+  broadcastMetadataUpdate: metadataHandlerMocks.broadcastMetadataUpdate,
+  getLastBroadcastAgentStatus: (ptyId: string) =>
+    metadataHandlerMocks.lastBroadcastAgentStatus.get(ptyId),
+  clearLastBroadcastAgentStatus: (ptyId: string) => {
+    metadataHandlerMocks.lastBroadcastAgentStatus.delete(ptyId);
+  },
 }));
 
 vi.mock('../dispatchNotification', () => ({
@@ -36,17 +58,17 @@ vi.mock('../../pipe/handlers/_bridge', () => ({
   sendToRenderer: vi.fn(),
 }));
 
-import { broadcastMetadataUpdate } from '../../ipc/handlers/metadata.handler';
 import { markResize, clearPty } from '../idleSuppression';
 import { DaemonNotificationRouter } from '../DaemonNotificationRouter';
 
-const broadcastMetadataUpdateMock = vi.mocked(broadcastMetadataUpdate);
+const broadcastMetadataUpdateMock = metadataHandlerMocks.broadcastMetadataUpdate;
 
 const PTY = 'daemon-plain-shell';
 
 interface Captured {
   idle?: (payload: { sessionId: string }) => void;
   agent?: (payload: { sessionId: string; event: unknown }) => void;
+  active?: (payload: { sessionId: string; agentName?: string }) => void;
 }
 
 function makeRouter() {
@@ -55,12 +77,22 @@ function makeRouter() {
     on: vi.fn((event: string, cb: (payload: never) => void) => {
       if (event === 'session:idle') captured.idle = cb as Captured['idle'];
       if (event === 'session:agent') captured.agent = cb as Captured['agent'];
+      if (event === 'session:active') captured.active = cb as Captured['active'];
     }),
     off: vi.fn(),
   } as unknown as DaemonClient;
   const router = new DaemonNotificationRouter(fakeDaemon, () => null);
   router.start();
   return { router, captured };
+}
+
+/** Last agentStatus this pane was broadcast, or undefined if never. */
+function lastStatus(): string | undefined {
+  const calls = broadcastMetadataUpdateMock.mock.calls.filter(
+    ([, patch]) => (patch as { ptyId?: string }).ptyId === PTY,
+  );
+  const last = calls.at(-1)?.[1] as { agentStatus?: string } | undefined;
+  return last?.agentStatus;
 }
 
 /** Did the handler broadcast the status clear for this pane? */
@@ -77,6 +109,7 @@ describe('DaemonNotificationRouter status clear (#733)', () => {
     broadcastMetadataUpdateMock.mockClear();
     // Module-global maps — isolate every case.
     clearPty(PTY);
+    metadataHandlerMocks.lastBroadcastAgentStatus.delete(PTY);
   });
 
   afterEach(() => {
@@ -123,6 +156,27 @@ describe('DaemonNotificationRouter status clear (#733)', () => {
     broadcastMetadataUpdateMock.mockClear();
     captured.idle?.({ sessionId: PTY });
     expect(clearedIdle()).toBe(false);
+    router.stop();
+  });
+
+  it('#935 direction 3 — still clears when a burst overwrote the precise status with running', () => {
+    // The wedge: a precise 'complete' lands, then a short burst inside the
+    // suppression window re-fires session:active ('running') on top of it —
+    // exactly what a final chrome repaint or keystroke echo does. Byte
+    // silence never returns because the pane really is done, so onIdle is the
+    // ONLY thing that can still self-heal this. Before the fix it deferred to
+    // the (no longer true) precise status and left the pane wedged forever.
+    const { router, captured } = makeRouter();
+    captured.agent?.({
+      sessionId: PTY,
+      event: { agent: 'Claude Code', status: 'complete', message: 'Done' },
+    });
+    expect(lastStatus()).toBe('complete');
+    captured.active?.({ sessionId: PTY, agentName: 'Claude Code' });
+    expect(lastStatus()).toBe('running');
+    broadcastMetadataUpdateMock.mockClear();
+    captured.idle?.({ sessionId: PTY }); // still inside AGENT_EVENT_SUPPRESSION_MS
+    expect(clearedIdle()).toBe(true);
     router.stop();
   });
 });

@@ -18,6 +18,11 @@ vi.mock('../../pipe/handlers/notify.rpc', () => ({
 
 vi.mock('../../ipc/handlers/metadata.handler', () => ({
   broadcastMetadataUpdate: vi.fn(),
+  // #935 direction 3: PTYBridge/DaemonNotificationRouter import these from
+  // the real module; this suite does not exercise the deferral logic, so
+  // no-op stubs are enough to keep the import from throwing.
+  getLastBroadcastAgentStatus: () => undefined,
+  clearLastBroadcastAgentStatus: () => { /* no-op stub */ },
 }));
 
 vi.mock('../sendNotification', () => ({
