@@ -4,7 +4,11 @@ import type { AgentStatus } from '../../shared/types';
 import type { HookSignalRouter } from '../hooks/HookSignalRouter';
 import { dispatchNotification } from './dispatchNotification';
 import { clearPty as clearSuppression } from './idleSuppression';
-import { broadcastMetadataUpdate } from '../ipc/handlers/metadata.handler';
+import {
+  broadcastMetadataUpdate,
+  getLastBroadcastAgentStatus,
+  clearLastBroadcastAgentStatus,
+} from '../ipc/handlers/metadata.handler';
 import { eventBus } from '../events/EventBus';
 import {
   findWorkspaceIdForPty,
@@ -170,23 +174,6 @@ export class DaemonNotificationRouter {
    * `lastAgentEventAt`) so stale agent labels never leak across PTY reuse.
    */
   private lastAgentNameByPty = new Map<string, string>();
-  /**
-   * Last `agentStatus` this router actually broadcast for a PTY — precise
-   * agent event, `session:active`'s 'running', or the idle/dead clear.
-   * (#935 direction 3.) `AGENT_EVENT_SUPPRESSION_MS` below assumes the
-   * precise status it protects is still live, but `onActive` broadcasts
-   * 'running' unconditionally, with no deference to a recent precise event —
-   * so a short burst inside the suppression window overwrites a correct
-   * 'complete'/'waiting' with 'running', and then this same window blocks the
-   * only thing that could undo it (`onIdle`'s clear), because
-   * `ActivityMonitor` already consumed its active→idle transition and a quiet
-   * pane never produces another burst to re-fire it. Tracking what actually
-   * went out lets `onIdle` tell "a precise status is still standing, defer to
-   * it" apart from "a precise status was standing, then 'running' clobbered
-   * it, so the clear must go through anyway" — the two cases the shared
-   * timestamp cannot distinguish on its own.
-   */
-  private lastBroadcastStatus = new Map<string, AgentStatus>();
   private workspaceCache: { value: WorkspaceListEntry[]; ts: number } | null = null;
   /**
    * Fleet View activity rate limit for the hook-activity replay. Same window as
@@ -766,14 +753,9 @@ export class DaemonNotificationRouter {
           // is the display name; mirrors the PTYBridge local-mode broadcast.
           agentSlug: statusSlug ?? null,
         });
-        // #935 direction 3: only a status actually written counts as "the
-        // precise system has this handled" for onIdle's suppression window
-        // below. A withheld status (governed pane) must not be recorded here
-        // — the roster still shows whatever it showed before, so nothing
-        // "landed" that a later clear would need to defer to.
-        if (!withholdStatus) {
-          this.lastBroadcastStatus.set(payload.sessionId, ev.status);
-        }
+        // #935 direction 3: recorded at the broadcastMetadataUpdate funnel —
+        // withheld statuses never reach `agentStatus` in that payload, so
+        // they never land in the tracker either.
         // Cache the agent display name for any subsequent OSC 133
         // command_end on this PTY. Daemon mode has no direct equivalent
         // of `agentDetector.getLastAgent()` because the detector lives in
@@ -992,7 +974,7 @@ export class DaemonNotificationRouter {
             ? { agentName: payload.agentName, agentSlug: agentDisplayToSlug(payload.agentName) ?? null }
             : {}),
         });
-        this.lastBroadcastStatus.set(payload.sessionId, 'running');
+        // #935 direction 3: recorded at the broadcastMetadataUpdate funnel.
       } catch (err) {
         console.warn('[DaemonNotificationRouter] session:active error:', err);
       }
@@ -1009,8 +991,16 @@ export class DaemonNotificationRouter {
       // at 'running' forever if the clear below kept deferring to a status
       // that 'running' already clobbered. Once the live status IS 'running',
       // there is nothing left to defer to, so the window no longer applies.
-      const stillPrecise = this.lastBroadcastStatus.get(payload.sessionId) !== 'running';
+      // #935 direction 3: recorded at the broadcastMetadataUpdate funnel
+      // (metadata.handler.ts) — shared with PTYBridge, so a status this
+      // router only replayed (line ~852 below) still counts as precise.
+      const stillPrecise = getLastBroadcastAgentStatus(payload.sessionId) !== 'running';
       if (stillPrecise && now - lastAgentAt < AGENT_EVENT_SUPPRESSION_MS) return;
+      // Accepted cost of #935 direction 3, do not "fix" — see PTYBridge.ts's
+      // identical comment at its onActiveToIdle equivalent: a turn that is
+      // genuinely still running and goes byte-quiet inside this window now
+      // clears to 'idle' with no deferral until the next burst. Deferring
+      // again here would reopen the wedge this direction closes.
       // No resize/typing gate here: this handler's only job is the status
       // clear, and dropping it wedges the pane at `running` permanently
       // (ActivityMonitor has already consumed the transition, and a quiet pane
@@ -1029,7 +1019,6 @@ export class DaemonNotificationRouter {
           agentStatus: 'idle',
           agentName: '',
         });
-        this.lastBroadcastStatus.set(payload.sessionId, 'idle');
       } catch (err) {
         console.warn('[DaemonNotificationRouter] session:idle error:', err);
       }
@@ -1051,7 +1040,7 @@ export class DaemonNotificationRouter {
         });
         this.lastAgentEventAt.delete(payload.sessionId);
         this.lastAgentNameByPty.delete(payload.sessionId);
-        this.lastBroadcastStatus.delete(payload.sessionId);
+        clearLastBroadcastAgentStatus(payload.sessionId);
         clearSuppression(payload.sessionId);
         // Release the dedup ledger AND the hook authority for this pane.
         // Daemon-backed panes never pass through PTYBridge.cleanupInstance
@@ -1180,7 +1169,13 @@ export class DaemonNotificationRouter {
     this.cleanups.length = 0;
     this.lastAgentEventAt.clear();
     this.lastAgentNameByPty.clear();
-    this.lastBroadcastStatus.clear();
+    // #935 direction 3: no `lastBroadcastAgentStatus.clear()` here — that
+    // tracker moved to metadata.handler.ts as a shared, module-level map fed
+    // by both this router and PTYBridge's local-mode broadcasts. Wiping it
+    // wholesale on this router's stop() would erase unrelated local-mode
+    // PTYs' tracked status. Per-PTY cleanup already runs on session end (see
+    // `clearLastBroadcastAgentStatus` above); there is nothing of this
+    // router's own left to clear here.
     this.activityThrottle.clear();
     this.workspaceCache = null;
   }

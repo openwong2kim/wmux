@@ -24,8 +24,30 @@ vi.mock('../../pipe/handlers/notify.rpc', () => ({
   toastManager: { show: vi.fn() },
 }));
 
+const metadataHandlerMocks = vi.hoisted(() => {
+  // Faithful stand-in for metadata.handler.ts's real funnel (#935 direction
+  // 3): this suite mocks the whole module, so the recording behavior has to
+  // be reproduced here — a bare `vi.fn()` would leave DaemonNotificationRouter's
+  // `getLastBroadcastAgentStatus`/`clearLastBroadcastAgentStatus` imports
+  // undefined and every call site that uses them would throw.
+  const lastBroadcastAgentStatus = new Map<string, string>();
+  const broadcastMetadataUpdate = vi.fn(
+    (_win: unknown, payload: { ptyId?: string; agentStatus?: string }) => {
+      if (payload.ptyId && payload.agentStatus !== undefined) {
+        lastBroadcastAgentStatus.set(payload.ptyId, payload.agentStatus);
+      }
+    },
+  );
+  return { broadcastMetadataUpdate, lastBroadcastAgentStatus };
+});
+
 vi.mock('../../ipc/handlers/metadata.handler', () => ({
-  broadcastMetadataUpdate: vi.fn(),
+  broadcastMetadataUpdate: metadataHandlerMocks.broadcastMetadataUpdate,
+  getLastBroadcastAgentStatus: (ptyId: string) =>
+    metadataHandlerMocks.lastBroadcastAgentStatus.get(ptyId),
+  clearLastBroadcastAgentStatus: (ptyId: string) => {
+    metadataHandlerMocks.lastBroadcastAgentStatus.delete(ptyId);
+  },
 }));
 
 vi.mock('../dispatchNotification', () => ({
@@ -36,11 +58,10 @@ vi.mock('../../pipe/handlers/_bridge', () => ({
   sendToRenderer: vi.fn(),
 }));
 
-import { broadcastMetadataUpdate } from '../../ipc/handlers/metadata.handler';
 import { markResize, clearPty } from '../idleSuppression';
 import { DaemonNotificationRouter } from '../DaemonNotificationRouter';
 
-const broadcastMetadataUpdateMock = vi.mocked(broadcastMetadataUpdate);
+const broadcastMetadataUpdateMock = metadataHandlerMocks.broadcastMetadataUpdate;
 
 const PTY = 'daemon-plain-shell';
 
@@ -88,6 +109,7 @@ describe('DaemonNotificationRouter status clear (#733)', () => {
     broadcastMetadataUpdateMock.mockClear();
     // Module-global maps — isolate every case.
     clearPty(PTY);
+    metadataHandlerMocks.lastBroadcastAgentStatus.delete(PTY);
   });
 
   afterEach(() => {

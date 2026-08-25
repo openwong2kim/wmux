@@ -25,6 +25,11 @@ vi.mock('../../ipc/handlers/metadata.handler', () => ({
   updateBranch: vi.fn(),
   removeBranch: vi.fn(),
   broadcastMetadataUpdate: mocks.broadcastMetadataUpdate,
+  // #935 direction 3: PTYBridge imports these from the real module; this
+  // suite does not exercise the deferral logic, so no-op stubs are enough
+  // to keep the import from throwing.
+  getLastBroadcastAgentStatus: () => undefined,
+  clearLastBroadcastAgentStatus: () => { /* no-op stub */ },
 }));
 
 vi.mock('../../notification/sendNotification', () => ({

@@ -7,7 +7,15 @@ import { ActivityMonitor } from './ActivityMonitor';
 import { parseOsc7Cwd, detectPromptCwd } from './cwdDetect';
 import { sanitizeTitle } from './titleDetect';
 import { IPC } from '../../shared/constants';
-import { updateCwd, removeCwd, updateBranch, removeBranch, broadcastMetadataUpdate } from '../ipc/handlers/metadata.handler';
+import {
+  updateCwd,
+  removeCwd,
+  updateBranch,
+  removeBranch,
+  broadcastMetadataUpdate,
+  getLastBroadcastAgentStatus,
+  clearLastBroadcastAgentStatus,
+} from '../ipc/handlers/metadata.handler';
 import { dispatchNotification } from '../notification/dispatchNotification';
 import { recentlyResized, RESIZE_REDRAW_GUARD_MS, clearPty as clearSuppression } from '../notification/idleSuppression';
 import { eventBus } from '../events/EventBus';
@@ -41,20 +49,6 @@ export class PTYBridge {
   // ActivityMonitor idle fallback notification when the agent already
   // emitted a more precise 'waiting'/'complete' signal a moment earlier.
   private lastAgentEventAt = new Map<string, number>();
-  /**
-   * Last `agentStatus` actually broadcast for a PTY (#935 direction 3).
-   * `AGENT_EVENT_SUPPRESSION_MS` assumes the precise status it protects is
-   * still live, but `onActive` below broadcasts 'running' unconditionally —
-   * no deference of its own — so a short burst inside the window overwrites
-   * a correct 'complete'/'waiting' with 'running', and the same window then
-   * blocks the only thing that could undo it (`onActiveToIdle`'s clear),
-   * because `ActivityMonitor` already consumed its active→idle transition and
-   * a quiet pane never bursts again to re-fire it. Tracked so the clear can
-   * tell "a precise status is still standing, defer to it" apart from "a
-   * precise status was standing, then 'running' clobbered it" — the shared
-   * timestamp alone cannot distinguish those.
-   */
-  private lastBroadcastStatus = new Map<string, AgentStatus>();
 
   // Micro-batch buffers for the data hot-path. Chunks are accumulated and
   // flushed every BATCH_INTERVAL_MS so middlewares + IPC send each fire once
@@ -106,8 +100,21 @@ export class PTYBridge {
       // overwrite a correct 'complete'/'waiting' with 'running' — once the
       // live status IS 'running', there is nothing precise left to defer to,
       // and continuing to defer would wedge the pane at 'running' forever.
-      const stillPrecise = this.lastBroadcastStatus.get(ptyId) !== 'running';
+      // #935 direction 3: recorded at the broadcastMetadataUpdate funnel
+      // (metadata.handler.ts), not locally — hooks.rpc's turn-boundary and
+      // awaiting-input broadcasts go through the same funnel, so a
+      // hook-governed pane's precise status is visible here too, not just
+      // the ones this class broadcasts itself.
+      const stillPrecise = getLastBroadcastAgentStatus(ptyId) !== 'running';
       if (stillPrecise && now - lastAgentAt < AGENT_EVENT_SUPPRESSION_MS) return;
+      // Accepted cost of #935 direction 3, do not "fix": a turn that is
+      // genuinely still running (a long silent tool call, quiet generation)
+      // and happens to cross IDLE_DELAY_MS of byte silence while inside this
+      // window now clears to 'idle' with no deferral — roster/stopGate see a
+      // brief false idle until the next burst. The alternative (deferring
+      // once more here) reopens exactly the wedge this direction closes: the
+      // deferred clear would need another burst to retry, and a pane that
+      // stays quiet because it is actually done never produces one.
       // No resize/typing gate here: this handler's only job is the status
       // clear, and dropping it wedges the pane at `running` permanently
       // (ActivityMonitor has already consumed the transition, and a quiet pane
@@ -125,7 +132,6 @@ export class PTYBridge {
         // the precise Stop/awaiting_input hook + AgentDetector paths, which are
         // untouched. See plans/agent-status-dot-quiet-notifications-2026-07-12.md.
         broadcastMetadataUpdate(win, { ptyId, agentStatus: 'idle', agentName: '' });
-        this.lastBroadcastStatus.set(ptyId, 'idle');
       } catch (err) {
         console.warn('[PTYBridge] onActiveToIdle callback error:', err);
       }
@@ -202,7 +208,7 @@ export class PTYBridge {
       this.agentDetectorCleanups.delete(ptyId);
     }
     this.lastAgentEventAt.delete(ptyId);
-    this.lastBroadcastStatus.delete(ptyId);
+    clearLastBroadcastAgentStatus(ptyId);
     clearSuppression(ptyId);
 
     this.oscParsers.delete(ptyId);
@@ -469,13 +475,9 @@ export class PTYBridge {
           // suffix without importing the main-only display→slug map.
           agentSlug: agentDisplayToSlug(agentEvent.agent) ?? null,
         });
-        // #935 direction 3: only a status actually written counts as "the
-        // precise system has this handled" for onActiveToIdle's suppression
-        // window. A withheld status (governed pane) must not be recorded —
-        // nothing landed that a later clear would need to defer to.
-        if (!withholdStatus) {
-          this.lastBroadcastStatus.set(ptyId, status);
-        }
+        // #935 direction 3: recorded at the broadcastMetadataUpdate funnel —
+        // withheld statuses never reach `agentStatus` in that payload, so
+        // they never land in the tracker either. No local bookkeeping needed.
 
         // Verdict-gate feed: a 'running' detection is working evidence — it
         // arms the turn gate on an ungoverned pane and clears `announced`
@@ -644,7 +646,7 @@ export class PTYBridge {
           // detected yet → agentDisplayToSlug returns undefined → null).
           agentSlug: agentDisplayToSlug(lastAgent) ?? null,
         });
-        this.lastBroadcastStatus.set(ptyId, 'running');
+        // #935 direction 3: recorded at the broadcastMetadataUpdate funnel.
         // Resize-redraw guard: a workspace switch / split / zoom refits xterm,
         // fires pty:resize, and TUI agents answer with a multi-KB full redraw —
         // a burst indistinguishable from real activity. Resetting the emission
