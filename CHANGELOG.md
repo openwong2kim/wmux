@@ -1,3 +1,192 @@
+## [3.47.0] — 2026-08-26
+
+### Added
+
+- **Stash a pane instead of killing it.** Until now the only way to take a pane
+  off the screen was `✕`, which destroys its daemon session with no way back —
+  so tidying a split and killing an agent were the same gesture. The pane
+  header's new archive button (and `prefix` + `!`, tmux's break-pane) removes a
+  pane from the layout and leaves its session running. It shows up in the
+  workspace's sidebar list — gathered under a divider below the running agents,
+  each row marked with a crossed-out eye — where its status keeps updating as
+  proof it is still working. Hovering or focusing a row turns the eye back on:
+  one click brings the pane back next to its former neighbour with its
+  scrollback replayed. A ten-second undo rides the confirmation toast.
+
+  Stashing is refused, with the reason, when the pane is the only one on screen,
+  when there is no daemon connection (nothing would be holding the session), or
+  when the pane holds an editor or diff tab whose unsaved state cannot be
+  replayed. If a stashed session dies while it is off-screen, the row says so
+  rather than pretending, and bringing it back offers the same recovery a dead
+  visible pane gets — never a silent fresh shell wearing the old pane's name.
+
+  Everything that watches your agents already counts stashed panes: the "N need
+  you" chip, the fleet cards, notifications, the sidebar's idle badge. Clicking
+  any of them brings the pane back and takes you to it.
+
+- **`pane.stash` / `pane.unstash` RPC + the `pane_stash` / `pane_unstash` MCP
+  tools.** A stashed pane stays fully addressable: `terminal_send`,
+  `terminal_read`, `pane_close` and A2A delivery all work against it, because
+  its PTY is alive and none of them need to know where the pane is on screen.
+  Only position-dependent calls (`pane_focus`, `surface_focus`) are refused, and
+  they answer with a `PANE_STASHED` error carrying a `recovery` payload the
+  caller can invoke verbatim.
+
+  `pane_list` and `surface_list` keep their existing membership — they still
+  mean "what is in the layout" — and gained `includeStashed: true` for the rest.
+  Every row now carries an explicit `stashed` boolean; stashed rows add
+  `stashedLiveness`. Two new events, `pane.stashed` and `pane.unstashed`, keep
+  the `pane_list` + `wmux_events_poll` recovery path complete: a pane leaving the
+  default listing is always explained by an event, never by silence. Feature
+  detection: `system.capabilities` → `features.paneStash`.
+
+- **Stash, in the fine print.** A few limits worth knowing before you lean on it:
+
+  - An orchestrator brain running under a commander binding can stash and unstash
+    only inside its own workspace, the same confinement `pane_focus` and
+    `pane_split` already have. A pane elsewhere is refused by name rather than
+    quietly rearranging a workspace the brain has no business touching.
+
+  - Stashed panes count against the 20-pane-per-workspace limit. The cap exists to
+    bound memory, and a stashed session is still running; when the stash is part of
+    why you hit the limit, the message says so.
+  - Downgrading to a build without stash support does not lose the panes: the
+    older session writer round-trips the field it does not understand, so they
+    reappear on upgrade. While you are on the older build those sessions keep
+    running unmanaged — the same thing that already happens to any session when the
+    app is not there to show it.
+  - A session that stays silent for more than 8 hours while the app is CLOSED can
+    still be reaped by the daemon (#557). That is unchanged and applies to every
+    pane, not just stashed ones; the difference is that a stashed pane now tells
+    you it happened instead of quietly coming back empty.
+
+- **`wmux daemon start | stop | status` — run the daemon without the app.** The
+  daemon no longer needs the Electron main process to exist just to be spawned:
+  `wmux daemon start` starts it (or reports it's already running), `wmux daemon
+  status` pings it, and `wmux daemon stop` shuts it down — the same spawn,
+  readiness, and shutdown paths the app itself uses, headless. A first step
+  toward running wmux's actual workload on a machine with no display, with a
+  lighter local client attaching to it.
+
+- **`a2a_discover` now reports each pane's own title, not just the generic
+  vendor name.** A workspace running two or more sessions of the same vendor
+  (several "Claude Code" panes under one role) used to list as indistinguishable
+  rows — another agent had no way to tell which pane was which before
+  addressing one. Each entry in `agents[].panes` now carries `paneTitle`
+  (the same title source the sidebar roster leads with, #934) alongside the
+  unchanged `agentName`, additive so existing callers are unaffected.
+
+- **`pane_get_metadata` can read another workspace's pane, read-only.** It
+  was hard-scoped to the calling workspace and errored `"not in workspace"`
+  against any other pane — the underlying RPC already supported an explicit
+  `workspaceId`, only the tool wrapper forced it to the caller's own. Pass
+  `workspaceId` to read cross-workspace; `pane_set_metadata` keeps no such
+  override and stays confined to the calling workspace. (#1018)
+
+- **Seven more workspace color tags, and two more places they show up.** The
+  optional color tag introduced in #927 grows from 8 to 15 hues (amber, lime,
+  mint, cyan, indigo, magenta, rose), so tagging a dozen-plus workspaces no
+  longer runs out of visually distinct colors. The tag now also appears next
+  to a workspace's name in a multiview tile header, and as a thin underline on
+  each pane tab's label — not just in the sidebar. Untagged workspaces (the
+  default) look exactly as before.
+
+- **Rename pane** in the pane-actions menu (right-click the pane header) — pane renaming no longer requires knowing the double-click gesture. (#1026)
+
+### Changed
+
+- **The pane header collapses its action buttons into a menu on a narrow
+  pane.** The split / browser / stash / zoom cluster is fixed-width, so below
+  roughly 220px it was squeezing the tab strip — the coordinate, the title and
+  the ✕ — down to nothing, leaving a header that was all buttons and no
+  identity. Such a pane now shows a single `⋮` that opens the same five actions
+  as a vertical menu: one button's worth of chrome instead of five. The `⋮`
+  stays however narrow the pane gets — the tab strip scrolls, so the pane's
+  identity is never lost to it, and the menu holds the ways out of a layout
+  that cramped (zoom, stash). **Right-clicking a pane header opens the same
+  menu at any width**, so the actions are never more than one click away.
+
+  This matters most where it used to hurt most: a crowded layout is exactly when
+  you want stash and zoom, and one of the five — adding a browser tab to *this*
+  pane — had no other entry point at all. The palette's Open Browser splits off
+  a new pane, which is the opposite of what a cramped layout is asking for.
+
+- The pane header no longer shows the auto label (`w2-1`) on a pane with a single tab and no custom name — the tab title already says it. Naming the pane, adding a second tab, or opening the rename editor brings it back. (#1021, #1026)
+
+### Fixed
+
+- **Chinese IME candidate window no longer jumps to wherever a streaming
+  agent parked its cursor.** Typing Chinese (WeChat IME, Microsoft Pinyin)
+  while Claude Code streamed output anchored the candidate window to the
+  TUI's repaint cursor — a screen corner or an output row — because a cursor
+  that sat still for 32 ms was trusted as the caret, and a streaming TUI
+  parks its cursor between output bursts far longer than that. The anchor
+  now tracks output recency: while output is streaming, the composition
+  anchors to the cell the cursor held through the last output-quiet period —
+  the input line the TUI deliberately parked it on — instead of trusting
+  stillness alone. Ordinary typing into a quiet pane is unaffected, and the
+  IME diagnostic log (`ime-anchor3` → `ime-anchor4`) now records the output
+  gap and snapshot age so a follow-up report is self-diagnosing. (#951)
+
+- **A replayed pane no longer overwrites your clipboard.** Reconnecting a pane,
+  resyncing it, or restoring its scrollback writes stored output back into the
+  terminal — and any OSC 52 clipboard write inside those bytes was executed
+  again, silently replacing whatever you had just copied with text from
+  whenever that output was produced. Since the ring buffer outlives the session
+  that produced it, this could resurrect a copy from days earlier, including
+  one you would not want back. The clipboard bridge is now closed while
+  historical bytes are parsed and open for everything live, so a copy made
+  during a resync still lands.
+
+- **`setup-hooks` no longer removes a hook of your own that shares a matcher
+  group with wmux's.** Claude Code allows several commands under one matcher.
+  If you had added yours next to wmux's, `wmux setup-hooks --remove` took yours
+  with it — and so did every reinstall, including the bridge refresh that runs
+  on app update. Removal now drops only the wmux command and leaves the group,
+  its matcher, and your commands in place. Hooks in groups of their own were
+  never affected. (#1008)
+
+- **Splitting a pane no longer replays the conversation you were reading.** The
+  split rebuilt the surviving pane's terminal from scratch, so the daemon's
+  scrollback arrived in chunks and you watched the whole session scroll past
+  from the top before settling at the bottom. Nothing had restarted — only the
+  view was thrown away — so the terminal is now handed to the new layout intact,
+  buffer and scroll position included. Dragging a pane and closing a pane that
+  collapses a split reached the same flash, and are fixed with it. (#1010)
+
+- **A pane could get stuck showing "running" forever after its turn actually
+  ended.** The byte-silence fallback that clears a stale `running` back to
+  `idle` deferred to any precise `waiting`/`complete` status set in the last
+  10 seconds — but nothing stopped a short burst afterward (a final chrome
+  repaint, a keystroke echo) from overwriting that correct status with
+  `running` first. Once that happened the same 10-second window blocked the
+  only thing that could undo it, and a quiet pane never produces another
+  burst to retry. The clear now goes through whenever `running` is the status
+  actually showing, precise or not. (#1013)
+
+- **Chinese IME candidate window now anchors to Claude Code's input box
+  while output streams.** The quiet-caret snapshot shipped for #951 could
+  itself capture the streaming cursor's parking spot (the end of whatever
+  the last frame painted — any column), because Claude Code never parks its
+  cursor on the input caret mid-stream. Compositions started during
+  streaming now find the input line by content — the `│ > ` prompt row
+  under its box border — and anchor there, outranking every cursor-derived
+  source. Idle panes keep the field-verified cursor behavior unchanged, and
+  the IME diagnostic (`ime-anchor4` → `ime-anchor5`) records when the
+  content scan was used. (#1016)
+
+- **"Token expired" clears itself once you log back in.** The Anthropic usage
+  meter stopped polling the moment Anthropic refused its token, so the titlebar
+  kept reading `Token expired — log in to Claude Code again` after a successful
+  re-login — there was nothing left running to notice. It now keeps looking, and
+  the notice goes away on its own within a few minutes of Claude Code writing a
+  new token. It still will not sit there re-sending a credential it already
+  knows is bad: while the notice stands, a check that finds the same token on
+  disk stops before the request, and a genuine retry happens no more often than
+  the ordinary hourly check would have — so a refusal that was never about your
+  token clears itself too. The refresh button still forces a real attempt
+  whenever you want one. (#1024)
+
 ## [3.46.0] — 2026-08-22
 
 ### Added
