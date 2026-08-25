@@ -28,6 +28,21 @@
           }
         ]
       }
+    },
+    {
+      "files": [
+        "src/mcp/__tests__/paneGetMetadataCrossWorkspace.test.ts"
+      ],
+      "rules": {
+        "import/no-unresolved": [
+          "error",
+          {
+            "ignore": [
+              "^@modelcontextprotocol/sdk/(?:client/index|inMemory)\\.js$"
+            ]
+          }
+        ]
+      }
     }
   ]
 }
