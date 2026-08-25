@@ -197,7 +197,7 @@ export const pl = {
   // English ("Needs input") in an otherwise Polish UI.
   'workspace.agentAwaitingInput': 'Czeka na Ciebie',
   'workspace.agentIdle': 'Bezczynny',
-  'workspace.agentCount': 'Agenci {count}',
+  'workspace.agentCount': 'Agenci: {count}',
   'workspace.agentNeedsAttention': 'Potrzebuje Cię {count}',
   'workspace.showAgents': 'Pokaż listę agentów',
   'workspace.hideAgents': 'Ukryj listę agentów',
