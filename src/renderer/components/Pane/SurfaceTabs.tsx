@@ -12,7 +12,7 @@ import { computePaneAutoName, paneDisplayName } from '../../utils/paneNaming';
 import { findPane } from '../../../shared/paneUtils';
 import PaneDragGrip from './PaneDragGrip';
 import { FOCUS_RING } from '../focusRing';
-import { IconSplitRight, IconSplitDown, IconBrowser, IconEyeOff } from '../icons';
+import { IconSplitRight, IconSplitDown, IconBrowser, IconEyeOff, IconPencil } from '../icons';
 import { displayPath } from '../../utils/displayPath';
 import { workspaceColorHex } from '../../../shared/workspaceColors';
 import PaneActionsMenu, { PANE_ACTIONS_MENU_WIDTH, type PaneActionItem } from './PaneActionsMenu';
@@ -402,12 +402,7 @@ export default function SurfaceTabs({
     {
       key: 'rename-pane',
       label: t('pane.rename'),
-      // Zoom's precedent: a mono glyph span where no drawn icon exists yet.
-      icon: (
-        <span aria-hidden="true" className="font-mono text-[13px] leading-none">
-          ✎
-        </span>
-      ),
+      icon: <IconPencil size={14} />,
       onSelect: startPaneRename,
     },
     {

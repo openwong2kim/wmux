@@ -112,6 +112,17 @@ export function IconEyeOff({ size = 14 }: { size?: number }) {
   );
 }
 
+export function IconPencil({ size = 14 }: { size?: number }) {
+  // Nib + shaft + baseline, drawn on the same 14px stroked grid as the rest of
+  // the set — a filled glyph (✎) next to these reads as a different weight.
+  return (
+    <Icon size={size}>
+      <path d="M9.4 2.6 a1.4 1.4 0 0 1 2 2 L5 11 L2.5 11.5 L3 9 Z" />
+      <line x1="8.6" y1="3.4" x2="10.6" y2="5.4" />
+    </Icon>
+  );
+}
+
 export function IconChevron({ size = 14 }: { size?: number }) {
   // Points right; rotate 90° via transform for an expanded/down state.
   return <Icon size={size}><polyline points="5.5,3 9.5,7 5.5,11" /></Icon>;
