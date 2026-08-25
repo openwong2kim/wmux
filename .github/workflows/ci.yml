@@ -57,5 +57,17 @@ jobs:
       - name: Type check push relay
         run: node_modules/.bin/tsc --noEmit -p relay/tsconfig.json
 
+      # `npm test` ends in `test:runtime`, and two of those suites drive the
+      # REAL bundled daemon (#546 boot marker, #596 web restore). Both skip
+      # when `dist/daemon-bundle/index.js` is absent — which it always was
+      # here, so neither has ever run in CI. A skip reads as green, so this
+      # step is what gives those suites any signal at all.
+      - name: Build daemon bundle (the runtime suites drive it)
+        run: npm run build:daemon
+
       - name: Test
         run: npm test
+        env:
+          # Tells those suites the bundle was promised, so removing the step
+          # above fails a test instead of silently retiring both files.
+          WMUX_REQUIRE_DAEMON_BUNDLE: '1'

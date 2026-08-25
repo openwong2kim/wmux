@@ -40,6 +40,18 @@ afterAll(() => {
 // fresh checkout without `npm run build:daemon` doesn't red the suite.
 const hasBundle = fs.existsSync(bundle);
 
+/** Set by the CI job that promises to build the bundle first (see
+ *  webRestart.runtime.test.ts). Outside the skipIf below on purpose: it has to
+ *  run precisely in the case where the suite itself cannot, so a workflow that
+ *  stops building the bundle goes red instead of quietly retiring this file. */
+const bundlePromised = process.env.WMUX_REQUIRE_DAEMON_BUNDLE === '1';
+
+describe.runIf(bundlePromised)('#546 boot marker suite prerequisites', () => {
+  it('has the daemon bundle the promising job was supposed to build', () => {
+    expect(hasBundle).toBe(true);
+  });
+});
+
 describe.skipIf(!hasBundle)('#546 boot marker lifecycle (real daemon)', () => {
   it('writes the marker during boot and clears it once ready', async () => {
     fs.rmSync(dir, { recursive: true, force: true });
