@@ -321,6 +321,21 @@ export class DaemonRespawnController {
     rep: DaemonReplacementHooks,
     reason: string,
   ): Promise<DaemonClient | null> {
+    if (oldInfo.pid === null) {
+      // Only reachable via the #1001 yield-and-reconnect edge case (a spawn
+      // that lost the race to an already-live daemon whose ping omitted
+      // pid, with no daemon.pid to fall back to). Replacement needs a real
+      // pid to verify-and-kill against; without one, surface the failure
+      // through the normal budget/IPC path instead of guessing a pid.
+      // The normal path's `disconnectClient` hook (wired into
+      // runDaemonReplacement below) never runs for this early return, so it
+      // must be done here explicitly — otherwise this connection to the
+      // stale daemon leaks: never disconnected, and the caller (`ensure()`)
+      // already has `null` back and no other handle to clean it up with.
+      oldClient.disconnect();
+      this.lastError = 'stale-daemon replacement skipped: old daemon info carries no verifiable pid';
+      return null;
+    }
     this.replacedOnceThisRun = true;
     this.deps.logger.warn(
       `stale daemon detected (${reason}) — starting session-preserving replacement of pid=${oldInfo.pid}`,
@@ -380,7 +395,10 @@ export class DaemonRespawnController {
       //    end state (it holds the recovered sessions; next launch reuses
       //    it) — killing it would break tmux-style persistence.
       if (freshInfo.spawned && (rep.isFullShutdown?.() ?? false)) {
-        rep.killVerifiedPid(freshInfo.pid);
+        // freshInfo.pid is only ever null on the reconnect-to-existing
+        // branch (spawned: false) — this is the spawned:true branch, so a
+        // real pid is guaranteed, but the type is shared so guard anyway.
+        if (freshInfo.pid !== null) rep.killVerifiedPid(freshInfo.pid);
       }
       return null;
     }
@@ -408,7 +426,10 @@ export class DaemonRespawnController {
       // fresh daemon has already written daemon.pid at acquireLock.
       await freshClient.disconnect().catch(() => { /* best-effort */ });
       if (freshInfo.spawned && (rep.isFullShutdown?.() ?? false)) {
-        rep.killVerifiedPid(freshInfo.pid);
+        // freshInfo.pid is only ever null on the reconnect-to-existing
+        // branch (spawned: false) — this is the spawned:true branch, so a
+        // real pid is guaranteed, but the type is shared so guard anyway.
+        if (freshInfo.pid !== null) rep.killVerifiedPid(freshInfo.pid);
       }
       return null;
     }
