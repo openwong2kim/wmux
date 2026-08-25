@@ -135,7 +135,7 @@ function attemptRequest(
  * double-apply a non-idempotent call — `input.send` would type the text into
  * the terminal twice. Timeouts fail hard instead.
  */
-function isConnectFailure(err: unknown): boolean {
+export function isConnectFailure(err: unknown): boolean {
   const code = (err as { code?: string })?.code;
   return code === 'ENOENT' || code === 'ECONNREFUSED' || code === 'EPERM';
 }

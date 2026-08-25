@@ -7,6 +7,15 @@ const { sendDaemonStringRequestMock, ensureDaemonMock } = vi.hoisted(() => ({
 
 vi.mock('../../client', () => ({
   sendDaemonStringRequest: sendDaemonStringRequestMock,
+  // Real implementation, not a mock: `runStop` (#1019 review) needs the
+  // actual connect-vs-other-failure classification to be exercised, and it
+  // is pure (reads only `err.code`) so re-declaring it here carries no risk
+  // of drifting from `client.ts` in a way a test would fail to catch —
+  // any behavior change there is a one-line diff to mirror.
+  isConnectFailure: (err: unknown) => {
+    const code = (err as { code?: string })?.code;
+    return code === 'ENOENT' || code === 'ECONNREFUSED' || code === 'EPERM';
+  },
 }));
 
 vi.mock('../../../shared/daemon/daemonLauncherCore', () => ({
@@ -71,6 +80,21 @@ describe('wmux daemon status', () => {
     const parsed = JSON.parse(logLines.join('\n'));
     expect(parsed).toMatchObject({ ok: false, running: false });
   });
+
+  it('#1019 review: --json success also carries running:true, matching the failure shape', async () => {
+    // Before the fix, a healthy `daemon.ping` result had no `running` field
+    // at all (it never needed to say "running" — a successful ping IS
+    // running) while the failure shape was `{ok, running: false, error}`. A
+    // script keying on `.running` read `undefined` for an up daemon.
+    sendDaemonStringRequestMock.mockResolvedValue({
+      id: 'x', ok: true, result: { status: 'ok', pid: 4242, sessions: 2 },
+    });
+
+    await handleDaemon('status', [], true);
+
+    const parsed = JSON.parse(logLines.join('\n'));
+    expect(parsed).toMatchObject({ ok: true, running: true, pid: 4242, sessions: 2 });
+  });
 });
 
 describe('wmux daemon stop', () => {
@@ -83,12 +107,38 @@ describe('wmux daemon stop', () => {
     expect(logLines.join('\n')).toContain('wmux daemon stopped.');
   });
 
-  it('reports not running rather than throwing when already down', async () => {
-    sendDaemonStringRequestMock.mockRejectedValue(new Error('connect ENOENT'));
+  it('reports not running rather than throwing when already down (connect failure)', async () => {
+    sendDaemonStringRequestMock.mockRejectedValue(Object.assign(new Error('connect ENOENT'), { code: 'ENOENT' }));
 
     await handleDaemon('stop', [], false);
 
     expect(logLines.join('\n')).toContain('wmux daemon is not running.');
+    expect(process.exitCode).toBeUndefined();
+  });
+
+  it('#1019 review: does NOT report success on a non-connect failure (timeout/permission/etc)', async () => {
+    // Before the fix, runStop treated every rejection — including a request
+    // timeout or a permission error, neither of which mean "already
+    // stopped" — as "wmux daemon is not running.", exit 0. A caller doing
+    // `wmux daemon stop && rm -rf $DATA_DIR` would proceed against a daemon
+    // that never actually shut down.
+    sendDaemonStringRequestMock.mockRejectedValue(new Error('Request timed out after 5 seconds.'));
+
+    await handleDaemon('stop', [], false);
+
+    expect(logLines.join('\n')).not.toContain('wmux daemon is not running.');
+    expect(errorLines.join('\n')).toContain('wmux daemon stop:');
+    expect(process.exitCode).toBe(1);
+  });
+
+  it('#1019 review: a non-connect failure in --json mode reports ok:false, not ok:true', async () => {
+    sendDaemonStringRequestMock.mockRejectedValue(Object.assign(new Error('permission denied'), { code: 'EACCES' }));
+
+    await handleDaemon('stop', [], true);
+
+    const parsed = JSON.parse(logLines.join('\n'));
+    expect(parsed).toMatchObject({ ok: false });
+    expect(process.exitCode).toBe(1);
   });
 });
 

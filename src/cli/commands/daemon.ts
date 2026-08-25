@@ -1,6 +1,6 @@
 import { readFileSync } from 'fs';
 import { join } from 'path';
-import { sendDaemonStringRequest } from '../client';
+import { sendDaemonStringRequest, isConnectFailure } from '../client';
 import { printResult, ensureOk } from '../utils';
 import {
   ensureDaemon,
@@ -53,21 +53,30 @@ function resolveDaemonScriptCandidates(): string[] {
 }
 
 /**
- * Same fallback idiom `doctor.ts` and `system.ts` already use for the CLI's
- * own version (`getFallbackVersion` in system.ts): read the nearest
- * `package.json` relative to this bundle, default to `0.0.0` if that fails.
+ * Reads the nearest `package.json` relative to this bundle to stamp a real
+ * version. `doctor.ts` / `system.ts` use the same relative-lookup idiom for
+ * the CLI's own version display, but fall back to `'0.0.0'` there because
+ * that value is display-only.
  *
- * This must never resolve to nothing — an empty `SPAWNED_BY_VERSION` makes
- * the daemon fall back to the `'unknown'` sentinel, which the B′ staleness
- * gate reads as "positively old", and the first GUI that connects to a
- * VPS-started daemon would replace it on sight.
+ * Here it is NOT display-only — it is stamped into `SPAWNED_BY_VERSION` and
+ * read by the B′ staleness gate (`isDaemonOlder` in `daemonReplacement.ts`).
+ * That gate special-cases the literal string `'unknown'` as "spawn path
+ * unclear, keep the daemon" — but `'0.0.0'` is a real, parseable version, so
+ * the gate reads it as positively OLDER than any real release and the first
+ * GUI to connect replaces (kills) the daemon the CLI just started, PTYs
+ * included. In the installed layout `__dirname/../../package.json` does not
+ * exist (the CLI bundle sits at `<resources>/cli-bundle`), so this path is
+ * not a rare edge case — it is what every real installed headless daemon
+ * hits. Falling back to `'unknown'` instead lets the gate's existing
+ * exception carry it, matching what an Electron-spawned daemon gets when
+ * `app.getVersion()` is unavailable for some other reason.
  */
-function resolveSpawnedByVersion(): string {
+export function resolveSpawnedByVersion(): string {
   try {
     const pkg = JSON.parse(readFileSync(join(__dirname, '..', '..', 'package.json'), 'utf-8'));
-    return typeof pkg.version === 'string' && pkg.version ? pkg.version : '0.0.0';
+    return typeof pkg.version === 'string' && pkg.version ? pkg.version : 'unknown';
   } catch {
-    return '0.0.0';
+    return 'unknown';
   }
 }
 
@@ -144,7 +153,16 @@ async function runStatus(jsonMode: boolean): Promise<void> {
     return;
   }
   if (jsonMode) {
-    return printResult(response);
+    // The failure branch above emits `{ok, running: false, error}`. Mirror
+    // that shape on success — `daemon.ping`'s own result carries no
+    // `running` field (a successful ping IS "running", it never needed to
+    // say so) — so a script keying on `.running` doesn't read `undefined`
+    // for a daemon that is, in fact, up.
+    if (!response.ok) {
+      return printResult(response);
+    }
+    console.log(JSON.stringify({ ok: true, running: true, ...(response.result as Record<string, unknown> | undefined) }, null, 2));
+    return;
   }
   ensureOk(response);
   console.log('wmux daemon is running.');
@@ -162,11 +180,22 @@ async function runStop(jsonMode: boolean): Promise<void> {
     response = await sendDaemonStringRequest('daemon.shutdown', {});
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
+    // Only a connect-level failure (no daemon listening at all) means
+    // "already stopped" — that is genuinely idempotent success. A timeout,
+    // a permission error, or a connection dropped mid-request all mean the
+    // daemon may well still be alive; reporting those as a clean stop would
+    // let `wmux daemon stop && something` proceed against a daemon that
+    // never shut down. Mirrors the connect/timeout split `sendRequest`
+    // itself already draws for retry purposes.
+    const alreadyStopped = isConnectFailure(err);
     if (jsonMode) {
-      console.log(JSON.stringify({ ok: false, error: message }, null, 2));
-    } else {
+      console.log(JSON.stringify({ ok: alreadyStopped, error: message }, null, 2));
+    } else if (alreadyStopped) {
       console.log('wmux daemon is not running.');
+    } else {
+      console.error(`wmux daemon stop: ${message}`);
     }
+    if (!alreadyStopped) process.exitCode = 1;
     return;
   }
   if (jsonMode) {

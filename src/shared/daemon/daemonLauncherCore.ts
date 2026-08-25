@@ -6,7 +6,6 @@ import * as crypto from 'crypto';
 import { getWmuxDir } from '../../daemon/config';
 import { getDaemonPipeName, readDaemonAuthToken } from '../../main/DaemonClient';
 import { DAEMON_EXIT_ALREADY_RUNNING, ENV_KEYS } from '../constants';
-import { markBoot } from '../../main/util/bootTrace';
 import { classifyTasklistOutput, classifyKillOutcome, type ProcessLiveness } from '../processLiveness';
 
 export interface DaemonInfo {
@@ -64,6 +63,17 @@ export interface DaemonLauncherDeps {
    * process that doesn't understand it. Explicit and unambiguous instead.
    */
   isElectronHost(): boolean;
+  /**
+   * Optional boot-phase timing hook (see `main/util/bootTrace.ts`). Deliberately
+   * NOT a static import here: that module's body writes a `[boot-trace]` line
+   * to stderr as a side effect of merely being loaded (it needs to capture
+   * `js-start` at eval time). This module is imported by every `wmux` CLI
+   * subcommand via `commands/daemon.ts` → `src/cli/index.ts`'s static import
+   * list, so a static import here would print that line on every invocation
+   * of the CLI, not just `wmux daemon *`. Electron's launcher supplies the
+   * real one; the headless CLI omits it and gets a silent no-op via `?.`.
+   */
+  markBoot?(name: string): void;
 }
 
 // `ProcessLiveness` + the pure classifiers now live in shared/processLiveness so
@@ -632,8 +642,18 @@ function findNodePath(): string {
 }
 
 function spawnDaemon(deps: DaemonLauncherDeps): Promise<number> {
-  markBoot('daemon-spawn-start');
+  deps.markBoot?.('daemon-spawn-start');
   return new Promise((resolve, reject) => {
+    // Set once pollDaemonReady starts below. The 'error' handler needs this
+    // to tear down the poll's pending timer on a failed spawn — without it,
+    // the poll keeps its own setTimeout chain alive up to the 90 s hard
+    // ceiling even though the caller was already rejected, holding a
+    // one-shot CLI process open for no reason after it already printed the
+    // error.
+    // Must exist (as undefined) for the 'error' handler below to read,
+    // before pollDaemonReady assigns it.
+    // eslint-disable-next-line prefer-const
+    let readiness: { promise: Promise<void>; cancel: (err: Error) => void } | undefined;
     const candidates = deps.resolveDaemonScriptCandidates();
     console.log(`[launcher] Daemon script candidates:`, candidates);
     console.log(`[launcher] Exists:`, candidates.map(c => fs.existsSync(c)));
@@ -671,7 +691,14 @@ function spawnDaemon(deps: DaemonLauncherDeps): Promise<number> {
     // bypassing the reject() contract every caller — including the headless
     // CLI's `runStart` — relies on to report a clean, non-crashing message.
     child.on('error', (err) => {
-      reject(new Error(`Failed to spawn daemon: ${err instanceof Error ? err.message : String(err)}`));
+      const spawnErr = new Error(`Failed to spawn daemon: ${err instanceof Error ? err.message : String(err)}`);
+      // Route through the poll's own cancel once it exists so its timer is
+      // cleared; before that, nothing has started yet and a direct reject
+      // is correct (and `readiness.promise.then(_, reject)` below would
+      // otherwise double-reject the same already-settled promise, which is
+      // harmless but pointless).
+      if (readiness) readiness.cancel(spawnErr);
+      else reject(spawnErr);
     });
 
     child.unref();
@@ -681,13 +708,13 @@ function spawnDaemon(deps: DaemonLauncherDeps): Promise<number> {
       return;
     }
 
-    markBoot('daemon-spawned');
+    deps.markBoot?.('daemon-spawned');
     console.log(`[launcher] Daemon spawned with PID: ${child.pid}`);
 
     // Wait for daemon to be ready. Adaptive cadence + the pipe-file zombie
     // guard live in pollDaemonReady (extracted so the chain is unit-testable
     // with fake timers).
-    const readiness = pollDaemonReady({
+    readiness = pollDaemonReady({
       budgetMs: 15_000, // wall-clock 15 s fast-path expectation for a warm daemon
       // Issue #537 — extend the wait while THIS spawned child is still alive.
       // The daemon writes daemon.pid at boot start but its pipe file only after
@@ -700,7 +727,7 @@ function spawnDaemon(deps: DaemonLauncherDeps): Promise<number> {
       isChildAlive: () => child.exitCode === null,
       hardCeilingMs: DAEMON_READY_HARD_CEILING_MS,
       onSlowStart: () => {
-        markBoot('daemon-recovery-slow');
+        deps.markBoot?.('daemon-recovery-slow');
         console.warn(
           `[launcher] daemon (PID ${child.pid}) still booting past 15 s but alive — waiting up to ` +
             `${Math.round(DAEMON_READY_HARD_CEILING_MS / 1000)} s (large session recovery in progress)`,
@@ -709,8 +736,8 @@ function spawnDaemon(deps: DaemonLauncherDeps): Promise<number> {
       readPipeName: () => readPipeNameFromFile(getWmuxDir()),
       readToken: readDaemonAuthToken,
       ping: (pipeName, token) => pingDaemon(pipeName, token, 2000),
-      onPipeFileSeen: () => markBoot('daemon-pipe-file-seen'),
-      onPingOk: () => markBoot('daemon-first-ping-ok'),
+      onPipeFileSeen: () => deps.markBoot?.('daemon-pipe-file-seen'),
+      onPingOk: () => deps.markBoot?.('daemon-first-ping-ok'),
     });
     readiness.promise.then(() => resolve(child.pid!), reject);
 
@@ -799,7 +826,7 @@ function readBootMarker(wmuxDir: string): string | null {
 }
 
 export async function ensureDaemon(deps: DaemonLauncherDeps): Promise<DaemonInfo> {
-  markBoot('daemon-ensure-start');
+  deps.markBoot?.('daemon-ensure-start');
   const wmuxDir = getWmuxDir();
   const pidFile = path.join(wmuxDir, 'daemon.pid');
 
@@ -816,7 +843,7 @@ export async function ensureDaemon(deps: DaemonLauncherDeps): Promise<DaemonInfo
   const livenessOnBoot = existingPid ? checkProcessLiveness(existingPid) : null;
   // Boot-trace only (first-occurrence-wins): isolates the tasklist.exe cost
   // on machines where AV slows process probes. No-op on respawn re-entry.
-  markBoot('daemon-liveness-checked');
+  deps.markBoot?.('daemon-liveness-checked');
   if (existingPid && livenessOnBoot !== 'dead') {
     const token = readDaemonAuthToken();
     const pipeName = readPipeNameFromFile(wmuxDir) || getDaemonPipeName();
@@ -835,7 +862,7 @@ export async function ensureDaemon(deps: DaemonLauncherDeps): Promise<DaemonInfo
         alive = await pingDaemon(pipeName, token);
       }
       if (alive) {
-        markBoot('daemon-reused');
+        deps.markBoot?.('daemon-reused');
         console.log(`[launcher] Daemon already running (PID: ${existingPid})`);
         return { pid: existingPid, authToken: token, pipeName, spawned: false };
       }
@@ -1254,13 +1281,26 @@ export function killVerifiedDaemonPid(
     // refuse the kill — only the cmdline check below is host-independent.
     const expectedImage = path.basename(process.execPath);
     const image = getProcessImageName(pid);
+    // A definite read that does NOT match is inconclusive on its own since
+    // #1001 (a different host may have spawned this daemon) — but it is
+    // still a real, negative signal. Recorded so a null cmdline right after
+    // it can be refused instead of silently combined into "proceed".
+    const imageDefinitivelyMismatched = image !== null && image.toLowerCase() !== expectedImage.toLowerCase();
     if (image === null) {
       if (opts.definitiveOnly) return false; // indeterminate — refuse
-    } else if (image.toLowerCase() !== expectedImage.toLowerCase()) {
-      // Cross-host image mismatch is inconclusive, not definitive — fall
-      // through to the cmdline check instead of refusing outright.
     }
     const cmdline = getProcessCommandLine(pid);
+    // #1019 review flagged these as generic enough to match an unrelated
+    // `node /srv/anything/daemon/index.js` on a recycled PID. Tried
+    // anchoring the single-segment markers with a leading separator
+    // (`/daemon/index.js`) — it does NOT actually narrow anything: that
+    // string is still a substring of `/srv/anything/daemon/index.js`, since
+    // `.includes()` has no path-boundary awareness. A real fix needs to
+    // tokenize the cmdline and compare path segments, not substring-match
+    // the whole string — left as a follow-up (flagged in the PR) rather
+    // than shipping an anchor that reads safer without being safer, and
+    // breaking the cross-host test fixture that (correctly) relies on the
+    // bare 'daemon-bundle' marker in the meantime.
     const markers = [
       'daemon-bundle',
       'daemon/daemon/index.js',
@@ -1269,7 +1309,14 @@ export function killVerifiedDaemonPid(
       'daemon\\index.js',
     ];
     if (cmdline === null) {
-      if (opts.definitiveOnly) return false; // indeterminate — refuse
+      // `definitiveOnly` already refuses on any indeterminate cmdline. Below
+      // that threshold, a null cmdline COMBINED with an already-confirmed
+      // image mismatch is refused too: neither signal alone proves the PID
+      // isn't ours (cross-host support needs that), but having both point
+      // away from "ours" restores the pre-#1001 guarantee that an image
+      // mismatch blocks the kill — it just needs the second, cmdline signal
+      // to also fail to clear it, rather than mismatch alone.
+      if (opts.definitiveOnly || imageDefinitivelyMismatched) return false;
     } else if (!markers.some((m) => cmdline.includes(m))) {
       return false; // definitive: same image but not our daemon script
     }

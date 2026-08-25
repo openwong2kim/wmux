@@ -1,5 +1,6 @@
 import * as path from 'path';
 import { app, dialog } from 'electron';
+import { markBoot } from '../util/bootTrace';
 import {
   classifyTasklistOutput,
   classifyKillOutcome,
@@ -149,6 +150,7 @@ const electronDeps: DaemonLauncherDeps = {
   resolveSpawnedByVersion: () => app.getVersion(),
   askUserToRecoverFromStalePid,
   isElectronHost: () => true,
+  markBoot,
 };
 
 /**
