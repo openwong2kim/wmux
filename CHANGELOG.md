@@ -1,3 +1,29 @@
+## [3.47.1] — 2026-08-26
+
+### Fixed
+
+- **The Polish locale now covers the full UI.** `pl.ts` had drifted to 374 of
+  1464 keys (26%) — the same stalled point every locale but `ko`/`zh` sits at,
+  since a translation only lands when someone can verify it. Settings alone was
+  missing 219 strings; large surfaces like Deck, Channels, and the first-run
+  wizard fell back to raw English inside an otherwise-Polish UI. Filled in the
+  remaining 1091 strings and dropped one orphaned key (`fanout.errPromptRequired`)
+  that no longer exists in `en.ts` — `pl.ts` now matches `en.ts` at 1464 keys
+  exactly, with nothing missing and nothing orphaned. A new coverage test locks
+  key parity and `{placeholder}` consistency against `en.ts` going forward,
+  scoped to `pl` only.
+
+- **Korean inline composition no longer drags backwards while an agent
+  streams.** Typing a multi-syllable word into a pane with output flowing
+  painted the syllable being composed near where the word started, so
+  `정확히 어떻` read `떻확히 어` until the space committed it. The anchor added
+  for Chinese candidate windows pins both IME surfaces to the input line it
+  finds, and fluid Korean typing reaches that path too — commit echoes are
+  output — so the visible preedit was held at a column one pause stale while
+  the caret moved on. The candidate-window pin stays where it was; the inline
+  preedit now follows the caret whenever the cursor is on the anchor's own
+  row. (#1034)
+
 ## [3.47.0] — 2026-08-26
 
 ### Added
