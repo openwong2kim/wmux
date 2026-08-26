@@ -17,6 +17,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { spawn, spawnSync, execFileSync, type ChildProcess } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import {
   buildWaiterScript,
   spawnInstallWaiter,
@@ -295,7 +296,13 @@ describe.skipIf(!onWindows)('concurrent waiters (#980)', () => {
 
     // Deterministic gate, not a sleep: proceed only once A actually HOLDS the
     // mutex — otherwise B could win the race and this test would invert.
-    const mtxName = 'wmux-install-waiter-' + root.replace(/[^A-Za-z0-9]/g, '_');
+    // #1044, coderabbit: the real script now hashes $root with SHA256 instead
+    // of the old lossy character replace. Node's crypto computes the same
+    // digest over the same bytes — .toUpperCase() to match PowerShell's
+    // BitConverter.ToString output, which the real script also strips dashes
+    // from.
+    const mtxHash = createHash('sha256').update(root, 'utf8').digest('hex').toUpperCase();
+    const mtxName = 'wmux-install-waiter-' + mtxHash;
     const deadline = Date.now() + 15_000;
     let held = false;
     while (Date.now() < deadline) {
