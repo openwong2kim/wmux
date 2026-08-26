@@ -519,6 +519,13 @@ describe('#942 inline preedit (Korean IME) — the pin never drags the preedit',
     dom.compView.style.left = '120px';
     dom.textarea.dispatchEvent(new Event('compositionstart'));
     expect(translateOf(dom.textarea)?.dy).toBeCloseTo(8 * 17.6, 6);
+    // The preedit's correction lands on the first compositionupdate, not at
+    // start: xterm's compositionstart writes only textContent and the `active`
+    // class, so at start the element holds no position for this composition
+    // (nothing is painted there either — an empty view is zero-width). This
+    // used to assert at start against coordinates the test had placed itself,
+    // a state xterm never produces (#1032 field follow-up).
+    dom.textarea.dispatchEvent(new Event('compositionupdate'));
     expect(translateOf(dom.compView)?.dy).toBeCloseTo(8 * 17.6, 6);
     handle.dispose();
   });
@@ -1673,6 +1680,93 @@ describe('#1032 wrapped input and scrolling streams', () => {
     expect(translateOf(dom.textarea)?.dx).toBeCloseTo((11 - 2) * 10, 6);
     expect(translateOf(dom.textarea)?.dy).toBeCloseTo(0, 6);
     expect(dom.compView.style.transform).toBe('');
+    handle.dispose();
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+describe('#1032 field follow-up — compositionstart never corrects against the previous composition', () => {
+  beforeEach(() => { document.body.innerHTML = ''; });
+
+  it('a second composition starts with a zero preedit correction, not one measured off the first', () => {
+    // Field report on v3.47.1 (#1032, after the fix landed): a
+    // composition-start record carried `preedit=(24.0,0.0)` next to
+    // `pin=(-72.0,0.0)` — unrelated values, and the same 24.0 recurred on
+    // unrelated compositions. Cause: xterm's compositionstart handler sets
+    // only `textContent`/`active`; `style.left/top` are written in
+    // updateCompositionElements on the FIRST compositionupdate. So at start
+    // the element still carries the previous composition's coordinates.
+    const dom = buildTerminalDom();
+    const t = makeTerminal(dom);
+    const diag = vi.fn();
+    Object.assign(t.state, { baseY: 0, viewportY: 0, cursorY: 30, cursorX: 20 });
+    const place = (r: number, c: number): void => {
+      dom.textarea.style.top = `${r * 17.6}px`;
+      dom.textarea.style.left = `${c * 10}px`;
+      dom.compView.style.top = `${r * 17.6}px`;
+      dom.compView.style.left = `${c * 10}px`;
+    };
+    place(30, 20);
+    const handle = attachImeAnchor(t.terminal, { onCompositionDiagnostic: diag });
+
+    // First composition, at column 20, runs and ends. xterm leaves the
+    // preedit's style.left/top on the element afterwards.
+    dom.textarea.dispatchEvent(new Event('compositionstart'));
+    dom.textarea.dispatchEvent(new Event('compositionupdate'));
+    dom.textarea.dispatchEvent(new Event('compositionend'));
+
+    // The caret has since moved well down the line; xterm repositions the
+    // TEXTAREA on its own (_syncTextArea), but the preedit keeps the stale
+    // coordinates until the next update.
+    Object.assign(t.state, { cursorX: 26 });
+    dom.textarea.style.left = `${26 * 10}px`;
+
+    diag.mockClear();
+    dom.textarea.dispatchEvent(new Event('compositionstart'));
+    // The start record must not report a correction derived from the previous
+    // composition's position.
+    expect(diag.mock.calls[0][0]).toMatchObject({ phase: 'start', preeditDx: 0, preeditDy: 0 });
+    expect(dom.compView.style.transform).toBe('');
+
+    // Once xterm gives the preedit a real position, the correction resumes
+    // exactly as before — the caret is followed, nothing is pinned.
+    place(30, 26);
+    dom.textarea.dispatchEvent(new Event('compositionupdate'));
+    expect(dom.compView.style.transform).toBe('');
+    handle.dispose();
+  });
+
+  it('a caret-sourced pin still lands on the first update after the start is skipped', () => {
+    // Skipping the start must not cost the streaming pin: the first
+    // compositionupdate is where xterm positions the preedit, and that is
+    // where the pin has to reach it.
+    const dom = buildTerminalDom(10, 17.6, 45, 128);
+    const t = makeTerminal(dom, 45, 128);
+    let clock = 1000;
+    const diag = vi.fn();
+    Object.assign(t.state, { baseY: 600, viewportY: 600, cursorY: 40, cursorX: 5 });
+    const handle = attachImeAnchor(t.terminal, { now: () => clock, onCompositionDiagnostic: diag });
+    clock = 2000;
+    Object.assign(t.state, { cursorY: 43, cursorX: 127 });
+    t.onCursorMove.fire(undefined);
+    t.onWriteParsed.fire(undefined);
+    dom.textarea.style.top = `${43 * 17.6}px`;
+    dom.textarea.style.left = `${127 * 10}px`;
+    clock = 2400;
+    t.onWriteParsed.fire(undefined);
+    clock = 2750;
+    t.onWriteParsed.fire(undefined);
+    clock = 2800;
+    dom.textarea.dispatchEvent(new Event('compositionstart'));
+    expect(diag.mock.calls[0][0]).toMatchObject({ src: 'caret', preeditDx: 0, preeditDy: 0 });
+    // xterm positions the preedit on the live (repaint) cursor at the first
+    // update; the cross-row pin pulls it back to the frozen cell.
+    dom.compView.style.top = `${43 * 17.6}px`;
+    dom.compView.style.left = `${127 * 10}px`;
+    dom.textarea.dispatchEvent(new Event('compositionupdate'));
+    expect(translateOf(dom.compView)?.dy).toBeCloseTo((40 - 43) * 17.6, 6);
+    expect(translateOf(dom.compView)?.dx).toBeCloseTo((5 - 127) * 10, 6);
     handle.dispose();
   });
 });

@@ -173,6 +173,18 @@
  * removed, reintroduced on the new path. A same-row cursor is the caret; a
  * cross-row cursor is repaint state (see preeditFollowsLiveCursor).
  *
+ * Timing note, learned from the #1032 field log: xterm positions the preedit
+ * ONLY in `updateCompositionElements`, which it calls from `compositionupdate`.
+ * Its `compositionstart` handler sets `textContent = ''` and the `active`
+ * class and nothing else, so at start the element still carries the PREVIOUS
+ * composition's `style.left/top`. Correcting against those produced a
+ * start-record `preedit` offset that recurred identically across unrelated
+ * compositions — inert on screen (an empty view has no padding or min-width,
+ * so it is zero-width until the first update fills it) but indistinguishable
+ * in a log from a real drag, which defeats the point of a diagnostic that
+ * exists to be read by reporters. The preedit correction therefore begins at
+ * the first update, where the position is real.
+ *
  * The correction is computed as `desired - actual`, where `actual` is read back
  * from the styles xterm wrote rather than re-derived from the buffer. That
  * matters for three reasons: `_syncTextArea` early-returns while composing (so
@@ -1038,9 +1050,21 @@ export function attachImeAnchor(
    * follow would drag the composing syllable around the screen (2-model
    * panel finding on the first cut of this fix).
    */
-  const syncPreedit = (): void => {
+  const syncPreedit = (atStart = false): void => {
     if (!preeditTransform || !compositionView) return;
-    if (!composing) {
+    // `atStart`: xterm has not positioned the preedit for THIS composition yet.
+    // Its compositionstart handler only sets `textContent = ''` and the
+    // `active` class; `style.left/top` are written in updateCompositionElements,
+    // which runs on the first compositionupdate. So the coordinates still on
+    // the element belong to the PREVIOUS composition, and a correction measured
+    // against them is meaningless — field-reported on #1032 as a
+    // composition-start record carrying `preedit=(24.0,0.0)` that recurred
+    // identically across unrelated compositions, which reads like a live drag
+    // and is not one. Nothing is painted either: an empty `.composition-view`
+    // has no padding or min-width in xterm's stylesheet, so it is zero-width
+    // until the first update fills it. Clear the transform and wait for the
+    // update that gives the preedit a real position.
+    if (!composing || atStart) {
       preeditTransform.set(0, 0);
       return;
     }
@@ -1163,7 +1187,7 @@ export function attachImeAnchor(
       ? pointFromCell(sel.absRow, sel.col, b, geometry)
       : null;
     sync();
-    syncPreedit();
+    syncPreedit(true);
     emitDiagnostic('start');
   };
 
