@@ -1770,3 +1770,53 @@ describe('#1032 field follow-up — compositionstart never corrects against the 
     handle.dispose();
   });
 });
+
+// ---------------------------------------------------------------------------
+
+describe('#1040 follow-up — the deferred sync is disarmed at compositionstart', () => {
+  beforeEach(() => { document.body.innerHTML = ''; });
+
+  it('a deferred sync from a composition that never ended cannot fire into the next one', () => {
+    // Review finding on the #1040 round: compositionupdate schedules a
+    // setTimeout(0) re-sync (mirroring xterm's own recursive reposition), and
+    // only compositionEND cleared it. A composition that ends without its
+    // compositionend event (focus loss mid-composition) leaves that timer
+    // armed, and it would fire during the NEXT composition's pre-update
+    // window — correcting against coordinates xterm wrote for the PREVIOUS
+    // composition, the exact stale-anchor class this file exists to prevent.
+    // compositionstart now disarms it, symmetric with the end handler.
+    vi.useFakeTimers();
+    try {
+      const dom = buildTerminalDom();
+      const t = makeTerminal(dom);
+      Object.assign(t.state, { baseY: 0, viewportY: 0, cursorY: 30, cursorX: 20 });
+      const place = (r: number, c: number): void => {
+        dom.textarea.style.top = `${r * 17.6}px`;
+        dom.textarea.style.left = `${c * 10}px`;
+        dom.compView.style.top = `${r * 17.6}px`;
+        dom.compView.style.left = `${c * 10}px`;
+      };
+      place(30, 20);
+      const handle = attachImeAnchor(t.terminal);
+
+      // Composition 1: the update arms the deferred re-sync. No compositionend.
+      dom.textarea.dispatchEvent(new Event('compositionstart'));
+      dom.textarea.dispatchEvent(new Event('compositionupdate'));
+
+      // Composition 2 begins; the caret has moved on, and xterm has not yet
+      // positioned the preedit for it (that happens on its first update).
+      Object.assign(t.state, { cursorX: 26 });
+      dom.textarea.style.left = `${26 * 10}px`;
+      dom.textarea.dispatchEvent(new Event('compositionstart'));
+
+      // The stale timer must be gone. If it fired here, it would compute
+      // desired(col 26) - actual(col 20) against the previous composition's
+      // coordinates and paint a correction xterm never asked for.
+      vi.runOnlyPendingTimers();
+      expect(dom.compView.style.transform).toBe('');
+      handle.dispose();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});

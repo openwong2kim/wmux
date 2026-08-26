@@ -1160,6 +1160,18 @@ export function attachImeAnchor(
     // the cursor. The cell it pins to is the resting-tracker selection: the
     // instantaneous cursor when it is at rest, the last resting cell when the
     // composition starts inside a repaint burst (cause 3).
+    //
+    // First, disarm a deferred update-sync left over from the PREVIOUS
+    // composition (review finding on the #1040 round): its closure would
+    // correct against coordinates xterm has not yet rewritten for this
+    // composition — the stale-anchor class this module exists to prevent.
+    // The end handler already disarms it, but a composition that dies
+    // without a compositionend event (focus loss mid-composition) leaves it
+    // armed, and start is then the only remaining gate.
+    if (pendingCompositionSync !== null) {
+      clearTimeout(pendingCompositionSync);
+      pendingCompositionSync = null;
+    }
     composing = true;
     const b = bufferState();
     // #1016: while output flows, the cursor never visits the input caret

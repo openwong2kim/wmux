@@ -19,6 +19,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import net from 'node:net';
+import { parseBootMarker } from '../../shared/daemon/daemonLauncherCore';
 
 const SUFFIX = '-i546-test';
 const dir = path.join(os.homedir(), `.wmux${SUFFIX}`);
@@ -61,6 +62,8 @@ describe.skipIf(!hasBundle)('#546 boot marker lifecycle (real daemon)', () => {
       env: { ...process.env, WMUX_DATA_SUFFIX: SUFFIX },
       stdio: ['ignore', 'ignore', 'ignore'],
     });
+    const spawnedPid = child.pid;
+    expect(spawnedPid, 'spawn returned no pid').toBeDefined();
 
     // (1) The marker appears, and names the daemon's own PID. Poll densely —
     // boot with zero sessions to recover is ~300 ms, and the marker is written
@@ -74,12 +77,15 @@ describe.skipIf(!hasBundle)('#546 boot marker lifecycle (real daemon)', () => {
       try {
         const raw = fs.readFileSync(markerFile, 'utf-8');
         // `writeFileSync` creates the file and then writes it, so a 2 ms poll
-        // can win that race and read the empty intermediate — which parsed to
-        // NaN and reddened `validate` on PRs that never touch the daemon.
-        // An empty read is not "the marker appeared"; it is the same "not yet"
-        // as ENOENT, and production agrees: parseBootMarker() rejects anything
-        // unparseable rather than treating it as a boot claim.
-        if (raw.trim() !== '') {
+        // can win that race and read a not-yet-complete intermediate — which
+        // parsed to NaN and reddened `validate` on PRs that never touch the
+        // daemon. The production parser is the predicate here, not an
+        // approximation of it: an empty read AND a torn one ("90" of "9052")
+        // are equally unparseable boot claims, and both re-poll as "not yet",
+        // exactly the way parseBootMarker() refuses them in the launcher.
+        // (3-way review consensus on the first cut, which skipped only empty
+        // reads and let a torn read through to the PID assertion below.)
+        if (spawnedPid !== undefined && parseBootMarker(raw, spawnedPid)) {
           sawMarker = raw;
           break;
         }
