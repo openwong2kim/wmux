@@ -93,6 +93,7 @@ import { setConfiguredFirstPartyClients } from './mcp/firstParty';
 import { readConfiguredFirstPartyClients } from './mcp/firstPartyConfig';
 import { ClaudeWorker } from './a2a/ClaudeWorker';
 import { AutoUpdater } from './updater/AutoUpdater';
+import { warnOnInstallIntegrityGap } from './updater/installIntegrity';
 import { readDaemonPid } from './updater/installTeardown';
 import { McpRegistrar } from './mcp/McpRegistrar';
 import { BrokerSupervisor, isMcpBrokerEnabled } from './mcp/BrokerSupervisor';
@@ -429,6 +430,16 @@ const autoUpdater = new AutoUpdater(() => mainWindow, {
   onInstallRequiresFullShutdown: () => { fullShutdownRequested = true; },
   getDaemonPid: () => readDaemonPid(getWmuxDir()),
 });
+
+// #1046: a Squirrel install can half-complete (an AV lock race inside the
+// installer aborts it mid-copy) and leave an installation that RUNS but can
+// never update or uninstall -- Update.exe was simply never written. Detect
+// that shape once the app is up and say so, instead of letting every later
+// update fail with no visible reason. The dead-on-arrival half of the class
+// (icudtl.dat missing) cannot reach any in-app check by definition; the
+// install waiter's post-exit verification (installTeardown.ts) covers it on
+// the update path.
+void app.whenReady().then(() => { try { warnOnInstallIntegrityGap(); } catch { /* best-effort */ } });
 
 const rpcRouter = new RpcRouter();
 markBoot('pre-pipe-server-ctor');

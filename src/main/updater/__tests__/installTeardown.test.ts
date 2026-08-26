@@ -512,3 +512,47 @@ describe('buildWaiterScript — one waiter per install root (#980, coderabbit)',
     expect(a).not.toBe(b);
   });
 });
+
+describe('buildWaiterScript — post-exit install verification (#1046)', () => {
+  const PLAN46 = {
+    pids: [4242],
+    setupExePath: 'C:/t/Setup.exe',
+    installRoot: 'C:/Users/u/AppData/Local/wmux',
+    abortMarkerPath: 'C:/t/marker.txt',
+    lockBudgetMs: 60000,
+  };
+  const script = (): string => buildWaiterScript(PLAN46) ?? '';
+
+  it('captures Setup.exe with -PassThru and only judges after a real exit', () => {
+    const s = script();
+    const start = s.indexOf('Start-Process -FilePath $setup -PassThru');
+    expect(start).toBeGreaterThan(-1);
+    const wait = s.indexOf('$setupProc.WaitForExit(600000)');
+    expect(wait).toBeGreaterThan(start);
+    // An installer still running at the deadline means "cannot judge" —
+    // exit 0, exactly the pre-#1046 behavior. The verification can only ADD
+    // a warning, never invent one about an install still in progress.
+    expect(s.indexOf('if (-not $setupDone) { exit 0 }')).toBeGreaterThan(wait);
+  });
+
+  it('checks exactly the two files whose absence is the #1046 corpse, after the launch', () => {
+    const s = script();
+    const start = s.indexOf('Start-Process -FilePath $setup');
+    expect(s.indexOf("Join-Path $root 'Update.exe'")).toBeGreaterThan(start);
+    expect(s.indexOf("'icudtl.dat'")).toBeGreaterThan(start);
+    expect(s).toContain('install-aborted: the installer exited but left an incomplete installation');
+  });
+
+  it('fails additively: guarded marker write, guarded MessageBox, its own exit code', () => {
+    const s = script();
+    // The MessageBox fires only when the Forms assembly proved loadable for
+    // the wait window, and a throw inside it is swallowed — a machine that
+    // cannot show UI still gets the marker, and one that cannot write the
+    // marker still gets the box.
+    expect(s).toMatch(/if \(\$formsLoaded\) \{ try \{ \[System\.Windows\.Forms\.MessageBox\]::Show\(/);
+    const formsTrue = s.indexOf('$formsLoaded = $true');
+    expect(formsTrue).toBeGreaterThan(s.indexOf('Add-Type -AssemblyName System.Windows.Forms'));
+    expect(formsTrue).toBeLessThan(s.indexOf('Add-Type -AssemblyName System.Drawing'));
+    expect(s.trimEnd().endsWith('exit 6')).toBe(true);
+  });
+});
