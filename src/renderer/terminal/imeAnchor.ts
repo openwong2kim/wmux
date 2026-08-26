@@ -159,10 +159,19 @@
  * syncPreedit) so it lands on the painted caret when the viewport is scrolled
  * (cause 1 applies to it too) without chasing mid-repaint transient cursors.
  * One exception (#951 field report on the first quiet-caret build): when the
- * freeze cell came from the quiet caret, the live cursor is the streaming
- * agent's repaint cursor, so the preedit pins to the same frozen point as the
- * textarea — otherwise the pinyin rides the agent's output rows while its
- * candidate list sits at the input line, and the two IME surfaces tear apart.
+ * freeze cell came from the quiet caret and the live cursor sits on some
+ * OTHER screen row — the streaming agent's repaint cursor — the preedit pins
+ * to the same frozen point as the textarea; otherwise the pinyin rides the
+ * agent's output rows while its candidate list sits at the input line, and
+ * the two IME surfaces tear apart. The exception is row-gated (#1032, the
+ * first ship of it was not): fluid Korean typing reaches the streaming
+ * branch too — each committed syllable's echo is output, and sub-quiet gaps
+ * sustain the epoch — and there the live cursor IS the caret advancing along
+ * the anchor's own row while the snapshot's column is one quiet-span stale.
+ * Pinning the preedit there repainted the composing syllable over text
+ * already committed (typing 정확히 어떻 read 떻확히 어) — the very drag #945
+ * removed, reintroduced on the new path. A same-row cursor is the caret; a
+ * cross-row cursor is repaint state (see preeditFollowsLiveCursor).
  *
  * The correction is computed as `desired - actual`, where `actual` is read back
  * from the styles xterm wrote rather than re-derived from the buffer. That
@@ -690,6 +699,30 @@ export function selectFreezeCell(
   return { absRow: state.lastRestingAbsRow, col: state.lastRestingCol, src: 'resting', held, restAge, outputGap, caretAge, edge };
 }
 
+/**
+ * Whether the inline preedit keeps following the live cursor for a
+ * composition whose textarea pin came from the streaming branch (#1032).
+ *
+ * `caret`/`marker` freeze cells answer a line-level question — which row the
+ * agent's input line is on — with a column that can be one quiet-span stale.
+ * The inline preedit needs the character-level answer: where in that line the
+ * user is NOW. The live cursor gives that answer exactly when it sits on the
+ * anchor's own screen row (commit echoes advance it along the input line —
+ * the field-clean v3.46.0 behavior for Korean), and is repaint state when it
+ * sits anywhere else (#951: screen corners, output rows — following it there
+ * tears the preedit away from the candidate window). Rows are compared
+ * screen-relative, like the caret snapshot itself: streaming output scrolls
+ * the buffer under the input line while its screen row stays put.
+ */
+export function preeditFollowsLiveCursor(
+  src: FreezeCellSource,
+  selRelRow: number,
+  cursorRelRow: number,
+): boolean {
+  if (src !== 'caret' && src !== 'marker') return true;
+  return cursorRelRow === selRelRow;
+}
+
 // ---------------------------------------------------------------------------
 // Runtime wiring
 // ---------------------------------------------------------------------------
@@ -929,13 +962,24 @@ export function attachImeAnchor(
    *
    * The one exception is a composition whose freeze cell came from the quiet
    * caret or the content marker (`src=caret`/`src=marker`, #951/#953/#1016
-   * field reports): there the live cursor IS the streaming agent's repaint
+   * field reports) while the live cursor sits on a DIFFERENT screen row than
+   * the frozen cell: there the cursor is the streaming agent's repaint
    * cursor, and following it split the two IME surfaces apart — the candidate
    * window pinned at the input line while the inline pinyin chased the
    * agent's output rows. Both surfaces must anchor to the same cell, so those
    * compositions pin the preedit to the same frozen point as the textarea.
-   * The quiet case is untouched: there the selection is instant/resting and
-   * the live follow stays (#942 stays fixed).
+   * A live cursor on the SAME screen row keeps the live follow (#1032): fluid
+   * Korean typing reaches the streaming branch too — commit echoes are
+   * output, and sub-quiet gaps sustain the epoch — but there the cursor is
+   * the true caret advancing along the input line while the snapshot's column
+   * is one quiet-span stale, and pinning to it painted the composing syllable
+   * over committed text (the very drag #945 removed, reintroduced on the new
+   * path). The row test is preeditFollowsLiveCursor, evaluated per
+   * composition event, so a cursor that leaves the row mid-composition (an
+   * agent chunk landing between keystrokes) pins for that event and resumes
+   * following when it returns. The quiet case is untouched: there the
+   * selection is instant/resting and the live follow stays (#942 stays
+   * fixed).
    *
    * Deliberately called only from the composition handlers, NOT from
    * onRender/onScroll: at a composition event xterm has just written the
@@ -956,9 +1000,12 @@ export function attachImeAnchor(
     if (!isUsableGeometry(geometry)) return;
     const actualPreedit = readStyledPoint(compositionView);
     if (!actualPreedit) return;
-    const desired = frozen !== null && (lastSel?.src === 'caret' || lastSel?.src === 'marker')
+    const b = bufferState();
+    const desired = frozen !== null
+      && lastSel !== null
+      && !preeditFollowsLiveCursor(lastSel.src, lastSelRelY, b.cursorY)
       ? frozen
-      : paintedCursorPosition(bufferState(), geometry);
+      : paintedCursorPosition(b, geometry);
     const c = computeImeAnchorCorrection(desired, actualPreedit);
     preeditTransform.set(c.dx, c.dy);
   };

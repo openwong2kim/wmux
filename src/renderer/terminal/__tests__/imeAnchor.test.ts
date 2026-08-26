@@ -27,6 +27,7 @@ import {
   paintedCursorPosition,
   parsePxOrNull,
   pointFromCell,
+  preeditFollowsLiveCursor,
   resetRestingTracker,
   RESTING_MS,
   scanClaudeInputLine,
@@ -1405,5 +1406,167 @@ describe('#874 upstream contracts', () => {
     expect(update, 'updateCompositionElements not found — xterm internals moved').not.toBeNull();
     expect(update![0]).toContain('const cursorTop = this._bufferService.buffer.y *');
     expect(update![0]).not.toContain('ydisp');
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+describe('#1032 row-gated preedit follow — the streaming pin never drags Korean typing', () => {
+  beforeEach(() => { document.body.innerHTML = ''; });
+
+  it('pure: only a cross-row cursor pins a caret/marker composition', () => {
+    // Quiet-path sources always follow (the #942 contract, untouched).
+    expect(preeditFollowsLiveCursor('instant', 34, 12)).toBe(true);
+    expect(preeditFollowsLiveCursor('resting', 34, 12)).toBe(true);
+    expect(preeditFollowsLiveCursor('scrolled_out', 34, 12)).toBe(true);
+    // Streaming-path sources: same screen row = the caret, follow it;
+    // any other row = the agent's repaint cursor, pin.
+    expect(preeditFollowsLiveCursor('caret', 34, 34)).toBe(true);
+    expect(preeditFollowsLiveCursor('caret', 34, 43)).toBe(false);
+    expect(preeditFollowsLiveCursor('marker', 31, 31)).toBe(true);
+    expect(preeditFollowsLiveCursor('marker', 31, 20)).toBe(false);
+  });
+
+  /** The #1032 field geometry (2026-08-26 correction comment): the quiet
+   *  caret snapshot holds column 11 of the input row (screen row 34) while
+   *  the user types a fresh word from column 2 on that same row. Commit
+   *  echoes keep every output gap under OUTPUT_QUIET_MS for longer than
+   *  STREAM_SUSTAIN_MS, so every composition takes the streaming branch. */
+  function fluidKoreanTyping(getAgentSlug?: () => string | undefined): {
+    dom: ReturnType<typeof buildTerminalDom>;
+    t: ReturnType<typeof makeTerminal>;
+    diag: ReturnType<typeof vi.fn>;
+    handle: { dispose(): void };
+    setClock: (v: number) => void;
+    positionChildren: (r: number, c: number) => void;
+  } {
+    const dom = buildTerminalDom(10, 17.6, 45, 128);
+    const t = makeTerminal(dom, 45, 128);
+    let clock = 1000;
+    const diag = vi.fn();
+    Object.assign(t.state, { baseY: 600, viewportY: 600, cursorY: 34, cursorX: 11 });
+    const handle = attachImeAnchor(t.terminal, {
+      now: () => clock,
+      getAgentSlug,
+      onCompositionDiagnostic: diag,
+    });
+    // The chunk at 2000 ends a 1000ms quiet span: snapshot = (11,34). The
+    // cursor moved to column 2 in the same chunk (fresh word), and the echo
+    // bursts at 2400/2750 sustain the epoch past STREAM_SUSTAIN_MS.
+    clock = 2000;
+    Object.assign(t.state, { cursorY: 34, cursorX: 2 });
+    t.onCursorMove.fire(undefined);
+    t.onWriteParsed.fire(undefined);
+    clock = 2400;
+    t.onWriteParsed.fire(undefined);
+    clock = 2750;
+    t.onWriteParsed.fire(undefined);
+    clock = 2800;
+    const positionChildren = (r: number, c: number): void => {
+      dom.textarea.style.top = `${r * 17.6}px`;
+      dom.textarea.style.left = `${c * 10}px`;
+      dom.compView.style.top = `${r * 17.6}px`;
+      dom.compView.style.left = `${c * 10}px`;
+    };
+    positionChildren(34, 2);
+    return { dom, t, diag, handle, setClock: (v) => { clock = v; }, positionChildren };
+  }
+
+  it('fluid typing mid-stream: the preedit follows the caret along the input row, the textarea stays pinned', () => {
+    // The regression's exact numbers: pin.x = (sel_col - cursor_col) x 8px on
+    // every record — a correction sized to cancel the live position and glue
+    // the preedit to the stale snapshot column, so 정확히 어떻 read 떻확히 어.
+    // The pin belongs on the textarea alone (#945's split): the preedit must
+    // ride the advancing caret.
+    const { dom, t, diag, handle, positionChildren } = fluidKoreanTyping();
+    dom.textarea.dispatchEvent(new Event('compositionstart'));
+    expect(diag.mock.calls[0][0]).toMatchObject({
+      src: 'caret', selY: 34, selX: 11, cursorY: 34, cursorX: 2,
+      preeditDx: 0, preeditDy: 0,
+    });
+    // Candidate-window anchor: still frozen to the snapshot cell (#951).
+    expect(translateOf(dom.textarea)?.dx).toBeCloseTo((11 - 2) * 10, 6);
+    // Inline preedit: the live cursor is ON the anchor row — it IS the caret.
+    expect(dom.compView.style.transform).toBe('');
+    // A committed syllable's echo advances the caret two cells; xterm
+    // re-anchors both children there on the next compositionupdate.
+    Object.assign(t.state, { cursorX: 4 });
+    positionChildren(34, 4);
+    dom.textarea.dispatchEvent(new Event('compositionupdate'));
+    expect(translateOf(dom.textarea)?.dx).toBeCloseTo((11 - 4) * 10, 6);
+    expect(dom.compView.style.transform).toBe('');
+    handle.dispose();
+  });
+
+  it('a cross-row repaint cursor mid-composition pins the preedit, and the follow resumes on return', () => {
+    // The #951 tear stays fixed: an agent chunk between keystrokes parks the
+    // cursor on an output row, and following THAT cursor would drag the
+    // pinyin/preedit onto the agent's output. The pin wins for exactly that
+    // event, per-event, and the follow resumes once the cursor is back.
+    const { dom, t, handle, positionChildren } = fluidKoreanTyping();
+    dom.textarea.dispatchEvent(new Event('compositionstart'));
+    expect(dom.compView.style.transform).toBe('');
+    Object.assign(t.state, { cursorY: 20, cursorX: 100 });
+    positionChildren(20, 100);
+    dom.textarea.dispatchEvent(new Event('compositionupdate'));
+    expect(translateOf(dom.compView)?.dx).toBeCloseTo((11 - 100) * 10, 6);
+    expect(translateOf(dom.compView)?.dy).toBeCloseTo((34 - 20) * 17.6, 6);
+    expect(translateOf(dom.compView)).toEqual(translateOf(dom.textarea));
+    Object.assign(t.state, { cursorY: 34, cursorX: 4 });
+    positionChildren(34, 4);
+    dom.textarea.dispatchEvent(new Event('compositionupdate'));
+    expect(dom.compView.style.transform).toBe('');
+    expect(translateOf(dom.textarea)?.dx).toBeCloseTo((11 - 4) * 10, 6);
+    handle.dispose();
+  });
+
+  it('a marker-sourced composition follows the caret inside the input box the same way', () => {
+    // Korean typing while Claude Code streams (#874 RC-C population): the
+    // content scan pins the candidate anchor to the input line's start, but
+    // the caret typing inside the box is on the marker's own row — the
+    // preedit must track it, not the box's first column.
+    const dom = buildTerminalDom(10, 17.6, 45, 128);
+    const t = makeTerminal(dom, 45, 128);
+    let clock = 1000;
+    const diag = vi.fn();
+    Object.assign(t.state, { baseY: 600, viewportY: 600, cursorY: 40, cursorX: 5 });
+    const content: string[] = [];
+    for (let i = 0; i < 45; i++) content.push(`output line ${i}`);
+    content[30] = '╭──────────────╮';
+    content[31] = '│ > 정확히     │';
+    content[32] = '╰──────────────╯';
+    t.terminal.buffer.active.getLine = (y: number) => {
+      const line = content[y - t.state.baseY];
+      return line === undefined ? undefined : { translateToString: () => line };
+    };
+    const handle = attachImeAnchor(t.terminal, {
+      now: () => clock,
+      getAgentSlug: () => 'claude',
+      onCompositionDiagnostic: diag,
+    });
+    clock = 2000;
+    // Claude's box repaint leaves the cursor after the typed text, ON the
+    // prompt row.
+    Object.assign(t.state, { cursorY: 31, cursorX: 10 });
+    t.onCursorMove.fire(undefined);
+    t.onWriteParsed.fire(undefined);
+    clock = 2400;
+    t.onWriteParsed.fire(undefined);
+    clock = 2750;
+    t.onWriteParsed.fire(undefined);
+    clock = 2800;
+    dom.textarea.style.top = `${31 * 17.6}px`;
+    dom.textarea.style.left = `${10 * 10}px`;
+    dom.compView.style.top = `${31 * 17.6}px`;
+    dom.compView.style.left = `${10 * 10}px`;
+    dom.textarea.dispatchEvent(new Event('compositionstart'));
+    expect(diag.mock.calls[0][0]).toMatchObject({
+      src: 'marker', selY: 31, selX: 4, cursorY: 31, cursorX: 10,
+    });
+    // Candidate anchor at the input's start (the marker's line-level answer)…
+    expect(translateOf(dom.textarea)?.dx).toBeCloseTo((4 - 10) * 10, 6);
+    // …while the preedit stays on the caret (the character-level answer).
+    expect(dom.compView.style.transform).toBe('');
+    handle.dispose();
   });
 });

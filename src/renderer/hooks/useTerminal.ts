@@ -1213,8 +1213,8 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         if (imeAnchorLogsLeft[budget] <= 0) return;
         imeAnchorLogsLeft[budget] -= 1;
         // Mirrored into the main-side log file by src/main/index.ts's
-        // console-message listener, so the user can share it. The "5" in the
-        // tag marks the input-line marker build (#1016) so a shared log is
+        // console-message listener, so the user can share it. The "6" in the
+        // tag marks the row-gated preedit-follow build (#1032) so a shared log is
         // unambiguous about which release produced it. src/held/restAge/sel
         // are the cause-3 discriminator: src=resting means the composition
         // started mid-repaint and the anchor used the last resting cell;
@@ -1225,7 +1225,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         // textarea correction, preedit= the live composition-view
         // correction.
         console.info(
-          `[wmux:ime-anchor5] pty=${ptyIdRef.current} composition-${phase} ybase=${baseY} ydisp=${viewportY} ` +
+          `[wmux:ime-anchor6] pty=${ptyIdRef.current} composition-${phase} ybase=${baseY} ydisp=${viewportY} ` +
           `cursor=(${cursorX},${cursorY}) sel=(${selX},${selY}) src=${src}${edge ? ' edge=1' : ''} held=${held.toFixed(0)}ms ` +
           `restAge=${restAge.toFixed(0)}ms gap=${outputGap.toFixed(0)}ms caretAge=${caretAge.toFixed(0)}ms ` +
           `cellHeight=${cellHeight.toFixed(2)} ` +
