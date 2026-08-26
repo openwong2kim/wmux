@@ -302,15 +302,56 @@ export function buildWaiterScript(plan: WaiterPlan): string | null {
     //
     // A named mutex gives exactly the wanted semantics for free: it exists
     // only while some process holds a handle to it, so a LIVE earlier waiter
-    // blocks the newcomer (exit 5, silently — the incumbent owns the install
-    // and the marker), while a dead or finished one leaves nothing behind and
-    // the newcomer proceeds. No state file to go stale, nothing to clean up.
-    // The name embeds the install root so two different installations (per
-    // user, portable copies) can never block each other.
+    // blocks the newcomer (exit 5 — the incumbent owns the install; the
+    // newcomer writes the marker for whichever boot reads it next, #1043),
+    // while a dead or finished one leaves nothing behind and the newcomer
+    // proceeds. No state file to go stale, nothing to clean up. The name
+    // embeds the install root so two different installations (per user,
+    // portable copies) can never block each other.
     `$mtxName = 'wmux-install-waiter-' + ($root -replace '[^A-Za-z0-9]', '_')`,
     `$mtxCreated = $false`,
     `$mtx = New-Object System.Threading.Mutex -ArgumentList $true, $mtxName, ([ref]$mtxCreated)`,
-    `if (-not $mtxCreated) { exit 5 }`,
+    // #1043 — this used to be a bare `exit 5`: correct (it stops a second
+    // Squirrel install from racing the first), but silent. A repeat click
+    // while an earlier waiter is still alive produced literally nothing —
+    // no marker, so nothing for the app to report on the boot that follows —
+    // which reads exactly like "the button did nothing" even though the
+    // mutex did its job. Writing the marker here reuses the SAME pull-based
+    // notice AppLayout's useRefusedInstallNotice already shows at every boot
+    // (#866) instead of inventing a second reporting path for one branch.
+    `if (-not $mtxCreated) {`,
+    `  Set-Content -LiteralPath $marker -Value 'install-aborted: another install is already in progress' -Encoding utf8`,
+    `  exit 5`,
+    `}`,
+    // #1043 — best-effort "please wait" indicator for the whole silent
+    // window below. Deliberately outside every correctness path: every use
+    // of $form is null-checked and wrapped in its own try/catch, so a
+    // machine where Add-Type/WinForms misbehaves (a locked-down policy, a
+    // server SKU with no display subsystem) degrades to exactly today's
+    // silent-but-correct wait, never to a failed install. It lives here and
+    // not in the Electron app for the same reason the waiter itself does
+    // (see spawnInstallWaiter): the app's own process tree is precisely what
+    // has to fully let go of the install root, so anything meant to render
+    // for the whole wait has to run outside that tree.
+    `$form = $null`,
+    `try {`,
+    `  Add-Type -AssemblyName System.Windows.Forms`,
+    `  Add-Type -AssemblyName System.Drawing`,
+    `  $form = New-Object System.Windows.Forms.Form`,
+    `  $form.Text = 'wmux update'`,
+    `  $form.FormBorderStyle = 'FixedToolWindow'`,
+    `  $form.StartPosition = 'CenterScreen'`,
+    `  $form.TopMost = $true`,
+    `  $form.ShowInTaskbar = $false`,
+    `  $form.ClientSize = New-Object System.Drawing.Size(360, 90)`,
+    `  $label = New-Object System.Windows.Forms.Label`,
+    `  $label.Text = "Installing the wmux update...\`nThis window closes on its own."`,
+    `  $label.Dock = 'Fill'`,
+    `  $label.TextAlign = 'MiddleCenter'`,
+    `  $form.Controls.Add($label)`,
+    `  $form.Show()`,
+    `  [System.Windows.Forms.Application]::DoEvents()`,
+    `} catch { $form = $null }`,
     // Capture HANDLES first. GetProcessById opens a handle now, so a later pid
     // recycle cannot make an exited process look alive (or a stranger's
     // process look like ours).
@@ -329,14 +370,30 @@ export function buildWaiterScript(plan: WaiterPlan): string | null {
     // below swallows it, and every handle is skipped without ever setting
     // $stuck. The wait silently becomes a no-op on exactly the long-uptime
     // machines that most need it. A Stopwatch is monotonic and 64-bit (#980).
+    //
+    // #1043 — sliced into a poll instead of one long WaitForExit so the form
+    // above can stay responsive (DoEvents needs to run periodically on THIS
+    // thread; a single multi-second blocking wait would freeze it for the
+    // whole slice). Same deadline, same "did every handle exit in budget"
+    // contract as before — only the granularity changed. A WaitForExit
+    // exception still reads as "this handle is not the blocker" ($exited
+    // stays true), matching the original catch-and-continue.
     `$clock = [System.Diagnostics.Stopwatch]::StartNew()`,
     `$stuck = $false`,
     `foreach ($h in $handles) {`,
-    `  $left = $budget - $clock.ElapsedMilliseconds`,
-    `  if ($left -le 0) { $stuck = $true; break }`,
-    `  try { if (-not $h.WaitForExit([int]$left)) { $stuck = $true; break } } catch { }`,
+    `  while ($true) {`,
+    `    $left = $budget - $clock.ElapsedMilliseconds`,
+    `    if ($left -le 0) { $stuck = $true; break }`,
+    `    $slice = [Math]::Min(200, $left)`,
+    `    $exited = $true`,
+    `    try { $exited = $h.WaitForExit([int]$slice) } catch { }`,
+    `    if ($exited) { break }`,
+    `    if ($form) { try { [System.Windows.Forms.Application]::DoEvents() } catch { } }`,
+    `  }`,
+    `  if ($stuck) { break }`,
     `}`,
     `if ($stuck) {`,
+    `  if ($form) { try { $form.Close() } catch { } }`,
     `  Set-Content -LiteralPath $marker -Value 'install-aborted: a process under the install root would not exit' -Encoding utf8`,
     `  exit 3`,
     `}`,
@@ -362,13 +419,20 @@ export function buildWaiterScript(plan: WaiterPlan): string | null {
     // installer runs at all, so a wrapped counter here does not merely mistime
     // it — it collapses the whole budget into a single pass.
     `$lockClock = [System.Diagnostics.Stopwatch]::StartNew()`,
-    `while ((Test-RootLocked) -and ($lockClock.ElapsedMilliseconds -lt $budget)) { Start-Sleep -Milliseconds 500 }`,
+    `while ((Test-RootLocked) -and ($lockClock.ElapsedMilliseconds -lt $budget)) {`,
+    `  if ($form) { try { [System.Windows.Forms.Application]::DoEvents() } catch { } }`,
+    `  Start-Sleep -Milliseconds 500`,
+    `}`,
     `if (Test-RootLocked) {`,
     // Refusing leaves a working old version. Launching anyway is precisely the
     // failure this module exists to prevent, so there is no "best effort" here.
+    `  if ($form) { try { $form.Close() } catch { } }`,
     `  Set-Content -LiteralPath $marker -Value 'install-aborted: install root still locked' -Encoding utf8`,
     `  exit 2`,
     `}`,
+    // The wait is over — Squirrel's own UI takes it from here once
+    // Start-Process below succeeds, so ours has nothing left to say.
+    `if ($form) { try { $form.Close() } catch { } }`,
     // A verified installer can still be gone by now — quarantined by AV,
     // swept by a temp cleaner. Under SilentlyContinue that failure is invisible
     // and the script would exit 0, leaving a user who just watched wmux quit

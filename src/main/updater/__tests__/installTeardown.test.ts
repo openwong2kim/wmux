@@ -86,6 +86,65 @@ describe('buildWaiterScript — ordering is the whole contract', () => {
     expect(buildWaiterScript({ ...PLAN, pids: [-3] })).toBeNull();
     expect(buildWaiterScript({ ...PLAN, pids: [1.5] })).toBeNull();
   });
+
+  // #1043 — a live earlier waiter used to make a repeat click a silent no-op:
+  // `exit 5` fired before the marker path was ever reached, so the boot that
+  // followed had nothing to report. The mutex still has to win the race (a
+  // second Squirrel install against the same root is the #866 corruption this
+  // whole module exists to prevent) — only the silence was the bug.
+  it('writes a marker before refusing a second concurrent waiter', () => {
+    const s = buildWaiterScript(PLAN) ?? '';
+    const mutexCheck = s.indexOf('if (-not $mtxCreated)');
+    const marker = s.indexOf('another install is already in progress');
+    const exit5 = s.indexOf('exit 5');
+    expect(mutexCheck).toBeGreaterThan(-1);
+    expect(marker).toBeGreaterThan(mutexCheck);
+    expect(exit5).toBeGreaterThan(marker);
+  });
+
+  // #1043 — a best-effort "please wait" indicator for the otherwise-silent
+  // 1-2 minute window. Structural lock only: the WinForms message loop and
+  // its interaction with a real Windows desktop cannot run on CI regardless
+  // of platform (there is no display), so this pins the CODE SHAPE — that a
+  // failure to build the form can never block the wait/probe logic, and that
+  // the window is gone before Setup.exe (which brings its own UI) starts.
+  it('shows a best-effort wait indicator that never gates the wait itself', () => {
+    const s = buildWaiterScript(PLAN) ?? '';
+    const formTry = s.indexOf('Add-Type -AssemblyName System.Windows.Forms');
+    const formCatch = s.indexOf('} catch { $form = $null }');
+    const handleWait = s.indexOf('WaitForExit');
+    const closeBeforeStart = s.lastIndexOf('$form.Close()');
+    const start = s.indexOf('Start-Process -FilePath $setup');
+
+    expect(formTry).toBeGreaterThan(-1);
+    // The form build is wrapped so any failure (Add-Type refused, no display
+    // subsystem) degrades to $form = $null rather than an unhandled error
+    // that would abort the whole waiter and silently cancel the update.
+    expect(formCatch).toBeGreaterThan(formTry);
+    expect(formCatch).toBeLessThan(handleWait);
+    // Every DoEvents/Close call is null-checked, so a null $form is inert —
+    // the wait/probe/launch sequence behaves exactly as it did before this
+    // indicator existed.
+    expect(s).toMatch(/if \(\$form\) \{ try \{ \[System\.Windows\.Forms\.Application\]::DoEvents\(\) \} catch \{ \} \}/);
+    // Closed before Setup.exe starts — Squirrel has its own UI from here.
+    expect(closeBeforeStart).toBeGreaterThan(handleWait);
+    expect(closeBeforeStart).toBeLessThan(start);
+  });
+
+  it('closes the wait indicator on every abort path too, not just success', () => {
+    const s = buildWaiterScript(PLAN) ?? '';
+    const stuckAbort = s.indexOf("'install-aborted: a process under the install root would not exit'");
+    const lockedAbort = s.indexOf("'install-aborted: install root still locked'");
+    // Each abort's own Set-Content is preceded (a few lines up) by a
+    // form-close guard — assert the guard is present at all, since a leaked
+    // topmost window after a refused install would be its own, smaller
+    // version of this same issue.
+    const closeCount = (s.match(/if \(\$form\) \{ try \{ \$form\.Close\(\) \} catch \{ \} \}/g) ?? []).length;
+    expect(stuckAbort).toBeGreaterThan(-1);
+    expect(lockedAbort).toBeGreaterThan(-1);
+    // success path + stuck-handle abort + locked-root abort = 3 close sites.
+    expect(closeCount).toBe(3);
+  });
 });
 
 describe('selectInstallRootPids', () => {
