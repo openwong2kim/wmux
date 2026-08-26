@@ -72,8 +72,17 @@ describe.skipIf(!hasBundle)('#546 boot marker lifecycle (real daemon)', () => {
     let sawMarker: string | null = null;
     for (let i = 0; i < 2000; i++) {
       try {
-        sawMarker = fs.readFileSync(markerFile, 'utf-8');
-        break;
+        const raw = fs.readFileSync(markerFile, 'utf-8');
+        // `writeFileSync` creates the file and then writes it, so a 2 ms poll
+        // can win that race and read the empty intermediate — which parsed to
+        // NaN and reddened `validate` on PRs that never touch the daemon.
+        // An empty read is not "the marker appeared"; it is the same "not yet"
+        // as ENOENT, and production agrees: parseBootMarker() rejects anything
+        // unparseable rather than treating it as a boot claim.
+        if (raw.trim() !== '') {
+          sawMarker = raw;
+          break;
+        }
       } catch { /* not yet */ }
       if (fs.existsSync(pipeFile)) break; // ready already — window closed
       await sleep(2);
