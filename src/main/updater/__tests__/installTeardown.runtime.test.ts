@@ -138,6 +138,16 @@ describe.skipIf(!onWindows)('install waiter (real processes, real locks)', () =>
     }
     expect(released).toBe(true);
 
+    // #1046: the waiter now stays for Setup.exe's exit and verifies what it
+    // left behind (Update.exe at the root, icudtl.dat in the newest app-*).
+    // The fake installer installs nothing, so give the sandbox the shape of
+    // a SUCCESSFUL install up front -- this test is about the launch path,
+    // and the verification's failure branch is pinned by the script-shape
+    // tests (a live 30s corpse-poll here would spend half the test budget
+    // proving what the shape tests already prove).
+    fs.writeFileSync(path.join(root, 'Update.exe'), 'x');
+    fs.writeFileSync(path.join(root, 'app-1.0.0', 'icudtl.dat'), 'x');
+
     writeWaiter(plan([holder.pid as number], 5_000));
     expect(runWaiter(60_000).status).toBe(0);
 
