@@ -644,7 +644,7 @@ describe('#874 resting-cell tracker (cause 3, pure)', () => {
     noteCursorMove(t, 49, 113, 1100); // caret promoted, cursor parked at 49,113
     // 5ms after the park: mid-burst -> resting cell.
     const midBurst = selectFreezeCell(t, 49, 113, 1105);
-    expect(midBurst).toEqual({ absRow: 30, col: 8, src: 'resting', held: 5, restAge: 5, outputGap: 105, caretAge: -1, edge: false });
+    expect(midBurst).toEqual({ absRow: 30, col: 8, src: 'resting', held: 5, restAge: 5, outputGap: 105, caretAge: -1, edge: false, rowSpan: 1 });
     // 100ms after the park: the parked cell is now at rest -> trusted as-is
     // (the documented cause-3 residual: dwell cannot tell a caret from a parked
     // cell — the diagnostic fields are the field-log discriminator).
@@ -1028,12 +1028,12 @@ describe('#1016 input-line content scan (pure)', () => {
       '╰──────────────╯',
       '  ? for shortcuts',
     ];
-    expect(scanClaudeInputLine(lines(screen), screen.length)).toEqual({ relRow: 3, col: 4 });
+    expect(scanClaudeInputLine(lines(screen), screen.length)).toEqual({ relRow: 3, col: 4, rowSpan: 1 });
   });
 
   it('keeps the column honest on an indented box', () => {
     const screen = ['  ╭────╮', '  │ > x│'];
-    expect(scanClaudeInputLine(lines(screen), screen.length)).toEqual({ relRow: 1, col: 6 });
+    expect(scanClaudeInputLine(lines(screen), screen.length)).toEqual({ relRow: 1, col: 6, rowSpan: 1 });
   });
 
   it('the bottom-most match wins over quoted chrome in the transcript', () => {
@@ -1048,7 +1048,7 @@ describe('#1016 input-line content scan (pure)', () => {
       '│ > live     │',
       '╰────────────╯',
     ];
-    expect(scanClaudeInputLine(lines(screen), screen.length)).toEqual({ relRow: 5, col: 4 });
+    expect(scanClaudeInputLine(lines(screen), screen.length)).toEqual({ relRow: 5, col: 4, rowSpan: 1 });
   });
 
   it('a bare prompt-like line without the box top above is not matched', () => {
@@ -1063,7 +1063,7 @@ describe('#1016 input-line content scan (pure)', () => {
       '│   wrapped    │',
       '╰──────────────╯',
     ];
-    expect(scanClaudeInputLine(lines(screen), screen.length)).toEqual({ relRow: 1, col: 4 });
+    expect(scanClaudeInputLine(lines(screen), screen.length)).toEqual({ relRow: 1, col: 4, rowSpan: 2 });
   });
 
   it('bash and memory mode prompts are the same caret row', () => {
@@ -1071,9 +1071,9 @@ describe('#1016 input-line content scan (pure)', () => {
     // (bash) or `#` (memory) mode — otherwise a quoted `│ > ` in the
     // transcript above would take over.
     const bash = ['│ > quoted', '╭────╮', '│ ! ls│', '╰────╯'];
-    expect(scanClaudeInputLine(lines(bash), bash.length)).toEqual({ relRow: 2, col: 4 });
+    expect(scanClaudeInputLine(lines(bash), bash.length)).toEqual({ relRow: 2, col: 4, rowSpan: 1 });
     const memory = ['╭────╮', '│ # note│', '╰────╯'];
-    expect(scanClaudeInputLine(lines(memory), memory.length)).toEqual({ relRow: 1, col: 4 });
+    expect(scanClaudeInputLine(lines(memory), memory.length)).toEqual({ relRow: 1, col: 4, rowSpan: 1 });
   });
 
   it('returns null on an unreadable or markerless screen', () => {
@@ -1103,7 +1103,7 @@ describe('#1016 marker selection (pure)', () => {
     // With it, content wins: the park sits on the prompt row's border zone
     // (col 137 of 139), which is repaint state, not a caret.
     const sel = selectFreezeCell(t, 676, 137, 2350, { top: 640, rows: 41, cols: 139 }, 640,
-      () => ({ relRow: 36, col: 4 }));
+      () => ({ relRow: 36, col: 4, rowSpan: 1 }));
     expect(sel).toMatchObject({ absRow: 676, col: 4, src: 'marker' });
   });
 
@@ -1114,14 +1114,14 @@ describe('#1016 marker selection (pure)', () => {
     noteOutputParsed(t, 1900, 139);
     expect(t.hasCaret).toBe(false);
     const sel = selectFreezeCell(t, 676, 137, 1950, { top: 640, rows: 41, cols: 139 }, 640,
-      () => ({ relRow: 31, col: 4 }));
+      () => ({ relRow: 31, col: 4, rowSpan: 1 }));
     expect(sel).toMatchObject({ absRow: 671, col: 4, src: 'marker' });
   });
 
   it('a quiet pane ignores the marker — idle stays cursor-driven', () => {
     const t = createRestingTracker(640, 8, 1000, 30);
     noteOutputParsed(t, 1200, 139); // real output once, long quiet since
-    const scan = vi.fn(() => ({ relRow: 31, col: 4 }));
+    const scan = vi.fn(() => ({ relRow: 31, col: 4, rowSpan: 1 }));
     const sel = selectFreezeCell(t, 640, 8, 1200 + OUTPUT_QUIET_MS + 200,
       { top: 600, rows: 45, cols: 139 }, 600, scan);
     expect(sel).toMatchObject({ absRow: 640, col: 8, src: 'instant' });
@@ -1139,7 +1139,7 @@ describe('#1016 marker selection (pure)', () => {
     noteOutputParsed(t, 1900, 139);
     noteOutputParsed(t, 2300, 139);
     const sel = selectFreezeCell(t, 671, 22, 2350, { top: 640, rows: 41, cols: 139 }, 640,
-      () => ({ relRow: 31, col: 4 }));
+      () => ({ relRow: 31, col: 4, rowSpan: 1 }));
     expect(sel).toMatchObject({ absRow: 671, col: 20, src: 'caret' });
   });
 
@@ -1150,7 +1150,7 @@ describe('#1016 marker selection (pure)', () => {
     // column (edge), the branch would open on the seed alone (panel
     // finding) — hasOutput keeps it shut until real output is observed.
     const t = createRestingTracker(676, 138, 1000, 36);
-    const scan = vi.fn(() => ({ relRow: 31, col: 4 }));
+    const scan = vi.fn(() => ({ relRow: 31, col: 4, rowSpan: 1 }));
     const sel = selectFreezeCell(t, 676, 138, 1100, { top: 640, rows: 41, cols: 139 }, 640, scan);
     expect(sel).toMatchObject({ src: 'instant' });
     expect(scan).not.toHaveBeenCalled();
@@ -1566,6 +1566,112 @@ describe('#1032 row-gated preedit follow — the streaming pin never drags Korea
     // Candidate anchor at the input's start (the marker's line-level answer)…
     expect(translateOf(dom.textarea)?.dx).toBeCloseTo((4 - 10) * 10, 6);
     // …while the preedit stays on the caret (the character-level answer).
+    expect(dom.compView.style.transform).toBe('');
+    handle.dispose();
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+describe('#1032 wrapped input and scrolling streams', () => {
+  beforeEach(() => { document.body.innerHTML = ''; });
+
+  it('pure: the row gate spans the box interior for marker anchors', () => {
+    expect(preeditFollowsLiveCursor('marker', 31, 32, 2)).toBe(true);
+    expect(preeditFollowsLiveCursor('marker', 31, 33, 2)).toBe(false);
+    expect(preeditFollowsLiveCursor('marker', 31, 30, 2)).toBe(false);
+    // Cursor-derived anchors keep the single-row gate.
+    expect(preeditFollowsLiveCursor('caret', 34, 35, 1)).toBe(false);
+  });
+
+  it('typing on a wrapped continuation row keeps the preedit on the caret', () => {
+    // GLM review finding on the first cut: wrapped input puts the caret on
+    // the box's second row while the marker always names the first — without
+    // the rowSpan gate that read as cross-row, pinned the preedit onto the
+    // prompt row, and the #1032 drag survived exactly for multi-line
+    // messages.
+    const dom = buildTerminalDom(10, 17.6, 45, 128);
+    const t = makeTerminal(dom, 45, 128);
+    let clock = 1000;
+    const diag = vi.fn();
+    Object.assign(t.state, { baseY: 600, viewportY: 600, cursorY: 40, cursorX: 5 });
+    const content: string[] = [];
+    for (let i = 0; i < 45; i++) content.push(`output line ${i}`);
+    content[30] = '╭──────────────────╮';
+    content[31] = '│ > 정확히 어떻게  │';
+    content[32] = '│   할까요         │';
+    content[33] = '╰──────────────────╯';
+    t.terminal.buffer.active.getLine = (y: number) => {
+      const line = content[y - t.state.baseY];
+      return line === undefined ? undefined : { translateToString: () => line };
+    };
+    const handle = attachImeAnchor(t.terminal, {
+      now: () => clock,
+      getAgentSlug: () => 'claude',
+      onCompositionDiagnostic: diag,
+    });
+    clock = 2000;
+    // The box repaint leaves the cursor mid-word on the continuation row.
+    Object.assign(t.state, { cursorY: 32, cursorX: 7 });
+    t.onCursorMove.fire(undefined);
+    t.onWriteParsed.fire(undefined);
+    clock = 2400;
+    t.onWriteParsed.fire(undefined);
+    clock = 2750;
+    t.onWriteParsed.fire(undefined);
+    clock = 2800;
+    dom.textarea.style.top = `${32 * 17.6}px`;
+    dom.textarea.style.left = '70px';
+    dom.compView.style.top = `${32 * 17.6}px`;
+    dom.compView.style.left = '70px';
+    dom.textarea.dispatchEvent(new Event('compositionstart'));
+    expect(diag.mock.calls[0][0]).toMatchObject({
+      src: 'marker', selY: 31, selX: 4, cursorY: 32, cursorX: 7, rowSpan: 2,
+    });
+    // Candidate anchor pinned to the box's input start on the prompt row…
+    expect(translateOf(dom.textarea)?.dy).toBeCloseTo((31 - 32) * 17.6, 6);
+    expect(translateOf(dom.textarea)?.dx).toBeCloseTo((4 - 7) * 10, 6);
+    // …while the caret on the continuation row keeps the live preedit.
+    expect(dom.compView.style.transform).toBe('');
+    handle.dispose();
+  });
+
+  it('a stream that scrolls the buffer under the input row keeps the follow', () => {
+    // Review hardening (Grok suggestion): ybase advances during the bursts
+    // while the input line holds its screen row. The snapshot is stored
+    // screen-relative, so the row gate must keep reading "same row" — a
+    // regression here would pin, and reintroduce #1032, exactly on
+    // scrolling output.
+    const dom = buildTerminalDom(10, 17.6, 45, 128);
+    const t = makeTerminal(dom, 45, 128);
+    let clock = 1000;
+    const diag = vi.fn();
+    Object.assign(t.state, { baseY: 600, viewportY: 600, cursorY: 34, cursorX: 11 });
+    const handle = attachImeAnchor(t.terminal, { now: () => clock, onCompositionDiagnostic: diag });
+    clock = 2000;
+    Object.assign(t.state, { baseY: 602, viewportY: 602, cursorY: 34, cursorX: 2 });
+    t.onCursorMove.fire(undefined);
+    t.onWriteParsed.fire(undefined);
+    clock = 2400;
+    Object.assign(t.state, { baseY: 606, viewportY: 606, cursorY: 34, cursorX: 2 });
+    t.onCursorMove.fire(undefined);
+    t.onWriteParsed.fire(undefined);
+    clock = 2750;
+    Object.assign(t.state, { baseY: 610, viewportY: 610, cursorY: 34, cursorX: 2 });
+    t.onCursorMove.fire(undefined);
+    t.onWriteParsed.fire(undefined);
+    clock = 2800;
+    dom.textarea.style.top = `${34 * 17.6}px`;
+    dom.textarea.style.left = '20px';
+    dom.compView.style.top = `${34 * 17.6}px`;
+    dom.compView.style.left = '20px';
+    dom.textarea.dispatchEvent(new Event('compositionstart'));
+    expect(diag.mock.calls[0][0]).toMatchObject({
+      src: 'caret', selY: 34, selX: 11, cursorY: 34, cursorX: 2,
+    });
+    // The pin corrects along the row only; the preedit stays on the caret.
+    expect(translateOf(dom.textarea)?.dx).toBeCloseTo((11 - 2) * 10, 6);
+    expect(translateOf(dom.textarea)?.dy).toBeCloseTo(0, 6);
     expect(dom.compView.style.transform).toBe('');
     handle.dispose();
   });

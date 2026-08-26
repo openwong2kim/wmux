@@ -504,6 +504,11 @@ export interface AgentInputLineMarker {
    *  input's start is already on the right row, which is what field reports
    *  complain about. */
   col: number;
+  /** Rows the box interior spans — 1 plus the wrapped continuation rows
+   *  under the prompt row (#1032). Wrapped input grows the box downward and
+   *  the caret lives on whichever interior row the user is typing on, so the
+   *  preedit's row gate must treat the whole interior as caret territory. */
+  rowSpan: number;
 }
 
 // Claude Code draws its input as a rounded box; the prompt row is the first
@@ -518,6 +523,10 @@ export interface AgentInputLineMarker {
 // CJK only ever appears after it.
 const CLAUDE_PROMPT_ROW = /^(\s*)│ [>!#] /;
 const CLAUDE_BOX_TOP = /^\s*╭─/;
+const CLAUDE_BOX_BOTTOM = /^\s*╰─/;
+// Interior rows of the box below the prompt row: wrapped continuation lines.
+// They carry the side border but no prompt glyph (#1032).
+const CLAUDE_BOX_ROW = /^\s*│ /;
 
 /**
  * Find Claude Code's input line in the visible rows (#1016).
@@ -546,9 +555,22 @@ export function scanClaudeInputLine(
     if (!m) continue;
     const above = readLine(r - 1);
     if (above === undefined || !CLAUDE_BOX_TOP.test(above)) continue;
+    // Wrapped input grows the box downward: continuation rows carry the side
+    // border but no prompt glyph, and the caret lives on whichever interior
+    // row the user is typing on (#1032). Count the interior down to the
+    // bottom border so the preedit's row gate can treat all of it as caret
+    // territory. A bottom border that never appears (unreadable row, box
+    // taller than the screen) keeps the conservative single-row span.
+    let rowSpan = 1;
+    for (let d = r + 1; d < rows; d++) {
+      const below = readLine(d);
+      if (below === undefined) break;
+      if (CLAUDE_BOX_BOTTOM.test(below)) { rowSpan = d - r; break; }
+      if (!CLAUDE_BOX_ROW.test(below)) break;
+    }
     // `│ > x`: border, space, prompt, space — input begins 4 cells past the
     // border.
-    return { relRow: r, col: m[1].length + 4 };
+    return { relRow: r, col: m[1].length + 4, rowSpan };
   }
   return null;
 }
@@ -576,6 +598,10 @@ export interface FreezeCellSelection {
   /** True when the instantaneous cursor sat on the last column — a TUI
    *  line-end park (#953). Diagnostic only; the selection is not rerouted. */
   edge: boolean;
+  /** Rows the anchor's input area spans, starting at the anchor row. 1 for
+   *  every cursor-derived source; the box-interior height for `marker`
+   *  (#1032 — wrapped input puts the caret on a continuation row). */
+  rowSpan: number;
 }
 
 /**
@@ -679,24 +705,25 @@ export function selectFreezeCell(
         return {
           absRow: baseY + marker.relRow, col: marker.col,
           src: 'marker', held, restAge, outputGap, caretAge, edge,
+          rowSpan: marker.rowSpan,
         };
       }
     }
     if (state.hasCaret) {
       return {
         absRow: baseY + state.caretRelRow, col: state.caretCol,
-        src: 'caret', held, restAge, outputGap, caretAge, edge,
+        src: 'caret', held, restAge, outputGap, caretAge, edge, rowSpan: 1,
       };
     }
   }
   if (held >= RESTING_MS || !state.hasResting) {
-    return { absRow: instAbsRow, col: instCol, src: 'instant', held, restAge, outputGap, caretAge, edge };
+    return { absRow: instAbsRow, col: instCol, src: 'instant', held, restAge, outputGap, caretAge, edge, rowSpan: 1 };
   }
   if (viewport && (state.lastRestingAbsRow < viewport.top
     || state.lastRestingAbsRow >= viewport.top + viewport.rows)) {
-    return { absRow: instAbsRow, col: instCol, src: 'scrolled_out', held, restAge, outputGap, caretAge, edge };
+    return { absRow: instAbsRow, col: instCol, src: 'scrolled_out', held, restAge, outputGap, caretAge, edge, rowSpan: 1 };
   }
-  return { absRow: state.lastRestingAbsRow, col: state.lastRestingCol, src: 'resting', held, restAge, outputGap, caretAge, edge };
+  return { absRow: state.lastRestingAbsRow, col: state.lastRestingCol, src: 'resting', held, restAge, outputGap, caretAge, edge, rowSpan: 1 };
 }
 
 /**
@@ -713,14 +740,31 @@ export function selectFreezeCell(
  * tears the preedit away from the candidate window). Rows are compared
  * screen-relative, like the caret snapshot itself: streaming output scrolls
  * the buffer under the input line while its screen row stays put.
+ *
+ * The gate is a row RANGE, not a single row: a `marker` anchor knows the
+ * box's interior height, and wrapped input puts the caret on a continuation
+ * row that is still the user's caret (#1032 review finding — without the
+ * span, multi-line messages kept exactly the drag this gate exists to
+ * remove). Cursor-derived anchors have no box knowledge and keep a span
+ * of 1.
+ *
+ * Known, accepted residual (3-way review consensus): an agent repaint that
+ * PARKS inside this row range — the #953 line-end park landing on a box
+ * row — reads as the caret, and the preedit follows it until the next
+ * composition event. Every prior generation that tried to outsmart a park
+ * (column heuristics, hysteresis, reroutes) field-tested worse than
+ * leaving it alone (see the header history), and for Korean a same-row
+ * follow is exactly the field-clean v3.46.0 behavior. The diagnostic's
+ * pin/preedit pair discriminates it in a field log.
  */
 export function preeditFollowsLiveCursor(
   src: FreezeCellSource,
   selRelRow: number,
   cursorRelRow: number,
+  rowSpan = 1,
 ): boolean {
   if (src !== 'caret' && src !== 'marker') return true;
-  return cursorRelRow === selRelRow;
+  return cursorRelRow >= selRelRow && cursorRelRow < selRelRow + rowSpan;
 }
 
 // ---------------------------------------------------------------------------
@@ -800,6 +844,9 @@ export interface ImeAnchorOptions {
     /** True when the cursor sat on the last column — a TUI line-end park
      *  (#953). Diagnostic only; the selection is not rerouted. */
     edge: boolean;
+    /** Rows the anchor's input area spans (#1032); 1 for cursor-derived
+     *  sources, the box-interior height for `marker`. */
+    rowSpan: number;
     /** Selected cell, ybase-relative like cursorY/cursorX. */
     selY: number;
     selX: number;
@@ -1003,7 +1050,7 @@ export function attachImeAnchor(
     const b = bufferState();
     const desired = frozen !== null
       && lastSel !== null
-      && !preeditFollowsLiveCursor(lastSel.src, lastSelRelY, b.cursorY)
+      && !preeditFollowsLiveCursor(lastSel.src, lastSelRelY, b.cursorY, lastSel.rowSpan)
       ? frozen
       : paintedCursorPosition(b, geometry);
     const c = computeImeAnchorCorrection(desired, actualPreedit);
@@ -1076,6 +1123,7 @@ export function attachImeAnchor(
       outputGap: lastSel.outputGap,
       caretAge: lastSel.caretAge,
       edge: lastSel.edge,
+      rowSpan: lastSel.rowSpan,
       selY: lastSelRelY,
       selX: lastSel.col,
     });

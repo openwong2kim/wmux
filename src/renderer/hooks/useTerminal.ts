@@ -1208,7 +1208,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         const id = ptyIdRef.current;
         return id ? useStore.getState().surfaceAgent[id]?.slug : undefined;
       },
-      onCompositionDiagnostic: ({ phase, baseY, viewportY, cursorY, cursorX, cellHeight, dx, dy, preeditDx, preeditDy, src, held, restAge, outputGap, caretAge, edge, selY, selX }) => {
+      onCompositionDiagnostic: ({ phase, baseY, viewportY, cursorY, cursorX, cellHeight, dx, dy, preeditDx, preeditDy, src, held, restAge, outputGap, caretAge, edge, rowSpan, selY, selX }) => {
         const budget = phase === 'start' ? 'start' : 'mid';
         if (imeAnchorLogsLeft[budget] <= 0) return;
         imeAnchorLogsLeft[budget] -= 1;
@@ -1226,7 +1226,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         // correction.
         console.info(
           `[wmux:ime-anchor6] pty=${ptyIdRef.current} composition-${phase} ybase=${baseY} ydisp=${viewportY} ` +
-          `cursor=(${cursorX},${cursorY}) sel=(${selX},${selY}) src=${src}${edge ? ' edge=1' : ''} held=${held.toFixed(0)}ms ` +
+          `cursor=(${cursorX},${cursorY}) sel=(${selX},${selY}) src=${src}${edge ? ' edge=1' : ''}${rowSpan > 1 ? ` span=${rowSpan}` : ''} held=${held.toFixed(0)}ms ` +
           `restAge=${restAge.toFixed(0)}ms gap=${outputGap.toFixed(0)}ms caretAge=${caretAge.toFixed(0)}ms ` +
           `cellHeight=${cellHeight.toFixed(2)} ` +
           `pin=(${dx.toFixed(1)},${dy.toFixed(1)}) preedit=(${preeditDx.toFixed(1)},${preeditDy.toFixed(1)})` +
