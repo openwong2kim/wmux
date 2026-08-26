@@ -159,10 +159,19 @@
  * syncPreedit) so it lands on the painted caret when the viewport is scrolled
  * (cause 1 applies to it too) without chasing mid-repaint transient cursors.
  * One exception (#951 field report on the first quiet-caret build): when the
- * freeze cell came from the quiet caret, the live cursor is the streaming
- * agent's repaint cursor, so the preedit pins to the same frozen point as the
- * textarea — otherwise the pinyin rides the agent's output rows while its
- * candidate list sits at the input line, and the two IME surfaces tear apart.
+ * freeze cell came from the quiet caret and the live cursor sits on some
+ * OTHER screen row — the streaming agent's repaint cursor — the preedit pins
+ * to the same frozen point as the textarea; otherwise the pinyin rides the
+ * agent's output rows while its candidate list sits at the input line, and
+ * the two IME surfaces tear apart. The exception is row-gated (#1032, the
+ * first ship of it was not): fluid Korean typing reaches the streaming
+ * branch too — each committed syllable's echo is output, and sub-quiet gaps
+ * sustain the epoch — and there the live cursor IS the caret advancing along
+ * the anchor's own row while the snapshot's column is one quiet-span stale.
+ * Pinning the preedit there repainted the composing syllable over text
+ * already committed (typing 정확히 어떻 read 떻확히 어) — the very drag #945
+ * removed, reintroduced on the new path. A same-row cursor is the caret; a
+ * cross-row cursor is repaint state (see preeditFollowsLiveCursor).
  *
  * The correction is computed as `desired - actual`, where `actual` is read back
  * from the styles xterm wrote rather than re-derived from the buffer. That
@@ -495,6 +504,11 @@ export interface AgentInputLineMarker {
    *  input's start is already on the right row, which is what field reports
    *  complain about. */
   col: number;
+  /** Rows the box interior spans — 1 plus the wrapped continuation rows
+   *  under the prompt row (#1032). Wrapped input grows the box downward and
+   *  the caret lives on whichever interior row the user is typing on, so the
+   *  preedit's row gate must treat the whole interior as caret territory. */
+  rowSpan: number;
 }
 
 // Claude Code draws its input as a rounded box; the prompt row is the first
@@ -509,6 +523,10 @@ export interface AgentInputLineMarker {
 // CJK only ever appears after it.
 const CLAUDE_PROMPT_ROW = /^(\s*)│ [>!#] /;
 const CLAUDE_BOX_TOP = /^\s*╭─/;
+const CLAUDE_BOX_BOTTOM = /^\s*╰─/;
+// Interior rows of the box below the prompt row: wrapped continuation lines.
+// They carry the side border but no prompt glyph (#1032).
+const CLAUDE_BOX_ROW = /^\s*│ /;
 
 /**
  * Find Claude Code's input line in the visible rows (#1016).
@@ -537,9 +555,22 @@ export function scanClaudeInputLine(
     if (!m) continue;
     const above = readLine(r - 1);
     if (above === undefined || !CLAUDE_BOX_TOP.test(above)) continue;
+    // Wrapped input grows the box downward: continuation rows carry the side
+    // border but no prompt glyph, and the caret lives on whichever interior
+    // row the user is typing on (#1032). Count the interior down to the
+    // bottom border so the preedit's row gate can treat all of it as caret
+    // territory. A bottom border that never appears (unreadable row, box
+    // taller than the screen) keeps the conservative single-row span.
+    let rowSpan = 1;
+    for (let d = r + 1; d < rows; d++) {
+      const below = readLine(d);
+      if (below === undefined) break;
+      if (CLAUDE_BOX_BOTTOM.test(below)) { rowSpan = d - r; break; }
+      if (!CLAUDE_BOX_ROW.test(below)) break;
+    }
     // `│ > x`: border, space, prompt, space — input begins 4 cells past the
     // border.
-    return { relRow: r, col: m[1].length + 4 };
+    return { relRow: r, col: m[1].length + 4, rowSpan };
   }
   return null;
 }
@@ -567,6 +598,10 @@ export interface FreezeCellSelection {
   /** True when the instantaneous cursor sat on the last column — a TUI
    *  line-end park (#953). Diagnostic only; the selection is not rerouted. */
   edge: boolean;
+  /** Rows the anchor's input area spans, starting at the anchor row. 1 for
+   *  every cursor-derived source; the box-interior height for `marker`
+   *  (#1032 — wrapped input puts the caret on a continuation row). */
+  rowSpan: number;
 }
 
 /**
@@ -670,24 +705,66 @@ export function selectFreezeCell(
         return {
           absRow: baseY + marker.relRow, col: marker.col,
           src: 'marker', held, restAge, outputGap, caretAge, edge,
+          rowSpan: marker.rowSpan,
         };
       }
     }
     if (state.hasCaret) {
       return {
         absRow: baseY + state.caretRelRow, col: state.caretCol,
-        src: 'caret', held, restAge, outputGap, caretAge, edge,
+        src: 'caret', held, restAge, outputGap, caretAge, edge, rowSpan: 1,
       };
     }
   }
   if (held >= RESTING_MS || !state.hasResting) {
-    return { absRow: instAbsRow, col: instCol, src: 'instant', held, restAge, outputGap, caretAge, edge };
+    return { absRow: instAbsRow, col: instCol, src: 'instant', held, restAge, outputGap, caretAge, edge, rowSpan: 1 };
   }
   if (viewport && (state.lastRestingAbsRow < viewport.top
     || state.lastRestingAbsRow >= viewport.top + viewport.rows)) {
-    return { absRow: instAbsRow, col: instCol, src: 'scrolled_out', held, restAge, outputGap, caretAge, edge };
+    return { absRow: instAbsRow, col: instCol, src: 'scrolled_out', held, restAge, outputGap, caretAge, edge, rowSpan: 1 };
   }
-  return { absRow: state.lastRestingAbsRow, col: state.lastRestingCol, src: 'resting', held, restAge, outputGap, caretAge, edge };
+  return { absRow: state.lastRestingAbsRow, col: state.lastRestingCol, src: 'resting', held, restAge, outputGap, caretAge, edge, rowSpan: 1 };
+}
+
+/**
+ * Whether the inline preedit keeps following the live cursor for a
+ * composition whose textarea pin came from the streaming branch (#1032).
+ *
+ * `caret`/`marker` freeze cells answer a line-level question — which row the
+ * agent's input line is on — with a column that can be one quiet-span stale.
+ * The inline preedit needs the character-level answer: where in that line the
+ * user is NOW. The live cursor gives that answer exactly when it sits on the
+ * anchor's own screen row (commit echoes advance it along the input line —
+ * the field-clean v3.46.0 behavior for Korean), and is repaint state when it
+ * sits anywhere else (#951: screen corners, output rows — following it there
+ * tears the preedit away from the candidate window). Rows are compared
+ * screen-relative, like the caret snapshot itself: streaming output scrolls
+ * the buffer under the input line while its screen row stays put.
+ *
+ * The gate is a row RANGE, not a single row: a `marker` anchor knows the
+ * box's interior height, and wrapped input puts the caret on a continuation
+ * row that is still the user's caret (#1032 review finding — without the
+ * span, multi-line messages kept exactly the drag this gate exists to
+ * remove). Cursor-derived anchors have no box knowledge and keep a span
+ * of 1.
+ *
+ * Known, accepted residual (3-way review consensus): an agent repaint that
+ * PARKS inside this row range — the #953 line-end park landing on a box
+ * row — reads as the caret, and the preedit follows it until the next
+ * composition event. Every prior generation that tried to outsmart a park
+ * (column heuristics, hysteresis, reroutes) field-tested worse than
+ * leaving it alone (see the header history), and for Korean a same-row
+ * follow is exactly the field-clean v3.46.0 behavior. The diagnostic's
+ * pin/preedit pair discriminates it in a field log.
+ */
+export function preeditFollowsLiveCursor(
+  src: FreezeCellSource,
+  selRelRow: number,
+  cursorRelRow: number,
+  rowSpan = 1,
+): boolean {
+  if (src !== 'caret' && src !== 'marker') return true;
+  return cursorRelRow >= selRelRow && cursorRelRow < selRelRow + rowSpan;
 }
 
 // ---------------------------------------------------------------------------
@@ -767,6 +844,9 @@ export interface ImeAnchorOptions {
     /** True when the cursor sat on the last column — a TUI line-end park
      *  (#953). Diagnostic only; the selection is not rerouted. */
     edge: boolean;
+    /** Rows the anchor's input area spans (#1032); 1 for cursor-derived
+     *  sources, the box-interior height for `marker`. */
+    rowSpan: number;
     /** Selected cell, ybase-relative like cursorY/cursorX. */
     selY: number;
     selX: number;
@@ -929,13 +1009,24 @@ export function attachImeAnchor(
    *
    * The one exception is a composition whose freeze cell came from the quiet
    * caret or the content marker (`src=caret`/`src=marker`, #951/#953/#1016
-   * field reports): there the live cursor IS the streaming agent's repaint
+   * field reports) while the live cursor sits on a DIFFERENT screen row than
+   * the frozen cell: there the cursor is the streaming agent's repaint
    * cursor, and following it split the two IME surfaces apart — the candidate
    * window pinned at the input line while the inline pinyin chased the
    * agent's output rows. Both surfaces must anchor to the same cell, so those
    * compositions pin the preedit to the same frozen point as the textarea.
-   * The quiet case is untouched: there the selection is instant/resting and
-   * the live follow stays (#942 stays fixed).
+   * A live cursor on the SAME screen row keeps the live follow (#1032): fluid
+   * Korean typing reaches the streaming branch too — commit echoes are
+   * output, and sub-quiet gaps sustain the epoch — but there the cursor is
+   * the true caret advancing along the input line while the snapshot's column
+   * is one quiet-span stale, and pinning to it painted the composing syllable
+   * over committed text (the very drag #945 removed, reintroduced on the new
+   * path). The row test is preeditFollowsLiveCursor, evaluated per
+   * composition event, so a cursor that leaves the row mid-composition (an
+   * agent chunk landing between keystrokes) pins for that event and resumes
+   * following when it returns. The quiet case is untouched: there the
+   * selection is instant/resting and the live follow stays (#942 stays
+   * fixed).
    *
    * Deliberately called only from the composition handlers, NOT from
    * onRender/onScroll: at a composition event xterm has just written the
@@ -956,9 +1047,12 @@ export function attachImeAnchor(
     if (!isUsableGeometry(geometry)) return;
     const actualPreedit = readStyledPoint(compositionView);
     if (!actualPreedit) return;
-    const desired = frozen !== null && (lastSel?.src === 'caret' || lastSel?.src === 'marker')
+    const b = bufferState();
+    const desired = frozen !== null
+      && lastSel !== null
+      && !preeditFollowsLiveCursor(lastSel.src, lastSelRelY, b.cursorY, lastSel.rowSpan)
       ? frozen
-      : paintedCursorPosition(bufferState(), geometry);
+      : paintedCursorPosition(b, geometry);
     const c = computeImeAnchorCorrection(desired, actualPreedit);
     preeditTransform.set(c.dx, c.dy);
   };
@@ -1029,6 +1123,7 @@ export function attachImeAnchor(
       outputGap: lastSel.outputGap,
       caretAge: lastSel.caretAge,
       edge: lastSel.edge,
+      rowSpan: lastSel.rowSpan,
       selY: lastSelRelY,
       selX: lastSel.col,
     });
