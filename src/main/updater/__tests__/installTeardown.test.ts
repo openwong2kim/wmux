@@ -87,21 +87,6 @@ describe('buildWaiterScript — ordering is the whole contract', () => {
     expect(buildWaiterScript({ ...PLAN, pids: [1.5] })).toBeNull();
   });
 
-  // #1043 — a live earlier waiter used to make a repeat click a silent no-op:
-  // `exit 5` fired before the marker path was ever reached, so the boot that
-  // followed had nothing to report. The mutex still has to win the race (a
-  // second Squirrel install against the same root is the #866 corruption this
-  // whole module exists to prevent) — only the silence was the bug.
-  it('writes a marker before refusing a second concurrent waiter', () => {
-    const s = buildWaiterScript(PLAN) ?? '';
-    const mutexCheck = s.indexOf('if (-not $mtxCreated)');
-    const marker = s.indexOf('another install is already in progress');
-    const exit5 = s.indexOf('exit 5');
-    expect(mutexCheck).toBeGreaterThan(-1);
-    expect(marker).toBeGreaterThan(mutexCheck);
-    expect(exit5).toBeGreaterThan(marker);
-  });
-
   // #1043 — a best-effort "please wait" indicator for the otherwise-silent
   // 1-2 minute window. Structural lock only: the WinForms message loop and
   // its interaction with a real Windows desktop cannot run on CI regardless
@@ -462,7 +447,10 @@ describe('buildWaiterScript — the clock has to survive a long uptime (#980)', 
   });
 
   it('hands WaitForExit an int, so a widened remainder cannot throw the wait away', () => {
-    expect(buildWaiterScript(plan)!).toContain('$h.WaitForExit([int]$left)');
+    // #1043 sliced the single blocking WaitForExit into a poll (so the wait
+    // screen can pump DoEvents between slices) — the value handed to
+    // WaitForExit is now the per-slice remainder, still explicitly cast.
+    expect(buildWaiterScript(plan)!).toContain('$exited = $h.WaitForExit([int]$slice)');
   });
 });
 

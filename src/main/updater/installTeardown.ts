@@ -302,27 +302,29 @@ export function buildWaiterScript(plan: WaiterPlan): string | null {
     //
     // A named mutex gives exactly the wanted semantics for free: it exists
     // only while some process holds a handle to it, so a LIVE earlier waiter
-    // blocks the newcomer (exit 5 — the incumbent owns the install; the
-    // newcomer writes the marker for whichever boot reads it next, #1043),
-    // while a dead or finished one leaves nothing behind and the newcomer
-    // proceeds. No state file to go stale, nothing to clean up. The name
-    // embeds the install root so two different installations (per user,
-    // portable copies) can never block each other.
+    // blocks the newcomer (exit 5, silently — the incumbent owns the install
+    // and the marker), while a dead or finished one leaves nothing behind and
+    // the newcomer proceeds. No state file to go stale, nothing to clean up.
+    // The name embeds the install root so two different installations (per
+    // user, portable copies) can never block each other.
+    //
+    // #1043 considered having the newcomer write its own marker here, so a
+    // repeat click that hits this branch is not silent on the next boot.
+    // Reverted: the incumbent is the one still deciding the real outcome, up
+    // to a further ~120s out. If it goes on to SUCCEED, it writes no marker at
+    // all — and a marker the newcomer left behind here would sit there
+    // unclaimed and get read on the next boot as "your update was refused,"
+    // which is false. If the incumbent later fails, it overwrites whatever
+    // this branch wrote anyway, so the newcomer's write only ever matters in
+    // the narrow window where it is wrong. The #1043 fix for this branch's
+    // silence lives in the "please wait" window below instead: that window is
+    // owned by the INCUMBENT and stays on screen (topmost) for the whole wait,
+    // so a user who reopens wmux and clicks "update" again sees it still
+    // there rather than a second silent close.
     `$mtxName = 'wmux-install-waiter-' + ($root -replace '[^A-Za-z0-9]', '_')`,
     `$mtxCreated = $false`,
     `$mtx = New-Object System.Threading.Mutex -ArgumentList $true, $mtxName, ([ref]$mtxCreated)`,
-    // #1043 — this used to be a bare `exit 5`: correct (it stops a second
-    // Squirrel install from racing the first), but silent. A repeat click
-    // while an earlier waiter is still alive produced literally nothing —
-    // no marker, so nothing for the app to report on the boot that follows —
-    // which reads exactly like "the button did nothing" even though the
-    // mutex did its job. Writing the marker here reuses the SAME pull-based
-    // notice AppLayout's useRefusedInstallNotice already shows at every boot
-    // (#866) instead of inventing a second reporting path for one branch.
-    `if (-not $mtxCreated) {`,
-    `  Set-Content -LiteralPath $marker -Value 'install-aborted: another install is already in progress' -Encoding utf8`,
-    `  exit 5`,
-    `}`,
+    `if (-not $mtxCreated) { exit 5 }`,
     // #1043 — best-effort "please wait" indicator for the whole silent
     // window below. Deliberately outside every correctness path: every use
     // of $form is null-checked and wrapped in its own try/catch, so a
