@@ -164,15 +164,21 @@ describe('DaemonPTYBridge turn priority', () => {
     });
 
     it('an explicit running edge re-opens the gate for autonomous work', () => {
-      // The point here is the hook edge, so keep the bytes below the threshold
-      // that would open the gate on its own (see the #935 block for that path).
+      // Before the edge, sub-threshold bytes prove nothing.
       bridge.noteAgentStatus('complete');
       feed('.');
       expect(active).toEqual([]);
 
       bridge.noteAgentStatus('running');
+      // #1045: the edge does not just unlock the gate — it re-arms the
+      // cycle, so the FIRST byte after it is proof enough. The previous
+      // assertion here ([] until a BIG burst) pinned exactly the reported
+      // bug: a tool call whose own output never crosses the threshold (a
+      // polling loop, a slow build) stayed idle-looking for its whole
+      // length while the pane's own footer visibly ticked.
       feed('.');
-      expect(active).toEqual([]);   // still under the threshold, but ungated
+      expect(active).toEqual(['sess-1']);
+      // The once-per-cycle dedup still holds through the following burst.
       feed(BIG);
       expect(active).toEqual(['sess-1']);
     });
@@ -451,3 +457,47 @@ describe('DaemonPTYBridge turn priority', () => {
     });
   });
 });
+
+describe('sparse-output turns after an explicit running edge (#1045)', () => {
+  let bridge: DaemonPTYBridge;
+  let feed: (data: string) => void;
+  let active: string[];
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    bridge = new DaemonPTYBridge();
+    const fake = makeFakePty();
+    feed = fake.feed;
+    active = [];
+    bridge.on('active', (e: { sessionId: string }) => active.push(e.sessionId));
+    bridge.setupDataForwarding(fake.pty, new RingBuffer(65536), 'sess-1');
+  });
+
+  afterEach(() => {
+    bridge.cleanup();
+    vi.useRealTimers();
+  });
+
+  it('a running edge lets a sparse tool call earn running back after an idle', () => {
+    // The #1045 field shape: the pane idled mid-turn, then a tool call began
+    // (hook says running) whose own output is a few dozen bytes a second --
+    // far under the throughput threshold, so bytes alone can never re-enter
+    // active. The authoritative edge re-arms the cycle; the first sparse
+    // byte is the proof.
+    feed(BIG);
+    vi.advanceTimersByTime(5000);
+    bridge.noteAgentStatus('running');
+    feed('tick');
+    expect(active).toEqual(['sess-1', 'sess-1']);
+  });
+
+  it('repeated running edges inside one active cycle broadcast active exactly once (#1013 guard)', () => {
+    feed(BIG);
+    expect(active).toEqual(['sess-1']);
+    bridge.noteAgentStatus('running');
+    bridge.noteAgentStatus('running');
+    feed('tick');
+    expect(active).toEqual(['sess-1']);
+  });
+});
+

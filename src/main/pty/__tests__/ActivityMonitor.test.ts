@@ -334,3 +334,40 @@ describe('ActivityMonitor', () => {
     });
   });
 });
+
+describe('ActivityMonitor.beginTurnIfInactive (#1045)', () => {
+  beforeEach(() => { vi.useFakeTimers(); });
+  afterEach(() => { vi.useRealTimers(); });
+
+  it('re-arms an idle cycle so the next sparse byte reports running again', () => {
+    const m = new ActivityMonitor();
+    const active: string[] = [];
+    m.onActive((id) => active.push(id));
+    m.start('p1');
+    m.feed('p1', 3000);            // turn 1 earns active by throughput
+    expect(active).toEqual(['p1']);
+    vi.advanceTimersByTime(5000);  // ...and goes idle
+    m.beginTurnIfInactive('p1');   // hook: a tool call just started
+    m.feed('p1', 40);              // a polling loop's few dozen bytes
+    expect(active).toEqual(['p1', 'p1']);
+  });
+
+  it('is a no-op mid-cycle: repeated running edges cannot re-open the once-per-cycle dedup (#1013)', () => {
+    const m = new ActivityMonitor();
+    const active: string[] = [];
+    m.onActive((id) => active.push(id));
+    m.start('p1');
+    m.feed('p1', 3000);
+    expect(active).toEqual(['p1']);
+    m.beginTurnIfInactive('p1');   // running-class metadata mid-turn
+    m.beginTurnIfInactive('p1');
+    m.feed('p1', 40);
+    expect(active).toEqual(['p1']); // still exactly one broadcast
+  });
+
+  it('unknown pty is a no-op', () => {
+    const m = new ActivityMonitor();
+    expect(() => m.beginTurnIfInactive('nope')).not.toThrow();
+  });
+});
+

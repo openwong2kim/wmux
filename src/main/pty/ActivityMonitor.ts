@@ -100,6 +100,26 @@ export class ActivityMonitor {
   }
 
   /**
+   * Re-arm from an authoritative RUNNING edge (#1045) — but only when the
+   * cycle is not already active. A hook's tool_started/activity metadata is
+   * proof a turn is genuinely underway, so the next output byte is enough —
+   * the sparse-output shape (a polling loop writing a few dozen bytes a
+   * second) never crosses the throughput threshold on its own, and before
+   * this the roster sat on idle for the whole tool call while the pane's own
+   * footer visibly ticked. While a cycle IS active this is deliberately a
+   * no-op: running-class hook events arrive many times per turn (every
+   * metadata kind projects as `running`), and resetting `activeFired`
+   * mid-cycle would re-open the once-per-cycle dedup that exists as IPC spam
+   * protection (#1013) — the reporter's own risk analysis, adopted as the
+   * gate.
+   */
+  beginTurnIfInactive(ptyId: string): void {
+    const s = this.states.get(ptyId);
+    if (!s || s.active) return;
+    this.beginTurn(ptyId);
+  }
+
+  /**
    * Re-arm a cycle from an authoritative TURN END, so the pane's next turn can
    * report `running` again.
    *
