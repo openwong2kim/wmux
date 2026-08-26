@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { PortWatcher, matchSessionPorts, type PortSnapshot } from '../portWatch';
 
 function snap(
@@ -125,5 +125,57 @@ describe('PortWatcher', () => {
     watcher.on('ports', (e) => events.push(e));
     await watcher.tick();
     expect(events).toHaveLength(0);
+  });
+
+  it('backs off after repeated snapshot failures and resumes after the window', async () => {
+    vi.useFakeTimers();
+    try {
+      let calls = 0;
+      const watcher = new PortWatcher(
+        () => [{ sessionId: 's1', pid: 100 }],
+        {
+          snapshot: async () => {
+            calls++;
+            throw new Error('boom');
+          },
+        },
+      );
+      await watcher.tick();
+      await watcher.tick();
+      await watcher.tick(); // third consecutive failure arms the backoff
+      expect(calls).toBe(3);
+
+      await watcher.tick(); // inside the backoff window — suppressed
+      expect(calls).toBe(3);
+
+      vi.advanceTimersByTime(60_000);
+      await watcher.tick(); // window elapsed — polling resumes
+      expect(calls).toBe(4);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('a successful snapshot resets the failure counter', async () => {
+    let calls = 0;
+    let fail = true;
+    const watcher = new PortWatcher(
+      () => [{ sessionId: 's1', pid: 100 }],
+      {
+        snapshot: async () => {
+          calls++;
+          if (fail) throw new Error('boom');
+          return snap([], []);
+        },
+      },
+    );
+    await watcher.tick();
+    await watcher.tick();
+    fail = false;
+    await watcher.tick(); // success — counter resets
+    fail = true;
+    await watcher.tick();
+    await watcher.tick();
+    expect(calls).toBe(5); // two failures after a success never reach the threshold
   });
 });
