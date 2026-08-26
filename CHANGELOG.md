@@ -1,3 +1,37 @@
+## [3.47.2] — 2026-08-27
+
+### Added
+
+- **A best-effort "installing the update, please wait" window during the install handoff.** Clicking "install now" used to close the app and go silent for up to ~1-2 minutes while the install waiter confirmed every process had actually let go of the install root — indistinguishable, from the outside, from the update having failed. The waiter (which already has to run outside the install root it is watching) now shows a small always-on-top window for that wait, and closes it right before Squirrel's own installer UI takes over. Failing to show it (a locked-down machine, no display subsystem) degrades to today's silent-but-correct behavior — it can never block or fail the install itself. (#1043)
+
+- **First-run system-locale detection.** A session that has never had a language chosen (fresh install, or a `session.json` from before the `locale` field existed) now picks up the OS locale via `navigator.language` and maps it to one of the 23 shipped languages — a region variant like `pl-PL` or `de-AT` matches its base language, and Traditional-vs-Simplified Chinese is routed by script/region rather than defaulting to one. A language nobody ships (or a locale string that doesn't parse) falls back to English, same as today. Detection runs exactly once: any explicit choice already on record in `session.json` — the user's own pick, or a previous run's detection — is left untouched.
+
+### Fixed
+
+- **Five Polish strings that drifted after the English changed.** Follow-up to
+  #1029 — the maintainer's `git blame` comparison of `en.ts` against `pl.ts`
+  caught keys whose English was edited after the Polish translation was
+  written, so the translation kept describing an older feature shape.
+  `settings.fontFamilyDesc` still said "monospace font for the terminal" after
+  the setting started accepting any installed font; the four `fanout.*` keys
+  still said "Fan-out" after the feature was renamed to "Multi Task" and its
+  prompt became optional.
+
+- **A half-completed install now says so, from the two places that can still
+  speak.** An antivirus scan holding the freshly written executable can make
+  the Windows installer abort partway, leaving an installation that either
+  never starts (a required Chromium resource was never copied) or starts but
+  can never update or uninstall (Squirrel's `Update.exe` was never written) —
+  in both cases silently, with the only diagnostic buried in the installer's
+  own log. On the update path, the install waiter now stays for the
+  installer's exit and verifies what it left behind: a broken result gets a
+  visible warning right there and a notice on the next boot that can boot.
+  An installation that runs but is missing `Update.exe` is detected at
+  startup and explained once, with reinstall guidance, instead of every
+  future update failing with no visible reason. Fresh installs run by hand
+  remain the installer's own responsibility — no process of the app exists
+  yet on such a machine. (#1048)
+
 ## [3.47.1] — 2026-08-26
 
 ### Fixed
