@@ -9,6 +9,7 @@ import { describe, it, expect, afterEach } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { createHash } from 'node:crypto';
 import {
   isSafePsPathLiteral,
   freeSpaceShortfall,
@@ -85,6 +86,51 @@ describe('buildWaiterScript — ordering is the whole contract', () => {
     expect(buildWaiterScript({ ...PLAN, pids: [0] })).toBeNull();
     expect(buildWaiterScript({ ...PLAN, pids: [-3] })).toBeNull();
     expect(buildWaiterScript({ ...PLAN, pids: [1.5] })).toBeNull();
+  });
+
+  // #1043 — a best-effort "please wait" indicator for the otherwise-silent
+  // 1-2 minute window. Structural lock only: the WinForms message loop and
+  // its interaction with a real Windows desktop cannot run on CI regardless
+  // of platform (there is no display), so this pins the CODE SHAPE — that a
+  // failure to build the form can never block the wait/probe logic, and that
+  // the window is gone before Setup.exe (which brings its own UI) starts.
+  it('shows a best-effort wait indicator that never gates the wait itself', () => {
+    const s = buildWaiterScript(PLAN) ?? '';
+    const formTry = s.indexOf('Add-Type -AssemblyName System.Windows.Forms');
+    const formCatch = s.indexOf('} catch { if ($form) { try { $form.Close() } catch { } }; $form = $null }');
+    const handleWait = s.indexOf('WaitForExit');
+    const closeBeforeStart = s.lastIndexOf('$form.Close()');
+    const start = s.indexOf('Start-Process -FilePath $setup');
+
+    expect(formTry).toBeGreaterThan(-1);
+    // The form build is wrapped so any failure (Add-Type refused, no display
+    // subsystem) degrades to $form = $null rather than an unhandled error
+    // that would abort the whole waiter and silently cancel the update.
+    expect(formCatch).toBeGreaterThan(formTry);
+    expect(formCatch).toBeLessThan(handleWait);
+    // Every DoEvents/Close call is null-checked, so a null $form is inert —
+    // the wait/probe/launch sequence behaves exactly as it did before this
+    // indicator existed.
+    expect(s).toMatch(/if \(\$form\) \{ try \{ \[System\.Windows\.Forms\.Application\]::DoEvents\(\) \} catch \{ \} \}/);
+    // Closed before Setup.exe starts — Squirrel has its own UI from here.
+    expect(closeBeforeStart).toBeGreaterThan(handleWait);
+    expect(closeBeforeStart).toBeLessThan(start);
+  });
+
+  it('closes the wait indicator on every abort path too, not just success', () => {
+    const s = buildWaiterScript(PLAN) ?? '';
+    const stuckAbort = s.indexOf("'install-aborted: a process under the install root would not exit'");
+    const lockedAbort = s.indexOf("'install-aborted: install root still locked'");
+    // Each abort's own Set-Content is preceded (a few lines up) by a
+    // form-close guard — assert the guard is present at all, since a leaked
+    // topmost window after a refused install would be its own, smaller
+    // version of this same issue.
+    const closeCount = (s.match(/if \(\$form\) \{ try \{ \$form\.Close\(\) \} catch \{ \} \}/g) ?? []).length;
+    expect(stuckAbort).toBeGreaterThan(-1);
+    expect(lockedAbort).toBeGreaterThan(-1);
+    // success path + stuck-handle abort + locked-root abort + the
+    // form-setup catch block (coderabbit, #1044) = 4 close sites.
+    expect(closeCount).toBe(4);
   });
 });
 
@@ -403,7 +449,10 @@ describe('buildWaiterScript — the clock has to survive a long uptime (#980)', 
   });
 
   it('hands WaitForExit an int, so a widened remainder cannot throw the wait away', () => {
-    expect(buildWaiterScript(plan)!).toContain('$h.WaitForExit([int]$left)');
+    // #1043 sliced the single blocking WaitForExit into a poll (so the wait
+    // screen can pump DoEvents between slices) — the value handed to
+    // WaitForExit is now the per-slice remainder, still explicitly cast.
+    expect(buildWaiterScript(plan)!).toContain('$exited = $h.WaitForExit([int]$slice)');
   });
 });
 
@@ -439,7 +488,27 @@ describe('buildWaiterScript — one waiter per install root (#980, coderabbit)',
     expect(s.slice(0, yieldAt)).not.toContain('Set-Content');
   });
 
-  it('scopes the mutex to the install root, so two installations never collide', () => {
-    expect(script()).toContain(`'wmux-install-waiter-' + ($root -replace '[^A-Za-z0-9]', '_')`);
+  it('derives the mutex name from a SHA256 hash of $root, not a lossy character replace', () => {
+    const s = script();
+    expect(s).toContain(
+      '[System.Security.Cryptography.SHA256]::Create().ComputeHash([System.Text.Encoding]::UTF8.GetBytes($root))',
+    );
+    expect(s).toContain(`'wmux-install-waiter-' + $mtxHash`);
+    // The regression this replaces: '[^A-Za-z0-9]' -> '_' collapses any root
+    // whose only difference is which non-alphanumeric character it uses.
+    expect(s).not.toContain(`-replace '[^A-Za-z0-9]', '_'`);
+  });
+
+  it('two roots the old regex-replace would have collided on now hash differently (#1043, coderabbit)', () => {
+    // C:\wmux-a and C:\wmux_a both replace their one non-alnum character with
+    // '_' and land on the identical mutex name under the old scheme — two
+    // genuinely different installations would then block each other's
+    // update. This is PowerShell's own SHA256 at runtime; Node's `crypto`
+    // computes the same algorithm over the same bytes, so equality here would
+    // mean the new scheme collides too, not just that the two happen to
+    // differ today.
+    const a = createHash('sha256').update('C:\\wmux-a', 'utf8').digest('hex');
+    const b = createHash('sha256').update('C:\\wmux_a', 'utf8').digest('hex');
+    expect(a).not.toBe(b);
   });
 });
