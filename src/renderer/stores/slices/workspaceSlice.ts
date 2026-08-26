@@ -957,7 +957,14 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
         // on the hardcoded 'en' default. A user who DOES pick a language in
         // Settings gets `data.locale` populated from then on (setLocale
         // writes it), so this branch never re-fires for them.
-        const detected = detectSupportedLocale(window.electronAPI?.systemLocale ?? '');
+        // `typeof window` guard, not a bare reference: loadSession also runs
+        // under node-environment suites (workspaceColor, workspaceProjections,
+        // paneOrdinal, remoteWorkspacesSlice) where `window` does not exist at
+        // all, so a bare read is a ReferenceError — the same reason the
+        // preload half of this feature guards `typeof navigator`.
+        const detected = detectSupportedLocale(
+          (typeof window !== 'undefined' ? window.electronAPI?.systemLocale : undefined) ?? '',
+        );
         state.locale = detected;
         i18nSetLocale(detected);
       }
