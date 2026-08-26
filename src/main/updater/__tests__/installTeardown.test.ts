@@ -9,6 +9,7 @@ import { describe, it, expect, afterEach } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { createHash } from 'node:crypto';
 import {
   isSafePsPathLiteral,
   freeSpaceShortfall,
@@ -96,7 +97,7 @@ describe('buildWaiterScript — ordering is the whole contract', () => {
   it('shows a best-effort wait indicator that never gates the wait itself', () => {
     const s = buildWaiterScript(PLAN) ?? '';
     const formTry = s.indexOf('Add-Type -AssemblyName System.Windows.Forms');
-    const formCatch = s.indexOf('} catch { $form = $null }');
+    const formCatch = s.indexOf('} catch { if ($form) { try { $form.Close() } catch { } }; $form = $null }');
     const handleWait = s.indexOf('WaitForExit');
     const closeBeforeStart = s.lastIndexOf('$form.Close()');
     const start = s.indexOf('Start-Process -FilePath $setup');
@@ -127,8 +128,9 @@ describe('buildWaiterScript — ordering is the whole contract', () => {
     const closeCount = (s.match(/if \(\$form\) \{ try \{ \$form\.Close\(\) \} catch \{ \} \}/g) ?? []).length;
     expect(stuckAbort).toBeGreaterThan(-1);
     expect(lockedAbort).toBeGreaterThan(-1);
-    // success path + stuck-handle abort + locked-root abort = 3 close sites.
-    expect(closeCount).toBe(3);
+    // success path + stuck-handle abort + locked-root abort + the
+    // form-setup catch block (coderabbit, #1044) = 4 close sites.
+    expect(closeCount).toBe(4);
   });
 });
 
@@ -486,7 +488,27 @@ describe('buildWaiterScript — one waiter per install root (#980, coderabbit)',
     expect(s.slice(0, yieldAt)).not.toContain('Set-Content');
   });
 
-  it('scopes the mutex to the install root, so two installations never collide', () => {
-    expect(script()).toContain(`'wmux-install-waiter-' + ($root -replace '[^A-Za-z0-9]', '_')`);
+  it('derives the mutex name from a SHA256 hash of $root, not a lossy character replace', () => {
+    const s = script();
+    expect(s).toContain(
+      '[System.Security.Cryptography.SHA256]::Create().ComputeHash([System.Text.Encoding]::UTF8.GetBytes($root))',
+    );
+    expect(s).toContain(`'wmux-install-waiter-' + $mtxHash`);
+    // The regression this replaces: '[^A-Za-z0-9]' -> '_' collapses any root
+    // whose only difference is which non-alphanumeric character it uses.
+    expect(s).not.toContain(`-replace '[^A-Za-z0-9]', '_'`);
+  });
+
+  it('two roots the old regex-replace would have collided on now hash differently (#1043, coderabbit)', () => {
+    // C:\wmux-a and C:\wmux_a both replace their one non-alnum character with
+    // '_' and land on the identical mutex name under the old scheme — two
+    // genuinely different installations would then block each other's
+    // update. This is PowerShell's own SHA256 at runtime; Node's `crypto`
+    // computes the same algorithm over the same bytes, so equality here would
+    // mean the new scheme collides too, not just that the two happen to
+    // differ today.
+    const a = createHash('sha256').update('C:\\wmux-a', 'utf8').digest('hex');
+    const b = createHash('sha256').update('C:\\wmux_a', 'utf8').digest('hex');
+    expect(a).not.toBe(b);
   });
 });

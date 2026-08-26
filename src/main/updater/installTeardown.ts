@@ -321,7 +321,14 @@ export function buildWaiterScript(plan: WaiterPlan): string | null {
     // owned by the INCUMBENT and stays on screen (topmost) for the whole wait,
     // so a user who reopens wmux and clicks "update" again sees it still
     // there rather than a second silent close.
-    `$mtxName = 'wmux-install-waiter-' + ($root -replace '[^A-Za-z0-9]', '_')`,
+    // #1043, coderabbit: the old name was 'wmux-install-waiter-' + ($root
+    // -replace '[^A-Za-z0-9]', '_') — lossy character replacement, so two
+    // DISTINCT roots that only differ in a replaced character (C:\wmux-a vs
+    // C:\wmux_a) collapse onto the same mutex name and would block each
+    // other's install. A SHA256 of the root is collision-resistant instead of
+    // merely "usually fine."
+    `$mtxHash = [System.BitConverter]::ToString([System.Security.Cryptography.SHA256]::Create().ComputeHash([System.Text.Encoding]::UTF8.GetBytes($root))) -replace '-', ''`,
+    `$mtxName = 'wmux-install-waiter-' + $mtxHash`,
     `$mtxCreated = $false`,
     `$mtx = New-Object System.Threading.Mutex -ArgumentList $true, $mtxName, ([ref]$mtxCreated)`,
     `if (-not $mtxCreated) { exit 5 }`,
@@ -335,6 +342,13 @@ export function buildWaiterScript(plan: WaiterPlan): string | null {
     // (see spawnInstallWaiter): the app's own process tree is precisely what
     // has to fully let go of the install root, so anything meant to render
     // for the whole wait has to run outside that tree.
+    // Colors match the app's own default dark chrome (the 'amber' theme in
+    // themes.ts: bgMantle for panel surfaces, textMain for body text,
+    // accentSecondary — steel-blue, the app's own "navigation/informational"
+    // accent, not the amber "attention" one — for the header) rather than
+    // stock Windows gray, so this reads as wmux's own UI and not a random
+    // system dialog. Segoe UI at two weights does the rest: a bold "wmux"
+    // header plus a lighter status line underneath.
     `$form = $null`,
     `try {`,
     `  Add-Type -AssemblyName System.Windows.Forms`,
@@ -345,15 +359,32 @@ export function buildWaiterScript(plan: WaiterPlan): string | null {
     `  $form.StartPosition = 'CenterScreen'`,
     `  $form.TopMost = $true`,
     `  $form.ShowInTaskbar = $false`,
-    `  $form.ClientSize = New-Object System.Drawing.Size(360, 90)`,
+    `  $form.BackColor = [System.Drawing.ColorTranslator]::FromHtml('#19191C')`,
+    `  $form.ClientSize = New-Object System.Drawing.Size(380, 110)`,
+    `  $headerLabel = New-Object System.Windows.Forms.Label`,
+    `  $headerLabel.Text = 'wmux'`,
+    `  $headerLabel.ForeColor = [System.Drawing.ColorTranslator]::FromHtml('#6E9BC4')`,
+    `  $headerLabel.Font = New-Object System.Drawing.Font('Segoe UI', 13, [System.Drawing.FontStyle]::Bold)`,
+    `  $headerLabel.Dock = 'Top'`,
+    `  $headerLabel.Height = 40`,
+    `  $headerLabel.TextAlign = 'MiddleCenter'`,
     `  $label = New-Object System.Windows.Forms.Label`,
-    `  $label.Text = "Installing the wmux update...\`nThis window closes on its own."`,
+    `  $label.Text = "Installing the update...\`nThis window closes on its own."`,
+    `  $label.ForeColor = [System.Drawing.ColorTranslator]::FromHtml('#EFEEEC')`,
+    `  $label.Font = New-Object System.Drawing.Font('Segoe UI', 9)`,
     `  $label.Dock = 'Fill'`,
     `  $label.TextAlign = 'MiddleCenter'`,
     `  $form.Controls.Add($label)`,
+    `  $form.Controls.Add($headerLabel)`,
     `  $form.Show()`,
     `  [System.Windows.Forms.Application]::DoEvents()`,
-    `} catch { $form = $null }`,
+    // #1043, coderabbit: a throw partway through this block — after
+    // .Show() but before the try finishes — used to leave a visible form
+    // orphaned: the catch cleared $form to null, so every later `if ($form)`
+    // cleanup treated it as never having existed and the window sat there,
+    // topmost, until the waiter process itself exited. Close it first if it
+    // got far enough to exist, THEN null the reference.
+    `} catch { if ($form) { try { $form.Close() } catch { } }; $form = $null }`,
     // Capture HANDLES first. GetProcessById opens a handle now, so a later pid
     // recycle cannot make an exited process look alive (or a stranger's
     // process look like ours).
