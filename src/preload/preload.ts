@@ -66,6 +66,16 @@ const electronAPI = {
       typeof process.getSystemVersion === 'function' ? process.getSystemVersion() : null,
     )
     : null,
+  // Raw OS locale (e.g. 'pl-PL', 'zh-Hant-TW') for first-run language
+  // detection (workspaceSlice's loadSession). `navigator.language` and not an
+  // IPC round-trip to `app.getLocale()`: sandboxed preload keeps the full Web
+  // platform surface (only Node builtins are restricted — see the
+  // getSystemVersion comment above), and Electron already seeds
+  // `navigator.language` from the OS locale, so this is available
+  // synchronously with no main-process hop. Static like the two fields above:
+  // the OS locale cannot change mid-session, so there is nothing to keep in
+  // sync.
+  systemLocale: typeof navigator !== 'undefined' && navigator.language ? navigator.language : 'en',
   pty: {
     // `exec`/`supervision` (X8): set by the AppLayout funnel for a supervised
     // wmux.json leaf — `exec` runs the command as the pane's ROOT process and

@@ -5,7 +5,7 @@ import { normalizeWorkspaceProfile } from '../../../shared/workspaceProfile';
 import { normalizeWorkspaceColor, type WorkspaceColorId } from '../../../shared/workspaceColors';
 import { normalizeRoleBindings } from '../../../shared/orchestratorRole';
 import { getPresetById } from '../../../shared/layoutPresets';
-import { setLocale as i18nSetLocale, t as i18nT, type Locale } from '../../i18n';
+import { setLocale as i18nSetLocale, t as i18nT, detectSupportedLocale, type Locale } from '../../i18n';
 import { applyCustomCssVars, migrateThemeId, migrateCustomThemeColors } from '../../themes';
 import { resetInspectState } from './uiSlice';
 import { sanitizeFontFamily } from '../../utils/terminalFont';
@@ -949,6 +949,17 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       if (data.locale) {
         state.locale = data.locale as Locale;
         i18nSetLocale(data.locale as Locale);
+      } else {
+        // No locale in session.json: either a genuinely first-ever run, or a
+        // session.json written before this field existed. Either way the
+        // user has never made an explicit choice, so detect once from the
+        // OS locale (falling back to English) rather than silently sitting
+        // on the hardcoded 'en' default. A user who DOES pick a language in
+        // Settings gets `data.locale` populated from then on (setLocale
+        // writes it), so this branch never re-fires for them.
+        const detected = detectSupportedLocale(window.electronAPI?.systemLocale ?? '');
+        state.locale = detected;
+        i18nSetLocale(detected);
       }
       if (data.terminalFontSize != null) state.terminalFontSize = data.terminalFontSize;
       // UI scale: clamp on load so a hand-edited session.json (e.g. uiScale: 5)

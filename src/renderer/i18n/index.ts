@@ -153,3 +153,52 @@ export const LOCALE_OPTIONS: Array<{ value: Locale; label: string }> = [
   { value: 'uk', label: 'Українська' },
   { value: 'vi', label: 'Tiếng Việt' },
 ];
+
+const SUPPORTED_LOCALES = LOCALE_OPTIONS.map((o) => o.value);
+
+/**
+ * Map a raw OS/BCP-47 locale string (`navigator.language`, e.g. `'pl-PL'`,
+ * `'zh-Hant-TW'`, `'pt-BR'`) to one of our 23 supported locales, falling back
+ * to `'en'` when nothing reasonable matches.
+ *
+ * Pure and total — never throws on garbage input, since the caller is
+ * first-run session load and a bad OS locale string must not be able to
+ * block the app from opening.
+ *
+ * Two passes:
+ *   1. Exact match, case-insensitive, against the full tag — catches the two
+ *      locales whose OWN id carries a region (`zh-TW`, `pt-BR`) when the OS
+ *      reports that exact region back.
+ *   2. Primary-subtag match — `'pl-PL'` -> `'pl'`, `'de-AT'` -> `'de'`. `zh`
+ *      gets special handling here: a Traditional-script/Taiwan/HK/Macau
+ *      signal (`Hant`, `-TW`, `-HK`, `-MO`) maps to `'zh-TW'` and everything
+ *      else that starts with `zh` maps to `'zh'` — those two are NOT mutually
+ *      readable, so guessing wrong is worse than the generic English
+ *      fallback would be for most other locales.
+ *
+ * Anything that matches neither pass — including a locale we simply don't
+ * ship a translation for — returns `'en'`.
+ */
+export function detectSupportedLocale(
+  systemLocale: string,
+  supported: readonly Locale[] = SUPPORTED_LOCALES,
+): Locale {
+  const tag = (systemLocale || '').trim().toLowerCase();
+  if (!tag) return 'en';
+
+  const supportedLower = new Map<string, Locale>(supported.map((l) => [l.toLowerCase(), l]));
+
+  const exact = supportedLower.get(tag);
+  if (exact) return exact;
+
+  const primary = tag.split('-')[0];
+
+  if (primary === 'zh') {
+    const isTraditional = /(^|-)(hant|tw|hk|mo)(-|$)/.test(tag);
+    const zhVariant: Locale = isTraditional ? 'zh-TW' : 'zh';
+    return supported.includes(zhVariant) ? zhVariant : 'en';
+  }
+
+  const byPrimary = supported.find((l) => l.toLowerCase().split('-')[0] === primary);
+  return byPrimary ?? 'en';
+}

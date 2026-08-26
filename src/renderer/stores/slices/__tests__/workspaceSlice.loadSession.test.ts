@@ -135,6 +135,11 @@ beforeAll(() => {
     usage: {
       setEnabled: setUsageEnabled,
     },
+    // First-run locale detection reads this (see detectSupportedLocale tests
+    // below) — default to English here so every OTHER test in this file
+    // keeps behaving as if the OS locale were English, unless a test
+    // overrides it.
+    systemLocale: 'en-US',
   };
   // document is provided by jsdom in vitest; safe to call setAttribute.
 });
@@ -1289,5 +1294,73 @@ describe('WorkspaceSlice.loadSession — stashedPanes guards (#977 review)', () 
 
     const ws = store.getState().workspaces[0];
     expect(ws.stashedPanes![0].pane.ordinal).toBe(9);
+  });
+});
+
+describe('WorkspaceSlice.loadSession — first-run system locale detection', () => {
+  // loadSession early-returns for an empty workspaces array (line ~682,
+  // before the theme/locale restoration code ever runs), so this needs at
+  // least one well-formed workspace to reach the branch under test.
+  const minimalData = (): SessionData =>
+    ({
+      workspaces: [{
+        id: 'ws-1',
+        name: 'WS',
+        rootPane: { id: 'pane-root', type: 'leaf', surfaces: [], activeSurfaceId: '' },
+        activePaneId: 'pane-root',
+      }],
+      activeWorkspaceId: 'ws-1',
+      sidebarVisible: true,
+    }) as unknown as SessionData;
+
+  function withSystemLocale<T>(systemLocale: string, run: () => T): T {
+    const api = (globalThis.window as unknown as { electronAPI: { systemLocale?: string } }).electronAPI;
+    const prev = api.systemLocale;
+    api.systemLocale = systemLocale;
+    try {
+      return run();
+    } finally {
+      api.systemLocale = prev;
+    }
+  }
+
+  it('detects a supported OS locale when session.json has no locale yet (fresh/legacy session)', () => {
+    withSystemLocale('pl-PL', () => {
+      const store = createTestStore();
+      store.getState().loadSession(minimalData());
+      expect(store.getState().locale).toBe('pl');
+    });
+  });
+
+  it('falls back to English when the OS locale is not one we ship', () => {
+    withSystemLocale('xx-XX', () => {
+      const store = createTestStore();
+      store.getState().loadSession(minimalData());
+      expect(store.getState().locale).toBe('en');
+    });
+  });
+
+  it('does NOT override a locale the user (or a prior load) already set — no data.locale means detect ONLY on a truly empty field', () => {
+    withSystemLocale('pl-PL', () => {
+      const store = createTestStore();
+      const data = { ...minimalData(), locale: 'de' } as unknown as SessionData;
+      store.getState().loadSession(data);
+      // The explicit 'de' in session.json wins over the OS locale entirely —
+      // detection must never fire once a real choice is on record.
+      expect(store.getState().locale).toBe('de');
+    });
+  });
+
+  it('is inert when window.electronAPI is unavailable (e.g. a race before preload finishes)', () => {
+    const api = (globalThis.window as unknown as { electronAPI?: { systemLocale?: string } }).electronAPI;
+    const saved = api;
+    (globalThis.window as unknown as { electronAPI?: unknown }).electronAPI = undefined;
+    try {
+      const store = createTestStore();
+      expect(() => store.getState().loadSession(minimalData())).not.toThrow();
+      expect(store.getState().locale).toBe('en');
+    } finally {
+      (globalThis.window as unknown as { electronAPI?: unknown }).electronAPI = saved;
+    }
   });
 });
