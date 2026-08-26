@@ -350,8 +350,10 @@ export function buildWaiterScript(plan: WaiterPlan): string | null {
     // system dialog. Segoe UI at two weights does the rest: a bold "wmux"
     // header plus a lighter status line underneath.
     `$form = $null`,
+    `$formsLoaded = $false`,
     `try {`,
     `  Add-Type -AssemblyName System.Windows.Forms`,
+    `  $formsLoaded = $true`,
     `  Add-Type -AssemblyName System.Drawing`,
     `  $form = New-Object System.Windows.Forms.Form`,
     `  $form.Text = 'wmux update'`,
@@ -471,12 +473,55 @@ export function buildWaiterScript(plan: WaiterPlan): string | null {
     // and the script would exit 0, leaving a user who just watched wmux quit
     // with no update and no explanation on the next boot.
     `$started = $true`,
-    `try { Start-Process -FilePath $setup -ErrorAction Stop } catch { $started = $false }`,
+    `$setupProc = $null`,
+    `try { $setupProc = Start-Process -FilePath $setup -PassThru -ErrorAction Stop } catch { $started = $false }`,
     `if (-not $started) {`,
     `  Set-Content -LiteralPath $marker -Value 'install-aborted: the installer could not be started' -Encoding utf8`,
     `  exit 4`,
     `}`,
-    `exit 0`,
+    // #1046 -- post-exit verification. A Squirrel install can throw partway
+    // (field log: Defender's transient lock on the freshly written exe turned
+    // a delete into UnauthorizedAccessException) and abort with the app dir
+    // half-copied: wmux.exe present, icudtl.dat never written, Update.exe
+    // never created. An app without icudtl.dat dies before one line of our
+    // code runs, so no in-app check can ever fire on the machine that needs
+    // it -- this waiter is the one process of ours still alive on the update
+    // path, so it stays for the installer's exit and looks at what was left
+    // behind. (A fresh install run by hand has no waiter; that half of #1046
+    // stays open upstream.)
+    //
+    // Same fail-safe posture as the wait window above: verification can only
+    // ADD a warning. An installer still running at the deadline means
+    // "cannot judge" and exits 0 exactly like before, and so does a throw
+    // anywhere in the checks.
+    `$setupDone = $false`,
+    `try { if ($setupProc) { $setupDone = $setupProc.WaitForExit(600000) } } catch { }`,
+    `if (-not $setupDone) { exit 0 }`,
+    // Newest app-* by write time is what the root stub will launch next. The
+    // 30s poll absorbs an installer whose file work settles just after its
+    // process tree exits -- the alarm only fires once the corpse is stable.
+    `$verifyClock = [System.Diagnostics.Stopwatch]::StartNew()`,
+    `$updateExeOk = $false`,
+    `$icuOk = $false`,
+    `while ($verifyClock.ElapsedMilliseconds -lt 30000) {`,
+    `  $updateExeOk = Test-Path -LiteralPath (Join-Path $root 'Update.exe')`,
+    `  $newestApp = $null`,
+    `  try { $newestApp = Get-ChildItem -LiteralPath $root -Directory -Filter 'app-*' | Sort-Object LastWriteTime -Descending | Select-Object -First 1 } catch { }`,
+    `  $icuOk = ($null -ne $newestApp) -and (Test-Path -LiteralPath (Join-Path $newestApp.FullName 'icudtl.dat'))`,
+    `  if ($updateExeOk -and $icuOk) { exit 0 }`,
+    `  Start-Sleep -Milliseconds 1000`,
+    `}`,
+    `$missing = @()`,
+    `if (-not $updateExeOk) { $missing += 'Update.exe' }`,
+    `if (-not $icuOk) { $missing += 'icudtl.dat' }`,
+    `$reason = 'install-aborted: the installer exited but left an incomplete installation (missing ' + ($missing -join ', ') + '). Reinstall wmux from the latest Setup.exe.'`,
+    `try { Set-Content -LiteralPath $marker -Value $reason -Encoding utf8 } catch { }`,
+    // The marker only helps if the app can still boot; when icudtl.dat is
+    // what went missing, it cannot. This MessageBox is the only surface that
+    // reaches that user -- best-effort, gated on the Forms assembly having
+    // actually loaded for the wait window earlier.
+    `if ($formsLoaded) { try { [System.Windows.Forms.MessageBox]::Show('The wmux update did not complete: ' + ($missing -join ', ') + ' is missing from the installation, and wmux may no longer start. Please reinstall from the latest Setup.exe (github.com/openwong2kim/wmux/releases).', 'wmux update', [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning) | Out-Null } catch { } }`,
+    `exit 6`,
   ].join('\n');
 }
 
