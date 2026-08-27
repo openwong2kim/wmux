@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import * as fs from 'node:fs';
+import * as path from 'node:path';
 import {
   decodeTcpTableV4,
   decodeTcpTableV6,
@@ -97,12 +98,18 @@ describe('issue #1051 regression guard', () => {
     '-noprofile',
   ];
 
+  // Resolved from the repo root rather than from `import.meta.url`: the
+  // project type-checks as CommonJS, where `import.meta` is a hard tsc error
+  // even though vitest itself would happily run it.
+  const srcDir = path.join(process.cwd(), 'src', 'main', 'pty');
+
   it.each(['portWatch.ts', 'winSnapshotNative.ts'])(
     '%s contains no spawnable PowerShell artifact',
     (file) => {
-      const src = fs
-        .readFileSync(new URL(`../${file}`, import.meta.url), 'utf-8')
-        .toLowerCase();
+      const full = path.join(srcDir, file);
+      // A missing file must fail the guard, never silently pass it.
+      expect(fs.existsSync(full), `guard could not find ${full}`).toBe(true);
+      const src = fs.readFileSync(full, 'utf-8').toLowerCase();
       for (const token of banned) {
         expect(src).not.toContain(token);
       }
