@@ -65,6 +65,8 @@ const AF_INET6 = 23;
 /** TCP_TABLE_CLASS — listeners only, with owning PID. */
 const TCP_TABLE_OWNER_PID_LISTENER = 3;
 const ERROR_INSUFFICIENT_BUFFER = 122;
+/** The only GetLastError value that means a Toolhelp walk ended normally. */
+const ERROR_NO_MORE_FILES = 18;
 const TH32CS_SNAPPROCESS = 0x00000002;
 /** Refuse to allocate a listener table larger than this (see readTcpTable). */
 const MAX_TCP_TABLE_BYTES = 64 * 1024 * 1024;
@@ -149,6 +151,7 @@ interface NativeBindings {
   Process32FirstW: (snapshot: Handle, entry: Buffer) => number;
   Process32NextW: (snapshot: Handle, entry: Buffer) => number;
   CloseHandle: (handle: Handle) => number;
+  GetLastError: () => number;
 }
 
 /** undefined = load not attempted yet; null = attempted and unavailable. */
@@ -200,6 +203,7 @@ function loadBindings(): NativeBindings | null {
         'int64', 'void *',
       ]) as NativeBindings['Process32NextW'],
       CloseHandle: kernel32.func('CloseHandle', 'int', ['int64']) as NativeBindings['CloseHandle'],
+      GetLastError: kernel32.func('GetLastError', 'uint32', []) as NativeBindings['GetLastError'],
     };
   } catch (err) {
     warn(`koffi load failed — native snapshot disabled: ${err instanceof Error ? err.message : String(err)}`);
@@ -257,10 +261,20 @@ function readProcessTable(b: NativeBindings): NativeProcRow[] {
       procs.push(decodeProcessEntry(entry));
       ok = b.Process32NextW(raw, entry);
     }
+    // A false return means "walk over" ONLY when the last error says so.
+    // Any other code is a mid-walk failure that leaves the table truncated —
+    // and truncation is invisible downstream: `matchSessionPorts` would just
+    // find fewer descendants and quietly drop a pane's ports. The self-check
+    // below cannot catch this on its own, since our own entry may already
+    // have been read before the walk broke.
+    const lastError = b.GetLastError();
+    if (lastError !== ERROR_NO_MORE_FILES) {
+      throw new Error(`Process32NextW walk aborted after ${procs.length} entries (error ${lastError})`);
+    }
     // Self-check: we are always in our own snapshot. This is the cheapest
-    // guard that catches a truncated walk AND any future struct-offset drift
-    // at runtime rather than only in tests — a wrong pid offset makes this
-    // fail loudly instead of silently mis-attributing every port.
+    // guard against struct-offset drift at runtime rather than only in tests
+    // — a wrong pid offset makes this fail loudly instead of silently
+    // mis-attributing every port on the machine.
     if (!procs.some((p) => p.pid === process.pid)) {
       throw new Error(`process table omits our own pid (${process.pid}) — walk is unreliable`);
     }
