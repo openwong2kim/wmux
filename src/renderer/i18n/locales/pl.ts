@@ -1348,7 +1348,7 @@ export const pl = {
   'daemon.replacingToast':
     'Aktualizuję demona w tle do tej wersji — panele mogą się na chwilę zatrzymać i przywrócić automatycznie.',
   'update.refusedInstall':
-    'Ostatnia aktualizacja się nie zainstalowała: coś nadal korzystało z folderu instalacyjnego wmuxa, więc został pozostawiony nietknięty zamiast częściowo zastąpiony. Spróbuj ponownie albo zamknij wmux i uruchom instalator ze strony wydań.',
+    'Ostatnia aktualizacja się nie zainstalowała: coś nadal korzystało z folderu instalacyjnego wmuxa, więc został pozostawiony nietknięty zamiast częściowo zastąpiony. Spróbuj ponownie albo zamknij wmux i uruchom instalator ze strony wydań. ({detail})',
   'update.readyToInstall': 'wmux {version} jest gotowy do instalacji. Używasz {current}. Instalacja zamyka każdy panel.',
   'update.installNow': 'Zainstaluj teraz',
   'channels.alreadyMemberToast': '{workspace} już jest w #{channel}',

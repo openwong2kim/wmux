@@ -40,6 +40,7 @@ import {
   spawnInstallWaiter,
   terminatePids,
 } from './installTeardown';
+import { findInstallIntegrityGap } from './installIntegrity';
 
 const REPO = 'openwong2kim/wmux';
 // update.electronjs.org keys releases by platform-arch. Only the two arches we
@@ -272,7 +273,25 @@ export class AutoUpdater {
     const reason = readAbortMarker(markerPath);
     if (!reason) return null;
     console.warn(`[AutoUpdater] previous install was refused: ${reason}`);
+    // #1055 — when the installation is broken RIGHT NOW (Update.exe missing),
+    // the warnOnInstallIntegrityGap boot notice already owns this user and
+    // says "reinstall from Setup.exe". Delivering the marker's generic "left
+    // untouched — try again" toast on the same boot would be a second,
+    // contradictory instruction. And the marker must still be consumed: it
+    // lives in userData, which Setup.exe never touches, so left in place it
+    // would greet the FIRST boot after the reinstall it asked for with the
+    // same stale advice. Structural, not a substring match on the marker —
+    // the marker is written by the PRE-upgrade build's waiter, so its
+    // wording can never be trusted across a version boundary.
+    let brokenNow = false;
+    try {
+      brokenNow = findInstallIntegrityGap(process.execPath) !== null;
+    } catch { /* cannot judge — deliver the marker as before */ }
     clearAbortMarker(markerPath);
+    if (brokenNow) {
+      console.warn('[AutoUpdater] suppressing the refused-install toast: the install-integrity boot notice owns this state');
+      return null;
+    }
     return reason;
   }
 
@@ -802,6 +821,7 @@ export class AutoUpdater {
       console.log('[AutoUpdater] install ignored — no verified installer downloaded yet.');
       this.sendToRenderer(IPC.UPDATE_ERROR, {
         status: 'error',
+        source: 'install',
         message: 'No verified installer is ready yet. Check for updates again to download one.',
       });
       return;
@@ -810,6 +830,8 @@ export class AutoUpdater {
       console.log('[AutoUpdater] install already in progress — ignoring re-entrant call.');
       this.sendToRenderer(IPC.UPDATE_ERROR, {
         status: 'error',
+        source: 'install',
+        code: 'in-progress',
         message: 'An update install is already in progress. If nothing happens, restart wmux and try again.',
       });
       return;
@@ -842,6 +864,7 @@ export class AutoUpdater {
       this.downloadedSha = null;
       this.sendToRenderer(IPC.UPDATE_ERROR, {
         status: 'error',
+        source: 'install',
         message: 'The staged installer no longer matches the release it was verified against, so it was not run. Check for updates again to fetch a fresh copy.',
       });
       return;
@@ -880,6 +903,7 @@ export class AutoUpdater {
       this.isInstalling = false;
       this.sendToRenderer(IPC.UPDATE_ERROR, {
         status: 'error',
+        source: 'install',
         message: 'In-app install is only available in an installed build. Download the latest release manually.',
       });
       return;
@@ -904,6 +928,7 @@ export class AutoUpdater {
       const freeMb = Math.floor(shortfall.freeBytes / 1024 / 1024);
       this.sendToRenderer(IPC.UPDATE_ERROR, {
         status: 'error',
+        source: 'install',
         message: `Not enough free space on ${shortfall.volume} to install safely: ${needMb} MB needed, ${freeMb} MB free. Nothing was changed.`,
       });
       return;
@@ -960,6 +985,7 @@ export class AutoUpdater {
       this.isInstalling = false;
       this.sendToRenderer(IPC.UPDATE_ERROR, {
         status: 'error',
+        source: 'install',
         message: 'Could not prepare the installer safely. The update was not started and your installation is unchanged.',
       });
       return;
@@ -1022,6 +1048,7 @@ export class AutoUpdater {
       );
       this.sendToRenderer(IPC.UPDATE_ERROR, {
         status: 'error',
+        source: 'install',
         message: reason
           ? `The update did not install (${reason}). Your current version is unchanged — restart wmux and try again.`
           : 'The update did not install: wmux could not shut down to let the installer run. Your current version is unchanged — restart wmux and try again.',
@@ -1114,7 +1141,7 @@ export class AutoUpdater {
       console.error('[AutoUpdater] macOS install failed (fail-closed):', message);
       void reachable
         .catch((err) => { console.error('[AutoUpdater] install-quit abort failed:', err); })
-        .then(() => { this.sendToRenderer(IPC.UPDATE_ERROR, { status: 'error', message }); });
+        .then(() => { this.sendToRenderer(IPC.UPDATE_ERROR, { status: 'error', source: 'install', message }); });
     };
 
     try {

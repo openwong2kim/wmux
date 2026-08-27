@@ -1264,7 +1264,7 @@ export const zh = {
   'channels.joinedToast': '已将 {workspace} 加入 #{channel}',
   'channels.daemonStaleBanner': '频道已更新，但后台守护进程仍在运行旧版本。请完全退出 wmux 并重新启动以完成更新。',
   'daemon.replacingToast': '正在将后台守护进程更新到此版本 — 面板可能会短暂暂停并自动恢复。',
-  'update.refusedInstall': '上次更新未安装：仍有进程在使用 wmux 安装文件夹，因此它被保持原样而未半替换。请重试，或关闭 wmux 并从 releases 页面运行安装程序。',
+  'update.refusedInstall': '上次更新未安装：仍有进程在使用 wmux 安装文件夹，因此它被保持原样而未半替换。请重试，或关闭 wmux 并从 releases 页面运行安装程序。（{detail}）',
   'update.readyToInstall': 'wmux {version} 已可安装。当前运行的是 {current}。安装会关闭所有窗格。',
   'update.installNow': '立即安装',
   'channels.alreadyMemberToast': '{workspace} 已在 #{channel} 中',
