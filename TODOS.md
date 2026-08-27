@@ -98,6 +98,7 @@
 - `THIRD_PARTY_NOTICES` 버전 드리프트(기록 1.27.1 vs 설치 1.29.0) — PR #676의 재생성으로 해소됐는지 확인 필요
 - `.claude/worktrees/agent-*` 잔여 24개 — README는 fan-out을 "never as mystery folders"로 파는데 리포가 그 상태다. wmux 정리 목록이 `~/.wmux/worktrees/`만 본다
 - CHANGELOG `[Unreleased]`에 grapheme 항목 3개 중복 — #671 되돌림으로 전량 삭제 대상이었는데 확인 필요
+- `collect-changelog.mjs`가 `## [Unreleased]` 헤딩을 **소비**한다 — 릴리즈 때마다 다음 사람이 손으로 다시 넣어야 하고, 안 넣으면 `applyToChangelog`가 throw한다(`changelog-fragments.mjs:117`). 3.47.1·3.48.0 두 릴리즈가 연속으로 이 절차를 밟았다. 수집기가 접은 뒤 빈 스텁을 되돌려놓으면 끝. ★3.47.1 릴리즈 커밋이 "이미 TODOS에 있다"고 적었지만 실제로는 없었고, 3.48.0이 그 문장을 검증 없이 복사했다 — 이 줄이 그 부채를 실제로 등록한다
 - wmux web 터미널이 유니코드 애드온 미탑재 → Unicode 6 기본값. 데스크톱과 같은 판이 폰에서 폭이 다르다
 - 오케스트레이션 스킬 3차 개정 — 긴 메시지 붙여넣기 실패 사례, 감시가 유휴도 잡아야 한다는 것
 
