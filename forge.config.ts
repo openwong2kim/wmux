@@ -241,6 +241,37 @@ const config: ForgeConfig = {
       if (!canPrune) {
         console.warn('[postPackage] packageResult platform/arch unavailable — skipping node-pty prebuild pruning.');
       }
+
+      // koffi (in-process Win32 FFI for the port watcher — issue #1051):
+      // a JS package plus a prebuilt Node-API binary in a sibling
+      // @koromix/koffi-<platform>-<arch> package. Its loader resolves the
+      // binary relative to the koffi package location, so both packages must
+      // land in the SAME node_modules root wherever koffi is required from
+      // (app.asar for main, daemon-bundle for the daemon). Windows-only:
+      // winSnapshotNative guards on process.platform, so other targets never
+      // require koffi at runtime.
+      const koffiPlatform = targetPlatform ?? process.platform;
+      const koffiArch = targetArch ?? process.arch;
+      const wantKoffi = koffiPlatform === 'win32';
+      const koffiSrc = path.join(__dirname, 'node_modules', 'koffi');
+      const koromixName = `koffi-win32-${koffiArch}`;
+      const koromixSrc = path.join(__dirname, 'node_modules', '@koromix', koromixName);
+      if (wantKoffi && (!fs.existsSync(koffiSrc) || !fs.existsSync(koromixSrc))) {
+        // Without the native snapshot the port watcher has no Windows source
+        // at all (the PowerShell path was removed on purpose — issue #1051),
+        // so a package silently missing koffi would ship a dead feature.
+        throw new Error(
+          `[postPackage] koffi prebuilt missing (${koffiSrc} / ${koromixSrc}) — cannot package a Windows build ` +
+          `without the native snapshot. npm installs only the BUILD HOST's koffi sidecar, so packaging ` +
+          `win32-${koffiArch} requires a win32-${koffiArch} host (or an explicit @koromix/${koromixName} install).`,
+        );
+      }
+      const copyKoffiInto = (nodeModulesDir: string): void => {
+        if (!wantKoffi) return;
+        copyDirSync(koffiSrc, path.join(nodeModulesDir, 'koffi'));
+        copyDirSync(koromixSrc, path.join(nodeModulesDir, '@koromix', koromixName));
+        console.log(`[postPackage] Copied koffi + @koromix/${koromixName} → ${nodeModulesDir}`);
+      };
       // macOS는 .app 번들이라 리소스가 <app>.app/Contents/Resources에,
       // Windows/Linux는 <output>/resources에 위치한다. .app 이름은
       // productName에 따라 달라지므로 디렉토리에서 직접 찾는다.
@@ -267,6 +298,7 @@ const config: ForgeConfig = {
       if (fs.existsSync(srcAddonApi)) {
         copyDirSync(srcAddonApi, path.join(tempDir, 'node_modules', 'node-addon-api'));
       }
+      copyKoffiInto(path.join(tempDir, 'node_modules'));
 
       // 3. Repack asar with native files unpacked
       console.log('[postPackage] Repacking asar...');
@@ -282,8 +314,12 @@ const config: ForgeConfig = {
       // __dirname에 이미 'app.asar.unpacked'가 들어가
       // 'app.asar.unpacked.unpacked'(ENOENT)로 망가진다. prebuilds만 unpack하면
       // lib는 가상 app.asar에 남아 replace가 정확히 'app.asar.unpacked'로 변환된다.
+      // koffi's @koromix prebuild (.node) must also live outside the asar for
+      // dlopen. Unpacking the whole (tiny) @koromix scope keeps the koffi
+      // loader's __dirname-relative candidate valid through Electron's
+      // asar → asar.unpacked dlopen redirect, same as node-pty's prebuilds.
       await asar.createPackageWithOptions(tempDir, asarPath, {
-        unpack: '**/node_modules/node-pty/prebuilds/**',
+        unpack: '**/node_modules/{node-pty/prebuilds,@koromix}/**',
       });
 
       // 3a. Invalidate @electron/asar's in-memory header cache for this archive.
@@ -318,6 +354,7 @@ const config: ForgeConfig = {
         console.log('[postPackage] Copying node-pty for daemon-bundle...');
         copyDirSync(path.join(__dirname, 'node_modules', 'node-pty'), daemonNodePty, isDebugSymbol);
         if (canPrune) pruneForeignPrebuilds(daemonNodePty, targetPlatform!, targetArch!);
+        copyKoffiInto(path.join(daemonBundleDir, 'node_modules'));
         console.log('[postPackage] Done — node-pty available for daemon.');
       }
 

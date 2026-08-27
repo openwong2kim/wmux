@@ -118,7 +118,11 @@ Resolution sources (normative for D6–7 implementation):
 - `pr`: main-process `gh pr status --json` cache, 5 min TTL, silent absence
   when `gh` missing.
 - `listeningPorts`: daemon PID tree (reuse identity PID map) →
-  `Get-NetTCPConnection -OwningProcess`, 10 s interval.
+  in-process listener-table snapshot (`GetExtendedTcpTable` via koffi — see
+  `src/main/pty/winSnapshotNative.ts`, issue #1051), 10 s interval.
+  (Resolution-source note only; the frozen wire shape above is unchanged.
+  Originally read via a PowerShell cmdlet — replaced because the periodic
+  spawn from an unsigned exe tripped Defender's behavioral heuristics.)
 - `cwd`: existing OSC 7 + prompt-scrape dual path (fix `surface_list`
   staleness as part of D6–7).
 

@@ -1,30 +1,24 @@
 import { EventEmitter } from 'node:events';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import path from 'node:path';
+import { tryNativeSnapshot } from './winSnapshotNative';
 
 const execFileAsync = promisify(execFile);
-
-/**
- * Absolute path to Windows PowerShell. A bare `powershell.exe` spawn relies
- * on PATH containing System32, which real-world machines lack surprisingly
- * often (X1 dogfood 2026-06-12: only System32\OpenSSH was on PATH → every
- * snapshot died ENOENT and ports silently never rendered). Same
- * SystemRoot-anchored resolution the daemon uses for wmic/tasklist.
- */
-function windowsPowershellPath(): string {
-  const systemRoot = process.env.SystemRoot || 'C:\\Windows';
-  return path.join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
-}
 
 /**
  * X1 workspace-context sidebar — per-session listening-port tracking.
  *
  * Frozen contract (docs/internal/fable-window-schema-freeze.md §2):
- *   - `listeningPorts`: daemon PID tree → `Get-NetTCPConnection
- *     -OwningProcess`, 10 s interval.
+ *   - `listeningPorts`: daemon PID tree → in-process listener-table snapshot
+ *     (`GetExtendedTcpTable`), 10 s interval.
  *   - Daemon broadcasts `{ type: 'context.ports', sessionId,
  *     data: { ports: Array<{ port: number, pid: number }> } }`.
+ *
+ * Windows snapshots are taken in-process via koffi FFI (winSnapshotNative).
+ * They used to shell out to PowerShell, which got the unsigned app flagged as
+ * a trojan by Defender's behavioral heuristics — see issue #1051 and the
+ * header of winSnapshotNative.ts. Do NOT reintroduce a PowerShell spawn
+ * here (regression-guarded in __tests__/winSnapshotNative.test.ts).
  *
  * Unlike the old MetadataCollector path (which listed the FIRST 20 ports of
  * the whole machine for every workspace), ports are matched against each
@@ -51,35 +45,36 @@ export interface PortSnapshot {
 export type SnapshotFn = () => Promise<PortSnapshot>;
 
 const DEFAULT_INTERVAL_MS = 10_000;
-/** Snapshot subprocess timeout — must stay well under the tick interval. */
+/** Snapshot subprocess timeout (Unix path) — well under the tick interval. */
 const SNAPSHOT_TIMEOUT_MS = 8_000;
+/** After this many consecutive snapshot failures, pause polling briefly. */
+const FAILURE_BACKOFF_THRESHOLD = 3;
+const FAILURE_BACKOFF_MS = 60_000;
 
-/** Windows: one PowerShell call returns both tables as compact JSON. */
-async function snapshotWindows(): Promise<PortSnapshot> {
-  const script =
-    '$p=Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Select-Object ProcessId,ParentProcessId;' +
-    '$c=Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | Select-Object LocalPort,OwningProcess;' +
-    '@{procs=@($p);conns=@($c)} | ConvertTo-Json -Depth 3 -Compress';
-  const { stdout } = await execFileAsync(windowsPowershellPath(), ['-NoProfile', '-Command', script], {
-    timeout: SNAPSHOT_TIMEOUT_MS,
-    windowsHide: true,
-    maxBuffer: 16 * 1024 * 1024,
-  });
-  const parsed = JSON.parse(stdout) as {
-    procs?: Array<{ ProcessId?: number; ParentProcessId?: number }> | null;
-    conns?: Array<{ LocalPort?: number; OwningProcess?: number }> | null;
-  };
+/**
+ * Windows: in-process FFI snapshot (see winSnapshotNative.ts — issue #1051).
+ *
+ * An unavailable native path REJECTS rather than resolving to an empty
+ * snapshot, which is what the old subprocess path did on failure. That
+ * distinction carries real weight downstream:
+ *   - `tick()` skips the diff pass entirely, so an already-rendered chip is
+ *     left alone instead of being cleared by a phantom "no ports" reading,
+ *     and the consecutive-failure backoff below can actually engage.
+ *   - `a2a.rpc.ts` branches on a failed snapshot to skip its retry; an empty
+ *     table would look like a successful-but-stale one and cost a second
+ *     pass on every single handshake.
+ */
+function snapshotWindowsNative(): PortSnapshot {
+  const native = tryNativeSnapshot();
+  if (!native) throw new Error('native snapshot unavailable');
   const ppidByPid = new Map<number, number>();
-  for (const p of parsed.procs ?? []) {
-    if (typeof p?.ProcessId === 'number' && typeof p?.ParentProcessId === 'number') {
-      ppidByPid.set(p.ProcessId, p.ParentProcessId);
-    }
-  }
   const listeners: SessionPort[] = [];
-  for (const c of parsed.conns ?? []) {
-    if (typeof c?.LocalPort === 'number' && typeof c?.OwningProcess === 'number' && c.OwningProcess > 4) {
-      listeners.push({ port: c.LocalPort, pid: c.OwningProcess });
-    }
+  for (const p of native.procs) {
+    ppidByPid.set(p.pid, p.ppid);
+  }
+  for (const c of native.conns) {
+    // Skip System/Idle (pid ≤ 4) — same filter the old snapshot applied.
+    if (c.pid > 4) listeners.push({ port: c.port, pid: c.pid });
   }
   return { ppidByPid, listeners };
 }
@@ -118,8 +113,15 @@ async function snapshotUnix(): Promise<PortSnapshot> {
   return { ppidByPid, listeners };
 }
 
-export function defaultSnapshot(): Promise<PortSnapshot> {
-  return process.platform === 'win32' ? snapshotWindows() : snapshotUnix();
+/**
+ * `async` on purpose: the Windows path is synchronous and can throw, and one
+ * consumer (`a2a.rpc.ts`) calls this OUTSIDE its try block — a synchronous
+ * throw would escape its guard instead of being handled as a failed
+ * snapshot. Declaring the function async turns every such throw into a
+ * rejection, which every consumer already handles.
+ */
+export async function defaultSnapshot(): Promise<PortSnapshot> {
+  return process.platform === 'win32' ? snapshotWindowsNative() : snapshotUnix();
 }
 
 /**
@@ -179,6 +181,8 @@ export class PortWatcher extends EventEmitter {
   private timer: NodeJS.Timeout | null = null;
   private ticking = false;
   private lastBySession = new Map<string, string>();
+  private consecutiveFailures = 0;
+  private backoffUntil = 0;
   private readonly intervalMs: number;
   private readonly snapshot: SnapshotFn;
 
@@ -205,6 +209,7 @@ export class PortWatcher extends EventEmitter {
   /** One poll cycle. Public so tests (and the daemon on session-create) can drive it. */
   async tick(): Promise<void> {
     if (this.ticking) return; // a slow snapshot must not stack subprocesses
+    if (Date.now() < this.backoffUntil) return; // failure backoff window
     this.ticking = true;
     try {
       const sessions = this.getSessions().filter(
@@ -220,6 +225,7 @@ export class PortWatcher extends EventEmitter {
       if (sessions.length === 0) return;
 
       const snap = await this.snapshot();
+      this.consecutiveFailures = 0;
       const matched = matchSessionPorts(snap, sessions);
       for (const [sessionId, ports] of matched) {
         const encoded = JSON.stringify(ports);
@@ -231,8 +237,15 @@ export class PortWatcher extends EventEmitter {
         this.emit('ports', { sessionId, ports });
       }
     } catch {
-      // Snapshot failure (PowerShell missing, lsof denied) — silent; the
+      // Snapshot failure (FFI unavailable, lsof denied) — silent; the
       // sidebar simply shows no ports, matching the "quiet absence" policy.
+      // Repeated failures pause polling briefly so a persistently broken
+      // snapshot source is not hammered every tick.
+      this.consecutiveFailures++;
+      if (this.consecutiveFailures >= FAILURE_BACKOFF_THRESHOLD) {
+        this.consecutiveFailures = 0;
+        this.backoffUntil = Date.now() + FAILURE_BACKOFF_MS;
+      }
     } finally {
       this.ticking = false;
     }
