@@ -12,7 +12,7 @@
  */
 
 import { autoUpdater, app, type BrowserWindow, ipcMain, net, shell } from 'electron';
-import { createReadStream, createWriteStream } from 'node:fs';
+import { createReadStream, createWriteStream, existsSync } from 'node:fs';
 import { lstat, readdir, stat, unlink } from 'node:fs/promises';
 import { join, dirname, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
@@ -285,7 +285,13 @@ export class AutoUpdater {
     // wording can never be trusted across a version boundary.
     let brokenNow = false;
     try {
-      brokenNow = findInstallIntegrityGap(process.execPath) !== null;
+      // Strict probe (coderabbit, #1058): the DEFAULT exists-callback inside
+      // findInstallIntegrityGap swallows an fs failure into `false`, which
+      // reads as "Update.exe missing" — an inconclusive probe would consume
+      // the marker and suppress the notice. Passing existsSync raw lets a
+      // throw propagate to the probe's own catch, which treats it as
+      // present — cannot-verify must deliver the marker, not eat it.
+      brokenNow = findInstallIntegrityGap(process.execPath, (p) => existsSync(p)) !== null;
     } catch { /* cannot judge — deliver the marker as before */ }
     clearAbortMarker(markerPath);
     if (brokenNow) {
@@ -1151,10 +1157,16 @@ export class AutoUpdater {
       autoUpdater.on('update-downloaded', () => {
         if (settled) return; // late event from an attempt that already failed
         console.log('[AutoUpdater] Squirrel.Mac staged the verified update — restarting to install (sessions persist in the daemon)');
-        // Squirrel has its own staged copy now — drop our temp ZIP so it does
-        // not survive the relaunch and pile up release after release.
-        void unlink(zipPath).catch(() => { /* best-effort cleanup */ });
-        this.downloadedPath = null;
+        // The ZIP and downloadedPath are deliberately KEPT here (#1058
+        // review F2): if the handoff deadline below fires, failInstall
+        // unlatches and the re-offered Install button must find a verified
+        // installer — nulling the path first made that retry answer "No
+        // verified installer is ready yet" and forced a fresh ~150 MB
+        // download on the exact platform the tagged-error fix targets. On
+        // success this process is gone before any cleanup could run; the
+        // leftover temp ZIP is reclaimed by the next boot sweep (its
+        // version then equals the running one, so the 24h floor applies,
+        // not the 7-day pending hold).
 
         // Let the windows close (the hide-to-tray intercept would otherwise
         // cancel the close quitAndInstall waits on), then deadline the handoff:

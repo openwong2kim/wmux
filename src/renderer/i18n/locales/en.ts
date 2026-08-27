@@ -1339,7 +1339,7 @@ export const en = {
   'daemon.replacingToast':
     'Updating the background daemon to this version — panes may pause briefly and restore automatically.',
   'update.refusedInstall':
-    'The last update did not install: something was still using the wmux install folder, so it was left untouched rather than half-replaced. Try again, or close wmux and run the installer from the releases page. ({detail})',
+    'The last update did not install; your current version is unchanged. Try again, or close wmux and run the installer from the releases page. ({detail})',
   'update.readyToInstall':
     'wmux {version} is ready to install. You are running {current}. Installing closes every pane.',
   'update.installNow': 'Install now',

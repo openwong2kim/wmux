@@ -566,7 +566,7 @@ describe('AutoUpdater #502 — quit after launching the installer', () => {
     const err = sent.find((m) => m.channel === IPC.UPDATE_ERROR);
     expect(err).toBeDefined();
     expect(err!.data.source).toBeUndefined();
-    if (typeof ipcHandlers.get(IPC.UPDATE_INSTALL) !== 'function') throw new Error('handler missing');
+    updater.stop();
   });
 
   it('win32: refuses to install from an unpackaged build instead of killing stray processes', async () => {

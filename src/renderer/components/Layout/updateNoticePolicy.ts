@@ -7,23 +7,23 @@
  * a structural regex cannot verify.
  */
 
-/** Payload of IPC.UPDATE_ERROR as the renderer sees it. */
-export interface UpdateErrorData {
-  status: string;
-  message: string;
-  /**
-   * Present on every error sent from an install context — performInstall's
-   * refusals, the install-quit watchdog, and the whole darwin install path.
-   * Background check and download failures never carry it.
-   */
-  source?: 'install';
-  /**
-   * The re-entrancy refusal ("an install is already in progress"): shown,
-   * but must not re-announce the ready toast — the in-flight attempt's own
-   * outcome will do that when it lands.
-   */
-  code?: 'in-progress';
-}
+import type { ElectronAPI } from '../../../preload/preload';
+
+/**
+ * Payload of IPC.UPDATE_ERROR as the renderer sees it — derived from the
+ * preload surface (the repo's single source of truth for this shape,
+ * `ElectronAPI = typeof electronAPI`) so this module cannot silently drift
+ * when a field is added there.
+ *
+ * Semantics: `source: 'install'` is present on every error sent from an
+ * install context (performInstall's refusals, the install watchdog, the
+ * whole darwin install path) and never on background check/download
+ * failures. `code: 'in-progress'` marks the re-entrancy refusal — shown,
+ * but it must not re-offer the Install button (the in-flight attempt
+ * re-announces on its own outcome).
+ */
+export type UpdateErrorData =
+  Parameters<Parameters<ElectronAPI['updater']['onUpdateError']>[0]>[0];
 
 /**
  * Whether an UPDATE_ERROR belongs on the always-mounted toast surface.

@@ -402,9 +402,10 @@ function useRefusedInstallNotice(
       .then((reason) => {
         if (cancelled || !reason) return;
         // #1055 — the marker's own text is the diagnostic this report class
-        // was missing, and the toast persists: the refusal is actionable
-        // (the install is intact — main suppresses the marker when it is
-        // not, deferring to the install-integrity boot notice).
+        // was missing, and the toast persists: retrying is valid advice for
+        // every reason main lets through (when Update.exe is missing — the
+        // one brokenness the integrity probe checks — main consumes the
+        // marker and defers to the boot notice instead).
         useStore.getState().pushToast({
           level: 'error',
           persist: true,
@@ -439,9 +440,9 @@ function useRefusedInstallNotice(
  * surface — with one difference that matters: this is a READ, not a take.
  * "An update is ready" is still true five minutes later, so the toast is
  * `persist` — a notice that fades leaves the user exactly where they
- * started. (Since #1055 the refusal notice above persists too: its advice
- * stays actionable, because main suppresses the marker whenever the
- * installation is actually broken.)
+ * started. (Since #1055 the refusal notice above persists too: main
+ * consumes the marker when Update.exe is missing — the one brokenness the
+ * integrity probe checks — and defers to the boot notice for that case.)
  */
 /** How long after a user-requested install an UPDATE_ERROR is still that
  *  install's. performInstall's refusals are decided before it launches
@@ -558,7 +559,9 @@ function usePendingInstallNotice(
       // land minutes after the click, and a one-shot install never stamps
       // one. Untagged errors keep the 30s click window described above.
       if (!shouldShowInstallError(data, installRequestedAt, Date.now(), INSTALL_ERROR_WINDOW_MS)) return;
-      installRequestedAt = 0; // one report per request
+      // Only meaningful for UNTAGGED errors now (tagged ones always show);
+      // resetting disarms the click window until the next request.
+      installRequestedAt = 0;
       useStore.getState().pushToast({
         level: 'error',
         persist: true,
@@ -574,6 +577,11 @@ function usePendingInstallNotice(
       void read().then((p) => {
         if (cancelled || announcedVersion !== null || !p) return; // superseded meanwhile
         announce(p.version, p.currentVersion);
+      }).catch((err) => {
+        // Same posture as every other read in this hook: never silently.
+        // A rejection here would otherwise throw unhandled AND eat the
+        // re-offered button — the exact silence this re-announce removes.
+        console.warn('[update] pending-install read failed after an install error:', err);
       });
     });
 
