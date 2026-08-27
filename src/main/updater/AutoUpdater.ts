@@ -12,7 +12,7 @@
  */
 
 import { autoUpdater, app, type BrowserWindow, ipcMain, net, shell } from 'electron';
-import { createReadStream, createWriteStream } from 'node:fs';
+import { createReadStream, createWriteStream, existsSync } from 'node:fs';
 import { lstat, readdir, stat, unlink } from 'node:fs/promises';
 import { join, dirname, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
@@ -42,6 +42,7 @@ import {
   terminatePids,
   waitForWaiterHeartbeat,
 } from './installTeardown';
+import { findInstallIntegrityGap } from './installIntegrity';
 
 const REPO = 'openwong2kim/wmux';
 // update.electronjs.org keys releases by platform-arch. Only the two arches we
@@ -280,7 +281,31 @@ export class AutoUpdater {
     const reason = readAbortMarker(markerPath);
     if (!reason) return null;
     console.warn(`[AutoUpdater] previous install was refused: ${reason}`);
+    // #1055 — when the installation is broken RIGHT NOW (Update.exe missing),
+    // the warnOnInstallIntegrityGap boot notice already owns this user and
+    // says "reinstall from Setup.exe". Delivering the marker's generic "left
+    // untouched — try again" toast on the same boot would be a second,
+    // contradictory instruction. And the marker must still be consumed: it
+    // lives in userData, which Setup.exe never touches, so left in place it
+    // would greet the FIRST boot after the reinstall it asked for with the
+    // same stale advice. Structural, not a substring match on the marker —
+    // the marker is written by the PRE-upgrade build's waiter, so its
+    // wording can never be trusted across a version boundary.
+    let brokenNow = false;
+    try {
+      // Strict probe (coderabbit, #1058): the DEFAULT exists-callback inside
+      // findInstallIntegrityGap swallows an fs failure into `false`, which
+      // reads as "Update.exe missing" — an inconclusive probe would consume
+      // the marker and suppress the notice. Passing existsSync raw lets a
+      // throw propagate to the probe's own catch, which treats it as
+      // present — cannot-verify must deliver the marker, not eat it.
+      brokenNow = findInstallIntegrityGap(process.execPath, (p) => existsSync(p)) !== null;
+    } catch { /* cannot judge — deliver the marker as before */ }
     clearAbortMarker(markerPath);
+    if (brokenNow) {
+      console.warn('[AutoUpdater] suppressing the refused-install toast: the install-integrity boot notice owns this state');
+      return null;
+    }
     return reason;
   }
 
@@ -810,6 +835,7 @@ export class AutoUpdater {
       console.log('[AutoUpdater] install ignored — no verified installer downloaded yet.');
       this.sendToRenderer(IPC.UPDATE_ERROR, {
         status: 'error',
+        source: 'install',
         message: 'No verified installer is ready yet. Check for updates again to download one.',
       });
       return;
@@ -818,6 +844,8 @@ export class AutoUpdater {
       console.log('[AutoUpdater] install already in progress — ignoring re-entrant call.');
       this.sendToRenderer(IPC.UPDATE_ERROR, {
         status: 'error',
+        source: 'install',
+        code: 'in-progress',
         message: 'An update install is already in progress. If nothing happens, restart wmux and try again.',
       });
       return;
@@ -850,6 +878,7 @@ export class AutoUpdater {
       this.downloadedSha = null;
       this.sendToRenderer(IPC.UPDATE_ERROR, {
         status: 'error',
+        source: 'install',
         message: 'The staged installer no longer matches the release it was verified against, so it was not run. Check for updates again to fetch a fresh copy.',
       });
       return;
@@ -888,6 +917,7 @@ export class AutoUpdater {
       this.isInstalling = false;
       this.sendToRenderer(IPC.UPDATE_ERROR, {
         status: 'error',
+        source: 'install',
         message: 'In-app install is only available in an installed build. Download the latest release manually.',
       });
       return;
@@ -911,6 +941,7 @@ export class AutoUpdater {
         this.isInstalling = false;
         this.sendToRenderer(IPC.UPDATE_ERROR, {
           status: 'error',
+          source: 'install',
           message: 'Could not prepare the installer safely. The update was not started and your installation is unchanged.',
         });
         return;
@@ -933,6 +964,7 @@ export class AutoUpdater {
       const freeMb = Math.floor(shortfall.freeBytes / 1024 / 1024);
       this.sendToRenderer(IPC.UPDATE_ERROR, {
         status: 'error',
+        source: 'install',
         message: `Not enough free space on ${shortfall.volume} to install safely: ${needMb} MB needed, ${freeMb} MB free. Nothing was changed.`,
       });
       return;
@@ -990,6 +1022,7 @@ export class AutoUpdater {
       this.isInstalling = false;
       this.sendToRenderer(IPC.UPDATE_ERROR, {
         status: 'error',
+        source: 'install',
         message: 'Could not prepare the installer safely. The update was not started and your installation is unchanged.',
       });
       return;
@@ -1008,6 +1041,7 @@ export class AutoUpdater {
       console.error(`[AutoUpdater] waiter=${waiterPath} never signaled it started — refusing to quit`);
       this.sendToRenderer(IPC.UPDATE_ERROR, {
         status: 'error',
+        source: 'install',
         message: 'The installer did not start. The update was not started and your installation is unchanged. Please try again.',
       });
       return;
@@ -1070,6 +1104,7 @@ export class AutoUpdater {
       );
       this.sendToRenderer(IPC.UPDATE_ERROR, {
         status: 'error',
+        source: 'install',
         message: reason
           ? `The update did not install (${reason}). Your current version is unchanged — restart wmux and try again.`
           : 'The update did not install: wmux could not shut down to let the installer run. Your current version is unchanged — restart wmux and try again.',
@@ -1162,7 +1197,7 @@ export class AutoUpdater {
       console.error('[AutoUpdater] macOS install failed (fail-closed):', message);
       void reachable
         .catch((err) => { console.error('[AutoUpdater] install-quit abort failed:', err); })
-        .then(() => { this.sendToRenderer(IPC.UPDATE_ERROR, { status: 'error', message }); });
+        .then(() => { this.sendToRenderer(IPC.UPDATE_ERROR, { status: 'error', source: 'install', message }); });
     };
 
     try {
@@ -1172,10 +1207,16 @@ export class AutoUpdater {
       autoUpdater.on('update-downloaded', () => {
         if (settled) return; // late event from an attempt that already failed
         console.log('[AutoUpdater] Squirrel.Mac staged the verified update — restarting to install (sessions persist in the daemon)');
-        // Squirrel has its own staged copy now — drop our temp ZIP so it does
-        // not survive the relaunch and pile up release after release.
-        void unlink(zipPath).catch(() => { /* best-effort cleanup */ });
-        this.downloadedPath = null;
+        // The ZIP and downloadedPath are deliberately KEPT here (#1058
+        // review F2): if the handoff deadline below fires, failInstall
+        // unlatches and the re-offered Install button must find a verified
+        // installer — nulling the path first made that retry answer "No
+        // verified installer is ready yet" and forced a fresh ~150 MB
+        // download on the exact platform the tagged-error fix targets. On
+        // success this process is gone before any cleanup could run; the
+        // leftover temp ZIP is reclaimed by the next boot sweep (its
+        // version then equals the running one, so the 24h floor applies,
+        // not the 7-day pending hold).
 
         // Let the windows close (the hide-to-tray intercept would otherwise
         // cancel the close quitAndInstall waits on), then deadline the handoff:

@@ -8,6 +8,7 @@ import MiniSidebar from '../Sidebar/MiniSidebar';
 import { WorkspaceCenter } from './WorkspaceCenter';
 import { EmptyLeafFunnel } from './EmptyLeafFunnel';
 import { selectProjectCwdSignature } from '../../stores/selectors/appLayout';
+import { shouldShowInstallError, shouldReannounceAfterError, truncateReason } from './updateNoticePolicy';
 import { registerSessionSaver, saveSessionNow } from '../../utils/sessionSaveBridge';
 import { resolveReconcileRebind } from '../../hooks/resolveReconcileRebind';
 import { getLeafPanes, getWorkspaceLeafPanes } from '../../../shared/paneUtils';
@@ -390,7 +391,9 @@ function buildSessionData(dumped: Map<string, boolean>): SessionData {
  * which is always mounted, and the take is what clears the marker: a notice
  * nobody could receive survives to the next boot instead.
  */
-function useRefusedInstallNotice(t: (key: string) => string): void {
+function useRefusedInstallNotice(
+  t: (key: string, vars?: Record<string, string | number>) => string,
+): void {
   useEffect(() => {
     const take = window.electronAPI?.updater?.takeRefusedInstall;
     if (!take) return; // tests / non-electron / stale preload
@@ -398,7 +401,16 @@ function useRefusedInstallNotice(t: (key: string) => string): void {
     void take()
       .then((reason) => {
         if (cancelled || !reason) return;
-        useStore.getState().pushToast({ level: 'error', message: t('update.refusedInstall') });
+        // #1055 — the marker's own text is the diagnostic this report class
+        // was missing, and the toast persists: retrying is valid advice for
+        // every reason main lets through (when Update.exe is missing — the
+        // one brokenness the integrity probe checks — main consumes the
+        // marker and defers to the boot notice instead).
+        useStore.getState().pushToast({
+          level: 'error',
+          persist: true,
+          message: t('update.refusedInstall', { detail: truncateReason(reason) }),
+        });
       })
       .catch((err) => {
         // Loud on purpose. The first version of this failed exactly here — the
@@ -425,10 +437,12 @@ function useRefusedInstallNotice(t: (key: string) => string): void {
  * one-shot install intent; the background poll never does).
  *
  * Same shape as the refused-install notice above — pull from an always-mounted
- * surface — with one difference that matters: this is a READ, not a take, and
- * the toast is `persist`. The refusal is a past event, so a toast that fades is
- * honest. "An update is ready" is still true five minutes later, and a notice
- * that fades leaves the user exactly where they started.
+ * surface — with one difference that matters: this is a READ, not a take.
+ * "An update is ready" is still true five minutes later, so the toast is
+ * `persist` — a notice that fades leaves the user exactly where they
+ * started. (Since #1055 the refusal notice above persists too: main
+ * consumes the marker when Update.exe is missing — the one brokenness the
+ * integrity probe checks — and defers to the boot notice for that case.)
  */
 /** How long after a user-requested install an UPDATE_ERROR is still that
  *  install's. performInstall's refusals are decided before it launches
@@ -540,12 +554,34 @@ function usePendingInstallNotice(
     // honestly name.
     const unsubscribeError = onError?.((data) => {
       if (cancelled) return;
-      if (Date.now() - installRequestedAt > INSTALL_ERROR_WINDOW_MS) return;
-      installRequestedAt = 0; // one report per request
+      // #1055 — tagged errors (source:'install') are install-origin by
+      // construction and always shown: the macOS staging/handoff deadlines
+      // land minutes after the click, and a one-shot install never stamps
+      // one. Untagged errors keep the 30s click window described above.
+      if (!shouldShowInstallError(data, installRequestedAt, Date.now(), INSTALL_ERROR_WINDOW_MS)) return;
+      // Only meaningful for UNTAGGED errors now (tagged ones always show);
+      // resetting disarms the click window until the next request.
+      installRequestedAt = 0;
       useStore.getState().pushToast({
         level: 'error',
         persist: true,
         message: t('update.installFailed', { error: data.message || '' }),
+      });
+      // The click dismissed the ready toast — a failed install hands the
+      // button back (#1055). Skipped for the re-entrancy refusal: the
+      // in-flight attempt's own outcome will re-announce. The
+      // announcedVersion re-check keeps a stale read from stomping a
+      // superseding release announced while this one was in flight.
+      if (!shouldReannounceAfterError(data)) return;
+      announcedVersion = null;
+      void read().then((p) => {
+        if (cancelled || announcedVersion !== null || !p) return; // superseded meanwhile
+        announce(p.version, p.currentVersion);
+      }).catch((err) => {
+        // Same posture as every other read in this hook: never silently.
+        // A rejection here would otherwise throw unhandled AND eat the
+        // re-offered button — the exact silence this re-announce removes.
+        console.warn('[update] pending-install read failed after an install error:', err);
       });
     });
 

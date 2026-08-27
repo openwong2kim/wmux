@@ -161,6 +161,34 @@ describe('AppLayout — update notices are pulled, not pushed', () => {
     expect(body).toMatch(/electronAPI\?\.updater\?\.takeRefusedInstall/);
     expect(source).toMatch(/useRefusedInstallNotice\(t\);/);
   });
+
+  it('surfaces the marker reason and persists the refusal notice (#1055)', () => {
+    // The reason string is the diagnostic #1055 arrived without; a fading
+    // toast on the one boot after a failed update is a coin flip on whether
+    // anyone was looking. Main-side suppression (takeRefusedInstall) owns
+    // the case where persisting would give wrong advice.
+    const body = hookBody('useRefusedInstallNotice');
+    expect(body).toMatch(/persist:\s*true/);
+    expect(body).toMatch(/update\.refusedInstall'\s*,\s*\{\s*detail:\s*truncateReason\(reason\)/);
+    // And the default copy has somewhere for that reason to land.
+    expect(en['update.refusedInstall']).toContain('{detail}');
+  });
+
+  it('routes UPDATE_ERROR through the shared policy, not an inline window check (#1055)', () => {
+    // The decision lives in updateNoticePolicy.ts where it is unit-tested:
+    // tagged install errors always show (macOS deadlines, one-shot installs),
+    // untagged ones keep the 30s click window. Inlining the arithmetic here
+    // is how the tagged cases got silently dropped in the first place.
+    const body = hookBody('usePendingInstallNotice');
+    expect(body).toMatch(/shouldShowInstallError\(data,\s*installRequestedAt,\s*Date\.now\(\),\s*INSTALL_ERROR_WINDOW_MS\)/);
+  });
+
+  it('hands the Install button back after a failure, without stomping a superseding release (#1055)', () => {
+    const body = hookBody('usePendingInstallNotice');
+    expect(body).toMatch(/shouldReannounceAfterError\(data\)/);
+    expect(body).toMatch(/announcedVersion = null;/);
+    expect(body).toMatch(/announcedVersion !== null/);
+  });
 });
 
 describe('AutoUpdater — pending install is a read, not a take', () => {

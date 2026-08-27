@@ -171,6 +171,13 @@ async function loadForPlatform(
   };
   vi.doMock('../installTeardown', () => teardown);
 
+  // #1055: takeRefusedInstall consults the install-integrity probe to decide
+  // whether the boot notice already owns the failure. Default: intact.
+  const integrity = {
+    findInstallIntegrityGap: vi.fn((): { root: string; missing: string[] } | null => null),
+  };
+  vi.doMock('../installIntegrity', () => integrity);
+
   vi.doMock('electron', () => ({
     autoUpdater: nativeUpdater,
     app: { getVersion: () => FAKE_VERSION, getPath: () => tempPathDir, quit: appQuit, isPackaged },
@@ -185,7 +192,7 @@ async function loadForPlatform(
   }));
 
   const mod = await import('../AutoUpdater');
-  return { AutoUpdater: mod.AutoUpdater, requestUrls, ipcHandlers, ipcListeners, request, appQuit, shellOpenPath, nativeUpdater, teardown, tempPathDir };
+  return { AutoUpdater: mod.AutoUpdater, requestUrls, ipcHandlers, ipcListeners, request, appQuit, shellOpenPath, nativeUpdater, teardown, integrity, tempPathDir };
 }
 
 describe('AutoUpdater platform gating', () => {
@@ -520,6 +527,53 @@ describe('AutoUpdater #502 — quit after launching the installer', () => {
     expect(loaded.shellOpenPath).not.toHaveBeenCalled();
   });
 
+  it('win32: install refusals carry source:install; a failed check does not (#1055)', async () => {
+    // The renderer's toast surface shows tagged errors unconditionally and
+    // holds untagged ones to the 30s click window — so a background poll
+    // failing on an offline machine must never gain the tag, and a refusal
+    // decided inside performInstall must always have it.
+    const loaded = await loadForPlatform('win32', downloadRoutes);
+    const { installHandler, sent } = await downloadUpdateFor(loaded);
+
+    loaded.teardown.spawnInstallWaiter.mockReturnValueOnce(null);
+    await installHandler();
+    const refusal = sent.find((m) => m.channel === IPC.UPDATE_ERROR);
+    expect(refusal).toBeDefined();
+    expect(refusal!.data.source).toBe('install');
+  });
+
+  it('win32: the re-entrancy refusal carries code:in-progress (#1055)', async () => {
+    // Shown, but the renderer must not re-offer the Install button for it:
+    // the in-flight attempt's own outcome will re-announce.
+    const loaded = await loadForPlatform('win32', downloadRoutes);
+    const { installHandler, sent } = await downloadUpdateFor(loaded);
+    vi.useFakeTimers();
+    try {
+      const first = installHandler();
+      const second = installHandler(); // pressed again during the session-save wait
+      await vi.advanceTimersByTimeAsync(1_000);
+      await Promise.all([first, second]);
+      const busy = sent.find((m) => m.channel === IPC.UPDATE_ERROR && m.data.code === 'in-progress');
+      expect(busy).toBeDefined();
+      expect(busy!.data.source).toBe('install');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('a failed background check is NOT tagged as an install error (#1055)', async () => {
+    const loaded = await loadForPlatform('win32', () => ({ statusCode: 500 }));
+    const { AutoUpdater, ipcHandlers } = loaded;
+    const { win, sent } = makeWin();
+    const updater = new AutoUpdater(() => win as never, quitHooks());
+    (updater as unknown as { registerIpcHandlers: () => void }).registerIpcHandlers();
+    await (updater as unknown as { check: (oneShot?: boolean) => Promise<void> }).check();
+    const err = sent.find((m) => m.channel === IPC.UPDATE_ERROR);
+    expect(err).toBeDefined();
+    expect(err!.data.source).toBeUndefined();
+    updater.stop();
+  });
+
   it('win32 (#1056): a waiter that never signals it started reports UPDATE_ERROR and does NOT quit or tear anything down', async () => {
     // Event-log evidence from a real machine: the waiter's PowerShell engine
     // started and then went silent forever, in the same second the app called
@@ -538,6 +592,7 @@ describe('AutoUpdater #502 — quit after launching the installer', () => {
     const err = sent.find((m) => m.channel === IPC.UPDATE_ERROR);
     expect(err).toBeDefined();
     expect(String(err?.data.message)).toContain('did not start');
+    expect(err!.data.source).toBe('install'); // tagged, or the toast surface drops it on one-shot installs
     expect(loaded.appQuit).not.toHaveBeenCalled();
     expect(loaded.shellOpenPath).not.toHaveBeenCalled();
     // Nothing irreversible ran: no daemon shutdown, no force-kill. Order is
@@ -564,6 +619,7 @@ describe('AutoUpdater #502 — quit after launching the installer', () => {
 
     const err = sent.find((m) => m.channel === IPC.UPDATE_ERROR);
     expect(err).toBeDefined();
+    expect(err!.data.source).toBe('install');
     expect(loaded.appQuit).not.toHaveBeenCalled();
     expect(loaded.shellOpenPath).not.toHaveBeenCalled();
     // The heartbeat check must never even run against an unproven marker.
@@ -950,5 +1006,37 @@ describe('AutoUpdater #866 — a refused install is reported on the next boot', 
     const updater = new loaded.AutoUpdater(() => null, quitHooks());
     // No start() call anywhere in this test.
     expect(await takeHandler(loaded)()).toBe('install-aborted: install root still locked');
+  });
+
+  it('win32: suppresses the notice when the installation is broken right now (#1055)', async () => {
+    // The exit-6 waiter marker meets warnOnInstallIntegrityGap's boot notice
+    // on the same boot. The notice owns that user; delivering the generic
+    // "left untouched — try again" toast alongside it would be a second,
+    // contradictory instruction. The marker is still consumed, so it cannot
+    // greet the first boot AFTER the reinstall with the same stale advice.
+    const loaded = await loadForPlatform('win32');
+    loaded.teardown.readAbortMarker.mockReturnValueOnce(
+      'install-aborted: the installer exited but left an incomplete installation (missing Update.exe). Reinstall wmux from the latest Setup.exe.',
+    );
+    loaded.integrity.findInstallIntegrityGap.mockReturnValueOnce({
+      root: 'C:/Users/u/AppData/Local/wmux',
+      missing: ['Update.exe'],
+    });
+
+    const updater = new loaded.AutoUpdater(() => null, quitHooks());
+    expect(await takeHandler(loaded)()).toBeNull();
+    expect(loaded.teardown.clearAbortMarker).toHaveBeenCalledTimes(1);
+    updater.stop();
+  });
+
+  it('win32: an integrity probe that throws still delivers the marker (fail-open on the notice)', async () => {
+    const loaded = await loadForPlatform('win32');
+    loaded.teardown.readAbortMarker.mockReturnValueOnce('install-aborted: install root still locked');
+    loaded.integrity.findInstallIntegrityGap.mockImplementationOnce(() => { throw new Error('probe died'); });
+
+    const updater = new loaded.AutoUpdater(() => null, quitHooks());
+    expect(await takeHandler(loaded)()).toBe('install-aborted: install root still locked');
+    expect(loaded.teardown.clearAbortMarker).toHaveBeenCalledTimes(1);
+    updater.stop();
   });
 });

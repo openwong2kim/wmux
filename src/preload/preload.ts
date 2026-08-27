@@ -1149,8 +1149,8 @@ const electronAPI = {
       ipcRenderer.on(IPC.UPDATE_NOT_AVAILABLE, listener);
       return () => { ipcRenderer.removeListener(IPC.UPDATE_NOT_AVAILABLE, listener); };
     },
-    onUpdateError: (callback: (data: { status: string; message: string }) => void) => {
-      const listener = (_event: Electron.IpcRendererEvent, data: { status: string; message: string }) =>
+    onUpdateError: (callback: (data: { status: string; message: string; source?: 'install'; code?: 'in-progress' }) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, data: { status: string; message: string; source?: 'install'; code?: 'in-progress' }) =>
         callback(data);
       ipcRenderer.on(IPC.UPDATE_ERROR, listener);
       return () => { ipcRenderer.removeListener(IPC.UPDATE_ERROR, listener); };
