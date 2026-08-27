@@ -223,6 +223,17 @@ export class DaemonPTYBridge extends EventEmitter {
       // unanswered approval would otherwise retire the question nobody
       // answered. Only `noteInput` — a human, including the forceSubmitted
       // approval controls — clears it.
+      //
+      // #1045: an authoritative running edge also re-arms the byte cycle,
+      // gated on the cycle being INACTIVE — repeated running-class hook
+      // events inside one turn must not re-open the once-per-cycle onActive
+      // dedup (#1013). Without this, a tool call whose own output stays
+      // under the throughput threshold (a polling loop, a slow build) could
+      // never earn `running` back after an idle, and the roster showed idle
+      // for a pane genuinely mid-turn.
+      if (this.activityMonitor && this.sessionId) {
+        this.activityMonitor.beginTurnIfInactive(this.sessionId);
+      }
       return;
     }
     this.explicitTerminalStatus = true;
