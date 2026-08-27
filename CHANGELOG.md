@@ -25,7 +25,8 @@
   in both cases silently, with the only diagnostic buried in the installer's
   own log. On the update path, the install waiter now stays for the
   installer's exit and verifies what it left behind: a broken result gets a
-  visible warning right there and a notice on the next boot that can boot.
+  visible warning right there — the one surface that still reaches a machine
+  too broken to start — plus a notice the next time the app can start at all.
   An installation that runs but is missing `Update.exe` is detected at
   startup and explained once, with reinstall guidance, instead of every
   future update failing with no visible reason. Fresh installs run by hand
