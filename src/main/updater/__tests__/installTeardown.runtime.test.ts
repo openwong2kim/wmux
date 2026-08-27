@@ -43,6 +43,7 @@ describe.skipIf(!onWindows)('install waiter (real processes, real locks)', () =>
   let setupStamp: string;
   let fakeSetup: string;
   let abortMarker: string;
+  let readyMarker: string;
   let scriptPath: string;
   const children: ChildProcess[] = [];
 
@@ -54,6 +55,7 @@ describe.skipIf(!onWindows)('install waiter (real processes, real locks)', () =>
     fs.writeFileSync(heldExe, 'x');
     setupStamp = path.join(sandbox, 'setup-ran.txt');
     abortMarker = path.join(sandbox, 'abort.txt');
+    readyMarker = path.join(sandbox, 'ready.tmp');
     fakeSetup = path.join(sandbox, 'fake-setup.cmd');
     // Stand-in for Setup.exe: proves it ran without installing anything.
     fs.writeFileSync(fakeSetup, `@echo off\r\necho ran > "${setupStamp}"\r\n`);
@@ -89,7 +91,8 @@ describe.skipIf(!onWindows)('install waiter (real processes, real locks)', () =>
   }
 
   const plan = (pids: number[], lockBudgetMs: number): WaiterPlan => ({
-    pids, setupExePath: fakeSetup, installRoot: root, abortMarkerPath: abortMarker, lockBudgetMs,
+    pids, setupExePath: fakeSetup, installRoot: root, abortMarkerPath: abortMarker,
+    readyMarkerPath: readyMarker, lockBudgetMs,
   });
 
   function runWaiter(timeoutMs: number): { status: number | null; timedOut: boolean } {
@@ -291,6 +294,7 @@ describe.skipIf(!onWindows)('concurrent waiters (#980)', () => {
       setupExePath: fakeSetup,
       installRoot: root,
       abortMarkerPath: marker,
+      readyMarkerPath: marker.replace(/\.txt$/, '-ready.tmp'),
       lockBudgetMs: 90_000,
     });
 
