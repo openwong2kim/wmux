@@ -113,7 +113,10 @@ describe.skipIf(!onWindows)('install waiter (real processes, real locks)', () =>
     const { timedOut } = runWaiter(12_000);
     expect(timedOut).toBe(true);
     expect(fs.existsSync(setupStamp)).toBe(false);
-    expect(fs.existsSync(abortMarker)).toBe(false);
+    // #1056 — mid-wait the incumbent's interrupted sentinel is ON DISK by
+    // design (it is what reports a waiter killed before any terminal); the
+    // pin here is that no TERMINAL reason has been written yet.
+    expect(fs.readFileSync(abortMarker, 'utf-8')).toContain('interrupted before it could report');
   }, 120_000);
 
   it('gives up instead of waiting forever on a process that will not die', () => {
@@ -225,7 +228,17 @@ describe.skipIf(!onWindows)('install waiter (real processes, real locks)', () =>
     const written = spawnInstallWaiter(plan([process.pid], 1_000));
     expect(written).not.toBeNull();
     expect((written as string).toLowerCase().startsWith(root.toLowerCase())).toBe(false);
-  }, 30_000);
+    // #1056/P2-6 — this call now really launches a waiter (it terminates
+    // itself in ~1s: its handle wait is against our own live pid on a 1s
+    // budget). Reap the temp dir this test used to leak every run; retried
+    // briefly because the dying waiter can hold its script file a moment.
+    const leaked = path.dirname(written as string);
+    const rmDeadline = Date.now() + 10_000;
+    for (;;) {
+      try { fs.rmSync(leaked, { recursive: true, force: true }); break; }
+      catch { if (Date.now() > rmDeadline) break; execFileSync(PS, ['-NoProfile', '-Command', 'Start-Sleep -Milliseconds 500'], { windowsHide: true }); }
+    }
+  }, 60_000);
 
   it('enumerates nothing for a root no process runs from', () => {
     expect(collectInstallRootPids(root)).toEqual([]);
@@ -343,5 +356,107 @@ describe.skipIf(!onWindows)('concurrent waiters (#980)', () => {
     expect(resB.status).toBe(5);
     expect(fs.existsSync(markerB)).toBe(false);
     expect(fs.existsSync(setupStamp)).toBe(false);
+  }, 120_000);
+});
+
+describe.skipIf(!onWindows)('waiter transport (#1056 — the REAL spawnInstallWaiter)', () => {
+  // Smoke coverage, billed honestly: on CI runners the direct detached spawn
+  // still works, so this suite is green before AND after the transport change
+  // and cannot regress-pin #1056 itself. What it closes is the older hole
+  // that let #1056 ship: no test anywhere ran the waiter through the real
+  // spawnInstallWaiter transport. The env assertion is the part that would
+  // go red if a future transport stopped inheriting the caller's environment
+  // — Setup.exe resolves its install target from %LOCALAPPDATA%.
+  let sandbox: string;
+  let root: string;
+  let envStamp: string;
+  let fakeSetup: string;
+  let marker: string;
+  let launchedDir: string | null = null;
+
+  beforeEach(() => {
+    sandbox = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-transport-')));
+    root = path.join(sandbox, 'wmux');
+    fs.mkdirSync(path.join(root, 'app-1.0.0'), { recursive: true });
+    // The shape of a SUCCESSFUL install, so the waiter's post-exit
+    // verification passes, removes its sentinel and exits 0 — the failure
+    // branches are pinned by the script-shape tests, and an exit-6
+    // MessageBox here would hang a headless runner.
+    fs.writeFileSync(path.join(root, 'Update.exe'), 'x');
+    fs.writeFileSync(path.join(root, 'app-1.0.0', 'icudtl.dat'), 'x');
+    envStamp = path.join(sandbox, 'env.txt');
+    marker = path.join(sandbox, 'abort.txt');
+    fakeSetup = path.join(sandbox, 'fake-setup.cmd');
+    // Redirect-first, so a username ending in a digit cannot turn `%USERNAME%>`
+    // into a stream redirect.
+    fs.writeFileSync(fakeSetup, `@echo off\r\n>"${envStamp}" echo %LOCALAPPDATA%^|%USERPROFILE%^|%USERNAME%\r\n`);
+  });
+
+  afterEach(() => {
+    // The waiter is NOT our child (that is the whole point of the trampoline)
+    // — reap by command line before dropping the directories.
+    if (launchedDir !== null) {
+      const dirLike = launchedDir.replace(/'/g, "''");
+      try {
+        execFileSync(PS, ['-NoProfile', '-NonInteractive', '-Command',
+          `Get-CimInstance Win32_Process -Filter "Name='powershell.exe' OR Name='cmd.exe'" | Where-Object { $_.CommandLine -like '*${dirLike}*' } | ForEach-Object { taskkill /PID $_.ProcessId /T /F } | Out-Null`,
+        ], { windowsHide: true, timeout: 20_000 });
+      } catch { /* nothing left to reap */ }
+      try { fs.rmSync(launchedDir, { recursive: true, force: true }); } catch { /* lock lingers */ }
+      launchedDir = null;
+    }
+    try { fs.rmSync(sandbox, { recursive: true, force: true }); } catch { /* lock lingers */ }
+  });
+
+  const mkPlan = (): WaiterPlan => ({
+    pids: [], setupExePath: fakeSetup, installRoot: root,
+    abortMarkerPath: marker, readyMarkerPath: path.join(sandbox, 'ready-transport.tmp'),
+    lockBudgetMs: 2_000,
+  });
+
+  function sleep200(): void {
+    execFileSync(PS, ['-NoProfile', '-Command', 'Start-Sleep -Milliseconds 200'], { windowsHide: true });
+  }
+
+  it('a verified transport runs the waiter with the caller environment intact', () => {
+    const written = spawnInstallWaiter(mkPlan());
+    // The launch-stamp gate passed — a real process executed our first line.
+    expect(written).not.toBeNull();
+    launchedDir = path.dirname(written as string);
+
+    const deadline = Date.now() + 60_000;
+    while (Date.now() < deadline && !fs.existsSync(envStamp)) sleep200();
+    expect(fs.existsSync(envStamp)).toBe(true);
+    const [la, up, un] = fs.readFileSync(envStamp, 'utf-8').trim().split('|');
+    expect(la).toBe(process.env.LOCALAPPDATA);
+    expect(up).toBe(process.env.USERPROFILE);
+    expect(un).toBe(process.env.USERNAME);
+
+    // Success path: the interrupted sentinel must be GONE once the waiter's
+    // post-exit verification passes.
+    const markerDeadline = Date.now() + 45_000;
+    while (Date.now() < markerDeadline && fs.existsSync(marker)) sleep200();
+    expect(fs.existsSync(marker)).toBe(false);
+  }, 120_000);
+
+  it("survives a TEMP with spaces and an apostrophe (the cmd /c quoting pin)", () => {
+    // cmd /c re-parses its tail with its own rules; today's safety rests on
+    // the FIRST token (the System32 powershell path) being space-free and
+    // unquoted. The script path is the token that inherits the user's TEMP,
+    // so this pins the one quoting risk left in the transport.
+    const weird = path.join(sandbox, "tmp o'brien");
+    fs.mkdirSync(weird);
+    const saved = { TEMP: process.env.TEMP, TMP: process.env.TMP };
+    process.env.TEMP = weird;
+    process.env.TMP = weird;
+    try {
+      const written = spawnInstallWaiter(mkPlan());
+      expect(written).not.toBeNull();
+      expect((written as string).toLowerCase().startsWith(weird.toLowerCase())).toBe(true);
+      launchedDir = path.dirname(written as string);
+    } finally {
+      process.env.TEMP = saved.TEMP;
+      process.env.TMP = saved.TMP;
+    }
   }, 120_000);
 });
