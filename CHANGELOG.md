@@ -1,3 +1,37 @@
+## [3.48.1] — 2026-08-28
+
+### Fixed
+
+- **An update that quits and never installs no longer fails silently.** The
+  install waiter's detached PowerShell process could die before running a
+  single line of its own script — event-log evidence on a real machine showed
+  it starting the same second the app called `app.quit()` and never getting
+  further, consistent with Windows Job Object cleanup catching a "detached"
+  child that never requested breakaway. The waiter now writes a heartbeat as
+  its first act, and the app waits (up to 3s) to see it before tearing
+  anything down. A waiter that never signals costs nothing — no daemon
+  shutdown, no quit, no install — instead of the app disappearing into an
+  unexplainable hang. (#1057)
+
+- **A failed update now says what happened, where you can see it.** The
+  refused-install notice carries the installer's actual refusal reason and
+  stays on screen instead of fading after five seconds; install errors on
+  macOS that landed minutes after the click (staging and handoff deadlines)
+  are no longer silently dropped; and after a failed install the "Install
+  now" button comes back instead of leaving nowhere to retry from. When an
+  update left the installation itself broken, the stale "try again" toast no
+  longer contradicts the boot notice that says to reinstall — including on
+  the first boot after the reinstall it asked for. (#1058)
+
+- **Clicking Install can no longer quit wmux into a silent no-op.** On
+  current Windows builds the helper process that runs the installer after
+  wmux quits could die before executing a single line, leaving the old
+  version in place with no error and no trace anywhere. The helper's launch
+  is now verified before wmux commits to quitting — if it cannot be proven
+  to run, the update is refused on the spot with the app still open — and a
+  helper that dies partway through now leaves a note that wmux shows on the
+  next start. (#1059)
+
 ## [3.48.0] — 2026-08-27
 
 ### Added
