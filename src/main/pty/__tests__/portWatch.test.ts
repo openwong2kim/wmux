@@ -1,5 +1,8 @@
-import { describe, it, expect, vi } from 'vitest';
-import { PortWatcher, matchSessionPorts, type PortSnapshot } from '../portWatch';
+import { describe, it, expect, vi, afterEach } from 'vitest';
+import { PortWatcher, matchSessionPorts, defaultSnapshot, type PortSnapshot } from '../portWatch';
+import { tryNativeSnapshot } from '../winSnapshotNative';
+
+vi.mock('../winSnapshotNative', () => ({ tryNativeSnapshot: vi.fn() }));
 
 function snap(
   procs: Array<[pid: number, ppid: number]>,
@@ -177,5 +180,37 @@ describe('PortWatcher', () => {
     await watcher.tick();
     await watcher.tick();
     expect(calls).toBe(5); // two failures after a success never reach the threshold
+  });
+});
+
+describe('defaultSnapshot — Windows native path', () => {
+  const realPlatform = process.platform;
+  const setPlatform = (p: string): void => {
+    Object.defineProperty(process, 'platform', { value: p, configurable: true });
+  };
+  afterEach(() => {
+    setPlatform(realPlatform);
+    vi.mocked(tryNativeSnapshot).mockReset();
+  });
+
+  it('REJECTS when the native snapshot is unavailable (never resolves empty)', async () => {
+    // Contract, not cosmetics: resolving an empty table would read as "this
+    // machine has no listening ports", clearing live sidebar chips and
+    // defeating both the watcher backoff and a2a.rpc's skip-the-retry branch.
+    setPlatform('win32');
+    vi.mocked(tryNativeSnapshot).mockReturnValue(null);
+    await expect(defaultSnapshot()).rejects.toThrow(/native snapshot unavailable/);
+  });
+
+  it('maps native rows and drops System/Idle pids (<= 4)', async () => {
+    setPlatform('win32');
+    vi.mocked(tryNativeSnapshot).mockReturnValue({
+      procs: [{ pid: 200, ppid: 100 }, { pid: 300, ppid: 200 }],
+      conns: [{ port: 3000, pid: 200 }, { port: 445, pid: 4 }, { port: 139, pid: 0 }],
+    });
+    const snap = await defaultSnapshot();
+    expect(snap.ppidByPid.get(200)).toBe(100);
+    expect(snap.ppidByPid.get(300)).toBe(200);
+    expect(snap.listeners).toEqual([{ port: 3000, pid: 200 }]);
   });
 });

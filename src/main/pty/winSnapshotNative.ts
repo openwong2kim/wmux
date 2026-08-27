@@ -19,11 +19,24 @@
  * line for AV heuristics to scan.
  *
  * Failure policy mirrors the port watcher's "quiet absence" contract: any
- * load or call failure returns null (the sidebar simply shows no ports), and
- * three consecutive call failures disable the path for the process lifetime
- * so a broken FFI environment cannot retry forever. There is deliberately NO
- * PowerShell fallback — shipping the old command string would keep the exact
- * bytes Defender signature-matched inside our bundles.
+ * failure returns null and the sidebar simply shows no ports. The two failure
+ * kinds are deliberately NOT treated alike:
+ *   - A LOAD failure (non-Windows, 32-bit, koffi missing or blocked) cannot
+ *     resolve itself, so the path is disabled for the process lifetime.
+ *   - A CALL failure is transient by nature (a table churning under load, an
+ *     AV briefly interposing), so it is never permanent — pacing retries is
+ *     the caller's job (PortWatcher backs off after consecutive failures).
+ *     A long-lived daemon must not lose the feature until restart over a
+ *     momentary hiccup.
+ * There is deliberately NO PowerShell fallback — shipping the old command
+ * string would keep the exact bytes Defender signature-matched in our bundles.
+ *
+ * Cost: the whole snapshot is synchronous, but it is cheap — measured on a
+ * 287-process machine at median 5.7 ms / p95 7.3 ms per call, i.e. ~0.06 % of
+ * a 10 s tick. That is far below the old path, which forked a PowerShell
+ * process costing 1.8–2.3 s of machine time per first spawn (PR #861). If a
+ * future caller needs a tighter budget, move the call to a worker thread
+ * rather than reintroducing a subprocess.
  *
  * Struct layouts below are the 64-bit ones (ULONG_PTR = 8 bytes). wmux ships
  * x64-only and arm64 shares the layout; on a 32-bit Node this module disables
@@ -53,6 +66,8 @@ const AF_INET6 = 23;
 const TCP_TABLE_OWNER_PID_LISTENER = 3;
 const ERROR_INSUFFICIENT_BUFFER = 122;
 const TH32CS_SNAPPROCESS = 0x00000002;
+/** Refuse to allocate a listener table larger than this (see readTcpTable). */
+const MAX_TCP_TABLE_BYTES = 64 * 1024 * 1024;
 
 /**
  * sizeof(PROCESSENTRY32W) on 64-bit: 9 DWORD/LONG fields with 4 bytes of
@@ -138,10 +153,11 @@ interface NativeBindings {
 
 /** undefined = load not attempted yet; null = attempted and unavailable. */
 let bindings: NativeBindings | null | undefined;
-let disabled = false;
+/** Set only for an unrecoverable LOAD failure — never for a call failure. */
+let loadFailed = false;
 let consecutiveCallFailures = 0;
-/** Permanently disable after this many consecutive snapshot failures. */
-const MAX_CALL_FAILURES = 3;
+/** Stop logging call failures after this many in a row (retries continue). */
+const CALL_FAILURE_LOG_LIMIT = 3;
 let warnedV6 = false;
 
 function warn(message: string): void {
@@ -205,7 +221,15 @@ function readTcpTable(
   const sizeBuf = Buffer.alloc(4);
   let rc = b.GetExtendedTcpTable(null, sizeBuf, 0, family, TCP_TABLE_OWNER_PID_LISTENER, 0);
   for (let attempt = 0; attempt < 4 && rc === ERROR_INSUFFICIENT_BUFFER; attempt++) {
-    const table = Buffer.alloc(sizeBuf.readUInt32LE(0) + 4096);
+    const needed = sizeBuf.readUInt32LE(0);
+    // Sanity-cap before allocating: this length comes from an out-param, and
+    // a bogus value (a failed write leaving 0xFFFFFFFF) would otherwise ask
+    // for ~4 GB inside the process that relays PTY output. The real listener
+    // table is a few KB; the cap is orders of magnitude above any real one.
+    if (needed > MAX_TCP_TABLE_BYTES) {
+      throw new Error(`GetExtendedTcpTable(af=${family}) reported an implausible size: ${needed}`);
+    }
+    const table = Buffer.alloc(needed + 4096);
     sizeBuf.writeUInt32LE(table.length, 0);
     rc = b.GetExtendedTcpTable(table, sizeBuf, 0, family, TCP_TABLE_OWNER_PID_LISTENER, 0);
     if (rc === 0) return decode(table);
@@ -225,9 +249,20 @@ function readProcessTable(b: NativeBindings): NativeProcRow[] {
     entry.writeUInt32LE(PROCESSENTRY32W_SIZE, 0); // dwSize — required in-param
     const procs: NativeProcRow[] = [];
     let ok = b.Process32FirstW(raw, entry);
+    // A zero return here is a FAILURE, not an empty machine — treating it as
+    // end-of-list would hand back an empty pid→ppid table that reads as a
+    // successful snapshot, and every session's ports would resolve to none.
+    if (!ok) throw new Error('Process32FirstW failed — no process table');
     while (ok) {
       procs.push(decodeProcessEntry(entry));
       ok = b.Process32NextW(raw, entry);
+    }
+    // Self-check: we are always in our own snapshot. This is the cheapest
+    // guard that catches a truncated walk AND any future struct-offset drift
+    // at runtime rather than only in tests — a wrong pid offset makes this
+    // fail loudly instead of silently mis-attributing every port.
+    if (!procs.some((p) => p.pid === process.pid)) {
+      throw new Error(`process table omits our own pid (${process.pid}) — walk is unreliable`);
     }
     return procs;
   } finally {
@@ -242,33 +277,43 @@ function readProcessTable(b: NativeBindings): NativeProcRow[] {
  * that as an empty observation, never as an error.
  */
 export function tryNativeSnapshot(): NativeSnapshot | null {
-  if (disabled) return null;
+  if (loadFailed) return null;
   const b = loadBindings();
   if (!b) {
-    disabled = true;
+    loadFailed = true;
     return null;
   }
   try {
     const conns = readTcpTable(b, AF_INET, decodeTcpTableV4);
     // IPv6 can be administratively disabled; degrade to v4-only rather than
-    // failing the whole snapshot.
+    // failing the whole snapshot. Read INSIDE the try, append OUTSIDE it, so
+    // an append-time error can never be misreported as "IPv6 unavailable"
+    // and demote the process to v4-only for good.
+    let v6: NativeConnRow[] = [];
     try {
-      conns.push(...readTcpTable(b, AF_INET6, decodeTcpTableV6));
+      v6 = readTcpTable(b, AF_INET6, decodeTcpTableV6);
     } catch (err) {
       if (!warnedV6) {
         warnedV6 = true;
         warn(`IPv6 listener table unavailable — v4 only: ${err instanceof Error ? err.message : String(err)}`);
       }
     }
+    // Not `push(...v6)`: spreading a large table can blow the argument-count
+    // limit and throw RangeError.
+    for (const row of v6) conns.push(row);
     const procs = readProcessTable(b);
     consecutiveCallFailures = 0;
     return { procs, conns };
   } catch (err) {
+    // Transient by assumption — the next tick tries again. Only the log is
+    // rate-limited, so a permanently broken call cannot spam the daemon log
+    // while still recovering on its own if the condition clears.
     consecutiveCallFailures++;
-    warn(`snapshot failed (${consecutiveCallFailures}/${MAX_CALL_FAILURES}): ${err instanceof Error ? err.message : String(err)}`);
-    if (consecutiveCallFailures >= MAX_CALL_FAILURES) {
-      disabled = true;
-      warn('too many consecutive failures — native snapshot disabled for this process');
+    if (consecutiveCallFailures <= CALL_FAILURE_LOG_LIMIT) {
+      warn(
+        `snapshot call failed (${consecutiveCallFailures}): ${err instanceof Error ? err.message : String(err)}` +
+        (consecutiveCallFailures === CALL_FAILURE_LOG_LIMIT ? ' — silencing further call-failure logs' : ''),
+      );
     }
     return null;
   }

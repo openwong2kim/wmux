@@ -261,7 +261,9 @@ const config: ForgeConfig = {
         // at all (the PowerShell path was removed on purpose — issue #1051),
         // so a package silently missing koffi would ship a dead feature.
         throw new Error(
-          `[postPackage] koffi prebuilt missing (${koffiSrc} / ${koromixSrc}) — cannot package a Windows build without the native snapshot.`,
+          `[postPackage] koffi prebuilt missing (${koffiSrc} / ${koromixSrc}) — cannot package a Windows build ` +
+          `without the native snapshot. npm installs only the BUILD HOST's koffi sidecar, so packaging ` +
+          `win32-${koffiArch} requires a win32-${koffiArch} host (or an explicit @koromix/${koromixName} install).`,
         );
       }
       const copyKoffiInto = (nodeModulesDir: string): void => {

@@ -53,21 +53,28 @@ const FAILURE_BACKOFF_MS = 60_000;
 
 /**
  * Windows: in-process FFI snapshot (see winSnapshotNative.ts — issue #1051).
- * When the native path is unavailable this returns an empty observation —
- * the "quiet absence" policy: the sidebar simply shows no ports.
+ *
+ * An unavailable native path REJECTS rather than resolving to an empty
+ * snapshot, which is what the old subprocess path did on failure. That
+ * distinction carries real weight downstream:
+ *   - `tick()` skips the diff pass entirely, so an already-rendered chip is
+ *     left alone instead of being cleared by a phantom "no ports" reading,
+ *     and the consecutive-failure backoff below can actually engage.
+ *   - `a2a.rpc.ts` branches on a failed snapshot to skip its retry; an empty
+ *     table would look like a successful-but-stale one and cost a second
+ *     pass on every single handshake.
  */
 function snapshotWindowsNative(): PortSnapshot {
   const native = tryNativeSnapshot();
+  if (!native) throw new Error('native snapshot unavailable');
   const ppidByPid = new Map<number, number>();
   const listeners: SessionPort[] = [];
-  if (native) {
-    for (const p of native.procs) {
-      ppidByPid.set(p.pid, p.ppid);
-    }
-    for (const c of native.conns) {
-      // Skip System/Idle (pid ≤ 4) — same filter the old snapshot applied.
-      if (c.pid > 4) listeners.push({ port: c.port, pid: c.pid });
-    }
+  for (const p of native.procs) {
+    ppidByPid.set(p.pid, p.ppid);
+  }
+  for (const c of native.conns) {
+    // Skip System/Idle (pid ≤ 4) — same filter the old snapshot applied.
+    if (c.pid > 4) listeners.push({ port: c.port, pid: c.pid });
   }
   return { ppidByPid, listeners };
 }
@@ -106,10 +113,15 @@ async function snapshotUnix(): Promise<PortSnapshot> {
   return { ppidByPid, listeners };
 }
 
-export function defaultSnapshot(): Promise<PortSnapshot> {
-  return process.platform === 'win32'
-    ? Promise.resolve(snapshotWindowsNative())
-    : snapshotUnix();
+/**
+ * `async` on purpose: the Windows path is synchronous and can throw, and one
+ * consumer (`a2a.rpc.ts`) calls this OUTSIDE its try block — a synchronous
+ * throw would escape its guard instead of being handled as a failed
+ * snapshot. Declaring the function async turns every such throw into a
+ * rejection, which every consumer already handles.
+ */
+export async function defaultSnapshot(): Promise<PortSnapshot> {
+  return process.platform === 'win32' ? snapshotWindowsNative() : snapshotUnix();
 }
 
 /**
