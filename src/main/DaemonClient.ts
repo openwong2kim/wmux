@@ -41,7 +41,7 @@ interface PendingRequest {
  * Communicates over Named Pipe (Windows) / Unix domain socket using JSON-RPC.
  *
  * Events:
- *   'session:data'   — { sessionId: string, data: Buffer }
+ *   'session:data'   — { sessionId: string, data: Buffer, replay: boolean }
  *   'session:died'   — { sessionId: string, exitCode: number | null }
  *   'disconnected'   — daemon control pipe disconnected
  *   'event'          — DaemonEvent from daemon broadcast
@@ -810,7 +810,7 @@ export class DaemonClient extends EventEmitter {
     const drain = (events: ReturnType<SessionPipeStreamScanner['feed']>) => {
       for (const ev of events) {
         if (ev.type === 'data') {
-          this.emit('session:data', { sessionId, data: ev.data });
+          this.emit('session:data', { sessionId, data: ev.data, replay: ev.replay });
         } else {
           this.emit('session:flushComplete', { sessionId, recoveredBytes: ev.recoveredBytes });
         }
@@ -862,7 +862,7 @@ export class DaemonClient extends EventEmitter {
     const events = scanner.disarmResync();
     for (const ev of events) {
       if (ev.type === 'data') {
-        this.emit('session:data', { sessionId, data: ev.data });
+        this.emit('session:data', { sessionId, data: ev.data, replay: ev.replay });
       }
     }
   }

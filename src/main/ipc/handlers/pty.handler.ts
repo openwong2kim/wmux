@@ -258,6 +258,11 @@ export function registerPTYHandlers(
     return decoder.write(data);
   }
 
+  // The decoder intentionally spans replay/live provenance boundaries so a
+  // UTF-8 code point split at FLUSH_DONE remains intact. A completed code point
+  // is attributed to the frame carrying its final bytes; terminal control
+  // introducers and terminators are ASCII and never depend on this buffering.
+
   // app-weight P1-3: 8 ms micro-batching for daemon-mode PTY data (parity
   // with local-mode PTYBridge). One batcher per handler registration = per
   // daemon generation; the cleanup below disposes it, so old-generation bytes
@@ -265,10 +270,10 @@ export function registerPTYHandlers(
   // BEFORE push() (see decodeSessionData above), so batching can't split a
   // multi-byte sequence. Ordering markers (flushComplete/exit/restarted)
   // flush the session first — see each forwarder.
-  const dataBatcher = new DaemonDataBatcher((sessionId, text) => {
+  const dataBatcher = new DaemonDataBatcher((sessionId, text, replay) => {
     const win = getWindow?.();
     if (win && !win.isDestroyed()) {
-      win.webContents.send(IPC.PTY_DATA, sessionId, text);
+      win.webContents.send(IPC.PTY_DATA, sessionId, text, replay);
     }
   });
 
@@ -518,13 +523,13 @@ export function registerPTYHandlers(
       // Forward session data to renderer. Routed through the per-id helper so
       // a stale listener (from a prior create with the same id, or a reconnect)
       // is removed before the new one is attached.
-      const onSessionData = (payload: { sessionId: string; data: Buffer }) => {
+      const onSessionData = (payload: { sessionId: string; data: Buffer; replay: boolean }) => {
         if (payload.sessionId !== sessionId) return;
         initialCmd.onFirstData();
         // P1-3: decode (stateful, upstream of batching) then micro-batch —
         // the batcher's send does the window-alive check at flush time.
         const text = decodeSessionData(sessionId, payload.data);
-        if (text) dataBatcher.push(sessionId, text);
+        if (text) dataBatcher.push(sessionId, text, payload.replay);
       };
       setSessionDataListener(sessionId, onSessionData);
 
@@ -968,11 +973,11 @@ export function registerPTYHandlers(
         // stacking a duplicate. Routed through the per-id helper so a stale
         // listener (from a prior create with the same id, or an earlier
         // reconnect) is swapped, not duplicated.
-        const onSessionData = (payload: { sessionId: string; data: Buffer }) => {
+        const onSessionData = (payload: { sessionId: string; data: Buffer; replay: boolean }) => {
           if (payload.sessionId !== id) return;
           // P1-3: same decode-then-batch as the create path.
           const text = decodeSessionData(id, payload.data);
-          if (text) dataBatcher.push(id, text);
+          if (text) dataBatcher.push(id, text, payload.replay);
         };
         setSessionDataListener(id, onSessionData);
 

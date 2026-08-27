@@ -60,13 +60,22 @@ interface WriteOptions {
    *  terminal.write (glyph-repaint cadence tracks WRITE calls, not IPC
    *  receipt — see glyphRepaint.ts header). */
   onWritten?: (chars: number) => void;
+  /** Optional hand-off used when these bytes need parse-scoped behavior.
+   *  Queued chunks retain the writer they arrived with, so replay and live
+   *  output can share a terminal queue without losing provenance. */
+  write?: (data: string) => void;
+}
+
+interface QueuedChunk {
+  data: string;
+  write?: (data: string) => void;
 }
 
 interface QueueEntry {
   terminal: SchedulableTerminal;
   /** Queued segments in arrival order. Consumed via chunkIndex to avoid
    *  O(n²) shift() on long queues; compacted periodically. */
-  chunks: string[];
+  chunks: QueuedChunk[];
   chunkIndex: number;
   queuedChars: number;
   /** True when foreground bytes are queued (visible pane briefly behind) —
@@ -238,25 +247,28 @@ function compactConsumedChunks(entry: QueueEntry): void {
 }
 
 /** Take up to `limit` chars off the head of the queue, preserving order. */
-function takeQueuedChunk(entry: QueueEntry, limit: number): string {
+function takeQueuedChunk(entry: QueueEntry, limit: number): QueuedChunk | null {
   let data = '';
   let remaining = limit;
+  let write: QueuedChunk['write'];
   while (remaining > 0 && entry.chunkIndex < entry.chunks.length) {
     const chunk = entry.chunks[entry.chunkIndex];
-    if (chunk.length <= remaining) {
-      data += chunk;
-      remaining -= chunk.length;
-      entry.queuedChars -= chunk.length;
+    if (data && chunk.write !== write) break;
+    write = chunk.write;
+    if (chunk.data.length <= remaining) {
+      data += chunk.data;
+      remaining -= chunk.data.length;
+      entry.queuedChars -= chunk.data.length;
       entry.chunkIndex += 1;
     } else {
-      data += chunk.slice(0, remaining);
-      entry.chunks[entry.chunkIndex] = chunk.slice(remaining);
+      data += chunk.data.slice(0, remaining);
+      chunk.data = chunk.data.slice(remaining);
       entry.queuedChars -= remaining;
       remaining = 0;
     }
   }
   compactConsumedChunks(entry);
-  return data;
+  return data ? { data, write } : null;
 }
 
 /** True when this entry still holds unconsumed output. Reads the cursor rather
@@ -268,11 +280,12 @@ function hasQueuedChunks(entry: QueueEntry): boolean {
 /** Hand one bounded chunk to xterm. Returns false when the terminal is gone
  *  (disposed mid-flight) and the entry should be abandoned. */
 function writeQueuedChunk(entry: QueueEntry): boolean {
-  const data = takeQueuedChunk(entry, CHUNK_CHARS);
-  if (!data) return true;
+  const chunk = takeQueuedChunk(entry, CHUNK_CHARS);
+  if (!chunk) return true;
   try {
-    entry.terminal.write(data);
-    entry.onWritten?.(data.length);
+    if (chunk.write) chunk.write(chunk.data);
+    else entry.terminal.write(chunk.data);
+    entry.onWritten?.(chunk.data.length);
     return true;
   } catch {
     // terminal.dispose() raced a queued late chunk. Drop this entry only —
@@ -411,7 +424,10 @@ function releaseHeldWithSyntheticEnd(terminal: SchedulableTerminal, entry: Queue
   clearSyncFrame(terminal);
   entry.heldForSync = false;
   entry.priority = true;
-  entry.chunks.push(SYNC_OUTPUT_END);
+  entry.chunks.push({
+    data: SYNC_OUTPUT_END,
+    write: entry.chunks[entry.chunks.length - 1]?.write,
+  });
   entry.queuedChars += SYNC_OUTPUT_END.length;
   scheduleDrain(0);
 }
@@ -458,7 +474,7 @@ function holdForSyncFrame(
   entry.retained = false;
   entry.priority = true;
   entry.heldForSync = true;
-  entry.chunks.push(data);
+  entry.chunks.push({ data, write: options.write });
   entry.queuedChars += data.length;
   if (entry.queuedChars > MAX_QUEUE_CHARS) {
     // A single frame ballooned past the cap (never-closing frame / runaway
@@ -484,7 +500,7 @@ function releaseSyncFrame(
   entry.retained = false;
   entry.heldForSync = false;
   entry.priority = true;
-  entry.chunks.push(data);
+  entry.chunks.push({ data, write: options.write });
   entry.queuedChars += data.length;
   if (entry.queuedChars > MAX_QUEUE_CHARS) {
     flushTerminalOutput(terminal);
@@ -532,7 +548,7 @@ export function writeTerminalOutput(
         console.log('[wmux:hidden-retention] engaged — hidden pane output retained without parsing');
       }
     }
-    entry.chunks.push(data);
+    entry.chunks.push({ data, write: options.write });
     entry.queuedChars += data.length;
     if (entry.queuedChars > MAX_QUEUE_CHARS) {
       queue.delete(terminal);
@@ -585,7 +601,8 @@ export function writeTerminalOutput(
     withinInteractiveWindow(terminal)
   ) {
     try {
-      terminal.write(data);
+      if (options.write) options.write(data);
+      else terminal.write(data);
       options.onWritten?.(data.length);
     } catch {
       // Disposed-terminal race — nothing to clean up on the direct path.
@@ -599,7 +616,7 @@ export function writeTerminalOutput(
   // ahead of it, order preserved); a background write without retainWhenHidden
   // means retention was turned off mid-flight.
   entry.retained = false;
-  entry.chunks.push(data);
+  entry.chunks.push({ data, write: options.write });
   entry.queuedChars += data.length;
 
   if (entry.queuedChars > MAX_QUEUE_CHARS) {
@@ -643,7 +660,10 @@ export function flushTerminalOutput(terminal: SchedulableTerminal): void {
   if (hadOpenFrame) {
     // The held bytes carry an unmatched BEGIN; close xterm's sync mode so the
     // handed-over frame paints (twin of the safety-timeout release).
-    entry.chunks.push(SYNC_OUTPUT_END);
+    entry.chunks.push({
+      data: SYNC_OUTPUT_END,
+      write: entry.chunks[entry.chunks.length - 1]?.write,
+    });
     entry.queuedChars += SYNC_OUTPUT_END.length;
   }
   queue.delete(terminal);

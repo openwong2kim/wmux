@@ -21,7 +21,7 @@ describe('createSessionDataDispatcher', () => {
     return new EventEmitter() as EventEmitter & SessionDataEmitter;
   }
   function frame(sessionId: string, text = 'x'): SessionDataPayload {
-    return { sessionId, data: Buffer.from(text) };
+    return { sessionId, data: Buffer.from(text), replay: false };
   }
 
   it('routes each session frame to only its own handler', () => {

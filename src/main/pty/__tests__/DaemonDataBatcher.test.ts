@@ -42,6 +42,21 @@ describe('DaemonDataBatcher', () => {
     expect(sent).toEqual([['s1', 'a'], ['s1', 'bc']]);
   });
 
+  it('keeps replay and live output in separate sends', () => {
+    const frames: Array<[string, string, boolean]> = [];
+    const b = new DaemonDataBatcher((id, text, replay) => frames.push([id, text, replay]), 8);
+    b.push('s1', 'live-leading', false);
+    b.push('s1', 'replay-a', true);
+    b.push('s1', 'replay-b', true);
+    b.push('s1', 'live-tail', false);
+    vi.runAllTimers();
+    expect(frames).toEqual([
+      ['s1', 'live-leading', false],
+      ['s1', 'replay-areplay-b', true],
+      ['s1', 'live-tail', false],
+    ]);
+  });
+
   it('keeps sessions independent (per-session buffers and timers)', () => {
     const b = new DaemonDataBatcher(send, 8);
     b.push('s1', 'x'); // leading edge each — immediate, per session

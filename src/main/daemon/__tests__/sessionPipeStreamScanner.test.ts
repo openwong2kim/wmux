@@ -19,18 +19,24 @@ interface Collected {
   flushes: number[];
   /** Event type sequence, e.g. ['data', 'flushComplete', 'data']. */
   order: Array<ScanEvent['type']>;
+  /** Replay provenance for each data event, in order. */
+  replay: boolean[];
 }
 
 function collect(events: ScanEvent[]): Collected {
   const parts: Buffer[] = [];
   const flushes: number[] = [];
   const order: Array<ScanEvent['type']> = [];
+  const replay: boolean[] = [];
   for (const ev of events) {
     order.push(ev.type);
-    if (ev.type === 'data') parts.push(ev.data);
+    if (ev.type === 'data') {
+      parts.push(ev.data);
+      replay.push(ev.replay);
+    }
     else flushes.push(ev.recoveredBytes);
   }
-  return { data: Buffer.concat(parts), flushes, order };
+  return { data: Buffer.concat(parts), flushes, order, replay };
 }
 
 function newScanner(opts?: { maxPendingBytes?: number; stripReplay?: (b: Buffer) => Buffer }) {
@@ -53,6 +59,7 @@ describe('initial flush', () => {
     const c = collect(events);
 
     expect(c.order).toEqual(['data', 'flushComplete', 'data']);
+    expect(c.replay).toEqual([true, false]);
     expect(c.flushes).toEqual([replay.length]);
     expect(collect([events[0]]).data.equals(replay)).toBe(true);
     expect(collect([events[2]]).data.equals(live)).toBe(true);
@@ -148,6 +155,7 @@ describe('live unarmed passthrough', () => {
     toLive(s);
     const c = collect(s.feed(b('echo output')));
     expect(c.order).toEqual(['data']);
+    expect(c.replay).toEqual([false]);
     expect(c.data.equals(b('echo output'))).toBe(true);
   });
 
@@ -242,6 +250,7 @@ describe('armed resync scan', () => {
     const c = collect(events);
 
     expect(c.order).toEqual(['data', 'data', 'flushComplete', 'data']);
+    expect(c.replay).toEqual([false, true, false]);
     // pre-marker live, then the snapshot replay, then the live tail
     expect(collect([events[0]]).data.equals(preLive)).toBe(true);
     expect(collect([events[1]]).data.equals(snapshot)).toBe(true);
@@ -308,30 +317,49 @@ describe('disarmResync', () => {
 });
 
 // ---------------------------------------------------------------------------
-// MAX_PENDING overflow — must mirror the original DaemonClient closure exactly
+// MAX_PENDING overflow — drop replay safely, resume only at FLUSH_DONE
 // ---------------------------------------------------------------------------
 
 describe('max pending overflow', () => {
-  it('drops the buffer and flips to live, emitting nothing (initial flush)', () => {
+  it('drops replay until the marker, then resumes with a live tail', () => {
     const s = newScanner({ maxPendingBytes: 10 });
     // 6 bytes, no marker — still accumulating, no events
     expect(s.feed(b('123456'))).toEqual([]);
     expect(s.mode).toBe('accumulating');
-    // +6 bytes → 12 > 10 cap → overflow: drop everything, go live, no events
+    // +6 bytes → 12 > 10 cap → drop replay and scan for the real boundary.
     expect(s.feed(b('789012'))).toEqual([]);
     expect(s.mode).toBe('live');
-    // subsequent bytes now pass straight through (buffered bytes were dropped)
-    const c = collect(s.feed(b('after')));
-    expect(c.order).toEqual(['data']);
+    // More pre-marker history is dropped, never relabelled as live.
+    expect(s.feed(b('more-history'))).toEqual([]);
+    const c = collect(s.feed(Buffer.concat([FLUSH_DONE_MARKER, b('after')])));
+    expect(c.order).toEqual(['flushComplete', 'data']);
+    expect(c.flushes).toEqual([0]);
+    expect(c.replay).toEqual([false]);
     expect(c.data.equals(b('after'))).toBe(true);
   });
 
-  it('a marker arriving in the SAME overflowing chunk is still dropped (cap wins)', () => {
+  it('settles safely when the marker arrives in the same overflowing chunk', () => {
     const s = newScanner({ maxPendingBytes: 5 });
-    // one chunk that exceeds the cap AND contains the marker — original behavior
-    // is overflow-wins: nothing emitted, straight to live.
+    // The replay is still dropped, but the marker settles the flush instead of
+    // leaking through as ordinary PTY bytes.
     const c = collect(s.feed(Buffer.concat([b('bigreplay'), FLUSH_DONE_MARKER])));
-    expect(c.order).toEqual([]);
+    expect(c.order).toEqual(['flushComplete']);
+    expect(c.flushes).toEqual([0]);
     expect(s.mode).toBe('live');
+  });
+
+  it('recognizes a flush marker split after overflow', () => {
+    const s = newScanner({ maxPendingBytes: 5 });
+    expect(s.feed(b('too-large'))).toEqual([]);
+    const cut = Math.floor(FLUSH_DONE_MARKER.length / 2);
+    expect(s.feed(FLUSH_DONE_MARKER.subarray(0, cut))).toEqual([]);
+    const c = collect(s.feed(Buffer.concat([
+      FLUSH_DONE_MARKER.subarray(cut),
+      b('live'),
+    ])));
+    expect(c.order).toEqual(['flushComplete', 'data']);
+    expect(c.flushes).toEqual([0]);
+    expect(c.replay).toEqual([false]);
+    expect(c.data.equals(b('live'))).toBe(true);
   });
 });

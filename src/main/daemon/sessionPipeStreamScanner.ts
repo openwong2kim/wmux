@@ -3,7 +3,9 @@ import { FLUSH_DONE_MARKER, RESYNC_BEGIN_MARKER } from '../../daemon/sessionPipe
 /**
  * Stream events produced while scanning a session pipe's byte stream.
  *
- * `data`          — raw PTY bytes to forward to the renderer, in order.
+ * `data`          — raw PTY bytes to forward to the renderer, in order;
+ *                   `replay` identifies bytes recovered from the daemon's
+ *                   ring buffer rather than produced by the live PTY.
  * `flushComplete` — the ring-buffer flush (or a live re-flush) finished;
  *                   `recoveredBytes` is the PRE-STRIP length of the replayed
  *                   scrollback that preceded the FLUSH_DONE_MARKER (0 means the
@@ -11,7 +13,7 @@ import { FLUSH_DONE_MARKER, RESYNC_BEGIN_MARKER } from '../../daemon/sessionPipe
  *                   the flush-detection block below).
  */
 export type ScanEvent =
-  | { type: 'data'; data: Buffer }
+  | { type: 'data'; data: Buffer; replay: boolean }
   | { type: 'flushComplete'; recoveredBytes: number };
 
 const DEFAULT_MAX_PENDING_BYTES = 10 * 1024 * 1024; // 10 MB safety cap
@@ -40,6 +42,11 @@ export class SessionPipeStreamScanner {
   private armed = false;
   private pendingChunks: Buffer[] = [];
   private pendingBytes = 0;
+  // The replay exceeded maxPendingBytes and was dropped. Keep scanning a
+  // marker-sized tail so the remaining historical bytes never fall through as
+  // live output; normal forwarding resumes only after the real flush boundary.
+  private discardingOverflowReplay = false;
+  private overflowCarry: Buffer = EMPTY;
   // live + armed only: the longest stream tail that is a strict prefix of
   // RESYNC_BEGIN_MARKER, held back until the next chunk can confirm or deny it.
   private carry: Buffer = EMPTY;
@@ -71,7 +78,7 @@ export class SessionPipeStreamScanner {
     if (this.carry.length > 0) {
       const held = this.carry;
       this.carry = EMPTY;
-      return [{ type: 'data', data: held }];
+      return [{ type: 'data', data: held, replay: false }];
     }
     return [];
   }
@@ -84,9 +91,13 @@ export class SessionPipeStreamScanner {
       return this.accumulate(buf);
     }
 
+    if (this.discardingOverflowReplay) {
+      return this.discardOverflowReplay(buf);
+    }
+
     if (!this.armed) {
       // Steady state — no scan, no copy. Identical to the original live path.
-      return buf.length > 0 ? [{ type: 'data', data: buf }] : [];
+      return buf.length > 0 ? [{ type: 'data', data: buf, replay: false }] : [];
     }
 
     return this.scanArmed(buf);
@@ -94,24 +105,35 @@ export class SessionPipeStreamScanner {
 
   /**
    * Buffer until FLUSH_DONE_MARKER, then emit replay → flushComplete → live
-   * tail. Byte-for-byte identical to the original setupSessionPipe closure;
-   * also reused for the post-RESYNC re-flush.
+   * tail. Also reused for the post-RESYNC re-flush.
    */
   private accumulate(buf: Buffer): ScanEvent[] {
     this.pendingChunks.push(buf);
     this.pendingBytes += buf.length;
 
-    // Prevent unbounded accumulation if the flush marker never arrives. Matches
-    // the original: drop everything buffered, flip to live, emit nothing.
+    const combined = Buffer.concat(this.pendingChunks);
+
+    // Prevent unbounded accumulation if the flush marker never arrives. Drop
+    // the oversized replay, then scan without accumulating until the actual
+    // marker arrives. Treating the remainder as live would give stored control
+    // sequences live side-effect authority (#1014).
     if (this.pendingBytes > this.maxPendingBytes) {
       this._mode = 'live';
       this.armed = false;
       this.pendingChunks = [];
       this.pendingBytes = 0;
+      const markerIndex = combined.indexOf(FLUSH_DONE_MARKER);
+      if (markerIndex !== -1) {
+        return this.finishDiscardedOverflow(combined, markerIndex);
+      }
+      this.discardingOverflowReplay = true;
+      const hold = this.matchingPrefixLen(combined, FLUSH_DONE_MARKER);
+      this.overflowCarry = hold > 0
+        ? combined.subarray(combined.length - hold)
+        : EMPTY;
       return [];
     }
 
-    const combined = Buffer.concat(this.pendingChunks);
     const markerIndex = combined.indexOf(FLUSH_DONE_MARKER);
     if (markerIndex === -1) return [];
 
@@ -139,7 +161,7 @@ export class SessionPipeStreamScanner {
     if (markerIndex > 0) {
       const replay = this.stripReplay(combined.subarray(0, markerIndex));
       if (replay.length > 0) {
-        events.push({ type: 'data', data: replay });
+        events.push({ type: 'data', data: replay, replay: true });
       }
     }
 
@@ -153,9 +175,42 @@ export class SessionPipeStreamScanner {
     // this tail is plain live output — passed straight through like the original.
     const afterMarker = combined.subarray(markerIndex + FLUSH_DONE_MARKER.length);
     if (afterMarker.length > 0) {
-      events.push({ type: 'data', data: afterMarker });
+      events.push({ type: 'data', data: afterMarker, replay: false });
     }
 
+    return events;
+  }
+
+  /**
+   * Drop bytes after an accumulation overflow until FLUSH_DONE is observed.
+   * A marker-sized carry handles split markers without retaining the replay.
+   */
+  private discardOverflowReplay(buf: Buffer): ScanEvent[] {
+    const combined = this.overflowCarry.length > 0
+      ? Buffer.concat([this.overflowCarry, buf])
+      : buf;
+    this.overflowCarry = EMPTY;
+    const markerIndex = combined.indexOf(FLUSH_DONE_MARKER);
+    if (markerIndex !== -1) {
+      return this.finishDiscardedOverflow(combined, markerIndex);
+    }
+    const hold = this.matchingPrefixLen(combined, FLUSH_DONE_MARKER);
+    if (hold > 0) {
+      this.overflowCarry = combined.subarray(combined.length - hold);
+    }
+    return [];
+  }
+
+  private finishDiscardedOverflow(combined: Buffer, markerIndex: number): ScanEvent[] {
+    this.discardingOverflowReplay = false;
+    this.overflowCarry = EMPTY;
+    // No replay reached the renderer, so recoveredBytes=0 preserves any .txt
+    // cache and still settles an in-flight attach/resync cleanly.
+    const events: ScanEvent[] = [{ type: 'flushComplete', recoveredBytes: 0 }];
+    const afterMarker = combined.subarray(markerIndex + FLUSH_DONE_MARKER.length);
+    if (afterMarker.length > 0) {
+      events.push({ type: 'data', data: afterMarker, replay: false });
+    }
     return events;
   }
 
@@ -174,7 +229,7 @@ export class SessionPipeStreamScanner {
     if (markerIndex !== -1) {
       const events: ScanEvent[] = [];
       if (markerIndex > 0) {
-        events.push({ type: 'data', data: combined.subarray(0, markerIndex) });
+        events.push({ type: 'data', data: combined.subarray(0, markerIndex), replay: false });
       }
       // Consume the marker and re-enter accumulation for the re-flush. Auto
       // disarm: the resync episode is now owned by the FLUSH_DONE cycle.
@@ -190,22 +245,21 @@ export class SessionPipeStreamScanner {
     // No full marker in this buffer. Only a tail that is a strict prefix of the
     // marker can still complete on the next chunk; everything before it is
     // definitely live data.
-    const hold = this.matchingPrefixLen(combined);
+    const hold = this.matchingPrefixLen(combined, RESYNC_BEGIN_MARKER);
     if (hold === 0) {
-      return combined.length > 0 ? [{ type: 'data', data: combined }] : [];
+      return combined.length > 0 ? [{ type: 'data', data: combined, replay: false }] : [];
     }
     const emittable = combined.subarray(0, combined.length - hold);
     this.carry = combined.subarray(combined.length - hold);
-    return emittable.length > 0 ? [{ type: 'data', data: emittable }] : [];
+    return emittable.length > 0 ? [{ type: 'data', data: emittable, replay: false }] : [];
   }
 
   /**
-   * Length of the longest suffix of `buf` that equals a prefix of
-   * RESYNC_BEGIN_MARKER (in [0, marker.length - 1]). Called only when the full
-   * marker is absent, so a match can exist only at the tail.
+   * Length of the longest suffix of `buf` that equals a prefix of `marker`
+   * (in [0, marker.length - 1]). Called only when the full marker is absent,
+   * so a match can exist only at the tail.
    */
-  private matchingPrefixLen(buf: Buffer): number {
-    const marker = RESYNC_BEGIN_MARKER;
+  private matchingPrefixLen(buf: Buffer, marker: Buffer): number {
     const maxK = Math.min(marker.length - 1, buf.length);
     for (let k = maxK; k >= 1; k--) {
       if (buf.subarray(buf.length - k).equals(marker.subarray(0, k))) {

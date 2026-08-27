@@ -24,7 +24,7 @@
  * only delegates the listener+map bookkeeping here.
  */
 
-export type SessionDataPayload = { sessionId: string; data: Buffer };
+export type SessionDataPayload = { sessionId: string; data: Buffer; replay: boolean };
 export type SessionDataHandler = (payload: SessionDataPayload) => void;
 
 /** The subset of DaemonClient (EventEmitter) this dispatcher relies on. */

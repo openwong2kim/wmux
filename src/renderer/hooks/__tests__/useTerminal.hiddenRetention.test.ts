@@ -24,7 +24,7 @@ describe('Phase 3 PR-A — useTerminal hidden-pane retention wiring (source-leve
     expect(idx).toBeGreaterThan(0);
     const body = src.slice(idx, idx + 1500);
     // In-flight resync buffers bytes out of xterm entirely…
-    expect(body).toMatch(/st\.buffer\.push\(data\)/);
+    expect(body).toMatch(/st\.buffer\.push\(payload\)/);
     expect(body).toMatch(/RESYNC_BUFFER_MAX_CHARS/);
     // …otherwise the scheduler write carries the retention option (evaluated
     // per event, logged once for the first hidden pane — the dogfood gate
@@ -35,20 +35,18 @@ describe('Phase 3 PR-A — useTerminal hidden-pane retention wiring (source-leve
   });
 
   it('both pty.onData listener sites use the shared routing', () => {
-    const matches = src.match(/routePtyData\(data\)/g) ?? [];
+    const matches = src.match(/routePtyData\(payload\)/g) ?? [];
     expect(matches.length).toBeGreaterThanOrEqual(2);
   });
 
   it('resync completion resets BEFORE writing the held replay (no early-parse race)', () => {
     const idx = src.indexOf('const completeResyncFromFlush');
     expect(idx).toBeGreaterThan(0);
-    // Window widened (was 1200) and the write spelling changed: #998 mutes the
-    // OSC 52 bridge for this flush, because on the raw-fallback path the
-    // reconnect replay itself lands in st.buffer. The ordering contract this
-    // test exists for — reset BEFORE the held bytes are parsed — is unchanged.
+    // The source-labelled writer mutes only replay chunks. The ordering
+    // contract this test exists for — reset BEFORE held bytes parse — remains.
     const body = src.slice(idx, idx + 2400);
     const resetIdx = body.indexOf('terminal.reset()');
-    const writeIdx = body.indexOf('for (const chunk of st.buffer) writeReplayed(terminal, chunk');
+    const writeIdx = body.indexOf('writePtyDataImmediately(terminal, chunk');
     expect(resetIdx).toBeGreaterThan(0);
     expect(writeIdx).toBeGreaterThan(resetIdx);
     // Stale retained backlog + dirty flag die with the old screen state.
