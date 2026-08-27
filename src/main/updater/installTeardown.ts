@@ -68,6 +68,14 @@ import { spawn, execFileSync } from 'child_process';
  */
 export const INSTALL_ABORT_MARKER = 'update-install-aborted.txt';
 
+/**
+ * #1056 — heartbeat the waiter writes as its first act, relative to userData.
+ * Not the abort marker: this says "the process ran at all," not "it refused."
+ * Cleared before each attempt so a stale one from a prior run cannot pass the
+ * check for a waiter that never started this time.
+ */
+export const INSTALL_READY_MARKER = 'update-install-ready.tmp';
+
 /** Result of the pre-flight space check. `null` when there is enough room. */
 export interface SpaceShortfall {
   volume: string;
@@ -82,6 +90,16 @@ export interface WaiterPlan {
   installRoot: string;
   /** Marker written when the waiter refuses to launch. Read on next boot. */
   abortMarkerPath: string;
+  /**
+   * #1056 — written as the waiter's very first act, before anything else
+   * (even the mutex). The caller polls for it before committing to the
+   * daemon shutdown and the force-kill: its absence after a short budget
+   * means the process died before running a single line of the script, which
+   * every other signal (the abort marker, a Squirrel log) requires reaching
+   * further than that to produce. See spawnInstallWaiter / AutoUpdater for
+   * why this can happen even though the process is spawned `detached`.
+   */
+  readyMarkerPath: string;
   /** How long to keep re-checking the root for locks before giving up. */
   lockBudgetMs: number;
 }
@@ -275,7 +293,7 @@ export function selectOwnTreePids(
  * handle waits and the lock probe have passed.
  */
 export function buildWaiterScript(plan: WaiterPlan): string | null {
-  const paths = [plan.setupExePath, plan.installRoot, plan.abortMarkerPath];
+  const paths = [plan.setupExePath, plan.installRoot, plan.abortMarkerPath, plan.readyMarkerPath];
   if (!paths.every(isSafePsPathLiteral)) return null;
   if (!plan.pids.every((p) => Number.isInteger(p) && p > 0)) return null;
   // Same check the pids get. A zero, negative or NaN budget would put the
@@ -289,7 +307,21 @@ export function buildWaiterScript(plan: WaiterPlan): string | null {
     `$root = ${psQuote(plan.installRoot)}`,
     `$setup = ${psQuote(plan.setupExePath)}`,
     `$marker = ${psQuote(plan.abortMarkerPath)}`,
+    `$ready = ${psQuote(plan.readyMarkerPath)}`,
     `$budget = ${plan.lockBudgetMs}`,
+    // #1056 — the very first thing this script does, before even the mutex.
+    // A real machine showed the waiter's PowerShell engine starting and then
+    // going silent forever, in the same second the app called app.quit(), with
+    // none of the abort paths below ever reached (no marker, no Squirrel log).
+    // Node's `detached: true` on Windows only requests DETACHED_PROCESS |
+    // CREATE_NEW_PROCESS_GROUP — never CREATE_BREAKAWAY_FROM_JOB (confirmed in
+    // libuv's win/process.c, which says so in its own comment) — so a parent
+    // that is itself a member of an outer Job Object with KILL_ON_JOB_CLOSE can
+    // still take a "detached" child down with it. This can't fix that
+    // mechanism from here; it only proves whether the engine got far enough to
+    // run a line of script at all, which is exactly the fact the caller is
+    // missing when the whole update goes silent.
+    `try { Set-Content -LiteralPath $ready -Value 'alive' -Encoding utf8 } catch { }`,
     // Single-instance gate, FIRST — before a handle is captured or anything
     // else happens. The quit watchdog unlatches `isInstalling` after 30 s so a
     // refused quit stays retryable, but the waiter it spawned can still be
@@ -579,6 +611,32 @@ export function collectInstallRootProcesses(installRoot: string): InstallRootSur
  *  the ownership split. */
 export function collectInstallRootPids(installRoot: string): number[] {
   return collectInstallRootProcesses(installRoot).pids;
+}
+
+/**
+ * #1056 — bounded poll for the waiter's heartbeat, written as the first line
+ * of the script (see buildWaiterScript). The caller awaits this BEFORE
+ * `onInstallRequiresFullShutdown()` and the force-kill, so a waiter that never
+ * ran costs nothing: nothing has been torn down yet and the old install is
+ * untouched.
+ *
+ * `existsFn` and `sleepFn` are injected so the unit suite can resolve this in
+ * milliseconds instead of burning the real budget.
+ */
+export async function waitForWaiterHeartbeat(
+  markerPath: string,
+  budgetMs: number,
+  pollMs = 100,
+  existsFn: (p: string) => boolean = fs.existsSync,
+  sleepFn: (ms: number) => Promise<void> = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+): Promise<boolean> {
+  const deadline = Date.now() + budgetMs;
+  for (;;) {
+    if (existsFn(markerPath)) return true;
+    const left = deadline - Date.now();
+    if (left <= 0) return existsFn(markerPath);
+    await sleepFn(Math.min(pollMs, left));
+  }
 }
 
 /**

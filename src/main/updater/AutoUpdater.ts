@@ -35,10 +35,12 @@ import {
   clearAbortMarker,
   freeSpaceShortfall,
   INSTALL_ABORT_MARKER,
+  INSTALL_READY_MARKER,
   probeVolume,
   readAbortMarker,
   spawnInstallWaiter,
   terminatePids,
+  waitForWaiterHeartbeat,
 } from './installTeardown';
 
 const REPO = 'openwong2kim/wmux';
@@ -82,6 +84,12 @@ const INSTALL_LOCK_BUDGET_MS = 60_000;
 // exists for the paths where it is NOT armed — a quit that never reaches a
 // before-quit handler at all leaves nothing else to notice.
 const INSTALL_QUIT_WATCHDOG_MS = 30_000;
+// #1056 — how long to wait for the waiter's heartbeat before concluding the
+// spawn itself did not survive (see waitForWaiterHeartbeat). Short on purpose:
+// unlike the lock budget, this is not waiting on anything that legitimately
+// takes time — a live process writes one file in well under a second, so a
+// few seconds of silence already means it is gone, not just busy.
+const WAITER_HEARTBEAT_BUDGET_MS = 3_000;
 // Squirrel downloading and unpacking a ~120 MB bundle before it reports
 // 'update-downloaded'. Generous on purpose: a slow disk or an antivirus scan
 // makes this minutes, and aborting a healthy update is worse than waiting.
@@ -887,6 +895,12 @@ export class AutoUpdater {
 
     const installRoot = resolve(dirname(process.execPath), '..');
     const abortMarkerPath = join(app.getPath('userData'), INSTALL_ABORT_MARKER);
+    const readyMarkerPath = join(app.getPath('userData'), INSTALL_READY_MARKER);
+    // A stale heartbeat from a previous attempt would make the check below
+    // pass without the new waiter ever having run. Best-effort: an unlink
+    // failure just means the poll might see a false positive from stale
+    // state, same as if we had never added this check.
+    try { await unlink(readyMarkerPath); } catch { /* nothing to clear */ }
 
     // Pre-flight: refuse BEFORE anything is written rather than dying halfway.
     // Budgeted per volume — the staging download and the install root can live
@@ -951,6 +965,7 @@ export class AutoUpdater {
       setupExePath: tempPath,
       installRoot,
       abortMarkerPath,
+      readyMarkerPath,
       lockBudgetMs: INSTALL_LOCK_BUDGET_MS,
     });
     if (!waiterPath) {
@@ -961,6 +976,24 @@ export class AutoUpdater {
       this.sendToRenderer(IPC.UPDATE_ERROR, {
         status: 'error',
         message: 'Could not prepare the installer safely. The update was not started and your installation is unchanged.',
+      });
+      return;
+    }
+
+    // #1056 — confirm the waiter's PowerShell process actually ran its first
+    // line before doing anything that cannot be walked back. A real machine
+    // showed the spawned process go completely silent, with none of the abort
+    // paths in the script ever reached — nothing here proves WHY (see
+    // installTeardown.ts for the leading theory), only THAT it happened, which
+    // is enough to stop before the daemon shutdown and the force-kill below
+    // instead of quitting into a hang nothing can explain afterward.
+    const waiterAlive = await waitForWaiterHeartbeat(readyMarkerPath, WAITER_HEARTBEAT_BUDGET_MS);
+    if (!waiterAlive) {
+      this.isInstalling = false;
+      console.error(`[AutoUpdater] waiter=${waiterPath} never signaled it started — refusing to quit`);
+      this.sendToRenderer(IPC.UPDATE_ERROR, {
+        status: 'error',
+        message: 'The installer did not start. The update was not started and your installation is unchanged. Please try again.',
       });
       return;
     }

@@ -162,7 +162,12 @@ async function loadForPlatform(
     readDaemonPid: vi.fn((): number | null => null),
     readAbortMarker: vi.fn((): string | null => null),
     clearAbortMarker: vi.fn(),
+    // #1056 — resolves true by default so existing tests exercise the same
+    // happy path as before this check existed; the dedicated test below
+    // overrides it to prove the refusal branch.
+    waitForWaiterHeartbeat: vi.fn(async (): Promise<boolean> => true),
     INSTALL_ABORT_MARKER: 'update-install-aborted.txt',
+    INSTALL_READY_MARKER: 'update-install-ready.tmp',
   };
   vi.doMock('../installTeardown', () => teardown);
 
@@ -513,6 +518,31 @@ describe('AutoUpdater #502 — quit after launching the installer', () => {
     // untouched when the safe path is unavailable.
     expect(loaded.appQuit).not.toHaveBeenCalled();
     expect(loaded.shellOpenPath).not.toHaveBeenCalled();
+  });
+
+  it('win32 (#1056): a waiter that never signals it started reports UPDATE_ERROR and does NOT quit or tear anything down', async () => {
+    // Event-log evidence from a real machine: the waiter's PowerShell engine
+    // started and then went silent forever, in the same second the app called
+    // app.quit() -- consistent with a detached child dying with an outer Job
+    // Object the parent belongs to (Node's `detached: true` on Windows never
+    // requests CREATE_BREAKAWAY_FROM_JOB). This proves the app-side half: the
+    // heartbeat check runs BEFORE the daemon shutdown and the force-kill, so a
+    // dead-on-arrival waiter costs nothing instead of quitting into a hang.
+    const loaded = await loadForPlatform('win32', downloadRoutes);
+    const { installHandler, sent } = await downloadUpdateFor(loaded);
+
+    loaded.teardown.waitForWaiterHeartbeat.mockResolvedValueOnce(false);
+    await installHandler();
+
+    const err = sent.find((m) => m.channel === IPC.UPDATE_ERROR);
+    expect(err).toBeDefined();
+    expect(String(err?.data.message)).toContain('did not start');
+    expect(loaded.appQuit).not.toHaveBeenCalled();
+    expect(loaded.shellOpenPath).not.toHaveBeenCalled();
+    // Nothing irreversible ran: no daemon shutdown, no force-kill. Order is
+    // the whole point -- this check sits between spawning the waiter and
+    // committing to either.
+    expect(loaded.teardown.terminatePids).not.toHaveBeenCalled();
   });
 
   it('win32: refuses to install from an unpackaged build instead of killing stray processes', async () => {

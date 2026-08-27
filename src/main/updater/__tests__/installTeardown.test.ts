@@ -5,7 +5,7 @@
 //   2. a still-locked root aborts instead of launching.
 //
 // Everything else (enumeration, volume budgeting, quoting) feeds those two.
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -21,6 +21,7 @@ import {
   terminatePids,
   readAbortMarker,
   clearAbortMarker,
+  waitForWaiterHeartbeat,
   INSTALL_ABORT_MARKER,
   type WaiterPlan,
 } from '../installTeardown';
@@ -30,6 +31,7 @@ const PLAN: WaiterPlan = {
   setupExePath: 'C:\\Temp\\wmux-3.41.0.Setup.exe',
   installRoot: 'C:\\Users\\u\\AppData\\Local\\wmux',
   abortMarkerPath: 'C:\\Users\\u\\AppData\\Roaming\\wmux\\install-abort.txt',
+  readyMarkerPath: 'C:\\Users\\u\\AppData\\Roaming\\wmux\\install-ready.tmp',
   lockBudgetMs: 30_000,
 };
 
@@ -428,6 +430,7 @@ describe('buildWaiterScript — the clock has to survive a long uptime (#980)', 
     setupExePath: 'C:/Temp/Setup.exe',
     installRoot: 'C:/Root',
     abortMarkerPath: 'C:/Data/aborted.txt',
+    readyMarkerPath: 'C:/Data/ready.tmp',
     lockBudgetMs: 60_000,
   };
 
@@ -462,6 +465,7 @@ describe('buildWaiterScript — one waiter per install root (#980, coderabbit)',
     setupExePath: 'C:/Temp/Setup.exe',
     installRoot: 'C:/Root',
     abortMarkerPath: 'C:/Data/aborted.txt',
+    readyMarkerPath: 'C:/Data/ready.tmp',
     lockBudgetMs: 60_000,
   };
   const script = () => buildWaiterScript(plan)!;
@@ -483,9 +487,13 @@ describe('buildWaiterScript — one waiter per install root (#980, coderabbit)',
     const s = script();
     const yieldAt = s.indexOf('exit 5');
     expect(yieldAt).toBeGreaterThan(-1);
-    // No marker write on this path: a "refused" marker from the loser would
-    // overwrite or pre-empt whatever the incumbent has to report.
-    expect(s.slice(0, yieldAt)).not.toContain('Set-Content');
+    // No ABORT marker write on this path: a "refused" marker from the loser
+    // would overwrite or pre-empt whatever the incumbent has to report. The
+    // #1056 heartbeat write IS expected before this point — it says "a
+    // process ran," not "the install was refused," and every waiter
+    // (incumbent or newcomer) writes its own regardless of the mutex outcome.
+    expect(s.slice(0, yieldAt)).not.toContain('-LiteralPath $marker');
+    expect(s.slice(0, yieldAt)).toContain('-LiteralPath $ready');
   });
 
   it('derives the mutex name from a SHA256 hash of $root, not a lossy character replace', () => {
@@ -519,6 +527,7 @@ describe('buildWaiterScript — post-exit install verification (#1046)', () => {
     setupExePath: 'C:/t/Setup.exe',
     installRoot: 'C:/Users/u/AppData/Local/wmux',
     abortMarkerPath: 'C:/t/marker.txt',
+    readyMarkerPath: 'C:/t/ready.tmp',
     lockBudgetMs: 60000,
   };
   const script = (): string => buildWaiterScript(PLAN46) ?? '';
@@ -554,5 +563,76 @@ describe('buildWaiterScript — post-exit install verification (#1046)', () => {
     expect(formsTrue).toBeGreaterThan(s.indexOf('Add-Type -AssemblyName System.Windows.Forms'));
     expect(formsTrue).toBeLessThan(s.indexOf('Add-Type -AssemblyName System.Drawing'));
     expect(s.trimEnd().endsWith('exit 6')).toBe(true);
+  });
+});
+
+describe('buildWaiterScript — the #1056 heartbeat is the very first thing it does', () => {
+  it('writes the ready marker before the mutex, before the wait window, before everything', () => {
+    const s = buildWaiterScript(PLAN)!;
+    const heartbeatAt = s.indexOf(`-LiteralPath $ready`);
+    const mutexAt = s.indexOf('System.Threading.Mutex');
+    const formsAt = s.indexOf('Add-Type -AssemblyName System.Windows.Forms');
+    expect(heartbeatAt).toBeGreaterThan(-1);
+    // Only the three path/budget assignments and $ErrorActionPreference may
+    // precede it -- nothing that could itself throw or block.
+    expect(s.indexOf('$ErrorActionPreference')).toBeLessThan(heartbeatAt);
+    expect(heartbeatAt).toBeLessThan(mutexAt);
+    expect(heartbeatAt).toBeLessThan(formsAt);
+  });
+
+  it('guards the write so a failure here cannot abort the rest of the script', () => {
+    const s = buildWaiterScript(PLAN)!;
+    expect(s).toContain(
+      `try { Set-Content -LiteralPath $ready -Value 'alive' -Encoding utf8 } catch { }`,
+    );
+  });
+
+  it('rejects a plan whose readyMarkerPath is not a safe PowerShell literal', () => {
+    expect(buildWaiterScript({ ...PLAN, readyMarkerPath: 'C:\\bad\npath.txt' })).toBeNull();
+  });
+});
+
+describe('waitForWaiterHeartbeat (#1056)', () => {
+  it('returns true immediately when the marker already exists, without sleeping', async () => {
+    const sleeps: number[] = [];
+    const alive = await waitForWaiterHeartbeat(
+      '/fake/ready.tmp', 3000, 100,
+      () => true,
+      async (ms) => { sleeps.push(ms); },
+    );
+    expect(alive).toBe(true);
+    expect(sleeps).toEqual([]);
+  });
+
+  it('polls until the marker appears, then stops', async () => {
+    let calls = 0;
+    const exists = () => { calls += 1; return calls >= 3; };
+    const sleeps: number[] = [];
+    const alive = await waitForWaiterHeartbeat(
+      '/fake/ready.tmp', 3000, 100,
+      exists,
+      async (ms) => { sleeps.push(ms); },
+    );
+    expect(alive).toBe(true);
+    expect(calls).toBe(3);
+    expect(sleeps).toEqual([100, 100]);
+  });
+
+  it('gives up once the budget is exhausted and the marker never appeared', async () => {
+    // Real timers, driven by vitest's fake clock so the budget elapses without
+    // the test actually burning wall-clock time -- the default sleepFn is a
+    // genuine setTimeout, and Date.now() (also faked) is what the function's
+    // own deadline math reads.
+    vi.useFakeTimers();
+    try {
+      const existsFn = vi.fn(() => false);
+      const resultP = waitForWaiterHeartbeat('/fake/ready.tmp', 250, 100, existsFn);
+      await vi.advanceTimersByTimeAsync(250);
+      expect(await resultP).toBe(false);
+      // Checked at least at the start and once more after the budget ran out.
+      expect(existsFn.mock.calls.length).toBeGreaterThanOrEqual(2);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
