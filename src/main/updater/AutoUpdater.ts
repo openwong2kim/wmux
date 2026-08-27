@@ -897,10 +897,25 @@ export class AutoUpdater {
     const abortMarkerPath = join(app.getPath('userData'), INSTALL_ABORT_MARKER);
     const readyMarkerPath = join(app.getPath('userData'), INSTALL_READY_MARKER);
     // A stale heartbeat from a previous attempt would make the check below
-    // pass without the new waiter ever having run. Best-effort: an unlink
-    // failure just means the poll might see a false positive from stale
-    // state, same as if we had never added this check.
-    try { await unlink(readyMarkerPath); } catch { /* nothing to clear */ }
+    // pass without the new waiter ever having run. ENOENT — nothing there to
+    // clear — is the expected, common case. Anything else means we cannot
+    // prove the marker is gone, so a stale heartbeat could go on to authorize
+    // the daemon shutdown and force-kill below for a waiter that never ran
+    // this time. That is exactly the failure #1056 exists to catch, so this
+    // fails closed instead of falling back to "same as if we had never added
+    // the check" (coderabbit, #1057).
+    try {
+      await unlink(readyMarkerPath);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+        this.isInstalling = false;
+        this.sendToRenderer(IPC.UPDATE_ERROR, {
+          status: 'error',
+          message: 'Could not prepare the installer safely. The update was not started and your installation is unchanged.',
+        });
+        return;
+      }
+    }
 
     // Pre-flight: refuse BEFORE anything is written rather than dying halfway.
     // Budgeted per volume — the staging download and the install root can live

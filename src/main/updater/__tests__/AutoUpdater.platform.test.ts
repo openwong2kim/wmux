@@ -18,7 +18,7 @@
  */
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { createHash } from 'node:crypto';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { IPC } from '../../../shared/constants';
@@ -185,7 +185,7 @@ async function loadForPlatform(
   }));
 
   const mod = await import('../AutoUpdater');
-  return { AutoUpdater: mod.AutoUpdater, requestUrls, ipcHandlers, ipcListeners, request, appQuit, shellOpenPath, nativeUpdater, teardown };
+  return { AutoUpdater: mod.AutoUpdater, requestUrls, ipcHandlers, ipcListeners, request, appQuit, shellOpenPath, nativeUpdater, teardown, tempPathDir };
 }
 
 describe('AutoUpdater platform gating', () => {
@@ -529,7 +529,8 @@ describe('AutoUpdater #502 — quit after launching the installer', () => {
     // heartbeat check runs BEFORE the daemon shutdown and the force-kill, so a
     // dead-on-arrival waiter costs nothing instead of quitting into a hang.
     const loaded = await loadForPlatform('win32', downloadRoutes);
-    const { installHandler, sent } = await downloadUpdateFor(loaded);
+    const hooks = quitHooks();
+    const { installHandler, sent } = await downloadUpdateFor(loaded, hooks);
 
     loaded.teardown.waitForWaiterHeartbeat.mockResolvedValueOnce(false);
     await installHandler();
@@ -541,7 +542,32 @@ describe('AutoUpdater #502 — quit after launching the installer', () => {
     expect(loaded.shellOpenPath).not.toHaveBeenCalled();
     // Nothing irreversible ran: no daemon shutdown, no force-kill. Order is
     // the whole point -- this check sits between spawning the waiter and
-    // committing to either.
+    // committing to either. A regression that called onInstallRequiresFullShutdown
+    // before this check would pass every assertion above (coderabbit, #1057).
+    expect(loaded.teardown.terminatePids).not.toHaveBeenCalled();
+    expect(hooks.onInstallRequiresFullShutdown).not.toHaveBeenCalled();
+  });
+
+  it('win32 (#1057, coderabbit): a stale ready-marker that cannot be cleared refuses instead of risking a false "waiter is alive"', async () => {
+    // waitForWaiterHeartbeat is mocked in this suite, so it cannot itself prove
+    // the fail-closed path -- the real risk is upstream, in the best-effort
+    // unlink that is supposed to clear a previous attempt's marker before the
+    // real heartbeat check ever runs. A directory at that exact path makes the
+    // unlink fail with a real, non-ENOENT error (EPERM/EISDIR) with no mocking
+    // of fs itself.
+    const loaded = await loadForPlatform('win32', downloadRoutes);
+    const readyMarkerPath = join(loaded.tempPathDir, loaded.teardown.INSTALL_READY_MARKER);
+    mkdirSync(readyMarkerPath);
+    const { installHandler, sent } = await downloadUpdateFor(loaded);
+
+    await installHandler();
+
+    const err = sent.find((m) => m.channel === IPC.UPDATE_ERROR);
+    expect(err).toBeDefined();
+    expect(loaded.appQuit).not.toHaveBeenCalled();
+    expect(loaded.shellOpenPath).not.toHaveBeenCalled();
+    // The heartbeat check must never even run against an unproven marker.
+    expect(loaded.teardown.waitForWaiterHeartbeat).not.toHaveBeenCalled();
     expect(loaded.teardown.terminatePids).not.toHaveBeenCalled();
   });
 
