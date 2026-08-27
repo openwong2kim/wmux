@@ -9,13 +9,17 @@ export default defineConfig({
   build: {
     rollupOptions: {
       // `node-pty` is a native addon (must be required from disk, never bundled).
+      // `koffi` ships a prebuilt native binary that its loader resolves
+      // relative to its own on-disk package location (@koromix/koffi-<triple>
+      // sibling in the same node_modules), so it must stay external too —
+      // see winSnapshotNative.ts.
       // `@anthropic-ai/claude-agent-sdk` is kept external too: it ships its own
       // `claude` CLI and spawns it as a subprocess resolving paths relative to
       // its on-disk module location, so rollup-bundling it into index.js would
       // break that self-spawn. External → required from node_modules at runtime
       // (resolvable in dev; packaged builds must ship it unpacked from the asar —
       // see the Command Deck P2 deferred note in the impl plan).
-      external: ['node-pty', '@anthropic-ai/claude-agent-sdk'],
+      external: ['node-pty', 'koffi', '@anthropic-ai/claude-agent-sdk'],
     },
   },
 });
