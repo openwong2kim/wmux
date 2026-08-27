@@ -90,6 +90,58 @@ describe('buildWaiterScript — ordering is the whole contract', () => {
     expect(buildWaiterScript({ ...PLAN, pids: [1.5] })).toBeNull();
   });
 
+  // #1056 — the launch stamp is the transport's execution proof. FIRST, and
+  // before the mutex: a newcomer that yields with exit 5 still proves the
+  // transport works.
+  it('writes the launch stamp before anything else when asked to', () => {
+    const s = buildWaiterScript(PLAN, 'C:\\Temp\\wmux-w\\launched-a.txt') ?? '';
+    const stamp = s.indexOf('launched-a.txt');
+    expect(stamp).toBeGreaterThan(-1);
+    expect(stamp).toBeLessThan(s.indexOf('$mtxHash'));
+    // Best-effort: a stamp that cannot be written degrades to "transport
+    // unverified", never to a broken waiter.
+    expect(s).toMatch(/try \{ Set-Content -LiteralPath \$stampPath[^\n]*\} catch \{ \}/);
+  });
+
+  it('emits no stamp machinery when not asked', () => {
+    // "No stamp" is a legal shape — the suites' single-argument call sites
+    // and any future caller that only needs the script.
+    const s = buildWaiterScript(PLAN) ?? '';
+    expect(s).not.toContain('$stampPath');
+  });
+
+  it('refuses a stamp path a double quote could break out of', () => {
+    // Deliberate divergence from isSafePsPathLiteral (which accepts `"` as a
+    // legal path character for single-quoted PS literals): the stamp path
+    // also rides through a cmd.exe trampoline command line, where `"` is
+    // structural.
+    expect(buildWaiterScript(PLAN, 'C:\\Temp\\a"b\\launched.txt')).toBeNull();
+    expect(buildWaiterScript(PLAN, 'C:\\Temp\\a\nb.txt')).toBeNull();
+  });
+
+  // #1056 — the interrupted sentinel: incumbent-only, and placed where a
+  // WinForms/Add-Type failure cannot eat it.
+  it('writes the interrupted sentinel after the mutex gate and before the wait window', () => {
+    const s = buildWaiterScript(PLAN) ?? '';
+    const gate = s.indexOf('exit 5');
+    const sentinel = s.indexOf('interrupted before it could report');
+    const form = s.indexOf('$form = $null');
+    expect(gate).toBeGreaterThan(-1);
+    expect(sentinel).toBeGreaterThan(gate);
+    expect(sentinel).toBeLessThan(form);
+  });
+
+  it('removes the sentinel on both success exits', () => {
+    const s = buildWaiterScript(PLAN) ?? '';
+    const removals = s.match(/Remove-Item -LiteralPath \$marker -ErrorAction SilentlyContinue/g) ?? [];
+    // One for the verified-ok exit, one for the cannot-judge exit: an
+    // installer demonstrably launched and still running at the 10-minute
+    // deadline makes "interrupted" a false refusal (the #1043 newcomer-marker
+    // reasoning).
+    expect(removals).toHaveLength(2);
+    expect(s).toContain('{ Remove-Item -LiteralPath $marker -ErrorAction SilentlyContinue; exit 0 }');
+  });
+
   // #1043 — a best-effort "please wait" indicator for the otherwise-silent
   // 1-2 minute window. Structural lock only: the WinForms message loop and
   // its interaction with a real Windows desktop cannot run on CI regardless
@@ -541,7 +593,7 @@ describe('buildWaiterScript — post-exit install verification (#1046)', () => {
     // An installer still running at the deadline means "cannot judge" —
     // exit 0, exactly the pre-#1046 behavior. The verification can only ADD
     // a warning, never invent one about an install still in progress.
-    expect(s.indexOf('if (-not $setupDone) { exit 0 }')).toBeGreaterThan(wait);
+    expect(s.indexOf('if (-not $setupDone) { Remove-Item -LiteralPath $marker -ErrorAction SilentlyContinue; exit 0 }')).toBeGreaterThan(wait);
   });
 
   it('checks exactly the two files whose absence is the #1046 corpse, after the launch', () => {

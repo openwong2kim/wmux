@@ -292,7 +292,7 @@ export function selectOwnTreePids(
  * one property that matters is that Setup.exe is never started before both the
  * handle waits and the lock probe have passed.
  */
-export function buildWaiterScript(plan: WaiterPlan): string | null {
+export function buildWaiterScript(plan: WaiterPlan, launchStampPath?: string): string | null {
   const paths = [plan.setupExePath, plan.installRoot, plan.abortMarkerPath, plan.readyMarkerPath];
   if (!paths.every(isSafePsPathLiteral)) return null;
   if (!plan.pids.every((p) => Number.isInteger(p) && p > 0)) return null;
@@ -300,6 +300,23 @@ export function buildWaiterScript(plan: WaiterPlan): string | null {
   // deadline in the past, so the lock loop would fall through on its first
   // pass — turning the gate that makes this whole change work into a no-op.
   if (!Number.isInteger(plan.lockBudgetMs) || plan.lockBudgetMs <= 0) return null;
+  // #1056 — optional execution-proof stamp. Stricter than isSafePsPathLiteral
+  // on purpose: this path also rides through a cmd.exe trampoline command
+  // line, where a double quote is structural. Optional, so the suites'
+  // existing single-argument call sites stay legal — "no stamp" is a shape.
+  if (launchStampPath !== undefined &&
+    (!isSafePsPathLiteral(launchStampPath) || launchStampPath.includes('"'))) {
+    return null;
+  }
+  const stampLines = launchStampPath === undefined ? [] : [
+    // Immediately after the $ready heartbeat, still before the mutex: the
+    // transport gate in spawnInstallWaiter polls for this file (a distinct
+    // one per transport), and a newcomer that yields with exit 5 still
+    // proves the transport works. Best-effort: a stamp that cannot be
+    // written degrades to "transport unverified", never to a broken waiter.
+    `$stampPath = ${psQuote(launchStampPath)}`,
+    `try { Set-Content -LiteralPath $stampPath -Value 'launched' -Encoding utf8 } catch { }`,
+  ];
 
   const pidList = plan.pids.join(',');
   return [
@@ -322,6 +339,7 @@ export function buildWaiterScript(plan: WaiterPlan): string | null {
     // run a line of script at all, which is exactly the fact the caller is
     // missing when the whole update goes silent.
     `try { Set-Content -LiteralPath $ready -Value 'alive' -Encoding utf8 } catch { }`,
+    ...stampLines,
     // Single-instance gate, FIRST — before a handle is captured or anything
     // else happens. The quit watchdog unlatches `isInstalling` after 30 s so a
     // refused quit stays retryable, but the waiter it spawned can still be
@@ -364,6 +382,17 @@ export function buildWaiterScript(plan: WaiterPlan): string | null {
     `$mtxCreated = $false`,
     `$mtx = New-Object System.Threading.Mutex -ArgumentList $true, $mtxName, ([ref]$mtxCreated)`,
     `if (-not $mtxCreated) { exit 5 }`,
+    // #1056 — incumbent-only "interrupted" sentinel. From here this waiter
+    // owns the outcome; if it dies without reaching a terminal (the app's
+    // death tears down a containing job, a reboot mid-wait), the next boot
+    // must not be silent. Every abort terminal below overwrites it, and both
+    // success exits remove it — the cannot-judge exit included, since an
+    // installer demonstrably launched and still running at the deadline makes
+    // "interrupted" a false refusal (the same false-positive reasoning as the
+    // #1043 newcomer-marker note above). Written BEFORE the WinForms block so
+    // an Add-Type failure cannot eat it, and only AFTER the mutex so a
+    // yielding newcomer (exit 5) cannot clobber the incumbent's outcome.
+    `try { Set-Content -LiteralPath $marker -Value 'install-aborted: wmux quit to install the update, but the installer step was interrupted before it could report an outcome. Try again, or run the installer from the releases page.' -Encoding utf8 } catch { }`,
     // #1043 — best-effort "please wait" indicator for the whole silent
     // window below. Deliberately outside every correctness path: every use
     // of $form is null-checked and wrapped in its own try/catch, so a
@@ -528,7 +557,7 @@ export function buildWaiterScript(plan: WaiterPlan): string | null {
     // anywhere in the checks.
     `$setupDone = $false`,
     `try { if ($setupProc) { $setupDone = $setupProc.WaitForExit(600000) } } catch { }`,
-    `if (-not $setupDone) { exit 0 }`,
+    `if (-not $setupDone) { Remove-Item -LiteralPath $marker -ErrorAction SilentlyContinue; exit 0 }`,
     // Newest app-* by write time is what the root stub will launch next. The
     // 30s poll absorbs an installer whose file work settles just after its
     // process tree exits -- the alarm only fires once the corpse is stable.
@@ -540,7 +569,7 @@ export function buildWaiterScript(plan: WaiterPlan): string | null {
     `  $newestApp = $null`,
     `  try { $newestApp = Get-ChildItem -LiteralPath $root -Directory -Filter 'app-*' | Sort-Object LastWriteTime -Descending | Select-Object -First 1 } catch { }`,
     `  $icuOk = ($null -ne $newestApp) -and (Test-Path -LiteralPath (Join-Path $newestApp.FullName 'icudtl.dat'))`,
-    `  if ($updateExeOk -and $icuOk) { exit 0 }`,
+    `  if ($updateExeOk -and $icuOk) { Remove-Item -LiteralPath $marker -ErrorAction SilentlyContinue; exit 0 }`,
     `  Start-Sleep -Milliseconds 1000`,
     `}`,
     `$missing = @()`,
@@ -640,39 +669,143 @@ export async function waitForWaiterHeartbeat(
 }
 
 /**
- * Write the waiter to a temp directory and start it detached.
+ * Sync sleep for the launch-stamp gate below. Atomics.wait cannot be assumed
+ * blockable on every agent — a TypeError here would land in
+ * spawnInstallWaiter's outer catch and turn into a UNIVERSAL install refusal,
+ * a worse bug than the one this file fixes — so each step degrades to a
+ * bounded busy-wait instead of propagating (#1056 review P1-A).
+ */
+function sleepStepMs(ms: number): void {
+  try {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+  } catch {
+    const end = Date.now() + ms;
+    while (Date.now() < end) { /* bounded busy-wait fallback */ }
+  }
+}
+
+/** True once `stampPath` exists, polling every 50ms up to `budgetMs`. */
+function waitForLaunchStamp(stampPath: string, budgetMs: number): boolean {
+  const deadline = Date.now() + budgetMs;
+  for (;;) {
+    try { if (fs.existsSync(stampPath)) return true; } catch { /* probe again */ }
+    if (Date.now() >= deadline) return false;
+    sleepStepMs(50);
+  }
+}
+
+// #1056 launch-verification budgets. A is generous on purpose: its critical
+// path is cmd.exe start + a PS 5.1 engine cold start + AMSI/Defender scanning
+// a freshly written .ps1 in TEMP — and the AV-heavy machines where that is
+// slow are exactly the machines this transport exists for; misreading a
+// working trampoline as dead falls through to a transport known to die on
+// those same machines. B is short: same engine init, no cmd, and it only
+// runs after A already burned its window. Total ≤8s of synchronous wait, and
+// nothing is armed yet — the 20s before-quit deadline only exists once the
+// caller reaches app.quit().
+const LAUNCH_STAMP_BUDGET_A_MS = 6_000;
+const LAUNCH_STAMP_BUDGET_B_MS = 2_000;
+
+/**
+ * Write the waiter to a temp directory and start it so that it PROVABLY runs.
  *
  * The script deliberately does NOT live under the install root: Setup.exe
  * deletes that root, and a waiter inside it would be deleting itself while
- * running. Returns the script path on success, null when it could not start —
- * and a null MUST make the caller abandon the install rather than fall back to
- * launching Setup.exe directly.
+ * running. Returns the launched script's path on success, null when no
+ * transport could be verified — and a null MUST make the caller abandon the
+ * install rather than fall back to launching Setup.exe directly.
+ *
+ * #1056 — "started" is not something a spawn can promise here. On current
+ * Windows builds (measured on two real machines: the reporter's and this
+ * one), a PowerShell spawned DIRECTLY with `detached: true` dies before
+ * executing its first line — engine event 40961 with no 40962, exit 0,
+ * nothing on stderr, no AV detection — while the same PowerShell created by
+ * a detached cmd.exe survives and runs to completion. So:
+ *
+ *   transport A — cmd.exe trampoline. argv-array: libuv does the CRT
+ *       quoting, and cmd /c's strip-first-and-last-quote rule cannot fire
+ *       because the first token after /c (the System32 powershell path)
+ *       carries no spaces and is unquoted.
+ *   transport B — today's direct detached spawn, kept for machines where A
+ *       is somehow unavailable but the direct spawn still works.
+ *   Both with cwd pinned OUTSIDE the install root — an inherited cwd inside
+ *       it would hold the directory open in a way the lock probe (file locks
+ *       only) can never see.
+ *
+ * Each transport must PROVE execution: the waiter's first statement writes a
+ * launch stamp — a distinct file per transport, so a late A stamp can never
+ * be misattributed to B and the transport log cannot lie — and the gate
+ * polls for it. The trampoline's cost is one idle cmd.exe parked as the
+ * waiter's parent for its lifetime (up to ~11 min); it lives in System32 and
+ * holds nothing under the install root.
  */
 export function spawnInstallWaiter(plan: WaiterPlan): string | null {
   if (process.platform !== 'win32') return null;
-  const script = buildWaiterScript(plan);
-  if (!script) return null;
   try {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-install-waiter-'));
-    const scriptPath = path.join(dir, 'wait-and-install.ps1');
+    const stampA = path.join(dir, 'launched-a.txt');
+    const stampB = path.join(dir, 'launched-b.txt');
+    const scriptA = buildWaiterScript(plan, stampA);
+    const scriptB = buildWaiterScript(plan, stampB);
+    if (!scriptA || !scriptB) return null;
+    const scriptPathA = path.join(dir, 'wait-and-install.ps1');
+    const scriptPathB = path.join(dir, 'wait-and-install-b.ps1');
     // The BOM is load-bearing. Windows PowerShell 5.1 decodes a BOM-less file
     // as the system ANSI code page, so on a Korean install every path we
     // embedded — all of them under the user profile — comes back mangled.
     // Measured: with `C:\Users\홍길동\...` the BOM-less script still exits 0
     // while writing to the wrong path, which is the worst shape a failure can
     // take here (silent success). With the BOM it behaves.
-    fs.writeFileSync(scriptPath, '\uFEFF' + script, 'utf-8');
+    fs.writeFileSync(scriptPathA, '\uFEFF' + scriptA, 'utf-8');
+    fs.writeFileSync(scriptPathB, '\uFEFF' + scriptB, 'utf-8');
+
     const systemRoot = process.env.SystemRoot || 'C:\\Windows';
     const powershell = path.join(
       systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe',
     );
-    const child = spawn(
-      powershell,
-      ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', scriptPath],
-      { detached: true, stdio: 'ignore', windowsHide: true },
-    );
-    child.unref();
-    return scriptPath;
+    const psArgs = ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File'];
+    const spawnedPids: number[] = [];
+
+    try {
+      const a = spawn(
+        'cmd.exe',
+        ['/d', '/c', powershell, ...psArgs, scriptPathA],
+        { detached: true, stdio: 'ignore', windowsHide: true, cwd: systemRoot },
+      );
+      a.unref();
+      if (typeof a.pid === 'number') spawnedPids.push(a.pid);
+    } catch { /* transport A unavailable — B still gets its window */ }
+    if (waitForLaunchStamp(stampA, LAUNCH_STAMP_BUDGET_A_MS)) {
+      console.log(`[installTeardown] waiter verified via cmd trampoline (pid ${spawnedPids[0] ?? '?'}): ${scriptPathA}`);
+      return scriptPathA;
+    }
+
+    try {
+      const b = spawn(
+        powershell,
+        [...psArgs, scriptPathB],
+        { detached: true, stdio: 'ignore', windowsHide: true, cwd: systemRoot },
+      );
+      b.unref();
+      if (typeof b.pid === 'number') spawnedPids.push(b.pid);
+    } catch { /* fall through to the refusal below */ }
+    if (waitForLaunchStamp(stampB, LAUNCH_STAMP_BUDGET_B_MS)) {
+      console.log(`[installTeardown] waiter verified via direct spawn (pid ${spawnedPids[spawnedPids.length - 1] ?? '?'}): ${scriptPathB}`);
+      return scriptPathB;
+    }
+
+    // Neither transport proved execution — refuse. P1-B: a slow-but-alive
+    // waiter left behind now would double-report (its interrupted sentinel
+    // plus a later exit-3 marker) and park a TopMost wait window over a wmux
+    // the user is still using, so both attempts are tree-killed (the /T
+    // reaches the PS under the cmd parent) and whatever they already wrote
+    // is cleared. Kill before clear: a residual race is acceptable, a
+    // guaranteed double-report is not.
+    console.warn('[installTeardown] no waiter transport proved execution — refusing the install handoff (#1056)');
+    terminatePids(spawnedPids);
+    clearAbortMarker(plan.abortMarkerPath);
+    try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* best-effort */ }
+    return null;
   } catch {
     return null;
   }
