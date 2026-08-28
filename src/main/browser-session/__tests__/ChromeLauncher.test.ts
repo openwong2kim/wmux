@@ -177,3 +177,31 @@ describe('ChromeLauncherRegistry', () => {
     expect(childB.kill).toHaveBeenCalled();
   });
 });
+
+// Crash-path adoption: a previous session's Chrome still holds the profile
+// dir — reuse its recorded endpoint instead of dying on the SingletonLock.
+describe('ChromeLauncher zombie adoption', () => {
+  it('adopts an existing instance when DevToolsActivePort answers, without spawning', async () => {
+    const realFs = await vi.importActual<typeof import('node:fs')>('node:fs');
+    const { mkdtempSync, writeFileSync, rmSync } = realFs;
+    const { tmpdir } = await vi.importActual<typeof import('node:os')>('node:os');
+    const { join } = await vi.importActual<typeof import('node:path')>('node:path');
+    const dir = mkdtempSync(join(tmpdir(), 'wmux-chrome-adopt-'));
+    try {
+      // The mocked node:fs readFileSync throws; route the adoption read
+      // through a fake DevToolsActivePort by re-mocking per-call.
+      const fsMock = await import('node:fs');
+      const spy = vi.spyOn(fsMock, 'readFileSync' as never).mockReturnValue('18933\n/devtools/browser/x\n' as never);
+      fetchMock.mockResolvedValue(fetchOk({ Browser: 'Chrome/151' }));
+
+      const launcher = new ChromeLauncher(dir);
+      const port = await launcher.ensureRunning();
+
+      expect(port).toBe(18933);
+      expect(spawnMock).not.toHaveBeenCalled();
+      spy.mockRestore();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});

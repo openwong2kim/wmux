@@ -179,9 +179,10 @@ export class ChromeLauncher implements ChromeBackendClient {
     return this.listTargets(workspaceId);
   }
 
-  /** True when the child is alive and its CDP endpoint answered readiness. */
+  /** True when a CDP endpoint is established (spawned child or adopted
+   *  previous-session instance; liveness is re-verified on demand). */
   isRunning(): boolean {
-    return this.child !== null && this.cdpPort > 0;
+    return this.cdpPort > 0;
   }
 
   /**
@@ -207,7 +208,41 @@ export class ChromeLauncher implements ChromeBackendClient {
     return this.launching;
   }
 
+  /**
+   * Adopt a still-running instance from a previous wmux session (crash path).
+   * Chrome writes DevToolsActivePort into the profile dir when launched with
+   * --remote-debugging-port; spawning again over that dir would just exit on
+   * the SingletonLock. If the recorded endpoint still answers, reuse it —
+   * verified live by our own zombie-instance reproduction.
+   */
+  private async adoptExisting(): Promise<number | null> {
+    let raw: string;
+    try {
+      raw = readFileSync(join(this.userDataDir, 'DevToolsActivePort'), 'utf8');
+    } catch {
+      return null;
+    }
+    const port = parseInt(raw.split('\n')[0]?.trim() ?? '', 10);
+    if (Number.isNaN(port) || port <= 0 || port > 65535) return null;
+    const prevPort = this.cdpPort;
+    this.cdpPort = port;
+    try {
+      await this.fetchJson('/json/version');
+      // No child handle for an adopted instance — dispose() can only close
+      // tabs we open; the process outlives us like it outlived its spawner.
+      this.child = null;
+      console.warn(`[ChromeLauncher] adopted existing Chrome on port ${port} (previous session's instance)`);
+      return port;
+    } catch {
+      this.cdpPort = prevPort;
+      return null;
+    }
+  }
+
   private async launch(): Promise<number> {
+    const adopted = await this.adoptExisting();
+    if (adopted !== null) return adopted;
+
     const binary = discoverChromeBinary();
     if (!binary) {
       throw new Error(
