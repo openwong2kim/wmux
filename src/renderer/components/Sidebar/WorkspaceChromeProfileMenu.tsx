@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { IconChevron } from '../icons';
 import { useT } from '../../hooks/useT';
+import { useStore } from '../../stores';
 
 /**
  * Workspace right-click → Chrome profile submenu (Phase 2.5, BIND ONLY).
@@ -11,6 +12,15 @@ import { useT } from '../../hooks/useT';
  * agents cannot pick a profile themselves. Already-connected agent sessions
  * keep their current browser; new page resolutions use the new binding.
  * Structure cloned from WorkspaceAccountMenu (same bind-only shape).
+ *
+ * Backend gate: a binding is only ever consulted on the 'chrome' path
+ * (requireChrome → chromeRegistry.forWorkspace in browser.rpc.ts), so under
+ * 'builtin' or 'external' the whole submenu is inert — it would offer a
+ * profile choice that changes nothing observable. Hide it there, the same way
+ * WorkspaceAccountMenu hides itself when no accounts are registered. The
+ * backend mirror is read synchronously at store-module load
+ * (readInitialBrowserBackend), so this is correct on first render and needs
+ * no hydration wait.
  */
 export default function WorkspaceChromeProfileMenu({
   workspaceId,
@@ -20,18 +30,22 @@ export default function WorkspaceChromeProfileMenu({
   flipLeft: boolean;
 }): React.ReactElement | null {
   const t = useT();
+  const browserBackend = useStore((s) => s.browserBackend);
+  const isChromeBackend = browserBackend === 'chrome';
   const [profiles, setProfiles] = useState<string[]>([]);
   const [bound, setBound] = useState<string | undefined>(undefined);
   const [open, setOpen] = useState(false);
 
   const reload = useCallback(() => {
     const api = window.electronAPI?.browser?.chromeProfiles;
-    if (!api) return;
+    // Skip the boot IPC entirely off the chrome backend: this effect runs once
+    // per rendered workspace row, and none of those rows will show the menu.
+    if (!api || !isChromeBackend) return;
     void api.list().then((res) => {
       setProfiles(res.profiles);
       setBound(res.bindings[workspaceId]);
     }).catch(() => { /* menu stays with stale rows */ });
-  }, [workspaceId]);
+  }, [workspaceId, isChromeBackend]);
 
   useEffect(() => { reload(); }, [reload]);
 
@@ -61,6 +75,8 @@ export default function WorkspaceChromeProfileMenu({
 
   // Hide on older builds without the preload surface.
   if (!window.electronAPI?.browser?.chromeProfiles) return null;
+  // Hide when the backend cannot act on a binding (see the gate note above).
+  if (!isChromeBackend) return null;
 
   const submenuPos = flipLeft ? 'right-full mr-0.5' : 'left-full ml-0.5';
 
