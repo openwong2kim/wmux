@@ -36,6 +36,33 @@ export interface ChromeTargetInfo {
   title: string;
 }
 
+/** What browser.cdp.info reports for a chrome-family client. Exactly one of
+ *  the fields is set: dedicated instances expose an HTTP CDP port, the live
+ *  attach exposes Chrome's secret browser WS endpoint. */
+export interface ChromeBackendEndpoint {
+  cdpPort?: number;
+  wsEndpoint?: string;
+}
+
+/**
+ * Surface the browser.rpc chrome branches drive. Implemented by
+ * ChromeLauncher (dedicated spawned instance) and LiveChromeClient (attach to
+ * the user's live Chrome — Phase 3).
+ */
+export interface ChromeBackendClient {
+  endpoint(): Promise<ChromeBackendEndpoint>;
+  /** Targets reported through browser.cdp.info (page-selection seed). Live
+   *  returns [] so the engine can never pin a random user tab by default. */
+  cdpInfoTargets(workspaceId?: string): Promise<ChromeTargetInfo[]>;
+  openTab(url: string, workspaceId?: string): Promise<{ targetId: string; url: string }>;
+  listTargets(workspaceId?: string): Promise<ChromeTargetInfo[]>;
+  closeTab(targetId: string): Promise<boolean>;
+  /** Real tab focus where the backend supports it (live attach). */
+  selectTab?(targetId: string): Promise<boolean>;
+  hasTab(targetId: string): boolean;
+  dispose(): void;
+}
+
 /** Candidate binary paths per platform, first match wins. */
 function discoverChromeBinary(): string | null {
   const envPath = process.env.WMUX_CHROME_PATH;
@@ -117,7 +144,7 @@ export interface ChromeLauncherOptions {
   profileLabel?: string;
 }
 
-export class ChromeLauncher {
+export class ChromeLauncher implements ChromeBackendClient {
   private child: ChildProcess | null = null;
   private cdpPort = 0;
   private launching: Promise<number> | null = null;
@@ -140,6 +167,16 @@ export class ChromeLauncher {
   /** True when this launcher opened (and still tracks) the given tab. */
   hasTab(targetId: string): boolean {
     return this.tabOwners.has(targetId);
+  }
+
+  /** Dedicated instances expose the HTTP CDP port (launching on demand). */
+  async endpoint(): Promise<ChromeBackendEndpoint> {
+    return { cdpPort: await this.ensureRunning() };
+  }
+
+  /** Registry-scoped tabs seed page selection for dedicated instances. */
+  cdpInfoTargets(workspaceId?: string): Promise<ChromeTargetInfo[]> {
+    return this.listTargets(workspaceId);
   }
 
   /** True when the child is alive and its CDP endpoint answered readiness. */
@@ -327,13 +364,15 @@ export class ChromeLauncher {
 
 import { join as joinPath } from 'node:path';
 import { validateBrowserProfileName } from './ProfileManager';
-import { DEFAULT_CHROME_PROFILE, type ChromeProfileStore } from './ChromeProfileStore';
+import { DEFAULT_CHROME_PROFILE, LIVE_CHROME_PROFILE, type ChromeProfileStore } from './ChromeProfileStore';
+import { LiveChromeClient } from './LiveChromeClient';
 
 // Disjoint per-profile port slices inside the chrome range (20 profiles × 5).
 const PORT_SLOT_WIDTH = 5;
 
 export class ChromeLauncherRegistry {
-  private readonly launchers = new Map<string, ChromeLauncher>();
+  private readonly launchers = new Map<string, ChromeBackendClient>();
+  private live: LiveChromeClient | null = null;
   /** Stable slot per profile name for the port slice (append-only). */
   private readonly slots = new Map<string, number>();
 
@@ -347,8 +386,13 @@ export class ChromeLauncherRegistry {
     },
   ) {}
 
-  forProfile(name: string): ChromeLauncher {
+  forProfile(name: string): ChromeBackendClient {
     validateBrowserProfileName(name); // re-validate at the interpolation site
+    // Reserved live profile: attach to the user's own Chrome, never spawn.
+    if (name === LIVE_CHROME_PROFILE) {
+      this.live ??= new LiveChromeClient();
+      return this.live;
+    }
     const existing = this.launchers.get(name);
     if (existing) return existing;
 
@@ -373,12 +417,12 @@ export class ChromeLauncherRegistry {
   }
 
   /** The launcher a workspace's automation runs against (binding ?? default). */
-  forWorkspace(workspaceId: string | undefined): ChromeLauncher {
+  forWorkspace(workspaceId: string | undefined): ChromeBackendClient {
     return this.forProfile(this.opts.store.profileFor(workspaceId));
   }
 
   /** Which live launcher opened this tab (close path). */
-  ownerOfTarget(targetId: string): ChromeLauncher | undefined {
+  ownerOfTarget(targetId: string): ChromeBackendClient | undefined {
     for (const launcher of this.launchers.values()) {
       if (launcher.hasTab(targetId)) return launcher;
     }
@@ -388,5 +432,8 @@ export class ChromeLauncherRegistry {
   disposeAll(): void {
     for (const launcher of this.launchers.values()) launcher.dispose();
     this.launchers.clear();
+    // Socket close only — never touches the user's Chrome process.
+    this.live?.dispose();
+    this.live = null;
   }
 }

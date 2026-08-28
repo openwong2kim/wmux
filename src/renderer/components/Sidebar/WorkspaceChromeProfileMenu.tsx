@@ -41,6 +41,13 @@ export default function WorkspaceChromeProfileMenu({
     void api.bind(workspaceId, profileName).then(reload).catch(() => { /* best-effort */ });
   }, [workspaceId, reload]);
 
+  const bindLive = useCallback(() => {
+    // Honest one-line grant: binding live = this workspace's agent gets the
+    // user's whole live browser (Chrome adds its own per-connection dialog).
+    if (!window.confirm(t('chromeProfiles.liveConfirm'))) return;
+    bind('live');
+  }, [bind, t]);
+
   const createAndBind = useCallback(() => {
     const api = window.electronAPI?.browser?.chromeProfiles;
     if (!api) return;
@@ -78,6 +85,16 @@ export default function WorkspaceChromeProfileMenu({
           className={`absolute top-0 ${submenuPos} min-w-[200px] max-w-[300px] py-1 rounded-[7px] shadow-xl sidebar-popover-enter`}
           style={{ background: 'var(--bg-surface)', border: '1px solid color-mix(in srgb, var(--bg-overlay) 70%, transparent)' }}
         >
+          {/* Reserved: attach to the user's own live Chrome (Phase 3). */}
+          <button
+            className="w-full flex items-center gap-2 px-3 py-1.5 text-xs transition-colors hover:bg-[var(--bg-overlay)]"
+            style={{ color: 'var(--text-main)' }}
+            onClick={bindLive}
+            title={t('chromeProfiles.liveDesc')}
+          >
+            <span className="w-3 text-[var(--accent-amber)]">{bound === 'live' ? '●' : ''}</span>
+            <span className="truncate flex-1">{t('chromeProfiles.liveProfile')}</span>
+          </button>
           {profiles.map((name) => {
             const isBound = name === 'default' ? bound === undefined || bound === 'default' : bound === name;
             return (

@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { ChromeProfileStore, DEFAULT_CHROME_PROFILE } from '../ChromeProfileStore';
+import { ChromeProfileStore, DEFAULT_CHROME_PROFILE, LIVE_CHROME_PROFILE } from '../ChromeProfileStore';
 
 // Chrome-profile registry + workspace bindings (Phase 2.5). accountStore test
 // idiom: real tmpdir, persistence proven via a fresh instance.
@@ -43,6 +43,14 @@ describe('ChromeProfileStore', () => {
     await expect(store.create('../evil')).rejects.toThrow('Browser profile names');
     await expect(store.setBinding('ws-1', 'nope')).rejects.toThrow('unknown Chrome profile');
     await expect(store.setBinding('__proto__', 'default')).rejects.toThrow('invalid workspaceId');
+  });
+
+  it("the reserved 'live' profile binds without create, and create('live') is rejected (Phase 3)", async () => {
+    const store = new ChromeProfileStore(dir);
+    await expect(store.create(LIVE_CHROME_PROFILE)).rejects.toThrow('reserved');
+    await store.setBinding('ws-1', LIVE_CHROME_PROFILE);
+    // Survives reload/sanitize despite not being in profiles[].
+    expect(new ChromeProfileStore(dir).profileFor('ws-1')).toBe(LIVE_CHROME_PROFILE);
   });
 
   it('load with knownWorkspaceIds lazily prunes orphan bindings', async () => {

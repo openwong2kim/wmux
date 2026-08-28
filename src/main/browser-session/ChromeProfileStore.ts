@@ -20,6 +20,12 @@ import { validateBrowserProfileName } from './ProfileManager';
 // ---------------------------------------------------------------------------
 
 export const DEFAULT_CHROME_PROFILE = 'default';
+/**
+ * Reserved profile: attach to the user's LIVE daily Chrome (Phase 3, M144
+ * chrome://inspect flow). Not creatable/listable as a normal profile — the
+ * menu offers it as a static row and binding it is the explicit grant.
+ */
+export const LIVE_CHROME_PROFILE = 'live';
 const SCHEMA_VERSION = 1;
 const MAX_PROFILES = 20;
 
@@ -66,7 +72,8 @@ function sanitizeFile(raw: unknown, knownWorkspaceIds?: ReadonlySet<string>): Ch
   if (r.bindings && typeof r.bindings === 'object') {
     for (const [wsId, profile] of Object.entries(r.bindings as Record<string, unknown>)) {
       if (isUnsafeKey(wsId)) continue;
-      if (!isValidProfileName(profile) || !file.profiles.includes(profile)) continue;
+      if (!isValidProfileName(profile)) continue;
+      if (profile !== LIVE_CHROME_PROFILE && !file.profiles.includes(profile)) continue;
       // Lazy prune: a wiped session.json re-mints workspace UUIDs; bindings to
       // ids nobody knows any more are dropped on load instead of lingering.
       if (knownWorkspaceIds && !knownWorkspaceIds.has(wsId)) continue;
@@ -148,6 +155,9 @@ export class ChromeProfileStore {
 
   async create(name: string): Promise<string> {
     validateBrowserProfileName(name); // throws its user-facing message
+    if (name === LIVE_CHROME_PROFILE) {
+      throw new ChromeProfileError('invalid', `"${LIVE_CHROME_PROFILE}" is reserved for live-Chrome attach`);
+    }
     return this.mutate((file) => {
       if (file.profiles.includes(name)) return name; // idempotent
       if (file.profiles.length >= MAX_PROFILES) {
@@ -169,7 +179,9 @@ export class ChromeProfileStore {
         return;
       }
       validateBrowserProfileName(profileName);
-      if (!file.profiles.includes(profileName)) {
+      // The reserved live profile is bindable without registry membership —
+      // the binding itself is the live-browser grant.
+      if (profileName !== LIVE_CHROME_PROFILE && !file.profiles.includes(profileName)) {
         throw new ChromeProfileError('not-found', `unknown Chrome profile "${profileName}"`);
       }
       file.bindings[workspaceId] = profileName;

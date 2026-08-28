@@ -29,7 +29,7 @@ import type {
   BrowserScopeShadowReason,
 } from '../../audit/shadowRejectionLog';
 import type { BrowserBackendStore } from '../../browser-session/BrowserBackendStore';
-import type { ChromeLauncher, ChromeLauncherRegistry } from '../../browser-session/ChromeLauncher';
+import type { ChromeBackendClient, ChromeLauncherRegistry } from '../../browser-session/ChromeLauncher';
 import type { EnforcementMode } from '../../mcp/enforcementMode';
 import { isFirstPartyClient } from '../../mcp/firstParty';
 import { isLocalExternalWireContext } from '../../mcp/rpcProvenance';
@@ -371,7 +371,7 @@ export function registerBrowserRpc(
   // Resolves the CALLING workspace's launcher (binding ?? 'default') — the
   // binding is user-set from the workspace card, never agent-selectable, so
   // workspace 1 drives its own signed-in Chrome and workspace 2 its own.
-  const requireChrome = (method: string, workspaceId: string | undefined): ChromeLauncher => {
+  const requireChrome = (method: string, workspaceId: string | undefined): ChromeBackendClient => {
     if (!chromeRegistry) {
       throw new Error(`${method}: browser backend is 'chrome' but no Chrome launcher is wired in this build.`);
     }
@@ -729,8 +729,9 @@ export function registerBrowserRpc(
         );
       }
       if (action === 'select') {
-        // Focus is driven by the automation itself (Playwright bringToFront);
-        // select is an ownership-checked no-op descriptor echo here.
+        // Live attach supports real tab focus; dedicated instances leave
+        // focus to the automation itself (Playwright bringToFront) and echo.
+        if (launcher.selectTab) await launcher.selectTab(match.targetId);
         return { ok: true, action: 'select', tab: chromeTabDescriptor(match) };
       }
       // action === 'close'
@@ -1160,10 +1161,14 @@ export function registerBrowserRpc(
     // must not hide the user's dev-server tabs.
     if (backend() === 'chrome') {
       const launcher = requireChrome('browser.cdp.info', callerWorkspaceId || undefined);
-      const chromePort = await launcher.ensureRunning();
-      const chromeTargets = await launcher.listTargets(callerWorkspaceId || undefined);
+      const ep = await launcher.endpoint();
+      // Live attach seeds NO targets (safe default: never pin a random user
+      // tab); dedicated instances seed their registry-scoped tabs.
+      const chromeTargets = await launcher.cdpInfoTargets(callerWorkspaceId || undefined);
+      const disclose = canDiscloseBrowserAttachInfo(ctx);
       return {
-        ...(canDiscloseBrowserAttachInfo(ctx) && { cdpPort: chromePort }),
+        ...(disclose && ep.cdpPort !== undefined && { cdpPort: ep.cdpPort }),
+        ...(disclose && ep.wsEndpoint && { wsEndpoint: ep.wsEndpoint }),
         ...(callerWorkspaceId && { targetsScoped: true }),
         workspaceBackend: 'chrome' as const,
         targets: chromeTargets.map((t) => ({

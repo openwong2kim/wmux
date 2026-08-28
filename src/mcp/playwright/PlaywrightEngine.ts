@@ -58,6 +58,13 @@ interface CdpInfoResponse {
    * main-side setting), merely reported on this per-workspace-scoped response.
    */
   workspaceBackend?: BrowserBackend;
+  /**
+   * Live-Chrome attach (Phase 3): the browser-level CDP WebSocket endpoint of
+   * the user's own Chrome (from its DevToolsActivePort). Mutually exclusive
+   * with cdpPort; when present, connect over it verbatim — there is no HTTP
+   * /json surface behind it.
+   */
+  wsEndpoint?: string;
   targets: CdpTargetInfo[];
 }
 
@@ -335,16 +342,26 @@ export class PlaywrightEngine {
     return null;
   }
 
-  async connect(cdpPort: number): Promise<void> {
-    if (this.browser && this.cdpPort === cdpPort && this.browser.isConnected()) {
+  async connect(cdpPortOrWsEndpoint: number | string): Promise<void> {
+    // Ports build the HTTP endpoint (dedicated instances, Electron); a ws://
+    // string (live-Chrome attach) passes through verbatim — connectOverCDP
+    // accepts both. The short-circuit keys on the resolved endpoint.
+    const isPort = typeof cdpPortOrWsEndpoint === 'number';
+    const endpoint = isPort ? `http://localhost:${cdpPortOrWsEndpoint}` : cdpPortOrWsEndpoint;
+    const samePort = isPort && this.cdpPort === cdpPortOrWsEndpoint;
+    const sameWs = !isPort && this.cdpPort === null && this.connectedEndpoint === endpoint;
+    if (this.browser && (samePort || sameWs) && this.browser.isConnected()) {
       return;
     }
     await this.disconnect();
     // B0: first real use — initialize playwright-core's module graph now.
     const { chromium } = loadPlaywright();
-    this.browser = await chromium.connectOverCDP(`http://localhost:${cdpPort}`);
-    this.cdpPort = cdpPort;
-    console.error(`[PlaywrightEngine] Connected to CDP on port ${cdpPort}`);
+    this.browser = await chromium.connectOverCDP(endpoint);
+    // cdpPort stays null on ws connections: findViaJsonEndpoint (HTTP /json)
+    // has no surface to talk to there and is gated on this.cdpPort.
+    this.cdpPort = isPort ? cdpPortOrWsEndpoint : null;
+    this.connectedEndpoint = endpoint;
+    console.error(`[PlaywrightEngine] Connected to CDP at ${isPort ? `port ${cdpPortOrWsEndpoint}` : 'ws endpoint'}`);
 
     // Enable auto-attach so Electron webview targets become discoverable as Playwright pages.
     // Without this, <webview> tags in Electron are separate renderer processes that
@@ -368,6 +385,7 @@ export class PlaywrightEngine {
     const s = this.autoAttachSession;
     this.browser = null;
     this.cdpPort = null;
+    this.connectedEndpoint = null;
     this.autoAttachSession = null;
     // Drop the cached shell URL — a reconnect may target a different window
     // (different port) whose shell URL must be re-fetched, not reused.
@@ -391,6 +409,8 @@ export class PlaywrightEngine {
    *  Chrome profiles (Phase 2.5) mean different workspaces can resolve to
    *  DIFFERENT ports — a live connection for A must not be reused for B. */
   private connectedWorkspaceId: string | undefined;
+  /** Resolved endpoint of the live connection (http URL or ws URL). */
+  private connectedEndpoint: string | null = null;
 
   async ensureConnected(workspaceId?: string): Promise<void> {
     if (
@@ -408,6 +428,12 @@ export class PlaywrightEngine {
           workspaceId ? { workspaceId } : {},
         )) as CdpInfoResponse;
         this.cacheShellUrl(info);
+        // Live-Chrome attach reports a ws endpoint instead of a port.
+        if (typeof info.wsEndpoint === 'string' && info.wsEndpoint.startsWith('ws')) {
+          await this.connect(info.wsEndpoint);
+          this.connectedWorkspaceId = workspaceId;
+          return;
+        }
         if (
           typeof info.cdpPort !== 'number'
           || !Number.isInteger(info.cdpPort)

@@ -338,6 +338,14 @@ function makeFakeLauncher() {
   return {
     tabs,
     ensureRunning: vi.fn(async () => 18901),
+    endpoint: vi.fn(async () => ({ cdpPort: 18901 })),
+    cdpInfoTargets: vi.fn(async function (this: unknown, workspaceId?: string) {
+      return (tabs instanceof Map)
+        ? [...tabs.entries()]
+            .filter(([, t]) => workspaceId === undefined || t.workspaceId === undefined || t.workspaceId === workspaceId)
+            .map(([targetId, t]) => ({ targetId, workspaceId: t.workspaceId, url: t.url, title: t.title }))
+        : [];
+    }),
     openTab: vi.fn(async (url: string, workspaceId?: string) => {
       const targetId = `tgt-${nextId++}`;
       tabs.set(targetId, { url, workspaceId, title: '' });
@@ -439,12 +447,53 @@ describe('chrome backend', () => {
     };
     expect(listA.tabs.map((t) => t.url)).toEqual(['https://a.test/']);
 
-    // cdp.info reports each workspace's own port. (No RpcContext in this
-    // harness → attach info undisclosed; assert via the launcher calls.)
+    // cdp.info reports each workspace's own endpoint. (No RpcContext in this
+    // harness → attach info undisclosed; assert via the endpoint() calls.)
     await dispatch(router, 'browser.cdp.info', { workspaceId: 'ws-a' });
     await dispatch(router, 'browser.cdp.info', { workspaceId: 'ws-b' });
-    expect(wsA.ensureRunning).toHaveBeenCalled();
-    expect(wsB.ensureRunning).toHaveBeenCalled();
+    expect(wsA.endpoint).toHaveBeenCalled();
+    expect(wsB.endpoint).toHaveBeenCalled();
+  });
+
+  it('live attach: cdp.info reports wsEndpoint with no targets; tabs list exposes all live tabs (Phase 3)', async () => {
+    const live = {
+      endpoint: vi.fn(async () => ({ wsEndpoint: 'ws://127.0.0.1:9333/devtools/browser/abc' })),
+      cdpInfoTargets: vi.fn(async () => []),
+      openTab: vi.fn(async (url: string) => ({ targetId: 'lt-1', url })),
+      listTargets: vi.fn(async () => [
+        { targetId: 'lt-1', url: 'https://a.test/', title: 'A' },
+        { targetId: 'lt-2', url: 'https://b.test/', title: 'B' },
+      ]),
+      closeTab: vi.fn(async () => true),
+      selectTab: vi.fn(async () => true),
+      hasTab: vi.fn(() => true),
+      dispose: vi.fn(),
+    };
+    const registry = {
+      forWorkspace: vi.fn(() => live),
+      forProfile: vi.fn(() => live),
+      ownerOfTarget: vi.fn(),
+      disposeAll: vi.fn(),
+    };
+    const { router } = register({ backend: 'chrome', launcher: registry });
+
+    // cdp.info: safe default — no targets, backend marker present. (No
+    // RpcContext in this harness → wsEndpoint undisclosed, like cdpPort.)
+    const info = (await dispatch(router, 'browser.cdp.info', { workspaceId: 'ws-1' })).result as {
+      workspaceBackend: string; targets: unknown[]; cdpPort?: number; wsEndpoint?: string;
+    };
+    expect(info.workspaceBackend).toBe('chrome');
+    expect(info.targets).toEqual([]);
+    expect(info.cdpPort).toBeUndefined();
+
+    // Full exposure: all live tabs listed; select drives real focus.
+    const list = (await dispatch(router, 'browser.tabs', { action: 'list', workspaceId: 'ws-1' })).result as {
+      tabs: Array<{ surfaceId: string }>;
+    };
+    expect(list.tabs.map((t) => t.surfaceId)).toEqual(['lt-1', 'lt-2']);
+    const sel = (await dispatch(router, 'browser.tabs', { action: 'select', surfaceId: 'lt-2', workspaceId: 'ws-1' })).result as { ok: boolean };
+    expect(sel.ok).toBe(true);
+    expect(live.selectTab).toHaveBeenCalledWith('lt-2');
   });
 
   it('chrome mode without a wired launcher fails with a clear message', async () => {

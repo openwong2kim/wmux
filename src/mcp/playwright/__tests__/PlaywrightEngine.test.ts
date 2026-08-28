@@ -1443,3 +1443,35 @@ describe('PlaywrightEngine ensureConnected workspace switch (Phase 2.5)', () => 
     expect(mockConnectOverCDP).toHaveBeenLastCalledWith('http://localhost:18906');
   });
 });
+
+
+// ── Phase 3: live-Chrome attach (wsEndpoint from cdp.info) ─────────────────
+describe('PlaywrightEngine live-Chrome ws endpoint (Phase 3)', () => {
+  beforeEach(() => {
+    (PlaywrightEngine as unknown as { instance: PlaywrightEngine | null }).instance = null;
+    mockSendRpc.mockReset();
+    mockConnectOverCDP.mockReset();
+  });
+
+  it('connects over the ws endpoint verbatim when cdp.info reports one', async () => {
+    mockSendRpc.mockImplementation((method: string) =>
+      method === 'browser.cdp.info'
+        ? Promise.resolve({
+            wsEndpoint: 'ws://127.0.0.1:9333/devtools/browser/abc',
+            workspaceBackend: 'chrome',
+            targetsScoped: true,
+            targets: [],
+          })
+        : Promise.resolve({}),
+    );
+    const sessions: FakeSession[] = [];
+    mockConnectOverCDP.mockResolvedValue(makeFakeBrowser(sessions));
+
+    const engine = PlaywrightEngine.getInstance();
+    await engine.ensureConnected('ws-live');
+    expect(mockConnectOverCDP).toHaveBeenCalledWith('ws://127.0.0.1:9333/devtools/browser/abc');
+    // Same workspace again: live connection reused.
+    await engine.ensureConnected('ws-live');
+    expect(mockConnectOverCDP).toHaveBeenCalledTimes(1);
+  });
+});
