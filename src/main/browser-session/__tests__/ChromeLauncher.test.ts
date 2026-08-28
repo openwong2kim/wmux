@@ -112,6 +112,7 @@ describe('ChromeLauncher', () => {
 });
 
 // Registry: one launcher per profile, workspace-binding resolution (Phase 2.5).
+import { join } from 'node:path';
 import { ChromeLauncherRegistry } from '../ChromeLauncher';
 
 describe('ChromeLauncherRegistry', () => {
@@ -134,8 +135,9 @@ describe('ChromeLauncherRegistry', () => {
     expect(d1).toBe(d2);
     expect(registry.forWorkspace('ws-a')).toBe(a); // cached
     const dirOf = (l: unknown) => (l as { userDataDir: string }).userDataDir;
-    expect(dirOf(a)).toBe('/tmp/profiles/youtube-a');
-    expect(dirOf(b)).toBe('/tmp/profiles/youtube-b');
+    // join() so the expectation follows the platform separator (Windows CI).
+    expect(dirOf(a)).toBe(join('/tmp/profiles', 'youtube-a'));
+    expect(dirOf(b)).toBe(join('/tmp/profiles', 'youtube-b'));
     expect(dirOf(d1)).toBe('/tmp/default-prof');
   });
 
