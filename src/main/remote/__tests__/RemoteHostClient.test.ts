@@ -85,7 +85,7 @@ describe('RemoteHostClient', () => {
     });
 
     it('includes cwd in the body only when given', async () => {
-      const fetchImpl = vi.fn(async () => ({ ok: true, status: 201, json: async () => ({ id: 'web-1' }) }) as unknown as Response);
+      const fetchImpl = vi.fn(async (_url: string, _init?: RequestInit) => ({ ok: true, status: 201, json: async () => ({ id: 'web-1' }) }) as unknown as Response);
       const client = new RemoteHostClient(host, fetchImpl as unknown as typeof fetch);
 
       await client.createWorkspace('ws-1', '/repo');
