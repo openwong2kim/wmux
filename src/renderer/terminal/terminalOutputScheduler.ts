@@ -63,7 +63,8 @@ interface WriteOptions {
   /** Optional hand-off used when these bytes need parse-scoped behavior.
    *  Queued chunks retain whether they need this writer, while the queue entry
    *  keeps the latest mount's function so parked terminals can be adopted
-   *  without retaining a stale closure. */
+   *  without retaining a stale closure. For replay-provenance bytes, this
+   *  writer MUST apply replay-scoped control-sequence muting. */
   write?: (data: string) => void;
 }
 
@@ -235,7 +236,9 @@ function getOrCreateEntry(
   return entry;
 }
 
-/** Rebind retained custom chunks to the mount that currently owns `terminal`. */
+/** Rebind retained custom chunks to the mount that currently owns `terminal`.
+ *  Replay-provenance chunks depend on this writer applying replay-scoped
+ *  control-sequence muting; callers must not bind a plain terminal writer. */
 export function rebindTerminalOutputWriter(
   terminal: SchedulableTerminal,
   write: (data: string) => void,
@@ -294,10 +297,22 @@ function hasQueuedChunks(entry: QueueEntry): boolean {
 function writeQueuedChunk(entry: QueueEntry): boolean {
   const chunk = takeQueuedChunk(entry, CHUNK_CHARS);
   if (!chunk) return true;
+  const customWrite = chunk.customWrite ? entry.customWrite : undefined;
+  if (chunk.customWrite && !customWrite) {
+    // This is an internal invariant failure, not the routine dispose race
+    // below. Fail closed: replay bytes must never fall back to an unmuted
+    // terminal.write, and make the dropped backlog visible in dogfood logs.
+    console.error(
+      `[wmux:terminal-output] custom replay writer is unbound; dropping ${entry.queuedChars + chunk.data.length} queued chars`,
+    );
+    entry.chunks.length = 0;
+    entry.chunkIndex = 0;
+    entry.queuedChars = 0;
+    return false;
+  }
   try {
-    if (chunk.customWrite) {
-      if (!entry.customWrite) throw new Error('custom terminal writer is not bound');
-      entry.customWrite(chunk.data);
+    if (customWrite) {
+      customWrite(chunk.data);
     } else {
       entry.terminal.write(chunk.data);
     }
