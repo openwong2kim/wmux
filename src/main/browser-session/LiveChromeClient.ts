@@ -16,6 +16,10 @@ import type { ChromeBackendClient, ChromeBackendEndpoint, ChromeTargetInfo } fro
 // a small CDP client on the global WebSocket (Node 24 in Electron 41 main).
 // dispose() closes the socket only — this class must NEVER kill the user's
 // Chrome.
+//
+// Mechanism credit: the DevToolsActivePort discovery contract is Chrome's own
+// (chrome://inspect/#remote-debugging); referenced via Google's
+// chrome-devtools-mcp (Apache-2.0) as prior art. No code copied.
 // ---------------------------------------------------------------------------
 
 const CDP_TIMEOUT_MS = 10_000;
