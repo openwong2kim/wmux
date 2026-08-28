@@ -1510,3 +1510,91 @@ describe('PlaywrightEngine lifecycle mirror (chrome backend)', () => {
     expect(eng.drainLocalLifecycle('ws-2', 's-1')).toEqual([]);
   });
 });
+
+/*
+ * Live-Chrome attach (Phase 3): cdp.info seeds only wmux-opened tabs, but
+ * browser_tabs exposes EVERY live tab by design — the workspace's 'live'
+ * binding is the grant. A surfaceId pinned from that list therefore names a
+ * target the seeded registry cannot know, and discovery must match Chrome's
+ * own Target.getTargets directly. Gated on the wsEndpoint marker so dedicated
+ * (port-based) chrome instances keep the registry-only match (their guard
+ * against cross-workspace pinning on a shared profile).
+ */
+describe('PlaywrightEngine live-Chrome attach (Phase 3)', () => {
+  beforeEach(() => {
+    (PlaywrightEngine as unknown as { instance: PlaywrightEngine | null }).instance = null;
+    mockSendRpc.mockReset();
+    mockConnectOverCDP.mockReset();
+  });
+
+  function liveHarness(targetId: string, url: string) {
+    const page = {
+      url: vi.fn().mockReturnValue(url),
+      context: vi.fn(),
+      on: vi.fn(),
+      mainFrame: vi.fn().mockReturnValue({}),
+    };
+    const session = {
+      send: vi.fn().mockImplementation((method: string) => {
+        if (method === 'Target.getTargets') {
+          return Promise.resolve({
+            targetInfos: [{ targetId, type: 'page', title: '', url, attached: true }],
+          });
+        }
+        if (method === 'Target.getTargetInfo') {
+          return Promise.resolve({ targetInfo: { targetId } });
+        }
+        return Promise.resolve({});
+      }),
+      detach: vi.fn().mockResolvedValue(undefined),
+    };
+    const ctx = {
+      pages: vi.fn().mockReturnValue([page]),
+      newCDPSession: vi.fn().mockImplementation(async () => session),
+    };
+    page.context.mockReturnValue(ctx);
+    const browser = {
+      isConnected: vi.fn().mockReturnValue(true),
+      newBrowserCDPSession: vi.fn().mockImplementation(async () => session),
+      contexts: vi.fn().mockReturnValue([ctx]),
+      close: vi.fn().mockResolvedValue(undefined),
+    };
+    return { page, browser };
+  }
+
+  function mockLiveCdpInfo() {
+    mockSendRpc.mockImplementation((method: string) => {
+      if (method === 'browser.cdp.info') {
+        return Promise.resolve({
+          wsEndpoint: 'ws://127.0.0.1:9333/devtools/browser/abc',
+          targetsScoped: true,
+          workspaceBackend: 'chrome',
+          // Live seeds only wmux-opened tabs; the pinned tab pre-exists.
+          targets: [],
+        });
+      }
+      return Promise.resolve({});
+    });
+  }
+
+  it('a pinned surfaceId matches a pre-existing user tab directly', async () => {
+    const { page, browser } = liveHarness('live-tab-7', 'https://mail.example/');
+    mockConnectOverCDP.mockResolvedValue(browser);
+    mockLiveCdpInfo();
+
+    const engine = PlaywrightEngine.getInstance();
+    const resolved = await engine.getPageForScope({ workspaceId: 'ws-A', surfaceId: 'live-tab-7' });
+    expect(resolved).toBe(page);
+    expect(mockConnectOverCDP).toHaveBeenCalledWith('ws://127.0.0.1:9333/devtools/browser/abc');
+  });
+
+  it('a pinned surfaceId naming no live target still fails (no lenient fallback)', async () => {
+    const { browser } = liveHarness('live-tab-7', 'https://mail.example/');
+    mockConnectOverCDP.mockResolvedValue(browser);
+    mockLiveCdpInfo();
+
+    const engine = PlaywrightEngine.getInstance();
+    const resolved = await engine.getPageForScope({ workspaceId: 'ws-A', surfaceId: 'no-such-tab' });
+    expect(resolved).toBeNull();
+  });
+});

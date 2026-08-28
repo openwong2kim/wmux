@@ -120,10 +120,51 @@ describe('LiveChromeClient CDP', () => {
     ws.reply({});
     expect(await selP).toBe(true);
 
-    // Every live tab is addressable; cdp.info seeds none (safe default).
+    // Every live tab is addressable.
     expect(client.hasTab()).toBe(true);
-    expect(await client.cdpInfoTargets()).toEqual([]);
+    // cdp.info seeds ONLY wmux-opened tabs: t9 (opened above) is seeded, the
+    // user's own t1 is not — a random user tab never becomes the default pin.
+    const seedP = client.cdpInfoTargets();
+    await tick();
+    expect(ws.sent[3]).toMatchObject({ method: 'Target.getTargets' });
+    ws.reply({
+      targetInfos: [
+        { targetId: 't1', type: 'page', title: 'A', url: 'https://a.test/' },
+        { targetId: 't9', type: 'page', title: 'B', url: 'https://b.test/' },
+      ],
+    });
+    expect(await seedP).toEqual([{ targetId: 't9', workspaceId: undefined, url: 'https://b.test/', title: 'B' }]);
     expect((await client.endpoint()).wsEndpoint).toBe('ws://127.0.0.1:9333/devtools/browser/abc');
+  });
+
+  it('cdpInfoTargets before any wmux-open seeds nothing and never dials the socket', async () => {
+    const client = new LiveChromeClient(dir);
+    expect(await client.cdpInfoTargets()).toEqual([]);
+    expect(FakeWebSocket.instances).toHaveLength(0);
+  });
+
+  it('cdpInfoTargets filters by owning workspace and prunes dead tabs', async () => {
+    const client = new LiveChromeClient(dir);
+    const openA = client.openTab('https://a.test/', 'ws-a');
+    await tick();
+    const ws = FakeWebSocket.instances[0];
+    ws.reply({ targetId: 'ta' });
+    await openA;
+    const openB = client.openTab('https://b.test/', 'ws-b');
+    await tick();
+    ws.reply({ targetId: 'tb' });
+    await openB;
+
+    // tb has died in Chrome; ta belongs to ws-a.
+    const forA = client.cdpInfoTargets('ws-a');
+    await tick();
+    ws.reply({ targetInfos: [{ targetId: 'ta', type: 'page', title: 'A', url: 'https://a.test/' }] });
+    expect(await forA).toEqual([{ targetId: 'ta', workspaceId: 'ws-a', url: 'https://a.test/', title: 'A' }]);
+
+    const forB = client.cdpInfoTargets('ws-b');
+    await tick();
+    ws.reply({ targetInfos: [{ targetId: 'ta', type: 'page', title: 'A', url: 'https://a.test/' }] });
+    expect(await forB).toEqual([]); // tb pruned as dead; ta owned by ws-a
   });
 
   it('dispose closes the socket only and rejects in-flight calls', async () => {
