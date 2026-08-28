@@ -109,6 +109,7 @@ function fakeClient(host: RemoteHost) {
     detachAll: vi.fn(),
     write: vi.fn(async () => undefined),
     listWorkspaces: vi.fn(async (): Promise<RemoteWorkspacesResponse> => ({ workspaces: [] })),
+    createWorkspace: vi.fn(async (): Promise<{ sessionId: string }> => ({ sessionId: 'web-1' })),
     onMeta: vi.fn((cb: (e: RemoteMetaEvent) => void) => { metaCbs.push(cb); }),
     onResize: vi.fn((cb: (e: RemoteResizeEvent) => void) => { resizeCbs.push(cb); }),
     onData: vi.fn((cb: (e: RemoteDataEvent) => void) => { dataCbs.push(cb); }),
@@ -125,6 +126,7 @@ function fakeClient(host: RemoteHost) {
     detachAll: ReturnType<typeof vi.fn>;
     write: ReturnType<typeof vi.fn>;
     listWorkspaces: ReturnType<typeof vi.fn>;
+    createWorkspace: ReturnType<typeof vi.fn>;
     emitMeta: (e: RemoteMetaEvent) => void;
     emitResize: (e: RemoteResizeEvent) => void;
     emitData: (e: RemoteDataEvent) => void;
@@ -483,6 +485,53 @@ describe('remote.handler — workspacesList', () => {
 
     expect(res).toEqual({ ok: false, error: 'unknown host' });
     expect(fetchImpl).not.toHaveBeenCalled();
+  });
+});
+
+describe('remote.handler — workspaceCreate (#1001)', () => {
+  const host: RemoteHost = { id: 'h1', label: 'box', origin: 'https://box:9600', token: 't', addedAt: 0 };
+
+  it('bootstraps a new workspace and returns its sessionId', async () => {
+    const store = fakeStore([host]);
+    const client = fakeClient(host);
+    client.createWorkspace.mockResolvedValueOnce({ sessionId: 'web-9' });
+    registerRemoteHandlers({ store: store as never, attachments: fakeAttachments() as never, clientFactory: () => client });
+
+    const res = await getHandler(IPC.REMOTE_WORKSPACE_CREATE)({}, 'h1', 'ws-brand-new') as { ok: true; sessionId: string };
+
+    expect(res).toEqual({ ok: true, sessionId: 'web-9' });
+    expect(client.createWorkspace).toHaveBeenCalledWith('ws-brand-new', undefined);
+  });
+
+  it('forwards cwd when given', async () => {
+    const store = fakeStore([host]);
+    const client = fakeClient(host);
+    registerRemoteHandlers({ store: store as never, attachments: fakeAttachments() as never, clientFactory: () => client });
+
+    await getHandler(IPC.REMOTE_WORKSPACE_CREATE)({}, 'h1', 'ws-1', '/repo');
+
+    expect(client.createWorkspace).toHaveBeenCalledWith('ws-1', '/repo');
+  });
+
+  it('maps a client rejection to {ok:false} rather than throwing', async () => {
+    const store = fakeStore([host]);
+    const client = fakeClient(host);
+    client.createWorkspace.mockRejectedValueOnce(new Error('unknown-workspace-id: workspaceId must match ...'));
+    registerRemoteHandlers({ store: store as never, attachments: fakeAttachments() as never, clientFactory: () => client });
+
+    const res = await getHandler(IPC.REMOTE_WORKSPACE_CREATE)({}, 'h1', 'bad id') as { ok: false; error: string };
+
+    expect(res.ok).toBe(false);
+    expect(res.error).toMatch(/workspaceId must match/);
+  });
+
+  it('reports unknown host without touching a client', async () => {
+    const store = fakeStore([]);
+    registerRemoteHandlers({ store: store as never, attachments: fakeAttachments() as never });
+
+    const res = await getHandler(IPC.REMOTE_WORKSPACE_CREATE)({}, 'missing', 'ws-1') as { ok: boolean; error?: string };
+
+    expect(res).toEqual({ ok: false, error: 'unknown host' });
   });
 });
 

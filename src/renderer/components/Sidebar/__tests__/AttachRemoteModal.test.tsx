@@ -65,6 +65,7 @@ describe('AttachRemoteModal', () => {
   let hostsPair: ReturnType<typeof vi.fn>;
   let hostsRemove: ReturnType<typeof vi.fn>;
   let workspacesList: ReturnType<typeof vi.fn>;
+  let workspaceCreate: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
     hostsList = vi.fn().mockResolvedValue([HOST]);
@@ -72,6 +73,7 @@ describe('AttachRemoteModal', () => {
     hostsPair = vi.fn();
     hostsRemove = vi.fn().mockResolvedValue(true);
     workspacesList = vi.fn().mockResolvedValue({ ok: true, workspaces: [WORKSPACE] });
+    workspaceCreate = vi.fn().mockResolvedValue({ ok: true, sessionId: 'web-1' });
 
     (window as unknown as { electronAPI: unknown }).electronAPI = {
       remote: {
@@ -80,6 +82,7 @@ describe('AttachRemoteModal', () => {
         hostsPair,
         hostsRemove,
         workspacesList,
+        workspaceCreate,
         paneAttach: vi.fn(),
         paneDetach: vi.fn(),
         paneWrite: vi.fn(),
@@ -181,6 +184,77 @@ describe('AttachRemoteModal', () => {
     });
 
     unmount();
+  });
+
+  // #1001 — bootstrapping the first pane of a NEW workspace on the selected
+  // host, from the exact dead end the VPS test hit (host paired, "no
+  // workspaces on that host", nothing further to click).
+  describe('create workspace on host (#1001)', () => {
+    it('mints an id, creates it on the host, and attaches it like an existing workspace would', async () => {
+      const uuidSpy = vi.spyOn(crypto, 'randomUUID').mockReturnValue('11111111-1111-1111-1111-111111111111');
+      const { container, unmount } = render(<AttachRemoteModal onClose={() => { /* noop */ }} />);
+      await flush();
+
+      const hostButton = Array.from(container.querySelectorAll('button')).find((b) => b.textContent === 'office-mac')!;
+      act(() => { hostButton.click(); });
+      await flush();
+
+      const createButton = Array.from(container.querySelectorAll('button'))
+        .find((b) => b.textContent === 'New workspace on this host')!;
+      expect(createButton).toBeTruthy();
+      act(() => { createButton.click(); });
+      await flush();
+
+      expect(workspaceCreate).toHaveBeenCalledWith('host-1', '11111111-1111-1111-1111-111111111111');
+
+      const remoteWorkspaces = useStore.getState().remoteWorkspaces;
+      expect(remoteWorkspaces).toHaveLength(1);
+      expect(remoteWorkspaces[0]).toMatchObject({
+        key: 'host-1:11111111-1111-1111-1111-111111111111',
+        hostId: 'host-1',
+        hostLabel: 'office-mac',
+        workspaceId: '11111111-1111-1111-1111-111111111111',
+        panes: [{ sessionId: 'web-1' }],
+      });
+
+      uuidSpy.mockRestore();
+      unmount();
+    });
+
+    it('is offered even when the host has no live workspaces yet', async () => {
+      workspacesList.mockResolvedValue({ ok: true, workspaces: [] });
+      const { container, unmount } = render(<AttachRemoteModal onClose={() => { /* noop */ }} />);
+      await flush();
+
+      const hostButton = Array.from(container.querySelectorAll('button')).find((b) => b.textContent === 'office-mac')!;
+      act(() => { hostButton.click(); });
+      await flush();
+
+      expect(container.textContent).toContain('No workspaces on that host');
+      expect(Array.from(container.querySelectorAll('button')).some((b) => b.textContent === 'New workspace on this host')).toBe(true);
+
+      unmount();
+    });
+
+    it('shows the error and does not attach on failure', async () => {
+      workspaceCreate.mockResolvedValue({ ok: false, error: 'unknown-workspace-id' });
+      const { container, unmount } = render(<AttachRemoteModal onClose={() => { /* noop */ }} />);
+      await flush();
+
+      const hostButton = Array.from(container.querySelectorAll('button')).find((b) => b.textContent === 'office-mac')!;
+      act(() => { hostButton.click(); });
+      await flush();
+
+      const createButton = Array.from(container.querySelectorAll('button'))
+        .find((b) => b.textContent === 'New workspace on this host')!;
+      act(() => { createButton.click(); });
+      await flush();
+
+      expect(container.textContent).toContain('Could not create workspace');
+      expect(useStore.getState().remoteWorkspaces).toHaveLength(0);
+
+      unmount();
+    });
   });
 
   // I3(a) — hostsRemove existed on the handler/preload/types but nothing in

@@ -1716,6 +1716,8 @@ export const en = {
   'remote.selectHostHint': 'Select a host to see its workspaces',
   'remote.noWorkspaces': 'No workspaces on that host — the list is built from panes that are open right now, so open a pane there and reselect',
   'remote.attach': 'Attach',
+  'remote.createWorkspaceHere': 'New workspace on this host',
+  'remote.createWorkspaceFailed': 'Could not create workspace — {error}',
   'remote.detach': 'Detach',
   'remote.loading': 'Loading…',
   'remote.readOnly': 'Read-only — start the remote server with --allow-input to type',

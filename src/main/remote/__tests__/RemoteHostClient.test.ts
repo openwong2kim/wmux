@@ -62,6 +62,72 @@ describe('RemoteHostClient', () => {
     vi.useRealTimers();
   });
 
+  describe('createWorkspace (#1001)', () => {
+    it('POSTs to /api/sessions with the operator Bearer token and the caller-supplied workspaceId', async () => {
+      const fetchImpl = vi.fn(async (_url: string, _init?: RequestInit) => ({
+        ok: true,
+        status: 201,
+        json: async () => ({ id: 'web-1' }),
+      }) as unknown as Response);
+      const client = new RemoteHostClient(host, fetchImpl as unknown as typeof fetch);
+
+      const result = await client.createWorkspace('ws-brand-new');
+
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+      const [url, init] = fetchImpl.mock.calls[0];
+      expect(url).toBe(`${host.origin}/api/sessions`);
+      expect(init?.method).toBe('POST');
+      expect((init?.headers as Record<string, string>)?.Authorization).toBe(`Bearer ${host.token}`);
+      expect(init?.redirect).toBe('error');
+      expect(init?.signal).toBeInstanceOf(AbortSignal);
+      expect(JSON.parse(init?.body as string)).toEqual({ workspaceId: 'ws-brand-new' });
+      expect(result).toEqual({ sessionId: 'web-1' });
+    });
+
+    it('includes cwd in the body only when given', async () => {
+      const fetchImpl = vi.fn(async (_url: string, _init?: RequestInit) => ({ ok: true, status: 201, json: async () => ({ id: 'web-1' }) }) as unknown as Response);
+      const client = new RemoteHostClient(host, fetchImpl as unknown as typeof fetch);
+
+      await client.createWorkspace('ws-1', '/repo');
+
+      const [, init] = fetchImpl.mock.calls[0];
+      expect(JSON.parse(init?.body as string)).toEqual({ workspaceId: 'ws-1', cwd: '/repo' });
+    });
+
+    it('rejects with the daemon-supplied detail on a non-OK response', async () => {
+      const fetchImpl = vi.fn(async () => ({
+        ok: false,
+        status: 400,
+        json: async () => ({ error: 'invalid-workspace-id', detail: 'workspaceId must match ^[A-Za-z0-9_-]{1,64}$' }),
+      }) as unknown as Response);
+      const client = new RemoteHostClient(host, fetchImpl as unknown as typeof fetch);
+
+      await expect(client.createWorkspace('bad id')).rejects.toThrow(
+        'workspaceId must match ^[A-Za-z0-9_-]{1,64}$',
+      );
+    });
+
+    it('rejects with a generic message when the error body is not JSON', async () => {
+      const fetchImpl = vi.fn(async () => ({
+        ok: false,
+        status: 500,
+        json: async () => { throw new Error('not json'); },
+      }) as unknown as Response);
+      const client = new RemoteHostClient(host, fetchImpl as unknown as typeof fetch);
+
+      await expect(client.createWorkspace('ws-1')).rejects.toThrow('createWorkspace failed: HTTP 500');
+    });
+
+    it('rejects when the response carries no session id', async () => {
+      const fetchImpl = vi.fn(async () => ({ ok: true, status: 201, json: async () => ({}) }) as unknown as Response);
+      const client = new RemoteHostClient(host, fetchImpl as unknown as typeof fetch);
+
+      await expect(client.createWorkspace('ws-1')).rejects.toThrow(
+        'createWorkspace failed: response carried no session id',
+      );
+    });
+  });
+
   describe('listWorkspaces', () => {
     it('sends Authorization: Bearer <token> and parses the body', async () => {
       const fetchImpl = vi.fn(async (_url: string, _init?: RequestInit) => {

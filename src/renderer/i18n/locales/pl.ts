@@ -1724,6 +1724,8 @@ export const pl = {
   'remote.selectHostHint': 'Wybierz hosta, aby zobaczyć jego obszary robocze',
   'remote.noWorkspaces': 'Brak obszarów roboczych na tym hoście — lista jest budowana z paneli otwartych właśnie teraz, więc otwórz tam panel i wybierz ponownie',
   'remote.attach': 'Dołącz',
+  'remote.createWorkspaceHere': 'Nowy obszar roboczy na tym hoście',
+  'remote.createWorkspaceFailed': 'Nie udało się utworzyć obszaru roboczego — {error}',
   'remote.detach': 'Odłącz',
   'remote.loading': 'Wczytywanie…',
   'remote.readOnly': 'Tylko do odczytu — uruchom zdalny serwer z --allow-input, aby pisać',

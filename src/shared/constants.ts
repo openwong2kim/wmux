@@ -554,6 +554,11 @@ export const IPC = {
   REMOTE_HOSTS_PAIR: 'remote:hosts:pair',
   REMOTE_HOSTS_REMOVE: 'remote:hosts:remove',
   REMOTE_WORKSPACES_LIST: 'remote:workspaces:list',
+  // Bootstrap the FIRST pane of a NEW workspace on a remote host (#1001):
+  // the desktop mints the workspace id and hands it to `POST /api/sessions`
+  // as an operator-authenticated caller (WebTerminalServer.rejectWorkspaceId's
+  // one exception). See RemoteHostClient.createWorkspace.
+  REMOTE_WORKSPACE_CREATE: 'remote:workspace:create',
   // Persisted attach descriptors (see RemoteAttachmentsStore). The renderer's
   // remote-workspace slice is memory-only, so these are what survive a reload
   // and an app restart; panes are never stored, only re-fetched.
