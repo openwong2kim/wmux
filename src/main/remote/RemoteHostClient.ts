@@ -197,6 +197,50 @@ export class RemoteHostClient implements RemotePaneEvents {
     this.errorCbs.push(cb);
   }
 
+  /**
+   * Bootstrap the first pane of a NEW workspace on this host (#1001). Mints
+   * no id itself — the caller (the renderer, which owns the workspace
+   * registry today) supplies `workspaceId`, and this is the operator-Bearer
+   * request `WebTerminalServer.rejectWorkspaceId` lets mint an unknown id
+   * for: `RemoteHost.token` is always the operator credential (parsed from
+   * the pasted wmux-web URL or the pair exchange — see remoteHosts.ts), never
+   * a paired device's, so every call through this client already qualifies.
+   *
+   * Returns the new pane's `sessionId` on success — the caller attaches to
+   * it the same way `REMOTE_PANE_ATTACH` attaches to any other remote pane.
+   */
+  async createWorkspace(workspaceId: string, cwd?: string): Promise<{ sessionId: string }> {
+    const res = await this.fetchImpl(`${this.host.origin}/api/sessions`, {
+      method: 'POST',
+      headers: { ...this.authHeaders(), 'Content-Type': 'application/json' },
+      body: JSON.stringify({ workspaceId, ...(cwd ? { cwd } : {}) }),
+      redirect: 'error',
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    });
+    if (!res.ok) {
+      let message = `createWorkspace failed: HTTP ${res.status}`;
+      try {
+        const parsed = (await res.json()) as { error?: string; detail?: string };
+        if (parsed?.detail) message = parsed.detail;
+        else if (parsed?.error) message = parsed.error;
+      } catch {
+        /* body wasn't JSON — fall back to the generic message */
+      }
+      throw new Error(message);
+    }
+    let body: unknown;
+    try {
+      body = await res.json();
+    } catch {
+      throw new Error('createWorkspace failed: response body was not JSON');
+    }
+    const sessionId = (body as { id?: unknown } | null)?.id;
+    if (typeof sessionId !== 'string' || !sessionId) {
+      throw new Error('createWorkspace failed: response carried no session id');
+    }
+    return { sessionId };
+  }
+
   async listWorkspaces(): Promise<RemoteWorkspacesResponse> {
     const res = await this.fetchImpl(`${this.host.origin}/api/workspaces`, {
       headers: this.authHeaders(),

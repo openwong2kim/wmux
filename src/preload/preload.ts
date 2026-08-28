@@ -1352,6 +1352,10 @@ document.addEventListener('DOMContentLoaded', () => {
     ipcRenderer.invoke(IPC.REMOTE_WORKSPACES_LIST, hostId) as Promise<
       { ok: true; workspaces: RemoteWorkspaceSummary[] } | { ok: false; error: string }
     >,
+  workspaceCreate: (hostId: string, workspaceId: string, cwd?: string) =>
+    ipcRenderer.invoke(IPC.REMOTE_WORKSPACE_CREATE, hostId, workspaceId, cwd) as Promise<
+      { ok: true; sessionId: string } | { ok: false; error: string }
+    >,
   attachmentsList: () =>
     ipcRenderer.invoke(IPC.REMOTE_ATTACHMENTS_LIST) as Promise<RemoteAttachmentDescriptor[]>,
   attachmentsAdd: (descriptor: RemoteAttachmentDescriptor) =>

@@ -214,6 +214,15 @@ declare global {
         workspacesList: (hostId: string) => Promise<
           { ok: true; workspaces: RemoteWorkspaceSummary[] } | { ok: false; error: string }
         >;
+        /** Bootstraps the FIRST pane of a NEW workspace on `hostId` (#1001).
+         *  The caller mints `workspaceId` — the daemon has no registry of its
+         *  own, so this is the one place a fresh id gets minted at all.
+         *  Resolves `{ ok: false }` (never rejects) on any failure — an
+         *  unreachable host, a rejected token, or the remote's own daemon
+         *  refusing the create. */
+        workspaceCreate: (hostId: string, workspaceId: string, cwd?: string) => Promise<
+          { ok: true; sessionId: string } | { ok: false; error: string }
+        >;
         /** Persisted attach descriptors — read on renderer boot to restore
          *  the attachments a reload/restart wiped out of the memory-only
          *  slice. Panes are never part of a descriptor: they are re-fetched

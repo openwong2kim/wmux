@@ -3327,14 +3327,36 @@ describe('WebTerminalServer', () => {
     expect(lifecycleCalls).toEqual([]);
   });
 
-  it('★ 400s a well-shaped workspaceId that no live pane is running in', async () => {
+  it('★ 400s a well-shaped workspaceId that no live pane is running in — for a paired DEVICE', async () => {
     // The daemon owns no workspace registry, so "some live session already
     // carries this id" is the only evidence it has that the workspace exists.
-    // Accepting an unverifiable id would be workspace impersonation.
-    const info = await startRW();
-    const res = await postSession(info.token as string, { workspaceId: 'ws-invented' });
+    // Accepting an unverifiable id from a device would be workspace
+    // impersonation — this is #1001's regression guard: the operator
+    // exception below must not have widened this for anyone else.
+    await startRW();
+    const device = await pairDevice('Phone');
+    const res = await postSession(device.token, { workspaceId: 'ws-invented' });
     expect(res.status).toBe(400);
     expect(await res.json()).toMatchObject({ error: 'unknown-workspace-id' });
+    expect(lifecycleCalls).toEqual([]);
+  });
+
+  it('★ #1001 — the OPERATOR may bootstrap a brand-new workspaceId no pane is running in', async () => {
+    // "New workspace on this host" on a headless remote daemon has no live
+    // pane to vouch for the id yet — that is the whole gap #1001 closes.
+    // Shape is still enforced (mirrors the 400 test above); only the
+    // liveness/existence check is skipped, and only for this credential.
+    const info = await startRW();
+    const res = await postSession(info.token as string, { workspaceId: 'ws-brand-new' });
+    expect(res.status).toBe(201);
+    expect(lifecycleCalls).toEqual([{ op: 'create', arg: { workspaceId: 'ws-brand-new' } }]);
+  });
+
+  it('★ #1001 — the operator exception still enforces SHAPE', async () => {
+    const info = await startRW();
+    const res = await postSession(info.token as string, { workspaceId: 'ws 1' });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ error: 'invalid-workspace-id' });
     expect(lifecycleCalls).toEqual([]);
   });
 

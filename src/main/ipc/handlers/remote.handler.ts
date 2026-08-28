@@ -462,6 +462,27 @@ export function registerRemoteHandlers(deps: RegisterRemoteHandlersDeps): () => 
       }
     }));
 
+  ipcMain.removeHandler(IPC.REMOTE_WORKSPACE_CREATE);
+  ipcMain.handle(IPC.REMOTE_WORKSPACE_CREATE, wrapHandler(IPC.REMOTE_WORKSPACE_CREATE,
+    async (
+      _e: IpcMainInvokeEvent,
+      hostId: unknown,
+      workspaceId: unknown,
+      cwd?: unknown,
+    ): Promise<{ ok: true; sessionId: string } | { ok: false; error: string }> => {
+      const id = assertString(hostId, 'hostId');
+      const wsId = assertString(workspaceId, 'workspaceId');
+      const safeCwd = cwd === undefined ? undefined : assertString(cwd, 'cwd');
+      const client = getOrCreateClient(id);
+      if (!client) return { ok: false, error: 'unknown host' };
+      try {
+        const { sessionId } = await client.createWorkspace(wsId, safeCwd);
+        return { ok: true, sessionId };
+      } catch (err) {
+        return { ok: false, error: err instanceof Error ? err.message : String(err) };
+      }
+    }));
+
   // Attach descriptors — the persistence half of "attachments survive a
   // reload". Deliberately independent of the SSE attach lifecycle below: the
   // reload teardown in installSenderCleanup still kills every live stream (a
@@ -577,6 +598,7 @@ export function registerRemoteHandlers(deps: RegisterRemoteHandlersDeps): () => 
     ipcMain.removeHandler(IPC.REMOTE_HOSTS_PAIR);
     ipcMain.removeHandler(IPC.REMOTE_HOSTS_REMOVE);
     ipcMain.removeHandler(IPC.REMOTE_WORKSPACES_LIST);
+    ipcMain.removeHandler(IPC.REMOTE_WORKSPACE_CREATE);
     ipcMain.removeHandler(IPC.REMOTE_ATTACHMENTS_LIST);
     ipcMain.removeHandler(IPC.REMOTE_ATTACHMENTS_ADD);
     ipcMain.removeHandler(IPC.REMOTE_ATTACHMENTS_REMOVE);

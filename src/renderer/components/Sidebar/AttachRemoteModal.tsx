@@ -68,6 +68,9 @@ export default function AttachRemoteModal({ onClose }: AttachRemoteModalProps) {
   const [pairing, setPairing] = useState(false);
   const [pairError, setPairError] = useState<string | null>(null);
 
+  const [creatingWorkspace, setCreatingWorkspace] = useState(false);
+  const [createWorkspaceError, setCreateWorkspaceError] = useState<string | null>(null);
+
   const refreshHosts = useCallback(async () => {
     const remote = window.electronAPI?.remote;
     if (!remote) return [];
@@ -104,6 +107,7 @@ export default function AttachRemoteModal({ onClose }: AttachRemoteModalProps) {
     setSelectedHostId(hostId);
     setWorkspaces([]);
     setWorkspacesError(null);
+    setCreateWorkspaceError(null);
     setLoadingWorkspaces(true);
     const remote = window.electronAPI?.remote;
     if (!remote) { setLoadingWorkspaces(false); return; }
@@ -237,6 +241,41 @@ export default function AttachRemoteModal({ onClose }: AttachRemoteModalProps) {
     });
     onClose();
   }, [hosts, selectedHostId, attachRemoteWorkspace, onClose]);
+
+  /**
+   * Bootstraps the FIRST pane of a brand-new workspace on the selected host
+   * (#1001) — the desktop mints the id (the daemon has no registry of its
+   * own to mint one from), calls the operator-authenticated create route,
+   * then attaches exactly like picking an existing workspace does.
+   */
+  const handleCreateWorkspace = useCallback(async () => {
+    const remote = window.electronAPI?.remote;
+    const host = hosts.find((h) => h.id === selectedHostId);
+    if (!remote?.workspaceCreate || !host) return;
+    setCreatingWorkspace(true);
+    setCreateWorkspaceError(null);
+    try {
+      const workspaceId = crypto.randomUUID();
+      const res = await remote.workspaceCreate(host.id, workspaceId);
+      if (!res.ok) {
+        setCreateWorkspaceError(t('remote.createWorkspaceFailed', { error: res.error }));
+        return;
+      }
+      attachRemoteWorkspace({
+        key: remoteAttachmentKey(host.id, workspaceId),
+        hostId: host.id,
+        hostLabel: host.label,
+        workspaceId,
+        name: '',
+        panes: [{ sessionId: res.sessionId }],
+      });
+      onClose();
+    } catch {
+      setCreateWorkspaceError(t('remote.createWorkspaceFailed', { error: t('remote.workspacesFailed') }));
+    } finally {
+      setCreatingWorkspace(false);
+    }
+  }, [hosts, selectedHostId, attachRemoteWorkspace, onClose, t]);
 
   const selectedHost = hosts.find((h) => h.id === selectedHostId) ?? null;
 
@@ -427,6 +466,23 @@ export default function AttachRemoteModal({ onClose }: AttachRemoteModalProps) {
             {!selectedHostId && (
               <div className="text-[11px]" style={{ color: 'var(--text-subtle)' }}>
                 {hosts.length === 0 ? t('remote.noHostsHint') : t('remote.selectHostHint')}
+              </div>
+            )}
+            {selectedHostId && (
+              <div>
+                <Button
+                  variant="secondary"
+                  className="w-full text-[11px]"
+                  disabled={creatingWorkspace}
+                  onClick={handleCreateWorkspace}
+                >
+                  {creatingWorkspace ? t('remote.loading') : t('remote.createWorkspaceHere')}
+                </Button>
+                {createWorkspaceError && (
+                  <div className="text-[10px] mt-1" style={{ color: 'var(--accent-red)' }}>
+                    {createWorkspaceError}
+                  </div>
+                )}
               </div>
             )}
             {selectedHostId && loadingWorkspaces && (

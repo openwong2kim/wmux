@@ -2336,7 +2336,7 @@ export class WebTerminalServer {
       const workspaceId = typeof b.workspaceId === 'string' ? b.workspaceId.trim() : '';
       const cwd = typeof b.cwd === 'string' ? b.cwd.trim() : '';
       if (workspaceId) {
-        const bad = this.rejectWorkspaceId(workspaceId);
+        const bad = this.rejectWorkspaceId(workspaceId, principal);
         if (bad) return this.json(res, 400, bad);
       }
       lifecycle
@@ -2392,14 +2392,32 @@ export class WebTerminalServer {
    * not resolve to "so I will accept it" for a value that becomes an identity.
    * The workspace-less spawn (omit the field) is always available and is what a
    * client should fall back to.
+   *
+   * THE ONE EXCEPTION (#1001): `principal.kind === 'operator'` skips EXISTENCE
+   * only — shape is still enforced for everyone. This is an identity operation,
+   * not an execution one: minting a workspace id decides how a pane is filed
+   * and scoped, not what it can run, so it sits outside the "credential form
+   * must not gate capability" argument `handleSessionCreate` makes just above —
+   * that argument is about `mayInput`, which a device already has. The operator
+   * is the thing that owns the workspace registry (the renderer mints and files
+   * these ids today), so it is the thing allowed to extend it; a paired device
+   * still cannot claim an id nothing is running under. Stated limitation so
+   * this is not mistaken for a hard boundary: it is an audit-and-revocability
+   * one — a shell on the daemon's own host can already read the operator
+   * token, and a phone-only headless bootstrap still needs that operator
+   * credential once, elsewhere, to get here at all.
    */
-  private rejectWorkspaceId(workspaceId: string): { error: string; detail: string } | null {
+  private rejectWorkspaceId(
+    workspaceId: string,
+    principal: WebPrincipal,
+  ): { error: string; detail: string } | null {
     if (!/^[A-Za-z0-9_-]{1,64}$/.test(workspaceId)) {
       return {
         error: 'invalid-workspace-id',
         detail: 'workspaceId must match ^[A-Za-z0-9_-]{1,64}$',
       };
     }
+    if (principal.kind === 'operator') return null;
     const known = this.deps.sessionManager
       .listLiveSessions()
       .some((s) => s.env?.[ENV_KEYS.WORKSPACE_ID] === workspaceId);
