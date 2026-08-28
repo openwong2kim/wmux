@@ -343,6 +343,7 @@ export type RpcMethod =
   | 'browser.screenshot'
   | 'browser.evaluate'
   | 'browser.console.get'
+  | 'browser.lifecycle.get'
   | 'browser.network.get'
   | 'browser.responseBody.get'
   | 'browser.type.cdp'
@@ -520,6 +521,7 @@ export const ALL_RPC_METHODS = [
   'browser.screenshot',
   'browser.evaluate',
   'browser.console.get',
+  'browser.lifecycle.get',
   'browser.network.get',
   'browser.responseBody.get',
   'browser.type.cdp',

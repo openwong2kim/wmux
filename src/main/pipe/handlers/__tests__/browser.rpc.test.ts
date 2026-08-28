@@ -1272,6 +1272,40 @@ describe('registerBrowserRpc', () => {
     }
   });
 
+  it('browser.lifecycle.get drains lifecycle events destructively (Phase 1)', async () => {
+    const router = register();
+    const response = await router.dispatch({ id: '7b', method: 'browser.lifecycle.get', params: {} });
+    expect(response.ok).toBe(true);
+    if (response.ok) {
+      expect(response.result).toHaveProperty('entries');
+      expect(Array.isArray((response.result as { entries: unknown[] }).entries)).toBe(true);
+    }
+  });
+
+  it('browser.lifecycle.get answers a missing target with empty entries, not an error (Phase 1)', async () => {
+    const router = new RpcRouter();
+    const webviewCdpManager = {
+      getTarget: vi.fn(() => null),
+      listTargets: vi.fn(() => []),
+      getCdpPort: vi.fn(() => 18800),
+      waitForTarget: vi.fn(),
+      ensureAwake: vi.fn(async () => null),
+      setCaptureCleanup: vi.fn(),
+      withAutomationLease: vi.fn(async (_surfaceId: string, fn: () => Promise<unknown>) => fn()),
+      acquireRpcLease: vi.fn(() => 'lease-1'),
+      renewRpcLease: vi.fn(() => true),
+      releaseRpcLease: vi.fn(() => true),
+    };
+    registerBrowserRpc(router, () => null, webviewCdpManager as never);
+    const response = await router.dispatch({ id: '11b', method: 'browser.lifecycle.get', params: {} });
+    // Unlike console.get, a gone target is a reportable state here (the tab may
+    // have just closed) — never an error, and empty when nothing is pending.
+    expect(response.ok).toBe(true);
+    if (response.ok) {
+      expect((response.result as { entries: unknown[] }).entries).toEqual([]);
+    }
+  });
+
   it('browser.network.get drains the capture buffer (#106)', async () => {
     const router = register();
     const response = await router.dispatch({ id: '8', method: 'browser.network.get', params: {} });

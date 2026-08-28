@@ -225,3 +225,67 @@ describe('BrowserCaptureManager', () => {
     expect(c[c.length - 1].text).toBe('1099');
   });
 });
+
+// Lifecycle capture + drain (Phase 1 browser events). Reuses the same fake
+// webContents/debugger harness as the suites above.
+describe('BrowserCaptureManager lifecycle', () => {
+  let mgr: BrowserCaptureManager;
+
+  beforeEach(() => {
+    fakeWc = makeFakeWc();
+    mgr = new BrowserCaptureManager();
+  });
+
+  it('enables the Page domain alongside Runtime + Network', async () => {
+    await mgr.ensure(1);
+    const cmds = fakeWc!.debugger.sendCommand.mock.calls.map((c) => c[0]);
+    expect(cmds).toContain('Page.enable');
+    // Order guard: Page.enable must not displace the existing enables.
+    expect(cmds).toContain('Runtime.enable');
+    expect(cmds).toContain('Network.enable');
+  });
+
+  it('records main-frame navigations only, collapses consecutive dupes, and drains destructively', async () => {
+    await mgr.ensure(1);
+    emit(fakeWc!, 'Page.frameNavigated', { frame: { url: 'https://a.test/' } });
+    emit(fakeWc!, 'Page.frameNavigated', { frame: { url: 'https://a.test/' } }); // dupe → collapsed
+    emit(fakeWc!, 'Page.frameNavigated', { frame: { parentId: 'f1', url: 'https://ad.test/' } }); // subframe → ignored
+    emit(fakeWc!, 'Page.loadEventFired', {});
+    emit(fakeWc!, 'Page.frameNavigated', { frame: { url: 'https://b.test/' } });
+
+    const drained = mgr.drainLifecycle(1);
+    expect(drained.map((e) => [e.type, e.url])).toEqual([
+      ['navigated', 'https://a.test/'],
+      ['loaded', undefined],
+      ['navigated', 'https://b.test/'],
+    ]);
+    // Destructive: a second drain reports nothing.
+    expect(mgr.drainLifecycle(1)).toEqual([]);
+  });
+
+  it('caps the lifecycle ring', async () => {
+    await mgr.ensure(1);
+    for (let i = 0; i < 30; i++) {
+      emit(fakeWc!, 'Page.frameNavigated', { frame: { url: `https://x.test/${i}` } });
+    }
+    const drained = mgr.drainLifecycle(1);
+    expect(drained.length).toBe(20);
+    expect(drained[0].url).toBe('https://x.test/10');
+  });
+
+  it('drop({closed:true}) preserves undrained events plus a closed record, drained exactly once', async () => {
+    await mgr.ensure(1);
+    emit(fakeWc!, 'Page.frameNavigated', { frame: { url: 'https://a.test/' } });
+    fakeWc!.emit('destroyed'); // wc destroyed → drop with closed:true
+
+    const drained = mgr.drainLifecycle(1);
+    expect(drained.map((e) => e.type)).toEqual(['navigated', 'closed']);
+    expect(mgr.drainLifecycle(1)).toEqual([]);
+  });
+
+  it('a plain drop (debugger detach) does NOT synthesize a closed record', async () => {
+    await mgr.ensure(1);
+    fakeWc!.debugger.emit('detach'); // DevTools stole the session — guest still alive
+    expect(mgr.drainLifecycle(1)).toEqual([]);
+  });
+});

@@ -3,8 +3,11 @@ import type { Page } from 'playwright-core';
 import { z } from 'zod';
 import { PlaywrightEngine } from '../PlaywrightEngine';
 import { withAutomationLease } from '../automationLease';
-import { generateSnapshot, resolveRef } from '../snapshot';
+import { generateSnapshot, markDomRefsActive, resolveRef } from '../snapshot';
 import { buildDomSnapshotExpression } from '../dom-intelligence';
+import { pageEvaluator, rpcEvaluator } from '../page-eval';
+import { formatSnapshotResult } from '../snapshotDiff';
+import { getSnapshotBaseline, setSnapshotBaseline, snapshotSurfaceKey } from '../snapshotCache';
 import { evaluateWithGesture } from '../anti-detection';
 import { detectDangerousPatterns } from '../security';
 import { sanitizeRef } from './interaction';
@@ -33,6 +36,22 @@ const BROWSER_SNAPSHOT_SHAPE = {
     .string()
     .optional()
     .describe('Reserved for future use: ref number to scope the snapshot to a subtree.'),
+  selector: z
+    .string()
+    .optional()
+    .describe(
+      'CSS selector to scope the snapshot to the first matching element (e.g. "main", "[role=dialog]"). Returns a DOM listing of interactive elements within that subtree.',
+    ),
+  filter: z
+    .enum(['interactive'])
+    .optional()
+    .describe('"interactive" strips non-interactive nodes from the tree — much smaller output.'),
+  full: z
+    .boolean()
+    .optional()
+    .describe(
+      'Force the complete snapshot. By default a repeat snapshot of the same page returns a diff against the previous one when that is smaller.',
+    ),
   surfaceId: optionalSurfaceId,
 };
 
@@ -305,29 +324,69 @@ export function registerInspectionTools(server: McpServer, deps: BrowserToolDeps
   // -----------------------------------------------------------------------
   server.tool(
     'browser_snapshot',
-    'Take an accessibility tree snapshot of the current page. Returns a text representation of the page structure with interactive elements annotated with ref numbers.',
+    'Take an accessibility tree snapshot of the current page. Returns a text representation of the page structure with interactive elements annotated with ref numbers. A repeat snapshot of the same page returns a diff against the previous one when that is smaller (pass full:true to force the complete tree); selector scopes to a subtree, filter:"interactive" strips non-interactive nodes.',
     BROWSER_SNAPSHOT_SHAPE,
-    async ({ format, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
+    async ({ format, selector, filter, full, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
       try {
-        // Try Playwright for full snapshot
+        let text: string;
         const page = await engine.getPageForScope(scope).catch(allowScopedRpcFallback);
-        if (page) {
-          const snapshot = await generateSnapshot(page, { format: format ?? 'ai' });
-          return {
-            content: [{ type: 'text' as const, text: snapshot }],
-          };
+        if (selector) {
+          // Selector scoping runs DOM-side on BOTH transports (one code path):
+          // the expression tags data-wmux-ref within the subtree, so refs
+          // resolve via the data-attr locator — mark any live Page's a11y
+          // refMap stale so resolveRef cannot use it.
+          const evaluate = page ? pageEvaluator(page) : rpcEvaluator(scope);
+          text = String(await evaluate(buildDomSnapshotExpression(selector)));
+          if (text.startsWith('No element matches selector:')) {
+            // A miss is an error, not a snapshot — and must never become the
+            // diff baseline for the next call (review consensus).
+            return {
+              content: [{ type: 'text' as const, text }],
+              isError: true,
+            };
+          }
+          if (page) markDomRefsActive(page);
+          // The DOM listing has no format/filter concept — be honest about it
+          // instead of silently ignoring the params (review consensus).
+          if (format || filter) {
+            text = `(note: format/filter are ignored when selector is given)\n${text}`;
+          }
+        } else if (page) {
+          text = await generateSnapshot(page, {
+            format: format ?? 'ai',
+            ...(filter && { filter }),
+          });
+        } else {
+          // Fallback: extract page structure via RPC evaluation. Tags interactive
+          // elements with data-wmux-ref so interaction tools can resolve them.
+          // Same expression the page-mode root-only fallthrough runs (snapshot.ts),
+          // via the shared buildDomSnapshotExpression() helper.
+          const result = await sendScopedBrowserRpc<{ value: string }>('browser.evaluate', scope, {
+            expression: buildDomSnapshotExpression(),
+          });
+          text = result.value;
         }
 
-        // Fallback: extract page structure via RPC evaluation. Tags interactive
-        // elements with data-wmux-ref so interaction tools can resolve them.
-        // Same expression the page-mode root-only fallthrough runs (snapshot.ts),
-        // via the shared buildDomSnapshotExpression() helper.
-        const result = await sendScopedBrowserRpc<{ value: string }>('browser.evaluate', scope, {
-          expression: buildDomSnapshotExpression(),
-        });
+        // Auto-diff: a repeat snapshot with the same attributes returns a diff
+        // against the previous one when that is genuinely smaller (D1). The
+        // fresh text always becomes the new baseline — including on full:true.
+        // URL guard (3-model review): never diff across different page URLs —
+        // Playwright pages report url() directly, the DOM listing embeds a
+        // "URL: …" line to parse.
+        let currentUrl: string | undefined;
+        if (page && typeof (page as { url?: () => string }).url === 'function') {
+          currentUrl = page.url();
+        } else {
+          currentUrl = /^URL: (.+)$/m.exec(text)?.[1];
+        }
+        const key = snapshotSurfaceKey(scope.workspaceId, scope.surfaceId);
+        const attrs = `${format ?? 'ai'}|${selector ?? ''}|${filter ?? ''}`;
+        const baseline = full ? null : getSnapshotBaseline(key, attrs, currentUrl);
+        const rendered = formatSnapshotResult(baseline?.text ?? null, text);
+        setSnapshotBaseline(key, attrs, text, currentUrl);
 
         return {
-          content: [{ type: 'text' as const, text: result.value }],
+          content: [{ type: 'text' as const, text: rendered.text }],
         };
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);

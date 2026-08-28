@@ -56,6 +56,21 @@ interface NetEntry extends NetworkEntry {
   bodyBytes?: number;
 }
 
+// Browser lifecycle events surfaced inline in MCP tool results (act→verify
+// loop compression): main-frame navigations, load completion, guest closure.
+export interface LifecycleEntry {
+  type: 'navigated' | 'loaded' | 'closed';
+  url?: string;
+  ts: number;
+}
+
+// Lifecycle ring bound: these are drained on nearly every browser_* tool call,
+// so a small cap suffices — anything older than 20 events is stale context.
+const MAX_LIFECYCLE_ENTRIES = 20;
+// Closure records for already-dropped guests, kept so a `closed` event can
+// still be drained once after the per-webContents state is gone.
+const MAX_PENDING_CLOSURES = 8;
+
 interface CaptureState {
   dbg: Electron.Debugger;
   onMessage: (event: Electron.Event, method: string, params: unknown, sessionId?: string) => void;
@@ -63,6 +78,7 @@ interface CaptureState {
   console: ConsoleEntry[];
   network: NetEntry[];
   byRequestId: Map<string, NetEntry>;
+  lifecycle: LifecycleEntry[];
   totalBodyBytes: number;
   enabled: boolean;
 }
@@ -119,6 +135,10 @@ export class BrowserCaptureManager {
   // Singleflight: concurrent first calls share one enable Promise so the
   // listener is never attached twice (which would double-buffer every event).
   private ensuring = new Map<number, Promise<CaptureState | null>>();
+  // Lifecycle entries that must outlive their CaptureState: drop({closed:true})
+  // moves undrained events plus a synthesized `closed` record here, keyed by
+  // the departed webContentsId, so the next drain can still report the close.
+  private pendingClosures = new Map<number, LifecycleEntry[]>();
 
   /**
    * Ensure capture is active for a guest webContents, enabling the CDP domains
@@ -164,6 +184,7 @@ export class BrowserCaptureManager {
       console: [],
       network: [],
       byRequestId: new Map(),
+      lifecycle: [],
       totalBodyBytes: 0,
       enabled: false,
     };
@@ -193,8 +214,16 @@ export class BrowserCaptureManager {
       return null;
     }
 
+    // Page domain is lifecycle-only: a failure here must not take down the
+    // working console/network capture above (review: regression risk).
+    try {
+      await dbg.sendCommand('Page.enable');
+    } catch (err) {
+      console.warn('[BrowserCaptureManager] Page.enable failed (lifecycle capture off):', err);
+    }
+
     state.enabled = true;
-    wc.once('destroyed', () => this.drop(webContentsId));
+    wc.once('destroyed', () => this.drop(webContentsId, { closed: true }));
     return state;
   }
 
@@ -247,6 +276,31 @@ export class BrowserCaptureManager {
         if (isTextualContentType(ct)) {
           void this.fetchBody(state, entry);
         }
+        break;
+      }
+      case 'Page.frameNavigated': {
+        // Main frame only — subframe churn (ads, embeds) is noise here.
+        const frame = (params.frame ?? {}) as { parentId?: string; url?: string };
+        if (frame.parentId !== undefined) break;
+        const url = frame.url ?? '';
+        // Collapse consecutive same-URL navigations (SPA replaceState churn,
+        // redirect hops that settle on the same URL).
+        const last = state.lifecycle[state.lifecycle.length - 1];
+        if (last?.type === 'navigated' && last.url === url) break;
+        this.pushLifecycle(state, { type: 'navigated', url, ts: Date.now() });
+        break;
+      }
+      case 'Page.navigatedWithinDocument': {
+        // SPA route change (history.pushState) — the page content can change
+        // completely without a frameNavigated, so record it as a navigation.
+        const url = typeof params.url === 'string' ? params.url : '';
+        const last = state.lifecycle[state.lifecycle.length - 1];
+        if (last?.type === 'navigated' && last.url === url) break;
+        this.pushLifecycle(state, { type: 'navigated', url, ts: Date.now() });
+        break;
+      }
+      case 'Page.loadEventFired': {
+        this.pushLifecycle(state, { type: 'loaded', ts: Date.now() });
         break;
       }
       default:
@@ -306,6 +360,13 @@ export class BrowserCaptureManager {
     state.console.push(entry);
     if (state.console.length > MAX_CAPTURE_ENTRIES) {
       state.console.splice(0, state.console.length - MAX_CAPTURE_ENTRIES);
+    }
+  }
+
+  private pushLifecycle(state: CaptureState, entry: LifecycleEntry): void {
+    state.lifecycle.push(entry);
+    if (state.lifecycle.length > MAX_LIFECYCLE_ENTRIES) {
+      state.lifecycle.splice(0, state.lifecycle.length - MAX_LIFECYCLE_ENTRIES);
     }
   }
 
@@ -378,8 +439,36 @@ export class BrowserCaptureManager {
     state.totalBodyBytes = 0;
   }
 
-  /** Stop capturing for a webContents and remove all listeners. */
-  drop(webContentsId: number): void {
+  /**
+   * Drain lifecycle events, destructively: each event is reported to exactly
+   * one consumer (the browser.console.get clear semantics, but in one call —
+   * lifecycle is inlined into every tool result, so a non-destructive read
+   * would repeat the same events forever). Falls back to pending closure
+   * records when the guest's state is already gone.
+   */
+  drainLifecycle(webContentsId: number): LifecycleEntry[] {
+    const state = this.states.get(webContentsId);
+    if (state) {
+      const entries = state.lifecycle;
+      state.lifecycle = [];
+      return entries;
+    }
+    const pending = this.pendingClosures.get(webContentsId);
+    if (pending) {
+      this.pendingClosures.delete(webContentsId);
+      return pending;
+    }
+    return [];
+  }
+
+  /**
+   * Stop capturing for a webContents and remove all listeners.
+   * `closed: true` marks a real guest departure (destroyed / unregistered):
+   * undrained lifecycle events plus a synthesized `closed` record survive in
+   * pendingClosures. A plain drop (DevTools stealing the debugger, enable
+   * failure) must NOT report a close — the guest is still there.
+   */
+  drop(webContentsId: number, opts?: { closed?: boolean }): void {
     const state = this.states.get(webContentsId);
     if (!state) return;
     try {
@@ -390,6 +479,18 @@ export class BrowserCaptureManager {
       // debugger already gone
     }
     this.states.delete(webContentsId);
+    if (opts?.closed) {
+      this.pendingClosures.set(webContentsId, [
+        ...state.lifecycle,
+        { type: 'closed', ts: Date.now() },
+      ]);
+      // Bound the map: evict the oldest closure record (insertion order).
+      while (this.pendingClosures.size > MAX_PENDING_CLOSURES) {
+        const oldest = this.pendingClosures.keys().next().value;
+        if (oldest === undefined) break;
+        this.pendingClosures.delete(oldest);
+      }
+    }
   }
 
   dropAll(): void {

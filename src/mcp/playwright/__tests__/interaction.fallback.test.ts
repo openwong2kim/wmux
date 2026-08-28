@@ -7,7 +7,7 @@ const { mockSendRpc, getPage } = vi.hoisted(() => ({
 
 vi.mock('../../wmux-client', () => ({
   sendRpc: (method: string, ...args: unknown[]) =>
-    method.startsWith('browser.lease.')
+    (method.startsWith('browser.lease.') || method === 'browser.lifecycle.get')
       ? Promise.resolve({ token: null })
       : mockSendRpc(method, ...args),
 }));

@@ -47,6 +47,12 @@ export interface ConnectionScope {
    * an import cycle (dom-intelligence imports this module); it owns the cast.
    */
   elementCache?: unknown[];
+  /**
+   * browser_snapshot auto-diff baselines (surface key → last snapshot), per
+   * connection for the same reason as elementCache. Typed as unknown to avoid
+   * an import cycle (snapshotCache imports this module); it owns the cast.
+   */
+  snapshotCache?: unknown;
 }
 
 const storage = new AsyncLocalStorage<ConnectionScope>();

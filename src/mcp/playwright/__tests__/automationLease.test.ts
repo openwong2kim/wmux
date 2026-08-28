@@ -32,6 +32,8 @@ describe('automation lease workspace scope', () => {
     expect(body).toHaveBeenCalledWith({ workspaceId: 'ws-test', surfaceId: 'surface-1' });
     expect(mockSendRpc.mock.calls).toEqual([
       ['browser.lease.acquire', { workspaceId: 'ws-test', surfaceId: 'surface-1' }],
+      // Lifecycle drain rides inside the lease bracket, before the body.
+      ['browser.lifecycle.get', { workspaceId: 'ws-test', surfaceId: 'surface-1' }],
       ['browser.lease.release', { token: 'lease-1' }],
     ]);
   });

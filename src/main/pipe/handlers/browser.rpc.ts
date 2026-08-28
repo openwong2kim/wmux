@@ -514,7 +514,19 @@ export function registerBrowserRpc(
   };
 
   // Tear down capture listeners whenever a surface's CDP session is unregistered.
-  webviewCdpManager.setCaptureCleanup((webContentsId) => captureManager.drop(webContentsId));
+  // unregister() fires only on real guest departure (destroyed / different-guest
+  // replacement — same-guest re-register skips it), so record it as a close for
+  // the lifecycle drain.
+  webviewCdpManager.setCaptureCleanup((webContentsId) =>
+    captureManager.drop(webContentsId, { closed: true }),
+  );
+
+  // browser.lifecycle.get target-tolerance: remember the last webContentsId a
+  // scope drained from, so a close can still be reported after the target is
+  // gone (getTarget() then returns null and pendingClosures is keyed by the
+  // departed webContentsId).
+  const lastLifecycleTarget = new Map<string, number>();
+  const MAX_LIFECYCLE_TARGETS = 64; // scope keys are per caller×surface — bound the map (review)
 
   // #517 lightweight mode: every automation op that drives the guest must hold
   // an AutomationLease for its duration so a hidden, throttled guest runs
@@ -1238,6 +1250,38 @@ export function registerBrowserRpc(
     const entries = captureManager.getConsole(target.webContentsId);
     if (clear) captureManager.clearConsole(target.webContentsId);
     return { entries };
+  });
+
+  /**
+   * browser.lifecycle.get
+   * Destructively drain browser lifecycle events (navigated/loaded/closed) for
+   * inline injection into MCP tool results. Target-tolerant: a gone target is
+   * answered from the pending-closure records of the scope's last-known guest
+   * instead of erroring — a closed tab is exactly the case this must report.
+   * params: { surfaceId?: string }
+   */
+  registerLeased('browser.lifecycle.get', async (params, scope) => {
+    const surfaceId = typeof params['surfaceId'] === 'string' ? params['surfaceId'] : undefined;
+    const scopeKey = `${scope ?? ''}|${surfaceId ?? ''}`;
+
+    const target = webviewCdpManager.getTarget(surfaceId, scope);
+    if (!target) {
+      const lastId = lastLifecycleTarget.get(scopeKey);
+      if (lastId === undefined) return { entries: [] };
+      lastLifecycleTarget.delete(scopeKey);
+      return { entries: captureManager.drainLifecycle(lastId) };
+    }
+
+    lastLifecycleTarget.delete(scopeKey);
+    lastLifecycleTarget.set(scopeKey, target.webContentsId);
+    while (lastLifecycleTarget.size > MAX_LIFECYCLE_TARGETS) {
+      const oldest = lastLifecycleTarget.keys().next().value;
+      if (oldest === undefined) break;
+      lastLifecycleTarget.delete(oldest);
+    }
+    const state = await captureManager.ensure(target.webContentsId);
+    if (!state) return { entries: [] };
+    return { entries: captureManager.drainLifecycle(target.webContentsId) };
   });
 
   /**
