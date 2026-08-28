@@ -42,11 +42,21 @@ export const INTERACTIVE_SELECTOR =
  * re-numbering from 0. Without this, a shrunk interactive set between two
  * snapshots would leave two elements sharing one ref, and resolveRef's
  * `.first()` data-attr fallback (snapshot.ts) could pick the wrong one.
+ *
+ * `filter: 'interactive'` drops the heading (h1–h3) listing so the output is
+ * the ref listing alone — the DOM-path equivalent of stripNonInteractive on
+ * the a11y path (issue #1066: the param used to be dropped silently here).
+ * The `Page:`/`URL:` header always stays: the auto-diff URL guard in
+ * inspection.ts parses the `URL: …` line out of this text.
  */
-export function buildDomSnapshotExpression(rootSelector?: string): string {
+export function buildDomSnapshotExpression(
+  rootSelector?: string,
+  opts?: { filter?: 'interactive' },
+): string {
   return `(() => {
     const sel = ${JSON.stringify(INTERACTIVE_SELECTOR)};
     const rootSel = ${JSON.stringify(rootSelector ?? null)};
+    const interactiveOnly = ${JSON.stringify(opts?.filter === 'interactive')};
     const root = rootSel ? document.querySelector(rootSel) : document;
     if (!root) return 'No element matches selector: ' + rootSel;
     document.querySelectorAll('[data-wmux-ref]').forEach(el => el.removeAttribute('data-wmux-ref'));
@@ -56,7 +66,7 @@ export function buildDomSnapshotExpression(rootSelector?: string): string {
     const url = location.href;
     const lines = ['Page: ' + title, 'URL: ' + url, ''];
     if (rootSel) lines.push('Scope: ' + rootSel, '');
-    root.querySelectorAll('h1,h2,h3').forEach(h => {
+    if (!interactiveOnly) root.querySelectorAll('h1,h2,h3').forEach(h => {
       lines.push(h.tagName + ': ' + (h.textContent || '').trim().substring(0, 80));
     });
     lines.push('', 'Interactive elements (use ref number for click/fill/type):');

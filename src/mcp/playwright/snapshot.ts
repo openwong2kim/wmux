@@ -342,7 +342,17 @@ export async function generateSnapshot(
   // useless, and the interactive listing beats an empty result (issue #353).
   if (!tree || isRootOnly(tree)) {
     try {
-      const domSnapshot = (await page.evaluate(buildDomSnapshotExpression())) as string;
+      // Honor filter on the DOM path too — the listing drops its heading block
+      // (#1066: the param used to be dropped silently on this early return).
+      let domSnapshot = (await page.evaluate(
+        buildDomSnapshotExpression(undefined, { filter: options?.filter }),
+      )) as string;
+      // aria has no DOM-listing equivalent — say so instead of silently
+      // returning the ai-style listing (same honesty rule as the selector
+      // path in inspection.ts). 'ai' needs no note: the listing IS ai-style.
+      if (format === 'aria') {
+        domSnapshot = `(note: aria format unavailable — the a11y tree collapsed, returning the DOM interactive listing)\n${domSnapshot}`;
+      }
       // Leave the refMap empty so resolveRef falls through to the data-wmux-ref
       // locator the DOM expression just tagged.
       pageRefMaps.set(page, []);

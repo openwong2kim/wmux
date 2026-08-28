@@ -336,7 +336,7 @@ export function registerInspectionTools(server: McpServer, deps: BrowserToolDeps
           // resolve via the data-attr locator — mark any live Page's a11y
           // refMap stale so resolveRef cannot use it.
           const evaluate = page ? pageEvaluator(page) : rpcEvaluator(scope);
-          text = String(await evaluate(buildDomSnapshotExpression(selector)));
+          text = String(await evaluate(buildDomSnapshotExpression(selector, { filter })));
           if (text.startsWith('No element matches selector:')) {
             // A miss is an error, not a snapshot — and must never become the
             // diff baseline for the next call (review consensus).
@@ -346,10 +346,11 @@ export function registerInspectionTools(server: McpServer, deps: BrowserToolDeps
             };
           }
           if (page) markDomRefsActive(page);
-          // The DOM listing has no format/filter concept — be honest about it
-          // instead of silently ignoring the params (review consensus).
-          if (format || filter) {
-            text = `(note: format/filter are ignored when selector is given)\n${text}`;
+          // filter is honored by the DOM listing (#1066); aria is not — be
+          // honest about it instead of silently ignoring the param (review
+          // consensus). 'ai' needs no note: the listing IS ai-style.
+          if (format === 'aria') {
+            text = `(note: aria format is ignored when selector is given)\n${text}`;
           }
         } else if (page) {
           text = await generateSnapshot(page, {
@@ -360,11 +361,15 @@ export function registerInspectionTools(server: McpServer, deps: BrowserToolDeps
           // Fallback: extract page structure via RPC evaluation. Tags interactive
           // elements with data-wmux-ref so interaction tools can resolve them.
           // Same expression the page-mode root-only fallthrough runs (snapshot.ts),
-          // via the shared buildDomSnapshotExpression() helper.
+          // via the shared buildDomSnapshotExpression() helper — filter honored,
+          // aria noted, same as there (#1066).
           const result = await sendScopedBrowserRpc<{ value: string }>('browser.evaluate', scope, {
-            expression: buildDomSnapshotExpression(),
+            expression: buildDomSnapshotExpression(undefined, { filter }),
           });
           text = result.value;
+          if (format === 'aria') {
+            text = `(note: aria format unavailable — no live page, returning the DOM interactive listing)\n${text}`;
+          }
         }
 
         // Auto-diff: a repeat snapshot with the same attributes returns a diff
