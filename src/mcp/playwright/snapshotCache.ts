@@ -90,3 +90,28 @@ export function setSnapshotBaseline(
 export function invalidateSnapshotBaseline(workspaceId: string | undefined, surfaceId: string | undefined): void {
   getStore().delete(snapshotSurfaceKey(workspaceId, surfaceId));
 }
+
+/**
+ * Drop the baseline unless it already describes `currentUrl`.
+ *
+ * Post-body drains (#1063 follow-up) use this instead of the unconditional
+ * invalidate: when browser_snapshot itself ran during a navigation, the fn
+ * has just written a baseline for the page's FINAL URL — nuking it would
+ * self-destruct the diff cache the call just primed. A baseline whose URL
+ * matches the last drained `navigated` URL is that exact case; anything else
+ * (mismatch, or either URL unknown) is conservatively invalidated, because
+ * the read-side URL guard in getSnapshotBaseline is fail-open when a URL is
+ * missing and a stale URL-less baseline would otherwise survive forever.
+ */
+export function invalidateSnapshotBaselineIfStale(
+  workspaceId: string | undefined,
+  surfaceId: string | undefined,
+  currentUrl: string | undefined,
+): void {
+  const store = getStore();
+  const key = snapshotSurfaceKey(workspaceId, surfaceId);
+  const entry = store.get(key);
+  if (!entry) return;
+  if (entry.url !== undefined && currentUrl !== undefined && entry.url === currentUrl) return;
+  store.delete(key);
+}

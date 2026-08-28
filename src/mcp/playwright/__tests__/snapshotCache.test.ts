@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import {
   getSnapshotBaseline,
   invalidateSnapshotBaseline,
+  invalidateSnapshotBaselineIfStale,
   setSnapshotBaseline,
   snapshotSurfaceKey,
 } from '../snapshotCache';
@@ -37,5 +38,31 @@ describe('snapshot baseline URL guard', () => {
   it('keeps legacy behavior when neither side knows a url', () => {
     setSnapshotBaseline(key, 'ai||', 'tree');
     expect(getSnapshotBaseline(key, 'ai||')?.text).toBe('tree');
+  });
+});
+
+describe('invalidateSnapshotBaselineIfStale (post-body drain)', () => {
+  it('preserves a baseline that matches the current URL', () => {
+    setSnapshotBaseline(key, 'ai||', 'tree', 'https://a.test/');
+    invalidateSnapshotBaselineIfStale('ws-1', 'surf-1', 'https://a.test/');
+    expect(getSnapshotBaseline(key, 'ai||', 'https://a.test/')?.text).toBe('tree');
+  });
+
+  it('invalidates on URL mismatch', () => {
+    setSnapshotBaseline(key, 'ai||', 'tree', 'https://a.test/');
+    invalidateSnapshotBaselineIfStale('ws-1', 'surf-1', 'https://b.test/');
+    expect(getSnapshotBaseline(key, 'ai||', 'https://a.test/')).toBeNull();
+  });
+
+  it('invalidates conservatively when either URL is unknown', () => {
+    setSnapshotBaseline(key, 'ai||', 'tree', 'https://a.test/');
+    invalidateSnapshotBaselineIfStale('ws-1', 'surf-1', undefined);
+    expect(getSnapshotBaseline(key, 'ai||')).toBeNull();
+
+    // URL-less baseline: the read-side guard is fail-open for these, so the
+    // stale-check must not let them survive a navigation.
+    setSnapshotBaseline(key, 'ai||', 'tree');
+    invalidateSnapshotBaselineIfStale('ws-1', 'surf-1', 'https://a.test/');
+    expect(getSnapshotBaseline(key, 'ai||')).toBeNull();
   });
 });
