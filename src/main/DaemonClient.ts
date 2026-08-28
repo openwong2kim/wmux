@@ -14,6 +14,7 @@ import type {
   LanLinkPeersListResult,
 } from '../shared/lanlink';
 import { stripReplayQuerySequences } from '../shared/replayQuerySanitizer';
+import { createSessionPipeMarkers } from '../daemon/sessionPipeMarkers';
 import { SessionPipeStreamScanner } from './daemon/sessionPipeStreamScanner';
 import { DAEMON_RPC_TIMEOUT_MS } from '../shared/timeouts';
 import {
@@ -803,6 +804,7 @@ export class DaemonClient extends EventEmitter {
     // scanner returns ordered events; this closure only fans them out onto the
     // EventBus, preserving the original emit signatures and ordering.
     const scanner = new SessionPipeStreamScanner({
+      markers: createSessionPipeMarkers(this.authToken),
       stripReplay: stripReplayQuerySequences,
     });
     this.sessionScanners.set(sessionId, scanner);

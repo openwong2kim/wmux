@@ -159,8 +159,9 @@ describe('#1002 — pane-restructure terminal adoption (source-level)', () => {
     // The scheduler queue belongs to the instance. Discarding it on the way out
     // would drop bytes the adopting mount is the only reader of, and (unlike
     // the dispose path) no resync follows to replace them.
-    expect(mainEffect).toMatch(/if \(!canPark\) discardTerminalOutput\(terminal\);/);
-    expect(mainEffect).toMatch(/const disposeTerminal = \(\) => \{\s*\n\s*discardTerminalOutput\(terminal\);\s*\n\s*disposeWhenDragEnds\(\(\) => terminal\.dispose\(\)\);/);
+    expect(mainEffect).toMatch(/const disposeTerminal = \(\) => \{[\s\S]{0,360}?discardTerminalOutput\(terminal\);\s*\n\s*disposeWhenDragEnds\(\(\) => terminal\.dispose\(\)\);/);
+    expect(mainEffect).toMatch(/parkTerminal\(ptyId, terminal, parkElement, disposeTerminal\);/);
+    expect(mainEffect).not.toMatch(/if \(canPark\)[\s\S]{0,120}?discardTerminalOutput\(terminal\)/);
   });
 
   it('releases the addons it loaded before parking', () => {
@@ -171,6 +172,6 @@ describe('#1002 — pane-restructure terminal adoption (source-level)', () => {
   });
 
   it('still disposes directly when the terminal cannot be parked', () => {
-    expect(mainEffect).toMatch(/\} else \{\s*\n\s*disposeWhenDragEnds\(\(\) => terminal\.dispose\(\)\);\s*\n\s*\}/);
+    expect(mainEffect).toMatch(/\} else \{\s*\n\s*disposeTerminal\(\);\s*\n\s*\}/);
   });
 });

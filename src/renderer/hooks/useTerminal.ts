@@ -18,7 +18,8 @@ import { claimFit } from '../utils/fitGuard';
 import { createAutoSelectionCopy } from '../utils/autoSelectionCopy';
 import { createOsc52Handler } from '../utils/osc52Clipboard';
 import {
-  createReplayMute, isReplayMuted, beginReplayWrite, resetReplayMute,
+  createReplayMute, getTerminalReplayMute, disposeTerminalReplayMute,
+  isReplayMuted, beginReplayWrite,
   type ReplayMute,
 } from '../terminal/replayMute';
 import { terminalFontFamilyCss } from '../utils/terminalFont';
@@ -1028,6 +1029,11 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         })()
         : {}),
     });
+
+    // #1014: xterm keeps parsing while the pane is parked and adopted into a
+    // new React mount. Share the mute with the terminal instance so an
+    // in-flight replay cannot become live-authorized during that handoff.
+    replayMuteRef.current = getTerminalReplayMute(terminal);
 
     const fitAddon = new FitAddon();
     const searchAddon = new SearchAddon();
@@ -2407,11 +2413,6 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     resizeObserver.observe(container);
 
     return () => {
-      // #998: a terminal disposed mid-parse never delivers its write callback,
-      // so release the replay mute here rather than leaving the next terminal
-      // that reuses this hook unable to accept a clipboard write.
-      resetReplayMute(replayMuteRef.current);
-
       // #1002: can this terminal be handed to the next mount instead of being
       // disposed? Only when every source of truth for this pane has settled on
       // it. Each rung below is a state where the adopting mount — which skips
@@ -2522,7 +2523,6 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       // post-dispose drain write would throw. A PARKED terminal keeps its
       // queue: it is the same instance the next mount will drain, and there is
       // no resync behind it to replace what we would discard here (#1002).
-      if (!canPark) discardTerminalOutput(terminal);
       // #582: defer terminal.dispose() if a mouse drag is active on any
       // terminal. xterm nullifies _renderService before removing its
       // document-level mouseup/mousemove listeners — a mouseup landing on the
@@ -2532,6 +2532,10 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       // deferring only the internal dispose is safe. See disposeWhenDragEnds
       // for the wait/force policy.
       const disposeTerminal = () => {
+        // A terminal disposed mid-parse never delivers its write callback.
+        // Invalidate this terminal's mute only at FINAL disposal, not when it
+        // is parked for adoption: its xterm write buffer survives the mount.
+        disposeTerminalReplayMute(terminal);
         discardTerminalOutput(terminal);
         disposeWhenDragEnds(() => terminal.dispose());
       };
@@ -2551,7 +2555,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         // than it used to.
         parkTerminal(ptyId, terminal, parkElement, disposeTerminal);
       } else {
-        disposeWhenDragEnds(() => terminal.dispose());
+        disposeTerminal();
       }
       terminalRef.current = null;
       fitAddonRef.current = null;

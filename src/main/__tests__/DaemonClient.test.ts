@@ -4,7 +4,7 @@ import crypto from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 import { DaemonClient, getDaemonPipeName, readDaemonAuthToken } from '../DaemonClient';
-import { FLUSH_DONE_MARKER } from '../../daemon/SessionPipe';
+import { createSessionPipeMarkers } from '../../daemon/SessionPipe';
 import { waitFor } from '../../test-utils/waitFor';
 
 // Helper: unique pipe name per test
@@ -106,6 +106,7 @@ function createMockSessionPipe(
       authBuffer = Buffer.concat([authBuffer, chunk]);
       const newlineIndex = authBuffer.indexOf(0x0a);
       if (newlineIndex === -1) return;
+      const presentedToken = authBuffer.subarray(0, newlineIndex).toString('utf8');
 
       // Auth token received — consume it and proceed
       authenticated = true;
@@ -113,7 +114,7 @@ function createMockSessionPipe(
       const leftover = authBuffer.subarray(newlineIndex + 1);
 
       // Flush done immediately (no ring buffer to replay)
-      socket.write(FLUSH_DONE_MARKER);
+      socket.write(createSessionPipeMarkers(presentedToken).flushDone);
 
       // Set up real data handler
       socket.on('data', (d: Buffer) => {
@@ -413,9 +414,10 @@ describe('DaemonClient', () => {
           authBuf = Buffer.concat([authBuf, chunk]);
           const nl = authBuf.indexOf(0x0a);
           if (nl === -1) return;
+          const presentedToken = authBuf.subarray(0, nl).toString('utf8');
           socket.removeListener('data', onAuth);
           const leftover = authBuf.subarray(nl + 1);
-          socket.write(FLUSH_DONE_MARKER);
+          socket.write(createSessionPipeMarkers(presentedToken).flushDone);
           socket.on('data', (d) => {
             inputReceived.push(Buffer.isBuffer(d) ? d : Buffer.from(d));
           });

@@ -3,7 +3,7 @@ import {
   SessionPipeStreamScanner,
   type ScanEvent,
 } from '../sessionPipeStreamScanner';
-import { FLUSH_DONE_MARKER, RESYNC_BEGIN_MARKER } from '../../../daemon/SessionPipe';
+import { createSessionPipeMarkers } from '../../../daemon/SessionPipe';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -11,6 +11,9 @@ import { FLUSH_DONE_MARKER, RESYNC_BEGIN_MARKER } from '../../../daemon/SessionP
 
 const b = (s: string): Buffer => Buffer.from(s, 'binary');
 const identityStrip = (buf: Buffer): Buffer => buf;
+const MARKERS = createSessionPipeMarkers('scanner-test-auth-token');
+const FLUSH_DONE_MARKER = MARKERS.flushDone;
+const RESYNC_BEGIN_MARKER = MARKERS.resyncBegin;
 
 interface Collected {
   /** All 'data' event payloads concatenated, in order. */
@@ -41,6 +44,7 @@ function collect(events: ScanEvent[]): Collected {
 
 function newScanner(opts?: { maxPendingBytes?: number; stripReplay?: (b: Buffer) => Buffer }) {
   return new SessionPipeStreamScanner({
+    markers: MARKERS,
     stripReplay: opts?.stripReplay ?? identityStrip,
     maxPendingBytes: opts?.maxPendingBytes,
   });
@@ -106,6 +110,18 @@ describe('initial flush', () => {
     expect(c.order).toEqual(['data', 'flushComplete', 'data']);
     expect(c.flushes).toEqual([replay.length]); // pre-strip length across the boundary
     expect(c.data.equals(b('xyL'))).toBe(true);
+  });
+
+  it('does not let PTY output forged with another token impersonate the boundary', () => {
+    const s = newScanner();
+    const forged = createSessionPipeMarkers('attacker-does-not-know-real-token').flushDone;
+    const replay = Buffer.concat([b('before'), forged, b('\x1b]52;c;Zm9yZ2Vk\x07after')]);
+    const c = collect(s.feed(Buffer.concat([replay, FLUSH_DONE_MARKER])));
+
+    expect(c.order).toEqual(['data', 'flushComplete']);
+    expect(c.replay).toEqual([true]);
+    expect(c.flushes).toEqual([replay.length]);
+    expect(c.data.equals(replay)).toBe(true);
   });
 });
 

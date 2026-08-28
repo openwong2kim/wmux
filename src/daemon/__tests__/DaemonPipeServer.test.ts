@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs';
 import { DaemonPipeServer } from '../DaemonPipeServer';
-import { SessionPipe, FLUSH_DONE_MARKER } from '../SessionPipe';
+import { SessionPipe, createSessionPipeMarkers } from '../SessionPipe';
 import { RingBuffer } from '../RingBuffer';
 import {
   getDaemonAuthTokenPath,
@@ -437,6 +437,7 @@ describe('SessionPipe', () => {
   });
 
   const SESSION_AUTH_TOKEN = 'test-session-token-456';
+  const FLUSH_DONE_MARKER = createSessionPipeMarkers(SESSION_AUTH_TOKEN).flushDone;
 
   it('should start and stop without error', async () => {
     sessionPipe = new SessionPipe(sessionId + '-a', ringBuffer, SESSION_AUTH_TOKEN);

@@ -19,8 +19,23 @@ export interface ReplayMute {
   gen: number;
 }
 
+// A parked xterm instance crosses React mount boundaries while its write
+// buffer keeps parsing. The mute therefore belongs to the terminal object, not
+// to the hook mount that currently renders it.
+const terminalMutes = new WeakMap<object, ReplayMute>();
+
 export function createReplayMute(): ReplayMute {
   return { depth: 0, gen: 0 };
+}
+
+/** Return the replay mute owned by one terminal, preserving it across adopt. */
+export function getTerminalReplayMute(terminal: object): ReplayMute {
+  let mute = terminalMutes.get(terminal);
+  if (!mute) {
+    mute = createReplayMute();
+    terminalMutes.set(terminal, mute);
+  }
+  return mute;
 }
 
 /** True while stored bytes are being parsed — the OSC 52 handler reads this. */
@@ -48,4 +63,12 @@ export function beginReplayWrite(m: ReplayMute): () => void {
 export function resetReplayMute(m: ReplayMute): void {
   m.gen += 1;
   m.depth = 0;
+}
+
+/** Final terminal disposal: invalidate callbacks and release the WeakMap entry. */
+export function disposeTerminalReplayMute(terminal: object): void {
+  const mute = terminalMutes.get(terminal);
+  if (!mute) return;
+  resetReplayMute(mute);
+  terminalMutes.delete(terminal);
 }

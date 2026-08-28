@@ -5,12 +5,15 @@ import crypto from 'node:crypto';
 import { getSessionSocketPath } from '../shared/constants';
 import type { RingBuffer } from './RingBuffer';
 import { generateSnapshot, MAX_SCROLLBACK } from './HeadlessSnapshot';
-import { FLUSH_DONE_MARKER, RESYNC_BEGIN_MARKER } from './sessionPipeMarkers';
+import {
+  createSessionPipeMarkers,
+  type SessionPipeMarkers,
+} from './sessionPipeMarkers';
 
-// Re-exported for existing importers; the definitions live in the dependency-free
-// sessionPipeMarkers module so the Electron main bundle can import the markers
-// without dragging SessionPipe's @xterm/headless dependency into its Vite graph.
-export { FLUSH_DONE_MARKER, RESYNC_BEGIN_MARKER };
+// Re-exported for existing importers; the factory lives in the dependency-free
+// sessionPipeMarkers module so the Electron main bundle can derive the same
+// authenticated markers without dragging @xterm/headless into its Vite graph.
+export { createSessionPipeMarkers };
 
 /**
  * TASK-10: initial-attach flushes at or above this size go through the
@@ -38,6 +41,7 @@ export class SessionPipe {
   private flushed = false;
   private reflushInFlight = false;
   private connectionRate = { count: 0, resetAt: 0 };
+  private readonly markers: SessionPipeMarkers;
 
   /**
    * Fired when the AUTHED client socket goes away (close or error) without a
@@ -62,7 +66,9 @@ export class SessionPipe {
      * the flush ships raw bytes exactly as before.
      */
     private readonly getDims?: () => { cols: number; rows: number },
-  ) {}
+  ) {
+    this.markers = createSessionPipeMarkers(authToken);
+  }
 
   /** Get the platform-specific pipe name for this session.
    * P7: Unix 소켓은 ~/.wmux{suffix}/ 하위 — shared 헬퍼가 클라이언트
@@ -276,7 +282,7 @@ export class SessionPipe {
     if (payload.length > 0) {
       socket.write(payload);
     }
-    socket.write(FLUSH_DONE_MARKER);
+    socket.write(this.markers.flushDone);
     this.flushed = true;
   }
 
@@ -437,7 +443,7 @@ export class SessionPipe {
     try {
       // T0 — one synchronous block: announce, suppress live writes, capture
       // the ring, arm the tee. Nothing can arrive between these statements.
-      socket.write(RESYNC_BEGIN_MARKER);
+      socket.write(this.markers.resyncBegin);
       this.flushed = false;
       const initial = this.ringBuffer.readAll();
       opts.bridge.on('data', tee);
@@ -477,7 +483,7 @@ export class SessionPipe {
         const tailRaw = teeQueue.length > 0 ? Buffer.concat(teeQueue.splice(0)) : null;
         socket.write(RIS);
         socket.write(outcome.payload);
-        socket.write(FLUSH_DONE_MARKER);
+        socket.write(this.markers.flushDone);
         this.flushed = true;
         if (tailRaw && tailRaw.length > 0) {
           socket.write(tailRaw);
@@ -496,7 +502,7 @@ export class SessionPipe {
       const raw = this.ringBuffer.readAll();
       socket.write(RIS);
       socket.write(raw);
-      socket.write(FLUSH_DONE_MARKER);
+      socket.write(this.markers.flushDone);
       this.flushed = true;
       // A3 rollout metric: fallback-rate by reason.
       // eslint-disable-next-line no-console

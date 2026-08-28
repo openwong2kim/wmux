@@ -76,4 +76,10 @@ describe('useTerminal OSC 52 clipboard-write wiring (source-level lock)', () => 
   it('disposes the OSC 52 handler on teardown (no leak across remounts)', () => {
     expect(SRC).toMatch(/osc52Disposable\.dispose\(\)/);
   });
+
+  it('preserves an in-flight mute across terminal parking and adoption', () => {
+    expect(SRC).toMatch(/replayMuteRef\.current\s*=\s*getTerminalReplayMute\(terminal\)/);
+    expect(SRC).toMatch(/const disposeTerminal = \(\) => \{[\s\S]{0,320}?disposeTerminalReplayMute\(terminal\)/);
+    expect(SRC).not.toMatch(/return \(\) => \{[\s\S]{0,180}?resetReplayMute/);
+  });
 });

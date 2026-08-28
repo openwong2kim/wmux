@@ -4,6 +4,8 @@ import {
   isReplayMuted,
   beginReplayWrite,
   resetReplayMute,
+  getTerminalReplayMute,
+  disposeTerminalReplayMute,
 } from '../replayMute';
 
 /**
@@ -69,5 +71,21 @@ describe('replayMute', () => {
     beginReplayWrite(m);
     resetReplayMute(m);
     expect(isReplayMuted(m)).toBe(false);
+  });
+
+  it('keeps an in-flight mute when the same terminal is adopted by a new mount', () => {
+    const terminal = {};
+    const originalMount = getTerminalReplayMute(terminal);
+    const release = beginReplayWrite(originalMount);
+
+    const adoptingMount = getTerminalReplayMute(terminal);
+    expect(adoptingMount).toBe(originalMount);
+    expect(isReplayMuted(adoptingMount)).toBe(true);
+
+    release();
+    expect(isReplayMuted(adoptingMount)).toBe(false);
+
+    disposeTerminalReplayMute(terminal);
+    expect(getTerminalReplayMute(terminal)).not.toBe(originalMount);
   });
 });

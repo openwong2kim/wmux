@@ -1,4 +1,4 @@
-import { FLUSH_DONE_MARKER, RESYNC_BEGIN_MARKER } from '../../daemon/sessionPipeMarkers';
+import type { SessionPipeMarkers } from '../../daemon/sessionPipeMarkers';
 
 /**
  * Stream events produced while scanning a session pipe's byte stream.
@@ -52,8 +52,14 @@ export class SessionPipeStreamScanner {
   private carry: Buffer = EMPTY;
   private readonly maxPendingBytes: number;
   private readonly stripReplay: (b: Buffer) => Buffer;
+  private readonly markers: SessionPipeMarkers;
 
-  constructor(opts: { maxPendingBytes?: number; stripReplay: (b: Buffer) => Buffer }) {
+  constructor(opts: {
+    markers: SessionPipeMarkers;
+    maxPendingBytes?: number;
+    stripReplay: (b: Buffer) => Buffer;
+  }) {
+    this.markers = opts.markers;
     this.maxPendingBytes = opts.maxPendingBytes ?? DEFAULT_MAX_PENDING_BYTES;
     this.stripReplay = opts.stripReplay;
   }
@@ -124,19 +130,19 @@ export class SessionPipeStreamScanner {
       this.armed = false;
       this.pendingChunks = [];
       this.pendingBytes = 0;
-      const markerIndex = combined.indexOf(FLUSH_DONE_MARKER);
+      const markerIndex = combined.indexOf(this.markers.flushDone);
       if (markerIndex !== -1) {
         return this.finishDiscardedOverflow(combined, markerIndex);
       }
       this.discardingOverflowReplay = true;
-      const hold = this.matchingPrefixLen(combined, FLUSH_DONE_MARKER);
+      const hold = this.matchingPrefixLen(combined, this.markers.flushDone);
       this.overflowCarry = hold > 0
         ? Buffer.from(combined.subarray(combined.length - hold))
         : EMPTY;
       return [];
     }
 
-    const markerIndex = combined.indexOf(FLUSH_DONE_MARKER);
+    const markerIndex = combined.indexOf(this.markers.flushDone);
     if (markerIndex === -1) return [];
 
     this._mode = 'live';
@@ -175,7 +181,7 @@ export class SessionPipeStreamScanner {
     // Emit data after marker (if any real-time data arrived in the same chunk).
     // After both the initial flush and a re-flush the scanner is disarmed, so
     // this tail is plain live output — passed straight through like the original.
-    const afterMarker = combined.subarray(markerIndex + FLUSH_DONE_MARKER.length);
+    const afterMarker = combined.subarray(markerIndex + this.markers.flushDone.length);
     if (afterMarker.length > 0) {
       events.push({ type: 'data', data: afterMarker, replay: false });
     }
@@ -192,11 +198,11 @@ export class SessionPipeStreamScanner {
       ? Buffer.concat([this.overflowCarry, buf])
       : buf;
     this.overflowCarry = EMPTY;
-    const markerIndex = combined.indexOf(FLUSH_DONE_MARKER);
+    const markerIndex = combined.indexOf(this.markers.flushDone);
     if (markerIndex !== -1) {
       return this.finishDiscardedOverflow(combined, markerIndex);
     }
-    const hold = this.matchingPrefixLen(combined, FLUSH_DONE_MARKER);
+    const hold = this.matchingPrefixLen(combined, this.markers.flushDone);
     if (hold > 0) {
       this.overflowCarry = Buffer.from(combined.subarray(combined.length - hold));
     }
@@ -210,7 +216,7 @@ export class SessionPipeStreamScanner {
     // No replay reached the renderer, so recoveredBytes=0 preserves any .txt
     // cache and still settles an in-flight attach/resync cleanly.
     const events: ScanEvent[] = [{ type: 'flushComplete', recoveredBytes: 0 }];
-    const afterMarker = combined.subarray(markerIndex + FLUSH_DONE_MARKER.length);
+    const afterMarker = combined.subarray(markerIndex + this.markers.flushDone.length);
     if (afterMarker.length > 0) {
       events.push({ type: 'data', data: afterMarker, replay: false });
     }
@@ -228,7 +234,7 @@ export class SessionPipeStreamScanner {
     const combined = this.carry.length > 0 ? Buffer.concat([this.carry, buf]) : buf;
     this.carry = EMPTY;
 
-    const markerIndex = combined.indexOf(RESYNC_BEGIN_MARKER);
+    const markerIndex = combined.indexOf(this.markers.resyncBegin);
     if (markerIndex !== -1) {
       const events: ScanEvent[] = [];
       if (markerIndex > 0) {
@@ -238,7 +244,7 @@ export class SessionPipeStreamScanner {
       // disarm: the resync episode is now owned by the FLUSH_DONE cycle.
       this.armed = false;
       this._mode = 'accumulating';
-      const residual = combined.subarray(markerIndex + RESYNC_BEGIN_MARKER.length);
+      const residual = combined.subarray(markerIndex + this.markers.resyncBegin.length);
       if (residual.length > 0) {
         events.push(...this.accumulate(residual));
       }
@@ -248,7 +254,7 @@ export class SessionPipeStreamScanner {
     // No full marker in this buffer. Only a tail that is a strict prefix of the
     // marker can still complete on the next chunk; everything before it is
     // definitely live data.
-    const hold = this.matchingPrefixLen(combined, RESYNC_BEGIN_MARKER);
+    const hold = this.matchingPrefixLen(combined, this.markers.resyncBegin);
     if (hold === 0) {
       return combined.length > 0 ? [{ type: 'data', data: combined, replay: false }] : [];
     }
