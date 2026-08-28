@@ -6,6 +6,7 @@ import {
   discardTerminalOutput,
   getQueuedCharCount,
   promoteTerminalToPriorityDrain,
+  rebindTerminalOutputWriter,
   __resetTerminalOutputSchedulerForTests,
   type SchedulableTerminal,
 } from '../terminalOutputScheduler';
@@ -157,6 +158,22 @@ describe('terminalOutputScheduler', () => {
       write: (data) => replayWrites.push(data),
     });
     expect(replayWrites).toEqual(['history']);
+    expect(t.writes).toEqual([]);
+  });
+
+  it('rebinds retained custom writes when a parked terminal is adopted', () => {
+    const t = makeTerminal();
+    const oldMount: string[] = [];
+    const newMount: string[] = [];
+    writeTerminalOutput(t, 'history', {
+      foreground: false,
+      retainWhenHidden: true,
+      write: (data) => oldMount.push(data),
+    });
+    rebindTerminalOutputWriter(t, (data) => newMount.push(data));
+    flushTerminalOutput(t);
+    expect(oldMount).toEqual([]);
+    expect(newMount).toEqual(['history']);
     expect(t.writes).toEqual([]);
   });
 

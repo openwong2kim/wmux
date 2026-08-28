@@ -50,6 +50,7 @@ import {
   markTerminalClean,
   getQueuedCharCount,
   promoteTerminalToPriorityDrain,
+  rebindTerminalOutputWriter,
 } from '../terminal/terminalOutputScheduler';
 import { reconnectPtyWithRetry as reconnectPtyWithRetryImpl } from './reconnectPtyWithRetry';
 import { adoptTerminal, parkTerminal, restoreParkedViewport, type ParkedTerminal } from '../terminal/terminalPark';
@@ -2085,6 +2086,9 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     const writeReplayOutput = (data: string) => {
       writeReplayed(terminal, data, replayMuteRef.current);
     };
+    // #1014: a parked terminal keeps its retained scheduler queue. Rebind its
+    // replay writer to this adopting mount's mute ref before that queue drains.
+    rebindTerminalOutputWriter(terminal, writeReplayOutput);
     const restingCursor = new RestingCursorGuard((seq) => {
       deliverPtyData({ data: seq, replay: false });
     });

@@ -329,6 +329,7 @@ describe('max pending overflow', () => {
     // +6 bytes → 12 > 10 cap → drop replay and scan for the real boundary.
     expect(s.feed(b('789012'))).toEqual([]);
     expect(s.mode).toBe('live');
+    expect(s.armResync()).toBe(false);
     // More pre-marker history is dropped, never relabelled as live.
     expect(s.feed(b('more-history'))).toEqual([]);
     const c = collect(s.feed(Buffer.concat([FLUSH_DONE_MARKER, b('after')])));
@@ -336,6 +337,8 @@ describe('max pending overflow', () => {
     expect(c.flushes).toEqual([0]);
     expect(c.replay).toEqual([false]);
     expect(c.data.equals(b('after'))).toBe(true);
+    expect(s.armResync()).toBe(true);
+    s.disarmResync();
   });
 
   it('settles safely when the marker arrives in the same overflowing chunk', () => {

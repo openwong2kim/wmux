@@ -847,8 +847,7 @@ export class DaemonClient extends EventEmitter {
   armSessionResync(sessionId: string): boolean {
     const scanner = this.sessionScanners.get(sessionId);
     if (!scanner || scanner.mode !== 'live') return false;
-    scanner.armResync();
-    return true;
+    return scanner.armResync();
   }
 
   /**

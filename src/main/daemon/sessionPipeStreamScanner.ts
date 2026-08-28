@@ -63,8 +63,10 @@ export class SessionPipeStreamScanner {
   }
 
   /** Start watching a live stream for the in-band RESYNC_BEGIN_MARKER. */
-  armResync(): void {
+  armResync(): boolean {
+    if (this.discardingOverflowReplay) return false;
     this.armed = true;
+    return true;
   }
 
   /**
@@ -129,7 +131,7 @@ export class SessionPipeStreamScanner {
       this.discardingOverflowReplay = true;
       const hold = this.matchingPrefixLen(combined, FLUSH_DONE_MARKER);
       this.overflowCarry = hold > 0
-        ? combined.subarray(combined.length - hold)
+        ? Buffer.from(combined.subarray(combined.length - hold))
         : EMPTY;
       return [];
     }
@@ -196,7 +198,7 @@ export class SessionPipeStreamScanner {
     }
     const hold = this.matchingPrefixLen(combined, FLUSH_DONE_MARKER);
     if (hold > 0) {
-      this.overflowCarry = combined.subarray(combined.length - hold);
+      this.overflowCarry = Buffer.from(combined.subarray(combined.length - hold));
     }
     return [];
   }
@@ -204,6 +206,7 @@ export class SessionPipeStreamScanner {
   private finishDiscardedOverflow(combined: Buffer, markerIndex: number): ScanEvent[] {
     this.discardingOverflowReplay = false;
     this.overflowCarry = EMPTY;
+    this.armed = false;
     // No replay reached the renderer, so recoveredBytes=0 preserves any .txt
     // cache and still settles an in-flight attach/resync cleanly.
     const events: ScanEvent[] = [{ type: 'flushComplete', recoveredBytes: 0 }];

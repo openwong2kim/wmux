@@ -61,14 +61,15 @@ interface WriteOptions {
    *  receipt — see glyphRepaint.ts header). */
   onWritten?: (chars: number) => void;
   /** Optional hand-off used when these bytes need parse-scoped behavior.
-   *  Queued chunks retain the writer they arrived with, so replay and live
-   *  output can share a terminal queue without losing provenance. */
+   *  Queued chunks retain whether they need this writer, while the queue entry
+   *  keeps the latest mount's function so parked terminals can be adopted
+   *  without retaining a stale closure. */
   write?: (data: string) => void;
 }
 
 interface QueuedChunk {
   data: string;
-  write?: (data: string) => void;
+  customWrite: boolean;
 }
 
 interface QueueEntry {
@@ -91,6 +92,8 @@ interface QueueEntry {
    *  marker or the hold safety timeout, never by another terminal's drain. */
   heldForSync: boolean;
   onWritten?: (chars: number) => void;
+  /** Latest mount's custom writer. Retained chunks store only a boolean tag. */
+  customWrite?: (data: string) => void;
 }
 
 // Cadence: hidden output is invisible, so its first hand-off can wait a
@@ -215,9 +218,8 @@ function scheduleDrain(delayMs: number): void {
 }
 
 /** Fetch this terminal's queue entry, creating an empty one on first write.
- *  `onWritten` is re-bound on every call because the latest registration belongs
- *  to the current mount — a stale closure from a previous mount would notify a
- *  component that is already gone. */
+ *  Mount-owned callbacks are re-bound on every applicable call so a parked
+ *  terminal never drains through stale closures after adoption. */
 function getOrCreateEntry(
   terminal: SchedulableTerminal,
   options: WriteOptions,
@@ -229,7 +231,17 @@ function getOrCreateEntry(
   }
   // Latest registration wins — the hook closure belongs to the current mount.
   entry.onWritten = options.onWritten;
+  if (options.write) entry.customWrite = options.write;
   return entry;
+}
+
+/** Rebind retained custom chunks to the mount that currently owns `terminal`. */
+export function rebindTerminalOutputWriter(
+  terminal: SchedulableTerminal,
+  write: (data: string) => void,
+): void {
+  const entry = queue.get(terminal);
+  if (entry) entry.customWrite = write;
 }
 
 /** Drop already-consumed chunks so a long-lived queue doesn't grow without
@@ -250,11 +262,11 @@ function compactConsumedChunks(entry: QueueEntry): void {
 function takeQueuedChunk(entry: QueueEntry, limit: number): QueuedChunk | null {
   let data = '';
   let remaining = limit;
-  let write: QueuedChunk['write'];
+  let customWrite: boolean | undefined;
   while (remaining > 0 && entry.chunkIndex < entry.chunks.length) {
     const chunk = entry.chunks[entry.chunkIndex];
-    if (data && chunk.write !== write) break;
-    write = chunk.write;
+    if (data && chunk.customWrite !== customWrite) break;
+    customWrite = chunk.customWrite;
     if (chunk.data.length <= remaining) {
       data += chunk.data;
       remaining -= chunk.data.length;
@@ -268,7 +280,7 @@ function takeQueuedChunk(entry: QueueEntry, limit: number): QueuedChunk | null {
     }
   }
   compactConsumedChunks(entry);
-  return data ? { data, write } : null;
+  return data ? { data, customWrite: customWrite ?? false } : null;
 }
 
 /** True when this entry still holds unconsumed output. Reads the cursor rather
@@ -283,8 +295,12 @@ function writeQueuedChunk(entry: QueueEntry): boolean {
   const chunk = takeQueuedChunk(entry, CHUNK_CHARS);
   if (!chunk) return true;
   try {
-    if (chunk.write) chunk.write(chunk.data);
-    else entry.terminal.write(chunk.data);
+    if (chunk.customWrite) {
+      if (!entry.customWrite) throw new Error('custom terminal writer is not bound');
+      entry.customWrite(chunk.data);
+    } else {
+      entry.terminal.write(chunk.data);
+    }
     entry.onWritten?.(chunk.data.length);
     return true;
   } catch {
@@ -426,7 +442,7 @@ function releaseHeldWithSyntheticEnd(terminal: SchedulableTerminal, entry: Queue
   entry.priority = true;
   entry.chunks.push({
     data: SYNC_OUTPUT_END,
-    write: entry.chunks[entry.chunks.length - 1]?.write,
+    customWrite: entry.chunks[entry.chunks.length - 1]?.customWrite ?? false,
   });
   entry.queuedChars += SYNC_OUTPUT_END.length;
   scheduleDrain(0);
@@ -474,7 +490,7 @@ function holdForSyncFrame(
   entry.retained = false;
   entry.priority = true;
   entry.heldForSync = true;
-  entry.chunks.push({ data, write: options.write });
+  entry.chunks.push({ data, customWrite: options.write !== undefined });
   entry.queuedChars += data.length;
   if (entry.queuedChars > MAX_QUEUE_CHARS) {
     // A single frame ballooned past the cap (never-closing frame / runaway
@@ -500,7 +516,7 @@ function releaseSyncFrame(
   entry.retained = false;
   entry.heldForSync = false;
   entry.priority = true;
-  entry.chunks.push({ data, write: options.write });
+  entry.chunks.push({ data, customWrite: options.write !== undefined });
   entry.queuedChars += data.length;
   if (entry.queuedChars > MAX_QUEUE_CHARS) {
     flushTerminalOutput(terminal);
@@ -548,7 +564,7 @@ export function writeTerminalOutput(
         console.log('[wmux:hidden-retention] engaged — hidden pane output retained without parsing');
       }
     }
-    entry.chunks.push({ data, write: options.write });
+    entry.chunks.push({ data, customWrite: options.write !== undefined });
     entry.queuedChars += data.length;
     if (entry.queuedChars > MAX_QUEUE_CHARS) {
       queue.delete(terminal);
@@ -616,7 +632,7 @@ export function writeTerminalOutput(
   // ahead of it, order preserved); a background write without retainWhenHidden
   // means retention was turned off mid-flight.
   entry.retained = false;
-  entry.chunks.push({ data, write: options.write });
+  entry.chunks.push({ data, customWrite: options.write !== undefined });
   entry.queuedChars += data.length;
 
   if (entry.queuedChars > MAX_QUEUE_CHARS) {
@@ -662,7 +678,7 @@ export function flushTerminalOutput(terminal: SchedulableTerminal): void {
     // handed-over frame paints (twin of the safety-timeout release).
     entry.chunks.push({
       data: SYNC_OUTPUT_END,
-      write: entry.chunks[entry.chunks.length - 1]?.write,
+      customWrite: entry.chunks[entry.chunks.length - 1]?.customWrite ?? false,
     });
     entry.queuedChars += SYNC_OUTPUT_END.length;
   }
