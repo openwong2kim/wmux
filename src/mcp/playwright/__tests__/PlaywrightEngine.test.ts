@@ -1352,3 +1352,161 @@ describe('PlaywrightEngine external backend contract (#517)', () => {
     expect(mockSendRpc.mock.calls.filter((c) => c[0] === 'browser.open')).toHaveLength(0);
   }, 15_000);
 });
+
+
+// ── Phase 2: 'chrome' backend marker behavior ──────────────────────────────
+describe('PlaywrightEngine chrome backend (Phase 2)', () => {
+  beforeEach(() => {
+    (PlaywrightEngine as unknown as { instance: PlaywrightEngine | null }).instance = null;
+    mockSendRpc.mockReset();
+    mockConnectOverCDP.mockReset();
+  });
+
+  it('does not take the external short-circuit and clears any stale shellUrl', async () => {
+    mockSendRpc.mockImplementation((method: string) =>
+      method === 'browser.cdp.info'
+        ? Promise.resolve({
+            cdpPort: 18901,
+            // A stale shellUrl from a pre-flip builtin response must be dropped
+            // by the chrome marker even if a buggy main were to send one.
+            targetsScoped: true,
+            workspaceBackend: 'chrome',
+            targets: [],
+          })
+        : Promise.resolve({}),
+    );
+    mockConnectOverCDP.mockRejectedValue(new Error('no chrome in unit test'));
+
+    const engine = PlaywrightEngine.getInstance();
+    scope(engine).setWorkspaceIdResolver(async () => 'ws-chrome');
+
+    // Must NOT reject with the external contract error; the connect attempt
+    // proves the short-circuit was not taken.
+    const page = await priv(engine).getPage().catch((e: Error) => e);
+    expect(String(page)).not.toContain('EXTERNAL_BACKEND_UNSUPPORTED');
+    expect(mockConnectOverCDP).toHaveBeenCalled();
+  });
+
+  it('isShellPage is a no-op under the chrome marker (localhost pages selectable)', async () => {
+    mockSendRpc.mockImplementation((method: string) =>
+      method === 'browser.cdp.info'
+        ? Promise.resolve({ cdpPort: 18901, workspaceBackend: 'chrome', targets: [] })
+        : Promise.resolve({}),
+    );
+    const engine = PlaywrightEngine.getInstance();
+    // Feed the marker through the single ingest funnel.
+    (engine as unknown as { cacheShellUrl: (i: unknown) => void }).cacheShellUrl({
+      workspaceBackend: 'chrome',
+      targets: [],
+    });
+    const isShell = (engine as unknown as { isShellPage: (u: string) => boolean }).isShellPage;
+    expect(isShell.call(engine, 'http://localhost:5173/')).toBe(false);
+    expect(isShell.call(engine, 'chrome://gpu/')).toBe(false);
+  });
+});
+
+
+// ── Phase 2.5: per-workspace Chrome profiles → per-workspace CDP ports ─────
+describe('PlaywrightEngine ensureConnected workspace switch (Phase 2.5)', () => {
+  beforeEach(() => {
+    (PlaywrightEngine as unknown as { instance: PlaywrightEngine | null }).instance = null;
+    mockSendRpc.mockReset();
+    mockConnectOverCDP.mockReset();
+  });
+
+  it('re-resolves cdp.info and reconnects when a different workspace asks', async () => {
+    const ports: Record<string, number> = { 'ws-a': 18901, 'ws-b': 18906 };
+    mockSendRpc.mockImplementation((method: string, params?: { workspaceId?: string }) =>
+      method === 'browser.cdp.info'
+        ? Promise.resolve({
+            cdpPort: ports[params?.workspaceId ?? ''] ?? 18901,
+            workspaceBackend: 'chrome',
+            targetsScoped: true,
+            targets: [],
+          })
+        : Promise.resolve({}),
+    );
+    const sessions: FakeSession[] = [];
+    mockConnectOverCDP.mockResolvedValue(makeFakeBrowser(sessions));
+
+    const engine = PlaywrightEngine.getInstance();
+    await engine.ensureConnected('ws-a');
+    // Same workspace again: live connection reused, no second connect.
+    await engine.ensureConnected('ws-a');
+    expect(mockConnectOverCDP).toHaveBeenCalledTimes(1);
+    expect(mockConnectOverCDP).toHaveBeenLastCalledWith('http://localhost:18901');
+
+    // Different workspace: the short-circuit must NOT pin ws-b to ws-a's
+    // browser — cdp.info re-runs and the connection moves to ws-b's port.
+    await engine.ensureConnected('ws-b');
+    expect(mockConnectOverCDP).toHaveBeenCalledTimes(2);
+    expect(mockConnectOverCDP).toHaveBeenLastCalledWith('http://localhost:18906');
+  });
+});
+
+
+// ── Phase 3: live-Chrome attach (wsEndpoint from cdp.info) ─────────────────
+describe('PlaywrightEngine live-Chrome ws endpoint (Phase 3)', () => {
+  beforeEach(() => {
+    (PlaywrightEngine as unknown as { instance: PlaywrightEngine | null }).instance = null;
+    mockSendRpc.mockReset();
+    mockConnectOverCDP.mockReset();
+  });
+
+  it('connects over the ws endpoint verbatim when cdp.info reports one', async () => {
+    mockSendRpc.mockImplementation((method: string) =>
+      method === 'browser.cdp.info'
+        ? Promise.resolve({
+            wsEndpoint: 'ws://127.0.0.1:9333/devtools/browser/abc',
+            workspaceBackend: 'chrome',
+            targetsScoped: true,
+            targets: [],
+          })
+        : Promise.resolve({}),
+    );
+    const sessions: FakeSession[] = [];
+    mockConnectOverCDP.mockResolvedValue(makeFakeBrowser(sessions));
+
+    const engine = PlaywrightEngine.getInstance();
+    await engine.ensureConnected('ws-live');
+    expect(mockConnectOverCDP).toHaveBeenCalledWith('ws://127.0.0.1:9333/devtools/browser/abc');
+    // Same workspace again: live connection reused.
+    await engine.ensureConnected('ws-live');
+    expect(mockConnectOverCDP).toHaveBeenCalledTimes(1);
+  });
+});
+
+
+// ── Chrome-backend lifecycle mirror (dogfood P1: inline events went silent) ─
+describe('PlaywrightEngine lifecycle mirror (chrome backend)', () => {
+  it('records main-frame navigations and closes per scope, drains destructively, dedupes', () => {
+    const engine = new (PlaywrightEngine as unknown as new () => PlaywrightEngine)();
+    type Handler = (arg?: unknown) => void;
+    const handlers = new Map<string, Handler>();
+    const mainFrame = { url: () => 'https://a.test/' };
+    const page = {
+      on: (ev: string, fn: Handler) => handlers.set(ev, fn),
+      mainFrame: () => mainFrame,
+    };
+    const eng = engine as unknown as {
+      attachLifecycleMirror: (p: unknown, ws?: string, surf?: string) => void;
+      drainLocalLifecycle: (ws?: string, surf?: string) => Array<{ type: string; url?: string }>;
+    };
+    eng.attachLifecycleMirror(page, 'ws-1', 's-1');
+    // Duplicate attach must not double the listeners' effect.
+    eng.attachLifecycleMirror(page, 'ws-1', 's-1');
+
+    handlers.get('framenavigated')!(mainFrame);
+    handlers.get('framenavigated')!(mainFrame); // same URL → collapsed
+    handlers.get('framenavigated')!({ url: () => 'https://sub.test/' }); // subframe → ignored
+    handlers.get('close')!();
+
+    expect(eng.drainLocalLifecycle('ws-1', 's-1').map((e) => [e.type, e.url])).toEqual([
+      ['navigated', 'https://a.test/'],
+      ['closed', undefined],
+    ]);
+    // Destructive + scope-keyed.
+    expect(eng.drainLocalLifecycle('ws-1', 's-1')).toEqual([]);
+    expect(eng.drainLocalLifecycle('ws-2', 's-1')).toEqual([]);
+  });
+});

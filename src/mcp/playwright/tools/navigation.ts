@@ -2,7 +2,9 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { validateNavigationUrl } from '../../../shared/types';
 import { sendRpc } from '../../wmux-client';
+import { PlaywrightEngine } from '../PlaywrightEngine';
 import {
+  allowScopedRpcFallback,
   requireBrowserTargetScope,
   sendScopedBrowserRpc,
   type BrowserToolDeps,
@@ -130,6 +132,19 @@ export function registerNavigationTools(server: McpServer, deps: BrowserToolDeps
         }
 
         const scope = await requireBrowserTargetScope(deps, surfaceId);
+        // Chrome backend (dogfood P1): the RPC lane cannot target a chrome
+        // tab — its fallback would open a NEW tab and report success while
+        // the agent keeps reading the old page. Navigate the resolved page
+        // over Playwright instead. Builtin keeps the fast RPC lane.
+        const engine = PlaywrightEngine.getInstance();
+        if ((await engine.resolveWorkspaceBackend(scope.workspaceId)) === 'chrome') {
+          const page = await engine.getPageForScope(scope);
+          if (!page) throw new Error('browser_navigate: no chrome page resolved for this scope.');
+          await page.goto(url, { waitUntil: 'domcontentloaded' });
+          return {
+            content: [{ type: 'text' as const, text: `Navigated to ${page.url()}` }],
+          };
+        }
         // Use RPC for fast, reliable navigation (bypasses Playwright CDP discovery)
         await sendScopedBrowserRpc('browser.navigate', scope, { url });
         return {
@@ -155,6 +170,17 @@ export function registerNavigationTools(server: McpServer, deps: BrowserToolDeps
     async ({ surfaceId }) => {
       try {
         const scope = await requireBrowserTargetScope(deps, surfaceId);
+        // Chrome backend: browser.goBack has no chrome lane — go back on the
+        // resolved page over Playwright (dogfood P2).
+        const engine = PlaywrightEngine.getInstance();
+        if ((await engine.resolveWorkspaceBackend(scope.workspaceId)) === 'chrome') {
+          const page = await engine.getPageForScope(scope);
+          if (!page) throw new Error('browser_navigate_back: no chrome page resolved for this scope.');
+          await page.goBack({ waitUntil: 'domcontentloaded' }).catch(() => null);
+          return {
+            content: [{ type: 'text' as const, text: `Went back. Current URL: ${page.url()}` }],
+          };
+        }
         await sendScopedBrowserRpc('browser.goBack', scope);
 
         await new Promise((resolve) => setTimeout(resolve, 300));

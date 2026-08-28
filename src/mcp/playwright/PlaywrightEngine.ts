@@ -58,6 +58,13 @@ interface CdpInfoResponse {
    * main-side setting), merely reported on this per-workspace-scoped response.
    */
   workspaceBackend?: BrowserBackend;
+  /**
+   * Live-Chrome attach (Phase 3): the browser-level CDP WebSocket endpoint of
+   * the user's own Chrome (from its DevToolsActivePort). Mutually exclusive
+   * with cdpPort; when present, connect over it verbatim — there is no HTTP
+   * /json surface behind it.
+   */
+  wsEndpoint?: string;
   targets: CdpTargetInfo[];
 }
 
@@ -264,6 +271,12 @@ export class PlaywrightEngine {
     if (info.shellUrl && info.shellUrl.length > 0) {
       this.shellUrl = info.shellUrl;
     }
+    // A 'chrome' response never carries a shellUrl (there is no app shell in
+    // the dedicated instance). Drop any value learned before a builtin→chrome
+    // flip so a stale exact-match can't hide a chrome tab at that URL.
+    if (info.workspaceBackend === 'chrome') {
+      this.shellUrl = null;
+    }
     // Capture the backend marker alongside the shell URL (#517): every
     // browser.cdp.info response flows through here, so this is the single point
     // where the marker reaches the engine regardless of which finder made the
@@ -288,6 +301,10 @@ export class PlaywrightEngine {
    * for the guest webview.
    */
   private isShellPage(url: string): boolean {
+    // Chrome backend: the CDP endpoint is a real Chrome — there is no app
+    // shell to exclude, and the localhost heuristics below would misclassify
+    // the user's own dev-server tabs as the shell.
+    if (this.workspaceBackend === 'chrome') return false;
     if (this.shellUrl && url === this.shellUrl) return true;
     return isElectronShellUrl(url);
   }
@@ -325,16 +342,26 @@ export class PlaywrightEngine {
     return null;
   }
 
-  async connect(cdpPort: number): Promise<void> {
-    if (this.browser && this.cdpPort === cdpPort && this.browser.isConnected()) {
+  async connect(cdpPortOrWsEndpoint: number | string): Promise<void> {
+    // Ports build the HTTP endpoint (dedicated instances, Electron); a ws://
+    // string (live-Chrome attach) passes through verbatim — connectOverCDP
+    // accepts both. The short-circuit keys on the resolved endpoint.
+    const isPort = typeof cdpPortOrWsEndpoint === 'number';
+    const endpoint = isPort ? `http://localhost:${cdpPortOrWsEndpoint}` : cdpPortOrWsEndpoint;
+    const samePort = isPort && this.cdpPort === cdpPortOrWsEndpoint;
+    const sameWs = !isPort && this.cdpPort === null && this.connectedEndpoint === endpoint;
+    if (this.browser && (samePort || sameWs) && this.browser.isConnected()) {
       return;
     }
     await this.disconnect();
     // B0: first real use — initialize playwright-core's module graph now.
     const { chromium } = loadPlaywright();
-    this.browser = await chromium.connectOverCDP(`http://localhost:${cdpPort}`);
-    this.cdpPort = cdpPort;
-    console.error(`[PlaywrightEngine] Connected to CDP on port ${cdpPort}`);
+    this.browser = await chromium.connectOverCDP(endpoint);
+    // cdpPort stays null on ws connections: findViaJsonEndpoint (HTTP /json)
+    // has no surface to talk to there and is gated on this.cdpPort.
+    this.cdpPort = isPort ? cdpPortOrWsEndpoint : null;
+    this.connectedEndpoint = endpoint;
+    console.error(`[PlaywrightEngine] Connected to CDP at ${isPort ? `port ${cdpPortOrWsEndpoint}` : 'ws endpoint'}`);
 
     // Enable auto-attach so Electron webview targets become discoverable as Playwright pages.
     // Without this, <webview> tags in Electron are separate renderer processes that
@@ -358,6 +385,7 @@ export class PlaywrightEngine {
     const s = this.autoAttachSession;
     this.browser = null;
     this.cdpPort = null;
+    this.connectedEndpoint = null;
     this.autoAttachSession = null;
     // Drop the cached shell URL — a reconnect may target a different window
     // (different port) whose shell URL must be re-fetched, not reused.
@@ -365,6 +393,7 @@ export class PlaywrightEngine {
     // Drop the cached backend marker for the same reason — it is re-learned
     // from the next cdp.info response (#517).
     this.workspaceBackend = undefined;
+    this.connectedWorkspaceId = undefined;
     if (s) {
       await s.detach().catch(() => { /* session may already be gone */ });
     }
@@ -376,8 +405,20 @@ export class PlaywrightEngine {
     }
   }
 
+  /** Workspace whose cdp.info produced the current connection. Per-workspace
+   *  Chrome profiles (Phase 2.5) mean different workspaces can resolve to
+   *  DIFFERENT ports — a live connection for A must not be reused for B. */
+  private connectedWorkspaceId: string | undefined;
+  /** Resolved endpoint of the live connection (http URL or ws URL). */
+  private connectedEndpoint: string | null = null;
+
   async ensureConnected(workspaceId?: string): Promise<void> {
-    if (this.browser?.isConnected()) return;
+    if (
+      this.browser?.isConnected() &&
+      (workspaceId === undefined || this.connectedWorkspaceId === undefined || this.connectedWorkspaceId === workspaceId)
+    ) {
+      return;
+    }
 
     let lastError: unknown = null;
     for (let attempt = 1; attempt <= MAX_CONNECT_RETRIES; attempt++) {
@@ -387,6 +428,12 @@ export class PlaywrightEngine {
           workspaceId ? { workspaceId } : {},
         )) as CdpInfoResponse;
         this.cacheShellUrl(info);
+        // Live-Chrome attach reports a ws endpoint instead of a port.
+        if (typeof info.wsEndpoint === 'string' && info.wsEndpoint.startsWith('ws')) {
+          await this.connect(info.wsEndpoint);
+          this.connectedWorkspaceId = workspaceId;
+          return;
+        }
         if (
           typeof info.cdpPort !== 'number'
           || !Number.isInteger(info.cdpPort)
@@ -399,6 +446,7 @@ export class PlaywrightEngine {
           throw new CdpAttachInfoUnavailableError();
         }
         await this.connect(info.cdpPort);
+        this.connectedWorkspaceId = workspaceId;
         return;
       } catch (err) {
         if (err instanceof CdpAttachInfoUnavailableError) throw err;
@@ -506,7 +554,76 @@ export class PlaywrightEngine {
    */
   async getPageForScope(scope: BrowserTargetScope): Promise<Page | null> {
     assertBrowserTargetScope(scope);
-    return this.getPage(scope.surfaceId, scope.workspaceId);
+    const page = await this.getPage(scope.surfaceId, scope.workspaceId);
+    // Chrome backend: main's webContents-side lifecycle capture cannot see
+    // these tabs, so mirror navigations/closes engine-side (dogfood P1 — the
+    // #1063 inline events went silent under 'chrome').
+    if (page && this.workspaceBackend === 'chrome') {
+      this.attachLifecycleMirror(page, scope.workspaceId, scope.surfaceId);
+    }
+    return page;
+  }
+
+  /** Backend marker for tool-side path choices; resolves via one cdp.info
+   *  call when not yet learned (no connect attempt, so cheap on builtin). */
+  async resolveWorkspaceBackend(workspaceId?: string): Promise<BrowserBackend | undefined> {
+    if (this.workspaceBackend) return this.workspaceBackend;
+    try {
+      const info = (await sendRpc(
+        'browser.cdp.info',
+        workspaceId ? { workspaceId } : {},
+      )) as CdpInfoResponse;
+      this.cacheShellUrl(info);
+    } catch {
+      /* older main / cdp disabled — caller treats as builtin */
+    }
+    return this.workspaceBackend;
+  }
+
+  getWorkspaceBackend(): BrowserBackend | undefined {
+    return this.workspaceBackend;
+  }
+
+  // ── Chrome-backend lifecycle mirror (engine-side) ─────────────────────────
+
+  private readonly mirroredPages = new WeakSet<Page>();
+  private readonly localLifecycle = new Map<string, Array<{ type: 'navigated' | 'loaded' | 'closed'; url?: string; ts: number }>>();
+
+  private lifecycleKey(workspaceId?: string, surfaceId?: string): string {
+    return `ws:${workspaceId ?? ''}:surf:${surfaceId ?? ''}`;
+  }
+
+  private pushLocalLifecycle(key: string, entry: { type: 'navigated' | 'loaded' | 'closed'; url?: string; ts: number }): void {
+    const q = this.localLifecycle.get(key) ?? [];
+    const last = q[q.length - 1];
+    if (entry.type === 'navigated' && last?.type === 'navigated' && last.url === entry.url) return;
+    q.push(entry);
+    if (q.length > 20) q.splice(0, q.length - 20);
+    this.localLifecycle.set(key, q);
+  }
+
+  private attachLifecycleMirror(page: Page, workspaceId?: string, surfaceId?: string): void {
+    if (this.mirroredPages.has(page)) return;
+    this.mirroredPages.add(page);
+    const key = this.lifecycleKey(workspaceId, surfaceId);
+    page.on('framenavigated', (frame) => {
+      try {
+        if (frame !== page.mainFrame()) return;
+        this.pushLocalLifecycle(key, { type: 'navigated', url: frame.url(), ts: Date.now() });
+      } catch { /* page torn down mid-event */ }
+    });
+    page.on('close', () => {
+      this.pushLocalLifecycle(key, { type: 'closed', ts: Date.now() });
+    });
+  }
+
+  /** Destructive drain of engine-side lifecycle events (chrome backend). */
+  drainLocalLifecycle(workspaceId?: string, surfaceId?: string): Array<{ type: 'navigated' | 'loaded' | 'closed'; url?: string; ts: number }> {
+    const key = this.lifecycleKey(workspaceId, surfaceId);
+    const q = this.localLifecycle.get(key);
+    if (!q || q.length === 0) return [];
+    this.localLifecycle.delete(key);
+    return q;
   }
 
   /**

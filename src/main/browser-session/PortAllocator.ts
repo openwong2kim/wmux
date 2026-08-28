@@ -10,11 +10,16 @@ const DEFAULT_PORT_MAX = 18899;
 export class PortAllocator {
   private readonly min: number;
   private readonly max: number;
+  private readonly envVar: string | null;
   private allocatedPort: number | null = null;
 
-  constructor(portRange?: { min: number; max: number }) {
+  constructor(portRange?: { min: number; max: number; envVar?: string | null }) {
     this.min = portRange?.min ?? DEFAULT_PORT_MIN;
     this.max = portRange?.max ?? DEFAULT_PORT_MAX;
+    // undefined keeps the legacy WMUX_CDP_PORT behavior; null disables the
+    // env override entirely (the chrome launcher's allocator must not throw
+    // because the user pinned the Electron CDP port outside its range).
+    this.envVar = portRange?.envVar === undefined ? 'WMUX_CDP_PORT' : portRange.envVar;
   }
 
   /**
@@ -27,21 +32,21 @@ export class PortAllocator {
     }
 
     // Prefer env-specified port
-    const envPort = process.env.WMUX_CDP_PORT
-      ? Number(process.env.WMUX_CDP_PORT)
+    const envPort = this.envVar && process.env[this.envVar]
+      ? Number(process.env[this.envVar])
       : null;
 
     if (envPort !== null) {
       if (envPort < this.min || envPort > this.max) {
         throw new Error(
-          `WMUX_CDP_PORT ${envPort} is out of range (${this.min}-${this.max})`
+          `${this.envVar} ${envPort} is out of range (${this.min}-${this.max})`
         );
       }
       if (await this.isPortAvailable(envPort)) {
         this.allocatedPort = envPort;
         return envPort;
       }
-      throw new Error(`WMUX_CDP_PORT ${envPort} is already in use`);
+      throw new Error(`${this.envVar} ${envPort} is already in use`);
     }
 
     // Scan range for an available port

@@ -115,7 +115,7 @@ function isFunctionExpression(source: string): boolean {
  *  definition: the workspace delegates opens to the OS browser, so no target
  *  will ever appear and polling (forever, with timeout: 0) cannot succeed. */
 function isSetupError(message: string): boolean {
-  return /no webview target registered|WebContents unavailable|EXTERNAL_BACKEND_UNSUPPORTED/i.test(message);
+  return /no webview target registered|WebContents unavailable|EXTERNAL_BACKEND_UNSUPPORTED|CHROME_BACKEND_RPC_UNSUPPORTED/i.test(message);
 }
 
 function sleep(ms: number): Promise<void> {

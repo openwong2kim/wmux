@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState, useCallback, type ReactNode } from 'react';
+import { BROWSER_BACKENDS, isBrowserBackend } from '../../../shared/browserBackend';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '../../stores';
 import { selectWorkspaceMuteRows } from '../../stores/selectors/workspaceProjections';
@@ -2198,11 +2199,17 @@ function TabTerminal() {
             // Locked until the boot read of main's persisted value lands, so an
             // edit can never race the async hydration and be overwritten.
             disabled={!browserBackendHydrated}
-            onChange={(v) => setBrowserBackend(v === 'external' ? 'external' : 'builtin')}
-            options={[
-              { value: 'builtin', label: t('settings.browserBackendBuiltin') },
-              { value: 'external', label: t('settings.browserBackendExternal') },
-            ]}
+            onChange={(v) => setBrowserBackend(isBrowserBackend(v) ? v : 'builtin')}
+            options={BROWSER_BACKENDS.map((b) => ({
+              value: b,
+              label: t(
+                b === 'builtin'
+                  ? 'settings.browserBackendBuiltin'
+                  : b === 'external'
+                    ? 'settings.browserBackendExternal'
+                    : 'settings.browserBackendChrome',
+              ),
+            }))}
           />
         </SettingRow>
         <SettingRow id="browserlight" label={t('settings.browserLightweight')} description={t('settings.browserLightweightDesc')}>

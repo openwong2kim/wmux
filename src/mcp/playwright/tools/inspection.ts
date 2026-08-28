@@ -407,6 +407,19 @@ export function registerInspectionTools(server: McpServer, deps: BrowserToolDeps
     BROWSER_SCREENSHOT_SHAPE,
     async ({ fullPage, ref, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
       try {
+        // Chrome backend (dogfood P2): browser.screenshot has no chrome lane —
+        // whole-page shots go over the resolved Playwright page instead.
+        if (!ref && (await engine.resolveWorkspaceBackend(scope.workspaceId)) === 'chrome') {
+          const page = await engine.getPageForScope(scope);
+          if (page) {
+            const buf = await page.screenshot({ ...(fullPage && { fullPage: true }), type: 'png' });
+            return {
+              content: [
+                { type: 'image' as const, data: buf.toString('base64'), mimeType: 'image/png' },
+              ],
+            };
+          }
+        }
         // Try Playwright for element-level screenshots (ref)
         if (ref) {
           const page = await engine.getPageForScope(scope);

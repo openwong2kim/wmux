@@ -7,6 +7,7 @@ import {
 } from './browserScope';
 
 import { invalidateSnapshotBaseline } from './snapshotCache';
+import { PlaywrightEngine } from './PlaywrightEngine';
 
 // Renew well inside main's 30s RPC-lease TTL so a long-running tool op
 // (browser_wait_for, slow page interactions) never lapses mid-flight.
@@ -31,8 +32,15 @@ async function drainLifecycleEvents(scope: BrowserTargetScope): Promise<Lifecycl
     const res = await sendScopedBrowserRpc<{ entries?: LifecycleEventWire[] }>(
       'browser.lifecycle.get',
       scope,
+    ).catch(() => ({ entries: [] as LifecycleEventWire[] }));
+    // Chrome backend: main cannot see chrome tabs — merge the engine-side
+    // mirror (attached in getPageForScope) so #1063's inline events survive
+    // the backend switch (dogfood P1).
+    const local = PlaywrightEngine.getInstance().drainLocalLifecycle(
+      scope.workspaceId,
+      scope.surfaceId,
     );
-    const entries = Array.isArray(res?.entries) ? res.entries : [];
+    const entries = [...(Array.isArray(res?.entries) ? res.entries : []), ...local];
     // A navigation or close means any cached snapshot baseline for this
     // surface describes a page that no longer exists.
     if (entries.some((e) => e.type === 'navigated' || e.type === 'closed')) {
