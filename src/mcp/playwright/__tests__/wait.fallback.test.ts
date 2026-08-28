@@ -5,7 +5,8 @@ import { describe, expect, it, vi, beforeEach } from 'vitest';
 // browser.evaluate RPC channel instead of throwing "No browser page available".
 
 // #517: tool handlers are wrapped in withAutomationLease, which issues
-// browser.lease.* RPCs around the real operation. Record that traffic
+// browser.lease.* RPCs around the real operation, plus a browser.lifecycle.get
+// drain before the body. Record that infrastructure traffic
 // separately so ordinary fallback assertions see only browser.evaluate calls.
 const { mockSendRpc, mockLeaseRpc, getPage, getInstance } = vi.hoisted(() => {
   const getPage = vi.fn();
@@ -18,7 +19,7 @@ const { mockSendRpc, mockLeaseRpc, getPage, getInstance } = vi.hoisted(() => {
 });
 vi.mock('../../wmux-client', () => ({
   sendRpc: (method: string, ...args: unknown[]) =>
-    typeof method === 'string' && method.startsWith('browser.lease.')
+    typeof method === 'string' && (method.startsWith('browser.lease.') || method === 'browser.lifecycle.get')
       ? mockLeaseRpc(method, ...args)
       : mockSendRpc(method, ...args),
 }));
@@ -277,7 +278,12 @@ describe('browser_wait RPC fallback', () => {
 
     await wait({ selector: '#app', surfaceId: 'surface-1' });
 
-    expect(mockLeaseRpc.mock.calls).toEqual([
+    // The lifecycle drain rides between acquire and the body — filter it out:
+    // this test is about the lease bracket, not the drain.
+    const leaseCalls = mockLeaseRpc.mock.calls.filter(
+      (c) => c[0] !== 'browser.lifecycle.get',
+    );
+    expect(leaseCalls).toEqual([
       ['browser.lease.acquire', { workspaceId: 'ws-test', surfaceId: 'surface-1' }],
       ['browser.lease.release', { token: 'lease-1' }],
     ]);

@@ -31,21 +31,32 @@ export const INTERACTIVE_SELECTOR =
  * documents), which is exactly why it covers background surfaces where the
  * CDP accessibility tree returns root-only.
  *
+ * `rootSelector` (optional) scopes the interactive query and heading listing
+ * to the first matching element — the 100-element cap then applies within that
+ * scope, which is the point: a scoped snapshot of a busy page surfaces the
+ * region the agent cares about instead of the first 100 elements site-wide.
+ * The stale-ref wipe stays document-wide so an out-of-scope element can never
+ * retain a stale ref that collides with the fresh numbering.
+ *
  * Stale-tag hygiene: prior `data-wmux-ref` attributes are removed before
  * re-numbering from 0. Without this, a shrunk interactive set between two
  * snapshots would leave two elements sharing one ref, and resolveRef's
  * `.first()` data-attr fallback (snapshot.ts) could pick the wrong one.
  */
-export function buildDomSnapshotExpression(): string {
+export function buildDomSnapshotExpression(rootSelector?: string): string {
   return `(() => {
     const sel = ${JSON.stringify(INTERACTIVE_SELECTOR)};
+    const rootSel = ${JSON.stringify(rootSelector ?? null)};
+    const root = rootSel ? document.querySelector(rootSel) : document;
+    if (!root) return 'No element matches selector: ' + rootSel;
     document.querySelectorAll('[data-wmux-ref]').forEach(el => el.removeAttribute('data-wmux-ref'));
-    const interactives = [...document.querySelectorAll(sel)].slice(0, 100);
+    const interactives = [...root.querySelectorAll(sel)].slice(0, 100);
     interactives.forEach((el, i) => el.setAttribute('data-wmux-ref', String(i)));
     const title = document.title;
     const url = location.href;
     const lines = ['Page: ' + title, 'URL: ' + url, ''];
-    document.querySelectorAll('h1,h2,h3').forEach(h => {
+    if (rootSel) lines.push('Scope: ' + rootSel, '');
+    root.querySelectorAll('h1,h2,h3').forEach(h => {
       lines.push(h.tagName + ': ' + (h.textContent || '').trim().substring(0, 80));
     });
     lines.push('', 'Interactive elements (use ref number for click/fill/type):');

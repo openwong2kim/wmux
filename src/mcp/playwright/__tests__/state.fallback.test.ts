@@ -15,7 +15,7 @@ import { describe, expect, it, vi, beforeEach } from 'vitest';
 const { mockSendRpc } = vi.hoisted(() => ({ mockSendRpc: vi.fn() }));
 vi.mock('../../wmux-client', () => ({
   sendRpc: (method: string, ...args: unknown[]) =>
-    typeof method === 'string' && method.startsWith('browser.lease.')
+    typeof method === 'string' && (method.startsWith('browser.lease.') || method === 'browser.lifecycle.get')
       ? Promise.resolve({ token: null })
       : mockSendRpc(method, ...args),
 }));

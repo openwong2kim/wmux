@@ -6,9 +6,67 @@ import {
   type BrowserToolDeps,
 } from './browserScope';
 
+import { invalidateSnapshotBaseline } from './snapshotCache';
+
 // Renew well inside main's 30s RPC-lease TTL so a long-running tool op
 // (browser_wait_for, slow page interactions) never lapses mid-flight.
 const RENEW_INTERVAL_MS = 10_000;
+
+// ---------------------------------------------------------------------------
+// Inline lifecycle events: before each tool body runs, drain the browser
+// lifecycle ring (navigations / loads / closes since the last tool call) from
+// main and prepend them to the tool's result, so the agent never needs a
+// polling round-trip to learn the page moved underneath it. Drain failure is
+// silent — older mains without browser.lifecycle.get must not break tools.
+// ---------------------------------------------------------------------------
+
+interface LifecycleEventWire {
+  type: 'navigated' | 'loaded' | 'closed';
+  url?: string;
+  ts: number;
+}
+
+async function drainLifecycleEvents(scope: BrowserTargetScope): Promise<LifecycleEventWire[]> {
+  try {
+    const res = await sendScopedBrowserRpc<{ entries?: LifecycleEventWire[] }>(
+      'browser.lifecycle.get',
+      scope,
+    );
+    const entries = Array.isArray(res?.entries) ? res.entries : [];
+    // A navigation or close means any cached snapshot baseline for this
+    // surface describes a page that no longer exists.
+    if (entries.some((e) => e.type === 'navigated' || e.type === 'closed')) {
+      invalidateSnapshotBaseline(scope.workspaceId, scope.surfaceId);
+    }
+    return entries;
+  } catch {
+    return [];
+  }
+}
+
+function formatAgo(ts: number): string {
+  const s = Math.max(0, Math.round((Date.now() - ts) / 1000));
+  return s < 60 ? `${s}s ago` : `${Math.round(s / 60)}m ago`;
+}
+
+/**
+ * Prepend drained events to an MCP tool result. Only results that duck-type
+ * as { content: [...] } are touched (isError results included) — anything
+ * else passes through unchanged.
+ */
+function prependBrowserEvents<T>(result: T, events: LifecycleEventWire[]): T {
+  if (events.length === 0) return result;
+  const shaped = result as { content?: Array<{ type: string; text?: string }> } | null | undefined;
+  if (!shaped || !Array.isArray(shaped.content)) return result;
+  const lines = events.map(
+    (e) => `- ${e.type}${e.url ? `: ${e.url}` : ''} (${formatAgo(e.ts)})`,
+  );
+  shaped.content.unshift({
+    type: 'text',
+    text: `[browser events since last tool call]\n${lines.join('\n')}`,
+  });
+  return result;
+}
 
 /**
  * Automation lease for Playwright-direct operations (#517 lightweight mode).
@@ -71,8 +129,9 @@ export async function withAutomationLease<T>(
       if (lateToken) sendRpc('browser.lease.renew', { token: lateToken }).catch(() => {});
     }, RENEW_INTERVAL_MS);
     (lateRenew as { unref?: () => void }).unref?.();
+    const lateEvents = await drainLifecycleEvents(scope);
     try {
-      return await fn(scope);
+      return prependBrowserEvents(await fn(scope), lateEvents);
     } finally {
       done = true;
       clearInterval(lateTimer);
@@ -92,8 +151,9 @@ export async function withAutomationLease<T>(
   // Do not keep the MCP process alive just to renew a lease.
   (renewTimer as { unref?: () => void }).unref?.();
 
+  const events = await drainLifecycleEvents(scope);
   try {
-    return await fn(scope);
+    return prependBrowserEvents(await fn(scope), events);
   } finally {
     clearInterval(renewTimer);
     sendRpc('browser.lease.release', { token: heldToken }).catch(() => {

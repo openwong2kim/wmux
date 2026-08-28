@@ -12,6 +12,9 @@ export interface SnapshotOptions {
   depth?: number;
   /** Maximum output length in characters (default 50000) */
   maxLength?: number;
+  /** 'interactive' = strip non-interactive nodes up front ('ai' format only),
+   *  not just on overflow — the measured-dominant agent usage. */
+  filter?: 'interactive';
 }
 
 /** CDP Accessibility.AXNode shape (subset of fields we use) */
@@ -152,6 +155,18 @@ export interface RefEntry {
 
 /** Per-page storage of the last generated refMap to avoid concurrency issues */
 const pageRefMaps = new WeakMap<Page, RefEntry[]>();
+
+/**
+ * Mark a page's refs as DOM-attribute-based: an empty a11y refMap makes
+ * resolveRef fall through to the `[data-wmux-ref]` locator. Used by the
+ * selector-scoped snapshot path in inspection.ts, which tags refs via the DOM
+ * expression while a live Page (and possibly a stale a11y refMap from an
+ * earlier unscoped snapshot) exists.
+ */
+export function markDomRefsActive(page: Page): void {
+  pageRefMaps.set(page, []);
+}
+
 
 function isInteractive(role: string): boolean {
   return INTERACTIVE_ROLES.has(role);
@@ -342,8 +357,15 @@ export async function generateSnapshot(
     }
   }
 
+  // Opt-in interactive-only filter: same strip as the overflow retry below,
+  // but unconditional — the agent asked for only actionable nodes.
+  let effectiveTree = tree;
+  if (options?.filter === 'interactive' && format === 'ai') {
+    effectiveTree = stripNonInteractive(tree) ?? tree;
+  }
+
   let refs: RefEntry[] = [];
-  let output = serializeTree(tree, format, depth, refs);
+  let output = serializeTree(effectiveTree, format, depth, refs);
 
   // If the output exceeds maxLength AND we are in 'ai' mode, strip
   // non-interactive nodes and regenerate.
