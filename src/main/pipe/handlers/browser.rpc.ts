@@ -526,6 +526,7 @@ export function registerBrowserRpc(
   // gone (getTarget() then returns null and pendingClosures is keyed by the
   // departed webContentsId).
   const lastLifecycleTarget = new Map<string, number>();
+  const MAX_LIFECYCLE_TARGETS = 64; // scope keys are per caller×surface — bound the map (review)
 
   // #517 lightweight mode: every automation op that drives the guest must hold
   // an AutomationLease for its duration so a hidden, throttled guest runs
@@ -1271,7 +1272,13 @@ export function registerBrowserRpc(
       return { entries: captureManager.drainLifecycle(lastId) };
     }
 
+    lastLifecycleTarget.delete(scopeKey);
     lastLifecycleTarget.set(scopeKey, target.webContentsId);
+    while (lastLifecycleTarget.size > MAX_LIFECYCLE_TARGETS) {
+      const oldest = lastLifecycleTarget.keys().next().value;
+      if (oldest === undefined) break;
+      lastLifecycleTarget.delete(oldest);
+    }
     const state = await captureManager.ensure(target.webContentsId);
     if (!state) return { entries: [] };
     return { entries: captureManager.drainLifecycle(target.webContentsId) };

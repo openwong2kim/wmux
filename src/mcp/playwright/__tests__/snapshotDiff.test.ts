@@ -34,8 +34,8 @@ describe('diffSnapshotLines', () => {
   });
 
   it('bails (null) when the changed region exceeds the DP bound', () => {
-    const prev = lines(2100, 'old');
-    const next = lines(2100, 'new');
+    const prev = lines(900, 'old');
+    const next = lines(900, 'new');
     expect(diffSnapshotLines(prev, next)).toBeNull();
   });
 });

@@ -15,6 +15,12 @@ export interface SnapshotBaseline {
   /** Attribute key: a diff is only valid against a baseline produced with the
    *  same format/selector/filter — mismatches replace, never diff. */
   attrs: string;
+  /** Page URL at capture time. Diffing across different URLs is never valid:
+   *  a missed navigation event (destructive drain won by another consumer,
+   *  in-surface tab switch, drain response lost) must degrade to a full
+   *  snapshot, not a diff against a page that no longer exists (3-model
+   *  review consensus). */
+  url?: string;
   ts: number;
 }
 
@@ -44,22 +50,35 @@ export function snapshotSurfaceKey(workspaceId: string | undefined, surfaceId: s
   return `ws:${workspaceId ?? ''}:surf:${surfaceId ?? ''}`;
 }
 
-export function getSnapshotBaseline(surfaceKey: string, attrs: string): SnapshotBaseline | null {
+export function getSnapshotBaseline(
+  surfaceKey: string,
+  attrs: string,
+  url?: string,
+): SnapshotBaseline | null {
   const store = getStore();
   const entry = store.get(surfaceKey);
   if (!entry) return null;
-  if (entry.attrs !== attrs || Date.now() - entry.ts > BASELINE_TTL_MS) {
+  // URL guard: when both sides know their URL and they differ, the baseline
+  // describes another page — drop it. (Both undefined keeps legacy behavior
+  // for callers that cannot determine a URL.)
+  const urlMismatch = entry.url !== undefined && url !== undefined && entry.url !== url;
+  if (entry.attrs !== attrs || urlMismatch || Date.now() - entry.ts > BASELINE_TTL_MS) {
     store.delete(surfaceKey);
     return null;
   }
   return entry;
 }
 
-export function setSnapshotBaseline(surfaceKey: string, attrs: string, text: string): void {
+export function setSnapshotBaseline(
+  surfaceKey: string,
+  attrs: string,
+  text: string,
+  url?: string,
+): void {
   const store = getStore();
   // Refresh insertion order so eviction below is LRU-ish.
   store.delete(surfaceKey);
-  store.set(surfaceKey, { text, attrs, ts: Date.now() });
+  store.set(surfaceKey, { text, attrs, ...(url !== undefined && { url }), ts: Date.now() });
   while (store.size > MAX_BASELINES) {
     const oldest = store.keys().next().value;
     if (oldest === undefined) break;

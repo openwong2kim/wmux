@@ -9,8 +9,10 @@
 // ---------------------------------------------------------------------------
 
 // Bail out of the O(n·m) DP beyond this many lines per side (after common
-// prefix/suffix trimming) — the caller then returns the full snapshot.
-const MAX_DIFF_LINES = 2000;
+// prefix/suffix trimming) — the caller then returns the full snapshot. Kept
+// small: the DP is synchronous on the MCP event loop (review: 2000 lines was
+// an 8MB table + 4M-iteration stall per snapshot).
+const MAX_DIFF_LINES = 800;
 // A diff at least this fraction of the full snapshot's size stops being a
 // savings and starts being a harder-to-read full snapshot.
 const DIFF_WORTHWHILE_RATIO = 0.5;

@@ -358,10 +358,17 @@ export async function generateSnapshot(
   }
 
   // Opt-in interactive-only filter: same strip as the overflow retry below,
-  // but unconditional — the agent asked for only actionable nodes.
+  // but unconditional — the agent asked for only actionable nodes. Zero
+  // interactive nodes must NOT fall back to the full tree (review consensus:
+  // the filter would silently invert into maximum output) — say so instead.
   let effectiveTree = tree;
   if (options?.filter === 'interactive' && format === 'ai') {
-    effectiveTree = stripNonInteractive(tree) ?? tree;
+    const stripped = stripNonInteractive(tree);
+    if (!stripped) {
+      pageRefMaps.set(page, []);
+      return '(no interactive elements on this page)';
+    }
+    effectiveTree = stripped;
   }
 
   let refs: RefEntry[] = [];

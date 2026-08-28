@@ -337,7 +337,20 @@ export function registerInspectionTools(server: McpServer, deps: BrowserToolDeps
           // refMap stale so resolveRef cannot use it.
           const evaluate = page ? pageEvaluator(page) : rpcEvaluator(scope);
           text = String(await evaluate(buildDomSnapshotExpression(selector)));
+          if (text.startsWith('No element matches selector:')) {
+            // A miss is an error, not a snapshot — and must never become the
+            // diff baseline for the next call (review consensus).
+            return {
+              content: [{ type: 'text' as const, text }],
+              isError: true,
+            };
+          }
           if (page) markDomRefsActive(page);
+          // The DOM listing has no format/filter concept — be honest about it
+          // instead of silently ignoring the params (review consensus).
+          if (format || filter) {
+            text = `(note: format/filter are ignored when selector is given)\n${text}`;
+          }
         } else if (page) {
           text = await generateSnapshot(page, {
             format: format ?? 'ai',
@@ -357,11 +370,20 @@ export function registerInspectionTools(server: McpServer, deps: BrowserToolDeps
         // Auto-diff: a repeat snapshot with the same attributes returns a diff
         // against the previous one when that is genuinely smaller (D1). The
         // fresh text always becomes the new baseline — including on full:true.
+        // URL guard (3-model review): never diff across different page URLs —
+        // Playwright pages report url() directly, the DOM listing embeds a
+        // "URL: …" line to parse.
+        let currentUrl: string | undefined;
+        if (page && typeof (page as { url?: () => string }).url === 'function') {
+          currentUrl = page.url();
+        } else {
+          currentUrl = /^URL: (.+)$/m.exec(text)?.[1];
+        }
         const key = snapshotSurfaceKey(scope.workspaceId, scope.surfaceId);
         const attrs = `${format ?? 'ai'}|${selector ?? ''}|${filter ?? ''}`;
-        const baseline = full ? null : getSnapshotBaseline(key, attrs);
+        const baseline = full ? null : getSnapshotBaseline(key, attrs, currentUrl);
         const rendered = formatSnapshotResult(baseline?.text ?? null, text);
-        setSnapshotBaseline(key, attrs, text);
+        setSnapshotBaseline(key, attrs, text, currentUrl);
 
         return {
           content: [{ type: 'text' as const, text: rendered.text }],

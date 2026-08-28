@@ -208,11 +208,18 @@ export class BrowserCaptureManager {
         maxResourceBufferSize: MAX_RESPONSE_BODY_BYTES,
         maxTotalBufferSize: MAX_TOTAL_BODY_BYTES,
       });
-      await dbg.sendCommand('Page.enable');
     } catch (err) {
       console.error('[BrowserCaptureManager] domain enable failed:', err);
       this.drop(webContentsId);
       return null;
+    }
+
+    // Page domain is lifecycle-only: a failure here must not take down the
+    // working console/network capture above (review: regression risk).
+    try {
+      await dbg.sendCommand('Page.enable');
+    } catch (err) {
+      console.warn('[BrowserCaptureManager] Page.enable failed (lifecycle capture off):', err);
     }
 
     state.enabled = true;
@@ -278,6 +285,15 @@ export class BrowserCaptureManager {
         const url = frame.url ?? '';
         // Collapse consecutive same-URL navigations (SPA replaceState churn,
         // redirect hops that settle on the same URL).
+        const last = state.lifecycle[state.lifecycle.length - 1];
+        if (last?.type === 'navigated' && last.url === url) break;
+        this.pushLifecycle(state, { type: 'navigated', url, ts: Date.now() });
+        break;
+      }
+      case 'Page.navigatedWithinDocument': {
+        // SPA route change (history.pushState) — the page content can change
+        // completely without a frameNavigated, so record it as a navigation.
+        const url = typeof params.url === 'string' ? params.url : '';
         const last = state.lifecycle[state.lifecycle.length - 1];
         if (last?.type === 'navigated' && last.url === url) break;
         this.pushLifecycle(state, { type: 'navigated', url, ts: Date.now() });
