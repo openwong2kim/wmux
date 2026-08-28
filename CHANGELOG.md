@@ -1,3 +1,40 @@
+## [3.49.0] — 2026-08-29
+
+### Added
+
+- `browser_snapshot` now returns a compact diff against the previous snapshot of the same page when that is smaller (`full:true` forces the complete tree), and accepts `selector` to scope the snapshot to a subtree and `filter:"interactive"` to strip non-interactive nodes.
+
+- Browser tool results now report page lifecycle changes inline — navigations (including SPA route changes), page loads, and tab closure — including changes the call itself caused, so a navigation is reported on the very result that triggered it and agents no longer need to poll for page state.
+
+- New `chrome` browser backend (Settings → Browser): wmux launches a dedicated real-Chrome instance with its own persistent profile — sign in once and logins stick, fully separate from your daily browser — and agents get the full automation toolset against it. Sites that block embedded browsers (e.g. Google sign-in) work normally there.
+
+- Each workspace can bind its own Chrome profile (workspace card → right-click → Chrome profile): separate logins per workspace, so one workspace can automate account A while another uses account B.
+
+- Bind a workspace to "Live Chrome" to let its agent work inside your own running browser — your real tabs and logins — using Chrome 144+'s official remote-debugging consent flow (enable once at chrome://inspect, Chrome asks permission on every connection).
+
+- Remote workspace attach: "New workspace on this host" in the Attach Remote modal bootstraps the first pane of a brand-new workspace on a paired remote daemon — previously only a sibling pane on a workspace the desktop app had already created could be added.
+
+### Changed
+
+- The workspace right-click → Chrome profile submenu now appears only when the browser backend is `chrome`. On `builtin` or `external` a profile binding changes nothing, so the menu no longer offers a choice without an effect — and the per-workspace profile-list lookup at boot is skipped there too.
+
+- Inline browser lifecycle events are now attributed to the tool call that caused them: the lifecycle ring is drained again after each tool body, so a click that navigates (or `browser_navigate` itself, which now reports events like every other browser tool) shows the navigation on its own result instead of one call late. A lone `navigated` that merely repeats the URL the result already states is suppressed; redirect hops stay visible.
+
+### Fixed
+
+- **Replayed terminal history no longer relies on a timing window.** wmux now
+  labels replayed daemon PTY data at its source, authenticates its in-band
+  boundaries, and keeps replay-only control sequences muted across pane
+  adoption without suppressing live terminal behavior. (#1062)
+
+- Chrome backend: a Chrome left running by a crashed wmux session is now adopted on the next use instead of bricking the backend on its profile lock — instances launch with an ephemeral debugging port recorded in the profile, which is what makes the recovery path actually able to find them.
+
+- Live Chrome: agents can now actually drive pages in your attached live Chrome — both tabs wmux opened and your pre-existing tabs picked from the tab list. Previously only opening and listing tabs worked.
+
+- The browser-backend setting description now covers the Chrome option (and points at the per-workspace profile menu) in Korean, Chinese, and Polish, not just English.
+
+- `browser_snapshot` no longer silently ignores `filter:"interactive"` and `format:"aria"` on its DOM-listing paths. The filter now actually strips the heading block wherever the DOM listing is used — the background-surface fallthrough, the `selector` path, and the RPC fallback — and `aria`, which has no DOM-listing equivalent, now says so with a note instead of returning the default listing unlabeled. (#1066)
+
 ## [3.48.1] — 2026-08-28
 
 ### Fixed
