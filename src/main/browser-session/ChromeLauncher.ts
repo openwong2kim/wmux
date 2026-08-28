@@ -1,7 +1,6 @@
 import { spawn, type ChildProcess } from 'child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { PortAllocator } from './PortAllocator';
 
 // ---------------------------------------------------------------------------
 // 'chrome' backend (Phase 2): launch the user's installed Chrome with a
@@ -21,11 +20,14 @@ import { PortAllocator } from './PortAllocator';
 // next demand.
 // ---------------------------------------------------------------------------
 
-// Distinct range from the Electron CDP range (18800-18899) so the two
-// endpoints can never collide on one machine.
-const CHROME_PORT_MIN = 18900;
-const CHROME_PORT_MAX = 18999;
-// /json/version readiness poll.
+// Port discovery: Chrome writes DevToolsActivePort (line 1 = port, line 2 =
+// secret WS path) into the profile dir ONLY when launched with
+// --remote-debugging-port=0 — a fixed port produces no file at all (measured
+// on Chrome 151, #1064 dogfood). So we launch with port 0 and read the
+// ephemeral port back out of the file. That retires the port-probe allocator
+// AND is what makes crash-path adoption possible in the first place: the file
+// adoptExisting() reads is now actually written by the instance it recovers.
+// DevToolsActivePort appearance + /json/version readiness poll.
 const READY_TIMEOUT_MS = 10_000;
 const READY_POLL_MS = 250;
 
@@ -52,7 +54,8 @@ export interface ChromeBackendEndpoint {
 export interface ChromeBackendClient {
   endpoint(): Promise<ChromeBackendEndpoint>;
   /** Targets reported through browser.cdp.info (page-selection seed). Live
-   *  returns [] so the engine can never pin a random user tab by default. */
+   *  seeds only wmux-opened tabs so a random user tab can never become the
+   *  default pin. */
   cdpInfoTargets(workspaceId?: string): Promise<ChromeTargetInfo[]>;
   openTab(url: string, workspaceId?: string): Promise<{ targetId: string; url: string }>;
   listTargets(workspaceId?: string): Promise<ChromeTargetInfo[]>;
@@ -134,11 +137,9 @@ export function seedChromeProfileLabel(userDataDir: string, label: string): void
 }
 
 export interface ChromeLauncherOptions {
-  /** Port probe range — the registry hands each profile a disjoint slice so
-   *  parallel first-launches cannot race-pick the same port. */
-  portRange?: { min: number; max: number };
   /** Env pin var; null disables (non-default profiles — one pin cannot serve
-   *  N instances). */
+   *  N instances). A pinned launch keeps the fixed port; note Chrome then
+   *  writes no DevToolsActivePort, so adoption probes the pin directly. */
   portEnvVar?: string | null;
   /** Profile display name seeded into Local State pre-launch (window chip). */
   profileLabel?: string;
@@ -149,7 +150,7 @@ export class ChromeLauncher implements ChromeBackendClient {
   private cdpPort = 0;
   private launching: Promise<number> | null = null;
   private disposed = false;
-  private readonly ports: PortAllocator;
+  private readonly portEnvVar: string | null;
   /** wmux-opened tabs: Chrome targetId → owning workspace. */
   private readonly tabOwners = new Map<string, string | undefined>();
 
@@ -157,11 +158,7 @@ export class ChromeLauncher implements ChromeBackendClient {
 
   constructor(private readonly userDataDir: string, opts?: ChromeLauncherOptions) {
     this.profileLabel = opts?.profileLabel;
-    this.ports = new PortAllocator({
-      min: opts?.portRange?.min ?? CHROME_PORT_MIN,
-      max: opts?.portRange?.max ?? CHROME_PORT_MAX,
-      envVar: opts?.portEnvVar === undefined ? 'WMUX_CHROME_CDP_PORT' : opts.portEnvVar,
-    });
+    this.portEnvVar = opts?.portEnvVar === undefined ? 'WMUX_CHROME_CDP_PORT' : opts.portEnvVar;
   }
 
   /** True when this launcher opened (and still tracks) the given tab. */
@@ -208,14 +205,22 @@ export class ChromeLauncher implements ChromeBackendClient {
     return this.launching;
   }
 
-  /**
-   * Adopt a still-running instance from a previous wmux session (crash path).
-   * Chrome writes DevToolsActivePort into the profile dir when launched with
-   * --remote-debugging-port; spawning again over that dir would just exit on
-   * the SingletonLock. If the recorded endpoint still answers, reuse it —
-   * verified live by our own zombie-instance reproduction.
-   */
-  private async adoptExisting(): Promise<number | null> {
+  /** Env-pinned fixed port ('default' profile only), validated. */
+  private pinnedPort(): number | null {
+    if (!this.portEnvVar) return null;
+    const raw = process.env[this.portEnvVar];
+    if (!raw) return null;
+    const port = Number(raw);
+    if (!Number.isInteger(port) || port <= 0 || port > 65535) {
+      throw new Error(`ChromeLauncher: ${this.portEnvVar}=${raw} is not a valid port`);
+    }
+    return port;
+  }
+
+  /** DevToolsActivePort in the profile dir. `raw` is kept for freshness
+   *  comparison: the secret /devtools/browser/<uuid> on line 2 is new every
+   *  boot, so byte-identical content means "same (old) instance". */
+  private readPortFile(): { raw: string; port: number } | null {
     let raw: string;
     try {
       raw = readFileSync(join(this.userDataDir, 'DevToolsActivePort'), 'utf8');
@@ -224,19 +229,36 @@ export class ChromeLauncher implements ChromeBackendClient {
     }
     const port = parseInt(raw.split('\n')[0]?.trim() ?? '', 10);
     if (Number.isNaN(port) || port <= 0 || port > 65535) return null;
-    const prevPort = this.cdpPort;
-    this.cdpPort = port;
-    try {
-      await this.fetchJson('/json/version');
-      // No child handle for an adopted instance — dispose() can only close
-      // tabs we open; the process outlives us like it outlived its spawner.
-      this.child = null;
-      console.warn(`[ChromeLauncher] adopted existing Chrome on port ${port} (previous session's instance)`);
-      return port;
-    } catch {
-      this.cdpPort = prevPort;
-      return null;
+    return { raw, port };
+  }
+
+  /**
+   * Adopt a still-running instance from a previous wmux session (crash path).
+   * Spawning again over an occupied profile dir just exits on the
+   * SingletonLock, so if a recorded endpoint still answers, reuse it. Two
+   * sources: the DevToolsActivePort file (port-0 launches write it), and the
+   * env-pinned port (pinned launches write no file — probe the pin itself).
+   */
+  private async adoptExisting(): Promise<number | null> {
+    const candidates: number[] = [];
+    const file = this.readPortFile();
+    if (file) candidates.push(file.port);
+    const pinned = this.pinnedPort();
+    if (pinned !== null && !candidates.includes(pinned)) candidates.push(pinned);
+    for (const port of candidates) {
+      this.cdpPort = port;
+      try {
+        await this.fetchJson('/json/version');
+        // No child handle for an adopted instance — dispose() can only close
+        // tabs we open; the process outlives us like it outlived its spawner.
+        this.child = null;
+        console.warn(`[ChromeLauncher] adopted existing Chrome on port ${port} (previous session's instance)`);
+        return port;
+      } catch {
+        this.cdpPort = 0;
+      }
     }
+    return null;
   }
 
   private async launch(): Promise<number> {
@@ -250,9 +272,13 @@ export class ChromeLauncher implements ChromeBackendClient {
           'Install Google Chrome or set WMUX_CHROME_PATH to a browser binary.',
       );
     }
-    const prev = this.ports.getPort();
-    if (prev !== null) this.ports.release(prev);
-    const port = await this.ports.allocate();
+
+    const pinned = this.pinnedPort();
+    // Port 0 (the normal path): Chrome picks an ephemeral port and records it
+    // in DevToolsActivePort. The file may still hold the PREVIOUS instance's
+    // endpoint (already probed dead by adoptExisting above) — snapshot it so
+    // the fresh write is recognized by content, not mere existence.
+    const stale = pinned === null ? this.readPortFile() : null;
 
     if (this.profileLabel) seedChromeProfileLabel(this.userDataDir, this.profileLabel);
 
@@ -260,7 +286,7 @@ export class ChromeLauncher implements ChromeBackendClient {
       binary,
       [
         `--user-data-dir=${this.userDataDir}`,
-        `--remote-debugging-port=${port}`,
+        `--remote-debugging-port=${pinned ?? 0}`,
         // connectOverCDP's websocket handshake (Chrome 111+ origin check).
         '--remote-allow-origins=*',
         '--no-first-run',
@@ -281,32 +307,40 @@ export class ChromeLauncher implements ChromeBackendClient {
     child.on('exit', onGone);
 
     this.child = child;
-    this.cdpPort = port;
 
-    // Poll /json/version until the endpoint answers.
+    // Resolve the port (pinned, or the fresh DevToolsActivePort write), then
+    // poll /json/version until the endpoint answers.
     const deadline = Date.now() + READY_TIMEOUT_MS;
     for (;;) {
       if (gone) throw new Error('ChromeLauncher: Chrome exited during startup');
-      try {
-        await this.fetchJson('/json/version');
-        return port;
-      } catch {
-        if (Date.now() > deadline) {
-          // Kill the half-started child; a later demand may retry cleanly.
-          try {
-            child.kill();
-          } catch { /* already gone */ }
-          this.onChildGone();
-          throw new Error('ChromeLauncher: CDP endpoint did not become ready in time');
-        }
-        await new Promise((r) => setTimeout(r, READY_POLL_MS));
+      let candidate = pinned;
+      if (candidate === null) {
+        const fresh = this.readPortFile();
+        candidate = fresh && fresh.raw !== stale?.raw ? fresh.port : null;
       }
+      if (candidate !== null) {
+        this.cdpPort = candidate;
+        try {
+          await this.fetchJson('/json/version');
+          return candidate;
+        } catch {
+          this.cdpPort = 0;
+        }
+      }
+      if (Date.now() > deadline) {
+        // Kill the half-started child; a later demand may retry cleanly.
+        try {
+          child.kill();
+        } catch { /* already gone */ }
+        this.onChildGone();
+        throw new Error('ChromeLauncher: CDP endpoint did not become ready in time');
+      }
+      await new Promise((r) => setTimeout(r, READY_POLL_MS));
     }
   }
 
   private onChildGone(): void {
     this.child = null;
-    if (this.cdpPort > 0) this.ports.release(this.cdpPort);
     this.cdpPort = 0;
     this.tabOwners.clear();
   }
@@ -394,7 +428,7 @@ export class ChromeLauncher implements ChromeBackendClient {
 // automation resolves through its binding ('default' when unbound), so
 // workspace 1 can drive a Chrome signed into account A while workspace 2
 // drives account B — separate user-data-dirs, separate instances, separate
-// CDP ports.
+// CDP ports (each instance picks its own ephemeral port via port 0).
 // ---------------------------------------------------------------------------
 
 import { join as joinPath } from 'node:path';
@@ -402,14 +436,9 @@ import { validateBrowserProfileName } from './ProfileManager';
 import { DEFAULT_CHROME_PROFILE, LIVE_CHROME_PROFILE, type ChromeProfileStore } from './ChromeProfileStore';
 import { LiveChromeClient } from './LiveChromeClient';
 
-// Disjoint per-profile port slices inside the chrome range (20 profiles × 5).
-const PORT_SLOT_WIDTH = 5;
-
 export class ChromeLauncherRegistry {
   private readonly launchers = new Map<string, ChromeBackendClient>();
   private live: LiveChromeClient | null = null;
-  /** Stable slot per profile name for the port slice (append-only). */
-  private readonly slots = new Map<string, number>();
 
   constructor(
     private readonly opts: {
@@ -431,16 +460,9 @@ export class ChromeLauncherRegistry {
     const existing = this.launchers.get(name);
     if (existing) return existing;
 
-    let slot = this.slots.get(name);
-    if (slot === undefined) {
-      slot = this.slots.size;
-      this.slots.set(name, slot);
-    }
-    const min = CHROME_PORT_MIN + slot * PORT_SLOT_WIDTH;
     const launcher = new ChromeLauncher(
       name === DEFAULT_CHROME_PROFILE ? this.opts.defaultDir : joinPath(this.opts.profilesDir, name),
       {
-        portRange: { min, max: Math.min(min + PORT_SLOT_WIDTH - 1, CHROME_PORT_MAX) },
         portEnvVar: name === DEFAULT_CHROME_PROFILE ? 'WMUX_CHROME_CDP_PORT' : null,
         // Window chip reads "wmux · <profile>" so the agent Chrome (and which
         // account-profile it is) is identifiable at a glance.

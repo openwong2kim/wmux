@@ -1173,8 +1173,9 @@ export function registerBrowserRpc(
     if (backend() === 'chrome') {
       const launcher = requireChrome('browser.cdp.info', callerWorkspaceId || undefined);
       const ep = await launcher.endpoint();
-      // Live attach seeds NO targets (safe default: never pin a random user
-      // tab); dedicated instances seed their registry-scoped tabs.
+      // Both client kinds seed only wmux-opened tabs (live additionally
+      // reaches pre-existing tabs via browser_tabs + engine-side direct
+      // match; a random user tab still never becomes the default pin).
       const chromeTargets = await launcher.cdpInfoTargets(callerWorkspaceId || undefined);
       const disclose = canDiscloseBrowserAttachInfo(ctx);
       return {

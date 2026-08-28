@@ -81,15 +81,46 @@ export class LiveChromeClient implements ChromeBackendClient {
     return { wsEndpoint: readLiveChromeEndpoint(this.userDataDir) };
   }
 
-  /** Safe default: never hand the engine a random live tab as the pinned
-   *  surface — existing tabs are reached explicitly via browser_tabs list. */
-  async cdpInfoTargets(): Promise<ChromeTargetInfo[]> {
-    return [];
+  /** wmux-opened tabs: targetId → owning workspace (ChromeLauncher mirror). */
+  private readonly tabOwners = new Map<string, string | undefined>();
+
+  /**
+   * Seed page selection with the tabs WMUX opened (dogfood P1 on #1064:
+   * seeding nothing left the engine unable to match ANY pinned surface — its
+   * registry match had no candidates — so every page tool failed after a
+   * successful browser_open). Only wmux-opened tabs are seeded, so a random
+   * user tab still can never become the default pin; PRE-EXISTING tabs are
+   * reached explicitly via the browser_tabs list + the engine's live-attach
+   * direct match. Dead targetIds are pruned as a side effect.
+   */
+  async cdpInfoTargets(workspaceId?: string): Promise<ChromeTargetInfo[]> {
+    // No wmux-opened tabs → nothing to seed. Return without touching the
+    // socket so a mere cdp.info (backend probe) never dials the user's Chrome.
+    if (this.tabOwners.size === 0) return [];
+    let live: ChromeTargetInfo[];
+    try {
+      live = await this.listTargets();
+    } catch {
+      return [];
+    }
+    const liveById = new Map(live.map((t) => [t.targetId, t]));
+    const out: ChromeTargetInfo[] = [];
+    for (const [targetId, owner] of [...this.tabOwners]) {
+      const t = liveById.get(targetId);
+      if (!t) {
+        this.tabOwners.delete(targetId);
+        continue;
+      }
+      if (workspaceId !== undefined && owner !== undefined && owner !== workspaceId) continue;
+      out.push({ targetId, workspaceId: owner, url: t.url, title: t.title });
+    }
+    return out;
   }
 
-  async openTab(url: string): Promise<{ targetId: string; url: string }> {
+  async openTab(url: string, workspaceId?: string): Promise<{ targetId: string; url: string }> {
     const res = (await this.send('Target.createTarget', { url })) as { targetId?: string };
     if (!res?.targetId) throw new Error('LiveChromeClient: Target.createTarget returned no targetId');
+    this.tabOwners.set(res.targetId, workspaceId);
     return { targetId: res.targetId, url };
   }
 
@@ -105,6 +136,7 @@ export class LiveChromeClient implements ChromeBackendClient {
   async closeTab(targetId: string): Promise<boolean> {
     try {
       await this.send('Target.closeTarget', { targetId });
+      this.tabOwners.delete(targetId);
       return true;
     } catch {
       return false;
