@@ -718,6 +718,34 @@ describe('DaemonClient', () => {
       expect(client.writeToSession(SESSION_ID, 'forced')).toBe(true);
     });
 
+    it('drops late data callbacks from a socket after its identity is replaced', async () => {
+      const staleSocket = new net.Socket();
+      const replacementSocket = new net.Socket();
+      const internals = client as unknown as {
+        sessionPipes: Map<string, net.Socket>;
+        setupSessionPipe: (sessionId: string, socket: net.Socket) => void;
+      };
+      const received: Buffer[] = [];
+      client.on('session:data', (payload: { sessionId: string; data: Buffer }) => {
+        if (payload.sessionId === SESSION_ID) received.push(payload.data);
+      });
+
+      internals.sessionPipes.set(SESSION_ID, staleSocket);
+      internals.setupSessionPipe(SESSION_ID, staleSocket);
+      internals.sessionPipes.set(SESSION_ID, replacementSocket);
+
+      staleSocket.emit('data', Buffer.concat([
+        createSessionPipeMarkers(AUTH_TOKEN).flushDone,
+        Buffer.from('stale-output'),
+      ]));
+
+      expect(received).toEqual([]);
+
+      await client.disconnect();
+      staleSocket.destroy();
+      replacementSocket.destroy();
+    });
+
     it('writeToSession returns false when the session is not connected', () => {
       expect(client.writeToSession('never-connected', 'x')).toBe(false);
     });

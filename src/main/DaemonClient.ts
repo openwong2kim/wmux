@@ -820,6 +820,11 @@ export class DaemonClient extends EventEmitter {
     };
 
     socket.on('data', (chunk: Buffer) => {
+      // A forceFresh reconnect can install a replacement before the old
+      // socket's final queued data callback runs. Only the socket that still
+      // owns this session may emit bytes; otherwise stale output could
+      // interleave with the replacement stream.
+      if (this.sessionPipes.get(sessionId) !== socket) return;
       drain(scanner.feed(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
     });
 
