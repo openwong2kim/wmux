@@ -728,6 +728,15 @@ const electronAPI = {
       ipcRenderer.sendSync('browser:get-backend-sync'),
     setBackend: (backend: 'builtin' | 'external' | 'chrome') =>
       ipcRenderer.invoke('browser:set-backend', backend),
+    // Phase 2.5 — chrome-backend profiles + workspace bindings.
+    chromeProfiles: {
+      list: (): Promise<{ profiles: string[]; bindings: Record<string, string> }> =>
+        ipcRenderer.invoke('browser:chrome-profiles:list'),
+      create: (name: string): Promise<{ ok: boolean; error?: string }> =>
+        ipcRenderer.invoke('browser:chrome-profiles:create', name),
+      bind: (workspaceId: string, profileName: string | null): Promise<{ ok: boolean; error?: string }> =>
+        ipcRenderer.invoke('browser:chrome-profiles:bind', { workspaceId, profileName }),
+    },
     onDiscarded: (callback: (surfaceId: string) => void) => {
       const listener = (_e: Electron.IpcRendererEvent, surfaceId: string) => callback(surfaceId);
       ipcRenderer.on('browser:discarded', listener);

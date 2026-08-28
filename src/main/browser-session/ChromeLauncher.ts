@@ -73,16 +73,36 @@ function discoverChromeBinary(): string | null {
   return candidates.find((p) => existsSync(p)) ?? null;
 }
 
+export interface ChromeLauncherOptions {
+  /** Port probe range — the registry hands each profile a disjoint slice so
+   *  parallel first-launches cannot race-pick the same port. */
+  portRange?: { min: number; max: number };
+  /** Env pin var; null disables (non-default profiles — one pin cannot serve
+   *  N instances). */
+  portEnvVar?: string | null;
+}
+
 export class ChromeLauncher {
   private child: ChildProcess | null = null;
   private cdpPort = 0;
   private launching: Promise<number> | null = null;
   private disposed = false;
-  private readonly ports = new PortAllocator({ min: CHROME_PORT_MIN, max: CHROME_PORT_MAX, envVar: 'WMUX_CHROME_CDP_PORT' });
+  private readonly ports: PortAllocator;
   /** wmux-opened tabs: Chrome targetId → owning workspace. */
   private readonly tabOwners = new Map<string, string | undefined>();
 
-  constructor(private readonly userDataDir: string) {}
+  constructor(private readonly userDataDir: string, opts?: ChromeLauncherOptions) {
+    this.ports = new PortAllocator({
+      min: opts?.portRange?.min ?? CHROME_PORT_MIN,
+      max: opts?.portRange?.max ?? CHROME_PORT_MAX,
+      envVar: opts?.portEnvVar === undefined ? 'WMUX_CHROME_CDP_PORT' : opts.portEnvVar,
+    });
+  }
+
+  /** True when this launcher opened (and still tracks) the given tab. */
+  hasTab(targetId: string): boolean {
+    return this.tabOwners.has(targetId);
+  }
 
   /** True when the child is alive and its CDP endpoint answered readiness. */
   isRunning(): boolean {
@@ -253,5 +273,77 @@ export class ChromeLauncher {
       // /json/close answers with plain text ("Target is closing").
       return text;
     }
+  }
+}
+
+
+// ---------------------------------------------------------------------------
+// Registry: one launcher per named profile (Phase 2.5). A workspace's
+// automation resolves through its binding ('default' when unbound), so
+// workspace 1 can drive a Chrome signed into account A while workspace 2
+// drives account B — separate user-data-dirs, separate instances, separate
+// CDP ports.
+// ---------------------------------------------------------------------------
+
+import { join as joinPath } from 'node:path';
+import { validateBrowserProfileName } from './ProfileManager';
+import { DEFAULT_CHROME_PROFILE, type ChromeProfileStore } from './ChromeProfileStore';
+
+// Disjoint per-profile port slices inside the chrome range (20 profiles × 5).
+const PORT_SLOT_WIDTH = 5;
+
+export class ChromeLauncherRegistry {
+  private readonly launchers = new Map<string, ChromeLauncher>();
+  /** Stable slot per profile name for the port slice (append-only). */
+  private readonly slots = new Map<string, number>();
+
+  constructor(
+    private readonly opts: {
+      /** 'default' keeps the pre-registry dir so existing logins survive. */
+      defaultDir: string;
+      /** Named profiles live under <profilesDir>/<name>. */
+      profilesDir: string;
+      store: Pick<ChromeProfileStore, 'profileFor'>;
+    },
+  ) {}
+
+  forProfile(name: string): ChromeLauncher {
+    validateBrowserProfileName(name); // re-validate at the interpolation site
+    const existing = this.launchers.get(name);
+    if (existing) return existing;
+
+    let slot = this.slots.get(name);
+    if (slot === undefined) {
+      slot = this.slots.size;
+      this.slots.set(name, slot);
+    }
+    const min = CHROME_PORT_MIN + slot * PORT_SLOT_WIDTH;
+    const launcher = new ChromeLauncher(
+      name === DEFAULT_CHROME_PROFILE ? this.opts.defaultDir : joinPath(this.opts.profilesDir, name),
+      {
+        portRange: { min, max: Math.min(min + PORT_SLOT_WIDTH - 1, CHROME_PORT_MAX) },
+        portEnvVar: name === DEFAULT_CHROME_PROFILE ? 'WMUX_CHROME_CDP_PORT' : null,
+      },
+    );
+    this.launchers.set(name, launcher);
+    return launcher;
+  }
+
+  /** The launcher a workspace's automation runs against (binding ?? default). */
+  forWorkspace(workspaceId: string | undefined): ChromeLauncher {
+    return this.forProfile(this.opts.store.profileFor(workspaceId));
+  }
+
+  /** Which live launcher opened this tab (close path). */
+  ownerOfTarget(targetId: string): ChromeLauncher | undefined {
+    for (const launcher of this.launchers.values()) {
+      if (launcher.hasTab(targetId)) return launcher;
+    }
+    return undefined;
+  }
+
+  disposeAll(): void {
+    for (const launcher of this.launchers.values()) launcher.dispose();
+    this.launchers.clear();
   }
 }

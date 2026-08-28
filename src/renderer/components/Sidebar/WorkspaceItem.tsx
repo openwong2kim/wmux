@@ -13,6 +13,7 @@ import { collectTerminalSurfaces, collectWorkspaceTerminalSurfaces } from '../..
 import { openUrlInBrowserPane } from '../../utils/browserPaneActions';
 import WorkspaceProfileModal from './WorkspaceProfileModal';
 import WorkspaceAccountMenu from './WorkspaceAccountMenu';
+import WorkspaceChromeProfileMenu from './WorkspaceChromeProfileMenu';
 import WorkspaceAgentRoster from './WorkspaceAgentRoster';
 import { displayPath } from '../../utils/displayPath';
 import { WORKSPACE_COLOR_IDS, WORKSPACE_COLOR_HEX, workspaceColorHex, workspaceColorLabelKey } from '../../../shared/workspaceColors';
@@ -931,6 +932,7 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
           {/* Multi-account (M1): per-vendor account bind submenu. Hides itself
               when no accounts are registered. Bind-only (new terminals). */}
           <WorkspaceAccountMenu workspaceId={workspaceId} flipLeft={menuPos.x > window.innerWidth * 0.6} />
+          <WorkspaceChromeProfileMenu workspaceId={workspaceId} flipLeft={menuPos.x > window.innerWidth * 0.6} />
 
           {/* Working directories — hover to reveal each terminal's cwd. Flips to
               the left when the menu is opened near the right screen edge. */}

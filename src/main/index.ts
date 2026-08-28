@@ -99,7 +99,8 @@ import { McpRegistrar } from './mcp/McpRegistrar';
 import { BrokerSupervisor, isMcpBrokerEnabled } from './mcp/BrokerSupervisor';
 import { WebviewCdpManager } from './browser-session/WebviewCdpManager';
 import { BrowserBackendStore } from './browser-session/BrowserBackendStore';
-import { ChromeLauncher } from './browser-session/ChromeLauncher';
+import { ChromeLauncherRegistry } from './browser-session/ChromeLauncher';
+import { ChromeProfileStore } from './browser-session/ChromeProfileStore';
 import { isBrowserBackend } from '../shared/browserBackend';
 import { DaemonClient, getDaemonPipeName, readDaemonAuthToken } from './DaemonClient';
 import { raceDaemonShutdown } from './daemonShutdownRace';
@@ -737,8 +738,14 @@ registerPerfRpc(rpcRouter);
 // arrive before the renderer has pushed anything, so renderer-push authority
 // would race and fail open to builtin).
 const browserBackendStore = new BrowserBackendStore(app.getPath('userData'));
-// 'chrome' backend: dedicated real-Chrome instance with its own profile dir.
-const chromeLauncher = new ChromeLauncher(path.join(app.getPath('userData'), 'chrome-agent-profile'));
+// 'chrome' backend: per-profile real-Chrome instances (Phase 2.5). The
+// 'default' profile keeps the pre-registry dir so existing logins survive.
+const chromeProfileStore = new ChromeProfileStore();
+const chromeRegistry = new ChromeLauncherRegistry({
+  defaultDir: path.join(app.getPath('userData'), 'chrome-agent-profile'),
+  profilesDir: path.join(app.getPath('userData'), 'chrome-profiles'),
+  store: chromeProfileStore,
+});
 // Phase 2.2 enforcement mode. Production wmux defaults to `enforce`; dev
 // (electron-forge / npm start) defaults to `shadow` so a bad delta doesn't lock
 // the developer out. Override via `mcp.mode` in `~/.wmux/config.json`.
@@ -765,7 +772,7 @@ registerBrowserRpc(
   // back. `enforcementMode` is resolved just above; the getter keeps the read
   // lazy so registration does not depend on where the mode is resolved.
   () => enforcementMode,
-  chromeLauncher,
+  chromeRegistry,
 );
 registerA2aRpc(rpcRouter, () => mainWindow, claudeWorker, { getDaemonClient: () => daemonClient });
 registerA2aChannelRpc(rpcRouter, () => daemonClient, () => mainWindow);
@@ -1043,6 +1050,40 @@ ipcMain.handle('browser:set-backend', (_event, value: unknown) => {
   browserBackendStore.set(value);
   return { ok: true };
 });
+// Phase 2.5 — chrome-backend profiles + workspace bindings (workspace card
+// menu). Validation lives in the store; IPC only shapes the payloads.
+ipcMain.handle('browser:chrome-profiles:list', () => ({
+  profiles: chromeProfileStore.listProfiles(),
+  bindings: chromeProfileStore.getBindings(),
+}));
+ipcMain.handle('browser:chrome-profiles:create', async (_event, name: unknown) => {
+  if (typeof name !== 'string') return { ok: false, error: 'invalid name' };
+  try {
+    await chromeProfileStore.create(name.trim());
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+});
+ipcMain.handle(
+  'browser:chrome-profiles:bind',
+  async (_event, payload: { workspaceId?: unknown; profileName?: unknown } | undefined) => {
+    const workspaceId = typeof payload?.workspaceId === 'string' ? payload.workspaceId : '';
+    const profileName =
+      payload?.profileName === null
+        ? null
+        : typeof payload?.profileName === 'string'
+          ? payload.profileName
+          : undefined;
+    if (!workspaceId || profileName === undefined) return { ok: false, error: 'invalid payload' };
+    try {
+      await chromeProfileStore.setBinding(workspaceId, profileName);
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  },
+);
 // Discard/wake signals travel main → renderer: the renderer owns the <webview>
 // element, so main can only ask it to unmount (discard) or remount (wake).
 webviewCdpManager.setDiscardHooks({
@@ -1895,9 +1936,9 @@ function prepareInstallQuit(): void {
   // The full before-quit teardown is skipped on this path — the agent Chrome
   // must not outlive the app across an update install.
   try {
-    chromeLauncher.dispose();
+    chromeRegistry.disposeAll();
   } catch (err) {
-    console.error('[Main] install-quit chromeLauncher.dispose failed:', err);
+    console.error('[Main] install-quit chromeRegistry.disposeAll failed:', err);
   }
   try {
     sessionManager.flushSync();
@@ -2172,7 +2213,7 @@ app.on('before-quit', async (e) => {
 
   safeStep('claudeWorker.stop', () => claudeWorker.stop());
   safeStep('webviewCdpManager.disposeAll', () => webviewCdpManager.disposeAll());
-  safeStep('chromeLauncher.dispose', () => chromeLauncher.dispose());
+  safeStep('chromeRegistry.disposeAll', () => chromeRegistry.disposeAll());
   safeStep('pipeServer.stop', () => pipeServer.stop());
   safeStep('mcpRegistrar.unregister', () => mcpRegistrar.unregister());
   safeStep('autoUpdater.stop', () => autoUpdater.stop());

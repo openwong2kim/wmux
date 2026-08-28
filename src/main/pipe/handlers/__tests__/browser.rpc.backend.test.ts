@@ -354,20 +354,32 @@ function makeFakeLauncher() {
   };
 }
 
+function makeFakeRegistry(perWorkspace?: Record<string, ReturnType<typeof makeFakeLauncher>>) {
+  const fallback = makeFakeLauncher();
+  return {
+    fallback,
+    forWorkspace: vi.fn((ws?: string) => (ws && perWorkspace?.[ws]) || fallback),
+    forProfile: vi.fn(() => fallback),
+    ownerOfTarget: vi.fn(),
+    disposeAll: vi.fn(),
+  };
+}
+
 describe('chrome backend', () => {
   it('browser.open opens a tracked Chrome tab and returns its targetId as surfaceId', async () => {
-    const launcher = makeFakeLauncher();
-    const { router } = register({ backend: 'chrome', launcher });
+    const registry = makeFakeRegistry();
+    const { router } = register({ backend: 'chrome', launcher: registry });
     const { result } = await dispatch(router, 'browser.open', { url: 'https://a.test/', workspaceId: 'ws-1' });
     expect(result).toMatchObject({ ok: true, backend: 'chrome', surfaceId: 'tgt-1', url: 'https://a.test/' });
-    expect(launcher.openTab).toHaveBeenCalledWith('https://a.test/', 'ws-1');
+    expect(registry.forWorkspace).toHaveBeenCalledWith('ws-1');
+    expect(registry.fallback.openTab).toHaveBeenCalledWith('https://a.test/', 'ws-1');
     expect(sendToRendererMock).not.toHaveBeenCalled();
     expect(openExternalMock).not.toHaveBeenCalled();
   });
 
   it('browser.cdp.info reports the chrome endpoint with workspace-scoped registry targets and no shellUrl', async () => {
-    const launcher = makeFakeLauncher();
-    const { router } = register({ backend: 'chrome', launcher });
+    const registry = makeFakeRegistry();
+    const { router } = register({ backend: 'chrome', launcher: registry });
     await dispatch(router, 'browser.open', { url: 'https://a.test/', workspaceId: 'ws-1' });
     await dispatch(router, 'browser.open', { url: 'https://b.test/', workspaceId: 'ws-2' });
 
@@ -379,22 +391,22 @@ describe('chrome backend', () => {
   });
 
   it('a leased RPC-fallback handler with no builtin target throws the chrome contract error', async () => {
-    const launcher = makeFakeLauncher();
-    const { router } = register({ backend: 'chrome', launcher });
+    const registry = makeFakeRegistry();
+    const { router } = register({ backend: 'chrome', launcher: registry });
     const { error } = await dispatch(router, 'browser.screenshot', {});
     expect(error?.message).toContain('CHROME_BACKEND_RPC_UNSUPPORTED');
   });
 
   it('browser.lifecycle.get returns empty entries instead of the contract error', async () => {
-    const launcher = makeFakeLauncher();
-    const { router } = register({ backend: 'chrome', launcher });
+    const registry = makeFakeRegistry();
+    const { router } = register({ backend: 'chrome', launcher: registry });
     const { result } = await dispatch(router, 'browser.lifecycle.get', {});
     expect(result).toEqual({ entries: [] });
   });
 
   it('browser.tabs list/close operate on the workspace-scoped registry', async () => {
-    const launcher = makeFakeLauncher();
-    const { router } = register({ backend: 'chrome', launcher });
+    const registry = makeFakeRegistry();
+    const { router } = register({ backend: 'chrome', launcher: registry });
     await dispatch(router, 'browser.open', { url: 'https://a.test/', workspaceId: 'ws-1' });
 
     const list = (await dispatch(router, 'browser.tabs', { action: 'list', workspaceId: 'ws-1' })).result as {
@@ -405,7 +417,34 @@ describe('chrome backend', () => {
 
     const closed = (await dispatch(router, 'browser.tabs', { action: 'close', surfaceId: 'tgt-1', workspaceId: 'ws-1' })).result as { ok: boolean };
     expect(closed.ok).toBe(true);
-    expect(launcher.closeTab).toHaveBeenCalledWith('tgt-1');
+    expect(registry.fallback.closeTab).toHaveBeenCalledWith('tgt-1');
+  });
+
+  it('two bound workspaces resolve to different launchers (ports + tab isolation) (Phase 2.5)', async () => {
+    const wsA = makeFakeLauncher();
+    const wsB = makeFakeLauncher();
+    wsA.ensureRunning.mockResolvedValue(18901);
+    wsB.ensureRunning.mockResolvedValue(18906);
+    const registry = makeFakeRegistry({ 'ws-a': wsA, 'ws-b': wsB });
+    const { router } = register({ backend: 'chrome', launcher: registry });
+
+    await dispatch(router, 'browser.open', { url: 'https://a.test/', workspaceId: 'ws-a' });
+    await dispatch(router, 'browser.open', { url: 'https://b.test/', workspaceId: 'ws-b' });
+    expect(wsA.openTab).toHaveBeenCalledWith('https://a.test/', 'ws-a');
+    expect(wsB.openTab).toHaveBeenCalledWith('https://b.test/', 'ws-b');
+
+    // Tab isolation: ws-a's list never sees ws-b's tab (separate instance).
+    const listA = (await dispatch(router, 'browser.tabs', { action: 'list', workspaceId: 'ws-a' })).result as {
+      tabs: Array<{ url: string }>;
+    };
+    expect(listA.tabs.map((t) => t.url)).toEqual(['https://a.test/']);
+
+    // cdp.info reports each workspace's own port. (No RpcContext in this
+    // harness → attach info undisclosed; assert via the launcher calls.)
+    await dispatch(router, 'browser.cdp.info', { workspaceId: 'ws-a' });
+    await dispatch(router, 'browser.cdp.info', { workspaceId: 'ws-b' });
+    expect(wsA.ensureRunning).toHaveBeenCalled();
+    expect(wsB.ensureRunning).toHaveBeenCalled();
   });
 
   it('chrome mode without a wired launcher fails with a clear message', async () => {

@@ -1404,3 +1404,42 @@ describe('PlaywrightEngine chrome backend (Phase 2)', () => {
     expect(isShell.call(engine, 'chrome://gpu/')).toBe(false);
   });
 });
+
+
+// ── Phase 2.5: per-workspace Chrome profiles → per-workspace CDP ports ─────
+describe('PlaywrightEngine ensureConnected workspace switch (Phase 2.5)', () => {
+  beforeEach(() => {
+    (PlaywrightEngine as unknown as { instance: PlaywrightEngine | null }).instance = null;
+    mockSendRpc.mockReset();
+    mockConnectOverCDP.mockReset();
+  });
+
+  it('re-resolves cdp.info and reconnects when a different workspace asks', async () => {
+    const ports: Record<string, number> = { 'ws-a': 18901, 'ws-b': 18906 };
+    mockSendRpc.mockImplementation((method: string, params?: { workspaceId?: string }) =>
+      method === 'browser.cdp.info'
+        ? Promise.resolve({
+            cdpPort: ports[params?.workspaceId ?? ''] ?? 18901,
+            workspaceBackend: 'chrome',
+            targetsScoped: true,
+            targets: [],
+          })
+        : Promise.resolve({}),
+    );
+    const sessions: FakeSession[] = [];
+    mockConnectOverCDP.mockResolvedValue(makeFakeBrowser(sessions));
+
+    const engine = PlaywrightEngine.getInstance();
+    await engine.ensureConnected('ws-a');
+    // Same workspace again: live connection reused, no second connect.
+    await engine.ensureConnected('ws-a');
+    expect(mockConnectOverCDP).toHaveBeenCalledTimes(1);
+    expect(mockConnectOverCDP).toHaveBeenLastCalledWith('http://localhost:18901');
+
+    // Different workspace: the short-circuit must NOT pin ws-b to ws-a's
+    // browser — cdp.info re-runs and the connection moves to ws-b's port.
+    await engine.ensureConnected('ws-b');
+    expect(mockConnectOverCDP).toHaveBeenCalledTimes(2);
+    expect(mockConnectOverCDP).toHaveBeenLastCalledWith('http://localhost:18906');
+  });
+});

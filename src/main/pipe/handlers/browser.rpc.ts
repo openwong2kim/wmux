@@ -29,7 +29,7 @@ import type {
   BrowserScopeShadowReason,
 } from '../../audit/shadowRejectionLog';
 import type { BrowserBackendStore } from '../../browser-session/BrowserBackendStore';
-import type { ChromeLauncher } from '../../browser-session/ChromeLauncher';
+import type { ChromeLauncher, ChromeLauncherRegistry } from '../../browser-session/ChromeLauncher';
 import type { EnforcementMode } from '../../mcp/enforcementMode';
 import { isFirstPartyClient } from '../../mcp/firstParty';
 import { isLocalExternalWireContext } from '../../mcp/rpcProvenance';
@@ -343,10 +343,10 @@ export function registerBrowserRpc(
   // to shadow, so a caller that forgets to wire it keeps observing rather than
   // silently starting to refuse traffic.
   getEnforcementMode: () => EnforcementMode = () => 'shadow',
-  // 'chrome' backend (Phase 2): dedicated real-Chrome instance. Optional so
-  // older wirings/tests keep working; chrome-mode calls without it fail with
-  // a clear message.
-  chromeLauncher?: ChromeLauncher,
+  // 'chrome' backend (Phase 2/2.5): per-profile real-Chrome instances behind
+  // a workspace-binding registry. Optional so older wirings/tests keep
+  // working; chrome-mode calls without it fail with a clear message.
+  chromeRegistry?: ChromeLauncherRegistry,
 ): void {
   const getActivePartition = (): string => profileManager.getActiveProfile().partition;
 
@@ -368,11 +368,14 @@ export function registerBrowserRpc(
   // generic target-miss, never a silent fallback onto another builtin surface.
   const backend = () => backendStore?.get() ?? 'builtin';
 
-  const requireChrome = (method: string): ChromeLauncher => {
-    if (!chromeLauncher) {
+  // Resolves the CALLING workspace's launcher (binding ?? 'default') — the
+  // binding is user-set from the workspace card, never agent-selectable, so
+  // workspace 1 drives its own signed-in Chrome and workspace 2 its own.
+  const requireChrome = (method: string, workspaceId: string | undefined): ChromeLauncher => {
+    if (!chromeRegistry) {
       throw new Error(`${method}: browser backend is 'chrome' but no Chrome launcher is wired in this build.`);
     }
-    return chromeLauncher;
+    return chromeRegistry.forWorkspace(workspaceId);
   };
 
   /** BrowserTabDescriptor for a chrome tab — paneId is synthetic (no pane). */
@@ -692,7 +695,7 @@ export function registerBrowserRpc(
     // Phase 2 'chrome' backend: all four actions operate on the dedicated
     // Chrome instance's wmux-opened tabs (registry-scoped by workspace).
     if (backend() === 'chrome') {
-      const launcher = requireChrome('browser.tabs');
+      const launcher = requireChrome('browser.tabs', workspaceId);
       if (action === 'new') {
         if (url) {
           try {
@@ -804,7 +807,7 @@ export function registerBrowserRpc(
     if (backend() === 'chrome') {
       // Dedicated-Chrome open: a tracked tab with a real handle — unlike
       // 'external', about:blank is a valid open here (auto-open path).
-      const launcher = requireChrome('browser.open');
+      const launcher = requireChrome('browser.open', workspaceId);
       if (url) await validateUrl(url, 'browser.open');
       const opened = await launcher.openTab(url ?? 'about:blank', workspaceId);
       // surfaceId = Chrome targetId keeps the engine's auto-open→pin contract.
@@ -985,7 +988,7 @@ export function registerBrowserRpc(
     await validateUrl(navUrl, 'browser.navigate');
     // Owner = the caller-verified scope, never a body-supplied workspaceId
     // (#810 scope-coverage guard).
-    const opened = await requireChrome('browser.navigate').openTab(navUrl, scope);
+    const opened = await requireChrome('browser.navigate', scope).openTab(navUrl, scope);
     return { ok: true, backend: 'chrome', surfaceId: opened.targetId, url: opened.url };
   });
 
@@ -1156,7 +1159,7 @@ export function registerBrowserRpc(
     // no app shell in that instance, and the engine's localhost heuristics
     // must not hide the user's dev-server tabs.
     if (backend() === 'chrome') {
-      const launcher = requireChrome('browser.cdp.info');
+      const launcher = requireChrome('browser.cdp.info', callerWorkspaceId || undefined);
       const chromePort = await launcher.ensureRunning();
       const chromeTargets = await launcher.listTargets(callerWorkspaceId || undefined);
       return {

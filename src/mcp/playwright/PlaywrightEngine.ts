@@ -375,6 +375,7 @@ export class PlaywrightEngine {
     // Drop the cached backend marker for the same reason — it is re-learned
     // from the next cdp.info response (#517).
     this.workspaceBackend = undefined;
+    this.connectedWorkspaceId = undefined;
     if (s) {
       await s.detach().catch(() => { /* session may already be gone */ });
     }
@@ -386,8 +387,18 @@ export class PlaywrightEngine {
     }
   }
 
+  /** Workspace whose cdp.info produced the current connection. Per-workspace
+   *  Chrome profiles (Phase 2.5) mean different workspaces can resolve to
+   *  DIFFERENT ports — a live connection for A must not be reused for B. */
+  private connectedWorkspaceId: string | undefined;
+
   async ensureConnected(workspaceId?: string): Promise<void> {
-    if (this.browser?.isConnected()) return;
+    if (
+      this.browser?.isConnected() &&
+      (workspaceId === undefined || this.connectedWorkspaceId === undefined || this.connectedWorkspaceId === workspaceId)
+    ) {
+      return;
+    }
 
     let lastError: unknown = null;
     for (let attempt = 1; attempt <= MAX_CONNECT_RETRIES; attempt++) {
@@ -409,6 +420,7 @@ export class PlaywrightEngine {
           throw new CdpAttachInfoUnavailableError();
         }
         await this.connect(info.cdpPort);
+        this.connectedWorkspaceId = workspaceId;
         return;
       } catch (err) {
         if (err instanceof CdpAttachInfoUnavailableError) throw err;

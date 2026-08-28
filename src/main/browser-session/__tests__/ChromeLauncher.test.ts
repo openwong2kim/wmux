@@ -110,3 +110,60 @@ describe('ChromeLauncher', () => {
     await expect(launcher.ensureRunning()).rejects.toThrow('disposed');
   });
 });
+
+// Registry: one launcher per profile, workspace-binding resolution (Phase 2.5).
+import { ChromeLauncherRegistry } from '../ChromeLauncher';
+
+describe('ChromeLauncherRegistry', () => {
+  function makeStore(bindings: Record<string, string>) {
+    return { profileFor: (ws?: string) => (ws && bindings[ws]) || 'default' };
+  }
+
+  it('bound workspaces get distinct launchers with distinct dirs; unbound share default', () => {
+    const registry = new ChromeLauncherRegistry({
+      defaultDir: '/tmp/default-prof',
+      profilesDir: '/tmp/profiles',
+      store: makeStore({ 'ws-a': 'youtube-a', 'ws-b': 'youtube-b' }),
+    });
+    const a = registry.forWorkspace('ws-a');
+    const b = registry.forWorkspace('ws-b');
+    const d1 = registry.forWorkspace('ws-unbound');
+    const d2 = registry.forWorkspace(undefined);
+
+    expect(a).not.toBe(b);
+    expect(d1).toBe(d2);
+    expect(registry.forWorkspace('ws-a')).toBe(a); // cached
+    const dirOf = (l: unknown) => (l as { userDataDir: string }).userDataDir;
+    expect(dirOf(a)).toBe('/tmp/profiles/youtube-a');
+    expect(dirOf(b)).toBe('/tmp/profiles/youtube-b');
+    expect(dirOf(d1)).toBe('/tmp/default-prof');
+  });
+
+  it('ownerOfTarget finds the launcher that opened a tab; disposeAll kills all children', async () => {
+    const childA = makeChild();
+    const childB = makeChild();
+    spawnMock.mockReturnValueOnce(childA).mockReturnValueOnce(childB);
+    fetchMock.mockImplementation(async (url: string, init?: { method?: string }) => {
+      if (init?.method === 'PUT') return fetchOk({ id: String(url).includes('a.test') ? 'tgt-a' : 'tgt-b', url: 'x' });
+      return fetchOk({});
+    });
+
+    const registry = new ChromeLauncherRegistry({
+      defaultDir: '/tmp/default-prof',
+      profilesDir: '/tmp/profiles',
+      store: makeStore({ 'ws-a': 'pa', 'ws-b': 'pb' }),
+    });
+    const a = registry.forWorkspace('ws-a');
+    const b = registry.forWorkspace('ws-b');
+    await a.openTab('https://a.test/', 'ws-a');
+    await b.openTab('https://b.test/', 'ws-b');
+
+    expect(registry.ownerOfTarget('tgt-a')).toBe(a);
+    expect(registry.ownerOfTarget('tgt-b')).toBe(b);
+    expect(registry.ownerOfTarget('tgt-x')).toBeUndefined();
+
+    registry.disposeAll();
+    expect(childA.kill).toHaveBeenCalled();
+    expect(childB.kill).toHaveBeenCalled();
+  });
+});
