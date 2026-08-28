@@ -6,8 +6,7 @@ import { Terminal } from '@xterm/headless';
 import { Unicode11Addon } from '@xterm/addon-unicode11';
 import {
   SessionPipe,
-  FLUSH_DONE_MARKER,
-  RESYNC_BEGIN_MARKER,
+  createSessionPipeMarkers,
 } from '../SessionPipe';
 import { RingBuffer } from '../RingBuffer';
 import { generateSnapshot } from '../HeadlessSnapshot';
@@ -103,6 +102,10 @@ function trimTrailingBlank(lines: string[]): string[] {
 }
 
 const TOKEN = 'reflush-session-token';
+const {
+  flushDone: FLUSH_DONE_MARKER,
+  resyncBegin: RESYNC_BEGIN_MARKER,
+} = createSessionPipeMarkers(TOKEN);
 
 // Cleanup registry — each test pushes teardown steps (LIFO).
 let cleanups: Array<() => void | Promise<void>> = [];

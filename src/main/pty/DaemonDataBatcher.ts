@@ -23,19 +23,20 @@
  */
 export class DaemonDataBatcher {
   private pending = new Map<string, string[]>();
+  private pendingReplay = new Map<string, boolean>();
   private pendingChars = new Map<string, number>();
   private timers = new Map<string, ReturnType<typeof setTimeout>>();
   private lastSentAt = new Map<string, number>();
   private disposed = false;
 
   constructor(
-    private readonly send: (sessionId: string, text: string) => void,
+    private readonly send: (sessionId: string, text: string, replay: boolean) => void,
     private readonly intervalMs = 8,
     /** Per-session cap; exceeding it flushes synchronously (bounded memory). */
     private readonly maxBufferedChars = 4 * 1024 * 1024,
   ) {}
 
-  push(sessionId: string, text: string): void {
+  push(sessionId: string, text: string, replay = false): void {
     if (!text) return;
     if (this.disposed) {
       // Late chunk after dispose (handler swap raced a pipe read): DROP it.
@@ -54,6 +55,13 @@ export class DaemonDataBatcher {
     // full 8 ms to echoMs.p95 (13.9 → 21.5 ms) — while agent torrents still
     // coalesce: only the FIRST chunk of a burst bypasses the batch window.
     // Ordering is safe: the bypass requires an empty buffer.
+    const buffered = this.pending.get(sessionId);
+    if (buffered && this.pendingReplay.get(sessionId) !== replay) {
+      // Provenance is an ordering boundary. Never merge historical replay
+      // with live PTY output into one IPC frame: the renderer applies replay
+      // side-effect guards at the exact xterm write that parses these bytes.
+      this.flushSession(sessionId);
+    }
     const now = Date.now();
     const buf = this.pending.get(sessionId);
     if (
@@ -62,13 +70,14 @@ export class DaemonDataBatcher {
       now - (this.lastSentAt.get(sessionId) ?? 0) >= this.intervalMs
     ) {
       this.lastSentAt.set(sessionId, now);
-      this.send(sessionId, text);
+      this.send(sessionId, text, replay);
       return;
     }
     if (buf) {
       buf.push(text);
     } else {
       this.pending.set(sessionId, [text]);
+      this.pendingReplay.set(sessionId, replay);
     }
     const chars = (this.pendingChars.get(sessionId) ?? 0) + text.length;
     this.pendingChars.set(sessionId, chars);
@@ -95,9 +104,11 @@ export class DaemonDataBatcher {
     const buf = this.pending.get(sessionId);
     if (!buf || buf.length === 0) return;
     this.pending.delete(sessionId);
+    const replay = this.pendingReplay.get(sessionId) ?? false;
+    this.pendingReplay.delete(sessionId);
     this.pendingChars.delete(sessionId);
     this.lastSentAt.set(sessionId, Date.now());
-    this.send(sessionId, buf.join(''));
+    this.send(sessionId, buf.join(''), replay);
   }
 
   /** Drop a session's buffer without sending (session destroyed mid-batch). */
@@ -108,6 +119,7 @@ export class DaemonDataBatcher {
       this.timers.delete(sessionId);
     }
     this.pending.delete(sessionId);
+    this.pendingReplay.delete(sessionId);
     this.pendingChars.delete(sessionId);
     this.lastSentAt.delete(sessionId);
   }

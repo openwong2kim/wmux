@@ -145,8 +145,13 @@ const electronAPI = {
         | { success: true; rows: Array<{ text: string; wrapped: boolean }>; truncated?: boolean }
         | { success: false; code: string; reason?: string }
       >,
-    onData: (callback: (id: string, data: string) => void) => {
-      const listener = (_event: Electron.IpcRendererEvent, id: string, data: string) => callback(id, data);
+    onData: (callback: (id: string, data: string, replay: boolean) => void) => {
+      const listener = (
+        _event: Electron.IpcRendererEvent,
+        id: string,
+        data: string,
+        replay = false,
+      ) => callback(id, data, replay);
       ipcRenderer.on(IPC.PTY_DATA, listener);
       return () => { ipcRenderer.removeListener(IPC.PTY_DATA, listener); };
     },

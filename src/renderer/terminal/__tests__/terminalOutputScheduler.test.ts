@@ -6,6 +6,7 @@ import {
   discardTerminalOutput,
   getQueuedCharCount,
   promoteTerminalToPriorityDrain,
+  rebindTerminalOutputWriter,
   __resetTerminalOutputSchedulerForTests,
   type SchedulableTerminal,
 } from '../terminalOutputScheduler';
@@ -130,6 +131,50 @@ describe('terminalOutputScheduler', () => {
     writeTerminalOutput(t, 'ef', { foreground: false, onWritten: (n) => written.push(n) });
     vi.runAllTimers();
     expect(written).toEqual([4, 2]);
+  });
+
+  it('preserves each queued segment writer across replay/live boundaries', () => {
+    const writes: Array<[string, string]> = [];
+    const t: SchedulableTerminal = {
+      write: (data) => writes.push(['live', data]),
+    };
+    const replayWrite = (data: string) => writes.push(['replay', data]);
+    writeTerminalOutput(t, 'old-a', { foreground: false, write: replayWrite });
+    writeTerminalOutput(t, 'old-b', { foreground: false, write: replayWrite });
+    writeTerminalOutput(t, 'new', { foreground: false });
+    vi.runAllTimers();
+    expect(writes).toEqual([
+      ['replay', 'old-aold-b'],
+      ['live', 'new'],
+    ]);
+  });
+
+  it('uses the supplied writer on the direct foreground path', () => {
+    const t = makeTerminal();
+    const replayWrites: string[] = [];
+    noteTerminalInput(t);
+    writeTerminalOutput(t, 'history', {
+      foreground: true,
+      write: (data) => replayWrites.push(data),
+    });
+    expect(replayWrites).toEqual(['history']);
+    expect(t.writes).toEqual([]);
+  });
+
+  it('rebinds retained custom writes when a parked terminal is adopted', () => {
+    const t = makeTerminal();
+    const oldMount: string[] = [];
+    const newMount: string[] = [];
+    writeTerminalOutput(t, 'history', {
+      foreground: false,
+      retainWhenHidden: true,
+      write: (data) => oldMount.push(data),
+    });
+    rebindTerminalOutputWriter(t, (data) => newMount.push(data));
+    flushTerminalOutput(t);
+    expect(oldMount).toEqual([]);
+    expect(newMount).toEqual(['history']);
+    expect(t.writes).toEqual([]);
   });
 
   it('drains large backlogs in bounded chunks across ticks, order preserved', () => {

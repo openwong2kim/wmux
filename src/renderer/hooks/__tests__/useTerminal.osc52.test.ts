@@ -22,6 +22,10 @@ const SRC = readFileSync(
   path.resolve(process.cwd(), 'src/renderer/hooks/useTerminal.ts'),
   'utf8',
 );
+const PRELOAD_SRC = readFileSync(
+  path.resolve(process.cwd(), 'src/preload/preload.ts'),
+  'utf8',
+);
 
 describe('useTerminal OSC 52 clipboard-write wiring (source-level lock)', () => {
   it('registers an OSC 52 parser handler', () => {
@@ -41,18 +45,26 @@ describe('useTerminal OSC 52 clipboard-write wiring (source-level lock)', () => 
     // Replayed bytes are stored output, not a request: a reconnect, resync or
     // scrollback restore must not re-apply an old copy to the live clipboard.
     // Pinned on the predicate reaching the shared state machine, not on how the
-    // boolean is spelled — replayMute.ts owns the WHEN, and its own tests cover
-    // the windows.
+    // boolean is spelled — replayMute.ts owns the parse-scoped lifetime.
     expect(SRC).toMatch(/isReplaying:\s*\(\)\s*=>\s*isReplayMuted\(replayMuteRef\.current\)/);
     expect(SRC).toMatch(/from '\.\.\/terminal\/replayMute'/);
   });
 
-  it('opens a mute window around the reattach replay (#998)', () => {
-    // The daemon RingBuffer flush after a reattach arrives as ordinary pty:data,
-    // so there is no write of ours to hang the mute on. This is the gap the
-    // maintainer's live dogfood found; the window is what closes it.
-    expect(SRC).toMatch(/openReattachWindow\(replayMuteRef\.current\)/);
-    expect(SRC).toMatch(/noteReplayData\(replayMuteRef\.current\)/);
+  it('uses source-labelled replay writes instead of a receive-time window (#1014)', () => {
+    expect(SRC).toMatch(/onData\(\(ptyId, data, replay\)\s*=>\s*cb\(ptyId, \{[\s\S]{0,80}?replay:\s*replay\s*===\s*true/);
+    expect(SRC).toMatch(/write:\s*payload\.replay\s*\?\s*writeReplayOutput\s*:\s*undefined/);
+    expect(SRC).not.toMatch(/openReattachWindow|noteReplayData/);
+  });
+
+  it('treats legacy and local two-argument PTY data as live', () => {
+    expect(PRELOAD_SRC).toMatch(/data:\s*string,\s*\n\s*replay\s*=\s*false/);
+    expect(SRC).toMatch(/replay:\s*replay\s*===\s*true/);
+  });
+
+  it('daemon replay still proves the recovered PTY pipe is ready', () => {
+    const connect = SRC.slice(SRC.indexOf('const connectPty'), SRC.indexOf('const connectPty') + 1200);
+    expect(connect).toMatch(/routePtyData\(payload\);[\s\S]{0,120}?markPaneLive\(\);/);
+    expect(connect).not.toMatch(/if \(payload\.replay\) return/);
   });
 
   it('writes the decoded text through the clipboard IPC (1 MB cap + lock handling)', () => {
@@ -63,5 +75,11 @@ describe('useTerminal OSC 52 clipboard-write wiring (source-level lock)', () => 
 
   it('disposes the OSC 52 handler on teardown (no leak across remounts)', () => {
     expect(SRC).toMatch(/osc52Disposable\.dispose\(\)/);
+  });
+
+  it('preserves an in-flight mute across terminal parking and adoption', () => {
+    expect(SRC).toMatch(/replayMuteRef\.current\s*=\s*getTerminalReplayMute\(terminal\)/);
+    expect(SRC).toMatch(/const disposeTerminal = \(\) => \{[\s\S]{0,320}?disposeTerminalReplayMute\(terminal\)/);
+    expect(SRC).not.toMatch(/return \(\) => \{[\s\S]{0,180}?resetReplayMute/);
   });
 });

@@ -8,15 +8,26 @@
  * the HeadlessSnapshot import to SessionPipe. Keep this file import-free.
  */
 
-/** Marker sent after Ring Buffer flush to signal transition to real-time mode. */
-export const FLUSH_DONE_MARKER = Buffer.from('\x00WMUX_FLUSH_DONE\x00');
+export interface SessionPipeMarkers {
+  /** Sent after a Ring Buffer flush to signal transition to real-time mode. */
+  flushDone: Buffer;
+  /** Sent immediately before a live-pipe re-flush begins. */
+  resyncBegin: Buffer;
+}
 
 /**
- * In-band announcement that a live-pipe re-flush is starting (phase 3 PR-B).
- * Written on the ALREADY-FLUSHED stream right before live output is
- * suppressed; everything after it up to the next FLUSH_DONE_MARKER is replay
- * (snapshot or raw) that the client must accumulate exactly like the initial
- * flush. Carrying the state transition in the stream itself is what makes the
- * protocol race-free: no RPC-vs-stream ordering can misclassify bytes.
+ * Build markers that only the authenticated daemon and main process can
+ * predict. PTY output shares this byte stream, so a fixed public marker would
+ * let stored output impersonate a flush boundary and regain live side-effect
+ * authority during replay. The daemon auth token is never exposed to a remote
+ * PTY producer; including it makes accidental or crafted collisions
+ * negligible while keeping this module import-free for the Vite main build.
+ * The resync marker is written on the already-flushed stream immediately
+ * before live output is suppressed; everything until flushDone is replay.
  */
-export const RESYNC_BEGIN_MARKER = Buffer.from('\x00WMUX_RESYNC_BEGIN\x00');
+export function createSessionPipeMarkers(authToken: string): SessionPipeMarkers {
+  return {
+    flushDone: Buffer.from(`\x00WMUX_FLUSH_DONE:${authToken}\x00`),
+    resyncBegin: Buffer.from(`\x00WMUX_RESYNC_BEGIN:${authToken}\x00`),
+  };
+}

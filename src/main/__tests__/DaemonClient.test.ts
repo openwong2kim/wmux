@@ -4,7 +4,7 @@ import crypto from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 import { DaemonClient, getDaemonPipeName, readDaemonAuthToken } from '../DaemonClient';
-import { FLUSH_DONE_MARKER } from '../../daemon/SessionPipe';
+import { createSessionPipeMarkers } from '../../daemon/SessionPipe';
 import { waitFor } from '../../test-utils/waitFor';
 
 // Helper: unique pipe name per test
@@ -88,6 +88,7 @@ function createMockDaemonServer(
 // Helper: create a mock session pipe server that sends FLUSH_DONE_MARKER then echoes data back
 function createMockSessionPipe(
   sessionId: string,
+  expectedToken: string,
 ): { server: net.Server; start: () => Promise<string>; stop: () => Promise<void>; writeToClient: (data: Buffer) => void } {
   const pipeName = process.platform === 'win32'
     ? `\\\\.\\pipe\\wmux-session-${sessionId}`
@@ -99,21 +100,24 @@ function createMockSessionPipe(
   const server = net.createServer((socket) => {
     clientSocket = socket;
     let authBuffer = Buffer.alloc(0);
-    let authenticated = false;
 
     const onAuthData = (data: Buffer): void => {
       const chunk = Buffer.isBuffer(data) ? data : Buffer.from(data);
       authBuffer = Buffer.concat([authBuffer, chunk]);
       const newlineIndex = authBuffer.indexOf(0x0a);
       if (newlineIndex === -1) return;
+      const presentedToken = authBuffer.subarray(0, newlineIndex).toString('utf8');
+      if (presentedToken !== expectedToken) {
+        socket.destroy();
+        return;
+      }
 
       // Auth token received — consume it and proceed
-      authenticated = true;
       socket.removeListener('data', onAuthData);
       const leftover = authBuffer.subarray(newlineIndex + 1);
 
       // Flush done immediately (no ring buffer to replay)
-      socket.write(FLUSH_DONE_MARKER);
+      socket.write(createSessionPipeMarkers(expectedToken).flushDone);
 
       // Set up real data handler
       socket.on('data', (d: Buffer) => {
@@ -356,7 +360,7 @@ describe('DaemonClient', () => {
       mockServer = createMockDaemonServer(pipeName, AUTH_TOKEN, {});
       await mockServer.start();
 
-      const mockSession = createMockSessionPipe(sessionId);
+      const mockSession = createMockSessionPipe(sessionId, AUTH_TOKEN);
       await mockSession.start();
 
       client = new DaemonClient(pipeName, AUTH_TOKEN);
@@ -391,6 +395,26 @@ describe('DaemonClient', () => {
       await mockServer.stop();
     });
 
+    it('does not complete a session flush when the client presents the wrong token', async () => {
+      const sessionId = `test-sp-auth-${crypto.randomUUID().slice(0, 8)}`;
+      const mockSession = createMockSessionPipe(sessionId, AUTH_TOKEN);
+      await mockSession.start();
+
+      client = new DaemonClient(testPipeName('unused-control'), 'wrong-session-token');
+      let flushCompleted = false;
+      client.on('session:flushComplete', (payload: { sessionId: string }) => {
+        if (payload.sessionId === sessionId) flushCompleted = true;
+      });
+
+      await client.connectSessionPipe(sessionId);
+      await waitFor(() => !client.isSessionPipeWritable(sessionId), 3000);
+
+      expect(flushCompleted).toBe(false);
+
+      await client.disconnect();
+      await mockSession.stop();
+    });
+
     it('should forward client writes to session pipe', async () => {
       const pipeName = testPipeName('sp2');
       const sessionId = `test-sp-${crypto.randomUUID().slice(0, 8)}`;
@@ -413,9 +437,14 @@ describe('DaemonClient', () => {
           authBuf = Buffer.concat([authBuf, chunk]);
           const nl = authBuf.indexOf(0x0a);
           if (nl === -1) return;
+          const presentedToken = authBuf.subarray(0, nl).toString('utf8');
+          if (presentedToken !== AUTH_TOKEN) {
+            socket.destroy();
+            return;
+          }
           socket.removeListener('data', onAuth);
           const leftover = authBuf.subarray(nl + 1);
-          socket.write(FLUSH_DONE_MARKER);
+          socket.write(createSessionPipeMarkers(AUTH_TOKEN).flushDone);
           socket.on('data', (d) => {
             inputReceived.push(Buffer.isBuffer(d) ? d : Buffer.from(d));
           });
@@ -461,7 +490,7 @@ describe('DaemonClient', () => {
       mockServer = createMockDaemonServer(pipeName, AUTH_TOKEN, {});
       await mockServer.start();
 
-      const mockSession = createMockSessionPipe(sessionId);
+      const mockSession = createMockSessionPipe(sessionId, AUTH_TOKEN);
       await mockSession.start();
 
       client = new DaemonClient(pipeName, AUTH_TOKEN);
@@ -633,7 +662,7 @@ describe('DaemonClient', () => {
       client = new DaemonClient(pipeName, AUTH_TOKEN);
       await client.connect();
 
-      sessionPipe = createMockSessionPipe(SESSION_ID);
+      sessionPipe = createMockSessionPipe(SESSION_ID, AUTH_TOKEN);
       await sessionPipe.start();
     });
 
@@ -667,7 +696,7 @@ describe('DaemonClient', () => {
       expect(client.isSessionPipeWritable(SESSION_ID)).toBe(false);
 
       // Bring the daemon side back up at the same pipe name.
-      sessionPipe = createMockSessionPipe(SESSION_ID);
+      sessionPipe = createMockSessionPipe(SESSION_ID, AUTH_TOKEN);
       await sessionPipe.start();
 
       // Reconnect should NOT early-return — the stale entry must be
@@ -687,6 +716,34 @@ describe('DaemonClient', () => {
       await client.connectSessionPipe(SESSION_ID, { forceFresh: true });
       expect(client.isSessionPipeWritable(SESSION_ID)).toBe(true);
       expect(client.writeToSession(SESSION_ID, 'forced')).toBe(true);
+    });
+
+    it('drops late data callbacks from a socket after its identity is replaced', async () => {
+      const staleSocket = new net.Socket();
+      const replacementSocket = new net.Socket();
+      const internals = client as unknown as {
+        sessionPipes: Map<string, net.Socket>;
+        setupSessionPipe: (sessionId: string, socket: net.Socket) => void;
+      };
+      const received: Buffer[] = [];
+      client.on('session:data', (payload: { sessionId: string; data: Buffer }) => {
+        if (payload.sessionId === SESSION_ID) received.push(payload.data);
+      });
+
+      internals.sessionPipes.set(SESSION_ID, staleSocket);
+      internals.setupSessionPipe(SESSION_ID, staleSocket);
+      internals.sessionPipes.set(SESSION_ID, replacementSocket);
+
+      staleSocket.emit('data', Buffer.concat([
+        createSessionPipeMarkers(AUTH_TOKEN).flushDone,
+        Buffer.from('stale-output'),
+      ]));
+
+      expect(received).toEqual([]);
+
+      await client.disconnect();
+      staleSocket.destroy();
+      replacementSocket.destroy();
     });
 
     it('writeToSession returns false when the session is not connected', () => {

@@ -18,8 +18,9 @@ import { claimFit } from '../utils/fitGuard';
 import { createAutoSelectionCopy } from '../utils/autoSelectionCopy';
 import { createOsc52Handler } from '../utils/osc52Clipboard';
 import {
-  createReplayMute, isReplayMuted, beginReplayWrite, openReattachWindow,
-  noteReplayData, resetReplayMute, type ReplayMute,
+  createReplayMute, getTerminalReplayMute, disposeTerminalReplayMute,
+  isReplayMuted, beginReplayWrite,
+  type ReplayMute,
 } from '../terminal/replayMute';
 import { terminalFontFamilyCss } from '../utils/terminalFont';
 import { createPathLinkProvider } from '../terminal/pathLinkProvider';
@@ -50,6 +51,7 @@ import {
   markTerminalClean,
   getQueuedCharCount,
   promoteTerminalToPriorityDrain,
+  rebindTerminalOutputWriter,
 } from '../terminal/terminalOutputScheduler';
 import { reconnectPtyWithRetry as reconnectPtyWithRetryImpl } from './reconnectPtyWithRetry';
 import { adoptTerminal, parkTerminal, restoreParkedViewport, type ParkedTerminal } from '../terminal/terminalPark';
@@ -123,8 +125,16 @@ export function createPtyDispatcher<T>(
     },
   };
 }
-const ptyDataDispatcher = createPtyDispatcher<string>((cb) =>
-  window.electronAPI.pty.onData(cb));
+interface PtyDataPayload {
+  data: string;
+  replay: boolean;
+}
+
+const ptyDataDispatcher = createPtyDispatcher<PtyDataPayload>((cb) =>
+  window.electronAPI.pty.onData((ptyId, data, replay) => cb(ptyId, {
+    data,
+    replay: replay === true,
+  })));
 const ptyExitDispatcher = createPtyDispatcher<number>((cb) =>
   window.electronAPI.pty.onExit(cb));
 const ptyFlushDispatcher = createPtyDispatcher<number>((cb) =>
@@ -348,8 +358,7 @@ export function subscribePaneSyncUi(ptyId: string, listener: (s: PaneSyncUiState
  * escape sequences are still queued, which is the bug itself.
  *
  * Live bytes must NOT come through here: a copy the user makes while a pane is
- * busy is real. The one exception is the reattach window, which has its own
- * mechanism in replayMute.ts because that replay arrives as ordinary pty:data.
+ * busy is real. Daemon replay bytes are source-labelled before they cross IPC.
  */
 function writeReplayed(term: Terminal, data: string | Uint8Array, mute: ReplayMute): void {
   const release = beginReplayWrite(mute);
@@ -361,6 +370,15 @@ function writeReplayed(term: Terminal, data: string | Uint8Array, mute: ReplayMu
     release();
     throw err;
   }
+}
+
+function writePtyDataImmediately(
+  term: Terminal,
+  payload: PtyDataPayload,
+  mute: ReplayMute,
+): void {
+  if (payload.replay) writeReplayed(term, payload.data, mute);
+  else term.write(payload.data);
 }
 
 function hiddenRetentionActive(): boolean {
@@ -405,7 +423,7 @@ interface ResyncState {
   pending: boolean;
   /** pty:data received while the resync replay is in flight — held out of
    *  xterm so the reset below cannot race half-parsed replay bytes. */
-  buffer: string[];
+  buffer: PtyDataPayload[];
   bufferedChars: number;
   resolvers: Array<() => void>;
   timer: ReturnType<typeof setTimeout> | null;
@@ -746,7 +764,9 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     const term = terminalRef.current;
     if (term) {
       try {
-        for (const chunk of st.buffer) term.write(chunk);
+        for (const chunk of st.buffer) {
+          writePtyDataImmediately(term, chunk, replayMuteRef.current);
+        }
       } catch { /* disposed mid-abort — teardown owns cleanup */ }
     }
     setPaneSyncUi(ptyIdRef.current ?? '', 'stale');
@@ -796,10 +816,11 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         writeReplayed(term, bytes, replayMuteRef.current);
         term.write(STALE_REPLAY_INPUT_MODE_RESETS);
         term.write(STALE_REPLAY_DISPLAY_RESETS);
-        // Same mixed-buffer reasoning as completeResyncFromFlush below: the
-        // renderer cannot separate held-live bytes from a replay that arrived
-        // as pty:data, so the flush is muted rather than trusted (#998).
-        for (const chunk of st.buffer) writeReplayed(term, chunk, replayMuteRef.current);
+        // Preserve the source label for bytes held alongside the snapshot:
+        // historical chunks are muted; genuinely live chunks remain trusted.
+        for (const chunk of st.buffer) {
+          writePtyDataImmediately(term, chunk, replayMuteRef.current);
+        }
         markTerminalClean(term);
       } catch { /* disposed mid-paint — teardown owns cleanup */ }
     }
@@ -1008,6 +1029,11 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         })()
         : {}),
     });
+
+    // #1014: xterm keeps parsing while the pane is parked and adopted into a
+    // new React mount. Share the mute with the terminal instance so an
+    // in-flight replay cannot become live-authorized during that handoff.
+    replayMuteRef.current = getTerminalReplayMute(terminal);
 
     const fitAddon = new FitAddon();
     const searchAddon = new SearchAddon();
@@ -2027,18 +2053,11 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       console.log(`[wmux:reveal] ptyId=${ptyId} mechanism=${mechanism} recoveredBytes=${recoveredBytes} buffered=${st.bufferedChars} chunks=${st.buffer.length}`);
       discardTerminalOutput(terminal); // stale retained backlog + dirty flag
       terminal.reset();
-      // #998: this buffer is MIXED. On the raw-fallback path the reconnect
-      // replay itself arrives as pty:data and lands here (hence "the held
-      // replay" in the comment above), alongside any genuinely live bytes that
-      // came in during the window. The renderer cannot tell them apart — no
-      // marker crosses the IPC boundary — so the whole flush is muted.
-      //
-      // That trades a real copy made inside a resync window (rare, ~1s, and the
-      // user can copy again) against silently replacing the clipboard with
-      // history (invisible, and the value can be days old). The first failure
-      // is a retry; the second is corruption you only notice after pasting the
-      // wrong thing somewhere.
-      for (const chunk of st.buffer) writeReplayed(terminal, chunk, replayMuteRef.current);
+      // The scanner labels every held chunk at its source. Historical bytes
+      // are muted for their exact parse lifetime; live output is not muted.
+      for (const chunk of st.buffer) {
+        writePtyDataImmediately(terminal, chunk, replayMuteRef.current);
+      }
       st.buffer.length = 0;
       st.bufferedChars = 0;
       resetStaleReplayModes(recoveredBytes);
@@ -2052,10 +2071,10 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         onFirstDataRef.current?.();
       }
     };
-    // X6 ②: the resume pill becomes clickable only on LIVE PTY data — NOT on
-    // restored scrollback (which also calls fireFirstData to hide overlays).
-    // Marking ready on a restore write would let the pill paste before the
-    // recovered pipe is confirmed writable (CodeRabbit #3 / eng review EI6).
+    // X6 ②: the resume pill becomes clickable only after data arrives through
+    // the PTY pipe — daemon RingBuffer replay qualifies because the recovered
+    // pipe has been health-probed as writable. A local .txt restore calls
+    // fireFirstData directly and never reaches markPaneLive.
     const markPaneLive = () => useStore.getState().markPtyReady(ptyId);
 
     // Restore scrollback from previous session, then connect PTY data listener.
@@ -2070,17 +2089,23 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     // guard's own show-injection goes through `deliverPtyData` (NOT
     // routePtyData) so it is ordered with queued output but never re-enters
     // the guard.
-    const restingCursor = new RestingCursorGuard((seq) => deliverPtyData(seq));
-    const routePtyData = (data: string) => deliverPtyData(restingCursor.process(data));
-    const deliverPtyData = (data: string) => {
-      // #998: while a reattach window is open these bytes ARE the daemon
-      // RingBuffer flush, not something happening now. Each chunk extends the
-      // window; it closes when the burst goes quiet, or at the hard cap.
-      noteReplayData(replayMuteRef.current);
+    const writeReplayOutput = (data: string) => {
+      writeReplayed(terminal, data, replayMuteRef.current);
+    };
+    // #1014: a parked terminal keeps its retained scheduler queue. Rebind its
+    // replay writer to this adopting mount's mute ref before that queue drains.
+    rebindTerminalOutputWriter(terminal, writeReplayOutput);
+    const restingCursor = new RestingCursorGuard((seq) => {
+      deliverPtyData({ data: seq, replay: false });
+    });
+    const routePtyData = (payload: PtyDataPayload) => {
+      deliverPtyData({ ...payload, data: restingCursor.process(payload.data) });
+    };
+    const deliverPtyData = (payload: PtyDataPayload) => {
       const st = resyncRef.current;
       if (st.pending) {
-        st.buffer.push(data);
-        st.bufferedChars += data.length;
+        st.buffer.push(payload);
+        st.bufferedChars += payload.data.length;
         if (st.bufferedChars > RESYNC_BUFFER_MAX_CHARS) abortResync('buffer-overflow');
         return;
       }
@@ -2091,10 +2116,11 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       // "terminal.write was CALLED"), not at IPC receipt.
       const retain = hiddenRetentionActive();
       if (!isVisibleRef.current) logRetentionGateOnce(retain);
-      writeTerminalOutput(terminal, data, {
+      writeTerminalOutput(terminal, payload.data, {
         foreground: isVisibleRef.current,
         retainWhenHidden: retain,
         onWritten: (chars) => glyphRepaint.onData(chars),
+        write: payload.replay ? writeReplayOutput : undefined,
       });
     };
 
@@ -2105,8 +2131,8 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       // would read as idle-forever. Throttled with a closure timestamp so the
       // zustand write (and its subscriber re-renders) stays off the hot path.
       let lastOutputStampAt = 0;
-      removeDataListener = ptyDataDispatcher.register(ptyId, (data) => {
-        routePtyData(data);
+      removeDataListener = ptyDataDispatcher.register(ptyId, (payload) => {
+        routePtyData(payload);
         fireFirstData();
         markPaneLive();
         const now = Date.now();
@@ -2135,16 +2161,16 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       // scrollback.load() is async (IPC round-trip). If PTY sends data before it
       // resolves, connectPty() would not yet be called and data would be lost.
       // Instead, buffer incoming data and flush after scrollback is written.
-      const pendingData: string[] = [];
+      const pendingData: PtyDataPayload[] = [];
       let scrollbackLoaded = false;
 
-      removeDataListener = ptyDataDispatcher.register(ptyId, (data) => {
+      removeDataListener = ptyDataDispatcher.register(ptyId, (payload) => {
         if (!scrollbackLoaded) {
-          pendingData.push(data);
+          pendingData.push(payload);
           return;
         }
         // Same routing as connectPty (resync hold-out + scheduler).
-        routePtyData(data);
+        routePtyData(payload);
         fireFirstData();
         markPaneLive();
       });
@@ -2261,8 +2287,8 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         // boot-restored pane obeys retention (queue, don't parse) and a
         // resync in flight keeps its hold-out ordering. Visible panes write
         // through the scheduler's foreground path, same order as before.
-        for (const data of pendingData) {
-          routePtyData(data);
+        for (const payload of pendingData) {
+          routePtyData(payload);
         }
         if (pendingData.length > 0) { fireFirstData(); markPaneLive(); }
         pendingData.length = 0;
@@ -2289,8 +2315,8 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         scrollbackLoaded = true;
         restoreSettled = true;
         // Same retention-aware routing as the success path above (P0-1).
-        for (const data of pendingData) {
-          routePtyData(data);
+        for (const payload of pendingData) {
+          routePtyData(payload);
         }
         if (pendingData.length > 0) { fireFirstData(); markPaneLive(); }
         pendingData.length = 0;
@@ -2387,11 +2413,6 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     resizeObserver.observe(container);
 
     return () => {
-      // #998: a terminal disposed mid-parse never delivers its write callback,
-      // so release the replay mute here rather than leaving the next terminal
-      // that reuses this hook unable to accept a clipboard write.
-      resetReplayMute(replayMuteRef.current);
-
       // #1002: can this terminal be handed to the next mount instead of being
       // disposed? Only when every source of truth for this pane has settled on
       // it. Each rung below is a state where the adopting mount — which skips
@@ -2502,7 +2523,6 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       // post-dispose drain write would throw. A PARKED terminal keeps its
       // queue: it is the same instance the next mount will drain, and there is
       // no resync behind it to replace what we would discard here (#1002).
-      if (!canPark) discardTerminalOutput(terminal);
       // #582: defer terminal.dispose() if a mouse drag is active on any
       // terminal. xterm nullifies _renderService before removing its
       // document-level mouseup/mousemove listeners — a mouseup landing on the
@@ -2512,6 +2532,10 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       // deferring only the internal dispose is safe. See disposeWhenDragEnds
       // for the wait/force policy.
       const disposeTerminal = () => {
+        // A terminal disposed mid-parse never delivers its write callback.
+        // Invalidate this terminal's mute only at FINAL disposal, not when it
+        // is parked for adoption: its xterm write buffer survives the mount.
+        disposeTerminalReplayMute(terminal);
         discardTerminalOutput(terminal);
         disposeWhenDragEnds(() => terminal.dispose());
       };
@@ -2531,7 +2555,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         // than it used to.
         parkTerminal(ptyId, terminal, parkElement, disposeTerminal);
       } else {
-        disposeWhenDragEnds(() => terminal.dispose());
+        disposeTerminal();
       }
       terminalRef.current = null;
       fitAddonRef.current = null;
@@ -2568,10 +2592,6 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       if (inFlight) return;
       inFlight = true;
       reconnectInFlightRef.current = true;
-      // #998: the RingBuffer replay this triggers arrives as ordinary
-      // pty:data, so there is no write of ours to hang the mute on — open a
-      // window here and let the data flow close it.
-      openReattachWindow(replayMuteRef.current);
       console.log(`[useTerminal] daemon reattach ptyId=${id} (${reason})`);
       void reconnectPtyWithRetry(id, () => ptyIdRef.current === id && terminalRef.current !== null)
         .then(() => {

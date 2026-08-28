@@ -16,7 +16,7 @@ import net from 'node:net';
 import crypto from 'node:crypto';
 import { Terminal } from '@xterm/headless';
 import { Unicode11Addon } from '@xterm/addon-unicode11';
-import { SessionPipe, FLUSH_DONE_MARKER, ATTACH_SNAPSHOT_MIN_BYTES } from '../SessionPipe';
+import { SessionPipe, createSessionPipeMarkers, ATTACH_SNAPSHOT_MIN_BYTES } from '../SessionPipe';
 import { RingBuffer } from '../RingBuffer';
 import { waitFor } from '../../test-utils/waitFor';
 
@@ -114,6 +114,7 @@ function redrawHistory(minBytes: number): Buffer {
 }
 
 const TOKEN = 'attsnap-test-token';
+const FLUSH_DONE_MARKER = createSessionPipeMarkers(TOKEN).flushDone;
 const COLS = 100;
 const ROWS = 24;
 

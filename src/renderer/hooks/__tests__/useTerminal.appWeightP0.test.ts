@@ -12,10 +12,10 @@ const src = fs.readFileSync(path.join(__dirname, '..', 'useTerminal.ts'), 'utf-8
 
 describe('P0-1 — scrollback pendingData obeys retention (Codex Eng #1)', () => {
   it('both pending-data flush loops route through routePtyData, never terminal.write', () => {
-    const loops = src.match(/for \(const data of pendingData\) \{\s*\n\s*routePtyData\(data\);/g) ?? [];
+    const loops = src.match(/for \(const payload of pendingData\) \{\s*\n\s*routePtyData\(payload\);/g) ?? [];
     expect(loops.length).toBe(2);
     // The old bypass must be gone entirely.
-    expect(src).not.toMatch(/for \(const data of pendingData\) \{\s*\n\s*terminal\.write\(data\);/);
+    expect(src).not.toMatch(/for \(const payload of pendingData\) \{[\s\S]{0,80}?terminal\.write\(/);
   });
 });
 

@@ -14,6 +14,7 @@ import type {
   LanLinkPeersListResult,
 } from '../shared/lanlink';
 import { stripReplayQuerySequences } from '../shared/replayQuerySanitizer';
+import { createSessionPipeMarkers } from '../daemon/sessionPipeMarkers';
 import { SessionPipeStreamScanner } from './daemon/sessionPipeStreamScanner';
 import { DAEMON_RPC_TIMEOUT_MS } from '../shared/timeouts';
 import {
@@ -41,7 +42,7 @@ interface PendingRequest {
  * Communicates over Named Pipe (Windows) / Unix domain socket using JSON-RPC.
  *
  * Events:
- *   'session:data'   — { sessionId: string, data: Buffer }
+ *   'session:data'   — { sessionId: string, data: Buffer, replay: boolean }
  *   'session:died'   — { sessionId: string, exitCode: number | null }
  *   'disconnected'   — daemon control pipe disconnected
  *   'event'          — DaemonEvent from daemon broadcast
@@ -803,6 +804,7 @@ export class DaemonClient extends EventEmitter {
     // scanner returns ordered events; this closure only fans them out onto the
     // EventBus, preserving the original emit signatures and ordering.
     const scanner = new SessionPipeStreamScanner({
+      markers: createSessionPipeMarkers(this.authToken),
       stripReplay: stripReplayQuerySequences,
     });
     this.sessionScanners.set(sessionId, scanner);
@@ -810,7 +812,7 @@ export class DaemonClient extends EventEmitter {
     const drain = (events: ReturnType<SessionPipeStreamScanner['feed']>) => {
       for (const ev of events) {
         if (ev.type === 'data') {
-          this.emit('session:data', { sessionId, data: ev.data });
+          this.emit('session:data', { sessionId, data: ev.data, replay: ev.replay });
         } else {
           this.emit('session:flushComplete', { sessionId, recoveredBytes: ev.recoveredBytes });
         }
@@ -818,6 +820,11 @@ export class DaemonClient extends EventEmitter {
     };
 
     socket.on('data', (chunk: Buffer) => {
+      // A forceFresh reconnect can install a replacement before the old
+      // socket's final queued data callback runs. Only the socket that still
+      // owns this session may emit bytes; otherwise stale output could
+      // interleave with the replacement stream.
+      if (this.sessionPipes.get(sessionId) !== socket) return;
       drain(scanner.feed(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
     });
 
@@ -847,8 +854,7 @@ export class DaemonClient extends EventEmitter {
   armSessionResync(sessionId: string): boolean {
     const scanner = this.sessionScanners.get(sessionId);
     if (!scanner || scanner.mode !== 'live') return false;
-    scanner.armResync();
-    return true;
+    return scanner.armResync();
   }
 
   /**
@@ -862,7 +868,7 @@ export class DaemonClient extends EventEmitter {
     const events = scanner.disarmResync();
     for (const ev of events) {
       if (ev.type === 'data') {
-        this.emit('session:data', { sessionId, data: ev.data });
+        this.emit('session:data', { sessionId, data: ev.data, replay: ev.replay });
       }
     }
   }

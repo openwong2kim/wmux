@@ -43,7 +43,7 @@ describe('A6 — useTerminal async restore race cancel (source-level)', () => {
     const body = src.slice(loadIdx, loadIdx + 4000);
     // pendingData.length > 0 check happens whether or not restored ran.
     expect(body).toMatch(/scrollbackLoaded\s*=\s*true/);
-    expect(body).toMatch(/for\s*\(\s*const\s+data\s+of\s+pendingData/);
+    expect(body).toMatch(/for\s*\(\s*const\s+payload\s+of\s+pendingData/);
   });
 
   // Codex review P2 #2 (cold-start race): if `.txt` restore lands before
