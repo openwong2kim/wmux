@@ -50,8 +50,23 @@ describe('browser navigation MCP workspace contract', () => {
     browserNavigateBack = backHandler;
   });
 
+  /** Leased-router helper: navigate/back now run inside withAutomationLease
+   *  (#1063 follow-up), so the mock must answer lease + lifecycle traffic.
+   *  `lifecycleQueue` models the ring's destructive drain. */
+  function leasedRouter(
+    lifecycleQueue: unknown[],
+    extra?: (method: string, params?: unknown) => unknown | undefined,
+  ) {
+    return (method: string, params?: unknown) => {
+      if (method === 'browser.lease.acquire') return Promise.resolve({ token: 'lease-1' });
+      if (method === 'browser.lifecycle.get') return Promise.resolve({ entries: lifecycleQueue.splice(0) });
+      const handled = extra?.(method, params);
+      return Promise.resolve(handled === undefined ? {} : handled);
+    };
+  }
+
   it('routes navigate through the calling workspace', async () => {
-    mockSendRpc.mockResolvedValue({ ok: true });
+    mockSendRpc.mockImplementation(leasedRouter([]));
 
     const result = await browserNavigate({
       url: 'https://example.com/',
@@ -68,8 +83,10 @@ describe('browser navigation MCP workspace contract', () => {
   });
 
   it('reuses one workspace identity for goBack and its URL read', async () => {
-    mockSendRpc.mockImplementation((method: string) =>
-      Promise.resolve(method === 'browser.evaluate' ? { value: 'https://example.com/previous' } : {}),
+    mockSendRpc.mockImplementation(
+      leasedRouter([], (method) =>
+        method === 'browser.evaluate' ? { value: 'https://example.com/previous' } : undefined,
+      ),
     );
 
     const result = await browserNavigateBack({ surfaceId: 'surface-a' });
@@ -77,6 +94,10 @@ describe('browser navigation MCP workspace contract', () => {
     expect(result.isError).toBeUndefined();
     expect(resolveWorkspaceId).toHaveBeenCalledTimes(1);
     expect(mockSendRpc.mock.calls).toEqual([
+      // Lease bracket with pre/post lifecycle drains (#1063 follow-up)
+      // wraps the whole body.
+      ['browser.lease.acquire', { workspaceId: 'ws-caller', surfaceId: 'surface-a' }],
+      ['browser.lifecycle.get', { workspaceId: 'ws-caller', surfaceId: 'surface-a' }],
       // Backend resolution (chrome fork, dogfood P2) precedes the RPC lane.
       ['browser.cdp.info', { workspaceId: 'ws-caller' }],
       ['browser.goBack', { workspaceId: 'ws-caller', surfaceId: 'surface-a' }],
@@ -88,7 +109,53 @@ describe('browser navigation MCP workspace contract', () => {
           surfaceId: 'surface-a',
         },
       ],
+      ['browser.lifecycle.get', { workspaceId: 'ws-caller', surfaceId: 'surface-a' }],
+      ['browser.lease.release', { token: 'lease-1' }],
     ]);
+  });
+
+  it('attributes the navigation to the navigate result, suppressing only the self-echo', async () => {
+    // The ring reports the redirect hop AND the final page; the final entry
+    // duplicates what the result text already says, so only it is dropped.
+    const queue: unknown[] = [];
+    mockSendRpc.mockImplementation(
+      leasedRouter(queue, (method) => {
+        if (method === 'browser.navigate') {
+          queue.push({ type: 'navigated', url: 'https://example.com/redirect-hop', ts: Date.now() });
+          queue.push({ type: 'navigated', url: 'https://example.com/', ts: Date.now() });
+          return { ok: true };
+        }
+        return undefined;
+      }),
+    );
+
+    const result = await browserNavigate({ url: 'https://example.com/', surfaceId: 'surface-a' });
+
+    expect(result.isError).toBeUndefined();
+    expect(result.content).toHaveLength(2);
+    expect(result.content[0].text).toContain('[browser events]');
+    expect(result.content[0].text).toContain('https://example.com/redirect-hop');
+    expect(result.content[0].text).not.toContain('- navigated: https://example.com/ (');
+    expect(result.content[1].text).toBe('Navigated to https://example.com/');
+  });
+
+  it('a plain navigation carries no events block — the lone self-echo is suppressed', async () => {
+    const queue: unknown[] = [];
+    mockSendRpc.mockImplementation(
+      leasedRouter(queue, (method) => {
+        if (method === 'browser.navigate') {
+          queue.push({ type: 'navigated', url: 'https://example.com/', ts: Date.now() });
+          return { ok: true };
+        }
+        return undefined;
+      }),
+    );
+
+    const result = await browserNavigate({ url: 'https://example.com/', surfaceId: 'surface-a' });
+
+    expect(result.isError).toBeUndefined();
+    expect(result.content).toHaveLength(1);
+    expect(result.content[0].text).toBe('Navigated to https://example.com/');
   });
 
   it('does not issue a navigation RPC when workspace identity fails', async () => {

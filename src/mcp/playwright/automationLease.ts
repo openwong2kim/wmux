@@ -6,7 +6,7 @@ import {
   type BrowserToolDeps,
 } from './browserScope';
 
-import { invalidateSnapshotBaseline } from './snapshotCache';
+import { invalidateSnapshotBaseline, invalidateSnapshotBaselineIfStale } from './snapshotCache';
 import { PlaywrightEngine } from './PlaywrightEngine';
 
 // Renew well inside main's 30s RPC-lease TTL so a long-running tool op
@@ -14,11 +14,25 @@ import { PlaywrightEngine } from './PlaywrightEngine';
 const RENEW_INTERVAL_MS = 10_000;
 
 // ---------------------------------------------------------------------------
-// Inline lifecycle events: before each tool body runs, drain the browser
-// lifecycle ring (navigations / loads / closes since the last tool call) from
-// main and prepend them to the tool's result, so the agent never needs a
-// polling round-trip to learn the page moved underneath it. Drain failure is
-// silent — older mains without browser.lifecycle.get must not break tools.
+// Inline lifecycle events: the lifecycle ring (navigations / loads / closes)
+// is drained TWICE per tool op and the merged list is prepended to the tool's
+// result, so the agent never needs a polling round-trip to learn the page
+// moved underneath it:
+//   - pre-drain, before the body: events from between tool calls, plus (on
+//     builtin) the lazy Page.enable warm-up — the first drain is what turns
+//     capture on, so it must stay ahead of the body.
+//   - post-drain, after the body: events the body itself caused (a click that
+//     navigated, the navigation the tool performed), attributed to THIS
+//     result instead of leaking one call late.
+// The two drains cannot double-report: both rings are drained destructively,
+// and the two sources are mutually exclusive (main cannot see chrome tabs).
+// An event that lands after the post-drain (builtin `loaded` fires after the
+// commit the navigate RPC resolves on) is delayed, not lost — the next op's
+// pre-drain picks it up. When the body throws, the post-drain is skipped and
+// its events likewise survive in the ring for the next op; the PRE-drained
+// events are lost with the error (destructive drain — no re-queue), which
+// matches the pre-#1063 behavior. Drain failure is silent — older mains
+// without browser.lifecycle.get must not break tools.
 // ---------------------------------------------------------------------------
 
 interface LifecycleEventWire {
@@ -27,24 +41,53 @@ interface LifecycleEventWire {
   ts: number;
 }
 
+async function collectLifecycleEvents(scope: BrowserTargetScope): Promise<LifecycleEventWire[]> {
+  const res = await sendScopedBrowserRpc<{ entries?: LifecycleEventWire[] }>(
+    'browser.lifecycle.get',
+    scope,
+  ).catch(() => ({ entries: [] as LifecycleEventWire[] }));
+  // Chrome backend: main cannot see chrome tabs — merge the engine-side
+  // mirror (attached in getPageForScope) so #1063's inline events survive
+  // the backend switch (dogfood P1).
+  const local = PlaywrightEngine.getInstance().drainLocalLifecycle(
+    scope.workspaceId,
+    scope.surfaceId,
+  );
+  return [...(Array.isArray(res?.entries) ? res.entries : []), ...local];
+}
+
 async function drainLifecycleEvents(scope: BrowserTargetScope): Promise<LifecycleEventWire[]> {
   try {
-    const res = await sendScopedBrowserRpc<{ entries?: LifecycleEventWire[] }>(
-      'browser.lifecycle.get',
-      scope,
-    ).catch(() => ({ entries: [] as LifecycleEventWire[] }));
-    // Chrome backend: main cannot see chrome tabs — merge the engine-side
-    // mirror (attached in getPageForScope) so #1063's inline events survive
-    // the backend switch (dogfood P1).
-    const local = PlaywrightEngine.getInstance().drainLocalLifecycle(
-      scope.workspaceId,
-      scope.surfaceId,
-    );
-    const entries = [...(Array.isArray(res?.entries) ? res.entries : []), ...local];
+    const entries = await collectLifecycleEvents(scope);
     // A navigation or close means any cached snapshot baseline for this
     // surface describes a page that no longer exists.
     if (entries.some((e) => e.type === 'navigated' || e.type === 'closed')) {
       invalidateSnapshotBaseline(scope.workspaceId, scope.surfaceId);
+    }
+    return entries;
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Post-body drain. Unlike the pre-drain, a `navigated` here must NOT nuke a
+ * baseline the body itself just wrote for the navigation's final URL (the
+ * browser_snapshot-during-navigation case) — that would self-destruct the
+ * diff cache the call just primed. Conditional invalidation keeps a baseline
+ * matching the LAST drained navigated URL and drops everything else;
+ * `closed` always invalidates.
+ */
+async function drainLifecycleEventsPost(scope: BrowserTargetScope): Promise<LifecycleEventWire[]> {
+  try {
+    const entries = await collectLifecycleEvents(scope);
+    if (entries.some((e) => e.type === 'closed')) {
+      invalidateSnapshotBaseline(scope.workspaceId, scope.surfaceId);
+    } else {
+      const lastNavigated = [...entries].reverse().find((e) => e.type === 'navigated');
+      if (lastNavigated) {
+        invalidateSnapshotBaselineIfStale(scope.workspaceId, scope.surfaceId, lastNavigated.url);
+      }
     }
     return entries;
   } catch {
@@ -71,9 +114,34 @@ function prependBrowserEvents<T>(result: T, events: LifecycleEventWire[]): T {
   );
   shaped.content.unshift({
     type: 'text',
-    text: `[browser events since last tool call]\n${lines.join('\n')}`,
+    text: `[browser events]\n${lines.join('\n')}`,
   });
   return result;
+}
+
+/** Options for withAutomationLease (navigation self-echo suppression). */
+export interface AutomationLeaseOpts<T> {
+  /**
+   * When the tool's own result already states the navigation it performed
+   * (browser_navigate's "Navigated to <url>"), return that URL here and the
+   * LAST merged event is dropped iff it is a `navigated` whose URL matches
+   * exactly. Deliberately narrow: a redirect chain (navigated: A, then B)
+   * keeps A visible, and a mismatching final URL suppresses nothing.
+   */
+  redundantNavigationUrl?: (result: T) => string | undefined;
+}
+
+/** Drop the trailing self-echo `navigated` event, if the tool declared one. */
+function suppressSelfEcho<T>(
+  events: LifecycleEventWire[],
+  result: T,
+  opts: AutomationLeaseOpts<T> | undefined,
+): LifecycleEventWire[] {
+  const url = opts?.redundantNavigationUrl?.(result);
+  if (!url) return events;
+  const last = events[events.length - 1];
+  if (last?.type === 'navigated' && last.url === url) return events.slice(0, -1);
+  return events;
 }
 
 /**
@@ -94,6 +162,7 @@ export async function withAutomationLease<T>(
   deps: BrowserToolDeps,
   surfaceId: string | undefined,
   fn: (scope: BrowserTargetScope) => Promise<T>,
+  opts?: AutomationLeaseOpts<T>,
 ): Promise<T> {
   const scope = await requireBrowserTargetScope(deps, surfaceId);
   let token: string | null = null;
@@ -139,7 +208,15 @@ export async function withAutomationLease<T>(
     (lateRenew as { unref?: () => void }).unref?.();
     const lateEvents = await drainLifecycleEvents(scope);
     try {
-      return prependBrowserEvents(await fn(scope), lateEvents);
+      const result = await fn(scope);
+      // Post-drain runs in the return expression, i.e. still inside this
+      // finally's lease bracket — browser.lifecycle.get is a leased RPC and
+      // must not hit a re-throttled guest.
+      const postEvents = await drainLifecycleEventsPost(scope);
+      return prependBrowserEvents(
+        result,
+        suppressSelfEcho([...lateEvents, ...postEvents], result, opts),
+      );
     } finally {
       done = true;
       clearInterval(lateTimer);
@@ -161,7 +238,13 @@ export async function withAutomationLease<T>(
 
   const events = await drainLifecycleEvents(scope);
   try {
-    return prependBrowserEvents(await fn(scope), events);
+    const result = await fn(scope);
+    // Post-drain still inside the lease bracket (see the late-acquire branch).
+    const postEvents = await drainLifecycleEventsPost(scope);
+    return prependBrowserEvents(
+      result,
+      suppressSelfEcho([...events, ...postEvents], result, opts),
+    );
   } finally {
     clearInterval(renewTimer);
     sendRpc('browser.lease.release', { token: heldToken }).catch(() => {

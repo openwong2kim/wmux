@@ -32,9 +32,33 @@ describe('automation lease workspace scope', () => {
     expect(body).toHaveBeenCalledWith({ workspaceId: 'ws-test', surfaceId: 'surface-1' });
     expect(mockSendRpc.mock.calls).toEqual([
       ['browser.lease.acquire', { workspaceId: 'ws-test', surfaceId: 'surface-1' }],
-      // Lifecycle drain rides inside the lease bracket, before the body.
+      // Lifecycle drains ride inside the lease bracket: pre-drain before the
+      // body, post-drain after it (attributing the body's own events).
+      ['browser.lifecycle.get', { workspaceId: 'ws-test', surfaceId: 'surface-1' }],
       ['browser.lifecycle.get', { workspaceId: 'ws-test', surfaceId: 'surface-1' }],
       ['browser.lease.release', { token: 'lease-1' }],
+    ]);
+  });
+
+  it('runs the body between the two drains, and the post-drain before release', async () => {
+    const order: string[] = [];
+    mockSendRpc.mockImplementation((method: string) => {
+      order.push(method);
+      return Promise.resolve(method === 'browser.lease.acquire' ? { token: 'lease-1' } : {});
+    });
+    const body = vi.fn(async () => {
+      order.push('BODY');
+      return 'done';
+    });
+
+    await withAutomationLease(deps, 'surface-1', body);
+
+    expect(order).toEqual([
+      'browser.lease.acquire',
+      'browser.lifecycle.get', // pre-drain
+      'BODY',
+      'browser.lifecycle.get', // post-drain — still inside the lease bracket
+      'browser.lease.release',
     ]);
   });
 

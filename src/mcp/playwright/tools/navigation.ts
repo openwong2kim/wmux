@@ -4,11 +4,10 @@ import { validateNavigationUrl } from '../../../shared/types';
 import { sendRpc } from '../../wmux-client';
 import { PlaywrightEngine } from '../PlaywrightEngine';
 import {
-  allowScopedRpcFallback,
-  requireBrowserTargetScope,
   sendScopedBrowserRpc,
   type BrowserToolDeps,
 } from '../browserScope';
+import { withAutomationLease } from '../automationLease';
 import {
   browserTabsError,
   isBrowserTabsResult,
@@ -131,25 +130,45 @@ export function registerNavigationTools(server: McpServer, deps: BrowserToolDeps
           };
         }
 
-        const scope = await requireBrowserTargetScope(deps, surfaceId);
-        // Chrome backend (dogfood P1): the RPC lane cannot target a chrome
-        // tab — its fallback would open a NEW tab and report success while
-        // the agent keeps reading the old page. Navigate the resolved page
-        // over Playwright instead. Builtin keeps the fast RPC lane.
-        const engine = PlaywrightEngine.getInstance();
-        if ((await engine.resolveWorkspaceBackend(scope.workspaceId)) === 'chrome') {
-          const page = await engine.getPageForScope(scope);
-          if (!page) throw new Error('browser_navigate: no chrome page resolved for this scope.');
-          await page.goto(url, { waitUntil: 'domcontentloaded' });
-          return {
-            content: [{ type: 'text' as const, text: `Navigated to ${page.url()}` }],
-          };
-        }
-        // Use RPC for fast, reliable navigation (bypasses Playwright CDP discovery)
-        await sendScopedBrowserRpc('browser.navigate', scope, { url });
-        return {
-          content: [{ type: 'text' as const, text: `Navigated to ${url}` }],
-        };
+        // Leased like every other browser tool (#1063 follow-up): the lease's
+        // post-body drain is what attributes this call's own `navigated`
+        // events (redirect chains included) to this result instead of the
+        // next tool call. The self-echo — a lone navigated matching the URL
+        // this result already reports — is suppressed via opts.
+        let finalUrl: string | undefined;
+        return await withAutomationLease(
+          deps,
+          surfaceId,
+          async (scope) => {
+            // Chrome backend (dogfood P1): the RPC lane cannot target a chrome
+            // tab — its fallback would open a NEW tab and report success while
+            // the agent keeps reading the old page. Navigate the resolved page
+            // over Playwright instead. Builtin keeps the fast RPC lane.
+            const engine = PlaywrightEngine.getInstance();
+            if ((await engine.resolveWorkspaceBackend(scope.workspaceId)) === 'chrome') {
+              const page = await engine.getPageForScope(scope);
+              if (!page) throw new Error('browser_navigate: no chrome page resolved for this scope.');
+              await page.goto(url, { waitUntil: 'domcontentloaded' });
+              finalUrl = page.url();
+              return {
+                content: [{ type: 'text' as const, text: `Navigated to ${finalUrl}` }],
+              };
+            }
+            // Use RPC for fast, reliable navigation (bypasses Playwright CDP discovery)
+            await sendScopedBrowserRpc('browser.navigate', scope, { url });
+            // The RPC resolves on commit (#756); the CDP Page.frameNavigated
+            // that feeds the lifecycle ring races it. A short settle lets the
+            // post-body drain catch this call's own events — a miss is only a
+            // delay (next op's pre-drain), not a loss. Chrome needs none: its
+            // in-process mirror is populated before goto() resolves.
+            await new Promise((resolve) => setTimeout(resolve, 150));
+            finalUrl = url;
+            return {
+              content: [{ type: 'text' as const, text: `Navigated to ${url}` }],
+            };
+          },
+          { redundantNavigationUrl: () => finalUrl },
+        );
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         return {
@@ -169,30 +188,41 @@ export function registerNavigationTools(server: McpServer, deps: BrowserToolDeps
     BROWSER_NAVIGATE_BACK_SHAPE,
     async ({ surfaceId }) => {
       try {
-        const scope = await requireBrowserTargetScope(deps, surfaceId);
-        // Chrome backend: browser.goBack has no chrome lane — go back on the
-        // resolved page over Playwright (dogfood P2).
-        const engine = PlaywrightEngine.getInstance();
-        if ((await engine.resolveWorkspaceBackend(scope.workspaceId)) === 'chrome') {
-          const page = await engine.getPageForScope(scope);
-          if (!page) throw new Error('browser_navigate_back: no chrome page resolved for this scope.');
-          await page.goBack({ waitUntil: 'domcontentloaded' }).catch(() => null);
-          return {
-            content: [{ type: 'text' as const, text: `Went back. Current URL: ${page.url()}` }],
-          };
-        }
-        await sendScopedBrowserRpc('browser.goBack', scope);
+        // Leased for the same reason as browser_navigate above: the post-body
+        // drain attributes this call's own navigation to this result.
+        let finalUrl: string | undefined;
+        return await withAutomationLease(
+          deps,
+          surfaceId,
+          async (scope) => {
+            // Chrome backend: browser.goBack has no chrome lane — go back on the
+            // resolved page over Playwright (dogfood P2).
+            const engine = PlaywrightEngine.getInstance();
+            if ((await engine.resolveWorkspaceBackend(scope.workspaceId)) === 'chrome') {
+              const page = await engine.getPageForScope(scope);
+              if (!page) throw new Error('browser_navigate_back: no chrome page resolved for this scope.');
+              await page.goBack({ waitUntil: 'domcontentloaded' }).catch(() => null);
+              finalUrl = page.url();
+              return {
+                content: [{ type: 'text' as const, text: `Went back. Current URL: ${finalUrl}` }],
+              };
+            }
+            await sendScopedBrowserRpc('browser.goBack', scope);
 
-        await new Promise((resolve) => setTimeout(resolve, 300));
+            await new Promise((resolve) => setTimeout(resolve, 300));
 
-        // Get current URL
-        const urlResult = await sendScopedBrowserRpc<{ value: string }>('browser.evaluate', scope, {
-          expression: 'location.href',
-        });
+            // Get current URL
+            const urlResult = await sendScopedBrowserRpc<{ value: string }>('browser.evaluate', scope, {
+              expression: 'location.href',
+            });
 
-        return {
-          content: [{ type: 'text' as const, text: `Navigated back to ${urlResult.value}` }],
-        };
+            finalUrl = urlResult.value;
+            return {
+              content: [{ type: 'text' as const, text: `Navigated back to ${finalUrl}` }],
+            };
+          },
+          { redundantNavigationUrl: () => finalUrl },
+        );
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         return {
