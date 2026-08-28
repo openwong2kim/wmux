@@ -162,9 +162,15 @@ export function registerNavigationTools(server: McpServer, deps: BrowserToolDeps
             // delay (next op's pre-drain), not a loss. Chrome needs none: its
             // in-process mirror is populated before goto() resolves.
             await new Promise((resolve) => setTimeout(resolve, 150));
-            finalUrl = url;
+            // Report where the page actually LANDED (navigate_back's existing
+            // pattern): on a redirect the requested URL is not the final one,
+            // and the self-echo match needs the final URL to fire. Fall back
+            // to the requested URL when the read fails mid-load.
+            finalUrl = await sendScopedBrowserRpc<{ value: string }>('browser.evaluate', scope, {
+              expression: 'location.href',
+            }).then((r) => r?.value || url).catch(() => url);
             return {
-              content: [{ type: 'text' as const, text: `Navigated to ${url}` }],
+              content: [{ type: 'text' as const, text: `Navigated to ${finalUrl}` }],
             };
           },
           { redundantNavigationUrl: () => finalUrl },

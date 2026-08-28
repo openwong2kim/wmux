@@ -125,11 +125,13 @@ describe('browser navigation MCP workspace contract', () => {
           queue.push({ type: 'navigated', url: 'https://example.com/', ts: Date.now() });
           return { ok: true };
         }
+        // Final-URL read after the settle: the page landed past the redirect.
+        if (method === 'browser.evaluate') return { value: 'https://example.com/' };
         return undefined;
       }),
     );
 
-    const result = await browserNavigate({ url: 'https://example.com/', surfaceId: 'surface-a' });
+    const result = await browserNavigate({ url: 'https://example.com/start', surfaceId: 'surface-a' });
 
     expect(result.isError).toBeUndefined();
     expect(result.content).toHaveLength(2);
@@ -147,6 +149,7 @@ describe('browser navigation MCP workspace contract', () => {
           queue.push({ type: 'navigated', url: 'https://example.com/', ts: Date.now() });
           return { ok: true };
         }
+        if (method === 'browser.evaluate') return { value: 'https://example.com/' };
         return undefined;
       }),
     );

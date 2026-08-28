@@ -156,6 +156,21 @@ describe('withAutomationLease lifecycle injection', () => {
     expect(result.content[0].text).not.toContain('https://final.test/');
   });
 
+  it('never suppresses a pre-drain event: a delayed same-URL navigated stays visible', async () => {
+    // A PREVIOUS op's navigation, delayed into this call's pre-drain, is not
+    // this call's echo — suppression applies to the post-drain slice only.
+    const queue: unknown[] = [{ type: 'navigated', url: 'https://target.test/', ts: Date.now() - 2000 }];
+    mockSendRpc.mockImplementation(queueRouter(queue));
+    const body = async () => ({ content: [{ type: 'text', text: 'Navigated to https://target.test/' }] });
+
+    const result = await withAutomationLease(deps, 's1', body, {
+      redundantNavigationUrl: () => 'https://target.test/',
+    });
+
+    expect(result.content).toHaveLength(2);
+    expect(result.content[0].text).toContain('navigated: https://target.test/');
+  });
+
   it('post-drain preserves a baseline the body wrote for the final URL', async () => {
     const key = snapshotSurfaceKey('ws-test', 's1');
     const queue: unknown[] = [];

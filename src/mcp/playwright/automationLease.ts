@@ -131,7 +131,12 @@ export interface AutomationLeaseOpts<T> {
   redundantNavigationUrl?: (result: T) => string | undefined;
 }
 
-/** Drop the trailing self-echo `navigated` event, if the tool declared one. */
+/**
+ * Drop the trailing self-echo `navigated` event, if the tool declared one.
+ * Applied to the POST-drain slice only: a same-URL `navigated` in the
+ * pre-drain is a delayed record of a PREVIOUS operation's navigation, not
+ * this call's echo, and must stay visible.
+ */
 function suppressSelfEcho<T>(
   events: LifecycleEventWire[],
   result: T,
@@ -215,7 +220,7 @@ export async function withAutomationLease<T>(
       const postEvents = await drainLifecycleEventsPost(scope);
       return prependBrowserEvents(
         result,
-        suppressSelfEcho([...lateEvents, ...postEvents], result, opts),
+        [...lateEvents, ...suppressSelfEcho(postEvents, result, opts)],
       );
     } finally {
       done = true;
@@ -243,7 +248,7 @@ export async function withAutomationLease<T>(
     const postEvents = await drainLifecycleEventsPost(scope);
     return prependBrowserEvents(
       result,
-      suppressSelfEcho([...events, ...postEvents], result, opts),
+      [...events, ...suppressSelfEcho(postEvents, result, opts)],
     );
   } finally {
     clearInterval(renewTimer);
