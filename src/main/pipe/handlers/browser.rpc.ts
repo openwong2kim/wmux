@@ -20,6 +20,7 @@ import {
 } from '../../../shared/browserTabs';
 import {
   EXTERNAL_BACKEND_UNSUPPORTED_MESSAGE,
+  CHROME_BACKEND_RPC_UNSUPPORTED_MESSAGE,
   type ExternalOpenResult,
 } from '../../../shared/browserBackend';
 import type { RpcContext, RpcMethod } from '../../../shared/rpc';
@@ -28,6 +29,7 @@ import type {
   BrowserScopeShadowReason,
 } from '../../audit/shadowRejectionLog';
 import type { BrowserBackendStore } from '../../browser-session/BrowserBackendStore';
+import type { ChromeLauncher } from '../../browser-session/ChromeLauncher';
 import type { EnforcementMode } from '../../mcp/enforcementMode';
 import { isFirstPartyClient } from '../../mcp/firstParty';
 import { isLocalExternalWireContext } from '../../mcp/rpcProvenance';
@@ -341,6 +343,10 @@ export function registerBrowserRpc(
   // to shadow, so a caller that forgets to wire it keeps observing rather than
   // silently starting to refuse traffic.
   getEnforcementMode: () => EnforcementMode = () => 'shadow',
+  // 'chrome' backend (Phase 2): dedicated real-Chrome instance. Optional so
+  // older wirings/tests keep working; chrome-mode calls without it fail with
+  // a clear message.
+  chromeLauncher?: ChromeLauncher,
 ): void {
   const getActivePartition = (): string => profileManager.getActiveProfile().partition;
 
@@ -362,6 +368,22 @@ export function registerBrowserRpc(
   // generic target-miss, never a silent fallback onto another builtin surface.
   const backend = () => backendStore?.get() ?? 'builtin';
 
+  const requireChrome = (method: string): ChromeLauncher => {
+    if (!chromeLauncher) {
+      throw new Error(`${method}: browser backend is 'chrome' but no Chrome launcher is wired in this build.`);
+    }
+    return chromeLauncher;
+  };
+
+  /** BrowserTabDescriptor for a chrome tab — paneId is synthetic (no pane). */
+  const chromeTabDescriptor = (t: { targetId: string; url: string; title?: string }) => ({
+    surfaceId: t.targetId,
+    paneId: `chrome:${t.targetId}`,
+    url: t.url,
+    title: t.title ?? '',
+    selected: false,
+  });
+
   const delegateExternal = async (url: string, method: string): Promise<ExternalOpenResult> => {
     await validateUrl(url, method);
     await shell.openExternal(url);
@@ -378,7 +400,10 @@ export function registerBrowserRpc(
     surfaceId: string | undefined,
     workspaceId: string | undefined,
   ): Promise<string | undefined> => {
-    if (backend() === 'external' && !surfaceId) return undefined;
+    // Non-builtin backends never own builtin surfaces: without an explicit
+    // surfaceId the default-target lookup must not grab another workspace's
+    // pane ('external' fire-and-forget; 'chrome' tabs live outside webviews).
+    if (backend() !== 'builtin' && !surfaceId) return undefined;
     let resolved = webviewCdpManager.getTarget(surfaceId, workspaceId)?.surfaceId;
     if (!resolved) {
       resolved = (await webviewCdpManager.ensureAwake(surfaceId, workspaceId))?.surfaceId;
@@ -501,11 +526,12 @@ export function registerBrowserRpc(
   ): Electron.WebContents => {
     // Same default-target rule as resolveTargetSurface: external + no
     // surfaceId must not grab another workspace's pane via the default lookup.
-    const target = backend() === 'external' && !surfaceId
+    const target = backend() !== 'builtin' && !surfaceId
       ? null
       : webviewCdpManager.getTarget(surfaceId, workspaceId);
     if (!target) {
       if (backend() === 'external') throw new Error(EXTERNAL_BACKEND_UNSUPPORTED_MESSAGE);
+      if (backend() === 'chrome') throw new Error(CHROME_BACKEND_RPC_UNSUPPORTED_MESSAGE);
       throw noTargetError(method, surfaceId, workspaceId);
     }
     const wc = webContents.fromId(target.webContentsId);
@@ -551,6 +577,10 @@ export function registerBrowserRpc(
     // backend is 'external'. Default is the fail-closed contract error; the
     // open-shaped handlers (navigate) pass a delegate instead.
     externalFallback?: (params: Record<string, unknown>) => Promise<unknown>,
+    // 'chrome' analog: what to do when no builtin target resolves under the
+    // chrome backend. Default is the chrome contract error — tools ride the
+    // Playwright path there, so an RPC-fallback hit means resolution failed.
+    chromeFallback?: (params: Record<string, unknown>, scope: string | undefined) => Promise<unknown>,
   ): void => {
     router.register(method, async (params, ctx) => {
       // Before any work: a refused caller must not reach URL validation, the
@@ -570,6 +600,10 @@ export function registerBrowserRpc(
         if (backend() === 'external') {
           if (externalFallback) return externalFallback(params);
           throw new Error(EXTERNAL_BACKEND_UNSUPPORTED_MESSAGE);
+        }
+        if (backend() === 'chrome') {
+          if (chromeFallback) return chromeFallback(params, scope);
+          throw new Error(CHROME_BACKEND_RPC_UNSUPPORTED_MESSAGE);
         }
         return handler(params, scope, ctx);
       }
@@ -655,6 +689,55 @@ export function registerBrowserRpc(
       );
     }
 
+    // Phase 2 'chrome' backend: all four actions operate on the dedicated
+    // Chrome instance's wmux-opened tabs (registry-scoped by workspace).
+    if (backend() === 'chrome') {
+      const launcher = requireChrome('browser.tabs');
+      if (action === 'new') {
+        if (url) {
+          try {
+            await validateUrl(url, 'browser.tabs');
+          } catch (error) {
+            return browserTabsError(
+              'BROWSER_TAB_URL_BLOCKED',
+              error instanceof Error ? error.message : String(error),
+            );
+          }
+        }
+        try {
+          const opened = await launcher.openTab(url ?? 'about:blank', workspaceId);
+          return { ok: true, action: 'new', tab: chromeTabDescriptor(opened) };
+        } catch (error) {
+          return browserTabsError(
+            'BROWSER_TAB_CREATE_FAILED',
+            error instanceof Error ? error.message : String(error),
+          );
+        }
+      }
+      const targets = await launcher.listTargets(workspaceId);
+      if (action === 'list') {
+        return { ok: true, action: 'list', tabs: targets.map(chromeTabDescriptor) };
+      }
+      const match = targets.find((t) => t.targetId === surfaceId);
+      if (!match) {
+        return browserTabsError(
+          'BROWSER_TAB_NOT_FOUND',
+          `browser_tabs ${action}: no wmux-opened Chrome tab with surfaceId "${surfaceId}" in this workspace.`,
+        );
+      }
+      if (action === 'select') {
+        // Focus is driven by the automation itself (Playwright bringToFront);
+        // select is an ownership-checked no-op descriptor echo here.
+        return { ok: true, action: 'select', tab: chromeTabDescriptor(match) };
+      }
+      // action === 'close'
+      const closed = await launcher.closeTab(match.targetId);
+      if (!closed) {
+        return browserTabsError('BROWSER_TABS_UNAVAILABLE', 'browser_tabs close: Chrome did not close the tab.');
+      }
+      return { ok: true, action: 'close', closed: chromeTabDescriptor(match) };
+    }
+
     // #517 backend fork: 'new' is an open-shaped action, so external mode
     // delegates it like browser.open. list/select/close keep operating on
     // builtin surfaces only (external opens are fire-and-forget, untracked).
@@ -718,6 +801,15 @@ export function registerBrowserRpc(
   router.register('browser.open', async (params) => {
     const url = typeof params['url'] === 'string' ? params['url'] : undefined;
     const workspaceId = typeof params['workspaceId'] === 'string' ? params['workspaceId'] : undefined;
+    if (backend() === 'chrome') {
+      // Dedicated-Chrome open: a tracked tab with a real handle — unlike
+      // 'external', about:blank is a valid open here (auto-open path).
+      const launcher = requireChrome('browser.open');
+      if (url) await validateUrl(url, 'browser.open');
+      const opened = await launcher.openTab(url ?? 'about:blank', workspaceId);
+      // surfaceId = Chrome targetId keeps the engine's auto-open→pin contract.
+      return { ok: true, backend: 'chrome', surfaceId: opened.targetId, url: opened.url };
+    }
     if (backend() === 'external') {
       // Missing url is an argument error, not the backend contract error —
       // conflating them makes agents "work around" a tool that would succeed
@@ -884,7 +976,18 @@ export function registerBrowserRpc(
   // External backend + no builtin surface: navigate behaves exactly like open
   // (fire-and-forget delegate) instead of failing on a surface that was never
   // going to exist. A live builtin surface (manual pane) still wins above.
-  (params) => delegateExternal(requireNavigateUrl(params), 'browser.navigate'));
+  (params) => delegateExternal(requireNavigateUrl(params), 'browser.navigate'),
+  // Chrome backend + no builtin surface: pinned-tab navigation rides the
+  // engine's Playwright path and never lands here; a bare navigate opens a
+  // tracked tab like browser.open does.
+  async (params, scope) => {
+    const navUrl = requireNavigateUrl(params);
+    await validateUrl(navUrl, 'browser.navigate');
+    // Owner = the caller-verified scope, never a body-supplied workspaceId
+    // (#810 scope-coverage guard).
+    const opened = await requireChrome('browser.navigate').openTab(navUrl, scope);
+    return { ok: true, backend: 'chrome', surfaceId: opened.targetId, url: opened.url };
+  });
 
   /**
    * browser.goBack
@@ -1046,6 +1149,28 @@ export function registerBrowserRpc(
   router.register('browser.cdp.info', async (params, ctx) => {
     // Refuse before disclosing anything, including whether CDP is enabled.
     const callerWorkspaceId = scopeFor('browser.cdp.info', params, ctx);
+
+    // Phase 2 'chrome' backend: report the dedicated Chrome's CDP endpoint.
+    // Deliberately BEFORE the Electron-CDP gate below — chrome mode works even
+    // when Electron's own remote debugging is disabled. No shellUrl: there is
+    // no app shell in that instance, and the engine's localhost heuristics
+    // must not hide the user's dev-server tabs.
+    if (backend() === 'chrome') {
+      const launcher = requireChrome('browser.cdp.info');
+      const chromePort = await launcher.ensureRunning();
+      const chromeTargets = await launcher.listTargets(callerWorkspaceId || undefined);
+      return {
+        ...(canDiscloseBrowserAttachInfo(ctx) && { cdpPort: chromePort }),
+        ...(callerWorkspaceId && { targetsScoped: true }),
+        workspaceBackend: 'chrome' as const,
+        targets: chromeTargets.map((t) => ({
+          surfaceId: t.targetId,
+          targetId: t.targetId,
+          ...(t.workspaceId && { workspaceId: t.workspaceId }),
+        })),
+      };
+    }
+
     const cdpPort = webviewCdpManager.getCdpPort();
     if (cdpPort <= 0) {
       throw new Error(
@@ -1282,7 +1407,11 @@ export function registerBrowserRpc(
     const state = await captureManager.ensure(target.webContentsId);
     if (!state) return { entries: [] };
     return { entries: captureManager.drainLifecycle(target.webContentsId) };
-  });
+  },
+  undefined,
+  // Chrome backend: no webContents-side capture exists; the snapshot URL
+  // guard covers baseline invalidation, so an empty drain is honest.
+  async () => ({ entries: [] }));
 
   /**
    * browser.network.get

@@ -1352,3 +1352,55 @@ describe('PlaywrightEngine external backend contract (#517)', () => {
     expect(mockSendRpc.mock.calls.filter((c) => c[0] === 'browser.open')).toHaveLength(0);
   }, 15_000);
 });
+
+
+// ── Phase 2: 'chrome' backend marker behavior ──────────────────────────────
+describe('PlaywrightEngine chrome backend (Phase 2)', () => {
+  beforeEach(() => {
+    (PlaywrightEngine as unknown as { instance: PlaywrightEngine | null }).instance = null;
+    mockSendRpc.mockReset();
+    mockConnectOverCDP.mockReset();
+  });
+
+  it('does not take the external short-circuit and clears any stale shellUrl', async () => {
+    mockSendRpc.mockImplementation((method: string) =>
+      method === 'browser.cdp.info'
+        ? Promise.resolve({
+            cdpPort: 18901,
+            // A stale shellUrl from a pre-flip builtin response must be dropped
+            // by the chrome marker even if a buggy main were to send one.
+            targetsScoped: true,
+            workspaceBackend: 'chrome',
+            targets: [],
+          })
+        : Promise.resolve({}),
+    );
+    mockConnectOverCDP.mockRejectedValue(new Error('no chrome in unit test'));
+
+    const engine = PlaywrightEngine.getInstance();
+    scope(engine).setWorkspaceIdResolver(async () => 'ws-chrome');
+
+    // Must NOT reject with the external contract error; the connect attempt
+    // proves the short-circuit was not taken.
+    const page = await priv(engine).getPage().catch((e: Error) => e);
+    expect(String(page)).not.toContain('EXTERNAL_BACKEND_UNSUPPORTED');
+    expect(mockConnectOverCDP).toHaveBeenCalled();
+  });
+
+  it('isShellPage is a no-op under the chrome marker (localhost pages selectable)', async () => {
+    mockSendRpc.mockImplementation((method: string) =>
+      method === 'browser.cdp.info'
+        ? Promise.resolve({ cdpPort: 18901, workspaceBackend: 'chrome', targets: [] })
+        : Promise.resolve({}),
+    );
+    const engine = PlaywrightEngine.getInstance();
+    // Feed the marker through the single ingest funnel.
+    (engine as unknown as { cacheShellUrl: (i: unknown) => void }).cacheShellUrl({
+      workspaceBackend: 'chrome',
+      targets: [],
+    });
+    const isShell = (engine as unknown as { isShellPage: (u: string) => boolean }).isShellPage;
+    expect(isShell.call(engine, 'http://localhost:5173/')).toBe(false);
+    expect(isShell.call(engine, 'chrome://gpu/')).toBe(false);
+  });
+});

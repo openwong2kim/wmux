@@ -1063,6 +1063,7 @@ export const zh = {
   'settings.browserBackendDesc': '智能体驱动的浏览器打开操作的去向。内置会在 wmux 内打开嵌入式浏览器面板，并提供完整的自动化工具集（点击、截图、数据提取）。外部会将打开操作发送到你真实登录的默认浏览器 — 只有打开和导航可用；深度自动化（点击、截图等）被禁用，wmux 不会启动嵌入式浏览器。外部是全局的：每个工作区都打开到你的同一个共享浏览器会话中，因此任何智能体都可以在那里弹出标签页。',
   'settings.browserBackendBuiltin': '内置（嵌入式面板）',
   'settings.browserBackendExternal': '外部（你的默认浏览器）',
+  'settings.browserBackendChrome': 'Chrome（专用智能体浏览器）',
   'settings.browserLightweight': '轻量级后台浏览器',
   'settings.browserLightweightDesc': '降低不可见内置浏览器面板（隐藏工作区、被缩放的面板、最小化窗口）的 CPU 用量。自动化（MCP/截图）仍全速运行。只降低 CPU，不降低内存。',
   'settings.browserDiscard': '丢弃隐藏浏览器（释放内存）',

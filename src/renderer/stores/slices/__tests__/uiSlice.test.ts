@@ -702,6 +702,14 @@ describe('UISlice — browser backend mirror (#517)', () => {
     expect(store.getState().browserBackend).toBe('builtin');
   });
 
+  it('setBrowserBackend(\'chrome\') flips the mirror and hydrate accepts it (Phase 2)', () => {
+    store.getState().setBrowserBackend('chrome');
+    expect(store.getState().browserBackend).toBe('chrome');
+    store.getState().hydrateBrowserBackend('chrome');
+    expect(store.getState().browserBackend).toBe('chrome');
+    expect(store.getState().browserBackendHydrated).toBe(true);
+  });
+
   it('setBrowserBackend(\'external\') flips the mirror', () => {
     store.getState().setBrowserBackend('external');
     expect(store.getState().browserBackend).toBe('external');

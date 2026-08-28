@@ -264,6 +264,12 @@ export class PlaywrightEngine {
     if (info.shellUrl && info.shellUrl.length > 0) {
       this.shellUrl = info.shellUrl;
     }
+    // A 'chrome' response never carries a shellUrl (there is no app shell in
+    // the dedicated instance). Drop any value learned before a builtin→chrome
+    // flip so a stale exact-match can't hide a chrome tab at that URL.
+    if (info.workspaceBackend === 'chrome') {
+      this.shellUrl = null;
+    }
     // Capture the backend marker alongside the shell URL (#517): every
     // browser.cdp.info response flows through here, so this is the single point
     // where the marker reaches the engine regardless of which finder made the
@@ -288,6 +294,10 @@ export class PlaywrightEngine {
    * for the guest webview.
    */
   private isShellPage(url: string): boolean {
+    // Chrome backend: the CDP endpoint is a real Chrome — there is no app
+    // shell to exclude, and the localhost heuristics below would misclassify
+    // the user's own dev-server tabs as the shell.
+    if (this.workspaceBackend === 'chrome') return false;
     if (this.shellUrl && url === this.shellUrl) return true;
     return isElectronShellUrl(url);
   }

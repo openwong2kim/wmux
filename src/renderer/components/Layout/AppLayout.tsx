@@ -1,4 +1,5 @@
 import { useEffect, useState, useRef, useCallback, lazy, Suspense } from 'react';
+import { isBrowserBackend } from '../../../shared/browserBackend';
 import type { AgentSlug } from '../../../shared/events';
 import type { ResumeBinding } from '../../../shared/agentResume';
 import { useStore } from '../../stores';
@@ -815,7 +816,7 @@ export default function AppLayout() {
     Promise.resolve(getBackend())
       .then((backend: unknown) => {
         if (cancelled) return;
-        hydrateBrowserBackend(backend === 'builtin' || backend === 'external' ? backend : null);
+        hydrateBrowserBackend(isBrowserBackend(backend) ? backend : null);
       })
       .catch(() => { if (!cancelled) hydrateBrowserBackend(null); });
     return () => { cancelled = true; };

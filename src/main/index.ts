@@ -99,6 +99,7 @@ import { McpRegistrar } from './mcp/McpRegistrar';
 import { BrokerSupervisor, isMcpBrokerEnabled } from './mcp/BrokerSupervisor';
 import { WebviewCdpManager } from './browser-session/WebviewCdpManager';
 import { BrowserBackendStore } from './browser-session/BrowserBackendStore';
+import { ChromeLauncher } from './browser-session/ChromeLauncher';
 import { isBrowserBackend } from '../shared/browserBackend';
 import { DaemonClient, getDaemonPipeName, readDaemonAuthToken } from './DaemonClient';
 import { raceDaemonShutdown } from './daemonShutdownRace';
@@ -736,6 +737,8 @@ registerPerfRpc(rpcRouter);
 // arrive before the renderer has pushed anything, so renderer-push authority
 // would race and fail open to builtin).
 const browserBackendStore = new BrowserBackendStore(app.getPath('userData'));
+// 'chrome' backend: dedicated real-Chrome instance with its own profile dir.
+const chromeLauncher = new ChromeLauncher(path.join(app.getPath('userData'), 'chrome-agent-profile'));
 // Phase 2.2 enforcement mode. Production wmux defaults to `enforce`; dev
 // (electron-forge / npm start) defaults to `shadow` so a bad delta doesn't lock
 // the developer out. Override via `mcp.mode` in `~/.wmux/config.json`.
@@ -762,6 +765,7 @@ registerBrowserRpc(
   // back. `enforcementMode` is resolved just above; the getter keeps the read
   // lazy so registration does not depend on where the mode is resolved.
   () => enforcementMode,
+  chromeLauncher,
 );
 registerA2aRpc(rpcRouter, () => mainWindow, claudeWorker, { getDaemonClient: () => daemonClient });
 registerA2aChannelRpc(rpcRouter, () => daemonClient, () => mainWindow);
@@ -1888,6 +1892,13 @@ function adoptMainWindow(win: BrowserWindow): void {
 function prepareInstallQuit(): void {
   isQuitting = true;
   mcpBrokerSupervisor.stop();
+  // The full before-quit teardown is skipped on this path — the agent Chrome
+  // must not outlive the app across an update install.
+  try {
+    chromeLauncher.dispose();
+  } catch (err) {
+    console.error('[Main] install-quit chromeLauncher.dispose failed:', err);
+  }
   try {
     sessionManager.flushSync();
   } catch (err) {
@@ -2161,6 +2172,7 @@ app.on('before-quit', async (e) => {
 
   safeStep('claudeWorker.stop', () => claudeWorker.stop());
   safeStep('webviewCdpManager.disposeAll', () => webviewCdpManager.disposeAll());
+  safeStep('chromeLauncher.dispose', () => chromeLauncher.dispose());
   safeStep('pipeServer.stop', () => pipeServer.stop());
   safeStep('mcpRegistrar.unregister', () => mcpRegistrar.unregister());
   safeStep('autoUpdater.stop', () => autoUpdater.stop());

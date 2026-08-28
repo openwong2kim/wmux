@@ -440,6 +440,7 @@ export const ko = {
   'settings.browserBackendDesc': '에이전트가 여는 브라우저를 어디로 보낼지 정합니다. 내장은 wmux 안에 내장 브라우저 패널을 열어 전체 자동화 도구(클릭, 스크린샷, 데이터 추출)를 사용합니다. 외부는 대신 로그인된 실제 기본 브라우저로 엽니다. 열기와 이동만 동작하며, 깊은 자동화(클릭, 스크린샷 등)는 비활성화되고 wmux는 내장 브라우저를 띄우지 않습니다. 외부는 전역 설정입니다. 모든 워크스페이스가 하나의 공유 브라우저 세션으로 열리므로 어떤 에이전트든 거기에 탭을 띄울 수 있습니다.',
   'settings.browserBackendBuiltin': '내장 (내장 패널)',
   'settings.browserBackendExternal': '외부 (기본 브라우저)',
+  'settings.browserBackendChrome': 'Chrome (전용 에이전트 브라우저)',
   'settings.browserLightweight': '백그라운드 브라우저 경량 모드',
   'settings.browserLightweightDesc': '보이지 않는 내장 브라우저 패널(숨은 워크스페이스, 줌으로 가려진 패널, 최소화된 창)의 CPU 사용을 제한합니다. 자동화(MCP/스크린샷)는 계속 전속력으로 동작합니다. CPU만 절감되며 메모리는 줄지 않습니다.',
   'settings.browserDiscard': '숨은 브라우저 내리기 (메모리 절감)',

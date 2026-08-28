@@ -719,14 +719,14 @@ const electronAPI = {
     setDiscard: (enabled: boolean) =>
       ipcRenderer.invoke('browser:set-discard', enabled),
     // #517 backend choice — main owns the persisted value; renderer mirrors it
-    getBackend: (): Promise<'builtin' | 'external'> =>
+    getBackend: (): Promise<'builtin' | 'external' | 'chrome'> =>
       ipcRenderer.invoke('browser:get-backend'),
     // Synchronous boot read (#517) — the renderer store initializes from this
     // before first render to close the async-hydration race that could spawn a
     // webview in external mode. Blocking, but a one-time boot cost.
-    getBackendSync: (): 'builtin' | 'external' =>
+    getBackendSync: (): 'builtin' | 'external' | 'chrome' =>
       ipcRenderer.sendSync('browser:get-backend-sync'),
-    setBackend: (backend: 'builtin' | 'external') =>
+    setBackend: (backend: 'builtin' | 'external' | 'chrome') =>
       ipcRenderer.invoke('browser:set-backend', backend),
     onDiscarded: (callback: (surfaceId: string) => void) => {
       const listener = (_e: Electron.IpcRendererEvent, surfaceId: string) => callback(surfaceId);

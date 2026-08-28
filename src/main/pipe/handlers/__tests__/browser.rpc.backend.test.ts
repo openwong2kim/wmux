@@ -59,7 +59,7 @@ vi.mock('../_bridge', () => ({
   sendToRenderer: sendToRendererMock,
 }));
 
-type Backend = 'builtin' | 'external';
+type Backend = 'builtin' | 'external' | 'chrome';
 
 interface Harness {
   router: RpcRouter;
@@ -79,7 +79,7 @@ const TARGET = {
   workspaceId: 'ws-1',
 };
 
-function register(opts: { backend?: Backend; hasTarget?: boolean; withStore?: boolean } = {}): Harness {
+function register(opts: { backend?: Backend; hasTarget?: boolean; withStore?: boolean; launcher?: unknown } = {}): Harness {
   let backend: Backend = opts.backend ?? 'builtin';
   const hasTarget = opts.hasTarget ?? false;
   const router = new RpcRouter();
@@ -101,6 +101,9 @@ function register(opts: { backend?: Backend; hasTarget?: boolean; withStore?: bo
     () => null as unknown as BrowserWindow,
     cdp as never,
     (opts.withStore === false ? undefined : store) as unknown as BrowserBackendStore,
+    undefined,
+    undefined,
+    opts.launcher as never,
   );
   return { router, cdp, setBackend: (b) => { backend = b; } };
 }
@@ -323,5 +326,91 @@ describe('browser backend fork (#517)', () => {
         vi.useRealTimers();
       }
     });
+  });
+});
+
+
+// ── Phase 2: 'chrome' backend ──────────────────────────────────────────────
+
+function makeFakeLauncher() {
+  const tabs = new Map<string, { url: string; workspaceId?: string; title: string }>();
+  let nextId = 1;
+  return {
+    tabs,
+    ensureRunning: vi.fn(async () => 18901),
+    openTab: vi.fn(async (url: string, workspaceId?: string) => {
+      const targetId = `tgt-${nextId++}`;
+      tabs.set(targetId, { url, workspaceId, title: '' });
+      return { targetId, url };
+    }),
+    listTargets: vi.fn(async (workspaceId?: string) =>
+      [...tabs.entries()]
+        .filter(([, t]) => workspaceId === undefined || t.workspaceId === undefined || t.workspaceId === workspaceId)
+        .map(([targetId, t]) => ({ targetId, workspaceId: t.workspaceId, url: t.url, title: t.title })),
+    ),
+    closeTab: vi.fn(async (targetId: string) => tabs.delete(targetId)),
+    dispose: vi.fn(),
+    isRunning: vi.fn(() => true),
+  };
+}
+
+describe('chrome backend', () => {
+  it('browser.open opens a tracked Chrome tab and returns its targetId as surfaceId', async () => {
+    const launcher = makeFakeLauncher();
+    const { router } = register({ backend: 'chrome', launcher });
+    const { result } = await dispatch(router, 'browser.open', { url: 'https://a.test/', workspaceId: 'ws-1' });
+    expect(result).toMatchObject({ ok: true, backend: 'chrome', surfaceId: 'tgt-1', url: 'https://a.test/' });
+    expect(launcher.openTab).toHaveBeenCalledWith('https://a.test/', 'ws-1');
+    expect(sendToRendererMock).not.toHaveBeenCalled();
+    expect(openExternalMock).not.toHaveBeenCalled();
+  });
+
+  it('browser.cdp.info reports the chrome endpoint with workspace-scoped registry targets and no shellUrl', async () => {
+    const launcher = makeFakeLauncher();
+    const { router } = register({ backend: 'chrome', launcher });
+    await dispatch(router, 'browser.open', { url: 'https://a.test/', workspaceId: 'ws-1' });
+    await dispatch(router, 'browser.open', { url: 'https://b.test/', workspaceId: 'ws-2' });
+
+    const { result } = await dispatch(router, 'browser.cdp.info', { workspaceId: 'ws-1' });
+    const info = result as { workspaceBackend: string; shellUrl?: string; targets: Array<{ surfaceId: string; targetId: string; workspaceId?: string }> };
+    expect(info.workspaceBackend).toBe('chrome');
+    expect(info.shellUrl).toBeUndefined();
+    expect(info.targets).toEqual([{ surfaceId: 'tgt-1', targetId: 'tgt-1', workspaceId: 'ws-1' }]);
+  });
+
+  it('a leased RPC-fallback handler with no builtin target throws the chrome contract error', async () => {
+    const launcher = makeFakeLauncher();
+    const { router } = register({ backend: 'chrome', launcher });
+    const { error } = await dispatch(router, 'browser.screenshot', {});
+    expect(error?.message).toContain('CHROME_BACKEND_RPC_UNSUPPORTED');
+  });
+
+  it('browser.lifecycle.get returns empty entries instead of the contract error', async () => {
+    const launcher = makeFakeLauncher();
+    const { router } = register({ backend: 'chrome', launcher });
+    const { result } = await dispatch(router, 'browser.lifecycle.get', {});
+    expect(result).toEqual({ entries: [] });
+  });
+
+  it('browser.tabs list/close operate on the workspace-scoped registry', async () => {
+    const launcher = makeFakeLauncher();
+    const { router } = register({ backend: 'chrome', launcher });
+    await dispatch(router, 'browser.open', { url: 'https://a.test/', workspaceId: 'ws-1' });
+
+    const list = (await dispatch(router, 'browser.tabs', { action: 'list', workspaceId: 'ws-1' })).result as {
+      ok: boolean; tabs: Array<{ surfaceId: string }>;
+    };
+    expect(list.ok).toBe(true);
+    expect(list.tabs.map((t) => t.surfaceId)).toEqual(['tgt-1']);
+
+    const closed = (await dispatch(router, 'browser.tabs', { action: 'close', surfaceId: 'tgt-1', workspaceId: 'ws-1' })).result as { ok: boolean };
+    expect(closed.ok).toBe(true);
+    expect(launcher.closeTab).toHaveBeenCalledWith('tgt-1');
+  });
+
+  it('chrome mode without a wired launcher fails with a clear message', async () => {
+    const { router } = register({ backend: 'chrome' });
+    const { error } = await dispatch(router, 'browser.open', { url: 'https://a.test/', workspaceId: 'ws-1' });
+    expect(error?.message).toContain('no Chrome launcher is wired');
   });
 });

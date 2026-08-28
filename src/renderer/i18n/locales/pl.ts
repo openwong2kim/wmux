@@ -861,6 +861,7 @@ export const pl = {
   'settings.browserBackendDesc': 'Dokąd trafiają otwarcia przeglądarki inicjowane przez agenta. Wbudowany otwiera osadzone panele przeglądarki wewnątrz wmuxa z pełnym zestawem automatyzacji (klikanie, zrzuty ekranu, wyciąganie danych). Zewnętrzny wysyła otwarcia do Twojej prawdziwej, zalogowanej domyślnej przeglądarki — działa tylko otwieranie i nawigacja; głęboka automatyzacja (klik, zrzut ekranu itd.) jest wyłączona i wmux nie uruchamia osadzonej przeglądarki. Zewnętrzny jest globalny: każdy obszar roboczy otwiera we wspólnej sesji przeglądarki, więc dowolny agent może tam otworzyć kartę.',
   'settings.browserBackendBuiltin': 'Wbudowany (osadzone panele)',
   'settings.browserBackendExternal': 'Zewnętrzny (Twoja domyślna przeglądarka)',
+  'settings.browserBackendChrome': 'Chrome (dedykowana przeglądarka agenta)',
   'settings.browserLightweight': 'Lekkie przeglądarki w tle',
   'settings.browserLightweightDesc': 'Ogranicz zużycie CPU przez wbudowane panele przeglądarki, które nie są widoczne (ukryte obszary robocze, oddalone panele, zminimalizowane okno). Automatyzacja (MCP/zrzuty ekranu) nadal działa pełną prędkością. Zmniejsza tylko CPU, nie pamięć.',
   'settings.browserDiscard': 'Odrzucaj ukryte przeglądarki (zwalnia pamięć)',
