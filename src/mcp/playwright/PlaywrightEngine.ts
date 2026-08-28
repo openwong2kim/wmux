@@ -554,7 +554,76 @@ export class PlaywrightEngine {
    */
   async getPageForScope(scope: BrowserTargetScope): Promise<Page | null> {
     assertBrowserTargetScope(scope);
-    return this.getPage(scope.surfaceId, scope.workspaceId);
+    const page = await this.getPage(scope.surfaceId, scope.workspaceId);
+    // Chrome backend: main's webContents-side lifecycle capture cannot see
+    // these tabs, so mirror navigations/closes engine-side (dogfood P1 — the
+    // #1063 inline events went silent under 'chrome').
+    if (page && this.workspaceBackend === 'chrome') {
+      this.attachLifecycleMirror(page, scope.workspaceId, scope.surfaceId);
+    }
+    return page;
+  }
+
+  /** Backend marker for tool-side path choices; resolves via one cdp.info
+   *  call when not yet learned (no connect attempt, so cheap on builtin). */
+  async resolveWorkspaceBackend(workspaceId?: string): Promise<BrowserBackend | undefined> {
+    if (this.workspaceBackend) return this.workspaceBackend;
+    try {
+      const info = (await sendRpc(
+        'browser.cdp.info',
+        workspaceId ? { workspaceId } : {},
+      )) as CdpInfoResponse;
+      this.cacheShellUrl(info);
+    } catch {
+      /* older main / cdp disabled — caller treats as builtin */
+    }
+    return this.workspaceBackend;
+  }
+
+  getWorkspaceBackend(): BrowserBackend | undefined {
+    return this.workspaceBackend;
+  }
+
+  // ── Chrome-backend lifecycle mirror (engine-side) ─────────────────────────
+
+  private readonly mirroredPages = new WeakSet<Page>();
+  private readonly localLifecycle = new Map<string, Array<{ type: 'navigated' | 'loaded' | 'closed'; url?: string; ts: number }>>();
+
+  private lifecycleKey(workspaceId?: string, surfaceId?: string): string {
+    return `ws:${workspaceId ?? ''}:surf:${surfaceId ?? ''}`;
+  }
+
+  private pushLocalLifecycle(key: string, entry: { type: 'navigated' | 'loaded' | 'closed'; url?: string; ts: number }): void {
+    const q = this.localLifecycle.get(key) ?? [];
+    const last = q[q.length - 1];
+    if (entry.type === 'navigated' && last?.type === 'navigated' && last.url === entry.url) return;
+    q.push(entry);
+    if (q.length > 20) q.splice(0, q.length - 20);
+    this.localLifecycle.set(key, q);
+  }
+
+  private attachLifecycleMirror(page: Page, workspaceId?: string, surfaceId?: string): void {
+    if (this.mirroredPages.has(page)) return;
+    this.mirroredPages.add(page);
+    const key = this.lifecycleKey(workspaceId, surfaceId);
+    page.on('framenavigated', (frame) => {
+      try {
+        if (frame !== page.mainFrame()) return;
+        this.pushLocalLifecycle(key, { type: 'navigated', url: frame.url(), ts: Date.now() });
+      } catch { /* page torn down mid-event */ }
+    });
+    page.on('close', () => {
+      this.pushLocalLifecycle(key, { type: 'closed', ts: Date.now() });
+    });
+  }
+
+  /** Destructive drain of engine-side lifecycle events (chrome backend). */
+  drainLocalLifecycle(workspaceId?: string, surfaceId?: string): Array<{ type: 'navigated' | 'loaded' | 'closed'; url?: string; ts: number }> {
+    const key = this.lifecycleKey(workspaceId, surfaceId);
+    const q = this.localLifecycle.get(key);
+    if (!q || q.length === 0) return [];
+    this.localLifecycle.delete(key);
+    return q;
   }
 
   /**

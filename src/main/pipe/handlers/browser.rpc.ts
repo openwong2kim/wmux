@@ -985,6 +985,17 @@ export function registerBrowserRpc(
   // engine's Playwright path and never lands here; a bare navigate opens a
   // tracked tab like browser.open does.
   async (params, scope) => {
+    // A pinned surfaceId reaching this fallback means the caller wanted to
+    // navigate an EXISTING chrome tab through the RPC lane — opening a new
+    // tab here would report success while the agent keeps reading the old
+    // page (dogfood P1). Refuse loudly; the tool's Playwright lane is the
+    // supported path for pinned chrome navigation.
+    if (typeof params['surfaceId'] === 'string' && params['surfaceId'].length > 0) {
+      throw new Error(
+        'browser.navigate: cannot navigate an existing chrome tab over the RPC lane — ' +
+          'page resolution failed upstream; retry (the tool navigates chrome tabs via CDP).',
+      );
+    }
     const navUrl = requireNavigateUrl(params);
     await validateUrl(navUrl, 'browser.navigate');
     // Owner = the caller-verified scope, never a body-supplied workspaceId

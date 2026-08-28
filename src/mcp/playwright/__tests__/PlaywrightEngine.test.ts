@@ -1475,3 +1475,38 @@ describe('PlaywrightEngine live-Chrome ws endpoint (Phase 3)', () => {
     expect(mockConnectOverCDP).toHaveBeenCalledTimes(1);
   });
 });
+
+
+// ── Chrome-backend lifecycle mirror (dogfood P1: inline events went silent) ─
+describe('PlaywrightEngine lifecycle mirror (chrome backend)', () => {
+  it('records main-frame navigations and closes per scope, drains destructively, dedupes', () => {
+    const engine = new (PlaywrightEngine as unknown as new () => PlaywrightEngine)();
+    type Handler = (arg?: unknown) => void;
+    const handlers = new Map<string, Handler>();
+    const mainFrame = { url: () => 'https://a.test/' };
+    const page = {
+      on: (ev: string, fn: Handler) => handlers.set(ev, fn),
+      mainFrame: () => mainFrame,
+    };
+    const eng = engine as unknown as {
+      attachLifecycleMirror: (p: unknown, ws?: string, surf?: string) => void;
+      drainLocalLifecycle: (ws?: string, surf?: string) => Array<{ type: string; url?: string }>;
+    };
+    eng.attachLifecycleMirror(page, 'ws-1', 's-1');
+    // Duplicate attach must not double the listeners' effect.
+    eng.attachLifecycleMirror(page, 'ws-1', 's-1');
+
+    handlers.get('framenavigated')!(mainFrame);
+    handlers.get('framenavigated')!(mainFrame); // same URL → collapsed
+    handlers.get('framenavigated')!({ url: () => 'https://sub.test/' }); // subframe → ignored
+    handlers.get('close')!();
+
+    expect(eng.drainLocalLifecycle('ws-1', 's-1').map((e) => [e.type, e.url])).toEqual([
+      ['navigated', 'https://a.test/'],
+      ['closed', undefined],
+    ]);
+    // Destructive + scope-keyed.
+    expect(eng.drainLocalLifecycle('ws-1', 's-1')).toEqual([]);
+    expect(eng.drainLocalLifecycle('ws-2', 's-1')).toEqual([]);
+  });
+});

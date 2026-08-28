@@ -15,7 +15,7 @@ vi.mock('node:fs', async (orig) => {
     // Label seeding must not touch the real filesystem in these tests
     // (covered by ChromeLauncher.label.test.ts against a real tmpdir).
     mkdirSync: () => undefined,
-    readFileSync: () => { throw new Error('no Local State in unit test'); },
+    readFileSync: vi.fn(() => { throw new Error('no Local State in unit test'); }),
     writeFileSync: () => undefined,
   };
 });
@@ -191,7 +191,8 @@ describe('ChromeLauncher zombie adoption', () => {
       // The mocked node:fs readFileSync throws; route the adoption read
       // through a fake DevToolsActivePort by re-mocking per-call.
       const fsMock = await import('node:fs');
-      const spy = vi.spyOn(fsMock, 'readFileSync' as never).mockReturnValue('18933\n/devtools/browser/x\n' as never);
+      const readMock = fsMock.readFileSync as unknown as ReturnType<typeof vi.fn>;
+      readMock.mockReturnValueOnce('18933\n/devtools/browser/x\n');
       fetchMock.mockResolvedValue(fetchOk({ Browser: 'Chrome/151' }));
 
       const launcher = new ChromeLauncher(dir);
@@ -199,7 +200,6 @@ describe('ChromeLauncher zombie adoption', () => {
 
       expect(port).toBe(18933);
       expect(spawnMock).not.toHaveBeenCalled();
-      spy.mockRestore();
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

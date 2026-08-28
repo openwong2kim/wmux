@@ -77,6 +77,8 @@ describe('browser navigation MCP workspace contract', () => {
     expect(result.isError).toBeUndefined();
     expect(resolveWorkspaceId).toHaveBeenCalledTimes(1);
     expect(mockSendRpc.mock.calls).toEqual([
+      // Backend resolution (chrome fork, dogfood P2) precedes the RPC lane.
+      ['browser.cdp.info', { workspaceId: 'ws-caller' }],
       ['browser.goBack', { workspaceId: 'ws-caller', surfaceId: 'surface-a' }],
       [
         'browser.evaluate',

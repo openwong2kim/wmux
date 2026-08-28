@@ -47,7 +47,9 @@ export const CHROME_BACKEND_RPC_UNSUPPORTED_CODE = 'CHROME_BACKEND_RPC_UNSUPPORT
  */
 export const CHROME_BACKEND_RPC_UNSUPPORTED_MESSAGE =
   `${CHROME_BACKEND_RPC_UNSUPPORTED_CODE}: browser backend is 'chrome': this operation drives the page ` +
-  `over CDP directly and has no webview fallback. If page resolution failed, open a page first with browser_open.`;
+  `over CDP directly and has no webview fallback. If page resolution failed, open a page first with browser_open. ` +
+  `If browser_open works but page tools keep failing, this MCP client may not be authorized to attach ` +
+  `(CDP endpoint disclosure is first-party-only).`;
 
 /** Result shape for a delegated (external) open/navigate. */
 export interface ExternalOpenResult {
