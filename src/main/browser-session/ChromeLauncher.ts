@@ -1,5 +1,5 @@
 import { spawn, type ChildProcess } from 'child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { PortAllocator } from './PortAllocator';
 
@@ -73,6 +73,39 @@ function discoverChromeBinary(): string | null {
   return candidates.find((p) => existsSync(p)) ?? null;
 }
 
+/**
+ * Seed the Chrome profile's display name so the agent window is identifiable
+ * at a glance (profile chip top-right + profile switcher show "wmux · <name>").
+ * Best-effort, pre-launch only, and never clobbers a name the USER set inside
+ * Chrome (is_using_default_name === false without our marker semantics is
+ * approximated by: only write when no name exists yet or the existing name is
+ * one we wrote). Exported for unit tests.
+ */
+export function seedChromeProfileLabel(userDataDir: string, label: string): void {
+  try {
+    mkdirSync(userDataDir, { recursive: true });
+    const statePath = join(userDataDir, 'Local State');
+    let state: Record<string, unknown> = {};
+    try {
+      state = JSON.parse(readFileSync(statePath, 'utf8')) as Record<string, unknown>;
+    } catch {
+      /* missing/corrupt → start fresh */
+    }
+    const profile = (state.profile ??= {}) as Record<string, unknown>;
+    const infoCache = (profile.info_cache ??= {}) as Record<string, unknown>;
+    const def = (infoCache.Default ??= {}) as Record<string, unknown>;
+    const current = typeof def.name === 'string' ? def.name : undefined;
+    // Respect a user-chosen name: overwrite only when unset or wmux-authored.
+    if (current !== undefined && !current.startsWith('wmux · ')) return;
+    if (current === label) return;
+    def.name = label;
+    def.is_using_default_name = false;
+    writeFileSync(statePath, JSON.stringify(state));
+  } catch (err) {
+    console.warn('[ChromeLauncher] profile label seed failed (cosmetic):', err);
+  }
+}
+
 export interface ChromeLauncherOptions {
   /** Port probe range — the registry hands each profile a disjoint slice so
    *  parallel first-launches cannot race-pick the same port. */
@@ -80,6 +113,8 @@ export interface ChromeLauncherOptions {
   /** Env pin var; null disables (non-default profiles — one pin cannot serve
    *  N instances). */
   portEnvVar?: string | null;
+  /** Profile display name seeded into Local State pre-launch (window chip). */
+  profileLabel?: string;
 }
 
 export class ChromeLauncher {
@@ -91,7 +126,10 @@ export class ChromeLauncher {
   /** wmux-opened tabs: Chrome targetId → owning workspace. */
   private readonly tabOwners = new Map<string, string | undefined>();
 
+  private readonly profileLabel: string | undefined;
+
   constructor(private readonly userDataDir: string, opts?: ChromeLauncherOptions) {
+    this.profileLabel = opts?.profileLabel;
     this.ports = new PortAllocator({
       min: opts?.portRange?.min ?? CHROME_PORT_MIN,
       max: opts?.portRange?.max ?? CHROME_PORT_MAX,
@@ -143,6 +181,8 @@ export class ChromeLauncher {
     const prev = this.ports.getPort();
     if (prev !== null) this.ports.release(prev);
     const port = await this.ports.allocate();
+
+    if (this.profileLabel) seedChromeProfileLabel(this.userDataDir, this.profileLabel);
 
     const child = spawn(
       binary,
@@ -323,6 +363,9 @@ export class ChromeLauncherRegistry {
       {
         portRange: { min, max: Math.min(min + PORT_SLOT_WIDTH - 1, CHROME_PORT_MAX) },
         portEnvVar: name === DEFAULT_CHROME_PROFILE ? 'WMUX_CHROME_CDP_PORT' : null,
+        // Window chip reads "wmux · <profile>" so the agent Chrome (and which
+        // account-profile it is) is identifiable at a glance.
+        profileLabel: `wmux · ${name}`,
       },
     );
     this.launchers.set(name, launcher);

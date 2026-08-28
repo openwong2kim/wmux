@@ -9,7 +9,15 @@ const { spawnMock } = vi.hoisted(() => ({ spawnMock: vi.fn() }));
 vi.mock('child_process', () => ({ spawn: spawnMock }));
 vi.mock('node:fs', async (orig) => {
   const real = (await orig()) as Record<string, unknown>;
-  return { ...real, existsSync: () => true }; // a binary always "exists"
+  return {
+    ...real,
+    existsSync: () => true, // a binary always "exists"
+    // Label seeding must not touch the real filesystem in these tests
+    // (covered by ChromeLauncher.label.test.ts against a real tmpdir).
+    mkdirSync: () => undefined,
+    readFileSync: () => { throw new Error('no Local State in unit test'); },
+    writeFileSync: () => undefined,
+  };
 });
 
 import { ChromeLauncher } from '../ChromeLauncher';
