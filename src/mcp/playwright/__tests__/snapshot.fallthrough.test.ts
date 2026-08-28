@@ -72,11 +72,34 @@ describe('generateSnapshot — root-only fallthrough (#353)', () => {
     expect(out).toBe('DOM-FALLBACK');
   });
 
-  it('falls through for aria format too, not just ai', async () => {
+  it('falls through for aria format too, with a note instead of a silent drop (#1066)', async () => {
     const { page } = makePage({ nodes: ROOT_ONLY, evalResult: 'DOM-FALLBACK' });
     const out = await generateSnapshot(page as never, { format: 'aria' });
     expect(page.evaluate).toHaveBeenCalledTimes(1);
+    // aria has no DOM-listing equivalent — the caller must be told, not
+    // handed the ai-style listing as if it were the aria tree.
+    expect(out).toBe(
+      '(note: aria format unavailable — the a11y tree collapsed, returning the DOM interactive listing)\nDOM-FALLBACK',
+    );
+  });
+
+  it('forwards filter:"interactive" into the DOM expression on fallthrough (#1066)', async () => {
+    const { page } = makePage({ nodes: ROOT_ONLY, evalResult: 'DOM-FALLBACK' });
+    const out = await generateSnapshot(page as never, { format: 'ai', filter: 'interactive' });
+    // The param must reach the expression instead of dying on the early return.
+    expect(page.evaluate).toHaveBeenCalledWith(
+      expect.stringContaining('const interactiveOnly = true'),
+    );
+    // ai + filter needs no note: the filtered listing IS what was asked for.
     expect(out).toBe('DOM-FALLBACK');
+  });
+
+  it('fallthrough without filter keeps the heading block enabled', async () => {
+    const { page } = makePage({ nodes: ROOT_ONLY, evalResult: 'DOM-FALLBACK' });
+    await generateSnapshot(page as never, { format: 'ai' });
+    expect(page.evaluate).toHaveBeenCalledWith(
+      expect.stringContaining('const interactiveOnly = false'),
+    );
   });
 
   it('serializes the a11y tree (no DOM fallback) when the tree has children', async () => {
