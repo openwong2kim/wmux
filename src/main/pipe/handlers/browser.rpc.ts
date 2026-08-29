@@ -552,6 +552,18 @@ export function registerBrowserRpc(
     captureManager.drop(webContentsId, { closed: true }),
   );
 
+  // Start capture as soon as a guest registers (#1081) — did-attach, before the
+  // page has loaded — so the load-time error an agent goes looking for is
+  // already in the buffer by the time it asks. ensure() is idempotent, so the
+  // dom-ready re-registration is a no-op. Fire-and-forget: registration must
+  // not wait on (or fail with) the CDP domain enable.
+  webviewCdpManager.setCaptureAttach((webContentsId) => {
+    void captureManager.ensure(webContentsId).catch(() => {
+      // A guest that cannot be captured still automates fine; the drain
+      // handlers report the miss when someone actually reads.
+    });
+  });
+
   // browser.lifecycle.get target-tolerance: remember the last webContentsId a
   // scope drained from, so a close can still be reported after the target is
   // gone (getTarget() then returns null and pendingClosures is keyed by the
@@ -1463,7 +1475,11 @@ export function registerBrowserRpc(
   /**
    * browser.console.get
    * Drain captured console messages for the webview (packaged-build fallback for
-   * the MCP browser_console tool, #106). Capture is enabled lazily on first call.
+   * the MCP browser_console tool, #106). Capture is enabled when the guest
+   * registers (#1081); ensure() here only covers a guest that registered before
+   * the hook existed, or one whose debugger was stolen and dropped.
+   * Also returns the collection window (since / missedBefore) so an empty
+   * result can say which kind of empty it is.
    * params: { surfaceId?: string, clear?: boolean }
    */
   registerLeased('browser.console.get', async (params, scope) => {
@@ -1477,8 +1493,11 @@ export function registerBrowserRpc(
     if (!state) throw new Error('browser.console.get: capture unavailable (webContents gone)');
 
     const entries = captureManager.getConsole(target.webContentsId);
+    // Read the window BEFORE the clear: it describes the entries being
+    // returned, not the empty buffer the clear leaves behind.
+    const window = captureManager.getConsoleWindow(target.webContentsId);
     if (clear) captureManager.clearConsole(target.webContentsId);
-    return { entries };
+    return { entries, ...window };
   });
 
   /**
@@ -1534,8 +1553,9 @@ export function registerBrowserRpc(
     if (!state) throw new Error('browser.network.get: capture unavailable (webContents gone)');
 
     const entries = captureManager.getNetwork(target.webContentsId);
+    const window = captureManager.getNetworkWindow(target.webContentsId);
     if (clear) captureManager.clearNetwork(target.webContentsId);
-    return { entries };
+    return { entries, ...window };
   });
 
   /**

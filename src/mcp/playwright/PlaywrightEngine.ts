@@ -13,6 +13,7 @@ import {
   WORKSPACE_SCOPE_UNRESOLVED_CODE,
   type BrowserTargetScope,
 } from './browserScope';
+import { attachPageCapture } from './pageCapture';
 
 export { WORKSPACE_SCOPE_UNRESOLVED_CODE } from './browserScope';
 
@@ -560,6 +561,19 @@ export class PlaywrightEngine {
     // #1063 inline events went silent under 'chrome').
     if (page && this.workspaceBackend === 'chrome') {
       this.attachLifecycleMirror(page, scope.workspaceId, scope.surfaceId);
+    }
+    // Console/network capture starts HERE — the first time a page is resolved
+    // (open / navigate / attach) — not on the first browser_console call
+    // (#1081). What a page logs while loading is exactly what an agent reaches
+    // for after something looked wrong, and a buffer that starts at the read
+    // call has already missed it. Idempotent per Page.
+    //
+    // Skipped for 'builtin': main's webContents capture covers those guests
+    // from attach and the tools read that one, so a second buffer here would
+    // collect (and retain response bodies for) something nothing reads. The
+    // tools still attach lazily if they ever fall back to this transport.
+    if (page && this.workspaceBackend !== 'builtin') {
+      attachPageCapture(page);
     }
     return page;
   }

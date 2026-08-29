@@ -128,6 +128,10 @@ export class WebviewCdpManager {
   // wc.debugger.detach() does not remove EventEmitter listeners, and may not
   // fire the debugger 'detach' event, so we notify explicitly.
   private captureCleanup?: (webContentsId: number) => void;
+  // Symmetric hook: start capture the moment a guest registers (#1081).
+  // BrowserPanel registers on did-attach — before the page has loaded — so this
+  // is the earliest point at which anything the page says can be heard.
+  private captureAttach?: (webContentsId: number) => void;
 
   constructor(cdpPort = 18800) {
     this.cdpPort = cdpPort;
@@ -136,6 +140,11 @@ export class WebviewCdpManager {
   /** Register a callback invoked with the webContentsId on every unregister. */
   setCaptureCleanup(fn: (webContentsId: number) => void): void {
     this.captureCleanup = fn;
+  }
+
+  /** Register a callback invoked with the webContentsId on every register. */
+  setCaptureAttach(fn: (webContentsId: number) => void): void {
+    this.captureAttach = fn;
   }
 
   async register(surfaceId: string, webContentsId: number, workspaceId?: string): Promise<void> {
@@ -266,6 +275,15 @@ export class WebviewCdpManager {
 
     // Apply lightweight throttling if this guest is already known-invisible.
     this.recomputeThrottle(surfaceId);
+
+    // Start console/network capture now, not when an agent first asks (#1081).
+    // Best-effort and non-blocking: a capture failure must never take down the
+    // registration that automation depends on.
+    try {
+      this.captureAttach?.(webContentsId);
+    } catch (err) {
+      console.warn('[WebviewCdpManager] capture attach failed:', err);
+    }
 
     const pending = this.waiters.get(surfaceId);
     if (pending) {

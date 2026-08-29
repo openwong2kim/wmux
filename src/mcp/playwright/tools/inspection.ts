@@ -21,7 +21,15 @@ import {
   allowScopedRpcFallback,
   sendScopedBrowserRpc,
   type BrowserToolDeps,
+  type BrowserTargetScope,
 } from '../browserScope';
+import {
+  clearConsoleCapture,
+  clearNetworkCapture,
+  ensurePageCapture,
+  type CaptureWindow,
+  type ConsoleEntry,
+} from '../pageCapture';
 
 // Optional surfaceId schema reused across tools
 const optionalSurfaceId = z
@@ -114,150 +122,13 @@ const BROWSER_HIGHLIGHT_SHAPE = {
 };
 
 // ---------------------------------------------------------------------------
-// Module-level storage for console messages and network requests
+// Capture buffers
 // ---------------------------------------------------------------------------
-
-interface ConsoleEntry {
-  level: string;
-  text: string;
-}
-
-interface NetworkEntry {
-  url: string;
-  method: string;
-  status?: number;
-  response?: {
-    headers: Record<string, string>;
-    body?: string;
-  };
-}
-
-// Capture buffers are keyed by the Page object itself, not by surfaceId. A Page is the
-// true identity: an omitted surfaceId and an explicit surfaceId can resolve to the SAME
-// Page (one buffer, no stranding), and two DISTINCT Pages never collide on an alias key
-// like '__default__' (so closing one page cannot delete another's data). WeakMap also
-// lets a closed/GC'd Page drop its buffers automatically.
-const consoleMessages = new WeakMap<Page, ConsoleEntry[]>();
-const networkRequests = new WeakMap<Page, NetworkEntry[]>();
-
-// Bound the per-page capture arrays so a long-lived MCP server process does not grow
-// without limit on a chatty / polling page. Oldest entries are dropped first.
-const MAX_CAPTURE_ENTRIES = 1000;
-// Cap each retained response body so a single large payload cannot pin unbounded RAM.
-const MAX_RESPONSE_BODY_BYTES = 256 * 1024;
-
-// Track which pages already have listeners attached. Keyed by the Page object so a
-// closed/GC'd page drops its guard automatically.
-const attachedConsolePages = new WeakSet<Page>();
-const attachedNetworkPages = new WeakSet<Page>();
-const cleanupBoundPages = new WeakSet<Page>();
-
-/** Append to a capped ring: drop the oldest entries once MAX_CAPTURE_ENTRIES is exceeded. */
-function pushCapped<T>(entries: T[], item: T): void {
-  entries.push(item);
-  if (entries.length > MAX_CAPTURE_ENTRIES) {
-    entries.splice(0, entries.length - MAX_CAPTURE_ENTRIES);
-  }
-}
-
-/**
- * Eagerly drop a page's capture buffers when it closes. The WeakMap would reclaim them
- * once the Page is GC'd, but the engine may retain the Page object past close, so we
- * delete on 'close' to free the (potentially large) retained response bodies promptly.
- * Bound once per page.
- */
-function ensurePageCloseCleanup(page: Page): void {
-  if (cleanupBoundPages.has(page)) return;
-  cleanupBoundPages.add(page);
-
-  page.on('close', () => {
-    consoleMessages.delete(page);
-    networkRequests.delete(page);
-  });
-}
-
-function ensureConsoleListener(page: Page): void {
-  ensurePageCloseCleanup(page);
-  if (attachedConsolePages.has(page)) return;
-  attachedConsolePages.add(page);
-
-  if (!consoleMessages.has(page)) {
-    consoleMessages.set(page, []);
-  }
-
-  page.on('console', (msg) => {
-    const entries = consoleMessages.get(page);
-    if (entries) {
-      pushCapped(entries, { level: msg.type(), text: msg.text() });
-    }
-  });
-}
-
-function ensureNetworkListener(page: Page): void {
-  ensurePageCloseCleanup(page);
-  if (attachedNetworkPages.has(page)) return;
-  attachedNetworkPages.add(page);
-
-  if (!networkRequests.has(page)) {
-    networkRequests.set(page, []);
-  }
-
-  page.on('request', (request) => {
-    const entries = networkRequests.get(page);
-    if (entries) {
-      pushCapped(entries, {
-        url: request.url(),
-        method: request.method(),
-      });
-    }
-  });
-
-  page.on('response', (response) => {
-    const entries = networkRequests.get(page);
-    if (!entries) return;
-
-    const url = response.url();
-    // Find the matching request entry (last one with same URL and no status yet)
-    for (let i = entries.length - 1; i >= 0; i--) {
-      if (entries[i].url === url && entries[i].status === undefined) {
-        // Capture a stable reference to the entry object: the capture array is a
-        // capped ring (pushCapped), so positional indices can shift while the async
-        // response.text() below is in flight.
-        const entry = entries[i];
-        entry.status = response.status();
-        // Store response headers for later body retrieval
-        const headers = response.headers();
-        entry.response = { headers };
-        // Only eagerly capture body for text-based content types
-        const contentType = headers['content-type'] ?? '';
-        const isTextual =
-          contentType.startsWith('text/') ||
-          contentType.includes('application/json') ||
-          contentType.includes('application/xml') ||
-          contentType.includes('application/xhtml') ||
-          contentType.includes('+json') ||
-          contentType.includes('+xml');
-        if (isTextual) {
-          response
-            .text()
-            .then((body) => {
-              if (entry.response) {
-                entry.response.body =
-                  body.length > MAX_RESPONSE_BODY_BYTES
-                    ? body.slice(0, MAX_RESPONSE_BODY_BYTES) +
-                      `\n... [truncated ${body.length - MAX_RESPONSE_BODY_BYTES} chars]`
-                    : body;
-              }
-            })
-            .catch(() => {
-              // Body may not be available for all responses
-            });
-        }
-        break;
-      }
-    }
-  });
-}
+//
+// The buffers themselves live in ../pageCapture: collection has to start when
+// the ENGINE first resolves a page, long before this file is asked to read it
+// (#1081). What is left here is the read side — which of the two transports'
+// buffers serves a given scope, and how an empty one is reported.
 
 /**
  * Simple glob-like URL matching.
@@ -267,6 +138,74 @@ function matchesGlob(url: string, pattern: string): boolean {
   const escaped = pattern.replace(/[.+^${}()|[\]\\]/g, '\\$&');
   const regex = new RegExp('^' + escaped.replace(/\*/g, '.*') + '$', 'i');
   return regex.test(url);
+}
+
+/**
+ * Read one of the two capture buffers for a scope.
+ *
+ * There are two, and they start at different moments. Main's webContents
+ * capture (BrowserCaptureManager) is enabled when a builtin guest attaches, so
+ * it covers the whole page life; the engine-side Playwright buffer only exists
+ * where main has no guest to watch — a chrome-backend tab. Preferring main's
+ * for everything but 'chrome' is what makes a dev build and a packaged build
+ * answer browser_console identically: before #1081 a dev build read the
+ * Playwright buffer, which only started at the first read call.
+ *
+ * The RPC lane still falls back to the page lane if main cannot serve it (an
+ * older main, a target that just went away), and that fallback attaches
+ * lazily, exactly as every path did before.
+ */
+async function readCapture<T>(
+  scope: BrowserTargetScope,
+  fromRpc: () => Promise<T>,
+  fromPage: (page: Page) => T,
+): Promise<T> {
+  const engine = PlaywrightEngine.getInstance();
+  const resolvePage = () => engine.getPageForScope(scope).catch(allowScopedRpcFallback);
+
+  let backend: string | undefined;
+  try {
+    backend = await engine.resolveWorkspaceBackend(scope.workspaceId);
+  } catch {
+    // Backend unknown (older main, cdp info disabled) — treat as builtin.
+  }
+
+  if (backend === 'chrome') {
+    const page = await resolvePage();
+    // No page under 'chrome' means resolution failed; let the RPC lane raise
+    // its own contract error rather than inventing one here.
+    return page ? fromPage(page) : fromRpc();
+  }
+
+  try {
+    return await fromRpc();
+  } catch (error) {
+    const page = await resolvePage();
+    if (!page) throw error;
+    return fromPage(page);
+  }
+}
+
+/**
+ * State the collection window whenever it is known, so an empty buffer stops
+ * reading like a clean page (#1081). Two different facts hide behind "nothing
+ * here": collection has been running and the page really has been quiet, or
+ * collection started after the interesting part had already happened.
+ */
+function describeWindow(window: CaptureWindow | undefined, noun: string): string {
+  if (!window) return '';
+  const since = new Date(window.since).toISOString();
+  const gap = window.missedBefore
+    ? ` The page was already open when collection started, so ${noun} from before then are not included.`
+    : '';
+  return `Collecting since ${since}.${gap}`;
+}
+
+/** Trailing note for a NON-empty result that still has an uncovered window. */
+function windowFootnote(window: CaptureWindow | undefined, noun: string): string {
+  if (!window?.missedBefore) return '';
+  const since = new Date(window.since).toISOString();
+  return `\n\n[collection started ${since}; ${noun} from before then are not included]`;
 }
 
 // --- Shared formatters: used by both the Playwright path and the RPC fallback
@@ -290,10 +229,15 @@ function filterConsole(entries: ConsoleEntry[], level?: string): ConsoleEntry[] 
  * of a `password`-family parameter — so ordinary log lines pass through byte
  * for byte.
  */
-function formatConsole(entries: ConsoleEntry[]): string {
-  return entries.length === 0
-    ? 'No console messages collected.'
-    : entries.map((e) => `[${e.level}] ${redactPasswordParams(e.text)}`).join('\n');
+function formatConsole(entries: ConsoleEntry[], window?: CaptureWindow): string {
+  if (entries.length === 0) {
+    const detail = describeWindow(window, 'messages');
+    return detail ? `No console messages. ${detail}` : 'No console messages collected.';
+  }
+  return (
+    entries.map((e) => `[${e.level}] ${redactPasswordParams(e.text)}`).join('\n') +
+    windowFootnote(window, 'messages')
+  );
 }
 
 /**
@@ -307,6 +251,7 @@ function formatConsole(entries: ConsoleEntry[]): string {
 function formatNetwork(
   entries: Array<{ url: string; method: string; status?: number }>,
   filter?: string,
+  window?: CaptureWindow,
 ): string {
   const filtered = filter ? entries.filter((e) => matchesGlob(e.url, filter)) : entries;
   const summary = filtered.map((e) => ({
@@ -314,7 +259,11 @@ function formatNetwork(
     method: e.method,
     status: e.status ?? '(pending)',
   }));
-  return summary.length === 0 ? 'No network requests collected.' : JSON.stringify(summary, null, 2);
+  if (summary.length === 0) {
+    const detail = describeWindow(window, 'requests');
+    return detail ? `No network requests. ${detail}` : 'No network requests collected.';
+  }
+  return JSON.stringify(summary, null, 2) + windowFootnote(window, 'requests');
 }
 
 // ---------------------------------------------------------------------------
@@ -569,26 +518,40 @@ export function registerInspectionTools(server: McpServer, deps: BrowserToolDeps
   // -----------------------------------------------------------------------
   server.tool(
     'browser_console',
-    'Read console messages collected from the page. They accumulate; clear:true resets.',
+    'Read console messages. Collection starts when the page is opened/attached, not at this call; clear:true resets.',
     BROWSER_CONSOLE_SHAPE,
     async ({ level, clear, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
       try {
-        const page = await engine.getPageForScope(scope).catch(allowScopedRpcFallback);
+        const { entries, window } = await readCapture<{
+          entries: ConsoleEntry[];
+          window?: CaptureWindow;
+        }>(
+          scope,
+          async () => {
+            // Main-process CDP capture, enabled when the guest attached.
+            const result = await sendScopedBrowserRpc<{
+              entries: ConsoleEntry[];
+              since?: number;
+              missedBefore?: boolean;
+            }>('browser.console.get', scope, { ...(clear && { clear: true }) });
+            return {
+              entries: result.entries ?? [],
+              // An older main reports no window; say nothing rather than guess.
+              ...(typeof result.since === 'number' && {
+                window: { since: result.since, missedBefore: result.missedBefore === true },
+              }),
+            };
+          },
+          (page) => {
+            const state = ensurePageCapture(page);
+            const entries = state.console;
+            const window = state.consoleWindow;
+            if (clear) clearConsoleCapture(state);
+            return { entries, window };
+          },
+        );
 
-        let entries: ConsoleEntry[];
-        if (page) {
-          ensureConsoleListener(page);
-          entries = consoleMessages.get(page) ?? [];
-          if (clear) consoleMessages.set(page, []);
-        } else {
-          // RPC fallback (packaged builds): drain the main-process CDP capture.
-          const result = await sendScopedBrowserRpc<{ entries: ConsoleEntry[] }>('browser.console.get', scope, {
-            ...(clear && { clear: true }),
-          });
-          entries = result.entries ?? [];
-        }
-
-        const text = formatConsole(filterConsole(entries, level));
+        const text = formatConsole(filterConsole(entries, level), window);
 
         return {
           content: [{ type: 'text' as const, text }],
@@ -608,28 +571,40 @@ export function registerInspectionTools(server: McpServer, deps: BrowserToolDeps
   // -----------------------------------------------------------------------
   server.tool(
     'browser_network',
-    'Read network requests collected from the page. They accumulate; clear:true resets.',
+    'Read network requests. Collection starts when the page is opened/attached, not at this call; clear:true resets.',
     BROWSER_NETWORK_SHAPE,
     async ({ filter, clear, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
       try {
-        const page = await engine.getPageForScope(scope).catch(allowScopedRpcFallback);
+        type NetworkSummary = { url: string; method: string; status?: number };
+        const { entries, window } = await readCapture<{
+          entries: NetworkSummary[];
+          window?: CaptureWindow;
+        }>(
+          scope,
+          async () => {
+            // Main-process CDP capture, enabled when the guest attached.
+            const result = await sendScopedBrowserRpc<{
+              entries: NetworkSummary[];
+              since?: number;
+              missedBefore?: boolean;
+            }>('browser.network.get', scope, { ...(clear && { clear: true }) });
+            return {
+              entries: result.entries ?? [],
+              ...(typeof result.since === 'number' && {
+                window: { since: result.since, missedBefore: result.missedBefore === true },
+              }),
+            };
+          },
+          (page) => {
+            const state = ensurePageCapture(page);
+            const entries: NetworkSummary[] = state.network;
+            const window = state.networkWindow;
+            if (clear) clearNetworkCapture(state);
+            return { entries, window };
+          },
+        );
 
-        let entries: Array<{ url: string; method: string; status?: number }>;
-        if (page) {
-          ensureNetworkListener(page);
-          entries = networkRequests.get(page) ?? [];
-          if (clear) networkRequests.set(page, []);
-        } else {
-          // RPC fallback (packaged builds): drain the main-process CDP capture.
-          const result = await sendScopedBrowserRpc<{
-            entries: Array<{ url: string; method: string; status?: number }>;
-          }>('browser.network.get', scope, {
-            ...(clear && { clear: true }),
-          });
-          entries = result.entries ?? [];
-        }
-
-        const text = formatNetwork(entries, filter);
+        const text = formatNetwork(entries, filter, window);
 
         return {
           content: [{ type: 'text' as const, text }],
@@ -653,28 +628,27 @@ export function registerInspectionTools(server: McpServer, deps: BrowserToolDeps
     BROWSER_RESPONSE_BODY_SHAPE,
     async ({ urlPattern, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
       try {
-        const page = await engine.getPageForScope(scope).catch(allowScopedRpcFallback);
-
-        let body: string | null = null;
-        if (page) {
-          ensureNetworkListener(page);
-          const entries = networkRequests.get(page) ?? [];
-          // Find the last matching entry with a captured body
-          for (let i = entries.length - 1; i >= 0; i--) {
-            const candidate = entries[i].response?.body;
-            if (candidate !== undefined && matchesGlob(entries[i].url, urlPattern)) {
-              body = candidate;
-              break;
+        const body = await readCapture<string | null>(
+          scope,
+          async () => {
+            // Main matches and returns the body from its CDP capture buffer.
+            const result = await sendScopedBrowserRpc<{ body: string | null }>('browser.responseBody.get', scope, {
+              urlPattern,
+            });
+            return result.body ?? null;
+          },
+          (page) => {
+            const state = ensurePageCapture(page);
+            // Find the last matching entry with a captured body
+            for (let i = state.network.length - 1; i >= 0; i--) {
+              const candidate = state.network[i].response?.body;
+              if (candidate !== undefined && matchesGlob(state.network[i].url, urlPattern)) {
+                return candidate;
+              }
             }
-          }
-        } else {
-          // RPC fallback (packaged builds): the main process matches and returns
-          // the body from its CDP capture buffer.
-          const result = await sendScopedBrowserRpc<{ body: string | null }>('browser.responseBody.get', scope, {
-            urlPattern,
-          });
-          body = result.body ?? null;
-        }
+            return null;
+          },
+        );
 
         if (body === null) {
           return {
