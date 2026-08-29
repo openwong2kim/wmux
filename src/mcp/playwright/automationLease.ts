@@ -6,6 +6,7 @@ import {
   type BrowserToolDeps,
 } from './browserScope';
 
+import { redactPasswordParams } from './redact';
 import { invalidateSnapshotBaseline, invalidateSnapshotBaselineIfStale } from './snapshotCache';
 import { PlaywrightEngine } from './PlaywrightEngine';
 
@@ -109,8 +110,11 @@ function prependBrowserEvents<T>(result: T, events: LifecycleEventWire[]): T {
   if (events.length === 0) return result;
   const shaped = result as { content?: Array<{ type: string; text?: string }> } | null | undefined;
   if (!shaped || !Array.isArray(shaped.content)) return result;
+  // Lifecycle URLs are rendered into the tool result like any other URL, so a
+  // credential in a query string or in `scheme://user:pass@host` is masked here
+  // too. The self-echo match above runs on the RAW url and is unaffected.
   const lines = events.map(
-    (e) => `- ${e.type}${e.url ? `: ${e.url}` : ''} (${formatAgo(e.ts)})`,
+    (e) => `- ${e.type}${e.url ? `: ${redactPasswordParams(e.url)}` : ''} (${formatAgo(e.ts)})`,
   );
   shaped.content.unshift({
     type: 'text',

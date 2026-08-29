@@ -15,6 +15,7 @@ import { formatSnapshotResult } from '../snapshotDiff';
 import { getSnapshotBaseline, setSnapshotBaseline, snapshotSurfaceKey } from '../snapshotCache';
 import { evaluateWithGesture } from '../anti-detection';
 import { detectDangerousPatterns } from '../security';
+import { redactPasswordParams } from '../redact';
 import { sanitizeRef } from './interaction';
 import {
   allowScopedRpcFallback,
@@ -280,20 +281,36 @@ function filterConsole(entries: ConsoleEntry[], level?: string): ConsoleEntry[] 
   });
 }
 
+/**
+ * Render collected console messages.
+ *
+ * Console text gets the same redaction as a network body: a page that logs its
+ * own login payload would otherwise hand the credential straight over. The
+ * masking is key-scoped rather than content-scoped — it rewrites only the value
+ * of a `password`-family parameter — so ordinary log lines pass through byte
+ * for byte.
+ */
 function formatConsole(entries: ConsoleEntry[]): string {
   return entries.length === 0
     ? 'No console messages collected.'
-    : entries.map((e) => `[${e.level}] ${e.text}`).join('\n');
+    : entries.map((e) => `[${e.level}] ${redactPasswordParams(e.text)}`).join('\n');
 }
 
-/** Filter by URL glob and render the {url, method, status} summary JSON. */
+/**
+ * Filter by URL glob and render the {url, method, status} summary JSON.
+ *
+ * Request bodies are never captured, so the only credential that can reach this
+ * listing is one a page put in the query string of a GET — which redaction
+ * strips from the rendered URL. The glob still matches against the REAL url:
+ * filtering is the caller's own pattern, not something the agent reads back.
+ */
 function formatNetwork(
   entries: Array<{ url: string; method: string; status?: number }>,
   filter?: string,
 ): string {
   const filtered = filter ? entries.filter((e) => matchesGlob(e.url, filter)) : entries;
   const summary = filtered.map((e) => ({
-    url: e.url,
+    url: redactPasswordParams(e.url),
     method: e.method,
     status: e.status ?? '(pending)',
   }));
@@ -360,7 +377,11 @@ export function registerInspectionTools(server: McpServer, deps: BrowserToolDeps
             // mark any live Page's a11y refMap stale so resolveRef cannot use it.
             scopeRoute = '|dom';
             const evaluate = page ? pageEvaluator(page) : rpcEvaluator(scope);
-            text = String(await evaluate(buildDomSnapshotExpression(selector, { filter })));
+            // The DOM listing carries the page URL and every link href verbatim,
+            // so it gets the same URL redaction the network listing does.
+            text = redactPasswordParams(
+              String(await evaluate(buildDomSnapshotExpression(selector, { filter }))),
+            );
             if (text.startsWith('No element matches selector:')) {
               // A miss is an error, not a snapshot — and must never become the
               // diff baseline for the next call (review consensus).
@@ -391,7 +412,8 @@ export function registerInspectionTools(server: McpServer, deps: BrowserToolDeps
           const result = await sendScopedBrowserRpc<{ value: string }>('browser.evaluate', scope, {
             expression: buildDomSnapshotExpression(undefined, { filter }),
           });
-          text = result.value;
+          // Same URL redaction as the scoped DOM listing above.
+          text = redactPasswordParams(result.value);
           if (format === 'aria') {
             text = `(note: aria format unavailable — no live page, returning the DOM interactive listing)\n${text}`;
           }
@@ -669,7 +691,12 @@ export function registerInspectionTools(server: McpServer, deps: BrowserToolDeps
           content: [
             {
               type: 'text' as const,
-              text: body,
+              // A login endpoint that echoes the submitted form back in its
+              // response (validation errors do this) would otherwise hand the
+              // password straight to the model. Only `password`-family VALUES
+              // are masked — the body stays debuggable, which is the point of
+              // the tool.
+              text: redactPasswordParams(body),
             },
           ],
         };

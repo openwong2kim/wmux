@@ -1,6 +1,11 @@
 import type { Page } from 'playwright-core';
 import type { JsonEvaluator } from './page-eval';
 import { getConnectionScope } from '../connectionScope';
+import {
+  PASSWORD_FIELD_PREDICATE_JS,
+  REDACTED_PASSWORD,
+  getPasswordFieldBackendIds,
+} from './redact';
 
 // ---------------------------------------------------------------------------
 // Shared interactive-element selector
@@ -158,6 +163,7 @@ const INTERACTIVE_ROLES = new Set([
 
 interface CdpAXNode {
   nodeId: string;
+  backendDOMNodeId?: number;
   role?: { type: string; value: string };
   name?: { type: string; value: string };
   value?: { type: string; value: string };
@@ -221,6 +227,7 @@ function collectInteractiveElements(
   nodeMap: Map<string, CdpAXNode>,
   node: CdpAXNode,
   elements: IndexedElement[],
+  passwordBackendIds: Set<number>,
 ): void {
   const role = node.role?.value ?? 'none';
   const name = node.name?.value ?? '';
@@ -240,7 +247,13 @@ function collectInteractiveElements(
     };
 
     if (node.value?.value) {
-      element.value = node.value.value;
+      // A password field reports its name, role and ref as usual; only the
+      // contents are withheld. Chrome pre-masks `type=password` here, but not a
+      // `type=text` field marked autocomplete="new-password" — see redact.ts.
+      element.value =
+        node.backendDOMNodeId !== undefined && passwordBackendIds.has(node.backendDOMNodeId)
+          ? REDACTED_PASSWORD
+          : node.value.value;
     }
     if (node.description?.value) {
       element.description = node.description.value;
@@ -254,7 +267,7 @@ function collectInteractiveElements(
     for (const childId of node.childIds) {
       const child = nodeMap.get(childId);
       if (child) {
-        collectInteractiveElements(nodeMap, child, elements);
+        collectInteractiveElements(nodeMap, child, elements, passwordBackendIds);
       }
     }
   }
@@ -273,12 +286,19 @@ async function getInteractiveElements(page: Page): Promise<IndexedElement[]> {
 
     if (nodes.length === 0) return [];
 
+    // Password fields are identified DOM-side and matched to a11y nodes through
+    // backendNodeId — the a11y node itself carries neither `type` nor
+    // `autocomplete`. Same bridge snapshot.ts uses.
+    const passwordBackendIds = await getPasswordFieldBackendIds(
+      client as unknown as { send: (method: string, params?: unknown) => Promise<unknown> },
+    );
+
     // Build a map for quick lookup by nodeId
     const nodeMap = new Map<string, CdpAXNode>();
     for (const n of nodes) nodeMap.set(n.nodeId, n);
 
     const elements: IndexedElement[] = [];
-    collectInteractiveElements(nodeMap, nodes[0], elements);
+    collectInteractiveElements(nodeMap, nodes[0], elements, passwordBackendIds);
     return elements;
   } finally {
     await client.detach().catch(() => {
@@ -364,6 +384,8 @@ export async function getSmartSnapshotViaEval(
   const script = `(() => {
     const sel = ${JSON.stringify(INTERACTIVE_SELECTOR)};
     const max = ${maxContentLength};
+    const isPasswordField = ${PASSWORD_FIELD_PREDICATE_JS};
+    const redactedPassword = ${JSON.stringify(REDACTED_PASSWORD)};
     const els = [...document.querySelectorAll(sel)].slice(0, 100);
     const roleFor = (el) => {
       const explicit = el.getAttribute('role');
@@ -392,8 +414,12 @@ export async function getSmartSnapshotViaEval(
         || el.getAttribute('name')
         || '').substring(0, 120);
       const out = { ref, role: roleFor(el), name };
+      // el.value is the plaintext for EVERY input type, password included —
+      // this path has no a11y tree doing the masking for it (redact.ts).
       const val = el.value;
-      if (typeof val === 'string' && val) out.value = val;
+      if (typeof val === 'string' && val) {
+        out.value = isPasswordField(el) ? redactedPassword : val;
+      }
       const desc = el.getAttribute('aria-description');
       if (desc) out.description = desc;
       return out;
