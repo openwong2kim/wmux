@@ -18,67 +18,58 @@ import {
 const optionalSurfaceId = z
   .string()
   .optional()
-  .describe('Target a specific surface by ID. Omit to use the active surface.');
+  .describe('Omit for the active surface.');
 
 // Module-scope parameter shapes: hoisted out of the per-registration path so
 // every createWmuxServer() instance shares one set of zod schema objects.
 const BROWSER_COOKIES_SHAPE = {
-  action: z
-    .enum(['get', 'set', 'clear'])
-    .describe('Action to perform on cookies.'),
+  action: z.enum(['get', 'set', 'clear']),
   url: z
     .string()
     .optional()
-    .describe('URL to filter cookies by (for "get" action).'),
+    .describe('Filter by URL, for "get".'),
   cookies: z
     .array(
       z.object({
-        name: z.string().describe('Cookie name'),
-        value: z.string().describe('Cookie value'),
-        domain: z.string().optional().describe('Cookie domain'),
-        path: z.string().optional().describe('Cookie path'),
+        name: z.string(),
+        value: z.string(),
+        domain: z.string().optional(),
+        path: z.string().optional(),
       }),
     )
     .optional()
-    .describe('Cookies to set (for "set" action).'),
+    .describe('For "set".'),
   allowSensitiveDomains: z
     .boolean()
     .optional()
-    .describe('Allow reading cookies from sensitive domains (email, banking, auth). Default false.'),
+    .describe('Allow sensitive-domain reads. Default false.'),
   surfaceId: optionalSurfaceId,
 };
 
 const BROWSER_STORAGE_SHAPE = {
-  type: z
-    .enum(['local', 'session'])
-    .describe('Storage type: "local" for localStorage, "session" for sessionStorage.'),
-  action: z
-    .enum(['get', 'set', 'clear'])
-    .describe('Action to perform.'),
+  type: z.enum(['local', 'session']),
+  action: z.enum(['get', 'set', 'clear']),
   key: z
     .string()
     .optional()
-    .describe('Storage key (for "get" or "set"). Omit for "get" to retrieve all entries.'),
+    .describe('Omit on "get" to return every entry.'),
   value: z
     .string()
     .optional()
-    .describe('Value to set (for "set" action).'),
+    .describe('For "set".'),
   allowSensitiveDomains: z
     .boolean()
     .optional()
-    .describe('Allow reading storage on sensitive domains. Default false.'),
+    .describe('Allow sensitive-domain reads. Default false.'),
   surfaceId: optionalSurfaceId,
 };
 
 const BROWSER_EMULATE_SHAPE = {
-  offline: z
-    .boolean()
-    .optional()
-    .describe('Enable or disable offline mode.'),
+  offline: z.boolean().optional(),
   headers: z
     .record(z.string(), z.string())
     .optional()
-    .describe('Extra HTTP headers to send with every request.'),
+    .describe('Extra headers on every request.'),
   credentials: z
     .object({
       username: z.string(),
@@ -86,7 +77,7 @@ const BROWSER_EMULATE_SHAPE = {
     })
     .nullable()
     .optional()
-    .describe('HTTP credentials for Basic/Digest auth. Pass null to clear.'),
+    .describe('Basic/Digest auth; null clears.'),
   geo: z
     .object({
       latitude: z.number(),
@@ -95,33 +86,33 @@ const BROWSER_EMULATE_SHAPE = {
     })
     .nullable()
     .optional()
-    .describe('Geolocation override. Pass null to clear.'),
+    .describe('Geolocation; null clears.'),
   media: z
     .enum(['dark', 'light', 'no-preference'])
     .nullable()
     .optional()
-    .describe('Color scheme media emulation. Pass null to reset.'),
+    .describe('Color-scheme emulation; null resets.'),
   timezone: z
     .string()
     .nullable()
     .optional()
-    .describe('Timezone override (e.g. "America/New_York"). Pass null to reset.'),
+    .describe('e.g. "America/New_York"; null resets.'),
   locale: z
     .string()
     .nullable()
     .optional()
-    .describe('Locale override (e.g. "en-US"). Pass null to reset.'),
+    .describe('e.g. "en-US"; null resets.'),
   device: z
     .string()
     .nullable()
     .optional()
-    .describe('Device preset name from Playwright devices (e.g. "iPhone 13"). Pass null to reset.'),
+    .describe('Playwright device preset, e.g. "iPhone 13"; null resets.'),
   surfaceId: optionalSurfaceId,
 };
 
 const BROWSER_RESIZE_SHAPE = {
-  width: z.number().describe('Viewport width in pixels.'),
-  height: z.number().describe('Viewport height in pixels.'),
+  width: z.number().describe('Pixels.'),
+  height: z.number().describe('Pixels.'),
   surfaceId: optionalSurfaceId,
 };
 
@@ -169,7 +160,7 @@ export function registerStateTools(server: McpServer, deps: BrowserToolDeps): vo
   // -----------------------------------------------------------------------
   server.tool(
     'browser_cookies',
-    'Manage browser cookies: get, set, or clear. Reads from sensitive domains (email, banking, auth) are blocked and values from such domains are redacted unless allowSensitiveDomains:true is set.',
+    'Get, set, or clear cookies. Sensitive domains (email, banking, auth) are blocked on read and redacted unless allowSensitiveDomains:true.',
     BROWSER_COOKIES_SHAPE,
     async ({ action, url, cookies, allowSensitiveDomains, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
       try {
@@ -278,7 +269,7 @@ export function registerStateTools(server: McpServer, deps: BrowserToolDeps): vo
   // -----------------------------------------------------------------------
   server.tool(
     'browser_storage',
-    'Manage localStorage or sessionStorage: get, set, or clear. Reads on sensitive pages (email, banking, auth) are blocked unless allowSensitiveDomains:true is set.',
+    'Get, set, or clear local or session storage. Reads on sensitive pages (email, banking, auth) are blocked unless allowSensitiveDomains:true.',
     BROWSER_STORAGE_SHAPE,
     async ({ type, action, key, value, allowSensitiveDomains, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
       try {
@@ -390,7 +381,7 @@ export function registerStateTools(server: McpServer, deps: BrowserToolDeps): vo
   // -----------------------------------------------------------------------
   server.tool(
     'browser_emulate',
-    'Apply emulation settings to the browser page: offline mode, custom headers, HTTP credentials, geolocation, color scheme, timezone, locale, or device preset.',
+    'Apply page emulation settings. Pass only the fields to change.',
     BROWSER_EMULATE_SHAPE,
     async ({ offline, headers, credentials, geo, media, timezone, locale, device, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
       try {
@@ -562,7 +553,7 @@ export function registerStateTools(server: McpServer, deps: BrowserToolDeps): vo
   // -----------------------------------------------------------------------
   server.tool(
     'browser_resize',
-    'Resize the browser viewport to the specified dimensions.',
+    'Resize the viewport.',
     BROWSER_RESIZE_SHAPE,
     async ({ width, height, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
       try {

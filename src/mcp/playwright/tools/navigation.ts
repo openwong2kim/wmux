@@ -22,14 +22,14 @@ import {
 const optionalSurfaceId = z
   .string()
   .optional()
-  .describe('Target a specific surface by ID. Omit to use the active surface.');
+  .describe('Omit for the active surface.');
 
 // Module-scope parameter shapes: hoisted out of the per-registration path so
 // every createWmuxServer() instance shares one set of zod schema objects
 // (per-connection memory reduction). Shapes carry no per-call state — only the
 // handlers (which stay inside the register* functions) close over runtime deps.
 const BROWSER_NAVIGATE_SHAPE = {
-  url: z.string().describe('The URL to navigate to'),
+  url: z.string(),
   surfaceId: optionalSurfaceId,
 };
 
@@ -41,20 +41,20 @@ export const BROWSER_TABS_SHAPE = {
   action: z
     .enum(['list', 'new', 'select', 'close'])
     .optional()
-    .describe('Action to perform. Defaults to "list".'),
+    .describe('Defaults to "list".'),
   surfaceId: z
     .string()
     .min(1)
     .optional()
-    .describe('Stable browser surface ID returned by "list" or "new". Required for "select" and "close".'),
+    .describe('Opaque ID from "list" or "new". Required for "select" and "close".'),
   url: z
     .string()
     .optional()
-    .describe('URL to open when action is "new".'),
+    .describe('For "new".'),
   tabId: z
     .never()
     .optional()
-    .describe('Removed unsafe numeric index. Use surfaceId returned by "list" or "new".'),
+    .describe('Removed. Use surfaceId.'),
 };
 
 function tabsToolError(result: BrowserTabsErrorResult) {
@@ -119,7 +119,7 @@ export function registerNavigationTools(server: McpServer, deps: BrowserToolDeps
   // -----------------------------------------------------------------------
   server.tool(
     'browser_navigate',
-    'Navigate the browser page to a URL. Returns the final URL after navigation.',
+    'Navigate to a URL. Returns the final URL after any redirects.',
     BROWSER_NAVIGATE_SHAPE,
     async ({ url, surfaceId }) => {
       try {
@@ -191,7 +191,7 @@ export function registerNavigationTools(server: McpServer, deps: BrowserToolDeps
   // -----------------------------------------------------------------------
   server.tool(
     'browser_navigate_back',
-    'Go back in browser history. Returns the current URL after going back.',
+    'Go back in history. Returns the resulting URL.',
     BROWSER_NAVIGATE_BACK_SHAPE,
     async ({ surfaceId }) => {
       try {
@@ -245,7 +245,7 @@ export function registerNavigationTools(server: McpServer, deps: BrowserToolDeps
   // -----------------------------------------------------------------------
   server.tool(
     'browser_tabs',
-    'Manage browser surfaces in the calling workspace. Address a surface only by the opaque surfaceId returned by list or new — a list position is never an address. select moves this workspace\'s UI focus only: it does NOT change which surface the other browser tools act on when they omit surfaceId, so pass surfaceId explicitly on every follow-up browser call.',
+    'Manage browser surfaces in the calling workspace. Address one only by the opaque surfaceId from list or new, never by list position. select moves UI focus only and does NOT retarget the other browser tools, so pass surfaceId explicitly on follow-up calls.',
     BROWSER_TABS_SHAPE,
     async ({ action, surfaceId, url }) => {
       const resolvedAction: BrowserTabsAction = action ?? 'list';

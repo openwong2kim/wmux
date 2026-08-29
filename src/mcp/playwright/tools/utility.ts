@@ -12,7 +12,7 @@ import { describeToolError } from '../toolError';
 const optionalSurfaceId = z
   .string()
   .optional()
-  .describe('Target a specific surface by ID. Omit to use the active surface.');
+  .describe('Omit for the active surface.');
 
 // Module-scope parameter shapes: hoisted out of the per-registration path so
 // every createWmuxServer() instance shares one set of zod schema objects.
@@ -20,18 +20,16 @@ const BROWSER_PDF_SHAPE = {
   path: z
     .string()
     .optional()
-    .describe('Relative output path under ~/.wmux/exports. Defaults to "output.pdf".'),
+    .describe('Path under ~/.wmux/exports; default "output.pdf".'),
   surfaceId: optionalSurfaceId,
 };
 
 const BROWSER_TRACE_SHAPE = {
-  action: z
-    .enum(['start', 'stop'])
-    .describe('Whether to start or stop tracing.'),
+  action: z.enum(['start', 'stop']),
   path: z
     .string()
     .optional()
-    .describe('Relative output path under ~/.wmux/exports (used with "stop"). Defaults to "trace.zip".'),
+    .describe('Path under ~/.wmux/exports for "stop"; default "trace.zip".'),
   surfaceId: optionalSurfaceId,
 };
 
@@ -111,7 +109,7 @@ export function registerUtilityTools(server: McpServer, deps: BrowserToolDeps): 
   // -----------------------------------------------------------------------
   server.tool(
     'browser_pdf',
-    'Export the current page as a PDF file. Falls back to CDP Page.printToPDF when Playwright pdf() is unavailable (e.g. CDP-connected browsers).',
+    'Export the page as a PDF file.',
     BROWSER_PDF_SHAPE,
     async ({ path: outputPath, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
       try {
@@ -176,7 +174,7 @@ export function registerUtilityTools(server: McpServer, deps: BrowserToolDeps): 
   // -----------------------------------------------------------------------
   server.tool(
     'browser_trace',
-    'Start or stop Playwright tracing. Use "start" to begin recording and "stop" to save the trace file.',
+    'Start or stop Playwright tracing; "stop" saves the trace file.',
     BROWSER_TRACE_SHAPE,
     async ({ action, path: outputPath, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
       try {

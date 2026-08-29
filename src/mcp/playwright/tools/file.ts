@@ -13,29 +13,29 @@ import { getWmuxDir } from '../../../daemon/config';
 const optionalSurfaceId = z
   .string()
   .optional()
-  .describe('Target a specific surface by ID. Omit to use the active surface.');
+  .describe('Omit for the active surface.');
 
 // Module-scope parameter shapes: hoisted out of the per-registration path so
 // every createWmuxServer() instance shares one set of zod schema objects.
 const BROWSER_FILE_UPLOAD_SHAPE = {
   paths: z
     .array(z.string())
-    .describe('Array of file paths to upload. Each path must resolve under ~/.wmux/uploads/.'),
+    .describe('Each path must resolve under ~/.wmux/uploads/.'),
   ref: z
     .string()
     .optional()
-    .describe('Ref number of the file input element (from browser_snapshot).'),
+    .describe('Ref of the file input.'),
   surfaceId: optionalSurfaceId,
 };
 
 const BROWSER_DOWNLOAD_SHAPE = {
   ref: z
     .string()
-    .describe('Ref number of the element to click to trigger the download.'),
+    .describe('Element that triggers the download.'),
   filename: z
     .string()
     .optional()
-    .describe('Optional filename to save the download as.'),
+    .describe('Save the download as this name.'),
   surfaceId: optionalSurfaceId,
 };
 
@@ -43,22 +43,22 @@ const BROWSER_WAIT_FOR_DOWNLOAD_SHAPE = {
   filename: z
     .string()
     .optional()
-    .describe('Expected filename to match against the download.'),
+    .describe('Expected filename.'),
   timeout: z
     .number()
     .optional()
-    .describe('Maximum wait time in milliseconds. Defaults to 30000.'),
+    .describe('Milliseconds; default 30000.'),
   surfaceId: optionalSurfaceId,
 };
 
 const BROWSER_DIALOG_SHAPE = {
   accept: z
     .boolean()
-    .describe('Whether to accept (true) or dismiss (false) the dialog.'),
+    .describe('true accepts, false dismisses.'),
   text: z
     .string()
     .optional()
-    .describe('Text to enter in a prompt dialog before accepting.'),
+    .describe('Text for a prompt dialog.'),
   surfaceId: optionalSurfaceId,
 };
 
@@ -117,7 +117,7 @@ export function registerFileTools(server: McpServer, deps: BrowserToolDeps): voi
   // -----------------------------------------------------------------------
   server.tool(
     'browser_file_upload',
-    'Upload files to a file input element. Paths MUST live under ~/.wmux/uploads/ — arbitrary filesystem paths are rejected to prevent exfiltration of credentials or SSH keys via malicious pages.',
+    'Upload files to a file input. Paths MUST live under ~/.wmux/uploads/; anything else is rejected so a malicious page cannot exfiltrate credentials or SSH keys.',
     BROWSER_FILE_UPLOAD_SHAPE,
     async ({ paths, ref, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
       try {
@@ -166,7 +166,7 @@ export function registerFileTools(server: McpServer, deps: BrowserToolDeps): voi
   // -----------------------------------------------------------------------
   server.tool(
     'browser_download',
-    'Click an element (identified by ref) and capture the resulting download. Returns the downloaded file path.',
+    'Click an element by ref and capture the resulting download. Returns the file path.',
     BROWSER_DOWNLOAD_SHAPE,
     async ({ ref, filename, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
       try {
@@ -228,7 +228,7 @@ export function registerFileTools(server: McpServer, deps: BrowserToolDeps): voi
   // -----------------------------------------------------------------------
   server.tool(
     'browser_wait_for_download',
-    'Wait for a download event on the page. Optionally filter by filename.',
+    'Wait for a download event, optionally matching a filename.',
     BROWSER_WAIT_FOR_DOWNLOAD_SHAPE,
     async ({ filename, timeout, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
       const resolvedTimeout = timeout ?? 30000;
@@ -301,7 +301,7 @@ export function registerFileTools(server: McpServer, deps: BrowserToolDeps): voi
   // -----------------------------------------------------------------------
   server.tool(
     'browser_dialog',
-    'Pre-register a handler for the next browser dialog (alert, confirm, prompt, beforeunload). The handler will automatically accept or dismiss the dialog when it appears.',
+    'Pre-register a handler for the NEXT dialog (alert, confirm, prompt, beforeunload); it is accepted or dismissed automatically when it appears.',
     BROWSER_DIALOG_SHAPE,
     async ({ accept, text, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
       try {
