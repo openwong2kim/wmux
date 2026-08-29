@@ -6,6 +6,7 @@ import * as path from 'path';
 import { PlaywrightEngine } from '../PlaywrightEngine';
 import { withAutomationLease } from '../automationLease';
 import type { BrowserToolDeps } from '../browserScope';
+import { describeToolError } from '../toolError';
 
 // Optional surfaceId schema reused across tools
 const optionalSurfaceId = z
@@ -161,7 +162,7 @@ export function registerUtilityTools(server: McpServer, deps: BrowserToolDeps): 
           }
         }
       } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
+        const message = describeToolError(error);
         return {
           content: [{ type: 'text' as const, text: message }],
           isError: true,
@@ -211,7 +212,7 @@ export function registerUtilityTools(server: McpServer, deps: BrowserToolDeps): 
           ],
         };
       } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
+        const message = describeToolError(error);
         return {
           content: [{ type: 'text' as const, text: message }],
           isError: true,

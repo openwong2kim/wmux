@@ -5,6 +5,7 @@ import { withAutomationLease } from '../automationLease';
 import { resolveRef } from '../snapshot';
 import { getLocatorByRef } from '../dom-intelligence';
 import { typeHumanlike } from '../human-typing';
+import { describeToolError } from '../toolError';
 import {
   allowScopedRpcFallback,
   sendScopedBrowserRpc,
@@ -230,7 +231,7 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
           content: [{ type: 'text' as const, text: `Clicked${double ? ' (double)' : ''} element ref=${resolvedRef}` }],
         };
       } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
+        const message = describeToolError(error);
         return {
           content: [{ type: 'text' as const, text: message }],
           isError: true,
@@ -275,7 +276,7 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
           ],
         };
       } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
+        const message = describeToolError(error);
         return {
           content: [{ type: 'text' as const, text: message }],
           isError: true,
@@ -309,7 +310,7 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
             }
             filled++;
           } catch (err) {
-            errors.push(err instanceof Error ? err.message : String(err));
+            errors.push(describeToolError(err));
           }
         }
 
@@ -323,7 +324,7 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
           ...(errors.length > 0 && filled === 0 ? { isError: true } : {}),
         };
       } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
+        const message = describeToolError(error);
         return {
           content: [{ type: 'text' as const, text: message }],
           isError: true,
@@ -353,7 +354,7 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
           content: [{ type: 'text' as const, text: `Pressed key: ${key}` }],
         };
       } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
+        const message = describeToolError(error);
         return {
           content: [{ type: 'text' as const, text: message }],
           isError: true,
@@ -395,7 +396,7 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
           content: [{ type: 'text' as const, text: `Hovered over element ref=${ref}` }],
         };
       } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
+        const message = describeToolError(error);
         return {
           content: [{ type: 'text' as const, text: message }],
           isError: true,
@@ -460,7 +461,7 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
           content: [{ type: 'text' as const, text: `Dragged element ref=${sourceRef} to ref=${targetRef}` }],
         };
       } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
+        const message = describeToolError(error);
         return {
           content: [{ type: 'text' as const, text: message }],
           isError: true,
@@ -502,7 +503,7 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
           content: [{ type: 'text' as const, text: `Selected value(s) [${values.join(', ')}] in element ref=${ref}` }],
         };
       } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
+        const message = describeToolError(error);
         return {
           content: [{ type: 'text' as const, text: message }],
           isError: true,
@@ -541,7 +542,7 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
           content: [{ type: 'text' as const, text: `Scrolled element ref=${ref} into view` }],
         };
       } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
+        const message = describeToolError(error);
         return {
           content: [{ type: 'text' as const, text: message }],
           isError: true,
@@ -600,7 +601,7 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
           content: [{ type: 'text' as const, text: `Scrolled ${direction} by ${px}px${ref ? ` (element ref=${ref})` : ''}` }],
         };
       } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
+        const message = describeToolError(error);
         return {
           content: [{ type: 'text' as const, text: message }],
           isError: true,

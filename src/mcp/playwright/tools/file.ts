@@ -6,6 +6,7 @@ import { PlaywrightEngine } from '../PlaywrightEngine';
 import { withAutomationLease } from '../automationLease';
 import type { BrowserToolDeps } from '../browserScope';
 import { resolveRef } from '../snapshot';
+import { describeToolError } from '../toolError';
 import { getWmuxDir } from '../../../daemon/config';
 
 // Optional surfaceId schema reused across tools
@@ -151,7 +152,7 @@ export function registerFileTools(server: McpServer, deps: BrowserToolDeps): voi
           ],
         };
       } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
+        const message = describeToolError(error);
         return {
           content: [{ type: 'text' as const, text: message }],
           isError: true,
@@ -213,7 +214,7 @@ export function registerFileTools(server: McpServer, deps: BrowserToolDeps): voi
           ],
         };
       } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
+        const message = describeToolError(error);
         return {
           content: [{ type: 'text' as const, text: message }],
           isError: true,
@@ -275,7 +276,7 @@ export function registerFileTools(server: McpServer, deps: BrowserToolDeps): voi
           ],
         };
       } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
+        const message = describeToolError(error);
         if (message.includes('Timeout') || message.includes('timeout')) {
           return {
             content: [
@@ -327,7 +328,7 @@ export function registerFileTools(server: McpServer, deps: BrowserToolDeps): voi
           ],
         };
       } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
+        const message = describeToolError(error);
         return {
           content: [{ type: 'text' as const, text: message }],
           isError: true,
