@@ -82,6 +82,31 @@ describe('installStatusline', () => {
     expect(sl.command).toBe('node my-own-line.js');
   });
 
+  it('replaces a FOREIGN statusLine only when force is asked for (#1102)', () => {
+    const t = target('acc-a');
+    fs.mkdirSync(path.dirname(t.settingsPath), { recursive: true });
+    fs.writeFileSync(
+      t.settingsPath,
+      JSON.stringify({ model: 'opus', statusLine: { type: 'command', command: 'node my-own-line.js' } }),
+      'utf8',
+    );
+    const outcome = installStatusline(makePaths([t]), { force: true });
+    expect(outcome.targets[0].outcome).toBe('replaced');
+    const settings = readSettings(t);
+    expect((settings.statusLine as { command: string }).command).toContain('wmux-statusline.mjs');
+    // The overwrite is scoped to statusLine — the rest of the file survives.
+    expect(settings.model).toBe('opus');
+  });
+
+  it('force never touches a corrupt settings.json', () => {
+    const t = target('acc-a');
+    fs.mkdirSync(path.dirname(t.settingsPath), { recursive: true });
+    fs.writeFileSync(t.settingsPath, '{not json', 'utf8');
+    const outcome = installStatusline(makePaths([t]), { force: true });
+    expect(outcome.targets[0].outcome).toBe('skipped-corrupt');
+    expect(fs.readFileSync(t.settingsPath, 'utf8')).toBe('{not json');
+  });
+
   it('refreshes an existing wmux statusLine (idempotent re-install)', () => {
     const t = target('acc-a');
     const paths = makePaths([t]);

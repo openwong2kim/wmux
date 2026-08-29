@@ -1168,6 +1168,11 @@ export const en = {
   'integrationSetup.registerButton': 'Register',
   'integrationSetup.working': 'Working…',
   'integrationSetup.installFailed': 'Failed',
+  'integrationSetup.replaceButton': 'Replace',
+  'integrationSetup.skippedForeign':
+    'Another tool already sets Claude Code\'s statusLine, so wmux left it alone. Replace it to use the wmux one.',
+  'integrationSetup.skippedCorrupt':
+    'Claude Code\'s settings.json is not valid JSON, so wmux left it alone. Fix the file and try again.',
   'integrationSetup.state.installed': 'installed',
   'integrationSetup.state.missing': 'not installed',
   'integrationSetup.state.working': 'working',

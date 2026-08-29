@@ -46,7 +46,7 @@ export interface IntegrationSetupApi {
     status: () => Promise<{ installed: boolean }>;
     /** `ok` only means nothing broke: every target can be skipped when another
      *  tool owns its settings.json. A row is installed when a target took it. */
-    install: () => Promise<{
+    install: (opts?: { force?: boolean }) => Promise<{
       ok: boolean;
       error: string | null;
       targets: Array<{ outcome: string }>;
@@ -80,6 +80,25 @@ export function skippedReason(targets?: Array<{ outcome: string }>): string | nu
   return skipped.length > 0 ? skipped.join(', ') : null;
 }
 
+/** True when a target actually took the write. `replaced` is a take too — the
+ *  forced install overwrote a foreign entry, which is exactly what was asked. */
+export function installTook(targets?: Array<{ outcome: string }>): boolean {
+  if (!targets) return true;
+  return targets.some((x) => x.outcome === 'installed' || x.outcome === 'replaced');
+}
+
+/** Which skip explains an install that wrote nothing. `foreign` is the only one
+ *  the user can act on from here (a forced re-install replaces it); `corrupt`
+ *  needs them to fix their settings.json by hand. */
+export type SkipReason = 'foreign' | 'corrupt' | null;
+
+export function skipReasonOf(targets?: Array<{ outcome: string }>): SkipReason {
+  if (!targets || targets.length === 0 || installTook(targets)) return null;
+  if (targets.some((x) => x.outcome === 'skipped-foreign')) return 'foreign';
+  if (targets.some((x) => x.outcome === 'skipped-corrupt')) return 'corrupt';
+  return null;
+}
+
 /** One row's lifecycle. `unknown` is the pre-probe state and reads as its own
  *  thing — never as "not installed", which would be a lie the user acts on. */
 export type RowState =
@@ -93,6 +112,10 @@ export type RowState =
 interface RowModel {
   state: RowState;
   error: string | null;
+  /** Set when the install wrote nothing because another tool owns the config.
+   *  Drives the plain-language line and the Replace affordance — the raw
+   *  `skipped-foreign` token was a dead end for the user who saw it (#1102). */
+  skip?: SkipReason;
 }
 
 const INITIAL: RowModel = { state: 'unknown', error: null };
@@ -215,7 +238,7 @@ export function IntegrationSetupSection({
         // settings.json, and claiming "Installed" there is a receipt for
         // something that did not happen. The skipped outcomes ARE the reason,
         // so they go into the error text — otherwise the user retries blindly.
-        const took = outcome.targets ? outcome.targets.some((x) => x.outcome === 'installed') : true;
+        const took = installTook(outcome.targets);
         if (outcome.ok && took) {
           // Re-probe rather than trusting the install's own word: the file is
           // the truth, and it can have been rewritten by another tool between
@@ -223,7 +246,15 @@ export function IntegrationSetupSection({
           probeAll();
           return;
         }
-        commit(set, { state: 'error', error: outcome.error ?? skippedReason(outcome.targets) }, gen);
+        commit(
+          set,
+          {
+            state: 'error',
+            error: outcome.error ?? skippedReason(outcome.targets),
+            skip: skipReasonOf(outcome.targets),
+          },
+          gen,
+        );
       } catch (err) {
         commit(set, { state: 'error', error: err instanceof Error ? err.message : null }, gen);
       }
@@ -322,7 +353,17 @@ export function IntegrationSetupSection({
         description={t('integrationSetup.statusline.description')}
         model={statusline}
         actionLabel={t('integrationSetup.installButton')}
-        onAction={() => { if (api.statusline) void runInstall(setStatusline, api.statusline.install); }}
+        onAction={() => {
+          const sl = api.statusline;
+          if (sl) void runInstall(setStatusline, () => sl.install());
+        }}
+        // Only offered after a skip has already been reported: the overwrite of
+        // someone else's statusLine takes a second, deliberate click.
+        secondaryLabel={statusline.skip === 'foreign' ? t('integrationSetup.replaceButton') : null}
+        onSecondary={() => {
+          const sl = api.statusline;
+          if (sl) void runInstall(setStatusline, () => sl.install({ force: true }));
+        }}
       />
     </div>
   );
@@ -336,6 +377,8 @@ function SetupRow({
   model,
   actionLabel,
   onAction,
+  secondaryLabel = null,
+  onSecondary,
 }: {
   id: string;
   required: boolean;
@@ -344,6 +387,8 @@ function SetupRow({
   model: RowModel;
   actionLabel: string;
   onAction: () => void;
+  secondaryLabel?: string | null;
+  onSecondary?: () => void;
 }): React.ReactElement {
   const t = useT();
   const installed = model.state === 'installed';
@@ -375,8 +420,14 @@ function SetupRow({
             style={{ color: 'var(--accent-red, #f38ba8)' }}
             data-setup-row-error
           >
-            {t('integrationSetup.installFailed')}
-            {model.error ? ` (${model.error})` : ''}
+            {/* A skip is not a crash: it says what wmux chose not to touch and
+                what to do about it, in words. Printing the raw outcome token
+                (`skipped-foreign`) told the user nothing they could act on. */}
+            {model.skip === 'foreign'
+              ? t('integrationSetup.skippedForeign')
+              : model.skip === 'corrupt'
+                ? t('integrationSetup.skippedCorrupt')
+                : `${t('integrationSetup.installFailed')}${model.error ? ` (${model.error})` : ''}`}
           </span>
         )}
       </div>
@@ -384,6 +435,22 @@ function SetupRow({
         <StateChip state={model.state} />
         {/* Nothing to click for a row we cannot act on: `unknown` has not been
             probed, and `unavailable` has no bridge to install through. */}
+        {secondaryLabel && onSecondary && !working && (
+          <button
+            type="button"
+            onClick={onSecondary}
+            data-setup-row-secondary
+            className="text-[11px] font-mono px-2.5 py-1 rounded-md transition-colors"
+            style={{
+              backgroundColor: 'transparent',
+              color: 'var(--text-muted)',
+              border: '1px solid var(--bg-overlay)',
+              cursor: 'pointer',
+            }}
+          >
+            {secondaryLabel}
+          </button>
+        )}
         {!installed && model.state !== 'unknown' && model.state !== 'unavailable' && (
           <button
             type="button"

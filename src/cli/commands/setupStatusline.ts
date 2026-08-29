@@ -39,6 +39,11 @@ ACTIONS (mutually exclusive; default = install)
   --remove     Remove only wmux-owned statusLine entries.
   --status     Report per-target install state.
 
+INSTALL FLAGS
+  --force      Replace a non-wmux statusLine instead of skipping it. Without
+               this, a settings.json that already has someone else's statusLine
+               is reported as SKIPPED and nothing is written.
+
 GLOBAL FLAGS
   --json       Output raw JSON (useful for scripting).
 
@@ -199,6 +204,7 @@ function statuslineCommand(scriptDest: string): string {
 
 export type TargetOutcome =
   | 'installed'      // statusLine written (fresh or refreshed)
+  | 'replaced'       // a foreign statusLine was overwritten (explicit --force)
   | 'skipped-foreign' // user has their own statusLine — untouched
   | 'skipped-corrupt' // settings.json unparseable — untouched
   | 'removed'
@@ -219,7 +225,17 @@ export interface StatuslineOutcome {
   error: string | null;
 }
 
-export function installStatusline(paths: SetupStatuslinePaths): StatuslineOutcome {
+export interface InstallStatuslineOptions {
+  /** Overwrite a foreign (non-wmux) statusLine. Off by default: wmux never
+   *  clobbers someone else's config without the human saying so. The UI asks
+   *  for a second, explicit click before it sets this. */
+  force?: boolean;
+}
+
+export function installStatusline(
+  paths: SetupStatuslinePaths,
+  opts: InstallStatuslineOptions = {},
+): StatuslineOutcome {
   const base: StatuslineOutcome = {
     ok: false,
     scriptDest: paths.scriptDest,
@@ -247,13 +263,13 @@ export function installStatusline(paths: SetupStatuslinePaths): StatuslineOutcom
       continue;
     }
     const kind = classifyStatusLine(load.settings);
-    if (kind === 'foreign') {
+    if (kind === 'foreign' && !opts.force) {
       targets.push({ ...t, outcome: 'skipped-foreign' });
       continue;
     }
     load.settings.statusLine = { type: 'command', command: statuslineCommand(paths.scriptDest) };
     writeJsonAtomic(t.settingsPath, load.settings);
-    targets.push({ ...t, outcome: 'installed' });
+    targets.push({ ...t, outcome: kind === 'foreign' ? 'replaced' : 'installed' });
   }
   return { ...base, ok: true, scriptCopied: true, targets };
 }
@@ -385,8 +401,9 @@ function printOutcome(outcome: StatuslineOutcome, jsonMode: boolean, verb: strin
   for (const t of outcome.targets) {
     const note =
       t.outcome === 'installed' ? verb
+      : t.outcome === 'replaced' ? 'replaced a non-wmux statusLine'
       : t.outcome === 'removed' ? 'removed'
-      : t.outcome === 'skipped-foreign' ? 'SKIPPED — a non-wmux statusLine is already set'
+      : t.outcome === 'skipped-foreign' ? 'SKIPPED — a non-wmux statusLine is already set (re-run with --force to replace it)'
       : t.outcome === 'skipped-corrupt' ? 'SKIPPED — settings.json is not valid JSON'
       : 'nothing to do';
     console.log(`  ${t.label}: ${note} (${t.settingsPath})`);
@@ -415,12 +432,18 @@ export async function handleSetupStatusline(args: string[], jsonMode: boolean): 
   }
   const remove = args.includes('--remove');
   const status = args.includes('--status');
+  const force = args.includes('--force');
   if (remove && status) {
     console.error('--remove and --status are mutually exclusive.');
     process.exit(1);
     return;
   }
-  const unknown = args.filter((a) => a !== '--remove' && a !== '--status');
+  if (force && (remove || status)) {
+    console.error('--force only applies to an install.');
+    process.exit(1);
+    return;
+  }
+  const unknown = args.filter((a) => a !== '--remove' && a !== '--status' && a !== '--force');
   if (unknown.length > 0) {
     console.error(`Unknown argument(s): ${unknown.join(', ')}. Run 'wmux setup-statusline --help' for usage.`);
     process.exit(1);
@@ -432,7 +455,7 @@ export async function handleSetupStatusline(args: string[], jsonMode: boolean): 
     printStatus(statusStatusline(paths), jsonMode);
     return;
   }
-  const outcome = remove ? removeStatusline(paths) : installStatusline(paths);
+  const outcome = remove ? removeStatusline(paths) : installStatusline(paths, { force });
   printOutcome(outcome, jsonMode, 'installed');
   if (!outcome.ok) process.exit(1);
 }

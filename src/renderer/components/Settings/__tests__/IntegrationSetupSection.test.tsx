@@ -13,6 +13,8 @@ import {
   rowStateFromProbe,
   mcpRegistered,
   skippedReason,
+  skipReasonOf,
+  installTook,
   type IntegrationSetupApi,
 } from '../IntegrationSetupSection';
 
@@ -38,7 +40,7 @@ function fakeApi(over: Partial<{
   statuslineInstalled: boolean;
   mcpRegistered: boolean;
   hooksInstall: () => Promise<{ ok: boolean; error: string | null }>;
-  statuslineInstall: () => Promise<{ ok: boolean; error: string | null; targets: Array<{ outcome: string }> }>;
+  statuslineInstall: (opts?: { force?: boolean }) => Promise<{ ok: boolean; error: string | null; targets: Array<{ outcome: string }> }>;
   hooksStatusThrows: boolean;
   promptSuppressed: boolean;
   promptPrefThrows: boolean;
@@ -197,10 +199,59 @@ describe('IntegrationSetupSection', () => {
     expect(state(container, 'hooks')).toBe('installed');
   });
 
+  // #1102: a foreign statusLine made Install report a bare "skipped-foreign"
+  // with no way forward. The row now says what happened in words and offers
+  // the one action that can fix it — a second, explicit click.
+  it('offers Replace when a foreign statusLine blocked the install', async () => {
+    const calls: Array<{ force?: boolean } | undefined> = [];
+    const flags = { forced: false };
+    const api = fakeApi({
+      statuslineInstall: async (opts) => {
+        calls.push(opts);
+        if (opts?.force) {
+          flags.forced = true;
+          return { ok: true, error: null, targets: [{ outcome: 'replaced' }] };
+        }
+        return { ok: true, error: null, targets: [{ outcome: 'skipped-foreign' }] };
+      },
+    });
+    // The re-probe after a forced install must see the new state.
+    api.statusline!.status = async () => ({ installed: flags.forced });
+    const { container, cleanup } = render(<IntegrationSetupSection api={api} />);
+    cleanups.push(cleanup);
+    await flush();
+
+    await act(async () => { action(container, 'statusline')!.click(); await Promise.resolve(); });
+    await flush();
+    expect(state(container, 'statusline')).toBe('error');
+    const text = row(container, 'statusline').querySelector('[data-setup-row-error]')!.textContent!;
+    expect(text).not.toContain('skipped-foreign');
+    expect(text).toContain('Replace');
+
+    const replace = row(container, 'statusline').querySelector('[data-setup-row-secondary]') as HTMLButtonElement;
+    expect(replace).not.toBeNull();
+    await act(async () => { replace.click(); await Promise.resolve(); });
+    await flush();
+    expect(calls).toEqual([undefined, { force: true }]);
+    expect(state(container, 'statusline')).toBe('installed');
+  });
+
   it('names the reason when an install succeeds but writes nothing', () => {
     expect(skippedReason([{ outcome: 'installed' }])).toBeNull();
     expect(skippedReason([{ outcome: 'skipped-foreign' }])).toBe('skipped-foreign');
     expect(skippedReason(undefined)).toBeNull();
+  });
+
+  it('names an all-skipped install by its actionable reason (#1102)', () => {
+    expect(skipReasonOf([{ outcome: 'skipped-foreign' }])).toBe('foreign');
+    expect(skipReasonOf([{ outcome: 'skipped-corrupt' }])).toBe('corrupt');
+    // A single target that took the write is a success, not a skip.
+    expect(skipReasonOf([{ outcome: 'installed' }, { outcome: 'skipped-foreign' }])).toBeNull();
+    expect(skipReasonOf([{ outcome: 'replaced' }])).toBeNull();
+    expect(skipReasonOf(undefined)).toBeNull();
+    // `replaced` is a take: a forced install must not report failure.
+    expect(installTook([{ outcome: 'replaced' }])).toBe(true);
+    expect(installTook([{ outcome: 'skipped-foreign' }])).toBe(false);
   });
 
   // One absent bridge must not take the two REQUIRED rows down with it — the
