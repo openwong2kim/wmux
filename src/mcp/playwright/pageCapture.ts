@@ -1,4 +1,4 @@
-import type { Page } from 'playwright-core';
+import type { ConsoleMessage, Frame, Page, Request, Response } from 'playwright-core';
 
 // ---------------------------------------------------------------------------
 // Engine-side console / network capture for the Playwright transport (#1081).
@@ -116,6 +116,30 @@ function evictBodies(state: PageCaptureState): void {
 }
 
 /**
+ * Whether a response body is worth reading into the buffer.
+ *
+ * A stream is textual but never ENDS: response.text() on an SSE or
+ * multipart/x-mixed-replace response settles only when the stream closes, so
+ * the pending promise pins the entry, the state and the page for as long as
+ * the stream runs. That was survivable while capture started on the first
+ * read; eager attachment widens the target from "a page someone called
+ * browser_network on" to "every page an agent touches", so streams are
+ * excluded rather than gambled on.
+ */
+function isRetainableTextBody(contentType: string): boolean {
+  const ct = contentType.toLowerCase();
+  if (ct.includes('text/event-stream') || ct.includes('multipart/x-mixed-replace')) return false;
+  return (
+    ct.startsWith('text/') ||
+    ct.includes('application/json') ||
+    ct.includes('application/xml') ||
+    ct.includes('application/xhtml') ||
+    ct.includes('+json') ||
+    ct.includes('+xml')
+  );
+}
+
+/**
  * A page that already shows content when capture starts has a window this
  * buffer cannot cover — attaching to a tab that was open before the agent
  * arrived, for instance. Reported to the caller rather than hidden, because an
@@ -154,28 +178,45 @@ export function attachPageCapture(page: Page): PageCaptureState {
   };
   states.set(page, state);
 
-  // The WeakMap would reclaim the buffers once the Page is GC'd, but the engine
-  // may retain the Page object past close, so drop them on 'close' to free the
-  // (potentially large) retained response bodies promptly.
-  page.on('close', () => {
-    states.delete(page);
-  });
-
-  page.on('console', (msg) => {
+  const onConsole = (msg: ConsoleMessage) => {
     pushConsole(state, {
       level: mapConsoleLevel(msg.type()),
       text: truncate(msg.text(), MAX_CONSOLE_TEXT_CHARS),
     });
-  });
+  };
 
-  page.on('request', (request) => {
+  // Playwright routes an uncaught exception to 'pageerror', NOT to 'console' —
+  // so without this the one thing #1081 is most often reached for, a page that
+  // threw while loading, was still missing from an eagerly attached buffer.
+  const onPageError = (error: Error) => {
+    const rendered = error.stack || `${error.name}: ${error.message}`;
+    pushConsole(state, {
+      level: 'error',
+      text: truncate(`Uncaught ${rendered}`, MAX_CONSOLE_TEXT_CHARS),
+    });
+  };
+
+  // A new main-frame document retires the pre-attach gap: whatever this buffer
+  // could not see belonged to the page that just went away, and claiming a gap
+  // for the page now loaded would be its own kind of dishonesty.
+  const onFrameNavigated = (frame: Frame) => {
+    try {
+      if (frame !== page.mainFrame()) return;
+    } catch {
+      return; // page torn down mid-event
+    }
+    state.consoleWindow.missedBefore = false;
+    state.networkWindow.missedBefore = false;
+  };
+
+  const onRequest = (request: Request) => {
     pushNetwork(state, {
       url: truncate(request.url(), MAX_URL_CHARS),
       method: request.method(),
     });
-  });
+  };
 
-  page.on('response', (response) => {
+  const onResponse = (response: Response) => {
     const url = truncate(response.url(), MAX_URL_CHARS);
     // Find the matching request entry (last one with same URL and no status yet)
     for (let i = state.network.length - 1; i >= 0; i--) {
@@ -187,23 +228,21 @@ export function attachPageCapture(page: Page): PageCaptureState {
       entry.status = response.status();
       const headers = response.headers();
       entry.response = { headers };
-      // Only eagerly capture body for text-based content types
-      const contentType = headers['content-type'] ?? '';
-      const isTextual =
-        contentType.startsWith('text/') ||
-        contentType.includes('application/json') ||
-        contentType.includes('application/xml') ||
-        contentType.includes('application/xhtml') ||
-        contentType.includes('+json') ||
-        contentType.includes('+xml');
-      if (isTextual) {
+      // Only eagerly capture body for text-based, non-streaming content types
+      if (isRetainableTextBody(headers['content-type'] ?? '')) {
         response
           .text()
           .then((body) => {
-            // The state may have been dropped on close while text() was in
-            // flight, and the entry may have left the ring; neither is worth
-            // resurrecting.
+            // Three ways this entry can be dead by now, and charging its bytes
+            // to the budget in any of them leaks the budget permanently: the
+            // state was dropped on close, the entry was shifted out of the
+            // ring, or clear:true replaced the array. `includes` covers the
+            // last two — a dead entry is not reachable from state.network, so
+            // evictBodies could never reclaim its bytes either, and the budget
+            // would drift until eviction started dropping LIVE bodies and
+            // browser_response_body answered "not found" forever.
             if (!entry.response || states.get(page) !== state) return;
+            if (!state.network.includes(entry)) return;
             entry.response.body =
               body.length > MAX_RESPONSE_BODY_BYTES
                 ? body.slice(0, MAX_RESPONSE_BODY_BYTES) +
@@ -219,7 +258,31 @@ export function attachPageCapture(page: Page): PageCaptureState {
       }
       break;
     }
-  });
+  };
+
+  // The WeakMap would reclaim the buffers once the Page is GC'd, but the engine
+  // may retain the Page object past close, so drop them on 'close' to free the
+  // (potentially large) retained response bodies promptly. The listeners come
+  // off with them: leaving them attached would double-record everything if the
+  // same Page object is ever resolved again (the WeakMap miss re-attaches), and
+  // would keep the old state — retained bodies included — alive through the
+  // closures.
+  const onClose = () => {
+    states.delete(page);
+    page.off('console', onConsole);
+    page.off('pageerror', onPageError);
+    page.off('framenavigated', onFrameNavigated);
+    page.off('request', onRequest);
+    page.off('response', onResponse);
+    page.off('close', onClose);
+  };
+
+  page.on('close', onClose);
+  page.on('console', onConsole);
+  page.on('pageerror', onPageError);
+  page.on('framenavigated', onFrameNavigated);
+  page.on('request', onRequest);
+  page.on('response', onResponse);
 
   return state;
 }

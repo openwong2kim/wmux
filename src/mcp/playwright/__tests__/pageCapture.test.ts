@@ -9,15 +9,19 @@ import {
   ensurePageCapture,
 } from '../pageCapture';
 
-// A Page stand-in: the capture module only ever calls url() and on(), and
-// reads the event objects Playwright hands it.
+// A Page stand-in: the capture module only ever calls url(), mainFrame(), on()
+// and off(), and reads the event objects Playwright hands it.
 interface FakePage extends EventEmitter {
   url: () => string;
+  mainFrame: () => object;
+  __mainFrame: object;
 }
 
 function makePage(url = 'about:blank'): FakePage {
   const page = new EventEmitter() as FakePage;
   page.url = () => url;
+  page.__mainFrame = { name: 'main' };
+  page.mainFrame = () => page.__mainFrame;
   return page;
 }
 
@@ -39,6 +43,23 @@ function response(url: string, status: number, body?: string, contentType = 'app
     status: () => status,
     headers: () => ({ 'content-type': contentType }),
     text: async () => body ?? '',
+  };
+}
+
+/** A response whose body arrives only when the returned `settle` is called. */
+function deferredResponse(url: string, contentType = 'application/json') {
+  let settle: (body: string) => void = () => undefined;
+  const body = new Promise<string>((resolve) => {
+    settle = resolve;
+  });
+  return {
+    response: {
+      url: () => url,
+      status: () => 200,
+      headers: () => ({ 'content-type': contentType }),
+      text: () => body,
+    },
+    settle: (value: string) => settle(value),
   };
 }
 
@@ -182,5 +203,146 @@ describe('attachPageCapture', () => {
 
     // A fresh state, not the old buffer.
     expect(ensurePageCapture(asPage(page)).console).toEqual([]);
+  });
+
+  it('removes its listeners on close, so re-attaching does not double-record', () => {
+    const page = makePage();
+    attachPageCapture(asPage(page));
+    page.emit('close');
+    expect(page.listenerCount('console')).toBe(0);
+    expect(page.listenerCount('response')).toBe(0);
+    expect(page.listenerCount('close')).toBe(0);
+
+    // Same Page object resolved again: the WeakMap miss re-attaches, and a
+    // listener left over from the closed state would record a second copy.
+    const revived = ensurePageCapture(asPage(page));
+    page.emit('console', consoleMessage('log', 'after revive'));
+
+    expect(revived.console).toEqual([{ level: 'log', text: 'after revive' }]);
+  });
+});
+
+describe('attachPageCapture — uncaught exceptions (#1081)', () => {
+  it('records an uncaught exception, which Playwright routes away from console', () => {
+    const page = makePage();
+    const state = attachPageCapture(asPage(page));
+
+    const error = new Error('boom during load');
+    error.stack = 'Error: boom during load\n    at http://x.test/app.js:1:1';
+    page.emit('pageerror', error);
+
+    expect(state.console).toHaveLength(1);
+    expect(state.console[0].level).toBe('error');
+    expect(state.console[0].text).toContain('boom during load');
+    expect(state.console[0].text).toContain('app.js:1:1');
+  });
+
+  it('falls back to name and message when there is no stack', () => {
+    const page = makePage();
+    const state = attachPageCapture(asPage(page));
+
+    const error = new Error('no stack here');
+    error.stack = undefined;
+    page.emit('pageerror', error);
+
+    expect(state.console[0].text).toContain('Error: no stack here');
+  });
+
+  it('caps a pathological stack like any other console line', () => {
+    const page = makePage();
+    const state = attachPageCapture(asPage(page));
+
+    const error = new Error('deep');
+    error.stack = 'x'.repeat(CAPTURE_BOUNDS.MAX_CONSOLE_TEXT_CHARS * 3);
+    page.emit('pageerror', error);
+
+    expect(state.console[0].text.length).toBeLessThan(CAPTURE_BOUNDS.MAX_CONSOLE_TEXT_CHARS + 64);
+  });
+});
+
+describe('attachPageCapture — late response bodies cannot leak the budget (#1081)', () => {
+  it('ignores a body that arrives after its entry left the ring', async () => {
+    const page = makePage();
+    const state = attachPageCapture(asPage(page));
+
+    const { response: pending, settle } = deferredResponse('https://x.test/slow');
+    page.emit('request', request('https://x.test/slow'));
+    page.emit('response', pending);
+
+    // Push the entry out of the ring while text() is still in flight.
+    for (let i = 0; i < CAPTURE_BOUNDS.MAX_CAPTURE_ENTRIES; i++) {
+      page.emit('request', request(`https://x.test/flood/${i}`));
+    }
+    expect(state.network.some((e) => e.url.includes('/slow'))).toBe(false);
+
+    settle('a'.repeat(1000));
+    await tick();
+
+    // Charging a dead entry would leak the budget permanently: it is no longer
+    // reachable from state.network, so evictBodies could never reclaim it.
+    expect(state.totalBodyBytes).toBe(0);
+  });
+
+  it('ignores a body that arrives after clear:true replaced the buffer', async () => {
+    const page = makePage();
+    const state = attachPageCapture(asPage(page));
+
+    const { response: pending, settle } = deferredResponse('https://x.test/slow');
+    page.emit('request', request('https://x.test/slow'));
+    page.emit('response', pending);
+
+    clearNetworkCapture(state);
+    settle('b'.repeat(1000));
+    await tick();
+
+    expect(state.totalBodyBytes).toBe(0);
+    expect(state.network).toEqual([]);
+  });
+
+  it('does not read the body of a stream that never ends', async () => {
+    const page = makePage();
+    const state = attachPageCapture(asPage(page));
+    let readAttempted = false;
+
+    page.emit('request', request('https://x.test/events'));
+    page.emit('response', {
+      url: () => 'https://x.test/events',
+      status: () => 200,
+      headers: () => ({ 'content-type': 'text/event-stream; charset=utf-8' }),
+      text: () => {
+        readAttempted = true;
+        // A real SSE stream settles only when the stream closes.
+        return new Promise<string>(() => undefined);
+      },
+    });
+    await tick();
+
+    expect(readAttempted).toBe(false);
+    // The request itself is still listed — only its body is skipped.
+    expect(state.network[0]).toMatchObject({ url: 'https://x.test/events', status: 200 });
+  });
+});
+
+describe('attachPageCapture — the gap claim expires with the document (#1081)', () => {
+  it('stops claiming a pre-attach gap once the main frame navigates away', () => {
+    const page = makePage('https://x.test/opened-before-the-agent-arrived');
+    const state = attachPageCapture(asPage(page));
+    expect(state.consoleWindow.missedBefore).toBe(true);
+
+    page.emit('framenavigated', page.__mainFrame);
+
+    // The document whose early life went unrecorded is gone; the buffer covers
+    // the new one completely, so the footnote would now be misleading.
+    expect(state.consoleWindow.missedBefore).toBe(false);
+    expect(state.networkWindow.missedBefore).toBe(false);
+  });
+
+  it('a subframe navigation does not retire the gap', () => {
+    const page = makePage('https://x.test/opened-before-the-agent-arrived');
+    const state = attachPageCapture(asPage(page));
+
+    page.emit('framenavigated', { name: 'an-iframe' });
+
+    expect(state.consoleWindow.missedBefore).toBe(true);
   });
 });

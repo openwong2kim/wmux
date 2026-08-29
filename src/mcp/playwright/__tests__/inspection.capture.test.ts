@@ -162,6 +162,21 @@ describe('browser_console — collection starts at page resolve (#1081)', () => 
     expect(text).toContain(`"password":"${REDACTED_PASSWORD}"`);
   });
 
+  it('surfaces an uncaught exception the page threw while loading', async () => {
+    const page = makePage();
+    resolveChromePage(page);
+    const error = new Error('Cannot read properties of undefined');
+    error.stack = 'TypeError: Cannot read properties of undefined\n    at boot (app.js:12:5)';
+    // Playwright routes this to 'pageerror', not 'console' — and a page that
+    // throws on load is the case the whole issue is about.
+    page.emit('pageerror', error);
+
+    const text = (await consoleTool({ level: 'error' })).content[0].text;
+
+    expect(text).toContain('[error] Uncaught TypeError: Cannot read properties of undefined');
+    expect(text).toContain('at boot (app.js:12:5)');
+  });
+
   it("speaks the filter's vocabulary for warnings ('warning' -> 'warn')", async () => {
     const page = makePage();
     resolveChromePage(page);

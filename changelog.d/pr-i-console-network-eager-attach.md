@@ -16,14 +16,25 @@
   Both buffers stay bounded — 1000 entries each, oldest dropped first, with a
   cap on the size of a single console line, a single URL, and the total
   response-body payload retained per page — so a page left open cannot grow
-  them without limit.
+  them without limit. Streaming responses (server-sent events and friends) no
+  longer have their bodies read: a stream has no end, so waiting for one kept
+  the request pinned for as long as the stream ran.
+
+- **`browser_console` now reports uncaught exceptions.** A page that threw on
+  load — the most common reason to open a console in the first place —
+  produced nothing at all, because an uncaught exception is not a `console.*`
+  call and neither capture path listened for one. The exception and its stack
+  are now recorded as an `error`-level entry on both the built-in and the
+  Chrome backend.
 
 - **An empty console or network result now says which kind of empty it is.**
   Instead of a bare "No console messages collected.", the result reports when
   collection started, and says so explicitly when the page was already open at
   that moment and messages from before then are not included — the case a late
-  attach to an already-running tab cannot avoid. The tool descriptions now
-  state when collection begins, which was previously undocumented.
+  attach to an already-running tab cannot avoid. That note is dropped once the
+  page navigates somewhere new, since the window it warned about belonged to a
+  document that is gone. The tool descriptions now state when collection
+  begins, which was previously undocumented.
 
 - **A development build and a packaged build answer these tools identically.**
   Console and network reads for a built-in browser pane now come from the same

@@ -149,8 +149,19 @@ function matchesGlob(url: string, pattern: string): boolean {
   return regex.test(url);
 }
 
+/**
+ * Whether a response body is worth pulling out of Chrome's buffer.
+ *
+ * Streams are textual but never END: getResponseBody on an SSE or
+ * multipart/x-mixed-replace response answers only once the stream closes, so
+ * the pending command keeps the entry alive for as long as the stream runs.
+ * Survivable when capture began on the first read; eager capture makes it
+ * every page in a browser pane. Mirrors isRetainableTextBody in the MCP-side
+ * pageCapture.ts (different bundle, so the rule is duplicated, not imported).
+ */
 function isTextualContentType(contentType: string | undefined): boolean {
-  const ct = contentType ?? '';
+  const ct = (contentType ?? '').toLowerCase();
+  if (ct.includes('text/event-stream') || ct.includes('multipart/x-mixed-replace')) return false;
   return (
     ct.startsWith('text/') ||
     ct.includes('application/json') ||
@@ -285,6 +296,21 @@ export class BrowserCaptureManager {
         });
         break;
       }
+      case 'Runtime.exceptionThrown': {
+        // An uncaught exception is NOT a consoleAPICalled event, so without
+        // this the page that threw while loading — the case #1081 exists for —
+        // was absent from the buffer no matter how early capture started.
+        const details = (params.exceptionDetails ?? {}) as {
+          text?: string;
+          exception?: RemoteObject;
+        };
+        // `text` is the wrapper Chrome shows ("Uncaught", "Uncaught (in
+        // promise)"); the exception object carries the message and stack.
+        const rendered = details.exception ? formatRemoteObject(details.exception) : '';
+        const text = [details.text, rendered].filter(Boolean).join(' ') || 'Uncaught exception';
+        this.pushConsole(state, { level: 'error', text: truncate(text, MAX_CONSOLE_TEXT_CHARS) });
+        break;
+      }
       case 'Network.requestWillBeSent': {
         const requestId = String(params.requestId ?? '');
         const request = (params.request ?? {}) as { url?: string; method?: string };
@@ -332,7 +358,14 @@ export class BrowserCaptureManager {
         // Main frame only — subframe churn (ads, embeds) is noise here.
         const frame = (params.frame ?? {}) as { parentId?: string; url?: string };
         if (frame.parentId !== undefined) break;
-        const url = frame.url ?? '';
+        // A new main-frame document retires the pre-attach gap: whatever this
+        // buffer could not see belonged to the page that just went away, and
+        // claiming a gap for the page now loading would be its own dishonesty.
+        state.consoleWindow.missedBefore = false;
+        state.networkWindow.missedBefore = false;
+        // Bounded like every other captured string: a data: URL navigation is
+        // one entry, but it can be megabytes on its own.
+        const url = truncate(frame.url ?? '', MAX_URL_CHARS);
         // Collapse consecutive same-URL navigations (SPA replaceState churn,
         // redirect hops that settle on the same URL).
         const last = state.lifecycle[state.lifecycle.length - 1];
@@ -343,7 +376,9 @@ export class BrowserCaptureManager {
       case 'Page.navigatedWithinDocument': {
         // SPA route change (history.pushState) — the page content can change
         // completely without a frameNavigated, so record it as a navigation.
-        const url = typeof params.url === 'string' ? params.url : '';
+        // Deliberately NOT clearing missedBefore here: a same-document route
+        // change leaves the document whose early life went unrecorded in place.
+        const url = truncate(typeof params.url === 'string' ? params.url : '', MAX_URL_CHARS);
         const last = state.lifecycle[state.lifecycle.length - 1];
         if (last?.type === 'navigated' && last.url === url) break;
         this.pushLifecycle(state, { type: 'navigated', url, ts: Date.now() });

@@ -317,6 +317,90 @@ describe('BrowserCaptureManager lifecycle', () => {
     expect(mgr.getNetworkWindow(1)?.since).toBe(networkSince);
   });
 
+  it('stops claiming a pre-attach gap once the main frame navigates away', async () => {
+    (fakeWc as unknown as { getURL: () => string }).getURL = () => 'https://x.test/loaded-already';
+    await mgr.ensure(1);
+    expect(mgr.getConsoleWindow(1)?.missedBefore).toBe(true);
+
+    emit(fakeWc!, 'Page.frameNavigated', { frame: { url: 'https://x.test/somewhere-new' } });
+
+    // The document whose early life went unrecorded is gone; the buffer covers
+    // the new one completely, so the footnote would now be misleading.
+    expect(mgr.getConsoleWindow(1)?.missedBefore).toBe(false);
+    expect(mgr.getNetworkWindow(1)?.missedBefore).toBe(false);
+  });
+
+  it('a subframe or same-document navigation does NOT retire the gap', async () => {
+    (fakeWc as unknown as { getURL: () => string }).getURL = () => 'https://x.test/loaded-already';
+    await mgr.ensure(1);
+
+    emit(fakeWc!, 'Page.frameNavigated', { frame: { parentId: 'f1', url: 'https://ad.test/' } });
+    emit(fakeWc!, 'Page.navigatedWithinDocument', { url: 'https://x.test/loaded-already#tab2' });
+
+    // Same document, so the window it could not see is still on screen.
+    expect(mgr.getConsoleWindow(1)?.missedBefore).toBe(true);
+  });
+
+  it('records an uncaught exception with its stack (#1081)', async () => {
+    await mgr.ensure(1);
+    emit(fakeWc!, 'Runtime.exceptionThrown', {
+      exceptionDetails: {
+        text: 'Uncaught',
+        exception: {
+          type: 'object',
+          subtype: 'error',
+          description: 'Error: boom during load\n    at http://x.test/app.js:1:1',
+        },
+      },
+    });
+
+    // An uncaught exception is not a consoleAPICalled event, so it needs its
+    // own case - and it is the case #1081 exists for.
+    expect(mgr.getConsole(1)).toHaveLength(1);
+    expect(mgr.getConsole(1)[0].level).toBe('error');
+    expect(mgr.getConsole(1)[0].text).toContain('Uncaught Error: boom during load');
+    expect(mgr.getConsole(1)[0].text).toContain('app.js:1:1');
+  });
+
+  it('caps a pathological exception stack like any other console line', async () => {
+    await mgr.ensure(1);
+    emit(fakeWc!, 'Runtime.exceptionThrown', {
+      exceptionDetails: { text: 'Uncaught', exception: { description: 'x'.repeat(50_000) } },
+    });
+
+    expect(mgr.getConsole(1)[0].text.length).toBeLessThan(5000);
+  });
+
+  it('skips the body of a stream that never ends', async () => {
+    await mgr.ensure(1);
+    emit(fakeWc!, 'Network.requestWillBeSent', {
+      requestId: 'sse',
+      request: { url: 'https://x.test/events', method: 'GET' },
+    });
+    emit(fakeWc!, 'Network.responseReceived', {
+      requestId: 'sse',
+      response: { status: 200, headers: { 'content-type': 'text/event-stream' }, mimeType: 'text/event-stream' },
+    });
+    emit(fakeWc!, 'Network.loadingFinished', { requestId: 'sse' });
+    await tick();
+
+    // getResponseBody on a live stream answers only when the stream closes.
+    const bodyCalls = fakeWc!.debugger.sendCommand.mock.calls.filter(
+      (c) => c[0] === 'Network.getResponseBody',
+    );
+    expect(bodyCalls).toHaveLength(0);
+    // The request is still listed - only its body is skipped.
+    expect(mgr.getNetwork(1)[0]).toMatchObject({ url: 'https://x.test/events', status: 200 });
+  });
+
+  it('caps a lifecycle URL like every other captured string', async () => {
+    await mgr.ensure(1);
+    emit(fakeWc!, 'Page.frameNavigated', { frame: { url: 'data:text/html,' + 'z'.repeat(50_000) } });
+
+    const drained = mgr.drainLifecycle(1);
+    expect(drained[0].url?.length).toBeLessThan(3000);
+  });
+
   it('reports no window for a guest nothing is capturing', () => {
     expect(mgr.getConsoleWindow(99)).toBeUndefined();
     expect(mgr.getNetworkWindow(99)).toBeUndefined();
