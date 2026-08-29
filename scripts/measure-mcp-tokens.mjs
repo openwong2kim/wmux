@@ -28,14 +28,24 @@ const CHARS_PER_TOKEN = 4;
 
 function parseArgs(argv) {
   const args = { profile: 'full', json: false, top: 10, save: null, compare: null };
+  // A flag left without its value used to read `undefined` and only blow up
+  // later inside path.resolve. Reject it here, where the message can name the
+  // flag the caller actually mistyped.
+  const value = (index, flag) => {
+    const next = argv[index];
+    if (next === undefined) throw new Error(`${flag} requires a value`);
+    return next;
+  };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === '--json') args.json = true;
-    else if (arg === '--profile') args.profile = argv[++i];
-    else if (arg === '--top') args.top = Number(argv[++i]);
-    else if (arg === '--save') args.save = argv[++i];
-    else if (arg === '--compare') args.compare = argv[++i];
-    else throw new Error(`unknown argument: ${arg}`);
+    else if (arg === '--profile') args.profile = value(++i, arg);
+    else if (arg === '--save') args.save = value(++i, arg);
+    else if (arg === '--compare') args.compare = value(++i, arg);
+    else if (arg === '--top') {
+      args.top = Number(value(++i, arg));
+      if (!Number.isFinite(args.top)) throw new Error('--top requires a number');
+    } else throw new Error(`unknown argument: ${arg}`);
   }
   if (args.profile !== 'full' && args.profile !== 'commander') {
     throw new Error(`--profile must be "full" or "commander", got ${args.profile}`);
@@ -85,6 +95,20 @@ async function listTools(profile) {
     child.stderr.on('data', (chunk) => { stderr += chunk; });
     child.on('error', fail);
     child.stdin.on('error', fail);
+    // The server outlives this exchange in the happy path and exits only once
+    // stdin.end() below closes its input. If it dies first — a broken bundle,
+    // a crash during startup — report that now instead of sitting out the full
+    // request timeout. 'close' rather than 'exit' because it fires after
+    // stdout has been fully delivered, so a server that answers and exits at
+    // once still resolves normally.
+    let exitCode = null;
+    child.on('exit', (code) => { exitCode = code; });
+    child.on('close', () => {
+      fail(new Error(
+        `MCP server exited (code ${exitCode}) before answering tools/list; ` +
+        `stderr: ${stderr.trim()}`,
+      ));
+    });
     child.stdout.on('data', (chunk) => {
       stdoutBuffer += chunk;
       let newline;
