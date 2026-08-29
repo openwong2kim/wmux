@@ -73,6 +73,7 @@ export default function SessionSchedulesPopover({
   const resolvedApi = api ?? window.electronAPI?.pty?.schedules;
   const promptRef = useRef<HTMLTextAreaElement>(null);
   const firstManageRef = useRef<HTMLButtonElement>(null);
+  const refreshRevision = useRef(0);
   const [schedules, setSchedules] = useState<SessionPromptSchedule[]>([]);
   const [schedulingAvailable, setSchedulingAvailable] = useState(false);
   const [prompt, setPrompt] = useState('');
@@ -83,19 +84,24 @@ export default function SessionSchedulesPopover({
 
   const refresh = useCallback(async () => {
     if (!resolvedApi) return;
+    const revision = ++refreshRevision.current;
     try {
       const response = resolvedApi.listAll
         ? await resolvedApi.listAll()
         : await resolvedApi.list(ptyId);
+      if (revision !== refreshRevision.current) return;
       setSchedules(response.schedules);
       setSchedulingAvailable(response.available ?? true);
     } catch {
-      setError(t('sessionSchedule.error'));
+      if (revision === refreshRevision.current) {
+        setError(t('sessionSchedule.error'));
+      }
     }
   }, [ptyId, resolvedApi, t]);
 
   useEffect(() => {
     void refresh();
+    return () => { refreshRevision.current += 1; };
   }, [refresh]);
 
   useEffect(() => {

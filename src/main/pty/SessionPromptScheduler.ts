@@ -30,9 +30,14 @@ export class SessionPromptScheduler {
   start(): void {
     if (this.timer) return;
     const setI = this.deps.setIntervalFn ?? setInterval;
-    this.timer = setI(() => void this.tick(), SESSION_PROMPT_SCHEDULER_TICK_MS);
+    const runTick = (): void => {
+      void this.tick().catch((error) => {
+        console.warn('[session-schedule] scheduler tick failed:', error);
+      });
+    };
+    this.timer = setI(runTick, SESSION_PROMPT_SCHEDULER_TICK_MS);
     (this.timer as { unref?: () => void }).unref?.();
-    void this.tick();
+    runTick();
   }
 
   stop(): void {

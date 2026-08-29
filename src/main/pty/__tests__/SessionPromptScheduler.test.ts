@@ -38,6 +38,35 @@ function schedule(overrides: Partial<SessionPromptSchedule> = {}): SessionPrompt
 }
 
 describe('SessionPromptScheduler', () => {
+  it('handles rejected immediate and interval ticks without an unhandled rejection', async () => {
+    let intervalTick: (() => void) | undefined;
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const scheduler = new SessionPromptScheduler({
+      deliver: vi.fn(async () => 'sent' as const),
+      now: () => { throw new Error('clock unavailable'); },
+      setIntervalFn: ((callback: () => void) => {
+        intervalTick = callback;
+        return { unref: vi.fn() };
+      }) as unknown as typeof setInterval,
+      clearIntervalFn: vi.fn() as unknown as typeof clearInterval,
+      dir,
+    });
+
+    try {
+      scheduler.start();
+      await vi.waitFor(() => expect(warn).toHaveBeenCalledTimes(1));
+      intervalTick?.();
+      await vi.waitFor(() => expect(warn).toHaveBeenCalledTimes(2));
+      expect(warn).toHaveBeenLastCalledWith(
+        '[session-schedule] scheduler tick failed:',
+        expect.objectContaining({ message: 'clock unavailable' }),
+      );
+    } finally {
+      scheduler.stop();
+      warn.mockRestore();
+    }
+  });
+
   it('fires a due schedule once and persists the result', async () => {
     await saveSessionPromptSchedules([schedule()], dir);
     const deliver = vi.fn(async () => 'sent' as const);

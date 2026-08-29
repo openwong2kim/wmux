@@ -99,9 +99,15 @@ describe('session prompt schedule IPC handlers', () => {
 
     await expect(handlers().update({ ptyId: 'pty-x', id: 'same', enabled: false }))
       .resolves.toEqual({ ok: false, code: 'not_found' });
+    await expect(handlers().update({ ptyId: 'pty-2', id: 'same', enabled: false }))
+      .resolves.toEqual({ ok: true });
+    expect(loadSessionPromptSchedules(dir)).toEqual([
+      expect.objectContaining({ ptyId: 'pty-1', enabled: true }),
+      expect.objectContaining({ ptyId: 'pty-2', enabled: false }),
+    ]);
     await handlers().remove({ ptyId: 'pty-1', id: 'same' });
     expect(loadSessionPromptSchedules(dir)).toEqual([
-      expect.objectContaining({ ptyId: 'pty-2', enabled: true }),
+      expect.objectContaining({ ptyId: 'pty-2', enabled: false }),
     ]);
   });
 

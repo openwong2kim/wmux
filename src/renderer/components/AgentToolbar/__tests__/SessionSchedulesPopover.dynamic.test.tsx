@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, createElement } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import SessionSchedulesPopover, { type SessionSchedulesApi } from '../SessionSchedulesPopover';
@@ -90,6 +90,15 @@ function setValue(element: HTMLInputElement | HTMLTextAreaElement, value: string
   element.dispatchEvent(new Event('input', { bubbles: true }));
 }
 
+function deferred<T>(): {
+  promise: Promise<T>;
+  resolve: (value: T) => void;
+} {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => { resolve = done; });
+  return { promise, resolve };
+}
+
 async function mount(api: SessionSchedulesApi): Promise<void> {
   await act(async () => {
     root.render(createElement(SessionSchedulesPopover, {
@@ -162,6 +171,31 @@ describe('SessionSchedulesPopover', () => {
     await act(async () => { query<HTMLButtonElement>('[data-session-schedule-delete]').click(); });
     expect(api.removed).toEqual([{ ptyId: 'pty-codex', id: 'schedule-1' }]);
     expect(container.querySelectorAll('[data-session-schedule-row]')).toHaveLength(0);
+  });
+
+  it('ignores a stale refresh that finishes after a newer mutation refresh', async () => {
+    const active = schedule();
+    const paused = { ...active, enabled: false };
+    const older = deferred<{ schedules: SessionPromptSchedule[] }>();
+    const newer = deferred<{ schedules: SessionPromptSchedule[] }>();
+    const api = fakeApi([active]);
+    let listCalls = 0;
+    api.listAll = () => {
+      listCalls += 1;
+      if (listCalls === 1) return Promise.resolve({ schedules: [active] });
+      return listCalls === 2 ? older.promise : newer.promise;
+    };
+    await mount(api);
+
+    await act(async () => { query<HTMLButtonElement>('[data-session-schedule-toggle]').click(); });
+    await vi.waitFor(() => expect(listCalls).toBe(2));
+    await act(async () => { query<HTMLButtonElement>('[data-session-schedule-toggle]').click(); });
+    await vi.waitFor(() => expect(listCalls).toBe(3));
+
+    await act(async () => { newer.resolve({ schedules: [paused] }); });
+    expect(query<HTMLButtonElement>('[data-session-schedule-toggle]').textContent).toContain('Resume');
+    await act(async () => { older.resolve({ schedules: [active] }); });
+    expect(query<HTMLButtonElement>('[data-session-schedule-toggle]').textContent).toContain('Resume');
   });
 
   it('keeps existing schedules manageable after the agent exits', async () => {
