@@ -9,7 +9,7 @@ export interface ToolbarSnippet {
   text: string;
 }
 
-export type ToolbarPopover = 'explorer' | 'snippets' | 'rich' | null;
+export type ToolbarPopover = 'explorer' | 'snippets' | 'rich' | 'schedule' | null;
 
 /** Trigger rect in viewport coords. `right`/`bottom` are required: placePopover
  *  right-aligns the dialog against `right`, so a synthesised rect that reused

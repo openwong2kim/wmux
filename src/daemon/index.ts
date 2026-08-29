@@ -46,7 +46,7 @@ import { DEFAULT_COMPANY_ID, CHANNELS_EPOCH } from '../shared/channels';
 // (로그·machineId는 채널 부트 게이트 산출물 공유 — 별도 개방 금지.)
 import { A2aTaskService, type CreateTaskInput } from './a2a/A2aTaskService';
 import { WorkTaskService } from './worktask/WorkTaskService';
-import { isTaskState, type Message } from '../shared/types';
+import { isTaskState, type AgentStatus, type Message } from '../shared/types';
 import { ProcessMonitor } from './ProcessMonitor';
 import { AgentProcessTracker } from './AgentProcessTracker';
 import { resolveCanonicalAgentIdentity, detectorSuppressedBy, type CanonicalAgentIdentity } from './canonicalAgent';
@@ -3138,11 +3138,10 @@ function registerRpcHandlers(
     });
   });
 
-  // daemon.getAgentName — daemon AgentDetector가 gate로 확정한 에이전트 표시명을
-  // 직접 조회한다. renderer detection pull의 권위 소스: main으로의 session:agent
-  // emit 전파(타이밍 race)를 우회해, 배너 매칭이 됐다면 항상 정답을 준다.
-  pipeServer.onRpc('daemon.getAgentName', async (params) => {
-    const id = typeof params['id'] === 'string' ? params['id'] : '';
+  const readDaemonAgentState = (id: string): {
+    agentName: string | null;
+    agentStatus: AgentStatus;
+  } => {
     const session = id ? sessionManager.getSession(id) : undefined;
     // #919 — answer canonically, not raw: the detector's getLastAgent is
     // sticky screen truth, which mislabels exactly when this RPC is consulted
@@ -3151,13 +3150,24 @@ function registerRpcHandlers(
     // no persisted slug can claim a fresh shell. Canonical undefined WITH a
     // mappable screen slug is the residue veto (confirmed-dead same slug):
     // report no agent instead of resurrecting the label.
+    const agentStatus = session?.bridge.getAgentStatus() ?? 'idle';
     const rawName = session?.bridge.getLastAgent();
-    if (!session || !rawName) return { agentName: rawName ?? null };
+    if (!session || !rawName) return { agentName: rawName ?? null, agentStatus };
     const screenSlug = agentDisplayToSlug(rawName);
     const canonical = canonicalIdentityFor(agentProcessTracker, id, screenSlug);
-    if (canonical) return { agentName: agentSlugToDisplay(canonical.slug) };
-    if (screenSlug) return { agentName: null };
-    return { agentName: rawName };
+    if (canonical) return { agentName: agentSlugToDisplay(canonical.slug), agentStatus };
+    if (screenSlug) return { agentName: null, agentStatus };
+    return { agentName: rawName, agentStatus };
+  };
+
+  // Authoritative detector state bypasses desktop reconnect/event timing.
+  pipeServer.onRpc('daemon.getAgentName', async (params) => {
+    const id = typeof params['id'] === 'string' ? params['id'] : '';
+    return readDaemonAgentState(id);
+  });
+  pipeServer.onRpc('daemon.getAgentState', async (params) => {
+    const id = typeof params['id'] === 'string' ? params['id'] : '';
+    return readDaemonAgentState(id);
   });
 
   // daemon.readPromptEvents — read structured OSC 133 prompt/command events

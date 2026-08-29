@@ -79,6 +79,11 @@ export class ActivityMonitor {
     });
   }
 
+  /** Current throughput state for authoritative daemon-side snapshots. */
+  isActive(ptyId: string): boolean {
+    return this.states.get(ptyId)?.active === true;
+  }
+
   /**
    * Re-arm a cycle from an explicit submitted-input boundary. Unlike passive
    * throughput detection, the next output byte is enough to prove this turn is

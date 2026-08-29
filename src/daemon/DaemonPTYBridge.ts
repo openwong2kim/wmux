@@ -1,5 +1,6 @@
 import { EventEmitter } from 'node:events';
 import type { IPty } from 'node-pty';
+import type { AgentStatus } from '../shared/types';
 import { OscParser } from '../main/pty/OscParser';
 import { TerminalNotificationParser } from '../main/pty/oscNotification';
 import { AgentDetector, type AgentEventStatus } from '../main/pty/AgentDetector';
@@ -615,6 +616,14 @@ export class DaemonPTYBridge extends EventEmitter {
    */
   getLastAgent(): string | null {
     return this.agentDetector?.getLastAgent() ?? null;
+  }
+
+  /** Authoritative status snapshot used when the desktop reconnects. */
+  getAgentStatus(): AgentStatus {
+    if (this.awaitingHuman) return 'awaiting_input';
+    if (this.settledStatus) return this.settledStatus;
+    if (this.sessionId && this.activityMonitor?.isActive(this.sessionId)) return 'running';
+    return 'idle';
   }
 
   /** Whether the bridge is currently dropping PTY output. */

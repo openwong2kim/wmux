@@ -7,6 +7,10 @@ import {
   updateBranch,
   updatePorts,
   removeCwd,
+  broadcastMetadataUpdate,
+  clearLastBroadcastAgentStatus,
+  getLastBroadcastAgentName,
+  getLastBroadcastAgentStatus,
 } from '../metadata.handler';
 
 vi.mock('electron', () => ({
@@ -163,5 +167,22 @@ describe('METADATA_REQUEST re-broadcast (active-surface pull)', () => {
     expect(idx).toBeGreaterThan(0);
     const body = src.slice(idx, idx + 900);
     expect(body).toMatch(/broadcastMetadataUpdate\(win, payload\)/);
+  });
+});
+
+describe('agent identity mirror', () => {
+  it('tracks identity and status through the shared broadcast funnel', () => {
+    broadcastMetadataUpdate(null, {
+      ptyId: 'pty-scheduled',
+      agentName: 'Codex CLI',
+      agentStatus: 'waiting',
+    });
+    expect(getLastBroadcastAgentName('pty-scheduled')).toBe('Codex CLI');
+    expect(getLastBroadcastAgentStatus('pty-scheduled')).toBe('waiting');
+
+    broadcastMetadataUpdate(null, { ptyId: 'pty-scheduled', agentName: '' });
+    expect(getLastBroadcastAgentName('pty-scheduled')).toBeUndefined();
+    clearLastBroadcastAgentStatus('pty-scheduled');
+    expect(getLastBroadcastAgentStatus('pty-scheduled')).toBeUndefined();
   });
 });

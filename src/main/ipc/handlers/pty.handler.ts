@@ -23,7 +23,11 @@ import {
   type SessionDataDispatcher,
   type SessionDataHandler,
 } from './sessionDataDispatcher';
-import { updateCwd } from './metadata.handler';
+import {
+  getLastBroadcastAgentName,
+  getLastBroadcastAgentStatus,
+  updateCwd,
+} from './metadata.handler';
 import { markResize } from '../../notification/idleSuppression';
 import { wrapHandler } from '../wrapHandler';
 import { dispatchNotification } from '../../notification/dispatchNotification';
@@ -40,6 +44,19 @@ import type { ResumeBinding } from '../../../shared/agentResume';
 import { createDeadPaneRecovery, type DeadPaneRecovery } from '../../../shared/ptyRecovery';
 import { resolvePtyCreateCwd, type PtyCwdSource } from '../../pty/resolvePtyCwd';
 import { FANOUT_TASK_PORT_ENV } from '../../worktask/fanoutEnvironment';
+import { agentDisplayToSlug, isAgentSlug } from '../../../shared/agentIdentity';
+import {
+  SessionPromptScheduler,
+  deliverSessionPrompt,
+  type ScheduledAgentState,
+} from '../../pty/SessionPromptScheduler';
+import {
+  createSessionPromptSchedule,
+  loadSessionPromptSchedules,
+  mutateSessionPromptSchedules,
+  SESSION_PROMPT_SCHEDULE_LIMITS,
+  type SessionPromptSchedule,
+} from '../../pty/sessionPromptScheduleStore';
 
 /**
  * Allowed shell basenames (compared case-insensitively).
@@ -693,6 +710,149 @@ export function registerPTYHandlers(
     ipcMain.on(IPC.PTY_WRITE, onPtyWrite);
   }
 
+  // Per-session scheduled prompts. Unlike Command Deck schedules, these
+  // target one immutable PTY and write through the same owner (daemon or local
+  // PTYManager) as ordinary input. The current agent identity is proved again
+  // at fire time so a Codex prompt can never fall through into a shell after
+  // Codex exits.
+  const scheduledPtyWrite = (id: string, data: string): boolean => {
+    const safe = sanitizePtyText(data);
+    if (useDaemon && daemonClient) return daemonClient.writeToSession(id, safe);
+    if (!ptyManager.get(id)) return false;
+    ptyManager.write(id, safe);
+    ptyBridge.noteUserInput(id);
+    return true;
+  };
+
+  const scheduledAgentState = async (ptyId: string): Promise<ScheduledAgentState | null> => {
+    if (useDaemon && daemonClient) {
+      const agent = await daemonClient.getAgentState(ptyId);
+      const slug = agent?.agentName ? agentDisplayToSlug(agent.agentName) : undefined;
+      return agent && slug ? { slug, status: agent.agentStatus } : null;
+    }
+    const displayName = getLastBroadcastAgentName(ptyId) ?? null;
+    const slug = displayName ? agentDisplayToSlug(displayName) : undefined;
+    const status = getLastBroadcastAgentStatus(ptyId);
+    return slug && status ? { slug, status } : null;
+  };
+
+  const sessionPromptScheduler = new SessionPromptScheduler({
+    deliver: (schedule) => deliverSessionPrompt(schedule, {
+      getAgentState: scheduledAgentState,
+      write: scheduledPtyWrite,
+    }),
+  });
+
+  ipcMain.removeHandler(IPC.SESSION_PROMPT_SCHEDULES_LIST);
+  ipcMain.handle(
+    IPC.SESSION_PROMPT_SCHEDULES_LIST,
+    wrapHandler(IPC.SESSION_PROMPT_SCHEDULES_LIST, async (
+      _event: Electron.IpcMainInvokeEvent,
+      raw: unknown,
+    ): Promise<{ schedules: SessionPromptSchedule[] }> => {
+      const req = raw && typeof raw === 'object' && !Array.isArray(raw)
+        ? raw as Record<string, unknown>
+        : {};
+      const ptyId = typeof req.ptyId === 'string' ? req.ptyId : '';
+      const schedules = loadSessionPromptSchedules();
+      return { schedules: ptyId ? schedules.filter((schedule) => schedule.ptyId === ptyId) : [] };
+    }),
+  );
+
+  ipcMain.removeHandler(IPC.SESSION_PROMPT_SCHEDULES_CREATE);
+  ipcMain.handle(
+    IPC.SESSION_PROMPT_SCHEDULES_CREATE,
+    wrapHandler(IPC.SESSION_PROMPT_SCHEDULES_CREATE, async (
+      _event: Electron.IpcMainInvokeEvent,
+      raw: unknown,
+    ): Promise<{ ok: boolean; schedule?: SessionPromptSchedule; code?: string }> => {
+      const req = raw && typeof raw === 'object' && !Array.isArray(raw)
+        ? raw as Record<string, unknown>
+        : {};
+      const ptyId = typeof req.ptyId === 'string' ? req.ptyId : '';
+      const requestedSlug = isAgentSlug(req.agentSlug) ? req.agentSlug : null;
+      if (!requestedSlug) return { ok: false, code: 'invalid_agent' };
+
+      // The creation surface may only bind the currently detected agent. This
+      // closes the renderer-stale race and prevents hand-crafted IPC from
+      // scheduling arbitrary shell input under a forged agent label.
+      const currentAgent = await scheduledAgentState(ptyId);
+      if (!currentAgent || currentAgent.slug !== requestedSlug) {
+        return { ok: false, code: 'agent_unavailable' };
+      }
+
+      const schedule = createSessionPromptSchedule({
+        ptyId,
+        agentSlug: requestedSlug,
+        prompt: typeof req.prompt === 'string' ? req.prompt : '',
+        nextRunAt: typeof req.nextRunAt === 'number' ? req.nextRunAt : NaN,
+        ...(typeof req.intervalMinutes === 'number'
+          ? { intervalMinutes: req.intervalMinutes }
+          : {}),
+      });
+      if (!schedule) return { ok: false, code: 'invalid' };
+      return mutateSessionPromptSchedules<{
+        ok: boolean;
+        schedule?: SessionPromptSchedule;
+        code?: string;
+      }>((schedules) => {
+        if (schedules.length >= SESSION_PROMPT_SCHEDULE_LIMITS.MAX_SCHEDULES) {
+          return { schedules, result: { ok: false, code: 'limit' } };
+        }
+        return { schedules: [...schedules, schedule], result: { ok: true, schedule } };
+      });
+    }),
+  );
+
+  ipcMain.removeHandler(IPC.SESSION_PROMPT_SCHEDULES_UPDATE);
+  ipcMain.handle(
+    IPC.SESSION_PROMPT_SCHEDULES_UPDATE,
+    wrapHandler(IPC.SESSION_PROMPT_SCHEDULES_UPDATE, async (
+      _event: Electron.IpcMainInvokeEvent,
+      raw: unknown,
+    ): Promise<{ ok: boolean; code?: string }> => {
+      const req = raw && typeof raw === 'object' && !Array.isArray(raw)
+        ? raw as Record<string, unknown>
+        : {};
+      const ptyId = typeof req.ptyId === 'string' ? req.ptyId : '';
+      const id = typeof req.id === 'string' ? req.id : '';
+      const enabled = req.enabled;
+      if (typeof enabled !== 'boolean') return { ok: false, code: 'invalid' };
+      return mutateSessionPromptSchedules<{ ok: boolean; code?: string }>((schedules) => {
+        const index = schedules.findIndex(
+          (schedule) => schedule.id === id && schedule.ptyId === ptyId,
+        );
+        if (index === -1) {
+          return { schedules, result: { ok: false, code: 'not_found' } };
+        }
+        schedules[index] = { ...schedules[index], enabled };
+        return { schedules, result: { ok: true } };
+      });
+    }),
+  );
+
+  ipcMain.removeHandler(IPC.SESSION_PROMPT_SCHEDULES_DELETE);
+  ipcMain.handle(
+    IPC.SESSION_PROMPT_SCHEDULES_DELETE,
+    wrapHandler(IPC.SESSION_PROMPT_SCHEDULES_DELETE, async (
+      _event: Electron.IpcMainInvokeEvent,
+      raw: unknown,
+    ): Promise<{ ok: boolean }> => {
+      const req = raw && typeof raw === 'object' && !Array.isArray(raw)
+        ? raw as Record<string, unknown>
+        : {};
+      const ptyId = typeof req.ptyId === 'string' ? req.ptyId : '';
+      const id = typeof req.id === 'string' ? req.id : '';
+      return mutateSessionPromptSchedules((schedules) => ({
+        schedules: schedules.filter(
+          (schedule) => schedule.id !== id || schedule.ptyId !== ptyId,
+        ),
+        result: { ok: true },
+      }));
+    }),
+  );
+  sessionPromptScheduler.start();
+
   // pty:resize
   // TUI agents (Claude, Codex, etc.) respond to SIGWINCH with a full-screen
   // redraw. Mark the resize timestamp so the AgentDetector emission-reset
@@ -1287,6 +1447,7 @@ export function registerPTYHandlers(
 
   // Cleanup function
   return () => {
+    sessionPromptScheduler.stop();
     ipcMain.removeHandler(IPC.PTY_CREATE);
     ipcMain.removeAllListeners(IPC.PTY_WRITE);
     ipcMain.removeHandler(IPC.PTY_RESIZE);
@@ -1298,6 +1459,10 @@ export function registerPTYHandlers(
     ipcMain.removeHandler(IPC.PTY_RESYNC);
     ipcMain.removeHandler(IPC.SUPERVISE_REARM);
     ipcMain.removeHandler(IPC.SUPERVISE_STOP);
+    ipcMain.removeHandler(IPC.SESSION_PROMPT_SCHEDULES_LIST);
+    ipcMain.removeHandler(IPC.SESSION_PROMPT_SCHEDULES_CREATE);
+    ipcMain.removeHandler(IPC.SESSION_PROMPT_SCHEDULES_UPDATE);
+    ipcMain.removeHandler(IPC.SESSION_PROMPT_SCHEDULES_DELETE);
 
     // Clean up daemon listeners
     if (daemonClient) {

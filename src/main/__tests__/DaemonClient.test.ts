@@ -255,6 +255,27 @@ describe('DaemonClient', () => {
       await mockServer.stop();
     });
 
+    it('reads a validated reconnect-safe agent state snapshot', async () => {
+      const pipeName = testPipeName('agent-state');
+      mockServer = createMockDaemonServer(pipeName, AUTH_TOKEN, {
+        'daemon.getAgentState': (params) => ({
+          agentName: params['id'] === 'sess-1' ? 'Codex CLI' : null,
+          agentStatus: 'waiting',
+        }),
+      });
+      await mockServer.start();
+
+      client = new DaemonClient(pipeName, AUTH_TOKEN);
+      await client.connect();
+      await expect(client.getAgentState('sess-1')).resolves.toEqual({
+        agentName: 'Codex CLI',
+        agentStatus: 'waiting',
+      });
+
+      await client.disconnect();
+      await mockServer.stop();
+    });
+
     it('should reject on RPC error', async () => {
       const pipeName = testPipeName('rpc3');
       mockServer = createMockDaemonServer(pipeName, AUTH_TOKEN, {});

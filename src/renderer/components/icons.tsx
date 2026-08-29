@@ -206,6 +206,16 @@ export function IconPause({ size = 14 }: { size?: number }) {
   return <Icon size={size}><line x1="5" y1="3.5" x2="5" y2="10.5" /><line x1="9" y1="3.5" x2="9" y2="10.5" /></Icon>;
 }
 
+/** Clock — schedule a future prompt for the active agent session. */
+export function IconClock({ size = 14 }: { size?: number }) {
+  return (
+    <Icon size={size}>
+      <circle cx="7" cy="7" r="5" />
+      <path d="M7 4.1 V7.2 L9.2 8.5" />
+    </Icon>
+  );
+}
+
 /** Paperclip — attach file. Replaces the ＋ glyph on the toolbar attach button. */
 export function IconPaperclip({ size = 14 }: { size?: number }) {
   return (

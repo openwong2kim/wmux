@@ -25,6 +25,7 @@ import {
   getSessionSocketPath,
 } from '../shared/constants';
 import { connectWithRetry, type ConnectAttemptResult } from './daemonConnectRetry';
+import type { AgentStatus } from '../shared/types';
 
 // RCA A2 — single source of truth in shared/timeouts.ts so the renderer's
 // RECONCILE_TIMEOUT_MS can be derived from (and stay greater than) this value.
@@ -564,6 +565,36 @@ export class DaemonClient extends EventEmitter {
       const result = await this.rpc('daemon.getAgentName', { id: sessionId });
       const name = (result as { agentName?: unknown })?.agentName;
       return typeof name === 'string' && name ? name : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /** Current daemon-owned agent identity and status for reconnect-safe actions. */
+  async getAgentState(sessionId: string): Promise<{
+    agentName: string | null;
+    agentStatus: AgentStatus;
+  } | null> {
+    try {
+      const result = await this.rpc('daemon.getAgentState', { id: sessionId }) as {
+        agentName?: unknown;
+        agentStatus?: unknown;
+      };
+      const validStatuses: AgentStatus[] = [
+        'running',
+        'complete',
+        'error',
+        'waiting',
+        'awaiting_input',
+        'idle',
+      ];
+      if (!validStatuses.includes(result.agentStatus as AgentStatus)) return null;
+      return {
+        agentName: typeof result.agentName === 'string' && result.agentName
+          ? result.agentName
+          : null,
+        agentStatus: result.agentStatus as AgentStatus,
+      };
     } catch {
       return null;
     }
