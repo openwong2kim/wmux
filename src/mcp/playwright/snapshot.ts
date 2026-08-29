@@ -113,6 +113,36 @@ const IFRAME_ROLES = new Set(['Iframe', 'IframePresentational']);
  */
 const FRAME_BOUNDARY_NOTE = '(separate document — contents not in this snapshot)';
 
+/**
+ * The two text roles Chrome stacks under every piece of visible text, and the
+ * reason the 'ai' format drops one of them and sometimes both.
+ *
+ * Chrome renders `<h1>Dogfood page</h1>` as THREE lines — the heading, a
+ * `StaticText` repeating its name, and an `InlineTextBox` repeating it again —
+ * so a button costs three lines to say one word. Measured on a real dogfood
+ * page that made "Dogfood page" appear three times on one screen, and across
+ * live pages the two text roles are the single largest slice of the output
+ * (Wikipedia: 963 InlineTextBox + 776 StaticText lines out of 3327).
+ *
+ * An `InlineTextBox` is the layout engine's per-line fragment of its parent
+ * `StaticText`, never new text. Measured on Chrome 141 over 3054 InlineTextBox
+ * nodes on three live pages (Wikipedia, Hacker News, a modal fixture): every
+ * one of them had a `StaticText` parent whose name contains its text — zero
+ * exceptions — apart from three under a `LineBreak`, whose text is "\n". So
+ * dropping them loses wrapping positions and nothing else.
+ *
+ * A `StaticText` is dropped only in the one case where it is provably an echo:
+ * it is its parent's ONLY child and serialises to exactly the parent's own
+ * name with no attributes and no children of its own (see serializeNode).
+ * A `link "A B"` over `StaticText "A"` + `StaticText "B"` keeps both — the
+ * pieces are not the accumulated name, and which piece sits where is signal.
+ *
+ * 'aria' keeps everything: its contract IS the full tree, and it is the format
+ * to reach for when the layout-level text really is what you are after.
+ */
+const INLINE_TEXT_ROLE = 'InlineTextBox';
+const STATIC_TEXT_ROLE = 'StaticText';
+
 // ---------------------------------------------------------------------------
 // CDP → AXNode tree builder
 // ---------------------------------------------------------------------------
@@ -358,6 +388,17 @@ function serializeNode(
   // the property to the focused element only, and to nothing at all when focus
   // is on the body), so this is a single word on a single line.
   if (node.focused) attrs.push('focused');
+  // The layer the note names, marked so `div#backdrop` in the note and a node
+  // in the tree are visibly the same thing — the note used to know a selector
+  // the tree never mentioned. Absent without comment when the layer has no
+  // a11y node of its own (Chrome ignores a bare backdrop `<div>`, or it falls
+  // outside the serialised depth) — same fail-open as the probe itself.
+  if (
+    ctx.occlusion?.layerBackendId !== undefined &&
+    node.backendDOMNodeId === ctx.occlusion.layerBackendId
+  ) {
+    attrs.push('overlay');
+  }
   // Only meaningful while an overlay is up. Deliberately NOT gated on
   // isInteractive(): the reachable set only ever holds elements the probe's own
   // selector matched (links, buttons, form fields, `[role]`, `[onclick]`,
@@ -382,13 +423,28 @@ function serializeNode(
 
   let line = `${pad}- ${role}${nameStr}${attrStr}${frameStr}`;
 
-  // Recurse into children
+  // Recurse into children. In 'ai' format an InlineTextBox never gets that far
+  // — see INLINE_TEXT_ROLE — so neither it nor its subtree is walked.
   const childLines: string[] = [];
   if (node.children) {
     for (const child of node.children) {
+      if (ctx.format === 'ai' && child.role === INLINE_TEXT_ROLE) continue;
       const childStr = serializeNode(child, ctx, currentDepth + 1, indent + 1);
       if (childStr) childLines.push(childStr);
     }
+  }
+
+  // The echo: an only child that serialised to nothing but the parent's own
+  // name. Tested against the produced LINE rather than against the node, so a
+  // StaticText that carries an attribute (focused, clickable) or any child of
+  // its own can never be silently dropped — either would make the string
+  // differ. No ref is lost with it: a line this shape minted none.
+  if (
+    ctx.format === 'ai' &&
+    childLines.length === 1 &&
+    childLines[0] === `${pad}  - ${STATIC_TEXT_ROLE}${nameStr}`
+  ) {
+    childLines.length = 0;
   }
 
   if (childLines.length > 0) {

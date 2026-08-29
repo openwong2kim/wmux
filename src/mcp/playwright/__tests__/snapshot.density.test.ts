@@ -49,6 +49,11 @@ interface OverlayResult {
   reachable?: number[];
   /** Override reachableCount to exercise the too-many-to-mark branch. */
   reachableCount?: number;
+  /**
+   * backendNodeId of the layer element itself. Omitted models the ordinary
+   * case where the backdrop has no a11y node to describe.
+   */
+  layerBackendId?: number;
 }
 
 function makePage(
@@ -75,6 +80,9 @@ function makePage(
             { name: 'blockedCount', value: { value: overlay.blockedCount ?? 0 } },
             { name: 'reachableCount', value: { value: overlay.reachableCount ?? reachable.length } },
             { name: 'reachable', value: { objectId: 'overlay-reachable' } },
+            ...(overlay.layerBackendId === undefined
+              ? []
+              : [{ name: 'layerEl', value: { objectId: `el-${overlay.layerBackendId}` } }]),
           ],
         };
       }
@@ -255,6 +263,52 @@ describe('snapshot: overlay occlusion', () => {
     expect(out.match(/a{100,}/)?.[0].length).toBeLessThanOrEqual(120);
   });
 
+  it('marks the layer the note names, so the two can be connected', async () => {
+    // The note knew `div#backdrop`; the tree said nothing about which node
+    // that was, and there is no selector to look it up with.
+    const withLayer: CdpNode[] = [
+      ...FORM_TREE,
+      { nodeId: '9', backendDOMNodeId: 9, role: { type: 'role', value: 'generic' }, childIds: [] },
+    ];
+    withLayer[0] = { ...withLayer[0], childIds: ['2', '3', '4', '9'] };
+    const { page } = makePage(withLayer, {
+      overlay: { label: 'div#backdrop', blockedCount: 2, reachable: [4], layerBackendId: 9 },
+    });
+    const out = await generateSnapshot(page as never, { format: 'ai' });
+
+    expect(out).toContain('(note: an overlay (div#backdrop) is covering the page');
+    expect(out).toContain('- generic overlay');
+    // Exactly one node is the layer.
+    expect(out.match(/^\s*- .* overlay$/gm)).toHaveLength(1);
+  });
+
+  it('marks the layer even when there are too many reachable controls to mark', async () => {
+    const withLayer: CdpNode[] = [
+      ...FORM_TREE,
+      { nodeId: '9', backendDOMNodeId: 9, role: { type: 'role', value: 'generic' }, childIds: [] },
+    ];
+    withLayer[0] = { ...withLayer[0], childIds: ['2', '3', '4', '9'] };
+    const { page } = makePage(withLayer, {
+      overlay: { label: 'div#veil', blockedCount: 3, reachable: [4], reachableCount: 500, layerBackendId: 9 },
+    });
+    const out = await generateSnapshot(page as never, { format: 'ai' });
+
+    expect(out).toContain('- generic overlay');
+    expect(out).not.toContain('clickable');
+  });
+
+  it('stays silent about the layer when it has no a11y node of its own', async () => {
+    // The ordinary case: a bare backdrop <div> Chrome ignores. Fail-open —
+    // the note still stands, nothing in the tree is marked.
+    const { page } = makePage(FORM_TREE, {
+      overlay: { label: 'div#backdrop', blockedCount: 2, reachable: [4] },
+    });
+    const out = await generateSnapshot(page as never, { format: 'ai' });
+
+    expect(out).toContain('an overlay (div#backdrop) is covering the page');
+    expect(out.match(/^\s*- .* overlay$/gm)).toBeNull();
+  });
+
   it('still returns the snapshot when the occlusion probe fails', async () => {
     const { page } = makePage(FORM_TREE, { occlusionThrows: true });
     const out = await generateSnapshot(page as never, { format: 'ai' });
@@ -262,6 +316,96 @@ describe('snapshot: overlay occlusion', () => {
     expect(out).toContain('textbox "Password" ref="1" focused');
     expect(out).toContain('button "Sign in" ref="2"');
     expect(out).not.toContain('overlay');
+  });
+});
+
+// Chrome stacks a StaticText and an InlineTextBox under every piece of visible
+// text, so `<h1>Dogfood page</h1>` costs three lines to say one thing. The 'ai'
+// format drops the repetition; 'aria' keeps the whole tree.
+const TEXT_TREE: CdpNode[] = [
+  { nodeId: '1', backendDOMNodeId: 1, role: { type: 'role', value: 'RootWebArea' }, name: { type: 'name', value: 'Dogfood page' }, childIds: ['2', '5', '8', '12'] },
+  // heading → StaticText → InlineTextBox, all saying the same thing.
+  { nodeId: '2', backendDOMNodeId: 2, role: { type: 'role', value: 'heading' }, name: { type: 'name', value: 'Dogfood page' }, childIds: ['3'] },
+  { nodeId: '3', backendDOMNodeId: 3, role: { type: 'role', value: 'StaticText' }, name: { type: 'name', value: 'Dogfood page' }, childIds: ['4'] },
+  { nodeId: '4', backendDOMNodeId: 4, role: { type: 'role', value: 'InlineTextBox' }, name: { type: 'name', value: 'Dogfood page' }, childIds: [] },
+  // A link whose accumulated name is the two pieces joined: neither piece is
+  // the name, and which piece sits where is information.
+  { nodeId: '5', backendDOMNodeId: 5, role: { type: 'role', value: 'link' }, name: { type: 'name', value: 'A B' }, childIds: ['6', '7'] },
+  { nodeId: '6', backendDOMNodeId: 6, role: { type: 'role', value: 'StaticText' }, name: { type: 'name', value: 'A' }, childIds: [] },
+  { nodeId: '7', backendDOMNodeId: 7, role: { type: 'role', value: 'StaticText' }, name: { type: 'name', value: 'B' }, childIds: [] },
+  // Wrapped body text: the InlineTextBoxes are line fragments of the parent.
+  { nodeId: '8', backendDOMNodeId: 8, role: { type: 'role', value: 'paragraph' }, childIds: ['9'] },
+  { nodeId: '9', backendDOMNodeId: 9, role: { type: 'role', value: 'StaticText' }, name: { type: 'name', value: 'long wrapped text' }, childIds: ['10', '11'] },
+  { nodeId: '10', backendDOMNodeId: 10, role: { type: 'role', value: 'InlineTextBox' }, name: { type: 'name', value: 'long wrapped ' }, childIds: [] },
+  { nodeId: '11', backendDOMNodeId: 11, role: { type: 'role', value: 'InlineTextBox' }, name: { type: 'name', value: 'text' }, childIds: [] },
+  { nodeId: '12', backendDOMNodeId: 12, role: { type: 'role', value: 'button' }, name: { type: 'name', value: 'Save' }, childIds: ['13'] },
+  { nodeId: '13', backendDOMNodeId: 13, role: { type: 'role', value: 'StaticText' }, name: { type: 'name', value: 'Save' }, childIds: [] },
+];
+
+describe('snapshot: duplicated text lines', () => {
+  it('drops InlineTextBox and the StaticText that only echoes its parent', async () => {
+    const { page } = makePage(TEXT_TREE);
+    const out = await generateSnapshot(page as never, { format: 'ai' });
+
+    expect(out).not.toContain('InlineTextBox');
+    // `heading "Dogfood page"` and `button "Save"` each said it once already.
+    expect(out).toContain('- heading "Dogfood page"');
+    expect(out).toContain('- button "Save" ref="1"');
+    expect(out.match(/Dogfood page/g)).toHaveLength(1);
+    expect(out.match(/Save/g)).toHaveLength(1);
+  });
+
+  it('keeps StaticText that is not just the parent name repeated', async () => {
+    const { page } = makePage(TEXT_TREE);
+    const out = await generateSnapshot(page as never, { format: 'ai' });
+
+    // Pieces of an accumulated name: substrings, but the split is signal.
+    expect(out).toContain('- link "A B" ref="0"');
+    expect(out).toContain('- StaticText "A"');
+    expect(out).toContain('- StaticText "B"');
+    // The paragraph has no name of its own, so its text is the only copy.
+    expect(out).toContain('- StaticText "long wrapped text"');
+  });
+
+  it('keeps a StaticText that carries an annotation of its own', async () => {
+    // The drop is decided against the line the child produced, so anything
+    // that makes the line more than the parent's name keeps it.
+    const focusedEcho = TEXT_TREE.map((n) =>
+      n.nodeId === '13'
+        ? { ...n, properties: [{ name: 'focused', value: { type: 'booleanOrUndefined', value: true } }] }
+        : n,
+    );
+    const { page } = makePage(focusedEcho);
+    const out = await generateSnapshot(page as never, { format: 'ai' });
+
+    expect(out).toContain('- StaticText "Save" focused');
+  });
+
+  it('leaves ref numbering untouched — only non-interactive lines go', async () => {
+    const { page } = makePage(TEXT_TREE);
+    const out = await generateSnapshot(page as never, { format: 'ai' });
+
+    expect(out).toContain('link "A B" ref="0"');
+    expect(out).toContain('button "Save" ref="1"');
+    expect(out.match(/ref="\d+"/g)).toHaveLength(2);
+  });
+
+  it('keeps the full tree for aria — that format\'s contract is everything', async () => {
+    const { page } = makePage(TEXT_TREE);
+    const out = await generateSnapshot(page as never, { format: 'aria' });
+
+    expect(out).toContain('- InlineTextBox "long wrapped "');
+    expect(out).toContain('- InlineTextBox "text"');
+    expect(out.match(/Dogfood page/g)).toHaveLength(3);
+  });
+
+  it('condenses inside a selector scope too', async () => {
+    const { page } = makePage(TEXT_TREE);
+    // DOM.querySelector → nodeId 101 → describeNode → backendNodeId 1.
+    const out = await generateScopedSnapshot(page as never, 'body', { format: 'ai' });
+
+    expect(out).not.toContain('InlineTextBox');
+    expect(out?.match(/Dogfood page/g)).toHaveLength(2); // the RootWebArea name + the heading
   });
 });
 

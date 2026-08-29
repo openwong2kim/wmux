@@ -938,7 +938,7 @@ server.tool(
 
 server.tool(
   'browser_session_status',
-  'Get current browser session status',
+  'Report the browser session: which profile this workspace is bound to and, on the chrome backend, whether that profile\'s Chrome is already up (running) and on which CDP port. A pure read that launches nothing, so running:false means "nothing is up yet", NOT "you must call browser_session_start" — the first browser tool call starts what it needs on demand.',
   {},
   async () => callRpc('browser.session.status'),
 );

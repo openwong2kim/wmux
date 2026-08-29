@@ -286,7 +286,7 @@ export function registerInspectionTools(server: McpServer, deps: BrowserToolDeps
   // -----------------------------------------------------------------------
   server.tool(
     'browser_snapshot',
-    'Accessibility-tree snapshot of the page, with interactive elements annotated with ref numbers. A repeat snapshot of the same page returns a diff against the previous one when that is smaller — pass full:true for the complete tree. Password field values read as "[redacted:password]" (the field is still listed and fillable); an empty field has no value at all, so a redacted one means it IS filled.',
+    'Accessibility-tree snapshot of the page, with interactive elements annotated with ref numbers. A repeat snapshot of the same page returns a diff against the previous one when that is smaller — pass full:true for the complete tree. Line markers: "focused" on the focused node; while an overlay covers the page, a note names the layer, "overlay" marks it in the tree, and "clickable" marks the only controls still reachable behind it; an iframe line is a boundary — its contents are a separate document, not in this snapshot. Password field values read as "[redacted:password]" (the field is still listed and fillable); an empty field has no value at all, so a redacted one means it IS filled. "ai" drops the duplicate StaticText/InlineTextBox lines Chrome stacks under every piece of text; "aria" keeps them.',
     BROWSER_SNAPSHOT_SHAPE,
     async ({ format, selector, filter, full, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
       try {
@@ -461,7 +461,7 @@ export function registerInspectionTools(server: McpServer, deps: BrowserToolDeps
   // -----------------------------------------------------------------------
   server.tool(
     'browser_evaluate',
-    'Evaluate a JavaScript expression in the page. Patterns that enable prompt-injection exfiltration (fetch, XHR, cookies, storage, eval, Function) are BLOCKED unless allowDangerous:true. Blocking is a text scan: a blocked name in a string or comment is refused too. Strings return verbatim, everything else as JSON (DOM nodes/Map/functions become {}); a returned Promise is awaited, top-level await is a SyntaxError.',
+    'Evaluate a JavaScript expression in the page. Patterns that enable prompt-injection exfiltration (fetch, XHR, cookies, storage, eval, Function) are BLOCKED unless allowDangerous:true. Blocking is a case-sensitive whole-word text scan that reads strings and comments too: the call forms (fetch/eval/require/import) need a "(" right after — retrieval, evaluateScore(), prefetch() and myFetch() all pass, window.fetch() does not — while the rest (localStorage, WebSocket, document.cookie) match the bare word anywhere, even in a comment. Strings return verbatim, everything else as JSON (DOM nodes/Map/functions become {}); a returned Promise is awaited, top-level await is a SyntaxError.',
     BROWSER_EVALUATE_SHAPE,
     async ({ expression, allowDangerous, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
       try {

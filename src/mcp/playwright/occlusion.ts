@@ -42,6 +42,13 @@ interface CdpSender {
 export interface OcclusionInfo {
   /** Short DOM label for the overlay layer, e.g. `div#backdrop`. */
   layer: string;
+  /**
+   * backendNodeId of that same layer element, so serialisation can mark the
+   * node the note names. Without it the note knew a selector the tree never
+   * mentioned, and the agent had no way to connect the two. Best-effort and
+   * often absent: a bare backdrop `<div>` frequently has no a11y node at all.
+   */
+  layerBackendId?: number;
   /** How many on-screen controls the layer keeps from receiving clicks. */
   blockedCount: number;
   /**
@@ -190,7 +197,7 @@ export const OVERLAY_PROBE_JS = `(() => {
   const label = layer.tagName.toLowerCase()
     + (role ? '[role=' + role + ']' : '')
     + (layer.id ? '#' + layer.id : '');
-  return { label: label, blockedCount: blockedCount, reachable: reachable, reachableCount: reachable.length };
+  return { label: label, layerEl: layer, blockedCount: blockedCount, reachable: reachable, reachableCount: reachable.length };
 })()`;
 
 type RemoteProp = { name: string; value?: { value?: unknown; objectId?: string } };
@@ -254,42 +261,60 @@ export async function collectOcclusion(client: CdpSender): Promise<OcclusionInfo
     const blockedCount = Number(propOf(props, 'blockedCount')?.value ?? 0);
     const reachableCount = Number(propOf(props, 'reachableCount')?.value ?? 0);
     const reachable = new Set<number>();
+    const truncated = reachableCount > MAX_REACHABLE_MARKS;
 
-    if (reachableCount > MAX_REACHABLE_MARKS) {
-      return { layer: label, blockedCount, reachable, truncated: true };
-    }
-
-    const arrayId = propOf(props, 'reachable')?.objectId;
+    // Over the cap nothing is marked reachable — the note stands alone — but
+    // the layer handle below is still resolved: one round-trip, and it is what
+    // ties that note to a line in the tree.
+    const reachableObjectIds: string[] = [];
+    const arrayId = truncated ? undefined : propOf(props, 'reachable')?.objectId;
     if (arrayId) {
       const items = (await bounded(
         client.send('Runtime.getProperties', { objectId: arrayId, ownProperties: true }),
       )) as { result?: RemoteProp[] } | null;
-      const objectIds: string[] = [];
       for (const item of items?.result ?? []) {
         // Own properties of an array include `length`; only the index slots
         // hold elements. The cap is re-applied here rather than trusted from
         // reachableCount — see MAX_REACHABLE_MARKS.
-        if (objectIds.length >= MAX_REACHABLE_MARKS) break;
+        if (reachableObjectIds.length >= MAX_REACHABLE_MARKS) break;
         if (!/^\d+$/.test(item.name)) continue;
         const objectId = item.value?.objectId;
-        if (objectId) objectIds.push(objectId);
-      }
-      // One round-trip each, but issued together: sequentially these are the
-      // dominant cost of the whole collection.
-      const described = await Promise.all(
-        objectIds.map((objectId) =>
-          bounded(client.send('DOM.describeNode', { objectId })) as Promise<{
-            node?: { backendNodeId?: number };
-          } | null>,
-        ),
-      );
-      for (const node of described) {
-        const backendNodeId = node?.node?.backendNodeId;
-        if (backendNodeId !== undefined) reachable.add(backendNodeId);
+        if (objectId) reachableObjectIds.push(objectId);
       }
     }
 
-    return { layer: label, blockedCount, reachable, truncated: false };
+    // The layer goes in the SAME batch as the reachable set rather than in a
+    // call of its own: issued together it costs the shared budget one more
+    // round-trip's latency, not one more round-trip's wait.
+    const layerObjectId = propOf(props, 'layerEl')?.objectId;
+    const handles = layerObjectId
+      ? [layerObjectId, ...reachableObjectIds]
+      : reachableObjectIds;
+
+    // One round-trip each, but issued together: sequentially these are the
+    // dominant cost of the whole collection.
+    const described = await Promise.all(
+      handles.map((objectId) =>
+        bounded(client.send('DOM.describeNode', { objectId })) as Promise<{
+          node?: { backendNodeId?: number };
+        } | null>,
+      ),
+    );
+    let layerBackendId: number | undefined;
+    described.forEach((node, index) => {
+      const backendNodeId = node?.node?.backendNodeId;
+      if (backendNodeId === undefined) return;
+      if (layerObjectId && index === 0) layerBackendId = backendNodeId;
+      else reachable.add(backendNodeId);
+    });
+
+    return {
+      layer: label,
+      blockedCount,
+      reachable,
+      truncated,
+      ...(layerBackendId !== undefined && { layerBackendId }),
+    };
   } catch {
     // No Runtime domain / detached target / hostile page — see fail-open above.
     return null;
