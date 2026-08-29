@@ -1,63 +1,18 @@
 // Main-process runner for prompts queued against a concrete PTY session.
 
-import type { AgentStatus } from '../../shared/types';
-import type { AgentSlug } from '../../shared/agentIdentity';
 import {
-  formatBracketedPastePayload,
-  isMultilinePtyPayload,
-} from '../../shared/ptyMessageDelivery';
-import {
-  advanceSessionPromptSchedule,
+  claimDueSessionPromptSchedule,
   dueSessionPromptSchedules,
+  finalizeSessionPromptScheduleClaim,
   loadSessionPromptSchedules,
   mutateSessionPromptSchedules,
+  recoverInterruptedSessionPromptDeliveries,
+  SESSION_PROMPT_CLAIM_STALE_MS,
   type SessionPromptSchedule,
   type SessionPromptScheduleResult,
 } from './sessionPromptScheduleStore';
 
 export const SESSION_PROMPT_SCHEDULER_TICK_MS = 15_000;
-export const SESSION_PROMPT_SUBMIT_DELAY_MS = 100;
-
-export interface ScheduledAgentState {
-  slug: AgentSlug;
-  status: AgentStatus;
-}
-
-export interface SessionPromptDeliveryDeps {
-  getAgentState: (ptyId: string) => Promise<ScheduledAgentState | null>;
-  /** Returns false when the target PTY/pipe is not currently writable. */
-  write: (ptyId: string, data: string) => boolean;
-  delay?: (ms: number) => Promise<void>;
-}
-
-const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
-
-/**
- * Safely paste and submit a scheduled prompt.
- *
- * The stored agent family is re-verified immediately before delivery so a
- * prompt queued for Codex cannot become a shell command after Codex exits.
- * Running turns and approval prompts are left alone; the schedule stays due
- * and retries when the target returns to a normal input prompt.
- */
-export async function deliverSessionPrompt(
-  schedule: SessionPromptSchedule,
-  deps: SessionPromptDeliveryDeps,
-): Promise<SessionPromptScheduleResult> {
-  const agent = await deps.getAgentState(schedule.ptyId);
-  if (!agent || agent.slug !== schedule.agentSlug) return 'unavailable';
-  if (agent.status !== 'waiting' && agent.status !== 'complete') return 'busy';
-
-  const pasted = deps.write(schedule.ptyId, formatBracketedPastePayload(schedule.prompt));
-  if (!pasted) return 'unavailable';
-
-  await (deps.delay ?? sleep)(SESSION_PROMPT_SUBMIT_DELAY_MS);
-  const submit = isMultilinePtyPayload(schedule.prompt) ? '\r\r' : '\r';
-  // The paste already landed. Do not retry automatically if only the submit
-  // write fails: that could duplicate the prompt after the pipe reconnects.
-  return deps.write(schedule.ptyId, submit) ? 'sent' : 'error';
-}
-
 export interface SessionPromptSchedulerDeps {
   deliver: (schedule: SessionPromptSchedule) => Promise<SessionPromptScheduleResult>;
   now?: () => number;
@@ -91,8 +46,22 @@ export class SessionPromptScheduler {
     this.ticking = true;
     try {
       const now = (this.deps.now ?? Date.now)();
-      const due = dueSessionPromptSchedules(loadSessionPromptSchedules(this.deps.dir), now);
-      for (const schedule of due) {
+      // A stale persisted claim means the previous process may have written
+      // some or all of the prompt. Recover it before selecting this tick's due
+      // set: an unattended duplicate is worse than a visible at-most-once failure.
+      const snapshot = loadSessionPromptSchedules(this.deps.dir);
+      const due = snapshot.some((schedule) => schedule.deliveryClaim &&
+        now - schedule.deliveryClaim.startedAt >= SESSION_PROMPT_CLAIM_STALE_MS)
+        ? await mutateSessionPromptSchedules((schedules) => {
+          const recovered = recoverInterruptedSessionPromptDeliveries(schedules, now);
+          return { schedules: recovered, result: dueSessionPromptSchedules(recovered, now) };
+        }, this.deps.dir)
+        : dueSessionPromptSchedules(snapshot, now);
+      for (const candidate of due) {
+        // Re-read through the serialized mutation queue immediately before
+        // delivery. A pause/delete that happened after the due snapshot wins.
+        const schedule = await claimDueSessionPromptSchedule(candidate.id, now, this.deps.dir);
+        if (!schedule?.deliveryClaim) continue;
         let result: SessionPromptScheduleResult;
         try {
           result = await this.deps.deliver(schedule);
@@ -100,18 +69,13 @@ export class SessionPromptScheduler {
           result = 'error';
         }
 
-        // Re-read before advancing so pause/delete operations performed while
-        // delivery was in flight are never overwritten by a stale snapshot.
-        await mutateSessionPromptSchedules((fresh) => {
-          const index = fresh.findIndex((candidate) => candidate.id === schedule.id);
-          if (index === -1) return { schedules: fresh, result: undefined };
-          fresh[index] = advanceSessionPromptSchedule(
-            fresh[index],
-            result,
-            (this.deps.now ?? Date.now)(),
-          );
-          return { schedules: fresh, result: undefined };
-        }, this.deps.dir);
+        await finalizeSessionPromptScheduleClaim(
+          schedule.id,
+          schedule.deliveryClaim.token,
+          result,
+          (this.deps.now ?? Date.now)(),
+          this.deps.dir,
+        );
       }
     } finally {
       this.ticking = false;

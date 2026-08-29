@@ -73,7 +73,7 @@ import { monitorEventLoopDelay, performance as nodePerformance } from 'node:perf
 import { DAEMON_EXIT_ALREADY_RUNNING, ENV_KEYS } from '../shared/constants';
 import { toResumeCommand, resumeOfferForRecovered, mergeResumeBinding, normalizeResumeCwd } from '../shared/agentResume';
 import type { ResumeBinding } from '../shared/agentResume';
-import { agentDisplayToSlug, AGENT_SLUG_SET } from '../shared/agentIdentity';
+import { agentDisplayToSlug, AGENT_SLUG_SET, isAgentSlug } from '../shared/agentIdentity';
 import type { AgentEventStatus } from '../main/pty/AgentDetector';
 import { HookIngest, type HookArbitration } from './hooks/HookIngest';
 import { deriveAgentLiveness } from './hooks/agentLiveness';
@@ -103,6 +103,7 @@ import type { ApprovalDecision } from './approvals/types';
 import type { AgentSlug } from '../shared/events';
 import { LANLINK_SENTINEL_SESSION_ID } from '../shared/lanlink';
 import { classifyTasklistOutput, classifyKillOutcome, lockOwnerIsReclaimable, type ProcessLiveness } from '../shared/processLiveness';
+import { deliverScheduledPrompt } from './sessionPromptDelivery';
 
 // wmux web — read-only-by-default browser terminal. Instantiated lazily in
 // registerRpcHandlers; nothing listens until a `daemon.web.start` RPC arrives
@@ -3141,6 +3142,8 @@ function registerRpcHandlers(
   const readDaemonAgentState = (id: string): {
     agentName: string | null;
     agentStatus: AgentStatus;
+    inputQuiet: boolean;
+    inputRevision: number;
   } => {
     const session = id ? sessionManager.getSession(id) : undefined;
     // #919 — answer canonically, not raw: the detector's getLastAgent is
@@ -3151,13 +3154,16 @@ function registerRpcHandlers(
     // mappable screen slug is the residue veto (confirmed-dead same slug):
     // report no agent instead of resurrecting the label.
     const agentStatus = session?.bridge.getAgentStatus() ?? 'idle';
+    const inputQuiet = session?.bridge.isInputQuiet() ?? false;
+    const inputRevision = session?.bridge.getInputRevision() ?? 0;
     const rawName = session?.bridge.getLastAgent();
-    if (!session || !rawName) return { agentName: rawName ?? null, agentStatus };
+    const state = { agentStatus, inputQuiet, inputRevision };
+    if (!session || !rawName) return { agentName: rawName ?? null, ...state };
     const screenSlug = agentDisplayToSlug(rawName);
     const canonical = canonicalIdentityFor(agentProcessTracker, id, screenSlug);
-    if (canonical) return { agentName: agentSlugToDisplay(canonical.slug), agentStatus };
-    if (screenSlug) return { agentName: null, agentStatus };
-    return { agentName: rawName, agentStatus };
+    if (canonical) return { agentName: agentSlugToDisplay(canonical.slug), ...state };
+    if (screenSlug) return { agentName: null, ...state };
+    return { agentName: rawName, ...state };
   };
 
   // Authoritative detector state bypasses desktop reconnect/event timing.
@@ -3168,6 +3174,34 @@ function registerRpcHandlers(
   pipeServer.onRpc('daemon.getAgentState', async (params) => {
     const id = typeof params['id'] === 'string' ? params['id'] : '';
     return readDaemonAgentState(id);
+  });
+  pipeServer.onRpc('daemon.deliverScheduledPrompt', async (params) => {
+    const id = typeof params['id'] === 'string' ? params['id'] : '';
+    const agentSlug = isAgentSlug(params['agentSlug']) ? params['agentSlug'] : null;
+    const prompt = typeof params['prompt'] === 'string' ? params['prompt'] : '';
+    if (!id || !agentSlug || !prompt.trim() || prompt.length > 16_000) {
+      return { result: 'error' as const };
+    }
+    const result = await deliverScheduledPrompt(agentSlug, prompt, {
+      getAgentState: () => {
+        const current = readDaemonAgentState(id);
+        const slug = current.agentName ? agentDisplayToSlug(current.agentName) : undefined;
+        return slug ? {
+          slug,
+          status: current.agentStatus,
+          inputQuiet: current.inputQuiet,
+          inputRevision: current.inputRevision,
+        } : null;
+      },
+      write: (data) => {
+        const managed = sessionManager.getSession(id);
+        if (!managed) return false;
+        managed.ptyProcess.write(data);
+        managed.bridge.noteInput(data);
+        return true;
+      },
+    });
+    return { result };
   });
 
   // daemon.readPromptEvents — read structured OSC 133 prompt/command events

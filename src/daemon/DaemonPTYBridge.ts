@@ -111,6 +111,8 @@ export class DaemonPTYBridge extends EventEmitter {
    * the separation from depending on one agent's repaint economy.
    */
   private lastInputAt = 0;
+  /** Monotonic stdin write counter used to detect input racing a scheduled paste. */
+  private inputRevision = 0;
   /**
    * At least one full activity window. A shorter one would let bytes banked
    * before a keystroke combine, inside the same 3 s measurement window, with
@@ -190,7 +192,10 @@ export class DaemonPTYBridge extends EventEmitter {
     // below. Output that arrives while the user is still typing is the TUI
     // echoing them, and echo must never be mistaken for the agent working —
     // see the settled branch in setupDataForwarding's data handler.
-    if (data.length > 0) this.lastInputAt = Date.now();
+    if (data.length > 0) {
+      this.lastInputAt = Date.now();
+      this.inputRevision += 1;
+    }
 
     const hasSubmitBoundary = this.scanSubmittedInput(data);
     if (!forceSubmitted && !hasSubmitBoundary) return;
@@ -259,8 +264,13 @@ export class DaemonPTYBridge extends EventEmitter {
    * the current output to be an echo of it. `lastInputAt` starts at 0, so a
    * pane nobody has typed into is quiet from the moment it spawns.
    */
-  private inputIsQuiet(): boolean {
+  isInputQuiet(): boolean {
     return Date.now() - this.lastInputAt >= DaemonPTYBridge.INPUT_ECHO_QUIET_MS;
+  }
+
+  /** Current stdin generation; every non-empty write advances it once. */
+  getInputRevision(): number {
+    return this.inputRevision;
   }
 
   private scanSubmittedInput(data: string): boolean {
@@ -378,7 +388,7 @@ export class DaemonPTYBridge extends EventEmitter {
         const now = Date.now();
         if (
           now - this.settledAtMs < DaemonPTYBridge.SETTLE_COOLDOWN_MS
-          || !this.inputIsQuiet()
+          || !this.isInputQuiet()
           || now - this.lastResizeAtMs < RESIZE_REDRAW_GUARD_MS
         ) {
           activityMonitor.endTurn(ptyId);
@@ -514,7 +524,7 @@ export class DaemonPTYBridge extends EventEmitter {
       // wearing the previous turn's `complete` for the whole autonomous turn.
       // Echo is what the settled branch has to exclude, and the input stamp
       // names it directly instead of blocking every byte to be safe.
-      if (!this.muted && (!this.explicitTerminalStatus || this.inputIsQuiet())) {
+      if (!this.muted && (!this.explicitTerminalStatus || this.isInputQuiet())) {
         try {
           activityMonitor.feed(sessionId, buf.length);
         } catch {
@@ -666,6 +676,7 @@ export class DaemonPTYBridge extends EventEmitter {
     this.submittedTurnPending = false;
     this.inputInBracketedPaste = false;
     this.lastInputAt = 0;
+    this.inputRevision = 0;
     this.settledStatus = null;
     this.settledAtMs = 0;
     this.awaitingHuman = false;

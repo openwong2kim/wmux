@@ -25,6 +25,8 @@ const MAX_SCHEDULES = 100;
 const MAX_PROMPT_CHARS = 16_000;
 const MAX_PTY_ID_CHARS = 256;
 const MAX_INTERVAL_MINUTES = 365 * 24 * 60;
+/** Longer than daemon RPC timeout + the 100 ms guarded submit window. */
+export const SESSION_PROMPT_CLAIM_STALE_MS = 60_000;
 
 export const SESSION_PROMPT_SCHEDULE_LIMITS = {
   MAX_SCHEDULES,
@@ -88,6 +90,20 @@ function sanitize(raw: unknown): SessionPromptSchedule | null {
     o.lastResult === 'error'
   ) {
     schedule.lastResult = o.lastResult;
+  }
+  if (o.deliveryClaim && typeof o.deliveryClaim === 'object' && !Array.isArray(o.deliveryClaim)) {
+    const claim = o.deliveryClaim as Record<string, unknown>;
+    if (
+      typeof claim.token === 'string' && claim.token.length > 0 &&
+      typeof claim.occurrenceAt === 'number' && Number.isFinite(claim.occurrenceAt) &&
+      typeof claim.startedAt === 'number' && Number.isFinite(claim.startedAt)
+    ) {
+      schedule.deliveryClaim = {
+        token: claim.token,
+        occurrenceAt: claim.occurrenceAt,
+        startedAt: claim.startedAt,
+      };
+    }
   }
   return schedule;
 }
@@ -189,8 +205,88 @@ export function dueSessionPromptSchedules(
   now: number,
 ): SessionPromptSchedule[] {
   return schedules
-    .filter((s) => s.enabled && s.nextRunAt <= now)
+    .filter((s) => s.enabled && !s.deliveryClaim && s.nextRunAt <= now)
     .sort((a, b) => a.nextRunAt - b.nextRunAt || a.createdAt - b.createdAt);
+}
+
+function withoutDeliveryClaim(schedule: SessionPromptSchedule): SessionPromptSchedule {
+  const copy = { ...schedule };
+  delete copy.deliveryClaim;
+  return copy;
+}
+
+/**
+ * Persist an at-most-once claim immediately before PTY delivery. A renderer
+ * pause/delete that won the mutation queue first prevents the claim entirely.
+ */
+export async function claimDueSessionPromptSchedule(
+  id: string,
+  now: number,
+  dir?: string,
+): Promise<SessionPromptSchedule | null> {
+  const token = randomUUID();
+  return mutateSessionPromptSchedules((schedules) => {
+    const index = schedules.findIndex((schedule) => schedule.id === id);
+    const current = index >= 0 ? schedules[index] : undefined;
+    if (!current?.enabled || current.deliveryClaim || current.nextRunAt > now) {
+      return { schedules, result: null };
+    }
+    const claimed: SessionPromptSchedule = {
+      ...current,
+      lastAttemptAt: now,
+      deliveryClaim: {
+        token,
+        occurrenceAt: current.nextRunAt,
+        startedAt: now,
+      },
+    };
+    schedules[index] = claimed;
+    return { schedules, result: claimed };
+  }, dir);
+}
+
+/** Finalize only the attempt that still owns this row's persisted claim. */
+export async function finalizeSessionPromptScheduleClaim(
+  id: string,
+  token: string,
+  result: SessionPromptScheduleResult,
+  now: number,
+  dir?: string,
+): Promise<void> {
+  await mutateSessionPromptSchedules((schedules) => {
+    const index = schedules.findIndex((schedule) => schedule.id === id);
+    const current = index >= 0 ? schedules[index] : undefined;
+    if (!current || current.deliveryClaim?.token !== token) {
+      return { schedules, result: undefined };
+    }
+    schedules[index] = advanceSessionPromptSchedule(withoutDeliveryClaim(current), result, now);
+    return { schedules, result: undefined };
+  }, dir);
+}
+
+/**
+ * Fail closed after a process stop: an interrupted claimed occurrence may
+ * already have reached the PTY, so consuming it is safer than replaying it.
+ */
+export function recoverInterruptedSessionPromptDeliveries(
+  schedules: SessionPromptSchedule[],
+  now: number,
+): SessionPromptSchedule[] {
+  return schedules.map((schedule) => schedule.deliveryClaim &&
+    now - schedule.deliveryClaim.startedAt >= SESSION_PROMPT_CLAIM_STALE_MS
+    ? advanceSessionPromptSchedule(withoutDeliveryClaim(schedule), 'error', now)
+    : schedule);
+}
+
+/** Remove schedules only after an explicit user-owned PTY destruction. */
+export async function removeSessionPromptSchedulesForPty(
+  ptyId: string,
+  dir?: string,
+): Promise<number> {
+  return mutateSessionPromptSchedules((schedules) => {
+    const kept = schedules.filter((schedule) => schedule.ptyId !== ptyId);
+    return { schedules: kept, result: schedules.length - kept.length };
+  }, dir);
 }
 
 /**
@@ -216,9 +312,8 @@ export function advanceSessionPromptSchedule(
   next.lastRunAt = now;
   if (schedule.intervalMinutes && schedule.intervalMinutes > 0) {
     const step = schedule.intervalMinutes * 60_000;
-    let candidate = schedule.nextRunAt;
-    while (candidate <= now) candidate += step;
-    next.nextRunAt = candidate;
+    const elapsed = Math.max(0, now - schedule.nextRunAt);
+    next.nextRunAt = schedule.nextRunAt + (Math.floor(elapsed / step) + 1) * step;
   } else {
     next.enabled = false;
   }

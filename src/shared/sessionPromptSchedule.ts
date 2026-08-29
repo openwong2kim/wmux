@@ -2,6 +2,15 @@ import type { AgentSlug } from './agentIdentity';
 
 export type SessionPromptScheduleResult = 'sent' | 'busy' | 'unavailable' | 'error';
 
+export interface SessionPromptDeliveryClaim {
+  /** Unique attempt token used to reject stale finalizers. */
+  token: string;
+  /** The occurrence being delivered (the pre-claim nextRunAt). */
+  occurrenceAt: number;
+  /** Wall-clock time when the at-most-once claim was persisted. */
+  startedAt: number;
+}
+
 /** A persisted prompt bound to one concrete agent PTY. */
 export interface SessionPromptSchedule {
   id: string;
@@ -20,4 +29,10 @@ export interface SessionPromptSchedule {
   lastAttemptAt?: number;
   lastRunAt?: number;
   lastResult?: SessionPromptScheduleResult;
+  /**
+   * Persisted before PTY input begins. If wmux stops before finalization, the
+   * next scheduler tick consumes the occurrence as an error instead of
+   * risking duplicate unattended input.
+   */
+  deliveryClaim?: SessionPromptDeliveryClaim;
 }

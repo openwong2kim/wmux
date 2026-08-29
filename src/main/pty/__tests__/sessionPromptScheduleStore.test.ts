@@ -4,11 +4,13 @@ import os from 'node:os';
 import path from 'node:path';
 import {
   advanceSessionPromptSchedule,
+  claimDueSessionPromptSchedule,
   createSessionPromptSchedule,
   dueSessionPromptSchedules,
   getSessionPromptSchedulesPath,
   loadSessionPromptSchedules,
   mutateSessionPromptSchedules,
+  removeSessionPromptSchedulesForPty,
   saveSessionPromptSchedules,
   type SessionPromptSchedule,
 } from '../sessionPromptScheduleStore';
@@ -118,6 +120,13 @@ describe('sessionPromptScheduleStore', () => {
     );
     expect(repeating.enabled).toBe(true);
     expect(repeating.nextRunAt).toBe(241_000);
+
+    const longGap = advanceSessionPromptSchedule(
+      schedule({ intervalMinutes: 1 }),
+      'sent',
+      365 * 24 * 60 * 60_000,
+    );
+    expect(longGap.nextRunAt).toBeGreaterThan(365 * 24 * 60 * 60_000);
   });
 
   it('consumes a partial-write error to avoid duplicate prompt injection', () => {
@@ -147,5 +156,20 @@ describe('sessionPromptScheduleStore', () => {
 
     await expect(Promise.all([first, second])).resolves.toEqual(['first', 'second']);
     expect(loadSessionPromptSchedules(dir).map((item) => item.id)).toEqual(['first', 'second']);
+  });
+
+  it('re-checks pause/delete state before claiming a due occurrence', async () => {
+    await saveSessionPromptSchedules([schedule()], dir);
+    await mutateSessionPromptSchedules(() => ({ schedules: [], result: undefined }), dir);
+    await expect(claimDueSessionPromptSchedule('schedule-1', 5_000, dir)).resolves.toBeNull();
+  });
+
+  it('removes every schedule for an explicitly destroyed PTY only', async () => {
+    await saveSessionPromptSchedules([
+      schedule({ id: 'one', ptyId: 'pty-1' }),
+      schedule({ id: 'two', ptyId: 'pty-2' }),
+    ], dir);
+    await expect(removeSessionPromptSchedulesForPty('pty-1', dir)).resolves.toBe(1);
+    expect(loadSessionPromptSchedules(dir).map((item) => item.id)).toEqual(['two']);
   });
 });

@@ -26,6 +26,8 @@ import {
 } from '../shared/constants';
 import { connectWithRetry, type ConnectAttemptResult } from './daemonConnectRetry';
 import type { AgentStatus } from '../shared/types';
+import type { AgentSlug } from '../shared/agentIdentity';
+import type { SessionPromptScheduleResult } from '../shared/sessionPromptSchedule';
 
 // RCA A2 — single source of truth in shared/timeouts.ts so the renderer's
 // RECONCILE_TIMEOUT_MS can be derived from (and stay greater than) this value.
@@ -574,11 +576,15 @@ export class DaemonClient extends EventEmitter {
   async getAgentState(sessionId: string): Promise<{
     agentName: string | null;
     agentStatus: AgentStatus;
+    inputQuiet: boolean;
+    inputRevision: number;
   } | null> {
     try {
       const result = await this.rpc('daemon.getAgentState', { id: sessionId }) as {
         agentName?: unknown;
         agentStatus?: unknown;
+        inputQuiet?: unknown;
+        inputRevision?: unknown;
       };
       const validStatuses: AgentStatus[] = [
         'running',
@@ -588,15 +594,47 @@ export class DaemonClient extends EventEmitter {
         'awaiting_input',
         'idle',
       ];
-      if (!validStatuses.includes(result.agentStatus as AgentStatus)) return null;
+      if (
+        !validStatuses.includes(result.agentStatus as AgentStatus) ||
+        typeof result.inputQuiet !== 'boolean' ||
+        typeof result.inputRevision !== 'number' ||
+        !Number.isInteger(result.inputRevision) ||
+        result.inputRevision < 0
+      ) return null;
       return {
         agentName: typeof result.agentName === 'string' && result.agentName
           ? result.agentName
           : null,
         agentStatus: result.agentStatus as AgentStatus,
+        inputQuiet: result.inputQuiet,
+        inputRevision: result.inputRevision,
       };
     } catch {
       return null;
+    }
+  }
+
+  /** Daemon-owned identity/input-atomic scheduled prompt delivery. */
+  async deliverScheduledPrompt(args: {
+    id: string;
+    agentSlug: AgentSlug;
+    prompt: string;
+  }): Promise<SessionPromptScheduleResult> {
+    try {
+      const response = await this.rpc('daemon.deliverScheduledPrompt', args) as {
+        result?: unknown;
+      };
+      if (
+        response.result === 'sent' ||
+        response.result === 'busy' ||
+        response.result === 'unavailable' ||
+        response.result === 'error'
+      ) return response.result;
+      return 'error';
+    } catch {
+      // The daemon may have accepted part of the occurrence before the control
+      // reply was lost. Consume it as error; automatic retry could duplicate.
+      return 'error';
     }
   }
 

@@ -90,6 +90,12 @@ const electronAPI = {
       list: (ptyId: string) =>
         ipcRenderer.invoke(IPC.SESSION_PROMPT_SCHEDULES_LIST, { ptyId }) as Promise<{
           schedules: import('../shared/sessionPromptSchedule').SessionPromptSchedule[];
+          available: boolean;
+        }>,
+      listAll: () =>
+        ipcRenderer.invoke(IPC.SESSION_PROMPT_SCHEDULES_LIST, { includeAll: true }) as Promise<{
+          schedules: import('../shared/sessionPromptSchedule').SessionPromptSchedule[];
+          available: boolean;
         }>,
       create: (args: {
         ptyId: string;

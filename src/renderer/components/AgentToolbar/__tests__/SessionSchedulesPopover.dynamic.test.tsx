@@ -47,6 +47,7 @@ function fakeApi(seed: SessionPromptSchedule[] = []): SessionSchedulesApi & {
     updated,
     removed,
     list: async (ptyId) => ({ schedules: schedules.filter((item) => item.ptyId === ptyId) }),
+    listAll: async () => ({ schedules: [...schedules] }),
     create: async (args) => {
       created.push(args);
       const item = schedule({
@@ -101,11 +102,20 @@ async function mount(api: SessionSchedulesApi): Promise<void> {
 }
 
 describe('SessionSchedulesPopover', () => {
-  it('lists only schedules returned for the bound session', async () => {
-    await mount(fakeApi([schedule()]));
-    expect(container.querySelectorAll('[data-session-schedule-row]')).toHaveLength(1);
+  it('lists current and other-session schedules without retargeting them', async () => {
+    const api = fakeApi([schedule(), schedule({ id: 'other', ptyId: 'pty-other' })]);
+    await mount(api);
+    expect(container.querySelectorAll('[data-session-schedule-row]')).toHaveLength(2);
     expect(container.textContent).toContain('continue the milestone');
     expect(container.textContent).toContain('Codex CLI · pty-codex');
+    expect(container.textContent).toContain('pty-other');
+
+    const otherDelete = container.querySelector<HTMLButtonElement>(
+      '[data-schedule-id="other"] [data-session-schedule-delete]',
+    );
+    if (!otherDelete) throw new Error('Missing other-session delete button');
+    await act(async () => { otherDelete.click(); });
+    expect(api.removed).toContainEqual({ ptyId: 'pty-other', id: 'other' });
   });
 
   it('creates an exact prompt for the immutable PTY and agent target', async () => {
@@ -166,7 +176,33 @@ describe('SessionSchedulesPopover', () => {
     expect(container.querySelectorAll('[data-session-schedule-row]')).toHaveLength(1);
     expect(container.querySelector('[data-session-schedule-needs-agent]')).not.toBeNull();
     expect(query<HTMLButtonElement>('[data-session-schedule-create]').disabled).toBe(true);
+    expect(document.activeElement).toBe(query<HTMLButtonElement>('[data-session-schedule-toggle]'));
     await act(async () => { query<HTMLButtonElement>('[data-session-schedule-delete]').click(); });
     expect(api.removed).toEqual([{ ptyId: 'pty-codex', id: 'schedule-1' }]);
+  });
+
+  it('surfaces daemon-only availability while keeping existing rows manageable', async () => {
+    const api = fakeApi([schedule()]);
+    api.listAll = async () => ({ schedules: [schedule()], available: false });
+    await mount(api);
+
+    expect(container.querySelector('[data-session-schedule-needs-daemon]')).not.toBeNull();
+    expect(query<HTMLButtonElement>('[data-session-schedule-create]').disabled).toBe(true);
+    await act(async () => { query<HTMLButtonElement>('[data-session-schedule-delete]').click(); });
+    expect(api.removed).toEqual([{ ptyId: 'pty-codex', id: 'schedule-1' }]);
+  });
+
+  it('names the dialog, composer controls, and row actions for assistive technology', async () => {
+    await mount(fakeApi([schedule()]));
+    expect(query<HTMLElement>('[role="dialog"]').getAttribute('aria-labelledby'))
+      .toBe('session-schedules-title');
+    expect(query<HTMLTextAreaElement>('[data-session-schedule-prompt]').getAttribute('aria-label'))
+      .toBeTruthy();
+    expect(query<HTMLInputElement>('[data-session-schedule-when]').getAttribute('aria-label'))
+      .toBeTruthy();
+    expect(query<HTMLButtonElement>('[data-session-schedule-toggle]').getAttribute('aria-label'))
+      .toContain('—');
+    expect(query<HTMLButtonElement>('[data-session-schedule-delete]').getAttribute('aria-label'))
+      .toContain('—');
   });
 });
