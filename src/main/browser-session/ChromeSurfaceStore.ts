@@ -20,8 +20,9 @@ import { isUnsafeKey } from '../account/accountStore';
 //
 //   ① The record's `tabTargetId` (the CDP *tab* target, which outlives the
 //      page target it wraps) is still present in Chrome → deterministic
-//      re-bind. Filled in by the follow-up PR; the field is carried here so
-//      records written today survive into that release.
+//      re-bind. The launcher's tab-target watcher fills this field in and
+//      re-binds on Chrome's own attachedToTarget signal, so a swap is
+//      followed live instead of waited out.
 //   ② The record's `targetId` is still present in Chrome's /json/list → the
 //      exact page is still there, so re-bind (the adopt path after a crash,
 //      where Chrome outlived wmux).
@@ -52,7 +53,8 @@ export interface ChromeSurfaceRecord {
   surfaceId: string;
   /** Current CDP page targetId (mutable; null = unbound, no live tab). */
   targetId: string | null;
-  /** Stable CDP tab-target anchor (filled by the follow-up PR). */
+  /** Stable CDP tab-target anchor: outlives Chrome replacing the page target
+   *  inside the tab. Absent on browsers that expose no tab targets. */
   tabTargetId?: string;
   workspaceId?: string;
   url: string;

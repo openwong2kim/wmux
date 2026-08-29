@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import type { ChromeBackendClient, ChromeBackendEndpoint, ChromeTargetInfo } from './ChromeLauncher';
+import { CdpSocket } from './CdpSocket';
 
 // ---------------------------------------------------------------------------
 // Live-Chrome attach (Phase 3): drive the user's REAL daily Chrome via the
@@ -69,10 +70,13 @@ interface CdpTargetInfoWire {
 }
 
 export class LiveChromeClient implements ChromeBackendClient {
-  private ws: WebSocket | null = null;
-  private wsEndpoint: string | null = null;
-  private nextId = 1;
-  private readonly pending = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void }>();
+  /** CDP transport. The endpoint is re-read on every call, so a Chrome
+   *  restart (new secret path) transparently re-dials. */
+  private readonly socket = new CdpSocket(() => readLiveChromeEndpoint(this.userDataDir), {
+    label: 'LiveChromeClient',
+    connectError: ENABLE_HINT,
+    timeoutMs: CDP_TIMEOUT_MS,
+  });
 
   constructor(private readonly userDataDir?: string) {}
 
@@ -176,73 +180,10 @@ export class LiveChromeClient implements ChromeBackendClient {
 
   /** Close our socket only. Never touch the user's Chrome process. */
   dispose(): void {
-    const ws = this.ws;
-    this.ws = null;
-    this.wsEndpoint = null;
-    for (const p of this.pending.values()) p.reject(new Error('LiveChromeClient: disposed'));
-    this.pending.clear();
-    try {
-      ws?.close();
-    } catch {
-      /* already gone */
-    }
+    this.socket.close();
   }
 
-  // ── CDP over WebSocket ────────────────────────────────────────────────────
-
-  private async ensureSocket(): Promise<WebSocket> {
-    const endpoint = readLiveChromeEndpoint(this.userDataDir);
-    // Chrome restarts mint a new secret path — a stale socket is replaced.
-    if (this.ws && this.ws.readyState === WebSocket.OPEN && this.wsEndpoint === endpoint) {
-      return this.ws;
-    }
-    this.dispose();
-    const ws = new WebSocket(endpoint);
-    await new Promise<void>((resolve, reject) => {
-      const t = setTimeout(() => reject(new Error(ENABLE_HINT)), CDP_TIMEOUT_MS);
-      (t as { unref?: () => void }).unref?.();
-      ws.addEventListener('open', () => { clearTimeout(t); resolve(); }, { once: true });
-      ws.addEventListener('error', () => { clearTimeout(t); reject(new Error(ENABLE_HINT)); }, { once: true });
-    });
-    ws.addEventListener('message', (ev: MessageEvent) => {
-      let msg: { id?: number; result?: unknown; error?: { message?: string } };
-      try {
-        msg = JSON.parse(String(ev.data)) as typeof msg;
-      } catch {
-        return;
-      }
-      if (typeof msg.id !== 'number') return; // event, not a reply
-      const waiter = this.pending.get(msg.id);
-      if (!waiter) return;
-      this.pending.delete(msg.id);
-      if (msg.error) waiter.reject(new Error(`LiveChromeClient: ${msg.error.message ?? 'CDP error'}`));
-      else waiter.resolve(msg.result);
-    });
-    ws.addEventListener('close', () => {
-      if (this.ws === ws) {
-        // Reject in-flight calls; the next call re-reads the endpoint.
-        this.ws = null;
-        this.wsEndpoint = null;
-        for (const p of this.pending.values()) p.reject(new Error('LiveChromeClient: connection closed'));
-        this.pending.clear();
-      }
-    });
-    this.ws = ws;
-    this.wsEndpoint = endpoint;
-    return ws;
-  }
-
-  private async send(method: string, params: Record<string, unknown>): Promise<unknown> {
-    const ws = await this.ensureSocket();
-    const id = this.nextId++;
-    const result = new Promise<unknown>((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
-      const t = setTimeout(() => {
-        if (this.pending.delete(id)) reject(new Error(`LiveChromeClient: ${method} timed out`));
-      }, CDP_TIMEOUT_MS);
-      (t as { unref?: () => void }).unref?.();
-    });
-    ws.send(JSON.stringify({ id, method, params }));
-    return result;
+  private send(method: string, params: Record<string, unknown>): Promise<unknown> {
+    return this.socket.send(method, params);
   }
 }
