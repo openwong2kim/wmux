@@ -605,6 +605,12 @@ export class ChromeLauncher implements ChromeBackendClient {
     return this.cdpPort > 0;
   }
 
+  /** The established CDP port, or null. Pure read — unlike endpoint(), this
+   *  never launches Chrome, so status probes stay side-effect-free. */
+  currentPort(): number | null {
+    return this.cdpPort > 0 ? this.cdpPort : null;
+  }
+
   /**
    * Launch Chrome if needed and resolve its CDP port. Singleflight: parallel
    * first calls share one launch. A dead child relaunches here on demand.
@@ -1015,6 +1021,27 @@ export class ChromeLauncherRegistry {
   /** The launcher a workspace's automation runs against (binding ?? default). */
   forWorkspace(workspaceId: string | undefined): ChromeBackendClient {
     return this.forProfile(this.opts.store.profileFor(workspaceId));
+  }
+
+  /**
+   * Side-effect-free status for browser.session.status: which profile the
+   * workspace is bound to and whether its instance is up. Reads the existing
+   * launcher map only — it must NEVER create a launcher (let alone spawn
+   * Chrome) for a mere status probe.
+   */
+  statusForWorkspace(
+    workspaceId: string | undefined,
+  ): { profile: string; running: boolean; cdpPort: number | null } {
+    const profile = this.opts.store.profileFor(workspaceId);
+    if (profile === LIVE_CHROME_PROFILE) {
+      // Live attach has no port of ours; "running" means a socket was set up.
+      return { profile, running: this.live !== null, cdpPort: null };
+    }
+    const launcher = this.launchers.get(profile);
+    if (launcher instanceof ChromeLauncher && launcher.isRunning()) {
+      return { profile, running: true, cdpPort: launcher.currentPort() };
+    }
+    return { profile, running: false, cdpPort: null };
   }
 
   /**

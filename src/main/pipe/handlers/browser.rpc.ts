@@ -1146,10 +1146,29 @@ export function registerBrowserRpc(
    * browser.session.status
    * Return the active profile and CDP port information.
    */
-  router.register('browser.session.status', async () => {
+  router.register('browser.session.status', async (params, ctx) => {
+    const kind = backend();
+    // Chrome backend: the Electron-session fields below describe a session the
+    // chrome backend does not use, so reporting them alone made the status
+    // useless for diagnosis (dogfood P2: "partition persist:wmux-default,
+    // port null" while a real Chrome was up on its CDP port). Report the
+    // chrome facts instead — via a pure read that never launches Chrome.
+    if (kind === 'chrome' && chromeRegistry) {
+      const ws = scopeFor('browser.session.status', params, ctx);
+      const status = chromeRegistry.statusForWorkspace(ws || undefined);
+      return {
+        backend: kind,
+        profile: status.profile,
+        partition: null,
+        persistent: null,
+        port: status.cdpPort,
+        running: status.running,
+      };
+    }
     const active = profileManager.getActiveProfile();
     const port = portAllocator.getPort();
     return {
+      backend: kind,
       profile: active.name,
       partition: active.partition,
       persistent: active.persistent,

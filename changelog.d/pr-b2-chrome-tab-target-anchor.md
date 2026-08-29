@@ -10,3 +10,6 @@
   genuinely closed tab report as closed right away rather than after a
   five-minute grace period. Chrome builds that do not expose tab targets keep
   working exactly as before; set `WMUX_CHROME_TARGET_WATCHER=0` to opt out.
+- `browser_session_status` now says which backend is active and, on the chrome
+  backend, reports the bound profile and the live CDP port instead of the
+  unused Electron-session fields — without ever launching Chrome for the probe.

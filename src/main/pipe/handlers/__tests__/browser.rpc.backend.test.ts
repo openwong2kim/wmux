@@ -382,6 +382,7 @@ function makeFakeRegistry(perWorkspace?: Record<string, ReturnType<typeof makeFa
       }
       return null;
     }),
+    statusForWorkspace: vi.fn(() => ({ profile: 'default', running: true, cdpPort: 52931 })),
     disposeAll: vi.fn(),
   };
 }
@@ -604,5 +605,33 @@ describe('chrome backend browser.close', () => {
       'browser.close',
       expect.objectContaining({ surfaceId: 'surface-9', workspaceId: 'ws-1' }),
     );
+  });
+});
+
+describe('browser.session.status backend reporting', () => {
+  it('reports chrome facts (backend, bound profile, CDP port) without touching the Electron session fields', async () => {
+    const registry = makeFakeRegistry();
+    const { router } = register({ backend: 'chrome', launcher: registry });
+    const { result } = await dispatch(router, 'browser.session.status', { workspaceId: 'ws-1' });
+    expect(result).toMatchObject({
+      backend: 'chrome',
+      profile: 'default',
+      port: 52931,
+      running: true,
+      partition: null,
+      persistent: null,
+    });
+    // A status probe must be a pure read: no launcher lookup that could spawn.
+    expect(registry.forWorkspace).not.toHaveBeenCalled();
+    expect(registry.statusForWorkspace).toHaveBeenCalled();
+  });
+
+  it('keeps the builtin shape and adds the backend field', async () => {
+    const registry = makeFakeRegistry();
+    const { router } = register({ backend: 'builtin', launcher: registry });
+    const { result } = await dispatch(router, 'browser.session.status', {});
+    expect(result).toMatchObject({ backend: 'builtin', profile: expect.any(String) });
+    expect((result as Record<string, unknown>)['partition']).toBeTruthy();
+    expect(registry.statusForWorkspace).not.toHaveBeenCalled();
   });
 });
