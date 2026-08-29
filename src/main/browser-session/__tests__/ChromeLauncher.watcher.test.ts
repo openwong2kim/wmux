@@ -327,6 +327,59 @@ describe('ChromeLauncher tab-target watcher', () => {
     expect((await launcher.listTargets('ws-1')).map((t) => t.targetId)).toEqual(['page-1']);
   });
 
+  it('Chrome dying mid-startup does not latch the watcher off for the next Chrome', async () => {
+    // The startup's own /json/version rejects BECAUSE the browser died, not
+    // because this browser refuses to be watched. Latching on that verdict
+    // used to leave every later Chrome unwatched until it, too, died.
+    const child = makeChild();
+    spawnWritesPortFile(child, 22001);
+    tabs.set('tab-1', 'page-1');
+    listedPages = ['page-1'];
+
+    let versionCalls = 0;
+    let failWatcherVersion: (() => void) | null = null;
+    fetchMock.mockImplementation(async (url: string, init?: { method?: string }) => {
+      const s = String(url);
+      if (s.includes('/json/version')) {
+        versionCalls++;
+        // #1 is the readiness poll; #2 is the watcher's, held open until the
+        // test has killed Chrome underneath it.
+        if (versionCalls === 2) {
+          return new Promise((_resolve, reject) => {
+            failWatcherVersion = () => reject(new Error('chrome died'));
+          });
+        }
+        return fetchOk({ Browser: 'Chrome/151', webSocketDebuggerUrl: WS_URL });
+      }
+      if (init?.method === 'PUT') return fetchOk({ id: nextCreatedPage, url: 'https://opened.test/' });
+      if (s.includes('/json/list')) {
+        return fetchOk(
+          listedPages.map((id) => ({ id, url: `https://${id}.test/`, title: id.toUpperCase(), type: 'page' })),
+        );
+      }
+      return fetchOk({});
+    });
+
+    const launcher = new ChromeLauncher('/tmp/watch-6', { profileName: 'p1' });
+    const opening = launcher.openTab('https://a.test/', 'ws-1');
+    await tick();
+    expect(failWatcherVersion).not.toBeNull();
+
+    child.emit('exit'); // onChildGone lands while the startup is still in flight
+    (failWatcherVersion as unknown as () => void)();
+    await opening;
+    expect(FakeBrowserWs.instances).toHaveLength(0);
+
+    // The next demand adopts the still-recorded endpoint and re-arms.
+    nextCreatedPage = 'page-2';
+    tabs.set('tab-2', 'page-2');
+    listedPages = ['page-1', 'page-2'];
+    const second = await launcher.openTab('https://b.test/', 'ws-1');
+
+    expect(FakeBrowserWs.instances).toHaveLength(1);
+    expect(launcher.recordFor(second.surfaceId)?.tabTargetId).toBe('tab-2');
+  });
+
   it('adoption revives an anchored record whose own targetId died with the swap', async () => {
     // Chrome outlived wmux AND swapped the page inside the tracked tab, so
     // revival rule (2) (targetId still listed) cannot help - only the tab

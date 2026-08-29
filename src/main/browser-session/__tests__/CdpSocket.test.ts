@@ -160,6 +160,41 @@ describe('CdpSocket', () => {
     await again;
   });
 
+  it('concurrent sends share one dial instead of opening two sockets', async () => {
+    const socket = new CdpSocket(() => 'ws://127.0.0.1:1/devtools/browser/a');
+    const seen: string[] = [];
+    socket.on('Target.targetDestroyed', (params) => seen.push(String(params.targetId)));
+
+    const a = socket.send('A');
+    const b = socket.send('B');
+    await tick();
+
+    // Two sockets would leak one of them and double every event.
+    expect(FakeWebSocket.instances).toHaveLength(1);
+    const ws = FakeWebSocket.instances[0];
+    expect(ws.sent.map((f) => f['method'])).toEqual(['A', 'B']);
+    ws.event('Target.targetDestroyed', { targetId: 'tab-1' });
+    expect(seen).toEqual(['tab-1']);
+
+    ws.emit('message', { data: JSON.stringify({ id: 1, result: { a: 1 } }) });
+    ws.emit('message', { data: JSON.stringify({ id: 2, result: { b: 2 } }) });
+    expect(await a).toEqual({ a: 1 });
+    expect(await b).toEqual({ b: 2 });
+  });
+
+  it('a close while still connecting does not resurrect the socket', async () => {
+    const socket = new CdpSocket(() => 'ws://127.0.0.1:1/devtools/browser/a', { label: 'W' });
+    const pending = socket.send('Target.getTargets');
+    // Synchronous: the dial is still waiting for 'open'.
+    socket.close();
+
+    await expect(pending).rejects.toThrow('W: disposed');
+    await tick(); // let the late 'open' land on the abandoned dial
+    expect(socket.isOpen()).toBe(false);
+    expect(FakeWebSocket.instances).toHaveLength(1);
+    expect(FakeWebSocket.instances[0].closed).toBe(true);
+  });
+
   it('a reply that never arrives times out, naming the method', async () => {
     const socket = new CdpSocket(() => 'ws://127.0.0.1:1/devtools/browser/a', { label: 'W', timeoutMs: 5 });
     await expect(socket.send('Target.getTargets')).rejects.toThrow('W: Target.getTargets timed out');

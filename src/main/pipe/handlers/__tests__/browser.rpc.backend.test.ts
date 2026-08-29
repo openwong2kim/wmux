@@ -574,6 +574,36 @@ describe('chrome backend browser.close', () => {
     expect(wsB.tabs.has('sfc-1')).toBe(true);
   });
 
+  it('refuses a cross-workspace close inside ONE launcher (same profile, two workspaces)', async () => {
+    // The sharper case: both workspaces are bound to the same profile, so
+    // they resolve to the SAME launcher. Nothing about the routing separates
+    // them — only the scoped listTargets check does. Closing by surfaceId
+    // straight through the launcher would hand workspace A workspace B's tab.
+    const registry = makeFakeRegistry();
+    const { router } = register({ backend: 'chrome', launcher: registry });
+    await dispatch(router, 'browser.open', { url: 'https://a.test/', workspaceId: 'ws-1' });
+    await dispatch(router, 'browser.open', { url: 'https://b.test/', workspaceId: 'ws-2' });
+
+    const { error } = await dispatch(router, 'browser.close', { surfaceId: 'sfc-2', workspaceId: 'ws-1' });
+    expect(error?.message).toContain('no wmux-opened Chrome tab');
+    expect(registry.fallback.closeSurface).not.toHaveBeenCalled();
+    expect(registry.fallback.tabs.has('sfc-2')).toBe(true);
+
+    // ...and the owner still closes its own tab.
+    const { result } = await dispatch(router, 'browser.close', { surfaceId: 'sfc-2', workspaceId: 'ws-2' });
+    expect(result).toMatchObject({ ok: true, closed: true, surfaceId: 'sfc-2' });
+  });
+
+  it('refuses a cross-workspace close addressed by the transitional raw targetId', async () => {
+    const registry = makeFakeRegistry();
+    const { router } = register({ backend: 'chrome', launcher: registry });
+    await dispatch(router, 'browser.open', { url: 'https://b.test/', workspaceId: 'ws-2' });
+
+    const { error } = await dispatch(router, 'browser.close', { surfaceId: 'tgt-1', workspaceId: 'ws-1' });
+    expect(error?.message).toContain('no wmux-opened Chrome tab');
+    expect(registry.fallback.closeSurface).not.toHaveBeenCalled();
+  });
+
   it('closes a surface the caller workspace owns under a different profile launcher', async () => {
     // The workspace rebound to another profile after opening the tab: the
     // caller resolves to a launcher that never saw it, and the registry

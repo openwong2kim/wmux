@@ -46,6 +46,12 @@ interface CdpFrame {
 export class CdpSocket {
   private ws: WebSocket | null = null;
   private wsEndpoint: string | null = null;
+  /** Dial in flight, shared by every concurrent send (singleflight). */
+  private connecting: Promise<WebSocket> | null = null;
+  private connectingEndpoint: string | null = null;
+  /** Bumped by every detach, so a dial that finishes after a close/re-dial
+   *  can tell it has been superseded instead of resurrecting the socket. */
+  private epoch = 0;
   private nextId = 1;
   private readonly pending = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void }>();
   private readonly handlers = new Map<string, Set<CdpEventHandler>>();
@@ -106,6 +112,10 @@ export class CdpSocket {
     const ws = this.ws;
     this.ws = null;
     this.wsEndpoint = null;
+    // Any dial still in flight belongs to the contract being torn down here.
+    this.epoch++;
+    this.connecting = null;
+    this.connectingEndpoint = null;
     if (this.pending.size > 0) {
       const waiters = [...this.pending.values()];
       this.pending.clear();
@@ -119,13 +129,28 @@ export class CdpSocket {
     }
   }
 
-  private async ensureSocket(): Promise<WebSocket> {
+  private ensureSocket(): Promise<WebSocket> {
     const endpoint = this.resolveEndpoint();
     // Chrome restarts mint a new secret path — a stale socket is replaced.
     if (this.ws && this.ws.readyState === WebSocket.OPEN && this.wsEndpoint === endpoint) {
-      return this.ws;
+      return Promise.resolve(this.ws);
     }
+    // Singleflight. Two concurrent sends over a dead socket used to open two
+    // WebSockets: one leaked, and every event reached the handlers twice.
+    if (this.connecting && this.connectingEndpoint === endpoint) return this.connecting;
     this.detach(`${this.label}: disposed`, true);
+    const dial: Promise<WebSocket> = this.dial(endpoint).finally(() => {
+      if (this.connecting !== dial) return;
+      this.connecting = null;
+      this.connectingEndpoint = null;
+    });
+    this.connecting = dial;
+    this.connectingEndpoint = endpoint;
+    return dial;
+  }
+
+  private async dial(endpoint: string): Promise<WebSocket> {
+    const epoch = this.epoch;
     const ws = new WebSocket(endpoint);
     await new Promise<void>((resolve, reject) => {
       const t = setTimeout(() => reject(new Error(this.connectError)), this.timeoutMs);
@@ -133,6 +158,17 @@ export class CdpSocket {
       ws.addEventListener('open', () => { clearTimeout(t); resolve(); }, { once: true });
       ws.addEventListener('error', () => { clearTimeout(t); reject(new Error(this.connectError)); }, { once: true });
     });
+    if (this.epoch !== epoch) {
+      // close() (or a re-dial) landed while this one was still connecting.
+      // Publishing the socket now would resurrect a contract the caller
+      // already tore down.
+      try {
+        ws.close();
+      } catch {
+        /* already gone */
+      }
+      throw new Error(`${this.label}: disposed`);
+    }
     ws.addEventListener('message', (ev: MessageEvent) => this.onMessage(ev));
     ws.addEventListener('close', () => {
       // Reject in-flight calls; the next send() re-resolves the endpoint.

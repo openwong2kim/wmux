@@ -317,12 +317,22 @@ export class ChromeLauncher implements ChromeBackendClient {
     if (this.disposed || this.watcherFailed || !this.watcherEnabled()) return;
     if (this.watcher?.isOpen()) return;
     if (this.watcherStarting) return this.watcherStarting;
-    this.watcherStarting = this.startTargetWatcher()
-      .catch((err) => this.watcherDown('startup failed', err))
+    // Attempt identity. onChildGone() drops watcherStarting when Chrome dies
+    // mid-startup, so an attempt that is no longer the current one must
+    // neither latch the watcher off — its failure was that death, not the
+    // browser's verdict — nor null out the attempt that replaced it. Without
+    // this, one launch dying during the first /json/version re-latched
+    // watcherFailed AFTER onChildGone had cleared it, and the next Chrome ran
+    // watcher-less until it too died.
+    const attempt: Promise<void> = this.startTargetWatcher()
+      .catch((err) => {
+        if (this.watcherStarting === attempt) this.watcherDown('startup failed', err);
+      })
       .finally(() => {
-        this.watcherStarting = null;
+        if (this.watcherStarting === attempt) this.watcherStarting = null;
       });
-    return this.watcherStarting;
+    this.watcherStarting = attempt;
+    return attempt;
   }
 
   private async startTargetWatcher(): Promise<void> {
@@ -835,6 +845,11 @@ export class ChromeLauncher implements ChromeBackendClient {
     // the failure latch resets so the next launch may re-arm.
     this.closeWatcher();
     this.watcherFailed = false;
+    // Invalidate any startup still in flight: it is dialing a Chrome that no
+    // longer exists, and handing its promise to the next launch would report
+    // a start that never happened. Deliberately NOT inside closeWatcher() —
+    // startTargetWatcher() calls that itself and must not self-invalidate.
+    this.watcherStarting = null;
     this.persist(true);
   }
 

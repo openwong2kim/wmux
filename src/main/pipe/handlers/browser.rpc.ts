@@ -863,21 +863,30 @@ export function registerBrowserRpc(
       const scope = scopeFor('browser.close', params, ctx);
       const launcher = requireChrome('browser.close', scope);
       if (surfaceId) {
-        if (await launcher.closeSurface(surfaceId)) {
-          return { ok: true, backend: 'chrome', closed: true, surfaceId };
-        }
-        // transitional: the caller may still hold a raw CDP targetId from
-        // before stable surface ids; map it once. Remove next release.
-        const viaTargetId = (await launcher.listTargets(scope)).find((t) => t.targetId === surfaceId);
-        if (viaTargetId && (await launcher.closeSurface(viaTargetId.surfaceId))) {
-          return { ok: true, backend: 'chrome', closed: true, surfaceId: viaTargetId.surfaceId };
+        // Ownership first, exactly like browser.tabs close: a launcher is
+        // shared by every workspace bound to its profile, so closeSurface()
+        // alone would let workspace A tear down workspace B's tab. Scoping
+        // through listTargets is the same check browser_tabs already makes
+        // (an undefined scope stays unfiltered, preserving shadow-mode
+        // semantics). The transitional raw-targetId handle folds in here.
+        const own = await launcher.listTargets(scope);
+        const match =
+          own.find((t) => t.surfaceId === surfaceId) ??
+          // transitional: the caller may still hold a raw CDP targetId from
+          // before stable surface ids; map it once. Remove next release.
+          own.find((t) => t.targetId === surfaceId);
+        if (match && (await launcher.closeSurface(match.surfaceId))) {
+          return { ok: true, backend: 'chrome', closed: true, surfaceId: match.surfaceId };
         }
         // Second chance: the surface may belong to another PROFILE's launcher
         // (the caller's workspace binding changed since the tab was opened).
         // Only the owning workspace may close it — a cross-workspace close is
         // exactly the tear-down-someone-else's-browser hazard #810 exists for.
         const owner = chromeRegistry?.ownerOfSurface(surfaceId);
-        if (owner && owner.workspaceId !== undefined && owner.workspaceId === scope) {
+        // An undefined scope (shadow mode, caller sent no workspaceId) closes
+        // unfiltered — the same meaning the primary path's listTargets(scope)
+        // gives it — so an unbound/stale handle stays retirable there too.
+        if (owner && (scope === undefined || (owner.workspaceId !== undefined && owner.workspaceId === scope))) {
           if (await owner.client.closeSurface(surfaceId)) {
             return { ok: true, backend: 'chrome', closed: true, surfaceId };
           }
