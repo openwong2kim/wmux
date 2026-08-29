@@ -713,7 +713,7 @@ export function registerPTYHandlers(
   };
 
   const sessionPromptScheduler = new SessionPromptScheduler({
-    deliver: (schedule) => useDaemon && daemonClient
+    deliver: (schedule) => useDaemon && daemonClient?.isConnected
       ? daemonClient.deliverScheduledPrompt({
         id: schedule.ptyId,
         agentSlug: schedule.agentSlug,

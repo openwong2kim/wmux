@@ -300,6 +300,16 @@ describe('DaemonClient', () => {
       await mockServer.stop();
     });
 
+    it('keeps delivery queued when disconnected before the RPC can be sent', async () => {
+      client = new DaemonClient(testPipeName('scheduled-prompt-disconnected'), AUTH_TOKEN);
+
+      await expect(client.deliverScheduledPrompt({
+        id: 'sess-1',
+        agentSlug: 'codex',
+        prompt: 'continue',
+      })).resolves.toBe('unavailable');
+    });
+
     it('delegates scheduled prompt delivery to the daemon owner', async () => {
       const pipeName = testPipeName('scheduled-prompt');
       mockServer = createMockDaemonServer(pipeName, AUTH_TOKEN, {

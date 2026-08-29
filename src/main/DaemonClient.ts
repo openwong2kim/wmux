@@ -620,6 +620,10 @@ export class DaemonClient extends EventEmitter {
     agentSlug: AgentSlug;
     prompt: string;
   }): Promise<SessionPromptScheduleResult> {
+    // This is known to be pre-send: rpc() cannot enqueue a request without a
+    // live control pipe, so the occurrence remains safe to retry.
+    if (!this.isConnected) return 'unavailable';
+
     try {
       const response = await this.rpc('daemon.deliverScheduledPrompt', args) as {
         result?: unknown;
