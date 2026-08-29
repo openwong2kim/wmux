@@ -283,6 +283,60 @@ describe('BrowserCaptureManager lifecycle', () => {
     expect(mgr.drainLifecycle(1)).toEqual([]);
   });
 
+  // --- collection window (#1081) ---
+
+  it('reports when collection started, and no gap for a guest that is still blank', async () => {
+    (fakeWc as unknown as { getURL: () => string }).getURL = () => 'about:blank';
+    const before = Date.now();
+    await mgr.ensure(1);
+
+    const window = mgr.getConsoleWindow(1);
+    expect(window?.since).toBeGreaterThanOrEqual(before);
+    // The eager path enables capture at did-attach, before the page loads.
+    expect(window?.missedBefore).toBe(false);
+    expect(mgr.getNetworkWindow(1)?.missedBefore).toBe(false);
+  });
+
+  it('admits a gap when capture starts on a guest that already shows a page', async () => {
+    (fakeWc as unknown as { getURL: () => string }).getURL = () => 'https://x.test/loaded-already';
+    await mgr.ensure(1);
+
+    expect(mgr.getConsoleWindow(1)?.missedBefore).toBe(true);
+    expect(mgr.getNetworkWindow(1)?.missedBefore).toBe(true);
+  });
+
+  it('clearing one buffer restarts only that window', async () => {
+    (fakeWc as unknown as { getURL: () => string }).getURL = () => 'https://x.test/loaded-already';
+    await mgr.ensure(1);
+    const networkSince = mgr.getNetworkWindow(1)?.since;
+
+    mgr.clearConsole(1);
+
+    expect(mgr.getConsoleWindow(1)?.missedBefore).toBe(false);
+    expect(mgr.getNetworkWindow(1)?.missedBefore).toBe(true);
+    expect(mgr.getNetworkWindow(1)?.since).toBe(networkSince);
+  });
+
+  it('reports no window for a guest nothing is capturing', () => {
+    expect(mgr.getConsoleWindow(99)).toBeUndefined();
+    expect(mgr.getNetworkWindow(99)).toBeUndefined();
+  });
+
+  it('caps one oversized console line and one oversized URL', async () => {
+    await mgr.ensure(1);
+    emit(fakeWc!, 'Runtime.consoleAPICalled', {
+      type: 'log',
+      args: [{ type: 'string', value: 'x'.repeat(50_000) }],
+    });
+    emit(fakeWc!, 'Network.requestWillBeSent', {
+      requestId: 'r1',
+      request: { url: 'https://x.test/' + 'y'.repeat(50_000), method: 'GET' },
+    });
+
+    expect(mgr.getConsole(1)[0].text.length).toBeLessThan(5000);
+    expect(mgr.getConsole(1)[0].text).toContain('[truncated');
+    expect(mgr.getNetwork(1)[0].url.length).toBeLessThan(3000);
+  });
   it('a plain drop (debugger detach) does NOT synthesize a closed record', async () => {
     await mgr.ensure(1);
     fakeWc!.debugger.emit('detach'); // DevTools stole the session — guest still alive

@@ -1,8 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { mockSendRpc, getPage } = vi.hoisted(() => ({
+const { mockSendRpc, getPage, resolveWorkspaceBackend } = vi.hoisted(() => ({
   mockSendRpc: vi.fn(),
   getPage: vi.fn(),
+  resolveWorkspaceBackend: vi.fn(async () => 'builtin'),
 }));
 
 vi.mock('../../wmux-client', () => ({
@@ -13,7 +14,13 @@ vi.mock('../../wmux-client', () => ({
 }));
 
 vi.mock('../PlaywrightEngine', () => ({
-  PlaywrightEngine: { getInstance: () => ({ getPageForScope: getPage }) },
+  PlaywrightEngine: {
+    getInstance: () => ({
+      getPageForScope: getPage,
+      resolveWorkspaceBackend,
+      drainLocalLifecycle: () => [],
+    }),
+  },
 }));
 
 import { registerInspectionTools } from '../tools/inspection';

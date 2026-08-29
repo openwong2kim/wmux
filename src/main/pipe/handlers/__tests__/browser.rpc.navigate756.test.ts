@@ -71,6 +71,7 @@ function register(targets: Array<typeof TARGET>) {
     listTargets: vi.fn(() => targets),
     getCdpPort: vi.fn(() => 18800),
     setCaptureCleanup: vi.fn(),
+    setCaptureAttach: vi.fn(),
     withAutomationLease: vi.fn(async (_s: string, fn: () => Promise<unknown>) => fn()),
     acquireRpcLease: vi.fn((sid: string) => `lease-${sid}`),
     renewRpcLease: vi.fn(() => true),

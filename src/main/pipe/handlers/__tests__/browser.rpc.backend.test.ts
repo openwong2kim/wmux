@@ -90,6 +90,7 @@ function register(opts: { backend?: Backend; hasTarget?: boolean; withStore?: bo
     waitForTarget: vi.fn(),
     ensureAwake: vi.fn(async () => null),
     setCaptureCleanup: vi.fn(),
+    setCaptureAttach: vi.fn(),
     withAutomationLease: vi.fn(async (_s: string, fn: () => Promise<unknown>) => fn()),
     acquireRpcLease: vi.fn(() => 'lease-1'),
     renewRpcLease: vi.fn(() => true),

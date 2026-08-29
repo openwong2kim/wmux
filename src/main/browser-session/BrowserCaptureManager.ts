@@ -11,10 +11,16 @@ import { webContents } from 'electron';
 // WebviewCdpManager attaches and that browser.screenshot / browser.evaluate
 // already drive via sendCommand). The MCP tools drain it over RPC.
 //
-// Capture is LAZY: domains are enabled and the listener attached on the first
-// ensure() call (driven by the first browser_console/network/response_body call
-// in packaged mode), matching the dev tools' "listener attaches on first call"
-// semantics. Nothing is captured before that first call.
+// Capture is EAGER (#1081): WebviewCdpManager calls ensure() when a guest
+// registers — which happens on did-attach, before the page has loaded — so the
+// load-time error, the uncaught exception and the failed request are all in the
+// buffer by the time an agent thinks to ask. It used to start on the first
+// browser_console call, which is always after something looked wrong, so the
+// one window that mattered was the one window never recorded.
+//
+// ensure() stays idempotent and is still called from the drain handlers, so a
+// guest that registered before this hook existed (or whose debugger was stolen
+// by DevTools and dropped) still starts capturing on first read.
 // ---------------------------------------------------------------------------
 
 export interface ConsoleEntry {
@@ -38,6 +44,11 @@ export interface NetworkEntry {
 const MAX_CAPTURE_ENTRIES = 1000;
 const MAX_RESPONSE_BODY_BYTES = 256 * 1024;
 const MAX_TOTAL_BODY_BYTES = 4 * 1024 * 1024;
+// Entry COUNT alone is not a memory bound once capture is eager: one
+// console.log can carry a megabyte and a data: URL can be megabytes on its
+// own. Cap entry SIZE too, so the ring's worst case is arithmetic.
+const MAX_CONSOLE_TEXT_CHARS = 4096;
+const MAX_URL_CHARS = 2048;
 
 // CDP RemoteObject (subset we read for console formatting).
 interface RemoteObject {
@@ -71,6 +82,16 @@ const MAX_LIFECYCLE_ENTRIES = 20;
 // still be drained once after the per-webContents state is gone.
 const MAX_PENDING_CLOSURES = 8;
 
+/**
+ * When collection started, and whether the guest was already showing a page at
+ * that moment. Reported to the MCP tools so an empty buffer can say which of
+ * the two it is — "nothing happened" or "I wasn't watching yet" (#1081).
+ */
+export interface CaptureWindow {
+  since: number;
+  missedBefore: boolean;
+}
+
 interface CaptureState {
   dbg: Electron.Debugger;
   onMessage: (event: Electron.Event, method: string, params: unknown, sessionId?: string) => void;
@@ -81,6 +102,16 @@ interface CaptureState {
   lifecycle: LifecycleEntry[];
   totalBodyBytes: number;
   enabled: boolean;
+  /** Per-kind, because clear:true is per-kind: clearing the console must not
+   *  claim the network buffer only goes back that far. */
+  consoleWindow: CaptureWindow;
+  networkWindow: CaptureWindow;
+}
+
+function truncate(value: string, max: number): string {
+  return value.length > max
+    ? `${value.slice(0, max)} [truncated ${value.length - max} chars]`
+    : value;
 }
 
 /** CDP consoleAPICalled `type` -> the level vocabulary the MCP tool filters on. */
@@ -177,6 +208,20 @@ export class BrowserCaptureManager {
       }
     }
 
+    // A guest that already shows a page has a window this buffer cannot cover.
+    // On the eager path (register -> did-attach) the guest is still on the
+    // blank initial document, so this is false and the buffer really does hold
+    // everything; it goes true only when capture starts late — a first read on
+    // an older main, or a re-enable after DevTools stole the debugger.
+    const currentUrl = (() => {
+      try {
+        return wc.getURL();
+      } catch {
+        return '';
+      }
+    })();
+    const startedLate = currentUrl !== '' && currentUrl !== 'about:blank';
+
     const state: CaptureState = {
       dbg,
       onMessage: () => { /* set below */ },
@@ -187,6 +232,8 @@ export class BrowserCaptureManager {
       lifecycle: [],
       totalBodyBytes: 0,
       enabled: false,
+      consoleWindow: { since: Date.now(), missedBefore: startedLate },
+      networkWindow: { since: Date.now(), missedBefore: startedLate },
     };
 
     // Attach the listener and register state BEFORE enabling domains: CDP can
@@ -232,7 +279,10 @@ export class BrowserCaptureManager {
       case 'Runtime.consoleAPICalled': {
         const args = Array.isArray(params.args) ? (params.args as RemoteObject[]) : [];
         const text = args.map(formatRemoteObject).join(' ');
-        this.pushConsole(state, { level: mapConsoleLevel(params.type as string), text });
+        this.pushConsole(state, {
+          level: mapConsoleLevel(params.type as string),
+          text: truncate(text, MAX_CONSOLE_TEXT_CHARS),
+        });
         break;
       }
       case 'Network.requestWillBeSent': {
@@ -248,7 +298,7 @@ export class BrowserCaptureManager {
         }
         const entry: NetEntry = {
           requestId,
-          url: request.url ?? '',
+          url: truncate(request.url ?? '', MAX_URL_CHARS),
           method: request.method ?? 'GET',
         };
         this.pushNetwork(state, entry);
@@ -396,7 +446,28 @@ export class BrowserCaptureManager {
 
   clearConsole(webContentsId: number): void {
     const state = this.states.get(webContentsId);
-    if (state) state.console = [];
+    if (!state) return;
+    state.console = [];
+    // The window restarts with the clear: "collecting since the clear" is the
+    // honest statement afterwards, and a pre-attach gap is no longer what an
+    // empty result would be hiding.
+    state.consoleWindow = { since: Date.now(), missedBefore: false };
+  }
+
+  /**
+   * When console collection started for a guest, and whether anything predates
+   * it. Undefined when nothing is capturing, so a caller states no window at
+   * all rather than inventing one.
+   */
+  getConsoleWindow(webContentsId: number): CaptureWindow | undefined {
+    const state = this.states.get(webContentsId);
+    return state ? { ...state.consoleWindow } : undefined;
+  }
+
+  /** The same, for the network buffer. */
+  getNetworkWindow(webContentsId: number): CaptureWindow | undefined {
+    const state = this.states.get(webContentsId);
+    return state ? { ...state.networkWindow } : undefined;
   }
 
   /**
@@ -437,6 +508,7 @@ export class BrowserCaptureManager {
     state.network = [];
     state.byRequestId.clear();
     state.totalBodyBytes = 0;
+    state.networkWindow = { since: Date.now(), missedBefore: false };
   }
 
   /**

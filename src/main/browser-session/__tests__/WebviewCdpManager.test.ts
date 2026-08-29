@@ -48,6 +48,26 @@ describe('WebviewCdpManager', () => {
     expect(target?.wsUrl).toContain('ws://');
   });
 
+  it('starts console/network capture as soon as a guest registers (#1081)', async () => {
+    const attached: number[] = [];
+    manager.setCaptureAttach((wcId) => attached.push(wcId));
+
+    await manager.register('surface-1', 42);
+
+    // BrowserPanel registers on did-attach, before the page loads — this is
+    // the earliest point at which anything the page logs can be heard.
+    expect(attached).toEqual([42]);
+  });
+
+  it('a failing capture attach does not take down the registration', async () => {
+    manager.setCaptureAttach(() => {
+      throw new Error('capture unavailable');
+    });
+
+    await manager.register('surface-1', 42);
+
+    expect(manager.getTarget('surface-1')).not.toBeNull();
+  });
   it('register enables focus emulation and disables background throttling (#353)', async () => {
     await manager.register('surface-1', 42);
     // Background surfaces (display:none guest) must behave focused for input/a11y.
