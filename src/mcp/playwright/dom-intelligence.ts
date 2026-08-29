@@ -222,12 +222,15 @@ function collectInteractiveElements(
   node: CdpAXNode,
   elements: IndexedElement[],
 ): void {
-  if (node.ignored) return;
-
   const role = node.role?.value ?? 'none';
   const name = node.name?.value ?? '';
 
-  if (INTERACTIVE_ROLES.has(role)) {
+  // An ignored node contributes nothing itself, but we must still descend into
+  // its children: Chrome hangs a chain of ignored "uninteresting" wrappers
+  // (html → body → generic) directly under the RootWebArea, so returning early
+  // here skipped the entire document. Same splice rule as buildTree() in
+  // snapshot.ts — see the comment there for the measurement.
+  if (!node.ignored && INTERACTIVE_ROLES.has(role)) {
     const ref = elements.length + 1; // 1-based
     const element: IndexedElement = {
       ref,

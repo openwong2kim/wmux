@@ -75,15 +75,68 @@ const INTERACTIVE_ROLES = new Set([
 // CDP → AXNode tree builder
 // ---------------------------------------------------------------------------
 
-function buildTree(nodes: CdpAXNode[]): AXNode | null {
+/** A built tree plus the DOM→a11y index that selector scoping resolves through. */
+interface BuiltTree {
+  root: AXNode;
+  /**
+   * backendDOMNodeId → the node(s) that DOM element contributes to the tree.
+   * Normally a single node; for an `ignored` element it is the forest its
+   * children were spliced into, so scoping a selector to an "uninteresting"
+   * wrapper still yields that wrapper's real content instead of nothing.
+   */
+  byBackendId: Map<number, AXNode[]>;
+}
+
+function buildTree(nodes: CdpAXNode[]): BuiltTree | null {
   if (nodes.length === 0) return null;
 
   const map = new Map<string, CdpAXNode>();
   for (const n of nodes) map.set(n.nodeId, n);
 
-  function convert(cdp: CdpAXNode): AXNode | null {
-    if (cdp.ignored) return null;
+  const byBackendId = new Map<number, AXNode[]>();
 
+  /** Record what a DOM element contributed, then hand it back to the caller. */
+  function index(cdp: CdpAXNode, contributed: AXNode[]): AXNode[] {
+    if (cdp.backendDOMNodeId !== undefined && contributed.length > 0) {
+      byBackendId.set(cdp.backendDOMNodeId, contributed);
+    }
+    return contributed;
+  }
+
+  /**
+   * Convert one CDP node into the list of nodes it contributes to its parent.
+   *
+   * An `ignored` node is SPLICED, not dropped: the node itself disappears but
+   * its children take its place under the parent (what Playwright/Puppeteer
+   * do). Dropping the subtree looks harmless — the nodes are "uninteresting"
+   * after all — but Chrome hangs a chain of ignored wrappers (html → body →
+   * generic, every one of them `ignoredReasons: ["uninteresting"]`) directly
+   * under the RootWebArea, so dropping them decapitates the entire document.
+   * Measured on a real page: 8 ignored nodes out of 1126 left the root with
+   * ZERO children, which made isRootOnly() true and silently demoted every
+   * snapshot to the DOM fallback — taking `format:"aria"` and
+   * `filter:"interactive"` (a11y-path-only features) down with it. Splicing
+   * the same tree keeps 1118 nodes, links included.
+   */
+  function convert(cdp: CdpAXNode): AXNode[] {
+    const children = convertChildren(cdp);
+    // Contribute our (already spliced) children in our own place. Recursion
+    // flattens an ignored → ignored → ignored → real chain in a single pass.
+    if (cdp.ignored) return index(cdp, children);
+    return index(cdp, [materialize(cdp, children)]);
+  }
+
+  function convertChildren(cdp: CdpAXNode): AXNode[] {
+    if (!cdp.childIds || cdp.childIds.length === 0) return [];
+    const out: AXNode[] = [];
+    for (const cid of cdp.childIds) {
+      const child = map.get(cid);
+      if (child) out.push(...convert(child));
+    }
+    return out;
+  }
+
+  function materialize(cdp: CdpAXNode, children: AXNode[]): AXNode {
     const role = cdp.role?.value ?? 'none';
     const name = cdp.name?.value ?? '';
 
@@ -124,23 +177,19 @@ function buildTree(nodes: CdpAXNode[]): AXNode | null {
       }
     }
 
-    // Build children
-    if (cdp.childIds && cdp.childIds.length > 0) {
-      const children: AXNode[] = [];
-      for (const cid of cdp.childIds) {
-        const child = map.get(cid);
-        if (child) {
-          const converted = convert(child);
-          if (converted) children.push(converted);
-        }
-      }
-      if (children.length > 0) node.children = children;
-    }
+    if (children.length > 0) node.children = children;
 
     return node;
   }
 
-  return convert(nodes[0]);
+  // The root is materialised even when it is itself ignored. It is a pure
+  // container at this layer — serializeTree emits `root.children` and never the
+  // root's own line, and isRootOnly only reads its children — so keeping it
+  // preserves every promoted child instead of arbitrarily electing one of them
+  // as the new root (or returning null and losing the document outright).
+  const root = materialize(nodes[0], convertChildren(nodes[0]));
+  index(nodes[0], [root]);
+  return { root, byBackendId };
 }
 
 // ---------------------------------------------------------------------------
@@ -157,6 +206,21 @@ export interface RefEntry {
 const pageRefMaps = new WeakMap<Page, RefEntry[]>();
 
 /**
+ * CSS selector the last a11y refMap was scoped to, when it was scoped.
+ * resolveRef must search inside that element, not the whole page: a scoped
+ * refMap numbers refs within the subtree, so counting same-role+name matches
+ * page-wide would resolve to an element outside the requested scope.
+ * Always written together with pageRefMaps via setPageRefs().
+ */
+const pageRefScopes = new WeakMap<Page, string>();
+
+function setPageRefs(page: Page, refs: RefEntry[], scopeSelector?: string): void {
+  pageRefMaps.set(page, refs);
+  if (scopeSelector === undefined) pageRefScopes.delete(page);
+  else pageRefScopes.set(page, scopeSelector);
+}
+
+/**
  * Mark a page's refs as DOM-attribute-based: an empty a11y refMap makes
  * resolveRef fall through to the `[data-wmux-ref]` locator. Used by the
  * selector-scoped snapshot path in inspection.ts, which tags refs via the DOM
@@ -164,7 +228,7 @@ const pageRefMaps = new WeakMap<Page, RefEntry[]>();
  * earlier unscoped snapshot) exists.
  */
 export function markDomRefsActive(page: Page): void {
-  pageRefMaps.set(page, []);
+  setPageRefs(page, []);
 }
 
 
@@ -224,21 +288,31 @@ function serializeNode(
   return line;
 }
 
+/** Serialise a list of sibling nodes at the top level of the output. */
+function serializeForest(
+  nodes: AXNode[],
+  format: 'ai' | 'aria',
+  maxDepth: number,
+  refs: RefEntry[],
+): string {
+  const lines: string[] = [];
+
+  for (const node of nodes) {
+    const s = serializeNode(node, format, 0, maxDepth, 0, refs);
+    if (s) lines.push(s);
+  }
+
+  return lines.join('\n');
+}
+
 function serializeTree(
   root: AXNode,
   format: 'ai' | 'aria',
   maxDepth: number,
   refs: RefEntry[],
 ): string {
-  const children = root.children ?? [root];
-  const lines: string[] = [];
-
-  for (const child of children) {
-    const s = serializeNode(child, format, 0, maxDepth, 0, refs);
-    if (s) lines.push(s);
-  }
-
-  return lines.join('\n');
+  // The RootWebArea is a container, not content — emit its children.
+  return serializeForest(root.children ?? [root], format, maxDepth, refs);
 }
 
 function stripNonInteractive(node: AXNode): AXNode | null {
@@ -271,43 +345,101 @@ export function isRootOnly(tree: AXNode): boolean {
   return !tree.children || tree.children.length === 0;
 }
 
-async function getAccessibilityTree(page: Page): Promise<AXNode | null> {
-  // A dropped/crashed page can't yield a CDP session — return null so the caller
-  // falls through to the DOM snapshot instead of throwing.
-  const client = await page.context().newCDPSession(page).catch(() => null);
-  if (!client) return null;
-  try {
-    // Enable the Accessibility domain before querying. Without it, getFullAXTree
-    // is racy on heavy pages — the domain computes the tree lazily on enable.
-    await client.send('Accessibility.enable' as any).catch(() => { /* best-effort */ });
+type CdpClient = {
+  send: (method: string, params?: unknown) => Promise<unknown>;
+  detach: () => Promise<void>;
+};
 
-    let tree = buildTree(
-      (await client.send('Accessibility.getFullAXTree' as any) as { nodes: CdpAXNode[] }).nodes,
+/** Fetch and build the full a11y tree over an already-open CDP session. */
+async function fetchAccessibilityTree(client: CdpClient): Promise<BuiltTree | null> {
+  // Enable the Accessibility domain before querying. Without it, getFullAXTree
+  // is racy on heavy pages — the domain computes the tree lazily on enable.
+  await client.send('Accessibility.enable').catch(() => { /* best-effort */ });
+
+  let built = buildTree(
+    (await client.send('Accessibility.getFullAXTree') as { nodes: CdpAXNode[] }).nodes,
+  );
+
+  // A foreground heavy / custom-element SPA can momentarily yield a root-only
+  // tree while the a11y tree is still computing. One short retry salvages those
+  // into a proper tree instead of degrading to the DOM fallback. Background
+  // surfaces stay root-only regardless (no layout) — generateSnapshot handles
+  // those via the DOM-selector fallthrough, so the extra 250 ms is the price of
+  // recovering foreground fidelity.
+  if (built && isRootOnly(built.root)) {
+    await new Promise((r) => setTimeout(r, 250));
+    built = buildTree(
+      (await client.send('Accessibility.getFullAXTree') as { nodes: CdpAXNode[] }).nodes,
     );
+  }
 
-    // A foreground heavy / custom-element SPA can momentarily yield a root-only
-    // tree while the a11y tree is still computing. One short retry salvages those
-    // into a proper tree instead of degrading to the DOM fallback. Background
-    // surfaces stay root-only regardless (no layout) — generateSnapshot handles
-    // those via the DOM-selector fallthrough, so the extra 250 ms is the price of
-    // recovering foreground fidelity.
-    if (tree && isRootOnly(tree)) {
-      await new Promise((r) => setTimeout(r, 250));
-      tree = buildTree(
-        (await client.send('Accessibility.getFullAXTree' as any) as { nodes: CdpAXNode[] }).nodes,
-      );
-    }
+  return built;
+}
 
-    return tree;
+/**
+ * Resolve a CSS selector to the backendNodeId the a11y tree indexes elements
+ * by. `backendNodeId` is the one id space shared by the DOM and Accessibility
+ * domains, which is what lets a DOM selector address an a11y subtree at all.
+ * Returns null when the selector matches nothing (or DOM queries are refused),
+ * so the caller can fall back rather than report a wrong scope.
+ */
+async function resolveSelectorBackendId(
+  client: CdpClient,
+  selector: string,
+): Promise<number | null> {
+  try {
+    const doc = (await client.send('DOM.getDocument', { depth: 0 })) as {
+      root?: { nodeId?: number };
+    };
+    const rootNodeId = doc?.root?.nodeId;
+    if (!rootNodeId) return null;
+
+    const found = (await client.send('DOM.querySelector', {
+      nodeId: rootNodeId,
+      selector,
+    })) as { nodeId?: number };
+    // CDP reports "no match" as nodeId 0, not as an error.
+    if (!found?.nodeId) return null;
+
+    const described = (await client.send('DOM.describeNode', {
+      nodeId: found.nodeId,
+    })) as { node?: { backendNodeId?: number } };
+    return described?.node?.backendNodeId ?? null;
   } catch {
-    // getFullAXTree can throw on a crashed/detached target. Return null so
-    // generateSnapshot falls through to the DOM snapshot rather than failing
-    // the whole snapshot (panel review — a11y-error path must be rescued too).
+    // An invalid selector makes DOM.querySelector throw — same as no match for
+    // our purposes: let the DOM listing produce the user-facing error.
     return null;
+  }
+}
+
+async function withCdpSession<T>(
+  page: Page,
+  fn: (client: CdpClient) => Promise<T>,
+  onFailure: T,
+): Promise<T> {
+  // A dropped/crashed page can't yield a CDP session — return the failure value
+  // so the caller falls through to the DOM snapshot instead of throwing.
+  const client = (await page.context().newCDPSession(page).catch(() => null)) as CdpClient | null;
+  if (!client) return onFailure;
+  try {
+    return await fn(client);
+  } catch {
+    // getFullAXTree can throw on a crashed/detached target. Degrade so the
+    // caller falls through to the DOM snapshot rather than failing the whole
+    // snapshot (panel review — a11y-error path must be rescued too).
+    return onFailure;
   } finally {
-    await client.send('Accessibility.disable' as any).catch(() => { /* best-effort */ });
+    await client.send('Accessibility.disable').catch(() => { /* best-effort */ });
     await client.detach().catch(() => { /* best-effort */ });
   }
+}
+
+async function getAccessibilityTree(page: Page): Promise<AXNode | null> {
+  return withCdpSession(
+    page,
+    async (client) => (await fetchAccessibilityTree(client))?.root ?? null,
+    null,
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -355,13 +487,13 @@ export async function generateSnapshot(
       }
       // Leave the refMap empty so resolveRef falls through to the data-wmux-ref
       // locator the DOM expression just tagged.
-      pageRefMaps.set(page, []);
+      setPageRefs(page, []);
       return domSnapshot;
     } catch (err) {
       // Don't mask a real failure (navigation / detach / script error) as a
       // silent empty snapshot — surface it, then degrade gracefully.
       console.warn('[snapshot] DOM fallback failed:', err);
-      pageRefMaps.set(page, []);
+      setPageRefs(page, []);
       if (!tree) return '(empty page)';
       // else: serialize the (root-only) tree below — better than nothing.
     }
@@ -375,7 +507,7 @@ export async function generateSnapshot(
   if (options?.filter === 'interactive' && format === 'ai') {
     const stripped = stripNonInteractive(tree);
     if (!stripped) {
-      pageRefMaps.set(page, []);
+      setPageRefs(page, []);
       return '(no interactive elements on this page)';
     }
     effectiveTree = stripped;
@@ -400,7 +532,95 @@ export async function generateSnapshot(
   }
 
   // Store the refMap for this page so resolveRef can use it without re-querying
-  pageRefMaps.set(page, refs);
+  setPageRefs(page, refs);
+
+  return output;
+}
+
+/**
+ * Snapshot only the subtree of the first element matching `selector`, via the
+ * accessibility tree.
+ *
+ * Selector scoping used to run DOM-side unconditionally, which made it blind to
+ * layout: the DOM listing hands out refs for `visibility:hidden` /
+ * zero-box elements, and every click on one of those refs timed out (dogfood
+ * P0). It also meant `format:"aria"` was silently unavailable whenever a
+ * selector was given. The a11y tree already encodes what is actually rendered,
+ * so scope through it instead and keep the DOM listing as the fallback.
+ *
+ * Scoping resolves DOM → a11y through `backendNodeId`, the id space both CDP
+ * domains share: `DOM.querySelector` for the element, then the tree's
+ * backendDOMNodeId index. Chosen over `Accessibility.getPartialAXTree`, which
+ * returns a node with its ancestors and immediate children only — a deep
+ * subtree would cost one round-trip per node, whereas the full tree is a single
+ * call we already make for every unscoped snapshot and can index for free.
+ *
+ * Returns null (never a partial or wrong-scope result) when the a11y route
+ * cannot serve the request — no CDP session, collapsed tree, selector miss, or
+ * an element with no a11y presence — so the caller falls back to the DOM
+ * listing, which stays the last resort and the source of the "no match" error.
+ */
+export async function generateScopedSnapshot(
+  page: Page,
+  selector: string,
+  options?: SnapshotOptions,
+): Promise<string | null> {
+  const format = options?.format ?? 'ai';
+  const depth = options?.depth ?? 10;
+  const maxLength = options?.maxLength ?? 50_000;
+
+  const forest = await withCdpSession<AXNode[] | null>(
+    page,
+    async (client) => {
+      // Resolve the selector FIRST: a miss costs nothing and must reach the DOM
+      // listing, which owns the user-facing "No element matches selector:" error.
+      const backendId = await resolveSelectorBackendId(client, selector);
+      if (backendId === null) return null;
+
+      const built = await fetchAccessibilityTree(client);
+      if (!built || isRootOnly(built.root)) return null;
+
+      return built.byBackendId.get(backendId) ?? null;
+    },
+    null,
+  );
+
+  if (!forest || forest.length === 0) return null;
+
+  let scoped = forest;
+  if (options?.filter === 'interactive' && format === 'ai') {
+    scoped = forest
+      .map(stripNonInteractive)
+      .filter((n): n is AXNode => n !== null);
+    if (scoped.length === 0) {
+      setPageRefs(page, [], selector);
+      return '(no interactive elements in this subtree)';
+    }
+  }
+
+  let refs: RefEntry[] = [];
+  // Unlike the page-level tree, the matched element is content, not a container
+  // — `dialog "Settings"` is exactly the context the selector asked about — so
+  // serialize the forest as-is instead of dropping its top level.
+  let output = serializeForest(scoped, format, depth, refs);
+
+  if (output.length > maxLength && format === 'ai') {
+    const trimmed = forest
+      .map(stripNonInteractive)
+      .filter((n): n is AXNode => n !== null);
+    if (trimmed.length > 0) {
+      refs = [];
+      output = serializeForest(trimmed, format, depth, refs);
+    }
+  }
+
+  if (output.length > maxLength) {
+    output = output.slice(0, maxLength) + '\n... (truncated)';
+  }
+
+  // Record the scope alongside the refs: these ref numbers are subtree-relative,
+  // so resolveRef must count matches inside the same element.
+  setPageRefs(page, refs, selector);
 
   return output;
 }
@@ -448,9 +668,14 @@ async function resolveRefViaAxMap(
 
   const target = refs[targetIndex];
 
-  // Use Playwright's getByRole to locate the element
+  // Use Playwright's getByRole to locate the element. A scoped snapshot numbered
+  // its refs inside one element, so search inside that same element — otherwise
+  // the nth-match count below is taken over the whole page and can land on an
+  // identical role+name that the caller deliberately scoped out.
+  const scopeSelector = pageRefScopes.get(page);
   try {
-    const locator = page.getByRole(target.role as any, {
+    const root = scopeSelector ? page.locator(scopeSelector).first() : page;
+    const locator = root.getByRole(target.role as any, {
       name: target.name || undefined,
       exact: true,
     });
