@@ -68,15 +68,15 @@ const DEFAULT_READ_TAIL_LINES = 300;
 // `<TOOLNAME>_SHAPE` naming mirrors the tool name 1:1. Tools whose param object
 // is empty (`{}`) are left inline: an empty object holds no zod schema to share.
 const BROWSER_OPEN_SHAPE = {
-  url: z.string().optional().describe('Initial URL to load (defaults to google.com)'),
+  url: z.string().optional().describe('Defaults to google.com.'),
 };
 
 const BROWSER_CLOSE_SHAPE = {
-  surfaceId: z.string().optional().describe('Target a specific surface by ID (searched across all workspaces). Omit to close the browser surface in the calling workspace.'),
+  surfaceId: z.string().optional().describe('Searched across all workspaces. Omit to close the browser in the calling workspace.'),
 };
 
 const BROWSER_SESSION_START_SHAPE = {
-  profile: z.string().optional().describe('Profile name to use (defaults to "default")'),
+  profile: z.string().optional().describe('Defaults to "default".'),
 };
 
 const TERMINAL_READ_SHAPE = {
@@ -866,7 +866,7 @@ async function resolveTerminalRouteBound(explicitPtyId?: string) {
 
 server.tool(
   'browser_open',
-  'Open a new browser panel in the active pane. Use this when no browser surface exists yet.',
+  'Open a browser panel in the active pane when no browser surface exists yet.',
   BROWSER_OPEN_SHAPE,
   async ({ url }) => {
     // requireWorkspaceId (NOT the weak resolveWorkspaceId) so a failed identity

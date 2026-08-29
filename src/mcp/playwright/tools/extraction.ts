@@ -12,7 +12,7 @@ import { describeToolError } from '../toolError';
 const optionalSurfaceId = z
   .string()
   .optional()
-  .describe('Target a specific surface by ID. Omit to use the active surface.');
+  .describe('Omit for the active surface.');
 
 // Module-scope parameter shapes: hoisted out of the per-registration path so
 // every createWmuxServer() instance shares one set of zod schema objects.
@@ -20,7 +20,7 @@ const BROWSER_SMART_SNAPSHOT_SHAPE = {
   maxContentLength: z
     .number()
     .optional()
-    .describe('Maximum length of the content summary in characters (default 3000).'),
+    .describe('Content summary cap in characters (default 3000).'),
   surfaceId: optionalSurfaceId,
 };
 
@@ -28,25 +28,25 @@ const BROWSER_EXTRACT_TEXT_SHAPE = {
   selector: z
     .string()
     .optional()
-    .describe('CSS selector to scope extraction to a specific element.'),
+    .describe('Scope extraction to this element.'),
   maxLength: z
     .number()
     .optional()
-    .describe('Maximum length of the returned markdown in characters.'),
+    .describe('Character cap on the markdown.'),
   includeLinks: z
     .boolean()
     .optional()
-    .describe('If true, preserve hyperlinks in the markdown output (default false).'),
+    .describe('Preserve hyperlinks (default false).'),
   surfaceId: optionalSurfaceId,
 };
 
 const BROWSER_EXTRACT_DATA_SHAPE = {
   goal: z
     .string()
-    .describe('Description of what data to extract (e.g. "product list", "search results").'),
+    .describe('What to extract, e.g. "product list".'),
   fields: z
     .record(z.string(), z.string())
-    .describe('Map of field names to their expected types (e.g. { name: "string", price: "number", url: "string" }).'),
+    .describe('Field name to expected type, e.g. { name: "string", price: "number" }.'),
   surfaceId: optionalSurfaceId,
 };
 
@@ -66,7 +66,7 @@ export function registerExtractionTools(server: McpServer, deps: BrowserToolDeps
   // -----------------------------------------------------------------------
   server.tool(
     'browser_smart_snapshot',
-    'Get a smart snapshot of the page with indexed interactive elements and clean text content. Use element ref numbers with browser_click to interact.',
+    'Indexed interactive elements plus clean page text. Pass a returned ref to browser_click as smartRef.',
     BROWSER_SMART_SNAPSHOT_SHAPE,
     async ({ maxContentLength, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
       try {
@@ -115,7 +115,7 @@ export function registerExtractionTools(server: McpServer, deps: BrowserToolDeps
   // -----------------------------------------------------------------------
   server.tool(
     'browser_extract_text',
-    'Extract page content as clean markdown text, stripping navigation and noise.',
+    'Extract page content as clean markdown, stripping navigation and noise.',
     BROWSER_EXTRACT_TEXT_SHAPE,
     async ({ selector, maxLength, includeLinks, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
       try {

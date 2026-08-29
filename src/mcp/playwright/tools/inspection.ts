@@ -26,7 +26,7 @@ import {
 const optionalSurfaceId = z
   .string()
   .optional()
-  .describe('Target a specific surface by ID. Omit to use the active surface.');
+  .describe('Omit for the active surface.');
 
 // Module-scope parameter shapes: hoisted out of the per-registration path so
 // every createWmuxServer() instance shares one set of zod schema objects.
@@ -35,28 +35,23 @@ const BROWSER_SNAPSHOT_SHAPE = {
     .enum(['ai', 'aria'])
     .optional()
     .describe(
-      'Snapshot format. "ai" annotates interactive elements with ref numbers (default). "aria" returns the full tree.',
+      '"ai" annotates interactive elements with refs (default); "aria" returns the full tree.',
     ),
   ref: z
     .string()
     .optional()
-    .describe('Reserved for future use: ref number to scope the snapshot to a subtree.'),
+    .describe('Reserved; not implemented yet.'),
   selector: z
     .string()
     .optional()
     .describe(
-      'CSS selector to scope the snapshot to the first matching element (e.g. "main", "[role=dialog]"). Returns the accessibility subtree of that element, falling back to a DOM listing of its interactive elements when the tree cannot be scoped.',
+      'Scope to the first match (e.g. "[role=dialog]"), falling back to a DOM listing of that element when the tree cannot be scoped.',
     ),
   filter: z
     .enum(['interactive'])
     .optional()
-    .describe('"interactive" strips non-interactive nodes from the tree — much smaller output.'),
-  full: z
-    .boolean()
-    .optional()
-    .describe(
-      'Force the complete snapshot. By default a repeat snapshot of the same page returns a diff against the previous one when that is smaller.',
-    ),
+    .describe('Strips non-interactive nodes — much smaller output.'),
+  full: z.boolean().optional(),
   surfaceId: optionalSurfaceId,
 };
 
@@ -64,20 +59,20 @@ const BROWSER_SCREENSHOT_SHAPE = {
   fullPage: z
     .boolean()
     .optional()
-    .describe('Capture the full scrollable page instead of just the viewport (default false).'),
+    .describe('Capture the full scrollable page (default false).'),
   ref: z
     .string()
     .optional()
-    .describe('Ref number of an element to screenshot (from browser_snapshot). Omit for full page.'),
+    .describe('Element to capture; omit for the whole page.'),
   surfaceId: optionalSurfaceId,
 };
 
 const BROWSER_EVALUATE_SHAPE = {
-  expression: z.string().describe('The JavaScript expression to evaluate.'),
+  expression: z.string(),
   allowDangerous: z
     .boolean()
     .optional()
-    .describe('Allow execution even if the expression contains dangerous patterns (fetch, cookies, storage, eval). Default false. Use only with trusted input.'),
+    .describe('Run a blocked pattern anyway. Default false; trusted input only.'),
   surfaceId: optionalSurfaceId,
 };
 
@@ -85,11 +80,11 @@ const BROWSER_CONSOLE_SHAPE = {
   level: z
     .enum(['error', 'warn', 'info', 'all'])
     .optional()
-    .describe('Filter by message level. Defaults to "all".'),
+    .describe('Defaults to "all".'),
   clear: z
     .boolean()
     .optional()
-    .describe('Clear collected messages after returning them.'),
+    .describe('Clear after returning.'),
   surfaceId: optionalSurfaceId,
 };
 
@@ -97,23 +92,23 @@ const BROWSER_NETWORK_SHAPE = {
   filter: z
     .string()
     .optional()
-    .describe('URL glob pattern to filter requests (e.g. "*api*", "*.json").'),
+    .describe('URL glob, e.g. "*api*".'),
   clear: z
     .boolean()
     .optional()
-    .describe('Clear collected requests (and any retained response bodies) after returning them.'),
+    .describe('Clear requests and retained response bodies after returning.'),
   surfaceId: optionalSurfaceId,
 };
 
 const BROWSER_RESPONSE_BODY_SHAPE = {
   urlPattern: z
     .string()
-    .describe('URL glob pattern to match (e.g. "*api/users*").'),
+    .describe('URL glob, e.g. "*api/users*".'),
   surfaceId: optionalSurfaceId,
 };
 
 const BROWSER_HIGHLIGHT_SHAPE = {
-  ref: z.string().describe('Ref number of the element to highlight (from browser_snapshot).'),
+  ref: z.string(),
   surfaceId: optionalSurfaceId,
 };
 
@@ -329,7 +324,7 @@ export function registerInspectionTools(server: McpServer, deps: BrowserToolDeps
   // -----------------------------------------------------------------------
   server.tool(
     'browser_snapshot',
-    'Take an accessibility tree snapshot of the current page. Returns a text representation of the page structure with interactive elements annotated with ref numbers. A repeat snapshot of the same page returns a diff against the previous one when that is smaller (pass full:true to force the complete tree); selector scopes to a subtree, filter:"interactive" strips non-interactive nodes.',
+    'Accessibility-tree snapshot of the page, with interactive elements annotated with ref numbers. A repeat snapshot of the same page returns a diff against the previous one when that is smaller — pass full:true for the complete tree.',
     BROWSER_SNAPSHOT_SHAPE,
     async ({ format, selector, filter, full, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
       try {
@@ -438,7 +433,7 @@ export function registerInspectionTools(server: McpServer, deps: BrowserToolDeps
   // -----------------------------------------------------------------------
   server.tool(
     'browser_screenshot',
-    'Take a screenshot of the current page or a specific element. Returns the image as base64-encoded PNG. Requires browser_open to be called first to establish a connection, even if a browser panel is already visible.',
+    'Screenshot the page or one element as a base64-encoded PNG. Requires browser_open first, even if a browser panel is already visible.',
     BROWSER_SCREENSHOT_SHAPE,
     async ({ fullPage, ref, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
       try {
@@ -499,7 +494,7 @@ export function registerInspectionTools(server: McpServer, deps: BrowserToolDeps
   // -----------------------------------------------------------------------
   server.tool(
     'browser_evaluate',
-    'Evaluate a JavaScript expression in the browser page context. Dangerous patterns (fetch, XHR, cookies, storage, eval, Function) are BLOCKED by default to mitigate prompt injection; pass allowDangerous:true to override when the caller has verified the expression is trusted.',
+    'Evaluate a JavaScript expression in the page. Patterns that enable prompt-injection exfiltration (fetch, XHR, cookies, storage, eval, Function) are BLOCKED unless allowDangerous:true.',
     BROWSER_EVALUATE_SHAPE,
     async ({ expression, allowDangerous, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
       try {
@@ -552,7 +547,7 @@ export function registerInspectionTools(server: McpServer, deps: BrowserToolDeps
   // -----------------------------------------------------------------------
   server.tool(
     'browser_console',
-    'Retrieve console messages collected from the browser page. Messages are accumulated over time; use clear=true to reset.',
+    'Read console messages collected from the page. They accumulate; clear:true resets.',
     BROWSER_CONSOLE_SHAPE,
     async ({ level, clear, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
       try {
@@ -591,7 +586,7 @@ export function registerInspectionTools(server: McpServer, deps: BrowserToolDeps
   // -----------------------------------------------------------------------
   server.tool(
     'browser_network',
-    'Retrieve network requests collected from the browser page. Requests are accumulated over time; use clear=true to reset. Use a URL glob pattern to filter.',
+    'Read network requests collected from the page. They accumulate; clear:true resets.',
     BROWSER_NETWORK_SHAPE,
     async ({ filter, clear, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
       try {
@@ -632,7 +627,7 @@ export function registerInspectionTools(server: McpServer, deps: BrowserToolDeps
   // -----------------------------------------------------------------------
   server.tool(
     'browser_response_body',
-    'Retrieve the response body for a previously captured network request matching a URL pattern.',
+    'Response body of a captured network request matching a URL glob.',
     BROWSER_RESPONSE_BODY_SHAPE,
     async ({ urlPattern, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
       try {
@@ -693,7 +688,7 @@ export function registerInspectionTools(server: McpServer, deps: BrowserToolDeps
   // -----------------------------------------------------------------------
   server.tool(
     'browser_highlight',
-    'Visually highlight an element on the page by its ref number. Adds a red outline around the element.',
+    'Draw a red outline around an element by ref.',
     BROWSER_HIGHLIGHT_SHAPE,
     async ({ ref, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
       try {

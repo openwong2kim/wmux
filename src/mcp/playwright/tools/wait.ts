@@ -16,7 +16,7 @@ import {
 const optionalSurfaceId = z
   .string()
   .optional()
-  .describe('Target a specific surface by ID. Omit to use the active surface.');
+  .describe('Omit for the active surface.');
 
 // Module-scope parameter shape: hoisted out of the per-registration path so
 // every createWmuxServer() instance shares one set of zod schema objects.
@@ -24,23 +24,23 @@ const BROWSER_WAIT_SHAPE = {
   url: z
     .string()
     .optional()
-    .describe('URL or glob pattern to wait for (e.g. "**/dashboard**").'),
+    .describe('URL glob, e.g. "**/dashboard**".'),
   selector: z
     .string()
     .optional()
-    .describe('CSS selector to wait for.'),
+    .describe('CSS selector to appear.'),
   text: z
     .string()
     .optional()
-    .describe('Text to wait for in document.body.innerText.'),
+    .describe('Text to appear in document.body.innerText.'),
   fn: z
     .string()
     .optional()
-    .describe('Custom JavaScript predicate function body to wait for (must return truthy).'),
+    .describe('JS predicate body; waits until it returns truthy.'),
   timeout: z
     .number()
     .optional()
-    .describe('Maximum wait time in milliseconds. Defaults to 30000.'),
+    .describe('Milliseconds; default 30000.'),
   surfaceId: optionalSurfaceId,
 };
 
@@ -138,7 +138,7 @@ export function createWaitToolCatalog(deps: BrowserToolDeps) {
   const tool = defineWmuxTool({
     name: 'browser_wait',
     description:
-      'Wait for a condition: URL pattern, CSS selector, text content, custom JS predicate, or network idle. Priority: url > selector > text > fn > networkidle.',
+      'Wait for a condition. When several are given the priority is url > selector > text > fn > networkidle.',
     inputSchema: BROWSER_WAIT_SHAPE,
     profiles: ['full'],
     invoke: async ({ url, selector, text, fn, timeout, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
