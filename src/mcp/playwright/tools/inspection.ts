@@ -52,7 +52,7 @@ const BROWSER_SNAPSHOT_SHAPE = {
     .enum(['interactive'])
     .optional()
     .describe('Strips non-interactive nodes — much smaller output.'),
-  full: z.boolean().optional(),
+  full: z.boolean().optional().describe('Force the complete tree instead of a diff.'),
   surfaceId: optionalSurfaceId,
 };
 
@@ -341,7 +341,7 @@ export function registerInspectionTools(server: McpServer, deps: BrowserToolDeps
   // -----------------------------------------------------------------------
   server.tool(
     'browser_snapshot',
-    'Accessibility-tree snapshot of the page, with interactive elements annotated with ref numbers. A repeat snapshot of the same page returns a diff against the previous one when that is smaller — pass full:true for the complete tree.',
+    'Accessibility-tree snapshot of the page, with interactive elements annotated with ref numbers. A repeat snapshot of the same page returns a diff against the previous one when that is smaller — pass full:true for the complete tree. Password field values read as "[redacted:password]" (the field is still listed and fillable); an empty field has no value at all, so a redacted one means it IS filled.',
     BROWSER_SNAPSHOT_SHAPE,
     async ({ format, selector, filter, full, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
       try {
