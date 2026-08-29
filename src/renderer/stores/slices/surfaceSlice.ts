@@ -46,6 +46,12 @@ export interface SurfaceSlice {
   updateSurfacePtyId: (paneId: string, surfaceId: string, ptyId: string) => void;
   updateSurfaceTitle: (surfaceId: string, title: string) => void;
   updateSurfaceTitleByPty: (ptyId: string, title: string) => void;
+  /** #1086/#1091 — the remote-terminal twin of updateSurfaceTitleByPty. A
+   *  remote-terminal surface's ptyId is always '' (see createRemoteSurface),
+   *  so it can never be found by that lookup — this one is keyed by surfaceId
+   *  directly instead, the same identity RemotePaneSurface already has to
+   *  hand. Same manual-rename guard: never overrides a titleLocked surface. */
+  updateRemoteSurfaceTitle: (surfaceId: string, title: string) => void;
   /**
    * Update the live working directory of the surface bound to `ptyId`. Driven
    * by the OSC 7 shell-integration channel (onCwdChanged), so each terminal
@@ -435,6 +441,19 @@ export const createSurfaceSlice: StateCreator<StoreState, [['zustand/immer', nev
         if (!surface) continue;
         // Terminal surfaces only, and never override a user's manual rename.
         if ((surface.surfaceType ?? 'terminal') === 'terminal' && !surface.titleLocked) {
+          surface.title = title;
+        }
+        return;
+      }
+    }
+  }),
+
+  updateRemoteSurfaceTitle: (surfaceId, title) => set((state: StoreState) => {
+    for (const ws of state.workspaces) {
+      for (const pane of getWorkspaceLeafPanes(ws)) {
+        const surface = pane.surfaces.find((s) => s.id === surfaceId);
+        if (!surface) continue;
+        if (surface.surfaceType === 'remote-terminal' && !surface.titleLocked) {
           surface.title = title;
         }
         return;

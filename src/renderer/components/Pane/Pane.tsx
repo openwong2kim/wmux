@@ -10,6 +10,8 @@ import TerminalComponent from '../Terminal/Terminal';
 import BrowserPanel from '../Browser/BrowserPanel';
 import EditorPanel from '../Editor/EditorPanel';
 import DiffPanel from '../Diff/DiffPanel';
+import RemotePaneSurface from '../Remote/RemotePaneSurface';
+import AddRemotePaneModal from '../Remote/AddRemotePaneModal';
 import SurfaceTabs, { paneClusterWidth, paneActionsMode, type PaneActionsMode } from './SurfaceTabs';
 import { useElementWidth } from '../../hooks/useElementWidth';
 import { ErrorBoundary } from '../ErrorBoundary';
@@ -282,6 +284,8 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
   const setActivePane = useStore((s) => s.setActivePane);
   const setActiveSurface = useStore((s) => s.setActiveSurface);
   const addBrowserSurface = useStore((s) => s.addBrowserSurface);
+  const addRemoteSurface = useStore((s) => s.addRemoteSurface);
+  const [addRemoteModalOpen, setAddRemoteModalOpen] = useState(false);
   const splitPane = useStore((s) => s.splitPane);
   const closeSurface = useStore((s) => s.closeSurface);
   const updateSurfacePtyId = useStore((s) => s.updateSurfacePtyId);
@@ -409,6 +413,14 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
     if (maybeDelegateExternalBrowser(undefined)) return;
     addBrowserSurface(pane.id, undefined, undefined, workspace.id);
   }, [addBrowserSurface, pane.id, workspace.id]);
+
+  const handleAddRemote = useCallback(() => {
+    setAddRemoteModalOpen(true);
+  }, []);
+
+  const handleRemoteCreated = useCallback((hostId: string, sessionId: string) => {
+    addRemoteSurface(pane.id, hostId, sessionId, undefined, undefined, workspace.id);
+  }, [addRemoteSurface, pane.id, workspace.id]);
 
   const closePane = useStore((s) => s.closePane);
 
@@ -944,7 +956,14 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
         onSplitVertical={handleSplitVertical}
         onAddTerminal={handleAddTerminal}
         onAddBrowser={handleAddBrowser}
+        onAddRemote={handleAddRemote}
       />
+      {addRemoteModalOpen && (
+        <AddRemotePaneModal
+          onClose={() => setAddRemoteModalOpen(false)}
+          onCreated={handleRemoteCreated}
+        />
+      )}
 
       <SplitSurfaceView
         pane={pane}
@@ -1001,6 +1020,7 @@ function SplitSurfaceView({
   // 인 것만 split 위에 오버레이로 겹쳐 렌더한다(각 패널이 display:isActive로 자기
   // 가시성을 관리하므로 비active는 보이지 않음 — editor 기존 단독 경로는 무회귀).
   const others = useMemo(() => pickOverlaySurfaces(pane.surfaces), [pane.surfaces]);
+  const updateRemoteSurfaceTitle = useStore((s) => s.updateRemoteSurfaceTitle);
 
   const hasBoth = terminals.length > 0 && browsers.length > 0;
 
@@ -1051,6 +1071,22 @@ function SplitSurfaceView({
               isActive={surface.id === activeSurfaceId}
               surfaceId={surface.id}
               verifiedWorkspaceId={surface.diffOwnerWorkspaceId || workspaceId}
+            />
+          ) : surface.surfaceType === 'remote-terminal' ? (
+            // #1086/#1091 — a remote session mirrored as an ordinary tab in a
+            // LOCAL workspace's pane, not a whole separate "attached remote
+            // workspace". No local PTY, so it sits outside the `terminals`
+            // group above (which is keyed on ptyId-bearing surfaces) even
+            // though it visually shares the same tab strip.
+            <RemotePaneSurface
+              key={surface.id}
+              hostId={surface.remoteHostId || ''}
+              sessionId={surface.remoteSessionId || ''}
+              surfaceId={surface.id}
+              shell={surface.shell}
+              cwd={surface.cwd}
+              isActive={surface.id === activeSurfaceId}
+              onTitleChange={updateRemoteSurfaceTitle}
             />
           ) : (
             <TerminalComponent

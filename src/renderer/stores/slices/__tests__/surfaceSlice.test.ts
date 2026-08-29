@@ -730,3 +730,60 @@ describe('surfaceSlice.addRemoteSurface (#1086/#1091)', () => {
     expect(pane.surfaces).toHaveLength(0);
   });
 });
+
+describe('surfaceSlice.updateRemoteSurfaceTitle (#1086/#1091)', () => {
+  it('sets the title of the remote-terminal surface identified by surfaceId', () => {
+    const { state, slice } = createHarness();
+    const paneId = state.workspaces[0].rootPane.id;
+    slice.addRemoteSurface(paneId, 'host-abc', 'session-xyz');
+    const pane = state.workspaces[0].rootPane;
+    if (pane.type !== 'leaf') throw new Error('expected leaf pane');
+    const surfaceId = pane.surfaces[0].id;
+
+    slice.updateRemoteSurfaceTitle(surfaceId, 'my-remote-shell');
+
+    expect(pane.surfaces[0].title).toBe('my-remote-shell');
+  });
+
+  it('is a no-op for an unknown surfaceId', () => {
+    const { state, slice } = createHarness();
+    const paneId = state.workspaces[0].rootPane.id;
+    slice.addRemoteSurface(paneId, 'host-abc', 'session-xyz');
+    const pane = state.workspaces[0].rootPane;
+    if (pane.type !== 'leaf') throw new Error('expected leaf pane');
+    const before = pane.surfaces[0].title;
+
+    slice.updateRemoteSurfaceTitle('ghost', 'nope');
+
+    expect(pane.surfaces[0].title).toBe(before);
+  });
+
+  it('never touches a terminal surface, even by a matching surfaceId collision', () => {
+    const { state, slice } = createHarness();
+    const paneId = state.workspaces[0].rootPane.id;
+    slice.addSurface(paneId, 'pty-1', 'pwsh', 'C:\\a');
+    const pane = state.workspaces[0].rootPane;
+    if (pane.type !== 'leaf') throw new Error('expected leaf pane');
+    const surfaceId = pane.surfaces[0].id;
+    const before = pane.surfaces[0].title;
+
+    slice.updateRemoteSurfaceTitle(surfaceId, 'should-not-apply');
+
+    expect(pane.surfaces[0].title).toBe(before);
+  });
+
+  it('is ignored once the surface title is locked by a manual rename', () => {
+    const { state, slice } = createHarness();
+    const paneId = state.workspaces[0].rootPane.id;
+    slice.addRemoteSurface(paneId, 'host-abc', 'session-xyz');
+    const pane = state.workspaces[0].rootPane;
+    if (pane.type !== 'leaf') throw new Error('expected leaf pane');
+    const surfaceId = pane.surfaces[0].id;
+
+    slice.updateSurfaceTitle(surfaceId, 'my-name'); // manual rename → locks
+    slice.updateRemoteSurfaceTitle(surfaceId, 'osc-set'); // must be ignored
+
+    expect(pane.surfaces[0].title).toBe('my-name');
+    expect(pane.surfaces[0].titleLocked).toBe(true);
+  });
+});
