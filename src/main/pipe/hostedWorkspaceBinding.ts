@@ -75,14 +75,33 @@ import { CAPABILITY_EFFECT, METHOD_CAPABILITY, resolveRequiredCapability } from 
 
 /**
  * Methods that resolve a workspace out of the request body with no ownership
- * check of their own. This is the plugin-reachable half of the #922 survey of
- * `params.workspaceId ?? store.activeWorkspaceId` sites, not a fresh judgement
- * call per method:
+ * check of their own. Two bypass patterns feed this set, and the second was
+ * missed on the first pass because the survey only looked for the first:
+ *
+ *   1. the renderer fallback — `params.workspaceId ?? store.activeWorkspaceId`
+ *      in `useRpcBridge.ts`, which resolves inside whatever workspace the
+ *      caller named;
+ *   2. the SKIPPED ownership check — `assertWorkspaceOwnsPty` (`ptyOwnership.ts`)
+ *      and `resolveTarget` (`pane.rpc.ts`) both early-return when
+ *      `workspaceId` is absent, so a caller that names a foreign `ptyId` or
+ *      `paneId` and NO workspace is not checked at all. Omitting the field was
+ *      the bypass; that is why every method here has `workspaceId` pinned on
+ *      omission rather than only on mismatch.
+ *
+ * `hostedWorkspaceBinding.drift.test.ts` scans the tree for both patterns and
+ * fails when a plugin-reachable method carries one without appearing here.
+ *
+ * Deliberately out, having been checked:
  *
  *   `surface.list` / `surface.new`  — `wmux.internal`; no plugin can declare
  *                                     the reserved prefix, so unreachable.
  *   `pane.resolveActiveLeaf`        — a main->renderer channel with no router
  *                                     entry; not in the `RpcMethod` union.
+ *   `pane.focus` / `pane.close` /   — no `workspaceId` param at all; they take
+ *   `pane.stash` / `pane.unstash`     a globally-unique `paneId`. They are
+ *                                     confined through `hostedConfinement`
+ *                                     below instead, reusing the renderer's
+ *                                     commander-confinement path.
  *
  * Everything ELSE stays out on purpose. `browser.*` beyond the two below
  * resolves its scope in `callerScope` (#941) and must keep doing so — a second
@@ -98,12 +117,32 @@ import { CAPABILITY_EFFECT, METHOD_CAPABILITY, resolveRequiredCapability } from 
  * and a security boundary is the wrong place to assume it.
  */
 const BODY_SCOPED_METHODS: ReadonlySet<RpcMethod> = new Set<RpcMethod>([
+  // Renderer-fallback family.
   'pane.list',
   'pane.search',
   'pane.split',
-  'input.readScreen',
   'browser.open',
   'browser.close',
+  // Terminal IO — `assertWorkspaceOwnsPty` skips itself when `workspaceId` is
+  // absent, so these were reachable with a foreign `ptyId` and no workspace.
+  // The pty ids are discoverable: lifecycle events are an all-workspace
+  // firehose for every `events.subscribe` holder by design.
+  'input.readScreen',
+  'input.send',
+  'input.sendKey',
+  'terminal.readEvents',
+  // Pane metadata — `resolveTarget` validates a `paneId` against "any
+  // workspace" when `workspaceId` is omitted.
+  'pane.getMetadata',
+  'pane.setMetadata',
+  'pane.clearMetadata',
+  // Workspace-level metadata, with no fallback to hide behind: it REQUIRES a
+  // caller-named workspace and then writes agent skills into it with no owner
+  // check — the `declared` lane in renderer form. Surfaced by the drift scan
+  // rather than by either survey. `meta.setStatus` / `meta.setProgress` are
+  // the safe members of the same family: they ignore the body and write to
+  // the active workspace, which for a hosted caller IS its binding.
+  'meta.setSkills',
 ]);
 
 export type HostedBindingRefusal =
@@ -237,5 +276,58 @@ export function hostedRefusalMessage(
   );
 }
 
+/**
+ * The hosted binding for a caller on a method that takes NO `workspaceId` —
+ * `pane.focus` / `pane.close` / `pane.stash` / `pane.unstash`, which address a
+ * globally-unique `paneId` that the renderer resolves across ALL workspaces.
+ *
+ * There is no request field to pin, so these reuse the confinement channel a
+ * validated commander already rides: main stamps `confineWorkspaceId` onto the
+ * renderer request, and the renderer refuses when the pane's true owner
+ * differs. Same mechanism, second writer.
+ *
+ * Three outcomes, and the middle one is the whole point:
+ *   `none`     not a hosted caller — the handler behaves exactly as before.
+ *   `confine`  stamp this id; the renderer enforces it against the real owner.
+ *   `refuse`   a hosted caller with NO binding. It must not fall through to
+ *              `none`, which is unconfined: that is the fail-open PR1 closed,
+ *              and here it would mean closing another workspace's pane (a PTY
+ *              dispose — a running session destroyed) rather than being told no.
+ */
+export type HostedConfinement =
+  | { kind: 'none' }
+  | { kind: 'confine'; workspaceId: string }
+  | { kind: 'refuse' };
+
+export function hostedConfinement(ctx: RpcContext | undefined): HostedConfinement {
+  if (!isHostedCaller(ctx)) return { kind: 'none' };
+  const bound = hostedBindingOf(ctx)?.trim();
+  if (!bound) return { kind: 'refuse' };
+  return { kind: 'confine', workspaceId: bound };
+}
+
+/**
+ * Refusal text for a hosted caller with no binding on a pane-addressed method.
+ * Names no workspace, for the same reason as `hostedRefusalMessage`.
+ */
+export function hostedUnboundPaneMessage(method: RpcMethod): string {
+  return (
+    `${method}: HOSTED_SCOPE_REFUSED: ` +
+    `${HOSTED_REFUSAL_REMEDY['hosted-workspace-unbound']}. Do not retry unchanged.`
+  );
+}
+
 /** Test-only view of the covered set, so a test can pin it without re-listing. */
 export const HOSTED_BOUND_METHODS = BODY_SCOPED_METHODS;
+
+/**
+ * Test-only: the methods confined through `hostedConfinement` rather than by
+ * pinning `workspaceId`. Kept beside the set above so the drift test can treat
+ * the two together as "the covered surface".
+ */
+export const HOSTED_CONFINED_METHODS: ReadonlySet<RpcMethod> = new Set<RpcMethod>([
+  'pane.focus',
+  'pane.close',
+  'pane.stash',
+  'pane.unstash',
+]);

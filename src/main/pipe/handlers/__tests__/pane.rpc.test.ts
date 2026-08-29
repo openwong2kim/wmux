@@ -1838,3 +1838,124 @@ describe('pane.rpc — commander confinement on stash/unstash', () => {
     },
   );
 });
+
+// ─── Hosted (plugin) confinement on the pane-addressed verbs (#922 PR2) ─────
+//
+// pane.focus / close / stash / unstash take a globally-unique paneId that the
+// renderer resolves across ALL workspaces, and they carry NO workspaceId param
+// to pin — so the dispatch-level binding cannot reach them. They ride the same
+// confinement channel the commander uses instead.
+//
+// pane.close had no stamp at all before this. That was consistent for the
+// commander (it is in COMMANDER_TEARDOWN_DENY, so a brain never reaches the
+// handler) but left the plugin lane with a teardown that resolves everywhere:
+// closing a pane disposes its PTYs, so the wrong target is a running session
+// destroyed rather than a view that can be switched back.
+
+describe('pane.rpc — hosted plugin confinement on pane-addressed verbs', () => {
+  const HOSTED = ['pane.focus', 'pane.close', 'pane.stash', 'pane.unstash'] as const;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    sendToRendererMock.mockResolvedValue({ ok: true });
+  });
+
+  const dispatchHosted = (
+    method: (typeof HOSTED)[number],
+    params: Record<string, unknown>,
+    hostedWorkspace: string | null = 'ws-plugin',
+  ) =>
+    register().dispatch(
+      { id: `h-${method}`, method, params, clientName: 'hello-panel' },
+      { firstParty: true, hostedWorkspace },
+    );
+
+  it.each(HOSTED)('%s stamps the host-derived workspace as confineWorkspaceId', async (method) => {
+    await dispatchHosted(method, { id: 'pane-victim' });
+    expect(sendToRendererMock).toHaveBeenCalledWith(
+      expect.anything(),
+      method,
+      { id: 'pane-victim', confineWorkspaceId: 'ws-plugin' },
+    );
+  });
+
+  it.each(HOSTED)('%s never trusts a plugin-supplied confineWorkspaceId', async (method) => {
+    // The provenance test that matters here: the plugin controls `params`, and
+    // the stamp must win over anything it puts in that key.
+    await dispatchHosted(method, { id: 'pane-victim', confineWorkspaceId: 'ws-victim' });
+    expect(sendToRendererMock).toHaveBeenCalledWith(
+      expect.anything(),
+      method,
+      expect.objectContaining({ confineWorkspaceId: 'ws-plugin' }),
+    );
+  });
+
+  it.each(HOSTED)('%s refuses outright when the host has no workspace to bind to', async (method) => {
+    // Stamping nothing would leave the call unconfined — an unbound plugin
+    // strictly less confined than a bound one, the fail-open PR1 closed.
+    const res = await dispatchHosted(method, { id: 'pane-victim' }, null);
+    expect(res.ok).toBe(false);
+    expect(String((res as { error?: string }).error)).toContain('HOSTED_SCOPE_REFUSED');
+    expect(sendToRendererMock).not.toHaveBeenCalled();
+  });
+
+  it.each(HOSTED)('%s still omits the field entirely for an ordinary caller', async (method) => {
+    // Absence is what makes every renderer-side check `confine && …`; a wire
+    // caller must be byte-identical to before.
+    const res = await register().dispatch(
+      { id: `w-${method}`, method, params: { id: 'pane-1' }, clientName: 'wmux-cli' },
+      { externalWire: true },
+    );
+    expect(res.ok).toBe(true);
+    expect(sendToRendererMock).toHaveBeenCalledWith(expect.anything(), method, { id: 'pane-1' });
+  });
+});
+
+// ─── Hosted binding on the metadata verbs (#922 PR2) ────────────────────────
+//
+// resolveTarget validates a paneId against "any workspace" when workspaceId is
+// omitted, so a plugin naming a foreign paneId and no workspace read or wrote
+// that pane's metadata unchecked. These DO take a workspaceId, so the
+// dispatch-level binding pins it and resolveTarget's check becomes real.
+
+describe('pane.rpc — hosted plugin binding on metadata verbs', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    sendToRendererMock.mockResolvedValue({ workspaceId: 'ws-victim' });
+  });
+
+  it('pins an omitted workspaceId to the host workspace on pane.getMetadata', async () => {
+    await register().dispatch(
+      {
+        id: 'm1',
+        method: 'pane.getMetadata',
+        params: { paneId: 'pane-victim' },
+        clientName: 'hello-panel',
+      },
+      { firstParty: true, hostedWorkspace: 'ws-plugin' },
+    );
+    // The renderer is asked to validate the pane against the BINDING, not
+    // against "any workspace" — the early-return that used to skip the check.
+    expect(sendToRendererMock).toHaveBeenCalledWith(
+      expect.anything(),
+      'pane.validateWorkspace',
+      expect.objectContaining({ paneId: 'pane-victim', workspaceId: 'ws-plugin' }),
+    );
+  });
+
+  it('refuses a foreign workspace on the metadata WRITES', async () => {
+    for (const method of ['pane.setMetadata', 'pane.clearMetadata'] as const) {
+      const res = await register().dispatch(
+        {
+          id: `m-${method}`,
+          method,
+          params: { paneId: 'pane-victim', workspaceId: 'ws-victim', status: 'x' },
+          clientName: 'hello-panel',
+        },
+        { firstParty: true, hostedWorkspace: 'ws-plugin' },
+      );
+      expect(res.ok, method).toBe(false);
+      expect(String((res as { error?: string }).error), method).toContain('HOSTED_SCOPE_REFUSED');
+    }
+  });
+});

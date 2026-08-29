@@ -561,6 +561,18 @@ export const CAPABILITY_RISK_CLASS: Record<string, RiskClass> = {
  * capability added without a row here fails closed (refuse) rather than
  * silently acquiring the read treatment. `methodCapabilityMap.test.ts` pins
  * that every KNOWN_CAPABILITIES entry is classified here regardless.
+ *
+ * WARNING — one capability can gate methods with DIFFERENT effects, and this
+ * map answers for the capability, not the method. `pane.read` gates both
+ * `pane.list` (an observation) and `pane.focus` (which mutates UI focus
+ * state); `browser.navigate` gates `browser.open` and `browser.close`. So a
+ * `read` verdict here is only as accurate as the capability's narrowest
+ * member. Before adding a method to `BODY_SCOPED_METHODS`, check what the
+ * METHOD actually does rather than trusting the capability's verdict — a
+ * mutation that inherits `read` gets its foreign workspace silently
+ * substituted instead of refused, which is the one failure mode the read/write
+ * seam exists to prevent. (`pane.focus` is deliberately not in that set for
+ * exactly this reason; it is confined through `hostedConfinement` instead.)
  */
 export const CAPABILITY_EFFECT: Record<string, 'read' | 'write'> = {
   // Pane lifecycle and content

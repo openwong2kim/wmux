@@ -174,10 +174,16 @@ function findOwnedPane(
 }
 
 /**
- * The commander-confinement workspace id MAIN stamps onto a request from a
- * VALIDATED per-spawn token — never read from the wire, so a caller cannot
- * widen its own blast radius by supplying one. Absent for every ordinary
- * caller, which is why the confinement checks are all `confine && …`.
+ * The confinement workspace id MAIN stamps onto a request — never read from the
+ * wire, so a caller cannot widen its own blast radius by supplying one. Absent
+ * for every ordinary caller, which is why the confinement checks are all
+ * `confine && …`.
+ *
+ * Two writers, both server-derived: a VALIDATED commander per-spawn token
+ * (BYOB P4) and the workspace the iframe plugin host derived for a hosted
+ * caller (#922 PR2). The checks below cannot tell them apart and do not need
+ * to — which is also why their refusals say "the calling workspace" rather
+ * than naming the commander, whose vocabulary means nothing to a plugin.
  */
 function readConfineWorkspaceId(params: Record<string, unknown>): string | null {
   return typeof params.confineWorkspaceId === 'string' && params.confineWorkspaceId.length > 0
@@ -1042,6 +1048,16 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
     }
     const targetWs = owned.ws;
 
+    // Confinement (#922 PR2). `pane.close` resolves across ALL workspaces by
+    // design — an external caller cleaning up a worker pane it created — but a
+    // CONFINED caller must not use that reach. This is a teardown: it disposes
+    // the pane's PTYs, so a wrong target is a running session destroyed, not a
+    // view that can be switched back. Stamped by MAIN, never caller-supplied.
+    const closeConfine = readConfineWorkspaceId(params);
+    if (closeConfine && targetWs.id !== closeConfine) {
+      return { error: `pane.close: pane ${paneId} is outside the calling workspace` };
+    }
+
     // Only leaf panes are closable, and never the root: closePane is a no-op for
     // the root pane (findParent returns null), so disposing its PTYs would orphan
     // live surfaces with dead PTYs (CodeRabbit). Reject non-leaf / root up front.
@@ -1069,7 +1085,7 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
     if (!owned) return { error: `pane.stash: pane ${paneId} not found` };
     const stashConfine = readConfineWorkspaceId(params);
     if (stashConfine && owned.ws.id !== stashConfine) {
-      return { error: `pane.stash: pane ${paneId} is outside the commander's workspace` };
+      return { error: `pane.stash: pane ${paneId} is outside the calling workspace` };
     }
     if (owned.stashed) return { ok: true, stashed: true };
     const ok = store.stashPane(paneId, owned.ws.id);
@@ -1097,7 +1113,7 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
     if (!owned) return { error: `pane.unstash: pane ${paneId} not found` };
     const unstashConfine = readConfineWorkspaceId(params);
     if (unstashConfine && owned.ws.id !== unstashConfine) {
-      return { error: `pane.unstash: pane ${paneId} is outside the commander's workspace` };
+      return { error: `pane.unstash: pane ${paneId} is outside the calling workspace` };
     }
     if (!owned.stashed) return { ok: true, stashed: false };
     const ok = store.unstashPane(paneId, owned.ws.id);
@@ -1226,7 +1242,7 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
     // not own is refused instead of mutating another workspace's focus state.
     const confine = readConfineWorkspaceId(params);
     if (confine && ownerWs.id !== confine) {
-      return { error: `pane.focus: pane ${paneId} is outside the commander's workspace` };
+      return { error: `pane.focus: pane ${paneId} is outside the calling workspace` };
     }
     const ok = store.focusPaneSurface(ownerWs.id, paneId);
     if (!ok) return { error: `pane.focus: pane ${paneId} is not a focusable leaf` };

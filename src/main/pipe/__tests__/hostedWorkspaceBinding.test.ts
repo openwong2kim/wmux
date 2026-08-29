@@ -17,6 +17,7 @@ import type {
 import type { HostedScopeAuditInput } from '../../audit/shadowRejectionLog';
 import {
   HOSTED_BOUND_METHODS,
+  hostedConfinement,
   hostedWorkspaceBinding,
 } from '../hostedWorkspaceBinding';
 import { CAPABILITY_EFFECT } from '../../mcp/methodCapabilityMap';
@@ -176,15 +177,64 @@ describe('hostedWorkspaceBinding — decision', () => {
     });
   });
 
-  it('covers exactly the plugin-reachable body-scoped methods from the survey', () => {
+  it('covers the plugin-reachable body-scoped methods from BOTH bypass patterns', () => {
+    // The list is pinned here for readability; `hostedWorkspaceBinding.drift.test.ts`
+    // is what actually proves nothing is missing, by scanning the tree.
     expect([...HOSTED_BOUND_METHODS].sort()).toEqual([
       'browser.close',
       'browser.open',
       'input.readScreen',
+      'input.send',
+      'input.sendKey',
+      'meta.setSkills',
+      'pane.clearMetadata',
+      'pane.getMetadata',
       'pane.list',
       'pane.search',
+      'pane.setMetadata',
       'pane.split',
+      'terminal.readEvents',
     ]);
+  });
+
+  it.each<[RpcMethod, 'read' | 'write']>([
+    ['terminal.readEvents', 'read'],
+    ['pane.getMetadata', 'read'],
+    ['input.send', 'write'],
+    ['input.sendKey', 'write'],
+    ['pane.setMetadata', 'write'],
+    ['pane.clearMetadata', 'write'],
+    ['meta.setSkills', 'write'],
+  ])('%s takes the %s verdict its capability implies', (method, effect) => {
+    const decision = hostedWorkspaceBinding(
+      method,
+      { workspaceId: OTHER_WS },
+      hostedCtx(HOST_WS),
+    );
+    expect(decision.kind).toBe(effect === 'write' ? 'refused' : 'bound');
+  });
+});
+
+describe('hostedConfinement — the pane-addressed methods', () => {
+  it('is inert for a caller that is not the plugin host', () => {
+    expect(hostedConfinement(undefined)).toEqual({ kind: 'none' });
+    expect(
+      hostedConfinement({ origin: 'local', externalWire: true, clientName: 'cli' }),
+    ).toEqual({ kind: 'none' });
+    expect(
+      hostedConfinement({ origin: 'local', operator: true, firstParty: true }),
+    ).toEqual({ kind: 'none' });
+  });
+
+  it('hands back the host-derived binding for a bound plugin', () => {
+    expect(hostedConfinement(hostedCtx(HOST_WS))).toEqual({
+      kind: 'confine',
+      workspaceId: HOST_WS,
+    });
+  });
+
+  it.each([null, '', '   '])('refuses an unbound plugin (%p) instead of leaving it unconfined', (binding) => {
+    expect(hostedConfinement(hostedCtx(binding as string | null))).toEqual({ kind: 'refuse' });
   });
 });
 

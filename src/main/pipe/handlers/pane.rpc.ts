@@ -6,6 +6,10 @@ import type { PaneMetadata } from '../../../shared/types';
 import type { RpcContext } from '../../../shared/rpc';
 import { ORCH_ROLE_KEY } from '../../../shared/orchestratorRole';
 import { metadataStore, type MergeMode, type MetadataStore } from '../../metadata/MetadataStore';
+import {
+  hostedConfinement,
+  hostedUnboundPaneMessage,
+} from '../hostedWorkspaceBinding';
 
 type GetWindow = () => BrowserWindow | null;
 
@@ -246,17 +250,42 @@ export function registerPaneRpc(
    * pane.focus — focuses a specific pane
    * params: { id: string }
    */
+  /**
+   * The `confineWorkspaceId` a pane-addressed RPC should carry, for both
+   * writers of that channel.
+   *
+   * BYOB P4: a validated commander caller (ctx stamped by the router from its
+   * per-spawn token — never from the wire) is confined to its own workspace.
+   * #922 PR2: an iframe plugin is confined the same way, to the workspace its
+   * host derived. These methods take a globally-unique `paneId` that the
+   * renderer resolves across ALL workspaces, so without a confinement id a
+   * plugin could focus, stash, or CLOSE (dispose the PTYs of) a pane in a
+   * workspace the user is not even looking at.
+   *
+   * Returns a rejection instead of an id when the caller is hosted but
+   * UNBOUND: stamping nothing would leave it unconfined, i.e. strictly less
+   * confined than a bound plugin.
+   */
+  const paneConfinement = (
+    method: 'pane.focus' | 'pane.close' | 'pane.stash' | 'pane.unstash',
+    ctx: RpcContext | undefined,
+  ): { reject: Error } | { confine: string | undefined } => {
+    if (ctx?.commanderWorkspace) return { confine: ctx.commanderWorkspace };
+    const hosted = hostedConfinement(ctx);
+    if (hosted.kind === 'refuse') return { reject: new Error(hostedUnboundPaneMessage(method)) };
+    if (hosted.kind === 'confine') return { confine: hosted.workspaceId };
+    return { confine: undefined };
+  };
+
   router.register('pane.focus', (params, ctx) => {
     if (typeof params['id'] !== 'string') {
       return Promise.reject(new Error('pane.focus: missing required param "id"'));
     }
-    // BYOB P4: a validated commander caller (ctx stamped by the router from
-    // its per-spawn token — never from the wire) is confined to its own
-    // workspace. The confinement id rides to the renderer bridge, which
-    // resolves the pane's true owner and refuses a mismatch.
+    const confinement = paneConfinement('pane.focus', ctx);
+    if ('reject' in confinement) return Promise.reject(confinement.reject);
     return sendToRenderer(getWindow, 'pane.focus', {
       id: params['id'],
-      ...(ctx?.commanderWorkspace ? { confineWorkspaceId: ctx.commanderWorkspace } : {}),
+      ...(confinement.confine ? { confineWorkspaceId: confinement.confine } : {}),
     });
   });
 
@@ -309,11 +338,21 @@ export function registerPaneRpc(
    * lets an external multi-agent caller clean up a worker pane it created via
    * pane.split in its own background workspace. No active-ws fallback.
    */
-  router.register('pane.close', (params) => {
+  router.register('pane.close', (params, ctx) => {
     if (typeof params['id'] !== 'string') {
       return Promise.reject(new Error('pane.close: missing required param "id"'));
     }
-    return sendToRenderer(getWindow, 'pane.close', { id: params['id'] });
+    // No confinement id used to ride this one at all. That was consistent for
+    // the commander — `pane.close` is in COMMANDER_TEARDOWN_DENY, so a brain
+    // never reaches the handler — but it left the plugin lane with a teardown
+    // that resolves across every workspace. The plugin arm is what is new here;
+    // the commander arm is unreachable and stays for the invariant.
+    const confinement = paneConfinement('pane.close', ctx);
+    if ('reject' in confinement) return Promise.reject(confinement.reject);
+    return sendToRenderer(getWindow, 'pane.close', {
+      id: params['id'],
+      ...(confinement.confine ? { confineWorkspaceId: confinement.confine } : {}),
+    });
   });
 
   /**
@@ -329,15 +368,14 @@ export function registerPaneRpc(
     if (typeof params['id'] !== 'string') {
       return Promise.reject(new Error('pane.stash: missing required param "id"'));
     }
-    // BYOB P4, same shape as pane.focus: a validated commander is confined to
-    // its own workspace. These take a globally-unique paneId that the renderer
-    // resolves across ALL workspaces, so without the confinement id a confined
-    // brain could rearrange another workspace's layout — the §4.0 blast-radius
-    // invariant. The id is stamped by MAIN from the validated token binding and
-    // never read off the wire.
+    // Same shape as pane.focus, both writers: a confined brain (§4.0
+    // blast-radius invariant) or a hosted plugin must not rearrange another
+    // workspace's layout. The id is stamped by MAIN and never read off the wire.
+    const confinement = paneConfinement('pane.stash', ctx);
+    if ('reject' in confinement) return Promise.reject(confinement.reject);
     return sendToRenderer(getWindow, 'pane.stash', {
       id: params['id'],
-      ...(ctx?.commanderWorkspace ? { confineWorkspaceId: ctx.commanderWorkspace } : {}),
+      ...(confinement.confine ? { confineWorkspaceId: confinement.confine } : {}),
     });
   });
 
@@ -353,9 +391,11 @@ export function registerPaneRpc(
     if (typeof params['id'] !== 'string') {
       return Promise.reject(new Error('pane.unstash: missing required param "id"'));
     }
+    const confinement = paneConfinement('pane.unstash', ctx);
+    if ('reject' in confinement) return Promise.reject(confinement.reject);
     return sendToRenderer(getWindow, 'pane.unstash', {
       id: params['id'],
-      ...(ctx?.commanderWorkspace ? { confineWorkspaceId: ctx.commanderWorkspace } : {}),
+      ...(confinement.confine ? { confineWorkspaceId: confinement.confine } : {}),
     });
   });
 
