@@ -101,6 +101,7 @@ import { WebviewCdpManager } from './browser-session/WebviewCdpManager';
 import { BrowserBackendStore } from './browser-session/BrowserBackendStore';
 import { ChromeLauncherRegistry } from './browser-session/ChromeLauncher';
 import { ChromeProfileStore } from './browser-session/ChromeProfileStore';
+import { ChromeSurfaceStore } from './browser-session/ChromeSurfaceStore';
 import { isBrowserBackend } from '../shared/browserBackend';
 import { DaemonClient, getDaemonPipeName, readDaemonAuthToken } from './DaemonClient';
 import { raceDaemonShutdown } from './daemonShutdownRace';
@@ -741,10 +742,14 @@ const browserBackendStore = new BrowserBackendStore(app.getPath('userData'));
 // 'chrome' backend: per-profile real-Chrome instances (Phase 2.5). The
 // 'default' profile keeps the pre-registry dir so existing logins survive.
 const chromeProfileStore = new ChromeProfileStore();
+// Stable chrome surface ids survive both Chrome swapping the target behind a
+// tab and an app restart, so an agent's tab handle stays valid across either.
+const chromeSurfaceStore = new ChromeSurfaceStore();
 const chromeRegistry = new ChromeLauncherRegistry({
   defaultDir: path.join(app.getPath('userData'), 'chrome-agent-profile'),
   profilesDir: path.join(app.getPath('userData'), 'chrome-profiles'),
   store: chromeProfileStore,
+  surfaceStore: chromeSurfaceStore,
 });
 // Phase 2.2 enforcement mode. Production wmux defaults to `enforce`; dev
 // (electron-forge / npm start) defaults to `shadow` so a bad delta doesn't lock
@@ -1937,6 +1942,7 @@ function prepareInstallQuit(): void {
   // must not outlive the app across an update install.
   try {
     chromeRegistry.disposeAll();
+    chromeSurfaceStore.flushSync();
   } catch (err) {
     console.error('[Main] install-quit chromeRegistry.disposeAll failed:', err);
   }
@@ -2214,6 +2220,7 @@ app.on('before-quit', async (e) => {
   safeStep('claudeWorker.stop', () => claudeWorker.stop());
   safeStep('webviewCdpManager.disposeAll', () => webviewCdpManager.disposeAll());
   safeStep('chromeRegistry.disposeAll', () => chromeRegistry.disposeAll());
+  safeStep('chromeSurfaceStore.flushSync', () => chromeSurfaceStore.flushSync());
   safeStep('pipeServer.stop', () => pipeServer.stop());
   safeStep('mcpRegistrar.unregister', () => mcpRegistrar.unregister());
   safeStep('autoUpdater.stop', () => autoUpdater.stop());

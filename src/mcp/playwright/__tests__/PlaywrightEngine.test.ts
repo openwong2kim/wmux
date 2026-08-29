@@ -1598,3 +1598,108 @@ describe('PlaywrightEngine live-Chrome attach (Phase 3)', () => {
     expect(resolved).toBeNull();
   });
 });
+
+/*
+ * Dedicated 'chrome' backend with STABLE surface ids.
+ *
+ * The launcher now mints `chrome-<uuid>` surfaceIds and keeps the CDP targetId
+ * as mutable mapping state, because Chrome replaces the target behind a tab on
+ * its own. Nothing in the engine changes: selectRegisteredTarget already
+ * matches the registry on `surfaceId`, and discovery already dials CDP with
+ * the matched entry's `targetId`. This test is the proof — it drives the
+ * engine unmodified against a cdp.info payload whose two ids DIFFER, which is
+ * exactly the shape a swapped target produces.
+ */
+describe('PlaywrightEngine dedicated-Chrome stable surface ids', () => {
+  beforeEach(() => {
+    (PlaywrightEngine as unknown as { instance: PlaywrightEngine | null }).instance = null;
+    mockSendRpc.mockReset();
+    mockConnectOverCDP.mockReset();
+  });
+
+  function chromeHarness(targetId: string, url: string) {
+    const page = {
+      url: vi.fn().mockReturnValue(url),
+      context: vi.fn(),
+      on: vi.fn(),
+      mainFrame: vi.fn().mockReturnValue({}),
+    };
+    const session = {
+      send: vi.fn().mockImplementation((method: string) => {
+        if (method === 'Target.getTargets') {
+          return Promise.resolve({
+            targetInfos: [{ targetId, type: 'page', title: '', url, attached: true }],
+          });
+        }
+        if (method === 'Target.getTargetInfo') {
+          return Promise.resolve({ targetInfo: { targetId } });
+        }
+        return Promise.resolve({});
+      }),
+      detach: vi.fn().mockResolvedValue(undefined),
+    };
+    const ctx = {
+      pages: vi.fn().mockReturnValue([page]),
+      newCDPSession: vi.fn().mockImplementation(async () => session),
+    };
+    page.context.mockReturnValue(ctx);
+    const browser = {
+      isConnected: vi.fn().mockReturnValue(true),
+      newBrowserCDPSession: vi.fn().mockImplementation(async () => session),
+      contexts: vi.fn().mockReturnValue([ctx]),
+      close: vi.fn().mockResolvedValue(undefined),
+    };
+    return { page, browser };
+  }
+
+  function mockChromeCdpInfo(surfaceId: string, targetId: string) {
+    mockSendRpc.mockImplementation((method: string) => {
+      if (method === 'browser.cdp.info') {
+        return Promise.resolve({
+          cdpPort: 9333,
+          targetsScoped: true,
+          workspaceBackend: 'chrome',
+          // The stable handle and the CDP target it currently maps to.
+          targets: [{ surfaceId, targetId, workspaceId: 'ws-1' }],
+        });
+      }
+      return Promise.resolve({});
+    });
+  }
+
+  it('resolves a stable surfaceId through the registry to its CURRENT targetId', async () => {
+    const { page, browser } = chromeHarness('TGT9', 'https://a.test/');
+    mockConnectOverCDP.mockResolvedValue(browser);
+    mockChromeCdpInfo('chrome-abc', 'TGT9');
+
+    const engine = PlaywrightEngine.getInstance();
+    const resolved = await engine.getPageForScope({ workspaceId: 'ws-1', surfaceId: 'chrome-abc' });
+    expect(resolved).toBe(page);
+    expect(mockConnectOverCDP).toHaveBeenCalledWith('http://localhost:9333');
+  });
+
+  it('the same surfaceId follows the tab after Chrome swaps the target behind it', async () => {
+    // Same handle the agent has held all along; Chrome has since replaced the
+    // page target. Only cdp.info's targetId changed.
+    const { page, browser } = chromeHarness('TGT-AFTER-SWAP', 'https://a.test/');
+    mockConnectOverCDP.mockResolvedValue(browser);
+    mockChromeCdpInfo('chrome-abc', 'TGT-AFTER-SWAP');
+
+    const engine = PlaywrightEngine.getInstance();
+    const resolved = await engine.getPageForScope({ workspaceId: 'ws-1', surfaceId: 'chrome-abc' });
+    expect(resolved).toBe(page);
+  });
+
+  it('a raw CDP targetId is NOT accepted as a surfaceId on the dedicated path', async () => {
+    // The dedicated backend's registry match is what keeps workspace B from
+    // pinning workspace A's tab on a shared profile — there is deliberately no
+    // direct Target.getTargets fallback here (that is live-attach only).
+    const { browser } = chromeHarness('TGT9', 'https://a.test/');
+    mockConnectOverCDP.mockResolvedValue(browser);
+    mockChromeCdpInfo('chrome-abc', 'TGT9');
+
+    const engine = PlaywrightEngine.getInstance();
+    const resolved = await engine.getPageForScope({ workspaceId: 'ws-1', surfaceId: 'TGT9' });
+    expect(resolved).toBeNull();
+  });
+});
