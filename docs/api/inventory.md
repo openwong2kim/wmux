@@ -141,7 +141,7 @@ The full list lives in `src/shared/rpc.ts` (`ALL_RPC_METHODS`). For the MCP-faci
 
 | Method | Tier | Notes |
 |---|---|---|
-| `daemon.createSession`, `daemon.destroySession`, `daemon.attachSession`, `daemon.detachSession`, `daemon.resizeSession`, `daemon.listSessions`, `daemon.readPromptEvents`, `daemon.ping`, `daemon.shutdown`, `daemon.compact` | **internal** | Used by the wmux Electron client to manage the PTY daemon process. External tooling should not call these — use the pane/terminal surfaces instead. |
+| `daemon.createSession`, `daemon.destroySession`, `daemon.attachSession`, `daemon.detachSession`, `daemon.resizeSession`, `daemon.listSessions`, `daemon.getAgentName`, `daemon.getAgentState`, `daemon.deliverScheduledPrompt`, `daemon.readPromptEvents`, `daemon.ping`, `daemon.shutdown`, `daemon.compact` | **internal** | Used by the wmux Electron client to manage PTYs and perform identity/input-atomic scheduled delivery. External tooling should not call these — use the pane/terminal surfaces instead. |
 
 ### Company Mode (deferred to Phase 4 gate)
 

@@ -46,7 +46,7 @@ import { DEFAULT_COMPANY_ID, CHANNELS_EPOCH } from '../shared/channels';
 // (로그·machineId는 채널 부트 게이트 산출물 공유 — 별도 개방 금지.)
 import { A2aTaskService, type CreateTaskInput } from './a2a/A2aTaskService';
 import { WorkTaskService } from './worktask/WorkTaskService';
-import { isTaskState, type Message } from '../shared/types';
+import { isTaskState, type AgentStatus, type Message } from '../shared/types';
 import { ProcessMonitor } from './ProcessMonitor';
 import { AgentProcessTracker } from './AgentProcessTracker';
 import { resolveCanonicalAgentIdentity, detectorSuppressedBy, type CanonicalAgentIdentity } from './canonicalAgent';
@@ -73,7 +73,7 @@ import { monitorEventLoopDelay, performance as nodePerformance } from 'node:perf
 import { DAEMON_EXIT_ALREADY_RUNNING, ENV_KEYS } from '../shared/constants';
 import { toResumeCommand, resumeOfferForRecovered, mergeResumeBinding, normalizeResumeCwd } from '../shared/agentResume';
 import type { ResumeBinding } from '../shared/agentResume';
-import { agentDisplayToSlug, AGENT_SLUG_SET } from '../shared/agentIdentity';
+import { agentDisplayToSlug, AGENT_SLUG_SET, isAgentSlug } from '../shared/agentIdentity';
 import type { AgentEventStatus } from '../main/pty/AgentDetector';
 import { HookIngest, type HookArbitration } from './hooks/HookIngest';
 import { deriveAgentLiveness } from './hooks/agentLiveness';
@@ -103,6 +103,7 @@ import type { ApprovalDecision } from './approvals/types';
 import type { AgentSlug } from '../shared/events';
 import { LANLINK_SENTINEL_SESSION_ID } from '../shared/lanlink';
 import { classifyTasklistOutput, classifyKillOutcome, lockOwnerIsReclaimable, type ProcessLiveness } from '../shared/processLiveness';
+import { deliverScheduledPrompt } from './sessionPromptDelivery';
 
 // wmux web — read-only-by-default browser terminal. Instantiated lazily in
 // registerRpcHandlers; nothing listens until a `daemon.web.start` RPC arrives
@@ -3138,11 +3139,12 @@ function registerRpcHandlers(
     });
   });
 
-  // daemon.getAgentName — daemon AgentDetector가 gate로 확정한 에이전트 표시명을
-  // 직접 조회한다. renderer detection pull의 권위 소스: main으로의 session:agent
-  // emit 전파(타이밍 race)를 우회해, 배너 매칭이 됐다면 항상 정답을 준다.
-  pipeServer.onRpc('daemon.getAgentName', async (params) => {
-    const id = typeof params['id'] === 'string' ? params['id'] : '';
+  const readDaemonAgentState = (id: string): {
+    agentName: string | null;
+    agentStatus: AgentStatus;
+    inputQuiet: boolean;
+    inputRevision: number;
+  } => {
     const session = id ? sessionManager.getSession(id) : undefined;
     // #919 — answer canonically, not raw: the detector's getLastAgent is
     // sticky screen truth, which mislabels exactly when this RPC is consulted
@@ -3151,13 +3153,55 @@ function registerRpcHandlers(
     // no persisted slug can claim a fresh shell. Canonical undefined WITH a
     // mappable screen slug is the residue veto (confirmed-dead same slug):
     // report no agent instead of resurrecting the label.
+    const agentStatus = session?.bridge.getAgentStatus() ?? 'idle';
+    const inputQuiet = session?.bridge.isInputQuiet() ?? false;
+    const inputRevision = session?.bridge.getInputRevision() ?? 0;
     const rawName = session?.bridge.getLastAgent();
-    if (!session || !rawName) return { agentName: rawName ?? null };
+    const state = { agentStatus, inputQuiet, inputRevision };
+    if (!session || !rawName) return { agentName: rawName ?? null, ...state };
     const screenSlug = agentDisplayToSlug(rawName);
     const canonical = canonicalIdentityFor(agentProcessTracker, id, screenSlug);
-    if (canonical) return { agentName: agentSlugToDisplay(canonical.slug) };
-    if (screenSlug) return { agentName: null };
-    return { agentName: rawName };
+    if (canonical) return { agentName: agentSlugToDisplay(canonical.slug), ...state };
+    if (screenSlug) return { agentName: null, ...state };
+    return { agentName: rawName, ...state };
+  };
+
+  // Authoritative detector state bypasses desktop reconnect/event timing.
+  pipeServer.onRpc('daemon.getAgentName', async (params) => {
+    const id = typeof params['id'] === 'string' ? params['id'] : '';
+    return readDaemonAgentState(id);
+  });
+  pipeServer.onRpc('daemon.getAgentState', async (params) => {
+    const id = typeof params['id'] === 'string' ? params['id'] : '';
+    return readDaemonAgentState(id);
+  });
+  pipeServer.onRpc('daemon.deliverScheduledPrompt', async (params) => {
+    const id = typeof params['id'] === 'string' ? params['id'] : '';
+    const agentSlug = isAgentSlug(params['agentSlug']) ? params['agentSlug'] : null;
+    const prompt = typeof params['prompt'] === 'string' ? params['prompt'] : '';
+    if (!id || !agentSlug || !prompt.trim() || prompt.length > 16_000) {
+      return { result: 'error' as const };
+    }
+    const result = await deliverScheduledPrompt(agentSlug, prompt, {
+      getAgentState: () => {
+        const current = readDaemonAgentState(id);
+        const slug = current.agentName ? agentDisplayToSlug(current.agentName) : undefined;
+        return slug ? {
+          slug,
+          status: current.agentStatus,
+          inputQuiet: current.inputQuiet,
+          inputRevision: current.inputRevision,
+        } : null;
+      },
+      write: (data) => {
+        const managed = sessionManager.getSession(id);
+        if (!managed) return false;
+        managed.ptyProcess.write(data);
+        managed.bridge.noteInput(data);
+        return true;
+      },
+    });
+    return { result };
   });
 
   // daemon.readPromptEvents — read structured OSC 133 prompt/command events

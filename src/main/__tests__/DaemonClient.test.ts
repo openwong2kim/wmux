@@ -255,6 +255,80 @@ describe('DaemonClient', () => {
       await mockServer.stop();
     });
 
+    it('reads a validated reconnect-safe agent state snapshot', async () => {
+      const pipeName = testPipeName('agent-state');
+      mockServer = createMockDaemonServer(pipeName, AUTH_TOKEN, {
+        'daemon.getAgentState': (params) => ({
+          agentName: params['id'] === 'sess-1' ? 'Codex CLI' : null,
+          agentStatus: 'waiting',
+          inputQuiet: true,
+          inputRevision: 12,
+        }),
+      });
+      await mockServer.start();
+
+      client = new DaemonClient(pipeName, AUTH_TOKEN);
+      await client.connect();
+      await expect(client.getAgentState('sess-1')).resolves.toEqual({
+        agentName: 'Codex CLI',
+        agentStatus: 'waiting',
+        inputQuiet: true,
+        inputRevision: 12,
+      });
+
+      await client.disconnect();
+      await mockServer.stop();
+    });
+
+    it('keeps delivery queued when an older daemon lacks the safety RPC', async () => {
+      const pipeName = testPipeName('legacy-agent-state');
+      mockServer = createMockDaemonServer(pipeName, AUTH_TOKEN, {
+        'daemon.getAgentState': () => ({ agentName: 'Codex CLI', agentStatus: 'idle' }),
+      });
+      await mockServer.start();
+
+      client = new DaemonClient(pipeName, AUTH_TOKEN);
+      await client.connect();
+      await expect(client.getAgentState('sess-1')).resolves.toBeNull();
+      await expect(client.deliverScheduledPrompt({
+        id: 'sess-1',
+        agentSlug: 'codex',
+        prompt: 'continue',
+      })).resolves.toBe('unavailable');
+
+      await client.disconnect();
+      await mockServer.stop();
+    });
+
+    it('keeps delivery queued when disconnected before the RPC can be sent', async () => {
+      client = new DaemonClient(testPipeName('scheduled-prompt-disconnected'), AUTH_TOKEN);
+
+      await expect(client.deliverScheduledPrompt({
+        id: 'sess-1',
+        agentSlug: 'codex',
+        prompt: 'continue',
+      })).resolves.toBe('unavailable');
+    });
+
+    it('delegates scheduled prompt delivery to the daemon owner', async () => {
+      const pipeName = testPipeName('scheduled-prompt');
+      mockServer = createMockDaemonServer(pipeName, AUTH_TOKEN, {
+        'daemon.deliverScheduledPrompt': () => ({ result: 'sent' }),
+      });
+      await mockServer.start();
+
+      client = new DaemonClient(pipeName, AUTH_TOKEN);
+      await client.connect();
+      await expect(client.deliverScheduledPrompt({
+        id: 'sess-1',
+        agentSlug: 'codex',
+        prompt: 'continue',
+      })).resolves.toBe('sent');
+
+      await client.disconnect();
+      await mockServer.stop();
+    });
+
     it('should reject on RPC error', async () => {
       const pipeName = testPipeName('rpc3');
       mockServer = createMockDaemonServer(pipeName, AUTH_TOKEN, {});

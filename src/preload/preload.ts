@@ -86,6 +86,39 @@ const electronAPI = {
     write: (id: string, data: string) => {
       ipcRenderer.send(IPC.PTY_WRITE, id, data);
     },
+    schedules: {
+      list: (ptyId: string) =>
+        ipcRenderer.invoke(IPC.SESSION_PROMPT_SCHEDULES_LIST, { ptyId }) as Promise<{
+          schedules: import('../shared/sessionPromptSchedule').SessionPromptSchedule[];
+          available: boolean;
+        }>,
+      listAll: () =>
+        ipcRenderer.invoke(IPC.SESSION_PROMPT_SCHEDULES_LIST, { includeAll: true }) as Promise<{
+          schedules: import('../shared/sessionPromptSchedule').SessionPromptSchedule[];
+          available: boolean;
+        }>,
+      create: (args: {
+        ptyId: string;
+        agentSlug: AgentSlug;
+        prompt: string;
+        nextRunAt: number;
+        intervalMinutes?: number;
+      }) =>
+        ipcRenderer.invoke(IPC.SESSION_PROMPT_SCHEDULES_CREATE, args) as Promise<{
+          ok: boolean;
+          schedule?: import('../shared/sessionPromptSchedule').SessionPromptSchedule;
+          code?: string;
+        }>,
+      update: (args: { ptyId: string; id: string; enabled: boolean }) =>
+        ipcRenderer.invoke(IPC.SESSION_PROMPT_SCHEDULES_UPDATE, args) as Promise<{
+          ok: boolean;
+          code?: string;
+        }>,
+      remove: (ptyId: string, id: string) =>
+        ipcRenderer.invoke(IPC.SESSION_PROMPT_SCHEDULES_DELETE, { ptyId, id }) as Promise<{
+          ok: boolean;
+        }>,
+    },
     resize: (id: string, cols: number, rows: number) =>
       ipcRenderer.invoke(IPC.PTY_RESIZE, id, cols, rows),
     // #766 — fire-and-forget visibility report (send, not invoke: the renderer

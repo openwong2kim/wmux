@@ -53,20 +53,30 @@ interface WorkspaceListEntry {
  * shared suppression timestamp alone cannot make.
  */
 const lastBroadcastAgentStatus = new Map<string, AgentStatus>();
+// Companion identity mirror for main-process consumers that must prove a PTY
+// still hosts the same agent before writing unattended input. Kept beside the
+// status funnel so detector/hook/local/daemon paths cannot drift.
+const lastBroadcastAgentName = new Map<string, string>();
 
 /** Read side of {@link lastBroadcastAgentStatus} for the idle-clear deferral check. */
 export function getLastBroadcastAgentStatus(ptyId: string): AgentStatus | undefined {
   return lastBroadcastAgentStatus.get(ptyId);
 }
 
+export function getLastBroadcastAgentName(ptyId: string): string | undefined {
+  return lastBroadcastAgentName.get(ptyId);
+}
+
 /** Drop a PTY's entry on cleanup, so a reused id never inherits a stale status. */
 export function clearLastBroadcastAgentStatus(ptyId: string): void {
   lastBroadcastAgentStatus.delete(ptyId);
+  lastBroadcastAgentName.delete(ptyId);
 }
 
 /** Test-only: reset between PTYs when a suite reuses the same id across cases. */
 export function resetLastBroadcastAgentStatusForTests(): void {
   lastBroadcastAgentStatus.clear();
+  lastBroadcastAgentName.clear();
 }
 
 /**
@@ -88,6 +98,10 @@ export function broadcastMetadataUpdate(
   // to know about.
   if (payload.ptyId && payload.agentStatus !== undefined) {
     lastBroadcastAgentStatus.set(payload.ptyId, payload.agentStatus);
+  }
+  if (payload.ptyId && payload.agentName !== undefined) {
+    if (payload.agentName) lastBroadcastAgentName.set(payload.ptyId, payload.agentName);
+    else lastBroadcastAgentName.delete(payload.ptyId);
   }
   if (!window || window.isDestroyed()) return;
   window.webContents.send(IPC.METADATA_UPDATE, payload);

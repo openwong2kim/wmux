@@ -86,6 +86,15 @@ describe('AgentToolbar — fan-out entry', () => {
     expect(document.querySelector('[data-testid="fanout-dialog"]')).toBeNull();
   });
 
+  it('keeps session schedule management reachable when no agent is detected', () => {
+    mount();
+    const schedule = container.querySelector(
+      '[data-testid="session-schedule-button"]',
+    ) as HTMLButtonElement | null;
+    expect(schedule).not.toBeNull();
+    expect(schedule?.disabled).toBe(false);
+  });
+
   it('toggles the FanOutDialog open and closed on click', () => {
     mount();
     act(() => {

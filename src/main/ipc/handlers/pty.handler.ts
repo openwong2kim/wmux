@@ -23,7 +23,9 @@ import {
   type SessionDataDispatcher,
   type SessionDataHandler,
 } from './sessionDataDispatcher';
-import { updateCwd } from './metadata.handler';
+import {
+  updateCwd,
+} from './metadata.handler';
 import { markResize } from '../../notification/idleSuppression';
 import { wrapHandler } from '../wrapHandler';
 import { dispatchNotification } from '../../notification/dispatchNotification';
@@ -40,6 +42,12 @@ import type { ResumeBinding } from '../../../shared/agentResume';
 import { createDeadPaneRecovery, type DeadPaneRecovery } from '../../../shared/ptyRecovery';
 import { resolvePtyCreateCwd, type PtyCwdSource } from '../../pty/resolvePtyCwd';
 import { FANOUT_TASK_PORT_ENV } from '../../worktask/fanoutEnvironment';
+import { agentDisplayToSlug } from '../../../shared/agentIdentity';
+import { SessionPromptScheduler } from '../../pty/SessionPromptScheduler';
+import {
+  removeSessionPromptSchedulesForPty,
+} from '../../pty/sessionPromptScheduleStore';
+import { createSessionPromptScheduleHandlers } from '../../pty/sessionPromptScheduleHandlers';
 
 /**
  * Allowed shell basenames (compared case-insensitively).
@@ -693,6 +701,81 @@ export function registerPTYHandlers(
     ipcMain.on(IPC.PTY_WRITE, onPtyWrite);
   }
 
+  // Per-session scheduled prompts. Unlike Command Deck schedules, these
+  // target one immutable daemon PTY. Local fallback mode intentionally refuses
+  // unattended input: it has no canonical child-process identity proof, so a
+  // sticky screen label could otherwise turn an old prompt into a shell command.
+  const scheduledAgentState = async (ptyId: string) => {
+    if (!useDaemon || !daemonClient) return null;
+    const agent = await daemonClient.getAgentState(ptyId);
+    const slug = agent?.agentName ? agentDisplayToSlug(agent.agentName) : undefined;
+    return agent && slug ? { slug } : null;
+  };
+
+  const sessionPromptScheduler = new SessionPromptScheduler({
+    deliver: (schedule) => useDaemon && daemonClient?.isConnected
+      ? daemonClient.deliverScheduledPrompt({
+        id: schedule.ptyId,
+        agentSlug: schedule.agentSlug,
+        prompt: schedule.prompt,
+      })
+      : Promise.resolve('unavailable'),
+  });
+  const scheduleHandlers = createSessionPromptScheduleHandlers({
+    available: useDaemon && daemonClient !== undefined,
+    getAgentState: scheduledAgentState,
+  });
+  const pruneSessionSchedules = async (ptyId: string): Promise<void> => {
+    try {
+      await removeSessionPromptSchedulesForPty(ptyId);
+    } catch (err) {
+      // The PTY is already gone. Do not turn a successful close into a false
+      // failure; the global schedule list still lets the operator remove the
+      // orphan if local storage was temporarily unavailable.
+      console.warn(`[session-schedule] could not prune closed PTY ${ptyId}:`, err);
+    }
+  };
+
+  ipcMain.removeHandler(IPC.SESSION_PROMPT_SCHEDULES_LIST);
+  ipcMain.handle(
+    IPC.SESSION_PROMPT_SCHEDULES_LIST,
+    wrapHandler(IPC.SESSION_PROMPT_SCHEDULES_LIST, (
+      _event: Electron.IpcMainInvokeEvent,
+      raw: unknown,
+    ) => scheduleHandlers.list(raw)),
+  );
+
+  ipcMain.removeHandler(IPC.SESSION_PROMPT_SCHEDULES_CREATE);
+  ipcMain.handle(
+    IPC.SESSION_PROMPT_SCHEDULES_CREATE,
+    wrapHandler(IPC.SESSION_PROMPT_SCHEDULES_CREATE, (
+      _event: Electron.IpcMainInvokeEvent,
+      raw: unknown,
+    ) => scheduleHandlers.create(raw)),
+  );
+
+  ipcMain.removeHandler(IPC.SESSION_PROMPT_SCHEDULES_UPDATE);
+  ipcMain.handle(
+    IPC.SESSION_PROMPT_SCHEDULES_UPDATE,
+    wrapHandler(IPC.SESSION_PROMPT_SCHEDULES_UPDATE, (
+      _event: Electron.IpcMainInvokeEvent,
+      raw: unknown,
+    ) => scheduleHandlers.update(raw)),
+  );
+
+  ipcMain.removeHandler(IPC.SESSION_PROMPT_SCHEDULES_DELETE);
+  ipcMain.handle(
+    IPC.SESSION_PROMPT_SCHEDULES_DELETE,
+    wrapHandler(IPC.SESSION_PROMPT_SCHEDULES_DELETE, (
+      _event: Electron.IpcMainInvokeEvent,
+      raw: unknown,
+    ) => scheduleHandlers.remove(raw)),
+  );
+  // A daemon reconnect re-registers these handlers and starts a fresh runner.
+  // In local fallback there is no safe delivery path, so polling due rows
+  // would only rewrite `unavailable` every 15 seconds with no chance to send.
+  if (useDaemon) sessionPromptScheduler.start();
+
   // pty:resize
   // TUI agents (Claude, Codex, etc.) respond to SIGWINCH with a full-screen
   // redraw. Mark the resize timestamp so the AgentDetector emission-reset
@@ -794,10 +877,12 @@ export function registerPTYHandlers(
       // fires for an explicit close — without this, every pane/workspace
       // close leaks its anchor for the OS to recycle into a ghost.
       removePidMapByPtyId(id);
+      await pruneSessionSchedules(id);
     }));
   } else {
-    ipcMain.handle(IPC.PTY_DISPOSE, wrapHandler(IPC.PTY_DISPOSE, (_event: Electron.IpcMainInvokeEvent, id: string) => {
+    ipcMain.handle(IPC.PTY_DISPOSE, wrapHandler(IPC.PTY_DISPOSE, async (_event: Electron.IpcMainInvokeEvent, id: string) => {
       ptyManager.dispose(id);
+      await pruneSessionSchedules(id);
     }));
   }
 
@@ -1287,6 +1372,7 @@ export function registerPTYHandlers(
 
   // Cleanup function
   return () => {
+    sessionPromptScheduler.stop();
     ipcMain.removeHandler(IPC.PTY_CREATE);
     ipcMain.removeAllListeners(IPC.PTY_WRITE);
     ipcMain.removeHandler(IPC.PTY_RESIZE);
@@ -1298,6 +1384,10 @@ export function registerPTYHandlers(
     ipcMain.removeHandler(IPC.PTY_RESYNC);
     ipcMain.removeHandler(IPC.SUPERVISE_REARM);
     ipcMain.removeHandler(IPC.SUPERVISE_STOP);
+    ipcMain.removeHandler(IPC.SESSION_PROMPT_SCHEDULES_LIST);
+    ipcMain.removeHandler(IPC.SESSION_PROMPT_SCHEDULES_CREATE);
+    ipcMain.removeHandler(IPC.SESSION_PROMPT_SCHEDULES_UPDATE);
+    ipcMain.removeHandler(IPC.SESSION_PROMPT_SCHEDULES_DELETE);
 
     // Clean up daemon listeners
     if (daemonClient) {

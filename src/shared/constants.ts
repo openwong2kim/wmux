@@ -20,6 +20,14 @@ export const IPC = {
   // Polled ONLY while Fleet View is visible (renderer-gated) — zero cost idle.
   PANE_RESOURCES: 'pane:resources',
   PTY_RECONNECT: 'pty:reconnect',
+  // Renderer-only CRUD for prompts scheduled against one concrete agent PTY.
+  // The main-process runner re-verifies the agent family before bracket-paste
+  // delivery, waits while a turn/approval is active, and persists across app
+  // restarts. Separate from DECK_SCHEDULES_* (workspace orchestrator turns).
+  SESSION_PROMPT_SCHEDULES_LIST: 'sessionPromptSchedules:list',
+  SESSION_PROMPT_SCHEDULES_CREATE: 'sessionPromptSchedules:create',
+  SESSION_PROMPT_SCHEDULES_UPDATE: 'sessionPromptSchedules:update',
+  SESSION_PROMPT_SCHEDULES_DELETE: 'sessionPromptSchedules:delete',
   // Phase 3 PR-B — live-pipe re-flush. Re-runs the daemon SessionPipe flush on
   // the EXISTING connected socket (no teardown / re-auth), so a hidden pane can
   // be rehydrated from a headless snapshot without an input dead-zone. Distinct

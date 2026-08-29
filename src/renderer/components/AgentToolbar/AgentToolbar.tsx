@@ -8,7 +8,8 @@ import RichInput from './RichInput';
 import SnippetsMenu from './SnippetsMenu';
 import FileExplorerPopover from './FileExplorerPopover';
 import BroadcastPopover from './BroadcastPopover';
-import { IconPaperclip, IconFolder, IconStar, IconKeyboard, IconPlus, IconUsers, IconSparkles, IconLock } from '../icons';
+import SessionSchedulesPopover from './SessionSchedulesPopover';
+import { IconPaperclip, IconFolder, IconStar, IconKeyboard, IconPlus, IconUsers, IconSparkles, IconLock, IconClock } from '../icons';
 
 /** Bar height — also the travel distance of the reveal transform. */
 export const AGENT_TOOLBAR_HEIGHT = 36;
@@ -59,6 +60,7 @@ export default function AgentToolbar({ barHandlers, revealed, onHoldChange, onFo
   const [newArmed, setNewArmed] = useState(false);
 
   const ptyId = focusedTerminalPtyId(activeWorkspace);
+  const activeAgent = useStore((s) => (ptyId ? s.surfaceAgent[ptyId] : undefined));
   const disabled = !ptyId;
 
   // Anything open below the bar must keep it on screen — a popover whose
@@ -100,7 +102,7 @@ export default function AgentToolbar({ barHandlers, revealed, onHoldChange, onFo
 
   // Every open path closes the others. Fan-out already cleared these; without
   // the reverse the two dialogs could sit on top of each other.
-  const togglePopover = (name: 'explorer' | 'snippets' | 'rich') => {
+  const togglePopover = (name: 'explorer' | 'snippets' | 'rich' | 'schedule') => {
     if (fanOutOpen) closeFanOut();
     setShowBroadcast(false);
     setPopover(popover === name ? null : name);
@@ -216,6 +218,15 @@ export default function AgentToolbar({ barHandlers, revealed, onHoldChange, onFo
         <kbd className="wmux-toolbar-label ml-1 px-1 rounded border border-[var(--bg-overlay)] text-[9px] leading-tight opacity-60 font-sans">{window.electronAPI?.platform === 'darwin' ? '⌘G' : 'Ctrl G'}</kbd>
       </button>
       <button
+        className={`${btn} ${popover === 'schedule' ? active : idle}`}
+        disabled={disabled}
+        onClick={() => togglePopover('schedule')}
+        title={t('toolbar.scheduleTooltip')}
+        data-testid="session-schedule-button"
+      >
+        <IconClock size={13} /> <span className="wmux-toolbar-label whitespace-nowrap">{t('toolbar.schedule')}</span>
+      </button>
+      <button
         ref={broadcastBtnRef}
         className={`${btn} ${showBroadcast ? active : idle}`}
         // Opening a local popover clears the global one (explorer/snippets/rich)
@@ -273,6 +284,13 @@ export default function AgentToolbar({ barHandlers, revealed, onHoldChange, onFo
       )}
       {popover === 'snippets' && ptyId && <SnippetsMenu ptyId={ptyId} />}
       {popover === 'rich' && ptyId && <RichInput ptyId={ptyId} />}
+      {popover === 'schedule' && ptyId && (
+        <SessionSchedulesPopover
+          ptyId={ptyId}
+          agentSlug={activeAgent?.slug}
+          agentName={activeAgent?.name}
+        />
+      )}
       {showBroadcast && <BroadcastPopover onClose={() => setShowBroadcast(false)} triggerRef={broadcastBtnRef} />}
     </div>
   );

@@ -75,6 +75,19 @@ describe('DaemonPTYBridge turn priority', () => {
       vi.advanceTimersByTime(5000);
       expect(idle).toEqual(['sess-1']);
     });
+
+    it('exposes a reconnect-safe status snapshot', () => {
+      expect(bridge.getAgentStatus()).toBe('idle');
+      feed(BIG);
+      expect(bridge.getAgentStatus()).toBe('running');
+      vi.advanceTimersByTime(5000);
+      expect(bridge.getAgentStatus()).toBe('idle');
+
+      bridge.noteAgentStatus('complete');
+      expect(bridge.getAgentStatus()).toBe('complete');
+      bridge.noteAgentStatus('awaiting_input');
+      expect(bridge.getAgentStatus()).toBe('awaiting_input');
+    });
   });
 
   describe('an explicit terminal status settles the turn', () => {
