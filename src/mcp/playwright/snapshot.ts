@@ -131,6 +131,14 @@ const FRAME_BOUNDARY_NOTE = '(separate document — contents not in this snapsho
  * exceptions — apart from three under a `LineBreak`, whose text is "\n". So
  * dropping them loses wrapping positions and nothing else.
  *
+ * That is a measurement, though, not a guarantee, so the drop is CONDITIONED on
+ * the parent role it was measured under (TEXT_FRAGMENT_PARENTS). A different
+ * Chrome major, an SVG text run, or a Blink change that hangs an InlineTextBox
+ * under a nameless container would then have it as the only carrier of that
+ * text — and this module would drop it silently, which is the exact failure the
+ * condensation exists to avoid. Outside the measured shape the node is kept:
+ * the output gets bigger, never emptier.
+ *
  * A `StaticText` is dropped only in the one case where it is provably an echo:
  * it is its parent's ONLY child and serialises to exactly the parent's own
  * name with no attributes and no children of its own (see serializeNode).
@@ -142,6 +150,12 @@ const FRAME_BOUNDARY_NOTE = '(separate document — contents not in this snapsho
  */
 const INLINE_TEXT_ROLE = 'InlineTextBox';
 const STATIC_TEXT_ROLE = 'StaticText';
+
+/**
+ * The parent roles an InlineTextBox was measured to be a redundant fragment OF.
+ * `LineBreak` is in the set because its fragment is the "\n" it already means.
+ */
+const TEXT_FRAGMENT_PARENTS = new Set([STATIC_TEXT_ROLE, 'LineBreak']);
 
 // ---------------------------------------------------------------------------
 // CDP → AXNode tree builder
@@ -423,12 +437,14 @@ function serializeNode(
 
   let line = `${pad}- ${role}${nameStr}${attrStr}${frameStr}`;
 
-  // Recurse into children. In 'ai' format an InlineTextBox never gets that far
-  // — see INLINE_TEXT_ROLE — so neither it nor its subtree is walked.
+  // Recurse into children. In 'ai' format an InlineTextBox under one of the
+  // parents it was measured to be a fragment of never gets that far — see
+  // INLINE_TEXT_ROLE — so neither it nor its subtree is walked.
+  const isFragmentParent = TEXT_FRAGMENT_PARENTS.has(role);
   const childLines: string[] = [];
   if (node.children) {
     for (const child of node.children) {
-      if (ctx.format === 'ai' && child.role === INLINE_TEXT_ROLE) continue;
+      if (ctx.format === 'ai' && isFragmentParent && child.role === INLINE_TEXT_ROLE) continue;
       const childStr = serializeNode(child, ctx, currentDepth + 1, indent + 1);
       if (childStr) childLines.push(childStr);
     }
@@ -439,6 +455,13 @@ function serializeNode(
   // StaticText that carries an attribute (focused, clickable) or any child of
   // its own can never be silently dropped — either would make the string
   // differ. No ref is lost with it: a line this shape minted none.
+  //
+  // The literal below therefore has to reassemble a child line exactly as the
+  // recursion above builds one — `indent + 1`, i.e. this node's pad plus two
+  // spaces. Changing how a line is assembled without changing this literal does
+  // not corrupt anything, it just stops matching and quietly returns the output
+  // to its pre-condensation size; the whole-output assertion in
+  // snapshot.density.test.ts is what catches that.
   if (
     ctx.format === 'ai' &&
     childLines.length === 1 &&

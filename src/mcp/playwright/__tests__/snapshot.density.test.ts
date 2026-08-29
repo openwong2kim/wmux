@@ -390,6 +390,64 @@ describe('snapshot: duplicated text lines', () => {
     expect(out.match(/ref="\d+"/g)).toHaveLength(2);
   });
 
+  it('serialises the whole fixture to exactly the condensed shape', async () => {
+    // The echo test reassembles a child line ("this node's pad plus two
+    // spaces") to decide the drop, so it is coupled to how the recursion
+    // indents. Pinning the ENTIRE output catches a change to either side: an
+    // indent change that silently un-does the condensation shows up here as the
+    // old three-times-longer tree instead of as a still-passing test.
+    const { page } = makePage(TEXT_TREE);
+    const out = await generateSnapshot(page as never, { format: 'ai' });
+
+    expect(out).toBe(
+      [
+        '- heading "Dogfood page"',
+        '- link "A B" ref="0"',
+        '  - StaticText "A"',
+        '  - StaticText "B"',
+        '- paragraph',
+        '  - StaticText "long wrapped text"',
+        '- button "Save" ref="1"',
+      ].join('\n'),
+    );
+  });
+
+  it('keeps an InlineTextBox whose parent is not one it fragments', async () => {
+    // "An InlineTextBox only ever repeats its parent" is a measurement over
+    // Chrome 141 under StaticText/LineBreak parents, not a guarantee. Under any
+    // other parent the node may be the only carrier of that text, so it is kept
+    // — outside the measured shape the output gets bigger, never emptier.
+    const oddParent: CdpNode[] = [
+      { nodeId: '1', backendDOMNodeId: 1, role: { type: 'role', value: 'RootWebArea' }, name: { type: 'name', value: 'Host' }, childIds: ['2'] },
+      { nodeId: '2', backendDOMNodeId: 2, role: { type: 'role', value: 'generic' }, childIds: ['3'] },
+      { nodeId: '3', backendDOMNodeId: 3, role: { type: 'role', value: 'InlineTextBox' }, name: { type: 'name', value: 'orphan text' }, childIds: [] },
+    ];
+    const { page } = makePage(oddParent);
+    const out = await generateSnapshot(page as never, { format: 'ai' });
+
+    expect(out).toContain('- InlineTextBox "orphan text"');
+  });
+
+  it('composes with filter:"interactive"', async () => {
+    // Two independent reductions on the same walk. Neither may undo the other:
+    // the filtered tree keeps its refs and its markers and carries no text-role
+    // line at all.
+    const echoing: CdpNode[] = [
+      ...FORM_TREE.map((n) =>
+        n.nodeId === '4' ? { ...n, childIds: ['5'] } : n,
+      ),
+      { nodeId: '5', backendDOMNodeId: 5, role: { type: 'role', value: 'StaticText' }, name: { type: 'name', value: 'Sign in' }, childIds: ['6'] },
+      { nodeId: '6', backendDOMNodeId: 6, role: { type: 'role', value: 'InlineTextBox' }, name: { type: 'name', value: 'Sign in' }, childIds: [] },
+    ];
+    const { page } = makePage(echoing);
+    const out = await generateSnapshot(page as never, { format: 'ai', filter: 'interactive' });
+
+    expect(out).toContain('button "Sign in" ref="2"');
+    expect(out).toContain('textbox "Password" ref="1" focused');
+    expect(out).not.toContain('StaticText');
+    expect(out).not.toContain('InlineTextBox');
+  });
+
   it('keeps the full tree for aria — that format\'s contract is everything', async () => {
     const { page } = makePage(TEXT_TREE);
     const out = await generateSnapshot(page as never, { format: 'aria' });
