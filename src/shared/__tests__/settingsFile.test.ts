@@ -23,6 +23,11 @@ afterEach(() => {
 
 const modeOf = (p: string): number => fs.statSync(p).mode & 0o777;
 
+// Windows has no POSIX mode: chmod there toggles the read-only bit and nothing
+// else, so every file reports 0o666. The permission work is real on the
+// platforms that have permissions; asserting it elsewhere only tests Node.
+const posixModes = process.platform !== 'win32';
+
 describe('writeJsonAtomic', () => {
   it('writes readable JSON with a trailing newline', () => {
     const file = path.join(tmpDir, 'settings.json');
@@ -39,7 +44,7 @@ describe('writeJsonAtomic', () => {
     expect(fs.readdirSync(tmpDir)).toEqual(['settings.json']);
   });
 
-  it('preserves the mode of an existing config', () => {
+  it.skipIf(!posixModes)('preserves the mode of an existing config', () => {
     const file = path.join(tmpDir, 'settings.json');
     fs.writeFileSync(file, '{}', 'utf8');
     fs.chmodSync(file, 0o600);
@@ -47,7 +52,7 @@ describe('writeJsonAtomic', () => {
     expect(modeOf(file)).toBe(0o600);
   });
 
-  it('creates a new config owner-only', () => {
+  it.skipIf(!posixModes)('creates a new config owner-only', () => {
     const file = path.join(tmpDir, 'fresh', 'settings.json');
     writeJsonAtomic(file, {});
     expect(modeOf(file)).toBe(0o600);
