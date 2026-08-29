@@ -168,6 +168,22 @@ describe('snapshot: iframe boundaries', () => {
 
     expect(out).not.toContain('separate document');
   });
+
+  it('stays quiet about an iframe whose contents ARE in the tree', async () => {
+    // Chrome 141 always stops at the iframe element, but the note claims the
+    // contents are absent — so it has to be tied to the node really being a
+    // dead end, not to the role alone.
+    const inlined: CdpNode[] = [
+      { nodeId: '1', backendDOMNodeId: 1, role: { type: 'role', value: 'RootWebArea' }, name: { type: 'name', value: 'Host' }, childIds: ['3'] },
+      { nodeId: '3', backendDOMNodeId: 3, role: { type: 'role', value: 'Iframe' }, name: { type: 'name', value: 'Checkout widget' }, childIds: ['5'] },
+      { nodeId: '5', backendDOMNodeId: 5, role: { type: 'role', value: 'button' }, name: { type: 'name', value: 'Pay' }, childIds: [] },
+    ];
+    const { page } = makePage(inlined);
+    const out = await generateSnapshot(page as never, { format: 'ai' });
+
+    expect(out).toContain('button "Pay"');
+    expect(out).not.toContain('separate document');
+  });
 });
 
 describe('snapshot: overlay occlusion', () => {
@@ -201,6 +217,42 @@ describe('snapshot: overlay occlusion', () => {
 
     expect(out).toContain('(note: an overlay (div#veil) is covering the page — 3 on-screen controls behind it will not receive clicks)');
     expect(out).not.toContain('clickable');
+  });
+
+  it('marks a reachable node whose role is outside INTERACTIVE_ROLES', async () => {
+    // The probe's selector is wider than INTERACTIVE_ROLES (`[role]`,
+    // `[onclick]`, `[tabindex]`, `summary`), so gating the mark on the ref-able
+    // roles would leave a genuinely clickable node unmarked while the note
+    // asserts that unmarked means unreachable.
+    const withGeneric: CdpNode[] = [
+      ...FORM_TREE,
+      { nodeId: '5', backendDOMNodeId: 5, role: { type: 'role', value: 'generic' }, name: { type: 'name', value: 'Dismiss' }, childIds: [] },
+    ];
+    withGeneric[0] = { ...withGeneric[0], childIds: ['2', '3', '4', '5'] };
+    const { page } = makePage(withGeneric, {
+      overlay: { label: 'div#backdrop', blockedCount: 3, reachable: [5] },
+    });
+    const out = await generateSnapshot(page as never, { format: 'ai' });
+
+    expect(out).toContain('generic "Dismiss" clickable');
+  });
+
+  it('charges the overlay note against maxLength', async () => {
+    // The note carries a page-controlled layer label, so leaving it outside the
+    // budget would let the page decide how far past the caller's cap the result
+    // runs.
+    const { page } = makePage(FORM_TREE, {
+      overlay: { label: 'div#' + 'a'.repeat(200), blockedCount: 2, reachable: [4] },
+    });
+    const maxLength = 300;
+    const out = await generateSnapshot(page as never, { format: 'ai', maxLength });
+
+    // The truncation marker is the one thing allowed past the cap (unchanged
+    // pre-existing behaviour).
+    expect(out.length).toBeLessThanOrEqual(maxLength + '\n... (truncated)'.length);
+    expect(out).toContain('(note: an overlay (');
+    // ...and the label itself was capped before it ever reached the note.
+    expect(out.match(/a{100,}/)?.[0].length).toBeLessThanOrEqual(120);
   });
 
   it('still returns the snapshot when the occlusion probe fails', async () => {

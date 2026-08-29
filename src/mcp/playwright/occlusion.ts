@@ -28,10 +28,10 @@
  * clickable; the culprits are duplicated-but-hidden nav trees, 4-px-wide
  * inline link slivers and elements whose centre lands on a sibling.
  *
- * So the test is GATED: it runs only once a viewport-scale overlay layer has
- * been positively identified, and it stays silent otherwise. The same six
- * production pages produce zero detections through the gate; the CSS-modal
- * fixture is caught with its backdrop named.
+ * So the test is GATED, and the gate has three independent conditions (see
+ * OVERLAY_PROBE_JS). It stays silent otherwise. Six production pages produce
+ * zero detections through the gate; the CSS-modal fixture is caught with its
+ * backdrop named.
  */
 
 /** The subset of a CDP session this module needs. */
@@ -58,12 +58,35 @@ export interface OcclusionInfo {
 /**
  * Above this many reachable controls the layer is not behaving like a modal,
  * and resolving them all would cost one CDP round-trip each for a wall of
- * annotations. The note alone is served instead.
+ * annotations. The note alone is served instead. Enforced twice: once against
+ * the count the page reports, and again as a hard stop while walking the array
+ * — a page can patch `Array.prototype.push`/`length` to under-report its own
+ * size, and the probe runs in that page's main world.
  */
 const MAX_REACHABLE_MARKS = 50;
 
-/** Give up rather than hang a snapshot behind a paused/wedged renderer. */
-const EVAL_TIMEOUT_MS = 2_000;
+/**
+ * The layer's label is page-controlled text (a tag name, a `role`, an `id`).
+ * Truncated here rather than in the probe: a hostile page can patch
+ * `String.prototype.slice`, so the cap has to be applied on this side of the
+ * wire, or the page decides how much of the agent's context it consumes.
+ */
+const MAX_LABEL_CHARS = 120;
+
+/**
+ * Wall-clock budget for the WHOLE collection, not per call. Per-call timeouts
+ * multiply: one evaluate + two getProperties + fifty describeNode at 2 s each
+ * is a 106-second worst case on a slow-but-alive renderer, which would stall
+ * the snapshot far longer than the snapshot is worth.
+ */
+const TOTAL_BUDGET_MS = 2_000;
+
+/**
+ * Cleanup gets its own small budget, separate from the shared deadline, so a
+ * collection that used its whole budget still gets a bounded chance to release
+ * the object group — and a wedged renderer still cannot hang the snapshot.
+ */
+const CLEANUP_BUDGET_MS = 500;
 
 /**
  * Runs in the page. Two stages, and the first one is a gate: everything after
@@ -75,20 +98,40 @@ const EVAL_TIMEOUT_MS = 2_000;
  * short-circuit to "nothing to report": Chrome has already dropped that
  * content from the a11y tree, so there is nothing left to annotate.
  *
+ * The grid test alone is NOT enough, and this is the failure that matters: an
+ * app shell — the `position: fixed; inset: 0` wrapper a dashboard, a map or a
+ * canvas app puts around its whole UI — is the outermost viewport-scale
+ * positioned ancestor at every grid point, exactly like a backdrop is. So the
+ * gate adds a structural test: a real backdrop does not CONTAIN the page's
+ * controls, while a layout root contains nearly all of them. A layer holding
+ * more than half of the document's controls is a layout root, and the probe
+ * bails.
+ *
  * Stage 2 probes each visible, in-viewport control at its centre and four
  * inset points; reaching itself (or an ancestor/descendant, which is the same
  * click) at ANY point counts as reachable. Five points rather than one is what
  * stops an inline sliver or an off-centre child from reading as covered.
+ * `pointer-events: none` is checked explicitly because `elementFromPoint`
+ * skips such an element and hands back its ancestor, which would otherwise
+ * read as "reached".
  *
- * Returning zero blocked controls means the layer does not actually intercept
- * pointer events (`pointer-events: none` decorative gradients are common), so
- * it reports nothing at all.
+ * Stage 2 then has to agree with stage 1: a layer that covers the viewport but
+ * blocks only a minority of the controls behind it is not a modal, and the one
+ * or two hit-test misfires that survive the five-point probe must never be
+ * enough on their own to declare a whole page unclickable.
+ *
+ * Exported so the gate's decisions can be pinned by unit tests: the source runs
+ * against a stub DOM in occlusion.probe.test.ts, since layout-dependent
+ * behaviour is otherwise only observable against a live browser.
  */
-const OVERLAY_PROBE_JS = `(() => {
+export const OVERLAY_PROBE_JS = `(() => {
   const vw = innerWidth, vh = innerHeight;
   if (!vw || !vh) return { label: null };
   try { if (document.querySelector(':modal')) return { label: null }; } catch (e) { /* older engine */ }
   if (document.querySelector('[inert]')) return { label: null };
+
+  const SEL = 'a[href],button,input,select,textarea,summary,[role],[onclick],[tabindex]';
+  const controls = document.querySelectorAll(SEL);
 
   const layerOf = (el) => {
     let best = null;
@@ -114,16 +157,22 @@ const OVERLAY_PROBE_JS = `(() => {
   for (const entry of counts) if (entry[1] > best) { layer = entry[0]; best = entry[1]; }
   if (!layer || !samples || best / samples < 0.4) return { label: null };
 
-  const SEL = 'a[href],button,input,select,textarea,summary,[role],[onclick],[tabindex]';
+  // An app shell contains the page's controls; a backdrop does not.
+  let inside = 0;
+  for (const el of controls) if (layer.contains(el)) inside++;
+  if (controls.length > 0 && inside * 2 > controls.length) return { label: null };
+
   const PTS = [[0.5, 0.5], [0.25, 0.25], [0.75, 0.25], [0.25, 0.75], [0.75, 0.75]];
   const reachable = [];
-  let blockedCount = 0;
-  for (const el of document.querySelectorAll(SEL)) {
+  let tested = 0, blockedCount = 0;
+  for (const el of controls) {
     const r = el.getBoundingClientRect();
     if (r.width <= 0 || r.height <= 0) continue;
     if (r.bottom <= 0 || r.top >= vh || r.right <= 0 || r.left >= vw) continue;
     if (typeof el.checkVisibility === 'function' &&
         !el.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true })) continue;
+    tested++;
+    if (getComputedStyle(el).pointerEvents === 'none') { blockedCount++; continue; }
     let ok = false;
     for (const p of PTS) {
       const x = Math.min(Math.max(r.left + r.width * p[0], 0), vw - 1);
@@ -133,7 +182,9 @@ const OVERLAY_PROBE_JS = `(() => {
     }
     if (ok) reachable.push(el); else blockedCount++;
   }
-  if (blockedCount === 0) return { label: null };
+  // A real full-viewport backdrop blocks essentially everything behind it. A
+  // minority means stray hit-test noise, not an overlay.
+  if (blockedCount === 0 || blockedCount * 2 <= tested) return { label: null };
 
   const role = layer.getAttribute('role');
   const label = layer.tagName.toLowerCase()
@@ -141,14 +192,6 @@ const OVERLAY_PROBE_JS = `(() => {
     + (layer.id ? '#' + layer.id : '');
   return { label: label, blockedCount: blockedCount, reachable: reachable, reachableCount: reachable.length };
 })()`;
-
-/** Resolve, or give up after EVAL_TIMEOUT_MS — a paused renderer never answers. */
-function withTimeout<T>(p: Promise<T>): Promise<T | null> {
-  return Promise.race([
-    p,
-    new Promise<null>((resolve) => setTimeout(() => resolve(null), EVAL_TIMEOUT_MS)),
-  ]);
-}
 
 type RemoteProp = { name: string; value?: { value?: unknown; objectId?: string } };
 
@@ -167,30 +210,46 @@ function propOf(props: RemoteProp[], name: string): RemoteProp['value'] {
  */
 export async function collectOcclusion(client: CdpSender): Promise<OcclusionInfo | null> {
   const objectGroup = 'wmux-occlusion';
+  const deadline = Date.now() + TOTAL_BUDGET_MS;
+
+  /** Resolve, or give up when the shared budget runs out. */
+  const bounded = <T>(p: Promise<T>): Promise<T | null> =>
+    Promise.race([
+      p.catch(() => null),
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), Math.max(0, deadline - Date.now()))),
+    ]);
+
+  // Only the branch that actually obtained a handle has anything to release,
+  // and skipping the call otherwise is what keeps a wedged renderer — whose
+  // evaluate just timed out and which will not answer this either — from
+  // reinstating the hang the budget above exists to prevent.
+  let acquired = false;
   try {
     // returnByValue is NOT usable here: the payload carries live Elements, and
     // the point of keeping them as remote handles is that DOM.describeNode can
     // turn each one into the backendNodeId the a11y tree is indexed by.
-    const evaluated = (await withTimeout(
+    const evaluated = (await bounded(
       client.send('Runtime.evaluate', {
         expression: OVERLAY_PROBE_JS,
         returnByValue: false,
         objectGroup,
-        timeout: EVAL_TIMEOUT_MS,
+        timeout: TOTAL_BUDGET_MS,
       }),
     )) as { result?: { objectId?: string } } | null;
 
     const rootId = evaluated?.result?.objectId;
     if (!rootId) return null;
+    acquired = true;
 
-    const rootProps = (await withTimeout(
+    const rootProps = (await bounded(
       client.send('Runtime.getProperties', { objectId: rootId, ownProperties: true }),
     )) as { result?: RemoteProp[] } | null;
     const props = rootProps?.result;
     if (!props) return null;
 
-    const label = propOf(props, 'label')?.value;
-    if (typeof label !== 'string' || label === '') return null;
+    const rawLabel = propOf(props, 'label')?.value;
+    if (typeof rawLabel !== 'string' || rawLabel === '') return null;
+    const label = rawLabel.slice(0, MAX_LABEL_CHARS);
 
     const blockedCount = Number(propOf(props, 'blockedCount')?.value ?? 0);
     const reachableCount = Number(propOf(props, 'reachableCount')?.value ?? 0);
@@ -202,19 +261,30 @@ export async function collectOcclusion(client: CdpSender): Promise<OcclusionInfo
 
     const arrayId = propOf(props, 'reachable')?.objectId;
     if (arrayId) {
-      const items = (await withTimeout(
+      const items = (await bounded(
         client.send('Runtime.getProperties', { objectId: arrayId, ownProperties: true }),
       )) as { result?: RemoteProp[] } | null;
+      const objectIds: string[] = [];
       for (const item of items?.result ?? []) {
         // Own properties of an array include `length`; only the index slots
-        // hold elements.
+        // hold elements. The cap is re-applied here rather than trusted from
+        // reachableCount — see MAX_REACHABLE_MARKS.
+        if (objectIds.length >= MAX_REACHABLE_MARKS) break;
         if (!/^\d+$/.test(item.name)) continue;
         const objectId = item.value?.objectId;
-        if (!objectId) continue;
-        const described = (await withTimeout(
-          client.send('DOM.describeNode', { objectId }),
-        )) as { node?: { backendNodeId?: number } } | null;
-        const backendNodeId = described?.node?.backendNodeId;
+        if (objectId) objectIds.push(objectId);
+      }
+      // One round-trip each, but issued together: sequentially these are the
+      // dominant cost of the whole collection.
+      const described = await Promise.all(
+        objectIds.map((objectId) =>
+          bounded(client.send('DOM.describeNode', { objectId })) as Promise<{
+            node?: { backendNodeId?: number };
+          } | null>,
+        ),
+      );
+      for (const node of described) {
+        const backendNodeId = node?.node?.backendNodeId;
         if (backendNodeId !== undefined) reachable.add(backendNodeId);
       }
     }
@@ -224,9 +294,12 @@ export async function collectOcclusion(client: CdpSender): Promise<OcclusionInfo
     // No Runtime domain / detached target / hostile page — see fail-open above.
     return null;
   } finally {
-    await client
-      .send('Runtime.releaseObjectGroup', { objectGroup })
-      .catch(() => { /* best-effort cleanup */ });
+    if (acquired) {
+      await Promise.race([
+        client.send('Runtime.releaseObjectGroup', { objectGroup }).catch(() => null),
+        new Promise((resolve) => setTimeout(resolve, CLEANUP_BUDGET_MS)),
+      ]);
+    }
   }
 }
 

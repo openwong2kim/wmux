@@ -341,8 +341,7 @@ function serializeNode(
   // Build attribute string
   const attrs: string[] = [];
 
-  const interactive = isInteractive(role);
-  if (ctx.format === 'ai' && interactive) {
+  if (ctx.format === 'ai' && isInteractive(role)) {
     const ref = ctx.refs.length;
     ctx.refs.push({ role, name, backendDOMNodeId: node.backendDOMNodeId });
     attrs.push(`ref="${ref}"`);
@@ -359,12 +358,14 @@ function serializeNode(
   // the property to the focused element only, and to nothing at all when focus
   // is on the body), so this is a single word on a single line.
   if (node.focused) attrs.push('focused');
-  // Only meaningful while an overlay is up, and only on nodes that can be
-  // clicked at all — see occlusion.ts for why the reachable side is the side
-  // that gets marked.
+  // Only meaningful while an overlay is up. Deliberately NOT gated on
+  // isInteractive(): the reachable set only ever holds elements the probe's own
+  // selector matched (links, buttons, form fields, `[role]`, `[onclick]`,
+  // `[tabindex]`, `summary`), and that selector is WIDER than INTERACTIVE_ROLES
+  // — gating here would leave a genuinely clickable node unmarked while the
+  // note above asserts that unmarked means unreachable.
   if (
     ctx.occlusion &&
-    interactive &&
     node.backendDOMNodeId !== undefined &&
     ctx.occlusion.reachable.has(node.backendDOMNodeId)
   ) {
@@ -373,7 +374,11 @@ function serializeNode(
 
   const attrStr = attrs.length > 0 ? ' ' + attrs.join(' ') : '';
   const nameStr = name ? ` "${name}"` : '';
-  const frameStr = IFRAME_ROLES.has(role) ? ` ${FRAME_BOUNDARY_NOTE}` : '';
+  // Only when the node really is a dead end. Chrome 141 always stops at the
+  // iframe element, but a version or engine that inlines the child document
+  // would turn this note into a lie.
+  const frameStr =
+    IFRAME_ROLES.has(role) && !node.children?.length ? ` ${FRAME_BOUNDARY_NOTE}` : '';
 
   let line = `${pad}- ${role}${nameStr}${attrStr}${frameStr}`;
 
@@ -412,13 +417,14 @@ function serializeTree(root: AXNode, ctx: SerializeCtx): string {
 
 function stripNonInteractive(node: AXNode): AXNode | null {
   if (isInteractive(node.role)) return node;
-  // An iframe survives the interactive filter as a bare boundary marker. It is
-  // not interactive and it has no children in this tree, so it would otherwise
-  // vanish — and its disappearance is exactly the wrong signal: the controls
-  // inside the frame are not in the snapshot either, so a filtered tree with no
-  // iframe line reads as "this page has no such button" when the truth is
-  // "look inside the frame".
-  if (IFRAME_ROLES.has(node.role)) return { ...node, children: undefined };
+  // A childless iframe survives the interactive filter as a bare boundary
+  // marker. It is not interactive, so it would otherwise vanish — and its
+  // disappearance is exactly the wrong signal: the controls inside the frame
+  // are not in the snapshot either, so a filtered tree with no iframe line
+  // reads as "this page has no such button" when the truth is "look inside the
+  // frame". An iframe that DOES carry children falls through to the ordinary
+  // path, so its interactive descendants decide whether it is kept.
+  if (IFRAME_ROLES.has(node.role) && !node.children?.length) return node;
 
   if (!node.children) return null;
 
@@ -649,9 +655,17 @@ export async function generateSnapshot(
   const ctx: SerializeCtx = { format, maxDepth: depth, refs, occlusion };
   let output = serializeTree(effectiveTree, ctx);
 
-  // If the output exceeds maxLength AND we are in 'ai' mode, strip
+  // The overlay note is prepended AFTER truncation — it is the one line that
+  // explains why the refs below may not respond, so losing it to a length cap
+  // would be exactly backwards — but it is charged against maxLength all the
+  // same, or the note's page-controlled layer label would let the page decide
+  // how far past the caller's budget the result runs.
+  const note = occlusion ? `${occlusionNote(occlusion)}\n` : '';
+  const budget = Math.max(0, maxLength - note.length);
+
+  // If the output exceeds the budget AND we are in 'ai' mode, strip
   // non-interactive nodes and regenerate.
-  if (output.length > maxLength && format === 'ai') {
+  if (output.length > budget && format === 'ai') {
     const trimmed = stripNonInteractive(tree);
     if (trimmed) {
       refs.length = 0;
@@ -660,14 +674,11 @@ export async function generateSnapshot(
   }
 
   // Hard-truncate as a last resort
-  if (output.length > maxLength) {
-    output = output.slice(0, maxLength) + '\n... (truncated)';
+  if (output.length > budget) {
+    output = output.slice(0, budget) + '\n... (truncated)';
   }
 
-  // The overlay note goes on top, and AFTER truncation — it is the one line
-  // that explains why the refs below may not respond, so losing it to a length
-  // cap would be exactly backwards.
-  if (occlusion) output = `${occlusionNote(occlusion)}\n${output}`;
+  output = note + output;
 
   // Store the refMap for this page so resolveRef can use it without re-querying
   setPageRefs(page, refs);
@@ -755,7 +766,12 @@ export async function generateScopedSnapshot(
   // serialize the forest as-is instead of dropping its top level.
   let output = serializeForest(scoped, ctx);
 
-  if (output.length > maxLength && format === 'ai') {
+  // Same length accounting as the page-level path: the note goes on top after
+  // truncation, and is charged against the caller's budget.
+  const note = occlusion ? `${occlusionNote(occlusion)}\n` : '';
+  const budget = Math.max(0, maxLength - note.length);
+
+  if (output.length > budget && format === 'ai') {
     const trimmed = forest
       .map(stripNonInteractive)
       .filter((n): n is AXNode => n !== null);
@@ -765,11 +781,11 @@ export async function generateScopedSnapshot(
     }
   }
 
-  if (output.length > maxLength) {
-    output = output.slice(0, maxLength) + '\n... (truncated)';
+  if (output.length > budget) {
+    output = output.slice(0, budget) + '\n... (truncated)';
   }
 
-  if (occlusion) output = `${occlusionNote(occlusion)}\n${output}`;
+  output = note + output;
 
   // Record the scope alongside the refs: these ref numbers are subtree-relative,
   // so resolveRef must count matches inside the same element.
