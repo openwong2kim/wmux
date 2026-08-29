@@ -332,31 +332,37 @@ describe('browser backend fork (#517)', () => {
 
 // ── Phase 2: 'chrome' backend ──────────────────────────────────────────────
 
+// The two ids are deliberately DIFFERENT here: surfaceId is the stable wmux
+// handle agents hold, targetId the CDP target it currently maps to. Anything
+// that conflates them shows up as a failure rather than passing by accident.
 function makeFakeLauncher() {
-  const tabs = new Map<string, { url: string; workspaceId?: string; title: string }>();
+  const tabs = new Map<string, { targetId: string; url: string; workspaceId?: string; title: string }>();
   let nextId = 1;
+  const visible = (workspaceId?: string) =>
+    [...tabs.entries()]
+      .filter(([, t]) => workspaceId === undefined || t.workspaceId === undefined || t.workspaceId === workspaceId)
+      .map(([surfaceId, t]) => ({
+        surfaceId,
+        targetId: t.targetId,
+        workspaceId: t.workspaceId,
+        url: t.url,
+        title: t.title,
+      }));
   return {
     tabs,
     ensureRunning: vi.fn(async () => 18901),
     endpoint: vi.fn(async () => ({ cdpPort: 18901 })),
-    cdpInfoTargets: vi.fn(async function (this: unknown, workspaceId?: string) {
-      return (tabs instanceof Map)
-        ? [...tabs.entries()]
-            .filter(([, t]) => workspaceId === undefined || t.workspaceId === undefined || t.workspaceId === workspaceId)
-            .map(([targetId, t]) => ({ targetId, workspaceId: t.workspaceId, url: t.url, title: t.title }))
-        : [];
-    }),
+    cdpInfoTargets: vi.fn(async (workspaceId?: string) => visible(workspaceId)),
     openTab: vi.fn(async (url: string, workspaceId?: string) => {
-      const targetId = `tgt-${nextId++}`;
-      tabs.set(targetId, { url, workspaceId, title: '' });
-      return { targetId, url };
+      const n = nextId++;
+      const surfaceId = `sfc-${n}`;
+      const targetId = `tgt-${n}`;
+      tabs.set(surfaceId, { targetId, url, workspaceId, title: '' });
+      return { surfaceId, targetId, url };
     }),
-    listTargets: vi.fn(async (workspaceId?: string) =>
-      [...tabs.entries()]
-        .filter(([, t]) => workspaceId === undefined || t.workspaceId === undefined || t.workspaceId === workspaceId)
-        .map(([targetId, t]) => ({ targetId, workspaceId: t.workspaceId, url: t.url, title: t.title })),
-    ),
-    closeTab: vi.fn(async (targetId: string) => tabs.delete(targetId)),
+    listTargets: vi.fn(async (workspaceId?: string) => visible(workspaceId)),
+    closeSurface: vi.fn(async (surfaceId: string) => tabs.delete(surfaceId)),
+    hasSurface: vi.fn((surfaceId: string) => tabs.has(surfaceId)),
     dispose: vi.fn(),
     isRunning: vi.fn(() => true),
   };
@@ -364,21 +370,29 @@ function makeFakeLauncher() {
 
 function makeFakeRegistry(perWorkspace?: Record<string, ReturnType<typeof makeFakeLauncher>>) {
   const fallback = makeFakeLauncher();
+  const all = [fallback, ...Object.values(perWorkspace ?? {})];
   return {
     fallback,
     forWorkspace: vi.fn((ws?: string) => (ws && perWorkspace?.[ws]) || fallback),
     forProfile: vi.fn(() => fallback),
-    ownerOfTarget: vi.fn(),
+    ownerOfSurface: vi.fn((surfaceId: string) => {
+      for (const client of all) {
+        const record = client.tabs.get(surfaceId);
+        if (record) return { workspaceId: record.workspaceId, client };
+      }
+      return null;
+    }),
+    statusForWorkspace: vi.fn(() => ({ profile: 'default', running: true, cdpPort: 52931 })),
     disposeAll: vi.fn(),
   };
 }
 
 describe('chrome backend', () => {
-  it('browser.open opens a tracked Chrome tab and returns its targetId as surfaceId', async () => {
+  it('browser.open opens a tracked Chrome tab and returns a stable surfaceId, not the CDP targetId', async () => {
     const registry = makeFakeRegistry();
     const { router } = register({ backend: 'chrome', launcher: registry });
     const { result } = await dispatch(router, 'browser.open', { url: 'https://a.test/', workspaceId: 'ws-1' });
-    expect(result).toMatchObject({ ok: true, backend: 'chrome', surfaceId: 'tgt-1', url: 'https://a.test/' });
+    expect(result).toMatchObject({ ok: true, backend: 'chrome', surfaceId: 'sfc-1', url: 'https://a.test/' });
     expect(registry.forWorkspace).toHaveBeenCalledWith('ws-1');
     expect(registry.fallback.openTab).toHaveBeenCalledWith('https://a.test/', 'ws-1');
     expect(sendToRendererMock).not.toHaveBeenCalled();
@@ -395,7 +409,9 @@ describe('chrome backend', () => {
     const info = result as { workspaceBackend: string; shellUrl?: string; targets: Array<{ surfaceId: string; targetId: string; workspaceId?: string }> };
     expect(info.workspaceBackend).toBe('chrome');
     expect(info.shellUrl).toBeUndefined();
-    expect(info.targets).toEqual([{ surfaceId: 'tgt-1', targetId: 'tgt-1', workspaceId: 'ws-1' }]);
+    // The engine matches the registry on surfaceId, then dials CDP with
+    // targetId - cdp.info must carry BOTH, and they are not the same value.
+    expect(info.targets).toEqual([{ surfaceId: 'sfc-1', targetId: 'tgt-1', workspaceId: 'ws-1' }]);
   });
 
   it('a leased RPC-fallback handler with no builtin target throws the chrome contract error', async () => {
@@ -418,14 +434,15 @@ describe('chrome backend', () => {
     await dispatch(router, 'browser.open', { url: 'https://a.test/', workspaceId: 'ws-1' });
 
     const list = (await dispatch(router, 'browser.tabs', { action: 'list', workspaceId: 'ws-1' })).result as {
-      ok: boolean; tabs: Array<{ surfaceId: string }>;
+      ok: boolean; tabs: Array<{ surfaceId: string; paneId: string }>;
     };
     expect(list.ok).toBe(true);
-    expect(list.tabs.map((t) => t.surfaceId)).toEqual(['tgt-1']);
+    expect(list.tabs.map((t) => t.surfaceId)).toEqual(['sfc-1']);
+    expect(list.tabs.map((t) => t.paneId)).toEqual(['chrome:sfc-1']);
 
-    const closed = (await dispatch(router, 'browser.tabs', { action: 'close', surfaceId: 'tgt-1', workspaceId: 'ws-1' })).result as { ok: boolean };
+    const closed = (await dispatch(router, 'browser.tabs', { action: 'close', surfaceId: 'sfc-1', workspaceId: 'ws-1' })).result as { ok: boolean };
     expect(closed.ok).toBe(true);
-    expect(registry.fallback.closeTab).toHaveBeenCalledWith('tgt-1');
+    expect(registry.fallback.closeSurface).toHaveBeenCalledWith('sfc-1');
   });
 
   it('two bound workspaces resolve to different launchers (ports + tab isolation) (Phase 2.5)', async () => {
@@ -459,20 +476,21 @@ describe('chrome backend', () => {
     const live = {
       endpoint: vi.fn(async () => ({ wsEndpoint: 'ws://127.0.0.1:9333/devtools/browser/abc' })),
       cdpInfoTargets: vi.fn(async () => []),
-      openTab: vi.fn(async (url: string) => ({ targetId: 'lt-1', url })),
+      // Live keeps surfaceId identical to targetId - see LiveChromeClient.
+      openTab: vi.fn(async (url: string) => ({ surfaceId: 'lt-1', targetId: 'lt-1', url })),
       listTargets: vi.fn(async () => [
-        { targetId: 'lt-1', url: 'https://a.test/', title: 'A' },
-        { targetId: 'lt-2', url: 'https://b.test/', title: 'B' },
+        { surfaceId: 'lt-1', targetId: 'lt-1', url: 'https://a.test/', title: 'A' },
+        { surfaceId: 'lt-2', targetId: 'lt-2', url: 'https://b.test/', title: 'B' },
       ]),
-      closeTab: vi.fn(async () => true),
-      selectTab: vi.fn(async () => true),
-      hasTab: vi.fn(() => true),
+      closeSurface: vi.fn(async () => true),
+      selectSurface: vi.fn(async () => true),
+      hasSurface: vi.fn(() => true),
       dispose: vi.fn(),
     };
     const registry = {
       forWorkspace: vi.fn(() => live),
       forProfile: vi.fn(() => live),
-      ownerOfTarget: vi.fn(),
+      ownerOfSurface: vi.fn(() => null),
       disposeAll: vi.fn(),
     };
     const { router } = register({ backend: 'chrome', launcher: registry });
@@ -493,12 +511,157 @@ describe('chrome backend', () => {
     expect(list.tabs.map((t) => t.surfaceId)).toEqual(['lt-1', 'lt-2']);
     const sel = (await dispatch(router, 'browser.tabs', { action: 'select', surfaceId: 'lt-2', workspaceId: 'ws-1' })).result as { ok: boolean };
     expect(sel.ok).toBe(true);
-    expect(live.selectTab).toHaveBeenCalledWith('lt-2');
+    expect(live.selectSurface).toHaveBeenCalledWith('lt-2');
   });
 
   it('chrome mode without a wired launcher fails with a clear message', async () => {
     const { router } = register({ backend: 'chrome' });
     const { error } = await dispatch(router, 'browser.open', { url: 'https://a.test/', workspaceId: 'ws-1' });
     expect(error?.message).toContain('no Chrome launcher is wired');
+  });
+});
+
+// ── browser.close on the 'chrome' backend ──────────────────────────────────
+//
+// Chrome tabs live outside the renderer, so the pre-existing bridge send was a
+// silent no-op for them: browser_close reported success and closed nothing.
+// The chrome branch closes the tab itself, and scopes the close to the caller.
+describe('chrome backend browser.close', () => {
+  it('closes the named surface and never touches the renderer', async () => {
+    const registry = makeFakeRegistry();
+    const { router } = register({ backend: 'chrome', launcher: registry });
+    await dispatch(router, 'browser.open', { url: 'https://a.test/', workspaceId: 'ws-1' });
+
+    const { result } = await dispatch(router, 'browser.close', { surfaceId: 'sfc-1', workspaceId: 'ws-1' });
+    expect(result).toEqual({ ok: true, backend: 'chrome', closed: true, surfaceId: 'sfc-1' });
+    expect(registry.fallback.closeSurface).toHaveBeenCalledWith('sfc-1');
+    // The renderer knows nothing about Chrome tabs — sending there is what
+    // made the old behavior a silent no-op.
+    expect(sendToRendererMock).not.toHaveBeenCalled();
+  });
+
+  it('without a surfaceId closes the workspace most recently opened tab', async () => {
+    const registry = makeFakeRegistry();
+    const { router } = register({ backend: 'chrome', launcher: registry });
+    await dispatch(router, 'browser.open', { url: 'https://a.test/', workspaceId: 'ws-1' });
+    await dispatch(router, 'browser.open', { url: 'https://b.test/', workspaceId: 'ws-1' });
+
+    const { result } = await dispatch(router, 'browser.close', { workspaceId: 'ws-1' });
+    expect(result).toMatchObject({ ok: true, closed: true, surfaceId: 'sfc-2' });
+    expect(registry.fallback.closeSurface).toHaveBeenCalledWith('sfc-2');
+    expect(registry.fallback.tabs.has('sfc-1')).toBe(true); // the older tab stays
+  });
+
+  it('a transitional raw CDP targetId still resolves to its surface', async () => {
+    const registry = makeFakeRegistry();
+    const { router } = register({ backend: 'chrome', launcher: registry });
+    await dispatch(router, 'browser.open', { url: 'https://a.test/', workspaceId: 'ws-1' });
+
+    const { result } = await dispatch(router, 'browser.close', { surfaceId: 'tgt-1', workspaceId: 'ws-1' });
+    expect(result).toMatchObject({ ok: true, closed: true, surfaceId: 'sfc-1' });
+  });
+
+  it('refuses to close a surface owned by another workspace (cross-workspace teardown)', async () => {
+    const wsA = makeFakeLauncher();
+    const wsB = makeFakeLauncher();
+    const registry = makeFakeRegistry({ 'ws-a': wsA, 'ws-b': wsB });
+    const { router } = register({ backend: 'chrome', launcher: registry });
+    await dispatch(router, 'browser.open', { url: 'https://b.test/', workspaceId: 'ws-b' });
+
+    const { error } = await dispatch(router, 'browser.close', { surfaceId: 'sfc-1', workspaceId: 'ws-a' });
+    expect(error?.message).toContain('no wmux-opened Chrome tab');
+    expect(wsB.closeSurface).not.toHaveBeenCalled();
+    expect(wsB.tabs.has('sfc-1')).toBe(true);
+  });
+
+  it('refuses a cross-workspace close inside ONE launcher (same profile, two workspaces)', async () => {
+    // The sharper case: both workspaces are bound to the same profile, so
+    // they resolve to the SAME launcher. Nothing about the routing separates
+    // them — only the scoped listTargets check does. Closing by surfaceId
+    // straight through the launcher would hand workspace A workspace B's tab.
+    const registry = makeFakeRegistry();
+    const { router } = register({ backend: 'chrome', launcher: registry });
+    await dispatch(router, 'browser.open', { url: 'https://a.test/', workspaceId: 'ws-1' });
+    await dispatch(router, 'browser.open', { url: 'https://b.test/', workspaceId: 'ws-2' });
+
+    const { error } = await dispatch(router, 'browser.close', { surfaceId: 'sfc-2', workspaceId: 'ws-1' });
+    expect(error?.message).toContain('no wmux-opened Chrome tab');
+    expect(registry.fallback.closeSurface).not.toHaveBeenCalled();
+    expect(registry.fallback.tabs.has('sfc-2')).toBe(true);
+
+    // ...and the owner still closes its own tab.
+    const { result } = await dispatch(router, 'browser.close', { surfaceId: 'sfc-2', workspaceId: 'ws-2' });
+    expect(result).toMatchObject({ ok: true, closed: true, surfaceId: 'sfc-2' });
+  });
+
+  it('refuses a cross-workspace close addressed by the transitional raw targetId', async () => {
+    const registry = makeFakeRegistry();
+    const { router } = register({ backend: 'chrome', launcher: registry });
+    await dispatch(router, 'browser.open', { url: 'https://b.test/', workspaceId: 'ws-2' });
+
+    const { error } = await dispatch(router, 'browser.close', { surfaceId: 'tgt-1', workspaceId: 'ws-1' });
+    expect(error?.message).toContain('no wmux-opened Chrome tab');
+    expect(registry.fallback.closeSurface).not.toHaveBeenCalled();
+  });
+
+  it('closes a surface the caller workspace owns under a different profile launcher', async () => {
+    // The workspace rebound to another profile after opening the tab: the
+    // caller resolves to a launcher that never saw it, and the registry
+    // fallback finds the real owner — allowed only because the record's
+    // workspace matches the caller's scope.
+    const owner = makeFakeLauncher();
+    const registry = makeFakeRegistry({ 'ws-owner': owner });
+    await owner.openTab('https://a.test/', 'ws-caller');
+    const { router } = register({ backend: 'chrome', launcher: registry });
+
+    const { result } = await dispatch(router, 'browser.close', { surfaceId: 'sfc-1', workspaceId: 'ws-caller' });
+    expect(result).toMatchObject({ ok: true, closed: true, surfaceId: 'sfc-1' });
+    expect(owner.closeSurface).toHaveBeenCalledWith('sfc-1');
+  });
+
+  it('with nothing open reports an explicit error instead of a silent success', async () => {
+    const registry = makeFakeRegistry();
+    const { router } = register({ backend: 'chrome', launcher: registry });
+    const { error } = await dispatch(router, 'browser.close', { workspaceId: 'ws-1' });
+    expect(error?.message).toContain('no open wmux Chrome tab');
+    expect(sendToRendererMock).not.toHaveBeenCalled();
+  });
+
+  it('builtin backend still forwards browser.close to the renderer (regression)', async () => {
+    const { router } = register({ backend: 'builtin' });
+    await dispatch(router, 'browser.close', { surfaceId: 'surface-9', workspaceId: 'ws-1' });
+    expect(sendToRendererMock).toHaveBeenCalledWith(
+      expect.anything(),
+      'browser.close',
+      expect.objectContaining({ surfaceId: 'surface-9', workspaceId: 'ws-1' }),
+    );
+  });
+});
+
+describe('browser.session.status backend reporting', () => {
+  it('reports chrome facts (backend, bound profile, CDP port) without touching the Electron session fields', async () => {
+    const registry = makeFakeRegistry();
+    const { router } = register({ backend: 'chrome', launcher: registry });
+    const { result } = await dispatch(router, 'browser.session.status', { workspaceId: 'ws-1' });
+    expect(result).toMatchObject({
+      backend: 'chrome',
+      profile: 'default',
+      port: 52931,
+      running: true,
+      partition: null,
+      persistent: null,
+    });
+    // A status probe must be a pure read: no launcher lookup that could spawn.
+    expect(registry.forWorkspace).not.toHaveBeenCalled();
+    expect(registry.statusForWorkspace).toHaveBeenCalled();
+  });
+
+  it('keeps the builtin shape and adds the backend field', async () => {
+    const registry = makeFakeRegistry();
+    const { router } = register({ backend: 'builtin', launcher: registry });
+    const { result } = await dispatch(router, 'browser.session.status', {});
+    expect(result).toMatchObject({ backend: 'builtin', profile: expect.any(String) });
+    expect((result as Record<string, unknown>)['partition']).toBeTruthy();
+    expect(registry.statusForWorkspace).not.toHaveBeenCalled();
   });
 });
