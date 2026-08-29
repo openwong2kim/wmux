@@ -989,7 +989,7 @@ export class ChromeLauncher implements ChromeBackendClient {
 import { join as joinPath } from 'node:path';
 import { validateBrowserProfileName } from './ProfileManager';
 import { DEFAULT_CHROME_PROFILE, LIVE_CHROME_PROFILE, type ChromeProfileStore } from './ChromeProfileStore';
-import { LiveChromeClient } from './LiveChromeClient';
+import { LiveChromeClient, isLiveChromeReachable } from './LiveChromeClient';
 
 export class ChromeLauncherRegistry {
   private readonly launchers = new Map<string, ChromeBackendClient>();
@@ -1039,18 +1039,33 @@ export class ChromeLauncherRegistry {
   }
 
   /**
-   * Side-effect-free status for browser.session.status: which profile the
-   * workspace is bound to and whether its instance is up. Reads the existing
-   * launcher map only — it must NEVER create a launcher (let alone spawn
-   * Chrome) for a mere status probe.
+   * Read-only status for browser.session.status: which profile the workspace is
+   * bound to and whether its instance is up. It must NEVER create a launcher or
+   * spawn Chrome for a mere status probe. It is not launcher-map-only anymore:
+   * on the live profile it also does a read-only reachability probe (parse the
+   * user's DevToolsActivePort + one bounded, immediately-closed TCP connect) —
+   * no process spawned, no automation opened.
    */
-  statusForWorkspace(
+  async statusForWorkspace(
     workspaceId: string | undefined,
-  ): { profile: string; running: boolean; cdpPort: number | null } {
+  ): Promise<{ profile: string; running: boolean; cdpPort: number | null; liveAttach?: boolean }> {
     const profile = this.opts.store.profileFor(workspaceId);
     if (profile === LIVE_CHROME_PROFILE) {
-      // Live attach has no port of ours; "running" means a socket was set up.
-      return { profile, running: this.live !== null, cdpPort: null };
+      // `running` here means the user's remote-debugging endpoint is LISTENING —
+      // not the old "did we lazily new-up a LiveChromeClient" (an object the
+      // agent never asked for), and not "does a DevToolsActivePort file parse"
+      // (a force-killed Chrome leaves a stale file pointing at a dead port — the
+      // false positive a live dogfood caught). isLiveChromeReachable confirms a
+      // live listener with a bounded TCP connect (no WS upgrade, so Chrome's
+      // per-connection consent dialog never fires on a status probe). NOTE this
+      // is REACHABILITY, not readiness: a listening endpoint can still refuse
+      // the first real drive at that consent dialog. It reads the SAME
+      // user-data-dir the registry's LiveChromeClient uses (both default to
+      // liveChromeUserDataDir()). liveAttach:true flags the attach case so the
+      // RPC layer and agent read running:false as "enable remote debugging at
+      // chrome://inspect", never "call session.start".
+      const running = await isLiveChromeReachable();
+      return { profile, running, cdpPort: null, liveAttach: true };
     }
     const launcher = this.launchers.get(profile);
     if (launcher instanceof ChromeLauncher && launcher.isRunning()) {

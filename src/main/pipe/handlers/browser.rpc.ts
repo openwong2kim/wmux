@@ -30,6 +30,7 @@ import type {
 } from '../../audit/shadowRejectionLog';
 import type { BrowserBackendStore } from '../../browser-session/BrowserBackendStore';
 import type { ChromeBackendClient, ChromeLauncherRegistry } from '../../browser-session/ChromeLauncher';
+import { isLiveChromeReachable } from '../../browser-session/LiveChromeClient';
 import type { EnforcementMode } from '../../mcp/enforcementMode';
 import { isFirstPartyClient } from '../../mcp/firstParty';
 import { isLocalExternalWireContext } from '../../mcp/rpcProvenance';
@@ -1130,6 +1131,46 @@ export function registerBrowserRpc(
    * params: { profile?: string }
    */
   router.register('browser.session.start', async (params) => {
+    // Only the builtin backend runs an RPC-started Electron session (the
+    // partition dance below). chrome/external never touch that partition, so
+    // running it there and returning a port MISLED the agent into "a session
+    // started" when nothing had (dogfood: a live-bound workspace got a
+    // successful builtin session it could not use). Answer honestly instead —
+    // no profileManager / portAllocator / renderer mutation — describing how
+    // the real backend actually attaches.
+    const kind = backend();
+    if (kind !== 'builtin') {
+      if (kind === 'external') {
+        return {
+          backend: kind,
+          started: false,
+          reason: 'URLs are handed to the OS browser; there is no session to start.',
+        };
+      }
+      // chrome backend. session.start is GLOBAL — it has neither a workspace
+      // nor an honored profile arg, so it CANNOT know whether the caller is
+      // bound to dedicated Chrome or Live Chrome. A reason that assumed one
+      // binding would be false for the other (and could contradict a
+      // workspace-scoped session.status). So the reason addresses BOTH
+      // audiences and states the fact it does know: whether the live
+      // remote-debugging endpoint is reachable (a bounded TCP connect behind
+      // isLiveChromeReachable; a stale DevToolsActivePort left by a dead Chrome
+      // does NOT count). NEVER launch the dedicated Chrome here: global start
+      // would spawn the DEFAULT profile, not the caller's bound one.
+      const remoteDebugging = await isLiveChromeReachable();
+      return {
+        backend: kind,
+        started: false,
+        remoteDebugging,
+        reason:
+          'This backend starts no RPC session (any profile argument is ignored). ' +
+          'If this workspace is bound to Live Chrome: remote debugging is ' +
+          (remoteDebugging
+            ? 'reachable, so the browser attaches when you first drive it. '
+            : 'not reachable — enable it once at chrome://inspect/#remote-debugging (Chrome 144+), then drive the browser. ') +
+          'Otherwise the dedicated Chrome launches on demand on the first browser tool call.',
+      };
+    }
     const profileName = typeof params['profile'] === 'string'
       ? validateBrowserProfileName(params['profile'])
       : 'default';
@@ -1160,6 +1201,15 @@ export function registerBrowserRpc(
    * Stop the active browser session and release resources.
    */
   router.register('browser.session.stop', async () => {
+    // Symmetric with session.start: only the builtin backend has an RPC session
+    // to stop. On chrome/external the mutations below (active-profile reset +
+    // renderer applyProfile) would "tear down" a session that never existed —
+    // the very partition the start-side gate refuses to touch — so gate them
+    // out and answer honestly. builtin path stays byte-identical.
+    const kind = backend();
+    if (kind !== 'builtin') {
+      return { backend: kind, stopped: false, reason: 'This backend has no RPC session to stop.' };
+    }
     const port = portAllocator.getPort();
     if (port !== null) {
       portAllocator.release(port);
@@ -1184,7 +1234,7 @@ export function registerBrowserRpc(
     // chrome facts instead — via a pure read that never launches Chrome.
     if (kind === 'chrome' && chromeRegistry) {
       const ws = scopeFor('browser.session.status', params, ctx);
-      const status = chromeRegistry.statusForWorkspace(ws || undefined);
+      const status = await chromeRegistry.statusForWorkspace(ws || undefined);
       return {
         backend: kind,
         profile: status.profile,
@@ -1192,6 +1242,10 @@ export function registerBrowserRpc(
         persistent: null,
         port: status.cdpPort,
         running: status.running,
+        // Only the live profile sets liveAttach (running there = remote-debugging
+        // reachable), so the agent reads running:false as "enable it at
+        // chrome://inspect", not "call session.start". Additive: absent elsewhere.
+        ...(status.liveAttach !== undefined && { liveAttach: status.liveAttach }),
       };
     }
     const active = profileManager.getActiveProfile();

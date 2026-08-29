@@ -1,4 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { createServer } from 'node:net';
 import type { BrowserWindow } from 'electron';
 import { RpcRouter } from '../../RpcRouter';
 import { registerBrowserRpc } from '../browser.rpc';
@@ -383,7 +387,13 @@ function makeFakeRegistry(perWorkspace?: Record<string, ReturnType<typeof makeFa
       }
       return null;
     }),
-    statusForWorkspace: vi.fn(() => ({ profile: 'default', running: true, cdpPort: 52931 })),
+    statusForWorkspace: vi.fn(
+      (): { profile: string; running: boolean; cdpPort: number | null; liveAttach?: boolean } => ({
+        profile: 'default',
+        running: true,
+        cdpPort: 52931,
+      }),
+    ),
     disposeAll: vi.fn(),
   };
 }
@@ -664,5 +674,175 @@ describe('browser.session.status backend reporting', () => {
     expect(result).toMatchObject({ backend: 'builtin', profile: expect.any(String) });
     expect((result as Record<string, unknown>)['partition']).toBeTruthy();
     expect(registry.statusForWorkspace).not.toHaveBeenCalled();
+  });
+
+  it('propagates liveAttach from the registry so running:false reads as chrome://inspect, not start', async () => {
+    const registry = makeFakeRegistry();
+    registry.statusForWorkspace.mockReturnValue({
+      profile: 'live',
+      running: false,
+      cdpPort: null,
+      liveAttach: true,
+    });
+    const { router } = register({ backend: 'chrome', launcher: registry });
+    const { result } = await dispatch(router, 'browser.session.status', { workspaceId: 'ws-1' });
+    expect(result).toMatchObject({
+      backend: 'chrome',
+      profile: 'live',
+      running: false,
+      liveAttach: true,
+    });
+  });
+
+  it('omits liveAttach for a dedicated profile (field is live-only)', async () => {
+    const registry = makeFakeRegistry(); // default status: dedicated, no liveAttach
+    const { router } = register({ backend: 'chrome', launcher: registry });
+    const { result } = await dispatch(router, 'browser.session.status', { workspaceId: 'ws-1' });
+    expect('liveAttach' in (result as object)).toBe(false);
+  });
+});
+
+/**
+ * browser.session.start honesty — the builtin backend runs the RPC partition
+ * dance; chrome/external must NOT, and must not return a success shape the
+ * agent misreads as "a session started" (dogfood: a live-bound workspace got a
+ * usable-looking builtin session that nothing consumed).
+ */
+describe('browser.session.start backend honesty', () => {
+  it('builtin: still starts the RPC session (partition dance + applyProfile)', async () => {
+    const { router } = register({ backend: 'builtin' });
+    const { result } = await dispatch(router, 'browser.session.start', {});
+    expect(result).toMatchObject({ partition: 'persist:wmux-default' });
+    expect(sendToRendererMock).toHaveBeenCalledWith(
+      expect.any(Function),
+      'browser.session.applyProfile',
+      { partition: 'persist:wmux-default' },
+    );
+  });
+
+  it('external: started:false, actionable reason, no renderer/partition/port mutation', async () => {
+    const { router } = register({ backend: 'external' });
+    const { result } = await dispatch(router, 'browser.session.start', {});
+    const r = result as Record<string, unknown>;
+    expect(r).toMatchObject({ backend: 'external', started: false });
+    expect(String(r['reason'])).toContain('OS browser');
+    expect(r['partition']).toBeUndefined();
+    expect(r['port']).toBeUndefined();
+    expect(sendToRendererMock).not.toHaveBeenCalled();
+  });
+
+  it('chrome + live reachable: started:false, remoteDebugging:true, attach-on-drive reason', async () => {
+    const prev = process.env.WMUX_LIVE_CHROME_DIR;
+    const dir = mkdtempSync(join(tmpdir(), 'wmux-start-live-'));
+    // A real listener on the port the file names → genuinely reachable.
+    const server = createServer();
+    await new Promise<void>((res) => server.listen(0, '127.0.0.1', () => res()));
+    const addr = server.address();
+    const port = typeof addr === 'object' && addr ? addr.port : 0;
+    writeFileSync(join(dir, 'DevToolsActivePort'), `${port}\n/devtools/browser/abc\n`);
+    process.env.WMUX_LIVE_CHROME_DIR = dir;
+    try {
+      const { router } = register({ backend: 'chrome' });
+      const { result } = await dispatch(router, 'browser.session.start', {});
+      const r = result as Record<string, unknown>;
+      expect(r).toMatchObject({ backend: 'chrome', started: false, remoteDebugging: true });
+      const reason = String(r['reason']);
+      // Neutral, two-audience framing: global start can't know the binding, so
+      // it addresses BOTH the live and the dedicated reader, never asserting one.
+      expect(reason).toContain('bound to Live Chrome');
+      expect(reason).toContain('reachable, so the browser attaches when you first drive');
+      expect(reason).toContain('Otherwise the dedicated Chrome launches on demand');
+      expect(sendToRendererMock).not.toHaveBeenCalled();
+    } finally {
+      if (server.listening) await new Promise<void>((res) => server.close(() => res()));
+      rmSync(dir, { recursive: true, force: true });
+      if (prev === undefined) delete process.env.WMUX_LIVE_CHROME_DIR;
+      else process.env.WMUX_LIVE_CHROME_DIR = prev;
+    }
+  });
+
+  it('chrome + live STALE file (parseable, dead port): started:false, remoteDebugging:false — the live-measurement regression', async () => {
+    const prev = process.env.WMUX_LIVE_CHROME_DIR;
+    const dir = mkdtempSync(join(tmpdir(), 'wmux-start-stale-'));
+    // Reserve a real port, then close it so nothing listens: a force-killed
+    // Chrome's leftover DevToolsActivePort. The file PARSES; the port is DEAD.
+    const server = createServer();
+    await new Promise<void>((res) => server.listen(0, '127.0.0.1', () => res()));
+    const addr = server.address();
+    const port = typeof addr === 'object' && addr ? addr.port : 0;
+    await new Promise<void>((res) => server.close(() => res()));
+    writeFileSync(join(dir, 'DevToolsActivePort'), `${port}\n/devtools/browser/abc\n`);
+    process.env.WMUX_LIVE_CHROME_DIR = dir;
+    try {
+      const { router } = register({ backend: 'chrome' });
+      const { result } = await dispatch(router, 'browser.session.start', {});
+      const r = result as Record<string, unknown>;
+      expect(r).toMatchObject({ backend: 'chrome', started: false, remoteDebugging: false });
+      const reason = String(r['reason']);
+      expect(reason).toContain('bound to Live Chrome');
+      expect(reason).toContain('not reachable');
+      expect(reason).toContain('chrome://inspect');
+      expect(reason).toContain('Otherwise the dedicated Chrome launches on demand');
+      expect(sendToRendererMock).not.toHaveBeenCalled();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+      if (prev === undefined) delete process.env.WMUX_LIVE_CHROME_DIR;
+      else process.env.WMUX_LIVE_CHROME_DIR = prev;
+    }
+  });
+
+  it('chrome + live unreachable: started:false, remoteDebugging:false, dedicated + enable-remote-debugging hint', async () => {
+    const prev = process.env.WMUX_LIVE_CHROME_DIR;
+    const dir = mkdtempSync(join(tmpdir(), 'wmux-start-nolive-')); // empty: no DevToolsActivePort
+    process.env.WMUX_LIVE_CHROME_DIR = dir;
+    try {
+      const { router } = register({ backend: 'chrome' });
+      const { result } = await dispatch(router, 'browser.session.start', {});
+      const r = result as Record<string, unknown>;
+      expect(r).toMatchObject({ backend: 'chrome', started: false, remoteDebugging: false });
+      const reason = String(r['reason']);
+      expect(reason).toContain('not reachable');
+      expect(reason).toContain('chrome://inspect');
+      expect(reason).toContain('Otherwise the dedicated Chrome launches on demand');
+      expect(sendToRendererMock).not.toHaveBeenCalled();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+      if (prev === undefined) delete process.env.WMUX_LIVE_CHROME_DIR;
+      else process.env.WMUX_LIVE_CHROME_DIR = prev;
+    }
+  });
+});
+
+/**
+ * browser.session.stop honesty — symmetric with start: only builtin has an RPC
+ * session to stop; chrome/external must NOT silently reset the active profile or
+ * send a renderer applyProfile to tear down a session that never existed.
+ */
+describe('browser.session.stop backend honesty', () => {
+  it('builtin: stops the RPC session (applyProfile back to default)', async () => {
+    const { router } = register({ backend: 'builtin' });
+    const { result } = await dispatch(router, 'browser.session.stop', {});
+    expect(result).toMatchObject({ stopped: true });
+    expect(sendToRendererMock).toHaveBeenCalledWith(
+      expect.any(Function),
+      'browser.session.applyProfile',
+      { partition: 'persist:wmux-default' },
+    );
+  });
+
+  it('external: stopped:false, no active-profile/renderer mutation', async () => {
+    const { router } = register({ backend: 'external' });
+    const { result } = await dispatch(router, 'browser.session.stop', {});
+    expect(result).toMatchObject({ backend: 'external', stopped: false });
+    expect(String((result as Record<string, unknown>)['reason'])).toContain('no RPC session to stop');
+    expect(sendToRendererMock).not.toHaveBeenCalled();
+  });
+
+  it('chrome: stopped:false, no active-profile/renderer mutation', async () => {
+    const { router } = register({ backend: 'chrome' });
+    const { result } = await dispatch(router, 'browser.session.stop', {});
+    expect(result).toMatchObject({ backend: 'chrome', stopped: false });
+    expect(String((result as Record<string, unknown>)['reason'])).toContain('no RPC session to stop');
+    expect(sendToRendererMock).not.toHaveBeenCalled();
   });
 });
