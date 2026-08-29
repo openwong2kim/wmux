@@ -318,11 +318,136 @@ const HIDDEN_ELEMENT_PREDICATE = `
       }`;
 
 /**
+ * In-page pass that removes the leading run of "skip to content" links.
+ *
+ * Skip links are in-page anchors a site puts at the very top of the document
+ * so keyboard and screen-reader users can jump past the chrome. They render,
+ * so the visibility filter keeps them, and they sit outside <nav>/<header>, so
+ * NOISE_SELECTORS misses them — yet they are pure navigation. On naver.com
+ * they were the first eight links of the extracted markdown and pushed the
+ * first headline past character 440, which reads as an empty page to a caller
+ * that previews the opening few hundred characters (issue #1077).
+ *
+ * A table of contents and a footnote reference have the same shape — an
+ * `a[href^="#"]` with a short label — so only position tells them apart. The
+ * scan is therefore confined to the LEADING run of the document: it walks in
+ * document order, drops anchors (and wrappers holding nothing but anchors)
+ * until the first node that produces real content, and stops there for good.
+ * It descends only through block wrappers that carry no text of their own, so
+ * an anchor opening the first paragraph is content, not chrome. Anything past
+ * that first content node — every real table of contents measured, which
+ * always follows a heading — is untouched.
+ *
+ * One more guard bounds the blast radius: a run longer than MAX_SKIP_LINKS is
+ * left alone entirely — a real skip-link block is a handful of links, so a
+ * longer one is more likely a table of contents that happens to lead the page.
+ *
+ * Where the target does resolve, it is read one way only: an anchor pointing
+ * at a heading is a table-of-contents entry and is kept, because a skip link
+ * targets the landmark it jumps over, never the heading that names a section.
+ * An anchor whose target is missing stays eligible — naver.com's eighth skip
+ * link points at #viewSetting, which no element on the page carries, and
+ * requiring a live target left exactly that link, the noise the issue
+ * reported, sitting at the top of the output.
+ */
+const SKIP_LINK_STRIPPER = `
+      function stripLeadingSkipLinks(root) {
+        const MAX_SKIP_LINKS = 12;
+        const MAX_DEPTH = 6;
+        // Block wrappers only. Descending into a <p> or a heading would let the
+        // scan eat a footnote link that merely opens the first paragraph.
+        const DESCENDABLE = { DIV: 1, SECTION: 1, MAIN: 1, ARTICLE: 1, BODY: 1 };
+
+        function resolveTarget(raw) {
+          const byId = document.getElementById(raw);
+          if (byId) return byId;
+          try {
+            return document.getElementById(decodeURIComponent(raw));
+          } catch (e) {
+            return null;
+          }
+        }
+
+        function isSkipLink(el) {
+          if (el.tagName !== 'A') return false;
+          const href = el.getAttribute('href') || '';
+          if (href.charAt(0) !== '#' || href.length < 2) return false;
+          if (!(el.textContent || '').trim()) return false;
+          // Its own label and nothing else — a link wrapping a figure, a table
+          // or a heading is carrying content, whatever its href says.
+          if (el.querySelector('img, svg, video, canvas, table, ul, ol, p, h1, h2, h3, h4, h5, h6')) return false;
+          // A table of contents that leads the page has the same shape, and its
+          // entries name headings. A skip link targets the landmark it jumps
+          // over, so a heading target rules it out.
+          const target = resolveTarget(href.slice(1));
+          return !(target && /^H[1-6]$/.test(target.tagName));
+        }
+
+        // 0 = renders nothing, 1 = skip links only, 2 = real content.
+        function classify(node, found) {
+          if (node.nodeType === 3) return (node.textContent || '').trim() ? 2 : 0;
+          if (node.nodeType !== 1) return 0;
+          if (isHidden(node)) return 0;
+          if (isSkipLink(node)) {
+            found.push(node);
+            return 1;
+          }
+          if (node.tagName === 'A') return 2;
+          // A wrapper whose whole subtree is skip links (ul > li > a) travels
+          // with them; one mixed child makes the wrapper content.
+          const nested = [];
+          let sawSkipLink = false;
+          for (const child of node.childNodes) {
+            const kind = classify(child, nested);
+            if (kind === 2) return 2;
+            if (kind === 1) sawSkipLink = true;
+          }
+          for (const link of nested) found.push(link);
+          return sawSkipLink ? 1 : 0;
+        }
+
+        function hasOwnText(el) {
+          for (const child of el.childNodes) {
+            if (child.nodeType === 3 && (child.textContent || '').trim()) return true;
+          }
+          return false;
+        }
+
+        const links = [];
+        const removals = [];
+
+        function walk(container, depth) {
+          for (const child of Array.from(container.childNodes)) {
+            const kind = classify(child, links);
+            if (kind === 0) continue;
+            if (kind === 1) {
+              removals.push(child);
+              continue;
+            }
+            if (
+              child.nodeType === 1 &&
+              depth < MAX_DEPTH &&
+              DESCENDABLE[child.tagName] === 1 &&
+              !hasOwnText(child)
+            ) {
+              walk(child, depth + 1);
+            }
+            return;
+          }
+        }
+
+        walk(root, 0);
+        if (links.length === 0 || links.length > MAX_SKIP_LINKS) return;
+        for (const node of removals) node.remove();
+      }`;
+
+/**
  * Returns a string that, when evaluated inside the browser, serialises the
  * DOM rooted at `rootSelector` into a JSON-safe tree structure.
  *
- * Noise elements are stripped before serialisation, and elements the browser
- * does not render are skipped along with their subtrees.
+ * Noise elements and the leading skip-link block are stripped before
+ * serialisation, and elements the browser does not render are skipped along
+ * with their subtrees.
  */
 function buildSerialiseScript(
   rootSelector: string | null,
@@ -343,6 +468,9 @@ function buildSerialiseScript(
       }
 
       ${HIDDEN_ELEMENT_PREDICATE}
+      ${SKIP_LINK_STRIPPER}
+
+      stripLeadingSkipLinks(root);
 
       function serialise(node, isRoot) {
         if (node.nodeType === 3) {
