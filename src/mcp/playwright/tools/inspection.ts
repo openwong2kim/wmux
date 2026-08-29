@@ -44,12 +44,8 @@ const BROWSER_SNAPSHOT_SHAPE = {
     .enum(['ai', 'aria'])
     .optional()
     .describe(
-      '"ai" annotates interactive elements with refs (default); "aria" returns the full tree.',
+      '"ai" annotates interactive elements with refs (default); "aria" returns the full tree, without refs.',
     ),
-  ref: z
-    .string()
-    .optional()
-    .describe('Reserved; not implemented yet.'),
   selector: z
     .string()
     .optional()
@@ -59,7 +55,7 @@ const BROWSER_SNAPSHOT_SHAPE = {
   filter: z
     .enum(['interactive'])
     .optional()
-    .describe('Strips non-interactive nodes — much smaller output.'),
+    .describe('Strips non-interactive nodes — much smaller output. Ignored by "aria".'),
   full: z.boolean().optional().describe('Force the complete tree instead of a diff.'),
   surfaceId: optionalSurfaceId,
 };
@@ -465,7 +461,7 @@ export function registerInspectionTools(server: McpServer, deps: BrowserToolDeps
   // -----------------------------------------------------------------------
   server.tool(
     'browser_evaluate',
-    'Evaluate a JavaScript expression in the page. Patterns that enable prompt-injection exfiltration (fetch, XHR, cookies, storage, eval, Function) are BLOCKED unless allowDangerous:true.',
+    'Evaluate a JavaScript expression in the page. Patterns that enable prompt-injection exfiltration (fetch, XHR, cookies, storage, eval, Function) are BLOCKED unless allowDangerous:true. Blocking is a text scan: a blocked name in a string or comment is refused too. Strings return verbatim, everything else as JSON (DOM nodes/Map/functions become {}); a returned Promise is awaited, top-level await is a SyntaxError.',
     BROWSER_EVALUATE_SHAPE,
     async ({ expression, allowDangerous, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
       try {

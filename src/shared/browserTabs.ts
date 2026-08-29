@@ -11,7 +11,9 @@ export interface BrowserTabDescriptor {
   url: string;
   /** Last logical surface title (currently usually "Browser"). */
   title: string;
-  /** Active surface of the workspace's active pane. */
+  /** UI focus: the active surface of the workspace's active pane. Not tool
+   *  targeting — a browser tool with no surfaceId resolves a surface in the
+   *  workspace regardless. Always false on the chrome backend (#1082). */
   selected: boolean;
 }
 

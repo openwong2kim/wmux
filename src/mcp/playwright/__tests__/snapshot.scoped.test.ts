@@ -124,6 +124,24 @@ describe('generateScopedSnapshot — a11y-scoped selector snapshots', () => {
     expect(out).not.toContain('heading');
   });
 
+  it('notes an ignored filter under format:"aria" and keeps the whole subtree (#1082)', async () => {
+    const { page } = makePage();
+    const out = await generateScopedSnapshot(page as never, 'main', {
+      format: 'aria',
+      filter: 'interactive',
+    });
+
+    expect(out).toBe(
+      [
+        '(note: filter ignored for aria format — returning the full tree)',
+        '- main "Content"',
+        '  - heading "Title"',
+        '  - link "Docs"',
+        '  - button "Save"',
+      ].join('\n'),
+    );
+  });
+
   it('says so when the scope holds no interactive elements, instead of dumping it', async () => {
     const { page } = makePage();
     const out = await generateScopedSnapshot(page as never, 'header', {

@@ -127,6 +127,35 @@ describe('generateSnapshot — root-only fallthrough (#353)', () => {
   });
 });
 
+// #1082: `filter` is an 'ai'-path feature — aria's contract is the whole tree.
+// Passing the two together used to drop the param without a word; it now says
+// so, matching the aria-unavailable notes this file already covers.
+describe('generateSnapshot — filter with format:"aria" (#1082)', () => {
+  const TREE_WITH_HEADING: CdpNode[] = [
+    { nodeId: '1', role: { type: 'role', value: 'RootWebArea' }, name: { type: 'name', value: 'Page' }, childIds: ['2', '3'] },
+    { nodeId: '2', role: { type: 'role', value: 'heading' }, name: { type: 'name', value: 'Title' }, childIds: [] },
+    { nodeId: '3', role: { type: 'role', value: 'button' }, name: { type: 'name', value: 'OK' }, childIds: [] },
+  ];
+
+  it('notes the ignored filter and still returns the full tree', async () => {
+    const { page } = makePage({ nodes: TREE_WITH_HEADING });
+    const out = await generateSnapshot(page as never, { format: 'aria', filter: 'interactive' });
+
+    expect(out).toBe(
+      '(note: filter ignored for aria format — returning the full tree)\n- heading "Title"\n- button "OK"',
+    );
+  });
+
+  it('emits no note when the filter is actually applied ("ai")', async () => {
+    const { page } = makePage({ nodes: TREE_WITH_HEADING });
+    const out = await generateSnapshot(page as never, { format: 'ai', filter: 'interactive' });
+
+    expect(out).not.toContain('note:');
+    expect(out).not.toContain('heading');
+    expect(out).toBe('- button "OK" ref="0"');
+  });
+});
+
 describe('resolveRef — data-wmux-ref fallback (#353)', () => {
   function pageWithDataAttr(count: number) {
     const handle = { __handle: true };

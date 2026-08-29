@@ -22,6 +22,15 @@ export interface SnapshotOptions {
   filter?: 'interactive';
 }
 
+/**
+ * Emitted when `filter` arrives with `format:"aria"`. The strip exists on the
+ * 'ai' path only — aria's contract IS the whole tree, so filtering it would
+ * break the thing the format was asked for. Reporting the param as ignored
+ * beats dropping it in silence, the same honesty rule the aria-unavailable
+ * notes below already follow (#1082).
+ */
+const ARIA_FILTER_NOTE = '(note: filter ignored for aria format — returning the full tree)';
+
 /** CDP Accessibility.AXNode shape (subset of fields we use) */
 interface CdpAXNode {
   nodeId: string;
@@ -555,13 +564,18 @@ export async function generateSnapshot(
   // interactive nodes must NOT fall back to the full tree (review consensus:
   // the filter would silently invert into maximum output) — say so instead.
   let effectiveTree = tree;
-  if (options?.filter === 'interactive' && format === 'ai') {
-    const stripped = stripNonInteractive(tree);
-    if (!stripped) {
-      setPageRefs(page, []);
-      return '(no interactive elements on this page)';
+  let filterNote = '';
+  if (options?.filter === 'interactive') {
+    if (format === 'ai') {
+      const stripped = stripNonInteractive(tree);
+      if (!stripped) {
+        setPageRefs(page, []);
+        return '(no interactive elements on this page)';
+      }
+      effectiveTree = stripped;
+    } else {
+      filterNote = ARIA_FILTER_NOTE;
     }
-    effectiveTree = stripped;
   }
 
   let refs: RefEntry[] = [];
@@ -585,7 +599,7 @@ export async function generateSnapshot(
   // Store the refMap for this page so resolveRef can use it without re-querying
   setPageRefs(page, refs);
 
-  return output;
+  return filterNote ? `${filterNote}\n${output}` : output;
 }
 
 /**
@@ -639,13 +653,18 @@ export async function generateScopedSnapshot(
   if (!forest || forest.length === 0) return null;
 
   let scoped = forest;
-  if (options?.filter === 'interactive' && format === 'ai') {
-    scoped = forest
-      .map(stripNonInteractive)
-      .filter((n): n is AXNode => n !== null);
-    if (scoped.length === 0) {
-      setPageRefs(page, [], selector);
-      return '(no interactive elements in this subtree)';
+  let filterNote = '';
+  if (options?.filter === 'interactive') {
+    if (format === 'ai') {
+      scoped = forest
+        .map(stripNonInteractive)
+        .filter((n): n is AXNode => n !== null);
+      if (scoped.length === 0) {
+        setPageRefs(page, [], selector);
+        return '(no interactive elements in this subtree)';
+      }
+    } else {
+      filterNote = ARIA_FILTER_NOTE;
     }
   }
 
@@ -673,7 +692,7 @@ export async function generateScopedSnapshot(
   // so resolveRef must count matches inside the same element.
   setPageRefs(page, refs, selector);
 
-  return output;
+  return filterNote ? `${filterNote}\n${output}` : output;
 }
 
 /**
