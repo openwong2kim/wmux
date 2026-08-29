@@ -918,7 +918,7 @@ PlaywrightEngine.getInstance().setWorkspaceIdResolver(requireWorkspaceId);
 
 server.tool(
   'browser_session_start',
-  'Start a browser session with the specified profile',
+  'Only the builtin backend uses an RPC-started session (starts it with the specified profile). On the chrome (including its live profile) and external backends nothing needs starting: this reports started:false and how the browser actually attaches (dedicated Chrome launches on demand; the live profile attaches on first drive once remote debugging is on; external hands URLs to the OS browser).',
   BROWSER_SESSION_START_SHAPE,
   // No workspaceId: browser sessions are GLOBAL — a single profile + CDP port via
   // the module-level ProfileManager/PortAllocator in browser.rpc.ts. The handler
@@ -931,14 +931,14 @@ server.tool(
 
 server.tool(
   'browser_session_stop',
-  'Stop the current browser session',
+  'Only the builtin backend has an RPC-started session to stop. On the chrome (including its live profile) and external backends this reports stopped:false — there is no such session and the browser is not torn down by this call.',
   {},
   async () => callRpc('browser.session.stop'),
 );
 
 server.tool(
   'browser_session_status',
-  'Report the browser session: which profile this workspace is bound to and, on the chrome backend, whether that profile\'s Chrome is already up (running) and on which CDP port. A pure read that launches nothing, so running:false means "nothing is up yet", NOT "you must call browser_session_start" — the first browser tool call starts what it needs on demand.',
+  'Report the browser session: which profile this workspace is bound to and, on the chrome backend, whether that profile\'s Chrome is already up (running) and on which CDP port. A pure read that launches nothing, so running:false means "nothing is up yet", NOT "you must call browser_session_start" — the first browser tool call starts what it needs on demand. On the live profile, running reports whether your Chrome\'s remote debugging is reachable; running:false there means enable it at chrome://inspect, not that a session must be started.',
   {},
   async () => callRpc('browser.session.status'),
 );

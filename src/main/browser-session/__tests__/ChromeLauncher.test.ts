@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { EventEmitter } from 'events';
+import { createServer, type Server } from 'node:net';
 
 // ChromeLauncher (Phase 2 'chrome' backend): spawn lifecycle + tab registry.
 // child_process, global fetch, and the profile dir's DevToolsActivePort are
@@ -284,6 +285,67 @@ describe('ChromeLauncherRegistry', () => {
     registry.disposeAll();
     expect(childA.kill).toHaveBeenCalled();
     expect(childB.kill).toHaveBeenCalled();
+  });
+
+  it('statusForWorkspace on the live profile probes actual listening, not just a parseable file', async () => {
+    const prev = process.env.WMUX_LIVE_CHROME_DIR;
+    process.env.WMUX_LIVE_CHROME_DIR = '/fake/live-user-data';
+    const registry = new ChromeLauncherRegistry({
+      defaultDir: '/tmp/default-prof',
+      profilesDir: '/tmp/profiles',
+      store: makeStore({ 'ws-live': 'live' }),
+    });
+    // A real listener gives us a genuinely live port we can also kill on demand.
+    const server: Server = createServer();
+    await new Promise<void>((res) => server.listen(0, '127.0.0.1', () => res()));
+    const addr = server.address();
+    const port = typeof addr === 'object' && addr ? addr.port : 0;
+    try {
+      // No DevToolsActivePort at all → not reachable; liveAttach still flags the
+      // attach case (running:false means chrome://inspect, not "call start").
+      state.portFiles = {};
+      expect(await registry.statusForWorkspace('ws-live')).toEqual({
+        profile: 'live',
+        running: false,
+        cdpPort: null,
+        liveAttach: true,
+      });
+      // Parseable file whose port is actually LISTENING → reachable.
+      state.portFiles = { '/fake/live-user-data': `${port}\n/devtools/browser/abc-123\n` };
+      expect(await registry.statusForWorkspace('ws-live')).toEqual({
+        profile: 'live',
+        running: true,
+        cdpPort: null,
+        liveAttach: true,
+      });
+      // THE REGRESSION: same parseable file, but the port is now DEAD (a
+      // force-killed Chrome's stale DevToolsActivePort). Parsing still succeeds
+      // yet nothing listens — must report NOT running, never a false "reachable".
+      await new Promise<void>((res) => server.close(() => res()));
+      expect(await registry.statusForWorkspace('ws-live')).toEqual({
+        profile: 'live',
+        running: false,
+        cdpPort: null,
+        liveAttach: true,
+      });
+    } finally {
+      if (server.listening) await new Promise<void>((res) => server.close(() => res()));
+      if (prev === undefined) delete process.env.WMUX_LIVE_CHROME_DIR;
+      else process.env.WMUX_LIVE_CHROME_DIR = prev;
+    }
+  });
+
+  it('statusForWorkspace on a down dedicated profile omits liveAttach and reports no port', async () => {
+    const registry = new ChromeLauncherRegistry({
+      defaultDir: '/tmp/default-prof',
+      profilesDir: '/tmp/profiles',
+      store: makeStore({}),
+    });
+    // Unbound → default (dedicated) profile, never launched → running:false and
+    // NO liveAttach field (the field is live-only, so callers can branch on it).
+    const status = await registry.statusForWorkspace('ws-x');
+    expect(status).toEqual({ profile: 'default', running: false, cdpPort: null });
+    expect('liveAttach' in status).toBe(false);
   });
 });
 

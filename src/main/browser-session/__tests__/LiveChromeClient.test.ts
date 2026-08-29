@@ -2,7 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { LiveChromeClient, readLiveChromeEndpoint } from '../LiveChromeClient';
+import { createServer, type Server } from 'node:net';
+import { LiveChromeClient, readLiveChromeEndpoint, isLiveChromeReachable, probeTcpListening } from '../LiveChromeClient';
 
 // Live-Chrome attach (Phase 3): DevToolsActivePort discovery + CDP-over-WS.
 
@@ -26,6 +27,66 @@ describe('readLiveChromeEndpoint', () => {
     expect(() => readLiveChromeEndpoint(dir)).toThrow('chrome://inspect');
     writeFileSync(join(dir, 'DevToolsActivePort'), 'not-a-port\n');
     expect(() => readLiveChromeEndpoint(dir)).toThrow('chrome://inspect');
+  });
+});
+
+describe('isLiveChromeReachable', () => {
+  let dir: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'wmux-live-reach-'));
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  async function openListener(): Promise<Server> {
+    const s = createServer();
+    await new Promise<void>((res) => s.listen(0, '127.0.0.1', () => res()));
+    return s;
+  }
+  function portOf(s: Server): number {
+    const addr = s.address();
+    return typeof addr === 'object' && addr ? addr.port : 0;
+  }
+  function closeListener(s: Server): Promise<void> {
+    return new Promise<void>((res) => (s.listening ? s.close(() => res()) : res()));
+  }
+
+  it('no DevToolsActivePort file → not reachable', async () => {
+    expect(await isLiveChromeReachable(dir)).toBe(false);
+  });
+
+  it('a parseable file whose port is actually listening → reachable', async () => {
+    const server = await openListener();
+    try {
+      writeFileSync(join(dir, 'DevToolsActivePort'), `${portOf(server)}\n/devtools/browser/abc\n`);
+      expect(await isLiveChromeReachable(dir)).toBe(true);
+    } finally {
+      await closeListener(server);
+    }
+  });
+
+  it('a parseable file pointing at a DEAD port → not reachable (the stale-file false positive)', async () => {
+    const server = await openListener();
+    const port = portOf(server);
+    await closeListener(server); // kill the listener → the port is now dead
+    writeFileSync(join(dir, 'DevToolsActivePort'), `${port}\n/devtools/browser/abc\n`);
+    // The file still parses cleanly — the exact shape a force-killed Chrome
+    // leaves behind — but nothing listens, so reachability must be false.
+    expect(readLiveChromeEndpoint(dir)).toBe(`ws://127.0.0.1:${port}/devtools/browser/abc`);
+    expect(await isLiveChromeReachable(dir)).toBe(false);
+  });
+
+  it('a black-holed host trips the timeout → false, and stays bounded (the safety net)', async () => {
+    // 192.0.2.1 is TEST-NET-1 (RFC 5737): never routed, so the SYN is dropped —
+    // the connect neither lands nor is refused, which is the exact hang the
+    // timeout guards. A tight budget keeps it fast; the result is false whether
+    // it times out (normal) or the host errors as unreachable (locked-down box).
+    const started = Date.now();
+    expect(await probeTcpListening('192.0.2.1', 9222, 150)).toBe(false);
+    expect(Date.now() - started).toBeLessThan(3000); // bounded, never hung
   });
 });
 

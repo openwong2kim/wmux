@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
+import { createConnection } from 'node:net';
 import type { ChromeBackendClient, ChromeBackendEndpoint, ChromeTargetInfo } from './ChromeLauncher';
 import { CdpSocket } from './CdpSocket';
 
@@ -24,6 +25,10 @@ import { CdpSocket } from './CdpSocket';
 // ---------------------------------------------------------------------------
 
 const CDP_TIMEOUT_MS = 10_000;
+
+/** Reachability probe budget: a TCP connect on localhost either lands or is
+ *  refused almost instantly, so this only bounds a black-holed port. */
+const LIVE_TCP_PROBE_TIMEOUT_MS = 500;
 
 const ENABLE_HINT =
   'LIVE_CHROME_UNAVAILABLE: could not find your Chrome’s remote-debugging endpoint. ' +
@@ -60,6 +65,69 @@ export function readLiveChromeEndpoint(userDataDir: string = liveChromeUserDataD
     throw new Error(ENABLE_HINT);
   }
   return `ws://127.0.0.1:${port}${rawPath}`;
+}
+
+/**
+ * Is the live Chrome ACTUALLY reachable over remote debugging right now?
+ *
+ * A parseable DevToolsActivePort is necessary but NOT sufficient: a Chrome that
+ * was force-killed (or crashed) leaves the file behind pointing at a dead port,
+ * so parsing alone reports "reachable" for a browser that is gone — the
+ * stale-file false positive a live dogfood caught. After parsing the port we
+ * therefore confirm something is actually LISTENING with a short, bounded TCP
+ * connect.
+ *
+ * Why a bare TCP connect and not a real CDP/WS probe: the live endpoint is
+ * WS-only, and opening the WS makes Chrome raise its per-connection permission
+ * dialog — a status/start probe must never pop that at the user. A raw TCP
+ * connect sends no WS upgrade, so it never touches the consent flow while still
+ * proving the port is held by a live listener.
+ *
+ * Ceiling: this proves the endpoint is LISTENING, not that automation will be
+ * allowed. A listening endpoint can still refuse the first real drive at
+ * Chrome's per-connection consent dialog (so reachable:true is NOT "consent
+ * granted"), and another process squatting that exact port would also read as
+ * reachable. Both are far narrower than the stale-file case, and closing them
+ * fully would require the WS handshake — i.e. the very dialog we avoid.
+ *
+ * Fail-safe: any parse failure, refusal, timeout, or socket error → false.
+ */
+export async function isLiveChromeReachable(
+  userDataDir: string = liveChromeUserDataDir(),
+  timeoutMs: number = LIVE_TCP_PROBE_TIMEOUT_MS,
+): Promise<boolean> {
+  let port: number;
+  try {
+    // readLiveChromeEndpoint yields ws://127.0.0.1:<port><path> (or throws);
+    // pull the port straight from it rather than re-reading the file.
+    const match = /^ws:\/\/127\.0\.0\.1:(\d+)/.exec(readLiveChromeEndpoint(userDataDir));
+    if (!match) return false;
+    port = Number(match[1]);
+  } catch {
+    return false;
+  }
+  return probeTcpListening('127.0.0.1', port, timeoutMs);
+}
+
+/** Resolve true iff a TCP connection to host:port is accepted within timeoutMs.
+ *  Never rejects — refusal / timeout / error all resolve false — and the probe
+ *  socket is destroyed the instant the outcome is known. Exported for unit
+ *  tests (the timeout branch needs a black-holed host status can't produce). */
+export function probeTcpListening(host: string, port: number, timeoutMs: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const socket = createConnection({ host, port });
+    let settled = false;
+    const finish = (result: boolean): void => {
+      if (settled) return;
+      settled = true;
+      socket.destroy();
+      resolve(result);
+    };
+    socket.setTimeout(timeoutMs);
+    socket.once('connect', () => finish(true));
+    socket.once('timeout', () => finish(false));
+    socket.once('error', () => finish(false));
+  });
 }
 
 interface CdpTargetInfoWire {
