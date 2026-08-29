@@ -33,6 +33,8 @@ const PLAN: WaiterPlan = {
   abortMarkerPath: 'C:\\Users\\u\\AppData\\Roaming\\wmux\\install-abort.txt',
   readyMarkerPath: 'C:\\Users\\u\\AppData\\Roaming\\wmux\\install-ready.tmp',
   lockBudgetMs: 30_000,
+  forceKillEligiblePids: [],
+  forceKillGraceMs: 5_000,
 };
 
 describe('isSafePsPathLiteral', () => {
@@ -484,6 +486,8 @@ describe('buildWaiterScript — the clock has to survive a long uptime (#980)', 
     abortMarkerPath: 'C:/Data/aborted.txt',
     readyMarkerPath: 'C:/Data/ready.tmp',
     lockBudgetMs: 60_000,
+    forceKillEligiblePids: [],
+    forceKillGraceMs: 5_000,
   };
 
   it('uses a monotonic Stopwatch, never [Environment]::TickCount', () => {
@@ -499,7 +503,12 @@ describe('buildWaiterScript — the clock has to survive a long uptime (#980)', 
 
   it('measures both the handle wait and the lock loop against that clock', () => {
     const script = buildWaiterScript(plan)!;
-    expect(script).toContain('$left = $budget - $clock.ElapsedMilliseconds');
+    // #1084 — the handle wait's deadline is per-handle now ($budget for the
+    // daemon/anything not force-kill-eligible, a shorter grace window for an
+    // eligible own-tree pid), but both variants are still measured off the
+    // same shared $clock, never a fresh timer per handle.
+    expect(script).toContain('$deadline = if ($eligible) { [Math]::Min($graceBudget, $budget) } else { $budget }');
+    expect(script).toContain('$left = $deadline - $clock.ElapsedMilliseconds');
     expect(script).toContain('$lockClock.ElapsedMilliseconds -lt $budget');
   });
 
@@ -519,6 +528,8 @@ describe('buildWaiterScript — one waiter per install root (#980, coderabbit)',
     abortMarkerPath: 'C:/Data/aborted.txt',
     readyMarkerPath: 'C:/Data/ready.tmp',
     lockBudgetMs: 60_000,
+    forceKillEligiblePids: [],
+    forceKillGraceMs: 5_000,
   };
   const script = () => buildWaiterScript(plan)!;
 
@@ -581,6 +592,8 @@ describe('buildWaiterScript — post-exit install verification (#1046)', () => {
     abortMarkerPath: 'C:/t/marker.txt',
     readyMarkerPath: 'C:/t/ready.tmp',
     lockBudgetMs: 60000,
+    forceKillEligiblePids: [],
+    forceKillGraceMs: 5_000,
   };
   const script = (): string => buildWaiterScript(PLAN46) ?? '';
 

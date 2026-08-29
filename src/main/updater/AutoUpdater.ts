@@ -91,6 +91,17 @@ const INSTALL_QUIT_WATCHDOG_MS = 30_000;
 // takes time — a live process writes one file in well under a second, so a
 // few seconds of silence already means it is gone, not just busy.
 const WAITER_HEARTBEAT_BUDGET_MS = 3_000;
+// #1084 — how long the waiter gives an own-tree, non-daemon process (main
+// window, renderer, GPU/utility helpers) to exit on its own before force-
+// killing it, instead of sitting in the full INSTALL_LOCK_BUDGET_MS wait and
+// refusing. Unlike the daemon, these have no flush to protect — the session
+// save this function triggers up front is the only state that matters for
+// them, and it already happened before performInstall got this far. Short,
+// like WAITER_HEARTBEAT_BUDGET_MS: a cooperating process that already got
+// app.quit() exits in milliseconds, so a few seconds of silence means it is
+// hung, not still working. Kept well under INSTALL_LOCK_BUDGET_MS so the
+// daemon (never in this set) still gets the long, patient wait it needs.
+const OWN_TREE_FORCE_KILL_GRACE_MS = 5_000;
 // Squirrel downloading and unpacking a ~120 MB bundle before it reports
 // 'update-downloaded'. Generous on purpose: a slow disk or an antivirus scan
 // makes this minutes, and aborting a healthy update is worse than waiting.
@@ -994,6 +1005,16 @@ export class AutoUpdater {
     const pids = survey.pids;
     const daemonPid = this.hooks.getDaemonPid();
     const forceKillPids = pids.filter((p) => p !== daemonPid && !survey.ownTree.has(p));
+    // #1084 — the OTHER half of survey.ownTree: pids we spare from the
+    // immediate force-kill above because app.quit() is about to ask them to
+    // exit on their own, but that is not the same as the daemon's exemption.
+    // The daemon is spared because it flushes scrollback; these have nothing
+    // left to flush (the session save above already ran) and are only
+    // waiting on ordinary window/process teardown. If one hangs anyway — a
+    // real machine showed a bare "wmux" process stuck at 0% CPU well past
+    // when app.quit() was called — the waiter should not sit out the full
+    // INSTALL_LOCK_BUDGET_MS and refuse over it; it can just finish the job.
+    const forceKillEligiblePids = pids.filter((p) => p !== daemonPid && survey.ownTree.has(p));
 
     // ORDER MATTERS, and it is the reverse of the obvious one.
     //
@@ -1014,6 +1035,8 @@ export class AutoUpdater {
       abortMarkerPath,
       readyMarkerPath,
       lockBudgetMs: INSTALL_LOCK_BUDGET_MS,
+      forceKillEligiblePids,
+      forceKillGraceMs: OWN_TREE_FORCE_KILL_GRACE_MS,
     });
     if (!waiterPath) {
       // No waiter means no safe way to start the installer. Falling back to

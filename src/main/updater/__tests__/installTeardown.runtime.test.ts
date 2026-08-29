@@ -90,9 +90,14 @@ describe.skipIf(!onWindows)('install waiter (real processes, real locks)', () =>
     fs.writeFileSync(scriptPath, script as string, 'utf-8');
   }
 
-  const plan = (pids: number[], lockBudgetMs: number): WaiterPlan => ({
+  const plan = (
+    pids: number[],
+    lockBudgetMs: number,
+    forceKillEligiblePids: number[] = [],
+    forceKillGraceMs = 5_000,
+  ): WaiterPlan => ({
     pids, setupExePath: fakeSetup, installRoot: root, abortMarkerPath: abortMarker,
-    readyMarkerPath: readyMarker, lockBudgetMs,
+    readyMarkerPath: readyMarker, lockBudgetMs, forceKillEligiblePids, forceKillGraceMs,
   });
 
   function runWaiter(timeoutMs: number): { status: number | null; timedOut: boolean } {
@@ -123,6 +128,42 @@ describe.skipIf(!onWindows)('install waiter (real processes, real locks)', () =>
     // taskkill is best-effort. Before the wait was bounded, a survivor left the
     // waiter blocked forever — and wmux had already quit, so the update stalled
     // with nothing to show for it on the next boot.
+    const holder = holdRoot();
+    writeWaiter(plan([holder.pid as number], 3_000));
+
+    expect(runWaiter(60_000).status).toBe(3);
+    expect(fs.readFileSync(abortMarker, 'utf-8')).toContain('would not exit');
+    expect(fs.existsSync(setupStamp)).toBe(false);
+  }, 120_000);
+
+  it('#1084 — force-kills a hung force-kill-eligible pid instead of refusing over it', () => {
+    // The incident this closes: a process app.quit() already asked to exit
+    // sits at 0% CPU past the lock budget, and the waiter refused rather
+    // than ending it. Same holder as the "gives up" test above, but this
+    // pid is marked force-kill-eligible with a short grace window — the
+    // waiter must end it and go on to launch Setup.exe, not abort.
+    // Shape of a SUCCESSFUL install, same as the "launches the installer"
+    // test below — otherwise the real #1046 post-exit verification (Update.exe
+    // + icudtl.dat) fails after Start-Process, falls through to exit 6, and a
+    // MessageBox blocks a headless runner forever.
+    fs.writeFileSync(path.join(root, 'Update.exe'), 'x');
+    fs.writeFileSync(path.join(root, 'app-1.0.0', 'icudtl.dat'), 'x');
+
+    const holder = holdRoot();
+    writeWaiter(plan([holder.pid as number], 60_000, [holder.pid as number], 3_000));
+
+    expect(runWaiter(60_000).status).toBe(0);
+    expect(fs.existsSync(setupStamp)).toBe(true);
+    expect(fs.existsSync(abortMarker)).toBe(false);
+    // The waiter's own taskkill did the killing, not our afterEach cleanup —
+    // confirm the holder is actually gone rather than merely unobserved.
+    expect(() => process.kill(holder.pid as number, 0)).toThrow();
+  }, 120_000);
+
+  it('#1084 — still refuses a hung pid that is NOT force-kill-eligible (the daemon path)', () => {
+    // Same shape as the eligible case above, but forceKillEligiblePids stays
+    // empty — this is the daemon's own contract, unchanged: nothing but the
+    // graceful daemon.shutdown RPC may end it, so a hang still refuses.
     const holder = holdRoot();
     writeWaiter(plan([holder.pid as number], 3_000));
 
@@ -309,6 +350,8 @@ describe.skipIf(!onWindows)('concurrent waiters (#980)', () => {
       abortMarkerPath: marker,
       readyMarkerPath: marker.replace(/\.txt$/, '-ready.tmp'),
       lockBudgetMs: 90_000,
+      forceKillEligiblePids: [],
+      forceKillGraceMs: 5_000,
     });
 
     // Waiter A: async, long budget — parked in WaitForExit holding the mutex.
@@ -411,7 +454,7 @@ describe.skipIf(!onWindows)('waiter transport (#1056 — the REAL spawnInstallWa
   const mkPlan = (): WaiterPlan => ({
     pids: [], setupExePath: fakeSetup, installRoot: root,
     abortMarkerPath: marker, readyMarkerPath: path.join(sandbox, 'ready-transport.tmp'),
-    lockBudgetMs: 2_000,
+    lockBudgetMs: 2_000, forceKillEligiblePids: [], forceKillGraceMs: 5_000,
   });
 
   function sleep200(): void {
