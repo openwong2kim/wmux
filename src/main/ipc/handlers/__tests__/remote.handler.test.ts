@@ -110,6 +110,7 @@ function fakeClient(host: RemoteHost) {
     write: vi.fn(async () => undefined),
     listWorkspaces: vi.fn(async (): Promise<RemoteWorkspacesResponse> => ({ workspaces: [] })),
     createWorkspace: vi.fn(async (): Promise<{ sessionId: string }> => ({ sessionId: 'web-1' })),
+    closeSession: vi.fn(async (): Promise<void> => undefined),
     onMeta: vi.fn((cb: (e: RemoteMetaEvent) => void) => { metaCbs.push(cb); }),
     onResize: vi.fn((cb: (e: RemoteResizeEvent) => void) => { resizeCbs.push(cb); }),
     onData: vi.fn((cb: (e: RemoteDataEvent) => void) => { dataCbs.push(cb); }),
@@ -127,6 +128,7 @@ function fakeClient(host: RemoteHost) {
     write: ReturnType<typeof vi.fn>;
     listWorkspaces: ReturnType<typeof vi.fn>;
     createWorkspace: ReturnType<typeof vi.fn>;
+    closeSession: ReturnType<typeof vi.fn>;
     emitMeta: (e: RemoteMetaEvent) => void;
     emitResize: (e: RemoteResizeEvent) => void;
     emitData: (e: RemoteDataEvent) => void;
@@ -530,6 +532,87 @@ describe('remote.handler — workspaceCreate (#1001)', () => {
     registerRemoteHandlers({ store: store as never, attachments: fakeAttachments() as never });
 
     const res = await getHandler(IPC.REMOTE_WORKSPACE_CREATE)({}, 'missing', 'ws-1') as { ok: boolean; error?: string };
+
+    expect(res).toEqual({ ok: false, error: 'unknown host' });
+  });
+});
+
+describe('remote.handler — workspacePaneAdd (#1091)', () => {
+  const host: RemoteHost = { id: 'h1', label: 'box', origin: 'https://box:9600', token: 't', addedAt: 0 };
+
+  it('grows an already-live workspace and returns the new sessionId — same call as workspaceCreate', async () => {
+    const store = fakeStore([host]);
+    const client = fakeClient(host);
+    client.createWorkspace.mockResolvedValueOnce({ sessionId: 'web-2' });
+    registerRemoteHandlers({ store: store as never, attachments: fakeAttachments() as never, clientFactory: () => client });
+
+    const res = await getHandler(IPC.REMOTE_WORKSPACE_PANE_ADD)({}, 'h1', 'ws-1') as { ok: true; sessionId: string };
+
+    expect(res).toEqual({ ok: true, sessionId: 'web-2' });
+    expect(client.createWorkspace).toHaveBeenCalledWith('ws-1', undefined);
+  });
+
+  it('forwards cwd when given', async () => {
+    const store = fakeStore([host]);
+    const client = fakeClient(host);
+    registerRemoteHandlers({ store: store as never, attachments: fakeAttachments() as never, clientFactory: () => client });
+
+    await getHandler(IPC.REMOTE_WORKSPACE_PANE_ADD)({}, 'h1', 'ws-1', '/repo');
+
+    expect(client.createWorkspace).toHaveBeenCalledWith('ws-1', '/repo');
+  });
+
+  it('maps a client rejection to {ok:false} rather than throwing', async () => {
+    const store = fakeStore([host]);
+    const client = fakeClient(host);
+    client.createWorkspace.mockRejectedValueOnce(new Error('daemon busy'));
+    registerRemoteHandlers({ store: store as never, attachments: fakeAttachments() as never, clientFactory: () => client });
+
+    const res = await getHandler(IPC.REMOTE_WORKSPACE_PANE_ADD)({}, 'h1', 'ws-1') as { ok: false; error: string };
+
+    expect(res).toEqual({ ok: false, error: 'daemon busy' });
+  });
+
+  it('reports unknown host without touching a client', async () => {
+    const store = fakeStore([]);
+    registerRemoteHandlers({ store: store as never, attachments: fakeAttachments() as never });
+
+    const res = await getHandler(IPC.REMOTE_WORKSPACE_PANE_ADD)({}, 'missing', 'ws-1') as { ok: boolean; error?: string };
+
+    expect(res).toEqual({ ok: false, error: 'unknown host' });
+  });
+});
+
+describe('remote.handler — sessionClose (#1091)', () => {
+  const host: RemoteHost = { id: 'h1', label: 'box', origin: 'https://box:9600', token: 't', addedAt: 0 };
+
+  it('closes a session on the given host', async () => {
+    const store = fakeStore([host]);
+    const client = fakeClient(host);
+    registerRemoteHandlers({ store: store as never, attachments: fakeAttachments() as never, clientFactory: () => client });
+
+    const res = await getHandler(IPC.REMOTE_SESSION_CLOSE)({}, 'h1', 'sess-1') as { ok: true };
+
+    expect(res).toEqual({ ok: true });
+    expect(client.closeSession).toHaveBeenCalledWith('sess-1');
+  });
+
+  it('maps a client rejection to {ok:false} rather than throwing', async () => {
+    const store = fakeStore([host]);
+    const client = fakeClient(host);
+    client.closeSession.mockRejectedValueOnce(new Error('daemon busy'));
+    registerRemoteHandlers({ store: store as never, attachments: fakeAttachments() as never, clientFactory: () => client });
+
+    const res = await getHandler(IPC.REMOTE_SESSION_CLOSE)({}, 'h1', 'sess-1') as { ok: false; error: string };
+
+    expect(res).toEqual({ ok: false, error: 'daemon busy' });
+  });
+
+  it('reports unknown host without touching a client', async () => {
+    const store = fakeStore([]);
+    registerRemoteHandlers({ store: store as never, attachments: fakeAttachments() as never });
+
+    const res = await getHandler(IPC.REMOTE_SESSION_CLOSE)({}, 'missing', 'sess-1') as { ok: boolean; error?: string };
 
     expect(res).toEqual({ ok: false, error: 'unknown host' });
   });

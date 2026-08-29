@@ -567,6 +567,16 @@ export const IPC = {
   // as an operator-authenticated caller (WebTerminalServer.rejectWorkspaceId's
   // one exception). See RemoteHostClient.createWorkspace.
   REMOTE_WORKSPACE_CREATE: 'remote:workspace:create',
+  // Add another pane to an ALREADY-live remote workspace (#1091) — the same
+  // POST /api/sessions call as REMOTE_WORKSPACE_CREATE, just with a
+  // workspaceId that already has a live pane under it (rejectWorkspaceId
+  // accepts either shape). Kept as its own channel so main-process test
+  // fixtures and renderer intent stay distinct from "bootstrap a new one".
+  REMOTE_WORKSPACE_PANE_ADD: 'remote:workspace:pane:add',
+  // Close a pane on a remote workspace THIS client bootstrapped (#1091). See
+  // RemoteHostClient.closeSession for why this is the one destroy call this
+  // bridge makes.
+  REMOTE_SESSION_CLOSE: 'remote:session:close',
   // Persisted attach descriptors (see RemoteAttachmentsStore). The renderer's
   // remote-workspace slice is memory-only, so these are what survive a reload
   // and an app restart; panes are never stored, only re-fetched.

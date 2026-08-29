@@ -1389,6 +1389,14 @@ document.addEventListener('DOMContentLoaded', () => {
     ipcRenderer.invoke(IPC.REMOTE_WORKSPACE_CREATE, hostId, workspaceId, cwd) as Promise<
       { ok: true; sessionId: string } | { ok: false; error: string }
     >,
+  workspacePaneAdd: (hostId: string, workspaceId: string, cwd?: string) =>
+    ipcRenderer.invoke(IPC.REMOTE_WORKSPACE_PANE_ADD, hostId, workspaceId, cwd) as Promise<
+      { ok: true; sessionId: string } | { ok: false; error: string }
+    >,
+  sessionClose: (hostId: string, sessionId: string) =>
+    ipcRenderer.invoke(IPC.REMOTE_SESSION_CLOSE, hostId, sessionId) as Promise<
+      { ok: true } | { ok: false; error: string }
+    >,
   attachmentsList: () =>
     ipcRenderer.invoke(IPC.REMOTE_ATTACHMENTS_LIST) as Promise<RemoteAttachmentDescriptor[]>,
   attachmentsAdd: (descriptor: RemoteAttachmentDescriptor) =>

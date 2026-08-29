@@ -128,6 +128,65 @@ describe('RemoteHostClient', () => {
     });
   });
 
+  describe('closeSession (#1091)', () => {
+    it('DELETEs /api/sessions/:id with the operator Bearer token', async () => {
+      const fetchImpl = vi.fn(async (_url: string, _init?: RequestInit) => ({
+        ok: true,
+        status: 204,
+      }) as unknown as Response);
+      const client = new RemoteHostClient(host, fetchImpl as unknown as typeof fetch);
+
+      await client.closeSession('sess-1');
+
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+      const [url, init] = fetchImpl.mock.calls[0];
+      expect(url).toBe(`${host.origin}/api/sessions/sess-1`);
+      expect(init?.method).toBe('DELETE');
+      expect((init?.headers as Record<string, string>)?.Authorization).toBe(`Bearer ${host.token}`);
+      expect(init?.redirect).toBe('error');
+      expect(init?.signal).toBeInstanceOf(AbortSignal);
+    });
+
+    it('URL-encodes the session id', async () => {
+      const fetchImpl = vi.fn(async () => ({ ok: true, status: 204 }) as unknown as Response);
+      const client = new RemoteHostClient(host, fetchImpl as unknown as typeof fetch);
+
+      await client.closeSession('sess/weird id');
+
+      const [url] = fetchImpl.mock.calls[0];
+      expect(url).toBe(`${host.origin}/api/sessions/${encodeURIComponent('sess/weird id')}`);
+    });
+
+    it('treats a 404 as success — the pane is gone either way', async () => {
+      const fetchImpl = vi.fn(async () => ({ ok: false, status: 404 }) as unknown as Response);
+      const client = new RemoteHostClient(host, fetchImpl as unknown as typeof fetch);
+
+      await expect(client.closeSession('sess-1')).resolves.toBeUndefined();
+    });
+
+    it('rejects with the daemon-supplied detail on a non-OK, non-404 response', async () => {
+      const fetchImpl = vi.fn(async () => ({
+        ok: false,
+        status: 500,
+        json: async () => ({ error: 'destroy-failed', detail: 'daemon busy' }),
+      }) as unknown as Response);
+      const client = new RemoteHostClient(host, fetchImpl as unknown as typeof fetch);
+
+      await expect(client.closeSession('sess-1')).rejects.toThrow('daemon busy');
+    });
+
+    it('rejects with a generic message when the error body is not JSON', async () => {
+      const fetchImpl = vi.fn(async () => ({
+        ok: false,
+        status: 500,
+        json: async () => { throw new Error('not json'); },
+      }) as unknown as Response);
+      const client = new RemoteHostClient(host, fetchImpl as unknown as typeof fetch);
+
+      await expect(client.closeSession('sess-1')).rejects.toThrow('closeSession failed: HTTP 500');
+    });
+  });
+
   describe('listWorkspaces', () => {
     it('sends Authorization: Bearer <token> and parses the body', async () => {
       const fetchImpl = vi.fn(async (_url: string, _init?: RequestInit) => {

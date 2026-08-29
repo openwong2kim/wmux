@@ -6,8 +6,12 @@
 // relying on EventSource's query-string token, and it drives the pane state
 // for Task 5's IPC handler instead of a DOM terminal.
 //
-// This class is observer + input only: it never calls a destroy/delete
-// endpoint on the remote host.
+// Mostly observer + input: it does not touch anyone else's existing panes.
+// The one exception is `closeSession` (#1091) — closing a pane belonging to
+// a workspace THIS client's operator credential bootstrapped in the first
+// place (#1067), which is a local-workspace-close-button equivalent, not a
+// mirror doing something to someone else's session. See that method's own
+// doc comment for the full reasoning.
 
 import * as crypto from 'crypto';
 import type {
@@ -239,6 +243,44 @@ export class RemoteHostClient implements RemotePaneEvents {
       throw new Error('createWorkspace failed: response carried no session id');
     }
     return { sessionId };
+  }
+
+  /**
+   * Close a pane this client (or the desktop app on our behalf) created on
+   * this host (#1091). This is the one destroy/delete call this class makes
+   * — a deliberate, narrow exception to the class-level "observer + input
+   * only" rule above, which was written for the older attach-to-an-
+   * EXISTING-workspace-to-watch-it use case, where destroying someone else's
+   * pane from a mirror would be a real surprise. #1067 added a second use
+   * case — bootstrapping a brand-new workspace on a paired host to actually
+   * work in it — and a workspace you just created has no "someone else" to
+   * surprise: closing one of its own panes is exactly what a local
+   * workspace's close button does, so a remote one needs the same capability
+   * to reach parity. `DELETE /api/sessions/:id` (`WebTerminalServer.
+   * handleSessionDelete`) already gates this on `mayInput`, same as create,
+   * so no server change was needed.
+   */
+  async closeSession(sessionId: string): Promise<void> {
+    const res = await this.fetchImpl(`${this.host.origin}/api/sessions/${encodeURIComponent(sessionId)}`, {
+      method: 'DELETE',
+      headers: this.authHeaders(),
+      redirect: 'error',
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    });
+    // 404 is treated as success: the pane is gone either way, and a caller
+    // racing a poll-driven pane-list refresh against its own close click
+    // must not surface an error for a session that already disappeared.
+    if (!res.ok && res.status !== 404) {
+      let message = `closeSession failed: HTTP ${res.status}`;
+      try {
+        const parsed = (await res.json()) as { error?: string; detail?: string };
+        if (parsed?.detail) message = parsed.detail;
+        else if (parsed?.error) message = parsed.error;
+      } catch {
+        /* body wasn't JSON — fall back to the generic message */
+      }
+      throw new Error(message);
+    }
   }
 
   async listWorkspaces(): Promise<RemoteWorkspacesResponse> {

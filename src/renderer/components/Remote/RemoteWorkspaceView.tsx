@@ -1,5 +1,6 @@
-import { useEffect, useRef, useState, type CSSProperties } from 'react';
+import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react';
 import { useT } from '../../hooks/useT';
+import { useStore } from '../../stores';
 import type { AttachedRemoteWorkspace } from '../../stores/slices/remoteWorkspacesSlice';
 import type { RemotePaneSummary } from '../../../shared/remoteHosts';
 import RemoteMirrorTerminal from './RemoteMirrorTerminal';
@@ -25,11 +26,16 @@ function gridStyle(count: number): CSSProperties {
  *  the SAME remote sessionIds, so nothing in the pane list changes and this
  *  effect would never fire again — the mirror would sit blank forever with no
  *  visible error. The epoch is bumped by the store whenever `stale` clears. */
-function PaneCell({ hostId, pane, readOnly, attachEpoch }: {
+function PaneCell({ hostId, pane, readOnly, attachEpoch, onClose, closeLabel }: {
   hostId: string;
   pane: RemotePaneSummary;
   readOnly: boolean;
   attachEpoch: number | undefined;
+  /** Undefined when this pane can't be closed from here — read-only hosts
+   *  (#1091, #1067's parity ask): closing panes is spawn's mirror image, so
+   *  it goes through `mayInput` too, same as add. */
+  onClose?: (sessionId: string) => void;
+  closeLabel: string;
 }) {
   const [attachId, setAttachId] = useState<string | null>(null);
   const [error, setError] = useState<string | undefined>(undefined);
@@ -79,11 +85,25 @@ function PaneCell({ hostId, pane, readOnly, attachEpoch }: {
   return (
     <div className="flex flex-col min-h-0 min-w-0" style={{ background: 'var(--bg-base)' }}>
       <div
-        className="h-6 flex items-center px-2 text-[10px] font-mono truncate flex-shrink-0"
+        className="h-6 flex items-center gap-1 px-2 text-[10px] font-mono flex-shrink-0"
         style={{ color: 'var(--text-subtle)', borderBottom: '1px solid var(--bg-overlay)' }}
       >
-        {pane.shell ?? pane.sessionId.slice(0, 8)}
-        {pane.cwd ? ` — ${pane.cwd}` : ''}
+        <span className="truncate flex-1 min-w-0">
+          {pane.shell ?? pane.sessionId.slice(0, 8)}
+          {pane.cwd ? ` — ${pane.cwd}` : ''}
+        </span>
+        {onClose && (
+          <button
+            type="button"
+            title={closeLabel}
+            aria-label={closeLabel}
+            onClick={() => onClose(pane.sessionId)}
+            className="flex-shrink-0 w-4 h-4 flex items-center justify-center rounded hover:bg-[var(--bg-overlay)]"
+            style={{ color: 'var(--text-subtle)' }}
+          >
+            ×
+          </button>
+        )}
       </div>
       <div className="flex-1 min-h-0">
         <RemoteMirrorTerminal attachId={attachId} error={error} readOnly={readOnly} />
@@ -114,6 +134,8 @@ export default function RemoteWorkspaceView({ workspace }: { workspace: Attached
   // at mount — the view stays mounted for the app session per the
   // hidden-but-alive rule above) is that probe.
   const [allowInput, setAllowInput] = useState<boolean | undefined>(undefined);
+  const [pending, setPending] = useState(false);
+  const [actionError, setActionError] = useState<string | undefined>(undefined);
 
   useEffect(() => {
     let cancelled = false;
@@ -127,17 +149,76 @@ export default function RemoteWorkspaceView({ workspace }: { workspace: Attached
     return () => { cancelled = true; };
   }, [workspace.hostId]);
 
+  // Grow/shrink the SAME workspace on the remote host (#1091 — parity with a
+  // local workspace's add/close pane). Both apply the result straight to
+  // `remoteWorkspaces` via `setRemoteWorkspacePanes`'s merge — an add appends
+  // the new sessionId (mergePaneSets keeps anything present in the next list),
+  // a close is a filter of the current list — rather than waiting up to
+  // POLL_INTERVAL_MS for `useRemoteAttachmentsLifecycle`'s own refetch to
+  // notice, so the workspace visibly grows/shrinks the moment the request
+  // that did it succeeds.
+  const handleAddPane = useCallback(async () => {
+    const remote = window.electronAPI?.remote;
+    if (!remote || pending) return;
+    setPending(true);
+    setActionError(undefined);
+    try {
+      const res = await remote.workspacePaneAdd(workspace.hostId, workspace.workspaceId);
+      if (!res.ok) {
+        setActionError(t('remote.addPaneFailed'));
+        return;
+      }
+      const nextPanes: RemotePaneSummary[] = [...workspace.panes, { sessionId: res.sessionId }];
+      useStore.getState().setRemoteWorkspacePanes(workspace.key, nextPanes);
+    } catch {
+      setActionError(t('remote.addPaneFailed'));
+    } finally {
+      setPending(false);
+    }
+  }, [workspace.hostId, workspace.workspaceId, workspace.key, workspace.panes, pending, t]);
+
+  const handleClosePane = useCallback(async (sessionId: string) => {
+    const remote = window.electronAPI?.remote;
+    if (!remote) return;
+    setActionError(undefined);
+    try {
+      const res = await remote.sessionClose(workspace.hostId, sessionId);
+      if (!res.ok) {
+        setActionError(t('remote.closePaneFailed'));
+        return;
+      }
+      const nextPanes = workspace.panes.filter((p) => p.sessionId !== sessionId);
+      useStore.getState().setRemoteWorkspacePanes(workspace.key, nextPanes);
+    } catch {
+      setActionError(t('remote.closePaneFailed'));
+    }
+  }, [workspace.hostId, workspace.key, workspace.panes, t]);
+
+  const readOnly = allowInput === false;
   const visiblePanes = workspace.panes.slice(0, MAX_MIRRORS);
   const hiddenCount = Math.max(0, workspace.panes.length - MAX_MIRRORS);
+  // A read-only host has no mayInput grant server-side either — add/close
+  // would just 403, so don't offer them (same gate handleSessionCreate and
+  // handleSessionDelete apply on WebTerminalServer).
+  const canManagePanes = !readOnly;
 
   return (
     <div className="flex-1 min-h-0 flex flex-col">
-      {allowInput === false && (
+      {readOnly && (
         <div
           className="px-3 py-1.5 text-[11px] font-mono flex-shrink-0"
           style={{ background: 'color-mix(in srgb, var(--accent) 12%, transparent)', color: 'var(--accent)' }}
         >
           {t('remote.readOnly')}
+        </div>
+      )}
+      {actionError && (
+        <div
+          className="px-3 py-1.5 text-[11px] font-mono flex-shrink-0 cursor-pointer"
+          style={{ background: 'color-mix(in srgb, var(--accent-red, red) 12%, transparent)', color: 'var(--accent-red, red)' }}
+          onClick={() => setActionError(undefined)}
+        >
+          {actionError}
         </div>
       )}
       <div
@@ -149,14 +230,29 @@ export default function RemoteWorkspaceView({ workspace }: { workspace: Attached
             key={pane.sessionId}
             hostId={workspace.hostId}
             pane={pane}
-            readOnly={allowInput === false}
+            readOnly={readOnly}
             attachEpoch={workspace.attachEpoch}
+            onClose={canManagePanes ? handleClosePane : undefined}
+            closeLabel={t('remote.closePane')}
           />
         ))}
       </div>
       {hiddenCount > 0 && (
         <div className="px-3 py-1 text-[10px] font-mono flex-shrink-0" style={{ color: 'var(--text-muted)' }}>
           {t('remote.morePanes', { count: hiddenCount })}
+        </div>
+      )}
+      {canManagePanes && (
+        <div className="px-2 py-1 flex-shrink-0 border-t" style={{ borderColor: 'var(--bg-overlay)' }}>
+          <button
+            type="button"
+            disabled={pending}
+            onClick={() => { void handleAddPane(); }}
+            className="text-[11px] font-mono px-2 py-1 rounded hover:bg-[var(--bg-overlay)] disabled:opacity-50"
+            style={{ color: 'var(--text-subtle)' }}
+          >
+            + {t('remote.addPane')}
+          </button>
         </div>
       )}
     </div>

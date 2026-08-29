@@ -223,6 +223,16 @@ declare global {
         workspaceCreate: (hostId: string, workspaceId: string, cwd?: string) => Promise<
           { ok: true; sessionId: string } | { ok: false; error: string }
         >;
+        /** Add another pane to a workspace that already has a live pane on
+         *  this host (#1091) — parity with a local workspace's "add pane". */
+        workspacePaneAdd: (hostId: string, workspaceId: string, cwd?: string) => Promise<
+          { ok: true; sessionId: string } | { ok: false; error: string }
+        >;
+        /** Close a pane on a workspace this client bootstrapped (#1091). See
+         *  RemoteHostClient.closeSession for why this destroy call is safe. */
+        sessionClose: (hostId: string, sessionId: string) => Promise<
+          { ok: true } | { ok: false; error: string }
+        >;
         /** Persisted attach descriptors — read on renderer boot to restore
          *  the attachments a reload/restart wiped out of the memory-only
          *  slice. Panes are never part of a descriptor: they are re-fetched

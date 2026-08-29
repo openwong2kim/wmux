@@ -483,6 +483,55 @@ export function registerRemoteHandlers(deps: RegisterRemoteHandlersDeps): () => 
       }
     }));
 
+  // Add a pane to a workspace that ALREADY has a live pane on this host
+  // (#1091 — parity with a local workspace's "add pane"). Same server call
+  // as REMOTE_WORKSPACE_CREATE (rejectWorkspaceId accepts a known-live id
+  // just as readily as an operator-minted new one); kept as its own IPC name
+  // so the renderer's intent ("grow this workspace") reads distinctly from
+  // "bootstrap a brand-new one".
+  ipcMain.removeHandler(IPC.REMOTE_WORKSPACE_PANE_ADD);
+  ipcMain.handle(IPC.REMOTE_WORKSPACE_PANE_ADD, wrapHandler(IPC.REMOTE_WORKSPACE_PANE_ADD,
+    async (
+      _e: IpcMainInvokeEvent,
+      hostId: unknown,
+      workspaceId: unknown,
+      cwd?: unknown,
+    ): Promise<{ ok: true; sessionId: string } | { ok: false; error: string }> => {
+      const id = assertString(hostId, 'hostId');
+      const wsId = assertString(workspaceId, 'workspaceId');
+      const safeCwd = cwd === undefined ? undefined : assertString(cwd, 'cwd');
+      const client = getOrCreateClient(id);
+      if (!client) return { ok: false, error: 'unknown host' };
+      try {
+        const { sessionId } = await client.createWorkspace(wsId, safeCwd);
+        return { ok: true, sessionId };
+      } catch (err) {
+        return { ok: false, error: err instanceof Error ? err.message : String(err) };
+      }
+    }));
+
+  // Close a pane on a workspace this client bootstrapped (#1091). See
+  // RemoteHostClient.closeSession for the reasoning behind allowing this one
+  // destroy call.
+  ipcMain.removeHandler(IPC.REMOTE_SESSION_CLOSE);
+  ipcMain.handle(IPC.REMOTE_SESSION_CLOSE, wrapHandler(IPC.REMOTE_SESSION_CLOSE,
+    async (
+      _e: IpcMainInvokeEvent,
+      hostId: unknown,
+      sessionId: unknown,
+    ): Promise<{ ok: true } | { ok: false; error: string }> => {
+      const id = assertString(hostId, 'hostId');
+      const sid = assertString(sessionId, 'sessionId');
+      const client = getOrCreateClient(id);
+      if (!client) return { ok: false, error: 'unknown host' };
+      try {
+        await client.closeSession(sid);
+        return { ok: true };
+      } catch (err) {
+        return { ok: false, error: err instanceof Error ? err.message : String(err) };
+      }
+    }));
+
   // Attach descriptors — the persistence half of "attachments survive a
   // reload". Deliberately independent of the SSE attach lifecycle below: the
   // reload teardown in installSenderCleanup still kills every live stream (a
@@ -599,6 +648,8 @@ export function registerRemoteHandlers(deps: RegisterRemoteHandlersDeps): () => 
     ipcMain.removeHandler(IPC.REMOTE_HOSTS_REMOVE);
     ipcMain.removeHandler(IPC.REMOTE_WORKSPACES_LIST);
     ipcMain.removeHandler(IPC.REMOTE_WORKSPACE_CREATE);
+    ipcMain.removeHandler(IPC.REMOTE_WORKSPACE_PANE_ADD);
+    ipcMain.removeHandler(IPC.REMOTE_SESSION_CLOSE);
     ipcMain.removeHandler(IPC.REMOTE_ATTACHMENTS_LIST);
     ipcMain.removeHandler(IPC.REMOTE_ATTACHMENTS_ADD);
     ipcMain.removeHandler(IPC.REMOTE_ATTACHMENTS_REMOVE);
