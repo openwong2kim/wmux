@@ -1,7 +1,7 @@
 import type { StateCreator } from 'zustand';
 import type { StoreState } from '../index';
 import type { Pane, PaneLeaf, Surface, Workspace } from '../../../shared/types';
-import { createSurface, generateId } from '../../../shared/types';
+import { createRemoteSurface, createSurface, generateId } from '../../../shared/types';
 import { isPlausibleCwd } from '../../../shared/cwdShape';
 import { getWorkspaceLeafPanes } from '../../../shared/paneUtils';
 import { isSafeBrowserUrl } from '../../utils/browserPane';
@@ -18,6 +18,14 @@ export interface SurfaceSlice {
    * callers are unchanged. */
   addSurface: (paneId: string, ptyId: string, shell: string, cwd: string, workspaceId?: string) => void;
   addBrowserSurface: (paneId: string, url?: string, partition?: string, workspaceId?: string) => void;
+  /** #1086/#1091 — mirror a session on a paired remote host as a surface in
+   * an ordinary LOCAL workspace's own pane tree (stage 1: store only, no
+   * SSE attach yet — that's the renderer wiring in Pane.tsx, a follow-up).
+   * Same shape as addBrowserSurface: caller splits an empty leaf first via
+   * splitPane, then calls this to populate it. ptyId stays '' (see
+   * createRemoteSurface), so every ptyId-gated check already treats this
+   * surface as non-local without further changes. */
+  addRemoteSurface: (paneId: string, hostId: string, sessionId: string, shell?: string, cwd?: string, workspaceId?: string) => void;
   addEditorSurface: (paneId: string, filePath: string) => void;
   /** J2 — diff 리뷰 서피스 추가. taskId만 영속(diff 내용은 파생 데이터).
    * 같은 taskId가 이미 열려 있으면 그 탭으로 전환. editor/browser처럼 ptyId 없음. */
@@ -141,6 +149,17 @@ export const createSurfaceSlice: StateCreator<StoreState, [['zustand/immer', nev
       browserUrl: url || 'https://google.com',
       browserPartition: partition || 'persist:wmux-default',
     };
+    pane.surfaces.push(surface);
+    pane.activeSurfaceId = surface.id;
+  }),
+
+  addRemoteSurface: (paneId, hostId, sessionId, shell, cwd, workspaceId) => set((state: StoreState) => {
+    const targetWsId = workspaceId || state.activeWorkspaceId;
+    const ws = state.workspaces.find((w: Workspace) => w.id === targetWsId);
+    if (!ws) return;
+    const pane = findLeafPane(ws.rootPane, paneId);
+    if (!pane) return;
+    const surface = createRemoteSurface(hostId, sessionId, shell || '', cwd || '');
     pane.surfaces.push(surface);
     pane.activeSurfaceId = surface.id;
   }),

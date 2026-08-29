@@ -56,10 +56,22 @@ export interface Surface {
   title: string;
   shell: string;
   cwd: string;
-  surfaceType?: 'terminal' | 'browser' | 'editor' | 'diff' | 'git' | 'review';
+  surfaceType?: 'terminal' | 'browser' | 'editor' | 'diff' | 'git' | 'review' | 'remote-terminal';
   browserUrl?: string;
   browserPartition?: string;
   editorFilePath?: string;
+  /**
+   * `remote-terminal` surfaces only (#1086/#1091): which paired host and
+   * which session on it this leaf mirrors. `ptyId` stays '' for these, same
+   * convention as `browser` — every ptyId-gated check in the codebase
+   * (a2aAddressing, deckBrain, the reconcile loop) already excludes an empty
+   * ptyId, so a remote-terminal surface is invisible to local-PTY logic
+   * without touching those sites. `remoteSessionId` is the durable identity
+   * (the remote daemon's own session id, `/api/stream?session=` key); the
+   * live SSE attach handle is ephemeral render-time state, not persisted here.
+   */
+  remoteHostId?: string;
+  remoteSessionId?: string;
   /** J2 — diff 서피스: 대상 태스크 id. diff 내용은 파생 데이터(열 때마다 재계산). */
   diffTaskId?: string;
   /**
@@ -1106,6 +1118,23 @@ export function createSurface(ptyId: string, shell: string, cwd: string): Surfac
     title: shell,
     shell,
     cwd,
+  };
+}
+
+/** #1086/#1091 — a leaf mirroring a session on a paired remote host, living
+ *  in an ordinary local workspace's own pane tree (not a separate remote
+ *  workspace). `ptyId: ''` mirrors the `browser` surface convention so every
+ *  existing ptyId-gated check already treats it as non-local without edits. */
+export function createRemoteSurface(hostId: string, sessionId: string, shell: string, cwd: string): Surface {
+  return {
+    id: generateId('surface'),
+    ptyId: '',
+    title: shell || 'Remote',
+    shell,
+    cwd,
+    surfaceType: 'remote-terminal',
+    remoteHostId: hostId,
+    remoteSessionId: sessionId,
   };
 }
 

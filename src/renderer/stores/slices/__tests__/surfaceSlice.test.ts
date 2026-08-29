@@ -673,3 +673,60 @@ describe('surfaceSlice.closeSurface — stashed panes', () => {
     expect(ws.stashedPanes).toBeUndefined();
   });
 });
+
+describe('surfaceSlice.addRemoteSurface (#1086/#1091)', () => {
+  it('pushes a remote-terminal surface into an ordinary local workspace pane, with an empty ptyId', () => {
+    const { state, slice } = createHarness();
+    const paneId = state.workspaces[0].rootPane.id;
+
+    slice.addRemoteSurface(paneId, 'host-abc', 'session-xyz', 'bash', '/root');
+
+    const pane = state.workspaces[0].rootPane;
+    if (pane.type !== 'leaf') throw new Error('expected leaf pane');
+    expect(pane.surfaces).toHaveLength(1);
+    const surface = pane.surfaces[0];
+    expect(surface.surfaceType).toBe('remote-terminal');
+    expect(surface.ptyId).toBe('');
+    expect(surface.remoteHostId).toBe('host-abc');
+    expect(surface.remoteSessionId).toBe('session-xyz');
+    expect(surface.shell).toBe('bash');
+    expect(surface.cwd).toBe('/root');
+    expect(pane.activeSurfaceId).toBe(surface.id);
+  });
+
+  it('lands in a background workspace when workspaceId is given, mirroring addBrowserSurface/#236', () => {
+    const { state, slice } = createHarness();
+    const ws2 = createWorkspace('Background');
+    state.workspaces.push(ws2);
+
+    slice.addRemoteSurface(ws2.rootPane.id, 'host-1', 'session-1', 'pwsh', 'D:\\bg', ws2.id);
+
+    const ws2Pane = state.workspaces.find((w) => w.id === ws2.id)!.rootPane;
+    if (ws2Pane.type !== 'leaf') throw new Error('expected leaf');
+    expect(ws2Pane.surfaces).toHaveLength(1);
+    expect(ws2Pane.surfaces[0].remoteSessionId).toBe('session-1');
+  });
+
+  it('defaults shell/cwd to empty strings when omitted', () => {
+    const { state, slice } = createHarness();
+    const paneId = state.workspaces[0].rootPane.id;
+
+    slice.addRemoteSurface(paneId, 'host-abc', 'session-xyz');
+
+    const pane = state.workspaces[0].rootPane;
+    if (pane.type !== 'leaf') throw new Error('expected leaf pane');
+    expect(pane.surfaces[0].shell).toBe('');
+    expect(pane.surfaces[0].cwd).toBe('');
+    expect(pane.surfaces[0].title).toBe('Remote');
+  });
+
+  it('is a no-op when the target pane does not exist', () => {
+    const { state, slice } = createHarness();
+
+    slice.addRemoteSurface('no-such-pane', 'host-abc', 'session-xyz');
+
+    const pane = state.workspaces[0].rootPane;
+    if (pane.type !== 'leaf') throw new Error('expected leaf pane');
+    expect(pane.surfaces).toHaveLength(0);
+  });
+});
