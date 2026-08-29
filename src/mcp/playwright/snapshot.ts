@@ -81,9 +81,40 @@ function buildTree(nodes: CdpAXNode[]): AXNode | null {
   const map = new Map<string, CdpAXNode>();
   for (const n of nodes) map.set(n.nodeId, n);
 
-  function convert(cdp: CdpAXNode): AXNode | null {
-    if (cdp.ignored) return null;
+  /**
+   * Convert one CDP node into the list of nodes it contributes to its parent.
+   *
+   * An `ignored` node is SPLICED, not dropped: the node itself disappears but
+   * its children take its place under the parent (what Playwright/Puppeteer
+   * do). Dropping the subtree looks harmless — the nodes are "uninteresting"
+   * after all — but Chrome hangs a chain of ignored wrappers (html → body →
+   * generic, every one of them `ignoredReasons: ["uninteresting"]`) directly
+   * under the RootWebArea, so dropping them decapitates the entire document.
+   * Measured on a real page: 8 ignored nodes out of 1126 left the root with
+   * ZERO children, which made isRootOnly() true and silently demoted every
+   * snapshot to the DOM fallback — taking `format:"aria"` and
+   * `filter:"interactive"` (a11y-path-only features) down with it. Splicing
+   * the same tree keeps 1118 nodes, links included.
+   */
+  function convert(cdp: CdpAXNode): AXNode[] {
+    const children = convertChildren(cdp);
+    // Contribute our (already spliced) children in our own place. Recursion
+    // flattens an ignored → ignored → ignored → real chain in a single pass.
+    if (cdp.ignored) return children;
+    return [materialize(cdp, children)];
+  }
 
+  function convertChildren(cdp: CdpAXNode): AXNode[] {
+    if (!cdp.childIds || cdp.childIds.length === 0) return [];
+    const out: AXNode[] = [];
+    for (const cid of cdp.childIds) {
+      const child = map.get(cid);
+      if (child) out.push(...convert(child));
+    }
+    return out;
+  }
+
+  function materialize(cdp: CdpAXNode, children: AXNode[]): AXNode {
     const role = cdp.role?.value ?? 'none';
     const name = cdp.name?.value ?? '';
 
@@ -124,23 +155,17 @@ function buildTree(nodes: CdpAXNode[]): AXNode | null {
       }
     }
 
-    // Build children
-    if (cdp.childIds && cdp.childIds.length > 0) {
-      const children: AXNode[] = [];
-      for (const cid of cdp.childIds) {
-        const child = map.get(cid);
-        if (child) {
-          const converted = convert(child);
-          if (converted) children.push(converted);
-        }
-      }
-      if (children.length > 0) node.children = children;
-    }
+    if (children.length > 0) node.children = children;
 
     return node;
   }
 
-  return convert(nodes[0]);
+  // The root is materialised even when it is itself ignored. It is a pure
+  // container at this layer — serializeTree emits `root.children` and never the
+  // root's own line, and isRootOnly only reads its children — so keeping it
+  // preserves every promoted child instead of arbitrarily electing one of them
+  // as the new root (or returning null and losing the document outright).
+  return materialize(nodes[0], convertChildren(nodes[0]));
 }
 
 // ---------------------------------------------------------------------------
