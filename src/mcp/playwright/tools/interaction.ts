@@ -284,7 +284,7 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
   // -----------------------------------------------------------------------
   server.tool(
     'browser_type',
-    'Type text into an element by ref.',
+    'Type text into an element by ref, replacing any existing value. Typing into a password field echoes "[redacted:password]" back — the text still went in.',
     BROWSER_TYPE_SHAPE,
     async ({ ref, text, submit, humanlike, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
       try {
