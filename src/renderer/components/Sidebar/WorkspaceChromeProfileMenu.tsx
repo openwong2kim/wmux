@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { IconChevron } from '../icons';
 import { useT } from '../../hooks/useT';
 import { useStore } from '../../stores';
@@ -35,6 +35,14 @@ export default function WorkspaceChromeProfileMenu({
   const [profiles, setProfiles] = useState<string[]>([]);
   const [bound, setBound] = useState<string | undefined>(undefined);
   const [open, setOpen] = useState(false);
+  // Inline "new profile" form (replaces window.prompt — see createProfile below).
+  const [formOpen, setFormOpen] = useState(false);
+  const [newName, setNewName] = useState('');
+  const [newError, setNewError] = useState<string | null>(null);
+  const [creating, setCreating] = useState(false);
+  // Prevent double submit: React state is async, so a second Enter/click in the
+  // same tick sees a stale `creating` and slips through — lock it with a ref.
+  const creatingRef = useRef(false);
 
   const reload = useCallback(() => {
     const api = window.electronAPI?.browser?.chromeProfiles;
@@ -62,16 +70,53 @@ export default function WorkspaceChromeProfileMenu({
     bind('live');
   }, [bind, t]);
 
-  const createAndBind = useCallback(() => {
+  const closeForm = useCallback(() => {
+    setFormOpen(false);
+    setNewName('');
+    setNewError(null);
+  }, []);
+
+  // Drop any half-typed profile name when the submenu itself goes away, so
+  // re-opening it never resurrects a stale name or a stale error.
+  useEffect(() => {
+    if (!open) closeForm();
+  }, [open, closeForm]);
+
+  /**
+   * Create the profile, then bind it — same create→bind flow the old
+   * `createAndBind` had, minus `window.prompt`. Electron's renderer has no
+   * prompt polyfill and the call itself throws (measured in DiffPanel's ask
+   * flow), so the "New profile…" row was dead; the name now comes from the
+   * inline form. Failures are common by design — main rejects bad names, the
+   * reserved 'live', and the 20-profile cap — so the error is shown in the
+   * form with the typed name intact instead of an (equally unavailable)
+   * `window.alert`.
+   */
+  const createProfile = useCallback(async () => {
+    if (creatingRef.current) return;
     const api = window.electronAPI?.browser?.chromeProfiles;
     if (!api) return;
-    const name = window.prompt(t('chromeProfiles.newPrompt'))?.trim();
+    const name = newName.trim();
     if (!name) return;
-    void api.create(name).then((res) => {
-      if (res.ok) bind(name);
-      else if (res.error) window.alert(res.error);
-    }).catch(() => { /* best-effort */ });
-  }, [bind, t]);
+    creatingRef.current = true;
+    setCreating(true);
+    setNewError(null);
+    try {
+      const res = await api.create(name);
+      if (res.ok) {
+        bind(name);
+        setFormOpen(false);
+        setNewName('');
+      } else {
+        setNewError(res.error || t('chromeProfiles.newFailed'));
+      }
+    } catch {
+      setNewError(t('chromeProfiles.newFailed'));
+    } finally {
+      creatingRef.current = false;
+      setCreating(false);
+    }
+  }, [newName, bind, t]);
 
   // Hide on older builds without the preload surface.
   if (!window.electronAPI?.browser?.chromeProfiles) return null;
@@ -84,7 +129,12 @@ export default function WorkspaceChromeProfileMenu({
     <div
       className="relative"
       onMouseEnter={() => setOpen(true)}
-      onMouseLeave={() => setOpen(false)}
+      onMouseLeave={() => {
+        // Hover-close would eat a half-typed profile name the moment the
+        // pointer drifted off the submenu — keep it open while the form is up.
+        if (formOpen) return;
+        setOpen(false);
+      }}
     >
       <button
         className="w-full flex items-center gap-2 px-3 py-1.5 text-xs transition-colors hover:bg-[var(--bg-overlay)]"
@@ -127,14 +177,70 @@ export default function WorkspaceChromeProfileMenu({
               </button>
             );
           })}
-          <button
-            className="w-full flex items-center gap-2 px-3 py-1.5 text-xs transition-colors hover:bg-[var(--bg-overlay)] border-t border-[var(--bg-overlay)] mt-1 pt-2"
-            style={{ color: 'var(--text-muted)' }}
-            onClick={createAndBind}
-          >
-            <span className="w-3" />
-            <span>{t('chromeProfiles.newProfile')}</span>
-          </button>
+          <div className="border-t border-[var(--bg-overlay)] mt-1 pt-1">
+            {formOpen ? (
+              <div className="px-3 py-1.5" data-testid="chrome-profile-new-form">
+                <input
+                  autoFocus
+                  className="ui-input text-xs"
+                  value={newName}
+                  placeholder={t('chromeProfiles.newPlaceholder')}
+                  spellCheck={false}
+                  disabled={creating}
+                  data-testid="chrome-profile-new-input"
+                  onChange={(e) => setNewName(e.target.value)}
+                  onClick={(e) => e.stopPropagation()}
+                  onKeyDown={(e) => {
+                    // An Enter that closes an IME composition (ko/ja/zh) commits
+                    // the text, it does not submit the form — guard on both
+                    // isComposing and the legacy keyCode 229.
+                    if (e.key === 'Enter' && !e.nativeEvent.isComposing && e.keyCode !== 229) {
+                      e.preventDefault();
+                      void createProfile();
+                    } else if (e.key === 'Escape') {
+                      e.preventDefault();
+                      closeForm();
+                    }
+                  }}
+                />
+                {newError && (
+                  <div
+                    className="mt-1 text-[10px] text-[var(--accent-red)]"
+                    data-testid="chrome-profile-new-error"
+                  >
+                    {newError}
+                  </div>
+                )}
+                <div className="flex items-center gap-1.5 mt-1.5">
+                  <button
+                    className="px-2 py-0.5 rounded-[5px] text-[11px] font-semibold bg-[var(--accent)] text-[var(--bg-base)] disabled:opacity-40 disabled:cursor-not-allowed"
+                    disabled={creating || newName.trim().length === 0}
+                    data-testid="chrome-profile-new-submit"
+                    onClick={() => void createProfile()}
+                  >
+                    {t('chromeProfiles.newCreate')}
+                  </button>
+                  <button
+                    className="px-2 py-0.5 rounded-[5px] text-[11px] text-[var(--text-muted)] hover:text-[var(--text-main)]"
+                    data-testid="chrome-profile-new-cancel"
+                    onClick={closeForm}
+                  >
+                    {t('chromeProfiles.newCancel')}
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <button
+                className="w-full flex items-center gap-2 px-3 py-1.5 text-xs transition-colors hover:bg-[var(--bg-overlay)]"
+                style={{ color: 'var(--text-muted)' }}
+                data-testid="chrome-profile-new-open"
+                onClick={() => { setNewError(null); setFormOpen(true); }}
+              >
+                <span className="w-3" />
+                <span>{t('chromeProfiles.newProfile')}</span>
+              </button>
+            )}
+          </div>
         </div>
       )}
     </div>
