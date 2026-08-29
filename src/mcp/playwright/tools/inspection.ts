@@ -3,7 +3,12 @@ import type { Page } from 'playwright-core';
 import { z } from 'zod';
 import { PlaywrightEngine } from '../PlaywrightEngine';
 import { withAutomationLease } from '../automationLease';
-import { generateSnapshot, markDomRefsActive, resolveRef } from '../snapshot';
+import {
+  generateScopedSnapshot,
+  generateSnapshot,
+  markDomRefsActive,
+  resolveRef,
+} from '../snapshot';
 import { buildDomSnapshotExpression } from '../dom-intelligence';
 import { pageEvaluator, rpcEvaluator } from '../page-eval';
 import { formatSnapshotResult } from '../snapshotDiff';
@@ -40,7 +45,7 @@ const BROWSER_SNAPSHOT_SHAPE = {
     .string()
     .optional()
     .describe(
-      'CSS selector to scope the snapshot to the first matching element (e.g. "main", "[role=dialog]"). Returns a DOM listing of interactive elements within that subtree.',
+      'CSS selector to scope the snapshot to the first matching element (e.g. "main", "[role=dialog]"). Returns the accessibility subtree of that element, falling back to a DOM listing of its interactive elements when the tree cannot be scoped.',
     ),
   filter: z
     .enum(['interactive'])
@@ -329,28 +334,53 @@ export function registerInspectionTools(server: McpServer, deps: BrowserToolDeps
     async ({ format, selector, filter, full, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
       try {
         let text: string;
+        // Which route served a SCOPED snapshot. Part of the diff key: an a11y
+        // subtree and a DOM listing of the same selector are different
+        // renderings, so a call that falls back must not diff against a baseline
+        // the other route produced. Stays empty for unscoped calls, whose diff
+        // key is unchanged.
+        let scopeRoute = '';
         const page = await engine.getPageForScope(scope).catch(allowScopedRpcFallback);
         if (selector) {
-          // Selector scoping runs DOM-side on BOTH transports (one code path):
-          // the expression tags data-wmux-ref within the subtree, so refs
-          // resolve via the data-attr locator — mark any live Page's a11y
-          // refMap stale so resolveRef cannot use it.
-          const evaluate = page ? pageEvaluator(page) : rpcEvaluator(scope);
-          text = String(await evaluate(buildDomSnapshotExpression(selector, { filter })));
-          if (text.startsWith('No element matches selector:')) {
-            // A miss is an error, not a snapshot — and must never become the
-            // diff baseline for the next call (review consensus).
-            return {
-              content: [{ type: 'text' as const, text }],
-              isError: true,
-            };
-          }
-          if (page) markDomRefsActive(page);
-          // filter is honored by the DOM listing (#1066); aria is not — be
-          // honest about it instead of silently ignoring the param (review
-          // consensus). 'ai' needs no note: the listing IS ai-style.
-          if (format === 'aria') {
-            text = `(note: aria format is ignored when selector is given)\n${text}`;
+          // Scope through the a11y tree first when a live Page can give us CDP.
+          // The DOM expression is layout-blind — it mints refs for hidden
+          // elements that then time out on click (dogfood P0) — and cannot
+          // render aria at all. generateScopedSnapshot returns null (never a
+          // wrong-scope result) whenever the a11y route can't serve the call,
+          // which keeps the DOM listing as the fail-open fallback below.
+          const scoped = page
+            ? await generateScopedSnapshot(page, selector, {
+                format: format ?? 'ai',
+                ...(filter && { filter }),
+              }).catch(() => null)
+            : null;
+
+          if (scoped !== null) {
+            text = scoped;
+            scopeRoute = '|ax';
+          } else {
+            // Fallback: selector scoping DOM-side, the only option on the RPC
+            // transport (no Page → no CDP). The expression tags data-wmux-ref
+            // within the subtree, so refs resolve via the data-attr locator —
+            // mark any live Page's a11y refMap stale so resolveRef cannot use it.
+            scopeRoute = '|dom';
+            const evaluate = page ? pageEvaluator(page) : rpcEvaluator(scope);
+            text = String(await evaluate(buildDomSnapshotExpression(selector, { filter })));
+            if (text.startsWith('No element matches selector:')) {
+              // A miss is an error, not a snapshot — and must never become the
+              // diff baseline for the next call (review consensus).
+              return {
+                content: [{ type: 'text' as const, text }],
+                isError: true,
+              };
+            }
+            if (page) markDomRefsActive(page);
+            // filter is honored by the DOM listing (#1066); aria is not — be
+            // honest about it instead of silently ignoring the param (review
+            // consensus). 'ai' needs no note: the listing IS ai-style.
+            if (format === 'aria') {
+              text = `(note: aria format unavailable for this selector — the a11y tree could not be scoped, returning the DOM interactive listing)\n${text}`;
+            }
           }
         } else if (page) {
           text = await generateSnapshot(page, {
@@ -385,7 +415,7 @@ export function registerInspectionTools(server: McpServer, deps: BrowserToolDeps
           currentUrl = /^URL: (.+)$/m.exec(text)?.[1];
         }
         const key = snapshotSurfaceKey(scope.workspaceId, scope.surfaceId);
-        const attrs = `${format ?? 'ai'}|${selector ?? ''}|${filter ?? ''}`;
+        const attrs = `${format ?? 'ai'}|${selector ?? ''}|${filter ?? ''}${scopeRoute}`;
         const baseline = full ? null : getSnapshotBaseline(key, attrs, currentUrl);
         const rendered = formatSnapshotResult(baseline?.text ?? null, text);
         setSnapshotBaseline(key, attrs, text, currentUrl);
