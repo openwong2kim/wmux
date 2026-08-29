@@ -64,10 +64,17 @@ function click(el: Element) {
   act(() => { el.dispatchEvent(new MouseEvent('click', { bubbles: true })); });
 }
 
-/** Hovering the root row is what opens the submenu holding the form. */
+/** Hovering the root row is what opens the submenu holding the form.
+ *  (React synthesizes onMouseEnter/onMouseLeave from mouseover/mouseout.) */
 function openSubmenu(container: Element) {
   act(() => {
     container.firstElementChild!.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+  });
+}
+
+function leaveSubmenu(container: Element) {
+  act(() => {
+    container.firstElementChild!.dispatchEvent(new MouseEvent('mouseout', { bubbles: true }));
   });
 }
 
@@ -188,11 +195,60 @@ describe('WorkspaceChromeProfileMenu — inline new-profile form', () => {
     openSubmenu(container);
     click(q(container, 'chrome-profile-new-open')!);
 
-    act(() => {
-      container.firstElementChild!.dispatchEvent(new MouseEvent('mouseout', { bubbles: true }));
-    });
+    leaveSubmenu(container);
 
     // Hover-close would otherwise unmount the form mid-typing.
     expect(q(container, 'chrome-profile-new-form')).not.toBeNull();
+  });
+
+  it('closes the submenu too when the form closes with the pointer already outside', async () => {
+    const container = render(<WorkspaceChromeProfileMenu workspaceId="ws-1" flipLeft={false} />);
+    await flush();
+    openSubmenu(container);
+    click(q(container, 'chrome-profile-new-open')!);
+
+    leaveSubmenu(container);
+    // The guard swallowed that mouseleave, so the submenu is still up…
+    expect(q(container, 'chrome-profile-new-form')).not.toBeNull();
+
+    act(() => {
+      q(container, 'chrome-profile-new-input')!
+        .dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    });
+
+    // …and mouseleave never fires a second time, so closing the form has to
+    // take the submenu with it — otherwise it hangs open until the user
+    // hovers the row again just to leave it.
+    expect(q(container, 'chrome-profile-new-open')).toBeNull();
+  });
+
+  it('leaves the submenu open when the form closes with the pointer still inside', async () => {
+    const container = render(<WorkspaceChromeProfileMenu workspaceId="ws-1" flipLeft={false} />);
+    await flush();
+    openSubmenu(container);
+    click(q(container, 'chrome-profile-new-open')!);
+
+    act(() => {
+      q(container, 'chrome-profile-new-input')!
+        .dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    });
+
+    // The pointer never left — the row the user is hovering must stay put.
+    expect(q(container, 'chrome-profile-new-open')).not.toBeNull();
+  });
+
+  it('closes the submenu after a successful create when the pointer has left', async () => {
+    const container = render(<WorkspaceChromeProfileMenu workspaceId="ws-1" flipLeft={false} />);
+    await flush();
+    openSubmenu(container);
+    click(q(container, 'chrome-profile-new-open')!);
+    setInputValue(q<HTMLInputElement>(container, 'chrome-profile-new-input')!, 'work-account');
+
+    leaveSubmenu(container);
+    click(q(container, 'chrome-profile-new-submit')!);
+    await flush();
+
+    expect(bind).toHaveBeenCalledWith('ws-1', 'work-account');
+    expect(q(container, 'chrome-profile-new-open')).toBeNull();
   });
 });

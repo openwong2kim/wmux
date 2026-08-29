@@ -43,6 +43,11 @@ export default function WorkspaceChromeProfileMenu({
   // Prevent double submit: React state is async, so a second Enter/click in the
   // same tick sees a stale `creating` and slips through — lock it with a ref.
   const creatingRef = useRef(false);
+  // Hover facts the guarded onMouseLeave below cannot express through `open`:
+  // whether the pointer is still over the menu, and whether the form was up at
+  // all. Refs, not state — closeForm reads both in the same tick it clears them.
+  const pointerInsideRef = useRef(false);
+  const formOpenRef = useRef(false);
 
   const reload = useCallback(() => {
     const api = window.electronAPI?.browser?.chromeProfiles;
@@ -70,10 +75,22 @@ export default function WorkspaceChromeProfileMenu({
     bind('live');
   }, [bind, t]);
 
+  const openFormRow = useCallback(() => {
+    formOpenRef.current = true;
+    setFormOpen(true);
+    setNewError(null);
+  }, []);
+
   const closeForm = useCallback(() => {
+    const wasOpen = formOpenRef.current;
+    formOpenRef.current = false;
     setFormOpen(false);
     setNewName('');
     setNewError(null);
+    // The onMouseLeave that fired while the form was up was swallowed by the
+    // guard, and mouseleave does not fire twice — without this the submenu
+    // would hang open until the user hovered it again just to leave it.
+    if (wasOpen && !pointerInsideRef.current) setOpen(false);
   }, []);
 
   // Drop any half-typed profile name when the submenu itself goes away, so
@@ -105,8 +122,7 @@ export default function WorkspaceChromeProfileMenu({
       const res = await api.create(name);
       if (res.ok) {
         bind(name);
-        setFormOpen(false);
-        setNewName('');
+        closeForm();
       } else {
         setNewError(res.error || t('chromeProfiles.newFailed'));
       }
@@ -116,7 +132,7 @@ export default function WorkspaceChromeProfileMenu({
       creatingRef.current = false;
       setCreating(false);
     }
-  }, [newName, bind, t]);
+  }, [newName, bind, closeForm, t]);
 
   // Hide on older builds without the preload surface.
   if (!window.electronAPI?.browser?.chromeProfiles) return null;
@@ -128,8 +144,14 @@ export default function WorkspaceChromeProfileMenu({
   return (
     <div
       className="relative"
-      onMouseEnter={() => setOpen(true)}
+      onMouseEnter={() => {
+        pointerInsideRef.current = true;
+        setOpen(true);
+      }}
       onMouseLeave={() => {
+        // Record the pointer leaving even when the close is suppressed, so
+        // closeForm knows whether it still has to close the submenu itself.
+        pointerInsideRef.current = false;
         // Hover-close would eat a half-typed profile name the moment the
         // pointer drifted off the submenu — keep it open while the form is up.
         if (formOpen) return;
@@ -234,7 +256,7 @@ export default function WorkspaceChromeProfileMenu({
                 className="w-full flex items-center gap-2 px-3 py-1.5 text-xs transition-colors hover:bg-[var(--bg-overlay)]"
                 style={{ color: 'var(--text-muted)' }}
                 data-testid="chrome-profile-new-open"
-                onClick={() => { setNewError(null); setFormOpen(true); }}
+                onClick={openFormRow}
               >
                 <span className="w-3" />
                 <span>{t('chromeProfiles.newProfile')}</span>
