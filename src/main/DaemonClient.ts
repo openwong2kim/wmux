@@ -631,7 +631,15 @@ export class DaemonClient extends EventEmitter {
         response.result === 'error'
       ) return response.result;
       return 'error';
-    } catch {
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        error.message.includes('Unknown method: daemon.deliverScheduledPrompt')
+      ) {
+        // A desktop upgrade can briefly share an older daemon. No delivery
+        // write could have started, so keep the occurrence due for a retry.
+        return 'unavailable';
+      }
       // The daemon may have accepted part of the occurrence before the control
       // reply was lost. Consume it as error; automatic retry could duplicate.
       return 'error';

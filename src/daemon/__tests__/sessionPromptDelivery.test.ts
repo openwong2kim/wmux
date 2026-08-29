@@ -35,6 +35,25 @@ describe('deliverScheduledPrompt', () => {
     ]);
   });
 
+  it('submits when paste echo temporarily promotes an idle pane to running', async () => {
+    let current = state();
+    const writes: string[] = [];
+    const result = await deliverScheduledPrompt('codex', 'continue', {
+      getAgentState: () => current,
+      write: (data) => {
+        writes.push(data);
+        if (writes.length === 1) {
+          current = state({ status: 'running', inputRevision: 8 });
+        }
+        return true;
+      },
+      delay: async () => undefined,
+    });
+
+    expect(result).toBe('sent');
+    expect(writes).toEqual(['\x1b[200~continue\x1b[201~', '\r']);
+  });
+
   it('waits through running, approval, error, and recent human input states', async () => {
     const cases: Array<Partial<ScheduledPromptAgentState>> = [
       { status: 'running' },
@@ -63,10 +82,10 @@ describe('deliverScheduledPrompt', () => {
     }
   });
 
-  it('does not press Enter if identity, readiness, or input revision changes after paste', async () => {
+  it('does not press Enter if identity, settled readiness, or input revision changes after paste', async () => {
     for (const changed of [
       state({ slug: 'claude', inputRevision: 8 }),
-      state({ status: 'running', inputRevision: 8 }),
+      state({ status: 'awaiting_input', inputRevision: 8 }),
       state({ inputRevision: 9 }),
     ]) {
       let current = state();
@@ -82,6 +101,21 @@ describe('deliverScheduledPrompt', () => {
       })).resolves.toBe('error');
       expect(writes).toHaveLength(1);
     }
+  });
+
+  it('does not treat running after a settled ready state as paste echo', async () => {
+    let current = state({ status: 'waiting' });
+    const writes: string[] = [];
+    await expect(deliverScheduledPrompt('codex', 'continue', {
+      getAgentState: () => current,
+      write: (data) => {
+        writes.push(data);
+        current = state({ status: 'running', inputRevision: 8 });
+        return true;
+      },
+      delay: async () => undefined,
+    })).resolves.toBe('error');
+    expect(writes).toHaveLength(1);
   });
 
   it('cannot escape bracketed paste with an embedded end marker or raw controls', async () => {

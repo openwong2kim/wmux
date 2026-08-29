@@ -30,6 +30,15 @@ function isReady(status: AgentStatus): boolean {
   return status === 'idle' || status === 'waiting' || status === 'complete';
 }
 
+function isSafeAfterPaste(before: AgentStatus, after: AgentStatus): boolean {
+  if (isReady(after)) return true;
+
+  // An unsettled idle pane can echo the bracketed paste as terminal output.
+  // ActivityMonitor then briefly reports `running` even though no turn was
+  // submitted. Identity and the exact input revision remain the safety proof.
+  return before === 'idle' && after === 'running';
+}
+
 /**
  * Paste and submit while the daemon still owns the authoritative process,
  * activity, and input streams. Identity is checked before both writes. The
@@ -56,7 +65,7 @@ export async function deliverScheduledPrompt(
   if (
     !after ||
     after.slug !== expectedSlug ||
-    !isReady(after.status) ||
+    !isSafeAfterPaste(before.status, after.status) ||
     after.inputRevision !== before.inputRevision + 1
   ) {
     // The paste may already be visible. Never retry or press Enter after the

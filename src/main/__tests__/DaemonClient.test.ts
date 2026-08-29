@@ -280,7 +280,7 @@ describe('DaemonClient', () => {
       await mockServer.stop();
     });
 
-    it('fails closed when an older daemon cannot prove input safety', async () => {
+    it('keeps delivery queued when an older daemon lacks the safety RPC', async () => {
       const pipeName = testPipeName('legacy-agent-state');
       mockServer = createMockDaemonServer(pipeName, AUTH_TOKEN, {
         'daemon.getAgentState': () => ({ agentName: 'Codex CLI', agentStatus: 'idle' }),
@@ -294,7 +294,7 @@ describe('DaemonClient', () => {
         id: 'sess-1',
         agentSlug: 'codex',
         prompt: 'continue',
-      })).resolves.toBe('error');
+      })).resolves.toBe('unavailable');
 
       await client.disconnect();
       await mockServer.stop();
