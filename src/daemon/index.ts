@@ -1356,6 +1356,7 @@ async function recoverSessions(
             cols: session.cols,
             rows: session.rows,
             agent: session.agent,
+            incarnationId: session.incarnationId,
             createdAt: session.createdAt,
             lastActivity: session.lastActivity,
             deadTtlHours: session.deadTtlHours,
@@ -1446,6 +1447,7 @@ async function recoverSessions(
             cols: session.cols,
             rows: session.rows,
             agent: session.agent,
+            incarnationId: session.incarnationId,
             createdAt: session.createdAt,
             lastActivity: session.lastActivity,
             deadTtlHours: session.deadTtlHours,
@@ -1495,6 +1497,7 @@ async function recoverSessions(
           cols: session.cols,
           rows: session.rows,
           agent: session.agent,
+          incarnationId: session.incarnationId,
           createdAt: session.createdAt,
           lastActivity: session.lastActivity,
           deadTtlHours: session.deadTtlHours,
@@ -1652,6 +1655,7 @@ function restartSupervisedSession(
     cols: meta.cols,
     rows: meta.rows,
     agent: meta.agent,
+    incarnationId: meta.incarnationId,
     createdAt: meta.createdAt,
     deadTtlHours: meta.deadTtlHours,
     exec: meta.exec,
@@ -2342,6 +2346,7 @@ function registerRpcHandlers(
             cols: session.cols,
             rows: session.rows,
             agent: session.agent,
+            incarnationId: session.incarnationId,
             createdAt: session.createdAt,
             lastActivity: session.lastActivity,
             deadTtlHours: session.deadTtlHours,
@@ -3144,6 +3149,7 @@ function registerRpcHandlers(
     agentStatus: AgentStatus;
     inputQuiet: boolean;
     inputRevision: number;
+    incarnationId: string | null;
   } => {
     const session = id ? sessionManager.getSession(id) : undefined;
     // #919 — answer canonically, not raw: the detector's getLastAgent is
@@ -3157,7 +3163,8 @@ function registerRpcHandlers(
     const inputQuiet = session?.bridge.isInputQuiet() ?? false;
     const inputRevision = session?.bridge.getInputRevision() ?? 0;
     const rawName = session?.bridge.getLastAgent();
-    const state = { agentStatus, inputQuiet, inputRevision };
+    const incarnationId = session?.meta.incarnationId ?? null;
+    const state = { agentStatus, inputQuiet, inputRevision, incarnationId };
     if (!session || !rawName) return { agentName: rawName ?? null, ...state };
     const screenSlug = agentDisplayToSlug(rawName);
     const canonical = canonicalIdentityFor(agentProcessTracker, id, screenSlug);
@@ -3175,19 +3182,27 @@ function registerRpcHandlers(
     const id = typeof params['id'] === 'string' ? params['id'] : '';
     return readDaemonAgentState(id);
   });
-  pipeServer.onRpc('daemon.deliverScheduledPrompt', async (params) => {
+  // Versioned method name is a rolling-upgrade safety boundary. An older
+  // daemon's v1 handler would ignore the additive incarnationId parameter and
+  // write anyway; v2 makes mixed versions fail with Unknown method pre-write.
+  pipeServer.onRpc('daemon.deliverScheduledPromptV2', async (params) => {
     const id = typeof params['id'] === 'string' ? params['id'] : '';
     const agentSlug = isAgentSlug(params['agentSlug']) ? params['agentSlug'] : null;
+    const incarnationId = typeof params['incarnationId'] === 'string'
+      ? params['incarnationId']
+      : '';
     const prompt = typeof params['prompt'] === 'string' ? params['prompt'] : '';
-    if (!id || !agentSlug || !prompt.trim() || prompt.length > 16_000) {
+    if (!id || !agentSlug || !incarnationId || incarnationId.length > 128 ||
+      !prompt.trim() || prompt.length > 16_000) {
       return { result: 'error' as const };
     }
-    const result = await deliverScheduledPrompt(agentSlug, prompt, {
+    const result = await deliverScheduledPrompt(agentSlug, incarnationId, prompt, {
       getAgentState: () => {
         const current = readDaemonAgentState(id);
         const slug = current.agentName ? agentDisplayToSlug(current.agentName) : undefined;
         return slug ? {
           slug,
+          incarnationId: current.incarnationId,
           status: current.agentStatus,
           inputQuiet: current.inputQuiet,
           inputRevision: current.inputRevision,

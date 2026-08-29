@@ -578,6 +578,7 @@ export class DaemonClient extends EventEmitter {
     agentStatus: AgentStatus;
     inputQuiet: boolean;
     inputRevision: number;
+    incarnationId: string;
   } | null> {
     try {
       const result = await this.rpc('daemon.getAgentState', { id: sessionId }) as {
@@ -585,6 +586,7 @@ export class DaemonClient extends EventEmitter {
         agentStatus?: unknown;
         inputQuiet?: unknown;
         inputRevision?: unknown;
+        incarnationId?: unknown;
       };
       const validStatuses: AgentStatus[] = [
         'running',
@@ -599,7 +601,10 @@ export class DaemonClient extends EventEmitter {
         typeof result.inputQuiet !== 'boolean' ||
         typeof result.inputRevision !== 'number' ||
         !Number.isInteger(result.inputRevision) ||
-        result.inputRevision < 0
+        result.inputRevision < 0 ||
+        typeof result.incarnationId !== 'string' ||
+        !result.incarnationId ||
+        result.incarnationId.length > 128
       ) return null;
       return {
         agentName: typeof result.agentName === 'string' && result.agentName
@@ -608,6 +613,7 @@ export class DaemonClient extends EventEmitter {
         agentStatus: result.agentStatus as AgentStatus,
         inputQuiet: result.inputQuiet,
         inputRevision: result.inputRevision,
+        incarnationId: result.incarnationId,
       };
     } catch {
       return null;
@@ -618,6 +624,7 @@ export class DaemonClient extends EventEmitter {
   async deliverScheduledPrompt(args: {
     id: string;
     agentSlug: AgentSlug;
+    incarnationId: string;
     prompt: string;
   }): Promise<SessionPromptScheduleResult> {
     // This is known to be pre-send: rpc() cannot enqueue a request without a
@@ -625,23 +632,25 @@ export class DaemonClient extends EventEmitter {
     if (!this.isConnected) return 'unavailable';
 
     try {
-      const response = await this.rpc('daemon.deliverScheduledPrompt', args) as {
+      const response = await this.rpc('daemon.deliverScheduledPromptV2', args) as {
         result?: unknown;
       };
       if (
         response.result === 'sent' ||
         response.result === 'busy' ||
         response.result === 'unavailable' ||
+        response.result === 'session_changed' ||
         response.result === 'error'
       ) return response.result;
       return 'error';
     } catch (error) {
       if (
         error instanceof Error &&
-        error.message.includes('Unknown method: daemon.deliverScheduledPrompt')
+        error.message.includes('Unknown method')
       ) {
-        // A desktop upgrade can briefly share an older daemon. No delivery
-        // write could have started, so keep the occurrence due for a retry.
+        // The v2 method name deliberately keeps mixed-version delivery from
+        // falling through to a legacy handler that does not bind incarnation.
+        // No write could have started, so keep the occurrence due for retry.
         return 'unavailable';
       }
       // The daemon may have accepted part of the occurrence before the control

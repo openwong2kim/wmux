@@ -9,7 +9,7 @@ import {
   type SessionPromptSchedule,
 } from './sessionPromptScheduleStore';
 
-type ScheduleAgentState = { slug: AgentSlug } | null;
+type ScheduleAgentState = { slug: AgentSlug; incarnationId: string } | null;
 
 export interface SessionPromptScheduleHandlerDeps {
   /** False in local/fallback mode, where process identity cannot be proven. */
@@ -60,6 +60,7 @@ export function createSessionPromptScheduleHandlers(deps: SessionPromptScheduleH
       const schedule = createSessionPromptSchedule({
         ptyId,
         agentSlug: requestedSlug,
+        sessionIncarnationId: currentAgent.incarnationId,
         prompt: typeof req.prompt === 'string' ? req.prompt : '',
         nextRunAt: typeof req.nextRunAt === 'number' ? req.nextRunAt : NaN,
         ...(typeof req.intervalMinutes === 'number'
@@ -97,7 +98,12 @@ export function createSessionPromptScheduleHandlers(deps: SessionPromptScheduleH
         if (index === -1) {
           return { schedules, result: { ok: false, code: 'not_found' } };
         }
-        schedules[index] = { ...schedules[index], enabled };
+        const current = schedules[index];
+        if (enabled &&
+          (current.lastResult === 'session_changed' || !current.sessionIncarnationId)) {
+          return { schedules, result: { ok: false, code: 'session_changed' } };
+        }
+        schedules[index] = { ...current, enabled };
         return { schedules, result: { ok: true } };
       }, deps.dir);
     },

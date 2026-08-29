@@ -30,6 +30,7 @@ function schedule(overrides: Partial<SessionPromptSchedule> = {}): SessionPrompt
     id: 'schedule-1',
     ptyId: 'pty-1',
     agentSlug: 'codex',
+    sessionIncarnationId: 'incarnation-1',
     prompt: 'continue the milestone',
     nextRunAt: 1_000,
     enabled: true,
@@ -43,6 +44,7 @@ describe('sessionPromptScheduleStore', () => {
     const created = createSessionPromptSchedule({
       ptyId: 'pty-1',
       agentSlug: 'codex',
+      sessionIncarnationId: 'incarnation-1',
       prompt: '  run the next milestone  ',
       nextRunAt: 123,
       intervalMinutes: 60,
@@ -55,6 +57,7 @@ describe('sessionPromptScheduleStore', () => {
       expect.objectContaining({
         ptyId: 'pty-1',
         agentSlug: 'codex',
+        sessionIncarnationId: 'incarnation-1',
         prompt: 'run the next milestone',
         nextRunAt: 123,
         intervalMinutes: 60,
@@ -65,15 +68,47 @@ describe('sessionPromptScheduleStore', () => {
   });
 
   it('rejects invalid targets, agents, prompts, and times', () => {
-    const base = { agentSlug: 'codex' as const, prompt: 'x', nextRunAt: 100, now: 1 };
+    const base = {
+      agentSlug: 'codex' as const,
+      sessionIncarnationId: 'incarnation-1',
+      prompt: 'x',
+      nextRunAt: 100,
+      now: 1,
+    };
     expect(createSessionPromptSchedule({ ...base, ptyId: '' })).toBeNull();
     expect(createSessionPromptSchedule({ ...base, ptyId: 'pty\n1' })).toBeNull();
+    expect(createSessionPromptSchedule({ ...base, ptyId: 'pty-1', sessionIncarnationId: '' })).toBeNull();
     expect(createSessionPromptSchedule({ ...base, ptyId: 'pty-1', agentSlug: 'bogus' as 'codex' })).toBeNull();
     expect(createSessionPromptSchedule({ ...base, ptyId: 'pty-1', prompt: '  ' })).toBeNull();
     expect(createSessionPromptSchedule({ ...base, ptyId: 'pty-1', nextRunAt: NaN })).toBeNull();
     expect(createSessionPromptSchedule({ ...base, ptyId: 'pty-1', nextRunAt: 1 })).toBeNull();
     expect(createSessionPromptSchedule({ ...base, ptyId: 'pty-1', intervalMinutes: 0.5 })).toBeNull();
     expect(createSessionPromptSchedule({ ...base, ptyId: 'pty-1', prompt: 'x'.repeat(16_001) })).toBeNull();
+  });
+
+  it('loads legacy unbound rows as visibly and permanently paused', async () => {
+    const legacy = schedule();
+    delete legacy.sessionIncarnationId;
+    await saveSessionPromptSchedules([legacy], dir);
+
+    const [loaded] = loadSessionPromptSchedules(dir);
+    expect(loaded).toMatchObject({
+      enabled: false,
+      lastResult: 'session_changed',
+    });
+    expect(loaded.sessionIncarnationId).toBeUndefined();
+
+    const advanced = advanceSessionPromptSchedule(
+      schedule({ intervalMinutes: 60 }),
+      'session_changed',
+      5_000,
+    );
+    expect(advanced).toMatchObject({
+      enabled: false,
+      nextRunAt: 1_000,
+      lastResult: 'session_changed',
+    });
+    expect(advanced.lastRunAt).toBeUndefined();
   });
 
   it('loads a missing or corrupt store as empty and drops malformed rows', async () => {

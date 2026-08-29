@@ -25,6 +25,7 @@ function schedule(id: string, ptyId = 'pty-1'): SessionPromptSchedule {
     id,
     ptyId,
     agentSlug: 'codex',
+    sessionIncarnationId: 'incarnation-1',
     prompt: 'continue',
     nextRunAt: Date.now() + 60_000,
     enabled: true,
@@ -35,7 +36,7 @@ function schedule(id: string, ptyId = 'pty-1'): SessionPromptSchedule {
 function handlers(available = true, slug: 'codex' | 'claude' | null = 'codex') {
   return createSessionPromptScheduleHandlers({
     available,
-    getAgentState: async () => slug ? { slug } : null,
+    getAgentState: async () => slug ? { slug, incarnationId: 'incarnation-1' } : null,
     dir,
   });
 }
@@ -49,7 +50,14 @@ describe('session prompt schedule IPC handlers', () => {
       nextRunAt: Date.now() + 60_000,
       intervalMinutes: 60,
     });
-    expect(result).toMatchObject({ ok: true, schedule: { ptyId: 'pty-1', agentSlug: 'codex' } });
+    expect(result).toMatchObject({
+      ok: true,
+      schedule: {
+        ptyId: 'pty-1',
+        agentSlug: 'codex',
+        sessionIncarnationId: 'incarnation-1',
+      },
+    });
     expect(loadSessionPromptSchedules(dir)).toEqual([
       expect.objectContaining({ ptyId: 'pty-1', intervalMinutes: 60 }),
     ]);
@@ -108,6 +116,22 @@ describe('session prompt schedule IPC handlers', () => {
     await handlers().remove({ ptyId: 'pty-1', id: 'same' });
     expect(loadSessionPromptSchedules(dir)).toEqual([
       expect.objectContaining({ ptyId: 'pty-2', enabled: false }),
+    ]);
+  });
+
+  it('does not resume a row whose session incarnation can no longer be proven', async () => {
+    const changed = schedule('changed');
+    changed.enabled = false;
+    changed.lastResult = 'session_changed';
+    await saveSessionPromptSchedules([changed], dir);
+
+    await expect(handlers().update({
+      ptyId: 'pty-1',
+      id: 'changed',
+      enabled: true,
+    })).resolves.toEqual({ ok: false, code: 'session_changed' });
+    expect(loadSessionPromptSchedules(dir)).toEqual([
+      expect.objectContaining({ id: 'changed', enabled: false, lastResult: 'session_changed' }),
     ]);
   });
 

@@ -1,4 +1,5 @@
 import { EventEmitter } from 'node:events';
+import { randomUUID } from 'node:crypto';
 import * as pty from 'node-pty';
 import type { IPty } from 'node-pty';
 import os from 'node:os';
@@ -23,6 +24,8 @@ import { getProcessStartTime, isPhantomExit, isPidAlive } from './phantomExit';
 const DEFAULT_COLS = 80;
 const DEFAULT_ROWS = 24;
 const DEFAULT_BUFFER_SIZE = 512 * 1024; // 512 KB
+const SESSION_INCARNATION_ID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 /** The daemon's own RPC auth-token namespace — must never reach a child shell. */
 const RESERVED_AUTH_PREFIX = /^WMUX_AUTH/i;
@@ -209,6 +212,8 @@ export class DaemonSessionManager extends EventEmitter {
     cols?: number;
     rows?: number;
     agent?: { role: string; teamId: string; displayName: string };
+    /** Recovery/restart replay only. Fresh sessions omit this and get a UUID. */
+    incarnationId?: string;
     createdAt?: string;
     /**
      * Recovery passes the session's persisted lastActivity so the TTL reaper
@@ -462,6 +467,10 @@ export class DaemonSessionManager extends EventEmitter {
     const meta: DaemonSession = {
       id: params.id,
       state: 'detached',
+      incarnationId: params.incarnationId &&
+        SESSION_INCARNATION_ID_PATTERN.test(params.incarnationId)
+        ? params.incarnationId
+        : randomUUID(),
       createdAt: params.createdAt ?? now,
       // #557: recovery passes the persisted timestamp; a brand-new session
       // takes `now`. Resetting to `now` unconditionally (the old behaviour)

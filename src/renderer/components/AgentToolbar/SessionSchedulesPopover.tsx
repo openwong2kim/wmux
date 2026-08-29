@@ -52,6 +52,7 @@ function statusKey(schedule: SessionPromptSchedule): string {
   if (schedule.enabled && schedule.lastResult === 'unavailable') {
     return 'sessionSchedule.statusUnavailable';
   }
+  if (schedule.lastResult === 'session_changed') return 'sessionSchedule.statusSessionChanged';
   if (schedule.lastResult === 'sent') return 'sessionSchedule.statusSent';
   if (schedule.lastResult === 'error') return 'sessionSchedule.statusError';
   return schedule.enabled ? 'sessionSchedule.statusWaiting' : 'sessionSchedule.statusPaused';
@@ -258,7 +259,9 @@ export default function SessionSchedulesPopover({
                     aria-hidden="true"
                     className="mt-1.5 h-1.5 w-1.5 rounded-full shrink-0"
                     style={{
-                      backgroundColor: schedule.enabled
+                      backgroundColor: schedule.lastResult === 'session_changed'
+                        ? 'var(--accent-red)'
+                        : schedule.enabled
                         ? schedule.lastResult === 'busy' || schedule.lastResult === 'unavailable'
                           ? 'var(--accent-yellow)'
                           : 'var(--accent-green)'
@@ -285,17 +288,22 @@ export default function SessionSchedulesPopover({
                       <span data-session-schedule-status>{t(statusKey(schedule))}</span>
                     </div>
                   </div>
+                  {schedule.lastResult !== 'session_changed' && (
+                    <button
+                      ref={index === 0 ? firstManageRef : undefined}
+                      type="button"
+                      data-session-schedule-toggle
+                      className="px-1 py-0.5 text-[10.5px] text-[var(--text-sub)] hover:text-[var(--text-main)]"
+                      aria-label={`${schedule.enabled ? t('sessionSchedule.pause') : t('sessionSchedule.resume')} — ${formatWhen(schedule.nextRunAt)}`}
+                      onClick={() => void setEnabled(schedule)}
+                    >
+                      {schedule.enabled ? t('sessionSchedule.pause') : t('sessionSchedule.resume')}
+                    </button>
+                  )}
                   <button
-                    ref={index === 0 ? firstManageRef : undefined}
-                    type="button"
-                    data-session-schedule-toggle
-                    className="px-1 py-0.5 text-[10.5px] text-[var(--text-sub)] hover:text-[var(--text-main)]"
-                    aria-label={`${schedule.enabled ? t('sessionSchedule.pause') : t('sessionSchedule.resume')} — ${formatWhen(schedule.nextRunAt)}`}
-                    onClick={() => void setEnabled(schedule)}
-                  >
-                    {schedule.enabled ? t('sessionSchedule.pause') : t('sessionSchedule.resume')}
-                  </button>
-                  <button
+                    ref={index === 0 && schedule.lastResult === 'session_changed'
+                      ? firstManageRef
+                      : undefined}
                     type="button"
                     data-session-schedule-delete
                     className="px-1 py-0.5 text-[10.5px] text-[var(--text-muted)] hover:text-[var(--accent-red)]"

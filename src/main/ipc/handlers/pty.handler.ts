@@ -709,14 +709,17 @@ export function registerPTYHandlers(
     if (!useDaemon || !daemonClient) return null;
     const agent = await daemonClient.getAgentState(ptyId);
     const slug = agent?.agentName ? agentDisplayToSlug(agent.agentName) : undefined;
-    return agent && slug ? { slug } : null;
+    return agent && slug ? { slug, incarnationId: agent.incarnationId } : null;
   };
 
   const sessionPromptScheduler = new SessionPromptScheduler({
-    deliver: (schedule) => useDaemon && daemonClient?.isConnected
+    deliver: (schedule) => !schedule.sessionIncarnationId
+      ? Promise.resolve('session_changed')
+      : useDaemon && daemonClient?.isConnected
       ? daemonClient.deliverScheduledPrompt({
         id: schedule.ptyId,
         agentSlug: schedule.agentSlug,
+        incarnationId: schedule.sessionIncarnationId,
         prompt: schedule.prompt,
       })
       : Promise.resolve('unavailable'),

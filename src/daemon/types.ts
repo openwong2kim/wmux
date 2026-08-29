@@ -26,6 +26,16 @@ export interface DaemonSessionSupervision extends DaemonSupervisionPolicy {
 export interface DaemonSession {
   id: string;
   state: DaemonSessionState;
+  /**
+   * Daemon-minted identity for this logical session incarnation. Unlike the
+   * caller-supplied `id`, this full UUID cannot be reused accidentally. It is
+   * replayed across recovery and supervised restarts, but a genuinely new
+   * session receives a new value even when its `id` is recycled.
+   *
+   * Optional only for sessions.json records written before this field existed;
+   * createSession always fills it for live sessions.
+   */
+  incarnationId?: string;
   createdAt: string;        // ISO 8601
   lastActivity: string;     // ISO 8601
   pid: number;              // child process PID

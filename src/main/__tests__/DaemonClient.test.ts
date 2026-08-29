@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach, beforeEach } from 'vitest';
+import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 import net from 'node:net';
 import crypto from 'node:crypto';
 import os from 'node:os';
@@ -263,6 +263,7 @@ describe('DaemonClient', () => {
           agentStatus: 'waiting',
           inputQuiet: true,
           inputRevision: 12,
+          incarnationId: 'incarnation-1',
         }),
       });
       await mockServer.start();
@@ -274,6 +275,7 @@ describe('DaemonClient', () => {
         agentStatus: 'waiting',
         inputQuiet: true,
         inputRevision: 12,
+        incarnationId: 'incarnation-1',
       });
 
       await client.disconnect();
@@ -282,8 +284,13 @@ describe('DaemonClient', () => {
 
     it('keeps delivery queued when an older daemon lacks the safety RPC', async () => {
       const pipeName = testPipeName('legacy-agent-state');
+      let legacyDeliveryCalls = 0;
       mockServer = createMockDaemonServer(pipeName, AUTH_TOKEN, {
         'daemon.getAgentState': () => ({ agentName: 'Codex CLI', agentStatus: 'idle' }),
+        'daemon.deliverScheduledPrompt': () => {
+          legacyDeliveryCalls += 1;
+          return { result: 'sent' };
+        },
       });
       await mockServer.start();
 
@@ -293,8 +300,20 @@ describe('DaemonClient', () => {
       await expect(client.deliverScheduledPrompt({
         id: 'sess-1',
         agentSlug: 'codex',
+        incarnationId: 'incarnation-1',
         prompt: 'continue',
       })).resolves.toBe('unavailable');
+      expect(legacyDeliveryCalls).toBe(0);
+
+      const genericUnknown = vi.spyOn(client, 'rpc')
+        .mockRejectedValueOnce(new Error('Unknown method'));
+      await expect(client.deliverScheduledPrompt({
+        id: 'sess-1',
+        agentSlug: 'codex',
+        incarnationId: 'incarnation-1',
+        prompt: 'continue',
+      })).resolves.toBe('unavailable');
+      genericUnknown.mockRestore();
 
       await client.disconnect();
       await mockServer.stop();
@@ -306,6 +325,7 @@ describe('DaemonClient', () => {
       await expect(client.deliverScheduledPrompt({
         id: 'sess-1',
         agentSlug: 'codex',
+        incarnationId: 'incarnation-1',
         prompt: 'continue',
       })).resolves.toBe('unavailable');
     });
@@ -313,7 +333,9 @@ describe('DaemonClient', () => {
     it('delegates scheduled prompt delivery to the daemon owner', async () => {
       const pipeName = testPipeName('scheduled-prompt');
       mockServer = createMockDaemonServer(pipeName, AUTH_TOKEN, {
-        'daemon.deliverScheduledPrompt': () => ({ result: 'sent' }),
+        'daemon.deliverScheduledPromptV2': (params) => ({
+          result: params['incarnationId'] === 'incarnation-1' ? 'sent' : 'error',
+        }),
       });
       await mockServer.start();
 
@@ -322,6 +344,7 @@ describe('DaemonClient', () => {
       await expect(client.deliverScheduledPrompt({
         id: 'sess-1',
         agentSlug: 'codex',
+        incarnationId: 'incarnation-1',
         prompt: 'continue',
       })).resolves.toBe('sent');
 
