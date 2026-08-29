@@ -102,6 +102,17 @@ export interface WaiterPlan {
   readyMarkerPath: string;
   /** How long to keep re-checking the root for locks before giving up. */
   lockBudgetMs: number;
+  /**
+   * #1084 — subset of `pids` (own-tree, never the daemon) that the waiter may
+   * force-kill after `forceKillGraceMs` instead of counting them toward the
+   * `lockBudgetMs` stuck-and-refuse verdict. These already got `app.quit()`
+   * and have no flush to protect (unlike the daemon, which is deliberately
+   * never in this list), so a hang here costs nothing to end forcibly.
+   */
+  forceKillEligiblePids: number[];
+  /** How long an eligible pid gets before the waiter kills it. Short: see
+   *  OWN_TREE_FORCE_KILL_GRACE_MS in AutoUpdater.ts for the reasoning. */
+  forceKillGraceMs: number;
 }
 
 /**
@@ -300,6 +311,11 @@ export function buildWaiterScript(plan: WaiterPlan, launchStampPath?: string): s
   // deadline in the past, so the lock loop would fall through on its first
   // pass — turning the gate that makes this whole change work into a no-op.
   if (!Number.isInteger(plan.lockBudgetMs) || plan.lockBudgetMs <= 0) return null;
+  // #1084 — same shape as the pid/budget checks above: a malformed value here
+  // must fail closed (build nothing) rather than silently force-kill nothing
+  // or run with a nonsensical grace window.
+  if (!plan.forceKillEligiblePids.every((p) => Number.isInteger(p) && p > 0)) return null;
+  if (!Number.isInteger(plan.forceKillGraceMs) || plan.forceKillGraceMs <= 0) return null;
   // #1056 — optional execution-proof stamp. Stricter than isSafePsPathLiteral
   // on purpose: this path also rides through a cmd.exe trampoline command
   // line, where a double quote is structural. Optional, so the suites'
@@ -319,6 +335,7 @@ export function buildWaiterScript(plan: WaiterPlan, launchStampPath?: string): s
   ];
 
   const pidList = plan.pids.join(',');
+  const eligibleList = plan.forceKillEligiblePids.join(',');
   return [
     `$ErrorActionPreference = 'SilentlyContinue'`,
     `$root = ${psQuote(plan.installRoot)}`,
@@ -453,6 +470,16 @@ export function buildWaiterScript(plan: WaiterPlan, launchStampPath?: string): s
     // process look like ours).
     `$handles = @()`,
     `foreach ($id in @(${pidList})) { try { $handles += [System.Diagnostics.Process]::GetProcessById($id) } catch { } }`,
+    // #1084 — pids app.quit() already told to exit, with no flush to protect
+    // (the daemon is never in this set — see AutoUpdater.ts). A hang here
+    // gets a short grace window, then a kill, instead of riding the full
+    // $budget below toward a refusal the user has to notice and clear by
+    // hand.
+    `$forceKillEligible = @(${eligibleList})`,
+    `$graceBudget = ${plan.forceKillGraceMs}`,
+    `function Stop-WaiterOwnedProcess($procId) {`,
+    `  try { & (Join-Path $env:SystemRoot 'System32\\taskkill.exe') /PID $procId /T /F 2>&1 | Out-Null } catch { }`,
+    `}`,
     // Bounded, and the bound is the point. taskkill is best-effort: a process
     // it could not terminate would make an unbounded WaitForExit block forever,
     // and by then wmux has already quit — so the update would silently stall
@@ -474,12 +501,31 @@ export function buildWaiterScript(plan: WaiterPlan, launchStampPath?: string): s
     // contract as before — only the granularity changed. A WaitForExit
     // exception still reads as "this handle is not the blocker" ($exited
     // stays true), matching the original catch-and-continue.
+    //
+    // #1084 — an eligible handle's deadline is $graceBudget, not $budget, but
+    // it is measured off the SAME shared clock as everything else (not a
+    // fresh timer per handle): a handle reached late, after the clock has
+    // already run past $graceBudget waiting on earlier ones, force-kills
+    // immediately rather than getting a full grace window it did not need to
+    // wait for. On expiry it force-kills and moves on WITHOUT setting
+    // $stuck — that verdict stays reserved for a pid this waiter cannot end
+    // itself.
     `$clock = [System.Diagnostics.Stopwatch]::StartNew()`,
     `$stuck = $false`,
     `foreach ($h in $handles) {`,
+    `  $eligible = $forceKillEligible -contains $h.Id`,
+    `  $deadline = if ($eligible) { [Math]::Min($graceBudget, $budget) } else { $budget }`,
     `  while ($true) {`,
-    `    $left = $budget - $clock.ElapsedMilliseconds`,
-    `    if ($left -le 0) { $stuck = $true; break }`,
+    `    $left = $deadline - $clock.ElapsedMilliseconds`,
+    `    if ($left -le 0) {`,
+    `      if ($eligible) {`,
+    `        Stop-WaiterOwnedProcess $h.Id`,
+    `        try { $h.WaitForExit(2000) } catch { }`,
+    `      } else {`,
+    `        $stuck = $true`,
+    `      }`,
+    `      break`,
+    `    }`,
     `    $slice = [Math]::Min(200, $left)`,
     `    $exited = $true`,
     `    try { $exited = $h.WaitForExit([int]$slice) } catch { }`,
