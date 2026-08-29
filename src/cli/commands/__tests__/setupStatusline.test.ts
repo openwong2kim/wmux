@@ -11,6 +11,7 @@ import {
   classifyStatusLine,
   foreignStatusLineCommand,
   parseStatuslineArgs,
+  normalizedTargetKey,
   WMUX_STATUSLINE_MARKER,
   type SetupStatuslinePaths,
 } from '../setupStatusline';
@@ -161,79 +162,120 @@ describe('installStatusline', () => {
 });
 
 // A forced replace destroys the only copy of the user's own statusLine command.
-// The ledger is what makes Replace a door you can walk back through (#1102).
-describe('replaced-entry ledger', () => {
-  it('restores the replaced statusLine on remove', () => {
-    const t = target('acc-a');
-    const paths = makePaths([t]);
-    const mine = { type: 'command', command: 'node my-own-line.js', padding: 0 };
-    fs.mkdirSync(path.dirname(t.settingsPath), { recursive: true });
-    fs.writeFileSync(t.settingsPath, JSON.stringify({ model: 'opus', statusLine: mine }), 'utf8');
-
-    expect(installStatusline(paths, { force: true }).targets[0].outcome).toBe('replaced');
-    const removed = removeStatusline(paths);
-    expect(removed.targets[0].outcome).toBe('restored');
-    // Restored verbatim — including keys wmux never writes itself.
-    expect(readSettings(t).statusLine).toEqual(mine);
-    expect(readSettings(t).model).toBe('opus');
-  });
-
-  it('does not restore twice — the ledger entry is consumed', () => {
-    const t = target('acc-a');
-    const paths = makePaths([t]);
+// The backup is what makes Replace a door you can walk back through (#1102) —
+// and the review panel's counterexamples are what shape it.
+describe('replaced-entry backups', () => {
+  function withForeign(name: string, command = 'node my-own-line.js'): { label: string; settingsPath: string } {
+    const t = target(name);
     fs.mkdirSync(path.dirname(t.settingsPath), { recursive: true });
     fs.writeFileSync(
       t.settingsPath,
-      JSON.stringify({ statusLine: { type: 'command', command: 'mine' } }),
+      JSON.stringify({ model: 'opus', statusLine: { type: 'command', command, padding: 0 } }),
       'utf8',
     );
+    return t;
+  }
+
+  it('restores the replaced statusLine on remove', () => {
+    const t = withForeign('acc-a');
+    const paths = makePaths([t]);
+    expect(installStatusline(paths, { force: true }).targets[0].outcome).toBe('replaced');
+    expect(removeStatusline(paths).targets[0].outcome).toBe('restored');
+    // Restored verbatim — including keys wmux never writes itself.
+    expect(readSettings(t).statusLine).toEqual({ type: 'command', command: 'node my-own-line.js', padding: 0 });
+    expect(readSettings(t).model).toBe('opus');
+  });
+
+  // Write-ahead: the backup has to be durable BEFORE the only copy is gone.
+  it('refuses the overwrite when the backup cannot be saved', () => {
+    const t = withForeign('acc-a');
+    const paths = makePaths([t]);
+    // A file where the backup directory belongs makes every backup write fail.
+    fs.mkdirSync(path.dirname(paths.scriptDest), { recursive: true });
+    fs.writeFileSync(path.join(path.dirname(paths.scriptDest), 'statusline-replaced'), 'blocked', 'utf8');
+
+    expect(installStatusline(paths, { force: true }).targets[0].outcome).toBe('skipped-no-backup');
+    // Untouched — better no statusline install than an irreversible one.
+    expect((readSettings(t).statusLine as { command: string }).command).toBe('node my-own-line.js');
+  });
+
+  // Panel counterexample ①: the operator tunes the wmux line by hand. It still
+  // carries our marker, so ownership alone would have said "restore".
+  it('does not restore over a wmux line the operator edited by hand', () => {
+    const t = withForeign('acc-a');
+    const paths = makePaths([t]);
     installStatusline(paths, { force: true });
-    removeStatusline(paths);
-    // Clear the restored entry, then take the ordinary (unforced) install path:
-    // the ledger has nothing left for this target, so remove leaves it empty.
+    const tuned = `${(readSettings(t).statusLine as { command: string }).command} --compact`;
+    fs.writeFileSync(t.settingsPath, JSON.stringify({ statusLine: { type: 'command', command: tuned } }), 'utf8');
+
+    expect(removeStatusline(paths).targets[0].outcome).toBe('removed');
+    expect(readSettings(t).statusLine).toBeUndefined();
+    // Their edit is gone because they asked for a removal — but the statusline
+    // they had already moved on from is NOT put back in its place.
+  });
+
+  // Panel counterexample ②: replace, delete by hand, reinstall clean, remove.
+  // The stale backup must not resurrect a statusLine they threw away.
+  it('does not resurrect a backup after a clean reinstall', () => {
+    const t = withForeign('acc-a');
+    const paths = makePaths([t]);
+    installStatusline(paths, { force: true });
     fs.writeFileSync(t.settingsPath, JSON.stringify({}), 'utf8');
-    installStatusline(paths);
+    expect(installStatusline(paths).targets[0].outcome).toBe('installed');
+
     expect(removeStatusline(paths).targets[0].outcome).toBe('removed');
     expect(readSettings(t).statusLine).toBeUndefined();
   });
 
-  it('never restores over a statusLine the user has since changed by hand', () => {
-    const t = target('acc-a');
+  it('consumes the backup, so a second cycle has nothing to put back', () => {
+    const t = withForeign('acc-a');
     const paths = makePaths([t]);
-    fs.mkdirSync(path.dirname(t.settingsPath), { recursive: true });
-    fs.writeFileSync(
-      t.settingsPath,
-      JSON.stringify({ statusLine: { type: 'command', command: 'mine' } }),
-      'utf8',
-    );
     installStatusline(paths, { force: true });
-    // User swaps in a third statusline after the replace.
-    fs.writeFileSync(
-      t.settingsPath,
-      JSON.stringify({ statusLine: { type: 'command', command: 'newest' } }),
-      'utf8',
-    );
-    expect(removeStatusline(paths).targets[0].outcome).toBe('nothing');
-    expect((readSettings(t).statusLine as { command: string }).command).toBe('newest');
+    expect(removeStatusline(paths).targets[0].outcome).toBe('restored');
+    // Now the original is live again; force once more and it is saved again.
+    expect(installStatusline(paths, { force: true }).targets[0].outcome).toBe('replaced');
+    expect(removeStatusline(paths).targets[0].outcome).toBe('restored');
   });
 
-  it('installs even when the ledger cannot be written', () => {
-    const t = target('acc-a');
+  // An unreadable backup is not the same as no backup: deleting on an I/O
+  // error would destroy the very entry we promised to give back.
+  it('holds rather than deleting when the backup is unreadable', () => {
+    const t = withForeign('acc-a');
     const paths = makePaths([t]);
-    fs.mkdirSync(path.dirname(t.settingsPath), { recursive: true });
-    fs.writeFileSync(
-      t.settingsPath,
-      JSON.stringify({ statusLine: { type: 'command', command: 'mine' } }),
-      'utf8',
-    );
-    // A directory where the ledger file belongs makes every write fail.
-    fs.mkdirSync(path.join(path.dirname(paths.scriptDest), 'statusline-replaced.json'), {
-      recursive: true,
-    });
-    expect(installStatusline(paths, { force: true }).targets[0].outcome).toBe('replaced');
-    expect((readSettings(t).statusLine as { command: string }).command).toContain(
-      WMUX_STATUSLINE_MARKER,
-    );
+    installStatusline(paths, { force: true });
+    const dir = path.join(path.dirname(paths.scriptDest), 'statusline-replaced');
+    const file = fs.readdirSync(dir)[0];
+    fs.writeFileSync(path.join(dir, file), '{not json', 'utf8');
+
+    expect(removeStatusline(paths).targets[0].outcome).toBe('skipped-no-backup');
+    // The wmux statusLine is still there — nothing was silently thrown away.
+    expect((readSettings(t).statusLine as { command: string }).command).toContain(WMUX_STATUSLINE_MARKER);
+  });
+
+  // One corrupt file used to be able to wipe every account's backup, because
+  // they all shared one map. Per-target files bound the blast radius.
+  it('keeps one account\'s damaged backup from touching another\'s', () => {
+    const a = withForeign('acc-a', 'line-a.sh');
+    const b = withForeign('acc-b', 'line-b.sh');
+    const paths = makePaths([a, b]);
+    installStatusline(paths, { force: true });
+    const dir = path.join(path.dirname(paths.scriptDest), 'statusline-replaced');
+    fs.writeFileSync(path.join(dir, fs.readdirSync(dir)[0]), 'corrupt', 'utf8');
+
+    const outcomes = removeStatusline(paths).targets.map((t) => t.outcome).sort();
+    expect(outcomes).toEqual(['restored', 'skipped-no-backup']);
+  });
+
+  it('reports a failing target without abandoning the rest', () => {
+    const a = target('acc-a');
+    const b = target('acc-b');
+    // A FILE where the settings directory belongs: the read reports "missing",
+    // and the write throws when it tries to create the directory.
+    fs.mkdirSync(path.dirname(path.dirname(a.settingsPath)), { recursive: true });
+    fs.writeFileSync(path.dirname(a.settingsPath), 'not a directory', 'utf8');
+    const outcome = installStatusline(makePaths([a, b]));
+    expect(outcome.targets[0].outcome).toBe('failed');
+    expect(outcome.targets[1].outcome).toBe('installed');
   });
 });
 
@@ -466,5 +508,24 @@ describe('foreignStatusLineCommand', () => {
     );
     const status = statusStatusline(makePaths([t]));
     expect(status.targets[0]).toMatchObject({ state: 'foreign', foreignCommand: 'bunx ccusage' });
+  });
+});
+
+describe('normalizedTargetKey', () => {
+  it('resolves a symlinked config dir to one identity', () => {
+    const real = path.join(tmpDir, 'real-claude');
+    const link = path.join(tmpDir, 'linked-claude');
+    fs.mkdirSync(real, { recursive: true });
+    fs.symlinkSync(real, link);
+    expect(normalizedTargetKey(path.join(link, 'settings.json')))
+      .toBe(normalizedTargetKey(path.join(real, 'settings.json')));
+  });
+
+  it('folds case on the case-insensitive platforms', () => {
+    const a = normalizedTargetKey('/Users/x/.claude/settings.json');
+    const b = normalizedTargetKey('/Users/x/.Claude/settings.json');
+    // darwin and win32 treat those as one file; a case-sensitive FS does not.
+    if (process.platform === 'darwin' || process.platform === 'win32') expect(a).toBe(b);
+    else expect(a).not.toBe(b);
   });
 });

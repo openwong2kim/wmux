@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { createHash, randomBytes } from 'crypto';
 import type { StatuslineTargetOutcome } from '../../shared/statuslineOutcome';
 
 /**
@@ -118,6 +119,28 @@ export function readClaudeAccountTargets(wmuxDir: string): Array<{ label: string
   }
 }
 
+/** One identity for one settings.json, used by both the target dedupe and the
+ *  backup filenames — they must not disagree about what "the same file" means.
+ *
+ *  realpath first: a configDir symlinked at the dotfiles repo is the same file
+ *  under two names, and resolving only lexically let the alias slip past the
+ *  dedupe and split its backup in two. Case folding covers Windows AND macOS —
+ *  APFS is case-insensitive by default, so `~/.Claude` and `~/.claude` are one
+ *  file there too, which the old win32-only fold got wrong. */
+export function normalizedTargetKey(settingsPath: string): string {
+  const absolute = path.resolve(settingsPath);
+  let resolved = absolute;
+  try {
+    // The file itself usually does not exist yet; its directory is what matters
+    // for the symlink question.
+    resolved = path.join(fs.realpathSync(path.dirname(absolute)), path.basename(absolute));
+  } catch {
+    /* directory absent — the lexical path is the best identity available */
+  }
+  const foldCase = process.platform === 'win32' || process.platform === 'darwin';
+  return foldCase ? resolved.toLowerCase() : resolved;
+}
+
 export function defaultPaths(): SetupStatuslinePaths {
   const home = os.homedir();
   const targets = [
@@ -125,12 +148,10 @@ export function defaultPaths(): SetupStatuslinePaths {
     ...readClaudeAccountTargets(path.join(home, '.wmux')),
   ];
   // A registered account may point at ~/.claude itself — dedupe by settings
-  // path. Case-fold only on Windows; case-sensitive filesystems treat
-  // differently-cased paths as distinct dirs.
+  // path.
   const seen = new Set<string>();
   const deduped = targets.filter((t) => {
-    const resolved = path.resolve(t.settingsPath);
-    const key = process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+    const key = normalizedTargetKey(t.settingsPath);
     if (seen.has(key)) return false;
     seen.add(key);
     return true;
@@ -149,12 +170,26 @@ function safeReviver(key: string, value: unknown): unknown {
   return value;
 }
 
+// The temp name carries pid + randomness for the same reason
+// refreshStatuslineScript's does: the app and the CLI can both be writing these
+// files at once, and a shared `<file>.tmp` lets two processes interleave their
+// writes into one buffer and then rename the mess over the user's settings.
+// That helper had the guard from the start; this one did not.
 function writeJsonAtomic(filePath: string, data: unknown): void {
   const dir = path.dirname(filePath);
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-  const tmp = filePath + '.tmp';
-  fs.writeFileSync(tmp, JSON.stringify(data, null, 2) + '\n', 'utf8');
-  fs.renameSync(tmp, filePath);
+  const tmp = `${filePath}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`;
+  try {
+    fs.writeFileSync(tmp, JSON.stringify(data, null, 2) + '\n', 'utf8');
+    fs.renameSync(tmp, filePath);
+  } catch (err) {
+    try {
+      fs.unlinkSync(tmp);
+    } catch {
+      /* the temp file never existed, or is already gone */
+    }
+    throw err;
+  }
 }
 
 interface LoadResult {
@@ -214,57 +249,124 @@ function statuslineCommand(scriptDest: string): string {
   return `node "${scriptDest}"`;
 }
 
-// ----- Replaced-entry ledger ------------------------------------------------
+// ----- Replaced-entry backups ----------------------------------------------
 //
 // A forced install overwrites someone else's statusLine, and the command string
 // it overwrites is the only copy that exists — the operator who no longer
 // remembers how they invoked ccusage cannot get it back. So the previous value
-// is written aside first, and `--remove` puts it back instead of leaving the
-// pane with no statusline at all: after Replace → Remove you are where you
-// started, not somewhere worse (#1102 eng review, D1).
+// is saved first and `--remove` puts it back, leaving them where they started
+// rather than somewhere worse.
 //
-// It lives next to the installed script (~/.wmux/hooks/) for the same reason
-// the script does — that path survives Squirrel's app-x.y.z swap — and NOT in
-// the user's own config dir, which wmux has no business littering.
+// Three properties the shape has to carry, each of which a single shared JSON
+// map got wrong:
+//
+//   write-ahead   The backup lands BEFORE settings.json is overwritten, and a
+//                 backup that cannot be written cancels that target's install.
+//                 Writing the file first and the ledger last meant a throw on
+//                 the second target destroyed the first one's only copy.
+//   per target    One file per settings.json, so two processes racing touch
+//                 different files. A shared map was a read-modify-write with no
+//                 lock: whoever wrote last erased the other's entry, and a
+//                 single unreadable map wiped every account's backup at once.
+//   self-checking Each backup records the exact command wmux wrote, and a
+//                 restore only fires when that command is still there. Without
+//                 it, `--remove` resurrected a statusLine the operator had
+//                 since edited or deliberately deleted.
+//
+// Lives beside the installed script (~/.wmux/hooks/), which survives Squirrel's
+// app-x.y.z swap, and NOT in the user's own config dir — wmux has no business
+// leaving files there.
 
-const REPLACED_LEDGER_BASENAME = 'statusline-replaced.json';
+const BACKUP_DIRNAME = 'statusline-replaced';
 
-function replacedLedgerPath(paths: SetupStatuslinePaths): string {
-  return path.join(path.dirname(paths.scriptDest), REPLACED_LEDGER_BASENAME);
+/** Stable per-target filename. The settings path is hashed rather than escaped
+ *  so no path separator, drive letter, or unicode name can escape the dir. */
+function backupPath(paths: SetupStatuslinePaths, settingsPath: string): string {
+  const key = normalizedTargetKey(settingsPath);
+  const digest = createHash('sha256').update(key).digest('hex').slice(0, 16);
+  return path.join(path.dirname(paths.scriptDest), BACKUP_DIRNAME, `${digest}.json`);
 }
 
-/** Same case-folding as the target dedupe: Windows paths differing only in case
- *  are one file, POSIX paths are not. */
-function ledgerKey(settingsPath: string): string {
-  const resolved = path.resolve(settingsPath);
-  return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
-}
-
-interface ReplacedEntry {
+interface ReplacedBackup {
+  /** For a human reading the directory; matching is done on the hashed name. */
+  settingsPath: string;
   /** The whole original `statusLine` value, so a restore reproduces it exactly
    *  rather than rebuilding a command into a guessed shape. */
   statusLine: unknown;
+  /** What wmux wrote in its place. A restore is only safe while this is still
+   *  the live value — anything else means the operator has moved on. */
+  wroteCommand: string;
   at: string;
 }
 
-function readReplacedLedger(paths: SetupStatuslinePaths): Record<string, ReplacedEntry> {
+type BackupRead =
+  | { kind: 'none' }        // nothing was ever saved for this target
+  | { kind: 'unreadable' }  // a file is there but we cannot trust it
+  | { kind: 'entry'; entry: ReplacedBackup };
+
+function readBackup(paths: SetupStatuslinePaths, settingsPath: string): BackupRead {
+  const file = backupPath(paths, settingsPath);
+  let raw: string;
   try {
-    const parsed = JSON.parse(fs.readFileSync(replacedLedgerPath(paths), 'utf8'), safeReviver) as unknown;
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
-    return parsed as Record<string, ReplacedEntry>;
+    raw = fs.readFileSync(file, 'utf8');
+  } catch (err) {
+    // Absent is a fact; anything else (permissions, I/O) is an unknown, and the
+    // two must not collapse — "no backup" silently deletes, "unreadable" holds.
+    return (err as NodeJS.ErrnoException).code === 'ENOENT' ? { kind: 'none' } : { kind: 'unreadable' };
+  }
+  try {
+    const parsed = JSON.parse(raw, safeReviver) as Partial<ReplacedBackup> | null;
+    if (
+      !parsed ||
+      typeof parsed !== 'object' ||
+      Array.isArray(parsed) ||
+      typeof parsed.wroteCommand !== 'string' ||
+      parsed.statusLine === undefined
+    ) {
+      return { kind: 'unreadable' };
+    }
+    return { kind: 'entry', entry: parsed as ReplacedBackup };
   } catch {
-    return {};
+    return { kind: 'unreadable' };
   }
 }
 
-/** Best-effort: a ledger we cannot write must not fail the install the operator
- *  asked for — it costs them the undo, not the feature. */
-function writeReplacedLedger(paths: SetupStatuslinePaths, ledger: Record<string, ReplacedEntry>): void {
+/** False when nothing durable was saved — the caller must then NOT overwrite.
+ *  Reporting a backup that does not exist is worse than refusing the install:
+ *  the operator clicks Replace precisely because they were promised an undo. */
+function writeBackup(
+  paths: SetupStatuslinePaths,
+  settingsPath: string,
+  statusLine: unknown,
+  wroteCommand: string,
+): boolean {
+  const entry: ReplacedBackup = {
+    settingsPath,
+    statusLine,
+    wroteCommand,
+    at: new Date().toISOString(),
+  };
   try {
-    writeJsonAtomic(replacedLedgerPath(paths), ledger);
+    writeJsonAtomic(backupPath(paths, settingsPath), entry);
+    return true;
   } catch {
-    /* ignore */
+    return false;
   }
+}
+
+function deleteBackup(paths: SetupStatuslinePaths, settingsPath: string): void {
+  try {
+    fs.unlinkSync(backupPath(paths, settingsPath));
+  } catch {
+    /* already gone */
+  }
+}
+
+/** The restored value has to be something Claude Code will actually run, and it
+ *  comes off disk — validate the shape rather than trusting the file. */
+function isRestorableStatusLine(value: unknown): boolean {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  return typeof (value as Record<string, unknown>).command === 'string';
 }
 
 // ----- Install / Remove / Status -------------------------------------------
@@ -317,31 +419,44 @@ export function installStatusline(
   fs.copyFileSync(paths.scriptSource, paths.scriptDest);
 
   const targets: TargetReport[] = [];
-  let ledger: Record<string, ReplacedEntry> | null = null;
   for (const t of paths.targets) {
-    const load = loadSettings(t.settingsPath);
-    if (load.corrupted) {
-      targets.push({ ...t, outcome: 'skipped-corrupt' });
-      continue;
+    // Per target, so one unwritable profile costs its own row and not the run:
+    // a throw here used to abandon every target after it with no report of how
+    // far the install actually got.
+    try {
+      const load = loadSettings(t.settingsPath);
+      if (load.corrupted) {
+        targets.push({ ...t, outcome: 'skipped-corrupt' });
+        continue;
+      }
+      const kind = classifyStatusLine(load.settings);
+      if (kind === 'foreign' && !opts.force) {
+        targets.push({ ...t, outcome: 'skipped-foreign' });
+        continue;
+      }
+      const command = statuslineCommand(paths.scriptDest);
+      // Nothing is set here, so whatever we wrote at replace time is gone —
+      // the operator deleted it. The backup no longer refers to a live entry
+      // and must not survive to be restored on some later remove. (Matching on
+      // the command alone could not tell this apart: a fresh install writes the
+      // very same string the replace did.)
+      if (kind === 'none') deleteBackup(paths, t.settingsPath);
+      if (kind === 'foreign') {
+        // Write-ahead, and fail-closed: an overwrite we cannot undo is not one
+        // we perform. The operator agreed to a replace they were told they
+        // could reverse — a silent best-effort backup turns that into a lie.
+        if (!writeBackup(paths, t.settingsPath, load.settings.statusLine, command)) {
+          targets.push({ ...t, outcome: 'skipped-no-backup' });
+          continue;
+        }
+      }
+      load.settings.statusLine = { type: 'command', command };
+      writeJsonAtomic(t.settingsPath, load.settings);
+      targets.push({ ...t, outcome: kind === 'foreign' ? 'replaced' : 'installed' });
+    } catch {
+      targets.push({ ...t, outcome: 'failed' });
     }
-    const kind = classifyStatusLine(load.settings);
-    if (kind === 'foreign' && !opts.force) {
-      targets.push({ ...t, outcome: 'skipped-foreign' });
-      continue;
-    }
-    if (kind === 'foreign') {
-      // Read lazily: the ledger only matters on the forced path, which is rare.
-      ledger ??= readReplacedLedger(paths);
-      ledger[ledgerKey(t.settingsPath)] = {
-        statusLine: load.settings.statusLine,
-        at: new Date().toISOString(),
-      };
-    }
-    load.settings.statusLine = { type: 'command', command: statuslineCommand(paths.scriptDest) };
-    writeJsonAtomic(t.settingsPath, load.settings);
-    targets.push({ ...t, outcome: kind === 'foreign' ? 'replaced' : 'installed' });
   }
-  if (ledger) writeReplacedLedger(paths, ledger);
   return { ...base, ok: true, scriptCopied: true, targets };
 }
 
@@ -410,9 +525,8 @@ export function refreshStatuslineScript(paths: SetupStatuslinePaths): RefreshOut
 
 export function removeStatusline(paths: SetupStatuslinePaths): StatuslineOutcome {
   const targets: TargetReport[] = [];
-  const ledger = readReplacedLedger(paths);
-  let ledgerDirty = false;
   for (const t of paths.targets) {
+   try {
     const load = loadSettings(t.settingsPath);
     if (!load.exists) {
       targets.push({ ...t, outcome: 'nothing' });
@@ -426,24 +540,40 @@ export function removeStatusline(paths: SetupStatuslinePaths): StatuslineOutcome
       targets.push({ ...t, outcome: 'nothing' });
       continue;
     }
-    // An entry we replaced goes back the way it was; anything else just goes.
-    // Restoring only over a wmux-owned entry means a statusLine the user has
-    // since changed by hand is never clobbered by our undo.
-    const key = ledgerKey(t.settingsPath);
-    const saved = ledger[key];
-    if (saved && saved.statusLine !== undefined) {
-      load.settings.statusLine = saved.statusLine;
+    const backup = readBackup(paths, t.settingsPath);
+    // A backup we cannot read is not the same as no backup. Deleting on an I/O
+    // error would destroy the entry we promised to put back, so hold instead
+    // and say so — the operator can retry or look at the file.
+    if (backup.kind === 'unreadable') {
+      targets.push({ ...t, outcome: 'skipped-no-backup' });
+      continue;
+    }
+    const live = (load.settings.statusLine as Record<string, unknown> | undefined)?.command;
+    // Restore only over the exact command this backup replaced. `wmux-owned`
+    // alone was too loose: a line the operator tuned by hand, or one they
+    // deleted and later reinstalled clean, would have had a statusLine they
+    // had already moved on from pushed back into their settings.
+    const restorable =
+      backup.kind === 'entry' &&
+      live === backup.entry.wroteCommand &&
+      isRestorableStatusLine(backup.entry.statusLine);
+    if (restorable) {
+      load.settings.statusLine = (backup as { entry: ReplacedBackup }).entry.statusLine;
       writeJsonAtomic(t.settingsPath, load.settings);
-      delete ledger[key];
-      ledgerDirty = true;
+      deleteBackup(paths, t.settingsPath);
       targets.push({ ...t, outcome: 'restored' });
       continue;
     }
     delete load.settings.statusLine;
     writeJsonAtomic(t.settingsPath, load.settings);
+    // A backup that no longer matches is stale, not precious — drop it so a
+    // later remove cannot resurrect it.
+    if (backup.kind === 'entry') deleteBackup(paths, t.settingsPath);
     targets.push({ ...t, outcome: 'removed' });
+   } catch {
+     targets.push({ ...t, outcome: 'failed' });
+   }
   }
-  if (ledgerDirty) writeReplacedLedger(paths, ledger);
   return {
     ok: true,
     scriptDest: paths.scriptDest,
@@ -502,6 +632,9 @@ function printOutcome(outcome: StatuslineOutcome, jsonMode: boolean, verb: strin
       : t.outcome === 'replaced' ? 'replaced a non-wmux statusLine'
       : t.outcome === 'removed' ? 'removed'
       : t.outcome === 'restored' ? 'removed — put your previous statusLine back'
+      : t.outcome === 'skipped-no-backup'
+        ? 'SKIPPED — could not save/read the replaced statusLine, so nothing was touched'
+      : t.outcome === 'failed' ? 'FAILED — see the error above; other targets were still attempted'
       : t.outcome === 'skipped-foreign' ? 'SKIPPED — a non-wmux statusLine is already set (re-run with --force to replace it)'
       : t.outcome === 'skipped-corrupt' ? 'SKIPPED — settings.json is not valid JSON'
       : 'nothing to do';

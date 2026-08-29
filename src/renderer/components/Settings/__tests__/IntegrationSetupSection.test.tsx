@@ -17,6 +17,7 @@ import {
   installTook,
   foreignTargets,
   foreignCommandSuffix,
+  displayCommand,
   type IntegrationSetupApi,
 } from '../IntegrationSetupSection';
 
@@ -305,6 +306,64 @@ describe('IntegrationSetupSection', () => {
     // Skips the foreign target we could not read a command from.
     expect(foreignCommandSuffix(targets)).toBe(' (mine.sh)');
     expect(foreignCommandSuffix([{ label: 'b', state: 'foreign' }])).toBe('');
+  });
+
+  // Panel finding: one Replace click forces EVERY foreign target, so naming
+  // only the first meant the other accounts' statuslines vanished unseen.
+  it('names every command a single Replace would overwrite', () => {
+    expect(
+      foreignCommandSuffix([
+        { label: 'a', state: 'foreign', foreignCommand: 'line-a.sh' },
+        { label: 'b', state: 'foreign', foreignCommand: 'line-b.sh' },
+      ]),
+    ).toBe(' (line-a.sh, line-b.sh)');
+  });
+
+  // The command is arbitrary text from someone else's config. An unbounded or
+  // multi-line one pushed the Replace button — the control the message points
+  // at — off the row.
+  it('flattens and caps a hostile command before showing it', () => {
+    expect(displayCommand('foo\nbar\tbaz')).toBe('foo bar baz');
+    const long = displayCommand('x'.repeat(500));
+    expect(long.length).toBeLessThanOrEqual(121);
+    expect(long.endsWith('…')).toBe(true);
+  });
+
+  // A refused replace is not the foreign skip: clicking Replace again cannot
+  // fix it, so it must not read as the same situation.
+  it('separates a backup failure from an ordinary foreign skip', async () => {
+    const api = fakeApi({
+      statuslineTargets: [{ label: 'default (~/.claude)', state: 'foreign', foreignCommand: 'bunx ccusage' }],
+      statuslineInstall: async () => ({ ok: true, error: null, targets: [{ outcome: 'skipped-no-backup' }] }),
+    });
+    const { container, cleanup } = render(<IntegrationSetupSection api={api} />);
+    cleanups.push(cleanup);
+    await flush();
+    await act(async () => { action(container, 'statusline')!.click(); await Promise.resolve(); });
+    await flush();
+
+    expect(skipReasonOf([{ outcome: 'skipped-no-backup' }])).toBe('no-backup');
+    const text = row(container, 'statusline').querySelector('[data-setup-row-error]')!.textContent!;
+    expect(text).toContain('~/.wmux/hooks');
+    expect(text).not.toContain('Replace puts the wmux one');
+  });
+
+  // #1102's original symptom, reached through the exception path: a throw used
+  // to wipe the foreign detail and take the Replace button with it.
+  it('keeps the Replace affordance when the install throws', async () => {
+    const api = fakeApi({
+      statuslineTargets: [{ label: 'default (~/.claude)', state: 'foreign', foreignCommand: 'bunx ccusage' }],
+      statuslineInstall: async () => { throw new Error('EACCES'); },
+    });
+    const { container, cleanup } = render(<IntegrationSetupSection api={api} />);
+    cleanups.push(cleanup);
+    await flush();
+    await act(async () => { action(container, 'statusline')!.click(); await Promise.resolve(); });
+    await flush();
+
+    expect(state(container, 'statusline')).toBe('error');
+    expect(row(container, 'statusline').querySelector('[data-setup-row-error]')!.textContent).toContain('EACCES');
+    expect(row(container, 'statusline').querySelector('[data-setup-row-secondary]')).not.toBeNull();
   });
 
   it('names the reason when an install succeeds but writes nothing', () => {

@@ -16,6 +16,8 @@ export type StatuslineTargetOutcome =
   | 'replaced'        // a foreign statusLine was overwritten (explicit force)
   | 'skipped-foreign' // user has their own statusLine — untouched
   | 'skipped-corrupt' // settings.json unparseable — untouched
+  | 'skipped-no-backup' // the replaced entry could not be saved (or read back)
+  | 'failed'          // this target threw; the others were still attempted
   | 'removed'
   | 'restored'        // wmux entry removed AND the replaced one put back
   | 'nothing';

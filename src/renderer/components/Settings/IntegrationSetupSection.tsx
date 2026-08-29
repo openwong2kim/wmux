@@ -111,21 +111,43 @@ export function foreignTargets(targets?: StatuslineTargetProbe[]): StatuslineTar
 /** Which skip explains an install that wrote nothing. `foreign` is the only one
  *  the user can act on from here (a forced re-install replaces it); `corrupt`
  *  needs them to fix their settings.json by hand. */
-export type SkipReason = 'foreign' | 'corrupt' | null;
+export type SkipReason = 'foreign' | 'corrupt' | 'no-backup' | 'failed' | null;
 
 export function skipReasonOf(targets?: Array<{ outcome: string }>): SkipReason {
   if (!targets || targets.length === 0 || installTook(targets)) return null;
+  // Order is by what the operator can act on. `no-backup` outranks `foreign`:
+  // a replace that refused because it could not save the old entry is a
+  // different situation from one that was never attempted, and clicking
+  // Replace again will not fix it.
+  if (targets.some((x) => x.outcome === 'skipped-no-backup')) return 'no-backup';
+  if (targets.some((x) => x.outcome === 'failed')) return 'failed';
   if (targets.some((x) => x.outcome === 'skipped-foreign')) return 'foreign';
   if (targets.some((x) => x.outcome === 'skipped-corrupt')) return 'corrupt';
   return null;
 }
 
-/** ` (\`<command>\`)` for the first foreign target we could read, else ''. Naming
- *  the command is the difference between consent and a button press: the
- *  operator has to be able to recognize what they are about to lose. */
+/** Arbitrary text out of someone else's settings.json, on its way into a row
+ *  that has to stay one line. Newlines and control characters are stripped and
+ *  the rest is capped — an unbounded command pushed the Replace button off
+ *  screen, which is the one control the message is telling them to use. */
+const FOREIGN_COMMAND_MAX = 120;
+
+export function displayCommand(command: string): string {
+  // eslint-disable-next-line no-control-regex
+  const flat = command.replace(/[\u0000-\u001f\u007f]+/g, ' ').trim();
+  return flat.length > FOREIGN_COMMAND_MAX ? `${flat.slice(0, FOREIGN_COMMAND_MAX)}…` : flat;
+}
+
+/** Every command a Replace would overwrite, not just the first. One click
+ *  forces ALL foreign targets, so showing one of three names made the other
+ *  two disappear without the operator ever seeing them. */
 export function foreignCommandSuffix(targets?: StatuslineTargetProbe[]): string {
-  const cmd = targets?.find((x) => x.foreignCommand)?.foreignCommand;
-  return cmd ? ` (${cmd})` : '';
+  const cmds = (targets ?? [])
+    .map((x) => x.foreignCommand)
+    .filter((c): c is string => typeof c === 'string' && c.length > 0)
+    .map(displayCommand)
+    .filter((c) => c.length > 0);
+  return cmds.length > 0 ? ` (${cmds.join(', ')})` : '';
 }
 
 /** One row's lifecycle. `unknown` is the pre-probe state and reads as its own
@@ -320,7 +342,14 @@ export function IntegrationSetupSection({
           gen,
         );
       } catch (err) {
-        commit(set, { state: 'error', error: err instanceof Error ? err.message : null }, gen);
+        // Updater, like the paths above: a thrown install that dropped the
+        // probe's foreign detail took the Replace button with it and left the
+        // exact dead end this whole change is about.
+        commit(
+          set,
+          (prev) => ({ ...prev, state: 'error', error: err instanceof Error ? err.message : null }),
+          gen,
+        );
       }
     },
     [commit, probeAll],
@@ -500,9 +529,13 @@ function SetupRow({
                 (`skipped-foreign`) told the user nothing they could act on. */}
             {model.skip === 'foreign'
               ? `${t('integrationSetup.skippedForeign')}${foreignCommandSuffix(model.foreign)}`
-              : model.skip === 'corrupt'
-                ? t('integrationSetup.skippedCorrupt')
-                : `${t('integrationSetup.installFailed')}${model.error ? ` (${model.error})` : ''}`}
+              : model.skip === 'no-backup'
+                ? t('integrationSetup.skippedNoBackup')
+                : model.skip === 'failed'
+                  ? t('integrationSetup.installFailedTarget')
+                  : model.skip === 'corrupt'
+                    ? t('integrationSetup.skippedCorrupt')
+                    : `${t('integrationSetup.installFailed')}${model.error ? ` (${model.error})` : ''}`}
           </span>
         )}
         {/* A note and an error never both apply: the error already carries the
