@@ -114,7 +114,10 @@ function prependBrowserEvents<T>(result: T, events: LifecycleEventWire[]): T {
   );
   shaped.content.unshift({
     type: 'text',
-    text: `[browser events]\n${lines.join('\n')}`,
+    // Trailing newline: MCP clients render adjacent content blocks with no
+    // separator of their own, so without it the block ran straight into the
+    // tool's own first line ("...(24s ago)Navigated to https://...").
+    text: `[browser events]\n${lines.join('\n')}\n`,
   });
   return result;
 }
@@ -124,7 +127,7 @@ export interface AutomationLeaseOpts<T> {
   /**
    * When the tool's own result already states the navigation it performed
    * (browser_navigate's "Navigated to <url>"), return that URL here and the
-   * LAST merged event is dropped iff it is a `navigated` whose URL matches
+   * LAST `navigated` of the post-drain slice is dropped iff its URL matches
    * exactly. Deliberately narrow: a redirect chain (navigated: A, then B)
    * keeps A visible, and a mismatching final URL suppresses nothing.
    */
@@ -132,10 +135,16 @@ export interface AutomationLeaseOpts<T> {
 }
 
 /**
- * Drop the trailing self-echo `navigated` event, if the tool declared one.
+ * Drop the self-echo `navigated` event, if the tool declared one.
  * Applied to the POST-drain slice only: a same-URL `navigated` in the
  * pre-drain is a delayed record of a PREVIOUS operation's navigation, not
  * this call's echo, and must stay visible.
+ *
+ * The echo candidate is the last `navigated` in the slice, not the last event
+ * (#1072): when `loaded` lands inside the same settle window the slice is
+ * [navigated, loaded], and an end-of-array-only check let the duplicate
+ * through. The rest of the rule is unchanged — post-drain slice only, exact
+ * URL match, at most one entry removed.
  */
 function suppressSelfEcho<T>(
   events: LifecycleEventWire[],
@@ -144,8 +153,11 @@ function suppressSelfEcho<T>(
 ): LifecycleEventWire[] {
   const url = opts?.redundantNavigationUrl?.(result);
   if (!url) return events;
-  const last = events[events.length - 1];
-  if (last?.type === 'navigated' && last.url === url) return events.slice(0, -1);
+  for (let i = events.length - 1; i >= 0; i--) {
+    if (events[i].type !== 'navigated') continue;
+    if (events[i].url !== url) return events;
+    return [...events.slice(0, i), ...events.slice(i + 1)];
+  }
   return events;
 }
 

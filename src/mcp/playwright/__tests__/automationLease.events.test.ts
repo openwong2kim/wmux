@@ -156,6 +156,58 @@ describe('withAutomationLease lifecycle injection', () => {
     expect(result.content[0].text).not.toContain('https://final.test/');
   });
 
+  it('drops the self-echo even when loaded follows it in the same slice (#1072)', async () => {
+    // The post-drain slice is [navigated, loaded] whenever the load settles
+    // inside the drain window. Checking only the last event let the duplicate
+    // navigated through.
+    const queue: unknown[] = [];
+    mockSendRpc.mockImplementation(queueRouter(queue));
+    const body = async () => {
+      queue.push({ type: 'navigated', url: 'https://target.test/', ts: Date.now() });
+      queue.push({ type: 'loaded', url: 'https://target.test/', ts: Date.now() });
+      return { content: [{ type: 'text', text: 'Navigated to https://target.test/' }] };
+    };
+
+    const result = await withAutomationLease(deps, 's1', body, {
+      redundantNavigationUrl: () => 'https://target.test/',
+    });
+
+    expect(result.content).toHaveLength(2);
+    const block = result.content[0].text as string;
+    expect(block).toContain('loaded');
+    expect(block).not.toContain('navigated');
+  });
+
+  it('keeps the echo when the last navigated is a different URL', async () => {
+    const queue: unknown[] = [];
+    mockSendRpc.mockImplementation(queueRouter(queue));
+    const body = async () => {
+      queue.push({ type: 'navigated', url: 'https://requested.test/', ts: Date.now() });
+      queue.push({ type: 'navigated', url: 'https://elsewhere.test/', ts: Date.now() });
+      queue.push({ type: 'loaded', ts: Date.now() });
+      return { content: [{ type: 'text', text: 'Navigated to https://requested.test/' }] };
+    };
+
+    const result = await withAutomationLease(deps, 's1', body, {
+      redundantNavigationUrl: () => 'https://requested.test/',
+    });
+
+    const block = result.content[0].text as string;
+    expect(block).toContain('https://requested.test/');
+    expect(block).toContain('https://elsewhere.test/');
+  });
+
+  it('ends the events block with a newline so it cannot run into the tool output', async () => {
+    const queue: unknown[] = [{ type: 'navigated', url: 'https://a.test/', ts: Date.now() }];
+    mockSendRpc.mockImplementation(queueRouter(queue));
+
+    const result = await withAutomationLease(deps, 's1', async () => ({
+      content: [{ type: 'text', text: 'Wait completed: selector found' }],
+    }));
+
+    expect(result.content[0].text as string).toMatch(/\n$/);
+  });
+
   it('never suppresses a pre-drain event: a delayed same-URL navigated stays visible', async () => {
     // A PREVIOUS op's navigation, delayed into this call's pre-drain, is not
     // this call's echo — suppression applies to the post-drain slice only.

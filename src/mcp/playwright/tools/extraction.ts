@@ -6,6 +6,7 @@ import { getSmartSnapshot, getSmartSnapshotViaEval } from '../dom-intelligence';
 import { extractMarkdown, extractStructuredData } from '../markdown-extractor';
 import { resolveEvaluator, rpcEvaluator } from '../page-eval';
 import { allowScopedRpcFallback, type BrowserToolDeps } from '../browserScope';
+import { describeToolError } from '../toolError';
 
 // Optional surfaceId schema reused across tools
 const optionalSurfaceId = z
@@ -100,7 +101,7 @@ export function registerExtractionTools(server: McpServer, deps: BrowserToolDeps
           content: [{ type: 'text' as const, text: lines.join('\n') }],
         };
       } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
+        const message = describeToolError(error);
         return {
           content: [{ type: 'text' as const, text: message }],
           isError: true,
@@ -133,7 +134,7 @@ export function registerExtractionTools(server: McpServer, deps: BrowserToolDeps
           content: [{ type: 'text' as const, text: markdown }],
         };
       } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
+        const message = describeToolError(error);
         return {
           content: [{ type: 'text' as const, text: message }],
           isError: true,
@@ -166,7 +167,7 @@ export function registerExtractionTools(server: McpServer, deps: BrowserToolDeps
           ],
         };
       } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
+        const message = describeToolError(error);
         return {
           content: [{ type: 'text' as const, text: message }],
           isError: true,

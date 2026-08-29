@@ -6,6 +6,7 @@ import { PlaywrightEngine } from '../PlaywrightEngine';
 import { withAutomationLease } from '../automationLease';
 import { matchSensitiveDomain } from '../security';
 import { evalFunctionOrRpc } from '../page-eval';
+import { describeToolError } from '../toolError';
 import {
   allowScopedRpcFallback,
   sendScopedBrowserRpc,
@@ -263,7 +264,7 @@ export function registerStateTools(server: McpServer, deps: BrowserToolDeps): vo
             throw new Error(`Unknown action: ${action}`);
         }
       } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
+        const message = describeToolError(error);
         return {
           content: [{ type: 'text' as const, text: message }],
           isError: true,
@@ -375,7 +376,7 @@ export function registerStateTools(server: McpServer, deps: BrowserToolDeps): vo
             throw new Error(`Unknown action: ${action}`);
         }
       } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
+        const message = describeToolError(error);
         return {
           content: [{ type: 'text' as const, text: message }],
           isError: true,
@@ -547,7 +548,7 @@ export function registerStateTools(server: McpServer, deps: BrowserToolDeps): vo
           ],
         };
       } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
+        const message = describeToolError(error);
         return {
           content: [{ type: 'text' as const, text: message }],
           isError: true,
@@ -586,7 +587,7 @@ export function registerStateTools(server: McpServer, deps: BrowserToolDeps): vo
           ],
         };
       } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
+        const message = describeToolError(error);
         return {
           content: [{ type: 'text' as const, text: message }],
           isError: true,

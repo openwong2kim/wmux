@@ -5,6 +5,7 @@ import { withAutomationLease } from '../automationLease';
 import { detectDangerousPatterns } from '../security';
 import { rpcEvaluator } from '../page-eval';
 import { allowScopedRpcFallback, type BrowserToolDeps } from '../browserScope';
+import { describeToolError } from '../toolError';
 import {
   defineWmuxTool,
   registerWmuxTools,
@@ -219,7 +220,7 @@ export function createWaitToolCatalog(deps: BrowserToolDeps) {
               // A missing target / dead WebContents is a setup error, not a
               // transient navigation race — surface it immediately so the caller
               // gets an actionable message instead of a timeout.
-              const message = error instanceof Error ? error.message : String(error);
+              const message = describeToolError(error);
               if (isSetupError(message)) throw error;
               // Otherwise transient (e.g. body not ready mid-navigation): keep polling.
             }
@@ -281,7 +282,7 @@ export function createWaitToolCatalog(deps: BrowserToolDeps) {
           content: [{ type: 'text' as const, text: `Wait completed: network idle` }],
         };
       } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
+        const message = describeToolError(error);
         // Provide clear timeout messaging
         if (message.includes('Timeout') || message.includes('timeout')) {
           const condition = url

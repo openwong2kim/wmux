@@ -8,6 +8,7 @@ import {
   type BrowserToolDeps,
 } from '../browserScope';
 import { withAutomationLease } from '../automationLease';
+import { describeToolError } from '../toolError';
 import {
   browserTabsError,
   isBrowserTabsResult,
@@ -176,7 +177,7 @@ export function registerNavigationTools(server: McpServer, deps: BrowserToolDeps
           { redundantNavigationUrl: () => finalUrl },
         );
       } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
+        const message = describeToolError(error);
         return {
           content: [{ type: 'text' as const, text: message }],
           isError: true,
@@ -230,7 +231,7 @@ export function registerNavigationTools(server: McpServer, deps: BrowserToolDeps
           { redundantNavigationUrl: () => finalUrl },
         );
       } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
+        const message = describeToolError(error);
         return {
           content: [{ type: 'text' as const, text: message }],
           isError: true,
@@ -316,7 +317,7 @@ export function registerNavigationTools(server: McpServer, deps: BrowserToolDeps
         }
         return result.ok ? tabsToolSuccess(result) : tabsToolError(result);
       } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
+        const message = describeToolError(error);
         if (/Unknown method:\s*browser\.tabs/i.test(message)) {
           return tabsToolError(
             browserTabsError(

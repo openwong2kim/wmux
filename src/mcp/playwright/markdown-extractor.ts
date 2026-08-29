@@ -24,7 +24,14 @@ export interface ExtractionOptions {
 
 const DEFAULT_MAX_LENGTH = 4000;
 
-/** Elements stripped before conversion — typically non-content chrome */
+/**
+ * Elements stripped before conversion — typically non-content chrome.
+ *
+ * Structural noise only. Elements the browser does not render are dropped
+ * separately (HIDDEN_ELEMENT_PREDICATE): real pages hide promo banners,
+ * collapsed layers and dormant error placeholders with CSS and no
+ * `aria-hidden` in sight.
+ */
 const NOISE_SELECTORS = [
   'script',
   'style',
@@ -283,10 +290,39 @@ function cleanMarkdown(md: string, maxLength: number): string {
 // ---------------------------------------------------------------------------
 
 /**
+ * In-page predicate: true when the element renders nothing, so its whole
+ * subtree is skipped during serialisation.
+ *
+ * browser_smart_snapshot reads `document.body.innerText`, which is
+ * rendering-aware and so already ignores hidden subtrees. This extractor walks
+ * the DOM itself, so without the check the two tools disagreed on the same
+ * page: on naver.com the first ~600 characters of extracted text were a hidden
+ * browser-promo banner, a collapsed search-suggestion layer and a dormant
+ * "temporary error" placeholder — every one of them `getClientRects().length
+ * === 0`, none of them `aria-hidden`.
+ *
+ * The criteria match browser_wait's visibility predicate (tools/wait.ts):
+ * computed `display:none` / `visibility:hidden`, or no box at all.
+ *
+ * Cost is one style read per *visible* element — a hidden element prunes its
+ * whole subtree, so the check never recurses into what it drops.
+ */
+const HIDDEN_ELEMENT_PREDICATE = `
+      function isHidden(el) {
+        const style = window.getComputedStyle(el);
+        if (style.display === 'none' || style.visibility === 'hidden') return true;
+        // \`display: contents\` generates no box of its own while its children
+        // still render, so the rect test below would drop the whole subtree.
+        if (style.display === 'contents') return false;
+        return el.getClientRects().length === 0;
+      }`;
+
+/**
  * Returns a string that, when evaluated inside the browser, serialises the
  * DOM rooted at `rootSelector` into a JSON-safe tree structure.
  *
- * Noise elements are stripped before serialisation.
+ * Noise elements are stripped before serialisation, and elements the browser
+ * does not render are skipped along with their subtrees.
  */
 function buildSerialiseScript(
   rootSelector: string | null,
@@ -306,7 +342,9 @@ function buildSerialiseScript(
         }
       }
 
-      function serialise(node) {
+      ${HIDDEN_ELEMENT_PREDICATE}
+
+      function serialise(node, isRoot) {
         if (node.nodeType === 3) {
           const text = node.textContent || '';
           if (!text.trim()) return null;
@@ -315,6 +353,9 @@ function buildSerialiseScript(
         if (node.nodeType !== 1) return null;
 
         const el = node;
+        // The root is serialised as asked for: an explicit \`selector\` names the
+        // region the caller wants, and document.body always renders anyway.
+        if (!isRoot && isHidden(el)) return null;
         const tag = el.tagName;
         const attrs = {};
         if (el.hasAttribute('href')) attrs['href'] = el.getAttribute('href');
@@ -323,14 +364,14 @@ function buildSerialiseScript(
 
         const children = [];
         for (const child of el.childNodes) {
-          const s = serialise(child);
+          const s = serialise(child, false);
           if (s) children.push(s);
         }
 
         return { type: 1, tag, attrs, children };
       }
 
-      return serialise(root);
+      return serialise(root, true);
     })()
   `;
 }
