@@ -135,6 +135,41 @@ describe('session prompt schedule IPC handlers', () => {
     ]);
   });
 
+  it('marks a paused row terminal when its live session incarnation has changed', async () => {
+    const paused = schedule('paused');
+    paused.enabled = false;
+    await saveSessionPromptSchedules([paused], dir);
+    const ipc = createSessionPromptScheduleHandlers({
+      available: true,
+      getAgentState: async () => ({ slug: 'codex', incarnationId: 'incarnation-2' }),
+      dir,
+    });
+
+    await expect(ipc.update({
+      ptyId: 'pty-1',
+      id: 'paused',
+      enabled: true,
+    })).resolves.toEqual({ ok: false, code: 'session_changed' });
+    expect(loadSessionPromptSchedules(dir)).toEqual([
+      expect.objectContaining({ id: 'paused', enabled: false, lastResult: 'session_changed' }),
+    ]);
+  });
+
+  it('resumes a paused row only when the live session binding still matches', async () => {
+    const paused = schedule('paused');
+    paused.enabled = false;
+    await saveSessionPromptSchedules([paused], dir);
+
+    await expect(handlers().update({
+      ptyId: 'pty-1',
+      id: 'paused',
+      enabled: true,
+    })).resolves.toEqual({ ok: true });
+    expect(loadSessionPromptSchedules(dir)).toEqual([
+      expect.objectContaining({ id: 'paused', enabled: true }),
+    ]);
+  });
+
   it('enforces the global schedule cap inside the serialized mutation', async () => {
     await saveSessionPromptSchedules(
       Array.from(
