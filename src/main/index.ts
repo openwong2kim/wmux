@@ -937,6 +937,14 @@ rpcRouter.setShadowRejectionSink((entry) => {
   shadowRejectionLogger.append(entry);
 });
 
+// #922 PR2: hosted-workspace binding decisions that CHANGED a dispatch — a
+// refused plugin write, or a plugin read answered about the workspace hosting
+// it rather than the one it named. Same bounded file as every other audit
+// entry kind, so one rotation policy covers all of them.
+rpcRouter.setHostedScopeSink((entry) => {
+  shadowRejectionLogger.appendHostedScope(entry);
+});
+
 // Per-method legacy traffic counter (Phase 2.2 pre-commit 4). Milestone
 // crossings (1st, 10th, 100th, 1000th, 10000th call) emit a summary row to
 // the shadow audit log. The trust-DB write above remains process-once and

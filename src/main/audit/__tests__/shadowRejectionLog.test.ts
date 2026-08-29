@@ -205,6 +205,52 @@ describe('ShadowRejectionLogger.append', () => {
     expect(rejectionEntries(entries)).toHaveLength(0);
   });
 
+  it('writes hosted-workspace binding decisions as their own entry kind (#922 PR2)', () => {
+    const log = new ShadowRejectionLogger({ path: logPath, now: () => 4321 });
+
+    log.appendHostedScope({
+      clientName: 'hello-panel',
+      method: 'pane.split',
+      outcome: 'refused',
+      reason: 'hosted-workspace-mismatch',
+      requestedWorkspaceId: 'ws-victim',
+      hostedWorkspaceId: 'ws-host',
+    });
+    log.appendHostedScope({
+      clientName: 'hello-panel',
+      method: 'input.readScreen',
+      outcome: 'substituted',
+      requestedWorkspaceId: 'ws-victim',
+      hostedWorkspaceId: 'ws-host',
+    });
+
+    const entries = log.readAll();
+    expect(entries).toEqual([
+      {
+        entryKind: 'hosted-scope',
+        ts: 4321,
+        clientName: 'hello-panel',
+        method: 'pane.split',
+        outcome: 'refused',
+        reason: 'hosted-workspace-mismatch',
+        requestedWorkspaceId: 'ws-victim',
+        hostedWorkspaceId: 'ws-host',
+      },
+      {
+        entryKind: 'hosted-scope',
+        ts: 4321,
+        clientName: 'hello-panel',
+        method: 'input.readScreen',
+        outcome: 'substituted',
+        requestedWorkspaceId: 'ws-victim',
+        hostedWorkspaceId: 'ws-host',
+      },
+    ]);
+    // A binding decision is not a permission rejection; the two must stay
+    // separable when the log is read back.
+    expect(rejectionEntries(entries)).toHaveLength(0);
+  });
+
   it('swallows fs errors so shadow logging never breaks RPC dispatch', () => {
     // Point the logger at a path that can't possibly be created (a file
     // appearing where a directory would need to go).

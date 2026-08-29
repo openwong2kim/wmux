@@ -364,6 +364,15 @@ export function registerInputRpc(
    *     returned ptyId as defense in depth.
    * Internal callers (CLI/UI) pass no workspaceId; assertWorkspaceOwnsPty then
    * early-returns and the check is skipped.
+   *
+   * #922 PR2 — note what this assert does and does not answer. `callerWs` comes
+   * from `params.workspaceId`, so it checks that the NAMED workspace and the
+   * pty agree; it never checks that the named workspace is the caller's. For an
+   * iframe plugin those were different questions: naming a foreign workspace
+   * passed, because the pty really does live there. The missing half is now
+   * supplied at dispatch — `hostedWorkspaceBinding.ts` pins `workspaceId` to
+   * the workspace hosting the plugin before this handler runs, so `callerWs`
+   * is the binding and the early-return is unreachable for that caller class.
    */
   router.register('input.readScreen', async (params) => {
     const p = params ?? {};

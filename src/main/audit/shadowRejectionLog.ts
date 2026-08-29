@@ -50,7 +50,8 @@ import type { RpcMethod, RpcRejection } from '../../shared/rpc';
 export type ShadowAuditEntry =
   | ShadowRejectionEntry
   | LegacyTrafficEntry
-  | BrowserScopeShadowEntry;
+  | BrowserScopeShadowEntry
+  | HostedScopeAuditEntry;
 
 export interface ShadowRejectionEntry {
   entryKind: 'rejection';
@@ -107,6 +108,36 @@ export interface BrowserScopeShadowEntry {
 }
 
 export type BrowserScopeShadowInput = Omit<BrowserScopeShadowEntry, 'entryKind' | 'ts'>;
+
+/**
+ * #922 PR2 — a dispatch-level hosted workspace binding that CHANGED the call.
+ *
+ * Only the two outcomes a caller could not have predicted are recorded: a
+ * refused write, and a read answered about a workspace other than the one it
+ * named. Resolving an OMITTED workspaceId is not recorded — it lands on the
+ * same workspace the renderer fallback would have chosen, so it is the normal
+ * path rather than evidence of anything.
+ *
+ * Unlike the caller-facing refusal text, this file is local and
+ * operator-owned, so it may hold both workspace ids — the same reason
+ * `BrowserScopeShadowEntry` records `pinnedWorkspaceId`.
+ */
+export interface HostedScopeAuditEntry {
+  entryKind: 'hosted-scope';
+  ts: number;
+  clientName: string | undefined;
+  method: RpcMethod;
+  /** `refused` for a write, `substituted` for a read answered about the binding. */
+  outcome: 'refused' | 'substituted';
+  /** Present on a refusal; the substitute path has no refusal reason. */
+  reason?: 'hosted-workspace-unbound' | 'hosted-workspace-mismatch';
+  /** The workspace the caller named, when it named one. */
+  requestedWorkspaceId?: string;
+  /** The workspace the plugin host derived for this caller. */
+  hostedWorkspaceId?: string;
+}
+
+export type HostedScopeAuditInput = Omit<HostedScopeAuditEntry, 'entryKind' | 'ts'>;
 
 export interface ShadowRejectionLoggerOptions {
   /** Override the log file path (tests). Default: `~/.wmux/shadow-rejections.log`. */
@@ -174,6 +205,18 @@ export class ShadowRejectionLogger {
   appendBrowserScope(input: BrowserScopeShadowInput): void {
     this.writeEntry({
       entryKind: 'browser-scope',
+      ts: this.now(),
+      ...input,
+    });
+  }
+
+  /**
+   * Record a hosted-workspace binding that changed a dispatch (#922 PR2).
+   * Best-effort under the same rotation policy as every other entry kind.
+   */
+  appendHostedScope(input: HostedScopeAuditInput): void {
+    this.writeEntry({
+      entryKind: 'hosted-scope',
       ts: this.now(),
       ...input,
     });
