@@ -1,7 +1,8 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { createHash, randomBytes } from 'crypto';
+import { createHash } from 'crypto';
+import { writeJsonAtomic, copyFileAtomic } from '../../shared/settingsFile';
 import type { StatuslineTargetOutcome } from '../../shared/statuslineOutcome';
 
 /**
@@ -165,33 +166,6 @@ export function defaultPaths(): SetupStatuslinePaths {
 
 // ----- settings.json plumbing (mirrors setupHooks) -------------------------
 
-function safeReviver(key: string, value: unknown): unknown {
-  if (key === '__proto__' || key === 'constructor' || key === 'prototype') return undefined;
-  return value;
-}
-
-// The temp name carries pid + randomness for the same reason
-// refreshStatuslineScript's does: the app and the CLI can both be writing these
-// files at once, and a shared `<file>.tmp` lets two processes interleave their
-// writes into one buffer and then rename the mess over the user's settings.
-// That helper had the guard from the start; this one did not.
-function writeJsonAtomic(filePath: string, data: unknown): void {
-  const dir = path.dirname(filePath);
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-  const tmp = `${filePath}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`;
-  try {
-    fs.writeFileSync(tmp, JSON.stringify(data, null, 2) + '\n', 'utf8');
-    fs.renameSync(tmp, filePath);
-  } catch (err) {
-    try {
-      fs.unlinkSync(tmp);
-    } catch {
-      /* the temp file never existed, or is already gone */
-    }
-    throw err;
-  }
-}
-
 interface LoadResult {
   settings: Record<string, unknown>;
   exists: boolean;
@@ -212,7 +186,13 @@ function loadSettings(settingsPath: string): LoadResult {
     return { settings: {}, exists: true, corrupted: false };
   }
   try {
-    const parsed = JSON.parse(raw, safeReviver) as unknown;
+    // No reviver: dropping `__proto__`/`constructor` keys at parse time was
+    // defense against a prototype-pollution shape this code never creates (it
+    // assigns one known key, it never merges), and the dropped keys were
+    // written straight back — quietly deleting them from the operator's file.
+    // JSON.parse makes such names ordinary own properties; they do not reach
+    // Object.prototype.
+    const parsed = JSON.parse(raw) as unknown;
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
       return { settings: {}, exists: true, corrupted: true };
     }
@@ -315,7 +295,7 @@ function readBackup(paths: SetupStatuslinePaths, settingsPath: string): BackupRe
     return (err as NodeJS.ErrnoException).code === 'ENOENT' ? { kind: 'none' } : { kind: 'unreadable' };
   }
   try {
-    const parsed = JSON.parse(raw, safeReviver) as Partial<ReplacedBackup> | null;
+    const parsed = JSON.parse(raw) as Partial<ReplacedBackup> | null;
     if (
       !parsed ||
       typeof parsed !== 'object' ||
@@ -416,7 +396,10 @@ export function installStatusline(
   }
   const destDir = path.dirname(paths.scriptDest);
   if (!fs.existsSync(destDir)) fs.mkdirSync(destDir, { recursive: true });
-  fs.copyFileSync(paths.scriptSource, paths.scriptDest);
+  // Same temp+rename the boot-time refresh uses: the statusline runs at
+  // input-box frequency, and an in-place copy can hand a tick a half-written
+  // script.
+  copyFileAtomic(paths.scriptSource, paths.scriptDest);
 
   const targets: TargetReport[] = [];
   for (const t of paths.targets) {
