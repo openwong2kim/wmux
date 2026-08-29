@@ -1,4 +1,5 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import type { ElementHandle } from 'playwright-core';
 import { z } from 'zod';
 import { PlaywrightEngine } from '../PlaywrightEngine';
 import { withAutomationLease } from '../automationLease';
@@ -6,6 +7,11 @@ import { resolveRef } from '../snapshot';
 import { getLocatorByRef } from '../dom-intelligence';
 import { typeHumanlike } from '../human-typing';
 import { describeToolError } from '../toolError';
+import {
+  PASSWORD_FIELD_PREDICATE_JS,
+  REDACTED_PASSWORD,
+  isPasswordFieldNode,
+} from '../redact';
 import {
   allowScopedRpcFallback,
   sendScopedBrowserRpc,
@@ -162,6 +168,41 @@ async function rpcFill(ref: string, value: string, scope: BrowserTargetScope): P
   });
 }
 
+/**
+ * Is the element behind `ref` a password field?
+ *
+ * browser_type echoes the text it typed back to the agent, which puts the value
+ * in the transcript (and the logs) a second time. That is fine for a search box
+ * and not fine for a credential, so the echo asks the element first. Both
+ * transports run the SAME predicate source (redact.ts) — Playwright serialises
+ * the function, RPC interpolates its text.
+ *
+ * Fails open (false) on any resolution error: an unmasked echo of what the
+ * agent itself just sent is the pre-existing behaviour, whereas a failed lookup
+ * must not turn into a failed browser_type.
+ */
+async function isPasswordElement(el: ElementHandle): Promise<boolean> {
+  try {
+    return await el.evaluate(isPasswordFieldNode);
+  } catch {
+    return false;
+  }
+}
+
+/** Same question over the RPC transport, resolved through the data-wmux-ref tag. */
+async function rpcIsPasswordElement(ref: string, scope: BrowserTargetScope): Promise<boolean> {
+  try {
+    const safeRef = sanitizeRef(ref);
+    const val = await rpcEval(`(() => {
+      const isPasswordField = ${PASSWORD_FIELD_PREDICATE_JS};
+      return isPasswordField(document.querySelector('[data-wmux-ref="${safeRef}"]')) ? 'yes' : 'no';
+    })()`, scope);
+    return val === 'yes';
+  } catch {
+    return false;
+  }
+}
+
 async function rpcPressKey(key: string, scope: BrowserTargetScope): Promise<void> {
   await sendScopedBrowserRpc('browser.press.cdp', scope, {
     key,
@@ -251,9 +292,14 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
       try {
         const page = await engine.getPageForScope(scope).catch(allowScopedRpcFallback);
 
+        // Decided BEFORE typing: the field is addressable now, and a submit can
+        // navigate the page out from under a later lookup.
+        let isPassword: boolean;
+
         if (page) {
           const el = await resolveRef(page, ref);
           if (!el) throw new Error(refNotFound(ref));
+          isPassword = await isPasswordElement(el);
           if (humanlike) {
             await el.click();
             await typeHumanlike(page, '', text);
@@ -263,15 +309,21 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
           if (submit) await page.keyboard.press('Enter');
         } else {
           // RPC fallback
+          isPassword = await rpcIsPasswordElement(ref, scope);
           await rpcFill(ref, text, scope);
           if (submit) await rpcPressKey('Enter', scope);
         }
+
+        // The typed text is echoed so the agent can see what landed in the
+        // field — except when the field is a credential, where the echo would
+        // only re-enter the value into the transcript and the logs.
+        const echoed = isPassword ? REDACTED_PASSWORD : text;
 
         return {
           content: [
             {
               type: 'text' as const,
-              text: `Typed "${text}" into element ref=${ref}${submit ? ' and submitted' : ''}`,
+              text: `Typed "${echoed}" into element ref=${ref}${submit ? ' and submitted' : ''}`,
             },
           ],
         };

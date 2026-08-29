@@ -15,6 +15,7 @@ import { formatSnapshotResult } from '../snapshotDiff';
 import { getSnapshotBaseline, setSnapshotBaseline, snapshotSurfaceKey } from '../snapshotCache';
 import { evaluateWithGesture } from '../anti-detection';
 import { detectDangerousPatterns } from '../security';
+import { redactPasswordParams } from '../redact';
 import { sanitizeRef } from './interaction';
 import {
   allowScopedRpcFallback,
@@ -291,14 +292,21 @@ function formatConsole(entries: ConsoleEntry[]): string {
     : entries.map((e) => `[${e.level}] ${e.text}`).join('\n');
 }
 
-/** Filter by URL glob and render the {url, method, status} summary JSON. */
+/**
+ * Filter by URL glob and render the {url, method, status} summary JSON.
+ *
+ * Request bodies are never captured, so the only credential that can reach this
+ * listing is one a page put in the query string of a GET — which redaction
+ * strips from the rendered URL. The glob still matches against the REAL url:
+ * filtering is the caller's own pattern, not something the agent reads back.
+ */
 function formatNetwork(
   entries: Array<{ url: string; method: string; status?: number }>,
   filter?: string,
 ): string {
   const filtered = filter ? entries.filter((e) => matchesGlob(e.url, filter)) : entries;
   const summary = filtered.map((e) => ({
-    url: e.url,
+    url: redactPasswordParams(e.url),
     method: e.method,
     status: e.status ?? '(pending)',
   }));
@@ -674,7 +682,12 @@ export function registerInspectionTools(server: McpServer, deps: BrowserToolDeps
           content: [
             {
               type: 'text' as const,
-              text: body,
+              // A login endpoint that echoes the submitted form back in its
+              // response (validation errors do this) would otherwise hand the
+              // password straight to the model. Only `password`-family VALUES
+              // are masked — the body stays debuggable, which is the point of
+              // the tool.
+              text: redactPasswordParams(body),
             },
           ],
         };

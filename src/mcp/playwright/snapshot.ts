@@ -1,5 +1,6 @@
 import type { Page, ElementHandle } from 'playwright-core';
 import { buildDomSnapshotExpression } from './dom-intelligence';
+import { REDACTED_PASSWORD, getPasswordFieldBackendIds } from './redact';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -87,7 +88,15 @@ interface BuiltTree {
   byBackendId: Map<number, AXNode[]>;
 }
 
-function buildTree(nodes: CdpAXNode[]): BuiltTree | null {
+/**
+ * @param passwordBackendIds backendNodeIds of the document's password fields
+ *   (resolved DOM-side by getPasswordFieldBackendIds). Their values never reach
+ *   the tree — see the redaction branch in convert().
+ */
+function buildTree(
+  nodes: CdpAXNode[],
+  passwordBackendIds: Set<number> = new Set(),
+): BuiltTree | null {
   if (nodes.length === 0) return null;
 
   const map = new Map<string, CdpAXNode>();
@@ -119,11 +128,36 @@ function buildTree(nodes: CdpAXNode[]): BuiltTree | null {
    * the same tree keeps 1118 nodes, links included.
    */
   function convert(cdp: CdpAXNode): AXNode[] {
+    // A password field is materialised WITHOUT its subtree, and with its value
+    // replaced. The subtree has to go because Chrome repeats the field's
+    // contents a second time as StaticText descendants of the input (its shadow
+    // editor's text), so masking the node's own `value` alone still leaks —
+    // measured on Chrome 141, see redact.ts. Dropping it costs nothing: the
+    // only thing under an <input> is that editor text. The field itself stays
+    // whole — role, label, ref — which is what makes the form fillable.
+    if (
+      cdp.backendDOMNodeId !== undefined &&
+      passwordBackendIds.has(cdp.backendDOMNodeId)
+    ) {
+      return index(cdp, [redactValue(materialize(cdp, []))]);
+    }
     const children = convertChildren(cdp);
     // Contribute our (already spliced) children in our own place. Recursion
     // flattens an ignored → ignored → ignored → real chain in a single pass.
     if (cdp.ignored) return index(cdp, children);
     return index(cdp, [materialize(cdp, children)]);
+  }
+
+  /**
+   * Mask a node's value in place. An EMPTY field is left alone: `value` stays
+   * undefined and the node renders without a value attribute, exactly as it
+   * does today — "this field is filled" is legitimate signal, the contents are
+   * not.
+   */
+  function redactValue(node: AXNode): AXNode {
+    if (node.value) node.value = REDACTED_PASSWORD;
+    if (node.valuetext) node.valuetext = REDACTED_PASSWORD;
+    return node;
   }
 
   function convertChildren(cdp: CdpAXNode): AXNode[] {
@@ -356,8 +390,15 @@ async function fetchAccessibilityTree(client: CdpClient): Promise<BuiltTree | nu
   // is racy on heavy pages — the domain computes the tree lazily on enable.
   await client.send('Accessibility.enable').catch(() => { /* best-effort */ });
 
+  // Which nodes may show their value. Resolved DOM-side (an a11y node carries
+  // neither `type` nor `autocomplete`) and matched through backendNodeId, the
+  // id space both domains share. Reused across the retry below — the document
+  // does not change identity in 250 ms.
+  const passwordBackendIds = await getPasswordFieldBackendIds(client);
+
   let built = buildTree(
     (await client.send('Accessibility.getFullAXTree') as { nodes: CdpAXNode[] }).nodes,
+    passwordBackendIds,
   );
 
   // A foreground heavy / custom-element SPA can momentarily yield a root-only
@@ -370,6 +411,7 @@ async function fetchAccessibilityTree(client: CdpClient): Promise<BuiltTree | nu
     await new Promise((r) => setTimeout(r, 250));
     built = buildTree(
       (await client.send('Accessibility.getFullAXTree') as { nodes: CdpAXNode[] }).nodes,
+      passwordBackendIds,
     );
   }
 
