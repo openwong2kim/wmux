@@ -1,6 +1,10 @@
 import type { Page, ElementHandle } from 'playwright-core';
 import { buildDomSnapshotExpression } from './dom-intelligence';
-import { REDACTED_PASSWORD, getPasswordFieldBackendIds } from './redact';
+import {
+  REDACTED_PASSWORD,
+  getPasswordFieldBackendIds,
+  redactPasswordParams,
+} from './redact';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -518,9 +522,14 @@ export async function generateSnapshot(
     try {
       // Honor filter on the DOM path too — the listing drops its heading block
       // (#1066: the param used to be dropped silently on this early return).
-      let domSnapshot = (await page.evaluate(
-        buildDomSnapshotExpression(undefined, { filter: options?.filter }),
-      )) as string;
+      // The listing carries the page URL and every link href verbatim, so it
+      // gets the same URL redaction the network listing does (inspection.ts
+      // applies it to its own two DOM-listing branches).
+      let domSnapshot = redactPasswordParams(
+        (await page.evaluate(
+          buildDomSnapshotExpression(undefined, { filter: options?.filter }),
+        )) as string,
+      );
       // aria has no DOM-listing equivalent — say so instead of silently
       // returning the ai-style listing (same honesty rule as the selector
       // path in inspection.ts). 'ai' needs no note: the listing IS ai-style.

@@ -40,7 +40,11 @@ function collectTools(): Map<string, ToolHandler> {
 const tools = collectTools();
 const network = tools.get('browser_network');
 const responseBody = tools.get('browser_response_body');
-if (!network || !responseBody) throw new Error('network tools failed to register');
+const consoleTool = tools.get('browser_console');
+const snapshot = tools.get('browser_snapshot');
+if (!network || !responseBody || !consoleTool || !snapshot) {
+  throw new Error('inspection tools failed to register');
+}
 
 beforeEach(() => {
   browserToolDeps.resolveWorkspaceId.mockClear();
@@ -118,5 +122,66 @@ describe('browser_response_body', () => {
     const result = await responseBody({ urlPattern: '*api*' });
 
     expect(result.content[0].text).toBe(body);
+  });
+});
+
+describe('browser_console', () => {
+  it('masks a credential a page logged in its own payload', async () => {
+    mockSendRpc.mockResolvedValue({
+      entries: [
+        { level: 'log', text: 'POST /login {"username":"alice","password":"hunter2SECRET"}' },
+        { level: 'error', text: 'auth failed for password=hunter2SECRET' },
+      ],
+    });
+
+    const result = await consoleTool({});
+    const text = result.content[0].text;
+
+    expect(text).not.toContain('hunter2SECRET');
+    expect(text).toContain(`"password":"${REDACTED_PASSWORD}"`);
+    expect(text).toContain(`password=${REDACTED_PASSWORD}`);
+    // The level prefix and the surrounding message survive.
+    expect(text).toContain('[log] POST /login');
+    expect(text).toContain('[error] auth failed for');
+  });
+
+  it('passes ordinary log lines through byte for byte', async () => {
+    mockSendRpc.mockResolvedValue({
+      entries: [
+        { level: 'warn', text: 'Deprecated API: passport.authenticate() will be removed' },
+        { level: 'log', text: 'render took 12ms (a=1&b=2)' },
+      ],
+    });
+
+    const result = await consoleTool({});
+    const text = result.content[0].text;
+
+    expect(text).toBe(
+      [
+        '[warn] Deprecated API: passport.authenticate() will be removed',
+        '[log] render took 12ms (a=1&b=2)',
+      ].join('\n'),
+    );
+  });
+});
+
+describe('browser_snapshot DOM-listing fallback', () => {
+  it('masks credentials in the listing URL line without a live page', async () => {
+    const listing = [
+      'Page: Login',
+      'URL: https://x.test/login?user=alice&password=hunter2SECRET',
+      '',
+      'Interactive elements (use ref number for click/fill/type):',
+      '  [ref=0] input[type=password] name="password"',
+    ].join('\n');
+    mockSendRpc.mockResolvedValue({ value: listing });
+
+    const result = await snapshot({ full: true });
+    const text = result.content[0].text;
+
+    expect(text).not.toContain('hunter2SECRET');
+    expect(text).toContain(`password=${REDACTED_PASSWORD}`);
+    // The field itself still has to be visible for the agent to fill it.
+    expect(text).toContain('[ref=0] input[type=password] name="password"');
   });
 });

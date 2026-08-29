@@ -9,6 +9,7 @@ import {
 } from '../browserScope';
 import { withAutomationLease } from '../automationLease';
 import { describeToolError } from '../toolError';
+import { redactPasswordParams } from '../redact';
 import {
   browserTabsError,
   isBrowserTabsResult,
@@ -73,7 +74,10 @@ function publicTab(tab: BrowserTabDescriptor): BrowserTabDescriptor {
   return {
     surfaceId: tab.surfaceId,
     paneId: tab.paneId,
-    url: tab.url,
+    // Every rendered tab URL passes through here (list / new / select / close),
+    // so this is the single place a credential in a query string or in
+    // `scheme://user:pass@host` gets masked before the agent reads it.
+    url: redactPasswordParams(tab.url),
     title: tab.title,
     selected: tab.selected,
   };
@@ -90,7 +94,7 @@ function tabsToolSuccess(result: BrowserTabsSuccessResult) {
       // wmux holds no handle on it — report the delegation honestly instead of
       // inventing a descriptor.
       payload = 'backend' in result
-        ? { action: result.action, backend: result.backend, opened: result.opened, url: result.url }
+        ? { action: result.action, backend: result.backend, opened: result.opened, url: redactPasswordParams(result.url) }
         : { action: result.action, tab: publicTab(result.tab) };
       break;
     case 'select':
@@ -152,7 +156,7 @@ export function registerNavigationTools(server: McpServer, deps: BrowserToolDeps
               await page.goto(url, { waitUntil: 'domcontentloaded' });
               finalUrl = page.url();
               return {
-                content: [{ type: 'text' as const, text: `Navigated to ${finalUrl}` }],
+                content: [{ type: 'text' as const, text: `Navigated to ${redactPasswordParams(finalUrl)}` }],
               };
             }
             // Use RPC for fast, reliable navigation (bypasses Playwright CDP discovery)
@@ -171,7 +175,7 @@ export function registerNavigationTools(server: McpServer, deps: BrowserToolDeps
               expression: 'location.href',
             }).then((r) => r?.value || url).catch(() => url);
             return {
-              content: [{ type: 'text' as const, text: `Navigated to ${finalUrl}` }],
+              content: [{ type: 'text' as const, text: `Navigated to ${redactPasswordParams(finalUrl)}` }],
             };
           },
           { redundantNavigationUrl: () => finalUrl },
@@ -211,7 +215,7 @@ export function registerNavigationTools(server: McpServer, deps: BrowserToolDeps
               await page.goBack({ waitUntil: 'domcontentloaded' }).catch(() => null);
               finalUrl = page.url();
               return {
-                content: [{ type: 'text' as const, text: `Went back. Current URL: ${finalUrl}` }],
+                content: [{ type: 'text' as const, text: `Went back. Current URL: ${redactPasswordParams(finalUrl)}` }],
               };
             }
             await sendScopedBrowserRpc('browser.goBack', scope);
@@ -225,7 +229,7 @@ export function registerNavigationTools(server: McpServer, deps: BrowserToolDeps
 
             finalUrl = urlResult.value;
             return {
-              content: [{ type: 'text' as const, text: `Navigated back to ${finalUrl}` }],
+              content: [{ type: 'text' as const, text: `Navigated back to ${redactPasswordParams(finalUrl)}` }],
             };
           },
           { redundantNavigationUrl: () => finalUrl },

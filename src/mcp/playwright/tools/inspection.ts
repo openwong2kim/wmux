@@ -286,10 +286,19 @@ function filterConsole(entries: ConsoleEntry[], level?: string): ConsoleEntry[] 
   });
 }
 
+/**
+ * Render collected console messages.
+ *
+ * Console text gets the same redaction as a network body: a page that logs its
+ * own login payload would otherwise hand the credential straight over. The
+ * masking is key-scoped rather than content-scoped — it rewrites only the value
+ * of a `password`-family parameter — so ordinary log lines pass through byte
+ * for byte.
+ */
 function formatConsole(entries: ConsoleEntry[]): string {
   return entries.length === 0
     ? 'No console messages collected.'
-    : entries.map((e) => `[${e.level}] ${e.text}`).join('\n');
+    : entries.map((e) => `[${e.level}] ${redactPasswordParams(e.text)}`).join('\n');
 }
 
 /**
@@ -373,7 +382,11 @@ export function registerInspectionTools(server: McpServer, deps: BrowserToolDeps
             // mark any live Page's a11y refMap stale so resolveRef cannot use it.
             scopeRoute = '|dom';
             const evaluate = page ? pageEvaluator(page) : rpcEvaluator(scope);
-            text = String(await evaluate(buildDomSnapshotExpression(selector, { filter })));
+            // The DOM listing carries the page URL and every link href verbatim,
+            // so it gets the same URL redaction the network listing does.
+            text = redactPasswordParams(
+              String(await evaluate(buildDomSnapshotExpression(selector, { filter }))),
+            );
             if (text.startsWith('No element matches selector:')) {
               // A miss is an error, not a snapshot — and must never become the
               // diff baseline for the next call (review consensus).
@@ -404,7 +417,8 @@ export function registerInspectionTools(server: McpServer, deps: BrowserToolDeps
           const result = await sendScopedBrowserRpc<{ value: string }>('browser.evaluate', scope, {
             expression: buildDomSnapshotExpression(undefined, { filter }),
           });
-          text = result.value;
+          // Same URL redaction as the scoped DOM listing above.
+          text = redactPasswordParams(result.value);
           if (format === 'aria') {
             text = `(note: aria format unavailable — no live page, returning the DOM interactive listing)\n${text}`;
           }

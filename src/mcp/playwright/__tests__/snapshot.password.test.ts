@@ -48,6 +48,7 @@ const LOGIN_FORM: CdpNode[] = [
   { nodeId: '31', backendDOMNodeId: 31, role: role('StaticText'), name: name('newpassSECRET'), childIds: [] },
 ];
 
+/** DOM.getSearchResults nodeId -> backendNodeId, as DOM.describeNode reports it. */
 const PASSWORD_NODE_IDS: Record<number, number> = { 7: 22, 9: 26 };
 
 /**
@@ -61,8 +62,8 @@ function makePage(nodes: CdpNode[], opts?: { withDomDomain?: boolean }) {
     send: vi.fn(async (method: string, params?: { nodeId?: number }) => {
       if (method === 'Accessibility.getFullAXTree') return { nodes };
       if (!withDomDomain) return {};
-      if (method === 'DOM.getDocument') return { root: { nodeId: 100 } };
-      if (method === 'DOM.querySelectorAll') return { nodeIds: [7, 9] };
+      if (method === 'DOM.performSearch') return { searchId: 'search-1', resultCount: 2 };
+      if (method === 'DOM.getSearchResults') return { nodeIds: [7, 9] };
       if (method === 'DOM.describeNode') {
         return { node: { backendNodeId: PASSWORD_NODE_IDS[params?.nodeId ?? -1] } };
       }
@@ -138,5 +139,115 @@ describe('generateSnapshot — password field values', () => {
 
     expect(out).toContain('value="alice@example.com"');
     expect(out).toContain('textbox "Password"');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Shadow-root fields (review P2)
+// ---------------------------------------------------------------------------
+//
+// Measured on Chrome 141 with an open shadow root holding
+// `<input type="text" autocomplete="new-password">`:
+//
+//   - Accessibility.getFullAXTree DOES carry the field, value in PLAINTEXT
+//     (backendDOMNodeId 32, plus the usual StaticText echo at 44).
+//   - DOM.querySelectorAll on the document root returned ONLY the light-DOM
+//     field (24) — CSS cannot cross a shadow boundary, so the shadow field was
+//     never in the redaction set. That was a live bypass of this whole feature.
+//   - DOM.performSearch returned all of 24, 29, 32 (light + shadow) and 2, 14
+//     (iframe), in 3 ms.
+//
+// The same measurement found iframe CONTENT absent from getFullAXTree
+// altogether, so the iframe ids are harmless surplus rather than a second fix.
+
+const SHADOW_FORM: CdpNode[] = [
+  { nodeId: '13', backendDOMNodeId: 13, role: role('RootWebArea'), name: name(''), childIds: ['1'] },
+  { nodeId: '1', backendDOMNodeId: 1, role: role('form'), name: name(''), childIds: ['24', '32'] },
+  { nodeId: '24', backendDOMNodeId: 24, role: role('textbox'), name: name('Password'), value: value('••••'), childIds: [] },
+  { nodeId: '32', backendDOMNodeId: 32, role: role('textbox'), name: name('Shadow new password'), value: value('SHADOW_NEWPASS_SECRET'), childIds: ['44'] },
+  { nodeId: '44', backendDOMNodeId: 44, role: role('StaticText'), name: name('SHADOW_NEWPASS_SECRET'), childIds: [] },
+];
+
+/** A CDP session whose search reaches into the shadow root, as Chrome's does. */
+function makeShadowPage(shadowReachable: boolean) {
+  // nodeId -> backendNodeId. Without shadow reach only the light-DOM field is
+  // found, which is exactly what the old querySelectorAll returned.
+  const hits: Record<number, number> = shadowReachable ? { 7: 24, 9: 32 } : { 7: 24 };
+  const nodeIds = Object.keys(hits).map(Number);
+  const client = {
+    send: vi.fn(async (method: string, params?: { nodeId?: number }) => {
+      if (method === 'Accessibility.getFullAXTree') return { nodes: SHADOW_FORM };
+      if (method === 'DOM.performSearch') {
+        return { searchId: 'search-1', resultCount: nodeIds.length };
+      }
+      if (method === 'DOM.getSearchResults') return { nodeIds };
+      if (method === 'DOM.describeNode') {
+        return { node: { backendNodeId: hits[params?.nodeId ?? -1] } };
+      }
+      return {};
+    }),
+    detach: vi.fn(() => Promise.resolve()),
+  };
+  return {
+    context: () => ({ newCDPSession: async () => client }),
+    evaluate: vi.fn(async () => ''),
+    getByRole: vi.fn(),
+    locator: vi.fn(),
+  };
+}
+
+describe('generateSnapshot — password fields inside a shadow root', () => {
+  it('redacts a shadow-hosted plaintext field and drops its StaticText echo', async () => {
+    const out = await generateSnapshot(makeShadowPage(true) as never, { format: 'ai' });
+
+    expect(out).not.toContain('SHADOW_NEWPASS_SECRET');
+    expect(out).toContain(`- textbox "Shadow new password" ref="1" value="${REDACTED_PASSWORD}"`);
+  });
+
+  it('pins the bypass: a search that stops at the shadow boundary leaks it', async () => {
+    // Not a requirement — a guard on the mechanism. If this ever stops leaking
+    // with shadowReachable=false, the resolution no longer depends on crossing
+    // the boundary and the test above has stopped proving anything.
+    const out = await generateSnapshot(makeShadowPage(false) as never, { format: 'ai' });
+
+    expect(out).toContain('SHADOW_NEWPASS_SECRET');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The DOM-listing fallthrough
+// ---------------------------------------------------------------------------
+//
+// When the a11y tree collapses to a bare root (a background surface has no
+// layout), generateSnapshot falls through to the DOM listing. That listing
+// prints the page URL and every link href verbatim, so it gets the same URL
+// masking browser_network's listing does.
+
+const ROOT_ONLY: CdpNode[] = [
+  { nodeId: '1', backendDOMNodeId: 1, role: role('RootWebArea'), name: name('Login'), childIds: [] },
+];
+
+describe('generateSnapshot — DOM-listing fallthrough URLs', () => {
+  it('masks credentials in the URL line and in link hrefs', async () => {
+    const listing = [
+      'Page: Login',
+      'URL: https://x.test/login?user=alice&password=hunter2SECRET',
+      '',
+      'Interactive elements (use ref number for click/fill/type):',
+      '  [ref=0] a "Docs" -> https://x.test/docs',
+      '  [ref=1] a "Retry" -> https://alice:hunter2SECRET@x.test/retry',
+    ].join('\n');
+
+    const page = makePage(ROOT_ONLY);
+    page.evaluate = vi.fn(async () => listing);
+
+    const out = await generateSnapshot(page as never, { format: 'ai' });
+
+    expect(out).not.toContain('hunter2SECRET');
+    expect(out).toContain(`URL: https://x.test/login?user=alice&password=${REDACTED_PASSWORD}`);
+    expect(out).toContain(`https://alice:${REDACTED_PASSWORD}@x.test/retry`);
+    // Everything the listing exists to convey is untouched.
+    expect(out).toContain('[ref=0] a "Docs" -> https://x.test/docs');
+    expect(out).toContain('Page: Login');
   });
 });

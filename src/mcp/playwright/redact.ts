@@ -36,12 +36,14 @@ export const REDACTED_PASSWORD = '[redacted:password]';
  * and redact the a11y nodes those ids index).
  *
  * `autocomplete` is in here because `type` alone misses the plaintext case the
- * module comment measures. Kept lowercase and flag-free so it parses on every
- * engine — `type` is matched ASCII-case-insensitively by the HTML spec anyway,
- * and `autocomplete` tokens are spec-defined lowercase.
+ * module comment measures. The `i` flags matter: `type` is matched
+ * ASCII-case-insensitively by the HTML spec on its own, but an attribute
+ * selector is case-SENSITIVE by default, so `autocomplete="New-Password"` would
+ * slip past a bare `~=`. This keeps the selector in step with
+ * isPasswordFieldNode, which lowercases before comparing.
  */
 export const PASSWORD_FIELD_SELECTOR =
-  'input[type="password"], input[autocomplete~="current-password"], input[autocomplete~="new-password"]';
+  'input[type="password"], input[autocomplete~="current-password" i], input[autocomplete~="new-password" i]';
 
 /**
  * Is this DOM element a password field?
@@ -80,32 +82,84 @@ export const PASSWORD_FIELD_PREDICATE_JS = String(isPasswordFieldNode);
 /**
  * Parameter names that carry a password. Narrow on purpose: `pass` alone would
  * swallow `passenger`/`passport`, and browser_network exists to make requests
- * debuggable — over-masking would defeat the tool it protects.
+ * debuggable — over-masking would defeat the tool it protects. `pass[_-]?word`
+ * (rather than a bare `password`) picks up the `pass_word` / `pass-word`
+ * spellings without widening the stem.
  */
-const PASSWORD_KEY = '[\\w.\\[\\]-]*(?:password|passwd|pwd)[\\w.\\[\\]-]*';
-
-/** `"password": "…"` at any nesting depth of a JSON body. */
-const JSON_PASSWORD = new RegExp(`("${PASSWORD_KEY}"\\s*:\\s*)"(?:[^"\\\\]|\\\\.)*"`, 'gi');
+const PASSWORD_KEY = '[\\w.\\[\\]-]*(?:pass[_-]?word|passwd|pwd)[\\w.\\[\\]-]*';
 
 /**
- * `password=…` in a query string or an `application/x-www-form-urlencoded`
- * body. The leading `^|[?&;]` boundary is what keeps a path like
- * `/account/reset-password` untouched: a key has to actually be a key.
- */
-const FORM_PASSWORD = new RegExp(`(^|[?&;])(${PASSWORD_KEY})=[^&;#\\s]*`, 'gi');
-
-/**
- * Replace password parameter VALUES in a URL or a request/response body,
- * leaving the parameter names — and everything else — exactly as they were.
+ * `"password": <value>` at any nesting depth of a JSON body.
  *
- * Covers the two shapes a login actually posts (JSON and form-urlencoded) plus
- * the query string of a GET that puts a credential in the URL.
+ * The value alternation covers a quoted string and a bare number — a numeric
+ * PIN posted as `{"password":123456}` is still a credential. `null`/`true`/
+ * `false` are deliberately NOT matched: they carry no secret, and masking them
+ * would erase the "unset" signal.
+ */
+const JSON_PASSWORD = new RegExp(
+  `("${PASSWORD_KEY}"\\s*:\\s*)(?:"(?:[^"\\\\]|\\\\.)*"|-?\\d[\\d.]*(?:[eE][-+]?\\d+)?)`,
+  'gi',
+);
+
+/**
+ * A JSON password value that the 256 KB capture cap cut mid-string, so it has
+ * no closing quote for JSON_PASSWORD to anchor on.
+ *
+ * `[^"\n]*$` with the `m` flag stops at the line end, which preserves the
+ * `\n... [truncated N chars]` marker the capture appends — and, because a
+ * terminated value always has a closing quote before the line ends, it cannot
+ * double-fire on something JSON_PASSWORD already handled.
+ */
+const JSON_PASSWORD_TRUNCATED = new RegExp(`("${PASSWORD_KEY}"\\s*:\\s*)"[^"\\n]*$`, 'gim');
+
+/**
+ * `password=…` in a query string, an `application/x-www-form-urlencoded` body,
+ * or a free-form line of console output.
+ *
+ * The leading `^|[?&;\s]` boundary is what keeps a path like
+ * `/account/reset-password` untouched: a key has to actually be a key.
+ * Whitespace counts as a boundary because console text is prose — a page that
+ * logs `auth failed for password=hunter2` puts the credential after a space,
+ * not after a `&`. It cannot widen the URL cases, which have no unencoded
+ * whitespace to begin with.
+ *
+ * A truncated tail needs no special case here: `[^&;#\s]*` ends at the input's
+ * end just as happily as at the next separator.
+ */
+const FORM_PASSWORD = new RegExp(`(^|[?&;\\s])(${PASSWORD_KEY})=[^&;#\\s]*`, 'gi');
+
+/**
+ * The password half of a `scheme://user:password@host` URL.
+ *
+ * Only the credential is replaced — the username stays, because knowing WHICH
+ * account a request authenticated as is exactly the kind of thing the network
+ * tools exist to show. A URL with no `:` before the `@` (`https://user@host`)
+ * carries no password and is left alone.
+ */
+const URL_USERINFO_PASSWORD = /(\b[a-z][a-z0-9+.-]*:\/\/[^\s/?#@:]+):[^\s/?#@]*@/gi;
+
+/**
+ * Replace password VALUES in a URL or a request/response body, leaving the
+ * parameter names — and everything else — exactly as they were.
+ *
+ * Covers the shapes a login actually posts (JSON and form-urlencoded), the
+ * query string of a GET that puts a credential in the URL, and URL userinfo.
+ *
+ * Known trade-off, accepted deliberately: these are regexes over text, not a
+ * parse. A password-family key appearing INSIDE an escaped JSON string (a body
+ * that embeds another JSON document as a string value) is rewritten as if it
+ * were a real key. Parsing first would be exact on well-formed input but is
+ * strictly worse here — the bodies most in need of masking are the ones the
+ * 256 KB cap truncated, which no parser accepts — and the damage is bounded to
+ * password-family keys, whose values are the one thing already being withheld.
  */
 export function redactPasswordParams(text: string): string {
   if (!text) return text;
   return text
     .replace(JSON_PASSWORD, `$1"${REDACTED_PASSWORD}"`)
-    .replace(FORM_PASSWORD, `$1$2=${REDACTED_PASSWORD}`);
+    .replace(JSON_PASSWORD_TRUNCATED, `$1"${REDACTED_PASSWORD}`)
+    .replace(FORM_PASSWORD, `$1$2=${REDACTED_PASSWORD}`)
+    .replace(URL_USERINFO_PASSWORD, `$1:${REDACTED_PASSWORD}@`);
 }
 
 // ---------------------------------------------------------------------------
@@ -118,11 +172,24 @@ interface CdpSender {
 }
 
 /**
- * backendNodeIds of every password field in the document.
+ * backendNodeIds of every password field reachable from this target — the main
+ * document, its shadow roots, and its same-process iframes.
  *
  * `backendNodeId` is the one id space the DOM and Accessibility domains share,
  * which is what lets a DOM-side `type`/`autocomplete` test decide whether an
  * a11y node may show its value (the a11y node itself carries neither).
+ *
+ * Uses `DOM.performSearch` — DevTools' own element search — rather than
+ * `DOM.querySelectorAll`, because CSS cannot cross a shadow boundary and
+ * `querySelectorAll` on the document root therefore sees only the main tree.
+ * That was a real bypass, not a theoretical one: measured on Chrome 141, a
+ * `<input type="text" autocomplete="new-password">` inside an open shadow root
+ * IS present in `Accessibility.getFullAXTree` with its value in plaintext,
+ * while the document-root `querySelectorAll` returned only the light-DOM
+ * field. Same measurement: `performSearch` returns all five fields across
+ * light DOM, shadow root and iframe, at 3 ms — against 37 ms and 1.25 MB for a
+ * `pierce: true` full-document dump, on a tree whose AX fetch already costs
+ * 172 ms and 4 MB.
  *
  * Fails OPEN — an empty set on any CDP error. Redaction is a filter over the
  * a11y tree, so failing closed would mean masking every value on the page;
@@ -131,16 +198,27 @@ interface CdpSender {
  */
 export async function getPasswordFieldBackendIds(client: CdpSender): Promise<Set<number>> {
   const ids = new Set<number>();
+  let searchId: string | undefined;
   try {
-    const doc = (await client.send('DOM.getDocument', { depth: 0 })) as {
-      root?: { nodeId?: number };
-    };
-    const rootNodeId = doc?.root?.nodeId;
-    if (!rootNodeId) return ids;
+    // DOM.performSearch searches the agent's node map, which stays EMPTY until
+    // the document is requested — without this the search returns resultCount 0
+    // on a page full of password fields. Verified against real Chrome: dropping
+    // this call silently emptied the redaction set.
+    await client.send('DOM.getDocument', { depth: 0 });
 
-    const found = (await client.send('DOM.querySelectorAll', {
-      nodeId: rootNodeId,
-      selector: PASSWORD_FIELD_SELECTOR,
+    const search = (await client.send('DOM.performSearch', {
+      query: PASSWORD_FIELD_SELECTOR,
+      includeUserAgentShadowDOM: false,
+    })) as { searchId?: string; resultCount?: number };
+
+    searchId = search?.searchId;
+    const resultCount = search?.resultCount ?? 0;
+    if (!searchId || resultCount === 0) return ids;
+
+    const found = (await client.send('DOM.getSearchResults', {
+      searchId,
+      fromIndex: 0,
+      toIndex: resultCount,
     })) as { nodeIds?: number[] };
 
     for (const nodeId of found?.nodeIds ?? []) {
@@ -152,6 +230,14 @@ export async function getPasswordFieldBackendIds(client: CdpSender): Promise<Set
     }
   } catch {
     // No DOM domain / detached target — see the fail-open note above.
+  } finally {
+    if (searchId !== undefined) {
+      // The backend holds the result set until it is discarded; the snapshot
+      // path runs on every call, so leaking one per snapshot adds up.
+      await client.send('DOM.discardSearchResults', { searchId }).catch(() => {
+        /* best-effort cleanup */
+      });
+    }
   }
   return ids;
 }

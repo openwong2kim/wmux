@@ -9,16 +9,27 @@
   masks `<input type="password">` in the accessibility tree, but that is the
   only shape it covers: a plain-text field marked
   `autocomplete="new-password"` — what a "show password" toggle and most
-  signup forms produce — came back in full, and the DOM-based snapshot path
-  read every field's value directly regardless of type. All of those now
-  report `[redacted:password]` instead. `browser_network` and
-  `browser_response_body` mask the same way for `password`-family parameters,
-  in both JSON and form-encoded bodies as well as in a URL's query string, so
-  a login request that echoes what was submitted no longer hands the password
-  over either.
+  signup forms produce — came back in full, a field inside a shadow root was
+  missed entirely, and the DOM-based snapshot path read every field's value
+  directly regardless of type. All of those now report `[redacted:password]`
+  instead.
+
+- **Credentials are masked wherever a tool prints a URL, a body, or a log
+  line.** `browser_network`, `browser_response_body` and `browser_console`
+  mask `password`-family parameters in JSON and form-encoded payloads, so a
+  login request that echoes what was submitted — or a page that logs its own
+  payload — no longer hands the password over. The same masking covers every
+  URL a tool renders: `browser_navigate`, `browser_navigate_back`, the
+  `browser_tabs` listing, the browser-events block and the DOM snapshot
+  listing. Both shapes a credential takes in a URL are handled — a `password=`
+  query parameter, and `scheme://user:password@host` basic-auth userinfo where
+  only the password half is replaced.
 
   Only the value is hidden. The field, its label, its name, its ref and
   whether it is currently filled are all still reported exactly as before —
-  an agent can find and fill a login form just as it could, and everything
-  else in a captured request or response body stays readable so the network
-  tools remain useful for debugging.
+  an agent can find and fill a login form just as it could — and everything
+  else in a URL, a captured body or a console line stays readable, so the
+  network and console tools remain useful for debugging. The username in a
+  login payload, and the account in a userinfo URL, are deliberately left
+  intact: which account a request used is exactly what those tools exist to
+  show.
