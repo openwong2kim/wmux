@@ -107,6 +107,14 @@ export interface FocusTargetState {
    * existing minimal test fixtures stay terse; the live store always has it.
    */
   unstashPane?: (paneId: string, workspaceId?: string) => boolean;
+  /**
+   * #1086 — a remote mirror can be the visible pane while `activeWorkspaceId`
+   * itself never moved (WorkspaceCenter checks this first, ahead of the local
+   * tree). Optional for the same reason as `unstashPane`: minimal test
+   * fixtures without the remoteWorkspacesSlice mounted stay terse, and a
+   * missing field reads as "no remote mirror is showing", the correct default.
+   */
+  activeRemoteKey?: string | null;
 }
 
 /**
@@ -122,7 +130,15 @@ export function activatePaneTarget(
   target: { workspaceId: string; paneId: string; surfaceId: string },
 ): FocusTargetState {
   const state = getState();
-  if (target.workspaceId !== state.activeWorkspaceId) {
+  // #1086: `activeWorkspaceId` can already equal the target while a remote
+  // mirror is what's actually on screen (activeRemoteKey is a separate flag
+  // WorkspaceCenter checks first) — in that case the plain !== guard below
+  // would skip setActiveWorkspace, and with it the only call in this function
+  // that drops the remote selection (setActiveWorkspace always calls
+  // clearRemoteSelection, unconditionally, once past its own existence
+  // guard). A pane-row jump within the already-active workspace must still
+  // surface the local tree, so fire setActiveWorkspace on either condition.
+  if (target.workspaceId !== state.activeWorkspaceId || state.activeRemoteKey) {
     state.setActiveWorkspace(target.workspaceId);
   }
   const fresh = getState();
