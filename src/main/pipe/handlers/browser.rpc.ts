@@ -125,7 +125,15 @@ function requestedWorkspaceId(params: Record<string, unknown>): string | undefin
  *           "may watch here, may act anywhere" was an asymmetry, not a
  *           decision. Confined to THIS table: the renderer's own fallbacks
  *           (`pane.list`, `browser.open` in `useRpcBridge.ts`) resolve a
- *           workspace without ever reaching here and are not covered.
+ *           workspace without ever reaching here. #922 PR2 covers those at
+ *           dispatch instead (`hostedWorkspaceBinding.ts`) — including
+ *           `browser.open` / `browser.close`, the two `browser.*` methods
+ *           that never reach this table. They are bound THERE rather than
+ *           routed in here on purpose: this table's other lanes apply to wire
+ *           callers too, and folding two previously unscoped methods into it
+ *           would newly refuse an approved wire caller that omits
+ *           `workspaceId` — a change #922 explicitly holds for the
+ *           peer-credential track.
  *   OPEN    the `declared` lane checks that `workspaceId` is PRESENT, not that
  *           it is the caller's own. For a WIRE caller nothing in the main
  *           process binds a clientName to a workspace — `mcp.claimWorkspace`

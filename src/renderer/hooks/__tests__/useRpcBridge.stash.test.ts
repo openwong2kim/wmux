@@ -155,12 +155,48 @@ describe('pane.stash / pane.unstash', () => {
     const block = region(start, end);
     expect(block).toMatch(/readConfineWorkspaceId\(params\)/);
     expect(block).toMatch(/owned\.ws\.id !== \w+Confine/);
-    expect(block).toContain(`${name}: pane \${paneId} is outside the commander`);
+    expect(block).toContain(`${name}: pane \${paneId} is outside the calling workspace`);
   });
 
   it('unstash is idempotent — the retry it asks for must always be safe', () => {
     const block = region("method === 'pane\\.unstash'", "method === 'surface\\.close'");
     expect(block).toMatch(/if \(!owned\.stashed\) return \{ ok: true, stashed: false \}/);
     expect(block).toMatch(/store\.unstashPane\(paneId, owned\.ws\.id\)/);
+  });
+});
+
+describe('pane.close honours the confinement stamp (#922 PR2)', () => {
+  it('refuses a pane outside the calling workspace before disposing any PTY', () => {
+    // pane.close resolves across ALL workspaces by design, so a CONFINED
+    // caller — a hosted plugin, since a commander is denied the method
+    // outright — could otherwise dispose the PTYs of a pane in a workspace the
+    // user is not even looking at. Unlike focus/stash this is a teardown: the
+    // wrong target is a running session destroyed, not a view to switch back.
+    const block = region("method === 'pane\\.close'", "method === 'pane\\.stash'");
+    expect(block).toMatch(/readConfineWorkspaceId\(params\)/);
+    expect(block).toMatch(/targetWs\.id !== closeConfine/);
+    expect(block).toContain('pane.close: pane ${paneId} is outside the calling workspace');
+    // The refusal must come BEFORE the close + dispose, not after.
+    const refusalAt = block.indexOf('is outside the calling workspace');
+    const closeAt = block.indexOf('store.closePane(');
+    const disposeAt = block.indexOf('pty.dispose(');
+    expect(refusalAt).toBeGreaterThan(-1);
+    expect(refusalAt).toBeLessThan(closeAt);
+    expect(refusalAt).toBeLessThan(disposeAt);
+  });
+
+  it('names no workspace in any confinement refusal', () => {
+    // Two writers now stamp this channel (a validated commander and the plugin
+    // host), so the copy says neither "commander" nor a workspace id.
+    for (const [name, start, end] of [
+      ['pane.focus', "method === 'pane\\.focus'", "method === 'pane\\.split'"],
+      ['pane.close', "method === 'pane\\.close'", "method === 'pane\\.stash'"],
+      ['pane.stash', "method === 'pane\\.stash'", "method === 'pane\\.unstash'"],
+      ['pane.unstash', "method === 'pane\\.unstash'", "method === 'surface\\.close'"],
+    ] as const) {
+      const block = region(start, end);
+      expect(block, name).toContain(`${name}: pane \${paneId} is outside the calling workspace`);
+      expect(block, name).not.toContain("outside the commander's workspace");
+    }
   });
 });

@@ -543,6 +543,83 @@ export const CAPABILITY_RISK_CLASS: Record<string, RiskClass> = {
 };
 
 /**
+ * Capability -> whether exercising it OBSERVES state or CHANGES it.
+ *
+ * Keyed on the capability, not the method, for the same reason as
+ * `CAPABILITY_RISK_CLASS` above: the capability is the unit a user approves,
+ * so a new method inherits its verdict from the capability it already
+ * declares instead of needing its own row somewhere.
+ *
+ * Read by the hosted-workspace binding (#922 PR2), where the two halves get
+ * opposite treatment when a plugin names a workspace that is not the one
+ * hosting it: a READ is answered for the caller's own workspace (it still
+ * gets a truthful answer, just about itself), while a WRITE is REFUSED —
+ * silently redirecting a write would create a pane, or open a surface, in a
+ * workspace nobody asked for, which does not fail safe.
+ *
+ * `hostedWorkspaceBinding.ts` treats an unlisted capability as a WRITE, so a
+ * capability added without a row here fails closed (refuse) rather than
+ * silently acquiring the read treatment. `methodCapabilityMap.test.ts` pins
+ * that every KNOWN_CAPABILITIES entry is classified here regardless.
+ *
+ * WARNING — one capability can gate methods with DIFFERENT effects, and this
+ * map answers for the capability, not the method. `pane.read` gates both
+ * `pane.list` (an observation) and `pane.focus` (which mutates UI focus
+ * state); `browser.navigate` gates `browser.open` and `browser.close`. So a
+ * `read` verdict here is only as accurate as the capability's narrowest
+ * member. Before adding a method to `BODY_SCOPED_METHODS`, check what the
+ * METHOD actually does rather than trusting the capability's verdict — a
+ * mutation that inherits `read` gets its foreign workspace silently
+ * substituted instead of refused, which is the one failure mode the read/write
+ * seam exists to prevent. (`pane.focus` is deliberately not in that set for
+ * exactly this reason; it is confined through `hostedConfinement` instead.)
+ */
+export const CAPABILITY_EFFECT: Record<string, 'read' | 'write'> = {
+  // Pane lifecycle and content
+  'pane.read':       'read',
+  'pane.write':      'write',
+  'pane.create':     'write',
+  'pane.delete':     'write',
+  'pane.search':     'read',
+  // Metadata
+  'meta.read':       'read',
+  'meta.write':      'write',
+  // Events
+  'events.subscribe':'read',
+  // Workspaces
+  'workspace.read':  'read',
+  'workspace.claim': 'write',
+  // Terminal IO
+  'terminal.send':   'write',
+  'terminal.read':   'read',
+  // Browser. `browser.evaluate` is a WRITE: it is the capability that runs
+  // arbitrary page JS, and reading through it is incidental to that.
+  'browser.navigate':  'write',
+  'browser.click':     'write',
+  'browser.type':      'write',
+  'browser.screenshot':'read',
+  'browser.evaluate':  'write',
+  'browser.read':      'read',
+  'browser.cookies':   'write',
+  'browser.emulate':   'write',
+  // A2A
+  'a2a.send':    'write',
+  'a2a.execute': 'write',
+  'a2a.read':    'read',
+  'a2a.channel.read': 'read',
+  'a2a.channel.send': 'write',
+  // Plugin host UI contribution points — enforced at mount time, never a
+  // per-RPC gate, so the classification is nominal. Listed so the
+  // completeness test covers the whole vocabulary.
+  'ui.sidebar':         'read',
+  'ui.statusbar':       'read',
+  'ui.pane-decoration': 'read',
+  'ui.commands':        'read',
+  // notification.received opt-in (events.poll gate)
+  'notifications.read': 'read',
+};
+
+/**
  * Risk-class → user-facing copy for the approval dialog (plan D5).
  *
  * Wording asymmetry is intentional. Terminal-content/input get bold-warning

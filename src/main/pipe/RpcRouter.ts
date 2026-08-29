@@ -12,6 +12,11 @@ import { commanderTokenWorkspace } from '../deck/commanderTrust';
 import { COMMANDER_TEARDOWN_DENY } from '../../shared/commanderSurface';
 import type { EnforcementMode } from '../mcp/enforcementMode';
 import type { ApprovalQueue } from '../mcp/ApprovalQueue';
+import {
+  hostedWorkspaceBinding,
+  hostedRefusalMessage,
+} from './hostedWorkspaceBinding';
+import type { HostedScopeAuditInput } from '../audit/shadowRejectionLog';
 
 // Handlers receive a per-request context as an optional second argument.
 // Existing handlers `(params) => ...` keep compiling because the extra
@@ -62,6 +67,15 @@ type ShadowRejectionSink = (input: {
   rejection: RpcRejection;
 }) => void;
 
+/**
+ * #922 PR2 — audit sink for hosted-workspace binding decisions that changed a
+ * dispatch. Wired by main/index.ts to ShadowRejectionLogger.appendHostedScope;
+ * unset is a no-op, so unit tests that do not care stay isolated from
+ * ~/.wmux state. Best-effort like every other side channel here: a logging
+ * failure must never affect dispatch.
+ */
+type HostedScopeSink = (input: HostedScopeAuditInput) => void;
+
 // Methods that handle plugin identity themselves — they must NOT trigger
 // a parallel legacy write because their own handlers do the right thing
 // (record an `unconfirmed` contact via the resolved name).
@@ -109,6 +123,7 @@ export class RpcRouter {
   private legacyTrafficCounter: LegacyTrafficCounter | undefined;
   private trustLookup: TrustLookup | undefined;
   private shadowSink: ShadowRejectionSink | undefined;
+  private hostedScopeSink: HostedScopeSink | undefined;
   /**
    * Phase 2.2 pre-commit 6: enforcement mode. Default is `shadow` so a
    * router that was never explicitly set up (unit tests, transitional
@@ -181,6 +196,14 @@ export class RpcRouter {
    */
   setShadowRejectionSink(sink: ShadowRejectionSink | undefined): void {
     this.shadowSink = sink;
+  }
+
+  /**
+   * #922 PR2 hosted-binding audit sink. main/index.ts injects
+   * ShadowRejectionLogger; tests pass a vi.fn() to assert calls.
+   */
+  setHostedScopeSink(sink: HostedScopeSink | undefined): void {
+    this.hostedScopeSink = sink;
   }
 
   /**
@@ -332,6 +355,60 @@ export class RpcRouter {
       }
     }
 
+    // ── #922 PR2: hosted workspace binding ───────────────────────────────
+    //
+    // Runs before enforcement so the permission gate and the handler see the
+    // SAME params — a path glob checked against a workspaceId the handler
+    // never receives would be checking a value that does not exist.
+    //
+    // Every branch is keyed on `isHostedCaller`, so a wire caller (declared /
+    // legacy) and the renderer operator take the `untouched` path and behave
+    // byte-identically to before, in both enforcement modes. See
+    // `hostedWorkspaceBinding.ts` for why the mode is not consulted here.
+    let effectiveParams: Record<string, unknown> = request.params ?? {};
+    const hostedBinding = hostedWorkspaceBinding(request.method, effectiveParams, ctx);
+    if (hostedBinding.kind === 'refused') {
+      if (this.hostedScopeSink) {
+        try {
+          this.hostedScopeSink({
+            clientName: ctx.clientName,
+            method: request.method,
+            outcome: 'refused',
+            reason: hostedBinding.reason,
+            ...(hostedBinding.requestedWorkspaceId && {
+              requestedWorkspaceId: hostedBinding.requestedWorkspaceId,
+            }),
+            ...(hostedBinding.hostedWorkspaceId && {
+              hostedWorkspaceId: hostedBinding.hostedWorkspaceId,
+            }),
+          });
+        } catch {
+          /* hosted-scope audit logging must never affect dispatch */
+        }
+      }
+      return {
+        id: request.id,
+        ok: false,
+        error: hostedRefusalMessage(request.method, hostedBinding.reason),
+      };
+    }
+    if (hostedBinding.kind === 'bound') {
+      effectiveParams = hostedBinding.params;
+      if (hostedBinding.substitutedFrom && this.hostedScopeSink) {
+        try {
+          this.hostedScopeSink({
+            clientName: ctx.clientName,
+            method: request.method,
+            outcome: 'substituted',
+            requestedWorkspaceId: hostedBinding.substitutedFrom,
+            hostedWorkspaceId: hostedBinding.hostedWorkspaceId,
+          });
+        } catch {
+          /* hosted-scope audit logging must never affect dispatch */
+        }
+      }
+    }
+
     // Spec §2.2: requests without `clientName` are recorded as `legacy`.
     // Two side-channels fire here:
     //
@@ -398,7 +475,7 @@ export class RpcRouter {
     }
     const outcome = enforcerCheck({
       method: request.method,
-      params: request.params ?? {},
+      params: effectiveParams,
       ctx,
       trust,
       trustLookupFailed,
@@ -463,7 +540,7 @@ export class RpcRouter {
     }
 
     try {
-      const result = await handler(request.params ?? {}, ctx);
+      const result = await handler(effectiveParams, ctx);
       return {
         id: request.id,
         ok: true,
