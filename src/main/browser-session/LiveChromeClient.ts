@@ -112,16 +112,25 @@ export class LiveChromeClient implements ChromeBackendClient {
         continue;
       }
       if (workspaceId !== undefined && owner !== undefined && owner !== workspaceId) continue;
-      out.push({ targetId, workspaceId: owner, url: t.url, title: t.title });
+      out.push({ surfaceId: targetId, targetId, workspaceId: owner, url: t.url, title: t.title });
     }
     return out;
   }
 
-  async openTab(url: string, workspaceId?: string): Promise<{ targetId: string; url: string }> {
+  /**
+   * Live attach keeps surfaceId ≡ targetId, deliberately. The engine's
+   * live-only escape hatch (PlaywrightEngine, wsEndpoint branch) matches a
+   * pinned surfaceId against Chrome's OWN Target.getTargets, because
+   * browser_tabs exposes pre-existing user tabs the wmux registry never saw.
+   * Minting a wmux id here would break that match for exactly those tabs. The
+   * dedicated (port) path is where stable ids buy something: there every
+   * addressable tab is one wmux opened.
+   */
+  async openTab(url: string, workspaceId?: string): Promise<{ surfaceId: string; targetId: string; url: string }> {
     const res = (await this.send('Target.createTarget', { url })) as { targetId?: string };
     if (!res?.targetId) throw new Error('LiveChromeClient: Target.createTarget returned no targetId');
     this.tabOwners.set(res.targetId, workspaceId);
-    return { targetId: res.targetId, url };
+    return { surfaceId: res.targetId, targetId: res.targetId, url };
   }
 
   /** Full exposure by design (consent model): ALL live page tabs, regardless
@@ -130,30 +139,38 @@ export class LiveChromeClient implements ChromeBackendClient {
     const res = (await this.send('Target.getTargets', {})) as { targetInfos?: CdpTargetInfoWire[] };
     return (res?.targetInfos ?? [])
       .filter((t) => t.type === 'page' && !t.url.startsWith('devtools://'))
-      .map((t) => ({ targetId: t.targetId, url: t.url, title: t.title }));
+      .map((t) => ({ surfaceId: t.targetId, targetId: t.targetId, url: t.url, title: t.title }));
   }
 
-  async closeTab(targetId: string): Promise<boolean> {
+  async closeSurface(surfaceId: string): Promise<boolean> {
     try {
-      await this.send('Target.closeTarget', { targetId });
-      this.tabOwners.delete(targetId);
+      await this.send('Target.closeTarget', { targetId: surfaceId });
+      this.tabOwners.delete(surfaceId);
       return true;
     } catch {
       return false;
     }
   }
 
-  async selectTab(targetId: string): Promise<boolean> {
+  async selectSurface(surfaceId: string): Promise<boolean> {
     try {
-      await this.send('Target.activateTarget', { targetId });
+      await this.send('Target.activateTarget', { targetId: surfaceId });
       return true;
     } catch {
       return false;
     }
   }
 
-  /** Every live tab is addressable — the workspace binding IS the ownership. */
-  hasTab(): boolean {
+  /** Every live tab is addressable — the workspace binding IS the ownership,
+   *  so this answers true for ids this client never opened. The parameter is
+   *  named for the interface, not consulted: the alternative (checking
+   *  tabOwners) would hide the user's own pre-existing tabs, which live mode
+   *  exists to reach. */
+  // The ignored parameter is the point: it keeps this signature readable
+  // against the ChromeBackendClient contract instead of silently taking zero
+  // arguments.
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  hasSurface(_surfaceId: string): boolean {
     return true;
   }
 

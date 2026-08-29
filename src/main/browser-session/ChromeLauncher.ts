@@ -1,6 +1,8 @@
 import { spawn, type ChildProcess } from 'child_process';
+import { randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { ORPHAN_TTL_MS, RECORD_TTL_MS, type ChromeSurfaceRecord, type ChromeSurfaceStore } from './ChromeSurfaceStore';
 
 // ---------------------------------------------------------------------------
 // 'chrome' backend (Phase 2): launch the user's installed Chrome with a
@@ -10,9 +12,13 @@ import { join } from 'node:path';
 // staying fully separate from the user's daily browser (ban-risk isolation),
 // and is exempt from Chrome 136+'s default-profile CDP block.
 //
-// Tab ownership: only tabs wmux opened are addressable — openTab() records
-// targetId → workspaceId, and listTargets() intersects that registry with
-// Chrome's live /json/list. Manually opened tabs are invisible to agents.
+// Tab ownership: only tabs wmux opened are addressable — openTab() mints a
+// stable `chrome-<uuid>` surfaceId and records surfaceId → targetId, and
+// listTargets() intersects that registry with Chrome's live /json/list.
+// Manually opened tabs are invisible to agents. The surfaceId, not the CDP
+// targetId, is what agents hold: Chrome replaces the target behind a tab on
+// its own, so the targetId is mutable mapping state on the record (see
+// ChromeSurfaceStore for the persistence + revival rules).
 //
 // Child lifecycle follows the BrokerSupervisor idiom: singleflight launch,
 // error+exit double-fire guard, a disposed flag so app teardown can never
@@ -32,6 +38,10 @@ const READY_TIMEOUT_MS = 10_000;
 const READY_POLL_MS = 250;
 
 export interface ChromeTargetInfo {
+  /** Stable wmux identity handed to agents (`chrome-<uuid>` for dedicated
+   *  instances). Live attach keeps surfaceId ≡ targetId — see LiveChromeClient. */
+  surfaceId: string;
+  /** Current CDP page target the surface maps to. Mutable across restarts. */
   targetId: string;
   workspaceId?: string;
   url: string;
@@ -57,12 +67,12 @@ export interface ChromeBackendClient {
    *  seeds only wmux-opened tabs so a random user tab can never become the
    *  default pin. */
   cdpInfoTargets(workspaceId?: string): Promise<ChromeTargetInfo[]>;
-  openTab(url: string, workspaceId?: string): Promise<{ targetId: string; url: string }>;
+  openTab(url: string, workspaceId?: string): Promise<{ surfaceId: string; targetId: string; url: string }>;
   listTargets(workspaceId?: string): Promise<ChromeTargetInfo[]>;
-  closeTab(targetId: string): Promise<boolean>;
+  closeSurface(surfaceId: string): Promise<boolean>;
   /** Real tab focus where the backend supports it (live attach). */
-  selectTab?(targetId: string): Promise<boolean>;
-  hasTab(targetId: string): boolean;
+  selectSurface?(surfaceId: string): Promise<boolean>;
+  hasSurface(surfaceId: string): boolean;
   dispose(): void;
 }
 
@@ -143,6 +153,18 @@ export interface ChromeLauncherOptions {
   portEnvVar?: string | null;
   /** Profile display name seeded into Local State pre-launch (window chip). */
   profileLabel?: string;
+  /** Which profile's records this launcher owns in the surface store. */
+  profileName?: string;
+  /** Persistence for surface records. Omitted → in-memory only (tests, and
+   *  any wiring that predates the store). */
+  surfaceStore?: ChromeSurfaceStore;
+}
+
+/** Mint a stable surface id. Mirrors shared/types.ts `generateId('chrome')`;
+ *  kept local so main's browser-session layer does not pull in the shared
+ *  types barrel (and everything it drags along) for one line. */
+function newSurfaceId(): string {
+  return `chrome-${randomUUID()}`;
 }
 
 export class ChromeLauncher implements ChromeBackendClient {
@@ -151,19 +173,59 @@ export class ChromeLauncher implements ChromeBackendClient {
   private launching: Promise<number> | null = null;
   private disposed = false;
   private readonly portEnvVar: string | null;
-  /** wmux-opened tabs: Chrome targetId → owning workspace. */
-  private readonly tabOwners = new Map<string, string | undefined>();
+  /** wmux-opened tabs, keyed by the stable surfaceId agents hold. */
+  private readonly surfaces = new Map<string, ChromeSurfaceRecord>();
+  /** Reverse index: current CDP targetId → surfaceId. */
+  private readonly byTargetId = new Map<string, string>();
+  /** True once the persisted records for this profile have been merged in. */
+  private restored = false;
 
   private readonly profileLabel: string | undefined;
+  private readonly profileName: string;
+  private readonly surfaceStore: ChromeSurfaceStore | undefined;
 
   constructor(private readonly userDataDir: string, opts?: ChromeLauncherOptions) {
     this.profileLabel = opts?.profileLabel;
     this.portEnvVar = opts?.portEnvVar === undefined ? 'WMUX_CHROME_CDP_PORT' : opts.portEnvVar;
+    this.profileName = opts?.profileName ?? DEFAULT_CHROME_PROFILE;
+    this.surfaceStore = opts?.surfaceStore;
   }
 
-  /** True when this launcher opened (and still tracks) the given tab. */
-  hasTab(targetId: string): boolean {
-    return this.tabOwners.has(targetId);
+  /** True when this launcher opened (and still tracks) the given surface. */
+  hasSurface(surfaceId: string): boolean {
+    return this.surfaces.has(surfaceId);
+  }
+
+  /** The record behind a surface, for the registry's cross-profile close
+   *  fallback (workspace ownership is checked there, not here). */
+  recordFor(surfaceId: string): ChromeSurfaceRecord | undefined {
+    return this.surfaces.get(surfaceId);
+  }
+
+  // ── Surface bookkeeping ───────────────────────────────────────────────────
+
+  /** Publish the current snapshot. `immediate` for structural changes
+   *  (open/close/dispose); the debounced path absorbs lastSeenAt churn. */
+  private persist(immediate = false): void {
+    if (!this.surfaceStore) return;
+    const snapshot = [...this.surfaces.values()];
+    if (immediate) void this.surfaceStore.saveNow(this.profileName, snapshot).catch(() => undefined);
+    else this.surfaceStore.save(this.profileName, snapshot);
+  }
+
+  private bind(record: ChromeSurfaceRecord, targetId: string): void {
+    if (record.targetId && record.targetId !== targetId) this.byTargetId.delete(record.targetId);
+    record.targetId = targetId;
+    delete record.missingSince;
+    record.lastSeenAt = Date.now();
+    this.byTargetId.set(targetId, record.surfaceId);
+  }
+
+  private forget(surfaceId: string): void {
+    const record = this.surfaces.get(surfaceId);
+    if (!record) return;
+    if (record.targetId) this.byTargetId.delete(record.targetId);
+    this.surfaces.delete(surfaceId);
   }
 
   /** Dedicated instances expose the HTTP CDP port (launching on demand). */
@@ -253,12 +315,51 @@ export class ChromeLauncher implements ChromeBackendClient {
         // tabs we open; the process outlives us like it outlived its spawner.
         this.child = null;
         console.warn(`[ChromeLauncher] adopted existing Chrome on port ${port} (previous session's instance)`);
+        // The adopted Chrome is the SAME instance that held the persisted
+        // tabs, so revival rule ② applies: any record whose targetId is still
+        // in /json/list re-binds to its live page.
+        await this.restoreFromStore();
         return port;
       } catch {
         this.cdpPort = 0;
       }
     }
     return null;
+  }
+
+  /**
+   * Merge the profile's persisted records back in, re-binding the ones whose
+   * targetId Chrome still reports (revival rule ②). Records that do not match
+   * are kept but left UNBOUND — never revived by URL (see ChromeSurfaceStore's
+   * header for why) — so they can still age out through the orphan TTL and an
+   * agent gets an explicit miss rather than a look-alike page.
+   */
+  private async restoreFromStore(): Promise<void> {
+    if (!this.surfaceStore || this.restored) return;
+    this.restored = true;
+    const persisted = this.surfaceStore.listForProfile(this.profileName);
+    if (persisted.length === 0) return;
+    let liveIds = new Set<string>();
+    try {
+      const live = (await this.fetchJson('/json/list')) as Array<{ id: string; type: string }>;
+      liveIds = new Set(live.filter((t) => t.type === 'page').map((t) => t.id));
+    } catch {
+      /* no list → nothing re-binds; records stay unbound */
+    }
+    const now = Date.now();
+    for (const record of persisted) {
+      if (this.surfaces.has(record.surfaceId)) continue; // this session wins
+      if (record.targetId && liveIds.has(record.targetId)) {
+        delete record.missingSince;
+        record.lastSeenAt = now;
+        this.byTargetId.set(record.targetId, record.surfaceId);
+      } else {
+        record.targetId = null;
+        record.missingSince ??= now;
+      }
+      this.surfaces.set(record.surfaceId, record);
+    }
+    this.persist(true);
   }
 
   private async launch(): Promise<number> {
@@ -322,6 +423,14 @@ export class ChromeLauncher implements ChromeBackendClient {
         this.cdpPort = candidate;
         try {
           await this.fetchJson('/json/version');
+          // A REAL spawn (adoption already failed above) means this profile's
+          // previous Chrome is gone and every tab it held with it. Neither
+          // revival rule can hold, so the persisted records are dropped rather
+          // than left to linger as permanently unbound handles.
+          this.restored = true;
+          this.surfaces.clear();
+          this.byTargetId.clear();
+          void this.surfaceStore?.dropProfile(this.profileName).catch(() => undefined);
           return candidate;
         } catch {
           this.cdpPort = 0;
@@ -342,11 +451,17 @@ export class ChromeLauncher implements ChromeBackendClient {
   private onChildGone(): void {
     this.child = null;
     this.cdpPort = 0;
-    this.tabOwners.clear();
+    // Records SURVIVE a dead Chrome — the surfaceId an agent holds must not
+    // become a dangling reference just because the browser went away. They go
+    // unbound instead, and re-bind through adoptExisting()'s /json/list pass
+    // if the same tabs are still there.
+    for (const record of this.surfaces.values()) record.targetId = null;
+    this.byTargetId.clear();
+    this.persist(true);
   }
 
-  /** Open a tab and record its owner. Returns the Chrome targetId. */
-  async openTab(url: string, workspaceId?: string): Promise<{ targetId: string; url: string }> {
+  /** Open a tab and record it under a freshly minted stable surfaceId. */
+  async openTab(url: string, workspaceId?: string): Promise<{ surfaceId: string; targetId: string; url: string }> {
     await this.ensureRunning();
     // Chrome 111+ requires PUT for /json/new.
     const created = (await this.fetchJson(`/json/new?${encodeURIComponent(url)}`, 'PUT')) as {
@@ -354,13 +469,30 @@ export class ChromeLauncher implements ChromeBackendClient {
       url?: string;
     };
     if (!created?.id) throw new Error('ChromeLauncher: /json/new returned no target id');
-    this.tabOwners.set(created.id, workspaceId);
-    return { targetId: created.id, url: created.url ?? url };
+    const now = Date.now();
+    const record: ChromeSurfaceRecord = {
+      surfaceId: newSurfaceId(),
+      targetId: created.id,
+      ...(workspaceId !== undefined && { workspaceId }),
+      url: created.url ?? url,
+      createdAt: now,
+      lastSeenAt: now,
+    };
+    this.surfaces.set(record.surfaceId, record);
+    this.byTargetId.set(created.id, record.surfaceId);
+    this.persist(true);
+    return { surfaceId: record.surfaceId, targetId: created.id, url: record.url };
   }
 
   /**
    * wmux-opened tabs still alive in Chrome, optionally filtered to one
-   * workspace. Dead targetIds are pruned from the registry as a side effect.
+   * workspace.
+   *
+   * A targetId that is missing from /json/list is NOT proof the surface is
+   * gone — Chrome swaps the target behind a tab on its own. So a miss only
+   * withholds the record from the result and stamps `missingSince`; the record
+   * is forgotten once it has been missing for ORPHAN_TTL_MS. A returning
+   * targetId clears the stamp.
    */
   async listTargets(workspaceId?: string): Promise<ChromeTargetInfo[]> {
     if (!this.isRunning()) return [];
@@ -371,27 +503,53 @@ export class ChromeLauncher implements ChromeBackendClient {
       return [];
     }
     const liveById = new Map(live.filter((t) => t.type === 'page').map((t) => [t.id, t]));
+    const now = Date.now();
     const out: ChromeTargetInfo[] = [];
-    for (const [targetId, owner] of [...this.tabOwners]) {
-      const t = liveById.get(targetId);
+    let structural = false;
+    for (const record of [...this.surfaces.values()]) {
+      const t = record.targetId ? liveById.get(record.targetId) : undefined;
       if (!t) {
-        this.tabOwners.delete(targetId);
+        record.missingSince ??= now;
+        if (now - record.missingSince > ORPHAN_TTL_MS || now - record.lastSeenAt > RECORD_TTL_MS) {
+          this.forget(record.surfaceId);
+          structural = true;
+        }
         continue;
       }
-      if (workspaceId !== undefined && owner !== undefined && owner !== workspaceId) continue;
-      out.push({ targetId, workspaceId: owner, url: t.url, title: t.title });
+      delete record.missingSince;
+      record.lastSeenAt = now;
+      record.url = t.url;
+      record.title = t.title;
+      if (workspaceId !== undefined && record.workspaceId !== undefined && record.workspaceId !== workspaceId) {
+        continue;
+      }
+      out.push({
+        surfaceId: record.surfaceId,
+        targetId: record.targetId as string,
+        ...(record.workspaceId !== undefined && { workspaceId: record.workspaceId }),
+        url: t.url,
+        title: t.title,
+      });
     }
+    this.persist(structural);
     return out;
   }
 
-  async closeTab(targetId: string): Promise<boolean> {
-    if (!this.isRunning()) return false;
-    try {
-      await this.fetchJson(`/json/close/${targetId}`);
-    } catch {
-      return false;
+  async closeSurface(surfaceId: string): Promise<boolean> {
+    const record = this.surfaces.get(surfaceId);
+    if (!record) return false;
+    if (record.targetId) {
+      if (!this.isRunning()) return false;
+      try {
+        await this.fetchJson(`/json/close/${record.targetId}`);
+      } catch {
+        return false;
+      }
     }
-    this.tabOwners.delete(targetId);
+    // An unbound record has no live tab to close; dropping it is the whole
+    // close, and it must succeed so the agent can retire the handle.
+    this.forget(surfaceId);
+    this.persist(true);
     return true;
   }
 
@@ -447,6 +605,9 @@ export class ChromeLauncherRegistry {
       /** Named profiles live under <profilesDir>/<name>. */
       profilesDir: string;
       store: Pick<ChromeProfileStore, 'profileFor'>;
+      /** Persistence for stable surface ids. Optional — omitted keeps the
+       *  pre-store in-memory behavior (older wirings, unit tests). */
+      surfaceStore?: ChromeSurfaceStore;
     },
   ) {}
 
@@ -467,6 +628,8 @@ export class ChromeLauncherRegistry {
         // Window chip reads "wmux · <profile>" so the agent Chrome (and which
         // account-profile it is) is identifiable at a glance.
         profileLabel: `wmux · ${name}`,
+        profileName: name,
+        ...(this.opts.surfaceStore && { surfaceStore: this.opts.surfaceStore }),
       },
     );
     this.launchers.set(name, launcher);
@@ -478,12 +641,21 @@ export class ChromeLauncherRegistry {
     return this.forProfile(this.opts.store.profileFor(workspaceId));
   }
 
-  /** Which live launcher opened this tab (close path). */
-  ownerOfTarget(targetId: string): ChromeBackendClient | undefined {
+  /**
+   * Which launcher owns a surface, and which workspace it belongs to (the
+   * browser.close cross-profile fallback). A caller's workspace may be bound
+   * to profile A while the surface it names was opened under profile B —
+   * browser.close checks the returned workspaceId against the caller's scope
+   * before acting, so this lookup discloses ownership, it does not grant it.
+   */
+  ownerOfSurface(surfaceId: string): { workspaceId?: string; client: ChromeBackendClient } | null {
     for (const launcher of this.launchers.values()) {
-      if (launcher.hasTab(targetId)) return launcher;
+      if (!launcher.hasSurface(surfaceId)) continue;
+      const workspaceId =
+        launcher instanceof ChromeLauncher ? launcher.recordFor(surfaceId)?.workspaceId : undefined;
+      return { ...(workspaceId !== undefined && { workspaceId }), client: launcher };
     }
-    return undefined;
+    return null;
   }
 
   disposeAll(): void {

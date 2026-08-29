@@ -133,28 +133,44 @@ describe('ChromeLauncher', () => {
     expect(spawnMock).toHaveBeenCalledTimes(2);
   });
 
-  it('openTab records the owner and listTargets filters by workspace and prunes dead tabs', async () => {
+  it('a tab missing from /json/list is withheld from listTargets but not forgotten', async () => {
     spawnWritesPortFile(makeChild());
+    // tgt-b vanishes from /json/list for one round, then comes back — exactly
+    // what Chrome does when it swaps the target behind a tab.
+    let bVisible = false;
     fetchMock.mockImplementation(async (url: string, init?: { method?: string }) => {
       if (String(url).includes('/json/version')) return fetchOk({});
       if (init?.method === 'PUT') {
         return fetchOk({ id: String(url).includes('a.test') ? 'tgt-a' : 'tgt-b', url: 'x' });
       }
       if (String(url).includes('/json/list')) {
-        // tgt-b already closed in Chrome — must be pruned.
-        return fetchOk([{ id: 'tgt-a', url: 'https://a.test/', title: 'A', type: 'page' }]);
+        const list = [{ id: 'tgt-a', url: 'https://a.test/', title: 'A', type: 'page' }];
+        if (bVisible) list.push({ id: 'tgt-b', url: 'https://b.test/', title: 'B', type: 'page' });
+        return fetchOk(list);
       }
       return fetchOk({});
     });
 
     const launcher = new ChromeLauncher('/tmp/profile');
-    await launcher.openTab('https://a.test/', 'ws-1');
-    await launcher.openTab('https://b.test/', 'ws-2');
+    const a = await launcher.openTab('https://a.test/', 'ws-1');
+    const b = await launcher.openTab('https://b.test/', 'ws-2');
+    // The surfaceId agents hold is minted by wmux, never Chrome's target id.
+    expect(a.surfaceId).toMatch(/^chrome-/);
+    expect(a.surfaceId).not.toBe(a.targetId);
 
     const ws1 = await launcher.listTargets('ws-1');
-    expect(ws1).toEqual([{ targetId: 'tgt-a', workspaceId: 'ws-1', url: 'https://a.test/', title: 'A' }]);
-    const ws2 = await launcher.listTargets('ws-2');
-    expect(ws2).toEqual([]); // tgt-b pruned as dead
+    expect(ws1).toEqual([
+      { surfaceId: a.surfaceId, targetId: 'tgt-a', workspaceId: 'ws-1', url: 'https://a.test/', title: 'A' },
+    ]);
+    // Withheld while missing...
+    expect(await launcher.listTargets('ws-2')).toEqual([]);
+    // ...but the record survived: the surfaceId is still owned, and the tab
+    // reappears (re-bound) once Chrome lists the target again.
+    expect(launcher.hasSurface(b.surfaceId)).toBe(true);
+    bVisible = true;
+    expect(await launcher.listTargets('ws-2')).toEqual([
+      { surfaceId: b.surfaceId, targetId: 'tgt-b', workspaceId: 'ws-2', url: 'https://b.test/', title: 'B' },
+    ]);
   });
 
   it('dispose kills the child and later demands fail', async () => {
@@ -237,7 +253,7 @@ describe('ChromeLauncherRegistry', () => {
     expect(dirOf(d1)).toBe('/tmp/default-prof');
   });
 
-  it('ownerOfTarget finds the launcher that opened a tab; disposeAll kills all children', async () => {
+  it('ownerOfSurface finds the launcher that opened a tab; disposeAll kills all children', async () => {
     const childA = makeChild();
     const childB = makeChild();
     spawnWritesPortFile(childA);
@@ -254,12 +270,16 @@ describe('ChromeLauncherRegistry', () => {
     });
     const a = registry.forWorkspace('ws-a');
     const b = registry.forWorkspace('ws-b');
-    await a.openTab('https://a.test/', 'ws-a');
-    await b.openTab('https://b.test/', 'ws-b');
+    const openedA = await a.openTab('https://a.test/', 'ws-a');
+    const openedB = await b.openTab('https://b.test/', 'ws-b');
 
-    expect(registry.ownerOfTarget('tgt-a')).toBe(a);
-    expect(registry.ownerOfTarget('tgt-b')).toBe(b);
-    expect(registry.ownerOfTarget('tgt-x')).toBeUndefined();
+    // Ownership resolves by the stable surfaceId, and reports the owning
+    // workspace so browser.close can refuse a cross-workspace close.
+    expect(registry.ownerOfSurface(openedA.surfaceId)).toEqual({ workspaceId: 'ws-a', client: a });
+    expect(registry.ownerOfSurface(openedB.surfaceId)).toEqual({ workspaceId: 'ws-b', client: b });
+    expect(registry.ownerOfSurface('chrome-nope')).toBeNull();
+    // A raw CDP target id is not a surface handle.
+    expect(registry.ownerOfSurface('tgt-a')).toBeNull();
 
     registry.disposeAll();
     expect(childA.kill).toHaveBeenCalled();

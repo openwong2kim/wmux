@@ -378,10 +378,12 @@ export function registerBrowserRpc(
     return chromeRegistry.forWorkspace(workspaceId);
   };
 
-  /** BrowserTabDescriptor for a chrome tab — paneId is synthetic (no pane). */
-  const chromeTabDescriptor = (t: { targetId: string; url: string; title?: string }) => ({
-    surfaceId: t.targetId,
-    paneId: `chrome:${t.targetId}`,
+  /** BrowserTabDescriptor for a chrome tab — paneId is synthetic (no pane).
+   *  surfaceId is the launcher's STABLE id, never the CDP targetId (which
+   *  Chrome may swap under the tab at any time). */
+  const chromeTabDescriptor = (t: { surfaceId: string; url: string; title?: string }) => ({
+    surfaceId: t.surfaceId,
+    paneId: `chrome:${t.surfaceId}`,
     url: t.url,
     title: t.title ?? '',
     selected: false,
@@ -721,21 +723,26 @@ export function registerBrowserRpc(
       if (action === 'list') {
         return { ok: true, action: 'list', tabs: targets.map(chromeTabDescriptor) };
       }
-      const match = targets.find((t) => t.targetId === surfaceId);
+      const match =
+        targets.find((t) => t.surfaceId === surfaceId) ??
+        // transitional: accept a raw CDP targetId as a surfaceId (pre-stable-id
+        // handles agents may still be holding); remove next release.
+        targets.find((t) => t.targetId === surfaceId);
       if (!match) {
         return browserTabsError(
           'BROWSER_TAB_NOT_FOUND',
-          `browser_tabs ${action}: no wmux-opened Chrome tab with surfaceId "${surfaceId}" in this workspace.`,
+          `browser_tabs ${action}: no wmux-opened Chrome tab with surfaceId "${surfaceId}" in this workspace — ` +
+            'the Chrome tab that held this surface may have been replaced or closed by Chrome; open a new one.',
         );
       }
       if (action === 'select') {
         // Live attach supports real tab focus; dedicated instances leave
         // focus to the automation itself (Playwright bringToFront) and echo.
-        if (launcher.selectTab) await launcher.selectTab(match.targetId);
+        if (launcher.selectSurface) await launcher.selectSurface(match.surfaceId);
         return { ok: true, action: 'select', tab: chromeTabDescriptor(match) };
       }
       // action === 'close'
-      const closed = await launcher.closeTab(match.targetId);
+      const closed = await launcher.closeSurface(match.surfaceId);
       if (!closed) {
         return browserTabsError('BROWSER_TABS_UNAVAILABLE', 'browser_tabs close: Chrome did not close the tab.');
       }
@@ -811,8 +818,9 @@ export function registerBrowserRpc(
       const launcher = requireChrome('browser.open', workspaceId);
       if (url) await validateUrl(url, 'browser.open');
       const opened = await launcher.openTab(url ?? 'about:blank', workspaceId);
-      // surfaceId = Chrome targetId keeps the engine's auto-open→pin contract.
-      return { ok: true, backend: 'chrome', surfaceId: opened.targetId, url: opened.url };
+      // The launcher's stable surfaceId keeps the engine's auto-open→pin
+      // contract AND survives Chrome swapping the target behind the tab.
+      return { ok: true, backend: 'chrome', surfaceId: opened.surfaceId, url: opened.url };
     }
     if (backend() === 'external') {
       // Missing url is an argument error, not the backend contract error —
@@ -843,9 +851,53 @@ export function registerBrowserRpc(
    * Closes the browser panel.
    * params: { surfaceId?: string, workspaceId?: string }
    */
-  router.register('browser.close', (params) => {
+  router.register('browser.close', async (params, ctx) => {
     const surfaceId = typeof params['surfaceId'] === 'string' ? params['surfaceId'] : undefined;
     const workspaceId = typeof params['workspaceId'] === 'string' ? params['workspaceId'] : undefined;
+    // Chrome tabs live outside the renderer entirely, so the bridge send below
+    // was a silent no-op for them — browser_close simply never worked on the
+    // chrome backend. Close them here instead. `scopeFor` is applied ONLY on
+    // this branch: the builtin branch keeps its pre-#810 shadow/enforce
+    // semantics, which this change must not quietly alter.
+    if (backend() === 'chrome') {
+      const scope = scopeFor('browser.close', params, ctx);
+      const launcher = requireChrome('browser.close', scope);
+      if (surfaceId) {
+        if (await launcher.closeSurface(surfaceId)) {
+          return { ok: true, backend: 'chrome', closed: true, surfaceId };
+        }
+        // transitional: the caller may still hold a raw CDP targetId from
+        // before stable surface ids; map it once. Remove next release.
+        const viaTargetId = (await launcher.listTargets(scope)).find((t) => t.targetId === surfaceId);
+        if (viaTargetId && (await launcher.closeSurface(viaTargetId.surfaceId))) {
+          return { ok: true, backend: 'chrome', closed: true, surfaceId: viaTargetId.surfaceId };
+        }
+        // Second chance: the surface may belong to another PROFILE's launcher
+        // (the caller's workspace binding changed since the tab was opened).
+        // Only the owning workspace may close it — a cross-workspace close is
+        // exactly the tear-down-someone-else's-browser hazard #810 exists for.
+        const owner = chromeRegistry?.ownerOfSurface(surfaceId);
+        if (owner && owner.workspaceId !== undefined && owner.workspaceId === scope) {
+          if (await owner.client.closeSurface(surfaceId)) {
+            return { ok: true, backend: 'chrome', closed: true, surfaceId };
+          }
+        }
+        throw new Error(
+          `browser.close: no wmux-opened Chrome tab with surfaceId "${surfaceId}" in this workspace ` +
+            '(it may already be closed, or belong to another workspace).',
+        );
+      }
+      // No surfaceId: close this workspace's most recently opened tab. There
+      // is no "active" chrome tab to fall back on, so closing all of them (or
+      // an arbitrary one) would both be worse than one explicit pick.
+      const own = await launcher.listTargets(scope);
+      const newest = own[own.length - 1];
+      if (!newest) {
+        throw new Error('browser.close: this workspace has no open wmux Chrome tab to close.');
+      }
+      await launcher.closeSurface(newest.surfaceId);
+      return { ok: true, backend: 'chrome', closed: true, surfaceId: newest.surfaceId };
+    }
     return sendToRenderer(getWindow, 'browser.close', {
       ...(surfaceId && { surfaceId }),
       // Same caller-workspace routing contract as browser.open above: absent
@@ -1001,7 +1053,7 @@ export function registerBrowserRpc(
     // Owner = the caller-verified scope, never a body-supplied workspaceId
     // (#810 scope-coverage guard).
     const opened = await requireChrome('browser.navigate', scope).openTab(navUrl, scope);
-    return { ok: true, backend: 'chrome', surfaceId: opened.targetId, url: opened.url };
+    return { ok: true, backend: 'chrome', surfaceId: opened.surfaceId, url: opened.url };
   });
 
   /**
@@ -1183,8 +1235,12 @@ export function registerBrowserRpc(
         ...(disclose && ep.wsEndpoint && { wsEndpoint: ep.wsEndpoint }),
         ...(callerWorkspaceId && { targetsScoped: true }),
         workspaceBackend: 'chrome' as const,
+        // The two ids differ for dedicated instances: the engine matches the
+        // registry on surfaceId and then dials CDP with targetId, so shipping
+        // the CURRENT targetId here is what keeps a stable handle drivable
+        // after Chrome swaps the target (PlaywrightEngine needs no change).
         targets: chromeTargets.map((t) => ({
-          surfaceId: t.targetId,
+          surfaceId: t.surfaceId,
           targetId: t.targetId,
           ...(t.workspaceId && { workspaceId: t.workspaceId }),
         })),

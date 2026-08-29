@@ -106,22 +106,24 @@ describe('LiveChromeClient CDP', () => {
         { targetId: 't3', type: 'page', title: 'devtools', url: 'devtools://x' },
       ],
     });
-    expect(await listP).toEqual([{ targetId: 't1', url: 'https://a.test/', title: 'A' }]);
+    // Live keeps surfaceId ≡ targetId (the engine matches pre-existing user
+    // tabs against Chrome's own target list by that id).
+    expect(await listP).toEqual([{ surfaceId: 't1', targetId: 't1', url: 'https://a.test/', title: 'A' }]);
 
     const openP = client.openTab('https://b.test/');
     await tick();
     expect(ws.sent[1]).toMatchObject({ method: 'Target.createTarget', params: { url: 'https://b.test/' } });
     ws.reply({ targetId: 't9' });
-    expect(await openP).toEqual({ targetId: 't9', url: 'https://b.test/' });
+    expect(await openP).toEqual({ surfaceId: 't9', targetId: 't9', url: 'https://b.test/' });
 
-    const selP = client.selectTab('t1');
+    const selP = client.selectSurface('t1');
     await tick();
     expect(ws.sent[2]).toMatchObject({ method: 'Target.activateTarget', params: { targetId: 't1' } });
     ws.reply({});
     expect(await selP).toBe(true);
 
     // Every live tab is addressable.
-    expect(client.hasTab()).toBe(true);
+    expect(client.hasSurface('t1')).toBe(true);
     // cdp.info seeds ONLY wmux-opened tabs: t9 (opened above) is seeded, the
     // user's own t1 is not — a random user tab never becomes the default pin.
     const seedP = client.cdpInfoTargets();
@@ -133,7 +135,9 @@ describe('LiveChromeClient CDP', () => {
         { targetId: 't9', type: 'page', title: 'B', url: 'https://b.test/' },
       ],
     });
-    expect(await seedP).toEqual([{ targetId: 't9', workspaceId: undefined, url: 'https://b.test/', title: 'B' }]);
+    expect(await seedP).toEqual([
+      { surfaceId: 't9', targetId: 't9', workspaceId: undefined, url: 'https://b.test/', title: 'B' },
+    ]);
     expect((await client.endpoint()).wsEndpoint).toBe('ws://127.0.0.1:9333/devtools/browser/abc');
   });
 
@@ -159,7 +163,9 @@ describe('LiveChromeClient CDP', () => {
     const forA = client.cdpInfoTargets('ws-a');
     await tick();
     ws.reply({ targetInfos: [{ targetId: 'ta', type: 'page', title: 'A', url: 'https://a.test/' }] });
-    expect(await forA).toEqual([{ targetId: 'ta', workspaceId: 'ws-a', url: 'https://a.test/', title: 'A' }]);
+    expect(await forA).toEqual([
+      { surfaceId: 'ta', targetId: 'ta', workspaceId: 'ws-a', url: 'https://a.test/', title: 'A' },
+    ]);
 
     const forB = client.cdpInfoTargets('ws-b');
     await tick();
