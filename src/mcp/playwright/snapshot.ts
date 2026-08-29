@@ -5,6 +5,7 @@ import {
   getPasswordFieldBackendIds,
   redactPasswordParams,
 } from './redact';
+import { collectOcclusion, occlusionNote, type OcclusionInfo } from './occlusion';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -84,6 +85,33 @@ const INTERACTIVE_ROLES = new Set([
   'tab',
   'treeitem',
 ]);
+
+/**
+ * Roles Chrome gives an `<iframe>` element.
+ *
+ * Measured on Chrome 141: `Accessibility.getFullAXTree` on a page target stops
+ * at the iframe element — the node comes back with `childIds: []` and the
+ * child document's nodes are simply absent, same-origin or not. The child
+ * frame's own tree is a separate `getFullAXTree({ frameId })` call (and, for a
+ * cross-origin frame, a separate CDP target entirely).
+ *
+ * That makes an iframe an invisible dead end in the output today: the agent
+ * sees a leaf and cannot tell "this frame is empty" from "this frame's
+ * contents are not in the snapshot". Naming the boundary is the fix — see
+ * FRAME_BOUNDARY_NOTE for why the contents are not stitched in instead.
+ */
+const IFRAME_ROLES = new Set(['Iframe', 'IframePresentational']);
+
+/**
+ * What an iframe node says instead of its contents.
+ *
+ * Stitching the child frame's tree in was the obvious alternative and is the
+ * wrong one while refs resolve through `page.getByRole()`, which searches the
+ * main frame only: every ref minted inside a frame would serialise fine and
+ * then fail to resolve. A dead ref is worse than a named boundary. Making
+ * frame contents reachable needs frame-aware ref resolution first.
+ */
+const FRAME_BOUNDARY_NOTE = '(separate document — contents not in this snapshot)';
 
 // ---------------------------------------------------------------------------
 // CDP → AXNode tree builder
@@ -283,15 +311,28 @@ function isInteractive(role: string): boolean {
   return INTERACTIVE_ROLES.has(role);
 }
 
+/**
+ * Everything serialisation needs beyond the node itself.
+ *
+ * `refs` is written through (the ref numbering is a running count over the
+ * whole walk) and `occlusion` is read — bundling them keeps the recursive
+ * signature from growing an argument per annotation.
+ */
+interface SerializeCtx {
+  format: 'ai' | 'aria';
+  maxDepth: number;
+  refs: RefEntry[];
+  /** Null when nothing is covering the page, which is the normal case. */
+  occlusion: OcclusionInfo | null;
+}
+
 function serializeNode(
   node: AXNode,
-  format: 'ai' | 'aria',
+  ctx: SerializeCtx,
   currentDepth: number,
-  maxDepth: number,
   indent: number,
-  refs: RefEntry[],
 ): string {
-  if (currentDepth > maxDepth) return '';
+  if (currentDepth > ctx.maxDepth) return '';
 
   const pad = '  '.repeat(indent);
   const role = node.role;
@@ -300,9 +341,10 @@ function serializeNode(
   // Build attribute string
   const attrs: string[] = [];
 
-  if (format === 'ai' && isInteractive(role)) {
-    const ref = refs.length;
-    refs.push({ role, name, backendDOMNodeId: node.backendDOMNodeId });
+  const interactive = isInteractive(role);
+  if (ctx.format === 'ai' && interactive) {
+    const ref = ctx.refs.length;
+    ctx.refs.push({ role, name, backendDOMNodeId: node.backendDOMNodeId });
     attrs.push(`ref="${ref}"`);
   }
 
@@ -313,17 +355,33 @@ function serializeNode(
   if (node.level !== undefined) attrs.push(`level="${node.level}"`);
   if (node.valuetext) attrs.push(`valuetext="${node.valuetext}"`);
   if (node.value) attrs.push(`value="${node.value}"`);
+  // Exactly one node per document carries `focused` (measured: Chrome attaches
+  // the property to the focused element only, and to nothing at all when focus
+  // is on the body), so this is a single word on a single line.
+  if (node.focused) attrs.push('focused');
+  // Only meaningful while an overlay is up, and only on nodes that can be
+  // clicked at all — see occlusion.ts for why the reachable side is the side
+  // that gets marked.
+  if (
+    ctx.occlusion &&
+    interactive &&
+    node.backendDOMNodeId !== undefined &&
+    ctx.occlusion.reachable.has(node.backendDOMNodeId)
+  ) {
+    attrs.push('clickable');
+  }
 
   const attrStr = attrs.length > 0 ? ' ' + attrs.join(' ') : '';
   const nameStr = name ? ` "${name}"` : '';
+  const frameStr = IFRAME_ROLES.has(role) ? ` ${FRAME_BOUNDARY_NOTE}` : '';
 
-  let line = `${pad}- ${role}${nameStr}${attrStr}`;
+  let line = `${pad}- ${role}${nameStr}${attrStr}${frameStr}`;
 
   // Recurse into children
   const childLines: string[] = [];
   if (node.children) {
     for (const child of node.children) {
-      const childStr = serializeNode(child, format, currentDepth + 1, maxDepth, indent + 1, refs);
+      const childStr = serializeNode(child, ctx, currentDepth + 1, indent + 1);
       if (childStr) childLines.push(childStr);
     }
   }
@@ -336,34 +394,31 @@ function serializeNode(
 }
 
 /** Serialise a list of sibling nodes at the top level of the output. */
-function serializeForest(
-  nodes: AXNode[],
-  format: 'ai' | 'aria',
-  maxDepth: number,
-  refs: RefEntry[],
-): string {
+function serializeForest(nodes: AXNode[], ctx: SerializeCtx): string {
   const lines: string[] = [];
 
   for (const node of nodes) {
-    const s = serializeNode(node, format, 0, maxDepth, 0, refs);
+    const s = serializeNode(node, ctx, 0, 0);
     if (s) lines.push(s);
   }
 
   return lines.join('\n');
 }
 
-function serializeTree(
-  root: AXNode,
-  format: 'ai' | 'aria',
-  maxDepth: number,
-  refs: RefEntry[],
-): string {
+function serializeTree(root: AXNode, ctx: SerializeCtx): string {
   // The RootWebArea is a container, not content — emit its children.
-  return serializeForest(root.children ?? [root], format, maxDepth, refs);
+  return serializeForest(root.children ?? [root], ctx);
 }
 
 function stripNonInteractive(node: AXNode): AXNode | null {
   if (isInteractive(node.role)) return node;
+  // An iframe survives the interactive filter as a bare boundary marker. It is
+  // not interactive and it has no children in this tree, so it would otherwise
+  // vanish — and its disappearance is exactly the wrong signal: the controls
+  // inside the frame are not in the snapshot either, so a filtered tree with no
+  // iframe line reads as "this page has no such button" when the truth is
+  // "look inside the frame".
+  if (IFRAME_ROLES.has(node.role)) return { ...node, children: undefined };
 
   if (!node.children) return null;
 
@@ -489,11 +544,23 @@ async function withCdpSession<T>(
   }
 }
 
-async function getAccessibilityTree(page: Page): Promise<AXNode | null> {
-  return withCdpSession(
+/** The a11y tree plus the annotations that only a live CDP session can supply. */
+interface SnapshotSource {
+  tree: AXNode | null;
+  occlusion: OcclusionInfo | null;
+}
+
+async function getAccessibilityTree(page: Page): Promise<SnapshotSource> {
+  return withCdpSession<SnapshotSource>(
     page,
-    async (client) => (await fetchAccessibilityTree(client))?.root ?? null,
-    null,
+    async (client) => ({
+      tree: (await fetchAccessibilityTree(client))?.root ?? null,
+      // After the tree, never instead of it: a thrown occlusion probe must not
+      // cost the caller its snapshot (collectOcclusion swallows its own
+      // failures, and this ordering keeps the tree even if that ever changes).
+      occlusion: await collectOcclusion(client).catch(() => null),
+    }),
+    { tree: null, occlusion: null },
   );
 }
 
@@ -519,7 +586,7 @@ export async function generateSnapshot(
   const depth = options?.depth ?? 10;
   const maxLength = options?.maxLength ?? 50_000;
 
-  const tree = await getAccessibilityTree(page);
+  const { tree, occlusion } = await getAccessibilityTree(page);
 
   // A null tree (no CDP session / getFullAXTree threw / zero nodes) OR a root-only
   // tree (the a11y path collapsed — a background surface with no layout, or a page
@@ -578,16 +645,17 @@ export async function generateSnapshot(
     }
   }
 
-  let refs: RefEntry[] = [];
-  let output = serializeTree(effectiveTree, format, depth, refs);
+  const refs: RefEntry[] = [];
+  const ctx: SerializeCtx = { format, maxDepth: depth, refs, occlusion };
+  let output = serializeTree(effectiveTree, ctx);
 
   // If the output exceeds maxLength AND we are in 'ai' mode, strip
   // non-interactive nodes and regenerate.
   if (output.length > maxLength && format === 'ai') {
     const trimmed = stripNonInteractive(tree);
     if (trimmed) {
-      refs = [];
-      output = serializeTree(trimmed, format, depth, refs);
+      refs.length = 0;
+      output = serializeTree(trimmed, ctx);
     }
   }
 
@@ -595,6 +663,11 @@ export async function generateSnapshot(
   if (output.length > maxLength) {
     output = output.slice(0, maxLength) + '\n... (truncated)';
   }
+
+  // The overlay note goes on top, and AFTER truncation — it is the one line
+  // that explains why the refs below may not respond, so losing it to a length
+  // cap would be exactly backwards.
+  if (occlusion) output = `${occlusionNote(occlusion)}\n${output}`;
 
   // Store the refMap for this page so resolveRef can use it without re-querying
   setPageRefs(page, refs);
@@ -634,22 +707,29 @@ export async function generateScopedSnapshot(
   const depth = options?.depth ?? 10;
   const maxLength = options?.maxLength ?? 50_000;
 
-  const forest = await withCdpSession<AXNode[] | null>(
+  const found = await withCdpSession<{ forest: AXNode[] | null; occlusion: OcclusionInfo | null }>(
     page,
     async (client) => {
       // Resolve the selector FIRST: a miss costs nothing and must reach the DOM
       // listing, which owns the user-facing "No element matches selector:" error.
       const backendId = await resolveSelectorBackendId(client, selector);
-      if (backendId === null) return null;
+      if (backendId === null) return { forest: null, occlusion: null };
 
       const built = await fetchAccessibilityTree(client);
-      if (!built || isRootOnly(built.root)) return null;
+      if (!built || isRootOnly(built.root)) return { forest: null, occlusion: null };
 
-      return built.byBackendId.get(backendId) ?? null;
+      return {
+        forest: built.byBackendId.get(backendId) ?? null,
+        // Occlusion is a whole-page fact, so it is worth just as much inside a
+        // scope — a selector aimed at the page behind an overlay is exactly the
+        // case where the agent is about to click something inert.
+        occlusion: await collectOcclusion(client).catch(() => null),
+      };
     },
-    null,
+    { forest: null, occlusion: null },
   );
 
+  const { forest, occlusion } = found;
   if (!forest || forest.length === 0) return null;
 
   let scoped = forest;
@@ -668,25 +748,28 @@ export async function generateScopedSnapshot(
     }
   }
 
-  let refs: RefEntry[] = [];
+  const refs: RefEntry[] = [];
+  const ctx: SerializeCtx = { format, maxDepth: depth, refs, occlusion };
   // Unlike the page-level tree, the matched element is content, not a container
   // — `dialog "Settings"` is exactly the context the selector asked about — so
   // serialize the forest as-is instead of dropping its top level.
-  let output = serializeForest(scoped, format, depth, refs);
+  let output = serializeForest(scoped, ctx);
 
   if (output.length > maxLength && format === 'ai') {
     const trimmed = forest
       .map(stripNonInteractive)
       .filter((n): n is AXNode => n !== null);
     if (trimmed.length > 0) {
-      refs = [];
-      output = serializeForest(trimmed, format, depth, refs);
+      refs.length = 0;
+      output = serializeForest(trimmed, ctx);
     }
   }
 
   if (output.length > maxLength) {
     output = output.slice(0, maxLength) + '\n... (truncated)';
   }
+
+  if (occlusion) output = `${occlusionNote(occlusion)}\n${output}`;
 
   // Record the scope alongside the refs: these ref numbers are subtree-relative,
   // so resolveRef must count matches inside the same element.
