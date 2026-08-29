@@ -699,7 +699,7 @@ describe('focusNotificationTarget', () => {
 // ─── S-C1 — focusPaneByPtyId (Fleet card click → pane jump) ─────────────────
 
 describe('focusPaneByPtyId (Fleet View jump)', () => {
-  function makeState(opts: { workspaces: Workspace[]; activeWorkspaceId: string }) {
+  function makeState(opts: { workspaces: Workspace[]; activeWorkspaceId: string; activeRemoteKey?: string | null }) {
     const spies = {
       setActiveWorkspace: vi.fn(),
       setActivePane: vi.fn(),
@@ -711,11 +711,19 @@ describe('focusPaneByPtyId (Fleet View jump)', () => {
     const state: FocusTargetState = {
       workspaces: opts.workspaces,
       activeWorkspaceId: opts.activeWorkspaceId,
+      activeRemoteKey: opts.activeRemoteKey ?? null,
       zoomedPaneId: null,
       notifications: [],
       ...spies,
     };
-    spies.setActiveWorkspace.mockImplementation((id: string) => { state.activeWorkspaceId = id; });
+    spies.setActiveWorkspace.mockImplementation((id: string) => {
+      state.activeWorkspaceId = id;
+      // Mirrors the real setActiveWorkspace (workspaceSlice.ts), which always
+      // calls clearRemoteSelection once past its own existence guard — the
+      // fixture needs this so AT4 below can tell "did the guard even let us
+      // in" apart from "did the real clear-on-select behavior run".
+      state.activeRemoteKey = null;
+    });
     return { state, spies, getState: () => state };
   }
 
@@ -773,5 +781,21 @@ describe('focusPaneByPtyId (Fleet View jump)', () => {
     h.state.zoomedPaneId = 'pane-zoomed-sibling';
     activatePaneTarget(h.getState, { workspaceId: 'ws-a', paneId: 'pane-a', surfaceId: 'sf-a' });
     expect(h.spies.togglePaneZoom).toHaveBeenCalledWith('pane-zoomed-sibling');
+  });
+
+  // #1086: a remote mirror can be the visible pane while activeWorkspaceId
+  // never moved (WorkspaceCenter checks activeRemoteKey first, ahead of the
+  // local tree) — so a pane-row jump within the already-active workspace
+  // must still call setActiveWorkspace to drop the mirror, even though AT2
+  // (no remote mirror showing) is right that it should stay a no-op there.
+  it('AT4: #1086 — still calls setActiveWorkspace when a remote mirror is showing, even though the workspace already matches', () => {
+    const h = makeState({
+      workspaces: [ws('ws-a', 'pane-a', 'sf-a', 'pty-a')],
+      activeWorkspaceId: 'ws-a',
+      activeRemoteKey: 'remote-host-1',
+    });
+    activatePaneTarget(h.getState, { workspaceId: 'ws-a', paneId: 'pane-a', surfaceId: 'sf-a' });
+    expect(h.spies.setActiveWorkspace).toHaveBeenCalledWith('ws-a');
+    expect(h.state.activeRemoteKey).toBeNull();
   });
 });
