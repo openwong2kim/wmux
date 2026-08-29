@@ -99,6 +99,9 @@ export function createSessionPromptScheduleHandlers(deps: SessionPromptScheduleH
           return { schedules, result: { ok: false, code: 'not_found' } };
         }
         const current = schedules[index];
+        // Loading already normalizes an unbound legacy row to a disabled,
+        // claim-free session_changed state. Returning this array still makes
+        // mutateSessionPromptSchedules persist that terminal migration.
         if (enabled &&
           (current.lastResult === 'session_changed' || !current.sessionIncarnationId)) {
           return { schedules, result: { ok: false, code: 'session_changed' } };

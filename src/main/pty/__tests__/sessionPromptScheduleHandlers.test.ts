@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { createSessionPromptScheduleHandlers } from '../sessionPromptScheduleHandlers';
 import {
+  getSessionPromptSchedulesPath,
   loadSessionPromptSchedules,
   saveSessionPromptSchedules,
   SESSION_PROMPT_SCHEDULE_LIMITS,
@@ -133,6 +134,30 @@ describe('session prompt schedule IPC handlers', () => {
     expect(loadSessionPromptSchedules(dir)).toEqual([
       expect.objectContaining({ id: 'changed', enabled: false, lastResult: 'session_changed' }),
     ]);
+  });
+
+  it('persists the terminal migration when a legacy row is resumed', async () => {
+    const legacy = schedule('legacy');
+    delete legacy.sessionIncarnationId;
+    legacy.deliveryClaim = { token: 'claim', occurrenceAt: 1, startedAt: 1 };
+    await saveSessionPromptSchedules([legacy], dir);
+
+    await expect(handlers().update({
+      ptyId: 'pty-1',
+      id: 'legacy',
+      enabled: true,
+    })).resolves.toEqual({ ok: false, code: 'session_changed' });
+    const persisted = JSON.parse(
+      fs.readFileSync(getSessionPromptSchedulesPath(dir), 'utf8'),
+    ) as SessionPromptSchedule[];
+    expect(persisted).toEqual([
+      expect.objectContaining({
+        id: 'legacy',
+        enabled: false,
+        lastResult: 'session_changed',
+      }),
+    ]);
+    expect(persisted[0]).not.toHaveProperty('deliveryClaim');
   });
 
   it('marks a paused row terminal when its live session incarnation has changed', async () => {
