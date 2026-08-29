@@ -148,7 +148,7 @@ describe('RemoteHostClient', () => {
     });
 
     it('URL-encodes the session id', async () => {
-      const fetchImpl = vi.fn(async () => ({ ok: true, status: 204 }) as unknown as Response);
+      const fetchImpl = vi.fn(async (_url: string, _init?: RequestInit) => ({ ok: true, status: 204 }) as unknown as Response);
       const client = new RemoteHostClient(host, fetchImpl as unknown as typeof fetch);
 
       await client.closeSession('sess/weird id');

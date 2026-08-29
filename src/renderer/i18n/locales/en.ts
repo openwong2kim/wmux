@@ -1766,6 +1766,8 @@ export const en = {
   'remote.workspacesFailed': 'Could not load workspaces — check the app logs',
   'remote.morePanes': '+{count} more panes',
   'remote.addPane': 'Add pane',
+  'remote.splitRight': 'Split right',
+  'remote.splitDown': 'Split down',
   'remote.closePane': 'Close pane',
   'remote.addPaneFailed': 'Could not add a pane — check the app logs',
   'remote.closePaneFailed': 'Could not close the pane — check the app logs',

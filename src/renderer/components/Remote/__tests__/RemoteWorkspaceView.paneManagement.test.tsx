@@ -22,6 +22,16 @@ vi.mock('../../../hooks/useT', () => ({ useT: () => (k: string) => k }));
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
+// #1091 follow-up: RemoteWorkspaceView now renders panes through
+// RemotePaneContainer's react-resizable-panels Group, which probes
+// ResizeObserver on mount — same stub PaneContainer.moveSizes.test.tsx uses.
+class ResizeObserverStub {
+  observe(): void { /* layout reflow is irrelevant under jsdom */ }
+  unobserve(): void { /* no-op */ }
+  disconnect(): void { /* no-op */ }
+}
+(globalThis as unknown as { ResizeObserver: unknown }).ResizeObserver ??= ResizeObserverStub;
+
 let container: HTMLDivElement;
 let root: Root;
 let workspacePaneAdd: ReturnType<typeof vi.fn>;

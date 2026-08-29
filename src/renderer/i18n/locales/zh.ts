@@ -1565,6 +1565,8 @@ export const zh = {
   'remote.workspacesFailed': '无法加载工作区 — 请检查应用日志',
   'remote.morePanes': '+{count} 个更多面板',
   'remote.addPane': '添加面板',
+  'remote.splitRight': '向右拆分',
+  'remote.splitDown': '向下拆分',
   'remote.closePane': '关闭面板',
   'remote.addPaneFailed': '无法添加面板 — 请检查应用日志',
   'remote.closePaneFailed': '无法关闭面板 — 请检查应用日志',

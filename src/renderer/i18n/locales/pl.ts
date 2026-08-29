@@ -1774,6 +1774,8 @@ export const pl = {
   'remote.workspacesFailed': 'Nie udało się wczytać obszarów roboczych — sprawdź logi aplikacji',
   'remote.morePanes': '+{count} więcej paneli',
   'remote.addPane': 'Dodaj panel',
+  'remote.splitRight': 'Podziel w prawo',
+  'remote.splitDown': 'Podziel w dół',
   'remote.closePane': 'Zamknij panel',
   'remote.addPaneFailed': 'Nie udało się dodać panelu — sprawdź logi aplikacji',
   'remote.closePaneFailed': 'Nie udało się zamknąć panelu — sprawdź logi aplikacji',

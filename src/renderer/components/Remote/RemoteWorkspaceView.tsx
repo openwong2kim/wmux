@@ -1,21 +1,41 @@
-import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useT } from '../../hooks/useT';
 import { useStore } from '../../stores';
 import type { AttachedRemoteWorkspace } from '../../stores/slices/remoteWorkspacesSlice';
 import type { RemotePaneSummary } from '../../../shared/remoteHosts';
 import RemoteMirrorTerminal from './RemoteMirrorTerminal';
+import RemotePaneContainer from './RemotePaneContainer';
+import {
+  type RemotePaneNode,
+  applySizes,
+  leafIds,
+  reconcile,
+  removeLeaf,
+  splitLeaf,
+} from './remotePaneTree';
+
+/**
+ * A bare leaf render (no Group/Panel) at the SAME position a branch would
+ * render (Group -> Panel -> leaf) is a different React element TYPE — React
+ * unmounts and remounts the whole subtree on that transition, tearing down
+ * and re-attaching a survivor's live SSE mirror for no reason (a live
+ * regression: collapsing a 2-pane split down to 1 pane by closing the other
+ * one detached AND re-attached the survivor). Wrapping every render in a
+ * trivial single-child "branch" keeps the outer element type constant across
+ * the 1-pane <-> N-pane transition, at the render boundary only — the STORED
+ * tree still uses a bare leaf for 1 pane, which keeps splitLeaf/removeLeaf's
+ * own invariants (and their tests) simple.
+ */
+function wrapForRender(node: RemotePaneNode): RemotePaneNode {
+  if (node.type === 'branch') return node;
+  return { id: `${node.id}-solo`, type: 'branch', direction: 'horizontal', children: [node] };
+}
 
 /** Bounded reads rule: never open more than this many concurrent SSE mirrors
- *  for one workspace — a "+N more panes" note covers the rest. */
+ *  for one workspace — a "+N more panes" note covers the rest. Applied by
+ *  capping which session ids ever enter the split tree (`reconcile` below),
+ *  not by capping the tree's own rendering. */
 const MAX_MIRRORS = 6;
-
-/** 1 → full, 2 → columns, 3-4 → 2×2, 5-6 → 3×2 (brief-specified layout). */
-function gridStyle(count: number): CSSProperties {
-  if (count <= 1) return { gridTemplateColumns: '1fr', gridTemplateRows: '1fr' };
-  if (count === 2) return { gridTemplateColumns: '1fr 1fr', gridTemplateRows: '1fr' };
-  if (count <= 4) return { gridTemplateColumns: '1fr 1fr', gridTemplateRows: '1fr 1fr' };
-  return { gridTemplateColumns: '1fr 1fr 1fr', gridTemplateRows: '1fr 1fr' };
-}
 
 /** One pane cell: owns the paneAttach call (and its resulting attachId), the
  *  shell/cwd caption, and the mirror terminal itself. Attach is idempotent in
@@ -113,7 +133,9 @@ function PaneCell({ hostId, pane, readOnly, attachEpoch, onClose, closeLabel }: 
 }
 
 /**
- * Grid of one attached remote workspace's panes. Mount lifecycle is
+ * Resizable split view of one attached remote workspace's panes (#1091 —
+ * replaced the earlier fixed mirror grid with a real, user-controlled split
+ * tree, parity with a local workspace). Mount lifecycle is
  * hidden-but-alive — WorkspaceCenter renders one of these per attached
  * remote workspace and toggles display:none by activeRemoteKey, the same
  * technique WorkspaceViewport uses for local workspaces. Unmounting on every
@@ -136,6 +158,33 @@ export default function RemoteWorkspaceView({ workspace }: { workspace: Attached
   const [allowInput, setAllowInput] = useState<boolean | undefined>(undefined);
   const [pending, setPending] = useState(false);
   const [actionError, setActionError] = useState<string | undefined>(undefined);
+  // The split tree (#1091). Local-only, rebuilt from `workspace.panes` by the
+  // reconcile effect below — see remotePaneTree.ts's header comment for why
+  // this is a separate structure from both the server pane list and the
+  // local-workspace pane tree.
+  const [layout, setLayout] = useState<RemotePaneNode | null>(null);
+  // Which leaf a split targets. Falls back to the tree's first leaf when
+  // nothing has been clicked yet (e.g. right after the very first pane
+  // attaches) so "Split" always has somewhere to act on.
+  const [activeLeafId, setActiveLeafId] = useState<string | null>(null);
+
+  const visibleSessionIds = useMemo(
+    () => workspace.panes.slice(0, MAX_MIRRORS).map((p) => p.sessionId),
+    [workspace.panes],
+  );
+  const visibleSessionIdsKey = visibleSessionIds.join(',');
+
+  // Keyed on visibleSessionIdsKey, not visibleSessionIds: the array is
+  // recreated every render, the key is stable unless the actual ids change —
+  // same discipline PaneContainer's childIdKey uses.
+  useEffect(() => {
+    setLayout((prev) => reconcile(prev, visibleSessionIds));
+  }, [visibleSessionIdsKey]);
+
+  useEffect(() => {
+    if (activeLeafId && layout && leafIds(layout).includes(activeLeafId)) return;
+    setActiveLeafId(layout ? leafIds(layout)[0] ?? null : null);
+  }, [layout, activeLeafId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -157,7 +206,7 @@ export default function RemoteWorkspaceView({ workspace }: { workspace: Attached
   // POLL_INTERVAL_MS for `useRemoteAttachmentsLifecycle`'s own refetch to
   // notice, so the workspace visibly grows/shrinks the moment the request
   // that did it succeeds.
-  const handleAddPane = useCallback(async () => {
+  const handleAddPane = useCallback(async (direction: 'horizontal' | 'vertical') => {
     const remote = window.electronAPI?.remote;
     if (!remote || pending) return;
     setPending(true);
@@ -170,12 +219,18 @@ export default function RemoteWorkspaceView({ workspace }: { workspace: Attached
       }
       const nextPanes: RemotePaneSummary[] = [...workspace.panes, { sessionId: res.sessionId }];
       useStore.getState().setRemoteWorkspacePanes(workspace.key, nextPanes);
+      setLayout((prev) => {
+        if (!prev) return { id: res.sessionId, type: 'leaf' };
+        const target = activeLeafId && leafIds(prev).includes(activeLeafId) ? activeLeafId : leafIds(prev)[0];
+        return target ? splitLeaf(prev, target, res.sessionId, direction) : prev;
+      });
+      setActiveLeafId(res.sessionId);
     } catch {
       setActionError(t('remote.addPaneFailed'));
     } finally {
       setPending(false);
     }
-  }, [workspace.hostId, workspace.workspaceId, workspace.key, workspace.panes, pending, t]);
+  }, [workspace.hostId, workspace.workspaceId, workspace.key, workspace.panes, pending, activeLeafId, t]);
 
   const handleClosePane = useCallback(async (sessionId: string) => {
     const remote = window.electronAPI?.remote;
@@ -189,13 +244,17 @@ export default function RemoteWorkspaceView({ workspace }: { workspace: Attached
       }
       const nextPanes = workspace.panes.filter((p) => p.sessionId !== sessionId);
       useStore.getState().setRemoteWorkspacePanes(workspace.key, nextPanes);
+      setLayout((prev) => (prev ? removeLeaf(prev, sessionId) : prev));
     } catch {
       setActionError(t('remote.closePaneFailed'));
     }
   }, [workspace.hostId, workspace.key, workspace.panes, t]);
 
+  const handleResize = useCallback((branchId: string, sizes: number[]) => {
+    setLayout((prev) => (prev ? applySizes(prev, branchId, sizes) : prev));
+  }, []);
+
   const readOnly = allowInput === false;
-  const visiblePanes = workspace.panes.slice(0, MAX_MIRRORS);
   const hiddenCount = Math.max(0, workspace.panes.length - MAX_MIRRORS);
   // A read-only host has no mayInput grant server-side either — add/close
   // would just 403, so don't offer them (same gate handleSessionCreate and
@@ -223,19 +282,34 @@ export default function RemoteWorkspaceView({ workspace }: { workspace: Attached
       )}
       <div
         className="flex-1 min-h-0"
-        style={{ display: 'grid', ...gridStyle(visiblePanes.length), gap: '2px', background: 'var(--bg-surface)' }}
+        style={{ background: 'var(--bg-surface)' }}
       >
-        {visiblePanes.map((pane) => (
-          <PaneCell
-            key={pane.sessionId}
-            hostId={workspace.hostId}
-            pane={pane}
-            readOnly={readOnly}
-            attachEpoch={workspace.attachEpoch}
-            onClose={canManagePanes ? handleClosePane : undefined}
-            closeLabel={t('remote.closePane')}
+        {layout && (
+          <RemotePaneContainer
+            node={wrapForRender(layout)}
+            onResize={handleResize}
+            renderLeaf={(leaf) => {
+              const pane = workspace.panes.find((p) => p.sessionId === leaf.id);
+              if (!pane) return null;
+              return (
+                <div
+                  className="h-full w-full"
+                  onMouseDown={() => setActiveLeafId(leaf.id)}
+                  style={leaf.id === activeLeafId ? { outline: '1px solid var(--accent-blue)', outlineOffset: '-1px' } : undefined}
+                >
+                  <PaneCell
+                    hostId={workspace.hostId}
+                    pane={pane}
+                    readOnly={readOnly}
+                    attachEpoch={workspace.attachEpoch}
+                    onClose={canManagePanes ? handleClosePane : undefined}
+                    closeLabel={t('remote.closePane')}
+                  />
+                </div>
+              );
+            }}
           />
-        ))}
+        )}
       </div>
       {hiddenCount > 0 && (
         <div className="px-3 py-1 text-[10px] font-mono flex-shrink-0" style={{ color: 'var(--text-muted)' }}>
@@ -243,15 +317,25 @@ export default function RemoteWorkspaceView({ workspace }: { workspace: Attached
         </div>
       )}
       {canManagePanes && (
-        <div className="px-2 py-1 flex-shrink-0 border-t" style={{ borderColor: 'var(--bg-overlay)' }}>
+        <div className="px-2 py-1 flex-shrink-0 border-t flex items-center gap-1" style={{ borderColor: 'var(--bg-overlay)' }}>
           <button
             type="button"
             disabled={pending}
-            onClick={() => { void handleAddPane(); }}
+            onClick={() => { void handleAddPane('horizontal'); }}
             className="text-[11px] font-mono px-2 py-1 rounded hover:bg-[var(--bg-overlay)] disabled:opacity-50"
             style={{ color: 'var(--text-subtle)' }}
           >
-            + {t('remote.addPane')}
+            {t('remote.splitRight')}
+          </button>
+          <button
+            type="button"
+            title={t('remote.splitDown')}
+            disabled={pending}
+            onClick={() => { void handleAddPane('vertical'); }}
+            className="text-[11px] font-mono px-2 py-1 rounded hover:bg-[var(--bg-overlay)] disabled:opacity-50"
+            style={{ color: 'var(--text-subtle)' }}
+          >
+            {t('remote.splitDown')}
           </button>
         </div>
       )}
