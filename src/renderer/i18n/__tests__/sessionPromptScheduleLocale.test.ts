@@ -23,6 +23,7 @@ const KEYS = [
   'sessionSchedule.statusWaiting',
   'sessionSchedule.statusBusy',
   'sessionSchedule.statusUnavailable',
+  'sessionSchedule.statusSessionChanged',
   'sessionSchedule.statusSent',
   'sessionSchedule.statusError',
   'sessionSchedule.statusPaused',

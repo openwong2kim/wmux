@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { createSessionPromptScheduleHandlers } from '../sessionPromptScheduleHandlers';
 import {
+  getSessionPromptSchedulesPath,
   loadSessionPromptSchedules,
   saveSessionPromptSchedules,
   SESSION_PROMPT_SCHEDULE_LIMITS,
@@ -25,6 +26,7 @@ function schedule(id: string, ptyId = 'pty-1'): SessionPromptSchedule {
     id,
     ptyId,
     agentSlug: 'codex',
+    sessionIncarnationId: 'incarnation-1',
     prompt: 'continue',
     nextRunAt: Date.now() + 60_000,
     enabled: true,
@@ -35,7 +37,7 @@ function schedule(id: string, ptyId = 'pty-1'): SessionPromptSchedule {
 function handlers(available = true, slug: 'codex' | 'claude' | null = 'codex') {
   return createSessionPromptScheduleHandlers({
     available,
-    getAgentState: async () => slug ? { slug } : null,
+    getAgentState: async () => slug ? { slug, incarnationId: 'incarnation-1' } : null,
     dir,
   });
 }
@@ -49,7 +51,14 @@ describe('session prompt schedule IPC handlers', () => {
       nextRunAt: Date.now() + 60_000,
       intervalMinutes: 60,
     });
-    expect(result).toMatchObject({ ok: true, schedule: { ptyId: 'pty-1', agentSlug: 'codex' } });
+    expect(result).toMatchObject({
+      ok: true,
+      schedule: {
+        ptyId: 'pty-1',
+        agentSlug: 'codex',
+        sessionIncarnationId: 'incarnation-1',
+      },
+    });
     expect(loadSessionPromptSchedules(dir)).toEqual([
       expect.objectContaining({ ptyId: 'pty-1', intervalMinutes: 60 }),
     ]);
@@ -108,6 +117,81 @@ describe('session prompt schedule IPC handlers', () => {
     await handlers().remove({ ptyId: 'pty-1', id: 'same' });
     expect(loadSessionPromptSchedules(dir)).toEqual([
       expect.objectContaining({ ptyId: 'pty-2', enabled: false }),
+    ]);
+  });
+
+  it('does not resume a row whose session incarnation can no longer be proven', async () => {
+    const changed = schedule('changed');
+    changed.enabled = false;
+    changed.lastResult = 'session_changed';
+    await saveSessionPromptSchedules([changed], dir);
+
+    await expect(handlers().update({
+      ptyId: 'pty-1',
+      id: 'changed',
+      enabled: true,
+    })).resolves.toEqual({ ok: false, code: 'session_changed' });
+    expect(loadSessionPromptSchedules(dir)).toEqual([
+      expect.objectContaining({ id: 'changed', enabled: false, lastResult: 'session_changed' }),
+    ]);
+  });
+
+  it('persists the terminal migration when a legacy row is resumed', async () => {
+    const legacy = schedule('legacy');
+    delete legacy.sessionIncarnationId;
+    legacy.deliveryClaim = { token: 'claim', occurrenceAt: 1, startedAt: 1 };
+    await saveSessionPromptSchedules([legacy], dir);
+
+    await expect(handlers().update({
+      ptyId: 'pty-1',
+      id: 'legacy',
+      enabled: true,
+    })).resolves.toEqual({ ok: false, code: 'session_changed' });
+    const persisted = JSON.parse(
+      fs.readFileSync(getSessionPromptSchedulesPath(dir), 'utf8'),
+    ) as SessionPromptSchedule[];
+    expect(persisted).toEqual([
+      expect.objectContaining({
+        id: 'legacy',
+        enabled: false,
+        lastResult: 'session_changed',
+      }),
+    ]);
+    expect(persisted[0]).not.toHaveProperty('deliveryClaim');
+  });
+
+  it('marks a paused row terminal when its live session incarnation has changed', async () => {
+    const paused = schedule('paused');
+    paused.enabled = false;
+    await saveSessionPromptSchedules([paused], dir);
+    const ipc = createSessionPromptScheduleHandlers({
+      available: true,
+      getAgentState: async () => ({ slug: 'codex', incarnationId: 'incarnation-2' }),
+      dir,
+    });
+
+    await expect(ipc.update({
+      ptyId: 'pty-1',
+      id: 'paused',
+      enabled: true,
+    })).resolves.toEqual({ ok: false, code: 'session_changed' });
+    expect(loadSessionPromptSchedules(dir)).toEqual([
+      expect.objectContaining({ id: 'paused', enabled: false, lastResult: 'session_changed' }),
+    ]);
+  });
+
+  it('resumes a paused row only when the live session binding still matches', async () => {
+    const paused = schedule('paused');
+    paused.enabled = false;
+    await saveSessionPromptSchedules([paused], dir);
+
+    await expect(handlers().update({
+      ptyId: 'pty-1',
+      id: 'paused',
+      enabled: true,
+    })).resolves.toEqual({ ok: true });
+    expect(loadSessionPromptSchedules(dir)).toEqual([
+      expect.objectContaining({ id: 'paused', enabled: true }),
     ]);
   });
 

@@ -9,7 +9,7 @@ import {
   type SessionPromptSchedule,
 } from './sessionPromptScheduleStore';
 
-type ScheduleAgentState = { slug: AgentSlug } | null;
+type ScheduleAgentState = { slug: AgentSlug; incarnationId: string } | null;
 
 export interface SessionPromptScheduleHandlerDeps {
   /** False in local/fallback mode, where process identity cannot be proven. */
@@ -60,6 +60,7 @@ export function createSessionPromptScheduleHandlers(deps: SessionPromptScheduleH
       const schedule = createSessionPromptSchedule({
         ptyId,
         agentSlug: requestedSlug,
+        sessionIncarnationId: currentAgent.incarnationId,
         prompt: typeof req.prompt === 'string' ? req.prompt : '',
         nextRunAt: typeof req.nextRunAt === 'number' ? req.nextRunAt : NaN,
         ...(typeof req.intervalMinutes === 'number'
@@ -90,14 +91,44 @@ export function createSessionPromptScheduleHandlers(deps: SessionPromptScheduleH
       const enabled = req.enabled;
       if (typeof enabled !== 'boolean') return { ok: false, code: 'invalid' };
 
-      return mutateSessionPromptSchedules<{ ok: boolean; code?: string }>((schedules) => {
+      return mutateSessionPromptSchedules<{ ok: boolean; code?: string }>(async (schedules) => {
         const index = schedules.findIndex(
           (schedule) => schedule.id === id && schedule.ptyId === ptyId,
         );
         if (index === -1) {
           return { schedules, result: { ok: false, code: 'not_found' } };
         }
-        schedules[index] = { ...schedules[index], enabled };
+        const current = schedules[index];
+        // Loading already normalizes an unbound legacy row to a disabled,
+        // claim-free session_changed state. Returning this array still makes
+        // mutateSessionPromptSchedules persist that terminal migration.
+        if (enabled &&
+          (current.lastResult === 'session_changed' || !current.sessionIncarnationId)) {
+          return { schedules, result: { ok: false, code: 'session_changed' } };
+        }
+
+        if (enabled) {
+          let currentAgent: ScheduleAgentState = null;
+          try {
+            currentAgent = await deps.getAgentState(current.ptyId);
+          } catch {
+            // A paused unattended-input target is safe to resume only when the
+            // daemon can positively prove that its original session still owns it.
+          }
+          if (!currentAgent ||
+            currentAgent.slug !== current.agentSlug ||
+            currentAgent.incarnationId !== current.sessionIncarnationId) {
+            schedules[index] = {
+              ...current,
+              enabled: false,
+              lastResult: 'session_changed',
+              deliveryClaim: undefined,
+            };
+            return { schedules, result: { ok: false, code: 'session_changed' } };
+          }
+        }
+
+        schedules[index] = { ...current, enabled };
         return { schedules, result: { ok: true } };
       }, deps.dir);
     },

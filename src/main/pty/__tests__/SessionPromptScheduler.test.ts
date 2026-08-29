@@ -26,6 +26,7 @@ function schedule(overrides: Partial<SessionPromptSchedule> = {}): SessionPrompt
   const created = createSessionPromptSchedule({
     ptyId: 'pty-1',
     agentSlug: 'codex',
+    sessionIncarnationId: 'incarnation-1',
     prompt: 'line one\nline two',
     nextRunAt: 1_000,
     now: 1,

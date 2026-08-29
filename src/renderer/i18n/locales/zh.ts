@@ -1446,6 +1446,7 @@ export const zh = {
   'sessionSchedule.statusWaiting': '已计划',
   'sessionSchedule.statusBusy': '等待可输入',
   'sessionSchedule.statusUnavailable': '等待会话',
+  'sessionSchedule.statusSessionChanged': '会话已更换，请重新创建',
   'sessionSchedule.statusSent': '已发送',
   'sessionSchedule.statusError': '投递错误',
   'sessionSchedule.statusPaused': '已暂停',

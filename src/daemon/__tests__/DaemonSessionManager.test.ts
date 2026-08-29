@@ -115,7 +115,41 @@ describe('DaemonSessionManager', () => {
     expect(session.cols).toBe(80);
     expect(session.rows).toBe(24);
     expect(session.pid).toBe(12345);
+    expect(session.incarnationId).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+    );
     expect(session.createdAt).toBeTruthy();
+  });
+
+  it('replays one incarnation but mints a new one for a replacement session id', () => {
+    const persistedIncarnation = '11111111-1111-4111-8111-111111111111';
+    const replayed = manager.createSession({
+      id: 'stable-incarnation',
+      cmd: 'cmd.exe',
+      cwd: os.tmpdir(),
+      incarnationId: persistedIncarnation,
+    });
+    expect(replayed.incarnationId).toBe(persistedIncarnation);
+
+    const first = manager.createSession({ id: 'reused-id', cmd: 'cmd.exe', cwd: os.tmpdir() });
+    const firstIncarnation = first.incarnationId;
+    manager.destroySession('reused-id');
+    const replacement = manager.createSession({ id: 'reused-id', cmd: 'cmd.exe', cwd: os.tmpdir() });
+    expect(replacement.incarnationId).toBeTruthy();
+    expect(replacement.incarnationId).not.toBe(firstIncarnation);
+  });
+
+  it('replaces a corrupt persisted incarnation instead of replaying it', () => {
+    const session = manager.createSession({
+      id: 'corrupt-incarnation',
+      cmd: 'cmd.exe',
+      cwd: os.tmpdir(),
+      incarnationId: 'not-a-uuid',
+    });
+    expect(session.incarnationId).not.toBe('not-a-uuid');
+    expect(session.incarnationId).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+    );
   });
 
   it('★ records spawnCwd at creation, and OSC 7 moves cwd WITHOUT moving it', () => {

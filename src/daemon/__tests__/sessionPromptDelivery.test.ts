@@ -7,6 +7,7 @@ import {
 function state(overrides: Partial<ScheduledPromptAgentState> = {}): ScheduledPromptAgentState {
   return {
     slug: 'codex',
+    incarnationId: 'incarnation-1',
     status: 'idle',
     inputQuiet: true,
     inputRevision: 7,
@@ -18,7 +19,7 @@ describe('deliverScheduledPrompt', () => {
   it('accepts a quiet idle agent and submits a bracketed multiline paste', async () => {
     let current = state();
     const writes: string[] = [];
-    const result = await deliverScheduledPrompt('codex', 'line one\nline two', {
+    const result = await deliverScheduledPrompt('codex', 'incarnation-1', 'line one\nline two', {
       getAgentState: () => current,
       write: (data) => {
         writes.push(data);
@@ -38,7 +39,7 @@ describe('deliverScheduledPrompt', () => {
   it('submits when paste echo temporarily promotes an idle pane to running', async () => {
     let current = state();
     const writes: string[] = [];
-    const result = await deliverScheduledPrompt('codex', 'continue', {
+    const result = await deliverScheduledPrompt('codex', 'incarnation-1', 'continue', {
       getAgentState: () => current,
       write: (data) => {
         writes.push(data);
@@ -63,7 +64,7 @@ describe('deliverScheduledPrompt', () => {
     ];
     for (const overrides of cases) {
       const write = vi.fn(() => true);
-      await expect(deliverScheduledPrompt('codex', 'continue', {
+      await expect(deliverScheduledPrompt('codex', 'incarnation-1', 'continue', {
         getAgentState: () => state(overrides),
         write,
       })).resolves.toBe('busy');
@@ -74,12 +75,21 @@ describe('deliverScheduledPrompt', () => {
   it('does not turn a stale agent prompt into shell or other-agent input', async () => {
     for (const current of [null, state({ slug: 'claude' })]) {
       const write = vi.fn(() => true);
-      await expect(deliverScheduledPrompt('codex', 'continue', {
+      await expect(deliverScheduledPrompt('codex', 'incarnation-1', 'continue', {
         getAgentState: () => current,
         write,
       })).resolves.toBe('unavailable');
       expect(write).not.toHaveBeenCalled();
     }
+  });
+
+  it('permanently rejects a replacement session before writing', async () => {
+    const write = vi.fn(() => true);
+    await expect(deliverScheduledPrompt('codex', 'incarnation-1', 'continue', {
+      getAgentState: () => state({ incarnationId: 'incarnation-2' }),
+      write,
+    })).resolves.toBe('session_changed');
+    expect(write).not.toHaveBeenCalled();
   });
 
   it('does not press Enter if identity, settled readiness, or input revision changes after paste', async () => {
@@ -90,7 +100,7 @@ describe('deliverScheduledPrompt', () => {
     ]) {
       let current = state();
       const writes: string[] = [];
-      await expect(deliverScheduledPrompt('codex', 'continue', {
+      await expect(deliverScheduledPrompt('codex', 'incarnation-1', 'continue', {
         getAgentState: () => current,
         write: (data) => {
           writes.push(data);
@@ -103,10 +113,25 @@ describe('deliverScheduledPrompt', () => {
     }
   });
 
+  it('does not press Enter if the session incarnation changes after paste', async () => {
+    let current = state();
+    const writes: string[] = [];
+    await expect(deliverScheduledPrompt('codex', 'incarnation-1', 'continue', {
+      getAgentState: () => current,
+      write: (data) => {
+        writes.push(data);
+        current = state({ incarnationId: 'incarnation-2', inputRevision: 8 });
+        return true;
+      },
+      delay: async () => undefined,
+    })).resolves.toBe('error');
+    expect(writes).toHaveLength(1);
+  });
+
   it('does not treat running after a settled ready state as paste echo', async () => {
     let current = state({ status: 'waiting' });
     const writes: string[] = [];
-    await expect(deliverScheduledPrompt('codex', 'continue', {
+    await expect(deliverScheduledPrompt('codex', 'incarnation-1', 'continue', {
       getAgentState: () => current,
       write: (data) => {
         writes.push(data);
@@ -122,7 +147,7 @@ describe('deliverScheduledPrompt', () => {
     let current = state({ status: 'complete' });
     const writes: string[] = [];
     const prompt = `before\x1b[201~after\rline`;
-    await expect(deliverScheduledPrompt('codex', prompt, {
+    await expect(deliverScheduledPrompt('codex', 'incarnation-1', prompt, {
       getAgentState: () => current,
       write: (data) => {
         writes.push(data);

@@ -1322,6 +1322,7 @@ export const en = {
   'sessionSchedule.statusWaiting': 'scheduled',
   'sessionSchedule.statusBusy': 'waiting for ready input',
   'sessionSchedule.statusUnavailable': 'waiting for session',
+  'sessionSchedule.statusSessionChanged': 'session changed — recreate',
   'sessionSchedule.statusSent': 'sent',
   'sessionSchedule.statusError': 'delivery error',
   'sessionSchedule.statusPaused': 'paused',

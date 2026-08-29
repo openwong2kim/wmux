@@ -386,6 +386,7 @@ export const zhTW = {
   'sessionSchedule.statusWaiting': '已排程',
   'sessionSchedule.statusBusy': '等待可輸入',
   'sessionSchedule.statusUnavailable': '等待 session',
+  'sessionSchedule.statusSessionChanged': 'session 已更換，請重新建立',
   'sessionSchedule.statusSent': '已送出',
   'sessionSchedule.statusError': '投遞失敗',
   'sessionSchedule.statusPaused': '已暫停',

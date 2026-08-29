@@ -12,6 +12,7 @@ export const SESSION_PROMPT_SUBMIT_DELAY_MS = 100;
 
 export interface ScheduledPromptAgentState {
   slug: AgentSlug;
+  incarnationId: string | null;
   status: AgentStatus;
   inputQuiet: boolean;
   inputRevision: number;
@@ -47,11 +48,13 @@ function isSafeAfterPaste(before: AgentStatus, after: AgentStatus): boolean {
  */
 export async function deliverScheduledPrompt(
   expectedSlug: AgentSlug,
+  expectedIncarnationId: string,
   prompt: string,
   deps: ScheduledPromptDeliveryDeps,
 ): Promise<SessionPromptScheduleResult> {
   const before = deps.getAgentState();
   if (!before || before.slug !== expectedSlug) return 'unavailable';
+  if (before.incarnationId !== expectedIncarnationId) return 'session_changed';
   if (!isReady(before.status) || !before.inputQuiet) return 'busy';
 
   try {
@@ -65,6 +68,7 @@ export async function deliverScheduledPrompt(
   if (
     !after ||
     after.slug !== expectedSlug ||
+    after.incarnationId !== expectedIncarnationId ||
     !isSafeAfterPaste(before.status, after.status) ||
     after.inputRevision !== before.inputRevision + 1
   ) {

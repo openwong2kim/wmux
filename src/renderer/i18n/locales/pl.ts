@@ -1305,6 +1305,7 @@ export const pl = {
   'sessionSchedule.statusWaiting': 'zaplanowano',
   'sessionSchedule.statusBusy': 'oczekuje na gotowość',
   'sessionSchedule.statusUnavailable': 'oczekuje na sesję',
+  'sessionSchedule.statusSessionChanged': 'sesja zastąpiona — utwórz ponownie',
   'sessionSchedule.statusSent': 'wysłano',
   'sessionSchedule.statusError': 'błąd dostarczenia',
   'sessionSchedule.statusPaused': 'wstrzymano',

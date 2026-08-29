@@ -24,6 +24,7 @@ export type {
 const MAX_SCHEDULES = 100;
 const MAX_PROMPT_CHARS = 16_000;
 const MAX_PTY_ID_CHARS = 256;
+const MAX_INCARNATION_ID_CHARS = 128;
 const MAX_INTERVAL_MINUTES = 365 * 24 * 60;
 /** Longer than daemon RPC timeout + the 100 ms guarded submit window. */
 export const SESSION_PROMPT_CLAIM_STALE_MS = 60_000;
@@ -32,6 +33,7 @@ export const SESSION_PROMPT_SCHEDULE_LIMITS = {
   MAX_SCHEDULES,
   MAX_PROMPT_CHARS,
   MAX_PTY_ID_CHARS,
+  MAX_INCARNATION_ID_CHARS,
   MAX_INTERVAL_MINUTES,
 } as const;
 
@@ -43,6 +45,16 @@ function validPtyId(value: unknown): value is string {
   if (typeof value !== 'string' || value.length === 0 || value.length > MAX_PTY_ID_CHARS) {
     return false;
   }
+  for (const character of value) {
+    const code = character.charCodeAt(0);
+    if (code <= 0x1f || code === 0x7f) return false;
+  }
+  return true;
+}
+
+function validIncarnationId(value: unknown): value is string {
+  if (typeof value !== 'string' || value.length === 0 ||
+    value.length > MAX_INCARNATION_ID_CHARS) return false;
   for (const character of value) {
     const code = character.charCodeAt(0);
     if (code <= 0x1f || code === 0x7f) return false;
@@ -69,6 +81,11 @@ function sanitize(raw: unknown): SessionPromptSchedule | null {
     createdAt:
       typeof o.createdAt === 'number' && Number.isFinite(o.createdAt) ? o.createdAt : 0,
   };
+  // Legacy rows deliberately remain unbound. They are made terminal below
+  // instead of guessing whether a reused PTY id is still safe.
+  if (validIncarnationId(o.sessionIncarnationId)) {
+    schedule.sessionIncarnationId = o.sessionIncarnationId;
+  }
   if (
     typeof o.intervalMinutes === 'number' &&
     Number.isFinite(o.intervalMinutes) &&
@@ -87,6 +104,7 @@ function sanitize(raw: unknown): SessionPromptSchedule | null {
     o.lastResult === 'sent' ||
     o.lastResult === 'busy' ||
     o.lastResult === 'unavailable' ||
+    o.lastResult === 'session_changed' ||
     o.lastResult === 'error'
   ) {
     schedule.lastResult = o.lastResult;
@@ -104,6 +122,14 @@ function sanitize(raw: unknown): SessionPromptSchedule | null {
         startedAt: claim.startedAt,
       };
     }
+  }
+  if (!schedule.sessionIncarnationId) {
+    // Surface the migration state immediately instead of making a future row
+    // look healthy until its due time. This is a derived, fail-closed view; the
+    // next mutation persists it, while Delete remains available immediately.
+    schedule.enabled = false;
+    schedule.lastResult = 'session_changed';
+    delete schedule.deliveryClaim;
   }
   return schedule;
 }
@@ -160,6 +186,7 @@ export async function mutateSessionPromptSchedules<T>(
 export function createSessionPromptSchedule(args: {
   ptyId: string;
   agentSlug: AgentSlug;
+  sessionIncarnationId: string;
   prompt: string;
   nextRunAt: number;
   intervalMinutes?: number;
@@ -168,6 +195,7 @@ export function createSessionPromptSchedule(args: {
   const prompt = args.prompt.trim();
   const createdAt = args.now ?? Date.now();
   if (!validPtyId(args.ptyId)) return null;
+  if (!validIncarnationId(args.sessionIncarnationId)) return null;
   if (!isAgentSlug(args.agentSlug)) return null;
   if (!prompt || prompt.length > MAX_PROMPT_CHARS || !Number.isFinite(args.nextRunAt)) return null;
   if (args.nextRunAt <= createdAt) return null;
@@ -184,6 +212,7 @@ export function createSessionPromptSchedule(args: {
     id: randomUUID(),
     ptyId: args.ptyId,
     agentSlug: args.agentSlug,
+    sessionIncarnationId: args.sessionIncarnationId,
     prompt,
     nextRunAt: args.nextRunAt,
     enabled: true,
@@ -308,6 +337,13 @@ export function advanceSessionPromptSchedule(
     lastResult: result,
   };
   if (result === 'busy' || result === 'unavailable') return next;
+
+  // An incarnation mismatch is permanent. In particular, repeating schedules
+  // must not advance and later target the replacement session.
+  if (result === 'session_changed') {
+    next.enabled = false;
+    return next;
+  }
 
   next.lastRunAt = now;
   if (schedule.intervalMinutes && schedule.intervalMinutes > 0) {

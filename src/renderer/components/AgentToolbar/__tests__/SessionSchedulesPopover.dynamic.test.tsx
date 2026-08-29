@@ -25,6 +25,7 @@ function schedule(overrides: Partial<SessionPromptSchedule> = {}): SessionPrompt
     id: 'schedule-1',
     ptyId: 'pty-codex',
     agentSlug: 'codex',
+    sessionIncarnationId: 'incarnation-1',
     prompt: 'continue the milestone',
     nextRunAt: Date.now() + 300_000,
     enabled: true,
@@ -213,6 +214,16 @@ describe('SessionSchedulesPopover', () => {
     expect(document.activeElement).toBe(query<HTMLButtonElement>('[data-session-schedule-toggle]'));
     await act(async () => { query<HTMLButtonElement>('[data-session-schedule-delete]').click(); });
     expect(api.removed).toEqual([{ ptyId: 'pty-codex', id: 'schedule-1' }]);
+  });
+
+  it('surfaces a replaced session as terminal and offers delete instead of resume', async () => {
+    const api = fakeApi([schedule({ enabled: false, lastResult: 'session_changed' })]);
+    await mount(api);
+
+    expect(query<HTMLElement>('[data-session-schedule-status]').textContent)
+      .toContain('session changed');
+    expect(container.querySelector('[data-session-schedule-toggle]')).toBeNull();
+    expect(container.querySelector('[data-session-schedule-delete]')).not.toBeNull();
   });
 
   it('surfaces daemon-only availability while keeping existing rows manageable', async () => {
