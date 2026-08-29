@@ -9,6 +9,8 @@ import {
   statusStatusline,
   readClaudeAccountTargets,
   classifyStatusLine,
+  foreignStatusLineCommand,
+  parseStatuslineArgs,
   WMUX_STATUSLINE_MARKER,
   type SetupStatuslinePaths,
 } from '../setupStatusline';
@@ -107,6 +109,19 @@ describe('installStatusline', () => {
     expect(fs.readFileSync(t.settingsPath, 'utf8')).toBe('{not json');
   });
 
+  it('handles multiple targets independently under force', () => {
+    const a = target('acc-a');
+    const b = target('acc-b');
+    fs.mkdirSync(path.dirname(b.settingsPath), { recursive: true });
+    fs.writeFileSync(
+      b.settingsPath,
+      JSON.stringify({ statusLine: { type: 'command', command: 'custom' } }),
+      'utf8',
+    );
+    const outcome = installStatusline(makePaths([a, b]), { force: true });
+    expect(outcome.targets.map((t) => t.outcome)).toEqual(['installed', 'replaced']);
+  });
+
   it('refreshes an existing wmux statusLine (idempotent re-install)', () => {
     const t = target('acc-a');
     const paths = makePaths([t]);
@@ -142,6 +157,83 @@ describe('installStatusline', () => {
     );
     const outcome = installStatusline(makePaths([a, b]));
     expect(outcome.targets.map((t) => t.outcome)).toEqual(['installed', 'skipped-foreign']);
+  });
+});
+
+// A forced replace destroys the only copy of the user's own statusLine command.
+// The ledger is what makes Replace a door you can walk back through (#1102).
+describe('replaced-entry ledger', () => {
+  it('restores the replaced statusLine on remove', () => {
+    const t = target('acc-a');
+    const paths = makePaths([t]);
+    const mine = { type: 'command', command: 'node my-own-line.js', padding: 0 };
+    fs.mkdirSync(path.dirname(t.settingsPath), { recursive: true });
+    fs.writeFileSync(t.settingsPath, JSON.stringify({ model: 'opus', statusLine: mine }), 'utf8');
+
+    expect(installStatusline(paths, { force: true }).targets[0].outcome).toBe('replaced');
+    const removed = removeStatusline(paths);
+    expect(removed.targets[0].outcome).toBe('restored');
+    // Restored verbatim — including keys wmux never writes itself.
+    expect(readSettings(t).statusLine).toEqual(mine);
+    expect(readSettings(t).model).toBe('opus');
+  });
+
+  it('does not restore twice — the ledger entry is consumed', () => {
+    const t = target('acc-a');
+    const paths = makePaths([t]);
+    fs.mkdirSync(path.dirname(t.settingsPath), { recursive: true });
+    fs.writeFileSync(
+      t.settingsPath,
+      JSON.stringify({ statusLine: { type: 'command', command: 'mine' } }),
+      'utf8',
+    );
+    installStatusline(paths, { force: true });
+    removeStatusline(paths);
+    // Clear the restored entry, then take the ordinary (unforced) install path:
+    // the ledger has nothing left for this target, so remove leaves it empty.
+    fs.writeFileSync(t.settingsPath, JSON.stringify({}), 'utf8');
+    installStatusline(paths);
+    expect(removeStatusline(paths).targets[0].outcome).toBe('removed');
+    expect(readSettings(t).statusLine).toBeUndefined();
+  });
+
+  it('never restores over a statusLine the user has since changed by hand', () => {
+    const t = target('acc-a');
+    const paths = makePaths([t]);
+    fs.mkdirSync(path.dirname(t.settingsPath), { recursive: true });
+    fs.writeFileSync(
+      t.settingsPath,
+      JSON.stringify({ statusLine: { type: 'command', command: 'mine' } }),
+      'utf8',
+    );
+    installStatusline(paths, { force: true });
+    // User swaps in a third statusline after the replace.
+    fs.writeFileSync(
+      t.settingsPath,
+      JSON.stringify({ statusLine: { type: 'command', command: 'newest' } }),
+      'utf8',
+    );
+    expect(removeStatusline(paths).targets[0].outcome).toBe('nothing');
+    expect((readSettings(t).statusLine as { command: string }).command).toBe('newest');
+  });
+
+  it('installs even when the ledger cannot be written', () => {
+    const t = target('acc-a');
+    const paths = makePaths([t]);
+    fs.mkdirSync(path.dirname(t.settingsPath), { recursive: true });
+    fs.writeFileSync(
+      t.settingsPath,
+      JSON.stringify({ statusLine: { type: 'command', command: 'mine' } }),
+      'utf8',
+    );
+    // A directory where the ledger file belongs makes every write fail.
+    fs.mkdirSync(path.join(path.dirname(paths.scriptDest), 'statusline-replaced.json'), {
+      recursive: true,
+    });
+    expect(installStatusline(paths, { force: true }).targets[0].outcome).toBe('replaced');
+    expect((readSettings(t).statusLine as { command: string }).command).toContain(
+      WMUX_STATUSLINE_MARKER,
+    );
   });
 });
 
@@ -323,5 +415,56 @@ describe('classifyStatusLine', () => {
     expect(classifyStatusLine({ statusLine: { type: 'command', command: `node "x/${WMUX_STATUSLINE_MARKER}"` } })).toBe('wmux');
     expect(classifyStatusLine({ statusLine: { type: 'command', command: 'other' } })).toBe('foreign');
     expect(classifyStatusLine({ statusLine: 'weird' })).toBe('foreign');
+  });
+});
+
+describe('parseStatuslineArgs', () => {
+  it('defaults to an unforced install', () => {
+    expect(parseStatuslineArgs([])).toEqual({ action: 'install', force: false });
+    expect(parseStatuslineArgs(['--force'])).toEqual({ action: 'install', force: true });
+  });
+
+  it('rejects --force on the read-only and undo actions', () => {
+    expect(parseStatuslineArgs(['--force', '--remove']).action).toBe('error');
+    expect(parseStatuslineArgs(['--force', '--status']).action).toBe('error');
+    expect(parseStatuslineArgs(['--remove', '--status']).action).toBe('error');
+  });
+
+  it('rejects unknown flags rather than silently installing', () => {
+    const parsed = parseStatuslineArgs(['--forse']);
+    expect(parsed.action).toBe('error');
+    expect(parsed.action === 'error' && parsed.message).toContain('--forse');
+  });
+
+  it('routes help, status, and remove', () => {
+    expect(parseStatuslineArgs(['--help'])).toEqual({ action: 'help' });
+    expect(parseStatuslineArgs(['--status'])).toEqual({ action: 'status' });
+    expect(parseStatuslineArgs(['--remove'])).toEqual({ action: 'remove' });
+  });
+});
+
+describe('foreignStatusLineCommand', () => {
+  it('names the command a forced install would overwrite', () => {
+    expect(foreignStatusLineCommand({ statusLine: { type: 'command', command: 'bunx ccusage' } }))
+      .toBe('bunx ccusage');
+  });
+
+  it('is null for our own entry, for none, and for an unreadable shape', () => {
+    expect(foreignStatusLineCommand({})).toBeNull();
+    expect(foreignStatusLineCommand({ statusLine: { command: `node ${WMUX_STATUSLINE_MARKER}` } })).toBeNull();
+    // Foreign but with no string command: still foreign, just nothing to show.
+    expect(foreignStatusLineCommand({ statusLine: { type: 'command' } })).toBeNull();
+  });
+
+  it('rides along on the status probe so the UI can show it', () => {
+    const t = target('acc-a');
+    fs.mkdirSync(path.dirname(t.settingsPath), { recursive: true });
+    fs.writeFileSync(
+      t.settingsPath,
+      JSON.stringify({ statusLine: { type: 'command', command: 'bunx ccusage' } }),
+      'utf8',
+    );
+    const status = statusStatusline(makePaths([t]));
+    expect(status.targets[0]).toMatchObject({ state: 'foreign', foreignCommand: 'bunx ccusage' });
   });
 });

@@ -1170,7 +1170,9 @@ export const en = {
   'integrationSetup.installFailed': 'Failed',
   'integrationSetup.replaceButton': 'Replace',
   'integrationSetup.skippedForeign':
-    'Another tool already sets Claude Code\'s statusLine, so wmux left it alone. Replace it to use the wmux one.',
+    'Another tool already sets Claude Code\'s statusLine, so wmux left it alone. Replace puts the wmux one in its place and keeps yours, so removing the wmux statusline later restores it.',
+  'integrationSetup.statusline.foreignProfiles':
+    '{count} Claude profile(s) still run another tool\'s statusline: {labels}.',
   'integrationSetup.skippedCorrupt':
     'Claude Code\'s settings.json is not valid JSON, so wmux left it alone. Fix the file and try again.',
   'integrationSetup.state.installed': 'installed',

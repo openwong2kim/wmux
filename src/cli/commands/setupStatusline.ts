@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import type { StatuslineTargetOutcome } from '../../shared/statuslineOutcome';
 
 /**
  * `wmux setup-statusline` — install the wmux usage statusline into Claude Code.
@@ -36,7 +37,8 @@ ACTIONS (mutually exclusive; default = install)
   (default)    Copy the statusline script to ~/.wmux/hooks/ and set statusLine
                in ~/.claude/settings.json and every registered claude account's
                settings.json. A non-wmux statusLine is left untouched (skipped).
-  --remove     Remove only wmux-owned statusLine entries.
+  --remove     Remove only wmux-owned statusLine entries. A statusLine that
+               --force replaced earlier is put back rather than left empty.
   --status     Report per-target install state.
 
 INSTALL FLAGS
@@ -196,19 +198,78 @@ export function classifyStatusLine(settings: Record<string, unknown>): 'none' | 
   return 'foreign';
 }
 
+/** The command string of a FOREIGN statusLine, for showing the operator what a
+ *  forced install would overwrite. Null unless the entry is foreign and its
+ *  command is a plain string — consent to replace something you cannot see is
+ *  not consent (#1102 eng review, D2). */
+export function foreignStatusLineCommand(settings: Record<string, unknown>): string | null {
+  if (classifyStatusLine(settings) !== 'foreign') return null;
+  const sl = settings.statusLine;
+  if (!sl || typeof sl !== 'object' || Array.isArray(sl)) return null;
+  const cmd = (sl as Record<string, unknown>).command;
+  return typeof cmd === 'string' && cmd.length > 0 ? cmd : null;
+}
+
 function statuslineCommand(scriptDest: string): string {
   return `node "${scriptDest}"`;
 }
 
+// ----- Replaced-entry ledger ------------------------------------------------
+//
+// A forced install overwrites someone else's statusLine, and the command string
+// it overwrites is the only copy that exists — the operator who no longer
+// remembers how they invoked ccusage cannot get it back. So the previous value
+// is written aside first, and `--remove` puts it back instead of leaving the
+// pane with no statusline at all: after Replace → Remove you are where you
+// started, not somewhere worse (#1102 eng review, D1).
+//
+// It lives next to the installed script (~/.wmux/hooks/) for the same reason
+// the script does — that path survives Squirrel's app-x.y.z swap — and NOT in
+// the user's own config dir, which wmux has no business littering.
+
+const REPLACED_LEDGER_BASENAME = 'statusline-replaced.json';
+
+function replacedLedgerPath(paths: SetupStatuslinePaths): string {
+  return path.join(path.dirname(paths.scriptDest), REPLACED_LEDGER_BASENAME);
+}
+
+/** Same case-folding as the target dedupe: Windows paths differing only in case
+ *  are one file, POSIX paths are not. */
+function ledgerKey(settingsPath: string): string {
+  const resolved = path.resolve(settingsPath);
+  return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+}
+
+interface ReplacedEntry {
+  /** The whole original `statusLine` value, so a restore reproduces it exactly
+   *  rather than rebuilding a command into a guessed shape. */
+  statusLine: unknown;
+  at: string;
+}
+
+function readReplacedLedger(paths: SetupStatuslinePaths): Record<string, ReplacedEntry> {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(replacedLedgerPath(paths), 'utf8'), safeReviver) as unknown;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+    return parsed as Record<string, ReplacedEntry>;
+  } catch {
+    return {};
+  }
+}
+
+/** Best-effort: a ledger we cannot write must not fail the install the operator
+ *  asked for — it costs them the undo, not the feature. */
+function writeReplacedLedger(paths: SetupStatuslinePaths, ledger: Record<string, ReplacedEntry>): void {
+  try {
+    writeJsonAtomic(replacedLedgerPath(paths), ledger);
+  } catch {
+    /* ignore */
+  }
+}
+
 // ----- Install / Remove / Status -------------------------------------------
 
-export type TargetOutcome =
-  | 'installed'      // statusLine written (fresh or refreshed)
-  | 'replaced'       // a foreign statusLine was overwritten (explicit --force)
-  | 'skipped-foreign' // user has their own statusLine — untouched
-  | 'skipped-corrupt' // settings.json unparseable — untouched
-  | 'removed'
-  | 'nothing';
+export type TargetOutcome = StatuslineTargetOutcome;
 
 export interface TargetReport {
   label: string;
@@ -256,6 +317,7 @@ export function installStatusline(
   fs.copyFileSync(paths.scriptSource, paths.scriptDest);
 
   const targets: TargetReport[] = [];
+  let ledger: Record<string, ReplacedEntry> | null = null;
   for (const t of paths.targets) {
     const load = loadSettings(t.settingsPath);
     if (load.corrupted) {
@@ -267,10 +329,19 @@ export function installStatusline(
       targets.push({ ...t, outcome: 'skipped-foreign' });
       continue;
     }
+    if (kind === 'foreign') {
+      // Read lazily: the ledger only matters on the forced path, which is rare.
+      ledger ??= readReplacedLedger(paths);
+      ledger[ledgerKey(t.settingsPath)] = {
+        statusLine: load.settings.statusLine,
+        at: new Date().toISOString(),
+      };
+    }
     load.settings.statusLine = { type: 'command', command: statuslineCommand(paths.scriptDest) };
     writeJsonAtomic(t.settingsPath, load.settings);
     targets.push({ ...t, outcome: kind === 'foreign' ? 'replaced' : 'installed' });
   }
+  if (ledger) writeReplacedLedger(paths, ledger);
   return { ...base, ok: true, scriptCopied: true, targets };
 }
 
@@ -339,6 +410,8 @@ export function refreshStatuslineScript(paths: SetupStatuslinePaths): RefreshOut
 
 export function removeStatusline(paths: SetupStatuslinePaths): StatuslineOutcome {
   const targets: TargetReport[] = [];
+  const ledger = readReplacedLedger(paths);
+  let ledgerDirty = false;
   for (const t of paths.targets) {
     const load = loadSettings(t.settingsPath);
     if (!load.exists) {
@@ -353,10 +426,24 @@ export function removeStatusline(paths: SetupStatuslinePaths): StatuslineOutcome
       targets.push({ ...t, outcome: 'nothing' });
       continue;
     }
+    // An entry we replaced goes back the way it was; anything else just goes.
+    // Restoring only over a wmux-owned entry means a statusLine the user has
+    // since changed by hand is never clobbered by our undo.
+    const key = ledgerKey(t.settingsPath);
+    const saved = ledger[key];
+    if (saved && saved.statusLine !== undefined) {
+      load.settings.statusLine = saved.statusLine;
+      writeJsonAtomic(t.settingsPath, load.settings);
+      delete ledger[key];
+      ledgerDirty = true;
+      targets.push({ ...t, outcome: 'restored' });
+      continue;
+    }
     delete load.settings.statusLine;
     writeJsonAtomic(t.settingsPath, load.settings);
     targets.push({ ...t, outcome: 'removed' });
   }
+  if (ledgerDirty) writeReplacedLedger(paths, ledger);
   return {
     ok: true,
     scriptDest: paths.scriptDest,
@@ -367,21 +454,32 @@ export function removeStatusline(paths: SetupStatuslinePaths): StatuslineOutcome
   };
 }
 
+export interface StatuslineTargetStatus {
+  label: string;
+  settingsPath: string;
+  state: 'none' | 'wmux' | 'foreign' | 'corrupt' | 'missing';
+  /** Present only for `foreign`: the command the operator would be replacing. */
+  foreignCommand?: string;
+}
+
 export interface StatuslineStatus {
   scriptDest: string;
   scriptExists: boolean;
-  targets: Array<{ label: string; settingsPath: string; state: 'none' | 'wmux' | 'foreign' | 'corrupt' | 'missing' }>;
+  targets: StatuslineTargetStatus[];
 }
 
 export function statusStatusline(paths: SetupStatuslinePaths): StatuslineStatus {
   return {
     scriptDest: paths.scriptDest,
     scriptExists: fs.existsSync(paths.scriptDest),
-    targets: paths.targets.map((t) => {
+    targets: paths.targets.map((t): StatuslineTargetStatus => {
       const load = loadSettings(t.settingsPath);
-      if (!load.exists) return { ...t, state: 'missing' as const };
-      if (load.corrupted) return { ...t, state: 'corrupt' as const };
-      return { ...t, state: classifyStatusLine(load.settings) };
+      if (!load.exists) return { ...t, state: 'missing' };
+      if (load.corrupted) return { ...t, state: 'corrupt' };
+      const state = classifyStatusLine(load.settings);
+      if (state !== 'foreign') return { ...t, state };
+      const foreignCommand = foreignStatusLineCommand(load.settings);
+      return foreignCommand ? { ...t, state, foreignCommand } : { ...t, state };
     }),
   };
 }
@@ -403,10 +501,14 @@ function printOutcome(outcome: StatuslineOutcome, jsonMode: boolean, verb: strin
       t.outcome === 'installed' ? verb
       : t.outcome === 'replaced' ? 'replaced a non-wmux statusLine'
       : t.outcome === 'removed' ? 'removed'
+      : t.outcome === 'restored' ? 'removed — put your previous statusLine back'
       : t.outcome === 'skipped-foreign' ? 'SKIPPED — a non-wmux statusLine is already set (re-run with --force to replace it)'
       : t.outcome === 'skipped-corrupt' ? 'SKIPPED — settings.json is not valid JSON'
       : 'nothing to do';
     console.log(`  ${t.label}: ${note} (${t.settingsPath})`);
+  }
+  if (outcome.targets.some((t) => t.outcome === 'replaced')) {
+    console.log('Your previous statusLine was saved; `wmux setup-statusline --remove` restores it.');
   }
   console.log('Restart your Claude Code sessions for the statusline to take effect.');
 }
@@ -424,38 +526,59 @@ function printStatus(status: StatuslineStatus, jsonMode: boolean): void {
   }
 }
 
-export async function handleSetupStatusline(args: string[], jsonMode: boolean): Promise<void> {
-  if (args.includes('--help') || args.includes('-h')) {
-    process.stdout.write(HELP_TEXT);
-    process.exit(0);
-    return;
-  }
+/** Parsed CLI intent. Split out from the dispatcher so the flag rules can be
+ *  tested — the dispatcher itself reaches for the real `~/.claude`, which is
+ *  not something a test may touch. */
+export type StatuslineArgs =
+  | { action: 'help' }
+  | { action: 'error'; message: string }
+  | { action: 'status' }
+  | { action: 'remove' }
+  | { action: 'install'; force: boolean };
+
+export function parseStatuslineArgs(args: string[]): StatuslineArgs {
+  if (args.includes('--help') || args.includes('-h')) return { action: 'help' };
   const remove = args.includes('--remove');
   const status = args.includes('--status');
   const force = args.includes('--force');
   if (remove && status) {
-    console.error('--remove and --status are mutually exclusive.');
-    process.exit(1);
-    return;
+    return { action: 'error', message: '--remove and --status are mutually exclusive.' };
   }
   if (force && (remove || status)) {
-    console.error('--force only applies to an install.');
-    process.exit(1);
-    return;
+    return { action: 'error', message: '--force only applies to an install.' };
   }
   const unknown = args.filter((a) => a !== '--remove' && a !== '--status' && a !== '--force');
   if (unknown.length > 0) {
-    console.error(`Unknown argument(s): ${unknown.join(', ')}. Run 'wmux setup-statusline --help' for usage.`);
+    return {
+      action: 'error',
+      message: `Unknown argument(s): ${unknown.join(', ')}. Run 'wmux setup-statusline --help' for usage.`,
+    };
+  }
+  if (status) return { action: 'status' };
+  if (remove) return { action: 'remove' };
+  return { action: 'install', force };
+}
+
+export async function handleSetupStatusline(args: string[], jsonMode: boolean): Promise<void> {
+  const parsed = parseStatuslineArgs(args);
+  if (parsed.action === 'help') {
+    process.stdout.write(HELP_TEXT);
+    process.exit(0);
+    return;
+  }
+  if (parsed.action === 'error') {
+    console.error(parsed.message);
     process.exit(1);
     return;
   }
 
   const paths = defaultPaths();
-  if (status) {
+  if (parsed.action === 'status') {
     printStatus(statusStatusline(paths), jsonMode);
     return;
   }
-  const outcome = remove ? removeStatusline(paths) : installStatusline(paths, { force });
+  const outcome =
+    parsed.action === 'remove' ? removeStatusline(paths) : installStatusline(paths, { force: parsed.force });
   printOutcome(outcome, jsonMode, 'installed');
   if (!outcome.ok) process.exit(1);
 }

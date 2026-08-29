@@ -25,6 +25,7 @@ import type {
   SampleTaskStartPayload,
 } from '../../shared/firstRun';
 import type { Pane, PaneLeaf } from '../../shared/types';
+import { isInstallTake } from '../../shared/statuslineOutcome';
 import { useStore } from '../stores';
 import { useT } from '../hooks/useT';
 
@@ -359,7 +360,7 @@ export default function FirstRunWizard({ mode, onClose }: FirstRunWizardProps) {
       // every target can be skipped (foreign/corrupt) if settings changed
       // between the status probe and the click. Only report success when a
       // target actually took the install.
-      const installedSomewhere = outcome.targets.some((t) => t.outcome === 'installed');
+      const installedSomewhere = outcome.targets.some((t) => isInstallTake(t.outcome));
       if (outcome.ok && installedSomewhere) {
         setStatuslineState('installed');
       } else {

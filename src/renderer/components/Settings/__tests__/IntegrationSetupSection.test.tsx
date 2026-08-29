@@ -15,6 +15,8 @@ import {
   skippedReason,
   skipReasonOf,
   installTook,
+  foreignTargets,
+  foreignCommandSuffix,
   type IntegrationSetupApi,
 } from '../IntegrationSetupSection';
 
@@ -38,6 +40,7 @@ function fakeApi(over: Partial<{
   hooksInstalled: boolean;
   hooksPluginOwned: boolean;
   statuslineInstalled: boolean;
+  statuslineTargets: Array<{ label: string; state: string; foreignCommand?: string }>;
   mcpRegistered: boolean;
   hooksInstall: () => Promise<{ ok: boolean; error: string | null }>;
   statuslineInstall: (opts?: { force?: boolean }) => Promise<{ ok: boolean; error: string | null; targets: Array<{ outcome: string }> }>;
@@ -78,7 +81,10 @@ function fakeApi(over: Partial<{
           }),
     },
     statusline: {
-      status: async () => ({ installed: flags.statusline }),
+      status: async () => ({
+        installed: flags.statusline,
+        outcome: over.statuslineTargets ? { targets: over.statuslineTargets } : undefined,
+      }),
       install:
         over.statuslineInstall ??
         (async () => { flags.statusline = true; return { ok: true, error: null, targets: [{ outcome: 'installed' }] }; }),
@@ -234,6 +240,71 @@ describe('IntegrationSetupSection', () => {
     await flush();
     expect(calls).toEqual([undefined, { force: true }]);
     expect(state(container, 'statusline')).toBe('installed');
+  });
+
+  // #1102 eng review D2: consent to replace something you cannot see is not
+  // consent. The probe carries the foreign command; the message must show it.
+  it('names the statusline it would replace', async () => {
+    const api = fakeApi({
+      statuslineTargets: [{ label: 'default (~/.claude)', state: 'foreign', foreignCommand: 'bunx ccusage statusline' }],
+      statuslineInstall: async () => ({ ok: true, error: null, targets: [{ outcome: 'skipped-foreign' }] }),
+    });
+    const { container, cleanup } = render(<IntegrationSetupSection api={api} />);
+    cleanups.push(cleanup);
+    await flush();
+
+    await act(async () => { action(container, 'statusline')!.click(); await Promise.resolve(); });
+    await flush();
+    expect(row(container, 'statusline').querySelector('[data-setup-row-error]')!.textContent)
+      .toContain('bunx ccusage statusline');
+  });
+
+  // #1102 eng review D3: one account taking the install used to turn the row
+  // green while another account still ran someone else's statusline, with no
+  // way to see it and no way to act on it.
+  it('keeps the skip visible when only some accounts took the install', async () => {
+    const api = fakeApi({
+      statuslineInstalled: true,
+      statuslineTargets: [
+        { label: 'default (~/.claude)', state: 'wmux' },
+        { label: 'work', state: 'foreign', foreignCommand: 'my-line.sh' },
+      ],
+    });
+    const { container, cleanup } = render(<IntegrationSetupSection api={api} />);
+    cleanups.push(cleanup);
+    await flush();
+
+    expect(state(container, 'statusline')).toBe('installed');
+    const note = row(container, 'statusline').querySelector('[data-setup-row-note]')!.textContent!;
+    expect(note).toContain('work');
+    expect(note).toContain('my-line.sh');
+    // Installed, and still replaceable — the remaining account is reachable.
+    expect(row(container, 'statusline').querySelector('[data-setup-row-secondary]')).not.toBeNull();
+  });
+
+  it('says nothing extra when every profile is ours', async () => {
+    const api = fakeApi({
+      statuslineInstalled: true,
+      statuslineTargets: [{ label: 'default (~/.claude)', state: 'wmux' }],
+    });
+    const { container, cleanup } = render(<IntegrationSetupSection api={api} />);
+    cleanups.push(cleanup);
+    await flush();
+    expect(row(container, 'statusline').querySelector('[data-setup-row-note]')).toBeNull();
+    expect(row(container, 'statusline').querySelector('[data-setup-row-secondary]')).toBeNull();
+  });
+
+  it('picks the foreign targets and the command out of a probe', () => {
+    const targets = [
+      { label: 'a', state: 'wmux' },
+      { label: 'b', state: 'foreign' },
+      { label: 'c', state: 'foreign', foreignCommand: 'mine.sh' },
+    ];
+    expect(foreignTargets(targets).map((x) => x.label)).toEqual(['b', 'c']);
+    expect(foreignTargets(undefined)).toEqual([]);
+    // Skips the foreign target we could not read a command from.
+    expect(foreignCommandSuffix(targets)).toBe(' (mine.sh)');
+    expect(foreignCommandSuffix([{ label: 'b', state: 'foreign' }])).toBe('');
   });
 
   it('names the reason when an install succeeds but writes nothing', () => {
