@@ -19,7 +19,7 @@ const optionalSurfaceId = z
 
 // Module-scope parameter shapes: hoisted out of the per-registration path so
 // every createWmuxServer() instance shares one set of zod schema objects.
-const BROWSER_FILE_UPLOAD_SHAPE = {
+export const BROWSER_FILE_UPLOAD_SHAPE = {
   paths: z
     .array(z.string())
     .describe('Each path must resolve under the uploads root (~/.wmux/uploads/).'),

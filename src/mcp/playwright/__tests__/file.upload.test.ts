@@ -2,6 +2,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { z } from 'zod';
 
 // One temp tree stands in for ~/.wmux, so the sandbox tests can build the
 // escape routes they are about (a junction out of the root, a sibling drive)
@@ -51,7 +52,7 @@ vi.mock('../snapshot', () => ({ resolveRef }));
 
 vi.mock('../../../daemon/config', () => ({ getWmuxDir: () => WMUX_DIR }));
 
-import { registerFileTools } from '../tools/file';
+import { BROWSER_FILE_UPLOAD_SHAPE, registerFileTools } from '../tools/file';
 
 type ToolResult = { content: { type: 'text'; text: string }[]; isError?: boolean };
 type ToolHandler = (args: Record<string, unknown>) => Promise<ToolResult>;
@@ -454,5 +455,28 @@ describe('browser_file_upload duplicate warning is earned, not pattern-matched',
 
     expect(out).toContain('detached');
     expect(out).not.toContain('may have reached the page');
+  });
+});
+
+describe('browser_file_upload timeout bound', () => {
+  // Schema-level, because zod rejects before the handler runs. Playwright reads
+  // timeout 0 as "wait forever", so the value meant to bound a wedged renderer
+  // would have removed the bound instead.
+  const schema = z.object(BROWSER_FILE_UPLOAD_SHAPE);
+  const args = (timeout: unknown) => ({ paths: ['x'], timeout });
+
+  it('refuses 0, which Playwright reads as no timeout at all', () => {
+    expect(schema.safeParse(args(0)).success).toBe(false);
+  });
+
+  it('refuses a negative or fractional timeout', () => {
+    expect(schema.safeParse(args(-5)).success).toBe(false);
+    expect(schema.safeParse(args(1.5)).success).toBe(false);
+  });
+
+  it('accepts a positive whole number, and omitting it', () => {
+    expect(schema.safeParse(args(1)).success).toBe(true);
+    expect(schema.safeParse(args(90_000)).success).toBe(true);
+    expect(schema.safeParse({ paths: ['x'] }).success).toBe(true);
   });
 });
