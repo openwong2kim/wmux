@@ -928,12 +928,14 @@ server.tool(
   'browser_session_start',
   'Only the builtin backend uses an RPC-started session (starts it with the specified profile). On the chrome (including its live profile) and external backends nothing needs starting: this reports started:false and how the browser actually attaches (dedicated Chrome launches on demand; the live profile attaches on first drive once remote debugging is on; external hands URLs to the OS browser).',
   BROWSER_SESSION_START_SHAPE,
-  // No workspaceId: browser sessions are GLOBAL — a single profile + CDP port via
-  // the module-level ProfileManager/PortAllocator in browser.rpc.ts. The handler
-  // ignores workspaceId entirely, so requiring identity here would protect no
-  // routing and only throw spuriously when the MCP server can't resolve its
-  // workspace (e.g. launched outside a wmux terminal). Matches browser_session_stop
-  // /status/list, which are likewise global. Only browser_open is workspace-routed.
+  // No workspaceId: browser.session.start is GLOBAL — on builtin it drives the
+  // module-level ProfileManager/PortAllocator, and on chrome/external it only
+  // reports how the backend attaches (a workspace-independent live-reachability
+  // probe), so requiring identity here would protect no routing and only throw
+  // spuriously when the MCP server can't resolve its workspace (e.g. launched
+  // outside a wmux terminal). browser_session_stop and browser_session_list are
+  // likewise global. browser_session_status is NOT — it scopes per-workspace on
+  // the chrome backend, so it resolves and passes its own workspaceId (below).
   async ({ profile }) => callRpc('browser.session.start', profile ? { profile } : {}),
 );
 
@@ -948,7 +950,21 @@ server.tool(
   'browser_session_status',
   'Report the browser session: which profile this workspace is bound to and, on the chrome backend, whether that profile\'s Chrome is already up (running) and on which CDP port. A pure read that launches nothing, so running:false means "nothing is up yet", NOT "you must call browser_session_start" — the first browser tool call starts what it needs on demand. On the live profile, running reports whether your Chrome\'s remote debugging is reachable; running:false there means enable it at chrome://inspect, not that a session must be started.',
   {},
-  async () => callRpc('browser.session.status'),
+  async () => {
+    // browser.session.status scopes per-workspace on the chrome backend
+    // (statusForWorkspace), but the server cannot derive the caller's workspace
+    // from the RPC context for a normal agent — callerScope has no ctx→workspace
+    // lane for one — so without an explicit workspaceId it fell back to the
+    // 'default' profile, reporting a builtin default while the workspace was
+    // actually bound to (e.g.) 'live'. Resolve and pass it. This is a workspace-
+    // scoped READ, so it routes through the fail-soft read resolver (the same
+    // one surface_list / pane_list use), NOT requireWorkspaceId: an identity
+    // that is genuinely unresolvable (launched outside a pane) yields '' and we
+    // pass nothing, so the builtin path — where the workspace is irrelevant —
+    // never throws spuriously.
+    const workspaceId = await resolveScopedReadWorkspaceId();
+    return callRpc('browser.session.status', workspaceId ? { workspaceId } : {});
+  },
 );
 
 server.tool(
