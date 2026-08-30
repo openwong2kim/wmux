@@ -62,6 +62,32 @@ function skipToCodepointBoundary(buf: Buffer, index: number): number {
   return i;
 }
 
+/**
+ * Length of `buf` with any trailing INCOMPLETE UTF-8 sequence removed.
+ *
+ * Distinct from walking back off a continuation byte at a known index: here the
+ * buffer already ends wherever the cap fell, so the question is whether its
+ * last lead byte got all the continuation bytes it needs. Asking
+ * `backOffToCodepointBoundary(buf, buf.length)` cannot answer that — it reads
+ * one byte past the end, which is undefined and never looks like a
+ * continuation, so it always reports the buffer as already clean.
+ */
+function trimIncompleteTrailingSequence(buf: Buffer): number {
+  const len = buf.length;
+  for (let back = 1; back <= 4 && back <= len; back++) {
+    const byte = buf[len - back];
+    if ((byte & 0xc0) === 0x80) continue; // continuation; keep scanning back
+    let needed: number;
+    if ((byte & 0x80) === 0) needed = 1;
+    else if ((byte & 0xe0) === 0xc0) needed = 2;
+    else if ((byte & 0xf0) === 0xe0) needed = 3;
+    else if ((byte & 0xf8) === 0xf0) needed = 4;
+    else return len; // not valid UTF-8 at all; leave the bytes alone
+    return back >= needed ? len : len - back;
+  }
+  return len;
+}
+
 function elisionMarker(bytes: number): string {
   return `\n… ${bytes} bytes elided …\n`;
 }
@@ -110,17 +136,24 @@ export class OutputBuffer {
     this.tailCap = Math.max(1, capBytes - this.headCap);
   }
 
+  /**
+   * Retained bytes are always COPIED out of the caller's chunk, never held as a
+   * subarray of it. Node hands out pipe chunks from a shared pool and a
+   * retained slice pins its whole pool block, so a writer producing many small
+   * chunks would hold tens of megabytes behind a 64 KB cap — defeating the one
+   * guarantee this class exists to make. The copies are bounded by the cap.
+   */
   append(chunk: Buffer): void {
     this.total += chunk.length;
     let rest = chunk;
     if (this.headBytes < this.headCap) {
       const take = Math.min(this.headCap - this.headBytes, rest.length);
-      this.head.push(rest.subarray(0, take));
+      this.head.push(Buffer.from(rest.subarray(0, take)));
       this.headBytes += take;
       rest = rest.subarray(take);
     }
     if (rest.length === 0) return;
-    this.tail.push(rest);
+    this.tail.push(Buffer.from(rest));
     this.tailBytes += rest.length;
     // Drop from the FRONT of the tail so the ring always holds the most recent
     // bytes. A single oversized chunk is sliced rather than kept whole.
@@ -164,7 +197,7 @@ export class OutputBuffer {
         elidedBytes: 0,
       };
     }
-    const headEnd = backOffToCodepointBoundary(headBuf, headBuf.length);
+    const headEnd = trimIncompleteTrailingSequence(headBuf);
     const tailStart = skipToCodepointBoundary(tailBuf, 0);
     return {
       text:

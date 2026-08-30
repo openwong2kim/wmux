@@ -64,6 +64,13 @@ export function formatOutcome(
   }
   if (outcome.remedy) lines.push(`note: ${outcome.remedy}`);
 
+  if (outcome.background) {
+    lines.push(
+      '',
+      '--- background output (from an earlier run still going) ---',
+      outcome.background.replace(/\n$/, ''),
+    );
+  }
   if (outcome.stdout.text) {
     lines.push('', '--- stdout ---', outcome.stdout.text.replace(/\n$/, ''));
     if (outcome.stdout.truncated) {
@@ -218,7 +225,9 @@ export function createReplToolCatalog(): readonly WmuxToolSpec[] {
         [
           s.name,
           `pid ${String(s.pid ?? '?')}`,
-          s.busy ? 'running code' : 'idle',
+          // Report the real state: a session still coming up is not idle, and
+          // saying so sends the agent looking for a runtime that is not ready.
+          s.status,
           `${s.evals} run(s)`,
           `up ${formatDuration(now - s.createdAt)}`,
           `idle ${formatDuration(now - s.lastUsed)}`,

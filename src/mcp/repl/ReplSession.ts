@@ -29,7 +29,7 @@ import { spawn, type ChildProcess } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import { buildGatedAutomationEnv, withheldCredentialNames } from '../../shared/envFilter';
-import { buildRunnerBootstrap, SCRIPT_TIMEOUT_MARKER, ALREADY_DECLARED_MARKER } from './replRunnerSource';
+import { buildRunnerBootstrap } from './replRunnerSource';
 import { OutputBuffer, truncateText, type TruncatedText } from './truncate';
 
 /** Per-eval retention for each of stdout and stderr. */
@@ -37,11 +37,15 @@ export const OUTPUT_CAP_BYTES = 64 * 1024;
 /** Retention for the inspected return value. */
 export const RESULT_CAP_BYTES = 16 * 1024;
 /**
- * How long past the caller's timeout the child gets before SIGKILL. The vm
- * watchdog inside the child stops synchronous runaways on its own; this grace
- * only has to cover the message hop back, so it is short on purpose.
+ * How long past the caller's timeout the child gets before SIGKILL.
+ *
+ * The vm watchdog inside the child stops synchronous runaways on its own, so
+ * this grace only has to cover the watchdog's message hop back. It is generous
+ * anyway: if a loaded broker delays that hop past the grace, a stop that should
+ * have KEPT the session escalates into a kill that destroys it, and losing a
+ * session's state is far worse than waiting an extra second for a genuine hang.
  */
-export const HARD_KILL_GRACE_MS = 500;
+export const HARD_KILL_GRACE_MS = 2_000;
 /** Quiet window the pipes must show before an eval's output is considered complete. */
 const DRAIN_QUIET_MS = 20;
 /** Ceiling on draining, so a still-chattering background timer cannot stall the tool. */
@@ -69,6 +73,12 @@ export interface ReplEvalOutcome {
   readonly timedOut?: boolean;
   /** Set when a `let`/`const` collided with a still-live binding. */
   readonly remedy?: string;
+  /**
+   * Output that arrived BEFORE this eval started — a timer or handle left
+   * running by an earlier one. Reported separately so the agent never reads
+   * another eval's output as its own code's doing.
+   */
+  readonly background?: string;
 }
 
 interface RunnerMessage {
@@ -77,6 +87,8 @@ interface RunnerMessage {
   readonly ok?: boolean;
   readonly result?: string;
   readonly error?: string;
+  /** Runner's own classification. Never re-derived from `error` text. */
+  readonly kind?: 'timeout' | 'redeclare';
 }
 
 /** Node binary plus whether Electron needs telling to behave as one. */
@@ -138,6 +150,8 @@ export class ReplSession {
   private out = new OutputBuffer(OUTPUT_CAP_BYTES);
   private err = new OutputBuffer(OUTPUT_CAP_BYTES);
   private pending: ((message: RunnerMessage) => void) | null = null;
+  /** Id of the eval in flight; only a reply carrying it may settle. */
+  private pendingId: number | null = null;
   private readonly ready: Promise<void>;
   private idleTimer: NodeJS.Timeout | null = null;
   private readonly idleMs: number;
@@ -218,7 +232,14 @@ export class ReplSession {
 
     child.on('message', (raw: unknown) => {
       const message = raw as RunnerMessage;
-      if (message?.id === undefined) return;
+      // Match the id of the eval actually in flight. User code shares this
+      // process's global scope and therefore its `process.send`, so without the
+      // check a script could post its own completion, collect the answer early,
+      // AND keep the hard-deadline timer cleared while it spins forever in the
+      // shared broker. A late reply from an abandoned earlier eval is dropped by
+      // the same test.
+      if (message?.id === undefined || message.id !== this.pendingId) return;
+      this.pendingId = null;
       const settle = this.pending;
       this.pending = null;
       settle?.(message);
@@ -275,7 +296,8 @@ export class ReplSession {
     }
     const settle = this.pending;
     this.pending = null;
-    settle?.({ id: -1, ok: false, error: reason });
+    this.pendingId = null;
+    settle?.({ ok: false, error: reason });
   }
 
   /** Kill the child and mark the session dead. Idempotent. */
@@ -331,8 +353,19 @@ export class ReplSession {
     this.lastUsedAt = Date.now();
     const id = this.nextEvalId++;
 
+    // Anything buffered before this call came from a timer or handle left
+    // running by an EARLIER eval. Take it now so it is reported as background
+    // rather than blended into this eval's output, where the agent would read
+    // it as its own code's doing.
+    const background = this.takeOutput();
+    // Reset the drain clock so quiet is measured from THIS eval. Left at the
+    // previous eval's value it is always already stale, which makes the quiet
+    // test vacuously true and defeats the drain entirely.
+    this.lastChunkAt = Date.now();
+
     const message = await new Promise<RunnerMessage>((resolve) => {
       this.pending = resolve;
+      this.pendingId = id;
       // Layer two of the timeout. The child's vm watchdog cannot see a promise
       // that never settles or a blocked native call, so the only reliable stop
       // is killing the process — which is why this costs the session's state
@@ -360,6 +393,8 @@ export class ReplSession {
     await this.drain();
     const { stdout, stderr } = this.takeOutput();
     const elapsedMs = Date.now() - started;
+    const backgroundText =
+      [background.stdout.text, background.stderr.text].filter(Boolean).join('') || undefined;
 
     // Read through the getter: the assignment above narrows `this.state` to
     // 'busy' for the checker, but the eval could have killed the session while
@@ -371,6 +406,7 @@ export class ReplSession {
         fatal: this.deathReason ?? 'the REPL session ended',
         stdout,
         stderr,
+        background: backgroundText,
         elapsedMs,
       };
     }
@@ -385,6 +421,7 @@ export class ReplSession {
         result: truncateText(message.result ?? 'undefined', RESULT_CAP_BYTES),
         stdout,
         stderr,
+        background: backgroundText,
         elapsedMs,
       };
     }
@@ -395,9 +432,13 @@ export class ReplSession {
       error,
       stdout,
       stderr,
+      background: backgroundText,
       elapsedMs,
-      timedOut: error.includes(SCRIPT_TIMEOUT_MARKER) || undefined,
-      remedy: error.includes(ALREADY_DECLARED_MARKER)
+      // Trust the runner's classification, never a substring of `error`: that
+      // text is whatever the caller's own code threw, so sniffing it lets a
+      // script make the tool announce a watchdog stop that never happened.
+      timedOut: message.kind === 'timeout' || undefined,
+      remedy: message.kind === 'redeclare'
         ? 'That name is already bound in this session. `let`/`const` cannot be re-declared ' +
           'against a live binding — assign without a keyword (`x = ...`) to update it, or call ' +
           'repl_reset to start from a clean runtime.'

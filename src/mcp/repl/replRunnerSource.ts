@@ -34,18 +34,6 @@
  */
 
 /**
- * Sentinel the parent matches to detect a top-level-await snippet, so the retry
- * fires on V8's actual message rather than on a guess about the user's code.
- */
-export const TOP_LEVEL_AWAIT_MARKER = 'await is only valid in';
-
-/** Sentinel for a `let`/`const` re-declared against a still-live session. */
-export const ALREADY_DECLARED_MARKER = 'has already been declared';
-
-/** V8's message when `vm`'s synchronous watchdog fires. */
-export const SCRIPT_TIMEOUT_MARKER = 'Script execution timed out';
-
-/**
  * Child program source. Kept dependency-free and small enough to travel as a
  * command-line argument on every platform (Windows caps a command line at
  * 32767 characters; this is well under 8 KB even base64-encoded).
@@ -84,14 +72,35 @@ process.on('unhandledRejection', (reason) => {
   try { stderrWrite('[repl] unhandled rejection in background code: ' + (reason && reason.stack || reason) + '\n'); } catch (_) { /* stderr gone */ }
 });
 
+// inspect's maxStringLength and maxArrayLength bound individual strings and
+// arrays, but NOT the number of keys on a plain object, so one
+// Object.fromEntries over a million entries renders hundreds of megabytes. The
+// parent truncates too, but only AFTER that string has crossed IPC and landed
+// in the shared broker's heap, which is precisely the process that must not be
+// asked to hold it. Cap here, at the only place the big string can be avoided.
+const CHILD_RESULT_CAP = 64 * 1024;
+
 function describe(value) {
-  return util.inspect(value, {
-    depth: 3,
-    maxArrayLength: 200,
-    maxStringLength: 8192,
-    breakLength: 100,
-    getters: false,
-  });
+  let rendered;
+  try {
+    rendered = util.inspect(value, {
+      depth: 3,
+      maxArrayLength: 200,
+      maxStringLength: 8192,
+      breakLength: 100,
+      getters: false,
+    });
+  } catch (err) {
+    // A Proxy with a throwing trap makes inspect itself throw. Without this the
+    // reply never goes out and the parent can only end the session on its hard
+    // deadline, reporting a hang for what is really an unprintable value.
+    return '<value could not be inspected: ' + String(err && err.message || err) + '>';
+  }
+  if (rendered.length > CHILD_RESULT_CAP) {
+    return rendered.slice(0, CHILD_RESULT_CAP) +
+      '\n… value truncated in the REPL process (' + rendered.length + ' chars rendered) …';
+  }
+  return rendered;
 }
 
 // Wrap a top-level-await snippet so it can run as a Script.
@@ -123,6 +132,26 @@ function wrapAsync(code) {
     const at = splits[s];
     const tail = trimmed.slice(at + 1).trim();
     if (tail === '') continue;
+    // Automatic semicolon insertion trap: a newline before one of these does
+    // NOT end a statement, so "const a = await f()\n[0].join()" is ONE
+    // expression. Splitting there yields two halves that each compile fine and
+    // together mean something else entirely, which is the worst failure mode
+    // available here - a silently different program and a wrong answer. Only
+    // an explicit semicolon can precede such a tail.
+    // 96 is a backtick (a tagged-template continuation); it cannot appear in
+    // the literal below without ending this runner's own template.
+    if (
+      trimmed[at] !== ';' &&
+      ('[(+-*/,.?:=<>&|'.indexOf(tail[0]) !== -1 || tail.charCodeAt(0) === 96)
+    ) continue;
+    // A trailing declaration or control statement must never be rewritten. Some
+    // of them WOULD compile inside "return (...)" - a function or class
+    // declaration becomes an expression - and the result is a wrong return
+    // value plus a definition trapped in the wrapper scope instead of the
+    // session. Compiling is not the same as meaning the same thing.
+    if (/^(function|class|async|let|const|var|return|if|for|while|do|switch|try|throw|import|export)\b/.test(tail)) {
+      continue;
+    }
     const head = trimmed.slice(0, at + 1);
     const rewritten = '(async () => {\n' + head + '\nreturn (' + tail + ');\n})()';
     try {
@@ -157,8 +186,31 @@ function trimStack(error) {
   return cut === -1 ? raw : lines.slice(0, cut).join('\n').replace(/\s+$/, '');
 }
 
-function fail(id, error) {
-  send({ id: id, ok: false, error: trimStack(error) });
+// Classify HERE, where the real Error object is, and ship the verdict as a
+// field. The parent must not re-derive it by matching substrings against the
+// error text: that text can be anything the caller's own code throws, so a
+// script that throws "Script execution timed out" would make the tool report a
+// watchdog stop that never happened.
+function classify(error, timeoutMs) {
+  const message = String(error && error.message || error);
+  // V8's watchdog error carries this EXACT message and, because it is raised by
+  // the engine rather than by the script, no frame inside the evaluated code.
+  // A script that throws the same text still has its own wmux-repl frame, which
+  // is what keeps it from impersonating the watchdog.
+  if (
+    message === 'Script execution timed out after ' + timeoutMs + 'ms' &&
+    String(error && error.stack || '').indexOf('wmux-repl') === -1
+  ) {
+    return 'timeout';
+  }
+  if (error instanceof SyntaxError && message.indexOf('has already been declared') !== -1) {
+    return 'redeclare';
+  }
+  return undefined;
+}
+
+function fail(id, error, timeoutMs) {
+  send({ id: id, ok: false, error: trimStack(error), kind: classify(error, timeoutMs) });
 }
 
 process.on('message', (msg) => {
@@ -180,11 +232,11 @@ process.on('message', (msg) => {
       try {
         value = vm.runInThisContext(wrapAsync(msg.code), options);
       } catch (retryErr) {
-        fail(id, retryErr);
+        fail(id, retryErr, msg.timeoutMs);
         return;
       }
     } else {
-      fail(id, err);
+      fail(id, err, msg.timeoutMs);
       return;
     }
   }
@@ -193,7 +245,7 @@ process.on('message', (msg) => {
   if (value && typeof value.then === 'function') {
     Promise.resolve(value).then(
       (resolved) => send({ id: id, ok: true, result: describe(resolved) }),
-      (err) => fail(id, err),
+      (err) => fail(id, err, msg.timeoutMs),
     );
     return;
   }

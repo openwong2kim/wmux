@@ -53,6 +53,26 @@ describe('OutputBuffer', () => {
     expect(result.elidedBytes).toBe(9000);
   });
 
+  it('never renders a replacement char at the head seam', () => {
+    // Three-byte codepoints guarantee the head cap lands mid-sequence.
+    const buf = new OutputBuffer(1000);
+    for (let i = 0; i < 200; i++) buf.append(Buffer.from('한글테스트'));
+    const result = buf.render();
+    expect(result.truncated).toBe(true);
+    expect(result.text).not.toContain('�');
+  });
+
+  it('does not retain the caller\'s chunk objects in the tail', () => {
+    // A retained subarray pins its whole pooled allocation; the ring must copy.
+    const buf = new OutputBuffer(400);
+    const chunk = Buffer.alloc(64 * 1024, 0x61);
+    buf.append(chunk);
+    buf.append(Buffer.from('tail'));
+    const before = buf.render().text;
+    chunk.fill(0x62); // mutating the original must not change what we kept
+    expect(buf.render().text).toBe(before);
+  });
+
   it('keeps the most recent bytes in the tail', () => {
     const buf = new OutputBuffer(400);
     buf.append(Buffer.from('S'.repeat(1000)));

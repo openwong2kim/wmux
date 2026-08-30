@@ -33,7 +33,7 @@ import {
   type ConnectionScope,
 } from './connectionScope';
 import type { PlaywrightEngine } from './playwright/PlaywrightEngine';
-import { disposeReplRegistry } from './repl/replRegistry';
+import { disposeReplRegistry, setReplBrokerMode } from './repl/replRegistry';
 
 interface ShimHandshake {
   wmuxShim: number;
@@ -159,6 +159,9 @@ async function hostConnection(socket: net.Socket, handshake: ShimHandshake): Pro
 }
 
 function main(): void {
+  // This process hosts many agents at once, so a REPL call that arrives without
+  // a connection scope must fail rather than fall back to a shared registry.
+  setReplBrokerMode();
   const expectedToken = readAuthToken();
   if (!expectedToken) {
     console.error('[wmux-mcp-broker] auth token not found; refusing to serve. Is wmux running?');

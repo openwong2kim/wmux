@@ -7,9 +7,11 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { runInConnectionScope, createConnectionScope } from '../../connectionScope';
 import {
   MAX_SESSIONS_PER_CONNECTION,
+  MAX_SESSIONS_PER_PROCESS,
   ReplRegistry,
   disposeReplRegistry,
   getReplRegistry,
+  setReplBrokerMode,
 } from '../replRegistry';
 
 const registries: ReplRegistry[] = [];
@@ -92,6 +94,34 @@ describe('ReplRegistry', () => {
   }, 20_000);
 });
 
+describe('host-wide bound', () => {
+  it('refuses past the process ceiling even across separate connections', () => {
+    // The per-connection cap is not a host bound: the broker hosts N agents, so
+    // N x 4 children would land on one machine without this.
+    const owned: ReplRegistry[] = [];
+    let created = 0;
+    try {
+      for (let r = 0; r < 8; r++) {
+        const registry = makeRegistry();
+        owned.push(registry);
+        for (let i = 0; i < MAX_SESSIONS_PER_CONNECTION; i++) {
+          try {
+            registry.acquire(`s${i}`, os.tmpdir());
+            created++;
+          } catch (error) {
+            expect(String(error)).toMatch(/host-wide limit|already holds/);
+            expect(created).toBe(MAX_SESSIONS_PER_PROCESS);
+            return;
+          }
+        }
+      }
+      throw new Error(`expected the process ceiling to bite; created ${created}`);
+    } finally {
+      for (const registry of owned) registry.disposeAll();
+    }
+  }, 60_000);
+});
+
 describe('connection scoping', () => {
   it('gives each connection its own sessions and disposes only its own', async () => {
     const scopeA = createConnectionScope();
@@ -118,4 +148,22 @@ describe('connection scoping', () => {
     runIn(scopeB, () => disposeReplRegistry());
     expect(b.session.dead).toBe(true);
   }, 20_000);
+
+  it('refuses to serve a scopeless call once broker mode is declared', () => {
+    // Run LAST: broker mode is process-wide and one-way, matching the real
+    // broker, where it is set at startup and never cleared.
+    setReplBrokerMode();
+    // Outside any runInConnectionScope there is no way to tell whose session
+    // this would be. Falling back to a shared registry would hand one agent
+    // another's live runtime, so this must fail loudly instead.
+    expect(() => getReplRegistry()).toThrow(/cannot be attributed/);
+
+    // Inside a scope it still works, and disposal stays tolerant so teardown
+    // is never abandoned half-done.
+    const scope = createConnectionScope();
+    runInConnectionScope(scope, () => {
+      expect(getReplRegistry()).toBeInstanceOf(ReplRegistry);
+    });
+    expect(() => disposeReplRegistry()).not.toThrow();
+  });
 });
