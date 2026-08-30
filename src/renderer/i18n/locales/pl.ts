@@ -872,6 +872,8 @@ export const pl = {
   'chromeProfiles.liveProfile': 'Live Chrome (Twoja przeglądarka)',
   'chromeProfiles.liveDesc': 'Połącz z własnym uruchomionym Chrome — wymaga jednorazowego włączenia chrome://inspect/#remote-debugging.',
   'chromeProfiles.liveConfirm': 'Dać agentowi tego obszaru roboczego dostęp do CAŁEGO Twojego Chrome — wszystkich kart i logowań? Chrome dodatkowo zapyta o zgodę przy każdym połączeniu.',
+  'chromeProfiles.liveConfirmYes': 'Podłącz live',
+  'chromeProfiles.liveConfirmCancel': 'Anuluj',
   'settings.browserLightweight': 'Lekkie przeglądarki w tle',
   'settings.browserLightweightDesc': 'Ogranicz zużycie CPU przez wbudowane panele przeglądarki, które nie są widoczne (ukryte obszary robocze, oddalone panele, zminimalizowane okno). Automatyzacja (MCP/zrzuty ekranu) nadal działa pełną prędkością. Zmniejsza tylko CPU, nie pamięć.',
   'settings.browserDiscard': 'Odrzucaj ukryte przeglądarki (zwalnia pamięć)',
