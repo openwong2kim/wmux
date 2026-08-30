@@ -229,6 +229,29 @@ export interface RpcContext {
    *   `undefined`  not a plugin-host dispatch at all.
    */
   hostedWorkspace?: string | null;
+  /**
+   * #922 PR-B — the workspace this caller CLAIMED, as resolved server-side from
+   * the `workspaceToken` envelope field. Written only by `RpcRouter` from the
+   * claim registry (`workspaceClaimTrust.ts`); a request envelope can supply
+   * the token but never this field, and a caller cannot invent a token that
+   * resolves because main issued it.
+   *
+   * Three states, mirroring the registry, and the difference between the last
+   * two is load-bearing:
+   *   `undefined`  no token was presented. The caller never claimed; every
+   *                lane behaves for it exactly as before.
+   *   `{ bound }`  a live claim. This IS the caller's workspace.
+   *   `{ stale }`  a token was presented and did not resolve — revoked, or its
+   *                workspace closed. A handler that scopes on this must REFUSE.
+   *                Falling through to a lane that accepts a caller-named
+   *                workspace would demote a caller whose claim just died into
+   *                one free to name any workspace, which is strictly weaker
+   *                than never having claimed.
+   *
+   * Deliberately NOT flattened to `string | undefined`: that collapses `stale`
+   * into `unclaimed` and makes the demotion the easy thing to write.
+   */
+  workspaceClaim?: { kind: 'bound'; workspaceId: string } | { kind: 'stale' };
 }
 
 /**

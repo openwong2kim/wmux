@@ -73,16 +73,17 @@ export type BrowserCallerScopeDecision =
     }
   | {
       kind: 'scoped';
-      lane: 'pinned' | 'hosted' | 'declared';
+      lane: 'pinned' | 'hosted' | 'verified' | 'declared';
       workspaceId: string;
     }
   | {
       kind: 'rejected';
-      lane: 'context' | 'pinned' | 'hosted' | 'declared';
+      lane: 'context' | 'pinned' | 'hosted' | 'verified' | 'declared' | 'legacy';
       reason: BrowserScopeShadowReason;
       requestedWorkspaceId?: string;
       pinnedWorkspaceId?: string;
       hostedWorkspaceId?: string;
+      verifiedWorkspaceId?: string;
     };
 
 function requestedWorkspaceId(params: Record<string, unknown>): string | undefined {
@@ -135,19 +136,40 @@ function requestedWorkspaceId(params: Record<string, unknown>): string | undefin
  *           would newly refuse an approved wire caller that omits
  *           `workspaceId` — a change #922 explicitly holds for the
  *           peer-credential track.
- *   OPEN    the `declared` lane checks that `workspaceId` is PRESENT, not that
- *           it is the caller's own. For a WIRE caller nothing in the main
- *           process binds a clientName to a workspace — `mcp.claimWorkspace`
- *           forwards to the renderer and records no server-side association —
- *           so one that names a foreign workspace is still accepted here.
- *   OPEN    the `legacy` lane (no `clientName`) stays allowed and unscoped, and
- *           `PermissionEnforcer` grandfathers the same callers. Dropping the
- *           identity envelope therefore still bypasses this.
+ *   closes  (#922 PR-B) a wire caller that CLAIMED a workspace is now scoped to
+ *           the one it claimed. `mcp.claimWorkspace` mints a token bound to the
+ *           workspace it creates for that caller (`workspaceClaimTrust.ts`), so
+ *           the association is one main RECORDED rather than one the caller
+ *           asserts — the `verified` lane below. A claim that has gone stale is
+ *           refused rather than demoted into `declared`.
+ *   narrows (#922, owner ruling (c)) the `legacy` lane no longer resolves an
+ *           OMITTED workspaceId through the workspace-blind "first registered
+ *           surface" lookup; that case is refused. The lane is NOT closed — a
+ *           legacy caller that names a workspace is unchanged, byte for byte —
+ *           because closing it belongs to the shared grandfather deprecation
+ *           with `PermissionEnforcer` (#1111), not to this table. Narrowing the
+ *           scope without touching the allow keeps one clock, not two.
+ *   OPEN    the `declared` lane still checks that `workspaceId` is PRESENT, not
+ *           that it is the caller's own, for a wire caller that never claimed.
+ *           Nothing binds a bare clientName to a workspace, and the name is
+ *           self-asserted, so binding to it would be no stronger than the
+ *           capability check that already keys on it.
+ *   OPEN    the `legacy` lane is still ALLOWED, and `PermissionEnforcer`
+ *           grandfathers the same callers. Dropping the identity envelope
+ *           still avoids per-plugin permission enforcement; it just no longer
+ *           buys an unscoped browser target lookup. Tracked on #1111.
  *
  * The hosted lane closes one caller CLASS, not the general problem: it works
- * only because the plugin host derives both halves of the identity itself.
- * Both OPEN items are wire callers, still need the peer-credential primitive
- * that does not exist yet, and are tracked on #922.
+ * only because the plugin host derives both halves of the identity itself. The
+ * verified lane closes a second class — wire callers that claimed — the same
+ * way: on a binding main recorded, not one the caller named.
+ *
+ * Peer credentials (`GetNamedPipeClientProcessId`) were the shape #922 first
+ * suggested and are NOT what landed. The OS handle behind a Node pipe socket
+ * is unreachable from JS (measured: the accepted socket reports
+ * `_handle.fd === -1`), so it needs a compiled native addon — and it would buy
+ * nothing against the ceiling below, since same-user code defeats both.
+ * `workspaceClaimTrust.ts` records the reasoning.
  *
  * Ceiling, stated so the lane is not read as more than it is: this confines an
  * APPROVED plugin to the scope its approval implied. It is not a defence
@@ -263,11 +285,56 @@ export function callerScope(
     return { kind: 'scoped', lane: 'hosted', workspaceId: hostedWorkspaceId };
   }
 
+  // #922 PR-B — the verified lane. The caller presented a token main itself
+  // minted when `mcp.claimWorkspace` created a workspace FOR it
+  // (`workspaceClaimTrust.ts`), so unlike `declared` the workspace is not a
+  // claim the caller makes — it is one main recorded. Same two rules as pinned
+  // and hosted: omitted resolves to it, a mismatch is refused.
+  //
+  // A STALE claim is refused rather than demoted. The caller presented a
+  // credential that no longer resolves — its workspace closed, or the token was
+  // revoked — and letting it fall through to `declared` would leave it free to
+  // name any workspace, i.e. strictly less confined than before it claimed.
+  // That is the same fail-open the hosted lane closes for an unbound plugin.
+  if (ctx.workspaceClaim !== undefined) {
+    if (ctx.workspaceClaim.kind === 'stale') {
+      return {
+        kind: 'rejected',
+        lane: 'verified',
+        reason: 'verified-claim-stale',
+        ...(requested && { requestedWorkspaceId: requested }),
+      };
+    }
+    const verifiedWorkspaceId = ctx.workspaceClaim.workspaceId;
+    if (requested && requested !== verifiedWorkspaceId) {
+      return {
+        kind: 'rejected',
+        lane: 'verified',
+        reason: 'verified-workspace-mismatch',
+        requestedWorkspaceId: requested,
+        verifiedWorkspaceId,
+      };
+    }
+    return { kind: 'scoped', lane: 'verified', workspaceId: verifiedWorkspaceId };
+  }
+
+  // #922 (c) — the legacy lane keeps its GRANDFATHER: a caller with no identity
+  // envelope is still allowed here, and closing that belongs to the shared
+  // deprecation clock with `PermissionEnforcer`, not to this table (#1111).
+  // What changes is only the OMITTED case. A legacy caller that names a
+  // workspace is unchanged, byte for byte — it was already scoped to what it
+  // named. One that names nothing used to reach the workspace-blind "first
+  // registered surface" lookup and get whichever surface happened to register
+  // first; that is what is refused now, with the one refusal message an
+  // unidentified caller can act on.
   if (!ctx.clientName) {
+    if (requested) {
+      return { kind: 'allowed', lane: 'legacy', workspaceId: requested };
+    }
     return {
-      kind: 'allowed',
+      kind: 'rejected',
       lane: 'legacy',
-      ...(requested && { workspaceId: requested }),
+      reason: 'legacy-workspace-unresolved',
     };
   }
   if (requested) {
@@ -327,6 +394,16 @@ const SCOPE_REFUSAL_REMEDY: Record<BrowserScopeShadowReason, string> = {
     'the plugin host has no active workspace to resolve this call against',
   'hosted-workspace-mismatch':
     'omit workspaceId and this resolves to the workspace you are hosted in',
+  'verified-workspace-mismatch':
+    'omit workspaceId and this resolves to the workspace you claimed',
+  'verified-claim-stale':
+    'the workspace you claimed is gone; call mcp.claimWorkspace again to get a new one',
+  // The one refusal an UNIDENTIFIED caller can receive, so it is the one that
+  // has to teach rather than just refuse: whoever reads it built against the
+  // documented envelope-less path and has no plugin identity to look up.
+  'legacy-workspace-unresolved':
+    'name the workspace this call belongs to — send workspaceId in the params. ' +
+    'workspace.current returns the one you are in; workspace.list returns every id',
   'workspace-unresolved':
     'send the workspaceId of the workspace you are calling from',
 };
@@ -485,6 +562,9 @@ export function registerBrowserRpc(
             }),
             ...(decision.hostedWorkspaceId && {
               hostedWorkspaceId: decision.hostedWorkspaceId,
+            }),
+            ...(decision.verifiedWorkspaceId && {
+              verifiedWorkspaceId: decision.verifiedWorkspaceId,
             }),
           });
         } catch {
