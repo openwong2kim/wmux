@@ -37,6 +37,9 @@ export default function WorkspaceChromeProfileMenu({
   const [open, setOpen] = useState(false);
   // Inline "new profile" form (replaces window.prompt — see createProfile below).
   const [formOpen, setFormOpen] = useState(false);
+  // Inline live-bind confirm (replaces window.confirm — a native OS dialog alien
+  // to the app chrome). Mutually exclusive with the new-profile form.
+  const [confirmLiveOpen, setConfirmLiveOpen] = useState(false);
   const [newName, setNewName] = useState('');
   const [newError, setNewError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
@@ -48,6 +51,7 @@ export default function WorkspaceChromeProfileMenu({
   // all. Refs, not state — closeForm reads both in the same tick it clears them.
   const pointerInsideRef = useRef(false);
   const formOpenRef = useRef(false);
+  const confirmLiveOpenRef = useRef(false);
 
   const reload = useCallback(() => {
     const api = window.electronAPI?.browser?.chromeProfiles;
@@ -68,19 +72,6 @@ export default function WorkspaceChromeProfileMenu({
     void api.bind(workspaceId, profileName).then(reload).catch(() => { /* best-effort */ });
   }, [workspaceId, reload]);
 
-  const bindLive = useCallback(() => {
-    // Honest one-line grant: binding live = this workspace's agent gets the
-    // user's whole live browser (Chrome adds its own per-connection dialog).
-    if (!window.confirm(t('chromeProfiles.liveConfirm'))) return;
-    bind('live');
-  }, [bind, t]);
-
-  const openFormRow = useCallback(() => {
-    formOpenRef.current = true;
-    setFormOpen(true);
-    setNewError(null);
-  }, []);
-
   const closeForm = useCallback(() => {
     const wasOpen = formOpenRef.current;
     formOpenRef.current = false;
@@ -93,11 +84,48 @@ export default function WorkspaceChromeProfileMenu({
     if (wasOpen && !pointerInsideRef.current) setOpen(false);
   }, []);
 
-  // Drop any half-typed profile name when the submenu itself goes away, so
-  // re-opening it never resurrects a stale name or a stale error.
+  const closeLiveConfirm = useCallback(() => {
+    // Same swallowed-mouseleave recovery as closeForm: the guard keeps the
+    // submenu open while the confirm is up, and mouseleave won't fire again.
+    const wasOpen = confirmLiveOpenRef.current;
+    confirmLiveOpenRef.current = false;
+    setConfirmLiveOpen(false);
+    if (wasOpen && !pointerInsideRef.current) setOpen(false);
+  }, []);
+
+  const bindLive = useCallback(() => {
+    // Binding live hands this workspace's agent the user's WHOLE live browser
+    // (all tabs + logins), so it takes an explicit confirm. Surfaced INLINE:
+    // window.confirm is a native OS dialog that clashes with the app chrome
+    // (owner feedback). One at a time — drop any half-typed new-profile form.
+    closeForm();
+    confirmLiveOpenRef.current = true;
+    setConfirmLiveOpen(true);
+  }, [closeForm]);
+
+  const confirmBindLive = useCallback(() => {
+    closeLiveConfirm();
+    bind('live');
+  }, [closeLiveConfirm, bind]);
+
+  const openFormRow = useCallback(() => {
+    // No need to close the live confirm here: the "new profile…" row and the
+    // confirm share the one bottom slot, so this row is only clickable while the
+    // confirm is closed. The reverse — opening the confirm from the always-
+    // visible Live row while the form is up — is what bindLive's closeForm handles.
+    formOpenRef.current = true;
+    setFormOpen(true);
+    setNewError(null);
+  }, []);
+
+  // Drop any half-typed profile name / an open live confirm when the submenu
+  // itself goes away, so re-opening never resurrects stale state.
   useEffect(() => {
-    if (!open) closeForm();
-  }, [open, closeForm]);
+    if (!open) {
+      closeForm();
+      closeLiveConfirm();
+    }
+  }, [open, closeForm, closeLiveConfirm]);
 
   /**
    * Create the profile, then bind it — same create→bind flow the old
@@ -152,9 +180,10 @@ export default function WorkspaceChromeProfileMenu({
         // Record the pointer leaving even when the close is suppressed, so
         // closeForm knows whether it still has to close the submenu itself.
         pointerInsideRef.current = false;
-        // Hover-close would eat a half-typed profile name the moment the
-        // pointer drifted off the submenu — keep it open while the form is up.
-        if (formOpen) return;
+        // Hover-close would eat a half-typed profile name — or dismiss the
+        // danger confirm — the moment the pointer drifted off the submenu.
+        // Keep it open while either is up.
+        if (formOpen || confirmLiveOpen) return;
         setOpen(false);
       }}
     >
@@ -179,6 +208,7 @@ export default function WorkspaceChromeProfileMenu({
             style={{ color: 'var(--text-main)' }}
             onClick={bindLive}
             title={t('chromeProfiles.liveDesc')}
+            data-testid="chrome-profile-live"
           >
             <span className="w-3 text-[var(--accent-amber)]">{bound === 'live' ? '●' : ''}</span>
             <span className="truncate flex-1">{t('chromeProfiles.liveProfile')}</span>
@@ -200,7 +230,41 @@ export default function WorkspaceChromeProfileMenu({
             );
           })}
           <div className="border-t border-[var(--bg-overlay)] mt-1 pt-1">
-            {formOpen ? (
+            {confirmLiveOpen ? (
+              <div
+                className="px-3 py-1.5"
+                data-testid="chrome-profile-live-confirm"
+                onClick={(e) => e.stopPropagation()}
+                onKeyDown={(e) => {
+                  if (e.key === 'Escape') {
+                    e.preventDefault();
+                    closeLiveConfirm();
+                  }
+                }}
+              >
+                <div className="text-[11px] leading-snug text-[var(--text-sub)]">
+                  {t('chromeProfiles.liveConfirm')}
+                </div>
+                <div className="flex items-center gap-1.5 mt-1.5">
+                  {/* Final confirm of a danger grant → solid red (DESIGN.md). */}
+                  <button
+                    className="px-2 py-0.5 rounded-[5px] text-[11px] font-semibold bg-[var(--accent-red)] text-[var(--bg-base)]"
+                    data-testid="chrome-profile-live-confirm-yes"
+                    onClick={confirmBindLive}
+                  >
+                    {t('chromeProfiles.liveConfirmYes')}
+                  </button>
+                  <button
+                    autoFocus
+                    className="px-2 py-0.5 rounded-[5px] text-[11px] text-[var(--text-muted)] hover:text-[var(--text-main)]"
+                    data-testid="chrome-profile-live-confirm-cancel"
+                    onClick={closeLiveConfirm}
+                  >
+                    {t('chromeProfiles.liveConfirmCancel')}
+                  </button>
+                </div>
+              </div>
+            ) : formOpen ? (
               <div className="px-3 py-1.5" data-testid="chrome-profile-new-form">
                 <input
                   autoFocus

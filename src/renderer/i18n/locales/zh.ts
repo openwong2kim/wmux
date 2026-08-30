@@ -1074,6 +1074,8 @@ export const zh = {
   'chromeProfiles.liveProfile': 'Live Chrome（你的浏览器）',
   'chromeProfiles.liveDesc': '连接到你正在使用的 Chrome — 需要先在 chrome://inspect/#remote-debugging 启用一次。',
   'chromeProfiles.liveConfirm': '允许此工作区的智能体访问你的整个 Chrome（所有标签页和登录状态）？每次连接时 Chrome 还会单独询问权限。',
+  'chromeProfiles.liveConfirmYes': '绑定 Live',
+  'chromeProfiles.liveConfirmCancel': '取消',
   'settings.browserLightweight': '轻量级后台浏览器',
   'settings.browserLightweightDesc': '降低不可见内置浏览器面板（隐藏工作区、被缩放的面板、最小化窗口）的 CPU 用量。自动化（MCP/截图）仍全速运行。只降低 CPU，不降低内存。',
   'settings.browserDiscard': '丢弃隐藏浏览器（释放内存）',

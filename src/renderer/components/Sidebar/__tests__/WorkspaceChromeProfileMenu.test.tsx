@@ -80,6 +80,7 @@ function leaveSubmenu(container: Element) {
 
 let promptSpy: ReturnType<typeof vi.spyOn>;
 let alertSpy: ReturnType<typeof vi.spyOn>;
+let confirmSpy: ReturnType<typeof vi.spyOn>;
 
 beforeEach(() => {
   list.mockClear();
@@ -95,6 +96,11 @@ beforeEach(() => {
   alertSpy = vi.spyOn(window, 'alert').mockImplementation(() => {
     throw new Error('alert() is not available in the Electron renderer');
   });
+  // The live-bind confirm must be inline too — reaching for the native dialog
+  // is the bug the owner flagged ("doesn't match our tone").
+  confirmSpy = vi.spyOn(window, 'confirm').mockImplementation(() => {
+    throw new Error('confirm() is not available in the Electron renderer');
+  });
 });
 
 afterEach(() => {
@@ -102,6 +108,7 @@ afterEach(() => {
   delete (window as unknown as { electronAPI?: unknown }).electronAPI;
   promptSpy.mockRestore();
   alertSpy.mockRestore();
+  confirmSpy.mockRestore();
 });
 
 describe('WorkspaceChromeProfileMenu — inline new-profile form', () => {
@@ -250,5 +257,99 @@ describe('WorkspaceChromeProfileMenu — inline new-profile form', () => {
 
     expect(bind).toHaveBeenCalledWith('ws-1', 'work-account');
     expect(q(container, 'chrome-profile-new-open')).toBeNull();
+  });
+});
+
+// Binding the reserved 'live' profile hands the workspace's agent the user's
+// whole live browser, so it takes a confirm. That confirm used to be
+// window.confirm — a native OS dialog the owner flagged as off-tone. These pin
+// the inline replacement: it opens instead of the native dialog, binds only on
+// an explicit yes, and survives a pointer-leave the same way the form does.
+describe('WorkspaceChromeProfileMenu — inline live-bind confirm', () => {
+  it('opens an inline confirm instead of calling window.confirm, and does not bind yet', async () => {
+    const container = render(<WorkspaceChromeProfileMenu workspaceId="ws-1" flipLeft={false} />);
+    await flush();
+    openSubmenu(container);
+
+    click(q(container, 'chrome-profile-live')!);
+
+    expect(q(container, 'chrome-profile-live-confirm')).not.toBeNull();
+    expect(confirmSpy).not.toHaveBeenCalled();
+    expect(bind).not.toHaveBeenCalled();
+  });
+
+  it('binds live only after the user confirms', async () => {
+    const container = render(<WorkspaceChromeProfileMenu workspaceId="ws-1" flipLeft={false} />);
+    await flush();
+    openSubmenu(container);
+    click(q(container, 'chrome-profile-live')!);
+
+    click(q(container, 'chrome-profile-live-confirm-yes')!);
+    await flush();
+
+    expect(bind).toHaveBeenCalledWith('ws-1', 'live');
+    expect(q(container, 'chrome-profile-live-confirm')).toBeNull();
+  });
+
+  it('cancel dismisses the confirm without binding', async () => {
+    const container = render(<WorkspaceChromeProfileMenu workspaceId="ws-1" flipLeft={false} />);
+    await flush();
+    openSubmenu(container);
+    click(q(container, 'chrome-profile-live')!);
+
+    click(q(container, 'chrome-profile-live-confirm-cancel')!);
+    await flush();
+
+    expect(bind).not.toHaveBeenCalled();
+    expect(q(container, 'chrome-profile-live-confirm')).toBeNull();
+  });
+
+  it('Escape dismisses the confirm without binding', async () => {
+    const container = render(<WorkspaceChromeProfileMenu workspaceId="ws-1" flipLeft={false} />);
+    await flush();
+    openSubmenu(container);
+    click(q(container, 'chrome-profile-live')!);
+
+    act(() => {
+      q(container, 'chrome-profile-live-confirm')!
+        .dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    });
+
+    expect(q(container, 'chrome-profile-live-confirm')).toBeNull();
+    expect(bind).not.toHaveBeenCalled();
+  });
+
+  it('keeps the submenu open when the pointer leaves while the confirm is up', async () => {
+    const container = render(<WorkspaceChromeProfileMenu workspaceId="ws-1" flipLeft={false} />);
+    await flush();
+    openSubmenu(container);
+    click(q(container, 'chrome-profile-live')!);
+
+    leaveSubmenu(container);
+
+    // A danger confirm that vanished the instant the pointer drifted off would
+    // be trivially defeated — the guard must hold it open like the form.
+    expect(q(container, 'chrome-profile-live-confirm')).not.toBeNull();
+  });
+
+  it('opening the live confirm dismisses an open new-profile form (one at a time)', async () => {
+    const container = render(<WorkspaceChromeProfileMenu workspaceId="ws-1" flipLeft={false} />);
+    await flush();
+    openSubmenu(container);
+    // The new-profile form and the confirm share one bottom slot; the Live row
+    // stays visible above it, so a click there while the form is up must swap
+    // the slot to the confirm rather than stack the two.
+    click(q(container, 'chrome-profile-new-open')!);
+    setInputValue(q<HTMLInputElement>(container, 'chrome-profile-new-input')!, 'half-typed');
+    expect(q(container, 'chrome-profile-new-form')).not.toBeNull();
+
+    click(q(container, 'chrome-profile-live')!);
+
+    expect(q(container, 'chrome-profile-new-form')).toBeNull();
+    expect(q(container, 'chrome-profile-live-confirm')).not.toBeNull();
+    // And the dropped form must not resurrect its half-typed name later.
+    click(q(container, 'chrome-profile-live-confirm-cancel')!);
+    click(q(container, 'chrome-profile-new-open')!);
+    expect(q<HTMLInputElement>(container, 'chrome-profile-new-input')!.value).toBe('');
   });
 });
