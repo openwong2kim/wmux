@@ -24,8 +24,54 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { randomBytes } from 'crypto';
 
+/** Sharing violations and antivirus scans surface as these. They say "someone
+ *  is holding the file right now", not "you may not do this", so a bounded
+ *  wait is the correct response to all three. */
+const RENAME_RETRY_CODES = new Set(['EPERM', 'EACCES', 'EBUSY']);
+const RENAME_ATTEMPTS = 5;
+
+/** Block the thread. These call sites are synchronous by contract — the whole
+ *  installer is — and the total wait is capped at 150ms. */
+function sleepSync(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+export interface RenameDeps {
+  rename?: (from: string, to: string) => void;
+  sleep?: (ms: number) => void;
+  attempts?: number;
+}
+
+/**
+ * `fs.renameSync` with a bounded backoff over the transient codes.
+ *
+ * Retried by error code rather than by platform: the same codes mean the same
+ * thing wherever they appear, and a genuine permission failure still surfaces
+ * — 150ms later, on a path a human just clicked.
+ */
+export function renameWithRetry(from: string, to: string, deps: RenameDeps = {}): void {
+  const rename = deps.rename ?? ((a: string, b: string) => fs.renameSync(a, b));
+  const sleep = deps.sleep ?? sleepSync;
+  const attempts = deps.attempts ?? RENAME_ATTEMPTS;
+  for (let attempt = 1; ; attempt++) {
+    try {
+      rename(from, to);
+      return;
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code ?? '';
+      if (attempt >= attempts || !RENAME_RETRY_CODES.has(code)) throw err;
+      sleep(10 * 2 ** (attempt - 1));
+    }
+  }
+}
+
 /** Mode for a config file we are creating from scratch. Claude's settings.json
- *  can hold credentials in `env`; owner-only is the safe thing to author. */
+ *  can hold credentials in `env`; owner-only is the safe thing to author.
+ *
+ *  POSIX only, and worth being plain about: on Windows `chmod` moves the
+ *  read-only bit and nothing else, so neither this nor the mode carried over
+ *  from an existing file changes who can read it. There the file inherits the
+ *  profile directory's ACL, which is already user-scoped. */
 const NEW_FILE_MODE = 0o600;
 
 /** Follow a symlinked config to the file it points at, so the write lands on
@@ -73,7 +119,7 @@ export function writeJsonAtomic(filePath: string, data: unknown): void {
     // openSync's mode argument is masked by umask; set it outright so a
     // 0600 config does not come back 0644.
     fs.chmodSync(tmp, mode);
-    fs.renameSync(tmp, target);
+    renameWithRetry(tmp, target);
   } catch (err) {
     try {
       fs.unlinkSync(tmp);
@@ -119,7 +165,7 @@ export function copyFileAtomic(source: string, dest: string): void {
   const tmp = `${dest}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`;
   try {
     fs.copyFileSync(source, tmp);
-    fs.renameSync(tmp, dest);
+    renameWithRetry(tmp, dest);
   } catch (err) {
     try {
       fs.unlinkSync(tmp);
