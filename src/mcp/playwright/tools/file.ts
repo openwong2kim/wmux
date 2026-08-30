@@ -40,7 +40,7 @@ export const BROWSER_FILE_UPLOAD_SHAPE = {
   surfaceId: optionalSurfaceId,
 };
 
-const BROWSER_DOWNLOAD_SHAPE = {
+export const BROWSER_DOWNLOAD_SHAPE = {
   ref: z
     .string()
     .describe('Element that triggers the download.'),
@@ -50,18 +50,22 @@ const BROWSER_DOWNLOAD_SHAPE = {
     .describe('Save the download as this name.'),
   timeout: z
     .number()
+    .int()
+    .min(1)
     .optional()
     .describe('Milliseconds to wait for the download to START; default 30000.'),
   surfaceId: optionalSurfaceId,
 };
 
-const BROWSER_WAIT_FOR_DOWNLOAD_SHAPE = {
+export const BROWSER_WAIT_FOR_DOWNLOAD_SHAPE = {
   filename: z
     .string()
     .optional()
     .describe('Expected filename.'),
   timeout: z
     .number()
+    .int()
+    .min(1)
     .optional()
     .describe('Milliseconds; default 30000.'),
   surfaceId: optionalSurfaceId,

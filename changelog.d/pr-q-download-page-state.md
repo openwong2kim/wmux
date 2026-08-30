@@ -26,3 +26,7 @@
   download succeeds under the 30s default. The default is unchanged; the
   parameter exists for pages that are slow to begin, and the description now
   says which half of the operation it covers.
+- **`timeout: 0` disabled the download waits.** Playwright reads zero as "wait
+  forever", so on `browser_download` it removed the very start-bound the value
+  exists to impose, and on `browser_wait_for_download` it hung a call whose
+  entire job is to give up. Both now require a positive whole number.

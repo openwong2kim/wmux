@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { z } from 'zod';
 
 const { mockSendRpc, getPage, resolveRef } = vi.hoisted(() => ({
   mockSendRpc: vi.fn(),
@@ -19,7 +20,11 @@ vi.mock('../PlaywrightEngine', () => ({
 
 vi.mock('../snapshot', () => ({ resolveRef }));
 
-import { registerFileTools } from '../tools/file';
+import {
+  BROWSER_DOWNLOAD_SHAPE,
+  BROWSER_WAIT_FOR_DOWNLOAD_SHAPE,
+  registerFileTools,
+} from '../tools/file';
 
 type ToolResult = { content: { type: 'text'; text: string }[]; isError?: boolean };
 type ToolHandler = (args: Record<string, unknown>) => Promise<ToolResult>;
@@ -253,4 +258,30 @@ describe('browser_download restore judges by URL, not by goBack resolving', () =
     // Returned on the poll, not after the 10s restore budget.
     expect(Date.now() - started).toBeLessThan(3_000);
   });
+});
+
+// Schema-level, because zod rejects before the handler runs. Playwright reads
+// timeout 0 as "wait forever": on browser_download that hangs the call the
+// start-timeout exists to bound, and on browser_wait_for_download it hangs a
+// call whose whole purpose is to give up.
+describe('download timeout bounds', () => {
+  for (const [name, shape] of [
+    ['browser_download', BROWSER_DOWNLOAD_SHAPE],
+    ['browser_wait_for_download', BROWSER_WAIT_FOR_DOWNLOAD_SHAPE],
+  ] as const) {
+    const schema = z.object(shape);
+    const base = name === 'browser_download' ? { ref: '0' } : {};
+
+    it(`${name} refuses 0, negatives and fractions`, () => {
+      expect(schema.safeParse({ ...base, timeout: 0 }).success).toBe(false);
+      expect(schema.safeParse({ ...base, timeout: -1 }).success).toBe(false);
+      expect(schema.safeParse({ ...base, timeout: 2.5 }).success).toBe(false);
+    });
+
+    it(`${name} accepts a positive whole number, and omitting it`, () => {
+      expect(schema.safeParse({ ...base, timeout: 1 }).success).toBe(true);
+      expect(schema.safeParse({ ...base, timeout: 90_000 }).success).toBe(true);
+      expect(schema.safeParse(base).success).toBe(true);
+    });
+  }
 });
