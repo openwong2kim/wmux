@@ -334,4 +334,55 @@ describe('browser navigation MCP workspace contract', () => {
     expect(newWithSurface.content[0].text).toContain('[BROWSER_TABS_INVALID_ARGUMENT]');
     expect(mockSendRpc).not.toHaveBeenCalled();
   });
+
+  // #922 PR-C — the scope refusal must survive the catch-all.
+  //
+  // Folding browser.tabs into the caller-scope table changed how a refusal
+  // arrives: main now THROWS `BROWSER_SCOPE_REFUSED` instead of returning a
+  // structured tabs error. The catch below relabels anything it does not
+  // recognise as "temporarily unavailable", which would turn a TERMINAL
+  // refusal into a transient one — the agent retries forever and never sees
+  // the one sentence telling it what to change. That is exactly what
+  // `scopeRefusalError`'s contract ("name it, say it is terminal, say what to
+  // do instead") exists to prevent, so it is pinned here.
+  it('surfaces a scope refusal verbatim instead of calling it unavailable', async () => {
+    mockSendRpc.mockRejectedValue(
+      new Error(
+        'browser.tabs: BROWSER_SCOPE_REFUSED: omit workspaceId and this resolves ' +
+          'to the workspace you claimed. Do not retry unchanged.',
+      ),
+    );
+
+    const result = await browserTabs({ action: 'list' });
+    const text = result.content.map((c) => c.text).join('\n');
+
+    expect(result.isError).toBe(true);
+    // The code says terminal, not transient.
+    expect(text).toContain('BROWSER_TABS_SCOPE_REFUSED');
+    expect(text).not.toContain('BROWSER_TABS_UNAVAILABLE');
+    expect(text).not.toContain('temporarily unavailable');
+    // And the remedy actually reaches the agent.
+    expect(text).toContain('omit workspaceId');
+    expect(text).toContain('Do not retry unchanged');
+  });
+
+  it('still reports a genuinely transient failure as unavailable', async () => {
+    // The other half: relabelling must not swallow real transients either.
+    mockSendRpc.mockRejectedValue(new Error('socket hang up'));
+
+    const result = await browserTabs({ action: 'list' });
+    const text = result.content.map((c) => c.text).join('\n');
+
+    expect(text).toContain('BROWSER_TABS_UNAVAILABLE');
+    expect(text).not.toContain('BROWSER_TABS_SCOPE_REFUSED');
+  });
+
+  it('still reports an old main process as unsupported', async () => {
+    mockSendRpc.mockRejectedValue(new Error('Unknown method: browser.tabs'));
+
+    const result = await browserTabs({ action: 'list' });
+    const text = result.content.map((c) => c.text).join('\n');
+
+    expect(text).toContain('BROWSER_TABS_UNSUPPORTED');
+  });
 });

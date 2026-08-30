@@ -330,6 +330,20 @@ export function registerNavigationTools(server: McpServer, deps: BrowserToolDeps
             ),
           );
         }
+        // A workspace-scope refusal is TERMINAL and carries its own remedy
+        // ("omit workspaceId and this resolves to…", "Do not retry unchanged").
+        // #922 PR-C routed browser.tabs through the caller-scope table, which
+        // reports a refusal by THROWING — so without this branch the catch-all
+        // below would relabel it "temporarily unavailable" and the agent would
+        // retry a call that can never succeed, never seeing the one sentence
+        // that says how to fix it. Pass the message through verbatim: rewriting
+        // a terminal refusal as a transient failure is the exact anti-pattern
+        // `scopeRefusalError` exists to prevent.
+        if (/BROWSER_SCOPE_REFUSED/.test(message)) {
+          return tabsToolError(
+            browserTabsError('BROWSER_TABS_SCOPE_REFUSED', message),
+          );
+        }
         return tabsToolError(
           browserTabsError(
             'BROWSER_TABS_UNAVAILABLE',

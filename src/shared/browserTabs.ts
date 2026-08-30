@@ -21,6 +21,12 @@ export const BROWSER_TABS_ERROR_CODES = [
   'BROWSER_TABS_WORKSPACE_UNRESOLVED',
   'BROWSER_TABS_UNSUPPORTED',
   'BROWSER_TABS_UNAVAILABLE',
+  /**
+   * #922 PR-C — the caller-scope table refused this call. TERMINAL: the message
+   * carries the remedy, and retrying it unchanged cannot succeed. Kept distinct
+   * from BROWSER_TABS_UNAVAILABLE precisely so it is not read as transient.
+   */
+  'BROWSER_TABS_SCOPE_REFUSED',
   'BROWSER_TABS_INVALID_ARGUMENT',
   'BROWSER_TAB_NOT_FOUND',
   'BROWSER_TAB_URL_BLOCKED',

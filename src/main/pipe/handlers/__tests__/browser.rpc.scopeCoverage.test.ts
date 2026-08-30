@@ -106,16 +106,28 @@ describe('browser RPC workspace-scope coverage (#810)', () => {
     // of handlers that still do it is an explicit, reviewed list rather than a
     // habit. Adding to it should require changing this test.
     //
-    //   browser.tabs   fails closed on its own with
-    //                  BROWSER_TABS_WORKSPACE_UNRESOLVED, and is a
-    //                  wmux.internal RPC whose id the bundled MCP resolves.
-    //   browser.open   surface LIFECYCLE, not target resolution: it routes a
-    //   browser.close  create/close through the renderer, which falls back to
-    //                  the UI-active workspace when the field is absent. Same
-    //                  class of gap as the lookup path this PR closes, but #846
-    //                  never shadowed them, so there is no traffic evidence to
-    //                  enforce on. Measure before flipping — tracked on #810.
-    const ALLOWED = ['browser.tabs', 'browser.open', 'browser.close'];
+    // The list is EMPTY as of #922 PR-C: no browser handler resolves a
+    // workspace out of the request body any more. `browser.open`'s 'external'
+    // branch is still unscoped — the OS browser owns no workspace — but it
+    // returns before a workspace is needed, so it reads nothing rather than
+    // reading a value it discards.
+    //
+    // `browser.close` and `browser.tabs` LEFT this list in #922 PR-C: all of
+    // their branches now resolve through `scopeFor`, so none of them reads the
+    // request field. The entries used to say they were "surface LIFECYCLE, not
+    // target resolution" and had to wait for traffic evidence before flipping —
+    // the evidence question was answered differently in the end. The `verified`
+    // lane gave an omitted workspaceId an answer, so folding them in stopped
+    // being a new refusal for approved callers and became the removal of an
+    // exception.
+    //
+    // One thing folding `browser.tabs` did NOT close, recorded so the next
+    // reader does not assume it did: it is `wmux.internal`, which no plugin can
+    // declare, but the enforcer allows an envelope-less caller before it checks
+    // the capability. Ruling (c) leaves the legacy lane accepting the workspace
+    // such a caller names, so that one caller class is unchanged here. It
+    // closes with the grandfather, on #1111.
+    const ALLOWED: string[] = [];
 
     const readers = blocks
       .filter((b) => /params\[['"]workspaceId['"]\]/.test(b.body))

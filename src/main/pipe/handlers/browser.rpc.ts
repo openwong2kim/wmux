@@ -129,19 +129,48 @@ function requestedWorkspaceId(params: Record<string, unknown>): string | undefin
  *           (`pane.list`, `browser.open` in `useRpcBridge.ts`) resolve a
  *           workspace without ever reaching here. #922 PR2 covers those at
  *           dispatch instead (`hostedWorkspaceBinding.ts`) — including
- *           `browser.open` / `browser.close`, the two `browser.*` methods
- *           that never reach this table. They are bound THERE rather than
- *           routed in here on purpose: this table's other lanes apply to wire
- *           callers too, and folding two previously unscoped methods into it
- *           would newly refuse an approved wire caller that omits
- *           `workspaceId` — a change #922 explicitly holds for the
- *           peer-credential track.
- *   closes  (#922 PR-B) a wire caller that CLAIMED a workspace is now scoped to
- *           the one it claimed. `mcp.claimWorkspace` mints a token bound to the
- *           workspace it creates for that caller (`workspaceClaimTrust.ts`), so
- *           the association is one main RECORDED rather than one the caller
- *           asserts — the `verified` lane below. A claim that has gone stale is
+ *           `browser.open` / `browser.close`. #922 PR-C then routed those two
+ *           through this table as well, once the `verified` lane gave an
+ *           omitted `workspaceId` an answer — see the closes entry below.
+ *
+ *           Both mechanisms still apply to those two, and that is deliberate:
+ *           the dispatch binding runs regardless of `mcp.mode`, so a hosted
+ *           plugin stays confined even in shadow, where this table is inert.
+ *           Removing the dispatch coverage now that the lane exists would hand
+ *           shadow-mode plugins back the reach #1097 took away. They do not
+ *           fight: dispatch fills `workspaceId` with the host binding, and the
+ *           hosted lane then sees a request that names its own workspace.
+ *   closes  (#922 PR-B) a wire CALL that presents a claim token is scoped to
+ *           the workspace that claim created. `mcp.claimWorkspace` mints the
+ *           token bound to it (`workspaceClaimTrust.ts`), so the association is
+ *           one main RECORDED rather than one the caller asserts — the
+ *           `verified` lane below. A presented claim that has gone stale is
  *           refused rather than demoted into `declared`.
+ *
+ *           Read that scope literally: it binds the CALL, not the caller. The
+ *           lane keys on the token being PRESENT, and nothing server-side
+ *           records that a given caller ever claimed — `clientName` is
+ *           self-asserted, which is why keying on it was rejected. So a caller
+ *           that omits the field is indistinguishable from one that never
+ *           claimed and lands in `declared`, with the freedom that lane still
+ *           has. The bundled client stamps the token on every envelope once it
+ *           holds one, so an honest caller is bound; a determined one drops a
+ *           field. Closing that gap needs a server-side record of who claimed,
+ *           which is the same missing primitive the OPEN items below name.
+ *   closes  (#922 PR-C) `browser.open`, `browser.close` and `browser.tabs`
+ *           resolve through this
+ *           table instead of handing the request's `workspaceId` straight to
+ *           the renderer or the surface lookup. `open` / `close` fell back to
+ *           the UI-active workspace; `tabs` acted on whatever it was given.
+ *           They were held out while `declared` accepted any named workspace,
+ *           because
+ *           folding them in would have newly refused an approved wire caller
+ *           that omits the field. The `verified` lane answers that caller now,
+ *           so the remaining refusal is the one every sibling `browser.*`
+ *           method already gives: this stops two methods being the exception,
+ *           rather than tightening the rule. The 'external' backend is
+ *           excluded — it hands the url to the OS browser, which belongs to no
+ *           workspace.
  *   narrows (#922, owner ruling (c)) the `legacy` lane no longer resolves an
  *           OMITTED workspaceId through the workspace-blind "first registered
  *           surface" lookup; that case is refused. The lane is NOT closed — a
@@ -751,7 +780,7 @@ export function registerBrowserRpc(
    * bundled MCP server, not trusted from an arbitrary capability-bearing
    * plugin. The renderer re-checks ownership at the mutation boundary.
    */
-  router.register('browser.tabs', async (params) => {
+  router.register('browser.tabs', async (params, ctx) => {
     const actionValue = typeof params['action'] === 'string' ? params['action'] : 'list';
     if (!(BROWSER_TABS_ACTIONS as readonly string[]).includes(actionValue)) {
       return browserTabsError(
@@ -760,10 +789,21 @@ export function registerBrowserRpc(
       );
     }
     const action = actionValue as BrowserTabsAction;
-    const workspaceId =
-      typeof params['workspaceId'] === 'string' && params['workspaceId'].length > 0
-        ? params['workspaceId']
-        : '';
+    // #922 PR-C — the last method that read the workspace straight out of the
+    // body now decides it the same way its siblings do. `select` and `close`
+    // act on a surface, so leaving it outside the table meant one method could
+    // still be pointed anywhere the lane rules would have refused.
+    //
+    // What this does NOT close, stated because the gap is easy to misread as
+    // fixed: `browser.tabs` is `wmux.internal`, which no plugin can declare —
+    // but `PermissionEnforcer` allows an envelope-less caller BEFORE it looks
+    // at the capability, so a legacy caller reaches this method at all. Under
+    // ruling (c) the legacy lane still accepts the workspace such a caller
+    // names, so scoping here confines the identified lanes and leaves that one
+    // exactly where it was. Closing it means closing the grandfather, which is
+    // #1111's shared deprecation clock, not this table's to start early.
+    const scoped = scopeFor('browser.tabs', params, ctx);
+    const workspaceId = scoped && scoped.length > 0 ? scoped : '';
     if (!workspaceId) {
       return browserTabsError(
         'BROWSER_TABS_WORKSPACE_UNRESOLVED',
@@ -910,9 +950,27 @@ export function registerBrowserRpc(
    * Opens a new browser surface in the active pane.
    * params: { url?: string }
    */
-  router.register('browser.open', async (params) => {
+  router.register('browser.open', async (params, ctx) => {
     const url = typeof params['url'] === 'string' ? params['url'] : undefined;
-    const workspaceId = typeof params['workspaceId'] === 'string' ? params['workspaceId'] : undefined;
+    // #922 PR-C — `browser.open` joins the lane table its siblings already use.
+    //
+    // It was left out on purpose while `declared` accepted any named workspace:
+    // folding it in then would have newly refused an approved wire caller that
+    // omits `workspaceId`, which #922 held for this track. Now the omission has
+    // an answer — a caller that claimed resolves through the `verified` lane —
+    // and the refusal that remains is the one every other `browser.*` method
+    // already gives. So this does not tighten a rule; it stops one method from
+    // being the exception to it.
+    //
+    // NOT applied on the 'external' branch: that backend hands the url to the
+    // OS browser, which belongs to no workspace, so there is nothing to scope
+    // and refusing an unscoped caller would break a working path for no gain.
+    // That branch returns before this value is used, so it is not computed at
+    // all there — reading the raw request field for it would be dead code, and
+    // keeping it would be the only thing holding this file's "no handler reads
+    // workspaceId out of the body" invariant open.
+    const workspaceId =
+      backend() === 'external' ? undefined : scopeFor('browser.open', params, ctx);
     if (backend() === 'chrome') {
       // Dedicated-Chrome open: a tracked tab with a real handle — unlike
       // 'external', about:blank is a valid open here (auto-open path).
@@ -938,11 +996,13 @@ export function registerBrowserRpc(
     return sendToRenderer(getWindow, 'browser.open', {
       partition: getActivePartition(),
       ...(url && { url }),
-      // workspaceId is dropped when absent; the renderer (useRpcBridge.ts) then
-      // falls back to the UI-active workspace. The MCP path guarantees a non-empty
-      // id via requireWorkspaceId (src/mcp/index.ts -> browser_open), so it never
-      // hits that fallback. Any future NON-MCP caller of browser.open must likewise
-      // pass an explicit workspaceId to avoid active-workspace misrouting.
+      // The workspace now comes from `scopeFor` above, not straight from the
+      // request. It is still dropped when absent, and the renderer then falls
+      // back to the UI-active workspace — but under `mcp.mode: enforce` an
+      // absent value means the lane table ALLOWED an unscoped caller (operator,
+      // or legacy naming a workspace), never that an identified one forgot to
+      // say. In shadow the old request-derived value is passed through
+      // unchanged, so the rollback lever still restores the previous behaviour.
       ...(workspaceId && { workspaceId }),
     });
   });
@@ -954,14 +1014,21 @@ export function registerBrowserRpc(
    */
   router.register('browser.close', async (params, ctx) => {
     const surfaceId = typeof params['surfaceId'] === 'string' ? params['surfaceId'] : undefined;
-    const workspaceId = typeof params['workspaceId'] === 'string' ? params['workspaceId'] : undefined;
+    // #922 PR-C — both branches now resolve through the lane table.
+    //
+    // `scopeFor` used to run on the chrome branch alone, because folding the
+    // builtin one in would have refused an approved wire caller that omits
+    // `workspaceId` before that omission had an answer. The `verified` lane is
+    // that answer, so the two branches stop disagreeing about who owns the
+    // surface being torn down — and a close is a teardown, which is the worst
+    // place for the two to differ. Called ONCE: `scopeFor` writes an audit
+    // entry, and one decision should leave one record.
+    const workspaceId = scopeFor('browser.close', params, ctx);
     // Chrome tabs live outside the renderer entirely, so the bridge send below
     // was a silent no-op for them — browser_close simply never worked on the
-    // chrome backend. Close them here instead. `scopeFor` is applied ONLY on
-    // this branch: the builtin branch keeps its pre-#810 shadow/enforce
-    // semantics, which this change must not quietly alter.
+    // chrome backend. Close them here instead.
     if (backend() === 'chrome') {
-      const scope = scopeFor('browser.close', params, ctx);
+      const scope = workspaceId;
       const launcher = requireChrome('browser.close', scope);
       if (surfaceId) {
         // Ownership first, exactly like browser.tabs close: a launcher is
@@ -1010,10 +1077,10 @@ export function registerBrowserRpc(
     }
     return sendToRenderer(getWindow, 'browser.close', {
       ...(surfaceId && { surfaceId }),
-      // Same caller-workspace routing contract as browser.open above: absent
-      // workspaceId falls back to the UI-active workspace in the renderer.
-      // MCP/CLI callers pass an explicit id so a close issued from workspace A
-      // can never tear down the browser the user is viewing in workspace B.
+      // Same caller-workspace routing contract as browser.open above, and now
+      // the same source: the decided scope rather than the raw request field.
+      // Absent still falls back to the UI-active workspace in the renderer,
+      // which under enforce means the table allowed an unscoped caller.
       ...(workspaceId && { workspaceId }),
     });
   });
