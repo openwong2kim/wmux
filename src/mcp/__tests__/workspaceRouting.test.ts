@@ -20,8 +20,11 @@ import path from 'node:path';
 //   2. browser_open is workspace-routed: it MUST use requireWorkspaceId().
 //   3. browser_session_start is GLOBAL (one ProfileManager + PortAllocator in
 //      browser.rpc.ts; the handler ignores workspaceId). It carries NO workspace
-//      identity, matching browser_session_stop/status/list — so it can never
-//      reintroduce the active-workspace fallback bug.
+//      identity, matching browser_session_stop/list — so it can never reintroduce
+//      the active-workspace fallback bug. browser_session_status is the exception:
+//      it scopes per-workspace on the chrome backend (which profile THIS
+//      workspace is bound to), so it resolves its own workspaceId through the
+//      fail-soft read resolver (below), like surface_list / pane_list.
 //   4. Every Playwright browser tool injects requireWorkspaceId() at its
 //      production registration site, so isolated unit tests cannot mask
 //      accidental weak wiring or an unscoped fallback/lease path.
@@ -237,6 +240,22 @@ describe('MCP workspace routing (source-level invariants)', () => {
     // Lock it global: neither resolver. If sessions ever become per-workspace,
     // this deliberate failure forces a conscious re-think of the routing contract.
     const block = toolBlock('browser_session_start');
+    expect(block).not.toMatch(/requireWorkspaceId\(\)/);
+    expect(block).not.toMatch(/resolveWorkspaceId\(\)/);
+  });
+
+  it('browser_session_status is workspace-SCOPED — routes through the fail-soft read resolver so the chrome backend reports the caller\'s own binding', () => {
+    // Unlike start/stop/list, status answers "which profile THIS workspace is
+    // bound to", which scopes per-workspace on the chrome backend
+    // (statusForWorkspace). The server has no ctx→workspace lane for a normal
+    // agent, so the MCP layer MUST resolve and pass the caller's workspaceId, or
+    // status silently reports the 'default' profile for a live-bound workspace
+    // (undermining #1105's "this workspace" promise). It is a READ, so it resolves
+    // via the fail-soft resolveScopedReadWorkspaceId ('' on an unresolvable
+    // identity → the builtin path never throws), never requireWorkspaceId nor the
+    // raw weak resolver.
+    const block = toolBlock('browser_session_status');
+    expect(block).toMatch(/resolveScopedReadWorkspaceId\(\)/);
     expect(block).not.toMatch(/requireWorkspaceId\(\)/);
     expect(block).not.toMatch(/resolveWorkspaceId\(\)/);
   });
