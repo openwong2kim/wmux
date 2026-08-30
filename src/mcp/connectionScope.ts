@@ -26,6 +26,17 @@ export interface RpcIdentityState {
   clientVersion?: string;
   /** Commander role claim (BYOB P4). Presence of the field IS the claim. */
   commanderToken?: string;
+  /**
+   * #922 PR-A — the workspace claim token returned by `mcp.claimWorkspace`.
+   *
+   * It lives HERE, beside the rest of the envelope identity, for the same
+   * reason `pinnedRoute` does: the broker hosts N server instances in one
+   * process, and a process-global token would let two hosted callers stamp
+   * each other's claim onto outbound envelopes — one connection acting as
+   * another's workspace. Scoping it with the pin it belongs to makes that
+   * unrepresentable rather than merely avoided.
+   */
+  workspaceToken?: string;
 }
 
 export interface ConnectionScope {

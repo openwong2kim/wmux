@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
-import { sendRpc, setClientIdentity, setCommanderRole } from './wmux-client';
+import { sendRpc, setClientIdentity, setCommanderRole, setWorkspaceToken } from './wmux-client';
 import { COMMANDER_TOOL_SURFACE } from '../shared/commanderSurface';
 import type { RpcMethod } from '../shared/rpc';
 import {
@@ -505,6 +505,14 @@ async function callRpc(
 function invalidateStaleRoute(pinnedRouteAtDispatch: PinnedRoute | null): void {
   invalidateWorkspaceId();
   clearPinnedRoute(pinnedRouteAtDispatch);
+  // #922 — drop the claim token with the pin it belongs to. The registry lives
+  // in main's memory while workspaces survive a restart, so a main restart
+  // leaves this process holding a token that no longer resolves. Every call
+  // opens its own socket, so nothing here notices the restart; without this the
+  // memoised pin would never be rebuilt and the token would be presented
+  // forever. Clearing both together makes the next call re-claim, which mints a
+  // fresh token — the same recovery path a closed workspace already takes.
+  setWorkspaceToken(undefined);
 }
 
 /**
@@ -856,7 +864,7 @@ async function resolveTerminalRouteBound(explicitPtyId?: string) {
         workspaceResolved = true;
       },
       getPinnedRoute,
-      claimPinnedRoute: () => claimPinnedRoute({ sendRpc }),
+      claimPinnedRoute: () => claimPinnedRoute({ sendRpc, onWorkspaceToken: setWorkspaceToken }),
     },
     explicitPtyId,
   );
