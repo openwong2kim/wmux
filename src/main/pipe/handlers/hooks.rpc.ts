@@ -169,12 +169,19 @@ export function activityFromSignalPayload(payload: Record<string, unknown> | und
 export function buildTurnBoundaryMetadata(
   kind: AgentSignal['kind'],
   stopMessage: AgentLastMessage | null,
+  leftoverWork = 0,
 ): { activity: string; pendingQuestion: string; agentStatus?: 'complete' } | null {
   if (kind !== 'agent.stop' && kind !== 'agent.session_start') return null;
   return {
     activity: '',
     pendingQuestion: stopMessage?.endsWithQuestion ? stopMessage.text : '',
-    ...(kind === 'agent.stop' ? { agentStatus: 'complete' as const } : {}),
+    // #1096 — a lead stop with background agents still running is not a turn
+    // end, so it must not stamp the hook-authoritative completion status: the
+    // pane sat on Completed for the whole `Waiting for N background agent(s)`
+    // hold. Activity clear + pendingQuestion still apply (the tool label IS
+    // stale); the real stop after the hold arrives with leftoverWork 0 and
+    // stamps 'complete' as before.
+    ...(kind === 'agent.stop' && leftoverWork === 0 ? { agentStatus: 'complete' as const } : {}),
   };
 }
 
@@ -651,7 +658,12 @@ export function registerHooksRpc(
     // The transcript tail is read ONCE here and reused for the EventBus tee
     // below — it is real file I/O inside the hook's 2s budget.
     const stopMessage = readStopMessage(signal);
-    const boundary = buildTurnBoundaryMetadata(signal.kind, stopMessage);
+    const boundaryCue = normalizeHookCue(signal);
+    const boundary = buildTurnBoundaryMetadata(
+      signal.kind,
+      stopMessage,
+      boundaryCue.class === 'stop' && !boundaryCue.child ? boundaryCue.leftoverWork : 0,
+    );
     if (boundary) {
       const win = getWindow();
       if (win) {

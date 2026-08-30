@@ -199,6 +199,31 @@ describe('hooks.signal — agent.lifecycle event tee', () => {
     );
   });
 
+  it('a stop with leftover background work clears activity but does NOT mark the pane complete (#1096)', async () => {
+    const stub = stubHookRouter();
+    stub.setDecision('emit');
+    const router = new RpcRouter();
+    registerHooksRpc(router, () => fakeWindow(), stub.router);
+
+    // The turn is still holding on `Waiting for N background agent(s)`, so the
+    // hook-authoritative completion stamp must wait for the real stop — the
+    // one that arrives with leftoverWork 0 after the hold.
+    await router.dispatch({
+      id: 'lw1',
+      method: 'hooks.signal',
+      params: signal({
+        kind: 'agent.stop',
+        agent: 'opencode',
+        payload: { wmux_leftover_work: 2 },
+      }) as unknown as Record<string, unknown>,
+    });
+
+    expect(broadcastMetadataUpdateMock).toHaveBeenCalledTimes(1);
+    const call = broadcastMetadataUpdateMock.mock.calls[0][1] as Record<string, unknown>;
+    expect(call).toMatchObject({ ptyId: 'pty-1', activity: '' });
+    expect(call).not.toHaveProperty('agentStatus');
+  });
+
   it('agent.session_start clears activity but does NOT mark the pane complete (a turn beginning is not an end)', async () => {
     const stub = stubHookRouter();
     const router = new RpcRouter();
