@@ -872,6 +872,30 @@ export class HookIngest {
       });
     }
 
+    // #1096 — a lead stop with background work still running is not a turn
+    // end, and the STATUS must say so, not just the alarm. The #907 verdict
+    // gate already judges this cue correctly ("treat as working evidence"),
+    // but the projection below would still broadcast eventShapeFor's
+    // 'complete', and 'internal' leaves the status dot live — so the roster
+    // wore Completed for the whole `Waiting for N background agent(s)` hold.
+    // Same shape as the subagent branch above: the pane's own turn keeps
+    // going, so the broadcast says RUNNING. observe() still feeds the cue so
+    // `seenWorking` lets the eventual real stop (leftoverWork 0) pass the
+    // gate; no resume closure — this candidate must never write the ledger or
+    // expire approvals, exactly like today's drop path.
+    if (signal.kind === 'agent.stop' && cue.class === 'stop' && cue.leftoverWork > 0) {
+      this.alarm.observe(sessionId, signal.agent, cue);
+      return this.broadcast(sessionId, {
+        agent: agentSlugToDisplay(signal.agent),
+        status: 'running',
+        message: 'Waiting on background agents',
+        source: 'hook',
+        hookKind: signal.kind,
+        decision: 'internal',
+        signal,
+      });
+    }
+
     // Awaiting input keeps its phone card IMMEDIATELY (R5): a remote device
     // must see the question while the provisional window runs, not 1.5s later.
     if (signal.kind === 'agent.awaiting_input') {

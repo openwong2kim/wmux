@@ -2939,8 +2939,11 @@ function registerRpcHandlers(
         // Outbound notification sinks: the END of a turn, and only the real one.
         // `agent.subagent_stop` also reports `status:'complete'`, and a run with
         // a dozen subagents would fire a dozen pings for one turn — so this keys
-        // on the signal kind, not the projected status.
-        if (data.signal.kind === 'agent.stop') {
+        // on the signal kind, not the projected status alone. The status guard
+        // covers the one stop that is NOT a turn end: a lead stop with leftover
+        // background work projects 'running' (#1096), and pinging "finished"
+        // there would contradict the roster it just corrected.
+        if (data.signal.kind === 'agent.stop' && data.status !== 'running') {
           webhookSink?.notify(
             buildAttentionNotifyPayload(
               { sessionId, ...(data.agent ? { agent: data.agent } : {}) },

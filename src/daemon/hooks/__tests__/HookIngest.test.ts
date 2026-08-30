@@ -457,15 +457,24 @@ describe('HookIngest', () => {
       }));
       // Not held — the bridge is answered and the candidate is rejected NOW.
       expect(res).toEqual({ ok: true });
+      // #1096 — the projection must agree with the verdict: the turn has NOT
+      // ended, so the status says running, not eventShapeFor's 'complete'
+      // (which sat on the roster for the whole background-agent hold).
       expect(fixture.emitted.at(-1)?.data).toMatchObject({
         hookKind: 'agent.stop',
         decision: 'internal',
+        status: 'running',
+        message: 'Waiting on background agents',
       });
       // The leftover stop counts as WORKING evidence (the turn is still going),
-      // so a subsequent clean stop in the same turn may still announce.
+      // so a subsequent clean stop in the same turn may still announce — and
+      // that real stop projects 'complete' exactly as before.
       ingest.handle(makeSignal({ ptyId: 'pty-a' }));
       vi.advanceTimersByTime(DEFAULT_ALARM_WINDOW_MS);
-      expect(fixture.emitted.at(-1)?.data.decision).toBe('emit');
+      expect(fixture.emitted.at(-1)?.data).toMatchObject({
+        decision: 'emit',
+        status: 'complete',
+      });
     });
 
     it('an answered cue cancels a pending attention window before its broadcast', () => {
