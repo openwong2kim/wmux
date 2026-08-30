@@ -505,6 +505,14 @@ async function callRpc(
 function invalidateStaleRoute(pinnedRouteAtDispatch: PinnedRoute | null): void {
   invalidateWorkspaceId();
   clearPinnedRoute(pinnedRouteAtDispatch);
+  // #922 — drop the claim token with the pin it belongs to. The registry lives
+  // in main's memory while workspaces survive a restart, so a main restart
+  // leaves this process holding a token that no longer resolves. Every call
+  // opens its own socket, so nothing here notices the restart; without this the
+  // memoised pin would never be rebuilt and the token would be presented
+  // forever. Clearing both together makes the next call re-claim, which mints a
+  // fresh token — the same recovery path a closed workspace already takes.
+  setWorkspaceToken(undefined);
 }
 
 /**

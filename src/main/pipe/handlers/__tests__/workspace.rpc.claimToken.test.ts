@@ -163,3 +163,79 @@ describe('workspace.close — token retirement', () => {
     expect(lookupWorkspaceClaim(token)).toEqual({ kind: 'bound', workspaceId: 'ws-claimed' });
   });
 });
+
+describe('workspace.close — a REFUSED close must not retire the claim', () => {
+  // The renderer reports a refusal as a resolved `{ error }` envelope, not a
+  // rejection (#799), so awaiting the call proves nothing on its own. Revoking
+  // unconditionally would kill the claim of a workspace that is STILL OPEN and
+  // still the holder's — and under the lane that refuses a stale claim, that
+  // holder is then locked out of its own live workspace, because re-claiming
+  // mints a new workspace rather than re-binding the old one.
+  //
+  // It is reachable by someone else, too: ids come from `workspace.list`, so a
+  // second caller can aim a close it knows will be refused at a claimant's
+  // workspace and destroy only that claim.
+  const claim = async (router: RpcRouter): Promise<string | undefined> => {
+    sendToRendererMock.mockResolvedValue(CLAIM_RESULT);
+    const res = await router.dispatch(
+      { id: 'rc', method: 'mcp.claimWorkspace', params: {} },
+      { externalWire: true },
+    );
+    return tokenFrom(res);
+  };
+
+  it.each([
+    ['an unknown id', { error: 'workspace.close: no workspace with id "ws-claimed"' }],
+    [
+      'the last-workspace guard',
+      { error: 'workspace.close: refusing to close "ws-claimed" — it is the only workspace' },
+    ],
+    [
+      'a removal the store refused',
+      { error: 'workspace.close: "ws-claimed" is still open — the removal was refused' },
+    ],
+  ])('keeps the claim alive when the close is refused by %s', async (_label, refusal) => {
+    const router = setup();
+    const token = await claim(router);
+
+    sendToRendererMock.mockResolvedValue(refusal);
+    const res = await router.dispatch({
+      id: 'rc-close',
+      method: 'workspace.close',
+      params: { id: 'ws-claimed' },
+    });
+
+    // The refusal is passed through unchanged...
+    expect((res as { result?: unknown }).result).toEqual(refusal);
+    // ...and the workspace is still open, so the claim must still resolve.
+    expect(lookupWorkspaceClaim(token)).toEqual({ kind: 'bound', workspaceId: 'ws-claimed' });
+  });
+
+  it.each([
+    ['a shape it does not recognise', { closed: true }],
+    ['a bare string', 'closed'],
+    ['null', null],
+  ])('leaves the claim alone for %s — being wrong safely', async (_label, weird) => {
+    // A positive `ok === true` check rather than "no error": an unrecognised
+    // response should cost a stale binding at worst, never a live claimant's
+    // access to its own workspace.
+    const router = setup();
+    const token = await claim(router);
+
+    sendToRendererMock.mockResolvedValue(weird);
+    await router.dispatch({ id: 'rc-weird', method: 'workspace.close', params: { id: 'ws-claimed' } });
+
+    expect(lookupWorkspaceClaim(token)).toEqual({ kind: 'bound', workspaceId: 'ws-claimed' });
+  });
+
+  it('still retires the claim when the close actually succeeds', async () => {
+    // The positive control: the fix must not turn revocation off altogether.
+    const router = setup();
+    const token = await claim(router);
+
+    sendToRendererMock.mockResolvedValue({ ok: true });
+    await router.dispatch({ id: 'rc-ok', method: 'workspace.close', params: { id: 'ws-claimed' } });
+
+    expect(lookupWorkspaceClaim(token)).toEqual({ kind: 'stale' });
+  });
+});

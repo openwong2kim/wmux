@@ -52,10 +52,17 @@ describe('wmux-client workspace claim token', () => {
     expect(getWorkspaceToken()).toBe('tok-padded');
   });
 
-  it('is dropped with the rest of the identity when the transport closes', () => {
-    // A trailing RPC after the transport tears down must not keep presenting a
-    // claim on behalf of a caller that has already disconnected — the same
-    // reasoning clearClientIdentity documents for the plugin name.
+  it('is dropped with the rest of the identity by clearClientIdentity', () => {
+    // Single-child mode calls this on transport close (`entry.ts`), so a
+    // trailing RPC after teardown cannot keep presenting a claim on behalf of a
+    // caller that has gone — the same reasoning clearClientIdentity documents
+    // for the plugin name.
+    //
+    // The broker does NOT call it (`broker.ts` teardown), so this is not the
+    // mechanism that protects broker connections. There the token is safe for a
+    // different reason, pinned by the isolation tests below: each connection
+    // owns its scope object and the scope is discarded with the connection, so
+    // there is nothing left to leak into the next one.
     setClientIdentity('claude-code', '1.0.0');
     setWorkspaceToken('tok-abc');
     clearClientIdentity();

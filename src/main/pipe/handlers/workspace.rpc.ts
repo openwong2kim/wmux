@@ -8,6 +8,10 @@ import {
 
 type GetWindow = () => BrowserWindow | null;
 
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null && !Array.isArray(v);
+}
+
 export function registerWorkspaceRpc(router: RpcRouter, getWindow: GetWindow): void {
   /**
    * workspace.list — returns all workspaces as {id, name}[]
@@ -45,11 +49,28 @@ export function registerWorkspaceRpc(router: RpcRouter, getWindow: GetWindow): v
       throw new Error('workspace.close: missing required param "id"');
     }
     const result = await sendToRenderer(getWindow, 'workspace.close', { id: params['id'] });
-    // #922 PR-A — retire any claim bound to this workspace. Revoking AFTER the
-    // close keeps the token alive for the duration of a close that fails, and
-    // a workspace id can be re-minted later: a surviving binding would then
-    // point a stale token at a workspace its holder never claimed.
-    revokeWorkspaceClaimTokensFor(params['id']);
+    // #922 PR-A — retire any claim bound to this workspace, but ONLY once the
+    // close actually happened.
+    //
+    // The renderer reports a REFUSAL as a resolved `{ error }` envelope, not a
+    // rejection: an unknown id, the last-workspace guard, and the post-removal
+    // "still open" assertion all return one (`useRpcBridge.ts`, #799). So
+    // awaiting the call proves nothing on its own — revoking unconditionally
+    // would kill the claim of a workspace that is still open and still the
+    // holder's. Under the lane that refuses a stale claim, that holder would be
+    // locked out of its own live workspace with no way back: re-claiming mints
+    // a NEW workspace, it does not re-bind the old one.
+    //
+    // It is also reachable by anyone else: workspace ids come from
+    // `workspace.list`, so a second caller could aim a close it knows will be
+    // refused at a claimant's workspace and destroy only that claim.
+    //
+    // Hence a POSITIVE success check rather than "no error" — a shape this
+    // handler does not recognise leaves the claim alone, which is the safe way
+    // to be wrong.
+    if (isRecord(result) && result['ok'] === true) {
+      revokeWorkspaceClaimTokensFor(params['id']);
+    }
     return result;
   });
 
