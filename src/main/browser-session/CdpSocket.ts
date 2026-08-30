@@ -20,9 +20,17 @@
 
 const DEFAULT_TIMEOUT_MS = 10_000;
 
+/** A handshake still open this long is worth telling someone about. */
+const DEFAULT_CONNECT_NOTICE_MS = 5_000;
+
 /** CDP event handler. `sessionId` is the session the event arrived on
  *  (undefined = the browser session). */
 export type CdpEventHandler = (params: Record<string, unknown>, sessionId?: string) => void;
+
+/** Why a dial failed. `timeout` means the handshake never completed inside the
+ *  budget — on the live endpoint that usually means a permission prompt nobody
+ *  has answered yet, which needs a different remedy from a refused socket. */
+export type CdpConnectFailure = 'timeout' | 'error';
 
 export interface CdpSocketOptions {
   /** Prefix on every error this socket raises ("<label>: <detail>"). */
@@ -30,8 +38,32 @@ export interface CdpSocketOptions {
   /** Error text when the socket cannot be opened. Callers with a better
    *  remedy to offer (LiveChromeClient's chrome://inspect hint) pass it here. */
   connectError?: string;
-  /** Per-request timeout, also the connect timeout. */
+  /** Per-request timeout. */
   timeoutMs?: number;
+  /**
+   * Budget for the WebSocket handshake, when it differs from the per-request
+   * timeout. These used to be one number, which is wrong for any endpoint that
+   * asks a human before accepting: the live Chrome endpoint holds the handshake
+   * open while Chrome shows its permission prompt, so a 10 s request timeout
+   * gave up before the user could reach the Allow button — a connection that
+   * could not succeed however fast they clicked. Defaults to `timeoutMs`.
+   */
+  connectTimeoutMs?: number;
+  /**
+   * Fires once per dial if the handshake is still open after
+   * `connectNoticeAfterMs` — the only hook that can say "we are waiting on you"
+   * while the caller is still blocked inside the dial.
+   */
+  onConnectPending?: (elapsedMs: number) => void;
+  /** How long a handshake may run before onConnectPending fires. */
+  connectNoticeAfterMs?: number;
+  /**
+   * Turns a dial failure into the message the caller sees. Async, so the
+   * implementation can probe (is the port even listening?) before deciding.
+   * Omitted, or throwing, falls back to `connectError` — every existing caller
+   * keeps its current behaviour.
+   */
+  connectErrorFor?: (reason: CdpConnectFailure, endpoint: string) => Promise<string> | string;
 }
 
 interface CdpFrame {
@@ -58,6 +90,10 @@ export class CdpSocket {
   private readonly label: string;
   private readonly connectError: string;
   private readonly timeoutMs: number;
+  private readonly connectTimeoutMs: number;
+  private readonly connectNoticeAfterMs: number;
+  private readonly onConnectPending?: (elapsedMs: number) => void;
+  private readonly connectErrorFor?: (reason: CdpConnectFailure, endpoint: string) => Promise<string> | string;
 
   constructor(
     private readonly resolveEndpoint: () => string,
@@ -66,6 +102,21 @@ export class CdpSocket {
     this.label = opts?.label ?? 'CdpSocket';
     this.connectError = opts?.connectError ?? `${this.label}: could not connect`;
     this.timeoutMs = opts?.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+    this.connectTimeoutMs = opts?.connectTimeoutMs ?? this.timeoutMs;
+    this.connectNoticeAfterMs = opts?.connectNoticeAfterMs ?? DEFAULT_CONNECT_NOTICE_MS;
+    this.onConnectPending = opts?.onConnectPending;
+    this.connectErrorFor = opts?.connectErrorFor;
+  }
+
+  /** The message for a failed dial. Never throws: a diagnosis that itself
+   *  fails must not replace the caller's real failure with its own. */
+  private async describeConnectFailure(reason: CdpConnectFailure, endpoint: string): Promise<string> {
+    if (!this.connectErrorFor) return this.connectError;
+    try {
+      return (await this.connectErrorFor(reason, endpoint)) || this.connectError;
+    } catch {
+      return this.connectError;
+    }
   }
 
   isOpen(): boolean {
@@ -152,12 +203,40 @@ export class CdpSocket {
   private async dial(endpoint: string): Promise<WebSocket> {
     const epoch = this.epoch;
     const ws = new WebSocket(endpoint);
-    await new Promise<void>((resolve, reject) => {
-      const t = setTimeout(() => reject(new Error(this.connectError)), this.timeoutMs);
-      (t as { unref?: () => void }).unref?.();
-      ws.addEventListener('open', () => { clearTimeout(t); resolve(); }, { once: true });
-      ws.addEventListener('error', () => { clearTimeout(t); reject(new Error(this.connectError)); }, { once: true });
+    const startedAt = Date.now();
+    // Timeout and socket error are kept apart all the way out. Collapsing them
+    // into one string was the reason a caller could not tell "nobody has
+    // approved this yet" from "the port is dead" — the two failures with the
+    // least in common and the most different remedies.
+    const reason = await new Promise<CdpConnectFailure | null>((resolve) => {
+      const timer = setTimeout(() => { clearTimeout(notice); resolve('timeout'); }, this.connectTimeoutMs);
+      (timer as { unref?: () => void }).unref?.();
+      const notice = setTimeout(() => {
+        try {
+          this.onConnectPending?.(Date.now() - startedAt);
+        } catch {
+          /* a notice must never fail the dial */
+        }
+      }, this.connectNoticeAfterMs);
+      (notice as { unref?: () => void }).unref?.();
+      const settle = (value: CdpConnectFailure | null) => {
+        clearTimeout(timer);
+        clearTimeout(notice);
+        resolve(value);
+      };
+      ws.addEventListener('open', () => settle(null), { once: true });
+      ws.addEventListener('error', () => settle('error'), { once: true });
     });
+    if (reason) {
+      // The socket may still be mid-handshake on a timeout; drop it so a slow
+      // approval cannot open a connection nobody is holding any more.
+      try {
+        ws.close();
+      } catch {
+        /* already gone */
+      }
+      throw new Error(await this.describeConnectFailure(reason, endpoint));
+    }
     if (this.epoch !== epoch) {
       // close() (or a re-dial) landed while this one was still connecting.
       // Publishing the socket now would resurrect a contract the caller

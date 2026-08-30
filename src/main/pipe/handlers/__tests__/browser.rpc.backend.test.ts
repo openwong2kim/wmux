@@ -750,7 +750,12 @@ describe('browser.session.start backend honesty', () => {
       // Neutral, two-audience framing: global start can't know the binding, so
       // it addresses BOTH the live and the dedicated reader, never asserting one.
       expect(reason).toContain('bound to Live Chrome');
-      expect(reason).toContain('reachable, so the browser attaches when you first drive');
+      expect(reason).toContain('reachable, so the first browser tool call will try to attach');
+      // Reachable is a TCP probe — "something is listening", nothing more. It
+      // used to promise the attach, which sent the user off to wait on a hang
+      // instead of to the prompt that was actually blocking them.
+      expect(reason).toContain('click Allow');
+      expect(reason).not.toContain('attaches when you first drive');
       expect(reason).toContain('Otherwise the dedicated Chrome launches on demand');
       expect(sendToRendererMock).not.toHaveBeenCalled();
     } finally {

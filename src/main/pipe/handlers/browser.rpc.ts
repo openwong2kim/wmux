@@ -1313,7 +1313,13 @@ export function registerBrowserRpc(
           'This backend starts no RPC session (any profile argument is ignored). ' +
           'If this workspace is bound to Live Chrome: remote debugging is ' +
           (remoteDebugging
-            ? 'reachable, so the browser attaches when you first drive it. '
+            ? // "Reachable" is only "something is listening": the probe is a bare
+              // TCP connect, deliberately, so a status call never raises Chrome's
+              // consent prompt. Promising the attach overstated that — the first
+              // drive still has to get past the prompt, and saying so is what
+              // sends the user to click it instead of waiting on a hang.
+              'reachable, so the first browser tool call will try to attach. Chrome asks permission ' +
+              'for every connection to it, so watch for its prompt and click Allow. '
             : 'not reachable — enable it once at chrome://inspect/#remote-debugging (Chrome 144+), then drive the browser. ') +
           'Otherwise the dedicated Chrome launches on demand on the first browser tool call.',
       };

@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { createConnection } from 'node:net';
 import type { ChromeBackendClient, ChromeBackendEndpoint, ChromeTargetInfo } from './ChromeLauncher';
-import { CdpSocket } from './CdpSocket';
+import { CdpSocket, type CdpConnectFailure } from './CdpSocket';
 
 // ---------------------------------------------------------------------------
 // Live-Chrome attach (Phase 3): drive the user's REAL daily Chrome via the
@@ -26,6 +26,24 @@ import { CdpSocket } from './CdpSocket';
 
 const CDP_TIMEOUT_MS = 10_000;
 
+/**
+ * Budget for the WebSocket handshake, deliberately separate from
+ * CDP_TIMEOUT_MS.
+ *
+ * Chrome asks the user for permission on every connection to this endpoint and
+ * holds the handshake open until they answer. Sharing the 10 s request timeout
+ * meant wmux hung up while that prompt was still on screen — reproduced as a
+ * silent timeout with no explanation, and structurally unwinnable: nobody
+ * reaches the Allow button that fast unless they were already staring at the
+ * window. Three minutes is long enough to walk back to the keyboard, and still
+ * bounded, so a genuinely dead endpoint does not hang forever.
+ */
+const LIVE_CONNECT_TIMEOUT_MS = 180_000;
+
+/** A handshake open this long is waiting on a human; say so while they can
+ *  still act on it. */
+const LIVE_CONNECT_NOTICE_MS = 5_000;
+
 /** Reachability probe budget: a TCP connect on localhost either lands or is
  *  refused almost instantly, so this only bounds a black-holed port. */
 const LIVE_TCP_PROBE_TIMEOUT_MS = 500;
@@ -34,6 +52,24 @@ const ENABLE_HINT =
   'LIVE_CHROME_UNAVAILABLE: could not find your Chrome’s remote-debugging endpoint. ' +
   'Make sure Chrome is running and remote debugging is enabled at chrome://inspect/#remote-debugging ' +
   '(Chrome 144+), then retry.';
+
+/**
+ * Listening, but the handshake was never accepted — Chrome is almost certainly
+ * holding it behind its permission prompt. The old code could not produce this
+ * message at all: a pending prompt and a dead port came out as the same string,
+ * so the one failure the user can actually fix read like a broken setup.
+ */
+const APPROVAL_HINT =
+  'LIVE_CHROME_AWAITING_APPROVAL: your Chrome is running and its remote-debugging endpoint is ' +
+  'listening, but it never accepted the connection. Chrome asks permission for every connection ' +
+  'to this endpoint — switch to your Chrome window and click Allow, then retry. If no prompt is ' +
+  'showing, something else may be holding the endpoint.';
+
+/** Listening, and the handshake was actively refused rather than left hanging. */
+const REFUSED_HINT =
+  'LIVE_CHROME_REFUSED: your Chrome’s remote-debugging endpoint is listening but refused the ' +
+  'connection. Its address changes every time Chrome restarts, so retry first — that re-reads ' +
+  'the current endpoint. If it keeps failing, re-check chrome://inspect/#remote-debugging.';
 
 /** The real Chrome's user-data-dir per platform (WMUX_LIVE_CHROME_DIR overrides). */
 export function liveChromeUserDataDir(): string {
@@ -130,6 +166,31 @@ export function probeTcpListening(host: string, port: number, timeoutMs: number)
   });
 }
 
+/**
+ * Turn a failed dial into the one thing the user can act on.
+ *
+ * The three outcomes need three different remedies, and the old single string
+ * covered only the first:
+ *   port not listening  → Chrome is down, or remote debugging was never enabled
+ *   listening, timed out → a permission prompt nobody has answered
+ *   listening, refused   → the endpoint moved (Chrome restarted) or is not ours
+ *
+ * Exported for unit tests: the listening/not-listening split is what decides
+ * the message, and it is worth pinning.
+ */
+export async function describeLiveConnectFailure(
+  reason: CdpConnectFailure,
+  endpoint: string,
+  probe: (host: string, port: number, timeoutMs: number) => Promise<boolean> = probeTcpListening,
+): Promise<string> {
+  const match = /^ws:\/\/127\.0\.0\.1:(\d+)/.exec(endpoint);
+  // No parseable port means we never had an endpoint to begin with.
+  if (!match) return ENABLE_HINT;
+  const listening = await probe('127.0.0.1', Number(match[1]), LIVE_TCP_PROBE_TIMEOUT_MS).catch(() => false);
+  if (!listening) return ENABLE_HINT;
+  return reason === 'timeout' ? APPROVAL_HINT : REFUSED_HINT;
+}
+
 interface CdpTargetInfoWire {
   targetId: string;
   type: string;
@@ -144,6 +205,17 @@ export class LiveChromeClient implements ChromeBackendClient {
     label: 'LiveChromeClient',
     connectError: ENABLE_HINT,
     timeoutMs: CDP_TIMEOUT_MS,
+    connectTimeoutMs: LIVE_CONNECT_TIMEOUT_MS,
+    connectNoticeAfterMs: LIVE_CONNECT_NOTICE_MS,
+    onConnectPending: (elapsedMs) => {
+      // The caller is still blocked inside the dial, so this is the only place
+      // that can reach the user while the prompt is still actionable.
+      console.warn(
+        `[LiveChromeClient] waiting ${Math.round(elapsedMs / 1000)}s for Chrome to accept this ` +
+          'connection — click Allow on the prompt in your Chrome window.',
+      );
+    },
+    connectErrorFor: (reason, endpoint) => describeLiveConnectFailure(reason, endpoint),
   });
 
   constructor(private readonly userDataDir?: string) {}
