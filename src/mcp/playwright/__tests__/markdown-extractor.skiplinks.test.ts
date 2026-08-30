@@ -83,7 +83,7 @@ describe('extractMarkdown — leading skip links (browser_extract_text)', () => 
         <dl id="abs"><dt>abs(x)</dt></dl>
       </main>`;
 
-    const md = await extractMarkdown(evaluateInJsdom);
+    const md = await extractMarkdown(evaluateInJsdom, { includeLinks: true });
 
     expect(md).not.toContain('Skip to content');
     expect(md).toContain('[abs()](#abs)');
@@ -100,7 +100,7 @@ describe('extractMarkdown — leading skip links (browser_extract_text)', () => 
       <p>Run the installer.</p>
       <h2 id="usage">Usage</h2>`;
 
-    const md = await extractMarkdown(evaluateInJsdom);
+    const md = await extractMarkdown(evaluateInJsdom, { includeLinks: true });
 
     expect(md).toContain('[Installation](#install)');
     expect(md).toContain('[Usage](#usage)');
@@ -113,7 +113,9 @@ describe('extractMarkdown — leading skip links (browser_extract_text)', () => 
       </main>
       <p id="note1">Note 1</p>`;
 
-    expect(await extractMarkdown(evaluateInJsdom)).toContain('[See note 1](#note1)');
+    expect(await extractMarkdown(evaluateInJsdom, { includeLinks: true })).toContain(
+      '[See note 1](#note1)',
+    );
   });
 
   it('leaves a run longer than the skip-link cap alone', async () => {
@@ -123,7 +125,7 @@ describe('extractMarkdown — leading skip links (browser_extract_text)', () => 
     ).join('');
     document.body.innerHTML = `<div>${entries}</div><div id="s0">Body</div>`;
 
-    const md = await extractMarkdown(evaluateInJsdom);
+    const md = await extractMarkdown(evaluateInJsdom, { includeLinks: true });
 
     expect(md).toContain('[Section 0](#s0)');
     expect(md).toContain('[Section 12](#s12)');
@@ -141,6 +143,21 @@ describe('extractMarkdown — leading skip links (browser_extract_text)', () => 
     expect(md).toContain('Real body text');
   });
 
+  // browser_extract_text documents includeLinks as defaulting to false, and the
+  // extractor used to default it to true — an agent that omitted the flag was
+  // billed for every href on the page.
+  it('omits hrefs when includeLinks is not asked for', async () => {
+    document.body.innerHTML = `
+      <main>
+        <p><a href="https://example.test/next">Next page</a></p>
+      </main>`;
+
+    const md = await extractMarkdown(evaluateInJsdom);
+
+    expect(md).toContain('Next page');
+    expect(md).not.toContain('https://example.test/next');
+  });
+
   it('leaves a page without skip links untouched', async () => {
     document.body.innerHTML = `
       <main>
@@ -149,7 +166,7 @@ describe('extractMarkdown — leading skip links (browser_extract_text)', () => 
         <p><a href="https://example.test/next">Next page</a></p>
       </main>`;
 
-    const md = await extractMarkdown(evaluateInJsdom);
+    const md = await extractMarkdown(evaluateInJsdom, { includeLinks: true });
 
     expect(md).toContain('# Plain article');
     expect(md).toContain('First paragraph.');

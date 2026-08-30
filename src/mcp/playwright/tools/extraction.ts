@@ -115,7 +115,7 @@ export function registerExtractionTools(server: McpServer, deps: BrowserToolDeps
   // -----------------------------------------------------------------------
   server.tool(
     'browser_extract_text',
-    'Extract page content as clean markdown, stripping navigation and noise.',
+    'Extract page content as clean markdown, stripping navigation and noise. Link URLs are dropped and only the anchor text is kept — pass includeLinks:true when you need the hrefs.',
     BROWSER_EXTRACT_TEXT_SHAPE,
     async ({ selector, maxLength, includeLinks, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
       try {
