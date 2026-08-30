@@ -8,6 +8,10 @@ import {
 } from '../../../mcp/firstParty';
 import { RpcRouter } from '../../RpcRouter';
 import {
+  __resetWorkspaceClaimTrustForTesting,
+  mintWorkspaceClaimToken,
+} from '../../../workspace/workspaceClaimTrust';
+import {
   callerScope,
   canDiscloseBrowserAttachInfo,
   registerBrowserRpc,
@@ -311,10 +315,13 @@ describe('callerScope shadow decision (#810)', () => {
       { kind: 'rejected', lane: 'declared', reason: 'workspace-unresolved' },
     ],
     [
-      'legacy caller remaining unscoped',
+      // #922 ruling (c): the grandfather stays, but an omitted workspace no
+      // longer resolves through the workspace-blind "first registered surface"
+      // lookup. Closing the lane itself is #1111's shared deprecation clock.
+      'legacy caller naming no workspace being refused',
       { origin: 'local', externalWire: true },
       {},
-      { kind: 'allowed', lane: 'legacy' },
+      { kind: 'rejected', lane: 'legacy', reason: 'legacy-workspace-unresolved' },
     ],
     [
       'legacy caller retaining an explicit narrow scope',
@@ -853,6 +860,152 @@ describe('registerBrowserRpc', () => {
     });
   });
 
+  // ── #922 PR-B: the verified lane and ruling (c), through the real chain ───
+  //
+  // `scopeFor` is mode-gated, which is what makes the (c) narrowing free of
+  // shadow risk: the rollback lever keeps working for both new branches.
+
+  it('scopes a claimed caller to the workspace it claimed', async () => {
+    __resetWorkspaceClaimTrustForTesting();
+    const token = mintWorkspaceClaimToken('ws-claimed');
+    const router = register(() => null, undefined, 'enforce');
+
+    const response = await router.dispatch({
+      id: 'scope-enforce-verified-omitted',
+      method: 'browser.evaluate',
+      params: { expression: '1 + 1' },
+      clientName: 'claude-code',
+      workspaceToken: token as string,
+    }, { externalWire: true });
+
+    expect(response.ok).toBe(true);
+    // The recorded claim, not an absent request field, reaches the lookup —
+    // and this caller used to be refused outright as `workspace-unresolved`.
+    expect(cdpOf(router).getTarget).toHaveBeenCalledWith(undefined, 'ws-claimed');
+  });
+
+  it('refuses a claimed caller that names someone else\'s workspace', async () => {
+    __resetWorkspaceClaimTrustForTesting();
+    const token = mintWorkspaceClaimToken('ws-claimed');
+    const shadowSink = vi.fn();
+    const router = register(() => null, shadowSink, 'enforce');
+
+    const response = await router.dispatch({
+      id: 'scope-enforce-verified-mismatch',
+      method: 'browser.evaluate',
+      params: { expression: '1 + 1', workspaceId: 'ws-other' },
+      clientName: 'claude-code',
+      workspaceToken: token as string,
+    }, { externalWire: true });
+
+    expect(response.ok).toBe(false);
+    if (!response.ok) expect(response.error).toContain('omit workspaceId');
+    expect(cdpOf(router).getTarget).not.toHaveBeenCalled();
+    expect(shadowSink).toHaveBeenCalledWith({
+      clientName: 'claude-code',
+      method: 'browser.evaluate',
+      reason: 'verified-workspace-mismatch',
+      requestedWorkspaceId: 'ws-other',
+      verifiedWorkspaceId: 'ws-claimed',
+    });
+  });
+
+  it('refuses a stale claim instead of letting it name a workspace', async () => {
+    // The regression: without the lane this lands in `declared` and is scoped
+    // to 'ws-other' — a caller whose claim just died would end up LESS
+    // confined than one that never claimed.
+    __resetWorkspaceClaimTrustForTesting();
+    const shadowSink = vi.fn();
+    const router = register(() => null, shadowSink, 'enforce');
+
+    const response = await router.dispatch({
+      id: 'scope-enforce-verified-stale',
+      method: 'browser.evaluate',
+      params: { expression: '1 + 1', workspaceId: 'ws-other' },
+      clientName: 'claude-code',
+      workspaceToken: 'revoked-or-never-minted',
+    }, { externalWire: true });
+
+    expect(response.ok).toBe(false);
+    if (!response.ok) expect(response.error).toContain('mcp.claimWorkspace again');
+    expect(cdpOf(router).getTarget).not.toHaveBeenCalled();
+    expect(shadowSink).toHaveBeenCalledWith({
+      clientName: 'claude-code',
+      method: 'browser.evaluate',
+      reason: 'verified-claim-stale',
+      requestedWorkspaceId: 'ws-other',
+    });
+  });
+
+  it('leaves a legacy caller that names a workspace byte-identical', async () => {
+    // Ruling (c) narrows only the OMITTED case. This one is the half that must
+    // not move, and it is the half most external integrations actually use.
+    const router = register(() => null, undefined, 'enforce');
+
+    const response = await router.dispatch({
+      id: 'scope-enforce-legacy-named',
+      method: 'browser.evaluate',
+      params: { expression: '1 + 1', workspaceId: 'ws-named' },
+    }, { externalWire: true });
+
+    expect(response.ok).toBe(true);
+    expect(cdpOf(router).getTarget).toHaveBeenCalledWith(undefined, 'ws-named');
+  });
+
+  it('refuses a legacy caller that names nothing, and says what to add', async () => {
+    // This is what (c) closes: the workspace-blind "first registered surface"
+    // lookup. The message has to teach, because whoever reads it has no plugin
+    // identity to look up and built against the documented envelope-less path.
+    const shadowSink = vi.fn();
+    const router = register(() => null, shadowSink, 'enforce');
+
+    const response = await router.dispatch({
+      id: 'scope-enforce-legacy-omitted',
+      method: 'browser.evaluate',
+      params: { expression: '1 + 1' },
+    }, { externalWire: true });
+
+    expect(response.ok).toBe(false);
+    if (!response.ok) {
+      expect(response.error).toContain('BROWSER_SCOPE_REFUSED');
+      expect(response.error).toContain('send workspaceId in the params');
+      // Both named methods exist and are reachable for this caller class.
+      expect(response.error).toContain('workspace.current');
+      expect(response.error).toContain('workspace.list');
+      expect(response.error).toContain('Do not retry unchanged');
+    }
+    expect(cdpOf(router).getTarget).not.toHaveBeenCalled();
+    expect(shadowSink).toHaveBeenCalledWith({
+      clientName: undefined,
+      method: 'browser.evaluate',
+      reason: 'legacy-workspace-unresolved',
+    });
+  });
+
+  it('still lets an omitted legacy caller through in shadow mode', async () => {
+    // The rollback lever keeps its promise: `mcp.mode: shadow` restores the
+    // pre-#810 behaviour for this caller exactly, refusal logged but not
+    // applied. Nothing about (c) rides outside that switch.
+    const shadowSink = vi.fn();
+    const router = register(() => null, shadowSink, 'shadow');
+
+    const response = await router.dispatch({
+      id: 'scope-shadow-legacy-omitted',
+      method: 'browser.evaluate',
+      params: { expression: '1 + 1' },
+    }, { externalWire: true });
+
+    expect(response.ok).toBe(true);
+    // Unscoped, exactly as before: the lookup runs with no workspace.
+    expect(cdpOf(router).getTarget).toHaveBeenCalledWith(undefined, undefined);
+    // Observed, not enforced — which is how the window before enforce works.
+    expect(shadowSink).toHaveBeenCalledWith({
+      clientName: undefined,
+      method: 'browser.evaluate',
+      reason: 'legacy-workspace-unresolved',
+    });
+  });
+
   it('hands the decided workspace to the lookup, not the raw request field', async () => {
     const router = register(() => null, undefined, 'enforce');
 
@@ -896,12 +1049,15 @@ describe('registerBrowserRpc', () => {
     expect(operator.ok).toBe(true);
 
     // Envelope-less caller: still grandfathered, matching PermissionEnforcer.
-    // This lane is the documented remaining hole on #810, asserted so that
-    // closing it later is a deliberate, visible change rather than a drift.
+    // #922 ruling (c) narrowed this lane WITHOUT closing it — the deliberate,
+    // visible change this assertion was written to catch. A legacy caller that
+    // names a workspace is unchanged; one that names nothing is refused, and
+    // that half is covered in the PR-B block above. Closing the lane outright
+    // belongs to the shared grandfather deprecation (#1111), not here.
     const legacy = await router.dispatch({
       id: 'scope-enforce-legacy',
       method: 'browser.evaluate',
-      params: { expression: '1 + 1' },
+      params: { expression: '1 + 1', workspaceId: 'ws-legacy' },
     });
     expect(legacy.ok).toBe(true);
   });

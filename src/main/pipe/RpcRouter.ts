@@ -17,6 +17,7 @@ import {
   hostedRefusalMessage,
 } from './hostedWorkspaceBinding';
 import type { HostedScopeAuditInput } from '../audit/shadowRejectionLog';
+import { lookupWorkspaceClaim } from '../workspace/workspaceClaimTrust';
 
 // Handlers receive a per-request context as an optional second argument.
 // Existing handlers `(params) => ...` keep compiling because the extra
@@ -407,6 +408,36 @@ export class RpcRouter {
           /* hosted-scope audit logging must never affect dispatch */
         }
       }
+    }
+
+    // ── #922 PR-B: resolve the workspace claim ───────────────────────────
+    //
+    // The token is an envelope field, but the ANSWER is not: it is looked up in
+    // the registry main wrote at claim time (`workspaceClaimTrust.ts`), so a
+    // caller cannot invent one that resolves.
+    //
+    // The router only TRANSLATES the lookup onto the context; it does not
+    // decide. A stale claim is carried through as `stale` rather than being
+    // rejected here, unlike `commanderToken` above, for one concrete reason:
+    // rejecting every method would strand the caller. Its claim goes stale
+    // exactly when its workspace closes, and recovering means calling
+    // `mcp.claimWorkspace` again — which a blanket rejection would also refuse,
+    // leaving the MCP server unable to recover until it restarts. Handlers that
+    // scope on the claim refuse it themselves (see `RpcContext.workspaceClaim`);
+    // everything else keeps working, which is what lets the caller re-claim.
+    if ('workspaceToken' in request && request.workspaceToken !== undefined) {
+      const claim = lookupWorkspaceClaim(request.workspaceToken);
+      // Past this gate the caller PRESENTED something, so `unclaimed` would be a
+      // contradiction — and acting on it would be the demotion this lane exists
+      // to prevent: nothing stamped, and the caller falls through to a lane that
+      // accepts the workspace it names. The registry answers `unclaimed` only
+      // for an absent field, but that is its rule to keep, not this call site's
+      // to assume: `null` used to answer `unclaimed` and reached exactly here.
+      // So anything that is not a live binding is treated as stale.
+      ctx.workspaceClaim =
+        claim.kind === 'bound'
+          ? { kind: 'bound', workspaceId: claim.workspaceId }
+          : { kind: 'stale' };
     }
 
     // Spec §2.2: requests without `clientName` are recorded as `legacy`.

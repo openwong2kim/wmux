@@ -85,6 +85,9 @@ export type BrowserScopeShadowReason =
   | 'hosted-source-unqualified'
   | 'hosted-workspace-unbound'
   | 'hosted-workspace-mismatch'
+  | 'verified-workspace-mismatch'
+  | 'verified-claim-stale'
+  | 'legacy-workspace-unresolved'
   | 'workspace-unresolved';
 
 /**
@@ -105,6 +108,12 @@ export interface BrowserScopeShadowEntry {
    * audit file, so it may hold what a refusal message must never disclose.
    */
   hostedWorkspaceId?: string;
+  /**
+   * #922 PR-B — the workspace the caller's claim token resolved to. Recorded
+   * for the same reason as the two above: this is a local, operator-owned
+   * audit file, so it may hold what a refusal message must never disclose.
+   */
+  verifiedWorkspaceId?: string;
 }
 
 export type BrowserScopeShadowInput = Omit<BrowserScopeShadowEntry, 'entryKind' | 'ts'>;
