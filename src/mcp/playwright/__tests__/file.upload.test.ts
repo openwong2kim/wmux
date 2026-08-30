@@ -10,11 +10,31 @@ const WMUX_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-upload-test-'));
 const UPLOADS = path.join(WMUX_DIR, 'uploads');
 const OUTSIDE = path.join(WMUX_DIR, 'outside');
 
-const { mockSendRpc, getPage, resolveRef } = vi.hoisted(() => ({
+const { mockSendRpc, getPage, resolveRef, realpathTrap } = vi.hoisted(() => ({
   mockSendRpc: vi.fn(),
   getPage: vi.fn(),
   resolveRef: vi.fn(),
+  /** Absolute path whose realpathSync should throw, or null. */
+  realpathTrap: { path: null as string | null },
 }));
+
+// No input on this machine makes existsSync succeed while realpathSync throws
+// (`f::$DATA` resolves fine, every other ADS/trailing-dot form is simply
+// absent), so the anomalous case the gate must refuse is injected here.
+vi.mock('node:fs', async () => {
+  const actual = await vi.importActual<typeof import('node:fs')>('node:fs');
+  const nodePath = await vi.importActual<typeof import('node:path')>('node:path');
+  return {
+    ...actual,
+    default: actual,
+    realpathSync: (target: Parameters<typeof actual.realpathSync>[0]) => {
+      if (realpathTrap.path && nodePath.resolve(String(target)) === realpathTrap.path) {
+        throw Object.assign(new Error('EINVAL: invalid argument'), { code: 'EINVAL' });
+      }
+      return actual.realpathSync(target);
+    },
+  };
+});
 
 vi.mock('../../wmux-client', () => ({
   sendRpc: (method: string, ...args: unknown[]) =>
@@ -105,6 +125,7 @@ const text = (r: ToolResult) => r.content.map((c) => c.text).join('\n');
 
 beforeEach(() => {
   vi.clearAllMocks();
+  realpathTrap.path = null;
   fs.mkdirSync(UPLOADS, { recursive: true });
   fs.mkdirSync(OUTSIDE, { recursive: true });
 });
@@ -206,14 +227,23 @@ describe('browser_file_upload sandbox', () => {
     expect(log.setFiles).toBeNull();
   });
 
-  it('names the real uploads root on success, suffix included', async () => {
-    // The message used to say "~/.wmux/uploads/" unconditionally, which is the
-    // wrong directory on every suffixed instance.
+  it('names the real uploads root on success, suffix included, home not spelled out', async () => {
+    // Two failures at once. The message used to say "~/.wmux/uploads/"
+    // unconditionally, which is the wrong directory on every suffixed
+    // instance; spelling the absolute path instead is right but parks the
+    // login name in every upload result. ~-relative keeps both.
     const file = write(path.join(UPLOADS, 'clip.mp4'));
     const { page } = makePage();
     getPage.mockResolvedValue(page);
 
-    expect(text(await upload({ paths: [file] }))).toContain(fs.realpathSync(UPLOADS));
+    const out = text(await upload({ paths: [file] }));
+    const rel = path.relative(fs.realpathSync(os.homedir()), fs.realpathSync(UPLOADS));
+    if (!rel.startsWith('..') && !path.isAbsolute(rel)) {
+      expect(out).toContain(`~/${rel.split(path.sep).join('/')}`);
+      expect(out).not.toContain(os.userInfo().username);
+    } else {
+      expect(out).toContain(fs.realpathSync(UPLOADS));
+    }
   });
 });
 
@@ -332,5 +362,97 @@ describe('browser_file_upload timeout honesty', () => {
     getPage.mockResolvedValue(page);
 
     expect(text(await upload({ paths: [file] }))).not.toContain('may have reached the page');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Security review follow-ups. Each of these was a way for the gate to be
+// weaker, wrong, or dishonest than its own doc comment claimed.
+// ---------------------------------------------------------------------------
+
+describe('browser_file_upload gate cannot be silently downgraded', () => {
+  it('refuses a path that exists but whose realpath cannot be resolved', async () => {
+    // The catch used to fall through to a LEXICAL check — a different, weaker
+    // gate — and that lexical string is what Chrome would then be told to open.
+    const file = write(path.join(UPLOADS, 'clip.mp4'));
+    realpathTrap.path = path.resolve(file);
+    const { page, log } = makePage();
+    getPage.mockResolvedValue(page);
+
+    const res = await upload({ paths: [file] });
+
+    expect(res.isError).toBe(true);
+    expect(text(res)).toContain('real path cannot be resolved');
+    expect(log.setFiles).toBeNull();
+  });
+});
+
+describe('browser_file_upload root matching', () => {
+  it('accepts a legitimate name that merely starts with dots', async () => {
+    // `..dots` relativises to `..dots`, which a bare startsWith('..') refused.
+    const file = write(path.join(UPLOADS, '..dots.mp4'));
+    const { page, log } = makePage();
+    getPage.mockResolvedValue(page);
+
+    const res = await upload({ paths: [file] });
+
+    expect(res.isError).toBeUndefined();
+    expect(log.setFiles?.files).toEqual([fs.realpathSync(file)]);
+  });
+
+  it('still refuses the parent directory itself', async () => {
+    const { page, log } = makePage();
+    getPage.mockResolvedValue(page);
+
+    const res = await upload({ paths: [path.join(UPLOADS, '..')] });
+
+    expect(res.isError).toBe(true);
+    expect(log.setFiles).toBeNull();
+  });
+});
+
+describe('browser_file_upload duplicate warning is earned, not pattern-matched', () => {
+  it('does not warn about a rejection whose PATH merely contains "timeout"', async () => {
+    // The rejection echoes the caller's path, so a text scan turned a refusal
+    // into "your file may have uploaded" — the exact advice that causes the
+    // duplicate post this warning exists to prevent.
+    const file = write(path.join(OUTSIDE, 'timeout-clip.mp4'));
+    const { page } = makePage();
+    getPage.mockResolvedValue(page);
+
+    const out = text(await upload({ paths: [file] }));
+
+    expect(out).toContain('outside the allowed upload root');
+    expect(out).not.toContain('may have reached the page');
+  });
+
+  it('warns when the transfer itself timed out', async () => {
+    const file = write(path.join(UPLOADS, 'clip.mp4'));
+    const { page } = makePage({ cdp: 'unavailable' });
+    page.$ = vi.fn(async () => ({
+      setInputFiles: vi.fn(async () => {
+        throw Object.assign(new Error('Timeout 30000ms exceeded.'), { name: 'TimeoutError' });
+      }),
+    })) as never;
+    getPage.mockResolvedValue(page);
+
+    const out = text(await upload({ paths: [file] }));
+
+    expect(out).toContain('Timeout 30000ms exceeded.');
+    expect(out).toContain('may have reached the page anyway');
+  });
+
+  it('does not warn about a non-timeout transfer failure', async () => {
+    const file = write(path.join(UPLOADS, 'clip.mp4'));
+    const { page } = makePage({ cdp: 'unavailable' });
+    page.$ = vi.fn(async () => ({
+      setInputFiles: vi.fn(async () => { throw new Error('Node is detached from document'); }),
+    })) as never;
+    getPage.mockResolvedValue(page);
+
+    const out = text(await upload({ paths: [file] }));
+
+    expect(out).toContain('detached');
+    expect(out).not.toContain('may have reached the page');
   });
 });

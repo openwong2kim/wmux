@@ -1,4 +1,5 @@
 import * as fs from 'node:fs';
+import * as os from 'node:os';
 import * as path from 'node:path';
 import type { Page } from 'playwright-core';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -32,6 +33,8 @@ const BROWSER_FILE_UPLOAD_SHAPE = {
     .describe('Ref of a file input. Prefer selector — a ref takes the 50MB-capped path.'),
   timeout: z
     .number()
+    .int()
+    .min(1)
     .optional()
     .describe('Milliseconds, ref path only; default 120000.'),
   surfaceId: optionalSurfaceId,
@@ -88,6 +91,33 @@ function getUploadRoot(): string {
 }
 
 /**
+ * How the uploads root is spelled in tool output.
+ *
+ * Two requirements that look opposed. Naming a fixed `~/.wmux/uploads/` is
+ * wrong on any instance carrying a data suffix — the directory the caller is
+ * told to use is not the one the check enforces. Printing the resolved absolute
+ * path is right but parks the login name and home layout in every upload
+ * result, which is local identifying detail an injected page would like an
+ * agent to repeat back to it.
+ *
+ * `~`-relative with the suffix kept satisfies both: `~/.wmux-dogm/uploads` is
+ * the real root, and nothing outside the home directory is disclosed. Falls
+ * back to the absolute path only when the root is not under the home directory
+ * at all, where accuracy has to win.
+ */
+function displayRoot(root: string): string {
+  let home = os.homedir();
+  try {
+    home = fs.realpathSync(home);
+  } catch {
+    // Unresolvable home — compare against what we were given.
+  }
+  const rel = path.relative(home, root);
+  if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) return root;
+  return `~/${rel.split(path.sep).join('/')}`;
+}
+
+/**
  * The one gate on what a page may be handed, and the reason it is unchanged by
  * the CDP route below.
  *
@@ -109,6 +139,13 @@ function getUploadRoot(): string {
  *    resolves links exactly as the browser would, so "exists" and "openable"
  *    are the same question here.
  *
+ * Note what is NOT on that list: a path that EXISTS and whose realpath still
+ * cannot be computed. Every guarantee above rests on resolving links first, so
+ * on that input the gate would quietly become a lexical string compare — a
+ * weaker check of a different kind — and that lexical string is exactly what
+ * Chrome would then be asked to open. It is refused instead. existsSync does
+ * not throw, so the only inputs that get there are already anomalous.
+ *
  * The residue is TOCTOU — swapping the file for a symlink between this check
  * and the upload — which needs write access to the uploads root and is no wider
  * than it was when Playwright did the reading.
@@ -123,12 +160,18 @@ function validateUploadPath(input: string): string {
   try {
     if (fs.existsSync(abs)) resolved = fs.realpathSync(abs);
   } catch {
-    // fall through with abs; the relative check below will still catch traversal
+    throw new Error(
+      `browser_file_upload blocked: "${input}" exists but its real path cannot be resolved, ` +
+      `so it cannot be checked against the upload root.`,
+    );
   }
   const rel = path.relative(root, resolved);
-  if (rel === '' || rel.startsWith('..') || path.isAbsolute(rel)) {
+  // `rel === '..'` and `'..' + sep` are the escapes; a bare startsWith('..')
+  // also swallows legitimate names — `..dots` in the root relativises to
+  // `..dots` and was refused forever.
+  if (rel === '' || rel === '..' || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel)) {
     throw new Error(
-      `browser_file_upload blocked: "${input}" is outside the allowed upload root (${root}). ` +
+      `browser_file_upload blocked: "${input}" is outside the allowed upload root (${displayRoot(root)}). ` +
       `Move the file under that root before uploading.`,
     );
   }
@@ -213,17 +256,53 @@ async function uploadViaCdp(
 }
 
 /**
- * Say out loud that a timed-out upload may have landed anyway.
+ * Marks the one error that means "this may actually have worked".
  *
- * This is the failure mode the timeout above exists to prevent, and it was
- * measured, not imagined: a 45MB file reported "Timeout 30000ms exceeded" while
- * the page's change event had already fired with the full 47,185,920 bytes. An
- * agent reading only "Timeout" retries — and on a real uploader a retry is a
- * SECOND upload, i.e. a duplicate post. The tool cannot tell the two apart from
- * here, so it says so instead of implying a clean failure.
+ * Raised only from the Playwright transfer call, never inferred from message
+ * text: the rejection messages echo the caller's own path, so a file living
+ * under `.wmux-timeout/` would have matched a text scan and been told its
+ * upload might have landed — advice that manufactures exactly the duplicate
+ * retry the warning exists to prevent.
  */
-function decorateUploadTimeout(message: string): string {
-  if (!/timeout/i.test(message)) return message;
+class UploadTransferTimeout extends Error {
+  constructor(readonly cause: unknown) {
+    super(describeToolError(cause));
+    this.name = 'UploadTransferTimeout';
+  }
+}
+
+/** Playwright's own timeout, as raised by setInputFiles. */
+function isPlaywrightTimeout(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    (error.name === 'TimeoutError' || /\bTimeout \d+ms exceeded/.test(error.message))
+  );
+}
+
+/**
+ * Run the content-copying transfer, tagging a timeout as the ambiguous case.
+ *
+ * That case was measured, not imagined: a 45MB file reported "Timeout 30000ms
+ * exceeded" while the page's change event had already fired with the full
+ * 47,185,920 bytes. An agent reading only "Timeout" retries — and on a real
+ * uploader a retry is a SECOND upload, i.e. a duplicate post. The tool cannot
+ * tell the two apart, so it says so rather than implying a clean failure.
+ */
+async function setInputFilesTagged(
+  target: { setInputFiles: (paths: string[], options: { timeout: number }) => Promise<void> },
+  safePaths: string[],
+  timeout: number,
+): Promise<void> {
+  try {
+    await target.setInputFiles(safePaths, { timeout });
+  } catch (error) {
+    if (isPlaywrightTimeout(error)) throw new UploadTransferTimeout(error);
+    throw error;
+  }
+}
+
+/** The duplicate-upload warning, appended only to a tagged transfer timeout. */
+function describeUploadTimeout(message: string): string {
   return (
     `${message} The file may have reached the page anyway — the renderer can ` +
     `finish the transfer after this call gives up. Check the page before ` +
@@ -270,7 +349,7 @@ export function registerFileTools(server: McpServer, deps: BrowserToolDeps): voi
           if (!el) {
             throw new Error(`Could not resolve ref="${ref}" to an element.`);
           }
-          await el.setInputFiles(safePaths, { timeout: resolvedTimeout });
+          await setInputFilesTagged(el, safePaths, resolvedTimeout);
         } else if (!(await uploadViaCdp(page, resolvedSelector, safePaths))) {
           // No CDP (or the selector matched nothing): fall back to the DOM
           // handle, which also produces the user-facing "no file input" error.
@@ -282,21 +361,25 @@ export function registerFileTools(server: McpServer, deps: BrowserToolDeps): voi
                 : 'No file input element found on the page.',
             );
           }
-          await fileInput.setInputFiles(safePaths, { timeout: resolvedTimeout });
+          await setInputFilesTagged(fileInput, safePaths, resolvedTimeout);
         }
 
         return {
           content: [
             {
               type: 'text' as const,
-              text: `Uploaded ${safePaths.length} file(s) from ${getUploadRoot()}`,
+              text: `Uploaded ${safePaths.length} file(s) from ${displayRoot(getUploadRoot())}`,
             },
           ],
         };
       } catch (error) {
-        const message = describeToolError(error);
+        // Only a tagged transfer timeout earns the duplicate-upload warning.
+        const message =
+          error instanceof UploadTransferTimeout
+            ? describeUploadTimeout(error.message)
+            : describeToolError(error);
         return {
-          content: [{ type: 'text' as const, text: decorateUploadTimeout(message) }],
+          content: [{ type: 'text' as const, text: message }],
           isError: true,
         };
       }
