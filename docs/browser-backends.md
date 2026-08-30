@@ -88,12 +88,109 @@ the animation to settle before acting on a coordinate.
 
 ### Sites that detect automation
 
-Attaching CDP is observable from inside the page: `navigator.webdriver`, and
-the side effects of enabling the `Runtime` domain, are signals the browser emits
-about itself. Bot-detection vendors have used them for years. wmux does not try
-to suppress them — it is a tool for driving *your* browser and *your* sessions,
-not for evading a site that has decided it does not want automated traffic. When
-a site blocks you, `external` hands it to your normal browser.
+A page can tell it is being automated. `navigator.webdriver` and the browser's
+own build fingerprint are signals the browser emits about itself, and
+bot-detection vendors have used them for years. wmux does not try to suppress
+them — it is a tool for driving *your* browser and *your* sessions, not for
+evading a site that has decided it does not want automated traffic. When a site
+blocks you, `external` hands it to your normal browser.
+
+Which signals appear depends on the backend, and not in the way you would
+guess. The next section is the measured detail.
+
+## The automation fingerprint, by backend
+
+Reach for an official API before reaching for a browser. If the service has one
+— YouTube, Instagram, most of what an agent is asked to post to — OAuth is the
+supported path: the user consents once in their real browser, the app holds a
+refresh token, and no browser is being driven at all, so none of this section
+applies. The rest of it is for the case where there is no API and an agent has
+to work inside a session the user signed into themselves.
+
+**wmux never types credentials into a login form**, on any backend. A person
+signs in; automation runs after that. The differences below are there so you can
+pick a backend knowing what it looks like, not to slip a login past a site's
+defences.
+
+### What actually sets `navigator.webdriver`
+
+The launch flag, not the connection. Chrome sets the bit when it is *started*
+with `--remote-debugging-port`, and it is already `true` before any client
+attaches; connecting a debugger later never sets it. Measured on Chrome 151:
+
+| How debugging was enabled | Debug port open? | `navigator.webdriver` |
+| --- | --- | --- |
+| `--remote-debugging-port` on the command line | yes | **`true`** |
+| `chrome://inspect` consent, enabled at runtime | yes (9222) | `false` |
+| `chrome.debugger` extension API | no | `false` |
+| Not enabled at all | no | `false` |
+
+The middle two rows are the point: the same CDP-over-WebSocket connection reads
+as automated or not depending purely on how the browser was launched.
+
+### The backends side by side
+
+Measured on Chrome 151 / Electron 41 by opening a page and reading the values —
+no accounts, no sign-in.
+
+| Signal | `chrome` (wmux-launched profile) | `chrome` + Live Chrome | `builtin` (webview) |
+| --- | --- | --- | --- |
+| `navigator.webdriver` | **`true`** | `false` | `false` |
+| `window.chrome` keys | full | full | **empty array** |
+| `navigator.userAgentData` | brands present | brands present | **`null`** |
+| `navigator.languages` | full list | full list | **single entry** |
+| User agent | ordinary Chrome | ordinary Chrome | **contains `Electron/…`** |
+| Banner while attached | none | **~56 px bar** | none |
+
+So neither of the two "quiet" options is invisible, and the noisy one is noisy
+in different ways: the wmux-launched Chrome profile announces itself through
+`navigator.webdriver`, while `builtin` announces itself through four separate
+Electron tells that no flag controls.
+
+### Live Chrome is the user's own consent, not a workaround
+
+Live Chrome reads clean on the fingerprint above for a straightforward reason:
+Chrome is started normally, by the user, and remote debugging is turned on
+afterwards through Chrome's own UI. Nothing is being disguised — the browser
+genuinely is the user's, and the user genuinely allowed the connection.
+
+Enabling it, once:
+
+1. Tick **Remote debugging** at `chrome://inspect/#remote-debugging` (Chrome 144+).
+2. **Restart Chrome.** The setting persists in the profile
+   (`Local State` → `devtools.remote_debugging.user-enabled`), but the running
+   instance does not open the endpoint — the port stayed closed for the ~17 s
+   it was watched after the toggle.
+3. From then on Chrome opens the endpoint on **port 9222** at every start.
+
+What it costs, all of it measured:
+
+- **A banner, the whole time a client is attached.** Roughly 56 px of viewport,
+  gone again when nothing is attached. Enabling the setting alone shows nothing.
+- **Connections after the first one did not complete.** One connection
+  succeeded; three later attempts sat unanswered for 20–25 s. That is consistent
+  with the per-connection permission prompt Chrome documents for this flow, but
+  the prompt itself was not observed — no separate dialog window appeared, and
+  the inside of the browser window was not inspected. Treat unattended,
+  long-running use as unproven.
+- **A fixed port.** 9222, not an ephemeral one, so anything else on the machine
+  can find it.
+
+### What was not measured
+
+Stated plainly, because the gaps matter more than the table:
+
+- **Whether Google blocks any of this.** Sign-in pages were opened and read
+  *before* any credential was entered; no block screen appeared for any backend.
+  That is not evidence that signing in would succeed. Control cases that should
+  have produced a block — `--enable-automation`, an embedded-webview user agent
+  on the OAuth endpoint — did not produce one either, so the check never
+  demonstrated it could detect a block at all. **What happens after credentials
+  are submitted is untested.**
+- **Whether a signed-in session gets throttled once automation drives it.** No
+  documentation was found either way.
+- **The banner is a signal to the person at the keyboard**, not something page
+  JavaScript can read. "No `navigator.webdriver`" is not "undetectable".
 
 ## Password values are redacted
 
