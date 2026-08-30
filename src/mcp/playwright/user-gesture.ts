@@ -1,27 +1,31 @@
 import type { Page } from 'playwright-core';
 
 // ---------------------------------------------------------------------------
-// Anti-detection helpers
-// ---------------------------------------------------------------------------
-
-/**
- * Apply anti-detection measures to the page via init scripts.
- *
- * Currently patches `navigator.webdriver` to return `undefined` so that
- * common bot-detection scripts do not flag the session.
- */
-export async function applyAntiDetection(page: Page): Promise<void> {
-  await page.context().addInitScript(() => {
-    // Override navigator.webdriver to hide automation flag
-    Object.defineProperty(navigator, 'webdriver', {
-      get: () => undefined,
-      configurable: true,
-    });
-  });
-}
-
-// ---------------------------------------------------------------------------
-// CDP-powered evaluate with user gesture
+// CDP-powered evaluate with user gesture.
+//
+// This file was `anti-detection.ts` and also exported `applyAntiDetection()`,
+// which patched `navigator.webdriver` to `undefined`. Nothing ever called it —
+// not once in the repo's history — and it is now deleted rather than wired up.
+//
+// The rule it violated, which is now the design constraint: **a person logs in,
+// and automation only ever runs after that.** wmux never types credentials into
+// a page and never forges automation signals to get past a site's own login
+// protections. Where the service has an API, the agent authenticates through
+// OAuth — the user consents once in their real browser and we hold a refresh
+// token, so the password never reaches the automation at all. Where it does not
+// (Google Flow has no API), the agent drives a session the user already signed
+// into, via the `live` Chrome backend and Chrome's own remote-debugging consent
+// flow (LiveChromeClient) — permission asked and granted per connection.
+//
+// Signal spoofing only buys anything if you are trying to push a login past a
+// site's defences, and that is precisely what we do not do.
+//
+// The flag it hid was not ours to hide from an init script anyway:
+// `navigator.webdriver` is true because ChromeLauncher passes
+// `--remote-debugging-port`, which sets it before any client attaches
+// (measured on Chrome 151; `--enable-automation` makes no further difference).
+//
+// Re-adding signal spoofing is a decision to reopen with the owner first.
 // ---------------------------------------------------------------------------
 
 /**
