@@ -96,25 +96,26 @@ export function formatOutcome(
 }
 
 // Descriptions are deliberately tight: every byte here rides in tools/list on
-// every session, and the protocol probe enforces a total budget for that view.
-// Each sentence that survived earns its place — the persistence contract, the
-// two await caveats, and the two facts an agent would otherwise get wrong (no
-// sandbox, no lifetime past the connection).
+// every session, and the protocol probe enforces a total budget for that view
+// that the whole tool surface shares. Each sentence that survived earns its
+// place — the persistence contract, the await caveat, and the two facts an
+// agent would otherwise get wrong (no sandbox, no lifetime past the
+// connection). The `let` re-declaration rule is deliberately NOT here: the
+// session reports it as a remedy at the moment it bites, which reaches the
+// caller when it matters instead of costing context on every session.
 const REPL_RUN_DESCRIPTION =
   'Run JavaScript in a persistent Node runtime and get the return value back. ' +
   'State survives between calls: variables (including top-level let/const), required ' +
   'modules, and open handles are still there next call. Top-level await works, but ' +
   'declarations inside an awaiting snippet do not persist — assign to a global ' +
-  '(x = await f()) to keep one. A name already bound by let/const cannot be re-declared; ' +
-  'assign without a keyword. Full fs/net/require access, NO sandbox. Lives only as long ' +
-  'as your MCP connection: no wmux restart, no sharing with other panes or workspaces.';
+  '(x = await f()). Full fs/net/require access, NO sandbox. Lives only as long as your ' +
+  'MCP connection: no wmux restart, no sharing with other panes or workspaces.';
 
 const REPL_RESET_DESCRIPTION =
-  'Throw away a REPL session and its state; the next repl_run starts a fresh runtime. ' +
-  'Use when a session is wedged or holds a stale module.';
+  'Throw away a REPL session and its state; the next repl_run starts a fresh runtime.';
 
 const REPL_SESSIONS_DESCRIPTION =
-  'List this connection\'s REPL sessions: cwd, pid, age, and whether one is running code.';
+  'List this connection\'s REPL sessions: cwd, pid, age, and current state.';
 
 export function createReplToolCatalog(): readonly WmuxToolSpec[] {
   const replRun = defineWmuxTool({
@@ -136,8 +137,8 @@ export function createReplToolCatalog(): readonly WmuxToolSpec[] {
         .string()
         .optional()
         .describe(
-          "Working directory, applied only when the session is created. Defaults to the MCP server's " +
-            "own cwd, which is not necessarily your pane's — pass it explicitly to be sure.",
+          "Working directory, honoured only when the session is created. Defaults to the MCP " +
+            "server's cwd, which is not necessarily your pane's — pass it explicitly.",
         ),
     },
     profiles: ['full'],

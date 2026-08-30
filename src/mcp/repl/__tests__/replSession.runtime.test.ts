@@ -7,7 +7,9 @@
  * parent does not orphan children — is only true if it is true of a real
  * process, so mocking the child would test nothing worth testing.
  */
+import * as fs from 'fs';
 import * as os from 'os';
+import * as path from 'path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { ReplSession, buildReplChildEnv } from '../ReplSession';
 
@@ -326,12 +328,22 @@ describe('ReplSession isolation', () => {
 
   it('runs in the cwd it was given and rejects one that does not exist', async () => {
     const session = makeSession(os.tmpdir());
-    const outcome = await session.run('process.cwd()', 5000);
+    // Compare INSIDE the child and return a boolean. Matching the path against
+    // the inspected result instead would compare against a JS string literal:
+    // on Windows every separator comes back escaped (C:\\Users\\...), so a
+    // substring test for the real path fails even when the cwd is correct.
+    // realpath on both sides absorbs macOS reporting /var/... as /private/var/....
+    const expectedCwd = fs.realpathSync(os.tmpdir());
+    const outcome = await session.run(
+      `require("fs").realpathSync(process.cwd()) === ${JSON.stringify(expectedCwd)}`,
+      5000,
+    );
     expect(outcome.ok).toBe(true);
-    // macOS reports /var/folders/... as /private/var/folders/...; compare the tail.
-    expect(outcome.result?.text).toContain(os.tmpdir().replace(/^\/private/, ''));
+    expect(outcome.result?.text).toBe('true');
 
-    expect(() => makeSession('/definitely/not/a/real/path')).toThrow(/cwd does not exist/);
+    expect(() => makeSession(path.join(os.tmpdir(), 'definitely-not-a-real-wmux-path'))).toThrow(
+      /cwd does not exist/,
+    );
   });
 
   it('exits when its parent IPC channel closes, so a crashed parent orphans nothing', async () => {
