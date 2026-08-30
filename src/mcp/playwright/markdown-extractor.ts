@@ -10,7 +10,7 @@ import type { BrowserTargetScope } from './browserScope';
 export interface ExtractionOptions {
   /** Maximum output length in characters (default 4000) */
   maxLength?: number;
-  /** Include [text](url) links (default true) */
+  /** Include [text](url) links (default false) */
   includeLinks?: boolean;
   /** Include ![alt](src) images (default false) */
   includeImages?: boolean;
@@ -539,7 +539,11 @@ export function treeToMarkdown(
   options?: ExtractionOptions,
 ): string {
   const maxLength = options?.maxLength ?? DEFAULT_MAX_LENGTH;
-  const includeLinks = options?.includeLinks ?? true;
+  // Default false, matching what browser_extract_text advertises. It used to
+  // default true, so an agent that trusted the documented default and omitted
+  // the flag paid for every href on the page — the opposite of the token saving
+  // it thought it had asked for (dogfood, 2026-08-30).
+  const includeLinks = options?.includeLinks ?? false;
   const includeImages = options?.includeImages ?? false;
 
   if (!tree) {
