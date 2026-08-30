@@ -48,6 +48,10 @@ const BROWSER_DOWNLOAD_SHAPE = {
     .string()
     .optional()
     .describe('Save the download as this name.'),
+  timeout: z
+    .number()
+    .optional()
+    .describe('Milliseconds to wait for the download to START; default 30000.'),
   surfaceId: optionalSurfaceId,
 };
 
@@ -255,6 +259,102 @@ async function uploadViaCdp(
   }
 }
 
+// ---------------------------------------------------------------------------
+// Download: keeping the page the agent was on
+// ---------------------------------------------------------------------------
+
+/** Default wait for the download to START. See BROWSER_DOWNLOAD_SHAPE. */
+const DOWNLOAD_START_TIMEOUT_MS = 30_000;
+
+/** Budget for each half of the restore. Bounded so a failed download does not
+ *  also become a hang; the error is already on its way out. */
+const RESTORE_TIMEOUT_MS = 10_000;
+
+/**
+ * Put the tab back where it was after a click navigated instead of downloading.
+ *
+ * Chrome ignores the `download` attribute on a CROSS-ORIGIN link (spec
+ * behaviour) and renders the target instead, so a click on a link to a video on
+ * someone else's host fires no download event and NAVIGATES. Measured: the tool
+ * timed out and the agent's tab was left on the media URL — a snapshot taken
+ * afterwards described a completely different page, with nothing saying the
+ * page the agent was working on had gone.
+ *
+ * `goBack` first, and the reason is history rather than speed: it POPS the
+ * stray entry, while `goto` pushes a new one on top of it. Measured on Chrome
+ * 141 with the same three-entry history — page A, page B, then the media URL
+ * the click navigated to — a later browser_navigate_back lands on A after a
+ * goBack restore, and lands back on THE MEDIA URL after a goto restore, i.e.
+ * straight into the failure this function exists to undo.
+ *
+ * Neither route brings the document back. Also measured: a marker set on
+ * `window` before the click is gone after goBack, so Chrome did not keep the
+ * page in its back/forward cache and the restore is a reload either way. The
+ * caller is told which route ran, because only one of them leaves the history
+ * usable.
+ */
+async function restoreAfterStrayNavigation(
+  page: Page,
+  originalUrl: string,
+): Promise<'restored' | 'reloaded' | 'failed'> {
+  // Success is judged by where the tab ENDED UP, not by whether goBack's
+  // promise resolved. Measured against a wmux-opened tab: the back navigation
+  // lands immediately (the lifecycle ring records it at once) while the promise
+  // sits unresolved until its own timeout — so awaiting it would spend the
+  // whole budget and then fall through to the goto that leaves the stray entry
+  // in history. Polling the URL turns that into the good outcome. The same loop
+  // exits at once when goBack fails outright, which is the no-history case.
+  let settled = false;
+  const back = page
+    .goBack({ timeout: RESTORE_TIMEOUT_MS, waitUntil: 'commit' })
+    .catch(() => undefined)
+    .finally(() => { settled = true; });
+  const deadline = Date.now() + RESTORE_TIMEOUT_MS;
+  for (;;) {
+    if (page.url() === originalUrl) return 'restored';
+    if (settled || Date.now() >= deadline) break;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  await back;
+  if (page.url() === originalUrl) return 'restored';
+
+  try {
+    await page.goto(originalUrl, { timeout: RESTORE_TIMEOUT_MS, waitUntil: 'domcontentloaded' });
+    return page.url() === originalUrl ? 'reloaded' : 'failed';
+  } catch {
+    return 'failed';
+  }
+}
+
+/**
+ * What to tell an agent whose download turned into a navigation.
+ *
+ * The bare Playwright timeout ("Timeout 30000ms exceeded while waiting for
+ * event \"download\"") is true and useless: it names neither the cause nor the
+ * fact that the page moved. Both belong here, and so does the one thing the
+ * agent can actually do next — the URL is in hand, and on this machine a
+ * terminal can fetch it whenever the asset does not need the page's session.
+ */
+function describeStrayNavigation(
+  strandedUrl: string,
+  originalUrl: string,
+  outcome: 'restored' | 'reloaded' | 'failed',
+): string {
+  const state =
+    outcome === 'restored'
+      ? `The tab was sent back to ${originalUrl}; the page was reloaded, so anything it held in memory is gone.`
+      : outcome === 'reloaded'
+        ? `The tab was reopened at ${originalUrl} — the page was reloaded, and the stray entry is still in history, so browser_navigate_back would land back here.`
+        : `The tab could NOT be recovered and is still on ${strandedUrl} — navigate before using it again.`;
+  return (
+    `The click navigated instead of downloading: the browser is now at ${strandedUrl}. ` +
+    `Chrome ignores a link's "download" attribute across origins and renders the target instead, ` +
+    `so no download ever started. ${state} ` +
+    `That URL is the file — fetch it from a terminal if it needs no session, ` +
+    `otherwise use a control that builds the download in the page itself.`
+  );
+}
+
 /**
  * Marks the one error that means "this may actually have worked".
  *
@@ -391,23 +491,32 @@ export function registerFileTools(server: McpServer, deps: BrowserToolDeps): voi
   // -----------------------------------------------------------------------
   server.tool(
     'browser_download',
-    'Click an element by ref and capture the resulting download. Returns the file path.',
+    'Click an element by ref and capture the resulting download. Returns the saved path plus the name and URL the browser had for it. timeout bounds the wait for the download to START, not to finish — a download that begins in time then runs for minutes still completes (measured: a 60s transfer succeeds under the 30s default). If the click navigates instead of downloading, which is what Chrome does with a cross-origin "download" link, the tab is put back where it was and the error says so.',
     BROWSER_DOWNLOAD_SHAPE,
-    async ({ ref, filename, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
+    async ({ ref, filename, timeout, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
+      // Captured before the click so a stray navigation has somewhere to go
+      // back to. Read outside the try: the catch needs it too.
+      let originalUrl = '';
+      let page: Awaited<ReturnType<typeof engine.getPageForScope>> = null;
       try {
-        const page = await engine.getPageForScope(scope);
+        page = await engine.getPageForScope(scope);
         if (!page) {
           throw new Error('No browser page available. Call browser_open with a URL first to establish a CDP connection (required even if a browser panel is already visible).');
         }
+        originalUrl = page.url();
 
         const el = await resolveRef(page, ref);
         if (!el) {
           throw new Error(`Could not resolve ref="${ref}" to an element.`);
         }
 
-        // Start waiting for download before clicking
+        // Start waiting for download before clicking. The timeout covers the
+        // START of the download only — Playwright resolves this event when the
+        // transfer begins, and download.path() below then waits out the rest
+        // unbounded. That split is deliberate and worth keeping: a large file
+        // is slow to finish, not slow to begin.
         const [download] = await Promise.all([
-          page.waitForEvent('download'),
+          page.waitForEvent('download', { timeout: timeout ?? DOWNLOAD_START_TIMEOUT_MS }),
           el.click(),
         ]);
 
@@ -430,16 +539,37 @@ export function registerFileTools(server: McpServer, deps: BrowserToolDeps): voi
           filePath = downloadPath ?? download.suggestedFilename();
         }
 
+        // The saved path is a temp name — `render.mp4` when the caller picked
+        // one, an extension-less GUID when it did not — so on its own it says
+        // nothing about WHAT was downloaded. The browser's own name and the URL
+        // it came from were previously reachable only through
+        // browser_wait_for_download, which meant learning the filename cost a
+        // second, differently-shaped call.
         return {
           content: [
             {
               type: 'text' as const,
-              text: `Downloaded: ${filePath}`,
+              text:
+                `Downloaded: ${filePath}\n` +
+                `suggestedFilename: ${download.suggestedFilename()}\n` +
+                `url: ${download.url()}`,
             },
           ],
         };
       } catch (error) {
-        const message = describeToolError(error);
+        let message = describeToolError(error);
+        // A click that navigated is not just a failed download: the page the
+        // agent was working on is gone, and every later tool call would run
+        // against whatever replaced it. Only on the failure path — a download
+        // that succeeded AND navigated did so because the site meant to, and
+        // undoing that would be the wrong kind of help.
+        if (page) {
+          const strandedUrl = page.url();
+          if (originalUrl && strandedUrl !== originalUrl) {
+            const outcome = await restoreAfterStrayNavigation(page, originalUrl);
+            message = `${message}\n\n${describeStrayNavigation(strandedUrl, originalUrl, outcome)}`;
+          }
+        }
         return {
           content: [{ type: 'text' as const, text: message }],
           isError: true,
