@@ -110,6 +110,10 @@ describe('ReplSession state persistence', () => {
     expect(failed.ok).toBe(false);
     expect(failed.error).toContain('boom');
     expect(failed.fatal).toBeUndefined();
+    // The runner's own vm/IPC frames are cut: they are identical on every error
+    // and would cost the agent context on every failure.
+    expect(failed.error).not.toContain('runInThisContext');
+    expect(failed.error).not.toContain('node:internal/child_process');
 
     const after = await session.run('survivor', 5000);
     expect(after.ok).toBe(true);
@@ -134,6 +138,8 @@ describe('ReplSession timeouts', () => {
     const outcome = await session.run('while (true) {}', 300);
     expect(outcome.ok).toBe(false);
     expect(outcome.timedOut).toBe(true);
+    // Entirely-internal stack trimmed down to the message that is the story.
+    expect(outcome.error).toBe('Error: Script execution timed out after 300ms');
     // The vm watchdog stops the script; the process is untouched, so state lives.
     expect(outcome.fatal).toBeUndefined();
     expect(session.dead).toBe(false);

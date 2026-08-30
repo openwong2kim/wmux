@@ -140,8 +140,25 @@ function wrapAsync(code) {
   return '(async () => {\n' + code + '\n})()';
 }
 
+// Cut the runner's own frames off a stack.
+//
+// Every error otherwise ends in six frames of vm/IPC plumbing that describe how
+// this file is built and nothing about what the caller wrote. They are pure
+// noise, they are identical on every error, and in an agent surface they are
+// paid for in context on every failure. Keep the message and the frames above
+// the first internal one; when the error is entirely internal (a vm timeout)
+// that leaves just the message, which is the whole story anyway.
+const INTERNAL_FRAME = /^\s+at (Script\.runInThisContext|Object\.runInThisContext|process\.eval|process\.emit|emit \(node:internal|process\.processTicksAndRejections)/;
+
+function trimStack(error) {
+  const raw = String(error && error.stack || error);
+  const lines = raw.split('\n');
+  const cut = lines.findIndex((line) => INTERNAL_FRAME.test(line));
+  return cut === -1 ? raw : lines.slice(0, cut).join('\n').replace(/\s+$/, '');
+}
+
 function fail(id, error) {
-  send({ id: id, ok: false, error: String(error && error.stack || error) });
+  send({ id: id, ok: false, error: trimStack(error) });
 }
 
 process.on('message', (msg) => {
