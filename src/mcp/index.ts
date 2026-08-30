@@ -24,6 +24,7 @@ import { registerExtractionTools } from './playwright/tools/extraction';
 import { registerChannelTools } from './channels';
 import { registerFanOutTools } from './fanout';
 import { registerPaneLifecycleTools } from './paneLifecycle';
+import { registerReplTools } from './repl/tools';
 import { getWmuxMcpServerInstructions, resolveMcpServerVersion } from './serverMetadata';
 import type { RegisterWmuxToolsOptions } from './toolCatalog';
 
@@ -1589,6 +1590,14 @@ registerPaneLifecycleTools(
   },
   MCP_CATALOG_OPTIONS,
 );
+
+// === Agent REPL tools ===
+// A persistent Node runtime per session, hosted as a child of THIS process and
+// scoped to this connection. It takes no RPC and needs no workspace identity:
+// nothing here touches the substrate, so there is nothing for the daemon to
+// authorize. The authority ceiling is unchanged — a caller holding
+// `terminal_send` already drives an arbitrary shell in its own pane as the user.
+registerReplTools(server, MCP_CATALOG_OPTIONS);
 
 // Hook the MCP initialize handshake so wmux substrate learns the declared
 // plugin identity (clientInfo.name + version). Fire `mcp.identify` once so

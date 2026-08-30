@@ -180,6 +180,16 @@ The wmux MCP server (hosted in-process, named-pipe transport to the daemon) expo
 | `wmux_search_panes` | `pane.search` | |
 | `send_message` | inter-workspace messaging — send a message to another workspace. Backed by the same handler as `a2a_task_send` (which is registered as a literal alias). NOT `input.send` semantics. | |
 
+### REPL surface (experimental)
+
+Backed by **no RPC method**: the sessions are child processes of the MCP server itself, so nothing crosses the substrate boundary and there is nothing for the daemon to authorize. Scope is the caller's MCP connection — a session is not shared between panes or workspaces and does not survive a wmux restart. `full` profile only; deliberately absent from the commander surface.
+
+| MCP tool | Backs RPC method | Description |
+|---|---|---|
+| `repl_run` | *(none — in-process child)* | Evaluate JavaScript in a persistent Node runtime; variables, required modules, and open handles survive between calls. |
+| `repl_reset` | *(none — in-process child)* | Kill a session and its state; the next `repl_run` starts a fresh runtime. |
+| `repl_sessions` | *(none — in-process child)* | List the sessions this connection holds (cwd, pid, age, busy). |
+
 ### A2A surface (stable)
 
 | MCP tool | Backs RPC method | Description |

@@ -14,6 +14,7 @@ import { COMMANDER_MODE_ARG } from '../shared/commanderSurface';
 import { clearClientIdentity } from './wmux-client';
 import { PlaywrightEngine } from './playwright/PlaywrightEngine';
 import { createWmuxServer } from './index';
+import { disposeReplRegistry } from './repl/replRegistry';
 
 async function main(): Promise<void> {
   const server = createWmuxServer({
@@ -38,11 +39,15 @@ async function main(): Promise<void> {
     // child. Diagnostics must stay on stderr, including during shutdown.
     console.error('[wmux-mcp] Transport closed, disconnecting Playwright');
     clearClientIdentity();
+    // REPL children hold live state and are ours alone; reap them with the
+    // connection rather than leaving them to the disconnect watchdog.
+    disposeReplRegistry();
     await PlaywrightEngine.getInstance().disconnect();
   };
 
   // Graceful shutdown
   const shutdown = async () => {
+    disposeReplRegistry();
     await PlaywrightEngine.getInstance().disconnect();
     process.exit(0);
   };

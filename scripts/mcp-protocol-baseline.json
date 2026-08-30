@@ -3,7 +3,7 @@
   "profiles": {
     "full": {
       "maxListBytes": 80000,
-      "wireResultSha256": "9bb6d64e7a5902d7ab85b0012c17994bbacc6fa1b07243e674f4c5af8e9d1520",
+      "wireResultSha256": "eb6cdfcae7a3bac1a2efdd9970ebaec56c7a9ded13764c9efbe5b373f65b471b",
       "instructionSha256": "f18849bb1ea62bcf5a1e46a73d633c787b4e08e763cc04b01c4e557df8f833eb",
       "toolNames": [
         "browser_open",
@@ -94,7 +94,10 @@
         "surface_new",
         "surface_close",
         "pane_stash",
-        "pane_unstash"
+        "pane_unstash",
+        "repl_run",
+        "repl_reset",
+        "repl_sessions"
       ]
     },
     "commander": {
