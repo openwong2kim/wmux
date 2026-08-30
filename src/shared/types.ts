@@ -1211,6 +1211,13 @@ export function clonePaneTreeFresh(pane: Pane): Pane {
       // so the clone is a clean slate that spawns its own PTY on mount.
       const next: Surface = { ...s, id: generateId('surface'), ptyId: '' };
       delete next.scrollbackFile;
+      // #1100, CodeRabbit round 1 — remoteHostId/remoteSessionId identify a
+      // LIVE remote session. Spreading them onto the clone double-attaches
+      // the same session from two tabs, which then fight over input. The
+      // clone gets an empty remote-terminal placeholder instead (same "spawns
+      // fresh on mount" contract a local terminal's reset ptyId gets).
+      delete next.remoteHostId;
+      delete next.remoteSessionId;
       return next;
     });
     // Preserve which surface was active by POSITION, since ids changed.

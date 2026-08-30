@@ -76,7 +76,7 @@ export default function RemotePaneSurface({ hostId, sessionId, surfaceId, shell,
   }, [hostId, sessionId]);
 
   return (
-    <div className="flex flex-col h-full w-full" style={{ background: 'var(--bg-base)', display: isActive ? 'flex' : 'none' }}>
+    <div className="absolute inset-0 flex flex-col" style={{ background: 'var(--bg-base)', display: isActive ? 'flex' : 'none' }}>
       {(shell || cwd) && (
         <div
           className="h-6 flex items-center px-2 text-[10px] font-mono truncate flex-shrink-0"

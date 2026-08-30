@@ -34,17 +34,31 @@ export default function AddRemotePaneModal({ onClose, onCreated }: AddRemotePane
 
   const pick = async (hostId: string): Promise<void> => {
     setError(undefined);
-    setCreatingHostId(hostId);
     const remote = window.electronAPI?.remote;
+    // #1100, CodeRabbit round 1 — the guard must run BEFORE the spinner
+    // latches: a missing bridge with no reset would leave every host button
+    // disabled forever (setCreatingHostId(null) was only reachable after
+    // this line). The `await` below gets the same protection via try/catch —
+    // a rejected IPC call (as opposed to an { ok: false } response, already
+    // handled) is the second way to strand the same spinner, and the caller
+    // (`onClick={() => void pick(h.id)}`) attaches no handler of its own, so
+    // an uncaught rejection here would surface as a genuine unhandled
+    // promise rejection, not just leave the spinner stuck.
     if (!remote) return;
+    setCreatingHostId(hostId);
     const freshId = `remote-pane-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-    const res = await remote.workspaceCreate(hostId, freshId);
-    setCreatingHostId(null);
-    if (res.ok) {
-      onCreated(hostId, res.sessionId);
-      onClose();
-    } else {
-      setError(res.error);
+    try {
+      const res = await remote.workspaceCreate(hostId, freshId);
+      if (res.ok) {
+        onCreated(hostId, res.sessionId);
+        onClose();
+      } else {
+        setError(res.error);
+      }
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setCreatingHostId(null);
     }
   };
 

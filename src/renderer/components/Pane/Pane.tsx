@@ -183,7 +183,7 @@ export function pickOverlaySurfaces<T extends { surfaceType?: string }>(
   surfaces: ReadonlyArray<T>,
 ): T[] {
   return surfaces.filter(
-    (s) => s.surfaceType === 'diff' || s.surfaceType === 'editor',
+    (s) => s.surfaceType === 'diff' || s.surfaceType === 'editor' || s.surfaceType === 'remote-terminal',
   );
 }
 
@@ -1175,6 +1175,21 @@ function SplitSurfaceView({
             isActive={surface.id === activeSurfaceId}
             surfaceId={surface.id}
             verifiedWorkspaceId={surface.diffOwnerWorkspaceId || workspaceId}
+          />
+        ) : surface.surfaceType === 'remote-terminal' ? (
+          // #1086/#1091, CodeRabbit round 1 — the hasBoth split previously
+          // routed remote-terminal into the editor ternary below (empty
+          // filePath, nothing rendered). Same overlay contract as Diff/Editor
+          // (absolute inset-0, isActive→display:none inside the component).
+          <RemotePaneSurface
+            key={surface.id}
+            hostId={surface.remoteHostId || ''}
+            sessionId={surface.remoteSessionId || ''}
+            surfaceId={surface.id}
+            shell={surface.shell}
+            cwd={surface.cwd}
+            isActive={surface.id === activeSurfaceId}
+            onTitleChange={updateRemoteSurfaceTitle}
           />
         ) : (
           <EditorPanel
