@@ -1,3 +1,598 @@
+## [3.49.1] — 2026-08-30
+
+### Added
+
+- Per-session scheduled prompts for agent panes, with quota-reset shortcuts,
+  optional repeats, and cross-session management.
+
+- New guide: [Browser backends](docs/browser-backends.md) — which of the three
+  backends to pick, what binding a workspace to each kind of Chrome profile
+  actually exposes (including why your existing Chrome profiles cannot appear in
+  that menu), the four things driving a browser over CDP genuinely cannot do
+  (real passkeys, canvas-rendered UIs, coordinates during compositor animation,
+  and sites that detect automation), and how password values are redacted from
+  tool output.
+
+- `browser_snapshot` now marks the focused element. Exactly one node per page
+  carries `focused`, so "which field am I in" no longer costs a second snapshot
+  or an `browser_evaluate` round-trip.
+
+- `browser_snapshot` names iframe boundaries. An `<iframe>` used to appear as a
+  bare childless node, indistinguishable from an empty one; it now reads
+  `Iframe "..." (separate document — contents not in this snapshot)`, and the
+  marker survives `filter:"interactive"` so a filtered tree can no longer be
+  misread as "this page has no such button".
+
+- `browser_snapshot` warns when a CSS overlay is covering the page. Chrome's
+  accessibility tree already drops content behind a native `<dialog>` modal or
+  an `inert` subtree, but a plain high-z-index `<div>` — every React/Tailwind
+  modal, cookie wall and paywall — leaves every covered control looking
+  clickable. The snapshot now opens with one note naming the overlay and marks
+  the controls that still receive clicks as `clickable`, instead of the agent
+  discovering it through a 30-second click timeout.
+
+- **`browser_snapshot` marks the overlay it warns about.** The note already
+  named the covering layer (`div#backdrop`), but nothing in the tree said which
+  node that was, so the two could not be connected. The layer's line now
+  carries an `overlay` marker next to the `clickable` marks on the controls
+  still reachable behind it. Best-effort: a backdrop with no accessibility node
+  of its own leaves the note standing alone, as before.
+
+- **`browser_file_upload` takes a `selector`.** Uploads used to go to whichever
+  file input happened to be first in the DOM, with no way to aim at another —
+  a silent wrong-target on any page with more than one. Passing a selector picks
+  the input, and a selector that matches nothing says so by name instead of
+  falling back to the first one.
+
+- **A file whose name starts with dots was refused forever.** The root check
+  compared the leading characters rather than the leading path segment, so a
+  perfectly ordinary `..dots.mp4` sitting inside the uploads directory looked
+  like an escape attempt.
+
+- **A rejected upload could be told its file might have arrived.** The
+  "this may have succeeded, do not blindly retry" note was attached by scanning
+  the error text for "timeout", and rejection messages quote the path you
+  passed — so a file under a directory called `.wmux-timeout` was refused and
+  then advised to check whether it had uploaded. The note is now raised by the
+  transfer itself, which is the only step that can be ambiguous.
+
+- **`timeout: 0` disabled the upload backstop.** Playwright reads zero as "wait
+  forever", so the value meant to bound a wedged renderer removed the bound
+  instead. The parameter now has to be a positive whole number.
+
+- **Upload results named the wrong directory, or too much of it.** The success
+  message hardcoded `~/.wmux/uploads/`, which is the wrong path on any instance
+  with a data suffix; naming the resolved absolute path instead would have put
+  the account name into every upload result. Both messages now say
+  `~/.wmux-<suffix>/uploads` — the real directory, without spelling out the
+  home layout.
+
+- **`browser_download` now says what it downloaded.** It returned only the saved
+  path — an extension-less temp name when no `filename` was given — so the
+  browser's own filename and the source URL were reachable only by driving
+  `browser_click` and `browser_wait_for_download` instead. Both now come back
+  from the one call, which is what a follow-up step (handing the file to
+  `ffmpeg`, naming an output) actually needs.
+
+- **`browser_download` takes a `timeout`.** It bounds the wait for the download
+  to START, which is the property that lets large files work at all: a transfer
+  that begins in time then runs for minutes still completes — measured, a 60s
+  download succeeds under the 30s default. The default is unchanged; the
+  parameter exists for pages that are slow to begin, and the description now
+  says which half of the operation it covers.
+
+- **`timeout: 0` disabled the download waits.** Playwright reads zero as "wait
+  forever", so on `browser_download` it removed the very start-bound the value
+  exists to impose, and on `browser_wait_for_download` it hung a call whose
+  entire job is to give up. Both now require a positive whole number.
+
+### Changed
+
+- **Browser tool descriptions are leaner, so every agent session starts
+  cheaper.** An MCP host loads the whole tool list into the system prompt
+  before an agent does any work, and wmux ships 39 `browser_*` tools — a fixed
+  cost paid on every single session. Their descriptions carried duplicated
+  sentences, repeated targeting advice, and implementation notes an agent
+  cannot act on. Those are gone: the `browser_*` tool definitions now weigh
+  20.6% less (25,684 → 20,399 characters, roughly 6,400 → 5,100 tokens), and
+  the full wmux tool list dropped from ~19,700 to ~18,400 tokens. Every
+  parameter, type, and enum is unchanged, as are the behavioural contracts the
+  wording exists to protect — the upload sandbox, the `browser_evaluate`
+  prompt-injection block, sensitive-domain cookie and storage rules, the
+  `browser_screenshot` `browser_open` prerequisite, and the rule that a
+  browser surface is addressed only by its opaque `surfaceId`.
+
+- `node scripts/measure-mcp-tokens.mjs` reports the per-tool token cost of the
+  MCP surface, so this budget can be checked rather than guessed.
+
+- **Password values no longer reach the agent through the browser tools.**
+  When an agent works on a page with a login form, the password in that form
+  used to travel back to the model in several places: `browser_snapshot` and
+  `browser_smart_snapshot` reported the field's contents, and `browser_type`
+  echoed the text it had just typed straight back into the tool result — which
+  put the credential in the transcript, and in the logs, a second time. Chrome
+  masks `<input type="password">` in the accessibility tree, but that is the
+  only shape it covers: a plain-text field marked
+  `autocomplete="new-password"` — what a "show password" toggle and most
+  signup forms produce — came back in full, a field inside a shadow root was
+  missed entirely, and the DOM-based snapshot path read every field's value
+  directly regardless of type. All of those now report `[redacted:password]`
+  instead.
+
+- **Credentials are masked wherever a tool prints a URL, a body, or a log
+  line.** `browser_network`, `browser_response_body` and `browser_console`
+  mask `password`-family parameters in JSON and form-encoded payloads, so a
+  login request that echoes what was submitted — or a page that logs its own
+  payload — no longer hands the password over. The same masking covers every
+  URL a tool renders: `browser_navigate`, `browser_navigate_back`, the
+  `browser_tabs` listing, the browser-events block and the DOM snapshot
+  listing. Both shapes a credential takes in a URL are handled — a `password=`
+  query parameter, and `scheme://user:password@host` basic-auth userinfo where
+  only the password half is replaced.
+
+  Only the value is hidden. The field, its label, its name, its ref and
+  whether it is currently filled are all still reported exactly as before —
+  an agent can find and fill a login form just as it could — and everything
+  else in a URL, a captured body or a console line stays readable, so the
+  network and console tools remain useful for debugging. The username in a
+  login payload, and the account in a userinfo URL, are deliberately left
+  intact: which account a request used is exactly what those tools exist to
+  show.
+
+- **Four browser-tool contracts an agent had to discover by trying them are now
+  stated in the tool descriptions.** `browser_tabs` says that `selected`
+  reports UI focus — always `false` on the `chrome` backend — and is not what
+  decides which surface a tool with no `surfaceId` targets, so the only surface
+  in a workspace is still reachable when it lists as `selected: false`.
+  `browser_snapshot` says that `"aria"` output carries no refs and that
+  `filter` applies to `"ai"` only; passing the two together now returns the
+  full tree with a note saying the filter was ignored, instead of dropping the
+  parameter in silence. `browser_evaluate` documents its return contract:
+  blocking is a text scan (a blocked name inside a string or a comment is
+  refused too), strings come back verbatim and everything else as JSON (DOM
+  nodes, `Map`s and functions serialize to `{}`), a returned Promise is
+  awaited, and top-level `await` is a syntax error.
+
+- **`browser_snapshot` no longer repeats every piece of text three times.**
+  Chrome stacks a `StaticText` and an `InlineTextBox` under each rendered
+  string, so `<h1>Dogfood page</h1>` cost three identical lines and a button
+  cost three lines to say one word — over half the output on a real page. The
+  `ai` format now drops `InlineTextBox` (the layout engine's per-line fragment
+  of its parent, measured to never carry text the parent lacks) and drops a
+  `StaticText` only when it is its parent's only child and repeats the parent's
+  own name. Measured against live pages: Wikipedia 204,276 → 115,648 chars
+  (−43%), Hacker News 59,783 → 29,874 (−50%), with byte-identical ref numbering
+  and no non-text line removed. `format:"aria"` is unchanged — its contract is
+  the whole tree.
+
+- **`docs/browser-backends.md` now documents what each backend looks like to a
+  page.** The "sites that detect automation" note said attaching CDP is what
+  sets `navigator.webdriver`; measurement says otherwise — the flag comes from
+  launching Chrome with `--remote-debugging-port`, and is already set before any
+  client connects, so a backend that enables debugging at runtime does not carry
+  it. The page now has the measured signal-by-backend table, the one-time setup
+  and the real costs of Live Chrome (a banner while attached, a fixed port,
+  connections after the first one left unanswered), and an explicit list of what
+  was *not* measured — chiefly that nothing here says whether a sign-in would
+  succeed, since every measurement stopped before credentials were entered.
+
+### Removed
+
+- **`browser_snapshot`'s `ref` parameter is gone from the schema.** It was
+  described as "Reserved; not implemented yet" and was never read, so every
+  agent paid to read it on its first call only to decide to ignore it.
+
+- **Dropped an unwired `applyAntiDetection()` that would have forged
+  `navigator.webdriver`.** Nothing had ever called it — not once in the repo's
+  history — but leaving it in place implied wmux had an answer to bot detection
+  that it does not have, and pointed the next reader away from the one it does.
+  The rule it violated is now the design constraint: a person logs in, and
+  automation only ever runs after that. wmux does not type credentials into a
+  page and does not forge automation signals to get past a site's login
+  protections. Where a service has an API, the agent authenticates through OAuth
+  — the user consents once in their real browser, so the password never reaches
+  the automation; where it does not, the agent drives a session the user has
+  already signed into, through the `live` Chrome backend's per-connection
+  consent flow. The file it lived in is now named `user-gesture.ts`, after the
+  helper that is actually used.
+
+### Fixed
+
+- **Creating a Chrome profile works again.** The workspace menu's
+  "New profile…" row asked for the name with a browser prompt dialog, which
+  Electron's renderer does not implement — the call threw, so the row did
+  nothing at all and no profile was ever created. It now opens a small inline
+  form right in the submenu: type the name, press Enter or Create, and the
+  workspace is bound to the new profile. If the name is rejected (bad
+  characters, the reserved `live`, or the 20-profile limit) the reason is
+  shown under the field with what you typed still there, instead of being
+  swallowed.
+
+- Browser (`chrome` backend): a tab handle returned by `browser_open` /
+  `browser_tabs new` now stays valid for the life of the tab. Chrome
+  routinely replaces the target behind a tab (the first-run sync flow does
+  exactly this), which used to silently invalidate the id an agent was
+  holding — every follow-up tool call then failed with a target miss and the
+  only recovery was opening a new tab. Handles are also remembered across a
+  wmux restart, so a tab you opened before quitting is still addressable when
+  wmux comes back to the same Chrome.
+
+- Browser (`chrome` backend): `browser_close` now actually closes a Chrome
+  tab. It previously reported success while doing nothing, because the close
+  was routed to the app window, which knows nothing about Chrome tabs. A close
+  issued from one workspace still cannot touch another workspace's tab.
+
+- Browser (`chrome` backend): when Chrome replaces the page behind one of your
+  tabs — the first-run sync flow is the common case — the agent's tab handle
+  now follows it over immediately instead of going quiet until the tab is
+  reopened. wmux anchors each tab it opens to Chrome's own tab target, which
+  survives the replacement, and re-points the handle the moment the successor
+  page appears. The same anchor is what lets a handle come back after a wmux
+  restart even if the page was swapped while wmux was away, and it makes a
+  genuinely closed tab report as closed right away rather than after a
+  five-minute grace period. Chrome builds that do not expose tab targets keep
+  working exactly as before; set `WMUX_CHROME_TARGET_WATCHER=0` to opt out.
+
+- `browser_session_status` now says which backend is active and, on the chrome
+  backend, reports the bound profile and the live CDP port instead of the
+  unused Electron-session fields — without ever launching Chrome for the probe.
+
+- Accessibility snapshots no longer collapse on real pages. Chrome puts a chain
+  of "uninteresting" wrapper nodes directly under the page root, and
+  `browser_snapshot` used to discard those nodes together with everything below
+  them — so on virtually every site the accessibility tree came back empty and
+  the snapshot was silently downgraded to the DOM element listing. Those wrapper
+  nodes are now spliced out while their contents are kept, which restores
+  `format: "aria"` (previously always answered with "aria format unavailable"),
+  makes `filter: "interactive"` work again, and stops the DOM listing from
+  handing out refs to invisible elements that timed out on click.
+
+- `browser_smart_snapshot` missed every interactive element on such pages for the
+  same reason, and now finds them.
+
+- `browser_snapshot` with a `selector` now scopes the accessibility tree instead
+  of always falling back to a raw DOM listing of the subtree. The DOM listing
+  cannot see layout, so it handed out refs for elements that were not actually
+  rendered and clicking one of those refs timed out; it also meant
+  `format: "aria"` was silently unavailable whenever a selector was given. Both
+  now work, and `filter: "interactive"` applies within the scope. The DOM listing
+  remains the fallback for cases the accessibility route cannot serve (no live
+  page, a collapsed tree, or an element with no accessibility presence), and
+  still owns the "no element matches selector" error.
+
+- A selector-scoped snapshot numbers its refs within the subtree, so resolving
+  one now searches inside that same element. Previously an identical
+  role and name elsewhere on the page could win the match, quietly acting on an
+  element the caller had scoped out.
+
+- **`browser_extract_text` no longer returns hidden text.** It stripped only
+  `aria-hidden` elements, so anything a page hides with CSS came through as
+  content — on naver.com the first several hundred characters were a hidden
+  promo banner, a collapsed search-suggestion layer and a dormant error
+  placeholder, while `browser_smart_snapshot` read the same page cleanly.
+  Elements the browser does not render (`display:none`, `visibility:hidden`,
+  or no box at all) are now skipped along with their subtrees, matching what
+  the snapshot tools already saw.
+
+- **Browser tool errors no longer lead with wmux-internal symbols.** Failures
+  arrived as `mcpServer.executeToolHandler: Timeout 30000ms exceeded` and
+  `automationLease: net::ERR_NAME_NOT_RESOLVED` — a module name inside wmux,
+  not the tool that failed. The prefix is dropped, so the message starts with
+  the part that says what went wrong.
+
+- **The inline lifecycle-event block ends with a line break.** Without it the
+  block ran straight into the tool's own output
+  (`...(24s ago)Navigated to https://...`).
+
+- **A repeated `navigated` event no longer survives self-echo suppression.**
+  When a page's `loaded` event arrived in the same window as its `navigated`,
+  `browser_navigate` reported the navigation twice — once in its own result and
+  again in the event block. (#1072)
+
+- `browser_snapshot`'s `full` parameter documents itself again — the tool-description
+  slimming in the previous release left it with no description at all, so nothing said
+  what it was for.
+
+- The browser tools now say that password field values read as `[redacted:password]`.
+  The redaction shipped without a word about it, and an agent reading a snapshot could
+  reasonably conclude its input had failed, or guess the wrong rule for which fields are
+  masked. `browser_type` likewise notes that it replaces an existing value rather than
+  appending to it.
+
+- **An update could refuse itself over a hung process that had already been
+  asked to quit.** The in-app update waiter watches every process under the
+  install root and refuses to launch the installer if one of them does not
+  exit within its budget — necessary for the daemon, which needs time to
+  flush scrollback before it goes down, but the main window, renderer and
+  GPU/utility helpers were held to the same patient wait even though they
+  carry nothing to flush and had already been told to quit. If one of them
+  hung — a real machine showed a bare `wmux` process idling at 0% CPU well
+  past when it should have exited — the update refused entirely, and
+  recovering meant noticing the stray process in Task Manager and killing it
+  by hand before a retry would succeed. The waiter now gives that kind of
+  process a short grace period and force-kills it if it is still there,
+  instead of waiting out the full budget and giving up. The daemon's own
+  wait is unchanged.
+
+- **`browser_extract_text` now strips the skip-navigation links it promised to
+  remove.** Pages open with hidden-until-focused "skip to content" anchors for
+  keyboard users, and they came through as the first thing in the extracted
+  markdown — on naver.com eight of them pushed the first headline past
+  character 440, so a caller that previews the opening few hundred characters
+  read the page as empty. The leading run of in-page anchors is now dropped,
+  while a table of contents and links inside the text are kept. (#1077)
+
+- Clicking a pane or agent row nested inside the currently-active workspace no longer leaves an attached remote workspace's mirror on screen — the jump now correctly switches back to the local view in one click, matching the workspace's own sidebar row (#1086).
+
+- **`browser_console` and `browser_network` no longer start collecting at the
+  moment you ask them.** The listeners used to attach on the first call, so
+  everything the page said before that — every load-time error, every uncaught
+  exception, every failed request — was never recorded and could not be
+  recovered. Since an agent only reaches for the console *after* something
+  looked wrong, that was reliably the one window the tools could not see, and
+  the empty result was indistinguishable from a clean page: an agent could
+  truthfully report "no console errors" about a page that threw on load.
+  Collection now begins when the page is first opened, navigated or attached,
+  so `browser_navigate` followed straight by `browser_console` shows what the
+  page logged while loading. The same fix covers `browser_network`: the request
+  that failed is in the listing without a priming call first.
+
+  Both buffers stay bounded — 1000 entries each, oldest dropped first, with a
+  cap on the size of a single console line, a single URL, and the total
+  response-body payload retained per page — so a page left open cannot grow
+  them without limit. Streaming responses (server-sent events and friends) no
+  longer have their bodies read: a stream has no end, so waiting for one kept
+  the request pinned for as long as the stream ran.
+
+- **`browser_console` now reports uncaught exceptions.** A page that threw on
+  load — the most common reason to open a console in the first place —
+  produced nothing at all, because an uncaught exception is not a `console.*`
+  call and neither capture path listened for one. The exception and its stack
+  are now recorded as an `error`-level entry on both the built-in and the
+  Chrome backend.
+
+- **An empty console or network result now says which kind of empty it is.**
+  Instead of a bare "No console messages collected.", the result reports when
+  collection started, and says so explicitly when the page was already open at
+  that moment and messages from before then are not included — the case a late
+  attach to an already-running tab cannot avoid. That note is dropped once the
+  page navigates somewhere new, since the window it warned about belonged to a
+  document that is gone. The tool descriptions now state when collection
+  begins, which was previously undocumented.
+
+- **A development build and a packaged build answer these tools identically.**
+  Console and network reads for a built-in browser pane now come from the same
+  capture in both, which is enabled when the pane's guest attaches; previously
+  a development build read a separate buffer that only started at the first
+  call. `clear:true`, the `filter` glob and the password masking all behave
+  exactly as before, and clearing one buffer no longer resets the other's
+  reported collection window.
+
+- **`browser_session_status` said `running` without saying running *what*.**
+  Its description now states that the field reports whether this workspace's
+  Chrome is already up, that the call is a pure read which launches nothing,
+  and — the part that cost a dogfood run a wrong turn — that `running:false`
+  does not mean you have to call `browser_session_start`, because the first
+  browser tool call starts what it needs on its own.
+
+- **`browser_evaluate` now says where its blocklist draws the line.** The
+  description said only "a text scan", which reads as a substring match under
+  which ordinary identifiers like `retrieval` or `evaluateScore` would be
+  refused. It is a case-sensitive whole-word scan: `fetch`/`eval`/`require`/
+  `import` match only in call form, everything else matches the bare word
+  anywhere including inside strings and comments.
+
+- **`browser_snapshot` documents its line markers.** `focused`, `overlay`,
+  `clickable` and the iframe boundary note were all readable in the output and
+  absent from the description, leaving an agent to infer them from a snapshot
+  it had already paid for.
+
+- **A UI plugin can no longer reach into a workspace you are not in — read it,
+  type into it, or tear it down.** An approved iframe plugin's browser calls
+  have been held to the workspace hosting it since #941, and its private event
+  and channel reads since #959, but the rest of its surface was not. Two
+  different gaps, and the second was the worse one. A plugin that *named*
+  someone else's workspace was answered about it: `pane.list` enumerated that
+  workspace's panes and the agents in them, `pane.search` returned its
+  scrollback, `pane.split` created a pane there, `browser.open` /
+  `browser.close` opened and closed pages there, and `meta.setSkills` rewrote
+  its agent skills. And a plugin that *omitted* the workspace skipped the
+  ownership check entirely rather than failing it — the check reads the
+  workspace from the request, so leaving it out meant there was nothing to
+  check against. That second path reached further: reading another workspace's
+  terminal viewport and command history, **typing into its terminal**, and
+  reading or clearing its pane metadata, all by naming a terminal or pane id
+  that ordinary pane lifecycle events hand to any plugin watching them.
+
+  The workspace the plugin host is showing — which the plugin can neither see
+  nor set — is now applied to every one of those before the call runs. Reads
+  answer for the plugin's own workspace, so an approved plugin keeps working
+  instead of erroring; writes are refused, because quietly redirecting an
+  action creates a pane, sends a keystroke, or closes a session somewhere
+  nobody asked for. `pane.focus` / `pane.close` / `pane.stash` / `pane.unstash`
+  address a pane directly and have no workspace to pin, so they are confined
+  through the same channel a workspace-bound agent already uses — `pane.close`
+  had no confinement at all before, and closing a pane disposes its terminal
+  sessions. A plugin whose host has no active workspace is refused rather than
+  left free to name one.
+
+  As with the earlier steps, this confines an **approved** plugin to the scope
+  its approval implied — it is not a defence against hostile code already
+  running as your user — and callers on the local RPC wire are unchanged.
+
+- **Installing the usage statusline no longer dead-ends on "skipped-foreign".** Settings → Accounts → "Usage statusline" → Install answered with a red `Failed (skipped-foreign)` when Claude Code's `settings.json` already carried someone else's `statusLine`. wmux was doing the right thing — it never overwrites a statusline it does not own — but the row printed the raw outcome token and re-offered the same button, so the feature simply read as broken. The row now says what happened in words, names the statusline it would be replacing, and offers a **Replace** action: the overwrite takes a second, deliberate click rather than happening behind your back. Your previous `statusLine` is saved before Replace overwrites it — and if that save is not possible, the overwrite does not happen at all, because a replace you cannot walk back from is not one wmux will perform on your behalf. Removing the wmux statusline later puts yours back instead of leaving the line empty, and only while the line wmux wrote is still the one standing: a statusline you have since tuned or deleted is never resurrected. `wmux setup-statusline --force` does the same from the CLI, and a `settings.json` that does not parse is still left alone either way. (#1104)
+
+- **A statusline install that reached only some of your Claude accounts stops claiming it reached all of them.** With several accounts registered, one account taking the install turned the row green while another still ran a different tool's statusline — invisible, and with no way to act on it. The row now names the profiles still on someone else's statusline and keeps Replace available for them. (#1104)
+
+- **Editing Claude Code's `settings.json` no longer risks the file it is editing.** `wmux setup-hooks` and `wmux setup-statusline` both write that file, and each carried its own copy of the same write helper with the same four faults: a shared temp filename two processes could interleave into before renaming the result over your settings; a rename that replaced a symlinked `settings.json` instead of writing through it, detaching a dotfiles setup; a new temp file that took the default umask, so a `0600` settings.json holding credentials in `env` came back world-readable; and no flush before the rename, so a power loss could publish an empty file. One shared helper now does all four correctly, and the statusline script is copied into place through the same temp-and-rename path the boot-time refresh already used — an in-place copy could hand a running statusline tick a half-written script. A defensive JSON parser that silently deleted `__proto__`, `constructor`, and `prototype` keys from your file on every write is gone too; it was guarding against a shape this code never builds, and the keys it dropped were yours. (#1104)
+
+- `browser_session_status` on the **live** profile now reports whether your
+  Chrome's remote-debugging endpoint is actually reachable, instead of a
+  meaningless "did wmux create an attach object yet" flag. `running:false`
+  there means "enable remote debugging at chrome://inspect" (surfaced as
+  `liveAttach:true`), not "call `browser_session_start`" — so diagnosing a
+  live-bound workspace no longer gets a value that tells you nothing.
+
+- `browser_session_start` no longer returns a success-looking Electron session
+  on the `chrome`, `live`, and `external` backends, where nothing consumes it.
+  It now answers honestly with `started:false` and a one-line reason for how
+  the browser actually attaches (dedicated Chrome launches on demand; live
+  attaches on first drive once remote debugging is on; external hands URLs to
+  the OS browser) — instead of misleading an agent into thinking a session had
+  started.
+
+- Binding a workspace to your **Live Chrome** now confirms with an inline panel
+  that matches the app, instead of a native OS dialog that looked foreign to the
+  window. The warning (the agent gets access to your whole live browser) and the
+  explicit confirm are unchanged — only the chrome around them, and it no longer
+  vanishes if your pointer drifts off mid-decision.
+
+- The per-hunk **Comment** button in the diff review panel works again. It
+  called a native prompt dialog that Electron's renderer does not implement — the
+  call threw, so posting a comment on a diff hunk silently did nothing. Comments
+  are now typed inline (Enter to post, Esc to cancel), matching the panel's
+  existing "Ask the orchestrator" composer, and the mission-channel post and
+  agent mentions are unchanged.
+
+- **Installing the hooks or the usage statusline no longer fails because something had the file open.** Both write by renaming a temp file into place, which Windows refuses when another process is holding the destination — and both destinations are held open by design: Claude Code reads `settings.json`, and the statusline script runs every time the input box redraws. A sharing violation or an antivirus scan landing in that instant surfaced as a bare install failure. The rename now waits out a transient hold, up to a fifth of a second, before reporting a problem that is real. (#1112)
+
+- Browser tools called without a `surfaceId` now target your **most recently
+  opened** browser surface, not the oldest one. Previously, right after
+  `browser_tabs new` (or `browser_open`) handed back a surfaceId, a follow-up
+  tool call that omitted it could silently act on a leftover tab from an earlier
+  run — the snapshot looked normal and only a stray action (a download, a click)
+  failed, so nothing revealed that the wrong page was being driven.
+  `browser_tabs` and `browser_open` now document this default; pass a `surfaceId`
+  to act on any earlier tab.
+
+- **`browser_file_upload` no longer refuses files over 50MB.** Playwright treats
+  a browser reached over CDP as "not co-located" with the client and ships the
+  file's *contents* down the protocol, refusing anything past 50MB — which made
+  the tool useless for the job it exists for, since a 40-second 720p clip is
+  already 39MB. wmux only ever attaches to a browser on the same machine, so the
+  browser can just open the file: uploads now pass the path via CDP
+  `DOM.setFileInputFiles` and nothing else crosses the wire. Measured against a
+  real page: 700MB uploaded in 4.3s (it was refused outright before), and the
+  time no longer grows with the file. The upload sandbox is unchanged — paths
+  still have to resolve under the uploads root, symlinks and all — and it now
+  refuses, rather than quietly falling back to a weaker check, when a path
+  exists but its real location cannot be resolved at all.
+
+- **An upload that timed out could actually have succeeded.** Copying a 45MB
+  file took longer than Playwright's 30-second default, so the tool reported
+  `Timeout 30000ms exceeded` while the page had already received all 47,185,920
+  bytes. On a real uploader an agent reading that retries — and a retry is a
+  second upload. The by-path route removes the wait entirely; the remaining
+  `ref` path now gets an explicit, generous timeout, and a timeout message says
+  outright that the file may have landed anyway and that a blind retry can post
+  the same file twice.
+
+- **The upload success message named the wrong directory.** It always said
+  `~/.wmux/uploads/`, even on an instance whose real root carries a suffix. It
+  now names the root the file actually came from, which is what the rejection
+  message already did.
+
+- **A browser call that never says which workspace it means no longer lands on
+  whichever browser happened to open first.** Until now, a caller on the local
+  RPC wire that left the workspace out was resolved against the first surface
+  that had registered — which could easily be a workspace it had nothing to do
+  with. That case is refused now, and the refusal says what to add: send
+  `workspaceId`, with `workspace.current` for the one you are in and
+  `workspace.list` for every id. A caller that already names a workspace is
+  unchanged.
+
+- **A tool that asked wmux for its own workspace is now held to it, on every
+  call that says so.** When an external tool calls `mcp.claimWorkspace`, wmux
+  creates a workspace for it and now hands back a token bound to that
+  workspace. A call that carries the token resolves to the workspace wmux
+  actually created rather than to whatever id the tool names, so naming
+  someone else's is refused instead of answered; if that workspace is closed,
+  the token stops resolving and the call is told to claim again.
+
+  Three limits, stated rather than left to be inferred.
+
+  The binding is a property of **the call**, not of the caller. wmux has no
+  record that a given tool ever claimed — a name a caller picks for itself is
+  not an identity — so a call that simply leaves the token out is treated as
+  one from a tool that never claimed. The bundled client stamps the token on
+  everything it sends once it has one, so an honest tool is held to its
+  workspace; a caller that wants the old behaviour can still omit the field.
+
+  It binds an **approved** tool to the scope its approval implied. The token
+  sits in that tool's own process, so it is not a defence against hostile code
+  already running as your user.
+
+  And it reaches the browser commands that resolve a target through the shared
+  scope table. `browser.open`, `browser.close` and `browser_tabs` resolve
+  theirs on a separate path and are covered by the change that follows this
+  one.
+
+- `browser_session_status` now reports the profile **your** workspace is bound
+  to. It sent no workspace identity to the daemon, so on the chrome backend the
+  server could not tell which workspace was asking and fell back to the default
+  profile — a workspace bound to Live Chrome (or any named profile) was reported
+  as `default`, hiding that the agent was actually pointed at the owner's real
+  browser. It now resolves and passes the caller's workspace, like every other
+  workspace-scoped browser tool.
+
+- **Opening, closing, and switching browser tabs now land in the workspace the
+  caller meant, not the one you happen to be looking at.** Every other browser
+  command has resolved its workspace from the caller since #873, but
+  `browser.open`, `browser.close` and `browser_tabs` read the workspace
+  straight out of the request — the first two then fell back to whichever
+  workspace was on screen. A tool working in a background workspace could open
+  a page, close a browser, or switch and close tabs in front of you. All three
+  now go through the same table as their siblings: a tool that claimed a
+  workspace resolves to it without having to name it, naming someone else's is
+  refused, and a caller that names nothing gets the same refusal the rest of
+  the browser commands already give, with the same instructions for fixing it.
+  Closing is the one that mattered most: it tears a surface down, and the two
+  halves of the close path did not previously agree on who owned it.
+
+  `wmux open` and `wmux browser close` keep working outside a wmux pane: they
+  now ask which workspace is active and say so, the same way `wmux browser
+  navigate` already did. And when a call is refused for scope, `browser_tabs`
+  passes the refusal through instead of reporting it as a temporary outage — an
+  agent that is told to retry something terminal retries it forever.
+
+  Unchanged: the operator crossing workspaces on purpose, callers that already
+  name their workspace, and the `external` browser backend — it hands the URL
+  to your OS browser, which belongs to no workspace. `mcp.mode: shadow` still
+  restores the previous behaviour for all of it. Also unchanged, and worth
+  saying plainly: a connection that sends no identity at all is still allowed
+  to name a workspace, here as everywhere else. That is the older grandfather
+  rule, tracked separately, and this change does not close it.
+
+- **A pane waiting on background agents no longer shows Completed.** When an
+  agent's turn ended with background agents still running (`Waiting for N
+  background agent(s) to finish`), the roster marked the pane Completed for the
+  whole hold — genuinely in-progress work read as done. The daemon already knew
+  the turn had not really ended (that knowledge is what kept the completion
+  alarm quiet); now the pane's status says the same thing: it stays running
+  until the real turn end, and the outbound turn-finished webhook waits with it.
+
+- **A download that turns into a navigation no longer strands the agent on
+  another page.** Chrome ignores a link's `download` attribute across origins
+  and renders the target instead, so clicking a link to a video on someone
+  else's host navigates rather than downloading. `browser_download` timed out —
+  correctly — but left the tab sitting on the media URL, and the next snapshot
+  described a completely different page with nothing to say the original had
+  gone. The tab is now put back where it was, and the error names the cause, the
+  URL the browser ended up at, whether the page was recovered, and what to do
+  instead. Restoring goes through history rather than a fresh load: measured on
+  Chrome 141, reloading by URL leaves the stray entry in place, so a later
+  `browser_navigate_back` walks straight back into the failure.
+
+### Security
+
+- Scheduled terminal input is restricted to daemon-owned sessions and
+  rechecks canonical agent identity, readiness, and concurrent input before
+  submit; each occurrence is durably claimed for at-most-once delivery.
+
+- Scheduled prompts are now bound to a daemon-minted session incarnation, so
+  recycled PTY ids and mixed-version daemons cannot receive stale unattended
+  input.
+
 ## [3.49.0] — 2026-08-29
 
 ### Added
