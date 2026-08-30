@@ -1,5 +1,7 @@
 import * as fs from 'node:fs';
+import * as os from 'node:os';
 import * as path from 'node:path';
+import type { Page } from 'playwright-core';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { PlaywrightEngine } from '../PlaywrightEngine';
@@ -17,14 +19,24 @@ const optionalSurfaceId = z
 
 // Module-scope parameter shapes: hoisted out of the per-registration path so
 // every createWmuxServer() instance shares one set of zod schema objects.
-const BROWSER_FILE_UPLOAD_SHAPE = {
+export const BROWSER_FILE_UPLOAD_SHAPE = {
   paths: z
     .array(z.string())
-    .describe('Each path must resolve under ~/.wmux/uploads/.'),
+    .describe('Each path must resolve under the uploads root (~/.wmux/uploads/).'),
+  selector: z
+    .string()
+    .optional()
+    .describe('CSS selector of the file input; default the page\'s first one.'),
   ref: z
     .string()
     .optional()
-    .describe('Ref of the file input.'),
+    .describe('Ref of a file input. Prefer selector — a ref takes the 50MB-capped path.'),
+  timeout: z
+    .number()
+    .int()
+    .min(1)
+    .optional()
+    .describe('Milliseconds, ref path only; default 120000.'),
   surfaceId: optionalSurfaceId,
 };
 
@@ -78,6 +90,66 @@ function getUploadRoot(): string {
   }
 }
 
+/**
+ * How the uploads root is spelled in tool output.
+ *
+ * Two requirements that look opposed. Naming a fixed `~/.wmux/uploads/` is
+ * wrong on any instance carrying a data suffix — the directory the caller is
+ * told to use is not the one the check enforces. Printing the resolved absolute
+ * path is right but parks the login name and home layout in every upload
+ * result, which is local identifying detail an injected page would like an
+ * agent to repeat back to it.
+ *
+ * `~`-relative with the suffix kept satisfies both: `~/.wmux-dogm/uploads` is
+ * the real root, and nothing outside the home directory is disclosed. Falls
+ * back to the absolute path only when the root is not under the home directory
+ * at all, where accuracy has to win.
+ */
+function displayRoot(root: string): string {
+  let home = os.homedir();
+  try {
+    home = fs.realpathSync(home);
+  } catch {
+    // Unresolvable home — compare against what we were given.
+  }
+  const rel = path.relative(home, root);
+  if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) return root;
+  return `~/${rel.split(path.sep).join('/')}`;
+}
+
+/**
+ * The one gate on what a page may be handed, and the reason it is unchanged by
+ * the CDP route below.
+ *
+ * The route changed from "Node reads the bytes and streams them" to "Chrome
+ * opens the path itself", which sounds like it widens the blast radius and does
+ * not: Chrome runs as the same user and could always read anything this process
+ * could. What matters is that the string handed to the browser is the one this
+ * function RETURNED — the realpath'd, root-checked value — and never the
+ * caller's raw input. Both call sites below use `safePaths` only.
+ *
+ * Four ways out of the root, and what stops each:
+ *  - `..` segments — path.resolve() normalises them before any check.
+ *  - a symlink/junction inside the root pointing out of it — realpathSync()
+ *    resolves it, so the relative check runs against the true target.
+ *  - another drive or a UNC share (`E:\x`, `\\host\share\x`) — path.relative()
+ *    then returns an absolute path, which path.isAbsolute() rejects.
+ *  - a path that does not exist, where realpath cannot run: it stays lexical,
+ *    but a path Chrome cannot open is a path Chrome cannot leak. fs.existsSync
+ *    resolves links exactly as the browser would, so "exists" and "openable"
+ *    are the same question here.
+ *
+ * Note what is NOT on that list: a path that EXISTS and whose realpath still
+ * cannot be computed. Every guarantee above rests on resolving links first, so
+ * on that input the gate would quietly become a lexical string compare — a
+ * weaker check of a different kind — and that lexical string is exactly what
+ * Chrome would then be asked to open. It is refused instead. existsSync does
+ * not throw, so the only inputs that get there are already anomalous.
+ *
+ * The residue is TOCTOU — swapping the file for a symlink between this check
+ * and the upload — which needs write access to the uploads root and is no wider
+ * than it was when Playwright did the reading.
+ */
 function validateUploadPath(input: string): string {
   if (typeof input !== 'string' || input.length === 0) {
     throw new Error('browser_file_upload blocked: empty path');
@@ -88,16 +160,154 @@ function validateUploadPath(input: string): string {
   try {
     if (fs.existsSync(abs)) resolved = fs.realpathSync(abs);
   } catch {
-    // fall through with abs; the relative check below will still catch traversal
+    throw new Error(
+      `browser_file_upload blocked: "${input}" exists but its real path cannot be resolved, ` +
+      `so it cannot be checked against the upload root.`,
+    );
   }
   const rel = path.relative(root, resolved);
-  if (rel === '' || rel.startsWith('..') || path.isAbsolute(rel)) {
+  // `rel === '..'` and `'..' + sep` are the escapes; a bare startsWith('..')
+  // also swallows legitimate names — `..dots` in the root relativises to
+  // `..dots` and was refused forever.
+  if (rel === '' || rel === '..' || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel)) {
     throw new Error(
-      `browser_file_upload blocked: "${input}" is outside the allowed upload root (${root}). ` +
-      `Move the file under ~/.wmux/uploads/ before uploading.`,
+      `browser_file_upload blocked: "${input}" is outside the allowed upload root (${displayRoot(root)}). ` +
+      `Move the file under that root before uploading.`,
     );
   }
   return resolved;
+}
+
+// ---------------------------------------------------------------------------
+// Upload transport: hand Chrome the path, not the bytes
+// ---------------------------------------------------------------------------
+
+/** The default file input — the page's first one, as before `selector` existed. */
+const DEFAULT_FILE_INPUT_SELECTOR = 'input[type="file"]';
+
+/**
+ * Fallback wall-clock for the ref path. Nothing legitimate can reach it: that
+ * path is capped at 50MB by Playwright (see uploadViaCdp) and measured transfer
+ * runs ~0.77 s/MB, so a maximal 50MB upload lands near 39 s. It exists to stop
+ * a wedged renderer hanging the tool, not to bound normal work — which is the
+ * opposite of the 30 s default it replaces, a limit real uploads DID reach.
+ */
+const REF_UPLOAD_TIMEOUT_MS = 120_000;
+
+/**
+ * Set a file input's files over CDP, by path.
+ *
+ * Why this exists: Playwright's `setInputFiles` decides that a browser reached
+ * through `connectOverCDP` is "not co-located" with the client and therefore
+ * ships the file's CONTENTS over the protocol — which it refuses to do past
+ * 50MB ("Cannot transfer files larger than 50Mb to a browser not co-located
+ * with the Playwright client"). Measured: 49MB uploads, 50MB is refused. Every
+ * video worth uploading is bigger than that, so the whole tool was unusable for
+ * the one job it exists for.
+ *
+ * The premise behind that refusal does not hold here. wmux only ever attaches
+ * to a browser on THIS machine — `http://localhost:<port>` for a dedicated or
+ * Electron instance, `ws://127.0.0.1:<port>` for a live-Chrome attach (see
+ * PlaywrightEngine.connect and LiveChromeClient) — so the browser can simply
+ * open the file itself. `DOM.setFileInputFiles` passes the path and nothing
+ * else, which makes the transfer free and the size limit disappear.
+ *
+ * If wmux ever attaches to a browser on another host, this route becomes wrong
+ * (the path would resolve over there) and must be gated on the endpoint being
+ * loopback. Nothing in the engine can produce such an endpoint today.
+ *
+ * Returns false when the CDP route is unavailable or the selector matches
+ * nothing, so the caller can fall back rather than fail the upload outright.
+ * A `DOM.setFileInputFiles` rejection is NOT swallowed: the element was found
+ * and the browser refused it, which the caller must report, not retry.
+ */
+async function uploadViaCdp(
+  page: Page,
+  selector: string,
+  files: string[],
+): Promise<boolean> {
+  const client = await page.context().newCDPSession(page).catch(() => null);
+  if (!client) return false;
+  try {
+    let nodeId: number | undefined;
+    try {
+      const doc = (await client.send('DOM.getDocument', { depth: 0 })) as {
+        root?: { nodeId?: number };
+      };
+      if (!doc?.root?.nodeId) return false;
+      const found = (await client.send('DOM.querySelector', {
+        nodeId: doc.root.nodeId,
+        selector,
+      })) as { nodeId?: number };
+      // CDP reports "no match" as nodeId 0, and throws on an invalid selector.
+      // Both mean "this route cannot serve the call" — the DOM fallback owns
+      // the user-facing "no file input" / bad-selector error.
+      nodeId = found?.nodeId || undefined;
+    } catch {
+      return false;
+    }
+    if (nodeId === undefined) return false;
+
+    await client.send('DOM.setFileInputFiles', { files, nodeId });
+    return true;
+  } finally {
+    await client.detach().catch(() => { /* best-effort */ });
+  }
+}
+
+/**
+ * Marks the one error that means "this may actually have worked".
+ *
+ * Raised only from the Playwright transfer call, never inferred from message
+ * text: the rejection messages echo the caller's own path, so a file living
+ * under `.wmux-timeout/` would have matched a text scan and been told its
+ * upload might have landed — advice that manufactures exactly the duplicate
+ * retry the warning exists to prevent.
+ */
+class UploadTransferTimeout extends Error {
+  constructor(readonly cause: unknown) {
+    super(describeToolError(cause));
+    this.name = 'UploadTransferTimeout';
+  }
+}
+
+/** Playwright's own timeout, as raised by setInputFiles. */
+function isPlaywrightTimeout(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    (error.name === 'TimeoutError' || /\bTimeout \d+ms exceeded/.test(error.message))
+  );
+}
+
+/**
+ * Run the content-copying transfer, tagging a timeout as the ambiguous case.
+ *
+ * That case was measured, not imagined: a 45MB file reported "Timeout 30000ms
+ * exceeded" while the page's change event had already fired with the full
+ * 47,185,920 bytes. An agent reading only "Timeout" retries — and on a real
+ * uploader a retry is a SECOND upload, i.e. a duplicate post. The tool cannot
+ * tell the two apart, so it says so rather than implying a clean failure.
+ */
+async function setInputFilesTagged(
+  target: { setInputFiles: (paths: string[], options: { timeout: number }) => Promise<void> },
+  safePaths: string[],
+  timeout: number,
+): Promise<void> {
+  try {
+    await target.setInputFiles(safePaths, { timeout });
+  } catch (error) {
+    if (isPlaywrightTimeout(error)) throw new UploadTransferTimeout(error);
+    throw error;
+  }
+}
+
+/** The duplicate-upload warning, appended only to a tagged transfer timeout. */
+function describeUploadTimeout(message: string): string {
+  return (
+    `${message} The file may have reached the page anyway — the renderer can ` +
+    `finish the transfer after this call gives up. Check the page before ` +
+    `retrying; a blind retry can upload the same file twice.`
+  );
 }
 
 /**
@@ -117,9 +327,9 @@ export function registerFileTools(server: McpServer, deps: BrowserToolDeps): voi
   // -----------------------------------------------------------------------
   server.tool(
     'browser_file_upload',
-    'Upload files to a file input. Paths MUST live under ~/.wmux/uploads/; anything else is rejected so a malicious page cannot exfiltrate credentials or SSH keys.',
+    'Upload files to a file input, by default the page\'s first one — pass selector to pick another. Paths MUST live under the uploads root (~/.wmux/uploads/, instance suffix applied); anything else is rejected so a malicious page cannot exfiltrate credentials or SSH keys. Size is not a limit on the selector path: the browser opens the path itself. A ref instead of a selector takes a slower path that cannot carry more than 50MB. Only a real <input type=file> is supported; a drop-zone-only uploader fails with "No file input element found".',
     BROWSER_FILE_UPLOAD_SHAPE,
-    async ({ paths, ref, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
+    async ({ paths, selector, ref, timeout, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
       try {
         const page = await engine.getPageForScope(scope);
         if (!page) {
@@ -127,32 +337,47 @@ export function registerFileTools(server: McpServer, deps: BrowserToolDeps): voi
         }
 
         const safePaths = paths.map(validateUploadPath);
+        const resolvedSelector = selector ?? DEFAULT_FILE_INPUT_SELECTOR;
+        const resolvedTimeout = timeout ?? REF_UPLOAD_TIMEOUT_MS;
 
         if (ref) {
+          // A ref names an element we hold as a handle, not as a selector, so
+          // the by-path CDP route cannot address it and this stays on
+          // Playwright's content-copying path — 50MB cap included. Kept for
+          // compatibility; `selector` is the route that scales.
           const el = await resolveRef(page, ref);
           if (!el) {
             throw new Error(`Could not resolve ref="${ref}" to an element.`);
           }
-          await el.setInputFiles(safePaths);
-        } else {
-          // Find the first file input on the page
-          const fileInput = await page.$('input[type="file"]');
+          await setInputFilesTagged(el, safePaths, resolvedTimeout);
+        } else if (!(await uploadViaCdp(page, resolvedSelector, safePaths))) {
+          // No CDP (or the selector matched nothing): fall back to the DOM
+          // handle, which also produces the user-facing "no file input" error.
+          const fileInput = await page.$(resolvedSelector);
           if (!fileInput) {
-            throw new Error('No file input element found on the page.');
+            throw new Error(
+              selector
+                ? `No file input element matches selector: ${resolvedSelector}`
+                : 'No file input element found on the page.',
+            );
           }
-          await fileInput.setInputFiles(safePaths);
+          await setInputFilesTagged(fileInput, safePaths, resolvedTimeout);
         }
 
         return {
           content: [
             {
               type: 'text' as const,
-              text: `Uploaded ${safePaths.length} file(s) from ~/.wmux/uploads/`,
+              text: `Uploaded ${safePaths.length} file(s) from ${displayRoot(getUploadRoot())}`,
             },
           ],
         };
       } catch (error) {
-        const message = describeToolError(error);
+        // Only a tagged transfer timeout earns the duplicate-upload warning.
+        const message =
+          error instanceof UploadTransferTimeout
+            ? describeUploadTimeout(error.message)
+            : describeToolError(error);
         return {
           content: [{ type: 'text' as const, text: message }],
           isError: true,
