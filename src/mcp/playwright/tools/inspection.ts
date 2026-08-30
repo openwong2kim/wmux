@@ -13,7 +13,7 @@ import { buildDomSnapshotExpression } from '../dom-intelligence';
 import { pageEvaluator, rpcEvaluator } from '../page-eval';
 import { formatSnapshotResult } from '../snapshotDiff';
 import { getSnapshotBaseline, setSnapshotBaseline, snapshotSurfaceKey } from '../snapshotCache';
-import { evaluateWithGesture } from '../anti-detection';
+import { evaluateWithGesture } from '../user-gesture';
 import { detectDangerousPatterns } from '../security';
 import { redactPasswordParams } from '../redact';
 import { sanitizeRef } from './interaction';
