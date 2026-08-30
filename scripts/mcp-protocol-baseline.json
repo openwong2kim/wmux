@@ -94,7 +94,10 @@
         "surface_new",
         "surface_close",
         "pane_stash",
-        "pane_unstash"
+        "pane_unstash",
+        "repl_run",
+        "repl_reset",
+        "repl_sessions"
       ]
     },
     "commander": {

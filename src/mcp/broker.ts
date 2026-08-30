@@ -33,6 +33,7 @@ import {
   type ConnectionScope,
 } from './connectionScope';
 import type { PlaywrightEngine } from './playwright/PlaywrightEngine';
+import { disposeReplRegistry } from './repl/replRegistry';
 
 interface ShimHandshake {
   wmuxShim: number;
@@ -129,6 +130,11 @@ async function hostConnection(socket: net.Socket, handshake: ShimHandshake): Pro
         if (engine) {
           void engine.disconnect().catch(() => { /* best-effort */ });
         }
+        // Same reasoning for this caller's REPL children: they are per-connection
+        // and hold live state, so they die with the connection. The children also
+        // self-exit when their IPC channel closes, which is what covers the case
+        // this handler cannot — the broker being killed outright.
+        disposeReplRegistry();
         // Close the per-connection McpServer too — without this, repeated shim
         // reconnects accumulate server instances in the broker process.
         void server.close().catch(() => { /* best-effort */ });

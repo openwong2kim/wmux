@@ -64,6 +64,14 @@ export interface ConnectionScope {
    * an import cycle (snapshotCache imports this module); it owns the cast.
    */
   snapshotCache?: unknown;
+  /**
+   * Per-connection REPL session registry, for the same reason as `playwright`:
+   * a REPL session is a live runtime holding the caller's variables and open
+   * handles, so a process-global map would hand one agent another agent's
+   * state. Typed as unknown to avoid an import cycle (replRegistry imports this
+   * module); it owns the cast.
+   */
+  repl?: unknown;
 }
 
 const storage = new AsyncLocalStorage<ConnectionScope>();
