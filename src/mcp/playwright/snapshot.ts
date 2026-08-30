@@ -319,6 +319,137 @@ export interface RefEntry {
   role: string;
   name: string;
   backendDOMNodeId?: number;
+  /**
+   * The number printed as `ref="N"`. Stable across snapshots of the same
+   * document: a node keeps the number it was first given, so inserting or
+   * removing a node no longer renumbers everything after it.
+   */
+  ref: number;
+  /** Position of this entry among the snapshot's entries sharing role+name. */
+  sameNameIndex: number;
+  /** How many entries the snapshot listed with this exact role+name. */
+  sameNameTotal: number;
+}
+
+/**
+ * The ref-number space for one document.
+ *
+ * Refs used to be a running count over the walk, so a single inserted node
+ * shifted every ref after it by one and an agent replaying a ref from the
+ * previous snapshot clicked its neighbour without any error (dogfood, GitHub
+ * PR page, 2026-08-30). Numbering off `backendDOMNodeId` — the id CDP keeps
+ * stable for a DOM node's lifetime — makes an unchanged node keep its ref, so
+ * a ref means the same element until the element itself goes away. It also
+ * lets browser_snapshot's auto-diff work at all: with everything renumbered,
+ * near enough every line read as changed and the diff was never adopted.
+ *
+ * Numbers are only ever handed out, never recycled, so a ref that named a
+ * removed element can never come back pointing at a different one.
+ */
+interface RefIdentity {
+  /** backendDOMNodeId → the ref number that node was given. */
+  byBackendId: Map<number, number>;
+  /** Next unused ref number. */
+  next: number;
+  /** URL the number space belongs to; a different document restarts it. */
+  url: string | undefined;
+  /** Bumped once per snapshot. Names the snapshot a ref came from. */
+  generation: number;
+}
+
+/**
+ * Above this many remembered nodes the identity map is dropped (an SPA that
+ * churns nodes forever would otherwise grow it without bound). `next` is NOT
+ * rewound with it — recycling a number is exactly the confusion this exists to
+ * prevent.
+ */
+const REF_IDENTITY_CAP = 5000;
+
+const pageRefIdentity = new WeakMap<Page, RefIdentity>();
+
+/** What the last snapshot on this page was taken against. */
+interface SnapshotStamp {
+  generation: number;
+  url: string | undefined;
+}
+
+const pageSnapshotStamps = new WeakMap<Page, SnapshotStamp>();
+
+/**
+ * Thrown instead of returning null when a ref can be shown to be stale — the
+ * page navigated, the element is gone, or the page no longer holds the
+ * elements the ref was numbered against. Every ref tool wraps its resolution in
+ * a try/catch that turns the message into the tool result, so the agent is told
+ * to re-snapshot rather than handed a silently substituted element.
+ */
+export class StaleRefError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'StaleRefError';
+  }
+}
+
+/** page.url(), tolerating a page (or a test double) that cannot answer. */
+function pageUrl(page: Page): string | undefined {
+  try {
+    const url = (page as { url?: () => string }).url?.();
+    return typeof url === 'string' && url.length > 0 ? url : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Open a new snapshot generation, resetting the number space when the page has
+ * moved to a different document (its backendDOMNodeIds mean nothing there).
+ */
+function beginRefGeneration(page: Page): RefIdentity {
+  const url = pageUrl(page);
+  let identity = pageRefIdentity.get(page);
+  const navigated =
+    identity !== undefined &&
+    identity.url !== undefined &&
+    url !== undefined &&
+    identity.url !== url;
+  if (!identity || navigated) {
+    identity = { byBackendId: new Map(), next: 0, url, generation: 0 };
+    pageRefIdentity.set(page, identity);
+  }
+  if (identity.byBackendId.size > REF_IDENTITY_CAP) identity.byBackendId.clear();
+  identity.url = url;
+  identity.generation++;
+  return identity;
+}
+
+/** The ref number for this node, minting one the first time we see it. */
+function assignRef(identity: RefIdentity, backendDOMNodeId?: number): number {
+  if (backendDOMNodeId === undefined) return identity.next++;
+  const existing = identity.byBackendId.get(backendDOMNodeId);
+  if (existing !== undefined) return existing;
+  const ref = identity.next++;
+  identity.byBackendId.set(backendDOMNodeId, ref);
+  return ref;
+}
+
+/**
+ * Record, per entry, the same-role+name population it was numbered against.
+ *
+ * resolveRef locates an element with `getByRole(...).nth(i)`, which is only
+ * sound while that population is what the snapshot saw. Storing it lets the
+ * resolver notice that the page has changed underneath the ref instead of
+ * clamping onto whichever element happens to sit at that index now.
+ */
+function finalizeRefs(refs: RefEntry[]): void {
+  const totals = new Map<string, number>();
+  for (const entry of refs) {
+    const key = `${entry.role}\u0000${entry.name}`;
+    const seen = totals.get(key) ?? 0;
+    entry.sameNameIndex = seen;
+    totals.set(key, seen + 1);
+  }
+  for (const entry of refs) {
+    entry.sameNameTotal = totals.get(`${entry.role}\u0000${entry.name}`) ?? 1;
+  }
 }
 
 /** Per-page storage of the last generated refMap to avoid concurrency issues */
@@ -334,7 +465,12 @@ const pageRefMaps = new WeakMap<Page, RefEntry[]>();
 const pageRefScopes = new WeakMap<Page, string>();
 
 function setPageRefs(page: Page, refs: RefEntry[], scopeSelector?: string): void {
+  finalizeRefs(refs);
   pageRefMaps.set(page, refs);
+  pageSnapshotStamps.set(page, {
+    generation: pageRefIdentity.get(page)?.generation ?? 0,
+    url: pageUrl(page),
+  });
   if (scopeSelector === undefined) pageRefScopes.delete(page);
   else pageRefScopes.set(page, scopeSelector);
 }
@@ -366,6 +502,8 @@ interface SerializeCtx {
   format: 'ai' | 'aria';
   maxDepth: number;
   refs: RefEntry[];
+  /** The document's ref-number space, so an unchanged node keeps its number. */
+  identity: RefIdentity;
   /** Null when nothing is covering the page, which is the normal case. */
   occlusion: OcclusionInfo | null;
 }
@@ -386,8 +524,16 @@ function serializeNode(
   const attrs: string[] = [];
 
   if (ctx.format === 'ai' && isInteractive(role)) {
-    const ref = ctx.refs.length;
-    ctx.refs.push({ role, name, backendDOMNodeId: node.backendDOMNodeId });
+    const ref = assignRef(ctx.identity, node.backendDOMNodeId);
+    ctx.refs.push({
+      role,
+      name,
+      backendDOMNodeId: node.backendDOMNodeId,
+      ref,
+      // Filled in by finalizeRefs once the whole walk is known.
+      sameNameIndex: 0,
+      sameNameTotal: 0,
+    });
     attrs.push(`ref="${ref}"`);
   }
 
@@ -656,9 +802,11 @@ async function getAccessibilityTree(page: Page): Promise<SnapshotSource> {
 /**
  * Generate an accessibility-tree snapshot of the page.
  *
- * In 'ai' format every interactive element receives a sequential `ref="N"`
- * attribute that can later be resolved back to an ElementHandle via
- * `resolveRef()`.
+ * In 'ai' format every interactive element receives a `ref="N"` attribute that
+ * can later be resolved back to an ElementHandle via `resolveRef()`. The number
+ * belongs to the DOM node, not to its position in the walk: a node that is
+ * still there keeps the ref it had, and a new node takes the next unused
+ * number. See RefIdentity.
  *
  * Uses CDP `Accessibility.getFullAXTree` under the hood to obtain a
  * structured tree that can be filtered and annotated.
@@ -670,6 +818,9 @@ export async function generateSnapshot(
   const format = options?.format ?? 'ai';
   const depth = options?.depth ?? 10;
   const maxLength = options?.maxLength ?? 50_000;
+  // Opened before anything can fail so every exit — including the DOM
+  // fallthroughs below — stamps the same generation onto the page.
+  const identity = beginRefGeneration(page);
 
   const { tree, occlusion } = await getAccessibilityTree(page);
 
@@ -731,7 +882,7 @@ export async function generateSnapshot(
   }
 
   const refs: RefEntry[] = [];
-  const ctx: SerializeCtx = { format, maxDepth: depth, refs, occlusion };
+  const ctx: SerializeCtx = { format, maxDepth: depth, refs, identity, occlusion };
   let output = serializeTree(effectiveTree, ctx);
 
   // The overlay note is prepended AFTER truncation — it is the one line that
@@ -796,6 +947,9 @@ export async function generateScopedSnapshot(
   const format = options?.format ?? 'ai';
   const depth = options?.depth ?? 10;
   const maxLength = options?.maxLength ?? 50_000;
+  // The number space is per document, not per scope: a node keeps the ref it
+  // was given whether it was reached through a selector or the whole page.
+  const identity = beginRefGeneration(page);
 
   const found = await withCdpSession<{ forest: AXNode[] | null; occlusion: OcclusionInfo | null }>(
     page,
@@ -839,7 +993,7 @@ export async function generateScopedSnapshot(
   }
 
   const refs: RefEntry[] = [];
-  const ctx: SerializeCtx = { format, maxDepth: depth, refs, occlusion };
+  const ctx: SerializeCtx = { format, maxDepth: depth, refs, identity, occlusion };
   // Unlike the page-level tree, the matched element is content, not a container
   // — `dialog "Settings"` is exactly the context the selector asked about — so
   // serialize the forest as-is instead of dropping its top level.
@@ -881,6 +1035,12 @@ export async function generateScopedSnapshot(
  * the same page, avoiding a full accessibility tree re-query.
  *
  * Falls back to role-based locator matching using the stored role+name.
+ *
+ * Throws StaleRefError — rather than returning a substitute element — when the
+ * page navigated since that snapshot, when the ref named an element the latest
+ * snapshot no longer lists, or when the role+name population it was numbered
+ * against has changed. Returning null still means "no such ref here", which is
+ * what sends the DOM-snapshot case to the data-wmux-ref locator below.
  */
 export async function resolveRef(
   page: Page,
@@ -903,47 +1063,84 @@ export async function resolveRef(
   return resolveRefViaDataAttr(page, ref);
 }
 
-/** Resolve a ref through the a11y refMap stored by generateSnapshot(). */
+/**
+ * Resolve a ref through the a11y refMap stored by generateSnapshot().
+ *
+ * Throws StaleRefError rather than returning a guess whenever the ref can be
+ * shown not to name what the caller thinks it names.
+ */
 async function resolveRefViaAxMap(
   page: Page,
   ref: string,
 ): Promise<ElementHandle | null> {
-  const targetIndex = parseInt(ref, 10);
-  if (Number.isNaN(targetIndex) || targetIndex < 0) return null;
+  const wanted = parseInt(ref, 10);
+  if (Number.isNaN(wanted) || wanted < 0) return null;
 
   const refs = pageRefMaps.get(page);
-  if (!refs || targetIndex >= refs.length) return null;
+  // An empty map is the DOM-fallthrough case, which resolveRef serves through
+  // the data-wmux-ref locator instead — not a staleness signal.
+  if (!refs || refs.length === 0) return null;
 
-  const target = refs[targetIndex];
+  const stamp = pageSnapshotStamps.get(page);
+  const liveUrl = pageUrl(page);
+  if (stamp?.url !== undefined && liveUrl !== undefined && stamp.url !== liveUrl) {
+    throw new StaleRefError(
+      `ref=${ref} is stale — the page navigated since snapshot #${stamp.generation} ` +
+        `(${stamp.url} → ${liveUrl}). Run browser_snapshot to get current refs.`,
+    );
+  }
+
+  const target = refs.find((entry) => entry.ref === wanted);
+  if (!target) {
+    const identity = pageRefIdentity.get(page);
+    // The number was handed out on this document but the latest snapshot does
+    // not list it: the element it named is gone. Say so — the number will never
+    // be reissued, so retrying cannot help, only re-snapshotting can.
+    if (identity && wanted < identity.next) {
+      throw new StaleRefError(
+        `ref=${ref} is stale — the element it named is no longer in the page snapshot ` +
+          `(current snapshot #${identity.generation}). Run browser_snapshot to get current refs.`,
+      );
+    }
+    return null;
+  }
 
   // Use Playwright's getByRole to locate the element. A scoped snapshot numbered
   // its refs inside one element, so search inside that same element — otherwise
   // the nth-match count below is taken over the whole page and can land on an
   // identical role+name that the caller deliberately scoped out.
   const scopeSelector = pageRefScopes.get(page);
+  let count: number;
+  let locator: ReturnType<Page['getByRole']>;
   try {
     const root = scopeSelector ? page.locator(scopeSelector).first() : page;
-    const locator = root.getByRole(target.role as any, {
+    locator = root.getByRole(target.role as any, {
       name: target.name || undefined,
       exact: true,
     });
+    count = await locator.count();
+  } catch {
+    return null;
+  }
 
-    const count = await locator.count();
-    if (count === 0) return null;
+  if (count === 0) return null;
 
-    // Find which instance corresponds to our ref by counting all
-    // refs with the same role+name before our target index
-    let sameRoleNameBefore = 0;
-    for (let i = 0; i < targetIndex; i++) {
-      if (
-        refs[i].role === target.role &&
-        refs[i].name === target.name
-      ) {
-        sameRoleNameBefore++;
-      }
-    }
+  // The nth-match below is only sound while the page still holds the elements
+  // the snapshot numbered against. It used to clamp with Math.min(), which
+  // turned "the page changed" into "click the last one that matches" — the
+  // silent wrong-element case. Only checked for named entries: an unnamed entry
+  // is looked up with no name filter, so the locator legitimately counts the
+  // named siblings too and the two totals are not comparable.
+  if (target.name && count !== target.sameNameTotal) {
+    throw new StaleRefError(
+      `ref=${ref} is stale — the page now has ${count} ${target.role} element(s) named ` +
+        `"${target.name}", not the ${target.sameNameTotal} the last snapshot listed, so the ref ` +
+        `no longer identifies one element. Run browser_snapshot to get current refs.`,
+    );
+  }
 
-    const nth = Math.min(sameRoleNameBefore, count - 1);
+  try {
+    const nth = Math.min(target.sameNameIndex, count - 1);
     return await locator.nth(nth).elementHandle();
   } catch {
     return null;

@@ -3,9 +3,12 @@
 //
 // Snapshots are one-line-per-node text (both the a11y serializer and the DOM
 // listing), so a plain line LCS is sufficient — no dependency needed. Ref
-// numbers are embedded in the line text, which is what makes diffing over
-// renumber-prone refs sound: any renumbering surfaces as changed lines, and a
-// small diff means the surviving refs are byte-identical and resolve the same.
+// numbers are embedded in the line text, so a renumbering surfaces as changed
+// lines and a small diff means the surviving refs are byte-identical and
+// resolve the same. That used to make the diff worthless in practice, because
+// the a11y serializer renumbered every ref on every snapshot and nothing came
+// in under DIFF_WORTHWHILE_RATIO; refs are keyed on DOM node identity now (see
+// RefIdentity in snapshot.ts), so an unchanged line stays unchanged.
 // ---------------------------------------------------------------------------
 
 // Bail out of the O(n·m) DP beyond this many lines per side (after common
