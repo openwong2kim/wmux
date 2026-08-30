@@ -352,7 +352,15 @@ export function IntegrationSetupSection({
         // exact dead end this whole change is about.
         commit(
           set,
-          (prev) => ({ ...prev, state: 'error', error: err instanceof Error ? err.message : null }),
+          // `skip` is cleared, `foreign` is kept: the reason a PREVIOUS install
+          // wrote nothing does not describe this throw, and leaving it set made
+          // the row explain a foreign skip while the real failure went unsaid.
+          (prev) => ({
+            ...prev,
+            state: 'error',
+            skip: null,
+            error: err instanceof Error ? err.message : null,
+          }),
           gen,
         );
       }

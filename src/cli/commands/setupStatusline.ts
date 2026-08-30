@@ -202,6 +202,10 @@ function loadSettings(settingsPath: string): LoadResult {
   }
 }
 
+function errorText(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
 /** 'none' | 'wmux' | 'foreign' — what the target's statusLine currently is. */
 export function classifyStatusLine(settings: Record<string, unknown>): 'none' | 'wmux' | 'foreign' {
   const sl = settings.statusLine;
@@ -357,6 +361,10 @@ export interface TargetReport {
   label: string;
   settingsPath: string;
   outcome: TargetOutcome;
+  /** Why a `failed` target failed. The per-target catch keeps one bad profile
+   *  from abandoning the rest, which also means the exception never reaches a
+   *  console — without carrying it here, `failed` is a dead end. */
+  error?: string;
 }
 
 export interface StatuslineOutcome {
@@ -436,8 +444,8 @@ export function installStatusline(
       load.settings.statusLine = { type: 'command', command };
       writeJsonAtomic(t.settingsPath, load.settings);
       targets.push({ ...t, outcome: kind === 'foreign' ? 'replaced' : 'installed' });
-    } catch {
-      targets.push({ ...t, outcome: 'failed' });
+    } catch (err) {
+      targets.push({ ...t, outcome: 'failed', error: errorText(err) });
     }
   }
   return { ...base, ok: true, scriptCopied: true, targets };
@@ -553,8 +561,8 @@ export function removeStatusline(paths: SetupStatuslinePaths): StatuslineOutcome
     // later remove cannot resurrect it.
     if (backup.kind === 'entry') deleteBackup(paths, t.settingsPath);
     targets.push({ ...t, outcome: 'removed' });
-   } catch {
-     targets.push({ ...t, outcome: 'failed' });
+   } catch (err) {
+     targets.push({ ...t, outcome: 'failed', error: errorText(err) });
    }
   }
   return {
@@ -617,7 +625,8 @@ function printOutcome(outcome: StatuslineOutcome, jsonMode: boolean, verb: strin
       : t.outcome === 'restored' ? 'removed — put your previous statusLine back'
       : t.outcome === 'skipped-no-backup'
         ? 'SKIPPED — could not save/read the replaced statusLine, so nothing was touched'
-      : t.outcome === 'failed' ? 'FAILED — see the error above; other targets were still attempted'
+      : t.outcome === 'failed'
+        ? `FAILED — ${t.error ?? 'unknown error'}; other targets were still attempted`
       : t.outcome === 'skipped-foreign' ? 'SKIPPED — a non-wmux statusLine is already set (re-run with --force to replace it)'
       : t.outcome === 'skipped-corrupt' ? 'SKIPPED — settings.json is not valid JSON'
       : 'nothing to do';

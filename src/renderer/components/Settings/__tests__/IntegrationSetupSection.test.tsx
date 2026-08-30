@@ -366,6 +366,37 @@ describe('IntegrationSetupSection', () => {
     expect(row(container, 'statusline').querySelector('[data-setup-row-secondary]')).not.toBeNull();
   });
 
+  // Review finding: the skip reason from the FIRST click survived into a
+  // second click that threw, so the row explained a foreign skip while the
+  // actual failure went unsaid. Only reachable on the second click, which is
+  // why the single-throw test above did not catch it.
+  it('does not explain a throw with the previous install\'s skip reason', async () => {
+    let calls = 0;
+    const api = fakeApi({
+      statuslineTargets: [{ label: 'default (~/.claude)', state: 'foreign', foreignCommand: 'bunx ccusage' }],
+      statuslineInstall: async () => {
+        calls += 1;
+        if (calls === 1) return { ok: true, error: null, targets: [{ outcome: 'skipped-foreign' }] };
+        throw new Error('EACCES');
+      },
+    });
+    const { container, cleanup } = render(<IntegrationSetupSection api={api} />);
+    cleanups.push(cleanup);
+    await flush();
+
+    await act(async () => { action(container, 'statusline')!.click(); await Promise.resolve(); });
+    await flush();
+    expect(row(container, 'statusline').querySelector('[data-setup-row-error]')!.textContent)
+      .toContain('Another tool already sets');
+
+    const replace = row(container, 'statusline').querySelector('[data-setup-row-secondary]') as HTMLButtonElement;
+    await act(async () => { replace.click(); await Promise.resolve(); });
+    await flush();
+    const text = row(container, 'statusline').querySelector('[data-setup-row-error]')!.textContent!;
+    expect(text).toContain('EACCES');
+    expect(text).not.toContain('Another tool already sets');
+  });
+
   it('names the reason when an install succeeds but writes nothing', () => {
     expect(skippedReason([{ outcome: 'installed' }])).toBeNull();
     expect(skippedReason([{ outcome: 'skipped-foreign' }])).toBe('skipped-foreign');

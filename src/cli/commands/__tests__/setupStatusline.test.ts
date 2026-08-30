@@ -275,6 +275,9 @@ describe('replaced-entry backups', () => {
     fs.writeFileSync(path.dirname(a.settingsPath), 'not a directory', 'utf8');
     const outcome = installStatusline(makePaths([a, b]));
     expect(outcome.targets[0].outcome).toBe('failed');
+    // The catch swallows the exception so the other targets still run, which
+    // means the reason has to travel on the report or `failed` says nothing.
+    expect(outcome.targets[0].error).toBeTruthy();
     expect(outcome.targets[1].outcome).toBe('installed');
   });
 });

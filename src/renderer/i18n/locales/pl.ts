@@ -1177,7 +1177,7 @@ export const pl = {
   'integrationSetup.installFailed': 'Niepowodzenie',
   'integrationSetup.replaceButton': 'Zastąp',
   'integrationSetup.skippedForeign':
-    'Inne narzędzie już ustawia statusLine w Claude Code, więc wmux go nie ruszył. Zastąp wstawia w to miejsce statusline wmux i zachowuje Twój, więc późniejsze usunięcie statusline wmux go przywróci.',
+    'Inne narzędzie już ustawia statusLine w Claude Code, więc wmux go nie ruszył. Kliknięcie „Zastąp” wstawi w to miejsce statusline wmux i zachowa Twój, więc późniejsze usunięcie statusline wmux go przywróci.',
   'integrationSetup.statusline.foreignProfilesOne':
     'Jeden profil Claude nadal używa statusline innego narzędzia: {labels}.',
   'integrationSetup.statusline.foreignProfilesMany':
