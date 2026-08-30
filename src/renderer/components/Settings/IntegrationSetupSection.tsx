@@ -26,6 +26,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useT } from '../../hooks/useT';
+import { isInstallTake } from '../../../shared/statuslineOutcome';
 
 // ─── Injected API (jsdom-testable; the container binds the preload bridges) ───
 
@@ -43,10 +44,14 @@ export interface IntegrationSetupApi {
     setPromptPreference?: (suppressed: boolean) => Promise<{ suppressed: boolean }>;
   };
   statusline?: {
-    status: () => Promise<{ installed: boolean }>;
+    /** `outcome.targets` is what makes a partially-foreign setup visible: with
+     *  two accounts, one installable and one owned by another tool, the install
+     *  succeeds and the row would otherwise go green while that account still
+     *  has no wmux statusline. */
+    status: () => Promise<{ installed: boolean; outcome?: { targets?: StatuslineTargetProbe[] } }>;
     /** `ok` only means nothing broke: every target can be skipped when another
      *  tool owns its settings.json. A row is installed when a target took it. */
-    install: () => Promise<{
+    install: (opts?: { force?: boolean }) => Promise<{
       ok: boolean;
       error: string | null;
       targets: Array<{ outcome: string }>;
@@ -60,6 +65,13 @@ export interface IntegrationSetupApi {
     check: () => Promise<{ targets: McpTarget[] }>;
     reregister: () => Promise<{ targets: McpTarget[] }>;
   };
+}
+
+export interface StatuslineTargetProbe {
+  label: string;
+  state: string;
+  /** The command a forced install would overwrite, when we could read it. */
+  foreignCommand?: string;
 }
 
 export interface McpTarget {
@@ -80,6 +92,64 @@ export function skippedReason(targets?: Array<{ outcome: string }>): string | nu
   return skipped.length > 0 ? skipped.join(', ') : null;
 }
 
+/** True when a target actually took the write. `replaced` is a take too — the
+ *  forced install overwrote a foreign entry, which is exactly what was asked.
+ *  The predicate is shared with the CLI and the first-run wizard so the three
+ *  cannot drift. */
+export function installTook(targets?: Array<{ outcome: string }>): boolean {
+  if (!targets) return true;
+  return targets.some((x) => isInstallTake(x.outcome));
+}
+
+/** The targets another tool owns, straight from the probe. Drives both the
+ *  note and the Replace affordance, so a half-installed multi-account setup
+ *  says so instead of showing an unqualified green row. */
+export function foreignTargets(targets?: StatuslineTargetProbe[]): StatuslineTargetProbe[] {
+  return (targets ?? []).filter((t) => t.state === 'foreign');
+}
+
+/** Which skip explains an install that wrote nothing. `foreign` is the only one
+ *  the user can act on from here (a forced re-install replaces it); `corrupt`
+ *  needs them to fix their settings.json by hand. */
+export type SkipReason = 'foreign' | 'corrupt' | 'no-backup' | 'failed' | null;
+
+export function skipReasonOf(targets?: Array<{ outcome: string }>): SkipReason {
+  if (!targets || targets.length === 0 || installTook(targets)) return null;
+  // Order is by what the operator can act on. `no-backup` outranks `foreign`:
+  // a replace that refused because it could not save the old entry is a
+  // different situation from one that was never attempted, and clicking
+  // Replace again will not fix it.
+  if (targets.some((x) => x.outcome === 'skipped-no-backup')) return 'no-backup';
+  if (targets.some((x) => x.outcome === 'failed')) return 'failed';
+  if (targets.some((x) => x.outcome === 'skipped-foreign')) return 'foreign';
+  if (targets.some((x) => x.outcome === 'skipped-corrupt')) return 'corrupt';
+  return null;
+}
+
+/** Arbitrary text out of someone else's settings.json, on its way into a row
+ *  that has to stay one line. Newlines and control characters are stripped and
+ *  the rest is capped — an unbounded command pushed the Replace button off
+ *  screen, which is the one control the message is telling them to use. */
+const FOREIGN_COMMAND_MAX = 120;
+
+export function displayCommand(command: string): string {
+  // eslint-disable-next-line no-control-regex
+  const flat = command.replace(/[\u0000-\u001f\u007f]+/g, ' ').trim();
+  return flat.length > FOREIGN_COMMAND_MAX ? `${flat.slice(0, FOREIGN_COMMAND_MAX)}…` : flat;
+}
+
+/** Every command a Replace would overwrite, not just the first. One click
+ *  forces ALL foreign targets, so showing one of three names made the other
+ *  two disappear without the operator ever seeing them. */
+export function foreignCommandSuffix(targets?: StatuslineTargetProbe[]): string {
+  const cmds = (targets ?? [])
+    .map((x) => x.foreignCommand)
+    .filter((c): c is string => typeof c === 'string' && c.length > 0)
+    .map(displayCommand)
+    .filter((c) => c.length > 0);
+  return cmds.length > 0 ? ` (${cmds.join(', ')})` : '';
+}
+
 /** One row's lifecycle. `unknown` is the pre-probe state and reads as its own
  *  thing — never as "not installed", which would be a lie the user acts on. */
 export type RowState =
@@ -93,6 +163,13 @@ export type RowState =
 interface RowModel {
   state: RowState;
   error: string | null;
+  /** Set when the install wrote nothing because another tool owns the config.
+   *  Drives the plain-language line — the raw `skipped-foreign` token was a
+   *  dead end for the user who saw it (#1102). */
+  skip?: SkipReason;
+  /** Configs another tool owns, from the last probe. Present even on an
+   *  `installed` row: that is the partially-foreign case. */
+  foreign?: StatuslineTargetProbe[];
 }
 
 const INITIAL: RowModel = { state: 'unknown', error: null };
@@ -101,6 +178,26 @@ const UNAVAILABLE: RowModel = { state: 'unavailable', error: null };
 /** Probe → row state. Kept separate so the mapping is testable without a DOM. */
 export function rowStateFromProbe(installed: boolean): RowState {
   return installed ? 'installed' : 'missing';
+}
+
+/** The standing note for a row whose install partly landed: which profiles are
+ *  still on someone else's statusline, and what that statusline is. */
+function foreignNote(
+  t: (key: string, vars?: Record<string, string | number>) => string,
+  targets?: StatuslineTargetProbe[],
+): string | null {
+  if (!targets || targets.length === 0) return null;
+  // Separate keys rather than "profile(s)": the rest of this card is written
+  // for a person to read, and the parenthesised plural was the one place that
+  // read like a placeholder.
+  const key =
+    targets.length === 1
+      ? 'integrationSetup.statusline.foreignProfilesOne'
+      : 'integrationSetup.statusline.foreignProfilesMany';
+  return (
+    t(key, { count: targets.length, labels: targets.map((x) => x.label).join(', ') }) +
+    foreignCommandSuffix(targets)
+  );
 }
 
 // ─── The card ────────────────────────────────────────────────────────────────
@@ -141,8 +238,15 @@ export function IntegrationSetupSection({
   // drop an in-flight install's `error` commit, stranding that row on its
   // spinner with nothing left to re-issue it. Two domains, two generations.
   const prefGenRef = useRef(0);
+  // An updater form matters on the failure path: a skipped install does not
+  // re-probe, and a flat model would drop the foreign detail the probe already
+  // fetched — leaving the message with no command to name.
   const commit = useCallback(
-    (set: (m: RowModel) => void, model: RowModel, gen: number) => {
+    (
+      set: React.Dispatch<React.SetStateAction<RowModel>>,
+      model: RowModel | ((prev: RowModel) => RowModel),
+      gen: number,
+    ) => {
       if (!mountedRef.current || gen !== genRef.current) return;
       set(model);
     },
@@ -186,7 +290,13 @@ export function IntegrationSetupSection({
     if (!api.statusline) commit(setStatusline, UNAVAILABLE, gen);
     else api.statusline
       .status()
-      .then((s) => commit(setStatusline, { state: rowStateFromProbe(s.installed), error: null }, gen))
+      .then((s) =>
+        commit(setStatusline, {
+          state: rowStateFromProbe(s.installed),
+          error: null,
+          foreign: foreignTargets(s.outcome?.targets),
+        }, gen),
+      )
       .catch(() => commit(setStatusline, INITIAL, gen));
     if (!api.mcp) commit(setMcp, UNAVAILABLE, gen);
     else api.mcp
@@ -199,7 +309,7 @@ export function IntegrationSetupSection({
 
   const runInstall = useCallback(
     async (
-      set: (m: RowModel) => void,
+      set: React.Dispatch<React.SetStateAction<RowModel>>,
       install: () => Promise<{
         ok: boolean;
         error: string | null;
@@ -207,7 +317,10 @@ export function IntegrationSetupSection({
       }>,
     ) => {
       const gen = ++genRef.current;
-      commit(set, { state: 'working', error: null }, gen);
+      // Carry the probe's foreign detail across the in-flight state: a flat
+      // model here dropped it, and the skip message that follows then had no
+      // command to name.
+      commit(set, (prev) => ({ state: 'working', error: null, foreign: prev.foreign }), gen);
       try {
         const outcome = await install();
         // When the install reports per-target outcomes, `ok` alone is not
@@ -215,7 +328,7 @@ export function IntegrationSetupSection({
         // settings.json, and claiming "Installed" there is a receipt for
         // something that did not happen. The skipped outcomes ARE the reason,
         // so they go into the error text — otherwise the user retries blindly.
-        const took = outcome.targets ? outcome.targets.some((x) => x.outcome === 'installed') : true;
+        const took = installTook(outcome.targets);
         if (outcome.ok && took) {
           // Re-probe rather than trusting the install's own word: the file is
           // the truth, and it can have been rewritten by another tool between
@@ -223,9 +336,33 @@ export function IntegrationSetupSection({
           probeAll();
           return;
         }
-        commit(set, { state: 'error', error: outcome.error ?? skippedReason(outcome.targets) }, gen);
+        commit(
+          set,
+          (prev) => ({
+            state: 'error',
+            error: outcome.error ?? skippedReason(outcome.targets),
+            skip: skipReasonOf(outcome.targets),
+            foreign: prev.foreign,
+          }),
+          gen,
+        );
       } catch (err) {
-        commit(set, { state: 'error', error: err instanceof Error ? err.message : null }, gen);
+        // Updater, like the paths above: a thrown install that dropped the
+        // probe's foreign detail took the Replace button with it and left the
+        // exact dead end this whole change is about.
+        commit(
+          set,
+          // `skip` is cleared, `foreign` is kept: the reason a PREVIOUS install
+          // wrote nothing does not describe this throw, and leaving it set made
+          // the row explain a foreign skip while the real failure went unsaid.
+          (prev) => ({
+            ...prev,
+            state: 'error',
+            skip: null,
+            error: err instanceof Error ? err.message : null,
+          }),
+          gen,
+        );
       }
     },
     [commit, probeAll],
@@ -322,7 +459,24 @@ export function IntegrationSetupSection({
         description={t('integrationSetup.statusline.description')}
         model={statusline}
         actionLabel={t('integrationSetup.installButton')}
-        onAction={() => { if (api.statusline) void runInstall(setStatusline, api.statusline.install); }}
+        onAction={() => {
+          const sl = api.statusline;
+          if (sl) void runInstall(setStatusline, () => sl.install());
+        }}
+        // Offered whenever the probe knows another tool owns a config — which
+        // includes the row that already says "installed" because a DIFFERENT
+        // account took the write. The overwrite still costs a deliberate click
+        // on a button that names what it replaces.
+        note={foreignNote(t, statusline.foreign)}
+        secondaryLabel={
+          (statusline.foreign?.length ?? 0) > 0 || statusline.skip === 'foreign'
+            ? t('integrationSetup.replaceButton')
+            : null
+        }
+        onSecondary={() => {
+          const sl = api.statusline;
+          if (sl) void runInstall(setStatusline, () => sl.install({ force: true }));
+        }}
       />
     </div>
   );
@@ -336,6 +490,9 @@ function SetupRow({
   model,
   actionLabel,
   onAction,
+  note = null,
+  secondaryLabel = null,
+  onSecondary,
 }: {
   id: string;
   required: boolean;
@@ -344,6 +501,11 @@ function SetupRow({
   model: RowModel;
   actionLabel: string;
   onAction: () => void;
+  /** Muted standing fact about the row, shown even when it is installed. Not
+   *  an error: a partially-foreign setup is a working install with a caveat. */
+  note?: string | null;
+  secondaryLabel?: string | null;
+  onSecondary?: () => void;
 }): React.ReactElement {
   const t = useT();
   const installed = model.state === 'installed';
@@ -375,8 +537,29 @@ function SetupRow({
             style={{ color: 'var(--accent-red, #f38ba8)' }}
             data-setup-row-error
           >
-            {t('integrationSetup.installFailed')}
-            {model.error ? ` (${model.error})` : ''}
+            {/* A skip is not a crash: it says what wmux chose not to touch and
+                what to do about it, in words. Printing the raw outcome token
+                (`skipped-foreign`) told the user nothing they could act on. */}
+            {model.skip === 'foreign'
+              ? `${t('integrationSetup.skippedForeign')}${foreignCommandSuffix(model.foreign)}`
+              : model.skip === 'no-backup'
+                ? t('integrationSetup.skippedNoBackup')
+                : model.skip === 'failed'
+                  ? t('integrationSetup.installFailedTarget')
+                  : model.skip === 'corrupt'
+                    ? t('integrationSetup.skippedCorrupt')
+                    : `${t('integrationSetup.installFailed')}${model.error ? ` (${model.error})` : ''}`}
+          </span>
+        )}
+        {/* A note and an error never both apply: the error already carries the
+            same fact in stronger words. */}
+        {note && model.state !== 'error' && (
+          // Set apart from the description above it: this is a fact about the
+          // operator's own machine, and butted straight against the static copy
+          // it read as a third sentence of it. Spacing only — the color grammar
+          // reserves the accent for alive/focus, and a note is neither.
+          <span className="text-[11px] text-[color:var(--text-muted)] mt-1" data-setup-row-note>
+            {note}
           </span>
         )}
       </div>
@@ -384,6 +567,22 @@ function SetupRow({
         <StateChip state={model.state} />
         {/* Nothing to click for a row we cannot act on: `unknown` has not been
             probed, and `unavailable` has no bridge to install through. */}
+        {secondaryLabel && onSecondary && !working && (
+          <button
+            type="button"
+            onClick={onSecondary}
+            data-setup-row-secondary
+            className="text-[11px] font-mono px-2.5 py-1 rounded-md transition-colors"
+            style={{
+              backgroundColor: 'transparent',
+              color: 'var(--text-muted)',
+              border: '1px solid var(--bg-overlay)',
+              cursor: 'pointer',
+            }}
+          >
+            {secondaryLabel}
+          </button>
+        )}
         {!installed && model.state !== 'unknown' && model.state !== 'unavailable' && (
           <button
             type="button"

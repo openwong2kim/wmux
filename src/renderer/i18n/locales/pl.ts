@@ -1175,6 +1175,19 @@ export const pl = {
   'integrationSetup.registerButton': 'Zarejestruj',
   'integrationSetup.working': 'Trwa…',
   'integrationSetup.installFailed': 'Niepowodzenie',
+  'integrationSetup.replaceButton': 'Zastąp',
+  'integrationSetup.skippedForeign':
+    'Inne narzędzie już ustawia statusLine w Claude Code, więc wmux go nie ruszył. Kliknięcie „Zastąp” wstawi w to miejsce statusline wmux i zachowa Twój, więc późniejsze usunięcie statusline wmux go przywróci.',
+  'integrationSetup.statusline.foreignProfilesOne':
+    'Jeden profil Claude nadal używa statusline innego narzędzia: {labels}.',
+  'integrationSetup.statusline.foreignProfilesMany':
+    'Profile Claude, na których nadal działa statusline innego narzędzia: {count}, w tym {labels}.',
+  'integrationSetup.skippedNoBackup':
+    'wmux nie mógł zapisać statusline, który miałby zastąpić, więc zostawił go bez zmian — nie zastępuje niczego bez możliwości cofnięcia. Sprawdź, czy katalog ~/.wmux/hooks jest zapisywalny, i spróbuj ponownie.',
+  'integrationSetup.installFailedTarget':
+    'wmux nie mógł zapisać zmian w profilu Claude. Sprawdź jego uprawnienia i spróbuj ponownie.',
+  'integrationSetup.skippedCorrupt':
+    'Plik settings.json Claude Code nie jest poprawnym JSON-em, więc wmux zostawił go bez zmian. Napraw plik i spróbuj ponownie.',
   'integrationSetup.state.installed': 'zainstalowano',
   'integrationSetup.state.missing': 'niezainstalowane',
   'integrationSetup.state.working': 'trwa',

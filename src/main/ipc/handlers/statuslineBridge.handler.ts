@@ -48,8 +48,18 @@ export function registerStatuslineBridgeHandlers(): void {
   ipcMain.removeHandler(IPC.STATUSLINE_BRIDGE_INSTALL);
   ipcMain.handle(
     IPC.STATUSLINE_BRIDGE_INSTALL,
-    wrapHandler(IPC.STATUSLINE_BRIDGE_INSTALL, async (): Promise<StatuslineOutcome> => {
-      return installStatusline(defaultPaths());
-    }),
+    // `force` replaces a foreign (non-wmux) statusLine. It is never the first
+    // click: the Settings row only offers it after an install came back with
+    // every target skipped, so the overwrite is a second, deliberate consent —
+    // which is what the "never write behind the operator's back" rule asks for.
+    wrapHandler(
+      IPC.STATUSLINE_BRIDGE_INSTALL,
+      async (
+        _event: Electron.IpcMainInvokeEvent,
+        payload?: { force?: boolean },
+      ): Promise<StatuslineOutcome> => {
+        return installStatusline(defaultPaths(), { force: payload?.force === true });
+      },
+    ),
   );
 }

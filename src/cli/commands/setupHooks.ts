@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { writeJsonAtomic } from '../../shared/settingsFile';
 
 /**
  * `wmux setup-hooks` — install the wmux ↔ Claude Code hook bridge directly into
@@ -230,18 +231,6 @@ function findBridgeSource(): string | null {
 function safeReviver(key: string, value: unknown): unknown {
   if (key === '__proto__' || key === 'constructor' || key === 'prototype') return undefined;
   return value;
-}
-
-/**
- * Atomic write — tmp + rename — so a partial write can never leave Claude Code
- * with an unparseable settings.json. Pretty-printed 2-space + trailing newline.
- */
-function writeJsonAtomic(filePath: string, data: unknown): void {
-  const dir = path.dirname(filePath);
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-  const tmp = filePath + '.tmp';
-  fs.writeFileSync(tmp, JSON.stringify(data, null, 2) + '\n', 'utf8');
-  fs.renameSync(tmp, filePath);
 }
 
 /** Build the command string for a hook event, referencing the stable bridge path. */

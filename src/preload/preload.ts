@@ -655,8 +655,8 @@ const electronAPI = {
         ipcRenderer.invoke(IPC.STATUSLINE_BRIDGE_STATUS) as Promise<
           import('../main/ipc/handlers/statuslineBridge.handler').StatuslineBridgeStatus
         >,
-      install: () =>
-        ipcRenderer.invoke(IPC.STATUSLINE_BRIDGE_INSTALL) as Promise<
+      install: (opts?: { force?: boolean }) =>
+        ipcRenderer.invoke(IPC.STATUSLINE_BRIDGE_INSTALL, opts) as Promise<
           import('../cli/commands/setupStatusline').StatuslineOutcome
         >,
     },

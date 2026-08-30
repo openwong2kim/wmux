@@ -13,6 +13,11 @@ import {
   rowStateFromProbe,
   mcpRegistered,
   skippedReason,
+  skipReasonOf,
+  installTook,
+  foreignTargets,
+  foreignCommandSuffix,
+  displayCommand,
   type IntegrationSetupApi,
 } from '../IntegrationSetupSection';
 
@@ -36,9 +41,10 @@ function fakeApi(over: Partial<{
   hooksInstalled: boolean;
   hooksPluginOwned: boolean;
   statuslineInstalled: boolean;
+  statuslineTargets: Array<{ label: string; state: string; foreignCommand?: string }>;
   mcpRegistered: boolean;
   hooksInstall: () => Promise<{ ok: boolean; error: string | null }>;
-  statuslineInstall: () => Promise<{ ok: boolean; error: string | null; targets: Array<{ outcome: string }> }>;
+  statuslineInstall: (opts?: { force?: boolean }) => Promise<{ ok: boolean; error: string | null; targets: Array<{ outcome: string }> }>;
   hooksStatusThrows: boolean;
   promptSuppressed: boolean;
   promptPrefThrows: boolean;
@@ -76,7 +82,10 @@ function fakeApi(over: Partial<{
           }),
     },
     statusline: {
-      status: async () => ({ installed: flags.statusline }),
+      status: async () => ({
+        installed: flags.statusline,
+        outcome: over.statuslineTargets ? { targets: over.statuslineTargets } : undefined,
+      }),
       install:
         over.statuslineInstall ??
         (async () => { flags.statusline = true; return { ok: true, error: null, targets: [{ outcome: 'installed' }] }; }),
@@ -197,10 +206,213 @@ describe('IntegrationSetupSection', () => {
     expect(state(container, 'hooks')).toBe('installed');
   });
 
+  // #1102: a foreign statusLine made Install report a bare "skipped-foreign"
+  // with no way forward. The row now says what happened in words and offers
+  // the one action that can fix it — a second, explicit click.
+  it('offers Replace when a foreign statusLine blocked the install', async () => {
+    const calls: Array<{ force?: boolean } | undefined> = [];
+    const flags = { forced: false };
+    const api = fakeApi({
+      statuslineInstall: async (opts) => {
+        calls.push(opts);
+        if (opts?.force) {
+          flags.forced = true;
+          return { ok: true, error: null, targets: [{ outcome: 'replaced' }] };
+        }
+        return { ok: true, error: null, targets: [{ outcome: 'skipped-foreign' }] };
+      },
+    });
+    // The re-probe after a forced install must see the new state.
+    api.statusline!.status = async () => ({ installed: flags.forced });
+    const { container, cleanup } = render(<IntegrationSetupSection api={api} />);
+    cleanups.push(cleanup);
+    await flush();
+
+    await act(async () => { action(container, 'statusline')!.click(); await Promise.resolve(); });
+    await flush();
+    expect(state(container, 'statusline')).toBe('error');
+    const text = row(container, 'statusline').querySelector('[data-setup-row-error]')!.textContent!;
+    expect(text).not.toContain('skipped-foreign');
+    expect(text).toContain('Replace');
+
+    const replace = row(container, 'statusline').querySelector('[data-setup-row-secondary]') as HTMLButtonElement;
+    expect(replace).not.toBeNull();
+    await act(async () => { replace.click(); await Promise.resolve(); });
+    await flush();
+    expect(calls).toEqual([undefined, { force: true }]);
+    expect(state(container, 'statusline')).toBe('installed');
+  });
+
+  // #1102 eng review D2: consent to replace something you cannot see is not
+  // consent. The probe carries the foreign command; the message must show it.
+  it('names the statusline it would replace', async () => {
+    const api = fakeApi({
+      statuslineTargets: [{ label: 'default (~/.claude)', state: 'foreign', foreignCommand: 'bunx ccusage statusline' }],
+      statuslineInstall: async () => ({ ok: true, error: null, targets: [{ outcome: 'skipped-foreign' }] }),
+    });
+    const { container, cleanup } = render(<IntegrationSetupSection api={api} />);
+    cleanups.push(cleanup);
+    await flush();
+
+    await act(async () => { action(container, 'statusline')!.click(); await Promise.resolve(); });
+    await flush();
+    expect(row(container, 'statusline').querySelector('[data-setup-row-error]')!.textContent)
+      .toContain('bunx ccusage statusline');
+  });
+
+  // #1102 eng review D3: one account taking the install used to turn the row
+  // green while another account still ran someone else's statusline, with no
+  // way to see it and no way to act on it.
+  it('keeps the skip visible when only some accounts took the install', async () => {
+    const api = fakeApi({
+      statuslineInstalled: true,
+      statuslineTargets: [
+        { label: 'default (~/.claude)', state: 'wmux' },
+        { label: 'work', state: 'foreign', foreignCommand: 'my-line.sh' },
+      ],
+    });
+    const { container, cleanup } = render(<IntegrationSetupSection api={api} />);
+    cleanups.push(cleanup);
+    await flush();
+
+    expect(state(container, 'statusline')).toBe('installed');
+    const note = row(container, 'statusline').querySelector('[data-setup-row-note]')!.textContent!;
+    expect(note).toContain('work');
+    expect(note).toContain('my-line.sh');
+    // Installed, and still replaceable — the remaining account is reachable.
+    expect(row(container, 'statusline').querySelector('[data-setup-row-secondary]')).not.toBeNull();
+  });
+
+  it('says nothing extra when every profile is ours', async () => {
+    const api = fakeApi({
+      statuslineInstalled: true,
+      statuslineTargets: [{ label: 'default (~/.claude)', state: 'wmux' }],
+    });
+    const { container, cleanup } = render(<IntegrationSetupSection api={api} />);
+    cleanups.push(cleanup);
+    await flush();
+    expect(row(container, 'statusline').querySelector('[data-setup-row-note]')).toBeNull();
+    expect(row(container, 'statusline').querySelector('[data-setup-row-secondary]')).toBeNull();
+  });
+
+  it('picks the foreign targets and the command out of a probe', () => {
+    const targets = [
+      { label: 'a', state: 'wmux' },
+      { label: 'b', state: 'foreign' },
+      { label: 'c', state: 'foreign', foreignCommand: 'mine.sh' },
+    ];
+    expect(foreignTargets(targets).map((x) => x.label)).toEqual(['b', 'c']);
+    expect(foreignTargets(undefined)).toEqual([]);
+    // Skips the foreign target we could not read a command from.
+    expect(foreignCommandSuffix(targets)).toBe(' (mine.sh)');
+    expect(foreignCommandSuffix([{ label: 'b', state: 'foreign' }])).toBe('');
+  });
+
+  // Panel finding: one Replace click forces EVERY foreign target, so naming
+  // only the first meant the other accounts' statuslines vanished unseen.
+  it('names every command a single Replace would overwrite', () => {
+    expect(
+      foreignCommandSuffix([
+        { label: 'a', state: 'foreign', foreignCommand: 'line-a.sh' },
+        { label: 'b', state: 'foreign', foreignCommand: 'line-b.sh' },
+      ]),
+    ).toBe(' (line-a.sh, line-b.sh)');
+  });
+
+  // The command is arbitrary text from someone else's config. An unbounded or
+  // multi-line one pushed the Replace button — the control the message points
+  // at — off the row.
+  it('flattens and caps a hostile command before showing it', () => {
+    expect(displayCommand('foo\nbar\tbaz')).toBe('foo bar baz');
+    const long = displayCommand('x'.repeat(500));
+    expect(long.length).toBeLessThanOrEqual(121);
+    expect(long.endsWith('…')).toBe(true);
+  });
+
+  // A refused replace is not the foreign skip: clicking Replace again cannot
+  // fix it, so it must not read as the same situation.
+  it('separates a backup failure from an ordinary foreign skip', async () => {
+    const api = fakeApi({
+      statuslineTargets: [{ label: 'default (~/.claude)', state: 'foreign', foreignCommand: 'bunx ccusage' }],
+      statuslineInstall: async () => ({ ok: true, error: null, targets: [{ outcome: 'skipped-no-backup' }] }),
+    });
+    const { container, cleanup } = render(<IntegrationSetupSection api={api} />);
+    cleanups.push(cleanup);
+    await flush();
+    await act(async () => { action(container, 'statusline')!.click(); await Promise.resolve(); });
+    await flush();
+
+    expect(skipReasonOf([{ outcome: 'skipped-no-backup' }])).toBe('no-backup');
+    const text = row(container, 'statusline').querySelector('[data-setup-row-error]')!.textContent!;
+    expect(text).toContain('~/.wmux/hooks');
+    expect(text).not.toContain('Replace puts the wmux one');
+  });
+
+  // #1102's original symptom, reached through the exception path: a throw used
+  // to wipe the foreign detail and take the Replace button with it.
+  it('keeps the Replace affordance when the install throws', async () => {
+    const api = fakeApi({
+      statuslineTargets: [{ label: 'default (~/.claude)', state: 'foreign', foreignCommand: 'bunx ccusage' }],
+      statuslineInstall: async () => { throw new Error('EACCES'); },
+    });
+    const { container, cleanup } = render(<IntegrationSetupSection api={api} />);
+    cleanups.push(cleanup);
+    await flush();
+    await act(async () => { action(container, 'statusline')!.click(); await Promise.resolve(); });
+    await flush();
+
+    expect(state(container, 'statusline')).toBe('error');
+    expect(row(container, 'statusline').querySelector('[data-setup-row-error]')!.textContent).toContain('EACCES');
+    expect(row(container, 'statusline').querySelector('[data-setup-row-secondary]')).not.toBeNull();
+  });
+
+  // Review finding: the skip reason from the FIRST click survived into a
+  // second click that threw, so the row explained a foreign skip while the
+  // actual failure went unsaid. Only reachable on the second click, which is
+  // why the single-throw test above did not catch it.
+  it('does not explain a throw with the previous install\'s skip reason', async () => {
+    let calls = 0;
+    const api = fakeApi({
+      statuslineTargets: [{ label: 'default (~/.claude)', state: 'foreign', foreignCommand: 'bunx ccusage' }],
+      statuslineInstall: async () => {
+        calls += 1;
+        if (calls === 1) return { ok: true, error: null, targets: [{ outcome: 'skipped-foreign' }] };
+        throw new Error('EACCES');
+      },
+    });
+    const { container, cleanup } = render(<IntegrationSetupSection api={api} />);
+    cleanups.push(cleanup);
+    await flush();
+
+    await act(async () => { action(container, 'statusline')!.click(); await Promise.resolve(); });
+    await flush();
+    expect(row(container, 'statusline').querySelector('[data-setup-row-error]')!.textContent)
+      .toContain('Another tool already sets');
+
+    const replace = row(container, 'statusline').querySelector('[data-setup-row-secondary]') as HTMLButtonElement;
+    await act(async () => { replace.click(); await Promise.resolve(); });
+    await flush();
+    const text = row(container, 'statusline').querySelector('[data-setup-row-error]')!.textContent!;
+    expect(text).toContain('EACCES');
+    expect(text).not.toContain('Another tool already sets');
+  });
+
   it('names the reason when an install succeeds but writes nothing', () => {
     expect(skippedReason([{ outcome: 'installed' }])).toBeNull();
     expect(skippedReason([{ outcome: 'skipped-foreign' }])).toBe('skipped-foreign');
     expect(skippedReason(undefined)).toBeNull();
+  });
+
+  it('names an all-skipped install by its actionable reason (#1102)', () => {
+    expect(skipReasonOf([{ outcome: 'skipped-foreign' }])).toBe('foreign');
+    expect(skipReasonOf([{ outcome: 'skipped-corrupt' }])).toBe('corrupt');
+    // A single target that took the write is a success, not a skip.
+    expect(skipReasonOf([{ outcome: 'installed' }, { outcome: 'skipped-foreign' }])).toBeNull();
+    expect(skipReasonOf([{ outcome: 'replaced' }])).toBeNull();
+    expect(skipReasonOf(undefined)).toBeNull();
+    // `replaced` is a take: a forced install must not report failure.
+    expect(installTook([{ outcome: 'replaced' }])).toBe(true);
+    expect(installTook([{ outcome: 'skipped-foreign' }])).toBe(false);
   });
 
   // One absent bridge must not take the two REQUIRED rows down with it — the
