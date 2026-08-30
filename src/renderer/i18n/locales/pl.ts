@@ -1178,7 +1178,9 @@ export const pl = {
   'integrationSetup.replaceButton': 'Zastąp',
   'integrationSetup.skippedForeign':
     'Inne narzędzie już ustawia statusLine w Claude Code, więc wmux go nie ruszył. Zastąp wstawia w to miejsce statusline wmux i zachowuje Twój, więc późniejsze usunięcie statusline wmux go przywróci.',
-  'integrationSetup.statusline.foreignProfiles':
+  'integrationSetup.statusline.foreignProfilesOne':
+    'Jeden profil Claude nadal używa statusline innego narzędzia: {labels}.',
+  'integrationSetup.statusline.foreignProfilesMany':
     'Profile Claude, na których nadal działa statusline innego narzędzia: {count}, w tym {labels}.',
   'integrationSetup.skippedNoBackup':
     'wmux nie mógł zapisać statusline, który miałby zastąpić, więc zostawił go bez zmian — nie zastępuje niczego bez możliwości cofnięcia. Sprawdź, czy katalog ~/.wmux/hooks jest zapisywalny, i spróbuj ponownie.',

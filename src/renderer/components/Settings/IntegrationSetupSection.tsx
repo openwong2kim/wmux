@@ -187,11 +187,16 @@ function foreignNote(
   targets?: StatuslineTargetProbe[],
 ): string | null {
   if (!targets || targets.length === 0) return null;
+  // Separate keys rather than "profile(s)": the rest of this card is written
+  // for a person to read, and the parenthesised plural was the one place that
+  // read like a placeholder.
+  const key =
+    targets.length === 1
+      ? 'integrationSetup.statusline.foreignProfilesOne'
+      : 'integrationSetup.statusline.foreignProfilesMany';
   return (
-    t('integrationSetup.statusline.foreignProfiles', {
-      count: targets.length,
-      labels: targets.map((x) => x.label).join(', '),
-    }) + foreignCommandSuffix(targets)
+    t(key, { count: targets.length, labels: targets.map((x) => x.label).join(', ') }) +
+    foreignCommandSuffix(targets)
   );
 }
 
@@ -541,7 +546,11 @@ function SetupRow({
         {/* A note and an error never both apply: the error already carries the
             same fact in stronger words. */}
         {note && model.state !== 'error' && (
-          <span className="text-[11px] text-[color:var(--text-muted)]" data-setup-row-note>
+          // Set apart from the description above it: this is a fact about the
+          // operator's own machine, and butted straight against the static copy
+          // it read as a third sentence of it. Spacing only — the color grammar
+          // reserves the accent for alive/focus, and a note is neither.
+          <span className="text-[11px] text-[color:var(--text-muted)] mt-1" data-setup-row-note>
             {note}
           </span>
         )}

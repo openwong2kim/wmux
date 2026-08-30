@@ -1171,8 +1171,10 @@ export const en = {
   'integrationSetup.replaceButton': 'Replace',
   'integrationSetup.skippedForeign':
     'Another tool already sets Claude Code\'s statusLine, so wmux left it alone. Replace puts the wmux one in its place and keeps yours, so removing the wmux statusline later restores it.',
-  'integrationSetup.statusline.foreignProfiles':
-    '{count} Claude profile(s) still run another tool\'s statusline: {labels}.',
+  'integrationSetup.statusline.foreignProfilesOne':
+    'One Claude profile still runs another tool\'s statusline: {labels}.',
+  'integrationSetup.statusline.foreignProfilesMany':
+    '{count} Claude profiles still run another tool\'s statusline: {labels}.',
   'integrationSetup.skippedNoBackup':
     'wmux could not save the statusLine it would replace, so it left it in place — replacing without a way back is not something it will do. Check that ~/.wmux/hooks is writable and try again.',
   'integrationSetup.installFailedTarget':
