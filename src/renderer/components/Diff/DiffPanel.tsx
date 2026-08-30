@@ -367,6 +367,10 @@ export default function DiffPanel({ source, isActive, surfaceId, verifiedWorkspa
   const [applying, setApplying] = useState(false);
   // F10: 미션 채널에서 역조회한 diff 코멘트.
   const [comments, setComments] = useState<DiffComment[]>([]);
+  // Inline comment composer (replaces the dead window.prompt — see handleComment):
+  // `${path}#${idx}` of the hunk whose composer is open, plus its draft text.
+  const [commentTarget, setCommentTarget] = useState<string | null>(null);
+  const [commentText, setCommentText] = useState('');
   // J3 §1·§2: close·PR 진행 상태(중복 클릭 방지).
   const [lifecycleBusy, setLifecycleBusy] = useState<'close' | 'pr' | null>(null);
   const pushToast = useStore((s) => s.pushToast);
@@ -531,8 +535,15 @@ export default function DiffPanel({ source, isActive, surfaceId, verifiedWorkspa
   const handleComment = useCallback(
     async (file: string, hunkHeader: string) => {
       if (!meta || meta.channelArchived || !meta.missionChannelId) return;
-      const comment = window.prompt(t('diff.commentPrompt', { file }));
+      // Inline composer, not window.prompt: Electron's renderer has no prompt
+      // polyfill and the call throws (dogfood-measured — the same dead path the
+      // ask flow already replaced), so this comment feature never actually ran.
+      const comment = commentText.trim();
       if (!comment) return;
+      // Close the composer now (mirrors the ask form); the captured `comment`
+      // drives the post below, so clearing the draft here is safe.
+      setCommentTarget(null);
+      setCommentText('');
       const api = (window as unknown as {
         electronAPI?: { rpc?: { mutateChannelLocal: (m: string, p: Record<string, unknown>) => Promise<unknown> } };
       }).electronAPI;
@@ -580,7 +591,7 @@ export default function DiffPanel({ source, isActive, surfaceId, verifiedWorkspa
         setApplyMsg(t('diff.commentFailed', { error: e instanceof Error ? e.message : String(e) }));
       }
     },
-    [meta, taskId, verifiedWorkspaceId, t],
+    [meta, taskId, verifiedWorkspaceId, commentText, t],
   );
 
   // J3 §1 — close(remove 성공→close 순서). 확인 1회 후 결과를 토스트로 구분
@@ -901,8 +912,12 @@ export default function DiffPanel({ source, isActive, surfaceId, verifiedWorkspa
                         {!meta?.channelArchived && meta?.missionChannelId && (
                           <button
                             className="text-[9px] text-[var(--text-muted)] hover:text-[var(--text-main)]"
-                            onClick={() => void handleComment(activeFile.path, hunk.header)}
+                            onClick={() => {
+                              setCommentText('');
+                              setCommentTarget((prev) => (prev === key ? null : key));
+                            }}
                             title={t('diff.commentHunk')}
+                            data-testid="diff-comment-open"
                           >
                             <IconComment />
                           </button>
@@ -946,6 +961,42 @@ export default function DiffPanel({ source, isActive, surfaceId, verifiedWorkspa
                             }
                           >
                             {t('diff.ask') || 'Ask'}
+                          </button>
+                        </div>
+                      )}
+                      {/* 인라인 코멘트 폼 — Enter 발사, Esc 닫기 (죽은 window.prompt 대체). */}
+                      {commentTarget === key && (
+                        <div
+                          className="flex items-center gap-1.5 px-2 py-1 bg-[var(--bg-base)] border-t border-[var(--bg-mantle)]"
+                          data-diff-comment-form
+                        >
+                          <input
+                            type="text"
+                            autoFocus
+                            value={commentText}
+                            onChange={(e) => setCommentText(e.target.value)}
+                            onKeyDown={(e) => {
+                              // IME 조합 중 Enter(한/일/중)는 조합 확정이지 제출이 아님 —
+                              // isComposing/keyCode 229를 가드(ask 폼과 동일).
+                              if (e.key === 'Enter' && !e.nativeEvent.isComposing && e.keyCode !== 229) {
+                                void handleComment(activeFile.path, hunk.header);
+                              } else if (e.key === 'Escape') {
+                                setCommentTarget(null);
+                                setCommentText('');
+                              }
+                            }}
+                            placeholder={t('diff.commentPrompt', { file: activeFile.path })}
+                            spellCheck={false}
+                            className="flex-1 min-w-0 bg-transparent text-[11px] text-[var(--text-main)] placeholder-[var(--text-muted)] outline-none px-1"
+                            data-testid="diff-comment-input"
+                          />
+                          <button
+                            className="px-1.5 py-0.5 rounded text-[10px] text-[var(--text-sub)] hover:text-[var(--text-main)] border border-[var(--bg-mantle)] disabled:opacity-40"
+                            disabled={!commentText.trim()}
+                            onClick={() => void handleComment(activeFile.path, hunk.header)}
+                            data-testid="diff-comment-submit"
+                          >
+                            {t('diff.commentSend') || 'Comment'}
                           </button>
                         </div>
                       )}

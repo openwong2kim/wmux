@@ -57,10 +57,12 @@ export function clearClientIdentity(): void {
   if (scope) {
     scope.rpcIdentity.clientName = undefined;
     scope.rpcIdentity.clientVersion = undefined;
+    scope.rpcIdentity.workspaceToken = undefined;
     return;
   }
   CLIENT_NAME = undefined;
   CLIENT_VERSION = undefined;
+  WORKSPACE_TOKEN = undefined;
 }
 
 export function getClientIdentity(): { name?: string; version?: string } {
@@ -69,6 +71,35 @@ export function getClientIdentity(): { name?: string; version?: string } {
     return { name: scope.rpcIdentity.clientName, version: scope.rpcIdentity.clientVersion };
   }
   return { name: CLIENT_NAME, version: CLIENT_VERSION };
+}
+
+// #922 PR-A: the workspace claim token minted by `mcp.claimWorkspace`. Set by
+// paneResolver the moment a claim succeeds, and stamped on every later
+// envelope so main can tell WHICH workspace this caller claimed — a fact main
+// itself recorded at claim time, not one the caller asserts.
+//
+// Scope-aware for the same reason as the identity above: under the broker one
+// process hosts N connections, and a shared token would let one hosted caller
+// send another's claim. `clearClientIdentity` drops it with the rest of the
+// identity, so trailing RPCs after a transport closes cannot keep presenting a
+// claim on behalf of a caller that has gone.
+let WORKSPACE_TOKEN: string | undefined;
+
+export function setWorkspaceToken(token: string | undefined): void {
+  const trimmed = typeof token === 'string' ? token.trim() : '';
+  const value = trimmed.length > 0 ? trimmed : undefined;
+  const scope = getConnectionScope();
+  if (scope) {
+    scope.rpcIdentity.workspaceToken = value;
+    return;
+  }
+  WORKSPACE_TOKEN = value;
+}
+
+export function getWorkspaceToken(): string | undefined {
+  const scope = getConnectionScope();
+  if (scope) return scope.rpcIdentity.workspaceToken;
+  return WORKSPACE_TOKEN;
 }
 
 // BYOB P4: commander role claim. Set once at startup by index.ts when the
@@ -93,10 +124,16 @@ function currentEnvelopeIdentity(): {
   clientName?: string;
   clientVersion?: string;
   commanderToken?: string;
+  workspaceToken?: string;
 } {
   const scope = getConnectionScope();
   if (scope) return scope.rpcIdentity;
-  return { clientName: CLIENT_NAME, clientVersion: CLIENT_VERSION, commanderToken: COMMANDER_TOKEN };
+  return {
+    clientName: CLIENT_NAME,
+    clientVersion: CLIENT_VERSION,
+    commanderToken: COMMANDER_TOKEN,
+    workspaceToken: WORKSPACE_TOKEN,
+  };
 }
 
 function readAuthToken(): string | undefined {
@@ -132,6 +169,10 @@ function attemptRpc(
     if (identity.clientName) envelope.clientName = identity.clientName;
     if (identity.clientVersion) envelope.clientVersion = identity.clientVersion;
     if (identity.commanderToken !== undefined) envelope.commanderToken = identity.commanderToken;
+    // #922 PR-A. Absent until a claim succeeds, and omitted entirely when
+    // there is none — an empty string would read as a presented-but-stale
+    // token to the lane PR-B adds, which must refuse rather than demote.
+    if (identity.workspaceToken !== undefined) envelope.workspaceToken = identity.workspaceToken;
     const request = JSON.stringify(envelope) + '\n';
 
     const socket = typeof target === 'string' ? net.connect(target) : net.connect(target);

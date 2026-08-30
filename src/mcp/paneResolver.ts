@@ -35,6 +35,17 @@ export interface PinnedRoute {
 export interface ClaimDeps {
   /** JSON-RPC sender (wmux-client.sendRpc, usually). */
   sendRpc: (method: RpcMethod, params?: Record<string, unknown>) => Promise<unknown>;
+  /**
+   * #922 PR-A — hand the minted workspace claim token to whatever stamps
+   * outbound envelopes (wmux-client.setWorkspaceToken, usually). Injected
+   * rather than imported so this module keeps its one-way dependency on the
+   * sender and stays testable without the socket layer.
+   *
+   * Optional: a main process that mints no token (an older build, or an
+   * in-process caller, which is not issued one) simply never calls it, and the
+   * claim succeeds exactly as before.
+   */
+  onWorkspaceToken?: (token: string) => void;
 }
 
 let pinned: PinnedRoute | null = null;
@@ -119,6 +130,25 @@ export async function claimPinnedRoute(deps: ClaimDeps): Promise<PinnedRoute> {
         // Pinning the ptyId without its owner would leave terminal RPCs with
         // no trustworthy workspaceId to assert against — fail closed instead.
         throw new Error('mcp.claimWorkspace returned no workspaceId');
+      }
+      // #922 PR-A — the claim token, when main issued one. Deliberately NOT
+      // part of `PinnedRoute`: the route is the terminal target, the token is
+      // envelope identity, and the two are read by different layers. It is
+      // handed over BEFORE the route is published so no RPC can be routed by
+      // this claim while the envelope still lacks its token.
+      //
+      // Its absence is never fatal. Unlike ptyId/workspaceId above — which
+      // fail closed because a pin without them reopens the #163 bypass —
+      // nothing in PR-A depends on the token, so a main process that does not
+      // mint one leaves the caller exactly where it was.
+      // Trimmed at the source, not just downstream: a blank token would be
+      // handed over as if it were a real one, and presenting a blank reads to
+      // the substrate as a token that does not resolve — "stale", which PR-B
+      // must refuse — rather than as the "never claimed" it actually is.
+      const rawToken = (result as { workspaceToken?: unknown } | null)?.workspaceToken;
+      const workspaceToken = typeof rawToken === 'string' ? rawToken.trim() : '';
+      if (workspaceToken.length > 0) {
+        deps.onWorkspaceToken?.(workspaceToken);
       }
       const route = { ptyId, workspaceId };
       s.set(route);

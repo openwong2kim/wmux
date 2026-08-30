@@ -13,6 +13,7 @@
 import { ipcMain } from 'electron';
 import { IPC } from '../../../shared/constants';
 import { getWorkspaceMirror } from '../../workspace/WorkspaceMirror';
+import { reconcileWorkspaceClaims } from '../../workspace/workspaceClaimTrust';
 import type {
   WorkspaceListEntry,
   FleetSnapshot,
@@ -159,6 +160,18 @@ export function registerWorkspaceMirrorHandler(): () => void {
     // Drop a structurally-unusable push — never overwrite last-good with junk.
     if (!payload) return;
     getWorkspaceMirror().setSnapshot(payload);
+    // #922 — retire workspace claim tokens whose workspace is gone. This push
+    // is the only authoritative workspace-lifecycle signal main receives: the
+    // sidebar's X, the close keybinding and the settings reset all remove a
+    // workspace through the renderer store without touching a main handler, so
+    // the `workspace.close` RPC alone would leave those claims bound forever.
+    // Best-effort and last — a bookkeeping failure must never cost the mirror
+    // the snapshot it just accepted.
+    try {
+      reconcileWorkspaceClaims(payload.entries.map((e) => e.id));
+    } catch {
+      /* claim bookkeeping must never affect the mirror */
+    }
   };
   ipcMain.removeAllListeners(IPC.WORKSPACE_MIRROR_PUSH);
   ipcMain.on(IPC.WORKSPACE_MIRROR_PUSH, onPush);
