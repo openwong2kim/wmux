@@ -361,7 +361,9 @@ interface RefIdentity {
  * Above this many remembered nodes the identity map is dropped (an SPA that
  * churns nodes forever would otherwise grow it without bound). `next` is NOT
  * rewound with it — recycling a number is exactly the confusion this exists to
- * prevent.
+ * prevent — so the cost of hitting the cap is that live nodes are renumbered
+ * once: every outstanding ref goes stale (loudly) and the next diff is a full
+ * snapshot.
  */
 const REF_IDENTITY_CAP = 5000;
 
@@ -400,20 +402,40 @@ function pageUrl(page: Page): string | undefined {
 }
 
 /**
+ * The part of the URL that decides whether this is still the same document.
+ *
+ * The fragment is dropped: a docs page rewrites `location.hash` as you scroll
+ * and an in-page anchor click does the same, and counting either as a
+ * navigation would retire every ref mid-flow and renumber the next snapshot
+ * from scratch — undoing the diff this change exists to make possible.
+ *
+ * Still a URL comparison, so a same-document pushState to a new path reads as
+ * a navigation (refs are retired, which is safe) and a POST that lands back on
+ * the same URL does not (the refMap checks below are what catch that).
+ */
+function documentKey(page: Page): string | undefined {
+  const url = pageUrl(page);
+  if (url === undefined) return undefined;
+  const hash = url.indexOf('#');
+  return hash === -1 ? url : url.slice(0, hash);
+}
+
+/**
  * Open a new snapshot generation, resetting the number space when the page has
  * moved to a different document (its backendDOMNodeIds mean nothing there).
  */
 function beginRefGeneration(page: Page): RefIdentity {
-  const url = pageUrl(page);
+  const url = documentKey(page);
   let identity = pageRefIdentity.get(page);
-  const navigated =
-    identity !== undefined &&
-    identity.url !== undefined &&
-    url !== undefined &&
-    identity.url !== url;
-  if (!identity || navigated) {
+  if (!identity) {
     identity = { byBackendId: new Map(), next: 0, url, generation: 0 };
     pageRefIdentity.set(page, identity);
+  } else if (identity.url !== undefined && url !== undefined && identity.url !== url) {
+    // A new document invalidates every backendDOMNodeId, but the numbers stay
+    // spent. Rewinding `next` here would hand an agent still holding a ref from
+    // the old document whatever now sits at that number — and the navigation
+    // guard cannot catch it once the URL comes back round (A → B → A).
+    identity.byBackendId.clear();
   }
   if (identity.byBackendId.size > REF_IDENTITY_CAP) identity.byBackendId.clear();
   identity.url = url;
@@ -469,7 +491,7 @@ function setPageRefs(page: Page, refs: RefEntry[], scopeSelector?: string): void
   pageRefMaps.set(page, refs);
   pageSnapshotStamps.set(page, {
     generation: pageRefIdentity.get(page)?.generation ?? 0,
-    url: pageUrl(page),
+    url: documentKey(page),
   });
   if (scopeSelector === undefined) pageRefScopes.delete(page);
   else pageRefScopes.set(page, scopeSelector);
@@ -1082,7 +1104,7 @@ async function resolveRefViaAxMap(
   if (!refs || refs.length === 0) return null;
 
   const stamp = pageSnapshotStamps.get(page);
-  const liveUrl = pageUrl(page);
+  const liveUrl = documentKey(page);
   if (stamp?.url !== undefined && liveUrl !== undefined && stamp.url !== liveUrl) {
     throw new StaleRefError(
       `ref=${ref} is stale — the page navigated since snapshot #${stamp.generation} ` +
@@ -1128,10 +1150,23 @@ async function resolveRefViaAxMap(
   // The nth-match below is only sound while the page still holds the elements
   // the snapshot numbered against. It used to clamp with Math.min(), which
   // turned "the page changed" into "click the last one that matches" — the
-  // silent wrong-element case. Only checked for named entries: an unnamed entry
-  // is looked up with no name filter, so the locator legitimately counts the
-  // named siblings too and the two totals are not comparable.
-  if (target.name && count !== target.sameNameTotal) {
+  // silent wrong-element case.
+  //
+  // Deliberately narrow, because the two counts are not measured the same way:
+  // the snapshot enumerates an accessibility tree that a depth cap or an
+  // `interactive` filter may have trimmed, while the locator sweeps the whole
+  // page. Comparing them for every ref would block valid clicks whenever a
+  // same-named element sits below the depth cap, or a toast adds one.
+  //
+  //  - Unnamed entries are exempt: the locator runs with no name filter, so it
+  //    counts named siblings too and the totals are not comparable at all.
+  //  - Entries the snapshot saw only one of are exempt: the index is 0 either
+  //    way, so the count buys no safety and only costs false rejections.
+  //
+  // What is left is exactly the case the index is load-bearing for: the
+  // snapshot listed several elements with this role+name, and which one a ref
+  // means depends on that population still being what it was.
+  if (target.name && target.sameNameTotal > 1 && count !== target.sameNameTotal) {
     throw new StaleRefError(
       `ref=${ref} is stale — the page now has ${count} ${target.role} element(s) named ` +
         `"${target.name}", not the ${target.sameNameTotal} the last snapshot listed, so the ref ` +
