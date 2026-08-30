@@ -659,6 +659,7 @@ export const zh = {
   'diff.displayOnlySuffix': ' — 仅显示（无 hunk 或不可采用）',
   'diff.selectHunk': '选择此 hunk 以采用',
   'diff.commentHunk': '对此 hunk 评论',
+  'diff.commentSend': '评论',
   'diff.channelArchived': '通道已归档',
   'diff.commentDisabled': '评论已禁用',
   'diff.commentMoved': '位置已偏移 — 评论锚点的 hunk 与当前 diff 不再匹配（{count}）',

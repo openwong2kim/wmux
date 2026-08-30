@@ -1224,6 +1224,7 @@ export const ko = {
   'diff.displayOnlySuffix': '— 표시 전용(hunk 없음 또는 채택 불가)',
   'diff.selectHunk': '이 hunk를 채택 대상으로 선택',
   'diff.commentHunk': '이 hunk에 코멘트',
+  'diff.commentSend': '코멘트',
   'diff.channelArchived': '채널 아카이브됨',
   'diff.commentDisabled': '코멘트 비활성',
   'diff.commentMoved': '위치 이동됨 — 코멘트 앵커의 hunk가 현재 diff와 불일치({count})',
