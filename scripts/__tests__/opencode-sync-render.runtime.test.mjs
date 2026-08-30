@@ -1,6 +1,5 @@
-#!/usr/bin/env node
 /* eslint-disable no-useless-escape -- escaped slashes keep inline scripts from closing the page template */
-// Dynamic regression for rapid OpenCode-style DEC 2026 full-screen frames.
+// Runtime regression for rapid OpenCode-style DEC 2026 full-screen frames.
 //
 // xterm 6.0 defers a completed synchronized frame through requestAnimationFrame.
 // If the next frame opens before that callback runs, the paint is skipped and
@@ -13,11 +12,12 @@ import { readFileSync } from 'fs';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 import http from 'http';
+import { expect, it } from 'vitest';
 
 const require = createRequire(import.meta.url);
 const { chromium } = require('playwright-core');
 
-const root = join(dirname(fileURLToPath(import.meta.url)), '..');
+const root = join(dirname(fileURLToPath(import.meta.url)), '../..');
 const xtermJs = readFileSync(join(root, 'node_modules/@xterm/xterm/lib/xterm.js'), 'utf8');
 const xtermCss = readFileSync(join(root, 'node_modules/@xterm/xterm/css/xterm.css'), 'utf8');
 const webglJs = readFileSync(join(root, 'node_modules/@xterm/addon-webgl/lib/addon-webgl.js'), 'utf8');
@@ -71,34 +71,33 @@ const pageHtml = `<!doctype html>
   };
 <\/script>`;
 
-const server = http.createServer((_request, response) => {
-  response.setHeader('Content-Type', 'text/html');
-  response.end(pageHtml);
-});
+it('paints completed synchronized frames while OpenCode-style output remains active', async () => {
+  const server = http.createServer((_request, response) => {
+    response.setHeader('Content-Type', 'text/html');
+    response.end(pageHtml);
+  });
+  let browser;
+  try {
+    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const origin = `http://127.0.0.1:${server.address().port}`;
+    const channel = process.env.CI
+      ? process.platform === 'win32' ? 'msedge' : 'chrome'
+      : undefined;
+    browser = await chromium.launch({
+      channel,
+      args: ['--enable-unsafe-swiftshader'],
+    });
+    const page = await browser.newPage();
+    await page.goto(origin);
+    await page.waitForFunction(() => typeof window.runProbe === 'function');
+    const result = await page.evaluate(() => window.runProbe());
 
-let browser;
-try {
-  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  const origin = `http://127.0.0.1:${server.address().port}`;
-  browser = await chromium.launch({ args: ['--enable-unsafe-swiftshader'] });
-  const page = await browser.newPage();
-  await page.goto(origin);
-  await page.waitForFunction(() => typeof window.runProbe === 'function');
-  const result = await page.evaluate(() => window.runProbe());
-
-  console.log(JSON.stringify(result));
-  const passed =
-    result.sent >= 10 &&
-    result.rendersDuringStream >= Math.floor(result.sent * 0.75) &&
-    result.finalFrameVisible &&
-    result.webglCanvasCount > 0;
-  if (!passed) {
-    console.error('FAIL: completed synchronized frames were not painted while the stream was active');
-    process.exitCode = 1;
-  } else {
-    console.log('PASS: completed synchronized frames painted continuously');
+    expect(result.sent).toBeGreaterThanOrEqual(10);
+    expect(result.rendersDuringStream).toBeGreaterThanOrEqual(Math.floor(result.sent * 0.75));
+    expect(result.finalFrameVisible).toBe(true);
+    expect(result.webglCanvasCount).toBeGreaterThan(0);
+  } finally {
+    await browser?.close();
+    server.close();
   }
-} finally {
-  await browser?.close();
-  server.close();
-}
+}, 30_000);
