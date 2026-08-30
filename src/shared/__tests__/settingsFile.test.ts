@@ -10,7 +10,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { writeJsonAtomic, copyFileAtomic, resolveWriteTarget } from '../settingsFile';
+import { writeJsonAtomic, copyFileAtomic, resolveWriteTarget, renameWithRetry } from '../settingsFile';
 
 let tmpDir: string;
 
@@ -119,5 +119,55 @@ describe('resolveWriteTarget', () => {
   it('returns the path unchanged when nothing is there yet', () => {
     const missing = path.join(tmpDir, 'not-yet.json');
     expect(resolveWriteTarget(missing)).toBe(missing);
+  });
+});
+
+// Windows refuses to rename over a file another process holds open, and both
+// destinations here are held open by design: Claude Code reads settings.json,
+// and the statusline script runs at input-box frequency. POSIX allows it, so
+// no amount of macOS testing reaches this — the injected rename is the only
+// way to exercise it off-platform.
+describe('renameWithRetry', () => {
+  const err = (code: string): NodeJS.ErrnoException =>
+    Object.assign(new Error(code), { code });
+
+  it('rides out a transient sharing violation', () => {
+    let calls = 0;
+    const slept: number[] = [];
+    renameWithRetry('a', 'b', {
+      rename: () => { calls += 1; if (calls < 3) throw err('EPERM'); },
+      sleep: (ms) => slept.push(ms),
+    });
+    expect(calls).toBe(3);
+    expect(slept).toEqual([10, 20]);
+  });
+
+  it('gives up rather than spinning, and surfaces the last error', () => {
+    let calls = 0;
+    expect(() =>
+      renameWithRetry('a', 'b', {
+        rename: () => { calls += 1; throw err('EBUSY'); },
+        sleep: () => { /* no real waiting in tests */ },
+        attempts: 4,
+      }),
+    ).toThrow('EBUSY');
+    expect(calls).toBe(4);
+  });
+
+  it('does not retry an error that will not clear on its own', () => {
+    let calls = 0;
+    expect(() =>
+      renameWithRetry('a', 'b', {
+        rename: () => { calls += 1; throw err('ENOENT'); },
+        sleep: () => { throw new Error('should not sleep'); },
+      }),
+    ).toThrow('ENOENT');
+    expect(calls).toBe(1);
+  });
+
+  it('is transparent when the rename just works', () => {
+    let calls = 0;
+    renameWithRetry('a', 'b', { rename: () => { calls += 1; }, sleep: () => { throw new Error('no'); } });
+    expect(calls).toBe(1);
   });
 });
