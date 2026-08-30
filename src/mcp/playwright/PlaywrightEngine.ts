@@ -697,7 +697,7 @@ export class PlaywrightEngine {
     // Then an empty list unambiguously means "we own no live target" (kind:
     // 'none'), and a present one is already ours — no client-side filter needed.
     if (info.targetsScoped) {
-      const own = info.targets[0];
+      const own = this.newestTarget(info.targets);
       return own
         ? { kind: 'surface', surfaceId: own.surfaceId, workspaceId }
         : { kind: 'none', workspaceId };
@@ -725,9 +725,30 @@ export class PlaywrightEngine {
       );
     }
 
-    const own = info.targets.find((t) => t.workspaceId === workspaceId);
+    const own = this.newestTarget(info.targets, workspaceId);
     if (own) return { kind: 'surface', surfaceId: own.surfaceId, workspaceId };
     return { kind: 'none', workspaceId };
+  }
+
+  /**
+   * The DEFAULT target when the caller pins no surfaceId: its MOST RECENTLY
+   * opened surface, never the oldest. listTargets() on both backends preserves
+   * creation order — the managers iterate their surface Map in insertion order —
+   * so the last entry a workspace owns is the newest. Picking targets[0] (the
+   * oldest) silently drove a leftover tab from a previous run: `browser_tabs new`
+   * returned a surfaceId, yet a follow-up call that omitted it hit the stale tab
+   * instead, with a snapshot that looked perfectly normal (live dogfood caught
+   * it). `ownedBy` narrows to the caller's own workspace on a legacy unscoped
+   * response; a scoped response is already the caller's, so it is omitted there.
+   * (Manual last-index instead of Array.findLast: this file compiles under the
+   * ES2020 MCP tsconfig, whose lib predates findLast.)
+   */
+  private newestTarget(
+    targets: readonly CdpTargetInfo[],
+    ownedBy?: string,
+  ): CdpTargetInfo | undefined {
+    const pool = ownedBy ? targets.filter((t) => t.workspaceId === ownedBy) : targets;
+    return pool.length ? pool[pool.length - 1] : undefined;
   }
 
   /**
@@ -1213,7 +1234,7 @@ export class PlaywrightEngine {
     if (!workspaceId || info.targetsScoped) {
       return surfaceId
         ? info.targets.find((target) => target.surfaceId === surfaceId)
-        : info.targets[0];
+        : this.newestTarget(info.targets);
     }
 
     if (surfaceId) {
@@ -1233,7 +1254,7 @@ export class PlaywrightEngine {
       return target;
     }
 
-    const own = info.targets.find((target) => target.workspaceId === workspaceId);
+    const own = this.newestTarget(info.targets, workspaceId);
     if (own || info.targets.length === 0) return own;
     const anyTagged = info.targets.some(
       (target) => typeof target.workspaceId === 'string' && target.workspaceId.length > 0,
