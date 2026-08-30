@@ -80,9 +80,11 @@ it('paints completed synchronized frames while OpenCode-style output remains act
   try {
     await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
     const origin = `http://127.0.0.1:${server.address().port}`;
-    const channel = process.env.CI
-      ? process.platform === 'win32' ? 'msedge' : 'chrome'
-      : undefined;
+    // Windows is wmux's supported contributor platform and ships Edge, so a
+    // fresh clone does not need a separate Playwright browser download.
+    const channel = process.platform === 'win32'
+      ? 'msedge'
+      : process.env.CI ? 'chrome' : undefined;
     browser = await chromium.launch({
       channel,
       args: ['--enable-unsafe-swiftshader'],
