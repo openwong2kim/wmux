@@ -1733,6 +1733,7 @@ export const en = {
   'diff.displayOnlySuffix': '— display only (no hunks or non-adoptable)',
   'diff.selectHunk': 'Select this hunk for adoption',
   'diff.commentHunk': 'Comment on this hunk',
+  'diff.commentSend': 'Comment',
   'diff.channelArchived': 'Channel archived',
   'diff.commentDisabled': 'comments disabled',
   'diff.commentMoved': "Position shifted — the comment anchor's hunk no longer matches the current diff ({count})",

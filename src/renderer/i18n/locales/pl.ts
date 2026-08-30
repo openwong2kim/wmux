@@ -1741,6 +1741,7 @@ export const pl = {
   'diff.displayOnlySuffix': '— tylko podgląd (brak hunków lub nieadoptowalne)',
   'diff.selectHunk': 'Wybierz ten hunk do adopcji',
   'diff.commentHunk': 'Skomentuj ten hunk',
+  'diff.commentSend': 'Skomentuj',
   'diff.channelArchived': 'Kanał zarchiwizowany',
   'diff.commentDisabled': 'komentarze wyłączone',
   'diff.commentMoved': 'Pozycja przesunięta — hunk kotwicy komentarza nie pasuje już do bieżącego diff ({count})',
