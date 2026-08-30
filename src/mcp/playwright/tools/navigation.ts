@@ -249,7 +249,7 @@ export function registerNavigationTools(server: McpServer, deps: BrowserToolDeps
   // -----------------------------------------------------------------------
   server.tool(
     'browser_tabs',
-    'Manage browser surfaces in the calling workspace. Address one only by the opaque surfaceId from list or new, never by list position. select moves UI focus only and does NOT retarget the other browser tools, so pass surfaceId explicitly on follow-up calls. selected likewise reports UI focus (always false on the chrome backend), not tool targeting: omitting surfaceId works even when it is false.',
+    'Manage browser surfaces in the calling workspace. Address one only by the opaque surfaceId from list or new, never by list position. select moves UI focus only and does NOT retarget the other browser tools, so pass surfaceId explicitly on follow-up calls. selected likewise reports UI focus (always false on the chrome backend), not tool targeting. Omitting surfaceId targets your MOST RECENTLY opened surface — a just-created new tab, or browser_open, becomes that default — so to act on any earlier tab pass its surfaceId explicitly.',
     BROWSER_TABS_SHAPE,
     async ({ action, surfaceId, url }) => {
       const resolvedAction: BrowserTabsAction = action ?? 'list';

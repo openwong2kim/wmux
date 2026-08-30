@@ -1207,6 +1207,60 @@ describe('PlaywrightEngine read-path workspace scoping — scoped cdp.info (#580
     expect(mockSendRpc).toHaveBeenCalledWith('browser.cdp.info', { workspaceId: 'ws-B' });
     expect(opened).toBe(true);
   }, 15_000);
+
+  it('with two of its OWN surfaces, defaults to the NEWEST (last opened), not the oldest', async () => {
+    // The exact silent failure a live dogfood hit: `browser_tabs new` returns a
+    // surfaceId, a follow-up call omits it, and the old default (targets[0])
+    // drove a LEFTOVER tab from a previous run whose snapshot looked normal.
+    // Targets are creation-ordered (listTargets = surface-Map insertion order),
+    // so the freshly-opened surface is last and must win.
+    mockSendRpc.mockImplementation((method: string) =>
+      method === 'browser.cdp.info'
+        ? Promise.resolve({
+            cdpPort: 9222,
+            targetsScoped: true,
+            targets: [
+              { surfaceId: 'surf-stale', targetId: 'wc-stale', workspaceId: 'ws-A' },
+              { surfaceId: 'surf-fresh', targetId: 'wc-fresh', workspaceId: 'ws-A' },
+            ],
+          })
+        : Promise.resolve({}),
+    );
+    const engine = PlaywrightEngine.getInstance();
+    scope(engine).setWorkspaceIdResolver(async () => 'ws-A');
+
+    await expect(scope(engine).resolveCallerSurface()).resolves.toEqual({
+      kind: 'surface',
+      surfaceId: 'surf-fresh',
+      workspaceId: 'ws-A',
+    });
+    // resolveSelectionContext (what getPage pins on) carries the same choice.
+    expect((await scope(engine).resolveSelectionContext()).surfaceId).toBe('surf-fresh');
+  });
+
+  it('legacy unscoped response: defaults to the caller\'s NEWEST own surface, ignoring other workspaces', async () => {
+    mockSendRpc.mockImplementation((method: string) =>
+      method === 'browser.cdp.info'
+        ? Promise.resolve({
+            cdpPort: 9222,
+            // No targetsScoped: an older main returns every workspace's targets.
+            targets: [
+              { surfaceId: 'surf-stale', targetId: 'wc-stale', workspaceId: 'ws-A' },
+              { surfaceId: 'surf-other', targetId: 'wc-other', workspaceId: 'ws-B' },
+              { surfaceId: 'surf-fresh', targetId: 'wc-fresh', workspaceId: 'ws-A' },
+            ],
+          })
+        : Promise.resolve({}),
+    );
+    const engine = PlaywrightEngine.getInstance();
+    scope(engine).setWorkspaceIdResolver(async () => 'ws-A');
+
+    await expect(scope(engine).resolveCallerSurface()).resolves.toEqual({
+      kind: 'surface',
+      surfaceId: 'surf-fresh',
+      workspaceId: 'ws-A',
+    });
+  });
 });
 
 /*

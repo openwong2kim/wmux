@@ -866,7 +866,7 @@ async function resolveTerminalRouteBound(explicitPtyId?: string) {
 
 server.tool(
   'browser_open',
-  'Open a browser panel in the active pane when no browser surface exists yet.',
+  'Open a browser panel in the active pane when no browser surface exists yet. The opened surface becomes the default target for browser tools called without a surfaceId (the most recently opened surface wins).',
   BROWSER_OPEN_SHAPE,
   async ({ url }) => {
     // requireWorkspaceId (NOT the weak resolveWorkspaceId) so a failed identity
