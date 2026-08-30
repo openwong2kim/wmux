@@ -19,7 +19,7 @@ vi.mock('../../identity', () => ({
 
 import { sendRequest } from '../../client';
 import { getParentPidDefault, resolveSelfContext } from '../../identity';
-import { handleBrowser } from '../browser';
+import { handleBrowser, handleOpen } from '../browser';
 
 const rpc = sendRequest as unknown as ReturnType<typeof vi.fn>;
 const selfContext = resolveSelfContext as unknown as ReturnType<typeof vi.fn>;
@@ -93,6 +93,86 @@ describe('wmux browser navigate caller scoping (#810)', () => {
   it('does not spend a round trip when the caller workspace already resolved', async () => {
     await handleBrowser(['navigate', 'https://example.com'], false);
 
+    expect(rpc).not.toHaveBeenCalledWith('workspace.current', expect.anything());
+  });
+});
+
+/**
+ * `wmux open` and `wmux browser close` — issue #922 PR-C.
+ *
+ * PR-C folded `browser.open` / `browser.close` into the same caller-scope table
+ * `browser.navigate` already used, which means an omitted workspaceId is now
+ * refused instead of falling back to the active workspace. `navigate` got the
+ * `workspace.current` fallback when #810 did the same to it; these two did not,
+ * so outside a wmux pane both documented paths — "otherwise the active
+ * workspace is used" / "defaults to your own workspace" — broke under enforce.
+ *
+ * Same shape as the navigate tests above, deliberately: one fallback, three
+ * commands, and no third variant to drift.
+ */
+describe('wmux open / browser close caller scoping (#922 PR-C)', () => {
+  it.each([
+    ['open', handleOpen, ['https://example.com'], 'browser.open', { url: 'https://example.com' }],
+    ['browser close', handleBrowser, ['close'], 'browser.close', {}],
+  ])('%s routes to the verified caller workspace', async (_label, run, argv, method, extra) => {
+    await run(argv, false);
+    expect(rpc).toHaveBeenCalledWith(method, { ...extra, workspaceId: 'ws-self' });
+  });
+
+  it.each([
+    ['open', handleOpen, ['https://example.com'], 'browser.open', { url: 'https://example.com' }],
+    ['browser close', handleBrowser, ['close'], 'browser.close', {}],
+  ])('%s names the active workspace when no caller workspace resolves', async (
+    _label, run, argv, method, extra,
+  ) => {
+    // The regression PR-C would otherwise have shipped: outside a pane this
+    // sent no workspace at all and was refused as `workspace-unresolved`.
+    selfContext.mockResolvedValue({});
+    rpc.mockImplementation(async (m: string) =>
+      m === 'workspace.current'
+        ? { id: 'rpc-cur', ok: true, result: { id: 'ws-active', name: 'Active' } }
+        : { id: 'rpc-ok', ok: true, result: { ok: true } },
+    );
+
+    await run(argv, false);
+
+    expect(rpc).toHaveBeenCalledWith(method, { ...extra, workspaceId: 'ws-active' });
+  });
+
+  it.each([
+    ['open', handleOpen, ['https://example.com'], 'browser.open', { url: 'https://example.com' }],
+    ['browser close', handleBrowser, ['close'], 'browser.close', {}],
+  ])('%s omits the field when the active workspace cannot be read', async (
+    _label, run, argv, method, extra,
+  ) => {
+    // Do not invent a workspace to get past the gate — let the server's own
+    // refusal explain itself, which now carries the remedy text.
+    selfContext.mockResolvedValue({});
+    rpc.mockImplementation(async (m: string) =>
+      m === 'workspace.current'
+        ? { id: 'rpc-cur', ok: false, error: 'renderer unavailable' }
+        : { id: 'rpc-ok', ok: true, result: { ok: true } },
+    );
+
+    await run(argv, false);
+
+    expect(rpc).toHaveBeenCalledWith(method, extra);
+  });
+
+  it.each([
+    ['open', handleOpen, ['https://example.com']],
+    ['browser close', handleBrowser, ['close']],
+  ])('%s spends no round trip when the caller workspace already resolved', async (
+    _label, run, argv,
+  ) => {
+    await run(argv, false);
+    expect(rpc).not.toHaveBeenCalledWith('workspace.current', expect.anything());
+  });
+
+  it('browser close still honours an explicit --workspace without any lookup', async () => {
+    await handleBrowser(['close', '--workspace', 'ws-named'], false);
+    expect(rpc).toHaveBeenCalledWith('browser.close', { workspaceId: 'ws-named' });
+    expect(selfContext).not.toHaveBeenCalled();
     expect(rpc).not.toHaveBeenCalledWith('workspace.current', expect.anything());
   });
 });

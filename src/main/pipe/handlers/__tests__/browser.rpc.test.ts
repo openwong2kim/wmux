@@ -366,6 +366,9 @@ describe('registerBrowserRpc', () => {
     getWindow: () => BrowserWindow | null = () => null,
     browserScopeShadowSink?: Parameters<typeof registerBrowserRpc>[4],
     enforcementMode: 'shadow' | 'enforce' = 'shadow',
+    // #922 PR-C: the 'external' backend routes to the OS browser, which owns no
+    // workspace, so it is the one branch the lane table does not scope.
+    backendMode?: 'builtin' | 'external' | 'chrome',
   ): RpcRouter {
     const router = new RpcRouter();
     const webviewCdpManager = {
@@ -387,7 +390,7 @@ describe('registerBrowserRpc', () => {
       router,
       getWindow,
       webviewCdpManager as never,
-      undefined,
+      backendMode ? ({ get: () => backendMode } as never) : undefined,
       browserScopeShadowSink,
       () => enforcementMode,
     );
@@ -1005,6 +1008,241 @@ describe('registerBrowserRpc', () => {
       reason: 'legacy-workspace-unresolved',
     });
   });
+
+// ── #922 PR-C: browser.open / browser.close join the lane table ────────────
+//
+// The two methods that used to hand `params.workspaceId` straight to the
+// renderer, which fell back to the UI-active workspace. They were held out
+// while `declared` accepted any named workspace: folding them in then would
+// have newly refused an approved wire caller that omits the field. The
+// `verified` lane answers that caller now, so what is left is the refusal
+// every sibling already gives — this stops two methods being the exception
+// rather than tightening the rule.
+describe('registerBrowserRpc — browser.open / browser.close scoping (#922 PR-C)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    __resetWorkspaceClaimTrustForTesting();
+    sendToRendererMock.mockResolvedValue({ ok: true });
+  });
+
+  it.each(['browser.open', 'browser.close'] as const)(
+    '%s hands the DECIDED workspace to the renderer, not the raw field',
+    async (method) => {
+      const router = register(() => null, undefined, 'enforce');
+      await router.dispatch({
+        id: `prc-${method}-declared`,
+        method,
+        params: { url: 'https://example.com', workspaceId: 'ws-declared' },
+        clientName: 'approved-plugin',
+      }, { externalWire: true });
+
+      expect(sendToRendererMock).toHaveBeenCalledWith(
+        expect.anything(),
+        method,
+        expect.objectContaining({ workspaceId: 'ws-declared' }),
+      );
+    },
+  );
+
+  it.each(['browser.open', 'browser.close'] as const)(
+    '%s resolves a claimed caller that omits the workspace, instead of refusing it',
+    async (method) => {
+      // The reason this PR is safe to ship now and was not before: the omitted
+      // case has an answer for a caller that claimed.
+      const token = mintWorkspaceClaimToken('ws-claimed');
+      const router = register(() => null, undefined, 'enforce');
+
+      const res = await router.dispatch({
+        id: `prc-${method}-verified`,
+        method,
+        params: { url: 'https://example.com' },
+        clientName: 'claude-code',
+        workspaceToken: token as string,
+      }, { externalWire: true });
+
+      expect(res.ok).toBe(true);
+      expect(sendToRendererMock).toHaveBeenCalledWith(
+        expect.anything(),
+        method,
+        expect.objectContaining({ workspaceId: 'ws-claimed' }),
+      );
+    },
+  );
+
+  it.each(['browser.open', 'browser.close'] as const)(
+    '%s refuses an identified caller that names nothing — same as its siblings',
+    async (method) => {
+      const router = register(() => null, undefined, 'enforce');
+      const res = await router.dispatch({
+        id: `prc-${method}-unresolved`,
+        method,
+        params: { url: 'https://example.com' },
+        clientName: 'approved-plugin',
+      }, { externalWire: true });
+
+      expect(res.ok).toBe(false);
+      if (!res.ok) expect(res.error).toContain('BROWSER_SCOPE_REFUSED');
+      // The refusal is the whole point: nothing reached the renderer.
+      expect(sendToRendererMock).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(['browser.open', 'browser.close'] as const)(
+    '%s refuses a claimed caller that names someone else\'s workspace',
+    async (method) => {
+      const token = mintWorkspaceClaimToken('ws-claimed');
+      const router = register(() => null, undefined, 'enforce');
+
+      const res = await router.dispatch({
+        id: `prc-${method}-mismatch`,
+        method,
+        params: { url: 'https://example.com', workspaceId: 'ws-other' },
+        clientName: 'claude-code',
+        workspaceToken: token as string,
+      }, { externalWire: true });
+
+      expect(res.ok).toBe(false);
+      expect(sendToRendererMock).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(['browser.open', 'browser.close'] as const)(
+    '%s keeps the operator crossing workspaces on purpose',
+    async (method) => {
+      const router = register(() => null, undefined, 'enforce');
+      const res = await router.dispatch({
+        id: `prc-${method}-operator`,
+        method,
+        params: { url: 'https://example.com', workspaceId: 'ws-anywhere' },
+      }, { operator: true });
+
+      expect(res.ok).toBe(true);
+      expect(sendToRendererMock).toHaveBeenCalledWith(
+        expect.anything(),
+        method,
+        expect.objectContaining({ workspaceId: 'ws-anywhere' }),
+      );
+    },
+  );
+
+  it.each(['browser.open', 'browser.close'] as const)(
+    '%s is unchanged in shadow mode — the rollback lever still covers it',
+    async (method) => {
+      // #810's promise: `mcp.mode: shadow` restores the previous behaviour.
+      // Folding these two in must not create a path that ignores the switch.
+      const router = register(() => null, undefined, 'shadow');
+      const res = await router.dispatch({
+        id: `prc-${method}-shadow`,
+        method,
+        params: { url: 'https://example.com' },
+        clientName: 'approved-plugin',
+      }, { externalWire: true });
+
+      expect(res.ok).toBe(true);
+      // Absent workspaceId reaches the renderer exactly as before, so its
+      // active-workspace fallback still runs.
+      expect(sendToRendererMock).toHaveBeenCalledWith(
+        expect.anything(),
+        method,
+        expect.not.objectContaining({ workspaceId: expect.anything() }),
+      );
+    },
+  );
+
+  // browser.tabs is the third method PR-C folds in. `select` and `close` act on
+  // a surface, so leaving it reading the raw field meant one method could still
+  // be pointed where the lane rules would have refused.
+  it('browser.tabs scopes a claimed caller to the workspace it claimed', async () => {
+    const token = mintWorkspaceClaimToken('ws-claimed');
+    const router = register(() => null, undefined, 'enforce');
+
+    const res = await router.dispatch({
+      id: 'prc-tabs-verified',
+      method: 'browser.tabs',
+      params: { action: 'list', workspaceId: 'ws-claimed' },
+      clientName: 'claude-code',
+      workspaceToken: token as string,
+    }, { externalWire: true });
+
+    expect(res.ok).toBe(true);
+  });
+
+  it('browser.tabs refuses a claimed caller aiming at another workspace', async () => {
+    // Before PR-C this reached the surface lookup with 'ws-other' regardless.
+    const token = mintWorkspaceClaimToken('ws-claimed');
+    const router = register(() => null, undefined, 'enforce');
+
+    const res = await router.dispatch({
+      id: 'prc-tabs-mismatch',
+      method: 'browser.tabs',
+      params: { action: 'close', workspaceId: 'ws-other', surfaceId: 'surface-1' },
+      clientName: 'claude-code',
+      workspaceToken: token as string,
+    }, { externalWire: true });
+
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.error).toContain('BROWSER_SCOPE_REFUSED');
+  });
+
+  it('browser.tabs still answers an identified caller that names its own workspace', async () => {
+    // The bundled MCP path: it resolves a workspace id itself and always sends
+    // a non-empty one, so it lands in `declared` and is unchanged.
+    const router = register(() => null, undefined, 'enforce');
+    const res = await router.dispatch({
+      id: 'prc-tabs-declared',
+      method: 'browser.tabs',
+      params: { action: 'list', workspaceId: 'ws-declared' },
+      clientName: 'claude-code',
+    }, { externalWire: true });
+
+    expect(res.ok).toBe(true);
+  });
+
+  it('browser.tabs leaves the legacy caller exactly where ruling (c) left it', async () => {
+    // Recorded as a KNOWN GAP, not as a fix. `browser.tabs` is wmux.internal,
+    // which no plugin can declare — but the enforcer allows an envelope-less
+    // caller before it checks the capability, and ruling (c) keeps the legacy
+    // lane accepting the workspace such a caller names. Folding this method in
+    // confines the identified lanes and changes nothing for this one; closing
+    // it means closing the grandfather (#1111), which this table must not do
+    // ahead of PermissionEnforcer.
+    const router = register(() => null, undefined, 'enforce');
+    const res = await router.dispatch({
+      id: 'prc-tabs-legacy',
+      method: 'browser.tabs',
+      params: { action: 'list', workspaceId: 'ws-someone-else' },
+    }, { externalWire: true });
+
+    expect(res.ok).toBe(true);
+  });
+
+  it('browser.tabs refuses a legacy caller that names nothing, per ruling (c)', async () => {
+    // The half (c) DID change: the omission no longer resolves unscoped.
+    const router = register(() => null, undefined, 'enforce');
+    const res = await router.dispatch({
+      id: 'prc-tabs-legacy-omitted',
+      method: 'browser.tabs',
+      params: { action: 'list' },
+    }, { externalWire: true });
+
+    expect(res.ok).toBe(false);
+  });
+
+  it('leaves the external backend unscoped — the OS browser owns no workspace', async () => {
+    // Refusing an unscoped caller here would break a working path for no gain:
+    // there is no wmux surface to own.
+    const router = register(() => null, undefined, 'enforce', 'external');
+    const res = await router.dispatch({
+      id: 'prc-open-external',
+      method: 'browser.open',
+      params: { url: 'https://example.com' },
+      clientName: 'approved-plugin',
+    }, { externalWire: true });
+    // Whatever the delegation does, the lane table did not refuse it — the
+    // same caller IS refused on the builtin branch, one test above.
+    if (!res.ok) expect(res.error).not.toContain('BROWSER_SCOPE_REFUSED');
+  });
+});
 
   it('hands the decided workspace to the lookup, not the raw request field', async () => {
     const router = register(() => null, undefined, 'enforce');

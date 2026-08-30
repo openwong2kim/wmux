@@ -27,6 +27,21 @@ export async function handleOpen(args: string[], jsonMode: boolean): Promise<voi
     });
     workspaceId = ctx.workspaceId;
   }
+    // Outside a wmux pane nothing resolves, and leaving the field absent now
+    // means the server refuses instead of guessing (#922 PR-C folded this
+    // method into the caller-scope table). So ASK for the target the way
+    // `wmux browser navigate` already does: `workspace.current` is the same
+    // active workspace the renderer fallback used to pick, so the documented
+    // behaviour is preserved and the choice is explicit and attributable. A
+    // failed lookup still leaves the field absent and lets the server's own
+    // refusal explain itself, rather than inventing a workspace.
+    if (!workspaceId) {
+      const current = await sendRequest('workspace.current', {});
+      if (current.ok) {
+        const id = (current.result as { id?: unknown } | null)?.id;
+        if (typeof id === 'string' && id.length > 0) workspaceId = id;
+      }
+    }
 
   const params: Record<string, unknown> = { url };
   if (workspaceId) params.workspaceId = workspaceId;
@@ -139,6 +154,21 @@ export async function handleBrowser(
           getParentPid: getParentPidDefault,
         });
         workspaceId = ctx.workspaceId;
+      }
+      // Outside a wmux pane nothing resolves, and leaving the field absent now
+      // means the server refuses instead of guessing (#922 PR-C folded this
+      // method into the caller-scope table). So ASK for the target the way
+      // `wmux browser navigate` already does: `workspace.current` is the same
+      // active workspace the renderer fallback used to pick, so the documented
+      // behaviour is preserved and the choice is explicit and attributable. A
+      // failed lookup still leaves the field absent and lets the server's own
+      // refusal explain itself, rather than inventing a workspace.
+      if (!workspaceId) {
+        const current = await sendRequest('workspace.current', {});
+        if (current.ok) {
+          const id = (current.result as { id?: unknown } | null)?.id;
+          if (typeof id === 'string' && id.length > 0) workspaceId = id;
+        }
       }
       const params: Record<string, unknown> = {};
       if (workspaceId) params.workspaceId = workspaceId;
