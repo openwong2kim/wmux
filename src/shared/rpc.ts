@@ -32,6 +32,24 @@ export interface RpcRequest {
    * close). A validated token puts `commanderWorkspace` on RpcContext.
    */
   commanderToken?: string;
+  /**
+   * #922 PR-A — workspace claim token. Minted by main in the
+   * `mcp.claimWorkspace` response and bound there to the workspace that call
+   * created for this caller (`workspaceClaimTrust.ts`); the MCP server holds
+   * it for the life of its claim and stamps it on every later envelope.
+   *
+   * Unlike `clientName` this is not self-asserted — a caller cannot invent one
+   * that resolves, because main issued it. Unlike `commanderToken` it grants
+   * no role: it only says WHICH workspace the holder claimed.
+   *
+   * PR-A carries it and nothing more. NO handler reads it for an
+   * authorisation decision yet, so a caller that omits or ignores it behaves
+   * exactly as before. PR-B adds the lane that consults it, where a presented
+   * token that does not resolve must REFUSE the request rather than demote the
+   * caller (the same rule `commanderToken` documents above, and the reason
+   * `lookupWorkspaceClaim` returns three states instead of a nullable).
+   */
+  workspaceToken?: string;
 }
 
 /**

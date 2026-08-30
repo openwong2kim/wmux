@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
-import { sendRpc, setClientIdentity, setCommanderRole } from './wmux-client';
+import { sendRpc, setClientIdentity, setCommanderRole, setWorkspaceToken } from './wmux-client';
 import { COMMANDER_TOOL_SURFACE } from '../shared/commanderSurface';
 import type { RpcMethod } from '../shared/rpc';
 import {
@@ -856,7 +856,7 @@ async function resolveTerminalRouteBound(explicitPtyId?: string) {
         workspaceResolved = true;
       },
       getPinnedRoute,
-      claimPinnedRoute: () => claimPinnedRoute({ sendRpc }),
+      claimPinnedRoute: () => claimPinnedRoute({ sendRpc, onWorkspaceToken: setWorkspaceToken }),
     },
     explicitPtyId,
   );
