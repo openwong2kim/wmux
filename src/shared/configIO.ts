@@ -22,6 +22,7 @@
 
 import { parse as parseTomlText } from 'smol-toml';
 import type { McpConfigFormat } from './mcpTargets';
+import { CORE_MODE_ARG } from './coreSurface';
 
 /** Thrown when a config file is present but unparseable. Callers choose: abort
  *  a write (never clobber a file we can't understand) vs. report "not
@@ -41,8 +42,20 @@ export interface McpServerEntry {
 // The wmux MCP entry shape written into every target. `node` (not the Electron
 // execPath) + the absolute bundle script. No `env` field — Claude Code may
 // replace rather than merge the subprocess environment.
-export function wmuxMcpEntry(scriptPath: string): McpServerEntry & { command: string } {
-  return { command: 'node', args: [scriptPath] };
+// Optional launch-time surface profile. Omitted (or 'full') keeps the
+// compatibility default; 'core' appends CORE_MODE_ARG so the child registers
+// the browser-free / company-free surface. The flag lives in `args` rather
+// than `env` on purpose: Claude Code may replace the subprocess environment,
+// so an env-carried profile could silently change between launches.
+export type WmuxMcpEntryProfile = 'full' | 'core';
+
+export function wmuxMcpEntry(
+  scriptPath: string,
+  profile: WmuxMcpEntryProfile = 'full',
+): McpServerEntry & { command: string } {
+  const args = [scriptPath];
+  if (profile === 'core') args.push(CORE_MODE_ARG);
+  return { command: 'node', args };
 }
 
 /** The container key that holds MCP server definitions for a given format.

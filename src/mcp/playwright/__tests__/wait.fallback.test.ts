@@ -35,6 +35,7 @@ import {
 import type { WmuxToolProfile } from '../../toolCatalog';
 import {
   expectCommanderCatalogLockstep,
+  expectCoreCatalogLockstep,
   expectFrozenCatalog,
 } from '../../__tests__/catalogAssertions';
 
@@ -102,6 +103,7 @@ describe('browser_wait catalog registration', () => {
       'surfaceId',
     ]);
     expectCommanderCatalogLockstep(specs);
+    expectCoreCatalogLockstep(specs);
     expectFrozenCatalog(specs);
   });
 

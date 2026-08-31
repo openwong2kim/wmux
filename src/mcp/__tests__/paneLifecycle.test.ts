@@ -17,6 +17,7 @@ import {
 import type { WmuxToolProfile } from '../toolCatalog';
 import {
   expectCommanderCatalogLockstep,
+  expectCoreCatalogLockstep,
   expectFrozenCatalog,
 } from './catalogAssertions';
 
@@ -108,6 +109,7 @@ describe('paneLifecycle tools: registration', () => {
       resolveCallerWorkspaceId: mockResolveWs,
     });
     expectCommanderCatalogLockstep(specs);
+    expectCoreCatalogLockstep(specs);
     expectFrozenCatalog(specs);
   });
 });

@@ -277,8 +277,14 @@ describe('MCP workspace routing (source-level invariants)', () => {
     expect(src, 'lifecycle CREATE family must inject resolveScopedReadWorkspaceId').toMatch(
       /registerPaneLifecycleTools\([\s\S]*?resolveCallerWorkspaceId:\s*resolveScopedReadWorkspaceId/,
     );
-    expect(src, 'catalog profile must derive from COMMANDER_MODE').toMatch(
-      /const MCP_CATALOG_OPTIONS[\s\S]*?profile:\s*COMMANDER_MODE\s*\?\s*'commander'\s*:\s*'full'/,
+    // The launch-time surface is decided once, from argv-derived flags, and
+    // commander wins a contradictory `--commander --core` launch (fail-closed:
+    // the security role never yields to the optimization profile).
+    expect(src, 'surface profile must derive from COMMANDER_MODE, then ctx.coreMode').toMatch(
+      /const SURFACE_PROFILE: WmuxToolProfile\s*=\s*COMMANDER_MODE\s*\?\s*'commander'\s*:\s*ctx\.coreMode\s*\?\s*'core'\s*:\s*'full'/,
+    );
+    expect(src, 'catalog profile must derive from SURFACE_PROFILE').toMatch(
+      /const MCP_CATALOG_OPTIONS[\s\S]*?profile:\s*SURFACE_PROFILE/,
     );
     expect(src, 'catalog invocation must remain explicitly unattributed').toMatch(
       /const MCP_CATALOG_OPTIONS[\s\S]*?principal:[\s\S]*?kind:\s*'unattributed'/,

@@ -126,7 +126,7 @@ export function createPaneLifecycleToolCatalog(
       description:
         'Split a leaf pane, creating a new sibling pane. Returns the new paneId (and a ptyWarning if a background PTY could not be pre-spawned). Omit workspaceId to split inside your own (the caller\'s) workspace; pass it to target a specific one — an unknown id is rejected, never silently redirected to the on-screen workspace.',
       inputSchema: PANE_SPLIT_SHAPE,
-      profiles: ['full', 'commander'],
+      profiles: ['full', 'core', 'commander'],
       invoke: async ({ workspaceId, direction }) => {
         const resolved = workspaceId || (await resolveCallerWorkspaceId());
         const params: Record<string, unknown> = { direction: direction ?? 'horizontal' };
@@ -141,7 +141,7 @@ export function createPaneLifecycleToolCatalog(
       description:
         'Close a leaf pane and dispose its surfaces\' PTYs. paneId is globally unique and resolved across all workspaces, so a supervisor can reap a worker pane it created in a background workspace. Rejects branch (non-leaf) panes and the root pane.',
       inputSchema: PANE_CLOSE_SHAPE,
-      profiles: ['full'],
+      profiles: ['full', 'core'],
       invoke: async ({ paneId }) => callRpc('pane.close', { id: paneId }),
     }),
 
@@ -151,7 +151,7 @@ export function createPaneLifecycleToolCatalog(
       description:
         'Focus a leaf pane. Does NOT switch the on-screen workspace (non-yank): focusing a pane in a background workspace marks it active there without stealing the user\'s screen. Use workspace.focus to switch screens. paneId is resolved across all workspaces.',
       inputSchema: PANE_FOCUS_SHAPE,
-      profiles: ['full', 'commander'],
+      profiles: ['full', 'core', 'commander'],
       invoke: async ({ paneId }) => callRpc('pane.focus', { id: paneId }),
     }),
 
@@ -161,7 +161,7 @@ export function createPaneLifecycleToolCatalog(
       description:
         'Open a new surface (terminal) in the active pane of a workspace. Returns the new surfaceId + ptyId. Omit workspaceId to open in your own (the caller\'s) workspace; an explicit unknown id is rejected.',
       inputSchema: SURFACE_NEW_SHAPE,
-      profiles: ['full', 'commander'],
+      profiles: ['full', 'core', 'commander'],
       invoke: async ({ workspaceId, shell, cwd }) => {
         const resolved = workspaceId || (await resolveCallerWorkspaceId());
         const params: Record<string, unknown> = {};
@@ -178,7 +178,7 @@ export function createPaneLifecycleToolCatalog(
       description:
         'Close a surface and dispose its PTY. surfaceId is globally unique and resolved across all workspaces.',
       inputSchema: SURFACE_CLOSE_SHAPE,
-      profiles: ['full'],
+      profiles: ['full', 'core'],
       invoke: async ({ surfaceId }) => callRpc('surface.close', { id: surfaceId }),
     }),
 
@@ -193,7 +193,7 @@ export function createPaneLifecycleToolCatalog(
       description:
         'Take a leaf pane out of the layout without killing it. The session keeps running, so terminal_send / terminal_read / pane_close / A2A still reach it; pane_focus is refused with PANE_STASHED naming pane_unstash. Refusals explain themselves.',
       inputSchema: PANE_STASH_SHAPE,
-      profiles: ['full', 'commander'],
+      profiles: ['full', 'core', 'commander'],
       invoke: async ({ paneId }) => callRpc('pane.stash', { id: paneId }),
     }),
 
@@ -202,7 +202,7 @@ export function createPaneLifecycleToolCatalog(
       description:
         'Put a stashed pane back into the layout, next to its former neighbour. Idempotent: an already-visible pane is success, so the retry PANE_STASHED asks for is always safe.',
       inputSchema: PANE_UNSTASH_SHAPE,
-      profiles: ['full', 'commander'],
+      profiles: ['full', 'core', 'commander'],
       invoke: async ({ paneId }) => callRpc('pane.unstash', { id: paneId }),
     }),
   ]);

@@ -291,7 +291,7 @@ export function createChannelToolCatalog(deps: ChannelToolDeps) {
     description:
       'List all channels visible to the calling workspace. Returns the channel metadata (id, name, visibility, topic, status, members) but NOT the message history — use a follow-up get for history.',
     inputSchema: {},
-    profiles: ['full', 'commander'],
+    profiles: ['full', 'core', 'commander'],
     invoke: async () => {
       const workspaceId = await deps.resolveWorkspaceId();
       // U5: `verifiedWorkspaceId` is the transport-resolved caller
@@ -311,7 +311,7 @@ export function createChannelToolCatalog(deps: ChannelToolDeps) {
       // KTD10: the creator is auto-added as a member with full history.
       'Create a new channel; you are added as a member with full history. Visibility is immutable after creation, and a "private" channel can only be entered by invitation from an existing member. Topics are editable only through the daemon.',
     inputSchema: CHANNEL_CREATE_SHAPE,
-    profiles: ['full', 'commander'],
+    profiles: ['full', 'core', 'commander'],
     invoke: async ({ name, visibility, topic, member_id, member_name }) => {
       const workspaceId = await deps.resolveWorkspaceId();
       const params: Record<string, unknown> = {
@@ -342,7 +342,7 @@ export function createChannelToolCatalog(deps: ChannelToolDeps) {
     description:
       'Post a message to a channel. A post is a NOTIFICATION, not a delivery: it does NOT start an idle agent\'s turn, so instructions can sit unread indefinitely while the sender reads the silence as "still working". To make an agent act, send it a task (a2a_task_send, pasted into its prompt) or @-mention it with `pane_id` set. Check `droppedMentions` on the result — a mention that did not land is reported there, never silently dropped.',
     inputSchema: CHANNEL_POST_SHAPE,
-    profiles: ['full', 'commander'],
+    profiles: ['full', 'core', 'commander'],
     invoke: async ({ channel_id, text, member_id, member_name, client_msg_id, mentions }) => {
       const workspaceId = await deps.resolveWorkspaceId();
       const params: Record<string, unknown> = {
@@ -380,7 +380,7 @@ export function createChannelToolCatalog(deps: ChannelToolDeps) {
     description:
       'Join a channel as a member. By default joins with full history (historyFromSeq=0); pass include_history=false to start at the channel\'s current seq (no past messages). Public channels are joinable by any company member; private channels require an existing member to add you (not yet exposed via MCP — see plan Scope Boundaries).',
     inputSchema: CHANNEL_JOIN_SHAPE,
-    profiles: ['full', 'commander'],
+    profiles: ['full', 'core', 'commander'],
     invoke: async ({ channel_id, member_id, member_name, include_history }) => {
       const workspaceId = await deps.resolveWorkspaceId();
       const params: Record<string, unknown> = {
@@ -405,7 +405,7 @@ export function createChannelToolCatalog(deps: ChannelToolDeps) {
     description:
       'Leave a channel. The caller\'s (workspaceId, memberId) pair is removed from the member list. If the channel becomes empty, the 7-day empty-channel reaper (plan KTD8) will purge it.',
     inputSchema: CHANNEL_LEAVE_SHAPE,
-    profiles: ['full', 'commander'],
+    profiles: ['full', 'core', 'commander'],
     invoke: async ({ channel_id, member_id }) => {
       const workspaceId = await deps.resolveWorkspaceId();
       return callRpc('a2a.channel.leave' as RpcMethod, {
@@ -439,7 +439,7 @@ export function createChannelToolCatalog(deps: ChannelToolDeps) {
         'than `limit` come back, to drain safely. Without it you get the most recent `limit` ' +
         '(display). A private channel you are not in returns an empty list; a missing one errors.',
     inputSchema: CHANNEL_READ_SHAPE,
-    profiles: ['full', 'commander'],
+    profiles: ['full', 'core', 'commander'],
     invoke: async ({ channel_id, since_seq, limit }) => {
       const workspaceId = await deps.resolveWorkspaceId();
       const params: Record<string, unknown> = {
@@ -463,7 +463,7 @@ export function createChannelToolCatalog(deps: ChannelToolDeps) {
     description:
       'Invite ANOTHER workspace/agent to a channel you belong to — the only way into a private channel, which cannot be self-joined. Any member may invite; the invitee gains history and live messages. To add YOURSELF to a public channel, use channel_join.',
     inputSchema: CHANNEL_INVITE_SHAPE,
-    profiles: ['full', 'commander'],
+    profiles: ['full', 'core', 'commander'],
     invoke: async ({ channel_id, invited_workspace_id, member_id, member_name, include_history }) => {
       const workspaceId = await deps.resolveWorkspaceId();
       return callRpc('a2a.channel.invite' as RpcMethod, {
@@ -491,7 +491,7 @@ export function createChannelToolCatalog(deps: ChannelToolDeps) {
     description:
       'List the members of a channel you can see. Returns each member\'s workspaceId, memberId, joinedAt, and history floor. A private channel you are not a member of returns an empty list (membership is not leaked to non-members).',
     inputSchema: CHANNEL_GET_MEMBERS_SHAPE,
-    profiles: ['full', 'commander'],
+    profiles: ['full', 'core', 'commander'],
     invoke: async ({ channel_id }) => {
       const workspaceId = await deps.resolveWorkspaceId();
       return callRpc('a2a.channel.getMembers' as RpcMethod, {
@@ -513,7 +513,7 @@ export function createChannelToolCatalog(deps: ChannelToolDeps) {
     description:
       'Acknowledge channel messages up to a seq (inclusive) as consumed. Call it after channel_read with the highest seq you actually processed — read oldest-first via since_seq until drained, and never ack past what you have seen. Advances your durable read cursor, clears the unread count and stops re-nudges. Advance-only (an older seq never rewinds) and clamped to the channel head.',
     inputSchema: CHANNEL_ACK_SHAPE,
-    profiles: ['full', 'commander'],
+    profiles: ['full', 'core', 'commander'],
     invoke: async ({ channel_id, upto_seq, member_id }) => {
       const workspaceId = await deps.resolveWorkspaceId();
       return callRpc('a2a.channel.ack' as RpcMethod, {
@@ -537,7 +537,7 @@ export function createChannelToolCatalog(deps: ChannelToolDeps) {
     description:
       'Summarize your unread channel messages: per-channel unread count, mention-unread count (messages that @-mention you), your cursor (lastReadSeq), the channel head seq, and trimmedBeforeCursor (messages lost to retention before you read them — never silently dropped). Cheap to call; does not consume messages. Follow up with channel_read + channel_ack.',
     inputSchema: CHANNEL_UNREAD_SHAPE,
-    profiles: ['full', 'commander'],
+    profiles: ['full', 'core', 'commander'],
     invoke: async ({ member_id }) => {
       const workspaceId = await deps.resolveWorkspaceId();
       return callRpc('a2a.channel.unread' as RpcMethod, {
@@ -558,7 +558,7 @@ export function createChannelToolCatalog(deps: ChannelToolDeps) {
     description:
       'Start a mission: create a WorkTask (owned by you) plus a private mission channel bound to it, optionally seeded with members via invite. Returns { taskId, channelId }.',
     inputSchema: CHANNEL_MISSION_START_SHAPE,
-    profiles: ['full', 'commander'],
+    profiles: ['full', 'core', 'commander'],
     invoke: async ({ title, member_id, invite, idempotency_key }) => {
       const workspaceId = await deps.resolveWorkspaceId();
       const params: Record<string, unknown> = {
@@ -585,7 +585,7 @@ export function createChannelToolCatalog(deps: ChannelToolDeps) {
     description:
       'Close a mission by task_id: mark the WorkTask closed and archive its mission channel. Only the task owner (or the CEO) may close. Re-closing an already-closed mission is a no-op success. Use idempotency_key to make a retried close safe.',
     inputSchema: CHANNEL_MISSION_CLOSE_SHAPE,
-    profiles: ['full', 'commander'],
+    profiles: ['full', 'core', 'commander'],
     invoke: async ({ task_id, idempotency_key }) => {
       const workspaceId = await deps.resolveWorkspaceId();
       const params: Record<string, unknown> = {
@@ -618,7 +618,7 @@ export function createChannelToolCatalog(deps: ChannelToolDeps) {
     description:
       'List the missions (WorkTasks) you own, with their status and — once materialized — branch, worktreePath, paneGroupId (the task workspace) and missionChannelId. This is how you check on tasks started by fanout_start or channel_mission_start. The listing is scoped to the workspace the server resolves from your verified terminal — you cannot ask for another workspace\'s missions, and the call is refused outright if your identity cannot be verified.',
     inputSchema: CHANNEL_MISSION_LIST_SHAPE,
-    profiles: ['full'],
+    profiles: ['full', 'core'],
     invoke: async () => {
       const workspaceId = await deps.resolveWorkspaceId();
       return callRpc('task.mission.list' as RpcMethod, { workspaceId, verifiedWorkspaceId: workspaceId });

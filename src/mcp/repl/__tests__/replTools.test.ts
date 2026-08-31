@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   expectCommanderCatalogLockstep,
+  expectCoreCatalogLockstep,
   expectFrozenCatalog,
 } from '../../__tests__/catalogAssertions';
 import {
@@ -21,11 +22,14 @@ describe('repl tool catalog', () => {
     expect(catalog.map((spec) => spec.name)).toEqual(['repl_run', 'repl_reset', 'repl_sessions']);
   });
 
-  it('is frozen and stays out of the commander surface', () => {
+  it('is frozen, on the core surface, and out of the commander surface', () => {
     expectFrozenCatalog(catalog);
     expectCommanderCatalogLockstep(catalog);
+    expectCoreCatalogLockstep(catalog);
     for (const spec of catalog) {
-      expect(spec.profiles).toEqual(['full']);
+      // core: an agent doing terminal/pane/delegation work wants the REPL.
+      // commander: still out — the brain drives workers, it does not execute.
+      expect(spec.profiles).toEqual(['full', 'core']);
     }
   });
 

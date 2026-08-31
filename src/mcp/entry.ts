@@ -11,6 +11,7 @@
  */
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { COMMANDER_MODE_ARG } from '../shared/commanderSurface';
+import { CORE_MODE_ARG } from '../shared/coreSurface';
 import { clearClientIdentity } from './wmux-client';
 import { PlaywrightEngine } from './playwright/PlaywrightEngine';
 import { createWmuxServer } from './index';
@@ -22,6 +23,7 @@ async function main(): Promise<void> {
     envPtyHint: process.env.WMUX_PTY_ID || '',
     commanderToken: process.env.WMUX_COMMANDER_TOKEN,
     commanderMode: process.argv.includes(COMMANDER_MODE_ARG),
+    coreMode: process.argv.includes(CORE_MODE_ARG),
     callerPid: process.pid,
     callerPpid: process.ppid,
   });

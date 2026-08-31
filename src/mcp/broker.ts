@@ -44,6 +44,9 @@ interface ShimHandshake {
   envPtyHint?: string;
   commanderToken?: string;
   commanderMode?: boolean;
+  /** Optional `--core` surface selection. Absent from a pre-core shim, which
+   *  then gets the `full` default — a wider surface, never a narrower one. */
+  coreMode?: boolean;
 }
 
 function readAuthToken(): string | undefined {
@@ -95,6 +98,7 @@ async function hostConnection(socket: net.Socket, handshake: ShimHandshake): Pro
       envPtyHint: handshake.envPtyHint || '',
       commanderToken: handshake.commanderToken,
       commanderMode: handshake.commanderMode === true,
+      coreMode: handshake.coreMode === true,
       // Identity walks start at the SHIM's pid — it sits in the agent's
       // process tree exactly where the old full child sat, so both the
       // server-side walk (a2a.resolve.identity { callerPid }) and the

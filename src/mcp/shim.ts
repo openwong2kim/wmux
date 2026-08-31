@@ -27,6 +27,7 @@ import * as net from 'net';
 import * as fs from 'fs';
 import { getMcpBrokerPipeName, getAuthTokenPath } from '../shared/constants';
 import { COMMANDER_MODE_ARG } from '../shared/commanderSurface';
+import { CORE_MODE_ARG } from '../shared/coreSurface';
 
 const CONNECT_RETRIES = 10;
 const CONNECT_RETRY_DELAY_MS = 300;
@@ -98,6 +99,14 @@ async function main(): Promise<void> {
       envPtyHint: process.env.WMUX_PTY_ID || '',
       commanderToken: process.env.WMUX_COMMANDER_TOKEN,
       commanderMode: process.argv.includes(COMMANDER_MODE_ARG),
+      // Additive handshake field. An OLD broker that predates `--core` simply
+      // ignores it and hosts the `full` surface — which is the pre-existing
+      // default, so the fallback is WIDER, never narrower. That is safe here
+      // precisely because core is an optimization profile and not a security
+      // boundary (see src/shared/coreSurface.ts): nothing is being fenced off,
+      // so a version skew that drops the field loses token savings, not a
+      // guarantee. `commanderMode` must never be treated this way.
+      coreMode: process.argv.includes(CORE_MODE_ARG),
     }) + '\n',
   );
 
