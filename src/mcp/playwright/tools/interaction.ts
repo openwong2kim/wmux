@@ -11,6 +11,7 @@ import {
   PASSWORD_FIELD_PREDICATE_JS,
   REDACTED_PASSWORD,
   isPasswordFieldNode,
+  redactPasswordParams,
 } from '../redact';
 import {
   allowScopedRpcFallback,
@@ -213,6 +214,20 @@ async function rpcPressKey(key: string, scope: BrowserTargetScope): Promise<void
  * with its full timeout, and a click that opens nothing is the common case.
  */
 const POPUP_GRACE_MS = 50;
+/**
+ * How long a popup may stay on about:blank before we report it anyway.
+ * window.open() hands back a blank document and navigates a beat later, so
+ * reading the URL synchronously names nothing useful — but a popup that never
+ * leaves about:blank is a real outcome too, and worth reporting as such.
+ */
+const POPUP_URL_SETTLE_MS = 500;
+const POPUP_URL_POLL_MS = 50;
+/** Popup URLs are page-controlled text; cap what goes into the result. */
+const POPUP_URL_MAX_CHARS = 200;
+
+function isBlankUrl(url: string | undefined): boolean {
+  return !url || url === 'about:blank';
+}
 
 /**
  * Watch one click for a popup (window.open / target=_blank).
@@ -232,31 +247,60 @@ const POPUP_GRACE_MS = 50;
  * (verified in ChromeLauncher.noteTabPage — a tab wmux does not own is ignored).
  * So the note names the URL and stops there; it must not imply the popup can be
  * targeted by surfaceId.
+ *
+ * `dispose()` is separate from `note()` and MUST run in a finally: a click that
+ * throws (a ref that vanished, a navigation mid-click) would otherwise leave
+ * the listener — and the closure holding the popup handle — attached to the
+ * page for the rest of its life.
  */
 function watchForPopup(page: { on: Function; off: Function }): {
   note: () => Promise<string>;
+  dispose: () => void;
 } {
-  let popupUrl: string | undefined;
+  let popup: { url?: () => string } | undefined;
   let fired = false;
-  const onPopup = (popup: { url?: () => string }) => {
+  const onPopup = (opened: { url?: () => string }) => {
     fired = true;
-    try {
-      popupUrl = popup.url?.();
-    } catch {
-      /* popup torn down before we could read it */
-    }
+    popup = opened;
   };
   page.on('popup', onPopup);
+
+  const readUrl = (): string | undefined => {
+    try {
+      return popup?.url?.();
+    } catch {
+      return undefined; // popup torn down before we could read it
+    }
+  };
+
   return {
-    note: async () => {
-      if (!fired) await new Promise((r) => setTimeout(r, POPUP_GRACE_MS));
+    dispose: () => {
       try {
         page.off('popup', onPopup);
       } catch {
         /* page already closed */
       }
+    },
+    note: async () => {
+      if (!fired) await new Promise((r) => setTimeout(r, POPUP_GRACE_MS));
       if (!fired) return '';
-      return ` — opened a popup (page: ${popupUrl || 'unknown url'}). It is not a wmux surface; use browser_tabs to see what this workspace owns.`;
+
+      // window.open() resolves before the popup navigates, so poll briefly for
+      // the real URL rather than reporting the blank placeholder.
+      let url = readUrl();
+      const deadline = Date.now() + POPUP_URL_SETTLE_MS;
+      while (isBlankUrl(url) && Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, POPUP_URL_POLL_MS));
+        url = readUrl();
+      }
+
+      // Page-controlled text lands in the transcript, so it gets the same
+      // treatment every other URL wmux echoes does: password params masked,
+      // then a hard length cap.
+      const shown = url
+        ? redactPasswordParams(url).slice(0, POPUP_URL_MAX_CHARS)
+        : 'unknown url';
+      return ` — opened a popup (page: ${shown}). It is not a wmux surface; use browser_tabs to see what this workspace owns.`;
     },
   };
 }
@@ -300,37 +344,36 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
             : null;
           const popupNote = async () => (popupWatch ? await popupWatch.note() : '');
 
-          if (smartRef !== undefined) {
-            const selector = getLocatorByRef(smartRef);
-            if (!selector) {
-              await popupNote();
-              throw new Error(
-                `Element with smartRef=${smartRef} not found. Run browser_smart_snapshot to get current refs.`,
-              );
+          try {
+            if (smartRef !== undefined) {
+              const selector = getLocatorByRef(smartRef);
+              if (!selector) {
+                throw new Error(
+                  `Element with smartRef=${smartRef} not found. Run browser_smart_snapshot to get current refs.`,
+                );
+              }
+              const locator = page.locator(selector);
+              if (double) await locator.dblclick();
+              else await locator.click();
+              return {
+                content: [{ type: 'text' as const, text: `Clicked${double ? ' (double)' : ''} element smartRef=${smartRef}${await popupNote()}` }],
+              };
             }
-            const locator = page.locator(selector);
-            if (double) await locator.dblclick();
-            else await locator.click();
+
+            if (!ref) throw new Error('Either ref or smartRef must be provided.');
+
+            const el = await resolveRef(page, ref);
+            if (!el) throw new Error(refNotFound(ref));
+            if (double) await el.dblclick();
+            else await el.click();
             return {
-              content: [{ type: 'text' as const, text: `Clicked${double ? ' (double)' : ''} element smartRef=${smartRef}${await popupNote()}` }],
+              content: [{ type: 'text' as const, text: `Clicked${double ? ' (double)' : ''} element ref=${ref}${await popupNote()}` }],
             };
+          } finally {
+            // Every exit — success, a ref that vanished, a click that threw —
+            // detaches the listener.
+            popupWatch?.dispose();
           }
-
-          if (!ref) {
-            await popupNote();
-            throw new Error('Either ref or smartRef must be provided.');
-          }
-
-          const el = await resolveRef(page, ref);
-          if (!el) {
-            await popupNote();
-            throw new Error(refNotFound(ref));
-          }
-          if (double) await el.dblclick();
-          else await el.click();
-          return {
-            content: [{ type: 'text' as const, text: `Clicked${double ? ' (double)' : ''} element ref=${ref}${await popupNote()}` }],
-          };
         }
 
         // RPC fallback

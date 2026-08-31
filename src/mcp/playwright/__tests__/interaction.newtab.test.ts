@@ -47,14 +47,26 @@ if (!click) throw new Error('browser_click failed to register');
 
 type Handler = (arg: unknown) => void;
 
-/** A Page double whose click can fire a 'popup' event. */
-function makePage(opts: { popupUrl?: string } = {}) {
+/**
+ * A Page double whose click can fire a 'popup' event.
+ *
+ * `popupUrls` models the real sequence: window.open() resolves on about:blank
+ * and the popup navigates a beat later, so each read returns the next entry.
+ * `clickThrows` exercises the listener-cleanup path.
+ */
+function makePage(opts: { popupUrl?: string; popupUrls?: string[]; clickThrows?: boolean } = {}) {
   const handlers = new Map<string, Set<Handler>>();
+  const urls = opts.popupUrls ?? (opts.popupUrl !== undefined ? [opts.popupUrl] : undefined);
+  let read = 0;
   const el = {
     click: vi.fn(async () => {
-      if (opts.popupUrl !== undefined) {
-        for (const fn of handlers.get('popup') ?? []) fn({ url: () => opts.popupUrl });
+      if (urls) {
+        const popup = {
+          url: () => urls[Math.min(read++, urls.length - 1)],
+        };
+        for (const fn of handlers.get('popup') ?? []) fn(popup);
       }
+      if (opts.clickThrows) throw new Error('Element is not attached to the DOM');
     }),
     dblclick: vi.fn(async () => undefined),
   };
@@ -125,6 +137,64 @@ describe('browser_click new-tab detection', () => {
 
     const result = await click({ ref: '3' });
     expect(result.content[0].text).toBe('Clicked element ref=3');
+    expect(watched.listenerCount()).toBe(0);
+  });
+
+  it('waits out about:blank and reports the URL the popup settled on', async () => {
+    const { page, el } = makePage({
+      popupUrls: ['about:blank', 'about:blank', 'https://popup.example/after-nav'],
+    });
+    getPage.mockResolvedValue(page);
+    resolveWorkspaceBackend.mockResolvedValue('chrome');
+    resolveRefMock.mockResolvedValue(el);
+
+    const result = await click({ ref: '3' });
+    expect(result.content[0].text).toContain('https://popup.example/after-nav');
+    expect(result.content[0].text).not.toContain('about:blank');
+  });
+
+  it('reports about:blank when the popup never navigates', async () => {
+    const { page, el } = makePage({ popupUrl: 'about:blank' });
+    getPage.mockResolvedValue(page);
+    resolveWorkspaceBackend.mockResolvedValue('chrome');
+    resolveRefMock.mockResolvedValue(el);
+
+    const result = await click({ ref: '3' });
+    expect(result.content[0].text).toContain('opened a popup (page: about:blank)');
+  });
+
+  it('masks a password parameter in the popup URL and caps its length', async () => {
+    const { page, el } = makePage({
+      popupUrl: `https://popup.example/login?password=hunter2&x=${'a'.repeat(400)}`,
+    });
+    getPage.mockResolvedValue(page);
+    resolveWorkspaceBackend.mockResolvedValue('chrome');
+    resolveRefMock.mockResolvedValue(el);
+
+    const text = (await click({ ref: '3' })).content[0].text;
+    expect(text).not.toContain('hunter2');
+    expect(text.length).toBeLessThan(400);
+  });
+
+  it('[CRIT] detaches the listener when the click itself throws', async () => {
+    const watched = makePage({ clickThrows: true });
+    getPage.mockResolvedValue(watched.page);
+    resolveWorkspaceBackend.mockResolvedValue('chrome');
+    resolveRefMock.mockResolvedValue(watched.el);
+
+    const result = await click({ ref: '3' });
+    expect(result.isError).toBe(true);
+    expect(watched.listenerCount()).toBe(0);
+  });
+
+  it('[CRIT] detaches the listener when the ref cannot be resolved', async () => {
+    const watched = makePage();
+    getPage.mockResolvedValue(watched.page);
+    resolveWorkspaceBackend.mockResolvedValue('chrome');
+    resolveRefMock.mockResolvedValue(null);
+
+    const result = await click({ ref: '3' });
+    expect(result.isError).toBe(true);
     expect(watched.listenerCount()).toBe(0);
   });
 

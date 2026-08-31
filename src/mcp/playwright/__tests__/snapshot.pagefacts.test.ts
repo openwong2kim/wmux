@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   PAGE_FACTS_LIMITS,
+  PAGE_FACTS_TIMEOUT_MS,
+  collectPageFacts,
   describePageReadiness,
   formatPageFactsFooter,
   isReportableScrollable,
@@ -21,8 +23,20 @@ function facts(over: Partial<PageFacts> = {}): PageFacts {
 }
 
 describe('pageFacts: readiness verdicts', () => {
-  it('calls a page with almost no interactive elements nearly empty', () => {
-    expect(describePageReadiness(facts({ interactiveElements: 3 }), 0)).toContain('nearly empty');
+  it('calls a page with almost no interactive elements AND almost no text nearly empty', () => {
+    expect(describePageReadiness(facts({ interactiveElements: 3, textChars: 20 }), 0)).toContain(
+      'nearly empty',
+    );
+  });
+
+  it('[fix] leaves a text-heavy page with few controls alone — an article is not "loading"', () => {
+    expect(describePageReadiness(facts({ interactiveElements: 3, textChars: 12000 }), 0)).toBe('');
+  });
+
+  it('names in-flight requests in the nearly-empty note when they are known', () => {
+    expect(describePageReadiness(facts({ interactiveElements: 1, textChars: 0 }), 2)).toContain(
+      '2 request(s) in flight',
+    );
   });
 
   it('calls a dense-but-textless page a skeleton without needing pending requests', () => {
@@ -197,5 +211,24 @@ describe('snapshot: page-facts footer', () => {
     expect(out).not.toBeNull();
     expect(out).not.toContain('skeleton screen likely');
     expect(out).not.toContain('scrollable containers');
+  });
+});
+
+describe('collectPageFacts', () => {
+  it('[CRIT] gives up on a page evaluation that never resolves', async () => {
+    const page = { evaluate: vi.fn(() => new Promise(() => undefined)) };
+    const started = Date.now();
+    const result = await collectPageFacts(page as never, 30);
+    expect(result).toBeNull();
+    expect(Date.now() - started).toBeLessThan(1000);
+  });
+
+  it('returns null instead of throwing when the evaluation rejects', async () => {
+    const page = { evaluate: vi.fn(async () => { throw new Error('detached'); }) };
+    await expect(collectPageFacts(page as never)).resolves.toBeNull();
+  });
+
+  it('keeps a sane default timeout', () => {
+    expect(PAGE_FACTS_TIMEOUT_MS).toBeLessThanOrEqual(1000);
   });
 });

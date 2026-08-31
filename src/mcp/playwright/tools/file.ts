@@ -420,7 +420,9 @@ function describeUploadTimeout(message: string): string {
  */
 interface ElementHandleLike {
   evaluate: (fn: (node: unknown) => boolean) => Promise<boolean>;
-  evaluateHandle: (expression: string) => Promise<{ asElement?: () => unknown } | null>;
+  evaluateHandle: (
+    expression: string,
+  ) => Promise<{ asElement?: () => unknown; dispose?: () => Promise<void> } | null>;
   setInputFiles: (paths: string[], options: { timeout: number }) => Promise<void>;
 }
 
@@ -440,9 +442,20 @@ const FILE_INPUT_PROXIMITY_JS = `(anchor) => {
   const MAX_HEIGHT = 3;
   const MAX_DESCENDANT_DEPTH = 3;
   const isFileInput = (n) => !!n && n.nodeType === 1 && n.tagName === 'INPUT' && String(n.getAttribute('type') || '').toLowerCase() === 'file';
+  // Walking three levels up reaches sibling subtrees that can belong to a
+  // DIFFERENT widget — a second upload form on the same page. When either the
+  // anchor or the candidate sits in a <form>, they must sit in the SAME one;
+  // otherwise the files would be attached to someone else's form.
+  const anchorForm = anchor && anchor.closest ? anchor.closest('form') : null;
+  const sameOwner = (n) => {
+    const form = n.closest ? n.closest('form') : null;
+    if (anchorForm || form) return form === anchorForm;
+    return true;
+  };
+  const accept = (n) => isFileInput(n) && sameOwner(n);
   const inDescendants = (n, depth) => {
     if (!n || depth < 0) return null;
-    if (isFileInput(n)) return n;
+    if (accept(n)) return n;
     for (const child of Array.from(n.children || [])) {
       const found = inDescendants(child, depth - 1);
       if (found) return found;
@@ -451,14 +464,14 @@ const FILE_INPUT_PROXIMITY_JS = `(anchor) => {
   };
   let current = anchor;
   for (let level = 0; current && level <= MAX_HEIGHT; level++) {
-    if (isFileInput(current)) return current;
+    if (accept(current)) return current;
     const inside = inDescendants(current, MAX_DESCENDANT_DEPTH);
     if (inside) return inside;
     const parent = current.parentElement;
     if (parent) {
       for (const sibling of Array.from(parent.children || [])) {
         if (sibling === current) continue;
-        if (isFileInput(sibling)) return sibling;
+        if (accept(sibling)) return sibling;
         const found = inDescendants(sibling, MAX_DESCENDANT_DEPTH);
         if (found) return found;
       }
@@ -497,13 +510,21 @@ async function resolveFileInputFromRef(
   }
   if (isFileInput !== false) return el;
 
-  let handle: { asElement?: () => unknown } | null | undefined;
+  let handle: { asElement?: () => unknown; dispose?: () => Promise<void> } | null | undefined;
   try {
     handle = await el.evaluateHandle(FILE_INPUT_PROXIMITY_JS);
   } catch {
     return el; // probe unavailable — keep the pre-existing behaviour
   }
   const found = handle?.asElement ? handle.asElement() : null;
+  // Playwright returns the handle ITSELF from asElement() for an element, so
+  // only a handle we are not about to use gets disposed — a null result (the
+  // page returned null) and any wrapper that is not the element included.
+  // Without this the miss path leaks a JSHandle into the page's context on
+  // every failed upload attempt.
+  if (handle && handle !== found && typeof handle.dispose === 'function') {
+    await handle.dispose().catch(() => undefined);
+  }
   return (found as ElementHandleLike | null) ?? null;
 }
 

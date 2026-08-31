@@ -56,10 +56,22 @@ const RESOLVED = fs.realpathSync(FILE);
  * A ref-resolved element. `isFileInput` decides the direct-match test;
  * `nearbyInput` is what the in-page proximity walk finds (null = nothing near).
  */
-function makeElement(opts: { isFileInput: boolean; nearbyInput?: { setInputFiles: unknown } | null }) {
+function makeElement(opts: {
+  isFileInput: boolean;
+  nearbyInput?: { setInputFiles: unknown } | null;
+  dispose?: ReturnType<typeof vi.fn>;
+}) {
+  const dispose = opts.dispose ?? vi.fn(async () => undefined);
   return {
+    dispose,
     evaluate: vi.fn(async () => opts.isFileInput),
-    evaluateHandle: vi.fn(async () => ({ asElement: () => opts.nearbyInput ?? null })),
+    // Playwright hands back a JSHandle; asElement() returns the handle itself
+    // for an element and null for a null result.
+    evaluateHandle: vi.fn(async () => {
+      const handle: Record<string, unknown> = { dispose };
+      handle.asElement = () => opts.nearbyInput ?? null;
+      return handle as { asElement?: () => unknown; dispose?: () => Promise<void> };
+    }),
     setInputFiles: vi.fn(async () => undefined),
   };
 }
@@ -108,6 +120,27 @@ describe('browser_file_upload proximity search', () => {
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toContain('No file input found at or near ref="7"');
     expect(button.setInputFiles).not.toHaveBeenCalled();
+  });
+
+  it('[CRIT] disposes the JSHandle when the search finds nothing', async () => {
+    const dispose = vi.fn(async () => undefined);
+    const button = makeElement({ isFileInput: false, nearbyInput: null, dispose });
+    resolveRef.mockResolvedValue(button);
+
+    await upload({ paths: [FILE], ref: '7' });
+    expect(dispose).toHaveBeenCalledTimes(1);
+  });
+
+  it('[CRIT] scopes the search to the anchor\'s own form', async () => {
+    // The guard lives in the injected source, so what the unit test can assert
+    // is that the source carries it — the DOM behaviour is dogfood-covered.
+    const button = makeElement({ isFileInput: false, nearbyInput: null });
+    resolveRef.mockResolvedValue(button);
+    await upload({ paths: [FILE], ref: '7' });
+
+    const source = String((button.evaluateHandle.mock.calls as unknown as string[][])[0][0]);
+    expect(source).toContain("closest('form')");
+    expect(source).toContain('sameOwner');
   });
 
   it('points the anchorless selector path at the visible button ref', async () => {

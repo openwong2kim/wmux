@@ -72,8 +72,9 @@ const REPORTABLE_SCROLLABLE_JS = String(isReportableScrollable);
 /**
  * The in-page collector, as source text. Built as a string (rather than a
  * passed function) so the same expression can run over either transport.
+ * Exported so a jsdom test can run the REAL source instead of a copy of it.
  */
-function buildPageFactsExpression(): string {
+export function buildPageFactsExpression(): string {
   const { MAX_SCAN_NODES, MAX_SCROLLABLES } = PAGE_FACTS_LIMITS;
   return `(() => {
   const isReportable = ${REPORTABLE_SCROLLABLE_JS};
@@ -92,28 +93,44 @@ function buildPageFactsExpression(): string {
     const el = all[i];
     window0.push(el);
     if (el.matches(INTERACTIVE)) interactiveElements++;
-    if (el.scrollHeight > el.clientHeight + 1) scrollerSet.add(el);
+    // documentElement/body are excluded on purpose: the page itself scrolls on
+    // nearly every long document, and counting it as an ancestor scroller
+    // suppressed EVERY inner container (the list came back empty).
+    if (el !== document.documentElement && el !== document.body && el.scrollHeight > el.clientHeight + 1) scrollerSet.add(el);
   }
   const cssPath = (el) => {
+    // Build from the element upward, and STOP as soon as the accumulated path
+    // matches exactly this element. A fixed-depth path can match a different
+    // node entirely, which would send a scroll to the wrong container.
     const parts = [];
     let node = el;
-    while (node && node.nodeType === 1 && parts.length < 5) {
+    while (node && node.nodeType === 1 && parts.length < 12) {
       let part = node.tagName.toLowerCase();
       if (node.id && /^[A-Za-z][-\\w]*$/.test(node.id)) {
         parts.unshift('#' + node.id);
-        return parts.join(' > ');
+      } else {
+        const parent = node.parentElement;
+        if (parent) {
+          const siblings = Array.prototype.filter.call(parent.children, (c) => c.tagName === node.tagName);
+          if (siblings.length > 1) part += ':nth-of-type(' + (siblings.indexOf(node) + 1) + ')';
+        }
+        parts.unshift(part);
       }
-      const parent = node.parentElement;
-      if (parent) {
-        const siblings = Array.prototype.filter.call(parent.children, (c) => c.tagName === node.tagName);
-        if (siblings.length > 1) part += ':nth-of-type(' + (siblings.indexOf(node) + 1) + ')';
-      }
-      parts.unshift(part);
+      const candidate = parts.join(' > ');
+      try {
+        const matches = document.querySelectorAll(candidate);
+        if (matches.length === 1 && matches[0] === el) return candidate;
+      } catch (e) { /* unusable selector — keep widening */ }
       node = node.parentElement;
     }
-    return parts.join(' > ');
+    // No selector uniquely identifies it; the caller omits the entry rather
+    // than printing something that resolves elsewhere.
+    return null;
   };
   for (const el of window0) {
+    // The document itself is not a "container" worth listing: the page scroll
+    // is what browser_scroll does by default.
+    if (el === document.documentElement || el === document.body) continue;
     const tagName = el.tagName;
     let hasScrollableAncestor = false;
     for (let p = el.parentElement; p; p = p.parentElement) {
@@ -123,9 +140,11 @@ function buildPageFactsExpression(): string {
     try { overflowY = getComputedStyle(el).overflowY || 'visible'; } catch (e) { /* detached */ }
     if (!isReportable({ tagName, scrollHeight: el.scrollHeight, clientHeight: el.clientHeight, overflowY, hasScrollableAncestor })) continue;
     if (scrollers.length >= ${MAX_SCROLLABLES}) { scrollablesTruncated = true; break; }
+    const selector = cssPath(el);
+    if (!selector) continue;
     const rect = el.getBoundingClientRect();
     scrollers.push({
-      selector: cssPath(el),
+      selector: selector,
       width: Math.round(rect.width),
       height: Math.round(rect.height),
       scrollHeight: el.scrollHeight,
@@ -144,19 +163,48 @@ function buildPageFactsExpression(): string {
 })()`;
 }
 
+/**
+ * Upper bound on the facts collection. A snapshot must not hang on it: the
+ * footer is an annotation, and a page busy enough to stall a DOM walk is
+ * exactly the page an agent most needs the snapshot itself back from.
+ */
+export const PAGE_FACTS_TIMEOUT_MS = 300;
+
 /** Collect the facts in ONE page round trip. Null on any failure (fail-open). */
-export async function collectPageFacts(page: Page): Promise<PageFacts | null> {
+export async function collectPageFacts(
+  page: Page,
+  timeoutMs = PAGE_FACTS_TIMEOUT_MS,
+): Promise<PageFacts | null> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    const raw = (await page.evaluate(buildPageFactsExpression())) as PageFacts | null;
+    // The evaluation keeps running in the page after a timeout — there is no
+    // way to cancel it — but its promise is deliberately dropped, so attach a
+    // catch to it here or an eventual rejection becomes an unhandled one.
+    const evaluation = page.evaluate(buildPageFactsExpression());
+    evaluation.catch(() => undefined);
+    const raw = (await Promise.race([
+      evaluation,
+      new Promise<null>((resolve) => {
+        timer = setTimeout(() => resolve(null), timeoutMs);
+      }),
+    ])) as PageFacts | null;
     if (!raw || typeof raw.totalElements !== 'number') return null;
     return raw;
   } catch {
     return null;
+  } finally {
+    if (timer) clearTimeout(timer);
   }
 }
 
 /** Interactive-element count below which a page reads as "not there yet". */
 const NEARLY_EMPTY_INTERACTIVE = 10;
+/**
+ * ...but only when there is little text to read either. An article, a docs
+ * page or a search result has almost no controls and is perfectly finished, so
+ * the control count alone called every one of them "still loading".
+ */
+const NEARLY_EMPTY_TEXT_CHARS = 200;
 /** Above this element count a low text density is worth calling out. */
 const SKELETON_MIN_ELEMENTS = 20;
 /** chars-per-element below which the DOM is mostly empty boxes. */
@@ -174,8 +222,13 @@ export function describePageReadiness(
   facts: PageFacts,
   pendingRequests: number,
 ): string {
-  if (facts.interactiveElements < NEARLY_EMPTY_INTERACTIVE) {
-    return 'nearly empty — may still be loading';
+  if (
+    facts.interactiveElements < NEARLY_EMPTY_INTERACTIVE &&
+    facts.textChars < NEARLY_EMPTY_TEXT_CHARS
+  ) {
+    return pendingRequests > 0
+      ? `nearly empty — ${pendingRequests} request(s) in flight, may still be loading`
+      : 'nearly empty — may still be loading';
   }
   if (
     facts.totalElements > SKELETON_MIN_ELEMENTS &&
