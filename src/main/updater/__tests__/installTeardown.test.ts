@@ -746,4 +746,17 @@ describe('buildWaiterVbsLauncher (#1136 — the hidden transport)', () => {
     expect(buildWaiterVbsLauncher('', ARGS, 'C:\\Temp\\w.ps1')).toBeNull();
     expect(buildWaiterVbsLauncher(PS, ['-No"Profile'], 'C:\\Temp\\w.ps1')).toBeNull();
   });
+
+  it('rejects a switch containing whitespace, because switches go in bare', () => {
+    // The paths are quoted, so a space in them is safe (the O'Brien TEMP above
+    // has one). The switches are NOT quoted, so a space inside one would
+    // silently split it into two arguments — a waiter running with the WRONG
+    // arguments, which is worse than no waiter, since transport A behind this
+    // one is a working fallback.
+    expect(buildWaiterVbsLauncher(PS, ['-No Profile'], 'C:\\Temp\\w.ps1')).toBeNull();
+    expect(buildWaiterVbsLauncher(PS, ['-NoProfile\t'], 'C:\\Temp\\w.ps1')).toBeNull();
+    expect(buildWaiterVbsLauncher(PS, ['-NoProfile', ''], 'C:\\Temp\\w.ps1')).toBeNull();
+    // A space in either PATH stays legal — that is the whole point of quoting.
+    expect(buildWaiterVbsLauncher(PS, ARGS, 'C:\\Program Files\\w.ps1')).not.toBeNull();
+  });
 });

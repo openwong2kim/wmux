@@ -55,7 +55,7 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { spawn, execFileSync } from 'child_process';
+import { spawn, execFileSync, type ChildProcess } from 'child_process';
 
 /**
  * Marker the waiter writes when it refuses to launch, relative to userData.
@@ -168,10 +168,16 @@ export function buildWaiterVbsLauncher(
   psArgs: readonly string[],
   scriptPath: string,
 ): string | null {
-  const parts = [powershellPath, ...psArgs, scriptPath];
-  if (!parts.every((p) => p.length > 0 && !/["\r\n]/.test(p))) return null;
-  // Quote only the two paths; the switches are literal and space-free, and
-  // quoting them would make CreateProcess look for a file named `"-NoProfile"`.
+  // The two paths are QUOTED in the emitted command, so whitespace in them is
+  // safe and only a quote or a line break could break out of the literal.
+  if (![powershellPath, scriptPath].every((p) => p.length > 0 && !/["\r\n]/.test(p))) return null;
+  // The switches are inserted BARE (quoting them would make CreateProcess look
+  // for a file named `"-NoProfile"`), so they carry a stricter rule: any
+  // whitespace would silently token-split one switch into two, which is the
+  // kind of failure that produces a waiter running with the WRONG arguments
+  // rather than no waiter at all. Fail closed instead — the caller falls
+  // through to transport A.
+  if (!psArgs.every((a) => a.length > 0 && !/[\s"]/.test(a))) return null;
   const q = (p: string) => `""${p}""`;
   const cmd = [q(powershellPath), ...psArgs, q(scriptPath)].join(' ');
   return [
@@ -781,6 +787,25 @@ function sleepStepMs(ms: number): void {
   }
 }
 
+/**
+ * Attach a no-op 'error' handler to a spawned waiter transport.
+ *
+ * `spawn` reports a failure to create the process ASYNCHRONOUSLY, by emitting
+ * 'error' on the returned ChildProcess — the synchronous try/catch around the
+ * call does NOT cover it. An 'error' event with no listener is re-thrown by
+ * EventEmitter as an uncaught exception, which in the main process means a
+ * crash at the single worst moment available: mid install-handoff, after the
+ * app has committed to quitting. The transport gate already treats "no launch
+ * stamp" as failure, so there is nothing for a handler to decide here — its
+ * only job is to keep the failure a fall-through instead of a crash.
+ *
+ * The listener must be attached BEFORE unref(): unref only stops the child
+ * from holding the event loop open, it does not stop the emit.
+ */
+function swallowSpawnError(child: ChildProcess): void {
+  child.on('error', () => { /* the launch-stamp gate is the real verdict */ });
+}
+
 /** True once `stampPath` exists, polling every 50ms up to `budgetMs`. */
 function waitForLaunchStamp(stampPath: string, budgetMs: number): boolean {
   const deadline = Date.now() + budgetMs;
@@ -891,6 +916,8 @@ export function spawnInstallWaiter(plan: WaiterPlan): string | null {
     let pidW: number | undefined;
     let pidA: number | undefined;
     let pidB: number | undefined;
+    let spawnedA = false;
+    let spawnedB = false;
 
     // #1136 — transport W, tried first because it is the only one that stays
     // invisible under the Win11 default-terminal delegation.
@@ -902,8 +929,9 @@ export function spawnInstallWaiter(plan: WaiterPlan): string | null {
       // install — the silent-wrong-path failure #1056 already paid for once.
       // wscript reads UTF-16LE unambiguously.
       const vbsPath = path.join(dir, 'launch-waiter.vbs');
+      let spawnedW = false;
       try {
-        fs.writeFileSync(vbsPath, '﻿' + vbs, 'utf16le');
+        fs.writeFileSync(vbsPath, '\uFEFF' + vbs, 'utf16le');
         const w = spawn(
           path.join(systemRoot, 'System32', 'wscript.exe'),
           // //B: batch mode. Without it a machine with Windows Script Host
@@ -913,10 +941,16 @@ export function spawnInstallWaiter(plan: WaiterPlan): string | null {
           ['//B', '//Nologo', vbsPath],
           { detached: true, stdio: 'ignore', windowsHide: true, cwd: systemRoot },
         );
+        swallowSpawnError(w);
         w.unref();
+        spawnedW = true;
         if (typeof w.pid === 'number') { spawnedPids.push(w.pid); pidW = w.pid; }
       } catch { /* WSH unavailable — A still gets its window */ }
-      if (waitForLaunchStamp(stampW, LAUNCH_STAMP_BUDGET_W_MS)) {
+      // Only poll for a stamp a process was actually asked to write. Without
+      // this gate a spawn that threw still burned the full 6s budget waiting
+      // on a file nothing could ever create, delaying the fallback transports
+      // for no information.
+      if (spawnedW && waitForLaunchStamp(stampW, LAUNCH_STAMP_BUDGET_W_MS)) {
         console.log(`[installTeardown] waiter verified via hidden wscript launcher (pid ${pidW ?? '?'}): ${scriptPathW}`);
         return scriptPathW;
       }
@@ -928,10 +962,12 @@ export function spawnInstallWaiter(plan: WaiterPlan): string | null {
         ['/d', '/c', powershell, ...psArgs, scriptPathA],
         { detached: true, stdio: 'ignore', windowsHide: true, cwd: systemRoot },
       );
+      swallowSpawnError(a);
       a.unref();
+      spawnedA = true;
       if (typeof a.pid === 'number') { spawnedPids.push(a.pid); pidA = a.pid; }
     } catch { /* transport A unavailable — B still gets its window */ }
-    if (waitForLaunchStamp(stampA, LAUNCH_STAMP_BUDGET_A_MS)) {
+    if (spawnedA && waitForLaunchStamp(stampA, LAUNCH_STAMP_BUDGET_A_MS)) {
       console.log(`[installTeardown] waiter verified via cmd trampoline (pid ${pidA ?? '?'}): ${scriptPathA}`);
       return scriptPathA;
     }
@@ -942,10 +978,12 @@ export function spawnInstallWaiter(plan: WaiterPlan): string | null {
         [...psArgs, scriptPathB],
         { detached: true, stdio: 'ignore', windowsHide: true, cwd: systemRoot },
       );
+      swallowSpawnError(b);
       b.unref();
+      spawnedB = true;
       if (typeof b.pid === 'number') { spawnedPids.push(b.pid); pidB = b.pid; }
     } catch { /* fall through to the refusal below */ }
-    if (waitForLaunchStamp(stampB, LAUNCH_STAMP_BUDGET_B_MS)) {
+    if (spawnedB && waitForLaunchStamp(stampB, LAUNCH_STAMP_BUDGET_B_MS)) {
       console.log(`[installTeardown] waiter verified via direct spawn (pid ${pidB ?? '?'}): ${scriptPathB}`);
       return scriptPathB;
     }

@@ -36,6 +36,40 @@ function q(p: string): string {
   return `'${p.replace(/'/g, "''")}'`;
 }
 
+// #1136 — is Windows Script Host actually usable on this machine?
+//
+// WSH being disabled by enterprise policy is an explicitly SUPPORTED case:
+// the hidden transport fails and the cmd.exe trampoline behind it carries the
+// install (a visible window is cosmetic, a refused install is not). So the
+// "the hidden transport wins" assertion below is only meaningful where WSH
+// runs, and asserting it unconditionally would turn a correctly-working
+// fallback into a red test. Probed by actually running a script rather than
+// by reading the registry: the policy lives in two hives plus a per-extension
+// association, and only an execution answers the question the test is asking.
+function wshUsable(): boolean {
+  if (!onWindows) return false;
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-wsh-probe-'));
+  try {
+    const out = path.join(dir, 'ok.txt');
+    const vbs = path.join(dir, 'probe.vbs');
+    fs.writeFileSync(vbs, '\uFEFF' +
+      `Set fso = CreateObject("Scripting.FileSystemObject")\r\n` +
+      `fso.CreateTextFile("${out}").Close\r\n`, 'utf16le');
+    const r = spawnSync(
+      path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'wscript.exe'),
+      ['//B', '//Nologo', vbs],
+      { windowsHide: true, timeout: 30_000 },
+    );
+    return r.status === 0 && fs.existsSync(out);
+  } catch {
+    return false;
+  } finally {
+    try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* best-effort */ }
+  }
+}
+
+const WSH_USABLE = wshUsable();
+
 describe.skipIf(!onWindows)('install waiter (real processes, real locks)', () => {
   let sandbox: string;
   let root: string;
@@ -503,7 +537,7 @@ describe.skipIf(!onWindows)('waiter transport (#1056 — the REAL spawnInstallWa
     }
   }, 120_000);
 
-  it('#1136 — the hidden wscript transport is the one that carries the install', () => {
+  it.skipIf(!WSH_USABLE)('#1136 — the hidden wscript transport is the one that carries the install', () => {
     // The defect: the cmd.exe trampoline is spawned `detached`, and
     // DETACHED_PROCESS overrides the CREATE_NO_WINDOW that `windowsHide: true`
     // asks for. The child then allocates its own console, that allocation goes
