@@ -208,6 +208,60 @@ async function rpcPressKey(key: string, scope: BrowserTargetScope): Promise<void
 }
 
 /**
+ * Grace period for a popup that Chrome reports a beat after the click resolves.
+ * Deliberately tiny and one-shot: `waitForEvent('popup')` would tax EVERY click
+ * with its full timeout, and a click that opens nothing is the common case.
+ */
+const POPUP_GRACE_MS = 50;
+
+/**
+ * Watch one click for a popup (window.open / target=_blank).
+ *
+ * mirrors browser-use tools/service.py _detect_new_tab_opened, but built on
+ * Playwright's own 'popup' event rather than a before/after tab-id diff: a diff
+ * over getAllPages() attributes ANY workspace's newly opened page to this
+ * click, which is exactly the cross-workspace mis-attribution page scoping
+ * exists to prevent.
+ *
+ * CHROME BACKEND ONLY. The builtin webview loads popups into the SAME webview
+ * (src/main/index.ts new-window handling), so no 'popup' ever fires there, and
+ * the RPC lane has no Page to listen on. Both keep their previous behaviour.
+ *
+ * The popup is NOT a wmux surface: only tabs opened through ChromeLauncher.openTab
+ * get a `chrome-<uuid>` surfaceId, and a page-opened target is never registered
+ * (verified in ChromeLauncher.noteTabPage — a tab wmux does not own is ignored).
+ * So the note names the URL and stops there; it must not imply the popup can be
+ * targeted by surfaceId.
+ */
+function watchForPopup(page: { on: Function; off: Function }): {
+  note: () => Promise<string>;
+} {
+  let popupUrl: string | undefined;
+  let fired = false;
+  const onPopup = (popup: { url?: () => string }) => {
+    fired = true;
+    try {
+      popupUrl = popup.url?.();
+    } catch {
+      /* popup torn down before we could read it */
+    }
+  };
+  page.on('popup', onPopup);
+  return {
+    note: async () => {
+      if (!fired) await new Promise((r) => setTimeout(r, POPUP_GRACE_MS));
+      try {
+        page.off('popup', onPopup);
+      } catch {
+        /* page already closed */
+      }
+      if (!fired) return '';
+      return ` — opened a popup (page: ${popupUrl || 'unknown url'}). It is not a wmux surface; use browser_tabs to see what this workspace owns.`;
+    },
+  };
+}
+
+/**
  * Register interaction-related MCP tools on the given server.
  *
  * Tools:
@@ -236,9 +290,20 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
         const page = await engine.getPageForScope(scope).catch(allowScopedRpcFallback);
 
         if (page) {
+          // A popup can only be observed on the chrome backend (see
+          // watchForPopup); everything else clicks exactly as before.
+          const watchesPopups =
+            (await engine.resolveWorkspaceBackend(scope.workspaceId).catch(() => undefined)) ===
+            'chrome';
+          const popupWatch = watchesPopups
+            ? watchForPopup(page as unknown as { on: Function; off: Function })
+            : null;
+          const popupNote = async () => (popupWatch ? await popupWatch.note() : '');
+
           if (smartRef !== undefined) {
             const selector = getLocatorByRef(smartRef);
             if (!selector) {
+              await popupNote();
               throw new Error(
                 `Element with smartRef=${smartRef} not found. Run browser_smart_snapshot to get current refs.`,
               );
@@ -247,18 +312,24 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
             if (double) await locator.dblclick();
             else await locator.click();
             return {
-              content: [{ type: 'text' as const, text: `Clicked${double ? ' (double)' : ''} element smartRef=${smartRef}` }],
+              content: [{ type: 'text' as const, text: `Clicked${double ? ' (double)' : ''} element smartRef=${smartRef}${await popupNote()}` }],
             };
           }
 
-          if (!ref) throw new Error('Either ref or smartRef must be provided.');
+          if (!ref) {
+            await popupNote();
+            throw new Error('Either ref or smartRef must be provided.');
+          }
 
           const el = await resolveRef(page, ref);
-          if (!el) throw new Error(refNotFound(ref));
+          if (!el) {
+            await popupNote();
+            throw new Error(refNotFound(ref));
+          }
           if (double) await el.dblclick();
           else await el.click();
           return {
-            content: [{ type: 'text' as const, text: `Clicked${double ? ' (double)' : ''} element ref=${ref}` }],
+            content: [{ type: 'text' as const, text: `Clicked${double ? ' (double)' : ''} element ref=${ref}${await popupNote()}` }],
           };
         }
 
