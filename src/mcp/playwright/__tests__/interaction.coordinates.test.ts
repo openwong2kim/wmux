@@ -50,7 +50,14 @@ if (!click || !screenshot) throw new Error('tools failed to register');
 
 type Handler = (arg: unknown) => void;
 
-function makePage(opts: { viewport?: { width: number; height: number } | null; popupUrl?: string } = {}) {
+function makePage(
+  opts: {
+    viewport?: { width: number; height: number } | null;
+    popupUrl?: string;
+    /** What window.innerWidth/innerHeight reports, or 'throws'. */
+    innerSize?: [number, number] | 'throws';
+  } = {},
+) {
   const handlers = new Map<string, Set<Handler>>();
   const order: string[] = [];
   const mouseClick = vi.fn(async () => {
@@ -74,7 +81,12 @@ function makePage(opts: { viewport?: { width: number; height: number } | null; p
       viewportSize: () => (opts.viewport === undefined ? { width: 1280, height: 800 } : opts.viewport),
       evaluate: vi.fn(async (expr: string) => {
         order.push('evaluate');
-        return expr === 'window.devicePixelRatio' ? 2 : undefined;
+        if (expr === 'window.devicePixelRatio') return 2;
+        if (expr === '[window.innerWidth, window.innerHeight]') {
+          if (opts.innerSize === 'throws') throw new Error('Execution context was destroyed');
+          return opts.innerSize ?? [1024, 768];
+        }
+        return undefined;
       }),
       screenshot: vi.fn(async () => {
         order.push('screenshot');
@@ -167,8 +179,28 @@ describe('browser_click coordinates', () => {
     expect(mouseClick).not.toHaveBeenCalled();
   });
 
-  it('[fix] still clicks when the page reports no viewport size', async () => {
-    const { page, mouseClick } = makePage({ viewport: null });
+  it('[fix] falls back to the page\'s own innerWidth/innerHeight when viewportSize() is null', async () => {
+    // Every chrome-backend page is connectOverCDP, where viewportSize() is null.
+    const { page, mouseClick } = makePage({ viewport: null, innerSize: [1024, 768] });
+    getPage.mockResolvedValue(page);
+
+    const result = await click({ x: 2000, y: 100 });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('1024x768 viewport');
+    expect(mouseClick).not.toHaveBeenCalled();
+  });
+
+  it('[fix] clicks inside the bounds that fallback reports', async () => {
+    const { page, mouseClick } = makePage({ viewport: null, innerSize: [1024, 768] });
+    getPage.mockResolvedValue(page);
+
+    const result = await click({ x: 500, y: 400 });
+    expect(result.isError).toBeUndefined();
+    expect(mouseClick).toHaveBeenCalledWith(500, 400, {});
+  });
+
+  it('[fix] still clicks when neither viewportSize nor the page can report a size', async () => {
+    const { page, mouseClick } = makePage({ viewport: null, innerSize: 'throws' });
     getPage.mockResolvedValue(page);
 
     const result = await click({ x: 900, y: 100 });

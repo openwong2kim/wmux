@@ -376,8 +376,22 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
           if ((x as number) < 0 || (y as number) < 0) {
             throw new Error(`Coordinates must be inside the viewport; got (${x}, ${y}).`);
           }
-          const viewport = (page as unknown as { viewportSize?: () => { width: number; height: number } | null })
+          let viewport = (page as unknown as { viewportSize?: () => { width: number; height: number } | null })
             .viewportSize?.();
+          if (!viewport) {
+            // viewportSize() is null for a page reached over connectOverCDP —
+            // which is EVERY page on the chrome backend, i.e. the only backend
+            // where coordinate clicks run at all. Without this fallback the
+            // bounds check was dead exactly where it matters (live dogfood:
+            // x=99999 reported success). The page's own innerWidth/innerHeight
+            // is the same CSS-pixel space x/y are defined in.
+            const size = await page
+              .evaluate('[window.innerWidth, window.innerHeight]')
+              .catch(() => null);
+            if (Array.isArray(size) && typeof size[0] === 'number' && typeof size[1] === 'number') {
+              viewport = { width: size[0], height: size[1] };
+            }
+          }
           if (viewport && ((x as number) > viewport.width || (y as number) > viewport.height)) {
             throw new Error(
               `Coordinates (${x}, ${y}) are outside the ${viewport.width}x${viewport.height} viewport (CSS px). Scroll the target into view first, or take a fresh screenshot.`,
