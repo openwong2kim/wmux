@@ -18,7 +18,7 @@
  *                   │                 │
  *                   └────────┬────────┴──── hard deadline (SIGKILL)
  *                            │         ├──── child exited on its own
- *                            │         ├──── idle timer
+ *                            │         ├──── the registry's idle sweep
  *                            ▼         └──── reset() / dispose()
  *                          dead  ── state is gone; the registry respawns clean
  *
@@ -130,8 +130,6 @@ function delay(ms: number): Promise<void> {
 export interface ReplSessionOptions {
   readonly name: string;
   readonly cwd: string;
-  /** Idle lifetime before the child is reaped. */
-  readonly idleMs: number;
 }
 
 export class ReplSession {
@@ -153,13 +151,10 @@ export class ReplSession {
   /** Id of the eval in flight; only a reply carrying it may settle. */
   private pendingId: number | null = null;
   private readonly ready: Promise<void>;
-  private idleTimer: NodeJS.Timeout | null = null;
-  private readonly idleMs: number;
 
   constructor(options: ReplSessionOptions) {
     this.name = options.name;
     this.cwd = options.cwd;
-    this.idleMs = options.idleMs;
 
     // Validated before spawn so a bad cwd reads as a bad cwd, not as an opaque
     // ENOENT from a process that never started.
@@ -244,8 +239,6 @@ export class ReplSession {
       this.pending = null;
       settle?.(message);
     });
-
-    this.armIdleTimer();
   }
 
   get status(): ReplSessionState {
@@ -277,23 +270,10 @@ export class ReplSession {
     return this.deathReason;
   }
 
-  private armIdleTimer(): void {
-    if (this.idleTimer) clearTimeout(this.idleTimer);
-    this.idleTimer = setTimeout(() => {
-      this.destroy(`idle for ${Math.round(this.idleMs / 60000)} minutes`);
-    }, this.idleMs);
-    // Never hold the MCP server open just to wait out an idle REPL.
-    this.idleTimer.unref?.();
-  }
-
   private markDead(reason: string): void {
     if (this.state === 'dead') return;
     this.state = 'dead';
     this.deathReason = reason;
-    if (this.idleTimer) {
-      clearTimeout(this.idleTimer);
-      this.idleTimer = null;
-    }
     const settle = this.pending;
     this.pending = null;
     this.pendingId = null;
@@ -413,7 +393,6 @@ export class ReplSession {
 
     this.state = 'idle';
     this.lastUsedAt = Date.now();
-    this.armIdleTimer();
 
     if (message.ok) {
       return {

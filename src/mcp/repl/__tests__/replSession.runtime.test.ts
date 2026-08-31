@@ -15,8 +15,8 @@ import { ReplSession, buildReplChildEnv } from '../ReplSession';
 
 const live: ReplSession[] = [];
 
-function makeSession(cwd = os.tmpdir(), idleMs = 60_000): ReplSession {
-  const session = new ReplSession({ name: 'test', cwd, idleMs });
+function makeSession(cwd = os.tmpdir()): ReplSession {
+  const session = new ReplSession({ name: 'test', cwd });
   live.push(session);
   return session;
 }

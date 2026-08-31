@@ -232,6 +232,12 @@ export function createReplToolCatalog(): readonly WmuxToolSpec[] {
           `${s.evals} run(s)`,
           `up ${formatDuration(now - s.createdAt)}`,
           `idle ${formatDuration(now - s.lastUsed)}`,
+          // Runtime output, not schema: the countdown an agent needs to decide
+          // whether its runtime will still be there costs nothing in tools/list.
+          // Busy sessions are spared by the sweep, so no countdown applies.
+          s.busy
+            ? 'reclaim held while busy'
+            : `reclaim in ${formatDuration(Math.max(0, IDLE_TIMEOUT_MS - (now - s.lastUsed)))}`,
           s.cwd,
         ].join(' · '),
       );
