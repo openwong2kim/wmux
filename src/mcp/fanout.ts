@@ -56,27 +56,27 @@ const FANOUT_START_SHAPE = {
     .string()
     .min(1)
     .describe(
-      'Required. Makes a retried start safe AND is the handle you poll this fan-out with: re-send the same key to get { status: "awaiting_approval" | "running" }, then { status: "completed", result }. Use a fresh key for a genuinely new fan-out.',
+      'Required. Makes a retried start safe AND is the poll handle: re-send the same key for { status: "awaiting_approval" | "running" }, then { status: "completed", result }. Use a fresh key for a new fan-out.',
     ),
   titles: z
     .array(z.string().min(1).max(256))
     .min(1)
     .max(FANOUT_MAX_TASKS)
     .describe(
-      `One title per task; the array length IS the task count (max ${FANOUT_MAX_TASKS}). Each title seeds that task's branch name (wtask/<slug>) and its mission channel topic.`,
+      `One title per task; the array length IS the task count (max ${FANOUT_MAX_TASKS}). Each title seeds the branch name (wtask/<slug>) and the mission channel topic.`,
     ),
   prompt: z
     .string()
     .optional()
     .describe(
-      `Shared prompt sent to every task. Optional: with no prompt at all, each task still gets its worktree, branch and agent pane, and you (or a human) type into them. Max ${FANOUT_PROMPT_MAX_BYTES} bytes.`,
+      `Shared prompt sent to every task. Optional — with none, each task still gets its worktree, branch and agent pane to be typed into. Max ${FANOUT_PROMPT_MAX_BYTES} bytes.`,
     ),
   task_prompts: z
     .array(z.string())
     .max(FANOUT_MAX_TASKS)
     .optional()
     .describe(
-      'Per-task prompts, index-aligned with titles. Each task receives shared prompt + "\\n\\n" + its own prompt (empty side dropped). Use this for N different jobs; omit it for N attempts at the same job.',
+      'Per-task prompts, index-aligned with titles. Each task gets shared prompt + "\\n\\n" + its own (empty side dropped). Use for N different jobs; omit for N attempts at one job.',
     ),
   roles: z
     .array(z.enum(ORCH_ROLES))
@@ -86,7 +86,7 @@ const FANOUT_START_SHAPE = {
       // Kept terse on purpose: the commander tools/list payload is budgeted
       // (scripts/mcp-protocol-baseline.json), and the long form of this already
       // lives in the brain's `fanout` skill and the SDK system prompt.
-      `Per-task role (${ORCH_ROLES.join(' | ')}), index-aligned with titles. Picks that task's agent CLI and model from the operator's bindings — your only agent control. Omit for the default; unknown roles are rejected.`,
+      `Per-task role (${ORCH_ROLES.join(' | ')}), index-aligned with titles. Picks that task's agent CLI and model from the operator's bindings — your only agent control. Omit for the default.`,
     ),
 };
 
@@ -99,15 +99,14 @@ export function registerFanOutTools(server: McpServer, deps: FanOutToolDeps): vo
 
   server.tool(
     'fanout_start',
-    'Fan out one job into N isolated parallel tasks. Each task gets its own git worktree on a fresh wtask/ branch, its own wmux workspace with an agent pane already launched on the prompt, and its own mission channel. Use it to race N attempts at the same problem, or to run N independent jobs without them colliding in one checkout. ' +
-      `Up to ${FANOUT_MAX_TASKS} tasks per call. ` +
+    `Fan out one job into N isolated parallel tasks (max ${FANOUT_MAX_TASKS}). Each task gets its own git worktree on a fresh wtask/ branch, its own wmux workspace with an agent pane already launched on the prompt, and its own mission channel — so N attempts at one problem, or N independent jobs, never collide in one checkout. ` +
       // Deliberately NOT naming channel_mission_list here: that tool is outside
       // the commander surface, so pointing a brain at it names a tool its
       // tools/list does not contain. Every profile can see the mission channels
       // themselves, which is the same answer.
-      'Returns immediately with { status: "accepted" } — spawning takes far longer than one RPC, so the work continues in the background. Poll it by calling again with the SAME idempotency_key, or watch each task\'s mission channel appear in your channel list. ' +
-      'The user is asked to approve before anything spawns, and that prompt is never auto-approved; if nobody answers it, a poll reports { status: "denied", reason: "timeout" } rather than leaving you waiting. ' +
-      "The repository, the owning workspace and the agent command are all determined by the server from your verified identity: fan-out always runs in YOUR workspace's repository, and the tasks are owned by you. Fan-out is refused if your identity cannot be verified.",
+      'Returns { status: "accepted" } immediately: spawning outlasts one RPC, so poll with the SAME idempotency_key, or watch each mission channel appear in your channel list. ' +
+      'The user must approve first and that prompt is never auto-approved; unanswered, a poll reports { status: "denied", reason: "timeout" } rather than leaving you waiting. ' +
+      'Repository, owning workspace and agent command all come from your verified identity — fan-out runs in YOUR repository, the tasks are owned by you, and it is refused without that identity.',
     FANOUT_START_SHAPE,
     async ({ idempotency_key, titles, prompt, task_prompts, roles }) => {
       const params: Record<string, unknown> = {
