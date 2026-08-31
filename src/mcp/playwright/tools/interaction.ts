@@ -30,6 +30,14 @@ const optionalSurfaceId = z
 // every createWmuxServer() instance shares one set of zod schema objects.
 const BROWSER_CLICK_SHAPE = {
   ref: z.string().optional(),
+  x: z
+    .number()
+    .optional()
+    .describe('Viewport CSS px, only when ref/smartRef is omitted. Needs y.'),
+  y: z
+    .number()
+    .optional()
+    .describe('Viewport CSS px, only when ref/smartRef is omitted. Needs x.'),
   smartRef: z
     .number()
     .optional()
@@ -326,12 +334,46 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
   // -----------------------------------------------------------------------
   server.tool(
     'browser_click',
-    'Click an element by ref (browser_snapshot) or smartRef (browser_smart_snapshot).',
+    'Click an element by ref (browser_snapshot) or smartRef (browser_smart_snapshot), or — when neither is available — at x/y. Coordinates are VIEWPORT CSS PIXELS: divide a browser_screenshot pixel by the devicePixelRatio that shot reports. A fullPage or element screenshot is in a different coordinate space and cannot be used for x/y at all. Coordinates need a live page (chrome backend); the RPC lane is ref-only.',
     BROWSER_CLICK_SHAPE,
-    async ({ ref, smartRef, double, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
+    async ({ ref, smartRef, x, y, double, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
       try {
+        // Coordinate clicking is an ESCAPE HATCH, not a second addressing mode:
+        // a ref survives a re-render and a coordinate does not, so a call that
+        // carries both is a mistake worth refusing rather than silently
+        // resolving in favour of one.
+        // mirrors browser-use tools/service.py coordinate clicking (set_coordinate_clicking)
+        const hasCoords = x !== undefined || y !== undefined;
+        if (hasCoords && (ref !== undefined || smartRef !== undefined)) {
+          throw new Error(
+            'Pass either ref/smartRef or x/y, not both — a ref survives a re-render and a coordinate does not.',
+          );
+        }
+        if (hasCoords && (x === undefined || y === undefined)) {
+          throw new Error('Coordinate clicks need both x and y (viewport CSS pixels).');
+        }
+
         // Try Playwright first
         const page = await engine.getPageForScope(scope).catch(allowScopedRpcFallback);
+
+        if (hasCoords) {
+          if (!page) {
+            throw new Error(
+              'Coordinate clicks need a live browser page, which this workspace\'s backend does not expose (the RPC lane resolves elements by ref only). Switch the workspace to the chrome backend, or click by ref from browser_snapshot.',
+            );
+          }
+          await page.mouse.click(x as number, y as number, {
+            ...(double && { clickCount: 2 }),
+          });
+          return {
+            content: [
+              {
+                type: 'text' as const,
+                text: `Clicked${double ? ' (double)' : ''} at viewport CSS px (${x}, ${y})`,
+              },
+            ],
+          };
+        }
 
         if (page) {
           // A popup can only be observed on the chrome backend (see
