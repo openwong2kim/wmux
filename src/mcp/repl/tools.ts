@@ -20,6 +20,7 @@ import {
 } from '../toolCatalog';
 import {
   DEFAULT_SESSION_NAME,
+  IDLE_SWEEP_INTERVAL_MS,
   IDLE_TIMEOUT_MS,
   MAX_SESSIONS_PER_CONNECTION,
   getReplRegistry,
@@ -217,7 +218,11 @@ export function createReplToolCatalog(): readonly WmuxToolSpec[] {
       const sessions = getReplRegistry().list();
       const header =
         `REPL sessions are scoped to this MCP connection, capped at ${MAX_SESSIONS_PER_CONNECTION}, ` +
-        `and reaped after ${Math.round(IDLE_TIMEOUT_MS / 60000)} minutes idle.`;
+        `and reaped after ${Math.round(IDLE_TIMEOUT_MS / 60000)} minutes idle ` +
+        // Say the granularity rather than let the per-row countdown imply a
+        // precision it does not have: the sweep is coarse, so a row reading
+        // "reclaim in 0s" still has up to one interval left to live.
+        `(checked every ${Math.round(IDLE_SWEEP_INTERVAL_MS / 1000)}s).`;
       if (sessions.length === 0) {
         return text(`No REPL sessions running.\n${header}`);
       }

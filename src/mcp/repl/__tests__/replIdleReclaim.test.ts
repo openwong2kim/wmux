@@ -34,6 +34,18 @@ function alive(pid: number | undefined): boolean {
   }
 }
 
+/**
+ * Wait for a SIGKILLed child to actually leave the process table. A killed
+ * child is a zombie until its parent reaps it, and `kill(pid, 0)` succeeds on a
+ * zombie — so a fixed sleep is a flake on a loaded CI runner, not a check.
+ */
+async function waitForExit(pid: number | undefined, deadlineMs = 5000): Promise<void> {
+  const until = Date.now() + deadlineMs;
+  while (alive(pid) && Date.now() < until) {
+    await new Promise((r) => setTimeout(r, 50));
+  }
+}
+
 afterEach(() => {
   vi.useRealTimers();
   while (registries.length > 0) registries.pop()?.disposeAll();
@@ -47,13 +59,15 @@ describe('idle reclaim', () => {
     const pid = session.pid;
     expect(alive(pid)).toBe(true);
 
-    // One millisecond short of the threshold is still a live session.
-    expect(reclaimIdleSessions(session.lastUsed + IDLE_TIMEOUT_MS - 1)).toBe(0);
+    // One millisecond short of the threshold is still a live session. Counted
+    // through the registry, not the process-wide entry point, so a registry
+    // another test forgot to dispose cannot skew the number.
+    expect(registry.reclaimIdle(session.lastUsed + IDLE_TIMEOUT_MS - 1)).toBe(0);
     expect(session.dead).toBe(false);
 
-    expect(reclaimIdleSessions(session.lastUsed + IDLE_TIMEOUT_MS)).toBe(1);
+    expect(registry.reclaimIdle(session.lastUsed + IDLE_TIMEOUT_MS)).toBe(1);
     expect(session.dead).toBe(true);
-    await new Promise((r) => setTimeout(r, 300));
+    await waitForExit(pid);
     expect(alive(pid)).toBe(false);
   }, 20_000);
 
@@ -72,6 +86,37 @@ describe('idle reclaim', () => {
     expect(outcome.result?.text).toContain('undefined');
   }, 20_000);
 
+  it('still explains itself after repl_sessions has listed the connection', async () => {
+    // Regression: `list()` used to DELETE dead sessions, so a repl_sessions
+    // call landing between the reclaim and the next repl_run threw away the
+    // reason and the agent got a silently empty runtime instead of a warning.
+    const registry = makeRegistry();
+    const first = registry.acquire('default', os.tmpdir());
+    await first.session.run('let doomed = 1;', 5000);
+    registry.reclaimIdle(Date.now() + IDLE_TIMEOUT_MS);
+
+    expect(registry.list().map((s) => s.name)).toEqual([]);
+    expect(registry.get('default')).toBeUndefined();
+
+    const second = registry.acquire('default', os.tmpdir());
+    expect(second.created).toBe(true);
+    expect(second.previousDeath).toBe('idle for 15 minutes');
+  }, 20_000);
+
+  it('does not let corpses occupy the per-connection session cap', async () => {
+    const registry = makeRegistry();
+    const { session } = registry.acquire('default', os.tmpdir());
+    await session.run('1', 5000);
+    registry.reclaimIdle(Date.now() + IDLE_TIMEOUT_MS);
+
+    // Four fresh sessions must still fit beside the corpse.
+    for (let i = 0; i < 4; i++) registry.acquire(`live${i}`, os.tmpdir());
+    expect(registry.liveCount).toBe(4);
+    expect(() => registry.acquire('one-too-many', os.tmpdir())).toThrow(
+      /already holds 4 REPL sessions/,
+    );
+  }, 30_000);
+
   it('spares a session that is still running code', async () => {
     const registry = makeRegistry();
     const { session } = registry.acquire('default', os.tmpdir());
@@ -83,7 +128,7 @@ describe('idle reclaim', () => {
     const inFlight = session.run('await new Promise((r) => setTimeout(r, 1500)); "done"', 10_000);
     await new Promise((r) => setTimeout(r, 200));
     expect(session.busy).toBe(true);
-    expect(reclaimIdleSessions(Date.now() + 10 * IDLE_TIMEOUT_MS)).toBe(0);
+    expect(registry.reclaimIdle(Date.now() + 10 * IDLE_TIMEOUT_MS)).toBe(0);
     expect(session.dead).toBe(false);
 
     const outcome = await inFlight;
@@ -99,7 +144,10 @@ describe('idle reclaim', () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     const registry = makeRegistry();
     const { session } = registry.acquire('default', os.tmpdir());
-    await session.run('let stale = 1;', 5000);
+    // A generous per-run timeout: under shouldAdvanceTime the hard deadline
+    // burns real seconds, and a slow runner must not turn this into a hard-kill
+    // death that masquerades as the reclaim being asserted.
+    await session.run('let stale = 1;', 60_000);
     const pid = session.pid;
     expect(session.dead).toBe(false);
 
@@ -108,21 +156,27 @@ describe('idle reclaim', () => {
 
     expect(session.dead).toBe(true);
     expect(session.diedBecause).toBe('idle for 15 minutes');
-    await new Promise((r) => setTimeout(r, 300));
+    await waitForExit(pid);
     expect(alive(pid)).toBe(false);
   }, 20_000);
 });
 
 describe('the sweep timer', () => {
   it("is one per process, unref'd, and released with the last registry", () => {
-    const a = new ReplRegistry();
+    // A registry alone arms nothing: a connection that only ever ran
+    // repl_sessions should not carry a sixty-second wakeup for its lifetime.
+    expect(idleSweepTimerForTest()).toBeNull();
+    const a = makeRegistry();
+    a.acquire('default', os.tmpdir());
     const timer = idleSweepTimerForTest();
     expect(timer).not.toBeNull();
     // Waiting out an idle REPL is not work worth keeping the MCP server alive
     // for: a ref'd interval would stop the process ever exiting on its own.
     expect(timer?.hasRef()).toBe(false);
 
-    const b = new ReplRegistry();
+    const b = makeRegistry();
+    b.acquire('default', os.tmpdir());
+    b.acquire('second', os.tmpdir());
     // One interval for the process, not one per registry — and emphatically
     // not one per session.
     expect(idleSweepTimerForTest()).toBe(timer);
@@ -131,7 +185,7 @@ describe('the sweep timer', () => {
     expect(idleSweepTimerForTest()).toBe(timer);
     b.disposeAll();
     expect(idleSweepTimerForTest()).toBeNull();
-  });
+  }, 20_000);
 });
 
 describe('repl_sessions idle reporting', () => {
