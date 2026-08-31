@@ -973,7 +973,15 @@ type CdpClient = {
 };
 
 /** Fetch and build the full a11y tree over an already-open CDP session. */
-async function fetchAccessibilityTree(client: CdpClient): Promise<BuiltTree | null> {
+async function fetchAccessibilityTree(
+  client: CdpClient,
+  /**
+   * Present only on the whole-page path. A scoped snapshot deliberately does
+   * NOT graft: its refs are numbered inside one selector-matched element, and
+   * a selector scope cannot be combined with a frame route (see resolveRef).
+   */
+  graftInto?: { page: Page; extraSessions: CdpClient[] },
+): Promise<BuiltTree | null> {
   // Enable the Accessibility domain before querying. Without it, getFullAXTree
   // is racy on heavy pages — the domain computes the tree lazily on enable.
   await client.send('Accessibility.enable').catch(() => { /* best-effort */ });
@@ -1003,7 +1011,301 @@ async function fetchAccessibilityTree(client: CdpClient): Promise<BuiltTree | nu
     );
   }
 
+  if (built && graftInto) {
+    // Fail-open around the whole walk: a frame that cannot be read costs its
+    // own boundary note, and a walk that throws costs the frames it had not
+    // reached yet — never the page's own tree.
+    try {
+      const doc = (await client.send('DOM.getDocument', { depth: 0 })) as {
+        root?: { nodeId?: number };
+      };
+      const documentNodeId = doc?.root?.nodeId;
+      if (documentNodeId) {
+        await graftChildFrames(
+          {
+            client,
+            root: graftInto.page,
+            documentNodeId,
+            built,
+            coord: MAIN_FRAME,
+            depth: 0,
+            passwordBackendIds,
+          },
+          {
+            remaining: MAX_FRAMES,
+            visited: new Set<string>(),
+            extraSessions: graftInto.extraSessions,
+          },
+        );
+      }
+    } catch {
+      /* the page's own tree is worth more than the frames under it */
+    }
+  }
+
   return built;
+}
+
+// ---------------------------------------------------------------------------
+// Child-frame grafting
+// ---------------------------------------------------------------------------
+
+/**
+ * How deep the graft follows nested frames.
+ *
+ * Mirrors browser-use's own frame walk (dom/service.py), which caps depth and
+ * frame count rather than trusting a page not to nest. An ad frame inside a
+ * consent frame inside a widget is three, so five leaves headroom while still
+ * bounding the number of CDP round-trips a hostile page can force.
+ */
+const MAX_FRAME_DEPTH = 5;
+
+/** Total frames grafted per snapshot, across the whole tree. */
+const MAX_FRAMES = 100;
+
+/** CDP `DOM.describeNode` fields the graft reads. */
+interface CdpDomNode {
+  backendNodeId?: number;
+  frameId?: string;
+  contentDocument?: { nodeId?: number };
+  attributes?: string[];
+}
+
+/** Read one attribute out of CDP's flat [name, value, name, value] array. */
+function attributeOf(node: CdpDomNode | undefined, wanted: string): string | undefined {
+  const attrs = node?.attributes;
+  if (!attrs) return undefined;
+  for (let i = 0; i + 1 < attrs.length; i += 2) {
+    if (attrs[i] === wanted) return attrs[i + 1];
+  }
+  return undefined;
+}
+
+/** Everything one host document contributes to the walk. */
+interface GraftHost {
+  /** CDP session the host document lives on. */
+  client: CdpClient;
+  /** Playwright handle on the same document — the index cross-check. */
+  root: Page | Frame;
+  /** CDP nodeId of the host document, for DOM.querySelectorAll. */
+  documentNodeId: number;
+  /** The host's built tree, so an `<iframe>` element can find its AX node. */
+  built: BuiltTree;
+  /** Route from the main frame to this host. */
+  coord: FrameCoord;
+  depth: number;
+  /**
+   * Password fields to mask, in this session's backendNodeId space.
+   *
+   * Shared with the host document on purpose: `DOM.performSearch` was measured
+   * to reach same-process iframes already (redact.ts), and backendNodeIds are
+   * unique per target — so the host's one search covers every same-process
+   * frame under it. An out-of-process frame gets its own search on its own
+   * session, because its ids live in a different space.
+   */
+  passwordBackendIds: Set<number>;
+}
+
+/** Mutable budget shared by every host in one snapshot's walk. */
+interface GraftBudget {
+  remaining: number;
+  /** frameIds already grafted — a page that re-parents a frame cannot loop us. */
+  visited: Set<string>;
+  /** Extra CDP sessions opened for out-of-process frames, closed by the caller. */
+  extraSessions: CdpClient[];
+}
+
+/**
+ * Stitch child documents into the host tree, in place.
+ *
+ * In place matters: the overflow path in generateSnapshot re-serialises the
+ * ORIGINAL tree after stripping non-interactive nodes, so a graft that built a
+ * new tree would be silently discarded on exactly the large pages that most
+ * need it.
+ *
+ * Every failure is fail-open — the `<iframe>` node keeps a boundary note
+ * saying why its contents are absent, which is strictly what the snapshot said
+ * before frames were reachable at all. A frame is never half-grafted: either
+ * its nodes are in, and refs minted in it carry a route that resolves, or they
+ * are not.
+ */
+async function graftChildFrames(host: GraftHost, budget: GraftBudget): Promise<void> {
+  let describedFrames: { nodeId: number; described: CdpDomNode | undefined }[];
+  let hostTotal: number;
+  try {
+    const found = (await host.client.send('DOM.querySelectorAll', {
+      nodeId: host.documentNodeId,
+      selector: FRAME_ELEMENT_SELECTOR,
+    })) as { nodeIds?: number[] };
+    const nodeIds = found?.nodeIds ?? [];
+    if (nodeIds.length === 0) return;
+    hostTotal = nodeIds.length;
+
+    describedFrames = [];
+    for (const nodeId of nodeIds) {
+      const described = (await host.client.send('DOM.describeNode', {
+        nodeId,
+        // depth 1 + pierce is what exposes contentDocument, and contentDocument
+        // is also the same-process/out-of-process discriminator: an OOPIF's
+        // document belongs to another target and is simply not here.
+        depth: 1,
+        pierce: true,
+      })) as { node?: CdpDomNode };
+      describedFrames.push({ nodeId, described: described?.node });
+    }
+  } catch {
+    return;
+  }
+
+  // The resolver counts frames with a Playwright locator over the same
+  // selector, so a ref's positional index is only sound while the two
+  // enumerations agree. They are both document order over one selector, so
+  // they do — but if they ever disagree, minting refs against an index the
+  // resolver will read differently is exactly the silent wrong-element bug
+  // this design exists to avoid. Graft nothing instead.
+  let liveCount: number;
+  try {
+    liveCount = await host.root.locator(FRAME_ELEMENT_SELECTOR).count();
+  } catch {
+    return;
+  }
+  if (liveCount !== hostTotal) return;
+
+  for (let hostIndex = 0; hostIndex < describedFrames.length; hostIndex++) {
+    const { described } = describedFrames[hostIndex];
+    const backendNodeId = described?.backendNodeId;
+    if (backendNodeId === undefined) continue;
+
+    const hostAx = host.built.byBackendId.get(backendNodeId)?.[0];
+    // No a11y node for this `<iframe>` means Chrome did not render it —
+    // display:none, zero-box, or an ad blocker's leftover. browser-use walks
+    // only visible frames for the same reason; here the visibility test is
+    // free, because absence from the a11y tree IS the answer, and grafting
+    // into nothing would mint refs no serialisation ever emits.
+    if (!hostAx) continue;
+
+    const frameId = described?.frameId;
+    if (!frameId || budget.visited.has(frameId)) {
+      hostAx.frameBoundaryReason = 'not-attached';
+      continue;
+    }
+    if (host.depth + 1 > MAX_FRAME_DEPTH) {
+      hostAx.frameBoundaryReason = 'depth-cap';
+      continue;
+    }
+    if (budget.remaining <= 0) {
+      hostAx.frameBoundaryReason = 'count-cap';
+      continue;
+    }
+
+    // The Playwright side of the same hop. Taken through an element handle
+    // rather than Locator.contentFrame() because the child's url() is what the
+    // hop records, and a FrameLocator cannot say what it points at.
+    let childFrame: Frame | null = null;
+    try {
+      const handle = await host.root
+        .locator(FRAME_ELEMENT_SELECTOR)
+        .nth(hostIndex)
+        .elementHandle();
+      childFrame = handle ? await handle.contentFrame() : null;
+    } catch {
+      childFrame = null;
+    }
+    if (!childFrame) {
+      hostAx.frameBoundaryReason = 'not-attached';
+      continue;
+    }
+
+    const hop: FrameHop = {
+      hostIndex,
+      hostTotal,
+      hostSrcKey: documentKey(attributeOf(described, 'src')) ?? '',
+      childUrlKey: documentKey(childFrame.url()) ?? '',
+    };
+    const childCoord = descend(host.coord, hop);
+
+    const child = await openChildDocument(host, frameId, described, budget);
+    if (!child) {
+      hostAx.frameBoundaryReason = 'not-attached';
+      continue;
+    }
+
+    budget.visited.add(frameId);
+    budget.remaining--;
+
+    // Grafted either way: the agent now knows the frame WAS read, so an empty
+    // one reads as "nothing in here" instead of "contents withheld".
+    hostAx.graftedFrame = true;
+    const injected = child.built.root.children ?? [];
+    if (injected.length === 0) {
+      hostAx.frameBoundaryReason = 'empty';
+      continue;
+    }
+    hostAx.frameBoundaryReason = undefined;
+
+    // Only the top level is stamped; serializeNode inherits the coordinate
+    // down the subtree, which keeps the main-frame walk untouched.
+    for (const node of injected) node.frameCoord = childCoord;
+    // Appended after the iframe node's own children (Chrome gives it none, but
+    // a future engine might) so the order is deterministic — the overflow
+    // re-serialisation has to reproduce it exactly.
+    hostAx.children = [...(hostAx.children ?? []), ...injected];
+
+    await graftChildFrames(
+      {
+        client: child.client,
+        root: childFrame,
+        documentNodeId: child.documentNodeId,
+        built: child.built,
+        coord: childCoord,
+        depth: host.depth + 1,
+        passwordBackendIds: child.passwordBackendIds,
+      },
+      budget,
+    );
+  }
+}
+
+/** A child document opened for grafting: its tree, its session, its DOM root. */
+interface ChildDocument {
+  built: BuiltTree;
+  client: CdpClient;
+  documentNodeId: number;
+  /** In `client`'s backendNodeId space — the host's set, or the frame's own. */
+  passwordBackendIds: Set<number>;
+}
+
+/**
+ * Read one child frame's accessibility tree.
+ *
+ * Same-process frames answer on the host's own session: `getFullAXTree` takes a
+ * frameId, and `DOM.describeNode(pierce)` already handed us the child document
+ * node. Out-of-process frames live in another CDP target and are C5's problem —
+ * here they simply fail, and the caller keeps the boundary note.
+ */
+async function openChildDocument(
+  host: GraftHost,
+  frameId: string,
+  described: CdpDomNode | undefined,
+  _budget: GraftBudget,
+): Promise<ChildDocument | null> {
+  const documentNodeId = described?.contentDocument?.nodeId;
+  if (documentNodeId === undefined) return null;
+  try {
+    const nodes = (await host.client.send('Accessibility.getFullAXTree', { frameId })) as {
+      nodes?: CdpAXNode[];
+    };
+    const built = buildTree(nodes?.nodes ?? [], host.passwordBackendIds);
+    if (!built) return null;
+    return {
+      built,
+      client: host.client,
+      documentNodeId,
+      passwordBackendIds: host.passwordBackendIds,
+    };
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -1071,17 +1373,26 @@ interface SnapshotSource {
 }
 
 async function getAccessibilityTree(page: Page): Promise<SnapshotSource> {
-  return withCdpSession<SnapshotSource>(
-    page,
-    async (client) => ({
-      tree: (await fetchAccessibilityTree(client))?.root ?? null,
+  // Sessions opened for out-of-process frames during the graft. Detached here
+  // rather than inside the walk so one frame's cleanup cannot abort the rest.
+  const extraSessions: CdpClient[] = [];
+  try {
+    return await withCdpSession<SnapshotSource>(
+      page,
+      async (client) => ({
+        tree: (await fetchAccessibilityTree(client, { page, extraSessions }))?.root ?? null,
       // After the tree, never instead of it: a thrown occlusion probe must not
       // cost the caller its snapshot (collectOcclusion swallows its own
       // failures, and this ordering keeps the tree even if that ever changes).
-      occlusion: await collectOcclusion(client).catch(() => null),
-    }),
-    { tree: null, occlusion: null },
-  );
+        occlusion: await collectOcclusion(client).catch(() => null),
+      }),
+      { tree: null, occlusion: null },
+    );
+  } finally {
+    for (const extra of extraSessions) {
+      await extra.detach().catch(() => { /* best-effort */ });
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
