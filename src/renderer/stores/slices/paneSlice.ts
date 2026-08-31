@@ -31,6 +31,7 @@ import { clearNudgesFor } from '../../hooks/channelMentionRateLimit';
 import { panePrincipalId } from '../../../shared/principals';
 import { computePaneAutoName, paneDisplayName } from '../../utils/paneNaming';
 import { saveSessionNow } from '../../utils/sessionSaveBridge';
+import { recomputeWorkspacePorts } from './workspacePorts';
 
 // Per-workspace leaf cap. xterm.js + node-pty memory scales linearly with
 // pane count, and the project memory budget targets ~200 MB for 10 panes
@@ -845,6 +846,11 @@ export const createPaneSlice: StateCreator<StoreState, [['zustand/immer', never]
           }
         }
       }
+      // #1135: the sidebar's listening-port chip is a union over surfacePorts.
+      // Recompute it now that the closing pane's entries are gone, otherwise a
+      // closed pane's ports stay pinned on the workspace forever (no surviving
+      // surface's METADATA_UPDATE can subtract another surface's ports).
+      recomputeWorkspacePorts(state.workspaces, state.surfacePorts);
 
       const previousActiveId = ws.activePaneId;
       // Structural removal lives in detachPane (shared with movePane, #645);

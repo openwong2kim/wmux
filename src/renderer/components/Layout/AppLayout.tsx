@@ -296,6 +296,11 @@ function buildSessionData(dumped: Map<string, boolean>): SessionData {
   return {
     workspaces: state.workspaces.map((ws) => ({
       ...ws,
+      // #1135: never persist listeningPorts. It describes processes that are
+      // alive right now; a saved value outlives them and the daemon's
+      // PortWatcher cannot contradict it (its first empty observation for a
+      // session is a deliberate no-op), so the sidebar chip survived restarts.
+      ...(ws.metadata ? { metadata: { ...ws.metadata, listeningPorts: undefined } } : {}),
       rootPane: cloneWithScrollback(ws.rootPane, dumped),
       stashedPanes: cloneStashedPanes(ws, dumped),
     })),

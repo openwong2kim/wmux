@@ -216,11 +216,21 @@ export class PortWatcher extends EventEmitter {
         (s) => Number.isInteger(s.pid) && s.pid > 0,
       );
 
-      // Sessions that disappeared: drop diff state so a recreated session
-      // with the same id re-emits its first non-empty set.
+      // Sessions that disappeared: emit one final empty set, then drop the
+      // diff state so a recreated session with the same id re-emits its first
+      // non-empty set.
+      //
+      // #1135 — the final empty emit is the important half. A session whose
+      // process died stops being matched at all, so without it the LAST set of
+      // ports it ever reported was also the last thing the sidebar heard, and
+      // the chip stayed lit for a dead dev server until the surface itself was
+      // closed. Suppressed when the last emitted value was already empty.
       const liveIds = new Set(sessions.map((s) => s.sessionId));
-      for (const id of this.lastBySession.keys()) {
-        if (!liveIds.has(id)) this.lastBySession.delete(id);
+      for (const id of [...this.lastBySession.keys()]) {
+        if (liveIds.has(id)) continue;
+        const prev = this.lastBySession.get(id);
+        this.lastBySession.delete(id);
+        if (prev && prev !== '[]') this.emit('ports', { sessionId: id, ports: [] });
       }
       if (sessions.length === 0) return;
 
