@@ -131,6 +131,57 @@ function psQuote(p: string): string {
 }
 
 /**
+ * #1136 — the VBScript launcher for the hidden waiter transport.
+ *
+ * Root cause it exists for, measured on this box (Win11 26200, default
+ * terminal = "Let Windows decide" → Windows Terminal): libuv turns
+ * `windowsHide: true` into `CREATE_NO_WINDOW`, but `detached: true` also sets
+ * `DETACHED_PROCESS` — and the two are mutually exclusive console-creation
+ * flags, so `DETACHED_PROCESS` wins. The console child then allocates its own
+ * console, that allocation goes through the Win11 default-terminal delegation,
+ * and Windows Terminal opens a real, visible window. Proven by A/B: the SAME
+ * `cmd.exe`, same `windowsHide: true`, produced a visible `WindowsTerminal`
+ * window with `detached: true` and none without it. So this is specific to the
+ * detached waiter transports; the module's non-detached `execFileSync` calls
+ * (probeVolume, terminatePids) are unaffected and are left alone.
+ *
+ * `wscript.exe` is a GUI-subsystem host: it never allocates a console, so
+ * nothing reaches the delegation layer. It then starts PowerShell through
+ * `WshShell.Run(cmd, 0, True)`:
+ *   - window style 0 = hidden, and because wscript already owns no console the
+ *     child's console is created hidden rather than delegated,
+ *   - `bWaitOnReturn = True` keeps wscript parked as the waiter's parent for
+ *     its whole life. That is deliberate and NOT a cost regression: it is the
+ *     same shape as the cmd.exe trampoline it replaces (one idle host process),
+ *     and it is what keeps the refusal path's `taskkill /T` able to reach the
+ *     PowerShell child. With `False` the launcher would exit immediately and
+ *     orphan a waiter no tree-kill could find.
+ *
+ * VBScript string literals are double-quoted with `""` as the escape, so an
+ * apostrophe in TEMP (the `O'Brien` case the cmd transport is pinned on) is
+ * inert here. A literal `"` cannot occur in a Windows path, but rather than
+ * rely on that this returns null for one — same fail-closed rule as
+ * buildWaiterScript's stamp-path check.
+ */
+export function buildWaiterVbsLauncher(
+  powershellPath: string,
+  psArgs: readonly string[],
+  scriptPath: string,
+): string | null {
+  const parts = [powershellPath, ...psArgs, scriptPath];
+  if (!parts.every((p) => p.length > 0 && !/["\r\n]/.test(p))) return null;
+  // Quote only the two paths; the switches are literal and space-free, and
+  // quoting them would make CreateProcess look for a file named `"-NoProfile"`.
+  const q = (p: string) => `""${p}""`;
+  const cmd = [q(powershellPath), ...psArgs, q(scriptPath)].join(' ');
+  return [
+    `Set sh = CreateObject("WScript.Shell")`,
+    `sh.Run "${cmd}", 0, True`,
+    '',
+  ].join('\r\n');
+}
+
+/**
  * Volume-aware free-space check. The staging download and the install root can
  * live on different volumes (a redirected AppData, a mapped drive), so a single
  * "is there room" number is meaningless — each volume is budgeted separately
@@ -749,6 +800,17 @@ function waitForLaunchStamp(stampPath: string, budgetMs: number): boolean {
 // runs after A already burned its window. Total ≤8s of synchronous wait, and
 // nothing is armed yet — the 20s before-quit deadline only exists once the
 // caller reaches app.quit().
+// #1136 adds W ahead of both. Same generosity as A, and for the same reason:
+// its critical path is a wscript host start plus the same PS 5.1 cold start
+// and AMSI scan of a freshly written .ps1. Measured on a Win11 box with
+// Windows Terminal as the default host, W stamps in ~440ms (A: ~585ms), so
+// the budget is >10x the observed cost; it is only ever spent in full on a
+// machine where WSH is disabled by policy, and there `//B` makes wscript fail
+// fast and silently rather than pop a dialog. Worst case is now three burned
+// windows (~14s) before the refusal instead of two (~8s) — paid only on the
+// path that was already going to end in a refusal dialog, and nothing is
+// armed yet (the 20s before-quit deadline starts at app.quit()).
+const LAUNCH_STAMP_BUDGET_W_MS = 6_000;
 const LAUNCH_STAMP_BUDGET_A_MS = 6_000;
 const LAUNCH_STAMP_BUDGET_B_MS = 2_000;
 
@@ -768,10 +830,18 @@ const LAUNCH_STAMP_BUDGET_B_MS = 2_000;
  * nothing on stderr, no AV detection — while the same PowerShell created by
  * a detached cmd.exe survives and runs to completion. So:
  *
+ *   transport W — #1136, PREFERRED. wscript.exe (GUI subsystem, so it never
+ *       touches the Win11 default-terminal delegation that made the cmd.exe
+ *       trampoline flash a visible Windows Terminal window) running a VBS
+ *       one-liner that starts the same PowerShell hidden and waits on it.
+ *       See buildWaiterVbsLauncher for the measured root cause.
  *   transport A — cmd.exe trampoline. argv-array: libuv does the CRT
  *       quoting, and cmd /c's strip-first-and-last-quote rule cannot fire
  *       because the first token after /c (the System32 powershell path)
- *       carries no spaces and is unquoted.
+ *       carries no spaces and is unquoted. Kept unchanged as the fallback for
+ *       machines where Windows Script Host is disabled by policy — visible
+ *       window and all, because a visible window is a cosmetic defect and a
+ *       refused install is not.
  *   transport B — today's direct detached spawn, kept for machines where A
  *       is somehow unavailable but the direct spawn still works.
  *   Both with cwd pinned OUTSIDE the install root — an inherited cwd inside
@@ -789,11 +859,14 @@ export function spawnInstallWaiter(plan: WaiterPlan): string | null {
   if (process.platform !== 'win32') return null;
   try {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-install-waiter-'));
+    const stampW = path.join(dir, 'launched-w.txt');
     const stampA = path.join(dir, 'launched-a.txt');
     const stampB = path.join(dir, 'launched-b.txt');
+    const scriptW = buildWaiterScript(plan, stampW);
     const scriptA = buildWaiterScript(plan, stampA);
     const scriptB = buildWaiterScript(plan, stampB);
-    if (!scriptA || !scriptB) return null;
+    if (!scriptW || !scriptA || !scriptB) return null;
+    const scriptPathW = path.join(dir, 'wait-and-install-w.ps1');
     const scriptPathA = path.join(dir, 'wait-and-install.ps1');
     const scriptPathB = path.join(dir, 'wait-and-install-b.ps1');
     // The BOM is load-bearing. Windows PowerShell 5.1 decodes a BOM-less file
@@ -802,6 +875,7 @@ export function spawnInstallWaiter(plan: WaiterPlan): string | null {
     // Measured: with `C:\Users\홍길동\...` the BOM-less script still exits 0
     // while writing to the wrong path, which is the worst shape a failure can
     // take here (silent success). With the BOM it behaves.
+    fs.writeFileSync(scriptPathW, '\uFEFF' + scriptW, 'utf-8');
     fs.writeFileSync(scriptPathA, '\uFEFF' + scriptA, 'utf-8');
     fs.writeFileSync(scriptPathB, '\uFEFF' + scriptB, 'utf-8');
 
@@ -811,6 +885,42 @@ export function spawnInstallWaiter(plan: WaiterPlan): string | null {
     );
     const psArgs = ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File'];
     const spawnedPids: number[] = [];
+    // Named per transport rather than indexed off spawnedPids: with three
+    // transports an index is a silent mis-attribution waiting to happen, and
+    // this log line is the field evidence for which one carried the install.
+    let pidW: number | undefined;
+    let pidA: number | undefined;
+    let pidB: number | undefined;
+
+    // #1136 — transport W, tried first because it is the only one that stays
+    // invisible under the Win11 default-terminal delegation.
+    const vbs = buildWaiterVbsLauncher(powershell, psArgs, scriptPathW);
+    if (vbs !== null) {
+      // UTF-16LE with a BOM, for the same reason scriptA/B carry one: a
+      // BOM-less script is decoded as the system ANSI code page, and every
+      // path embedded here (TEMP, so the user profile) mangles on a non-Latin
+      // install — the silent-wrong-path failure #1056 already paid for once.
+      // wscript reads UTF-16LE unambiguously.
+      const vbsPath = path.join(dir, 'launch-waiter.vbs');
+      try {
+        fs.writeFileSync(vbsPath, '﻿' + vbs, 'utf16le');
+        const w = spawn(
+          path.join(systemRoot, 'System32', 'wscript.exe'),
+          // //B: batch mode. Without it a machine with Windows Script Host
+          // disabled by policy shows an error DIALOG — the exact class of
+          // visible window this transport exists to remove. With it, wscript
+          // fails silently and the gate falls through to transport A.
+          ['//B', '//Nologo', vbsPath],
+          { detached: true, stdio: 'ignore', windowsHide: true, cwd: systemRoot },
+        );
+        w.unref();
+        if (typeof w.pid === 'number') { spawnedPids.push(w.pid); pidW = w.pid; }
+      } catch { /* WSH unavailable — A still gets its window */ }
+      if (waitForLaunchStamp(stampW, LAUNCH_STAMP_BUDGET_W_MS)) {
+        console.log(`[installTeardown] waiter verified via hidden wscript launcher (pid ${pidW ?? '?'}): ${scriptPathW}`);
+        return scriptPathW;
+      }
+    }
 
     try {
       const a = spawn(
@@ -819,10 +929,10 @@ export function spawnInstallWaiter(plan: WaiterPlan): string | null {
         { detached: true, stdio: 'ignore', windowsHide: true, cwd: systemRoot },
       );
       a.unref();
-      if (typeof a.pid === 'number') spawnedPids.push(a.pid);
+      if (typeof a.pid === 'number') { spawnedPids.push(a.pid); pidA = a.pid; }
     } catch { /* transport A unavailable — B still gets its window */ }
     if (waitForLaunchStamp(stampA, LAUNCH_STAMP_BUDGET_A_MS)) {
-      console.log(`[installTeardown] waiter verified via cmd trampoline (pid ${spawnedPids[0] ?? '?'}): ${scriptPathA}`);
+      console.log(`[installTeardown] waiter verified via cmd trampoline (pid ${pidA ?? '?'}): ${scriptPathA}`);
       return scriptPathA;
     }
 
@@ -833,10 +943,10 @@ export function spawnInstallWaiter(plan: WaiterPlan): string | null {
         { detached: true, stdio: 'ignore', windowsHide: true, cwd: systemRoot },
       );
       b.unref();
-      if (typeof b.pid === 'number') spawnedPids.push(b.pid);
+      if (typeof b.pid === 'number') { spawnedPids.push(b.pid); pidB = b.pid; }
     } catch { /* fall through to the refusal below */ }
     if (waitForLaunchStamp(stampB, LAUNCH_STAMP_BUDGET_B_MS)) {
-      console.log(`[installTeardown] waiter verified via direct spawn (pid ${spawnedPids[spawnedPids.length - 1] ?? '?'}): ${scriptPathB}`);
+      console.log(`[installTeardown] waiter verified via direct spawn (pid ${pidB ?? '?'}): ${scriptPathB}`);
       return scriptPathB;
     }
 

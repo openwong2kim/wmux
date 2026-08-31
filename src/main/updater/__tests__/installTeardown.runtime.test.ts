@@ -442,7 +442,7 @@ describe.skipIf(!onWindows)('waiter transport (#1056 — the REAL spawnInstallWa
       const dirLike = launchedDir.replace(/'/g, "''");
       try {
         execFileSync(PS, ['-NoProfile', '-NonInteractive', '-Command',
-          `Get-CimInstance Win32_Process -Filter "Name='powershell.exe' OR Name='cmd.exe'" | Where-Object { $_.CommandLine -like '*${dirLike}*' } | ForEach-Object { taskkill /PID $_.ProcessId /T /F } | Out-Null`,
+          `Get-CimInstance Win32_Process -Filter "Name='powershell.exe' OR Name='cmd.exe' OR Name='wscript.exe'" | Where-Object { $_.CommandLine -like '*${dirLike}*' } | ForEach-Object { taskkill /PID $_.ProcessId /T /F } | Out-Null`,
         ], { windowsHide: true, timeout: 20_000 });
       } catch { /* nothing left to reap */ }
       try { fs.rmSync(launchedDir, { recursive: true, force: true }); } catch { /* lock lingers */ }
@@ -501,5 +501,35 @@ describe.skipIf(!onWindows)('waiter transport (#1056 — the REAL spawnInstallWa
       process.env.TEMP = saved.TEMP;
       process.env.TMP = saved.TMP;
     }
+  }, 120_000);
+
+  it('#1136 — the hidden wscript transport is the one that carries the install', () => {
+    // The defect: the cmd.exe trampoline is spawned `detached`, and
+    // DETACHED_PROCESS overrides the CREATE_NO_WINDOW that `windowsHide: true`
+    // asks for. The child then allocates its own console, that allocation goes
+    // through the Win11 default-terminal delegation, and Windows Terminal opens
+    // a real visible window. A/B measured on a Win11 26200 box with WT as the
+    // default host: the same cmd.exe with `detached: true` produced a visible
+    // WindowsTerminal window, without it produced none.
+    //
+    // What this asserts is transport IDENTITY, not window count. A global
+    // visible-window diff was tried first and rejected: it goes red for any
+    // console window that happens to open on the box during the sample (a
+    // parallel test file, another tool), so it reports the machine's mood
+    // rather than this code's behaviour. The identity check is exact — the
+    // per-transport script name is already distinct because each transport
+    // needs its own launch stamp — and it is the property that actually
+    // matters: on a machine where the hidden transport works, it must be the
+    // one that runs, never the visible fallback behind it.
+    const written = spawnInstallWaiter(mkPlan());
+    expect(written).not.toBeNull();
+    launchedDir = path.dirname(written as string);
+    expect(path.basename(written as string)).toBe('wait-and-install-w.ps1');
+
+    // ...and it is a REAL waiter, not just a process that stamped and died:
+    // the same end-to-end proof the transport suite's first test makes.
+    const deadline = Date.now() + 60_000;
+    while (Date.now() < deadline && !fs.existsSync(envStamp)) sleep200();
+    expect(fs.existsSync(envStamp)).toBe(true);
   }, 120_000);
 });
