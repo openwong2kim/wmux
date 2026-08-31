@@ -50,6 +50,12 @@ const SNAPSHOT_TIMEOUT_MS = 8_000;
 /** After this many consecutive snapshot failures, pause polling briefly. */
 const FAILURE_BACKOFF_THRESHOLD = 3;
 const FAILURE_BACKOFF_MS = 60_000;
+/**
+ * The encoded form of "this session has no listening ports". Shared by the
+ * diff-state writer and the vanished-session clear below so the two can never
+ * drift apart from the JSON encoding they both depend on.
+ */
+const EMPTY_PORTS_ENCODED = JSON.stringify([] as SessionPort[]);
 
 /**
  * Windows: in-process FFI snapshot (see winSnapshotNative.ts — issue #1051).
@@ -206,6 +212,23 @@ export class PortWatcher extends EventEmitter {
     this.lastBySession.clear();
   }
 
+  /**
+   * Forget every session's diff state and poll again, so the NEXT tick re-emits
+   * the current port set for every session instead of staying silent because
+   * nothing changed.
+   *
+   * #1135 — the daemon outlives the app (tmux-style detach), so a freshly
+   * launched app starts with an empty per-surface port map while the watcher
+   * still holds the diff state of the previous app's lifetime. Without a
+   * resync, a dev server that was already listening before the restart is
+   * invisible until it happens to change. Called when a client subscribes to
+   * the event stream.
+   */
+  resync(): void {
+    this.lastBySession.clear();
+    void this.tick();
+  }
+
   /** One poll cycle. Public so tests (and the daemon on session-create) can drive it. */
   async tick(): Promise<void> {
     if (this.ticking) return; // a slow snapshot must not stack subprocesses
@@ -216,11 +239,21 @@ export class PortWatcher extends EventEmitter {
         (s) => Number.isInteger(s.pid) && s.pid > 0,
       );
 
-      // Sessions that disappeared: drop diff state so a recreated session
-      // with the same id re-emits its first non-empty set.
+      // Sessions that disappeared: emit one final empty set, then drop the
+      // diff state so a recreated session with the same id re-emits its first
+      // non-empty set.
+      //
+      // #1135 — the final empty emit is the important half. A session whose
+      // process died stops being matched at all, so without it the LAST set of
+      // ports it ever reported was also the last thing the sidebar heard, and
+      // the chip stayed lit for a dead dev server until the surface itself was
+      // closed. Suppressed when the last emitted value was already empty.
       const liveIds = new Set(sessions.map((s) => s.sessionId));
-      for (const id of this.lastBySession.keys()) {
-        if (!liveIds.has(id)) this.lastBySession.delete(id);
+      for (const id of [...this.lastBySession.keys()]) {
+        if (liveIds.has(id)) continue;
+        const prev = this.lastBySession.get(id);
+        this.lastBySession.delete(id);
+        if (prev && prev !== EMPTY_PORTS_ENCODED) this.emit('ports', { sessionId: id, ports: [] });
       }
       if (sessions.length === 0) return;
 

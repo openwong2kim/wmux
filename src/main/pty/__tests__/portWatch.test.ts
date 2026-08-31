@@ -91,11 +91,11 @@ describe('PortWatcher', () => {
     expect(events[1]).toEqual({ sessionId: 's1', ports: [] });
   });
 
-  it('drops diff state for sessions that disappeared', async () => {
+  it('clears and drops diff state for sessions that disappeared (#1135)', async () => {
     let sessions = [{ sessionId: 's1', pid: 100 }];
     const snapshot = async (): Promise<PortSnapshot> =>
       snap([[200, 100]], [{ port: 3000, pid: 200 }]);
-    const events: unknown[] = [];
+    const events: Array<{ sessionId: string; ports: unknown[] }> = [];
     const watcher = new PortWatcher(() => sessions, { snapshot });
     watcher.on('ports', (e) => events.push(e));
 
@@ -104,11 +104,56 @@ describe('PortWatcher', () => {
 
     sessions = []; // session destroyed
     await watcher.tick();
-    expect(events).toHaveLength(1);
+    // #1135: one final empty set so the sidebar chip of a dead session clears.
+    expect(events).toHaveLength(2);
+    expect(events[1]).toEqual({ sessionId: 's1', ports: [] });
+
+    await watcher.tick(); // still gone — nothing more to say
+    expect(events).toHaveLength(2);
 
     sessions = [{ sessionId: 's1', pid: 100 }]; // same id recreated
     await watcher.tick();
-    expect(events).toHaveLength(2); // re-emits — diff state was reset
+    expect(events).toHaveLength(3); // re-emits — diff state was reset
+  });
+
+  it('does not emit a clear for a vanished session that never reported ports (#1135)', async () => {
+    let sessions = [{ sessionId: 's1', pid: 100 }];
+    let current: PortSnapshot = snap([[200, 100]], [{ port: 3000, pid: 200 }]);
+    const events: unknown[] = [];
+    const watcher = new PortWatcher(() => sessions, { snapshot: async () => current });
+    watcher.on('ports', (e) => events.push(e));
+
+    await watcher.tick();
+    expect(events).toHaveLength(1);
+    current = snap([[200, 100]], []);
+    await watcher.tick(); // already cleared
+    expect(events).toHaveLength(2);
+
+    sessions = [];
+    await watcher.tick(); // last value was already empty — no redundant clear
+    expect(events).toHaveLength(2);
+  });
+
+  it('resync() re-emits the current port set for a fresh subscriber (#1135)', async () => {
+    const current = snap([[200, 100]], [{ port: 3000, pid: 200 }]);
+    const events: Array<{ sessionId: string; ports: unknown[] }> = [];
+    const watcher = new PortWatcher(
+      () => [{ sessionId: 's1', pid: 100 }],
+      { snapshot: async () => current },
+    );
+    watcher.on('ports', (e) => events.push(e));
+
+    await watcher.tick();
+    expect(events).toHaveLength(1);
+    await watcher.tick(); // unchanged — silent
+    expect(events).toHaveLength(1);
+
+    // A new app attached: it has no port state of its own, so the unchanged
+    // set has to be announced again.
+    watcher.resync();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(events).toHaveLength(2);
+    expect(events[1]).toEqual({ sessionId: 's1', ports: [{ port: 3000, pid: 200 }] });
   });
 
   it('swallows snapshot failures silently', async () => {

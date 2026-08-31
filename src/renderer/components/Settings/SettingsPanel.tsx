@@ -24,6 +24,7 @@ import {
 } from '../../contrastSafety';
 import type { CustomThemeColors, NotificationCategory, Workspace, XtermThemeColors } from '../../../shared/types';
 import { getWorkspacePtyIds } from '../../../shared/paneUtils';
+import { destroyWorkspaceRemoteSessions } from '../../utils/remoteSessionTeardown';
 import type { ChromePreset } from '../../../shared/chromePresets';
 import { NOTIFICATION_CATEGORIES } from '../../../shared/types';
 import { ORCH_ROLES, launcherSupportsModelFlag } from '../../../shared/orchestratorRole';
@@ -626,6 +627,9 @@ function ResetSection() {
  *  behind the one action whose whole promise is a clean slate. */
 function disposeWorkspacePtys(ws: Workspace) {
   for (const ptyId of getWorkspacePtyIds(ws)) window.electronAPI.pty.dispose(ptyId);
+  // #1129 — remote-terminal surfaces have no ptyId; a "clean slate" that
+  // leaves sessions running on a paired host is not one.
+  destroyWorkspaceRemoteSessions(ws);
 }
 
 // ─── Orchestrator (deck brain) settings ──────────────────────────────────────

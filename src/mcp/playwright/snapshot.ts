@@ -6,6 +6,8 @@ import {
   redactPasswordParams,
 } from './redact';
 import { collectOcclusion, occlusionNote, type OcclusionInfo } from './occlusion';
+import { collectPageFacts, formatPageFactsFooter } from './pageFacts';
+import { peekRecentPendingRequests } from './pageCapture';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -913,7 +915,17 @@ export async function generateSnapshot(
   // same, or the note's page-controlled layer label would let the page decide
   // how far past the caller's budget the result runs.
   const note = occlusion ? `${occlusionNote(occlusion)}\n` : '';
-  const budget = Math.max(0, maxLength - note.length);
+
+  // Page facts (readiness hint + scrollable containers) are collected AFTER
+  // serialization and charged against the SAME budget, so adding the footer
+  // cannot push a snapshot past the caller's maxLength. Deliberately not
+  // applied in generateScopedSnapshot: a scoped snapshot is a small subtree by
+  // definition, so "nearly empty" would fire on every correct result.
+  const facts = await collectPageFacts(page);
+  const footer = facts
+    ? formatPageFactsFooter(facts, peekRecentPendingRequests(page))
+    : '';
+  const budget = Math.max(0, maxLength - note.length - footer.length);
 
   // If the output exceeds the budget AND we are in 'ai' mode, strip
   // non-interactive nodes and regenerate.
@@ -930,7 +942,7 @@ export async function generateSnapshot(
     output = output.slice(0, budget) + '\n... (truncated)';
   }
 
-  output = note + output;
+  output = note + output + footer;
 
   // Store the refMap for this page so resolveRef can use it without re-querying
   setPageRefs(page, refs);

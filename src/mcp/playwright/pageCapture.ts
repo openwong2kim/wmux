@@ -48,6 +48,18 @@ export interface PageCaptureState {
   consoleWindow: CaptureWindow;
   networkWindow: CaptureWindow;
   totalBodyBytes: number;
+  /**
+   * Requests that have started and not yet finished or failed, keyed by the
+   * Request object with the ms timestamp of their start.
+   *
+   * Deliberately NOT a counter: a counter that only ever increments on
+   * 'request' leaks on every aborted/failed load, and a page that lives for an
+   * hour would then report permanent "in flight" traffic. Membership is the
+   * truth, and readers additionally window it by recency
+   * (countRecentPendingRequests) so a hung request cannot pin the signal on
+   * forever either.
+   */
+  pendingRequests: Map<Request, number>;
 }
 
 // Bounds. Eager attachment means these buffers now fill on every page an agent
@@ -62,6 +74,8 @@ const MAX_URL_CHARS = 2048;
 // unbounded RAM, and cap the total so 1000 entries cannot pin 1000 of them.
 const MAX_RESPONSE_BODY_BYTES = 256 * 1024;
 const MAX_TOTAL_BODY_BYTES = 4 * 1024 * 1024;
+// Unsettled requests tracked at once (insertion-ordered eviction).
+const MAX_PENDING_REQUESTS = 500;
 
 // Keyed by the Page object itself, not by surfaceId. A Page is the true
 // identity: an omitted surfaceId and an explicit surfaceId can resolve to the
@@ -175,6 +189,7 @@ export function attachPageCapture(page: Page): PageCaptureState {
     consoleWindow: { ...window },
     networkWindow: { ...window },
     totalBodyBytes: 0,
+    pendingRequests: new Map<Request, number>(),
   };
   states.set(page, state);
 
@@ -210,10 +225,23 @@ export function attachPageCapture(page: Page): PageCaptureState {
   };
 
   const onRequest = (request: Request) => {
+    // Bound the map the same way the ring bounds entries: a page that starts
+    // thousands of never-settling requests must not pin them all.
+    if (state.pendingRequests.size >= MAX_PENDING_REQUESTS) {
+      const oldest = state.pendingRequests.keys().next();
+      if (!oldest.done) state.pendingRequests.delete(oldest.value);
+    }
+    state.pendingRequests.set(request, Date.now());
     pushNetwork(state, {
       url: truncate(request.url(), MAX_URL_CHARS),
       method: request.method(),
     });
+  };
+
+  // Settlement. Both events must clear the entry: 'requestfinished' alone
+  // leaves every blocked/aborted request pending forever.
+  const onRequestSettled = (request: Request) => {
+    state.pendingRequests.delete(request);
   };
 
   const onResponse = (response: Response) => {
@@ -273,6 +301,8 @@ export function attachPageCapture(page: Page): PageCaptureState {
     page.off('pageerror', onPageError);
     page.off('framenavigated', onFrameNavigated);
     page.off('request', onRequest);
+    page.off('requestfinished', onRequestSettled);
+    page.off('requestfailed', onRequestSettled);
     page.off('response', onResponse);
     page.off('close', onClose);
   };
@@ -282,6 +312,8 @@ export function attachPageCapture(page: Page): PageCaptureState {
   page.on('pageerror', onPageError);
   page.on('framenavigated', onFrameNavigated);
   page.on('request', onRequest);
+  page.on('requestfinished', onRequestSettled);
+  page.on('requestfailed', onRequestSettled);
   page.on('response', onResponse);
 
   return state;
@@ -306,7 +338,45 @@ export function clearConsoleCapture(state: PageCaptureState): void {
 export function clearNetworkCapture(state: PageCaptureState): void {
   state.network = [];
   state.totalBodyBytes = 0;
+  state.pendingRequests.clear();
   state.networkWindow = { since: Date.now(), missedBefore: false };
+}
+
+/**
+ * How far back a pending request still counts as "in flight" for the snapshot
+ * readiness hint. A long-poll or an EventSource stream never settles, so an
+ * unwindowed count would report traffic on an idle page forever.
+ */
+export const PENDING_RECENCY_MS = 10_000;
+
+/**
+ * Requests started within PENDING_RECENCY_MS that have not settled.
+ * Older entries are excluded from the count but kept in the map — the settle
+ * events still own removal, and a slow request that finally responds must not
+ * be double-counted.
+ */
+export function countRecentPendingRequests(
+  state: PageCaptureState,
+  now = Date.now(),
+): number {
+  let count = 0;
+  for (const startedAt of state.pendingRequests.values()) {
+    if (now - startedAt <= PENDING_RECENCY_MS) count++;
+  }
+  return count;
+}
+
+/**
+ * Recent pending count for a page WITHOUT attaching capture to it.
+ *
+ * The snapshot readiness hint is a nice-to-have; attaching a capture buffer
+ * (and its retained response bodies) merely to answer it would be a real cost
+ * charged for a hint. Pages with no capture — every page on the builtin
+ * backend — simply report 0, which the hint treats as "no extra signal".
+ */
+export function peekRecentPendingRequests(page: Page, now = Date.now()): number {
+  const state = states.get(page);
+  return state ? countRecentPendingRequests(state, now) : 0;
 }
 
 /** Bounds, exported so tests assert the ring's contract rather than assume it. */
@@ -316,4 +386,5 @@ export const CAPTURE_BOUNDS = {
   MAX_URL_CHARS,
   MAX_RESPONSE_BODY_BYTES,
   MAX_TOTAL_BODY_BYTES,
+  MAX_PENDING_REQUESTS,
 } as const;

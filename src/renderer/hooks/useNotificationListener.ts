@@ -16,6 +16,7 @@ import {
   findWorkspaceSurfaceById,
 } from '../utils/paneTraversal';
 import { getWorkspacePtyIds } from '../../shared/paneUtils';
+import { unionSurfacePorts } from '../stores/slices/workspacePorts';
 import { FrameCoalescer } from '../utils/frameCoalescer';
 import { normalizeWorktreePath } from '../../shared/workTask';
 import { isBrainPtyId } from '../../shared/constants';
@@ -226,7 +227,12 @@ export function focusNotificationTarget(
   if (payload.workspaceId) {
     const ws = state.workspaces.find((w) => w.id === payload.workspaceId);
     if (ws) {
-      if (ws.id !== state.activeWorkspaceId) {
+      // #1086, same reason as activatePaneTarget above: while a remote mirror
+      // is on screen `activeWorkspaceId` already equals the target, so a bare
+      // `!==` guard skips setActiveWorkspace — the only call that drops the
+      // remote selection — and the jump silently does nothing. Fire on either
+      // condition so an app-level jump always surfaces the local tree.
+      if (ws.id !== state.activeWorkspaceId || state.activeRemoteKey) {
         state.setActiveWorkspace(ws.id);
       }
       return true;
@@ -749,16 +755,16 @@ export function useNotificationListener() {
             // X1 — ports: store per-surface, publish the workspace union.
             if (Array.isArray(rest.listeningPorts)) {
               state.setSurfacePorts(ptyId, rest.listeningPorts);
-              const merged = new Set<number>();
-              // Workspace-wide (#977): this branch now runs for stashed panes
-              // too, so a visible-tree union would report the workspace's ports
-              // MINUS whatever the stashed pane is serving — including the
+              // Workspace-wide (#977): getWorkspacePtyIds covers stashed panes
+              // too — a visible-tree union would report the workspace's ports
+              // MINUS whatever the stashed pane is serving, including the
               // stashed pane's own ports on the very update that announced them.
-              const freshPorts = useStore.getState().surfacePorts;
-              for (const id of getWorkspacePtyIds(ws)) {
-                for (const p of freshPorts[id] ?? []) merged.add(p);
-              }
-              rest.listeningPorts = [...merged].sort((a, b) => a - b);
+              // #1135: shared with the teardown paths so the union is derived
+              // from surfacePorts in exactly one place.
+              rest.listeningPorts = unionSurfacePorts(
+                getWorkspacePtyIds(ws),
+                useStore.getState().surfacePorts,
+              );
             }
             // Only update exclusive context (cwd/git/PR) from the active
             // pane's active surface to prevent stale PTYs from overwriting it.

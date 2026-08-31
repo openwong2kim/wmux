@@ -483,6 +483,43 @@ export function registerRemoteHandlers(deps: RegisterRemoteHandlersDeps): () => 
       }
     }));
 
+  // #1129 — the teardown twin of REMOTE_WORKSPACE_CREATE. Closing a
+  // remote-terminal tab detaches its SSE stream; without this the shell it
+  // minted (and the one-shot workspace row the daemon derives from that
+  // session's WMUX_WORKSPACE_ID) outlives the tab forever.
+  ipcMain.removeHandler(IPC.REMOTE_SESSION_CLOSE);
+  ipcMain.handle(IPC.REMOTE_SESSION_CLOSE, wrapHandler(IPC.REMOTE_SESSION_CLOSE,
+    async (
+      _e: IpcMainInvokeEvent,
+      hostId: unknown,
+      sessionId: unknown,
+    ): Promise<{ ok: true } | { ok: false; error: string }> => {
+      const id = assertString(hostId, 'hostId');
+      const session = assertString(sessionId, 'sessionId');
+      const client = getOrCreateClient(id);
+      if (!client) return { ok: false, error: 'unknown host' };
+      // DESTROY FIRST, DETACH AFTER — order matters, and the intuitive order
+      // is the wrong one. Detaching first would be failure-destructive: if
+      // the DELETE then fails (host offline, or a 403 after --allow-input was
+      // revoked), the session is still alive but every mirror of it has been
+      // cut, with no live attach left to retry from. The remote daemon's
+      // handleSessionDelete does not refuse a delete while SSE streams are
+      // open, so there is nothing to gain by going the other way.
+      try {
+        await client.closeSession(session);
+      } catch (err) {
+        return { ok: false, error: err instanceof Error ? err.message : String(err) };
+      }
+      // The session is gone. Drop every live attach on this (host, session) —
+      // for any sender, since a session can legitimately be mirrored from
+      // more than one place — so nothing is left feeding the client's
+      // reconnect loop a target that no longer exists.
+      for (const [attachId, record] of [...attachRecords.entries()]) {
+        if (record.hostId === id && record.sessionId === session) detachAttach(attachId);
+      }
+      return { ok: true };
+    }));
+
   // Attach descriptors — the persistence half of "attachments survive a
   // reload". Deliberately independent of the SSE attach lifecycle below: the
   // reload teardown in installSenderCleanup still kills every live stream (a
@@ -599,6 +636,7 @@ export function registerRemoteHandlers(deps: RegisterRemoteHandlersDeps): () => 
     ipcMain.removeHandler(IPC.REMOTE_HOSTS_REMOVE);
     ipcMain.removeHandler(IPC.REMOTE_WORKSPACES_LIST);
     ipcMain.removeHandler(IPC.REMOTE_WORKSPACE_CREATE);
+    ipcMain.removeHandler(IPC.REMOTE_SESSION_CLOSE);
     ipcMain.removeHandler(IPC.REMOTE_ATTACHMENTS_LIST);
     ipcMain.removeHandler(IPC.REMOTE_ATTACHMENTS_ADD);
     ipcMain.removeHandler(IPC.REMOTE_ATTACHMENTS_REMOVE);

@@ -33,6 +33,8 @@ import { submitBracketedPasteToPty } from '../utils/ptyMessageDelivery';
 import { publishA2aTask } from '../events/publisher';
 import { resolvePaneAddress, activePaneTerminalPty, decideSameWsSend, decideReplyDelivery, REPLY_SUPPRESS_HINTS, countRoundTrips, maxSideMessages, REPLY_ROUND_CAP, isTerminalPtyInLeaves, resolveSelfPaneIdentity, resolveSenderPaneAddress, resolvePaneRole, findLeafPanes, type PaneAddress } from './a2aAddressing';
 import { resolveWorkspaceTarget } from './workspaceTargeting';
+import { destroyRemoteSessions, destroySurfaceRemoteSession, destroyWorkspaceRemoteSessions } from '../utils/remoteSessionTeardown';
+import { collectPaneTreeRemoteSessions } from '../../shared/paneUtils';
 import { findActivePtyId, buildWorkspaceListEntries } from './workspaceMirrorSnapshot';
 
 // ---------------------------------------------------------------------------
@@ -662,6 +664,14 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
         void window.electronAPI.pty.dispose(ptyId).catch(() => { /* best-effort */ });
       } catch { /* best-effort */ }
     }
+    // #1129 — the remote half of the same teardown, and the same "one of the
+    // two paths forgot" bug class the comment above describes. A
+    // remote-terminal surface carries no ptyId, so the loop above cannot see
+    // it; and once removeWorkspace drops the workspace, its `remoteOwned`
+    // records go with it and the session becomes permanently unreapable.
+    // Placed under the same guards as the dispose loop: it only runs where
+    // the removal will actually happen.
+    destroyWorkspaceRemoteSessions(ws);
     store.removeWorkspace(id);
     // Confirm the removal actually landed before acknowledging it. Today this
     // cannot fail: nothing awaits between the guards above and here, so two
@@ -1066,8 +1076,12 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
       return { error: 'pane.close: cannot close the root pane' };
     }
     const ptyIds = pane.surfaces.map((s) => s.ptyId).filter((p): p is string => !!p);
+    // #1129 — remote-terminal surfaces carry no ptyId, so they are invisible
+    // to the dispose loop below; collect them before the pane leaves the tree.
+    const remoteSessions = collectPaneTreeRemoteSessions(pane);
 
     store.closePane(paneId, targetWs.id);
+    destroyRemoteSessions(remoteSessions);
 
     for (const ptyId of ptyIds) {
       try { await window.electronAPI.pty.dispose(ptyId); } catch { /* best-effort */ }
@@ -1139,6 +1153,12 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
     const ptyId = surface?.ptyId;
 
     store.closeSurface(targetLeaf.id, surfaceId, targetWs.id);
+
+    // #1129 — a remote-terminal surface has no ptyId, so the dispose below
+    // would silently do nothing and leave the session running on the host.
+    // Same semantics as the tab X and Ctrl+W: close destroys what this
+    // desktop minted, never a session it is only viewing.
+    destroySurfaceRemoteSession(surface);
 
     if (ptyId) {
       try {

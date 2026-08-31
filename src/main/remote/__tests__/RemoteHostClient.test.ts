@@ -128,6 +128,71 @@ describe('RemoteHostClient', () => {
     });
   });
 
+  describe('closeSession (#1129)', () => {
+    it('DELETEs /api/sessions/:id with the Bearer token and no redirect following', async () => {
+      const fetchImpl = vi.fn(async () => ({ ok: true, status: 204 }) as unknown as Response);
+      const client = new RemoteHostClient(host, fetchImpl as unknown as typeof fetch);
+
+      await client.closeSession('web-1');
+
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+      const [url, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+      expect(url).toBe(`${host.origin}/api/sessions/web-1`);
+      expect(init.method).toBe('DELETE');
+      expect((init.headers as Record<string, string>)?.Authorization).toBe(`Bearer ${host.token}`);
+      expect(init.redirect).toBe('error');
+      expect(init.signal).toBeInstanceOf(AbortSignal);
+    });
+
+    it('percent-encodes the session id into the path', async () => {
+      const fetchImpl = vi.fn(async () => ({ ok: true, status: 204 }) as unknown as Response);
+      const client = new RemoteHostClient(host, fetchImpl as unknown as typeof fetch);
+
+      await client.closeSession('a/../b');
+
+      expect((fetchImpl.mock.calls[0] as unknown as [string])[0])
+        .toBe(`${host.origin}/api/sessions/a%2F..%2Fb`);
+    });
+
+    it('resolves on 404 — already gone is the outcome the caller asked for', async () => {
+      const fetchImpl = vi.fn(async () => ({
+        ok: false,
+        status: 404,
+        json: async () => ({ error: 'session not found' }),
+      }) as unknown as Response);
+      const client = new RemoteHostClient(host, fetchImpl as unknown as typeof fetch);
+
+      await expect(client.closeSession('web-gone')).resolves.toBeUndefined();
+    });
+
+    it('rejects with the daemon detail when the host refuses the close (no --allow-input)', async () => {
+      const fetchImpl = vi.fn(async () => ({
+        ok: false,
+        status: 403,
+        json: async () => ({
+          error: 'input-not-allowed',
+          detail: 'closing a pane destroys running work — it requires the same grant as typing',
+        }),
+      }) as unknown as Response);
+      const client = new RemoteHostClient(host, fetchImpl as unknown as typeof fetch);
+
+      await expect(client.closeSession('web-1')).rejects.toThrow(
+        'closing a pane destroys running work — it requires the same grant as typing',
+      );
+    });
+
+    it('rejects with a generic message when the error body is not JSON', async () => {
+      const fetchImpl = vi.fn(async () => ({
+        ok: false,
+        status: 500,
+        json: async () => { throw new Error('not json'); },
+      }) as unknown as Response);
+      const client = new RemoteHostClient(host, fetchImpl as unknown as typeof fetch);
+
+      await expect(client.closeSession('web-1')).rejects.toThrow('closeSession failed: HTTP 500');
+    });
+  });
+
   describe('listWorkspaces', () => {
     it('sends Authorization: Bearer <token> and parses the body', async () => {
       const fetchImpl = vi.fn(async (_url: string, _init?: RequestInit) => {

@@ -720,6 +720,22 @@ describe('surfaceSlice.addRemoteSurface (#1086/#1091)', () => {
     expect(pane.surfaces[0].title).toBe('Remote');
   });
 
+  // #1129 — ownership decides whether closing the tab destroys the session.
+  it('marks the surface owned only when the caller says it minted the session', () => {
+    const { state, slice } = createHarness();
+    const paneId = state.workspaces[0].rootPane.id;
+
+    slice.addRemoteSurface(paneId, 'host-abc', 'minted', undefined, undefined, undefined, true);
+    slice.addRemoteSurface(paneId, 'host-abc', 'viewed');
+
+    const pane = state.workspaces[0].rootPane;
+    if (pane.type !== 'leaf') throw new Error('expected leaf pane');
+    expect(pane.surfaces[0].remoteOwned).toBe(true);
+    // Not merely false — absent, so a persisted surface from before #1129
+    // reads the same as an explicit "not mine".
+    expect(pane.surfaces[1].remoteOwned).toBeUndefined();
+  });
+
   it('is a no-op when the target pane does not exist', () => {
     const { state, slice } = createHarness();
 

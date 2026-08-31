@@ -11,6 +11,7 @@ import {
   PASSWORD_FIELD_PREDICATE_JS,
   REDACTED_PASSWORD,
   isPasswordFieldNode,
+  redactPasswordParams,
 } from '../redact';
 import {
   allowScopedRpcFallback,
@@ -29,6 +30,14 @@ const optionalSurfaceId = z
 // every createWmuxServer() instance shares one set of zod schema objects.
 const BROWSER_CLICK_SHAPE = {
   ref: z.string().optional(),
+  x: z
+    .number()
+    .optional()
+    .describe('Viewport CSS px, only when ref/smartRef is omitted. Needs y.'),
+  y: z
+    .number()
+    .optional()
+    .describe('Viewport CSS px, only when ref/smartRef is omitted. Needs x.'),
   smartRef: z
     .number()
     .optional()
@@ -208,6 +217,103 @@ async function rpcPressKey(key: string, scope: BrowserTargetScope): Promise<void
 }
 
 /**
+ * Grace period for a popup that Chrome reports a beat after the click resolves.
+ * Deliberately tiny and one-shot: `waitForEvent('popup')` would tax EVERY click
+ * with its full timeout, and a click that opens nothing is the common case.
+ */
+const POPUP_GRACE_MS = 50;
+/**
+ * How long a popup may stay on about:blank before we report it anyway.
+ * window.open() hands back a blank document and navigates a beat later, so
+ * reading the URL synchronously names nothing useful — but a popup that never
+ * leaves about:blank is a real outcome too, and worth reporting as such.
+ */
+const POPUP_URL_SETTLE_MS = 500;
+const POPUP_URL_POLL_MS = 50;
+/** Popup URLs are page-controlled text; cap what goes into the result. */
+const POPUP_URL_MAX_CHARS = 200;
+
+function isBlankUrl(url: string | undefined): boolean {
+  return !url || url === 'about:blank';
+}
+
+/**
+ * Watch one click for a popup (window.open / target=_blank).
+ *
+ * mirrors browser-use tools/service.py _detect_new_tab_opened, but built on
+ * Playwright's own 'popup' event rather than a before/after tab-id diff: a diff
+ * over getAllPages() attributes ANY workspace's newly opened page to this
+ * click, which is exactly the cross-workspace mis-attribution page scoping
+ * exists to prevent.
+ *
+ * CHROME BACKEND ONLY. The builtin webview loads popups into the SAME webview
+ * (src/main/index.ts new-window handling), so no 'popup' ever fires there, and
+ * the RPC lane has no Page to listen on. Both keep their previous behaviour.
+ *
+ * The popup is NOT a wmux surface: only tabs opened through ChromeLauncher.openTab
+ * get a `chrome-<uuid>` surfaceId, and a page-opened target is never registered
+ * (verified in ChromeLauncher.noteTabPage — a tab wmux does not own is ignored).
+ * So the note names the URL and stops there; it must not imply the popup can be
+ * targeted by surfaceId.
+ *
+ * `dispose()` is separate from `note()` and MUST run in a finally: a click that
+ * throws (a ref that vanished, a navigation mid-click) would otherwise leave
+ * the listener — and the closure holding the popup handle — attached to the
+ * page for the rest of its life.
+ */
+function watchForPopup(page: { on: Function; off: Function }): {
+  note: () => Promise<string>;
+  dispose: () => void;
+} {
+  let popup: { url?: () => string } | undefined;
+  let fired = false;
+  const onPopup = (opened: { url?: () => string }) => {
+    fired = true;
+    popup = opened;
+  };
+  page.on('popup', onPopup);
+
+  const readUrl = (): string | undefined => {
+    try {
+      return popup?.url?.();
+    } catch {
+      return undefined; // popup torn down before we could read it
+    }
+  };
+
+  return {
+    dispose: () => {
+      try {
+        page.off('popup', onPopup);
+      } catch {
+        /* page already closed */
+      }
+    },
+    note: async () => {
+      if (!fired) await new Promise((r) => setTimeout(r, POPUP_GRACE_MS));
+      if (!fired) return '';
+
+      // window.open() resolves before the popup navigates, so poll briefly for
+      // the real URL rather than reporting the blank placeholder.
+      let url = readUrl();
+      const deadline = Date.now() + POPUP_URL_SETTLE_MS;
+      while (isBlankUrl(url) && Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, POPUP_URL_POLL_MS));
+        url = readUrl();
+      }
+
+      // Page-controlled text lands in the transcript, so it gets the same
+      // treatment every other URL wmux echoes does: password params masked,
+      // then a hard length cap.
+      const shown = url
+        ? redactPasswordParams(url).slice(0, POPUP_URL_MAX_CHARS)
+        : 'unknown url';
+      return ` — opened a popup (page: ${shown}). It is not a wmux surface; use browser_tabs to see what this workspace owns.`;
+    },
+  };
+}
+
+/**
  * Register interaction-related MCP tools on the given server.
  *
  * Tools:
@@ -228,38 +334,136 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
   // -----------------------------------------------------------------------
   server.tool(
     'browser_click',
-    'Click an element by ref (browser_snapshot) or smartRef (browser_smart_snapshot).',
+    'Click an element by ref (browser_snapshot) or smartRef (browser_smart_snapshot), or — when neither is available — at x/y. Coordinates are VIEWPORT CSS PIXELS: divide a browser_screenshot pixel by the devicePixelRatio that shot reports. A fullPage or element screenshot is in a different coordinate space and cannot be used for x/y at all. Coordinates need a live page (chrome backend); the RPC lane is ref-only.',
     BROWSER_CLICK_SHAPE,
-    async ({ ref, smartRef, double, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
+    async ({ ref, smartRef, x, y, double, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
       try {
-        // Try Playwright first
-        const page = await engine.getPageForScope(scope).catch(allowScopedRpcFallback);
+        // Coordinate clicking is an ESCAPE HATCH, not a second addressing mode:
+        // a ref survives a re-render and a coordinate does not, so a call that
+        // carries both is a mistake worth refusing rather than silently
+        // resolving in favour of one.
+        // mirrors browser-use tools/service.py coordinate clicking (set_coordinate_clicking)
+        const hasCoords = x !== undefined || y !== undefined;
+        if (hasCoords && (ref !== undefined || smartRef !== undefined)) {
+          throw new Error(
+            'Pass either ref/smartRef or x/y, not both — a ref survives a re-render and a coordinate does not.',
+          );
+        }
+        if (hasCoords && (x === undefined || y === undefined)) {
+          throw new Error('Coordinate clicks need both x and y (viewport CSS pixels).');
+        }
 
-        if (page) {
-          if (smartRef !== undefined) {
-            const selector = getLocatorByRef(smartRef);
-            if (!selector) {
-              throw new Error(
-                `Element with smartRef=${smartRef} not found. Run browser_smart_snapshot to get current refs.`,
-              );
-            }
-            const locator = page.locator(selector);
-            if (double) await locator.dblclick();
-            else await locator.click();
-            return {
-              content: [{ type: 'text' as const, text: `Clicked${double ? ' (double)' : ''} element smartRef=${smartRef}` }],
-            };
+        // Try Playwright first. The rejection is kept: on the coordinate path
+        // "no page" is reported to the caller, and "the page navigated away" or
+        // "the browser crashed" must not be dressed up as a backend limitation.
+        let pageError: unknown;
+        const page = await engine.getPageForScope(scope).catch((error) => {
+          pageError = error;
+          return allowScopedRpcFallback(error);
+        });
+
+        if (hasCoords) {
+          if (!page) {
+            const cause = pageError ? ` (${describeToolError(pageError)})` : '';
+            throw new Error(
+              `Coordinate clicks need a live browser page, which this workspace's backend did not provide${cause}. The RPC lane resolves elements by ref only — switch the workspace to the chrome backend, or click by ref from browser_snapshot.`,
+            );
           }
 
-          if (!ref) throw new Error('Either ref or smartRef must be provided.');
+          // Refuse a coordinate the viewport does not contain instead of
+          // clicking nothing and reporting success. viewportSize() can be null
+          // on a CDP-attached page; only the negative check applies then.
+          if ((x as number) < 0 || (y as number) < 0) {
+            throw new Error(`Coordinates must be inside the viewport; got (${x}, ${y}).`);
+          }
+          let viewport = (page as unknown as { viewportSize?: () => { width: number; height: number } | null })
+            .viewportSize?.();
+          if (!viewport) {
+            // viewportSize() is null for a page reached over connectOverCDP —
+            // which is EVERY page on the chrome backend, i.e. the only backend
+            // where coordinate clicks run at all. Without this fallback the
+            // bounds check was dead exactly where it matters (live dogfood:
+            // x=99999 reported success). The page's own innerWidth/innerHeight
+            // is the same CSS-pixel space x/y are defined in.
+            const size = await page
+              .evaluate('[window.innerWidth, window.innerHeight]')
+              .catch(() => null);
+            if (Array.isArray(size) && typeof size[0] === 'number' && typeof size[1] === 'number') {
+              viewport = { width: size[0], height: size[1] };
+            }
+          }
+          if (viewport && ((x as number) > viewport.width || (y as number) > viewport.height)) {
+            throw new Error(
+              `Coordinates (${x}, ${y}) are outside the ${viewport.width}x${viewport.height} viewport (CSS px). Scroll the target into view first, or take a fresh screenshot.`,
+            );
+          }
 
-          const el = await resolveRef(page, ref);
-          if (!el) throw new Error(refNotFound(ref));
-          if (double) await el.dblclick();
-          else await el.click();
-          return {
-            content: [{ type: 'text' as const, text: `Clicked${double ? ' (double)' : ''} element ref=${ref}` }],
-          };
+          // Same popup contract as a ref click — a coordinate click on a link
+          // with target=_blank opens a popup just as readily.
+          const coordWatch =
+            (await engine.resolveWorkspaceBackend(scope.workspaceId).catch(() => undefined)) ===
+            'chrome'
+              ? watchForPopup(page as unknown as { on: Function; off: Function })
+              : null;
+          try {
+            await page.mouse.click(x as number, y as number, {
+              ...(double && { clickCount: 2 }),
+            });
+            const note = coordWatch ? await coordWatch.note() : '';
+            return {
+              content: [
+                {
+                  type: 'text' as const,
+                  text: `Clicked${double ? ' (double)' : ''} at viewport CSS px (${x}, ${y})${note}`,
+                },
+              ],
+            };
+          } finally {
+            coordWatch?.dispose();
+          }
+        }
+
+        if (page) {
+          // A popup can only be observed on the chrome backend (see
+          // watchForPopup); everything else clicks exactly as before.
+          const watchesPopups =
+            (await engine.resolveWorkspaceBackend(scope.workspaceId).catch(() => undefined)) ===
+            'chrome';
+          const popupWatch = watchesPopups
+            ? watchForPopup(page as unknown as { on: Function; off: Function })
+            : null;
+          const popupNote = async () => (popupWatch ? await popupWatch.note() : '');
+
+          try {
+            if (smartRef !== undefined) {
+              const selector = getLocatorByRef(smartRef);
+              if (!selector) {
+                throw new Error(
+                  `Element with smartRef=${smartRef} not found. Run browser_smart_snapshot to get current refs.`,
+                );
+              }
+              const locator = page.locator(selector);
+              if (double) await locator.dblclick();
+              else await locator.click();
+              return {
+                content: [{ type: 'text' as const, text: `Clicked${double ? ' (double)' : ''} element smartRef=${smartRef}${await popupNote()}` }],
+              };
+            }
+
+            if (!ref) throw new Error('Either ref or smartRef must be provided.');
+
+            const el = await resolveRef(page, ref);
+            if (!el) throw new Error(refNotFound(ref));
+            if (double) await el.dblclick();
+            else await el.click();
+            return {
+              content: [{ type: 'text' as const, text: `Clicked${double ? ' (double)' : ''} element ref=${ref}${await popupNote()}` }],
+            };
+          } finally {
+            // Every exit — success, a ref that vanished, a click that threw —
+            // detaches the listener.
+            popupWatch?.dispose();
+          }
         }
 
         // RPC fallback

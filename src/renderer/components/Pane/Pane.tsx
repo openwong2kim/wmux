@@ -3,6 +3,9 @@ import { Panel, Group, Separator } from 'react-resizable-panels';
 import type { PaneLeaf, Workspace } from '../../../shared/types';
 import { maybeDelegateExternalBrowser } from '../../utils/browserPaneActions';
 import { createTerminalSurface } from '../../utils/createTerminalSurface';
+import { destroyRemoteSessions, destroySurfaceRemoteSession } from '../../utils/remoteSessionTeardown';
+import { getWorkspaceLeafPanes } from '../../../shared/paneUtils';
+import { MAX_PANES_PER_WORKSPACE } from '../../stores/slices/paneSlice';
 import { useIpc } from '../../hooks/useIpc';
 import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
@@ -317,6 +320,8 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
   // fires from the modal's async onCreated — no render needs to observe it.
   const remoteSplitDirectionRef = useRef<'horizontal' | 'vertical' | null>(null);
   const splitPane = useStore((s) => s.splitPane);
+  const clearSplitCwdSeed = useStore((s) => s.clearSplitCwdSeed);
+  const pushToast = useStore((s) => s.pushToast);
   const closeSurface = useStore((s) => s.closeSurface);
   const updateSurfacePtyId = useStore((s) => s.updateSurfacePtyId);
   const addSurface = useStore((s) => s.addSurface);
@@ -452,14 +457,34 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
   // #1140: same modal, but split first — a fresh pane, not another tab on
   // this one. Mirrors handleSplitHorizontal/handleSplitVertical's direction
   // semantics (Ctrl+D right, Ctrl+Shift+D down).
+  //
+  // Cap pre-check BEFORE the modal opens: the modal mints a real session on
+  // the host before onCreated fires, so opening it at the pane cap would
+  // spend a host round-trip on a split that is already known to refuse —
+  // same split-before-mint ordering splitBrowserPane settled on
+  // (browserPane.ts). Duplicates splitPane's own toast because splitPane
+  // cannot be asked "would you refuse?" without actually splitting.
+  const remoteSplitBlockedAtCap = useCallback((): boolean => {
+    if (getWorkspaceLeafPanes(workspace).length < MAX_PANES_PER_WORKSPACE) return false;
+    const stashed = (workspace.stashedPanes ?? []).length;
+    pushToast({
+      message: stashed > 0
+        ? t('pane.maxLeavesReachedWithStash', { count: MAX_PANES_PER_WORKSPACE, stashed })
+        : t('pane.maxLeavesReached', { count: MAX_PANES_PER_WORKSPACE }),
+      level: 'warn',
+    });
+    return true;
+  }, [workspace, pushToast, t]);
   const handleSplitRemoteHorizontal = useCallback(() => {
+    if (remoteSplitBlockedAtCap()) return;
     remoteSplitDirectionRef.current = 'horizontal';
     setAddRemoteModalOpen(true);
-  }, []);
+  }, [remoteSplitBlockedAtCap]);
   const handleSplitRemoteVertical = useCallback(() => {
+    if (remoteSplitBlockedAtCap()) return;
     remoteSplitDirectionRef.current = 'vertical';
     setAddRemoteModalOpen(true);
-  }, []);
+  }, [remoteSplitBlockedAtCap]);
 
   const handleRemoteCreated = useCallback((hostId: string, sessionId: string) => {
     const direction = remoteSplitDirectionRef.current;
@@ -475,9 +500,25 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
     const splitResult: string | false = direction === null ? pane.id : splitPane(pane.id, direction, workspace.id);
     const targetPaneId = resolveRemoteAttachPaneId(direction, pane.id, splitResult);
     if (targetPaneId) {
-      addRemoteSurface(targetPaneId, hostId, sessionId, undefined, undefined, workspace.id);
+      // owned: true — AddRemotePaneModal MINTED this session (and the one-shot
+      // `remote-pane-*` workspace row derived from it), so this tab is what has
+      // to destroy it on close (#1129). Nothing else on the host ever will.
+      addRemoteSurface(targetPaneId, hostId, sessionId, undefined, undefined, workspace.id, true);
+      // splitPane seeded an inherited cwd for the fresh leaf so a terminal
+      // funnel could start a shell there; a remote leaf never goes through
+      // that funnel, so the seed would sit until the pane closes — and replay
+      // a stale cwd if the leaf ever empties out. Same guard splitBrowserPane
+      // applies (browserPane.ts).
+      if (direction !== null) clearSplitCwdSeed(targetPaneId);
+    } else {
+      // splitPane refused after the mint — the cap was reached while the
+      // modal sat open, or this pane vanished under it. With no surface to
+      // carry the remoteOwned record, nothing would ever reap the session
+      // (#1129's exact orphan) — destroy it now rather than strand a live
+      // shell on the host.
+      destroyRemoteSessions([{ hostId, sessionId }]);
     }
-  }, [addRemoteSurface, pane.id, splitPane, workspace.id]);
+  }, [addRemoteSurface, clearSplitCwdSeed, pane.id, splitPane, workspace.id]);
 
   const closePane = useStore((s) => s.closePane);
 
@@ -569,6 +610,12 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
     if (surface?.ptyId) {
       window.electronAPI.pty.dispose(surface.ptyId);
     }
+    // #1129 — a remote-terminal tab carries no ptyId, so the dispose above is
+    // structurally blind to it. Closing the tab must also end the session
+    // this desktop minted on the host (and with it the one-shot workspace row
+    // derived from it); a tab merely viewing somebody else's session is left
+    // alone by destroySurfaceRemoteSession itself.
+    destroySurfaceRemoteSession(surface);
     closeSurface(pane.id, surfaceId);
 
     // 마지막 Surface가 닫히면 Pane도 자동 제거

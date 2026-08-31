@@ -10,6 +10,7 @@ import { saveSessionNow } from '../../utils/sessionSaveBridge';
 import { publishPaneClosed } from '../../events/publisher';
 import { panePrincipalId } from '../../../shared/principals';
 import { computePaneAutoName } from '../../utils/paneNaming';
+import { recomputeWorkspacePorts } from './workspacePorts';
 
 export interface SurfaceSlice {
   /** Add a terminal surface to a pane. `workspaceId` lets RPC / eager-spawn
@@ -25,7 +26,7 @@ export interface SurfaceSlice {
    * splitPane, then calls this to populate it. ptyId stays '' (see
    * createRemoteSurface), so every ptyId-gated check already treats this
    * surface as non-local without further changes. */
-  addRemoteSurface: (paneId: string, hostId: string, sessionId: string, shell?: string, cwd?: string, workspaceId?: string) => void;
+  addRemoteSurface: (paneId: string, hostId: string, sessionId: string, shell?: string, cwd?: string, workspaceId?: string, owned?: boolean) => void;
   addEditorSurface: (paneId: string, filePath: string) => void;
   /** J2 — diff 리뷰 서피스 추가. taskId만 영속(diff 내용은 파생 데이터).
    * 같은 taskId가 이미 열려 있으면 그 탭으로 전환. editor/browser처럼 ptyId 없음. */
@@ -159,13 +160,13 @@ export const createSurfaceSlice: StateCreator<StoreState, [['zustand/immer', nev
     pane.activeSurfaceId = surface.id;
   }),
 
-  addRemoteSurface: (paneId, hostId, sessionId, shell, cwd, workspaceId) => set((state: StoreState) => {
+  addRemoteSurface: (paneId, hostId, sessionId, shell, cwd, workspaceId, owned) => set((state: StoreState) => {
     const targetWsId = workspaceId || state.activeWorkspaceId;
     const ws = state.workspaces.find((w: Workspace) => w.id === targetWsId);
     if (!ws) return;
     const pane = findLeafPane(ws.rootPane, paneId);
     if (!pane) return;
-    const surface = createRemoteSurface(hostId, sessionId, shell || '', cwd || '');
+    const surface = createRemoteSurface(hostId, sessionId, shell || '', cwd || '', owned === true);
     pane.surfaces.push(surface);
     pane.activeSurfaceId = surface.id;
   }),
@@ -305,7 +306,12 @@ export const createSurfaceSlice: StateCreator<StoreState, [['zustand/immer', nev
     // Drop per-surface ports and agent status too (fleet-activity adversarial
     // review): without this, every closed surface leaves a dead ptyId entry
     // behind, and a REUSED ptyId inherits the previous surface's status.
-    if (closedPtyId && state.surfacePorts) delete state.surfacePorts[closedPtyId];
+    if (closedPtyId && state.surfacePorts) {
+      delete state.surfacePorts[closedPtyId];
+      // #1135: the workspace badge is a union over surfacePorts — recompute it
+      // here or the closed surface's ports stay on the sidebar forever.
+      recomputeWorkspacePorts(state.workspaces, state.surfacePorts);
+    }
     if (closedPtyId && state.surfaceAgentStatus) delete state.surfaceAgentStatus[closedPtyId];
     if (closedPtyId) clearNudgesFor(closedPtyId); // A5: free the rate-cap entry for a reusable ptyId
     // J3 F4: onExhausted 매핑도 이 ptyId 소멸과 함께 evict(무한 성장·재사용 ptyId 오염 방지).

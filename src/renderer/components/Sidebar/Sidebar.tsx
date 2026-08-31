@@ -8,6 +8,7 @@ import MissionsSection from './MissionsSection';
 import PresetPicker from './PresetPicker';
 import type { Workspace } from '../../../shared/types';
 import { getWorkspacePtyIds } from '../../../shared/paneUtils';
+import { destroyWorkspaceRemoteSessions } from '../../utils/remoteSessionTeardown';
 import { useT } from '../../hooks/useT';
 import { buildWorkspaceMarkdown } from '../../utils/sessionInfoMarkdown';
 import { tokenAttrs } from '../../themes';
@@ -26,6 +27,10 @@ import { COMPANY_MODE_ENABLED } from '../../../shared/featureFlags';
 // daemon session burning tokens with no window left to show it.
 function disposeAllPtys(ws: Workspace) {
   for (const ptyId of getWorkspacePtyIds(ws)) window.electronAPI.pty.dispose(ptyId);
+  // #1129 — a remote-terminal surface owns a session on another machine and
+  // carries no ptyId, so the walk above is blind to it. Same orphan argument
+  // as the stash: nothing else on the host will ever reap it.
+  destroyWorkspaceRemoteSessions(ws);
 }
 
 export default function Sidebar() {

@@ -8,6 +8,8 @@ import {
   getWorkspaceLeafPanes,
   collectPaneTreePtyIds,
   getWorkspacePtyIds,
+  collectPaneTreeRemoteSessions,
+  getWorkspaceRemoteSessions,
 } from '../paneUtils';
 import type { Pane, PaneLeaf, PaneBranch } from '../types';
 
@@ -171,5 +173,55 @@ describe('collectPaneTreePtyIds / getWorkspacePtyIds', () => {
     expect(getWorkspacePtyIds({ rootPane: surfaced })).toEqual(['pty-1', 'pty-2']);
     expect(getWorkspacePtyIds({ rootPane: surfaced, stashedPanes: [{ pane: stashed }] }))
       .toEqual(['pty-1', 'pty-2', 'pty-stashed']);
+  });
+});
+
+// #1129 — the remote counterpart of the PTY walks. A remote-terminal surface
+// carries no ptyId, so the walks above are structurally blind to it.
+describe('collectPaneTreeRemoteSessions / getWorkspaceRemoteSessions', () => {
+  const remoteLeaf: PaneLeaf = {
+    id: 'leaf-r',
+    type: 'leaf',
+    activeSurfaceId: 'r1',
+    surfaces: [
+      // owned — this desktop minted it
+      { id: 'r1', ptyId: '', title: '', shell: '', cwd: '', surfaceType: 'remote-terminal', remoteHostId: 'h1', remoteSessionId: 'web-1', remoteOwned: true },
+      // a VIEW of somebody else's session — never a destroy target
+      { id: 'r2', ptyId: '', title: '', shell: '', cwd: '', surfaceType: 'remote-terminal', remoteHostId: 'h1', remoteSessionId: 'web-2' },
+      // an ordinary local terminal shares the leaf
+      { id: 'r3', ptyId: 'pty-9', title: '', shell: '', cwd: '' },
+    ],
+  };
+
+  it('collects only the sessions this desktop owns', () => {
+    expect(collectPaneTreeRemoteSessions(remoteLeaf)).toEqual([{ hostId: 'h1', sessionId: 'web-1' }]);
+  });
+
+  it('returns nothing for a tree with no remote surfaces', () => {
+    expect(collectPaneTreeRemoteSessions(surfaced)).toEqual([]);
+  });
+
+  it('skips an owned surface whose host/session pointer is missing', () => {
+    const broken: PaneLeaf = {
+      id: 'leaf-b',
+      type: 'leaf',
+      activeSurfaceId: 'b1',
+      surfaces: [{ id: 'b1', ptyId: '', title: '', shell: '', cwd: '', surfaceType: 'remote-terminal', remoteOwned: true }],
+    };
+    expect(collectPaneTreeRemoteSessions(broken)).toEqual([]);
+  });
+
+  it('includes stashed panes at the workspace level', () => {
+    const stashed: PaneLeaf = {
+      id: 'leaf-x',
+      type: 'leaf',
+      activeSurfaceId: 'sx',
+      surfaces: [{ id: 'sx', ptyId: '', title: '', shell: '', cwd: '', surfaceType: 'remote-terminal', remoteHostId: 'h2', remoteSessionId: 'web-stashed', remoteOwned: true }],
+    };
+    expect(getWorkspaceRemoteSessions({ rootPane: remoteLeaf })).toEqual([{ hostId: 'h1', sessionId: 'web-1' }]);
+    expect(getWorkspaceRemoteSessions({ rootPane: remoteLeaf, stashedPanes: [{ pane: stashed }] })).toEqual([
+      { hostId: 'h1', sessionId: 'web-1' },
+      { hostId: 'h2', sessionId: 'web-stashed' },
+    ]);
   });
 });

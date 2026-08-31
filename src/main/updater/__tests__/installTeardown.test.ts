@@ -17,6 +17,7 @@ import {
   selectOwnTreePids,
   parseProcessRows,
   buildWaiterScript,
+  buildWaiterVbsLauncher,
   readDaemonPid,
   terminatePids,
   readAbortMarker,
@@ -699,5 +700,63 @@ describe('waitForWaiterHeartbeat (#1056)', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe('buildWaiterVbsLauncher (#1136 — the hidden transport)', () => {
+  const PS = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe';
+  const ARGS = ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File'];
+
+  it('runs the waiter hidden AND waits on it', () => {
+    const vbs = buildWaiterVbsLauncher(PS, ARGS, 'C:\\Temp\\w.ps1') as string;
+    expect(vbs).not.toBeNull();
+    // 0 = SW_HIDE. True = bWaitOnReturn: wscript stays parked as the waiter's
+    // parent, which is what keeps the refusal path's `taskkill /T` able to
+    // reach the PowerShell child. Flipping either brings the whole bug back.
+    expect(vbs).toContain(', 0, True');
+    expect(vbs).toContain('WScript.Shell');
+  });
+
+  it('quotes both paths and leaves the switches bare', () => {
+    const vbs = buildWaiterVbsLauncher(PS, ARGS, "C:\\tmp o'brien\\w.ps1") as string;
+    // VBScript escapes a double quote by doubling it, so a quoted path inside
+    // the literal reads as ""...""; an apostrophe is inert (the O'Brien TEMP
+    // the cmd transport is separately pinned on).
+    expect(vbs).toContain(`""${PS}""`);
+    expect(vbs).toContain(`""C:\\tmp o'brien\\w.ps1""`);
+    // A quoted switch would make CreateProcess hunt for a file called
+    // `"-NoProfile"`.
+    expect(vbs).toContain(' -NoProfile -NonInteractive ');
+    expect(vbs).not.toContain('""-NoProfile""');
+  });
+
+  it('is a two-statement script with CRLF line endings', () => {
+    const vbs = buildWaiterVbsLauncher(PS, ARGS, 'C:\\Temp\\w.ps1') as string;
+    expect(vbs.split('\r\n').filter((l) => l.length > 0)).toHaveLength(2);
+    expect(vbs).not.toMatch(/[^\r]\n/);
+  });
+
+  it('fails closed on a quote or a newline rather than emitting a broken script', () => {
+    // Same rule as buildWaiterScript's stamp-path check: a path that could
+    // break out of the literal builds nothing, so the caller falls through to
+    // transport A instead of running something malformed.
+    expect(buildWaiterVbsLauncher(PS, ARGS, 'C:\\Temp\\a"b.ps1')).toBeNull();
+    expect(buildWaiterVbsLauncher(PS, ARGS, 'C:\\Temp\\a\nb.ps1')).toBeNull();
+    expect(buildWaiterVbsLauncher(PS, ARGS, 'C:\\Temp\\a\rb.ps1')).toBeNull();
+    expect(buildWaiterVbsLauncher('', ARGS, 'C:\\Temp\\w.ps1')).toBeNull();
+    expect(buildWaiterVbsLauncher(PS, ['-No"Profile'], 'C:\\Temp\\w.ps1')).toBeNull();
+  });
+
+  it('rejects a switch containing whitespace, because switches go in bare', () => {
+    // The paths are quoted, so a space in them is safe (the O'Brien TEMP above
+    // has one). The switches are NOT quoted, so a space inside one would
+    // silently split it into two arguments — a waiter running with the WRONG
+    // arguments, which is worse than no waiter, since transport A behind this
+    // one is a working fallback.
+    expect(buildWaiterVbsLauncher(PS, ['-No Profile'], 'C:\\Temp\\w.ps1')).toBeNull();
+    expect(buildWaiterVbsLauncher(PS, ['-NoProfile\t'], 'C:\\Temp\\w.ps1')).toBeNull();
+    expect(buildWaiterVbsLauncher(PS, ['-NoProfile', ''], 'C:\\Temp\\w.ps1')).toBeNull();
+    // A space in either PATH stays legal — that is the whole point of quoting.
+    expect(buildWaiterVbsLauncher(PS, ARGS, 'C:\\Program Files\\w.ps1')).not.toBeNull();
   });
 });
