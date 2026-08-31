@@ -48,19 +48,38 @@ const click = collect(registerInteractionTools).get('browser_click');
 const screenshot = collect(registerInspectionTools).get('browser_screenshot');
 if (!click || !screenshot) throw new Error('tools failed to register');
 
-function makePage() {
-  const mouseClick = vi.fn(async () => undefined);
+type Handler = (arg: unknown) => void;
+
+function makePage(opts: { viewport?: { width: number; height: number } | null; popupUrl?: string } = {}) {
+  const handlers = new Map<string, Set<Handler>>();
+  const order: string[] = [];
+  const mouseClick = vi.fn(async () => {
+    if (opts.popupUrl !== undefined) {
+      for (const fn of handlers.get('popup') ?? []) fn({ url: () => opts.popupUrl });
+    }
+  });
   return {
     mouseClick,
+    order,
+    listenerCount: () => handlers.get('popup')?.size ?? 0,
     page: {
-      on: vi.fn(),
-      off: vi.fn(),
+      on: (event: string, fn: Handler) => {
+        const set = handlers.get(event) ?? new Set<Handler>();
+        set.add(fn);
+        handlers.set(event, set);
+      },
+      off: (event: string, fn: Handler) => handlers.get(event)?.delete(fn),
       locator: vi.fn(),
       mouse: { click: mouseClick },
-      evaluate: vi.fn(async (expr: string) =>
-        expr === 'window.devicePixelRatio' ? 2 : undefined,
-      ),
-      screenshot: vi.fn(async () => Buffer.from('png')),
+      viewportSize: () => (opts.viewport === undefined ? { width: 1280, height: 800 } : opts.viewport),
+      evaluate: vi.fn(async (expr: string) => {
+        order.push('evaluate');
+        return expr === 'window.devicePixelRatio' ? 2 : undefined;
+      }),
+      screenshot: vi.fn(async () => {
+        order.push('screenshot');
+        return Buffer.from('png');
+      }),
     },
   };
 }
@@ -120,6 +139,51 @@ describe('browser_click coordinates', () => {
     expect(result.content[0].text).toContain('chrome backend');
     expect(mockSendRpc).not.toHaveBeenCalledWith('browser.click.cdp', expect.anything());
   });
+
+  it('[fix] carries the underlying page failure into that message', async () => {
+    getPage.mockRejectedValue(new Error('Target page, context or browser has been closed'));
+
+    const result = await click({ x: 1, y: 2 });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('browser has been closed');
+  });
+
+  it('[fix] refuses a negative coordinate', async () => {
+    const { page } = makePage();
+    getPage.mockResolvedValue(page);
+
+    const result = await click({ x: -5, y: 10 });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('inside the viewport');
+  });
+
+  it('[fix] refuses a coordinate outside the viewport instead of faking success', async () => {
+    const { page, mouseClick } = makePage({ viewport: { width: 800, height: 600 } });
+    getPage.mockResolvedValue(page);
+
+    const result = await click({ x: 900, y: 100 });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('800x600 viewport');
+    expect(mouseClick).not.toHaveBeenCalled();
+  });
+
+  it('[fix] still clicks when the page reports no viewport size', async () => {
+    const { page, mouseClick } = makePage({ viewport: null });
+    getPage.mockResolvedValue(page);
+
+    const result = await click({ x: 900, y: 100 });
+    expect(result.isError).toBeUndefined();
+    expect(mouseClick).toHaveBeenCalled();
+  });
+
+  it('[fix] reports a popup opened by a coordinate click, and detaches the listener', async () => {
+    const watched = makePage({ popupUrl: 'https://popup.example/from-coords' });
+    getPage.mockResolvedValue(watched.page);
+
+    const result = await click({ x: 10, y: 20 });
+    expect(result.content[0].text).toContain('opened a popup (page: https://popup.example/from-coords)');
+    expect(watched.listenerCount()).toBe(0);
+  });
 });
 
 describe('browser_screenshot coordinate basis', () => {
@@ -133,6 +197,23 @@ describe('browser_screenshot coordinate basis', () => {
     expect(result.content[0].type).toBe('image');
     expect(note).toContain('devicePixelRatio 2');
     expect(note).toContain('image pixels / 2');
+  });
+
+  it('[fix] reads the devicePixelRatio before taking the shot', async () => {
+    const watched = makePage();
+    getPage.mockResolvedValue(watched.page);
+
+    await screenshot({});
+    expect(watched.order).toEqual(['evaluate', 'screenshot']);
+  });
+
+  it('[fix] tells the RPC lane that coordinate clicks are unsupported', async () => {
+    getPage.mockResolvedValue(null);
+
+    const result = await screenshot({});
+    const note = result.content.find((c) => c.type === 'text')?.text ?? '';
+    expect(note).toContain('does not support coordinate clicks');
+    expect(note).not.toContain('devicePixelRatio');
   });
 
   it('marks a fullPage capture as unusable for coordinate clicks', async () => {

@@ -353,26 +353,60 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
           throw new Error('Coordinate clicks need both x and y (viewport CSS pixels).');
         }
 
-        // Try Playwright first
-        const page = await engine.getPageForScope(scope).catch(allowScopedRpcFallback);
+        // Try Playwright first. The rejection is kept: on the coordinate path
+        // "no page" is reported to the caller, and "the page navigated away" or
+        // "the browser crashed" must not be dressed up as a backend limitation.
+        let pageError: unknown;
+        const page = await engine.getPageForScope(scope).catch((error) => {
+          pageError = error;
+          return allowScopedRpcFallback(error);
+        });
 
         if (hasCoords) {
           if (!page) {
+            const cause = pageError ? ` (${describeToolError(pageError)})` : '';
             throw new Error(
-              'Coordinate clicks need a live browser page, which this workspace\'s backend does not expose (the RPC lane resolves elements by ref only). Switch the workspace to the chrome backend, or click by ref from browser_snapshot.',
+              `Coordinate clicks need a live browser page, which this workspace's backend did not provide${cause}. The RPC lane resolves elements by ref only — switch the workspace to the chrome backend, or click by ref from browser_snapshot.`,
             );
           }
-          await page.mouse.click(x as number, y as number, {
-            ...(double && { clickCount: 2 }),
-          });
-          return {
-            content: [
-              {
-                type: 'text' as const,
-                text: `Clicked${double ? ' (double)' : ''} at viewport CSS px (${x}, ${y})`,
-              },
-            ],
-          };
+
+          // Refuse a coordinate the viewport does not contain instead of
+          // clicking nothing and reporting success. viewportSize() can be null
+          // on a CDP-attached page; only the negative check applies then.
+          if ((x as number) < 0 || (y as number) < 0) {
+            throw new Error(`Coordinates must be inside the viewport; got (${x}, ${y}).`);
+          }
+          const viewport = (page as unknown as { viewportSize?: () => { width: number; height: number } | null })
+            .viewportSize?.();
+          if (viewport && ((x as number) > viewport.width || (y as number) > viewport.height)) {
+            throw new Error(
+              `Coordinates (${x}, ${y}) are outside the ${viewport.width}x${viewport.height} viewport (CSS px). Scroll the target into view first, or take a fresh screenshot.`,
+            );
+          }
+
+          // Same popup contract as a ref click — a coordinate click on a link
+          // with target=_blank opens a popup just as readily.
+          const coordWatch =
+            (await engine.resolveWorkspaceBackend(scope.workspaceId).catch(() => undefined)) ===
+            'chrome'
+              ? watchForPopup(page as unknown as { on: Function; off: Function })
+              : null;
+          try {
+            await page.mouse.click(x as number, y as number, {
+              ...(double && { clickCount: 2 }),
+            });
+            const note = coordWatch ? await coordWatch.note() : '';
+            return {
+              content: [
+                {
+                  type: 'text' as const,
+                  text: `Clicked${double ? ' (double)' : ''} at viewport CSS px (${x}, ${y})${note}`,
+                },
+              ],
+            };
+          } finally {
+            coordWatch?.dispose();
+          }
         }
 
         if (page) {
