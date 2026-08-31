@@ -1,3 +1,113 @@
+## [3.49.2] — 2026-08-31
+
+### Added
+
+- A workspace attached to a paired remote host can now hold a session as an ordinary pane tab, right alongside local terminal/browser/editor/diff tabs — pick "New remote pane" from a pane's ⋮ menu, choose a paired host, and it bootstraps a fresh remote session into the CURRENT local workspace instead of a separate "attached remote workspace" entity (#1086/#1091). Rename, color tags, and every other local-workspace affordance apply to it for free. The tab's name also follows the remote shell's own `rename`/window-title command, the same way a local pane's does.
+
+- **Agents get a real REPL.** Three new MCP tools — `repl_run`, `repl_reset`,
+  `repl_sessions` — give an agent a persistent Node runtime where variables,
+  required modules, and open handles survive between calls, so it can build up
+  context instead of re-deriving it every time. Top-level `await` works, return
+  values come back inspected, and stdout, stderr, and the result arrive as
+  separate labelled blocks. Until now the only ways to run code were
+  `terminal_send`, which types keys at a shell and leaves you scraping the
+  screen for the answer, and `browser_evaluate`, whose page globals vanish on
+  navigation and can never touch a file or the network. Each session is its own
+  child process, so a runaway loop or a `process.exit()` costs you that session
+  and nothing else; runs have a timeout, output is capped with both ends kept,
+  and sessions live as long as your MCP connection. (#1125)
+
+- A `core` MCP tool profile, selected with the `--core` launch argument. It registers 47 of the 92 tools — everything except the browser and company-A2A families — for agents doing terminal, pane, workspace, channel, and delegation work, cutting about 27,500 bytes (~6,900 tokens) off what every session pays for `tools/list` before it does any work. The profile is chosen once at launch and never changes during a session. It is an optimization, not a permission boundary: a core-mode agent has exactly the authority an ordinary one does, with a shorter tool list. No client registers itself as `core` yet.
+
+### Changed
+
+- **`browser_extract_text` drops link URLs unless you ask for them.** The tool
+  documented `includeLinks` as defaulting to false and then defaulted it to
+  true, so leaving it out returned every href on the page. It now behaves as
+  described; pass `includeLinks: true` when you want the URLs. (#1124)
+
+- **The MCP tool list got 5,677 bytes lighter, and the budget guarding it tightened to match.** Every agent session pays for `tools/list` before it does any work — the host copies each tool's description and schema into the system prompt — and the wmux surface had grown a second copy of itself: error codes the failure already reports, field semantics written out twice, and version stamps meant for maintainers. The text is now said once, in the place that owns it, and the counter-intuitive contracts an agent actually needs are all still there: that a channel post is a notification and not a delivery, that `terminal_send_key` is not a submit mechanism, that a poll cursor can fall out of the ring. The full surface drops from 79,796 to 74,119 bytes and the commander surface from 48,991 to 43,314, with the CI budgets ratcheted from 80,000/49,000 to 75,000/45,000 so the saving cannot quietly be spent again.
+
+### Deprecated
+
+- The `legacy` (no-`clientName`) RPC lane is deprecated and **closes in the
+  first release on or after 2026-09-30** (#1111). Today a request without a
+  `clientName` envelope is grandfathered through the permission gate; after
+  the close it is refused. Integrations should send a `clientName` and declare
+  capabilities — `wmux-cli` remains available as the limited curated lane.
+  Every place the lane is documented now carries this notice.
+
+### Fixed
+
+- **Live Chrome could not be attached to at all, and would not say why.** Chrome
+  asks permission for every connection to its remote-debugging endpoint and
+  holds the WebSocket handshake open until you answer — but the handshake shared
+  the 10-second CDP request timeout, so wmux hung up while the prompt was still
+  on screen. No amount of clicking was fast enough. The first handshake now gets
+  its own budget (3 minutes), separate from the per-request timeout, and logs
+  that it is waiting once it passes 5 seconds.
+
+- **Every way of failing to reach Live Chrome produced the same message.** A
+  pending permission prompt, a Chrome that is not running, and an endpoint that
+  refused the connection were reported identically, so the one failure you can
+  fix in two seconds read like a broken setup. The three now say what actually
+  happened and what to do: click Allow, enable remote debugging at
+  `chrome://inspect`, or retry because the endpoint moved.
+
+- **`browser.session.start` overstated what "remote debugging is reachable"
+  means.** The probe behind it is a bare TCP connect — deliberately, so a status
+  call never raises Chrome's consent prompt — which proves something is
+  listening and nothing more. It claimed the browser would attach on the first
+  drive; it now says the attach will be *attempted* and that Chrome will ask
+  permission first.
+
+- **A snapshot ref now keeps naming the same element.** Every `browser_snapshot`
+  renumbered its refs from scratch, so one node appearing anywhere on the page
+  shifted all the refs after it. Clicking a ref you had just been given landed
+  on the element next door — no error, just the wrong thing clicked. Refs are
+  now tied to the DOM node itself, so a node that is still there keeps its ref
+  and a number is never handed out twice. When a ref genuinely cannot be trusted
+  — the page navigated, the element is gone, or several same-named elements
+  moved around under it — the tool now says so and asks you to take a fresh
+  snapshot instead of clicking something else. (#1124)
+
+- **Repeat snapshots are diffs again.** `browser_snapshot` advertises returning
+  only what changed since the last one, but the renumbering made almost every
+  line look different, so it always fell back to the full tree. With refs
+  holding still, a second snapshot of a barely-changed page is a handful of
+  lines. (#1124)
+
+- **OpenCode no longer flashes rapidly between its content and a blank terminal
+  pane.** wmux now presents each completed synchronized-output frame before
+  OpenCode begins the next one, instead of letting xterm defer and repeatedly
+  suppress the paint. (#1126)
+
+- **`channel_read`'s `since_seq` no longer describes paging backwards.** With a cursor, a limited read returns the oldest messages at or after it, so an ack-and-repeat drain stays contiguous. The field description claimed the opposite — the most recent of the remainder — contradicting the tool's own description and inviting exactly the lossy drain loop the paging rule exists to prevent.
+
+- The server's opening instructions no longer point agents at browser tools on profiles that do not have them.
+
+- REPL sessions left idle for 15 minutes now have their Node child process reclaimed, instead of holding memory for the life of the MCP connection. The next `repl_run` on a reclaimed session says why its state is gone rather than handing back a silently empty runtime.
+
+- A REPL session running a long eval is no longer killed by its own idle deadline. A session that had been quiet for nearly 15 minutes and then started a multi-minute run could be terminated mid-flight, losing state that was actively in use.
+
+- `repl_sessions` now shows how long each session has left before it is reclaimed.
+
+- wmux could SIGKILL an unrelated program that happened to be running a
+  script at `.../daemon/index.js` if the operating system had recycled the
+  daemon's process id onto it. The daemon is now identified by the exact
+  entry script wmux itself launches (compared at the argv entry position),
+  and when that identity cannot be proven, wmux asks before cleaning up and
+  spawning — it no longer risks starting a second daemon over a live one.
+  (#1025, #1132; redo of the reverted #1027 per #1028)
+
+- On macOS, wmux failed to recognize its own daemon when the app was
+  installed under a path containing a space (for example `wmux 2.app`, the
+  name macOS gives a second copy): the process listing joins arguments with
+  spaces, so the executable path itself arrived shattered and the daemon's
+  identity could never be proven — leaving that user with a confirmation
+  dialog on every launch. The executable is now read separately and kept
+  whole, so the daemon identifies correctly. (#1132)
+
 ## [3.49.1] — 2026-08-30
 
 ### Added
