@@ -22,6 +22,22 @@ export const MAX_SESSIONS_PER_CONNECTION = 4;
  */
 export const IDLE_TIMEOUT_MS = 15 * 60 * 1000;
 /**
+ * How often the process looks for sessions to reclaim.
+ *
+ * ONE interval for the whole process, not one timer per session: the broker
+ * hosts N connections holding up to four sessions each, and a timer per session
+ * is N x 4 handles on the event loop to enforce a single coarse deadline. The
+ * cost of the coarse tick is that a session can outlive its idle deadline by up
+ * to one interval, which is noise against a fifteen-minute threshold.
+ */
+export const IDLE_SWEEP_INTERVAL_MS = 60 * 1000;
+/**
+ * Why a reclaimed session's state is gone. Written once here because the next
+ * `repl_run` reads it back out through `previousDeath` and tells the caller —
+ * a reclaimed session must never look like a silently fresh one.
+ */
+const IDLE_DEATH_REASON = `idle for ${Math.round(IDLE_TIMEOUT_MS / 60000)} minutes`;
+/**
  * Ceiling on live children across the WHOLE process.
  *
  * The per-connection cap alone is not a limit in the broker: it hosts N agents
@@ -54,6 +70,51 @@ function processLiveSessions(): number {
   return total;
 }
 
+/** The one sweep for this process, started with the first registry. */
+let sweepTimer: NodeJS.Timeout | null = null;
+
+function startSweepTimer(): void {
+  if (sweepTimer) return;
+  sweepTimer = setInterval(() => reclaimIdleSessions(), IDLE_SWEEP_INTERVAL_MS);
+  // An idle REPL waiting to be reaped is not work worth keeping the MCP server
+  // alive for. Without this the sweep would hold the event loop open forever
+  // and the process would never exit on its own.
+  sweepTimer.unref?.();
+}
+
+function stopSweepTimerWhenUnused(): void {
+  if (sweepTimer && liveRegistries.size === 0) {
+    clearInterval(sweepTimer);
+    sweepTimer = null;
+  }
+}
+
+/**
+ * Kill every child whose session has gone quiet for longer than the threshold.
+ * Returns how many were reclaimed. `now` is injectable so a test can age
+ * sessions without aging the child processes it is testing against.
+ */
+export function reclaimIdleSessions(now: number = Date.now()): number {
+  let reclaimed = 0;
+  for (const registry of liveRegistries) {
+    // Per registry, because this runs on an interval callback in the broker:
+    // an exception escaping here is an uncaughtException that takes down every
+    // agent's connection, and it would also skip the registries after it in
+    // the iteration. One connection's bad session is not the others' problem.
+    try {
+      reclaimed += registry.reclaimIdle(now);
+    } catch {
+      /* a session that will not die is not worth the whole process */
+    }
+  }
+  return reclaimed;
+}
+
+/** The sweep handle, for the test that asserts it does not hold the loop open. */
+export function idleSweepTimerForTest(): NodeJS.Timeout | null {
+  return sweepTimer;
+}
+
 export class ReplRegistry {
   private readonly sessions = new Map<string, ReplSession>();
 
@@ -68,15 +129,25 @@ export class ReplRegistry {
     return count;
   }
 
-  /** Live sessions, oldest first. Dead ones are swept as they are noticed. */
+  /**
+   * Live sessions, oldest first.
+   *
+   * Dead ones are FILTERED, not deleted. Deleting here is what a tidier reading
+   * suggests and it silently breaks the contract next door: `acquire` reads a
+   * dead session's `diedBecause` to tell the caller why its variables are gone,
+   * so a `repl_sessions` call between the reclaim and the next `repl_run` would
+   * swallow the explanation and hand back a fresh runtime as if nothing had
+   * happened.
+   */
   list(): ReplSession[] {
     this.sweep();
-    return [...this.sessions.values()];
+    return [...this.sessions.values()].filter((session) => !session.dead);
   }
 
   get(name: string): ReplSession | undefined {
     this.sweep();
-    return this.sessions.get(name);
+    const session = this.sessions.get(name);
+    return session && !session.dead ? session : undefined;
   }
 
   /**
@@ -95,10 +166,14 @@ export class ReplRegistry {
     if (existing) this.sessions.delete(name);
     this.sweep();
 
-    if (this.sessions.size >= MAX_SESSIONS_PER_CONNECTION) {
+    // Live sessions, not map entries: the map also holds reclaimed corpses,
+    // and letting those occupy the cap would refuse a caller a runtime on
+    // behalf of sessions that no longer exist.
+    const live = [...this.sessions.values()].filter((session) => !session.dead);
+    if (live.length >= MAX_SESSIONS_PER_CONNECTION) {
       throw new Error(
         `this connection already holds ${MAX_SESSIONS_PER_CONNECTION} REPL sessions ` +
-          `(${[...this.sessions.keys()].join(', ')}). Call repl_reset on one before starting another.`,
+          `(${live.map((session) => session.name).join(', ')}). Call repl_reset on one before starting another.`,
       );
     }
     if (processLiveSessions() >= MAX_SESSIONS_PER_PROCESS) {
@@ -108,8 +183,15 @@ export class ReplRegistry {
       );
     }
 
-    const session = new ReplSession({ name, cwd, idleMs: IDLE_TIMEOUT_MS });
+    const session = new ReplSession({ name, cwd });
     this.sessions.set(name, session);
+    // Re-assert membership rather than relying on the constructor's: a registry
+    // that was disposed and then used again would otherwise hold a child no
+    // sweep can see and no host-wide count knows about. Arming the sweep here
+    // and not in the constructor also keeps a connection that only ever called
+    // repl_sessions from carrying a sixty-second wakeup for nothing.
+    liveRegistries.add(this);
+    startSweepTimer();
     return { session, created: true, previousDeath };
   }
 
@@ -129,13 +211,47 @@ export class ReplRegistry {
     }
     this.sessions.clear();
     liveRegistries.delete(this);
+    stopSweepTimerWhenUnused();
   }
 
-  /** Forget sessions whose child is already gone (idle reap, crash, kill). */
-  private sweep(): void {
-    for (const [name, session] of this.sessions) {
-      if (session.dead) this.sessions.delete(name);
+  /**
+   * Kill the children of sessions that have gone quiet, and leave the corpses
+   * in the map.
+   *
+   * Deleting the entry here would be the obvious tidier move and is exactly
+   * wrong: `acquire` reads the dead session's `diedBecause` to tell the next
+   * caller WHY its variables are gone, and an entry deleted by the sweep would
+   * make a reclaimed session indistinguishable from one that never existed. The
+   * corpse is a few hundred bytes and the next `acquire`/`list` drops it; the
+   * forty megabytes this is actually about died with the child.
+   *
+   * A busy session is spared no matter how stale `lastUsed` looks: it is mid-
+   * eval, and an eval may legitimately run for the full five-minute ceiling.
+   */
+  reclaimIdle(now: number): number {
+    let reclaimed = 0;
+    for (const session of this.sessions.values()) {
+      if (session.dead || session.busy) continue;
+      if (now - session.lastUsed < IDLE_TIMEOUT_MS) continue;
+      session.destroy(IDLE_DEATH_REASON);
+      reclaimed++;
     }
+    return reclaimed;
+  }
+
+  /**
+   * Drop corpses the caller can no longer plausibly be told about.
+   *
+   * A dead session is kept ON PURPOSE — `acquire` reads its `diedBecause`. But
+   * session names are the caller's to invent, so an agent that never reuses one
+   * would grow this map without bound. Keep as many corpses as there are live
+   * slots and drop the rest, oldest first (the Map iterates in insertion
+   * order).
+   */
+  private sweep(): void {
+    const dead = [...this.sessions.entries()].filter(([, session]) => session.dead);
+    const excess = dead.length - MAX_SESSIONS_PER_CONNECTION;
+    for (let i = 0; i < excess; i++) this.sessions.delete(dead[i][0]);
   }
 }
 
