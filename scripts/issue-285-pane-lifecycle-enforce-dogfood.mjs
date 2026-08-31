@@ -18,9 +18,14 @@
  *     REJECTED — the first-party grant is curated, not "first-party ⇒ anything".
  *   - FAIL-CLOSED: claude-code pane.split with an unknown workspaceId rejects.
  *
- * Setup/observer calls (workspace.*, *.list reads) omit clientName → legacy
- * grandfather, exactly how the human/CLI drives the daemon; only the methods
- * UNDER TEST carry a clientName so we exercise the first-party enforce path.
+ * Setup/observer calls (workspace.*, *.list reads) default to clientName
+ * 'wmux-cli' → the curated internal-CLI lane, exactly how the human/CLI drives
+ * the daemon; the methods UNDER TEST override it with their own clientName so
+ * we exercise the first-party enforce path. They used to omit clientName and
+ * ride the `legacy` grandfather, which #1111 closes in the first release on or
+ * after 2026-09-30.
+ * KNOWN GAP (#1111): `pane.close` is not in WMUX_CLI_METHODS, so the reap step
+ * still needs the allowlist decision.
  *
  * Run (PowerShell): npm run package; node scripts/issue-285-pane-lifecycle-enforce-dogfood.mjs
  */
@@ -79,7 +84,11 @@ function readMainToken() { try { return fs.readFileSync(authTokenPath, 'utf8').t
 
 // rpcCall with an optional clientName stamped into the envelope (the whole
 // point: clientName drives the enforcer's first-party recognition).
-function rpcCall(method, params = {}, { timeoutMs = 8000, clientName } = {}) {
+// #1111: the default is now 'wmux-cli' (curated internal-CLI lane) rather than
+// an omitted clientName, since the envelope-less grandfather closes in the
+// first release on or after 2026-09-30. Callers that test a specific identity
+// still pass their own clientName.
+function rpcCall(method, params = {}, { timeoutMs = 8000, clientName = 'wmux-cli' } = {}) {
   return new Promise((resolve, reject) => {
     const sock = net.createConnection(mainPipe);
     let buf = ''; let settled = false; const id = randomUUID();
