@@ -77,10 +77,12 @@ describe('buildCodexHookEnvelope', () => {
     expect(envelope?.payload).toMatchObject({ source: 'startup' });
   });
 
-  // A resumed session reports the SAME session_id with source "resume". That is
-  // what makes a resumed Codex pane identifiable without inspecting the
-  // transcript, so it is pinned rather than left to chance.
-  it('marks a resumed session without changing the session id', () => {
+  // `source` has NO CONSUMER in src/ today — nothing reads
+  // signal.payload.source. These two cases pin it as a future candidate, not
+  // as a working feature: they assert the bridge carries it faithfully, and
+  // claim nothing about a resumed pane being identified downstream, because
+  // today it is not.
+  it('carries the resume marker faithfully, though nothing reads it yet', () => {
     const envelope = buildCodexHookEnvelope(
       { ...SESSION_START_PAYLOAD, source: 'resume' },
       { env: baseEnv, now: 1 },

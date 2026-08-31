@@ -120,23 +120,30 @@ export function renderCodexHooksToml(bridgeScript) {
  * True when a codex-cli version string is at or above the hooks floor.
  *
  * Accepts what `codex --version` prints (`codex-cli 0.151.0`) and bare
- * versions, and tolerates a pre-release suffix: `0.145.0-alpha.2` is a build
- * of 0.145.0 and was measured firing, so the suffix is dropped rather than
- * ordered. A version it cannot parse is treated as TOO OLD — an unknown build
+ * versions. A version it cannot parse is treated as TOO OLD — an unknown build
  * that silently runs no hooks is the failure this gate exists to prevent, and
  * falling back to the screen detector is the safe side of that call.
+ *
+ * Pre-release suffixes are ordered BELOW their own release, which is the
+ * semver rule and also the measurement: `0.145.0-alpha.2` fired, and it is
+ * above the floor either way. The case that matters is a pre-release AT the
+ * floor — `0.141.0-alpha.0` is a build made BEFORE 0.141.0 shipped, so it sits
+ * in exactly the 0.140.0 silent-no-fire zone this floor exists to exclude.
+ * Treating it as ">= 0.141.0" would let the one build class we cannot verify
+ * through the gate.
  */
 export function codexSupportsHooks(versionOutput, floor = CODEX_HOOKS_MIN_VERSION) {
   const parse = (text) => {
-    const m = /(\d+)\.(\d+)\.(\d+)/.exec(String(text ?? ''));
-    return m ? [Number(m[1]), Number(m[2]), Number(m[3])] : null;
+    const m = /(\d+)\.(\d+)\.(\d+)(-[0-9A-Za-z.-]+)?/.exec(String(text ?? ''));
+    return m ? { nums: [Number(m[1]), Number(m[2]), Number(m[3])], pre: Boolean(m[4]) } : null;
   };
   const found = parse(versionOutput);
   const want = parse(floor);
   if (!found || !want) return false;
   for (let i = 0; i < 3; i++) {
-    if (found[i] > want[i]) return true;
-    if (found[i] < want[i]) return false;
+    if (found.nums[i] > want.nums[i]) return true;
+    if (found.nums[i] < want.nums[i]) return false;
   }
-  return true;
+  // Numerically equal to the floor: a pre-release of it predates it.
+  return !found.pre;
 }

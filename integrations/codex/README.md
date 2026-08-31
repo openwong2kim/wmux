@@ -162,14 +162,24 @@ login to design against.
 Until then, manual setup:
 
 1. Check your version: `codex --version` must be **0.141.0 or newer**.
-2. Get the block:
+2. Copy the bridge somewhere **stable** — not the repo checkout:
    ```sh
-   node -e "import('./integrations/codex/hooks/wmuxHooks.mjs').then(m=>console.log(m.renderCodexHooksToml(require('path').resolve('integrations/codex/bin/wmux-codex-hooks-bridge.mjs'))))"
+   mkdir -p ~/.wmux/bridges
+   cp integrations/codex/bin/wmux-codex-hooks-bridge.mjs ~/.wmux/bridges/
    ```
-3. Append it to `$CODEX_HOME/config.toml` (default `~/.codex/config.toml`).
-4. Start Codex interactively and **approve the hooks when it asks**. If it never
-   asks, the hooks are not registered — re-check step 3.
-5. Confirm: run a turn, then look for `"outcome":"ok"` lines in
+   The path goes into `config.toml` and into the trust hash Codex records
+   against it. Pointing it at a working tree means moving, renaming, or
+   re-cloning the checkout silently un-trusts the hook — and an un-trusted hook
+   does not run and does not say so, which is the exact failure mode above.
+   Re-copy after a `git pull` that touches the bridge, then re-approve.
+3. Get the block (substitute the path you copied to):
+   ```sh
+   node -e "import('./integrations/codex/hooks/wmuxHooks.mjs').then(m=>console.log(m.renderCodexHooksToml(process.env.HOME + '/.wmux/bridges/wmux-codex-hooks-bridge.mjs')))"
+   ```
+4. Append it to `$CODEX_HOME/config.toml` (default `~/.codex/config.toml`).
+5. Start Codex interactively and **approve the hooks when it asks**. If it never
+   asks, the hooks are not registered — re-check step 4.
+6. Confirm: run a turn, then look for `"outcome":"ok"` lines in
    `~/.wmux/codex-hooks.log`.
 
 If you use this bridge, remove the `notify = [...]` line — otherwise every turn

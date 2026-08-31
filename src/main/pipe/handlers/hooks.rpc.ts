@@ -497,14 +497,30 @@ export function registerHooksRpc(
         ? { ok: true, block: { reason: brainVerdict.block } }
         : { ok: true };
     }
-    // A prompt-submit only ever means something to the brain lane above — it
-    // exists to open the foreign-turn flag. One arriving UNCLAIMED is a brain
-    // pty that already died (teardown raced the hook): letting it fall through
-    // would surface a "Prompt submitted" fleet notification for a pane the
-    // human never saw. Drop it silently.
-    if (signal.kind === 'agent.user_prompt_submit') {
-      return { ok: true };
-    }
+    // An unclaimed prompt-submit used to be dropped RIGHT HERE, on the premise
+    // that the brain lane was its only emitter, so an unclaimed one meant a
+    // brain pty that already died (teardown raced the hook). #1107 broke that
+    // premise: the Codex hooks bridge registers UserPromptSubmit on ordinary
+    // panes, and it is that pane's ONLY working cue — the bridge deliberately
+    // does not map PreToolUse/PostToolUse, and `agent.session_start` normalizes
+    // to a `session` cue that RESETS `seenWorking` rather than arming it. So a
+    // drop here made CompletionAlarm's turn gate (`!seenWorking` -> drop)
+    // swallow the same turn's `agent.stop`, and the pane never announced
+    // completion. The daemon path never had this hole: HookIngest feeds the
+    // alarm before it branches on kind.
+    //
+    // The drop is gone rather than relocated because the fall-through already
+    // does exactly what it was protecting: `agent.user_prompt_submit` is not an
+    // emit kind, so it returns at the `!isEmitKind` branch below — after the
+    // alarm feed, and before the ledger write, the EventBus tee and the toast.
+    // `buildTurnBoundaryMetadata` returns null for it and the activity
+    // broadcast is gated on `agent.activity`, so nothing user-visible fires on
+    // the way there. The "Prompt submitted" notification the old comment feared
+    // was never reachable from this path.
+    //
+    // It also stopped the signal from RELAYING: with a healthy daemon, a
+    // prompt-submit that arrived on the main pipe was dropped before
+    // `relayHookSignalToDaemon` and so never reached the daemon's alarm either.
 
     // 2. Latency observability runs BEFORE workspace match so that
     //    plugin signals from cwds outside any wmux workspace still

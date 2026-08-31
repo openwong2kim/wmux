@@ -77,11 +77,22 @@ describe('codexSupportsHooks', () => {
     }
   });
 
-  // 0.145.0-alpha.2 was measured firing, so a pre-release suffix must not
-  // demote the build below its own version.
-  it('treats a pre-release as its release version', () => {
+  // 0.145.0-alpha.2 was measured firing, and it is above the floor either way.
+  it('accepts a pre-release above the floor', () => {
     expect(codexSupportsHooks('codex-cli 0.145.0-alpha.2')).toBe(true);
     expect(codexSupportsHooks('0.140.0-alpha.1')).toBe(false);
+  });
+
+  // The case that actually matters: a pre-release AT the floor is a build made
+  // BEFORE 0.141.0 shipped, so it sits in the 0.140.0 silent-no-fire zone the
+  // floor exists to exclude. Ordering it as ">= 0.141.0" would let the one
+  // build class nobody can verify through the gate.
+  it('rejects a pre-release of the floor version itself', () => {
+    for (const v of ['0.141.0-alpha.0', 'codex-cli 0.141.0-rc.1', '0.141.0-nightly']) {
+      expect(codexSupportsHooks(v), v).toBe(false);
+    }
+    // The released floor itself still passes.
+    expect(codexSupportsHooks('0.141.0')).toBe(true);
   });
 
   // Fail closed. An unknown build that silently runs no hooks is exactly the

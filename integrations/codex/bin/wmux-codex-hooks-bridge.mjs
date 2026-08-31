@@ -6,7 +6,7 @@
 //   matcher = "*"
 //   [[hooks.Stop.hooks]]
 //   type = "command"
-//   command = "node \"<abs path to this file>\" Stop"
+//   command = "node \"<abs path to this file>\""
 //
 // Codex spawns it on the event and writes the event JSON to STDIN. The spawned
 // process inherits the pane env, so WMUX_PTY_ID pins the signal to the exact
@@ -42,8 +42,10 @@
 //   * A session id IS present, unlike Kiro — so resume binding is possible and
 //     this bridge keeps the notify bridge's spool.
 //   * `SessionStart.source` is `"startup"` on a fresh session and `"resume"` on
-//     `codex ... resume`, with the SAME `session_id` — so a resumed pane is
-//     identifiable without guessing.
+//     `codex ... resume`, with the SAME `session_id`. Recorded as a
+//     FUTURE-CANDIDATE field only: nothing in src/ reads it today, so it
+//     identifies nothing yet. It rides along because it is free, measured, and
+//     metadata — not because a consumer is waiting for it.
 //   * The payload carries CONTENT: `prompt` (UserPromptSubmit),
 //     `last_assistant_message` (Stop), `tool_input` (PreToolUse). wmux's
 //     bridges are metadata-only, so those fields are never read, logged, or
@@ -445,9 +447,11 @@ export function buildCodexHookEnvelope(payload, { env = process.env, now = Date.
   const sessionId = nonEmptyStr(payload.session_id);
   const turnId = nonEmptyStr(payload.turn_id);
   const transcriptPath = nonEmptyStr(payload.transcript_path);
-  // `source` is "startup" | "resume" on SessionStart. It is pane state, not
-  // content, and it is the only thing that distinguishes a resumed session
-  // from a fresh one without inspecting the transcript.
+  // `source` is "startup" | "resume" on SessionStart. Metadata, not content.
+  // NO CONSUMER YET — nothing in src/ reads signal.payload.source; it is
+  // carried because it is the only field that distinguishes a resumed session
+  // from a fresh one without inspecting the transcript, and dropping it now
+  // would mean re-measuring later.
   const source = kind === 'agent.session_start' ? nonEmptyStr(payload.source) : undefined;
   const workspaceId = nonEmptyStr(env.WMUX_WORKSPACE_ID);
   const surfaceId = nonEmptyStr(env.WMUX_SURFACE_ID);
@@ -462,7 +466,8 @@ export function buildCodexHookEnvelope(payload, { env = process.env, now = Date.
     cwd: nonEmptyStr(payload.cwd) ?? process.cwd(),
     // Metadata only. `turn_id` correlates a Stop with its UserPromptSubmit;
     // `transcript_path` feeds the resume binding's liveness probe; `source`
-    // marks a resumed session. Nothing here is user or model text.
+    // marks a resumed session and currently has no reader. Nothing here is
+    // user or model text.
     payload: {
       ...(turnId ? { turn_id: turnId } : {}),
       ...(transcriptPath ? { transcript_path: transcriptPath } : {}),
@@ -490,7 +495,11 @@ async function main() {
     // event wmux does not act on, or a pane we cannot identify.
     const event = nonEmptyStr(payload?.hook_event_name);
     const known = Boolean(event) && Object.hasOwn(EVENT_TO_KIND, event);
-    logEvent(known ? 'no-pty-id' : 'ignored-event', { event: known ? event : undefined });
+    // Log the event name in BOTH cases. An unmapped name is the single most
+    // useful thing in this log — it is how a Codex that renamed or added an
+    // event becomes visible — and a `hook_event_name` is metadata, never
+    // content. It is length-capped because the field is caller-controlled.
+    logEvent(known ? 'no-pty-id' : 'ignored-event', { event: event ? event.slice(0, 64) : undefined });
     return;
   }
 
@@ -498,8 +507,13 @@ async function main() {
   const sessionId = envelope.agentSessionId;
   if (targets.length === 0) {
     logEvent('no-auth-token', { paths: [getDaemonAuthTokenPath(), getAuthTokenPath()] });
-    // Still spool so a later daemon boot reconciles the capture.
-    if (sessionId) {
+    // Still spool so a later daemon boot reconciles the capture — but only for
+    // a turn boundary, same gate as the send-failure path below. The record is
+    // a RESUME BINDING; one written at SessionStart would name a session with
+    // no turn in it yet, and one written at UserPromptSubmit would name a turn
+    // that has not finished. Both would then win the don't-replace-newer rule
+    // against the real Stop for that same pty key.
+    if (sessionId && envelope.kind === 'agent.stop') {
       spoolResumeBinding({
         ptyId: envelope.ptyId,
         agent: 'codex',
@@ -514,6 +528,13 @@ async function main() {
 
   // One id across the walk so a fallback is correlatable in the log; each
   // target carries its own method + token (see resolveTargets).
+  //
+  // TODO(#1111): this request sends no `clientName`, so the daemon sees it as
+  // an anonymous wmux.internal caller on `hooks.signal`. That is not a local
+  // omission — neither wmux-codex-notify.mjs nor wmux-kiro-bridge.mjs sends one
+  // either, and the lane closure needs ONE identification pattern across all
+  // the bridges rather than three. Deliberately not invented here; adopt
+  // whatever #1111 lands for the existing bridges.
   const requestId = `codex-hook-${randomUUID()}`;
   const { result: rpcResult, target } = await sendToTargets(targets, (t) => ({
     id: requestId,
