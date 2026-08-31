@@ -204,6 +204,20 @@ const IFRAME_ROLES = new Set(['Iframe', 'IframePresentational']);
 const FRAME_ELEMENT_SELECTOR = 'iframe,frame';
 
 /**
+ * How deep the graft follows nested frames.
+ *
+ * Mirrors browser-use's own frame walk (dom/service.py), which caps depth and
+ * frame count rather than trusting a page not to nest. An ad frame inside a
+ * consent frame inside a widget is three, so five leaves headroom while still
+ * bounding the number of CDP round-trips a hostile page can force.
+ */
+const MAX_FRAME_DEPTH = 5;
+
+/** Total frames grafted per snapshot, across the whole tree. */
+const MAX_FRAMES = 100;
+
+
+/**
  * What an iframe node says instead of its contents.
  *
  * Stitching the child frame's tree in was the obvious alternative and is the
@@ -213,6 +227,42 @@ const FRAME_ELEMENT_SELECTOR = 'iframe,frame';
  * frame contents reachable needs frame-aware ref resolution first.
  */
 const FRAME_BOUNDARY_NOTE = '(separate document — contents not in this snapshot)';
+
+/**
+ * What an `<iframe>` says once the graft has actually looked inside it.
+ *
+ * "Read and empty" and "not read" are different facts and used to render
+ * identically, which is the same conflation FRAME_BOUNDARY_NOTE was introduced
+ * to end one level up: an agent that cannot tell them apart re-snapshots
+ * forever waiting for contents that are never coming.
+ */
+const FRAME_EMPTY_NOTE = '(separate document — read, no content in it)';
+
+/** Appended where a frame's own share of the output budget ran out. */
+const FRAME_TRUNCATED_NOTE = '(frame content truncated)';
+
+/** The sentence fragment naming why a frame was not read. */
+const FRAME_BOUNDARY_REASONS: Record<FrameBoundaryReason, string> = {
+  'not-attached': '(separate document — could not be attached, contents not in this snapshot)',
+  'depth-cap': `(separate document — nested deeper than ${MAX_FRAME_DEPTH} frames, contents not in this snapshot)`,
+  'count-cap': `(separate document — past the ${MAX_FRAMES}-frame budget for one snapshot, contents not in this snapshot)`,
+  empty: FRAME_EMPTY_NOTE,
+};
+
+/**
+ * The note an `<iframe>` node carries instead of its contents, if any.
+ *
+ * A frame with content in the tree says nothing extra — the content IS the
+ * answer. Everything else names the specific reason rather than the generic
+ * boundary, except the plain unread case, which keeps its original wording.
+ */
+function frameBoundaryNote(node: AXNode): string {
+  if (!IFRAME_ROLES.has(node.role)) return '';
+  if (node.children?.length) return '';
+  if (node.frameBoundaryReason) return ` ${FRAME_BOUNDARY_REASONS[node.frameBoundaryReason]}`;
+  if (node.graftedFrame) return ` ${FRAME_EMPTY_NOTE}`;
+  return ` ${FRAME_BOUNDARY_NOTE}`;
+}
 
 /**
  * The two text roles Chrome stacks under every piece of visible text, and the
@@ -779,7 +829,21 @@ interface SerializeCtx {
   identity: RefIdentity;
   /** Null when nothing is covering the page, which is the normal case. */
   occlusion: OcclusionInfo | null;
+  /**
+   * Characters any ONE grafted frame may spend.
+   *
+   * A page's own controls are what the caller asked about; a frame's are a
+   * bonus. Without a sub-budget a single chatty ad frame can fill the whole
+   * output and push the page's own buttons past the truncation point, which
+   * would make the snapshot worse than it was before frames were reachable.
+   * 40% leaves a legitimately content-heavy frame (a hosted checkout) room to
+   * be useful while keeping the majority for the host document.
+   */
+  frameBudget: number;
 }
+
+/** The share of one snapshot's budget any single grafted frame may spend. */
+const FRAME_BUDGET_SHARE = 0.4;
 
 /**
  * The frame a node is being serialised in.
@@ -867,8 +931,7 @@ function serializeNode(
   // Only when the node really is a dead end. Chrome 141 always stops at the
   // iframe element, but a version or engine that inlines the child document
   // would turn this note into a lie.
-  const frameStr =
-    IFRAME_ROLES.has(role) && !node.children?.length ? ` ${FRAME_BOUNDARY_NOTE}` : '';
+  const frameStr = frameBoundaryNote(node);
 
   let line = `${pad}- ${role}${nameStr}${attrStr}${frameStr}`;
 
@@ -877,13 +940,30 @@ function serializeNode(
   // INLINE_TEXT_ROLE — so neither it nor its subtree is walked.
   const isFragmentParent = TEXT_FRAGMENT_PARENTS.has(role);
   const childLines: string[] = [];
+  // A grafted frame's contents are metered; everything else is not, which
+  // keeps the main-document walk exactly as it was.
+  const frameBudget = node.graftedFrame ? ctx.frameBudget : Infinity;
+  let frameUsed = 0;
+  let frameTruncated = false;
   if (node.children) {
     for (const child of node.children) {
       if (ctx.format === 'ai' && isFragmentParent && child.role === INLINE_TEXT_ROLE) continue;
+      // Where the refs for this child start, so a child that does not make it
+      // into the output does not leave a ref behind either. A ref for a line
+      // the agent cannot see is a ref it cannot have meant to use.
+      const refMark = ctx.refs.length;
       const childStr = serializeNode(child, ctx, currentDepth + 1, indent + 1, frame);
-      if (childStr) childLines.push(childStr);
+      if (!childStr) continue;
+      if (frameUsed + childStr.length > frameBudget) {
+        ctx.refs.length = refMark;
+        frameTruncated = true;
+        break;
+      }
+      frameUsed += childStr.length + 1;
+      childLines.push(childStr);
     }
   }
+  if (frameTruncated) childLines.push(`${pad}  - ${FRAME_TRUNCATED_NOTE}`);
 
   // The echo: an only child that serialised to nothing but the parent's own
   // name. Tested against the produced LINE rather than against the node, so a
@@ -931,14 +1011,24 @@ function serializeTree(root: AXNode, ctx: SerializeCtx): string {
 
 function stripNonInteractive(node: AXNode): AXNode | null {
   if (isInteractive(node.role)) return node;
-  // A childless iframe survives the interactive filter as a bare boundary
-  // marker. It is not interactive, so it would otherwise vanish — and its
-  // disappearance is exactly the wrong signal: the controls inside the frame
-  // are not in the snapshot either, so a filtered tree with no iframe line
-  // reads as "this page has no such button" when the truth is "look inside the
-  // frame". An iframe that DOES carry children falls through to the ordinary
-  // path, so its interactive descendants decide whether it is kept.
-  if (IFRAME_ROLES.has(node.role) && !node.children?.length) return node;
+  // An iframe ALWAYS survives the interactive filter. It is not interactive, so
+  // it would otherwise vanish — and its disappearance is exactly the wrong
+  // signal in both directions. For a frame that was never read, the controls
+  // inside it are not in the snapshot either, so a filtered tree with no iframe
+  // line reads as "this page has no such button" when the truth is "look inside
+  // the frame". For a frame that WAS read and holds nothing interactive, the
+  // line is the evidence of that: dropping it turns a checked-and-empty frame
+  // back into an unexplained absence, and the graft would look like it never
+  // ran.
+  if (IFRAME_ROLES.has(node.role)) {
+    const inside = (node.children ?? [])
+      .map(stripNonInteractive)
+      .filter((c): c is AXNode => c !== null);
+    if (inside.length > 0) return { ...node, children: inside };
+    // Childless here means "nothing interactive in it", which frameBoundaryNote
+    // renders as read-and-empty when the frame was actually grafted.
+    return { ...node, children: undefined };
+  }
 
   if (!node.children) return null;
 
@@ -1050,19 +1140,6 @@ async function fetchAccessibilityTree(
 // ---------------------------------------------------------------------------
 // Child-frame grafting
 // ---------------------------------------------------------------------------
-
-/**
- * How deep the graft follows nested frames.
- *
- * Mirrors browser-use's own frame walk (dom/service.py), which caps depth and
- * frame count rather than trusting a page not to nest. An ad frame inside a
- * consent frame inside a widget is three, so five leaves headroom while still
- * bounding the number of CDP round-trips a hostile page can force.
- */
-const MAX_FRAME_DEPTH = 5;
-
-/** Total frames grafted per snapshot, across the whole tree. */
-const MAX_FRAMES = 100;
 
 /** CDP `DOM.describeNode` fields the graft reads. */
 interface CdpDomNode {
@@ -1536,7 +1613,14 @@ export async function generateSnapshot(
   }
 
   const refs: RefEntry[] = [];
-  const ctx: SerializeCtx = { format, maxDepth: depth, refs, identity, occlusion };
+  const ctx: SerializeCtx = {
+    format,
+    maxDepth: depth,
+    refs,
+    identity,
+    occlusion,
+    frameBudget: Math.floor(maxLength * FRAME_BUDGET_SHARE),
+  };
   let output = serializeTree(effectiveTree, ctx);
 
   // The overlay note is prepended AFTER truncation — it is the one line that
@@ -1657,7 +1741,14 @@ export async function generateScopedSnapshot(
   }
 
   const refs: RefEntry[] = [];
-  const ctx: SerializeCtx = { format, maxDepth: depth, refs, identity, occlusion };
+  const ctx: SerializeCtx = {
+    format,
+    maxDepth: depth,
+    refs,
+    identity,
+    occlusion,
+    frameBudget: Math.floor(maxLength * FRAME_BUDGET_SHARE),
+  };
   // Unlike the page-level tree, the matched element is content, not a container
   // — `dialog "Settings"` is exactly the context the selector asked about — so
   // serialize the forest as-is instead of dropping its top level.
