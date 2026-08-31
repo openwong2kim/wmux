@@ -546,11 +546,12 @@ interface SnapshotStamp {
 /**
  * frameKey → the document that frame held when the last snapshot ran.
  *
- * Per frame rather than per page because a frame can navigate on its own
- * (review ⑬) and the page URL says nothing about it. The stored stamp is the
- * cheap half of that check; the resolver also re-reads `frame.url()` live on
- * every hop, so a frame that navigated and came back to the same URL between
- * snapshots cannot slip through on the stored value alone.
+ * Only the main frame is stamped. A frame's own document is already recorded
+ * in every ref's FrameHop, and the resolver re-reads `frame.url()` live on each
+ * hop rather than trusting either copy — a second stored copy would be a value
+ * nothing reads, which is worse than absent because it looks like a check.
+ * The map shape is kept for the per-frame stamps this would need if the live
+ * read ever became too expensive to do on every hop.
  */
 const pageSnapshotStamps = new WeakMap<Page, Map<string, SnapshotStamp>>();
 
@@ -710,45 +711,65 @@ function setPageRefs(page: Page, refs: RefEntry[], scopeSelector?: string): void
   const generation = pageRefIdentity.get(page)?.generation ?? 0;
   const stamps = new Map<string, SnapshotStamp>();
   stamps.set(MAIN_FRAME.key, { generation, url: pageDocumentKey(page) });
-  for (const entry of refs) {
-    if (entry.frameKey === MAIN_FRAME.key || stamps.has(entry.frameKey)) continue;
-    const last = entry.framePath[entry.framePath.length - 1];
-    stamps.set(entry.frameKey, { generation, url: last?.childUrlKey });
-  }
   pageSnapshotStamps.set(page, stamps);
-  rememberFrameRefs(page, refs);
   if (scopeSelector === undefined) pageRefScopes.delete(page);
   else pageRefScopes.set(page, scopeSelector);
 }
 
 /**
- * Pages whose LAST snapshot minted at least one frame ref, and which numbers
- * those were.
+ * The registry key for one browser surface.
  *
- * A WeakMap cannot answer "is any frame ref outstanding anywhere", and that is
- * the only question the RPC transport can ask: the RPC path exists precisely
- * because there is no Page to look anything up on. So this is a real Map, kept
- * small by construction — an entry is deleted the moment that page takes a
- * snapshot with no frame refs in it, and the oldest is evicted past the cap.
+ * A surface, not a workspace: two surfaces in one workspace have separate
+ * pages and separate ref numbering, so folding them together would recreate
+ * the cross-surface false refusal this key exists to prevent.
  */
-const FRAME_REF_PAGE_CAP = 32;
-const framePagesWithRefs = new Map<Page, Set<number>>();
+export function browserScopeKey(scope: {
+  workspaceId: string;
+  surfaceId?: string;
+}): string {
+  return `${scope.workspaceId}\u0000${scope.surfaceId ?? ''}`;
+}
 
-function rememberFrameRefs(page: Page, refs: RefEntry[]): void {
+/**
+ * Browser scope → the frame-ref numbers that scope's last snapshot minted.
+ *
+ * The RPC transport is reached precisely because there is no Page to look
+ * anything up on, so its guard needs an answer keyed by something it still
+ * has: the scope it was called for. Keying by scope rather than "any page
+ * anywhere" is what keeps one surface's frame refs from refusing an unrelated
+ * surface's perfectly good DOM ref.
+ *
+ * Holds numbers and strings only — never a Page. An earlier version kept the
+ * Page as the key of a strong Map, which pinned every page that had ever
+ * snapshotted a frame for the life of the process.
+ *
+ * Entries are replaced on every snapshot of that scope and deleted the moment
+ * one mints no frame refs, so the map holds at most one entry per live browser
+ * surface; the cap is a backstop for a session that churns surfaces.
+ */
+const FRAME_REF_SCOPE_CAP = 64;
+const frameRefsByScope = new Map<string, Set<number>>();
+
+/**
+ * Record what the snapshot just taken for `scopeKey` minted, so the RPC lane
+ * can refuse a frame ref for THIS surface without touching any other.
+ *
+ * Called by the snapshot tool for both routes: the a11y route registers what it
+ * minted, and the DOM route registers nothing, which clears the scope — its
+ * data-wmux-ref tags ARE the current truth and must stay resolvable.
+ */
+export function noteFrameRefsForScope(scopeKey: string, page: Page | null): void {
   const numbers = new Set<number>();
-  for (const entry of refs) {
+  for (const entry of (page && pageRefMaps.get(page)) || []) {
     if (entry.frameKey !== MAIN_FRAME.key) numbers.add(entry.ref);
   }
-  if (numbers.size === 0) {
-    framePagesWithRefs.delete(page);
-    return;
-  }
-  framePagesWithRefs.delete(page);
-  framePagesWithRefs.set(page, numbers);
-  while (framePagesWithRefs.size > FRAME_REF_PAGE_CAP) {
-    const oldest = framePagesWithRefs.keys().next().value;
+  frameRefsByScope.delete(scopeKey);
+  if (numbers.size === 0) return;
+  frameRefsByScope.set(scopeKey, numbers);
+  while (frameRefsByScope.size > FRAME_REF_SCOPE_CAP) {
+    const oldest = frameRefsByScope.keys().next().value;
     if (oldest === undefined) break;
-    framePagesWithRefs.delete(oldest);
+    frameRefsByScope.delete(oldest);
   }
 }
 
@@ -763,30 +784,41 @@ function rememberFrameRefs(page: Page, refs: RefEntry[]): void {
  * this feature can produce, so it is refused rather than attempted.
  */
 export function isFrameRef(page: Page, ref: string): boolean {
-  const wanted = parseInt(ref, 10);
-  if (Number.isNaN(wanted)) return false;
+  const wanted = refNumber(ref);
+  if (wanted === null) return false;
   const refs = pageRefMaps.get(page);
   if (!refs) return false;
   return refs.some((entry) => entry.ref === wanted && entry.frameKey !== MAIN_FRAME.key);
 }
 
 /**
+ * A ref string as the number it names, or null when it does not name one.
+ *
+ * Strict, not parseInt: `parseInt('12abc')` is 12 and `parseInt('0x10')` is 16,
+ * so a guard built on it answers questions about a ref the caller never asked
+ * about. A ref is a run of digits and nothing else — the same shape
+ * REF_ATTR_PATTERN already enforces on the data-attr side.
+ */
+function refNumber(ref: string): number | null {
+  return /^\d+$/.test(ref) ? Number(ref) : null;
+}
+
+/**
  * Same question with no Page to ask it of — the RPC transport's only option.
  *
- * Deliberately conservative: it answers yes if ANY page whose last snapshot
- * minted frame refs minted THIS number. A ref number that a DOM snapshot
- * separately handed to an unrelated element on an RPC-only surface would be
- * refused too. That trade is the right way round — a false refusal costs one
- * re-snapshot and says so, while a false accept clicks the wrong element and
- * reports success.
+ * Scoped to the surface the call is for. An unrelated surface's frame refs say
+ * nothing about this one's numbering, and refusing on them would block a
+ * perfectly good DOM ref on an RPC-only surface for as long as some other page
+ * happened to hold that number.
+ *
+ * A surface with no entry is not refused: either it never took an a11y
+ * snapshot, or its last one had no frames, and in both cases its
+ * data-wmux-ref tags are the current truth.
  */
-export function isOutstandingFrameRef(ref: string): boolean {
-  const wanted = parseInt(ref, 10);
-  if (Number.isNaN(wanted)) return false;
-  for (const numbers of framePagesWithRefs.values()) {
-    if (numbers.has(wanted)) return true;
-  }
-  return false;
+export function isOutstandingFrameRef(scopeKey: string, ref: string): boolean {
+  const wanted = refNumber(ref);
+  if (wanted === null) return false;
+  return frameRefsByScope.get(scopeKey)?.has(wanted) === true;
 }
 
 /** The message both guards raise, so the agent reads one explanation. */
@@ -830,19 +862,29 @@ interface SerializeCtx {
   /** Null when nothing is covering the page, which is the normal case. */
   occlusion: OcclusionInfo | null;
   /**
-   * Characters any ONE grafted frame may spend.
+   * Characters left for frame content — ONE pool for the whole snapshot,
+   * drawn down by every grafted frame in it.
    *
    * A page's own controls are what the caller asked about; a frame's are a
-   * bonus. Without a sub-budget a single chatty ad frame can fill the whole
-   * output and push the page's own buttons past the truncation point, which
-   * would make the snapshot worse than it was before frames were reachable.
-   * 40% leaves a legitimately content-heavy frame (a hosted checkout) room to
-   * be useful while keeping the majority for the host document.
+   * bonus. Without a cap a chatty ad frame fills the output and pushes the
+   * page's own buttons past the truncation point, which leaves the snapshot
+   * worse than it was when frames were unreachable.
+   *
+   * Shared rather than per frame, because a per-frame allowance is not a cap
+   * at all: ten sibling ad frames at 40% each is 400% of the budget, and the
+   * host document is squeezed out by exactly the case the cap exists for.
+   * One pool also gives nesting the right shape for free — a child frame can
+   * only spend what its parent has not, since both draw on the same counter.
+   *
+   * The consequence is deliberate: frames are served in document order and an
+   * early greedy frame can leave a later one with nothing. A later frame that
+   * gets nothing says so (FRAME_TRUNCATED_NOTE), which is the same contract a
+   * truncated one already has.
    */
-  frameBudget: number;
+  frameBudgetRemaining: number;
 }
 
-/** The share of one snapshot's budget any single grafted frame may spend. */
+/** The share of one snapshot's budget ALL grafted frames together may spend. */
 const FRAME_BUDGET_SHARE = 0.4;
 
 /**
@@ -940,10 +982,9 @@ function serializeNode(
   // INLINE_TEXT_ROLE — so neither it nor its subtree is walked.
   const isFragmentParent = TEXT_FRAGMENT_PARENTS.has(role);
   const childLines: string[] = [];
-  // A grafted frame's contents are metered; everything else is not, which
+  // Only a grafted frame's contents are metered; everything else is not, which
   // keeps the main-document walk exactly as it was.
-  const frameBudget = node.graftedFrame ? ctx.frameBudget : Infinity;
-  let frameUsed = 0;
+  const metered = node.graftedFrame === true;
   let frameTruncated = false;
   if (node.children) {
     for (const child of node.children) {
@@ -952,14 +993,24 @@ function serializeNode(
       // into the output does not leave a ref behind either. A ref for a line
       // the agent cannot see is a ref it cannot have meant to use.
       const refMark = ctx.refs.length;
+      const remainingBefore = ctx.frameBudgetRemaining;
       const childStr = serializeNode(child, ctx, currentDepth + 1, indent + 1, frame);
       if (!childStr) continue;
-      if (frameUsed + childStr.length > frameBudget) {
-        ctx.refs.length = refMark;
-        frameTruncated = true;
-        break;
+      if (metered) {
+        // A nested grafted frame inside this child has already charged its own
+        // bytes to the same pool, so charging the child's full length again
+        // would bill that content twice and cut this frame short by the size of
+        // its own children's frames.
+        const chargedByNested = remainingBefore - ctx.frameBudgetRemaining;
+        const own = childStr.length - chargedByNested;
+        if (own > ctx.frameBudgetRemaining) {
+          ctx.refs.length = refMark;
+          ctx.frameBudgetRemaining = remainingBefore;
+          frameTruncated = true;
+          break;
+        }
+        ctx.frameBudgetRemaining -= own;
       }
-      frameUsed += childStr.length + 1;
       childLines.push(childStr);
     }
   }
@@ -1619,7 +1670,7 @@ export async function generateSnapshot(
     refs,
     identity,
     occlusion,
-    frameBudget: Math.floor(maxLength * FRAME_BUDGET_SHARE),
+    frameBudgetRemaining: Math.floor(maxLength * FRAME_BUDGET_SHARE),
   };
   let output = serializeTree(effectiveTree, ctx);
 
@@ -1647,6 +1698,9 @@ export async function generateSnapshot(
     const trimmed = stripNonInteractive(tree);
     if (trimmed) {
       refs.length = 0;
+      // The pool is per rendering, not per call: the first pass spent it, and
+      // a retry that starts empty would truncate every frame at once.
+      ctx.frameBudgetRemaining = Math.floor(maxLength * FRAME_BUDGET_SHARE);
       output = serializeTree(trimmed, ctx);
     }
   }
@@ -1747,7 +1801,7 @@ export async function generateScopedSnapshot(
     refs,
     identity,
     occlusion,
-    frameBudget: Math.floor(maxLength * FRAME_BUDGET_SHARE),
+    frameBudgetRemaining: Math.floor(maxLength * FRAME_BUDGET_SHARE),
   };
   // Unlike the page-level tree, the matched element is content, not a container
   // — `dialog "Settings"` is exactly the context the selector asked about — so
@@ -1765,6 +1819,7 @@ export async function generateScopedSnapshot(
       .filter((n): n is AXNode => n !== null);
     if (trimmed.length > 0) {
       refs.length = 0;
+      ctx.frameBudgetRemaining = Math.floor(maxLength * FRAME_BUDGET_SHARE);
       output = serializeForest(trimmed, ctx);
     }
   }
@@ -1902,8 +1957,8 @@ async function resolveRefViaAxMap(
   page: Page,
   ref: string,
 ): Promise<ElementHandle | null> {
-  const wanted = parseInt(ref, 10);
-  if (Number.isNaN(wanted) || wanted < 0) return null;
+  const wanted = refNumber(ref);
+  if (wanted === null) return null;
 
   const refs = pageRefMaps.get(page);
   // An empty map is the DOM-fallthrough case, which resolveRef serves through

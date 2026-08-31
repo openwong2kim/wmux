@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { generateSnapshot, resolveRef, StaleRefError, isFrameRef } from '../snapshot';
+import { browserScopeKey, noteFrameRefsForScope } from '../snapshot';
 import { sanitizeRef } from '../tools/interaction';
 
 // Frame-aware refs (B2). browser_snapshot used to stop at the iframe element
@@ -555,6 +556,108 @@ describe('a frame cannot spend the whole snapshot, or reach the DOM fallback', (
     for (const ref of printed) expect(isFrameRef(h.page, ref)).toBe(true);
   });
 
+  it('shares one pool across sibling frames, so the host survives all three', async () => {
+    // The bug a per-frame allowance hides: three siblings at 40% EACH is 120%
+    // of the budget, and the host document is squeezed out by exactly the case
+    // the cap exists to prevent.
+    const loud = (id: string) =>
+      doc({
+        frameId: id,
+        url: `https://ads.test/${id}`,
+        ax: tree(
+          Array.from({ length: 30 }, (_, i) => ({
+            backendId: Number(`${id.charCodeAt(1)}${i}`),
+            role: 'button',
+            name: `${id} advert action number ${i}`,
+          })),
+        ),
+      });
+    const h = makeHarness(
+      doc({
+        frameId: 'main',
+        ax: tree([
+          { backendId: 91, role: 'Iframe', name: 'ad one' },
+          { backendId: 92, role: 'Iframe', name: 'ad two' },
+          { backendId: 93, role: 'Iframe', name: 'ad three' },
+          { backendId: 94, role: 'button', name: 'Checkout' },
+        ]),
+        iframes: [
+          hostedFrame(91, loud('a1')),
+          hostedFrame(92, loud('a2')),
+          hostedFrame(93, loud('a3')),
+        ],
+      }),
+    );
+
+    const maxLength = 2000;
+    const out = await generateSnapshot(h.page, { format: 'ai', maxLength });
+
+    // The host document's own control is what the caller asked about.
+    expect(out).toContain('button "Checkout"');
+    expect(out).not.toContain('... (truncated)');
+
+    // Frame content, summed over all three, stays inside the single 40% pool.
+    const frameBytes = out
+      .split('\n')
+      .filter((l) => /advert action number/.test(l))
+      .reduce((n, l) => n + l.length, 0);
+    expect(frameBytes).toBeLessThanOrEqual(Math.floor(maxLength * 0.4));
+
+    // And the pool really was shared: the later siblings were cut, not each
+    // handed a fresh allowance.
+    expect(out).toContain('(frame content truncated)');
+  });
+
+  it('lets a nested frame spend only what its parent has not', async () => {
+    const inner = doc({
+      frameId: 'in',
+      url: 'https://ads.test/inner',
+      ax: tree(
+        Array.from({ length: 25 }, (_, i) => ({
+          backendId: 2000 + i,
+          role: 'button',
+          name: `Inner advert action number ${i}`,
+        })),
+      ),
+    });
+    const outer = doc({
+      frameId: 'out',
+      url: 'https://ads.test/outer',
+      ax: tree([
+        ...Array.from({ length: 25 }, (_, i) => ({
+          backendId: 3000 + i,
+          role: 'button',
+          name: `Outer advert action number ${i}`,
+        })),
+        { backendId: 3900, role: 'Iframe', name: 'nested ad' },
+      ]),
+      iframes: [hostedFrame(3900, inner)],
+    });
+    const h = makeHarness(
+      doc({
+        frameId: 'main',
+        ax: tree([
+          { backendId: 96, role: 'Iframe', name: 'ad' },
+          { backendId: 97, role: 'button', name: 'Checkout' },
+        ]),
+        iframes: [hostedFrame(96, outer)],
+      }),
+    );
+
+    const maxLength = 2000;
+    const out = await generateSnapshot(h.page, { format: 'ai', maxLength });
+
+    expect(out).toContain('button "Checkout"');
+    // Both levels draw on one counter, so the total is still inside the pool —
+    // the nested frame's bytes are not billed twice, and not billed free.
+    const frameBytes = out
+      .split('\n')
+      .filter((l) => /advert action number/.test(l))
+      .reduce((n, l) => n + l.length, 0);
+    expect(frameBytes).toBeLessThanOrEqual(Math.floor(maxLength * 0.4));
+    expect(frameBytes).toBeGreaterThan(0);
+  });
+
   it('refuses a frame ref on the RPC data-attr lane', async () => {
     const child = doc({
       frameId: 'fr',
@@ -576,7 +679,19 @@ describe('a frame cannot spend the whole snapshot, or reach the DOM fallback', (
     // layer passes through, and data-wmux-ref only ever tags the main
     // document — so a frame ref there matches nothing, or worse, matches an
     // unrelated element a previous DOM snapshot tagged with that number.
-    expect(() => sanitizeRef(ref!)).toThrow(/minted inside an iframe/);
-    expect(() => sanitizeRef('4242')).not.toThrow();
+    const scope = { workspaceId: 'w1', surfaceId: 's1' };
+    noteFrameRefsForScope(browserScopeKey(scope), h.page);
+    expect(() => sanitizeRef(ref!, scope)).toThrow(/minted inside an iframe/);
+    expect(() => sanitizeRef('4242', scope)).not.toThrow();
+
+    // A different surface is untouched: its own DOM refs stay resolvable no
+    // matter what numbers this one happens to hold.
+    const other = { workspaceId: 'w1', surfaceId: 's2' };
+    expect(() => sanitizeRef(ref!, other)).not.toThrow();
+
+    // And the surface is cleared once a route that mints no frame refs runs
+    // for it — a DOM listing's tags are then the current truth.
+    noteFrameRefsForScope(browserScopeKey(scope), null);
+    expect(() => sanitizeRef(ref!, scope)).not.toThrow();
   });
 });

@@ -25,6 +25,7 @@ vi.mock('../PlaywrightEngine', () => ({
 // frame refs outstanding", which is what these RPC-lane cases are about.
 vi.mock('../snapshot', () => ({
   resolveRef: resolveRefMock,
+  browserScopeKey: () => 'test-scope',
   isOutstandingFrameRef: () => false,
   frameRefFallbackMessage: (ref: string) => `frame ref ${ref}`,
 }));
