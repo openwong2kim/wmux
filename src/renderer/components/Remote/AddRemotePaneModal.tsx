@@ -8,6 +8,11 @@ export interface AddRemotePaneModalProps {
    *  surface to its own pane; this component only picks the host and mints
    *  the remote session. */
   onCreated: (hostId: string, sessionId: string) => void;
+  /** Heading shown above the host list. The modal serves three menu entries
+   *  since #1140 (tab, split right, split down), and the heading is the only
+   *  place the dialog can say which one it is answering — omitted falls back
+   *  to the tab flow's "New remote pane". */
+  title?: string;
 }
 
 /**
@@ -18,11 +23,19 @@ export interface AddRemotePaneModalProps {
  * "workspace" at all, so a fresh id is minted purely to satisfy the
  * bootstrap contract and is never referenced again afterward.
  */
-export default function AddRemotePaneModal({ onClose, onCreated }: AddRemotePaneModalProps) {
+export default function AddRemotePaneModal({ onClose, onCreated, title }: AddRemotePaneModalProps) {
   const t = useT();
   const [hosts, setHosts] = useState<RemoteHostPublic[] | null>(null);
   const [creatingHostId, setCreatingHostId] = useState<string | null>(null);
   const [error, setError] = useState<string | undefined>(undefined);
+
+  // Escape closes, same listener AttachRemoteModal binds — until #1140 the
+  // backdrop click was the only way out of this dialog.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [onClose]);
 
   useEffect(() => {
     let cancelled = false;
@@ -74,7 +87,7 @@ export default function AddRemotePaneModal({ onClose, onCreated }: AddRemotePane
         onMouseDown={(e) => e.stopPropagation()}
       >
         <div className="text-sm font-medium mb-2" style={{ color: 'var(--text-main)' }}>
-          {t('pane.newRemote')}
+          {title ?? t('pane.newRemote')}
         </div>
         {error && (
           <div className="text-xs mb-2" style={{ color: 'var(--accent-red, #e5484d)' }}>{error}</div>

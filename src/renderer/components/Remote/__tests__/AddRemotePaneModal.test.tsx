@@ -127,4 +127,37 @@ describe('AddRemotePaneModal', () => {
     expect(onCreated).toHaveBeenCalledWith('host-1', 'sess-1');
     expect(onClose).toHaveBeenCalled();
   });
+
+  it('closes on Escape — the backdrop click must not be the only way out', async () => {
+    const onClose = vi.fn();
+    (window as unknown as { electronAPI: unknown }).electronAPI = {
+      remote: { hostsList: vi.fn().mockResolvedValue([HOST]), workspaceCreate: vi.fn() },
+    };
+    const { unmount } = render(<AddRemotePaneModal onClose={onClose} onCreated={() => { /* noop */ }} />);
+    await flush();
+
+    act(() => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    });
+    expect(onClose).toHaveBeenCalledTimes(1);
+
+    // Listener must not outlive the modal.
+    unmount();
+    act(() => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    });
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('renders the caller-provided title so the #1140 split flows can name themselves', async () => {
+    (window as unknown as { electronAPI: unknown }).electronAPI = {
+      remote: { hostsList: vi.fn().mockResolvedValue([]), workspaceCreate: vi.fn() },
+    };
+    const { container, unmount } = render(
+      <AddRemotePaneModal onClose={() => { /* noop */ }} onCreated={() => { /* noop */ }} title="Split right — remote" />,
+    );
+    await flush();
+    expect(container.textContent).toContain('Split right — remote');
+    unmount();
+  });
 });
