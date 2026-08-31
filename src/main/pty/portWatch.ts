@@ -50,6 +50,12 @@ const SNAPSHOT_TIMEOUT_MS = 8_000;
 /** After this many consecutive snapshot failures, pause polling briefly. */
 const FAILURE_BACKOFF_THRESHOLD = 3;
 const FAILURE_BACKOFF_MS = 60_000;
+/**
+ * The encoded form of "this session has no listening ports". Shared by the
+ * diff-state writer and the vanished-session clear below so the two can never
+ * drift apart from the JSON encoding they both depend on.
+ */
+const EMPTY_PORTS_ENCODED = JSON.stringify([] as SessionPort[]);
 
 /**
  * Windows: in-process FFI snapshot (see winSnapshotNative.ts — issue #1051).
@@ -230,7 +236,7 @@ export class PortWatcher extends EventEmitter {
         if (liveIds.has(id)) continue;
         const prev = this.lastBySession.get(id);
         this.lastBySession.delete(id);
-        if (prev && prev !== '[]') this.emit('ports', { sessionId: id, ports: [] });
+        if (prev && prev !== EMPTY_PORTS_ENCODED) this.emit('ports', { sessionId: id, ports: [] });
       }
       if (sessions.length === 0) return;
 
