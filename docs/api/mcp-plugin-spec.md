@@ -47,7 +47,7 @@ Every JSON-RPC request to wmux MAY include two optional envelope fields:
 }
 ```
 
-Requests without `clientName` are recorded as `legacy`. **Deprecated:** the `legacy` grandfather closes in the first release on or after **2026-09-30** (#1111); envelope-less requests will then be refused.
+Requests without `clientName` are recorded as `legacy`. **Deprecated:** the `legacy` grandfather closes in the first release on or after **2026-09-30** (#1111); from that release envelope-less requests are refused. Send a `clientName` and declare permissions.
 
 ### 2.3 Threat model
 
