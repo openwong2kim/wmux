@@ -140,11 +140,46 @@ function pipeAlive(pipeName) {
 
 // One-shot newline-delimited JSON-RPC client (pra PipeClient).
 // #1111: these calls used to omit clientName and ride the `legacy`
-// grandfather. That lane closes in the first release on or after
-// 2026-09-30, so the driver now identifies as 'wmux-cli' (the curated
-// internal-CLI lane, src/main/mcp/internalCli.ts) which needs no approval
-// dialog.
+// grandfather, which closes in the first release on or after 2026-09-30. The
+// driver now identifies as 'wmux-cli' AND the sandbox trust DB is seeded with
+// a matching `trusted` row (seedDogfoodTrust) declaring exactly the extra
+// capabilities this script needs.
+//
+// Why the row and that particular name: this script also calls `wmux.internal`
+// methods that no declaration can ever contain, so those can only ride the
+// curated internal-CLI lane — which forces the name to 'wmux-cli'. The methods
+// OUTSIDE that allowlist (a2a.task.send / a2a.task.update / a2a.task.cancel / events.poll)
+// fall through to normal enforcement, where the seeded declaration grants them.
+// Nothing here widens a production allowlist: the row lives in this script's
+// throwaway sandbox HOME and dies with it.
 const DOGFOOD_CLIENT_NAME = 'wmux-cli';
+const DOGFOOD_CAPABILITIES = ["a2a.send", "a2a.read", "events.subscribe"];
+
+function seedDogfoodTrust(wmuxDir) {
+  fs.mkdirSync(wmuxDir, { recursive: true });
+  const now = Date.now();
+  fs.writeFileSync(
+    path.join(wmuxDir, 'plugin-trust.json'),
+    JSON.stringify({
+      schemaVersion: 1,
+      plugins: {
+        [DOGFOOD_CLIENT_NAME]: {
+          name: DOGFOOD_CLIENT_NAME,
+          version: '0.0.0-dogfood',
+          status: 'trusted',
+          declaredCapabilities: DOGFOOD_CAPABILITIES,
+          rationale: 'dogfood sandbox instance',
+          firstSeen: now,
+          lastSeen: now,
+        },
+      },
+    }, null, 2),
+    'utf8',
+  );
+}
+
+// Seed BEFORE the app boots: the first RPC is already gated.
+seedDogfoodTrust(path.join(home, `.wmux${suffix}`));
 function rpcCall(pipeName, token, method, params = {}, timeoutMs = 8000) {
   return new Promise((resolve, reject) => {
     const sock = net.createConnection(pipeName);
