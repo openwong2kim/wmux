@@ -94,6 +94,10 @@ gate (this is exactly why the dynamic-verification scripts in `scripts/` work
 against the production app without an approval prompt). No identity handshake,
 no approval dialog. Use this for a fast smoke test or a throwaway demo.
 
+> **Deprecated (#1111):** the `legacy` grandfather closes in the first release
+> on or after **2026-09-30**. After that, `--legacy` is refused by the gate —
+> use the identity mode above.
+
 > The two modes differ only in whether the envelope carries `clientName`. The
 > event-bus, metadata, and reconciliation logic is identical.
 

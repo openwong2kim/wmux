@@ -472,8 +472,8 @@ What it does **not** close, and why it is written down rather than implied:
   a caller naming a foreign workspace is accepted exactly as before.
 - The `legacy` lane (no `clientName`) stays allowed and unscoped, matching
   `PermissionEnforcer`'s grandfather. Dropping the identity envelope bypasses
-  this layer. Envelope-less traffic continues through its existing per-method
-  milestone audit rather than starting a second deprecation clock here.
+  this layer. Envelope-less traffic is now on the single shared deprecation
+  clock: #1111 closes the lane in the first release on or after 2026-09-30.
 - `browser.open` and `browser.close` route a create/close by the request's
   `workspaceId` and fall back to the UI-active workspace when it is absent. They
   are surface lifecycle rather than target resolution, were never shadowed, and
