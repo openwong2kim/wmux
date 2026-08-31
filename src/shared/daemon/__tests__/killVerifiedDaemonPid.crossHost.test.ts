@@ -56,10 +56,12 @@ describe('killVerifiedDaemonPid — cross-host image mismatch (#1019)', () => {
     fs.copyFileSync(process.execPath, renamedNodePath);
     if (process.platform !== 'win32') fs.chmodSync(renamedNodePath, 0o755);
 
-    // The command line must carry a daemon-script marker for the cmdline
-    // check to accept it — 'daemon-bundle' is one of the markers this
-    // module looks for verbatim.
-    const scriptPath = path.join(tmpDir, 'daemon-bundle-fake-index.js');
+    // The command line must carry the daemon entry-script shape for the
+    // argv check to accept it — since #1025's redo that is EXACTLY
+    // `daemon-bundle/index.js` at the entry position (a suffixed variant
+    // like `daemon-bundle-fake-index.js` is somebody else's name now).
+    const scriptPath = path.join(tmpDir, 'daemon-bundle', 'index.js');
+    fs.mkdirSync(path.dirname(scriptPath), { recursive: true });
     fs.writeFileSync(scriptPath, 'setTimeout(() => {}, 30000);\n');
 
     child = spawn(renamedNodePath, [scriptPath], { stdio: 'ignore' });
