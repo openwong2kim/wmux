@@ -300,18 +300,61 @@ function pidAlive(pid) {
 }
 
 // === Raw newline-delimited JSON-RPC over a named pipe (one-shot client) ===
-// Sends clientName 'wmux-cli' so mutating calls (pane.split) run against the
-// production enforce-mode app without an approval dialog, via the curated
-// internal-CLI lane (src/main/mcp/internalCli.ts) — same model as
-// substrate-bench.mjs. It used to send NO clientName and ride the `legacy`
-// grandfather instead; #1111 closes that lane in the first release on or
-// after 2026-09-30.
+// The bench identifies as 'wmux-bench' and the sandbox's trust DB is seeded
+// with a `trusted` row declaring exactly the capabilities the scenarios below
+// need (seedBenchTrust). It used to send NO clientName and ride the `legacy`
+// grandfather; #1111 closes that lane in the first release on or after
+// 2026-09-30.
 //
-// KNOWN GAP (#1111): `pane.close` and `mcp.claimWorkspace` are NOT in
-// WMUX_CLI_METHODS, so the pane-close reap and hidden-flood scenarios still
-// need a decision — extend the curated allowlist or move those calls to the
-// identity+approval flow. Every other call in this bench is covered.
-const BENCH_CLIENT_NAME = 'wmux-cli';
+// Why not 'wmux-cli': that lane's allowlist does not cover `pane.close` or
+// `mcp.claimWorkspace`, and widening it is not an option — 'wmux-cli' is a
+// NON_IDENTIFYING name anyone may send, so every method added there is granted
+// to every caller who claims it. The bench owns its sandbox HOME, so it can
+// simply be a properly declared plugin instead: least privilege, no approval
+// dialog, works headlessly.
+const BENCH_CLIENT_NAME = 'wmux-bench';
+
+// Exactly the capabilities the main-pipe calls in this file require
+// (methodCapabilityMap.ts): pane.list -> pane.read; pane.split / pane.close ->
+// pane.create; input.send / input.sendKey -> terminal.send;
+// mcp.claimWorkspace -> workspace.claim. `daemon.*` is dispatched by the daemon
+// control pipe, which has no enforcer, so it needs nothing here.
+const BENCH_CAPABILITIES = ['pane.read', 'pane.create', 'terminal.send', 'workspace.claim'];
+
+// Seed <home>/.wmux<suffix>/plugin-trust.json with a trusted row for
+// BENCH_CLIENT_NAME BEFORE the app boots, so the very first RPC is already
+// past the gate with no approval dialog. Same schema PluginTrustStore writes
+// ({ schemaVersion, plugins: { <name>: PluginIdentityRecord } }); a bare
+// capability with no `:glob` is an unrestricted grant for that capability.
+// Also pins mcp.mode=enforce so the bench measures the production gate rather
+// than whatever the build's default happens to be.
+function seedBenchTrust(wmuxDir) {
+  fs.mkdirSync(wmuxDir, { recursive: true });
+  const now = Date.now();
+  fs.writeFileSync(
+    path.join(wmuxDir, 'plugin-trust.json'),
+    JSON.stringify({
+      schemaVersion: 1,
+      plugins: {
+        [BENCH_CLIENT_NAME]: {
+          name: BENCH_CLIENT_NAME,
+          version: '0.0.0-bench',
+          status: 'trusted',
+          declaredCapabilities: BENCH_CAPABILITIES,
+          rationale: 'perf-bench.mjs sandbox instance (scripts/perf-bench.mjs)',
+          firstSeen: now,
+          lastSeen: now,
+        },
+      },
+    }, null, 2),
+    'utf8',
+  );
+  const cfgPath = path.join(wmuxDir, 'config.json');
+  let cfg = {};
+  try { cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8')); } catch { /* fresh sandbox */ }
+  cfg.mcp = { ...(cfg.mcp ?? {}), mode: 'enforce' };
+  fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2), 'utf8');
+}
 
 class PipeClient {
   constructor(pipeName, token) {
@@ -454,6 +497,9 @@ function makeInstance() {
       'utf8',
     );
   }
+  // Identity for the enforce-mode permission gate (#1111) — must exist before
+  // the app boots, since the first RPC is already gated.
+  seedBenchTrust(path.join(home, `.wmux${suffix}`));
   return {
     seq, suffix, home, env,
     proc: null, cdpPort: null, browser: null, page: null,

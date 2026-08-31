@@ -42,14 +42,14 @@
  *     running two daemons collides on the single per-user pipe.
  *   - Reads the token from <TEST_HOME>/.wmux-auth-token once the app writes it.
  *   - Raw newline-delimited JSON-RPC over the pipe, carrying clientName
- *     'wmux-cli' so the request rides the curated internal-CLI lane
- *     (src/main/mcp/internalCli.ts) and runs against the production
- *     enforce-mode app without an approval dialog. It used to send NO
- *     clientName and ride the 'legacy' grandfather; #1111 closes that lane in
- *     the first release on or after 2026-09-30.
- *     KNOWN GAP (#1111): events.poll / pane.getMetadata / pane.setMetadata are
- *     NOT in WMUX_CLI_METHODS, so B2-B4 need a decision — extend the curated
- *     allowlist or move them to the identity+approval flow.
+ *     'wmux-bench'. The sandbox trust DB is seeded with a `trusted` row
+ *     declaring exactly the capabilities B1-B4 need, so the bench runs against
+ *     the production enforce-mode app with no approval dialog. It used to send
+ *     NO clientName and ride the 'legacy' grandfather; #1111 closes that lane
+ *     in the first release on or after 2026-09-30. Not 'wmux-cli': that lane's
+ *     allowlist covers none of events.poll / pane.getMetadata /
+ *     pane.setMetadata, and widening a NON_IDENTIFYING name would grant those
+ *     to every caller that claims it.
  *   - SIGTERM then SIGKILL on cleanup; awaits the cleanup deadline before exit
  *     so the temp HOME is actually removed.
  *
@@ -113,8 +113,8 @@ Flags:
   -h, --help         Show this help.
 
 Spawns the packaged app at out/wmux-win32-x64/wmux.exe in an isolated temp
-HOME, talks raw JSON-RPC over the per-user Named Pipe (clientName 'wmux-cli'
-→ the curated internal-CLI lane), runs B1-B4, and prints a results table. Numbers are
+HOME, talks raw JSON-RPC over the per-user Named Pipe (clientName 'wmux-bench'
+→ a seeded trusted identity), runs B1-B4, and prints a results table. Numbers are
 environment-dependent; re-run on the target machine. See
 docs/internal/substrate-perf.md.`);
   process.exit(0);
@@ -170,7 +170,48 @@ function pipeAlive() {
 // without tripping MAX_NEW_CONNECTIONS_PER_SEC=30). So unlike the one-shot
 // rpc() in m0-dynamic-verify.mjs, this keeps a long-lived socket, buffers
 // incoming data, splits on '\n', and correlates responses by request id.
-const BENCH_CLIENT_NAME = 'wmux-cli';
+const BENCH_CLIENT_NAME = 'wmux-bench';
+
+// Exactly the capabilities B1-B4 require (methodCapabilityMap.ts):
+// workspace.list -> workspace.read; pane.list -> pane.read;
+// pane.getMetadata -> meta.read; pane.setMetadata -> meta.write;
+// events.poll -> events.subscribe.
+const BENCH_CAPABILITIES = [
+  'workspace.read', 'pane.read', 'meta.read', 'meta.write', 'events.subscribe',
+];
+
+// Seed <HOME>/.wmux/plugin-trust.json with a trusted row for BENCH_CLIENT_NAME
+// BEFORE the app boots, so the first RPC is already past the gate with no
+// approval dialog. Same schema PluginTrustStore writes; a bare capability with
+// no `:glob` is an unrestricted grant for that capability. Also pins
+// mcp.mode=enforce so the bench measures the production gate.
+function seedBenchTrust(wmuxDir) {
+  fs.mkdirSync(wmuxDir, { recursive: true });
+  const now = Date.now();
+  fs.writeFileSync(
+    path.join(wmuxDir, 'plugin-trust.json'),
+    JSON.stringify({
+      schemaVersion: 1,
+      plugins: {
+        [BENCH_CLIENT_NAME]: {
+          name: BENCH_CLIENT_NAME,
+          version: '0.0.0-bench',
+          status: 'trusted',
+          declaredCapabilities: BENCH_CAPABILITIES,
+          rationale: 'substrate-bench.mjs sandbox instance (scripts/substrate-bench.mjs)',
+          firstSeen: now,
+          lastSeen: now,
+        },
+      },
+    }, null, 2),
+    'utf8',
+  );
+  const cfgPath = path.join(wmuxDir, 'config.json');
+  let cfg = {};
+  try { cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8')); } catch { /* fresh sandbox */ }
+  cfg.mcp = { ...(cfg.mcp ?? {}), mode: 'enforce' };
+  fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2), 'utf8');
+}
 
 class PipeClient {
   constructor(token) {
@@ -327,6 +368,10 @@ function line(s) { lines.push(s); console.log(s); }
   };
   fs.mkdirSync(isolatedEnv.APPDATA, { recursive: true });
   fs.mkdirSync(isolatedEnv.LOCALAPPDATA, { recursive: true });
+  // Identity for the enforce-mode permission gate (#1111) — must exist before
+  // the app boots, since the first RPC is already gated. This bench sets no
+  // WMUX_DATA_SUFFIX, so its data dir is plain <HOME>/.wmux.
+  seedBenchTrust(path.join(TEST_HOME, '.wmux'));
 
   console.log('--- spawning Electron app ---');
   appProc = spawn(APP_EXE, [], {
