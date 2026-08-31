@@ -9,7 +9,7 @@
   },
   "scripts": {
     "start": "node recorder.mjs",
-    "smoke": "node recorder.mjs --legacy --once"
+    "smoke": "node recorder.mjs --once"
   },
   "engines": {
     "node": ">=18"

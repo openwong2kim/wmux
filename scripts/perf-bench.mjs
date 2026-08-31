@@ -300,9 +300,19 @@ function pidAlive(pid) {
 }
 
 // === Raw newline-delimited JSON-RPC over a named pipe (one-shot client) ===
-// No clientName → recorded 'legacy' and grandfathered by RpcRouter, so
-// mutating calls (pane.split) run against the production enforce-mode app
-// without an approval dialog (same model as substrate-bench.mjs).
+// Sends clientName 'wmux-cli' so mutating calls (pane.split) run against the
+// production enforce-mode app without an approval dialog, via the curated
+// internal-CLI lane (src/main/mcp/internalCli.ts) — same model as
+// substrate-bench.mjs. It used to send NO clientName and ride the `legacy`
+// grandfather instead; #1111 closes that lane in the first release on or
+// after 2026-09-30.
+//
+// KNOWN GAP (#1111): `pane.close` and `mcp.claimWorkspace` are NOT in
+// WMUX_CLI_METHODS, so the pane-close reap and hidden-flood scenarios still
+// need a decision — extend the curated allowlist or move those calls to the
+// identity+approval flow. Every other call in this bench is covered.
+const BENCH_CLIENT_NAME = 'wmux-cli';
+
 class PipeClient {
   constructor(pipeName, token) {
     this.pipeName = pipeName;
@@ -348,7 +358,7 @@ class PipeClient {
       const id = randomUUID();
       const timer = setTimeout(() => { this.pending.delete(id); reject(new Error(`rpc timeout: ${method}`)); }, timeoutMs);
       this.pending.set(id, { resolve, reject, timer });
-      this.sock.write(JSON.stringify({ id, method, params, token: this.token }) + '\n');
+      this.sock.write(JSON.stringify({ id, method, params, token: this.token, clientName: BENCH_CLIENT_NAME, clientVersion: '0.0.0-bench' }) + '\n');
     });
   }
   close() { try { this.sock?.destroy(); } catch { /* noop */ } }
