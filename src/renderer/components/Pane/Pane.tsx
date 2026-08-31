@@ -3,6 +3,7 @@ import { Panel, Group, Separator } from 'react-resizable-panels';
 import type { PaneLeaf, Workspace } from '../../../shared/types';
 import { maybeDelegateExternalBrowser } from '../../utils/browserPaneActions';
 import { createTerminalSurface } from '../../utils/createTerminalSurface';
+import { destroySurfaceRemoteSession } from '../../utils/remoteSessionTeardown';
 import { useIpc } from '../../hooks/useIpc';
 import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
@@ -419,7 +420,10 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
   }, []);
 
   const handleRemoteCreated = useCallback((hostId: string, sessionId: string) => {
-    addRemoteSurface(pane.id, hostId, sessionId, undefined, undefined, workspace.id);
+    // owned: true — AddRemotePaneModal MINTED this session (and the one-shot
+    // `remote-pane-*` workspace row derived from it), so this tab is what has
+    // to destroy it on close (#1129). Nothing else on the host ever will.
+    addRemoteSurface(pane.id, hostId, sessionId, undefined, undefined, workspace.id, true);
   }, [addRemoteSurface, pane.id, workspace.id]);
 
   const closePane = useStore((s) => s.closePane);
@@ -512,6 +516,12 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
     if (surface?.ptyId) {
       window.electronAPI.pty.dispose(surface.ptyId);
     }
+    // #1129 — a remote-terminal tab carries no ptyId, so the dispose above is
+    // structurally blind to it. Closing the tab must also end the session
+    // this desktop minted on the host (and with it the one-shot workspace row
+    // derived from it); a tab merely viewing somebody else's session is left
+    // alone by destroySurfaceRemoteSession itself.
+    destroySurfaceRemoteSession(surface);
     closeSurface(pane.id, surfaceId);
 
     // 마지막 Surface가 닫히면 Pane도 자동 제거

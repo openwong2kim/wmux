@@ -241,6 +241,44 @@ export class RemoteHostClient implements RemotePaneEvents {
     return { sessionId };
   }
 
+  /**
+   * Destroy one session on this host — `DELETE /api/sessions/:id` (#1129).
+   *
+   * The teardown half of {@link createWorkspace}: the desktop mints a session
+   * (and with it the workspace row the daemon derives from that session's
+   * `WMUX_WORKSPACE_ID` — the daemon keeps no registry of its own), so the
+   * desktop is the only thing that can end it. Detaching closes the SSE
+   * stream and nothing else; the shell keeps running on the host forever.
+   *
+   * A 404 resolves rather than throws: the session already being gone is the
+   * outcome the caller asked for, and a close racing the shell's own exit is
+   * the normal case, not an error. Every other non-2xx throws with the
+   * daemon's own wording — notably 403 on a host running without
+   * `--allow-input`, where closing a pane is refused for the same reason
+   * typing is.
+   */
+  async closeSession(sessionId: string): Promise<void> {
+    const res = await this.fetchImpl(
+      `${this.host.origin}/api/sessions/${encodeURIComponent(sessionId)}`,
+      {
+        method: 'DELETE',
+        headers: this.authHeaders(),
+        redirect: 'error',
+        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+      },
+    );
+    if (res.ok || res.status === 404) return;
+    let message = `closeSession failed: HTTP ${res.status}`;
+    try {
+      const parsed = (await res.json()) as { error?: string; detail?: string };
+      if (parsed?.detail) message = parsed.detail;
+      else if (parsed?.error) message = parsed.error;
+    } catch {
+      /* body wasn't JSON — fall back to the generic message */
+    }
+    throw new Error(message);
+  }
+
   async listWorkspaces(): Promise<RemoteWorkspacesResponse> {
     const res = await this.fetchImpl(`${this.host.origin}/api/workspaces`, {
       headers: this.authHeaders(),

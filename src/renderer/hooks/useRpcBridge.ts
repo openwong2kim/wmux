@@ -33,6 +33,8 @@ import { submitBracketedPasteToPty } from '../utils/ptyMessageDelivery';
 import { publishA2aTask } from '../events/publisher';
 import { resolvePaneAddress, activePaneTerminalPty, decideSameWsSend, decideReplyDelivery, REPLY_SUPPRESS_HINTS, countRoundTrips, maxSideMessages, REPLY_ROUND_CAP, isTerminalPtyInLeaves, resolveSelfPaneIdentity, resolveSenderPaneAddress, resolvePaneRole, findLeafPanes, type PaneAddress } from './a2aAddressing';
 import { resolveWorkspaceTarget } from './workspaceTargeting';
+import { destroyRemoteSessions, destroySurfaceRemoteSession } from '../utils/remoteSessionTeardown';
+import { collectPaneTreeRemoteSessions } from '../../shared/paneUtils';
 import { findActivePtyId, buildWorkspaceListEntries } from './workspaceMirrorSnapshot';
 
 // ---------------------------------------------------------------------------
@@ -1066,8 +1068,12 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
       return { error: 'pane.close: cannot close the root pane' };
     }
     const ptyIds = pane.surfaces.map((s) => s.ptyId).filter((p): p is string => !!p);
+    // #1129 — remote-terminal surfaces carry no ptyId, so they are invisible
+    // to the dispose loop below; collect them before the pane leaves the tree.
+    const remoteSessions = collectPaneTreeRemoteSessions(pane);
 
     store.closePane(paneId, targetWs.id);
+    destroyRemoteSessions(remoteSessions);
 
     for (const ptyId of ptyIds) {
       try { await window.electronAPI.pty.dispose(ptyId); } catch { /* best-effort */ }
@@ -1139,6 +1145,12 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
     const ptyId = surface?.ptyId;
 
     store.closeSurface(targetLeaf.id, surfaceId, targetWs.id);
+
+    // #1129 — a remote-terminal surface has no ptyId, so the dispose below
+    // would silently do nothing and leave the session running on the host.
+    // Same semantics as the tab X and Ctrl+W: close destroys what this
+    // desktop minted, never a session it is only viewing.
+    destroySurfaceRemoteSession(surface);
 
     if (ptyId) {
       try {
