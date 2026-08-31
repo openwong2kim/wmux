@@ -81,7 +81,7 @@ const memberIdSchema = z.string().describe('Agent member id within the workspace
 const memberNameSchema = z
   .string()
   .optional()
-  .describe('Optional display-name fallback. The daemon derives the shown name from the channel roster (server-owned); this value is used only when the post matches no roster row.');
+  .describe('Display-name fallback; ignored whenever the server-owned channel roster has a row for this member.');
 
 /** Helper: convert the typed `{ ok, ... } | { ok: false, error }` envelope
  *  into an MCP tool result with `isError` set on the failure branch. The
@@ -144,23 +144,27 @@ const CHANNEL_POST_SHAPE = {
   client_msg_id: z
     .string()
     .optional()
-    .describe('Optional idempotency key. Two posts with the same key on the same channel return the original seq instead of appending a duplicate.'),
+    .describe('Idempotency key: a repeat post with the same key returns the original seq instead of appending a duplicate.'),
   mentions: z
     .array(
       z.object({
-        workspace_id: z.string().describe('Mentioned member workspace id. Dropped server-side unless it is a CURRENT channel member.'),
+        workspace_id: z.string().describe('Mentioned member workspace id; dropped unless a CURRENT channel member.'),
         name: z.string().optional().describe('Display name for the @mention (defaults to the workspace id).'),
         member_id: z.string().optional().describe('Narrow the mention to a specific member; omit for a workspace-level mention.'),
+        // Refusal reasons the daemon returns for a bad pin, kept out of the
+        // wire description because `droppedMentions` already names them at
+        // runtime: "pane_not_in_workspace" (pane is not provably in
+        // `workspace_id`) and "pane_not_live" (its session is gone).
         pane_id: z
           .string()
           .optional()
           .describe(
-            'Pin the mention to ONE agent pane of that workspace (paneId from a2a_discover / pane_list). A PINNED mention is delivered into that agent\'s prompt at its next idle moment — this is the only mention shape that reaches an agent by itself. WITHOUT it the mention is badge-only: it raises an unread count and waits for the agent to poll. The pane must belong to `workspace_id` and have a live session behind it. A pane the server cannot prove belongs there is refused with reason "pane_not_in_workspace"; one whose session is gone is refused with "pane_not_live" — it is NOT redirected to a sibling pane, which is what an unrefused dead pin would silently do. Either way the refusal is reported in `droppedMentions` and the mention still lands, badge-only. Note the server checks that a PTY is live, not that an AGENT is: a pane whose agent exited to its shell still accepts a pin, and the text lands at the shell prompt.',
+            'Pin the mention to ONE agent pane (paneId from a2a_discover / pane_list). A pinned mention lands in that agent\'s prompt at its next idle moment — the only mention shape that reaches an agent by itself; without it the mention is badge-only and waits for a poll. A pin outside `workspace_id`, or onto a dead session, is refused (reported in `droppedMentions`, mention still lands badge-only), never redirected to a sibling pane. Liveness means a live PTY, not a live agent: a pane at its shell accepts the pin and the text lands at the shell prompt.',
           ),
       }),
     )
     .optional()
-    .describe('@-mentions to ping specific members. Each must be a current channel member; a non-member target is returned in `droppedMentions` (not silently dropped) so you know it did not land. Mentioned workspaces are notified via their a2a inbox. Add `pane_id` to actually reach a specific idle agent — see that field.'),
+    .describe('@-mentions to ping specific members; each must be a current channel member. A non-member target comes back in `droppedMentions`, never silently dropped. Mentioned workspaces are notified via their a2a inbox; add `pane_id` to actually reach an idle agent.'),
 };
 
 const CHANNEL_JOIN_SHAPE = {
@@ -186,8 +190,8 @@ const CHANNEL_READ_SHAPE = {
     .min(0)
     .optional()
     .describe(
-      'Return messages with seq >= since_seq (forward pagination). When combined with limit, the ' +
-        'floor is applied first, then the most recent `limit` of the remainder.',
+      'Return messages with seq >= since_seq (forward pagination). With limit, the floor applies ' +
+        'first, then the most recent `limit` of the remainder.',
     ),
   limit: z
     .number()
@@ -203,15 +207,15 @@ const CHANNEL_INVITE_SHAPE = {
   invited_workspace_id: z.string().describe('Workspace id of the agent/workspace to add (the invitee, not you).'),
   member_id: z
     .string()
-    .describe('Member id for the INVITED workspace within the channel (e.g. "lead", "backend") — identifies the invitee, not the caller.'),
+    .describe('Member id for the INVITED workspace (e.g. "lead", "backend"), not the caller.'),
   member_name: z
     .string()
     .optional()
-    .describe('Optional display-name fallback for the INVITED member — the daemon derives the shown name from the roster (server-owned).'),
+    .describe('Display-name fallback for the INVITED member; ignored whenever the server-owned roster has a row.'),
   include_history: z
     .boolean()
     .optional()
-    .describe('When true (default) the invited member sees the full channel history; false starts them at the current message.'),
+    .describe('True (default) shows the invited member the full history; false starts them at the current message.'),
 };
 
 const CHANNEL_GET_MEMBERS_SHAPE = {
@@ -228,7 +232,7 @@ const CHANNEL_ACK_SHAPE = {
   member_id: z
     .string()
     .optional()
-    .describe('YOUR member row in this channel (e.g. "codex") — required to advance your cursor; an id with no row errors instead of silently no-opping. Omit = read receipts only, no cursor moves (a human-glance semantic, not consumption).'),
+    .describe('YOUR member row in this channel (e.g. "codex"), required to advance the cursor; an id with no row errors rather than silently no-opping. Omit for read receipts only — a glance, not consumption.'),
 };
 
 const CHANNEL_UNREAD_SHAPE = {
@@ -304,7 +308,8 @@ export function createChannelToolCatalog(deps: ChannelToolDeps) {
   const channelCreate = defineWmuxTool({
     name: 'channel_create',
     description:
-      'Create a new channel. The creator is auto-added as a member with full history (plan KTD10). Visibility is immutable post-creation; a "private" channel must be joined by an existing member. Topics are optional and editable only via the underlying daemon.',
+      // KTD10: the creator is auto-added as a member with full history.
+      'Create a new channel; you are added as a member with full history. Visibility is immutable after creation, and a "private" channel can only be entered by invitation from an existing member. Topics are editable only through the daemon.',
     inputSchema: CHANNEL_CREATE_SHAPE,
     profiles: ['full', 'commander'],
     invoke: async ({ name, visibility, topic, member_id, member_name }) => {
@@ -328,10 +333,14 @@ export function createChannelToolCatalog(deps: ChannelToolDeps) {
   });
 
   // ── channel_post ──────────────────────────────────────────────────
+  // Post-path failures are returned as isError=true with the daemon's own
+  // code + message, so the codes are not enumerated in the wire description:
+  // PERSIST_FAILED (U2 maintainer directive — do not swallow saveImmediate
+  // errors here), CHANNEL_ARCHIVED, CHANNEL_MENTIONS_TOO_MANY.
   const channelPost = defineWmuxTool({
     name: 'channel_post',
     description:
-      'Post a message to a channel. A channel post is a NOTIFICATION, not a delivery: it does NOT start an idle agent\'s turn. An agent that has finished its work sees nothing until it polls (channel_unread / channel_read), so instructions posted to a channel can sit unread indefinitely while the sender reads the silence as "still working". To make an agent act, either send it a task (a2a_task_send, which is pasted into its prompt) or @-mention it with `pane_id` set (see the mentions field). Returns isError=true with code PERSIST_FAILED when persistence fails (U2 maintainer directive: do not swallow saveImmediate errors on the post path), CHANNEL_ARCHIVED for read-only channels, and CHANNEL_MENTIONS_TOO_MANY when a single post lists too many @mentions. Use client_msg_id for at-most-once delivery — a repeat post with the same key returns the original `seq` instead of appending a duplicate. IMPORTANT: check `droppedMentions` on the result — any @mention whose target workspace is NOT a channel member is reported there (not silently dropped), so you know that ping did not land.',
+      'Post a message to a channel. A post is a NOTIFICATION, not a delivery: it does NOT start an idle agent\'s turn, so instructions can sit unread indefinitely while the sender reads the silence as "still working". To make an agent act, send it a task (a2a_task_send, pasted into its prompt) or @-mention it with `pane_id` set. Check `droppedMentions` on the result — a mention that did not land is reported there, never silently dropped.',
     inputSchema: CHANNEL_POST_SHAPE,
     profiles: ['full', 'commander'],
     invoke: async ({ channel_id, text, member_id, member_name, client_msg_id, mentions }) => {
@@ -425,12 +434,10 @@ export function createChannelToolCatalog(deps: ChannelToolDeps) {
     name: 'channel_read',
     description:
       'Read messages from a channel you can see (public, or private if you are a member). ' +
-        'With `since_seq` (pass your cursor + 1 from channel_unread) it returns the OLDEST `limit` ' +
-        'messages from that point — contiguous pages, so ack the highest seq you read and repeat ' +
-        'until fewer than `limit` return to drain safely. Without `since_seq` it returns the most ' +
-        'recent `limit` messages (display). Reading consumes your context window, so prefer a small ' +
-        '`limit`. A private channel you are not a member of returns an empty list; a missing channel ' +
-        'returns an error.',
+        'With `since_seq` (your channel_unread cursor + 1) it returns the OLDEST `limit` messages ' +
+        'from that point as contiguous pages — ack the highest seq you read and repeat until fewer ' +
+        'than `limit` come back, to drain safely. Without it you get the most recent `limit` ' +
+        '(display). A private channel you are not in returns an empty list; a missing one errors.',
     inputSchema: CHANNEL_READ_SHAPE,
     profiles: ['full', 'commander'],
     invoke: async ({ channel_id, since_seq, limit }) => {
@@ -454,7 +461,7 @@ export function createChannelToolCatalog(deps: ChannelToolDeps) {
   const channelInvite = defineWmuxTool({
     name: 'channel_invite',
     description:
-      'Invite ANOTHER workspace/agent to a channel you belong to. This is the only way to add someone to a private channel (you cannot self-join one). Any member may invite; the invited workspace gains the channel history and live messages. Use channel_join to add YOURSELF to a public channel instead.',
+      'Invite ANOTHER workspace/agent to a channel you belong to — the only way into a private channel, which cannot be self-joined. Any member may invite; the invitee gains history and live messages. To add YOURSELF to a public channel, use channel_join.',
     inputSchema: CHANNEL_INVITE_SHAPE,
     profiles: ['full', 'commander'],
     invoke: async ({ channel_id, invited_workspace_id, member_id, member_name, include_history }) => {
@@ -504,7 +511,7 @@ export function createChannelToolCatalog(deps: ChannelToolDeps) {
   const channelAck = defineWmuxTool({
     name: 'channel_ack',
     description:
-      'Acknowledge channel messages up to a seq (inclusive) as consumed. Call this after channel_read with the highest seq you actually processed (read oldest-first via since_seq and repeat until drained — do not ack past messages you have not seen). Advances your durable read cursor, clears your unread count, and stops re-nudges. Advance-only (acking an older seq never rewinds) and clamped to the channel head. Requires member_id to move a cursor; an unknown member_id is an error, and omitting it records read receipts only.',
+      'Acknowledge channel messages up to a seq (inclusive) as consumed. Call it after channel_read with the highest seq you actually processed — read oldest-first via since_seq until drained, and never ack past what you have seen. Advances your durable read cursor, clears the unread count and stops re-nudges. Advance-only (an older seq never rewinds) and clamped to the channel head.',
     inputSchema: CHANNEL_ACK_SHAPE,
     profiles: ['full', 'commander'],
     invoke: async ({ channel_id, upto_seq, member_id }) => {
@@ -549,7 +556,7 @@ export function createChannelToolCatalog(deps: ChannelToolDeps) {
   const channelMissionStart = defineWmuxTool({
     name: 'channel_mission_start',
     description:
-      'Start a mission: create a WorkTask (owned by you) plus a private mission channel bound to it. Returns { taskId, channelId }. Use idempotency_key to make a retried start safe — a repeat with the same key returns the original { taskId, channelId } instead of creating a duplicate mission + channel. Optionally seed the channel with initial members via invite.',
+      'Start a mission: create a WorkTask (owned by you) plus a private mission channel bound to it, optionally seeded with members via invite. Returns { taskId, channelId }.',
     inputSchema: CHANNEL_MISSION_START_SHAPE,
     profiles: ['full', 'commander'],
     invoke: async ({ title, member_id, invite, idempotency_key }) => {

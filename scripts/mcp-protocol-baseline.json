@@ -2,8 +2,8 @@
   "schemaVersion": 2,
   "profiles": {
     "full": {
-      "maxListBytes": 80000,
-      "wireResultSha256": "eb6cdfcae7a3bac1a2efdd9970ebaec56c7a9ded13764c9efbe5b373f65b471b",
+      "maxListBytes": 75000,
+      "wireResultSha256": "8ab858611f9ff986915bef6eb364cb80ded1ad7f4ea13f5ea63f3a98d731c0bc",
       "instructionSha256": "f18849bb1ea62bcf5a1e46a73d633c787b4e08e763cc04b01c4e557df8f833eb",
       "toolNames": [
         "browser_open",
@@ -101,8 +101,8 @@
       ]
     },
     "commander": {
-      "maxListBytes": 49000,
-      "wireResultSha256": "c4cd51661adaef9efa197b947282fe11a4dbd8f2d28879691ed9eee20d6a979f",
+      "maxListBytes": 45000,
+      "wireResultSha256": "b13d93dbc0b19487d6332a7bb2c531ca03f9f58e68924d12b0f8c9c9e82ff676",
       "instructionSha256": "5a97f851c892326eba7cbcf46292f6925834d5794172461d1ced997d90ac1deb",
       "toolNames": [
         "terminal_read",
