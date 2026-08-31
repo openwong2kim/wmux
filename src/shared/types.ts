@@ -72,6 +72,20 @@ export interface Surface {
    */
   remoteHostId?: string;
   remoteSessionId?: string;
+  /**
+   * #1129 — did THIS desktop mint `remoteSessionId`, or is the tab merely a
+   * view onto a session that already existed on the host?
+   *
+   * Only an owned session is destroyed when its tab closes. The distinction
+   * is the whole safety of that teardown: the "add remote pane" flow mints a
+   * one-shot session (and, with it, the workspace row the daemon derives from
+   * its `WMUX_WORKSPACE_ID`) that nothing else will ever reap, whereas the
+   * planned "open this mirror session as a tab" bridge (#1091's direction
+   * call) points at somebody's running work — closing a view of it must not
+   * end it. Absent/false means not owned, so any future construction site is
+   * non-destructive by default.
+   */
+  remoteOwned?: boolean;
   /** J2 — diff 서피스: 대상 태스크 id. diff 내용은 파생 데이터(열 때마다 재계산). */
   diffTaskId?: string;
   /**
@@ -1125,7 +1139,17 @@ export function createSurface(ptyId: string, shell: string, cwd: string): Surfac
  *  in an ordinary local workspace's own pane tree (not a separate remote
  *  workspace). `ptyId: ''` mirrors the `browser` surface convention so every
  *  existing ptyId-gated check already treats it as non-local without edits. */
-export function createRemoteSurface(hostId: string, sessionId: string, shell: string, cwd: string): Surface {
+export function createRemoteSurface(
+  hostId: string,
+  sessionId: string,
+  shell: string,
+  cwd: string,
+  /** #1129 — true only when this desktop minted `sessionId` and is therefore
+   *  the thing responsible for destroying it when the tab closes. Defaults to
+   *  false so a future attach-to-existing caller is non-destructive unless it
+   *  says otherwise. */
+  owned = false,
+): Surface {
   return {
     id: generateId('surface'),
     ptyId: '',
@@ -1135,6 +1159,7 @@ export function createRemoteSurface(hostId: string, sessionId: string, shell: st
     surfaceType: 'remote-terminal',
     remoteHostId: hostId,
     remoteSessionId: sessionId,
+    ...(owned ? { remoteOwned: true } : {}),
   };
 }
 
@@ -1218,6 +1243,10 @@ export function clonePaneTreeFresh(pane: Pane): Pane {
       // fresh on mount" contract a local terminal's reset ptyId gets).
       delete next.remoteHostId;
       delete next.remoteSessionId;
+      // …and with the session pointer gone, the ownership claim over it must
+      // go too (#1129): a clone that kept `remoteOwned` would offer to
+      // destroy a session it does not point at.
+      delete next.remoteOwned;
       return next;
     });
     // Preserve which surface was active by POSITION, since ids changed.

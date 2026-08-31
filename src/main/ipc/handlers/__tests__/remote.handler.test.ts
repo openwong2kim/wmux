@@ -110,6 +110,7 @@ function fakeClient(host: RemoteHost) {
     write: vi.fn(async () => undefined),
     listWorkspaces: vi.fn(async (): Promise<RemoteWorkspacesResponse> => ({ workspaces: [] })),
     createWorkspace: vi.fn(async (): Promise<{ sessionId: string }> => ({ sessionId: 'web-1' })),
+    closeSession: vi.fn(async (): Promise<void> => undefined),
     onMeta: vi.fn((cb: (e: RemoteMetaEvent) => void) => { metaCbs.push(cb); }),
     onResize: vi.fn((cb: (e: RemoteResizeEvent) => void) => { resizeCbs.push(cb); }),
     onData: vi.fn((cb: (e: RemoteDataEvent) => void) => { dataCbs.push(cb); }),
@@ -127,6 +128,7 @@ function fakeClient(host: RemoteHost) {
     write: ReturnType<typeof vi.fn>;
     listWorkspaces: ReturnType<typeof vi.fn>;
     createWorkspace: ReturnType<typeof vi.fn>;
+    closeSession: ReturnType<typeof vi.fn>;
     emitMeta: (e: RemoteMetaEvent) => void;
     emitResize: (e: RemoteResizeEvent) => void;
     emitData: (e: RemoteDataEvent) => void;
@@ -530,6 +532,81 @@ describe('remote.handler — workspaceCreate (#1001)', () => {
     registerRemoteHandlers({ store: store as never, attachments: fakeAttachments() as never });
 
     const res = await getHandler(IPC.REMOTE_WORKSPACE_CREATE)({}, 'missing', 'ws-1') as { ok: boolean; error?: string };
+
+    expect(res).toEqual({ ok: false, error: 'unknown host' });
+  });
+});
+
+describe('remote.handler — sessionClose (#1129)', () => {
+  const host: RemoteHost = { id: 'h1', label: 'box', origin: 'https://box:9600', token: 't', addedAt: 0 };
+
+  it('destroys the session on the host', async () => {
+    const store = fakeStore([host]);
+    const client = fakeClient(host);
+    registerRemoteHandlers({ store: store as never, attachments: fakeAttachments() as never, clientFactory: () => client });
+
+    const res = await getHandler(IPC.REMOTE_SESSION_CLOSE)({}, 'h1', 'web-9');
+
+    expect(res).toEqual({ ok: true });
+    expect(client.closeSession).toHaveBeenCalledWith('web-9');
+  });
+
+  it('detaches every live stream on that session once the destroy SUCCEEDS — no reconnect target left behind', async () => {
+    const store = fakeStore([host]);
+    const client = fakeClient(host);
+    registerRemoteHandlers({ store: store as never, attachments: fakeAttachments() as never, clientFactory: () => client });
+    const senderA = fakeSender(1);
+    const senderB = fakeSender(2);
+    const a = await getHandler(IPC.REMOTE_PANE_ATTACH)({ sender: senderA }, 'h1', 'web-9') as { attachId: string };
+    const b = await getHandler(IPC.REMOTE_PANE_ATTACH)({ sender: senderB }, 'h1', 'web-9') as { attachId: string };
+    const other = await getHandler(IPC.REMOTE_PANE_ATTACH)({ sender: senderA }, 'h1', 'web-other') as { attachId: string };
+
+    await getHandler(IPC.REMOTE_SESSION_CLOSE)({}, 'h1', 'web-9');
+
+    expect(client.detach).toHaveBeenCalledWith(a.attachId);
+    expect(client.detach).toHaveBeenCalledWith(b.attachId);
+    // An attach on a DIFFERENT session on the same host is untouched.
+    expect(client.detach).not.toHaveBeenCalledWith(other.attachId);
+  });
+
+  it('maps a refused close ({ok:false}) rather than throwing', async () => {
+    const store = fakeStore([host]);
+    const client = fakeClient(host);
+    client.closeSession.mockRejectedValueOnce(new Error('closing a pane destroys running work'));
+    registerRemoteHandlers({ store: store as never, attachments: fakeAttachments() as never, clientFactory: () => client });
+
+    const res = await getHandler(IPC.REMOTE_SESSION_CLOSE)({}, 'h1', 'web-9') as { ok: false; error: string };
+
+    expect(res.ok).toBe(false);
+    expect(res.error).toMatch(/closing a pane destroys running work/);
+  });
+
+  // The failure-destructive ordering bug: a detach-first close that then fails
+  // leaves the session alive with every mirror of it cut and nothing to retry
+  // from. The destroy must land before anything is torn down.
+  it('leaves every attach INTACT when the destroy fails', async () => {
+    const store = fakeStore([host]);
+    const client = fakeClient(host);
+    client.closeSession.mockRejectedValueOnce(new Error('host offline'));
+    registerRemoteHandlers({ store: store as never, attachments: fakeAttachments() as never, clientFactory: () => client });
+    const sender = fakeSender(1);
+    await getHandler(IPC.REMOTE_PANE_ATTACH)({ sender }, 'h1', 'web-9');
+
+    await getHandler(IPC.REMOTE_SESSION_CLOSE)({}, 'h1', 'web-9');
+
+    expect(client.detach).not.toHaveBeenCalled();
+    // …and the attach is still idempotently addressable, so a retry (or the
+    // renderer's own detach) still has a handle to work with.
+    const again = await getHandler(IPC.REMOTE_PANE_ATTACH)({ sender }, 'h1', 'web-9') as { ok: true; attachId: string };
+    expect(again.ok).toBe(true);
+    expect(client.attach).toHaveBeenCalledTimes(1); // same stream, not a second one
+  });
+
+  it('reports unknown host without touching a client', async () => {
+    const store = fakeStore([]);
+    registerRemoteHandlers({ store: store as never, attachments: fakeAttachments() as never });
+
+    const res = await getHandler(IPC.REMOTE_SESSION_CLOSE)({}, 'missing', 'web-9');
 
     expect(res).toEqual({ ok: false, error: 'unknown host' });
   });

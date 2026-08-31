@@ -7,6 +7,11 @@ import { t } from '../i18n';
 import { pastePtyChunked } from '../utils/clipboardChunk';
 import { createTerminalSurface } from '../utils/createTerminalSurface';
 import { openUrlInBrowserPane } from '../utils/browserPaneActions';
+import {
+  destroyPaneTreeRemoteSessions,
+  destroySurfaceRemoteSession,
+  destroyWorkspaceRemoteSessions,
+} from '../utils/remoteSessionTeardown';
 
 // Lightweight bookmark toast — reuses the same DOM element pattern as showCopyToast
 let bookmarkToastTimer: ReturnType<typeof setTimeout> | null = null;
@@ -74,9 +79,12 @@ export function ctrlByteForKeyCode(code: string): string | null {
   return String.fromCharCode(m[1].charCodeAt(0) - 64);
 }
 
-/** Dispose all PTYs inside a pane tree */
+/** Dispose all PTYs inside a pane tree — plus every remote session the tree
+ *  owns (#1129), which carries no ptyId and would otherwise survive the pane
+ *  that was running it. */
 function disposePanePtys(pane: import('../../shared/types').Pane): void {
   for (const ptyId of collectPaneTreePtyIds(pane)) window.electronAPI.pty.dispose(ptyId);
+  destroyPaneTreeRemoteSessions(pane);
 }
 
 /**
@@ -165,6 +173,9 @@ export function createPrefixActions(deps: PrefixActionDeps): Record<string, () =
   // injected electronAPI, not the window global) stays local.
   const disposeTree = (pane: import('../../shared/types').Pane): void => {
     for (const ptyId of collectPaneTreePtyIds(pane)) electronAPI.pty.dispose(ptyId);
+    // #1129 — remote-terminal surfaces have no ptyId; the walk above cannot
+    // see them, so the sessions this desktop minted need their own teardown.
+    destroyPaneTreeRemoteSessions(pane);
   };
 
   return {
@@ -241,6 +252,7 @@ export function createPrefixActions(deps: PrefixActionDeps): Record<string, () =
       // Workspace-wide (#977) — see Sidebar.disposeAllPtys: a stashed pane's
       // session dies with its workspace or it becomes an orphan.
       for (const ptyId of getWorkspacePtyIds(ws)) electronAPI.pty.dispose(ptyId);
+      destroyWorkspaceRemoteSessions(ws); // #1129 — same reasoning, no ptyId
       state.removeWorkspace(state.activeWorkspaceId);
     },
     showCheatSheet: () => {
@@ -442,6 +454,7 @@ export function useKeyboard() {
           // killWorkspace action: a stashed session outliving its workspace is
           // an orphan nothing can reach.
           for (const ptyId of getWorkspacePtyIds(ws)) window.electronAPI.pty.dispose(ptyId);
+          destroyWorkspaceRemoteSessions(ws); // #1129 — same reasoning, no ptyId
         }
         state.removeWorkspace(state.activeWorkspaceId);
         return;
@@ -569,6 +582,10 @@ export function useKeyboard() {
           if (surface?.ptyId) {
             window.electronAPI.pty.dispose(surface.ptyId);
           }
+          // #1129 — the tab-strip X does the same (Pane.handleCloseSurface);
+          // the two close paths must not diverge on what closing a remote tab
+          // means.
+          destroySurfaceRemoteSession(surface);
           const wasLastSurface = activePane.surfaces.length <= 1;
           state.closeSurface(activePane.id, activePane.activeSurfaceId);
           if (wasLastSurface) {

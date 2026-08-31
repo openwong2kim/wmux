@@ -103,6 +103,44 @@ export function getWorkspacePtyIds(ws: WorkspacePaneOwner): string[] {
   );
 }
 
+/**
+ * #1129 — every remote session a pane tree OWNS (this desktop minted it, see
+ * `Surface.remoteOwned`), in tree order. The remote counterpart of
+ * {@link collectPaneTreePtyIds}: a remote-terminal surface carries no ptyId,
+ * so the PTY walks above are structurally blind to it and a teardown path
+ * that only disposes PTYs leaves the remote shell — plus the one-shot
+ * workspace row the daemon derives from it — running forever.
+ *
+ * Surfaces that merely VIEW a session somebody else started are excluded by
+ * construction: no `remoteOwned`, no destroy.
+ */
+export function collectPaneTreeRemoteSessions(root: Pane): RemoteSessionRef[] {
+  return getLeafPanes(root).flatMap((leaf) => ownedRemoteSessionsOf(leaf));
+}
+
+/**
+ * Every owned remote session a workspace holds — visible tree plus stash. The
+ * workspace-level counterpart of {@link collectPaneTreeRemoteSessions}, for
+ * the same reason {@link getWorkspacePtyIds} exists.
+ */
+export function getWorkspaceRemoteSessions(ws: WorkspacePaneOwner): RemoteSessionRef[] {
+  return getWorkspaceLeafPanes(ws).flatMap((leaf) => ownedRemoteSessionsOf(leaf));
+}
+
+/** One owned remote session, addressed the way `remote.sessionClose` wants it. */
+export interface RemoteSessionRef {
+  hostId: string;
+  sessionId: string;
+}
+
+function ownedRemoteSessionsOf(leaf: PaneLeaf): RemoteSessionRef[] {
+  return leaf.surfaces.flatMap((s) =>
+    s.surfaceType === 'remote-terminal' && s.remoteOwned && s.remoteHostId && s.remoteSessionId
+      ? [{ hostId: s.remoteHostId, sessionId: s.remoteSessionId }]
+      : [],
+  );
+}
+
 // ─── Not consolidated here (deliberate) ──────────────────────────────────────
 //
 // The walks below look like the ones above but diverge in signature or in what

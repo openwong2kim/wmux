@@ -567,6 +567,12 @@ export const IPC = {
   // as an operator-authenticated caller (WebTerminalServer.rejectWorkspaceId's
   // one exception). See RemoteHostClient.createWorkspace.
   REMOTE_WORKSPACE_CREATE: 'remote:workspace:create',
+  // Destroy a session the desktop minted on a remote host (#1129) —
+  // `DELETE /api/sessions/:id`. The teardown half of REMOTE_WORKSPACE_CREATE:
+  // closing a remote-terminal tab detaches the stream, and without this the
+  // shell (and the one-shot workspace row the daemon derives from it) would
+  // outlive the tab forever. See RemoteHostClient.closeSession.
+  REMOTE_SESSION_CLOSE: 'remote:session:close',
   // Persisted attach descriptors (see RemoteAttachmentsStore). The renderer's
   // remote-workspace slice is memory-only, so these are what survive a reload
   // and an app restart; panes are never stored, only re-fetched.

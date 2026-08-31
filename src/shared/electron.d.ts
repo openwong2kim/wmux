@@ -223,6 +223,16 @@ declare global {
         workspaceCreate: (hostId: string, workspaceId: string, cwd?: string) => Promise<
           { ok: true; sessionId: string } | { ok: false; error: string }
         >;
+        /** Destroy a session on `hostId` — the teardown twin of
+         *  `workspaceCreate` (#1129). Detaches every live stream on that
+         *  session first, then `DELETE /api/sessions/:id`. Resolves
+         *  `{ ok: true }` when the session is gone (a 404 counts: already
+         *  gone is the requested outcome), `{ ok: false }` with the daemon's
+         *  own wording otherwise — notably on a host running without
+         *  `--allow-input`, which refuses a close. Never rejects. */
+        sessionClose: (hostId: string, sessionId: string) => Promise<
+          { ok: true } | { ok: false; error: string }
+        >;
         /** Persisted attach descriptors — read on renderer boot to restore
          *  the attachments a reload/restart wiped out of the memory-only
          *  slice. Panes are never part of a descriptor: they are re-fetched
