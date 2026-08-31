@@ -56,7 +56,7 @@ function parseArgs(argv) {
       if (!Number.isFinite(args.top)) throw new Error('--top requires a number');
     } else throw new Error(`unknown argument: ${arg}`);
   }
-  if (!PROFILE_ARGS[args.profile]) {
+  if (!Object.hasOwn(PROFILE_ARGS, args.profile)) {
     throw new Error(
       `--profile must be one of ${Object.keys(PROFILE_ARGS).join('|')}, got ${args.profile}`,
     );

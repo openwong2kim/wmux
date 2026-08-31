@@ -15,9 +15,14 @@ const baseline = JSON.parse(
 ) as { profiles: Record<string, { toolNames: string[] }> };
 
 /** Tool families the core profile drops. Prefix-based on purpose: a new
- *  browser_/company_a2a_ tool is excluded automatically, and anything else
- *  new must be added to CORE_TOOL_SURFACE explicitly. */
-const EXCLUDED_PREFIXES = ['browser_', 'company_a2a_'];
+ *  browser_/company_ tool is excluded automatically, and anything else new
+ *  must be added to CORE_TOOL_SURFACE explicitly.
+ *
+ *  `company_`, not `company_a2a_`: today every company tool is company_a2a_*
+ *  so the two are equivalent, but the probe bans the whole `company_` family
+ *  from core. Matching the wider prefix here keeps the two drift gates from
+ *  disagreeing the day a company tool lands under a different sub-prefix. */
+const EXCLUDED_PREFIXES = ['browser_', 'company_'];
 
 describe('core surface manifest invariants', () => {
   it('has no duplicate tool names', () => {
@@ -39,6 +44,16 @@ describe('core surface manifest invariants', () => {
     // deepEqual, not set equality: core must preserve the canonical
     // full-profile registration order so a host's cached ordering holds.
     expect([...CORE_TOOL_SURFACE]).toEqual(expected);
+  });
+
+  it('matches the published core baseline exactly', () => {
+    // Closes the regeneration loophole. Without this, dropping 'core' from one
+    // catalog spec fails the probe once ("core: tool surface changed"), and a
+    // developer who reflexively regenerates the baseline makes both gates
+    // green again with a tool silently missing from the surface. Pinning
+    // CORE_TOOL_SURFACE to baseline.core.toolNames means the regenerated
+    // baseline has to disagree with the manifest to land.
+    expect(baseline.profiles.core.toolNames).toEqual([...CORE_TOOL_SURFACE]);
   });
 
   it('is a strict subset of the full surface', () => {

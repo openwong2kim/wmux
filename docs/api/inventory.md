@@ -182,7 +182,7 @@ The wmux MCP server (hosted in-process, named-pipe transport to the daemon) expo
 
 ### REPL surface (experimental)
 
-Backed by **no RPC method**: the sessions are child processes of the MCP server itself, so nothing crosses the substrate boundary and there is nothing for the daemon to authorize. Scope is the caller's MCP connection — a session is not shared between panes or workspaces and does not survive a wmux restart. `full` profile only; deliberately absent from the commander surface.
+Backed by **no RPC method**: the sessions are child processes of the MCP server itself, so nothing crosses the substrate boundary and there is nothing for the daemon to authorize. Scope is the caller's MCP connection — a session is not shared between panes or workspaces and does not survive a wmux restart. On the `full` and `core` profiles; deliberately absent from the commander surface.
 
 | MCP tool | Backs RPC method | Description |
 |---|---|---|

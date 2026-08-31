@@ -81,6 +81,10 @@ async function hostConnection(socket: net.Socket, handshake: ShimHandshake): Pro
   log(
     `shim connected pid=${handshake.callerPid} ` +
       `commander=${handshake.commanderMode ? 'yes' : 'no'} ` +
+      // The server's own "--core ignored" warning goes to the DAEMON's stderr
+      // on this path, not the agent host's, so record the requested flags here
+      // too — otherwise a contradictory launch is invisible to the operator.
+      `core=${handshake.coreMode ? 'yes' : 'no'} ` +
       `envHints=${handshake.envWorkspaceHint ? 'ws' : ''}${handshake.envPtyHint ? '+pty' : ''}`,
   );
 

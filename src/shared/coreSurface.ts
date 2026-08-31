@@ -18,13 +18,15 @@
 //
 // Derivation rule (enforced by src/shared/__tests__/coreSurface.test.ts):
 //
-//     CORE_TOOL_SURFACE === full surface − browser_* − company_a2a_*
+//     CORE_TOOL_SURFACE === full surface − browser_* − company_*
 //
 // in the canonical full registration order. The test derives the expectation
 // from scripts/mcp-protocol-baseline.json's `full.toolNames`, so a NEW tool
 // added to the full surface fails the build until someone decides, explicitly,
 // whether it belongs in core. That drift gate is the point of the list being
-// spelled out here rather than computed at runtime.
+// spelled out here rather than computed at runtime, and a second assertion
+// pins this list to the baseline's own core.toolNames so regenerating the
+// baseline cannot quietly bless a tool that fell out of the surface.
 //
 // COMMANDER_TOOL_SURFACE ⊆ CORE_TOOL_SURFACE is likewise an asserted
 // invariant: commander deliberately omits browser_* and company_* too, so the

@@ -429,13 +429,6 @@ function logIdentityEnvOnce(): void {
   );
 }
 
-const server = new McpServer({
-  name: 'wmux',
-  version: resolveMcpServerVersion(),
-}, {
-  instructions: getWmuxMcpServerInstructions(ctx.commanderMode),
-});
-
 // ── BYOB P4 Layer 1: commander tool-surface filter ──────────────────────────
 // `--commander` on the command line (NOT an env var — the brain adapter
 // declares it in the MCP server config args, so an env-stripping brain host
@@ -466,6 +459,17 @@ const SURFACE_PROFILE: WmuxToolProfile = COMMANDER_MODE
   : ctx.coreMode
     ? 'core'
     : 'full';
+
+// Constructed after SURFACE_PROFILE because the handshake instructions must
+// describe the surface this process actually registers — naming a tool the
+// profile omitted sends the agent after something tools/list will not contain.
+const server = new McpServer({
+  name: 'wmux',
+  version: resolveMcpServerVersion(),
+}, {
+  instructions: getWmuxMcpServerInstructions(SURFACE_PROFILE),
+});
+
 const MCP_CATALOG_OPTIONS: RegisterWmuxToolsOptions = Object.freeze({
   profile: SURFACE_PROFILE,
   context: Object.freeze({

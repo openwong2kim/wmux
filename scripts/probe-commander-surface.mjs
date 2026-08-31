@@ -47,9 +47,10 @@ const PROFILE_ARGS = {
 };
 
 function profileArgs(profile) {
-  const args = PROFILE_ARGS[profile];
-  assert.ok(args, `unknown probe profile: ${profile}`);
-  return [BUNDLE_PATH, ...args];
+  // hasOwn, not truthiness: a baseline key of `constructor` or `toString`
+  // would otherwise pass the guard and blow up in the spread below.
+  assert.ok(Object.hasOwn(PROFILE_ARGS, profile), `unknown probe profile: ${profile}`);
+  return [BUNDLE_PATH, ...PROFILE_ARGS[profile]];
 }
 
 function childEnvironment(profile) {
@@ -149,7 +150,7 @@ async function readHandshake(entryPath, label, config) {
     command: process.execPath,
     args: [entryPath],
     cwd: REPO_ROOT,
-    env: childEnvironment(false),
+    env: childEnvironment('full'),
     stderr: 'pipe',
   });
   transport.stderr?.resume();
