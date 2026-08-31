@@ -8,7 +8,7 @@
  * numbers instead of by feel.
  *
  * Usage:
- *   node scripts/measure-mcp-tokens.mjs [--profile full|commander] [--json]
+ *   node scripts/measure-mcp-tokens.mjs [--profile full|core|commander] [--json]
  *                                       [--top N] [--save <file>]
  *                                       [--compare <file>]
  *
@@ -25,6 +25,15 @@ const REPO_ROOT = path.resolve(SCRIPT_DIR, '..');
 const BUNDLE_PATH = path.join(REPO_ROOT, 'dist', 'mcp-bundle', 'index.js');
 const REQUEST_TIMEOUT_MS = 20_000;
 const CHARS_PER_TOKEN = 4;
+
+// Profile → extra launch argv. Keep in lockstep with the same table in
+// scripts/probe-commander-surface.mjs; both exist because the surface is
+// chosen by argv alone, never by an env var.
+const PROFILE_ARGS = {
+  full: [],
+  core: ['--core'],
+  commander: ['--commander'],
+};
 
 function parseArgs(argv) {
   const args = { profile: 'full', json: false, top: 10, save: null, compare: null };
@@ -47,8 +56,10 @@ function parseArgs(argv) {
       if (!Number.isFinite(args.top)) throw new Error('--top requires a number');
     } else throw new Error(`unknown argument: ${arg}`);
   }
-  if (args.profile !== 'full' && args.profile !== 'commander') {
-    throw new Error(`--profile must be "full" or "commander", got ${args.profile}`);
+  if (!PROFILE_ARGS[args.profile]) {
+    throw new Error(
+      `--profile must be one of ${Object.keys(PROFILE_ARGS).join('|')}, got ${args.profile}`,
+    );
   }
   return args;
 }
@@ -63,17 +74,16 @@ function estimateTokens(chars) {
  * them. Mirrors the raw pass in scripts/probe-commander-surface.mjs.
  */
 async function listTools(profile) {
-  const commander = profile === 'commander';
   const env = Object.fromEntries(
     Object.entries(process.env).filter(([, value]) => typeof value === 'string'),
   );
   delete env.WMUX_COMMANDER_TOKEN;
-  if (commander) env.WMUX_COMMANDER_TOKEN = 'wmux-token-measure';
+  if (profile === 'commander') env.WMUX_COMMANDER_TOKEN = 'wmux-token-measure';
 
   return await new Promise((resolve, reject) => {
     const child = spawn(
       process.execPath,
-      commander ? [BUNDLE_PATH, '--commander'] : [BUNDLE_PATH],
+      [BUNDLE_PATH, ...PROFILE_ARGS[profile]],
       { cwd: REPO_ROOT, env, stdio: ['pipe', 'pipe', 'pipe'] },
     );
     let stdoutBuffer = '';
