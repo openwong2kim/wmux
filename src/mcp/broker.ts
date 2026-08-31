@@ -44,6 +44,9 @@ interface ShimHandshake {
   envPtyHint?: string;
   commanderToken?: string;
   commanderMode?: boolean;
+  /** Optional `--core` surface selection. Absent from a pre-core shim, which
+   *  then gets the `full` default — a wider surface, never a narrower one. */
+  coreMode?: boolean;
 }
 
 function readAuthToken(): string | undefined {
@@ -78,6 +81,10 @@ async function hostConnection(socket: net.Socket, handshake: ShimHandshake): Pro
   log(
     `shim connected pid=${handshake.callerPid} ` +
       `commander=${handshake.commanderMode ? 'yes' : 'no'} ` +
+      // The server's own "--core ignored" warning goes to the DAEMON's stderr
+      // on this path, not the agent host's, so record the requested flags here
+      // too — otherwise a contradictory launch is invisible to the operator.
+      `core=${handshake.coreMode ? 'yes' : 'no'} ` +
       `envHints=${handshake.envWorkspaceHint ? 'ws' : ''}${handshake.envPtyHint ? '+pty' : ''}`,
   );
 
@@ -95,6 +102,7 @@ async function hostConnection(socket: net.Socket, handshake: ShimHandshake): Pro
       envPtyHint: handshake.envPtyHint || '',
       commanderToken: handshake.commanderToken,
       commanderMode: handshake.commanderMode === true,
+      coreMode: handshake.coreMode === true,
       // Identity walks start at the SHIM's pid — it sits in the agent's
       // process tree exactly where the old full child sat, so both the
       // server-side walk (a2a.resolve.identity { callerPid }) and the

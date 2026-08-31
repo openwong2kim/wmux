@@ -3,6 +3,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { sendRpc, setClientIdentity, setCommanderRole, setWorkspaceToken } from './wmux-client';
 import { COMMANDER_TOOL_SURFACE } from '../shared/commanderSurface';
+import { CORE_TOOL_SURFACE } from '../shared/coreSurface';
 import type { RpcMethod } from '../shared/rpc';
 import {
   claimPinnedRoute,
@@ -26,7 +27,7 @@ import { registerFanOutTools } from './fanout';
 import { registerPaneLifecycleTools } from './paneLifecycle';
 import { registerReplTools } from './repl/tools';
 import { getWmuxMcpServerInstructions, resolveMcpServerVersion } from './serverMetadata';
-import type { RegisterWmuxToolsOptions } from './toolCatalog';
+import type { RegisterWmuxToolsOptions, WmuxToolProfile } from './toolCatalog';
 
 /**
  * Everything a server instance needs that used to come from process globals.
@@ -47,6 +48,9 @@ export interface WmuxServerCtx {
   commanderToken: string | undefined;
   /** --commander surface filter flag (from argv / shim handshake). */
   commanderMode: boolean;
+  /** --core surface filter flag (from argv / shim handshake). An optimization
+   *  profile, not a role: it narrows tools/list and nothing else. */
+  coreMode: boolean;
   /** The pid identity walks start from (self pid, or the shim's pid). */
   callerPid: number;
   /** That pid's parent when already known (process.ppid); null → resolve lazily. */
@@ -425,13 +429,6 @@ function logIdentityEnvOnce(): void {
   );
 }
 
-const server = new McpServer({
-  name: 'wmux',
-  version: resolveMcpServerVersion(),
-}, {
-  instructions: getWmuxMcpServerInstructions(ctx.commanderMode),
-});
-
 // ── BYOB P4 Layer 1: commander tool-surface filter ──────────────────────────
 // `--commander` on the command line (NOT an env var — the brain adapter
 // declares it in the MCP server config args, so an env-stripping brain host
@@ -441,9 +438,40 @@ const server = new McpServer({
 // contain pane_close / surface_close / browser_* / company_* — unregistered
 // tools cannot be called by ANY brain runtime (SDK, ACP, gateway). Ordinary
 // pane agents (no arg) keep the full surface, unchanged.
+//
+// `--core` (src/shared/coreSurface.ts) is the third launch-time profile: the
+// same mechanism, but an OPTIMIZATION rather than a role. It drops browser_*
+// and company_a2a_* from tools/list for agents that never use them and
+// changes nothing else — no token, no role claim, no RPC allow lane, no
+// PermissionEnforcer difference. A core-mode process keeps exactly the
+// authority an ordinary pane agent has.
 const COMMANDER_MODE = ctx.commanderMode;
+// Fail closed on a contradictory launch: commander is the security role, so
+// it wins over the optimization flag and the operator is told, rather than
+// silently getting the wrong (possibly wider) surface.
+if (COMMANDER_MODE && ctx.coreMode) {
+  console.error(
+    '[wmux-mcp] both --commander and --core were given; using the commander surface (--core ignored)',
+  );
+}
+const SURFACE_PROFILE: WmuxToolProfile = COMMANDER_MODE
+  ? 'commander'
+  : ctx.coreMode
+    ? 'core'
+    : 'full';
+
+// Constructed after SURFACE_PROFILE because the handshake instructions must
+// describe the surface this process actually registers — naming a tool the
+// profile omitted sends the agent after something tools/list will not contain.
+const server = new McpServer({
+  name: 'wmux',
+  version: resolveMcpServerVersion(),
+}, {
+  instructions: getWmuxMcpServerInstructions(SURFACE_PROFILE),
+});
+
 const MCP_CATALOG_OPTIONS: RegisterWmuxToolsOptions = Object.freeze({
-  profile: COMMANDER_MODE ? 'commander' : 'full',
+  profile: SURFACE_PROFILE,
   context: Object.freeze({
     // clientInfo is self-declared telemetry. Catalog invocation remains
     // explicitly powerless until an authenticated transport principal exists.
@@ -456,8 +484,24 @@ if (COMMANDER_MODE) {
   // the request closed when it is missing/stale, so a commander child whose
   // token env was lost degrades to "no fleet hands at all", never to an
   // ordinary external caller with the wider surface.
+  //
+  // Deliberately inside the commander branch ONLY. Core mode must not claim a
+  // role: it is a smaller tools/list on an ordinary pane agent, so minting or
+  // asserting a role for it would change authority the profile never intends
+  // to change.
   setCommanderRole(ctx.commanderToken ?? '');
-  const surface = new Set(COMMANDER_TOOL_SURFACE);
+}
+// Legacy (non-catalog) registration sites are filtered by an explicit manifest
+// for every profile that is narrower than `full`. `full` registers everything
+// and needs no patch at all.
+const LEGACY_SURFACE: readonly string[] | null =
+  SURFACE_PROFILE === 'commander'
+    ? COMMANDER_TOOL_SURFACE
+    : SURFACE_PROFILE === 'core'
+      ? CORE_TOOL_SURFACE
+      : null;
+if (LEGACY_SURFACE) {
+  const surface = new Set(LEGACY_SURFACE);
   const registerTool = server.tool.bind(server);
   // Transitional gate for legacy server.tool() registration sites. Domains
   // migrated to WmuxToolSpec use their immutable profile instead; invariant

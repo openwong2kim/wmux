@@ -11,6 +11,7 @@ import {
   isWmuxOwnedNotify,
   upsertNotifyToml,
   removeNotifyToml,
+  wmuxMcpEntry,
 } from '../configIO';
 
 // ── TOML (Codex) — surgical block, must preserve every other byte ────────────
@@ -253,5 +254,26 @@ describe('configIO — codex notify', () => {
 
   it('throws on malformed TOML rather than appending to garbage', () => {
     expect(() => upsertNotifyToml('this is = = not toml [[', SCRIPT)).toThrow(ConfigParseError);
+  });
+});
+
+// ── wmuxMcpEntry launch profile ─────────────────────────────────────────────
+
+describe('wmuxMcpEntry', () => {
+  it('omits the profile flag by default and appends --core only when asked', () => {
+    // The default must stay byte-identical to the pre-profile entry: every
+    // existing caller passes one argument and must keep the full surface.
+    expect(wmuxMcpEntry('/opt/wmux/mcp.js')).toEqual({
+      command: 'node',
+      args: ['/opt/wmux/mcp.js'],
+    });
+    expect(wmuxMcpEntry('/opt/wmux/mcp.js', 'full')).toEqual({
+      command: 'node',
+      args: ['/opt/wmux/mcp.js'],
+    });
+    expect(wmuxMcpEntry('/opt/wmux/mcp.js', 'core')).toEqual({
+      command: 'node',
+      args: ['/opt/wmux/mcp.js', '--core'],
+    });
   });
 });

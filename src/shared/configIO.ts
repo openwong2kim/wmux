@@ -22,6 +22,7 @@
 
 import { parse as parseTomlText } from 'smol-toml';
 import type { McpConfigFormat } from './mcpTargets';
+import { CORE_MODE_ARG } from './coreSurface';
 
 /** Thrown when a config file is present but unparseable. Callers choose: abort
  *  a write (never clobber a file we can't understand) vs. report "not
@@ -41,8 +42,27 @@ export interface McpServerEntry {
 // The wmux MCP entry shape written into every target. `node` (not the Electron
 // execPath) + the absolute bundle script. No `env` field — Claude Code may
 // replace rather than merge the subprocess environment.
-export function wmuxMcpEntry(scriptPath: string): McpServerEntry & { command: string } {
-  return { command: 'node', args: [scriptPath] };
+// Optional launch-time surface profile. Omitted (or 'full') keeps the
+// compatibility default; 'core' appends CORE_MODE_ARG so the child registers
+// the browser-free / company-free surface. The flag lives in `args` rather
+// than `env` on purpose: Claude Code may replace the subprocess environment,
+// so an env-carried profile could silently change between launches.
+//
+// NOT YET THREADED THROUGH THE WRITERS. upsertMcpServer takes no profile, so
+// every registration path still writes the `full` entry — which also means a
+// hand-added `--core` in a user's config is replaced on the next upsert. Wiring
+// a profile choice through mcpTargets and the settings UI is deliberately a
+// separate change; this signature exists so the flag has one owner when that
+// lands, not so callers can half-use it today.
+export type WmuxMcpEntryProfile = 'full' | 'core';
+
+export function wmuxMcpEntry(
+  scriptPath: string,
+  profile: WmuxMcpEntryProfile = 'full',
+): McpServerEntry & { command: string } {
+  const args = [scriptPath];
+  if (profile === 'core') args.push(CORE_MODE_ARG);
+  return { command: 'node', args };
 }
 
 /** The container key that holds MCP server definitions for a given format.
@@ -241,10 +261,14 @@ function tomlKeySegment(key: string): string {
 function tomlBlock(key: string, scriptPath: string, eol: string): string {
   // JSON.stringify yields a valid TOML basic string for the path (escapes \ and
   // " the same way TOML does), so Windows backslash paths round-trip correctly.
+  // Derive args from wmuxMcpEntry rather than restating `[scriptPath]`: the
+  // JSON writer already goes through it, and two hand-kept arg lists would let
+  // a TOML host and a JSON host end up on different surfaces.
+  const entry = wmuxMcpEntry(scriptPath);
   return [
     `[mcp_servers.${tomlKeySegment(key)}]`,
-    `command = "node"`,
-    `args = [${JSON.stringify(scriptPath)}]`,
+    `command = ${JSON.stringify(entry.command)}`,
+    `args = [${entry.args.map((arg) => JSON.stringify(arg)).join(', ')}]`,
   ].join(eol);
 }
 

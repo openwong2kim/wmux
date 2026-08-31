@@ -94,10 +94,11 @@ describe('resolveMcpServerVersion', () => {
 
 describe('getWmuxMcpServerInstructions', () => {
   it.each([
-    ['full', false],
-    ['commander', true],
-  ] as const)('keeps the %s profile concise and self-contained', (_profile, commanderMode) => {
-    const instructions = getWmuxMcpServerInstructions(commanderMode);
+    ['full'],
+    ['core'],
+    ['commander'],
+  ] as const)('keeps the %s profile concise and self-contained', (profile) => {
+    const instructions = getWmuxMcpServerInstructions(profile);
     const prefix = instructions.slice(0, 512);
 
     expect(Buffer.byteLength(instructions, 'utf8')).toBeLessThanOrEqual(2 * 1024);
@@ -112,7 +113,14 @@ describe('getWmuxMcpServerInstructions', () => {
   });
 
   it('keeps profile-specific discovery guidance inside the advertised surface', () => {
-    expect(getWmuxMcpServerInstructions(false)).toContain('browser_tabs');
-    expect(getWmuxMcpServerInstructions(true)).not.toContain('browser_tabs');
+    // Only `full` registers browser_*, so only `full` may name one. A profile
+    // that advertises a tool it did not register sends the agent after
+    // something its own tools/list does not contain.
+    expect(getWmuxMcpServerInstructions('full')).toContain('browser_tabs');
+    expect(getWmuxMcpServerInstructions('core')).not.toContain('browser_tabs');
+    expect(getWmuxMcpServerInstructions('commander')).not.toContain('browser_tabs');
+    // The prose blurb must agree with the discovery list, not just the list.
+    expect(getWmuxMcpServerInstructions('full')).toContain('terminal, browser, pane');
+    expect(getWmuxMcpServerInstructions('core')).not.toContain('browser');
   });
 });

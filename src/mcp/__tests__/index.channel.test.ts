@@ -55,6 +55,7 @@ import {
 import type { WmuxToolProfile } from '../toolCatalog';
 import {
   expectCommanderCatalogLockstep,
+  expectCoreCatalogLockstep,
   expectFrozenCatalog,
 } from './catalogAssertions';
 import { FIRST_PARTY_METHODS } from '../../main/mcp/firstParty';
@@ -307,10 +308,13 @@ describe('channel_* tools: registration', () => {
     expect(specs.map(({ name }) => name)).toEqual(CHANNEL_TOOL_NAMES);
     expect(specs.map(({ profiles }) => profiles)).toEqual(
       CHANNEL_TOOL_NAMES.map((name) =>
-        name === 'channel_mission_list' ? ['full'] : ['full', 'commander'],
+        name === 'channel_mission_list'
+          ? ['full', 'core']
+          : ['full', 'core', 'commander'],
       ),
     );
     expectCommanderCatalogLockstep(specs);
+    expectCoreCatalogLockstep(specs);
     expectFrozenCatalog(specs);
   });
 

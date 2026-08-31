@@ -1,5 +1,6 @@
 import { readFileSync } from 'fs';
 import { join } from 'path';
+import type { WmuxToolProfile } from './toolCatalog';
 
 /**
  * Replaced by esbuild in the packaged MCP and broker bundles.
@@ -119,17 +120,24 @@ const ROUTING_INSTRUCTIONS =
  * OpenAI recommends making the first 512 characters self-contained. Keep
  * shared workflow rules here and tool-specific details on each tool.
  */
-export function getWmuxMcpServerInstructions(commanderMode: boolean): string {
-  const profile = commanderMode
+export function getWmuxMcpServerInstructions(profileName: WmuxToolProfile): string {
+  // Instructions must describe the surface this process actually registered.
+  // Naming a tool the profile omitted (browser_tabs under core/commander) sends
+  // the agent after a tool its tools/list does not contain.
+  const hasBrowser = profileName === 'full';
+  const profile = profileName === 'commander'
     ? "wmux provides the orchestrator's approved terminal, pane, workspace, channel, " +
       'delegation, decision, and event tools; unavailable tools are intentionally omitted.'
-    : 'wmux provides terminal, browser, pane, workspace, channel, and agent-delegation ' +
-      'tools for the caller. Search these tools when work must inspect or act inside wmux.';
-  const discovery = commanderMode
+    : hasBrowser
+      ? 'wmux provides terminal, browser, pane, workspace, channel, and agent-delegation ' +
+        'tools for the caller. Search these tools when work must inspect or act inside wmux.'
+      : 'wmux provides terminal, pane, workspace, channel, and agent-delegation tools ' +
+        'for the caller. Search these tools when work must inspect or act inside wmux.';
+  const discovery = hasBrowser
     ? 'Discover opaque IDs before addressing targets with workspace_list, pane_list, ' +
-      'surface_list, or a2a_discover as appropriate.'
+      'surface_list, browser_tabs, or a2a_discover as appropriate.'
     : 'Discover opaque IDs before addressing targets with workspace_list, pane_list, ' +
-      'surface_list, browser_tabs, or a2a_discover as appropriate.';
+      'surface_list, or a2a_discover as appropriate.';
 
   // Trust and ambiguous-retry rules come before discovery details so every
   // current profile keeps the complete critical block inside the first 512

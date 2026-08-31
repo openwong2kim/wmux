@@ -73,6 +73,27 @@ describe('typed wmux tool catalog', () => {
     );
   });
 
+  it('selects core independently of commander and keeps declaration order', () => {
+    const fullOnly = makeTool('full_only');
+    const coreOnly = makeTool('core_only', ['full', 'core']);
+    const shared = makeTool('shared', ['full', 'core', 'commander']);
+    const specs = [fullOnly, coreOnly, shared];
+
+    expect(selectWmuxTools(specs, 'core').map((spec) => spec.name)).toEqual([
+      'core_only',
+      'shared',
+    ]);
+    // commander stays the narrower surface: core membership never widens it.
+    expect(selectWmuxTools(specs, 'commander').map((spec) => spec.name)).toEqual([
+      'shared',
+    ]);
+    expect(selectWmuxTools(specs, 'full').map((spec) => spec.name)).toEqual([
+      'full_only',
+      'core_only',
+      'shared',
+    ]);
+  });
+
   it('requires full to remain the catalog superset', () => {
     expect(() => makeTool('commander_only', ['commander'])).toThrow(
       'the full profile must remain a superset',

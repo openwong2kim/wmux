@@ -37,24 +37,41 @@ function sha256(value) {
   return createHash('sha256').update(value).digest('hex');
 }
 
-function childEnvironment(commander) {
+// Profile → launch argv. The ONLY thing that selects a surface: no env var
+// widens or narrows it, so the probe reproduces exactly what a host config
+// can express (see src/shared/coreSurface.ts and commanderSurface.ts).
+const PROFILE_ARGS = {
+  full: [],
+  core: ['--core'],
+  commander: ['--commander'],
+};
+
+function profileArgs(profile) {
+  // hasOwn, not truthiness: a baseline key of `constructor` or `toString`
+  // would otherwise pass the guard and blow up in the spread below.
+  assert.ok(Object.hasOwn(PROFILE_ARGS, profile), `unknown probe profile: ${profile}`);
+  return [BUNDLE_PATH, ...PROFILE_ARGS[profile]];
+}
+
+function childEnvironment(profile) {
   const env = Object.fromEntries(
     Object.entries(process.env).filter(([, value]) => typeof value === 'string'),
   );
 
   // A developer's ambient token must not affect this deterministic probe.
+  // Only commander gets one: core is an optimization profile that claims no
+  // role, so injecting a token there would probe a topology that never ships.
   delete env.WMUX_COMMANDER_TOKEN;
-  if (commander) env.WMUX_COMMANDER_TOKEN = 'wmux-protocol-probe';
+  if (profile === 'commander') env.WMUX_COMMANDER_TOKEN = 'wmux-protocol-probe';
   return env;
 }
 
 async function readSdkProfile(profile, config) {
-  const commander = profile === 'commander';
   const transport = new StdioClientTransport({
     command: process.execPath,
-    args: commander ? [BUNDLE_PATH, '--commander'] : [BUNDLE_PATH],
+    args: profileArgs(profile),
     cwd: REPO_ROOT,
-    env: childEnvironment(commander),
+    env: childEnvironment(profile),
     stderr: 'pipe',
   });
   transport.stderr?.resume();
@@ -133,7 +150,7 @@ async function readHandshake(entryPath, label, config) {
     command: process.execPath,
     args: [entryPath],
     cwd: REPO_ROOT,
-    env: childEnvironment(false),
+    env: childEnvironment('full'),
     stderr: 'pipe',
   });
   transport.stderr?.resume();
@@ -175,16 +192,15 @@ function writeFrame(child, message) {
 }
 
 async function readRawProfile(profile, config, protocolVersion) {
-  const commander = profile === 'commander';
   const label = `${profile}/${protocolVersion}`;
 
   return await new Promise((resolve, reject) => {
     const child = spawn(
       process.execPath,
-      commander ? [BUNDLE_PATH, '--commander'] : [BUNDLE_PATH],
+      profileArgs(profile),
       {
         cwd: REPO_ROOT,
-        env: childEnvironment(commander),
+        env: childEnvironment(profile),
         stdio: ['pipe', 'pipe', 'pipe'],
       },
     );
@@ -357,10 +373,13 @@ async function main() {
     2,
     `unsupported MCP protocol baseline schema: ${baseline.schemaVersion}`,
   );
+  // Order matters as well as membership: `full` must stay first because the
+  // handshake-layout passes below and the subset invariants read results[0]
+  // as the canonical full surface.
   assert.deepEqual(
     Object.keys(baseline.profiles),
-    ['full', 'commander'],
-    'baseline must define exactly the full and commander profiles',
+    ['full', 'core', 'commander'],
+    'baseline must define exactly the full, core and commander profiles, full first',
   );
 
   const results = [];
@@ -394,21 +413,48 @@ async function main() {
     rmSync(stableProbeDir, { recursive: true, force: true });
   }
 
-  const fullNames = new Set(results[0].names);
-  const commanderNames = results[1].names;
+  const byProfile = new Map(results.map((result) => [result.profile, result.names]));
+  const fullOrder = byProfile.get('full');
+  const fullNames = new Set(fullOrder);
+
+  // Every narrower profile is a strict, order-preserving subset of full: a
+  // host that cached the full ordering must never see a tool move.
+  for (const profile of ['core', 'commander']) {
+    const names = byProfile.get(profile);
+    assert.ok(
+      names.every((name) => fullNames.has(name)),
+      `${profile} surface must be a strict subset of the full surface`,
+    );
+    assert.ok(
+      names.length < fullNames.size,
+      `${profile} surface must omit at least one full-profile tool`,
+    );
+    const set = new Set(names);
+    assert.deepEqual(
+      names,
+      fullOrder.filter((name) => set.has(name)),
+      `${profile} must preserve the canonical full-profile registration order`,
+    );
+  }
+
+  // commander ⊆ core: commander drops browser_/company_ too, so the security
+  // role can never name a tool the optimization profile already removed.
+  const coreNames = new Set(byProfile.get('core'));
   assert.ok(
-    commanderNames.every((name) => fullNames.has(name)),
-    'commander surface must be a strict subset of the full surface',
+    byProfile.get('commander').every((name) => coreNames.has(name)),
+    'commander surface must be contained in the core surface',
   );
-  assert.ok(
-    commanderNames.length < fullNames.size,
-    'commander surface must omit at least one full-profile tool',
-  );
-  const commanderSet = new Set(commanderNames);
+
+  // The point of the core profile: no browser tools at all.
   assert.deepEqual(
-    commanderNames,
-    results[0].names.filter((name) => commanderSet.has(name)),
-    'commander must preserve the canonical full-profile registration order',
+    byProfile.get('core').filter((name) => name.startsWith('browser_')),
+    [],
+    'core surface must contain no browser_* tool',
+  );
+  assert.deepEqual(
+    byProfile.get('core').filter((name) => name.startsWith('company_')),
+    [],
+    'core surface must contain no company_* tool',
   );
 
   console.log(JSON.stringify({

@@ -48,6 +48,7 @@ async function connectClient(envWorkspaceHint: string): Promise<ConnectedClient>
     envPtyHint: '',
     commanderToken: undefined,
     commanderMode: false,
+    coreMode: false,
     callerPid: process.pid,
     callerPpid: null,
   });
