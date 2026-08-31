@@ -524,6 +524,7 @@ describe('focusNotificationTarget', () => {
     activeWorkspaceId: string;
     notifications?: Array<{ id: string; read: boolean; surfaceId?: string }>;
     zoomedPaneId?: string | null;
+    activeRemoteKey?: string | null;
   }): JumpHarness {
     const spies = {
       setActiveWorkspace: vi.fn(),
@@ -538,6 +539,7 @@ describe('focusNotificationTarget', () => {
       activeWorkspaceId: opts.activeWorkspaceId,
       zoomedPaneId: opts.zoomedPaneId ?? null,
       notifications: opts.notifications ?? [],
+      activeRemoteKey: opts.activeRemoteKey ?? null,
       ...spies,
     };
     // setActiveWorkspace mutates the harness state the way zustand would,
@@ -545,6 +547,9 @@ describe('focusNotificationTarget', () => {
     // function is documented around) observes the new active workspace.
     spies.setActiveWorkspace.mockImplementation((id: string) => {
       state.activeWorkspaceId = id;
+      // The real action always calls clearRemoteSelection past its own
+      // existence guard — mirror that so the #1086 assertions are meaningful.
+      state.activeRemoteKey = null;
     });
     return { state, spies, getState: () => state };
   }
@@ -661,6 +666,22 @@ describe('focusNotificationTarget', () => {
     const handled = focusNotificationTarget(h.getState, { ptyId: null, workspaceId: 'ws-a' });
     expect(handled).toBe(true);
     expect(h.spies.setActiveWorkspace).not.toHaveBeenCalled();
+  });
+
+  // #1086: the workspaceId-only fallback carried the same bare `!==` guard
+  // that activatePaneTarget's AT4 covers. While a remote mirror is showing,
+  // activeWorkspaceId already equals the target, so the guard skipped the one
+  // call that drops the mirror and an app-level jump did nothing visible.
+  it('J7b: #1086 — workspaceId already active BUT a remote mirror is showing → switch fires and clears the mirror', () => {
+    const h = makeJumpHarness({
+      workspaces: [wsA()],
+      activeWorkspaceId: 'ws-a',
+      activeRemoteKey: 'remote-host-1',
+    });
+    const handled = focusNotificationTarget(h.getState, { ptyId: null, workspaceId: 'ws-a' });
+    expect(handled).toBe(true);
+    expect(h.spies.setActiveWorkspace).toHaveBeenCalledWith('ws-a');
+    expect(h.state.activeRemoteKey).toBeNull();
   });
 
   it('J8: unknown workspaceId → no-op, returns false', () => {

@@ -12,7 +12,7 @@ import {
   MAX_INBOX_SIZE,
 } from '../../../shared/types';
 import type { QueuedMessage } from '../../company/MessageQueue';
-import { clearColdParkEntry, pruneMultiviewMembership } from './workspaceSlice';
+import { clearColdParkEntry, clearRemoteSelection, pruneMultiviewMembership } from './workspaceSlice';
 
 /** Maximum number of pending messages in the queue to prevent memory exhaustion. */
 const MAX_MESSAGE_QUEUE_SIZE = 500;
@@ -127,6 +127,10 @@ export const createCompanySlice: StateCreator<StoreState, [['zustand/immer', nev
     if (!state.workspaces.some((ws) => ws.id === state.activeWorkspaceId)) {
       state.activeWorkspaceId = state.workspaces[0]?.id || '';
       clearColdParkEntry(state, state.activeWorkspaceId); // keep promoted ws visible
+      // #1086: every site that assigns activeWorkspaceId must drop the remote
+      // mirror selection too, or WorkspaceCenter keeps showing the mirror while
+      // the sidebar highlights the newly-promoted local workspace.
+      clearRemoteSelection(state);
     }
     state.company = null;
     state.memberCosts = {};
@@ -171,6 +175,10 @@ export const createCompanySlice: StateCreator<StoreState, [['zustand/immer', nev
     if (!state.workspaces.some((ws) => ws.id === state.activeWorkspaceId)) {
       state.activeWorkspaceId = state.workspaces[0]?.id || '';
       clearColdParkEntry(state, state.activeWorkspaceId); // keep promoted ws visible
+      // #1086: every site that assigns activeWorkspaceId must drop the remote
+      // mirror selection too, or WorkspaceCenter keeps showing the mirror while
+      // the sidebar highlights the newly-promoted local workspace.
+      clearRemoteSelection(state);
     }
     // Remove department
     const idx = state.company.departments.findIndex((d) => d.id === deptId);

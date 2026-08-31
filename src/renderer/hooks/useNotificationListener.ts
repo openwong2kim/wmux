@@ -226,7 +226,12 @@ export function focusNotificationTarget(
   if (payload.workspaceId) {
     const ws = state.workspaces.find((w) => w.id === payload.workspaceId);
     if (ws) {
-      if (ws.id !== state.activeWorkspaceId) {
+      // #1086, same reason as activatePaneTarget above: while a remote mirror
+      // is on screen `activeWorkspaceId` already equals the target, so a bare
+      // `!==` guard skips setActiveWorkspace — the only call that drops the
+      // remote selection — and the jump silently does nothing. Fire on either
+      // condition so an app-level jump always surfaces the local tree.
+      if (ws.id !== state.activeWorkspaceId || state.activeRemoteKey) {
         state.setActiveWorkspace(ws.id);
       }
       return true;
