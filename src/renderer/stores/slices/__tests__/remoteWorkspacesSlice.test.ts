@@ -6,11 +6,14 @@ import { createRemoteWorkspacesSlice, mergePaneSets, type RemoteWorkspacesSlice,
 import { createCompanySlice, type CompanySlice } from '../companySlice';
 import { createWorkspace, type SessionData } from '../../../../shared/types';
 
-// Minimal store: workspaceSlice + remoteWorkspacesSlice only. Mirrors the
-// workspaceSlice.coldPark.test.ts / loadSession.test.ts convention of NOT
-// pulling in the full StoreState — channelsSlice's fire-and-forget daemon
-// calls touch `window`, which isn't defined under the node test environment,
-// and loadSession only needs the fields this test actually reads/writes.
+// Minimal store: workspaceSlice + remoteWorkspacesSlice + companySlice.
+// Mirrors the workspaceSlice.coldPark.test.ts / loadSession.test.ts convention
+// of NOT pulling in the full StoreState — channelsSlice's fire-and-forget
+// daemon calls touch `window`, which isn't defined under the node test
+// environment, and loadSession only needs the fields this test actually
+// reads/writes. companySlice is in the set because destroyCompany and
+// removeDepartment are two of the activeWorkspaceId assignment sites the
+// clearRemoteSelection convention covers (#1086).
 type TestState = WorkspaceSlice & RemoteWorkspacesSlice & CompanySlice & {
   multiviewIds: string[];
   sidebarVisible: boolean;
@@ -157,6 +160,26 @@ describe('remoteWorkspacesSlice', () => {
       expect(store.getState().activeRemoteKey).not.toBeNull();
 
       store.getState().destroyCompany();
+      expect(store.getState().activeWorkspaceId).toBe(survivor);
+      expect(store.getState().activeRemoteKey).toBeNull();
+    });
+
+    it('removeDepartment promoting a surviving workspace', () => {
+      const survivor = store.getState().workspaces[0].id;
+      store.getState().addWorkspace('Member WS');
+      store.getState().createCompany('TestCorp');
+      store.getState().addDepartment('Engineering', 'CTO');
+      const deptId = store.getState().company!.departments[0].id;
+      const memberWsId = store.getState().workspaces.find((w) => w.id !== survivor)!.id;
+      store.setState((st) => {
+        st.company!.departments[0].members[0].workspaceId = memberWsId;
+        st.activeWorkspaceId = memberWsId;
+      });
+      store.getState().attachRemoteWorkspace(makeRemote());
+      expect(store.getState().activeRemoteKey).not.toBeNull();
+
+      store.getState().removeDepartment(deptId);
+      expect(store.getState().workspaces.some((w) => w.id === memberWsId)).toBe(false);
       expect(store.getState().activeWorkspaceId).toBe(survivor);
       expect(store.getState().activeRemoteKey).toBeNull();
     });
