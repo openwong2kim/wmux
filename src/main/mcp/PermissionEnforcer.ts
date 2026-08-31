@@ -63,6 +63,7 @@ import {
 import { FIRST_PARTY_METHODS, isFirstPartyClient } from './firstParty';
 import { COMMANDER_RPC_METHODS } from '../../shared/commanderSurface';
 import { WMUX_CLI_METHODS, isInternalCliClient } from './internalCli';
+import { HOOK_BRIDGE_METHODS, isHookBridgeClient } from './hookBridge';
 import { isLocalExternalWireContext } from './rpcProvenance';
 
 export type EnforcerOutcome =
@@ -292,6 +293,30 @@ export function check(input: EnforcerInput): EnforcerOutcome {
     !input.trustLookupFailed &&
     input.trust?.status !== 'denied' &&
     WMUX_CLI_METHODS.has(input.method)
+  ) {
+    return { kind: 'allow' };
+  }
+
+  // Agent lifecycle hook bridges (`integrations/<agent>/bin/`, clientName
+  // 'wmux-hook-bridge'). They report turn state and call exactly ONE main-pipe
+  // method, `hooks.signal`, which is `wmux.internal` and therefore ungrantable
+  // by declaration — so, like the two tiers above, a source-qualified
+  // name-recognised lane is the only path. Before #1111 they sent no
+  // clientName and rode the grandfather; closing it without this lane refuses
+  // every main-pipe lifecycle signal and silently degrades turn-state
+  // reporting (invisible in shadow mode, the dev default).
+  //
+  // Deliberately its own one-method set rather than an addition to
+  // FIRST_PARTY_METHODS (~35 methods): a notify bridge must not receive
+  // pane.close / surface.new / input.send, and hooks.signal must not become
+  // reachable by the bundled MCP server. See hookBridge.ts for the full
+  // reasoning and threat model. Same four guards as the tiers above.
+  if (
+    isLocalExternalWireContext(input.ctx) &&
+    isHookBridgeClient(input.ctx.clientName) &&
+    !input.trustLookupFailed &&
+    input.trust?.status !== 'denied' &&
+    HOOK_BRIDGE_METHODS.has(input.method)
   ) {
     return { kind: 'allow' };
   }

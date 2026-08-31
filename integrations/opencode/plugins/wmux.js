@@ -118,6 +118,15 @@ export function getDaemonPipeName() {
   return join(getWmuxHomeDir(), 'daemon.sock');
 }
 
+// #1111: the envelope-less `legacy` grandfather these hook RPCs used to ride
+// closes in the first release on or after 2026-09-30. `hooks.signal` on the
+// MAIN pipe is `wmux.internal`, so no declaration can ever grant it; the
+// enforcer instead recognises this exact clientName and allows that ONE method
+// (src/main/mcp/hookBridge.ts). Keep it in lockstep with
+// WMUX_HOOK_BRIDGE_CLIENT_NAME in src/shared/rpc.ts. Harmless on the daemon
+// control pipe, which has no enforcer and ignores the extra envelope field.
+const WMUX_CLIENT_NAME = 'wmux-hook-bridge';
+
 function readTokenFile(tokenPath) {
   try {
     const token = readFileSync(tokenPath, 'utf8').trim();
@@ -411,6 +420,7 @@ async function sendSignal(envelope, idPrefix) {
     method: candidate.method,
     params: envelope,
     token: candidate.token,
+    clientName: WMUX_CLIENT_NAME,
   }));
   const outerOk = rpcResult && rpcResult.ok === true;
   const innerOk = outerOk && rpcResult.result && rpcResult.result.ok === true;

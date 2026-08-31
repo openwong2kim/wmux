@@ -574,6 +574,39 @@ describe('phase 2.2 dynamic — enforce mode (pre-commit 6)', () => {
     expect(r.error).toMatch(/clientName/);
   });
 
+  // #1111 hook bridges: `hooks.signal` is wmux.internal, so no declaration can
+  // grant it. Envelope-less (how the bridges used to call) must be refused;
+  // the recognised bridge clientName must still get through, or every
+  // main-pipe agent lifecycle signal dies silently under enforce mode.
+  it('refuses an envelope-less hooks.signal but allows the identified bridge', async () => {
+    router.register('hooks.signal', async () => ({ ok: true }));
+
+    const anon = await router.dispatch({ id: 'hook-anon', method: 'hooks.signal', params: {} });
+    expect(anon.ok).toBe(false);
+    if (anon.ok) throw new Error('expected rejection');
+    expect(anon.rejection?.reason).toBe('identity-status');
+    if (anon.rejection?.reason === 'identity-status') {
+      expect(anon.rejection.status).toBe('legacy');
+    }
+
+    // externalWire is the provenance PipeServer stamps after authenticating
+    // the socket; the lane requires it, so a test must supply it too.
+    const bridge = await router.dispatch(
+      { id: 'hook-bridge', method: 'hooks.signal', params: {}, clientName: 'wmux-hook-bridge' },
+      { externalWire: true },
+    );
+    expect(bridge.ok).toBe(true);
+  });
+
+  // The lane is one method wide: the bridge name must not reach anything else.
+  it('does not let the bridge clientName reach other methods', async () => {
+    const r = await router.dispatch(
+      { id: 'hook-bridge-overreach', method: 'pane.list', params: {}, clientName: 'wmux-hook-bridge' },
+      { externalWire: true },
+    );
+    expect(r.ok).toBe(false);
+  });
+
   // The capability-gate bypass closes with it: `wmux.internal` methods were
   // reachable envelope-less because the old allow returned before the gate.
   it('rejects envelope-less wmux.internal calls in enforce mode', async () => {
