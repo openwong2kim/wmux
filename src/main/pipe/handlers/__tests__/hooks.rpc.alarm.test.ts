@@ -165,6 +165,44 @@ describe('hooks.signal — local verdict gate (CompletionAlarm)', () => {
     expect(r.onClaudeTurnEnd).toHaveBeenCalledTimes(1);
   });
 
+  // #1107 regression. The Codex hooks bridge registers UserPromptSubmit on an
+  // ordinary pane and deliberately maps no PreToolUse/PostToolUse, so
+  // `agent.user_prompt_submit` is that pane's ONLY working cue. This path used
+  // to drop it before the alarm feed (on the premise that the brain lane was
+  // its only emitter), which made the turn gate swallow the same turn's stop.
+  // The daemon path never had the hole; this locks the main path symmetric.
+  it('arms the turn gate from agent.user_prompt_submit so the stop survives', async () => {
+    const r = rig();
+
+    // The ONLY cue before the stop — no activity, no tool_started.
+    await r.dispatch({ kind: 'agent.user_prompt_submit', agent: 'codex' });
+    // It is not an emit kind: no toast, no ledger write, no lifecycle tee.
+    expect(sendNotificationMock).not.toHaveBeenCalled();
+    expect(r.recordHook).not.toHaveBeenCalled();
+    expect(pollLifecycle()).toHaveLength(0);
+
+    await r.dispatch({ kind: 'agent.stop', agent: 'codex' });
+    vi.advanceTimersByTime(DEFAULT_ALARM_WINDOW_MS);
+
+    // The stop passed the `!seenWorking` gate and fanned out exactly once.
+    expect(r.recordHook).toHaveBeenCalledTimes(1);
+    expect(sendNotificationMock).toHaveBeenCalledTimes(1);
+  });
+
+  // The other half of the same fix: session_start normalizes to a `session`
+  // cue that RESETS seenWorking. So a Codex pane whose only prior signal was
+  // SessionStart must still NOT announce — otherwise the gate is meaningless.
+  it('does not let agent.session_start alone arm the gate', async () => {
+    const r = rig();
+
+    await r.dispatch({ kind: 'agent.session_start', agent: 'codex' });
+    await r.dispatch({ kind: 'agent.stop', agent: 'codex' });
+    vi.advanceTimersByTime(DEFAULT_ALARM_WINDOW_MS);
+
+    expect(r.recordHook).not.toHaveBeenCalled();
+    expect(sendNotificationMock).not.toHaveBeenCalled();
+  });
+
   it('a working cue inside the window rebuts the stop — nothing fires, ledger untouched', async () => {
     const r = rig();
     await primeWorking(r);
