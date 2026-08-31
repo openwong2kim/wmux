@@ -703,6 +703,52 @@ function rememberFrameRefs(page: Page, refs: RefEntry[]): void {
 }
 
 /**
+ * Was this ref minted inside an iframe?
+ *
+ * Exported for the fail-closed guard in the tool layer: a frame ref must never
+ * reach a `[data-wmux-ref]` lookup. Those attributes are written into the MAIN
+ * document only, so the selector cannot find the element the ref names — but it
+ * CAN find an unrelated main-document element that a previous DOM snapshot
+ * tagged with the same number, and then click it. That is the loudest failure
+ * this feature can produce, so it is refused rather than attempted.
+ */
+export function isFrameRef(page: Page, ref: string): boolean {
+  const wanted = parseInt(ref, 10);
+  if (Number.isNaN(wanted)) return false;
+  const refs = pageRefMaps.get(page);
+  if (!refs) return false;
+  return refs.some((entry) => entry.ref === wanted && entry.frameKey !== MAIN_FRAME.key);
+}
+
+/**
+ * Same question with no Page to ask it of — the RPC transport's only option.
+ *
+ * Deliberately conservative: it answers yes if ANY page whose last snapshot
+ * minted frame refs minted THIS number. A ref number that a DOM snapshot
+ * separately handed to an unrelated element on an RPC-only surface would be
+ * refused too. That trade is the right way round — a false refusal costs one
+ * re-snapshot and says so, while a false accept clicks the wrong element and
+ * reports success.
+ */
+export function isOutstandingFrameRef(ref: string): boolean {
+  const wanted = parseInt(ref, 10);
+  if (Number.isNaN(wanted)) return false;
+  for (const numbers of framePagesWithRefs.values()) {
+    if (numbers.has(wanted)) return true;
+  }
+  return false;
+}
+
+/** The message both guards raise, so the agent reads one explanation. */
+export function frameRefFallbackMessage(ref: string): string {
+  return (
+    `ref=${ref} was minted inside an iframe and cannot be resolved through the ` +
+    `data-wmux-ref fallback, which only tags the main document. ` +
+    `Run browser_snapshot to get current refs.`
+  );
+}
+
+/**
  * Mark a page's refs as DOM-attribute-based: an empty a11y refMap makes
  * resolveRef fall through to the `[data-wmux-ref]` locator. Used by the
  * selector-scoped snapshot path in inspection.ts, which tags refs via the DOM
@@ -1313,6 +1359,11 @@ export async function resolveRef(
   // backend-flap fix — DOM-minted refs stay usable through the Playwright path).
   const refs = pageRefMaps.get(page);
   if (refs && refs.length > 0) return null;
+  // Belt and braces for the frame case: a populated refMap already blocks the
+  // fallback above, but a frame ref reaching the data-attr locator is the one
+  // outcome that resolves to a confidently wrong element, so it is named and
+  // refused rather than left to depend on that branch staying as it is.
+  if (isFrameRef(page, ref)) throw new StaleRefError(frameRefFallbackMessage(ref));
   return resolveRefViaDataAttr(page, ref);
 }
 

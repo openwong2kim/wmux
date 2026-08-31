@@ -3,7 +3,11 @@ import type { ElementHandle } from 'playwright-core';
 import { z } from 'zod';
 import { PlaywrightEngine } from '../PlaywrightEngine';
 import { withAutomationLease } from '../automationLease';
-import { resolveRef } from '../snapshot';
+import {
+  frameRefFallbackMessage,
+  isOutstandingFrameRef,
+  resolveRef,
+} from '../snapshot';
 import { getLocatorByRef } from '../dom-intelligence';
 import { typeHumanlike } from '../human-typing';
 import { describeToolError } from '../toolError';
@@ -149,6 +153,14 @@ async function rpcEval(expression: string, scope: BrowserTargetScope): Promise<s
  */
 export function sanitizeRef(ref: string): string {
   if (!/^[a-zA-Z0-9_-]+$/.test(ref)) throw new Error(`Invalid ref: "${ref}"`);
+  // Every `[data-wmux-ref]` resolution in the tool layer — RPC click, fill,
+  // hover, drag, select, scroll, scroll-into-view, the password probe, and
+  // browser_highlight — passes through here first, which makes this the one
+  // place a frame ref can be stopped before it reaches a selector that can
+  // only ever match a main-document element. Fail closed: a frame ref has no
+  // data-attr representation at all, so attempting it either finds nothing or,
+  // worse, finds whatever a previous DOM snapshot tagged with that number.
+  if (isOutstandingFrameRef(ref)) throw new Error(frameRefFallbackMessage(ref));
   return ref;
 }
 
