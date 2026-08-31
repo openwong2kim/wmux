@@ -867,6 +867,17 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
         else delete ws.profile;
       }
 
+      // #1135: listening ports are a LIVE fact about running processes, never
+      // a saved one. A session written while a dev server was up otherwise
+      // restores its chip verbatim, and the daemon's PortWatcher never
+      // contradicts it — its very first observation of an empty port set for a
+      // session is deliberately a no-op ("nothing to clear"), so a stale chip
+      // survived full app restarts. Drop it on load; the surfacePorts map that
+      // feeds the union starts empty anyway.
+      for (const ws of data.workspaces) {
+        if (ws.metadata?.listeningPorts !== undefined) delete ws.metadata.listeningPorts;
+      }
+
       state.workspaces = data.workspaces;
       // The previous session's group cannot describe this one's workspaces.
       pruneMultiviewMembership(state);
@@ -1290,6 +1301,10 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       state.terminalBookmarks = {};
       // X1 per-surface port map is ptyId-keyed — same wipe contract.
       if (state.surfacePorts) state.surfacePorts = {};
+      // #1135: the workspace chip is a union over that map — wipe it with it.
+      for (const ws of state.workspaces) {
+        if (ws.metadata?.listeningPorts !== undefined) delete ws.metadata.listeningPorts;
+      }
       if (state.pendingDeadPaneRecoveryBySurfaceId) state.pendingDeadPaneRecoveryBySurfaceId = {};
       if (state.deadPaneRecoveryOfferByPtyId) state.deadPaneRecoveryOfferByPtyId = {};
 

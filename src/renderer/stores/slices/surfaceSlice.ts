@@ -10,6 +10,7 @@ import { saveSessionNow } from '../../utils/sessionSaveBridge';
 import { publishPaneClosed } from '../../events/publisher';
 import { panePrincipalId } from '../../../shared/principals';
 import { computePaneAutoName } from '../../utils/paneNaming';
+import { recomputeWorkspacePorts } from './workspacePorts';
 
 export interface SurfaceSlice {
   /** Add a terminal surface to a pane. `workspaceId` lets RPC / eager-spawn
@@ -305,7 +306,12 @@ export const createSurfaceSlice: StateCreator<StoreState, [['zustand/immer', nev
     // Drop per-surface ports and agent status too (fleet-activity adversarial
     // review): without this, every closed surface leaves a dead ptyId entry
     // behind, and a REUSED ptyId inherits the previous surface's status.
-    if (closedPtyId && state.surfacePorts) delete state.surfacePorts[closedPtyId];
+    if (closedPtyId && state.surfacePorts) {
+      delete state.surfacePorts[closedPtyId];
+      // #1135: the workspace badge is a union over surfacePorts — recompute it
+      // here or the closed surface's ports stay on the sidebar forever.
+      recomputeWorkspacePorts(state.workspaces, state.surfacePorts);
+    }
     if (closedPtyId && state.surfaceAgentStatus) delete state.surfaceAgentStatus[closedPtyId];
     if (closedPtyId) clearNudgesFor(closedPtyId); // A5: free the rate-cap entry for a reusable ptyId
     // J3 F4: onExhausted 매핑도 이 ptyId 소멸과 함께 evict(무한 성장·재사용 ptyId 오염 방지).

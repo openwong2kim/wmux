@@ -289,6 +289,17 @@ function cloneStashedPanes(
   });
 }
 
+/**
+ * #1135 — a copy of workspace metadata with the live-only `listeningPorts`
+ * key genuinely absent (not present-but-undefined, which round-trips as a
+ * `listeningPorts: null`-shaped hole through some serializers).
+ */
+function stripLivePorts(metadata: NonNullable<Workspace['metadata']>): Workspace['metadata'] {
+  const copy = { ...metadata };
+  delete copy.listeningPorts;
+  return copy;
+}
+
 /** Build a consistent SessionData snapshot for save operations */
 function buildSessionData(dumped: Map<string, boolean>): SessionData {
   const state = useStore.getState();
@@ -296,6 +307,11 @@ function buildSessionData(dumped: Map<string, boolean>): SessionData {
   return {
     workspaces: state.workspaces.map((ws) => ({
       ...ws,
+      // #1135: never persist listeningPorts. It describes processes that are
+      // alive right now; a saved value outlives them and the daemon's
+      // PortWatcher cannot contradict it (its first empty observation for a
+      // session is a deliberate no-op), so the sidebar chip survived restarts.
+      ...(ws.metadata ? { metadata: stripLivePorts(ws.metadata) } : {}),
       rootPane: cloneWithScrollback(ws.rootPane, dumped),
       stashedPanes: cloneStashedPanes(ws, dumped),
     })),
