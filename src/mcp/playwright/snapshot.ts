@@ -1035,6 +1035,7 @@ async function fetchAccessibilityTree(
             remaining: MAX_FRAMES,
             visited: new Set<string>(),
             extraSessions: graftInto.extraSessions,
+            page: graftInto.page,
           },
         );
       }
@@ -1113,6 +1114,45 @@ interface GraftBudget {
   visited: Set<string>;
   /** Extra CDP sessions opened for out-of-process frames, closed by the caller. */
   extraSessions: CdpClient[];
+  /** The page the walk started on — the only handle that can mint a session. */
+  page: Page;
+}
+
+/**
+ * A cross-origin frame's tree, over a session bound to its own target.
+ *
+ * Fail-open like everything else in the walk: an unattachable target (a frame
+ * still navigating, a target the connection cannot see) leaves the caller's
+ * boundary note in place, which is exactly what the snapshot said before.
+ */
+async function openOutOfProcessDocument(
+  childFrame: Frame,
+  budget: GraftBudget,
+): Promise<ChildDocument | null> {
+  let session: CdpClient | null = null;
+  try {
+    session = (await budget.page
+      .context()
+      .newCDPSession(childFrame)) as unknown as CdpClient;
+    budget.extraSessions.push(session);
+
+    await session.send('Accessibility.enable').catch(() => { /* best-effort */ });
+    const passwordBackendIds = await getPasswordFieldBackendIds(session);
+    const doc = (await session.send('DOM.getDocument', { depth: 0 })) as {
+      root?: { nodeId?: number };
+    };
+    const documentNodeId = doc?.root?.nodeId;
+    if (!documentNodeId) return null;
+
+    const nodes = (await session.send('Accessibility.getFullAXTree')) as {
+      nodes?: CdpAXNode[];
+    };
+    const built = buildTree(nodes?.nodes ?? [], passwordBackendIds);
+    if (!built) return null;
+    return { built, client: session, documentNodeId, passwordBackendIds };
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -1224,7 +1264,7 @@ async function graftChildFrames(host: GraftHost, budget: GraftBudget): Promise<v
     };
     const childCoord = descend(host.coord, hop);
 
-    const child = await openChildDocument(host, frameId, described, budget);
+    const child = await openChildDocument(host, frameId, described, childFrame, budget);
     if (!child) {
       hostAx.frameBoundaryReason = 'not-attached';
       continue;
@@ -1280,17 +1320,31 @@ interface ChildDocument {
  *
  * Same-process frames answer on the host's own session: `getFullAXTree` takes a
  * frameId, and `DOM.describeNode(pierce)` already handed us the child document
- * node. Out-of-process frames live in another CDP target and are C5's problem —
- * here they simply fail, and the caller keeps the boundary note.
+ * node.
+ *
+ * A cross-origin frame is a separate CDP target and has no contentDocument
+ * here, so it gets a session of its own — the frame-owning-session idea mirrors
+ * stagehand understudy/cdp.ts (MIT, Browserbase Inc.), which attaches per frame
+ * target rather than trying to reach one through the page's session. The
+ * attach itself goes through Playwright's own `newCDPSession(frame)` instead of
+ * `Target.setAutoAttach`/`attachToTarget`, because Playwright already owns the
+ * target bookkeeping on this connection and a second auto-attach probe would
+ * register a session it never closes.
+ *
+ * Its backendNodeIds live in a different id space, so it also gets its own
+ * password search — reusing the host's set would mask by coincidence.
  */
 async function openChildDocument(
   host: GraftHost,
   frameId: string,
   described: CdpDomNode | undefined,
-  _budget: GraftBudget,
+  childFrame: Frame,
+  budget: GraftBudget,
 ): Promise<ChildDocument | null> {
   const documentNodeId = described?.contentDocument?.nodeId;
-  if (documentNodeId === undefined) return null;
+  if (documentNodeId === undefined) {
+    return await openOutOfProcessDocument(childFrame, budget);
+  }
   try {
     const nodes = (await host.client.send('Accessibility.getFullAXTree', { frameId })) as {
       nodes?: CdpAXNode[];

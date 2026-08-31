@@ -324,7 +324,22 @@ const BORROWED_SOURCES = [
     what:
       'Browser-automation heuristics reimplemented in TypeScript: the nearest\n' +
       'file-input search around a clicked element, the scrollable-container\n' +
-      'reporting rules, and the page-readiness (empty / skeleton) statistics.',
+      'reporting rules, the page-readiness (empty / skeleton) statistics, and\n' +
+      'the bounded iframe walk (depth and frame-count caps, visited-frame cycle\n' +
+      'guard, rendered frames only) used by the snapshot frame graft.',
+  },
+  {
+    name: 'Stagehand',
+    license: 'MIT License',
+    repo: 'https://github.com/browserbase/stagehand',
+    copyright: 'Copyright (c) 2024 Browserbase, Inc.',
+    what:
+      'Chrome DevTools Protocol plumbing for cross-origin iframes,\n' +
+      'reimplemented in TypeScript: the auto-attach / attach-to-target pattern\n' +
+      'for out-of-process frame targets, and the frame-owning-session helper —\n' +
+      'the idea that a frame is read over a CDP session bound to its own\n' +
+      'target rather than through the page session. No selector-resolution or\n' +
+      'XPath code was taken.',
   },
 ];
 lines.push('BORROWED IMPLEMENTATION TECHNIQUES');
