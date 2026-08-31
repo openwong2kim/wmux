@@ -1,0 +1,16 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Dynamically inserted frame</title>
+<h1>Frame added after load</h1>
+<button id="add">Add a frame</button>
+<div id="slot"></div>
+<script>
+  document.getElementById('add').addEventListener('click', () => {
+    const f = document.createElement('iframe');
+    f.src = 'widget.html?slot=late';
+    f.width = 360;
+    f.height = 200;
+    f.title = 'late widget';
+    document.getElementById('slot').appendChild(f);
+  });
+</script>

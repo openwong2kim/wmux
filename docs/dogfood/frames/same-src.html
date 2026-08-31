@@ -1,0 +1,9 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Two identical frames</title>
+<h1>Two identical frames</h1>
+<p>Both iframes load the same document. Each Submit must get its OWN ref, and
+clicking one must land in that frame only.</p>
+<iframe src="widget.html?slot=1" width="360" height="200" title="widget one"></iframe>
+<iframe src="widget.html?slot=2" width="360" height="200" title="widget two"></iframe>
+<button id="page-button">Page-level button</button>

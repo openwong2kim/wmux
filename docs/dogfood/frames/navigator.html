@@ -1,0 +1,10 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Navigator frame</title>
+<button id="go">Go elsewhere</button>
+<button id="stay">Stay</button>
+<script>
+  document.getElementById('go').addEventListener('click', () => {
+    location.href = 'widget.html?slot=moved';
+  });
+</script>
