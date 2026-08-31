@@ -134,6 +134,28 @@ describe('PortWatcher', () => {
     expect(events).toHaveLength(2);
   });
 
+  it('resync() re-emits the current port set for a fresh subscriber (#1135)', async () => {
+    const current = snap([[200, 100]], [{ port: 3000, pid: 200 }]);
+    const events: Array<{ sessionId: string; ports: unknown[] }> = [];
+    const watcher = new PortWatcher(
+      () => [{ sessionId: 's1', pid: 100 }],
+      { snapshot: async () => current },
+    );
+    watcher.on('ports', (e) => events.push(e));
+
+    await watcher.tick();
+    expect(events).toHaveLength(1);
+    await watcher.tick(); // unchanged — silent
+    expect(events).toHaveLength(1);
+
+    // A new app attached: it has no port state of its own, so the unchanged
+    // set has to be announced again.
+    watcher.resync();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(events).toHaveLength(2);
+    expect(events[1]).toEqual({ sessionId: 's1', ports: [{ port: 3000, pid: 200 }] });
+  });
+
   it('swallows snapshot failures silently', async () => {
     const watcher = new PortWatcher(
       () => [{ sessionId: 's1', pid: 100 }],

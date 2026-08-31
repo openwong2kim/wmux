@@ -2868,7 +2868,12 @@ function registerRpcHandlers(
   pipeServer.onRpc('daemon.events.subscribe', async (_params, ctx) => {
     // A false result is an expected first step of the compatibility handshake,
     // so do not warn here. DaemonClient identifies and immediately retries.
-    return { ok: pipeServer.subscribeEvents(ctx.clientId) };
+    const ok = pipeServer.subscribeEvents(ctx.clientId);
+    // #1135: a subscribing app has an empty context mirror — re-emit the live
+    // port sets so an already-listening dev server shows up without waiting
+    // for it to change.
+    if (ok) { try { resyncContextWatchers?.(); } catch { /* best effort */ } }
+    return { ok };
   });
 
   pipeServer.onRpc('daemon.events.unsubscribe', async (_params, ctx) => {
@@ -4815,6 +4820,8 @@ function wireContextWatchers(
     gitWatcher.update(s.id, s.cwd);
   }
 
+  resyncContextWatchers = () => { portWatcher.resync(); };
+
   return () => {
     sessionManager.off('session:created', onCreated);
     sessionManager.off('session:cwd', onCwd);
@@ -4822,8 +4829,17 @@ function wireContextWatchers(
     sessionManager.off('session:destroyed', onGone);
     portWatcher.stop();
     gitWatcher.dispose();
+    resyncContextWatchers = null;
   };
 }
+
+/**
+ * #1135 — re-emit the current per-session port sets. Set by
+ * wireContextWatchers, called when an app subscribes to the event stream: the
+ * daemon survives app restarts, so a new app's empty port map has to be
+ * refilled from the watcher rather than from whatever the last app persisted.
+ */
+let resyncContextWatchers: (() => void) | null = null;
 
 /** Set in main(); consumed by shutdown(). */
 let disposeContextWatchers: (() => void) | null = null;

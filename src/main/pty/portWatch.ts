@@ -212,6 +212,23 @@ export class PortWatcher extends EventEmitter {
     this.lastBySession.clear();
   }
 
+  /**
+   * Forget every session's diff state and poll again, so the NEXT tick re-emits
+   * the current port set for every session instead of staying silent because
+   * nothing changed.
+   *
+   * #1135 — the daemon outlives the app (tmux-style detach), so a freshly
+   * launched app starts with an empty per-surface port map while the watcher
+   * still holds the diff state of the previous app's lifetime. Without a
+   * resync, a dev server that was already listening before the restart is
+   * invisible until it happens to change. Called when a client subscribes to
+   * the event stream.
+   */
+  resync(): void {
+    this.lastBySession.clear();
+    void this.tick();
+  }
+
   /** One poll cycle. Public so tests (and the daemon on session-create) can drive it. */
   async tick(): Promise<void> {
     if (this.ticking) return; // a slow snapshot must not stack subprocesses
