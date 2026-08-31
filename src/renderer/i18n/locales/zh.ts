@@ -754,6 +754,8 @@ export const zh = {
   'pane.newTerminal': '新建终端',
   'pane.newBrowser': '新建浏览器',
   'pane.newRemote': '新建远程面板',
+  'pane.splitRightRemote': '向右分割 — 远程',
+  'pane.splitDownRemote': '向下分割 — 远程',
   'pane.addSurface': '新建标签页',
   'pane.maxLeavesReached': '已达到面板数量上限（{count}）。请先关闭一个面板再分割。',
   'pane.maxLeavesReachedWithStash': '已达到面板数量上限（{count}，其中已收起 {stashed}）。请取回一个并关闭，或关闭一个可见面板。',

@@ -16,7 +16,7 @@
  * Pane.notificationRing.test.tsx (the pure helper is the load-bearing piece).
  */
 import { describe, it, expect } from 'vitest';
-import { pickSplitShownSurfaces, pickOverlaySurfaces } from '../Pane';
+import { pickSplitShownSurfaces, pickOverlaySurfaces, resolveRemoteAttachPaneId } from '../Pane';
 
 const T = (id: string) => ({ id });
 
@@ -124,5 +124,27 @@ describe('pickOverlaySurfaces — F6 mixed-split diff/editor routing', () => {
       { id: 'r', surfaceType: 'remote-terminal' },
     ];
     expect(pickOverlaySurfaces(surfaces).map((s) => s.id)).toEqual(['r']);
+  });
+});
+
+describe('resolveRemoteAttachPaneId — #1140 split-into-a-pane vs the #1100 tab', () => {
+  it('null direction (the #1100 tab flow): always the pane the ⋮ menu opened on, regardless of splitResult', () => {
+    // splitPane is never even called on this path — the caller passes the
+    // clicking pane's own id as a placeholder, which must be ignored in favor
+    // of currentPaneId if it ever WAS read.
+    expect(resolveRemoteAttachPaneId(null, 'pane-A', 'pane-A')).toBe('pane-A');
+    expect(resolveRemoteAttachPaneId(null, 'pane-A', false)).toBe('pane-A');
+  });
+
+  it('a direction (the new split flow): targets the NEW pane splitPane returned, not the one that was split', () => {
+    expect(resolveRemoteAttachPaneId('horizontal', 'pane-A', 'pane-B')).toBe('pane-B');
+    expect(resolveRemoteAttachPaneId('vertical', 'pane-A', 'pane-B')).toBe('pane-B');
+  });
+
+  it('a direction but splitPane was blocked (per-workspace pane cap): attach nowhere, never fall back to the original pane', () => {
+    // Falling back to pane-A here would silently put a second surface on a
+    // pane the user explicitly asked to split away from — worse than doing
+    // nothing, since the cap warning already told them why the split refused.
+    expect(resolveRemoteAttachPaneId('horizontal', 'pane-A', false)).toBeNull();
   });
 });
