@@ -90,6 +90,19 @@ describe('clonePaneTreeFresh', () => {
     expect(allSurfaces(clone).every((s) => s.ptyId === '')).toBe(true);
   });
 
+  it('#1100 CodeRabbit round 1 — strips remoteHostId/remoteSessionId so the clone does not double-attach the source\'s live remote session', () => {
+    const src = leaf(
+      [surface({ id: 's1', surfaceType: 'remote-terminal', remoteHostId: 'host-a', remoteSessionId: 'sess-live-1' })],
+      's1',
+    );
+    const clone = clonePaneTreeFresh(src) as PaneLeaf;
+    expect(clone.surfaces[0].remoteHostId).toBeUndefined();
+    expect(clone.surfaces[0].remoteSessionId).toBeUndefined();
+    // surfaceType itself is preserved — this is an empty remote-terminal
+    // placeholder, not silently downgraded to a plain terminal.
+    expect(clone.surfaces[0].surfaceType).toBe('remote-terminal');
+  });
+
   it('does not mutate the source tree', () => {
     const src = leaf([surface({ id: 's1', ptyId: 'pty-keep' })], 's1');
     clonePaneTreeFresh(src);

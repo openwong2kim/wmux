@@ -289,6 +289,7 @@ export const en = {
   'pane.splitDown': 'Split down',
   'pane.newTerminal': 'New terminal',
   'pane.newBrowser': 'New browser',
+  'pane.newRemote': 'New remote pane',
   // Label for the ⋮ that replaces the five-button cluster on a pane too
   // narrow to hold it, and for the header's right-click menu. Names the SET of
   // actions, not the glyph — it is the accessible name a screen reader reads.

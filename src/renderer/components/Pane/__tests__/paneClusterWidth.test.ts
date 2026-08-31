@@ -222,8 +222,11 @@ describe('the ⋮ menu offers exactly what the cluster does', () => {
     // decision here rather than silent drift. rename-pane is menu-only by
     // design (#1021): the label fold removed the double-click target on
     // unnamed single-tab panes, and the menu replaces that affordance; the
-    // cluster keeps to icon-sized layout actions.
+    // cluster keeps to icon-sized layout actions. new-remote (#1086/#1091) is
+    // the same kind of deliberate menu-only addition, conditionally rendered
+    // (only when a caller passes onAddRemote) rather than promoted to the
+    // icon cluster.
     for (const key of cluster) expect(menu).toContain(key);
-    expect(menu.filter((k) => !cluster.includes(k))).toEqual(['rename-pane']);
+    expect(menu.filter((k) => !cluster.includes(k))).toEqual(['new-remote', 'rename-pane']);
   });
 });

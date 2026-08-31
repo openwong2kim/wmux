@@ -12,7 +12,7 @@ import { computePaneAutoName, paneDisplayName } from '../../utils/paneNaming';
 import { findPane } from '../../../shared/paneUtils';
 import PaneDragGrip from './PaneDragGrip';
 import { FOCUS_RING } from '../focusRing';
-import { IconSplitRight, IconSplitDown, IconBrowser, IconEyeOff, IconPencil } from '../icons';
+import { IconSplitRight, IconSplitDown, IconBrowser, IconExternalLink, IconEyeOff, IconPencil } from '../icons';
 import { displayPath } from '../../utils/displayPath';
 import { workspaceColorHex } from '../../../shared/workspaceColors';
 import PaneActionsMenu, { PANE_ACTIONS_MENU_WIDTH, type PaneActionItem } from './PaneActionsMenu';
@@ -189,6 +189,11 @@ interface SurfaceTabsProps {
   onAddTerminal: () => void;
   /** New browser surface (tab) in this pane. */
   onAddBrowser: () => void;
+  /** #1086/#1091 — new remote-terminal surface (tab) in this pane, mirroring
+   *  a session on one of the user's paired hosts. Optional so existing
+   *  callers/tests that mount this component standalone keep working
+   *  unchanged — omitted just drops the menu item. */
+  onAddRemote?: () => void;
   /**
    * How the pane-action cluster renders. Pane.tsx owns this because it is the
    * Settings toggle AND the width check — the cluster is fixed-width and
@@ -211,6 +216,7 @@ export default function SurfaceTabs({
   onSplitVertical,
   onAddTerminal,
   onAddBrowser,
+  onAddRemote,
   actionsMode,
 }: SurfaceTabsProps) {
   const t = useT();
@@ -399,6 +405,12 @@ export default function SurfaceTabs({
       icon: <IconBrowser size={14} />,
       onSelect: onAddBrowser,
     },
+    ...(onAddRemote ? [{
+      key: 'new-remote',
+      label: t('pane.newRemote'),
+      icon: <IconExternalLink size={14} />,
+      onSelect: onAddRemote,
+    }] : []),
     {
       key: 'rename-pane',
       label: t('pane.rename'),
@@ -427,7 +439,7 @@ export default function SurfaceTabs({
       onSelect: toggleZoom,
     },
   ], [
-    t, onSplitHorizontal, onSplitVertical, onAddBrowser, startPaneRename,
+    t, onSplitHorizontal, onSplitVertical, onAddBrowser, onAddRemote, startPaneRename,
     stashChord, stashDisabled, stashTooltip, stashThisPane, isZoomed, toggleZoom,
   ]);
 

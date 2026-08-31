@@ -116,4 +116,13 @@ describe('pickOverlaySurfaces — F6 mixed-split diff/editor routing', () => {
     ];
     expect(pickOverlaySurfaces(surfaces)).toEqual([]);
   });
+
+  it('#1100 CodeRabbit round 1 — remote-terminal도 오버레이 집합에 포함 (terminal+browser+remote 혼재에서 사라지지 않아야 함)', () => {
+    const surfaces = [
+      { id: 't', surfaceType: 'terminal' },
+      { id: 'b', surfaceType: 'browser' },
+      { id: 'r', surfaceType: 'remote-terminal' },
+    ];
+    expect(pickOverlaySurfaces(surfaces).map((s) => s.id)).toEqual(['r']);
+  });
 });

@@ -1,7 +1,7 @@
 import type { StateCreator } from 'zustand';
 import type { StoreState } from '../index';
 import type { Pane, PaneLeaf, Surface, Workspace } from '../../../shared/types';
-import { createSurface, generateId } from '../../../shared/types';
+import { createRemoteSurface, createSurface, generateId } from '../../../shared/types';
 import { isPlausibleCwd } from '../../../shared/cwdShape';
 import { getWorkspaceLeafPanes } from '../../../shared/paneUtils';
 import { isSafeBrowserUrl } from '../../utils/browserPane';
@@ -18,6 +18,14 @@ export interface SurfaceSlice {
    * callers are unchanged. */
   addSurface: (paneId: string, ptyId: string, shell: string, cwd: string, workspaceId?: string) => void;
   addBrowserSurface: (paneId: string, url?: string, partition?: string, workspaceId?: string) => void;
+  /** #1086/#1091 — mirror a session on a paired remote host as a surface in
+   * an ordinary LOCAL workspace's own pane tree (stage 1: store only, no
+   * SSE attach yet — that's the renderer wiring in Pane.tsx, a follow-up).
+   * Same shape as addBrowserSurface: caller splits an empty leaf first via
+   * splitPane, then calls this to populate it. ptyId stays '' (see
+   * createRemoteSurface), so every ptyId-gated check already treats this
+   * surface as non-local without further changes. */
+  addRemoteSurface: (paneId: string, hostId: string, sessionId: string, shell?: string, cwd?: string, workspaceId?: string) => void;
   addEditorSurface: (paneId: string, filePath: string) => void;
   /** J2 — diff 리뷰 서피스 추가. taskId만 영속(diff 내용은 파생 데이터).
    * 같은 taskId가 이미 열려 있으면 그 탭으로 전환. editor/browser처럼 ptyId 없음. */
@@ -38,6 +46,12 @@ export interface SurfaceSlice {
   updateSurfacePtyId: (paneId: string, surfaceId: string, ptyId: string) => void;
   updateSurfaceTitle: (surfaceId: string, title: string) => void;
   updateSurfaceTitleByPty: (ptyId: string, title: string) => void;
+  /** #1086/#1091 — the remote-terminal twin of updateSurfaceTitleByPty. A
+   *  remote-terminal surface's ptyId is always '' (see createRemoteSurface),
+   *  so it can never be found by that lookup — this one is keyed by surfaceId
+   *  directly instead, the same identity RemotePaneSurface already has to
+   *  hand. Same manual-rename guard: never overrides a titleLocked surface. */
+  updateRemoteSurfaceTitle: (surfaceId: string, title: string) => void;
   /**
    * Update the live working directory of the surface bound to `ptyId`. Driven
    * by the OSC 7 shell-integration channel (onCwdChanged), so each terminal
@@ -141,6 +155,17 @@ export const createSurfaceSlice: StateCreator<StoreState, [['zustand/immer', nev
       browserUrl: url || 'https://google.com',
       browserPartition: partition || 'persist:wmux-default',
     };
+    pane.surfaces.push(surface);
+    pane.activeSurfaceId = surface.id;
+  }),
+
+  addRemoteSurface: (paneId, hostId, sessionId, shell, cwd, workspaceId) => set((state: StoreState) => {
+    const targetWsId = workspaceId || state.activeWorkspaceId;
+    const ws = state.workspaces.find((w: Workspace) => w.id === targetWsId);
+    if (!ws) return;
+    const pane = findLeafPane(ws.rootPane, paneId);
+    if (!pane) return;
+    const surface = createRemoteSurface(hostId, sessionId, shell || '', cwd || '');
     pane.surfaces.push(surface);
     pane.activeSurfaceId = surface.id;
   }),
@@ -416,6 +441,19 @@ export const createSurfaceSlice: StateCreator<StoreState, [['zustand/immer', nev
         if (!surface) continue;
         // Terminal surfaces only, and never override a user's manual rename.
         if ((surface.surfaceType ?? 'terminal') === 'terminal' && !surface.titleLocked) {
+          surface.title = title;
+        }
+        return;
+      }
+    }
+  }),
+
+  updateRemoteSurfaceTitle: (surfaceId, title) => set((state: StoreState) => {
+    for (const ws of state.workspaces) {
+      for (const pane of getWorkspaceLeafPanes(ws)) {
+        const surface = pane.surfaces.find((s) => s.id === surfaceId);
+        if (!surface) continue;
+        if (surface.surfaceType === 'remote-terminal' && !surface.titleLocked) {
           surface.title = title;
         }
         return;

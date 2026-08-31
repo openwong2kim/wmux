@@ -78,6 +78,13 @@ class FakeTerminal {
     this.selectionHandler = cb;
     return { dispose: vi.fn() };
   }
+  /** #1086/#1091 — RemoteMirrorTerminal always wires this in its mount
+   *  effect now, whether or not a test passes onTitleChange. */
+  titleHandler: ((title: string) => void) | null = null;
+  onTitleChange(cb: (title: string) => void): { dispose: () => void } {
+    this.titleHandler = cb;
+    return { dispose: vi.fn() };
+  }
   getSelection(): string { return this.selection; }
   hasSelection(): boolean { return this.selection.length > 0; }
   clearSelection(): void { this.clearSelectionCalls++; this.selection = ''; }
@@ -219,6 +226,44 @@ describe('RemoteMirrorTerminal', () => {
 
     expect(term.written).toHaveLength(1);
 
+    unmount();
+  });
+
+  it('#1086/#1091 — fires onTitleChange with the sanitized OSC title', () => {
+    const onTitleChange = vi.fn();
+    const { unmount } = render(<RemoteMirrorTerminal attachId="a1" onTitleChange={onTitleChange} />);
+    const term = termInstances[0];
+
+    act(() => {
+      term.titleHandler?.('claude: feature-x\x07');
+    });
+
+    expect(onTitleChange).toHaveBeenCalledWith('claude: feature-x');
+    unmount();
+  });
+
+  it('#1086/#1091 — drops an all-control-character title (nothing printable to show)', () => {
+    const onTitleChange = vi.fn();
+    const { unmount } = render(<RemoteMirrorTerminal attachId="a1" onTitleChange={onTitleChange} />);
+    const term = termInstances[0];
+
+    act(() => {
+      term.titleHandler?.('\x07');
+    });
+
+    expect(onTitleChange).not.toHaveBeenCalled();
+    unmount();
+  });
+
+  it('#1086/#1091 — works without an onTitleChange prop (mirror-grid callers pass none)', () => {
+    const { unmount } = render(<RemoteMirrorTerminal attachId="a1" />);
+    const term = termInstances[0];
+
+    expect(() => {
+      act(() => {
+        term.titleHandler?.('claude: feature-x');
+      });
+    }).not.toThrow();
     unmount();
   });
 

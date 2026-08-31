@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Terminal } from '@xterm/xterm';
 import { useT } from '../../hooks/useT';
+import { sanitizeTitle } from '../../../main/pty/titleDetect';
 import { applyUnicodeWidthModel } from '../../../shared/terminalUnicode';
 import { computeMirrorFontSize, mirrorFitKey, MAX_FIT_PASSES } from './mirrorFit';
 import { decideMirrorKeyWithRepeat } from './mirrorInput';
@@ -21,6 +22,13 @@ export interface RemoteMirrorTerminalProps {
   /** True when the remote host was started without --allow-input — writes
    *  must be swallowed locally rather than silently dropped server-side. */
   readOnly?: boolean;
+  /** #1086/#1091 — fired, already run through {@link sanitizeTitle}, whenever
+   *  the remote shell sets its window title via OSC 0/2 (e.g. a `rename`
+   *  command) — xterm's own parser extracts the OSC payload; this component
+   *  sanitizes it the same way PTYBridge does for a local pane before handing
+   *  it up. Optional: RemoteWorkspaceView's mirror-grid cells have no
+   *  per-surface title to update and pass nothing. */
+  onTitleChange?: (title: string) => void;
 }
 
 /** Decode a base64 payload into raw bytes and hand it to xterm as-is — the
@@ -86,8 +94,13 @@ const FIT_DEBOUNCE_MS = 150;
  * container/remote aspect mismatch is letterboxed by the parent's CSS, not by
  * resizing the terminal.
  */
-export default function RemoteMirrorTerminal({ attachId, error, readOnly }: RemoteMirrorTerminalProps) {
+export default function RemoteMirrorTerminal({ attachId, error, readOnly, onTitleChange }: RemoteMirrorTerminalProps) {
   const t = useT();
+  // Ref, same reason as readOnlyRef below: the title subscription is wired
+  // once inside the mount-only effect, and a parent re-render passing a new
+  // closure must not tear down and re-attach the whole terminal.
+  const onTitleChangeRef = useRef(onTitleChange);
+  onTitleChangeRef.current = onTitleChange;
   /** The clipping box. Its content size is what the remote grid must fit in. */
   const boxRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -409,6 +422,14 @@ export default function RemoteMirrorTerminal({ attachId, error, readOnly }: Remo
       autoCopy.onSelection(term.getSelection());
     });
 
+    // #1086/#1091 — xterm's own parser already extracts the OSC 0/2 payload
+    // (icon title / window title); sanitize it exactly like PTYBridge does
+    // for a local pane before handing it to the surface-title callback.
+    const titleDisposable = term.onTitleChange((raw) => {
+      const title = sanitizeTitle(raw);
+      if (title) onTitleChangeRef.current?.(title);
+    });
+
     term.attachCustomKeyEventHandler((ev) => {
       const decision = decideMirrorKeyWithRepeat(ev, {
         isMac,
@@ -468,6 +489,7 @@ export default function RemoteMirrorTerminal({ attachId, error, readOnly }: Remo
     return () => {
       if (isMac) container.removeEventListener('paste', blockNativePaste, true);
       selectionDisposable.dispose();
+      titleDisposable.dispose();
       // Cancels a debounced write that would otherwise fire against a disposed
       // terminal's last selection.
       autoCopy.dispose();

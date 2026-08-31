@@ -886,7 +886,7 @@ export default function AppLayout() {
 
       const activeSurface = leaf.surfaces.find((s) => s.id === leaf.activeSurfaceId);
       // browser/editor/diff는 PTY가 없어 경로 붙여넣기 대상이 아님(J2 — diff 추가).
-      if (!activeSurface || activeSurface.surfaceType === 'browser' || activeSurface.surfaceType === 'editor' || activeSurface.surfaceType === 'diff') return;
+      if (!activeSurface || activeSurface.surfaceType === 'browser' || activeSurface.surfaceType === 'editor' || activeSurface.surfaceType === 'diff' || activeSurface.surfaceType === 'remote-terminal') return;
 
       const text = paths.map((p) => (p.includes(' ') ? `"${p}"` : p)).join(' ');
       // Route the joined path string through the paste chunker. Single-file
@@ -1036,7 +1036,7 @@ export default function AppLayout() {
           for (const surface of pane.surfaces) {
             if (signal?.aborted) return;
             // browser/editor/diff는 PTY를 갖지 않음 — 재조정·자가생성 대상에서 제외(J2).
-            if (surface.surfaceType === 'browser' || surface.surfaceType === 'editor' || surface.surfaceType === 'diff') continue;
+            if (surface.surfaceType === 'browser' || surface.surfaceType === 'editor' || surface.surfaceType === 'diff' || surface.surfaceType === 'remote-terminal') continue;
             if (!surface.ptyId) {
               console.log(`[AppLayout] Surface ${surface.id}: no ptyId, Terminal will self-create`);
               continue;
