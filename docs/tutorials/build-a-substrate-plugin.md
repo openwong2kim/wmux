@@ -58,7 +58,9 @@ node examples/event-recorder/recorder.mjs --legacy --once
 
 - `--legacy` sends no `clientName`, so wmux grandfathers the connection through
   its permission gate (always allowed). This lets you see real output before
-  touching the identity flow.
+  touching the identity flow. **Deprecated:** the grandfather closes in the
+  first release on or after **2026-09-30** (#1111); after that this step
+  requires the identity flow below.
 - `--once` polls once from the start of the ring (with a few bounded
   reconciliation hops if the ring already wrapped past the oldest event), prints
   what it finds, and exits.
@@ -222,7 +224,8 @@ plugin is a named, user-approved identity instead of an anonymous legacy caller.
   fields (`label`/`role`/`status`) and tool-private `custom.<tool>.*` subtrees,
   and the wmux UI reads them.
 - **Identity + approval** is the difference between a `legacy` grandfathered
-  caller and a named plugin the user explicitly trusted. Enforce mode rejects an
+  caller (deprecated — the lane closes 2026-09-30+, #1111) and a named plugin
+  the user explicitly trusted. Enforce mode rejects an
   unconfirmed plugin with a `pendingApproval` promptId; you retry until the user
   approves in the UI.
 

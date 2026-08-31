@@ -323,13 +323,13 @@ The substrate has four enforcement points. All four exist to prevent one MCP fro
 - **`enforce`** (production default) — a non-`allow` outcome turns into an `RpcResponse` failure carrying the structured `rejection`; the handler is not invoked.
 - **`shadow`** (dev / `npm start` / `NODE_ENV=test` default) — the same outcome is logged to `~/.wmux/shadow-rejections.log` and the handler still runs, so a bad declaration during dogfood can't lock a developer out.
 
-Either default can be overridden explicitly via the config key. The enforcement decision is computed by a single pure function (`PermissionEnforcer.check`) shared by both modes, so shadow logs predict exactly what enforce mode would reject. Requests without a `clientName` envelope are grandfathered as `legacy` (§4.1) and always allowed.
+Either default can be overridden explicitly via the config key. The enforcement decision is computed by a single pure function (`PermissionEnforcer.check`) shared by both modes, so shadow logs predict exactly what enforce mode would reject. Requests without a `clientName` envelope are grandfathered as `legacy` (§4.1) and always allowed. **Deprecated:** this grandfather lane closes in the first release on or after **2026-09-30** (#1111); envelope-less requests will then be refused.
 
 ### 4.1 Identity (Phase 2.1 first PR — shipped)
 
 Plugin identity rides the JSON-RPC envelope as `clientName` (and optional `clientVersion`). The MCP server (`src/mcp/index.ts`) populates them from the MCP `InitializeRequest.clientInfo` so the substrate can attribute every call to a declared plugin. Identity is **declared, not verified** — there is no root-of-trust today; threat-model details live in `api/mcp-plugin-spec.md`.
 
-Requests without `clientName` are recorded as `legacy` so future enforcement can grandfather them or prompt the user, never silently bypass.
+Requests without `clientName` are recorded as `legacy`. That grandfather is now on a deprecation clock: **the lane closes in the first release on or after 2026-09-30** (#1111). After the close, envelope-less requests are refused; `wmux-cli` remains as an honestly-labelled limited lane (curated allowlist, no approval dialog).
 
 The trust DB lives at `~/.wmux/plugin-trust.json` (atomic-write, single-process owner = wmux main). Per-plugin record shape (`PluginIdentityRecord` in `src/shared/rpc.ts`):
 
