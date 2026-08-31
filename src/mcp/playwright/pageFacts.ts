@@ -197,6 +197,17 @@ export async function collectPageFacts(
   }
 }
 
+/**
+ * What the snapshot knows that the page-level measurements cannot.
+ *
+ * The facts themselves are still collected exactly as before — this only tells
+ * the formatter how to read them.
+ */
+export interface PageFactsFooterOptions {
+  /** The snapshot grafted iframe content that contributed at least one ref. */
+  hasFrameContent?: boolean;
+}
+
 /** Interactive-element count below which a page reads as "not there yet". */
 const NEARLY_EMPTY_INTERACTIVE = 10;
 /**
@@ -221,8 +232,20 @@ const SKELETON_TEXT_PER_ELEMENT = 5;
 export function describePageReadiness(
   facts: PageFacts,
   pendingRequests: number,
+  options?: PageFactsFooterOptions,
 ): string {
+  // Every count above is taken in the MAIN document, so a page whose content
+  // lives in an iframe measures as empty however finished it is. That used to
+  // be honest — frame contents were not in the snapshot either — and stopped
+  // being so once they were grafted in: the tree would list a frame's controls
+  // while the footer called the page nearly empty. The caller says when it
+  // grafted frame content, and this defers to it.
+  //
+  // Only the nearly-empty verdict is suppressed. The skeleton verdict reads
+  // element density rather than absolute counts, and a host document full of
+  // empty boxes around a frame is still worth calling out.
   if (
+    !options?.hasFrameContent &&
     facts.interactiveElements < NEARLY_EMPTY_INTERACTIVE &&
     facts.textChars < NEARLY_EMPTY_TEXT_CHARS
   ) {
@@ -249,9 +272,10 @@ export function describePageReadiness(
 export function formatPageFactsFooter(
   facts: PageFacts,
   pendingRequests: number,
+  options?: PageFactsFooterOptions,
 ): string {
   const lines: string[] = [];
-  const readiness = describePageReadiness(facts, pendingRequests);
+  const readiness = describePageReadiness(facts, pendingRequests, options);
   if (readiness) lines.push(`(page: ${readiness})`);
   if (facts.scrollables.length > 0) {
     lines.push('scrollable containers (scroll one with browser_evaluate, e.g.');

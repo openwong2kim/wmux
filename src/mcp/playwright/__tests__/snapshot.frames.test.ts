@@ -112,7 +112,12 @@ interface Harness {
  * search is the whole same-process subtree's answer, and the child frame's
  * plaintext field came back masked end-to-end.
  */
-function makeHarness(main: FakeDoc, passwordBackendIds: number[] = []): Harness {
+function makeHarness(
+  main: FakeDoc,
+  passwordBackendIds: number[] = [],
+  /** What page.evaluate() answers the pageFacts collector with, if anything. */
+  pageFacts?: Record<string, unknown>,
+): Harness {
   const counts = new Map<string, number>();
   const handles: string[] = [];
 
@@ -234,7 +239,7 @@ function makeHarness(main: FakeDoc, passwordBackendIds: number[] = []): Harness 
         return { send, detach: vi.fn(() => Promise.resolve()) };
       },
     }),
-    evaluate: vi.fn(async () => ''),
+    evaluate: vi.fn(async () => (pageFacts ?? '') as never),
     locator: (sel: string) => frameLocator(main, sel),
     ...roleRoot(main.frameId),
   };
@@ -804,5 +809,88 @@ describe('a frame between documents is refused, not guessed', () => {
     await expect(resolveRef(h.page, '0')).rejects.toBeInstanceOf(StaleRefError);
     await expect(resolveRef(h.page, '0')).rejects.toThrow(/between documents/);
     expect(h.handles).toEqual([]);
+  });
+});
+
+describe('the page-facts footer does not contradict the tree above it', () => {
+  /** A main document that measures as empty: no controls, almost no text. */
+  const EMPTY_LOOKING_FACTS = {
+    totalElements: 4,
+    interactiveElements: 0,
+    textChars: 12,
+    scrollables: [],
+    scanTruncated: false,
+    scrollablesTruncated: false,
+  };
+
+  it('drops the nearly-empty hint once a frame contributed refs', async () => {
+    // Dogfood, 2026-09-01: same-src.html listed seven refs under a footer that
+    // called the page nearly empty. pageFacts counts the MAIN document only, so
+    // a page whose controls all live in an iframe measures as empty — honest
+    // while frame contents were absent from the snapshot, a contradiction once
+    // they are in it.
+    const child = doc({
+      frameId: 'ff',
+      url: 'https://widget.test/app',
+      ax: tree([{ backendId: 980, role: 'button', name: 'Submit' }]),
+    });
+    const h = makeHarness(
+      doc({
+        frameId: 'main',
+        ax: tree([{ backendId: 110, role: 'Iframe', name: 'app' }]),
+        iframes: [hostedFrame(110, child)],
+      }),
+      [],
+      EMPTY_LOOKING_FACTS,
+    );
+
+    const out = await generateSnapshot(h.page, { format: 'ai' });
+
+    expect(out).toContain('button "Submit" ref="0"');
+    expect(out).not.toContain('nearly empty');
+  });
+
+  it('still reports a genuinely empty page with no frames', async () => {
+    // The gate is the frame refs, not the footer going quiet in general.
+    const h = makeHarness(
+      doc({
+        frameId: 'main',
+        ax: tree([{ backendId: 120, role: 'heading', name: 'Loading' }]),
+      }),
+      [],
+      EMPTY_LOOKING_FACTS,
+    );
+
+    const out = await generateSnapshot(h.page, { format: 'ai' });
+    expect(out).toContain('nearly empty');
+  });
+
+  it('keeps the skeleton hint even when a frame contributed refs', async () => {
+    // Skeleton reads element DENSITY, not absolute counts, so a host document
+    // full of empty boxes around a frame is still worth calling out.
+    const child = doc({
+      frameId: 'fs',
+      url: 'https://widget.test/app',
+      ax: tree([{ backendId: 990, role: 'button', name: 'Submit' }]),
+    });
+    const h = makeHarness(
+      doc({
+        frameId: 'main',
+        ax: tree([{ backendId: 130, role: 'Iframe', name: 'app' }]),
+        iframes: [hostedFrame(130, child)],
+      }),
+      [],
+      {
+        totalElements: 400,
+        interactiveElements: 40,
+        textChars: 100,
+        scrollables: [],
+        scanTruncated: false,
+        scrollablesTruncated: false,
+      },
+    );
+
+    const out = await generateSnapshot(h.page, { format: 'ai' });
+    expect(out).toContain('skeleton screen likely');
   });
 });

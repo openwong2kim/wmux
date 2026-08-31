@@ -1731,8 +1731,14 @@ export async function generateSnapshot(
   // applied in generateScopedSnapshot: a scoped snapshot is a small subtree by
   // definition, so "nearly empty" would fire on every correct result.
   const facts = await collectPageFacts(page);
+  // pageFacts counts the main document only, so a page whose controls all live
+  // in an iframe measures as empty. Now that those controls ARE in the tree,
+  // let the footer know rather than have it contradict the lines above it
+  // (dogfood, 2026-09-01: same-src.html listed seven refs under a footer that
+  // called the page nearly empty).
+  const hasFrameContent = refs.some((entry) => entry.frameKey !== MAIN_FRAME.key);
   const footer = facts
-    ? formatPageFactsFooter(facts, peekRecentPendingRequests(page))
+    ? formatPageFactsFooter(facts, peekRecentPendingRequests(page), { hasFrameContent })
     : '';
   const budget = Math.max(0, maxLength - note.length - footer.length);
 
