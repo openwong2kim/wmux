@@ -134,6 +134,19 @@ export const HOST_CONTRACTS = {
     if (exitCode !== 0) return 'nonzero-exit-tolerated-by-host';
     return 'none';
   },
+
+  // Codex CLI lifecycle hooks (0.151.0). Unlike the notify program, these run
+  // ON the turn and Codex reads both channels: the binary carries
+  // "PreToolUse hook exited with code 2 but did not write a blocking reason to
+  // stderr" and "hook returned invalid pre-tool-use JSON output", so exit 2 is
+  // a BLOCK and stdout can be parsed as a verdict. That makes the strictness
+  // load-bearing here rather than merely tidy — a wmux observation hook that
+  // printed or failed could actually stop a Codex turn.
+  codexHook(exitCode, stdout) {
+    if (stdout !== '') return 'stdout-noise';
+    if (exitCode !== 0) return 'nonzero-exit-blocks-host';
+    return 'none';
+  },
 };
 
 // ----- Case manifest ------------------------------------------------------
@@ -174,7 +187,7 @@ export function discoverHookManifests() {
 // appears in neither this map nor the discovery above is an adapter nobody
 // wired into the gate, and the coverage test says so rather than passing.
 export const NON_MANIFEST_INTEGRATIONS = {
-  codex: 'notify program registered in config.toml; payload arrives as argv, covered explicitly',
+  codex: 'notify program + lifecycle hooks registered in config.toml (TOML, not a hooks.json); covered explicitly',
   kiro: 'hooks live inside a wmux-owned agent config, not a hooks.json; covered explicitly',
   opencode: 'in-process plugin, not a spawned hook; measured separately',
   shared: 'not an agent — shared type declarations',
@@ -324,6 +337,66 @@ export function buildCases(payloadOpts) {
       args: [],
       stdin: 'none',
       argvPayload: payload,
+      payload,
+    });
+  }
+
+  // Codex's LIFECYCLE hooks (as opposed to the notify program above) are
+  // registered as `[[hooks.<Event>]]` in config.toml and take their payload on
+  // stdin, Claude-Code style. These are the payloads codex-cli 0.151.0
+  // actually sends, captured live (2026-08-31) — including the content fields
+  // (`prompt`, `last_assistant_message`, `tool_input`) the bridge must never
+  // forward, so the harness exercises the real shape rather than a sanitized
+  // one.
+  const codexHookScript = join(REPO_ROOT, 'integrations', 'codex', 'bin', 'wmux-codex-hooks-bridge.mjs');
+  const codexCwd = payloadOpts?.cwd ?? '/tmp/harness';
+  const codexSession = 'harness-session';
+  const codexTranscript = payloadOpts?.transcriptPath ?? '/tmp/harness/harness-session.jsonl';
+  for (const [label, payload] of [
+    ['Stop', {
+      session_id: codexSession,
+      turn_id: 'harness-turn',
+      transcript_path: codexTranscript,
+      cwd: codexCwd,
+      hook_event_name: 'Stop',
+      stop_hook_active: false,
+      last_assistant_message: 'the model said this',
+    }],
+    ['SessionStart', {
+      session_id: codexSession,
+      transcript_path: codexTranscript,
+      cwd: codexCwd,
+      hook_event_name: 'SessionStart',
+      source: 'startup',
+    }],
+    ['UserPromptSubmit', {
+      session_id: codexSession,
+      turn_id: 'harness-turn',
+      cwd: codexCwd,
+      hook_event_name: 'UserPromptSubmit',
+      prompt: 'the user typed this',
+    }],
+    // Events wmux deliberately does not map. "Ignored" must still mean silent
+    // and fast, not a slow no-op — and PreToolUse fires on EVERY Codex tool
+    // call, so a slow ignore there would be the most expensive kind.
+    ['PreToolUse', {
+      session_id: codexSession,
+      cwd: codexCwd,
+      hook_event_name: 'PreToolUse',
+      tool_name: 'Bash',
+      tool_input: { command: 'echo hi' },
+    }],
+    ['SessionEnd', { session_id: codexSession, cwd: codexCwd, hook_event_name: 'SessionEnd', reason: 'other' }],
+  ]) {
+    cases.push({
+      agent: 'codex',
+      contract: 'codexHook',
+      id: `codex:hook[${label}]`,
+      event: label,
+      matcher: label,
+      script: codexHookScript,
+      args: [],
+      stdin: 'json',
       payload,
     });
   }
