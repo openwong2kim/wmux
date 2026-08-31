@@ -111,10 +111,13 @@ function printHelp() {
 
 Usage: node recorder.mjs [options]
 
-  --legacy               Skip mcp.identify/declarePermissions. The substrate
-                         grandfathers envelope-less callers (PROTOCOL.md §4),
-                         so this is the fastest way to see events with no
-                         approval dialog. Use for quick demos / smoke tests.
+  --legacy               DEPRECATED (#1111): skip mcp.identify/declarePermissions
+                         and send no clientName. The substrate grandfathers
+                         envelope-less callers (PROTOCOL.md §4), so this is the
+                         fastest way to see events with no approval dialog —
+                         but that lane closes in the first release on or after
+                         2026-09-30, after which the request is refused. The
+                         npm smoke script no longer uses it.
   --workspace <id>       Watch a specific workspace id (default: first from
                          workspace.list).
   --types a,b,c          Comma-separated WmuxEventType filter. Default: all 8.

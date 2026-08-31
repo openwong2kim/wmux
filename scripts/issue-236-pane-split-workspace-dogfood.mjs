@@ -3,8 +3,9 @@
  *
  * Spawns an isolated packaged wmux (out/wmux-win32-x64/wmux.exe) with
  * WMUX_DATA_SUFFIX isolation, then over the pure main-pipe RPC (clientName
- * omitted → grandfather path, exactly how an external multi-agent CLI drives
- * the daemon) verifies the root fix:
+ * 'wmux-cli' → the curated internal-CLI lane, exactly how an external
+ * multi-agent CLI drives the daemon now that #1111 closes the envelope-less
+ * grandfather) verifies the root fix:
  *
  *   - With ws B globally active, `pane.split {workspaceId: wsA}` lands the new
  *     pane in the BACKGROUND ws A (not the on-screen ws B) — the core bug.
@@ -63,6 +64,12 @@ const authTokenPath = path.join(home, `.wmux${suffix}-auth-token`);
 
 function readMainToken() { try { return fs.readFileSync(authTokenPath, 'utf8').trim() || null; } catch { return null; } }
 
+// #1111: these calls used to omit clientName and ride the `legacy`
+// grandfather. That lane closes in the first release on or after
+// 2026-09-30, so the driver now identifies as 'wmux-cli' (the curated
+// internal-CLI lane, src/main/mcp/internalCli.ts) which needs no approval
+// dialog.
+const DOGFOOD_CLIENT_NAME = 'wmux-cli';
 function rpcCall(method, params = {}, { timeoutMs = 8000 } = {}) {
   return new Promise((resolve, reject) => {
     const sock = net.createConnection(mainPipe);
@@ -70,7 +77,7 @@ function rpcCall(method, params = {}, { timeoutMs = 8000 } = {}) {
     const finish = (fn) => { if (settled) return; settled = true; clearTimeout(timer); try { sock.destroy(); } catch { /* */ } fn(); };
     const timer = setTimeout(() => finish(() => reject(new Error(`rpc timeout: ${method}`))), timeoutMs);
     sock.setEncoding('utf8');
-    sock.once('connect', () => sock.write(JSON.stringify({ id, method, params, token: TOKEN }) + '\n'));
+    sock.once('connect', () => sock.write(JSON.stringify({ id, method, params, token: TOKEN, clientName: DOGFOOD_CLIENT_NAME, clientVersion: '0.0.0-dogfood' }) + '\n'));
     sock.once('error', (e) => finish(() => reject(e)));
     sock.on('data', (chunk) => {
       buf += chunk; let nl;

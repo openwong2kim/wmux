@@ -41,10 +41,15 @@
  *     we pre-flight pipeAlive() and ABORT if a real wmux is already on it —
  *     running two daemons collides on the single per-user pipe.
  *   - Reads the token from <TEST_HOME>/.wmux-auth-token once the app writes it.
- *   - Raw newline-delimited JSON-RPC over the pipe. NO clientName, so the
- *     request is recorded 'legacy' and grandfathered by RpcRouter — this runs
- *     against the production enforce-mode app without an approval dialog
- *     (same reason m0-dynamic-verify.mjs works against the packaged app).
+ *   - Raw newline-delimited JSON-RPC over the pipe, carrying clientName
+ *     'wmux-cli' so the request rides the curated internal-CLI lane
+ *     (src/main/mcp/internalCli.ts) and runs against the production
+ *     enforce-mode app without an approval dialog. It used to send NO
+ *     clientName and ride the 'legacy' grandfather; #1111 closes that lane in
+ *     the first release on or after 2026-09-30.
+ *     KNOWN GAP (#1111): events.poll / pane.getMetadata / pane.setMetadata are
+ *     NOT in WMUX_CLI_METHODS, so B2-B4 need a decision — extend the curated
+ *     allowlist or move them to the identity+approval flow.
  *   - SIGTERM then SIGKILL on cleanup; awaits the cleanup deadline before exit
  *     so the temp HOME is actually removed.
  *
@@ -108,8 +113,8 @@ Flags:
   -h, --help         Show this help.
 
 Spawns the packaged app at out/wmux-win32-x64/wmux.exe in an isolated temp
-HOME, talks raw JSON-RPC over the per-user Named Pipe (no clientName →
-grandfathered 'legacy'), runs B1-B4, and prints a results table. Numbers are
+HOME, talks raw JSON-RPC over the per-user Named Pipe (clientName 'wmux-cli'
+→ the curated internal-CLI lane), runs B1-B4, and prints a results table. Numbers are
 environment-dependent; re-run on the target machine. See
 docs/internal/substrate-perf.md.`);
   process.exit(0);
@@ -165,6 +170,8 @@ function pipeAlive() {
 // without tripping MAX_NEW_CONNECTIONS_PER_SEC=30). So unlike the one-shot
 // rpc() in m0-dynamic-verify.mjs, this keeps a long-lived socket, buffers
 // incoming data, splits on '\n', and correlates responses by request id.
+const BENCH_CLIENT_NAME = 'wmux-cli';
+
 class PipeClient {
   constructor(token) {
     this.token = token;
@@ -225,7 +232,7 @@ class PipeClient {
         reject(new Error(`rpc timeout: ${method}`));
       }, timeoutMs);
       this.pending.set(id, { resolve, reject, timer, t0 });
-      this.sock.write(JSON.stringify({ id, method, params, token: this.token }) + '\n');
+      this.sock.write(JSON.stringify({ id, method, params, token: this.token, clientName: BENCH_CLIENT_NAME, clientVersion: '0.0.0-bench' }) + '\n');
     });
   }
   close() { try { this.sock?.destroy(); } catch {} }
