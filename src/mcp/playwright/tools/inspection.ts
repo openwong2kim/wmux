@@ -398,6 +398,44 @@ export function registerInspectionTools(server: McpServer, deps: BrowserToolDeps
   // -----------------------------------------------------------------------
   // browser_screenshot
   // -----------------------------------------------------------------------
+
+  /**
+   * The coordinate basis of a screenshot, stated in the result.
+   *
+   * browser_click x/y are VIEWPORT CSS pixels, while a PNG is in device pixels
+   * — off by the devicePixelRatio on every retina display — and a fullPage or
+   * element shot is not in viewport space at all. Without this line an agent
+   * reading pixels off the image clicks the wrong place and cannot tell why.
+   * Adding a text part changes the result shape (image-only before), which is
+   * called out in the changelog.
+   */
+  const coordinateBasis = (
+    kind: 'viewport' | 'fullPage' | 'element' | 'unsupported',
+    dpr: number | null,
+  ): string => {
+    if (kind === 'fullPage') {
+      return 'Coordinates in this image are DOCUMENT coordinates — NOT usable for browser_click x/y (which are viewport CSS px). Take a viewport screenshot (omit fullPage) if you need to click by coordinate.';
+    }
+    if (kind === 'element') {
+      return 'Coordinates in this image are ELEMENT-relative — NOT usable for browser_click x/y (which are viewport CSS px).';
+    }
+    if (kind === 'unsupported') {
+      return 'This backend does not support coordinate clicks (browser_click resolves elements by ref here), so no coordinate can be read off this image.';
+    }
+    return dpr === null
+      ? 'This is a viewport capture. browser_click x/y are viewport CSS px; this image may be scaled by the display\'s devicePixelRatio, which could not be read here — divide image pixels by it before clicking.'
+      : `This is a viewport capture at devicePixelRatio ${dpr}. browser_click x/y are viewport CSS px = image pixels / ${dpr}.`;
+  };
+
+  /** Read the ratio at capture time, so the note describes THIS image. */
+  const readDpr = async (
+    page: { evaluate: (expr: string) => Promise<unknown> } | null,
+  ): Promise<number | null> => {
+    if (!page) return null;
+    const value = await page.evaluate('window.devicePixelRatio').catch(() => null);
+    return typeof value === 'number' && value > 0 ? value : null;
+  };
+
   server.tool(
     'browser_screenshot',
     'Screenshot the page or one element as a base64-encoded PNG. Requires browser_open first, even if a browser panel is already visible.',
@@ -409,10 +447,17 @@ export function registerInspectionTools(server: McpServer, deps: BrowserToolDeps
         if (!ref && (await engine.resolveWorkspaceBackend(scope.workspaceId)) === 'chrome') {
           const page = await engine.getPageForScope(scope);
           if (page) {
+            // Read the ratio immediately before the capture: a display change
+            // between the two would otherwise mislabel the image.
+            const dpr = fullPage ? null : await readDpr(page);
             const buf = await page.screenshot({ ...(fullPage && { fullPage: true }), type: 'png' });
             return {
               content: [
                 { type: 'image' as const, data: buf.toString('base64'), mimeType: 'image/png' },
+                {
+                  type: 'text' as const,
+                  text: coordinateBasis(fullPage ? 'fullPage' : 'viewport', dpr),
+                },
               ],
             };
           }
@@ -427,7 +472,10 @@ export function registerInspectionTools(server: McpServer, deps: BrowserToolDeps
             }
             const buffer = (await el.screenshot()) as Buffer;
             return {
-              content: [{ type: 'image' as const, data: buffer.toString('base64'), mimeType: 'image/png' as const }],
+              content: [
+                { type: 'image' as const, data: buffer.toString('base64'), mimeType: 'image/png' as const },
+                { type: 'text' as const, text: coordinateBasis('element', null) },
+              ],
             };
           }
         }
@@ -443,6 +491,12 @@ export function registerInspectionTools(server: McpServer, deps: BrowserToolDeps
               type: 'image' as const,
               data: result.data,
               mimeType: 'image/png' as const,
+            },
+            {
+              // The RPC lane cannot click by coordinate at all, so telling the
+              // caller how to convert pixels here would contradict itself.
+              type: 'text' as const,
+              text: coordinateBasis(fullPage ? 'fullPage' : 'unsupported', null),
             },
           ],
         };

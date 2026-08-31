@@ -30,6 +30,14 @@ const optionalSurfaceId = z
 // every createWmuxServer() instance shares one set of zod schema objects.
 const BROWSER_CLICK_SHAPE = {
   ref: z.string().optional(),
+  x: z
+    .number()
+    .optional()
+    .describe('Viewport CSS px, only when ref/smartRef is omitted. Needs y.'),
+  y: z
+    .number()
+    .optional()
+    .describe('Viewport CSS px, only when ref/smartRef is omitted. Needs x.'),
   smartRef: z
     .number()
     .optional()
@@ -326,12 +334,94 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
   // -----------------------------------------------------------------------
   server.tool(
     'browser_click',
-    'Click an element by ref (browser_snapshot) or smartRef (browser_smart_snapshot).',
+    'Click an element by ref (browser_snapshot) or smartRef (browser_smart_snapshot), or — when neither is available — at x/y. Coordinates are VIEWPORT CSS PIXELS: divide a browser_screenshot pixel by the devicePixelRatio that shot reports. A fullPage or element screenshot is in a different coordinate space and cannot be used for x/y at all. Coordinates need a live page (chrome backend); the RPC lane is ref-only.',
     BROWSER_CLICK_SHAPE,
-    async ({ ref, smartRef, double, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
+    async ({ ref, smartRef, x, y, double, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
       try {
-        // Try Playwright first
-        const page = await engine.getPageForScope(scope).catch(allowScopedRpcFallback);
+        // Coordinate clicking is an ESCAPE HATCH, not a second addressing mode:
+        // a ref survives a re-render and a coordinate does not, so a call that
+        // carries both is a mistake worth refusing rather than silently
+        // resolving in favour of one.
+        // mirrors browser-use tools/service.py coordinate clicking (set_coordinate_clicking)
+        const hasCoords = x !== undefined || y !== undefined;
+        if (hasCoords && (ref !== undefined || smartRef !== undefined)) {
+          throw new Error(
+            'Pass either ref/smartRef or x/y, not both — a ref survives a re-render and a coordinate does not.',
+          );
+        }
+        if (hasCoords && (x === undefined || y === undefined)) {
+          throw new Error('Coordinate clicks need both x and y (viewport CSS pixels).');
+        }
+
+        // Try Playwright first. The rejection is kept: on the coordinate path
+        // "no page" is reported to the caller, and "the page navigated away" or
+        // "the browser crashed" must not be dressed up as a backend limitation.
+        let pageError: unknown;
+        const page = await engine.getPageForScope(scope).catch((error) => {
+          pageError = error;
+          return allowScopedRpcFallback(error);
+        });
+
+        if (hasCoords) {
+          if (!page) {
+            const cause = pageError ? ` (${describeToolError(pageError)})` : '';
+            throw new Error(
+              `Coordinate clicks need a live browser page, which this workspace's backend did not provide${cause}. The RPC lane resolves elements by ref only — switch the workspace to the chrome backend, or click by ref from browser_snapshot.`,
+            );
+          }
+
+          // Refuse a coordinate the viewport does not contain instead of
+          // clicking nothing and reporting success. viewportSize() can be null
+          // on a CDP-attached page; only the negative check applies then.
+          if ((x as number) < 0 || (y as number) < 0) {
+            throw new Error(`Coordinates must be inside the viewport; got (${x}, ${y}).`);
+          }
+          let viewport = (page as unknown as { viewportSize?: () => { width: number; height: number } | null })
+            .viewportSize?.();
+          if (!viewport) {
+            // viewportSize() is null for a page reached over connectOverCDP —
+            // which is EVERY page on the chrome backend, i.e. the only backend
+            // where coordinate clicks run at all. Without this fallback the
+            // bounds check was dead exactly where it matters (live dogfood:
+            // x=99999 reported success). The page's own innerWidth/innerHeight
+            // is the same CSS-pixel space x/y are defined in.
+            const size = await page
+              .evaluate('[window.innerWidth, window.innerHeight]')
+              .catch(() => null);
+            if (Array.isArray(size) && typeof size[0] === 'number' && typeof size[1] === 'number') {
+              viewport = { width: size[0], height: size[1] };
+            }
+          }
+          if (viewport && ((x as number) > viewport.width || (y as number) > viewport.height)) {
+            throw new Error(
+              `Coordinates (${x}, ${y}) are outside the ${viewport.width}x${viewport.height} viewport (CSS px). Scroll the target into view first, or take a fresh screenshot.`,
+            );
+          }
+
+          // Same popup contract as a ref click — a coordinate click on a link
+          // with target=_blank opens a popup just as readily.
+          const coordWatch =
+            (await engine.resolveWorkspaceBackend(scope.workspaceId).catch(() => undefined)) ===
+            'chrome'
+              ? watchForPopup(page as unknown as { on: Function; off: Function })
+              : null;
+          try {
+            await page.mouse.click(x as number, y as number, {
+              ...(double && { clickCount: 2 }),
+            });
+            const note = coordWatch ? await coordWatch.note() : '';
+            return {
+              content: [
+                {
+                  type: 'text' as const,
+                  text: `Clicked${double ? ' (double)' : ''} at viewport CSS px (${x}, ${y})${note}`,
+                },
+              ],
+            };
+          } finally {
+            coordWatch?.dispose();
+          }
+        }
 
         if (page) {
           // A popup can only be observed on the chrome backend (see
