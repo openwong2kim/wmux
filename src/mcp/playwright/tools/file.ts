@@ -421,55 +421,83 @@ function describeUploadTimeout(message: string): string {
 interface ElementHandleLike {
   evaluate: (fn: (node: unknown) => boolean) => Promise<boolean>;
   evaluateHandle: (
-    expression: string,
+    fn: (node: unknown) => unknown,
   ) => Promise<{ asElement?: () => unknown; dispose?: () => Promise<void> } | null>;
   setInputFiles: (paths: string[], options: { timeout: number }) => Promise<void>;
 }
 
+/** The shape of the DOM nodes the proximity search walks. */
+interface ProximityNode {
+  nodeType?: number;
+  tagName?: string;
+  id?: string;
+  getAttribute?: (name: string) => string | null;
+  children?: ArrayLike<ProximityNode>;
+  parentElement?: ProximityNode | null;
+  closest?: (selector: string) => ProximityNode | null;
+}
+
 /**
- * The in-page proximity search, as source text.
+ * Find the file input at or near an anchor element.
  *
  * mirrors browser-use browser/session.py find_file_input_near_element: from the
- * anchor element, walk up to `maxHeight` parents; at each level test the node
- * itself, its descendants up to `maxDescendantDepth`, and its siblings, for an
+ * anchor, walk up to MAX_HEIGHT parents; at each level test the node itself,
+ * its descendants up to MAX_DESCENDANT_DEPTH, and its siblings, for an
  * `input[type=file]`.
  *
  * Why it is needed: real uploaders style a <button>/<label> and keep the actual
  * input visually hidden, so the ref an agent gets from a snapshot is the button,
  * and setInputFiles on a button fails with an unhelpful error.
+ *
+ * Deliberately self-contained (no imports, no closure): it is handed to
+ * `ElementHandle.evaluateHandle` AS A FUNCTION, which Playwright serialises and
+ * calls with the element as its argument. It used to be passed as a source
+ * STRING, which Playwright evaluated as an expression instead — the search
+ * never ran on the anchor at all and every styled uploader reported "no file
+ * input found" (live dogfood).
  */
-const FILE_INPUT_PROXIMITY_JS = `(anchor) => {
+export function findFileInputNearElement(anchor: unknown): unknown {
   const MAX_HEIGHT = 3;
   const MAX_DESCENDANT_DEPTH = 3;
-  const isFileInput = (n) => !!n && n.nodeType === 1 && n.tagName === 'INPUT' && String(n.getAttribute('type') || '').toLowerCase() === 'file';
+  const start = anchor as ProximityNode | null;
+  const isFileInput = (n: ProximityNode | null | undefined): boolean =>
+    !!n &&
+    n.nodeType === 1 &&
+    n.tagName === 'INPUT' &&
+    String((n.getAttribute && n.getAttribute('type')) || '').toLowerCase() === 'file';
+
   // Walking three levels up reaches sibling subtrees that can belong to a
   // DIFFERENT widget — a second upload form on the same page. When either the
   // anchor or the candidate sits in a <form>, they must sit in the SAME one;
   // otherwise the files would be attached to someone else's form.
-  const anchorForm = anchor && anchor.closest ? anchor.closest('form') : null;
-  const sameOwner = (n) => {
+  const anchorForm = start && start.closest ? start.closest('form') : null;
+  const sameOwner = (n: ProximityNode): boolean => {
     const form = n.closest ? n.closest('form') : null;
     if (anchorForm || form) return form === anchorForm;
     return true;
   };
-  const accept = (n) => isFileInput(n) && sameOwner(n);
-  const inDescendants = (n, depth) => {
+  const accept = (n: ProximityNode | null | undefined): boolean => !!n && isFileInput(n) && sameOwner(n);
+
+  const inDescendants = (n: ProximityNode | null | undefined, depth: number): ProximityNode | null => {
     if (!n || depth < 0) return null;
     if (accept(n)) return n;
-    for (const child of Array.from(n.children || [])) {
+    const kids = n.children ? Array.prototype.slice.call(n.children) : [];
+    for (const child of kids as ProximityNode[]) {
       const found = inDescendants(child, depth - 1);
       if (found) return found;
     }
     return null;
   };
-  let current = anchor;
+
+  let current: ProximityNode | null | undefined = start;
   for (let level = 0; current && level <= MAX_HEIGHT; level++) {
     if (accept(current)) return current;
     const inside = inDescendants(current, MAX_DESCENDANT_DEPTH);
     if (inside) return inside;
-    const parent = current.parentElement;
+    const parent: ProximityNode | null | undefined = current.parentElement;
     if (parent) {
-      for (const sibling of Array.from(parent.children || [])) {
+      const siblings = parent.children ? Array.prototype.slice.call(parent.children) : [];
+      for (const sibling of siblings as ProximityNode[]) {
         if (sibling === current) continue;
         if (accept(sibling)) return sibling;
         const found = inDescendants(sibling, MAX_DESCENDANT_DEPTH);
@@ -479,7 +507,7 @@ const FILE_INPUT_PROXIMITY_JS = `(anchor) => {
     current = parent;
   }
   return null;
-}`;
+}
 
 /** Hint appended when no file input can be reached from what the caller named. */
 const FILE_INPUT_PROXIMITY_HINT =
@@ -512,7 +540,7 @@ async function resolveFileInputFromRef(
 
   let handle: { asElement?: () => unknown; dispose?: () => Promise<void> } | null | undefined;
   try {
-    handle = await el.evaluateHandle(FILE_INPUT_PROXIMITY_JS);
+    handle = await el.evaluateHandle(findFileInputNearElement);
   } catch {
     return el; // probe unavailable — keep the pre-existing behaviour
   }

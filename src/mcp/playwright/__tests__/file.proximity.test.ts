@@ -26,7 +26,7 @@ vi.mock('../PlaywrightEngine', () => ({
 vi.mock('../snapshot', () => ({ resolveRef }));
 vi.mock('../../../daemon/config', () => ({ getWmuxDir: () => WMUX_DIR }));
 
-import { registerFileTools } from '../tools/file';
+import { findFileInputNearElement, registerFileTools } from '../tools/file';
 
 type ToolResult = { content: { type: 'text'; text: string }[]; isError?: boolean };
 type ToolHandler = (args: Record<string, unknown>) => Promise<ToolResult>;
@@ -66,8 +66,14 @@ function makeElement(opts: {
     dispose,
     evaluate: vi.fn(async () => opts.isFileInput),
     // Playwright hands back a JSHandle; asElement() returns the handle itself
-    // for an element and null for a null result.
-    evaluateHandle: vi.fn(async () => {
+    // for an element and null for a null result. The mock ASSERTS the call
+    // shape: a real function, which Playwright serialises and invokes with the
+    // element — passing source text instead made it an expression the page
+    // merely evaluated, and the search never ran (live dogfood).
+    evaluateHandle: vi.fn(async (fn: unknown) => {
+      if (typeof fn !== 'function') {
+        throw new Error(`evaluateHandle must be given a function, got ${typeof fn}`);
+      }
       const handle: Record<string, unknown> = { dispose };
       handle.asElement = () => opts.nearbyInput ?? null;
       return handle as { asElement?: () => unknown; dispose?: () => Promise<void> };
@@ -131,16 +137,14 @@ describe('browser_file_upload proximity search', () => {
     expect(dispose).toHaveBeenCalledTimes(1);
   });
 
-  it('[CRIT] scopes the search to the anchor\'s own form', async () => {
-    // The guard lives in the injected source, so what the unit test can assert
-    // is that the source carries it — the DOM behaviour is dogfood-covered.
+  it('[CRIT] hands evaluateHandle a callable function, not source text', async () => {
     const button = makeElement({ isFileInput: false, nearbyInput: null });
     resolveRef.mockResolvedValue(button);
     await upload({ paths: [FILE], ref: '7' });
 
-    const source = String((button.evaluateHandle.mock.calls as unknown as string[][])[0][0]);
-    expect(source).toContain("closest('form')");
-    expect(source).toContain('sameOwner');
+    const arg = (button.evaluateHandle.mock.calls as unknown as unknown[][])[0][0];
+    expect(typeof arg).toBe('function');
+    expect(arg).toBe(findFileInputNearElement);
   });
 
   it('points the anchorless selector path at the visible button ref', async () => {
