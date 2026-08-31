@@ -230,18 +230,55 @@ function getProcessArgv(pid: number): string[] | null {
   }
   // macOS / other POSIX without /proc: shell out to `ps`. (Codex
   // review #5 — Darwin builds need this path so the daemon verifier
-  // can confirm cmdline carries the daemon-script path.) `ps` joins argv
-  // with spaces and the boundaries are genuinely gone — tokenize on
-  // whitespace; the matcher compensates with a progressive re-join against
-  // known candidate paths, and an unprovable identity now refuses instead
-  // of cleaning (#1028).
+  // can confirm cmdline carries the daemon-script path.) `ps -o command=`
+  // joins argv with spaces and the boundaries are genuinely gone — tokenize
+  // on whitespace; the matcher compensates with a progressive re-join
+  // against known candidate paths, and an unprovable identity refuses
+  // instead of cleaning (#1028).
+  //
+  // `ps -o comm=` is asked for in the same breath because it returns the
+  // executable path on ONE line, spaces intact. Without that anchor a
+  // packaged install whose path contains a space (`/Applications/wmux
+  // 2.app/...`, the name macOS gives a second copy) shatters the EXECUTABLE
+  // too, and the re-join then starts inside the executable's tail fragment
+  // and can never reach the script — wmux stopped recognizing its own
+  // daemon (#1132). Stripping the comm prefix restores `[exe, ...rest]`.
   try {
-    const result = execFileSync('/bin/ps', ['-p', String(pid), '-o', 'command='], {
+    const command = execFileSync('/bin/ps', ['-p', String(pid), '-o', 'command='], {
       encoding: 'utf-8', timeout: 3000,
-    });
-    const trimmed = result.trim();
-    return trimmed.length > 0 ? tokenizeCommandLine(trimmed) : null;
+    }).trim();
+    if (command.length === 0) return null;
+    let comm = '';
+    try {
+      comm = execFileSync('/bin/ps', ['-p', String(pid), '-o', 'comm='], {
+        encoding: 'utf-8', timeout: 3000,
+      }).trim();
+    } catch { comm = ''; }
+    return psArgvFromCommand(command, comm);
   } catch { return null; }
+}
+
+/**
+ * Rebuild argv-shaped tokens from macOS `ps` output (#1132).
+ *
+ * `command=` is argv space-joined; `comm=` is argv[0] alone, whole. When the
+ * line starts with that executable path, emit it as a SINGLE token and
+ * tokenize only what follows, so the matcher's progressive re-join begins at
+ * the real entry position instead of inside a fragment of the executable.
+ * When comm is missing or is not the line's prefix (empty output, a process
+ * that rewrote argv[0]), fall back to plain whitespace tokenization — the
+ * historical behavior, which is refuse-safe.
+ *
+ * Exported for tests only.
+ */
+export function psArgvFromCommand(command: string, comm: string): string[] | null {
+  const trimmed = command.trim();
+  if (trimmed.length === 0) return null;
+  if (comm.length > 0 && (trimmed === comm || trimmed.startsWith(`${comm} `))) {
+    const rest = trimmed.slice(comm.length).trim();
+    return rest.length > 0 ? [comm, ...tokenizeCommandLine(rest)] : [comm];
+  }
+  return tokenizeCommandLine(trimmed);
 }
 
 /** Quote-aware split of a raw command line into argv-shaped tokens, so a
@@ -291,6 +328,15 @@ function tokenizeCommandLine(cmdline: string): string[] {
  *
  * Callers that cannot supply candidates get the fallback alone — refusing
  * to kill degrades safely, a false-positive kill does not.
+ *
+ * Known limitation (#1132): the fallback inspects the entry token alone, so
+ * a CROSS-HOST daemon installed under a path containing a space still fails
+ * to prove its identity on macOS — the script fragments and no candidate is
+ * available to re-join it against. Widening the fallback to re-joined spans
+ * would re-admit #1027's third defect (`node innocent.js <our path>`), and
+ * an unproven identity refuses rather than kills, so the limitation is
+ * accepted. The identity branch — the common case, same host — is fixed by
+ * the comm anchor in `psArgvFromCommand`.
  */
 export function argvIdentifiesDaemonScript(argv: string[], scriptCandidates: string[]): boolean {
   // Windows path comparison is case-insensitive; POSIX is not, and folding

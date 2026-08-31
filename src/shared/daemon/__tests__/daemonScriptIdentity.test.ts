@@ -5,6 +5,7 @@ import path from 'path';
 import { spawn, type ChildProcess } from 'child_process';
 import {
   argvIdentifiesDaemonScript,
+  psArgvFromCommand,
   killVerifiedDaemonPid,
   ensureDaemon,
   type DaemonLauncherDeps,
@@ -95,6 +96,44 @@ describe('argvIdentifiesDaemonScript — unit (#1025/#1028)', () => {
       ['/usr/bin/node', '/opt/wmux/daemon-bundle/other.js'],
       [],
     )).toBe(false);
+  });
+
+  it('#1132: a macOS install whose EXECUTABLE and script both fragment still matches', () => {
+    // Real dogfood argv from `/Applications/wmux 2.app` — the name macOS
+    // gives a second copy. `ps -o comm=` anchors argv[0] whole, so only the
+    // script fragments and the progressive re-join reaches the candidate.
+    const exe = '/Applications/wmux 2.app/Contents/MacOS/wmux';
+    const script = '/Applications/wmux 2.app/Contents/Resources/daemon-bundle/index.js';
+    const argv = psArgvFromCommand(`${exe} ${script}`, exe);
+    expect(argv).toEqual([exe, '/Applications/wmux', '2.app/Contents/Resources/daemon-bundle/index.js']);
+    expect(argvIdentifiesDaemonScript(argv!, [script])).toBe(true);
+  });
+
+  it('#1132: the trailing-argument case stays false through the same probe path', () => {
+    // Requirement 1 re-checked against comm-anchored argv: our script as a
+    // mere argument must still not verify the process.
+    const argv = psArgvFromCommand(
+      '/usr/bin/node /srv/other-tool/main.js /opt/wmux/dist/daemon-bundle/index.js',
+      '/usr/bin/node',
+    );
+    expect(argvIdentifiesDaemonScript(argv!, ['/opt/wmux/dist/daemon-bundle/index.js'])).toBe(false);
+    // ...and with a fragmented executable in front of it too.
+    const spacedExe = '/Applications/evil 2.app/Contents/MacOS/node';
+    const argv2 = psArgvFromCommand(
+      `${spacedExe} /srv/other-tool/main.js /opt/wmux/dist/daemon-bundle/index.js`,
+      spacedExe,
+    );
+    expect(argvIdentifiesDaemonScript(argv2!, ['/opt/wmux/dist/daemon-bundle/index.js'])).toBe(false);
+  });
+
+  it('#1132: psArgvFromCommand falls back to whitespace tokens without a usable comm', () => {
+    expect(psArgvFromCommand('/usr/bin/node /x/index.js', '')).toEqual(['/usr/bin/node', '/x/index.js']);
+    // comm that is not the line's prefix (argv[0] rewritten) must not be forced on.
+    expect(psArgvFromCommand('/usr/bin/node /x/index.js', '/other/bin/node'))
+      .toEqual(['/usr/bin/node', '/x/index.js']);
+    expect(psArgvFromCommand('   ', '/usr/bin/node')).toBe(null);
+    expect(psArgvFromCommand('/Applications/wmux 2.app/Contents/MacOS/wmux', '/Applications/wmux 2.app/Contents/MacOS/wmux'))
+      .toEqual(['/Applications/wmux 2.app/Contents/MacOS/wmux']);
   });
 
   it('no entry script (flags only, or bare executable) never matches', () => {
