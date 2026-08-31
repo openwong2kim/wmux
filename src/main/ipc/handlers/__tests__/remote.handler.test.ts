@@ -551,7 +551,7 @@ describe('remote.handler — sessionClose (#1129)', () => {
     expect(client.closeSession).toHaveBeenCalledWith('web-9');
   });
 
-  it('detaches every live stream on that session first — no reconnect target left behind', async () => {
+  it('detaches every live stream on that session once the destroy SUCCEEDS — no reconnect target left behind', async () => {
     const store = fakeStore([host]);
     const client = fakeClient(host);
     registerRemoteHandlers({ store: store as never, attachments: fakeAttachments() as never, clientFactory: () => client });
@@ -579,6 +579,27 @@ describe('remote.handler — sessionClose (#1129)', () => {
 
     expect(res.ok).toBe(false);
     expect(res.error).toMatch(/closing a pane destroys running work/);
+  });
+
+  // The failure-destructive ordering bug: a detach-first close that then fails
+  // leaves the session alive with every mirror of it cut and nothing to retry
+  // from. The destroy must land before anything is torn down.
+  it('leaves every attach INTACT when the destroy fails', async () => {
+    const store = fakeStore([host]);
+    const client = fakeClient(host);
+    client.closeSession.mockRejectedValueOnce(new Error('host offline'));
+    registerRemoteHandlers({ store: store as never, attachments: fakeAttachments() as never, clientFactory: () => client });
+    const sender = fakeSender(1);
+    await getHandler(IPC.REMOTE_PANE_ATTACH)({ sender }, 'h1', 'web-9');
+
+    await getHandler(IPC.REMOTE_SESSION_CLOSE)({}, 'h1', 'web-9');
+
+    expect(client.detach).not.toHaveBeenCalled();
+    // …and the attach is still idempotently addressable, so a retry (or the
+    // renderer's own detach) still has a handle to work with.
+    const again = await getHandler(IPC.REMOTE_PANE_ATTACH)({ sender }, 'h1', 'web-9') as { ok: true; attachId: string };
+    expect(again.ok).toBe(true);
+    expect(client.attach).toHaveBeenCalledTimes(1); // same stream, not a second one
   });
 
   it('reports unknown host without touching a client', async () => {

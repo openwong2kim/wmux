@@ -6,8 +6,13 @@
 // relying on EventSource's query-string token, and it drives the pane state
 // for Task 5's IPC handler instead of a DOM terminal.
 //
-// This class is observer + input only: it never calls a destroy/delete
-// endpoint on the remote host.
+// Observe + input + exactly ONE destructive verb (#1129): `closeSession`
+// (`DELETE /api/sessions/:id`), the teardown twin of `createWorkspace`. This
+// class mints sessions on the remote host, so it is also what must end them —
+// closing a remote-terminal tab would otherwise leave the shell (and the
+// workspace row the daemon derives from it) running forever. Nothing else
+// here deletes anything on the remote; `detach`/`detachAll` are LOCAL stream
+// teardown and leave the remote session untouched, on purpose.
 
 import * as crypto from 'crypto';
 import type {

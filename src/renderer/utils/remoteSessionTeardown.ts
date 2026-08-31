@@ -22,6 +22,10 @@ import {
  *     minted. A tab that merely views a session started elsewhere is left
  *     strictly alone — closing your view of somebody's running work must
  *     never end it.
+ *     NO CONFIRMATION PROMPT (decided, not an oversight): closing a remote
+ *     tab destroys immediately, exactly as closing a local pane disposes its
+ *     PTY without asking. `remoteOwned` IS the safety boundary — a prompt
+ *     would be asking the user to re-authorize a close they just performed.
  *  2. CLOSE, NOT UNMOUNT. These are called from the explicit close paths
  *     (tab X, Ctrl+W, pane/workspace teardown) only, never from a React
  *     cleanup: a remount, a reload, a tab switch, or a workspace switch must
@@ -31,7 +35,12 @@ import {
  * Best-effort by design, like `pty.dispose`: the tab is already gone from the
  * layout by the time the DELETE lands, so a failure (host offline, or a host
  * running without `--allow-input`, which refuses a close) has nothing to
- * report to and must not reject into the caller.
+ * report to and must not reject into the caller. Best-effort is NOT silent,
+ * though: the surface carrying the `remoteOwned` record is gone, so a failed
+ * close orphans that session for good — one transient network blip with no
+ * trace is a session nobody can explain later. Every failure, refused
+ * (`{ ok: false }`) or thrown, is logged with the host and session it was
+ * about.
  */
 export function destroyRemoteSessions(refs: readonly RemoteSessionRef[]): void {
   // `typeof window` rather than a bare reference: createPrefixActions (the
@@ -41,7 +50,21 @@ export function destroyRemoteSessions(refs: readonly RemoteSessionRef[]): void {
   const remote = typeof window === 'undefined' ? undefined : window.electronAPI?.remote;
   if (!remote?.sessionClose) return;
   for (const ref of refs) {
-    void remote.sessionClose(ref.hostId, ref.sessionId).catch(() => { /* see doc comment */ });
+    void remote
+      .sessionClose(ref.hostId, ref.sessionId)
+      .then((res) => {
+        if (res.ok) return;
+        console.warn(
+          `[remote] could not close session ${ref.sessionId} on host ${ref.hostId} — ` +
+          `it is still running there: ${res.error}`,
+        );
+      })
+      .catch((err: unknown) => {
+        console.warn(
+          `[remote] close of session ${ref.sessionId} on host ${ref.hostId} failed — ` +
+          `it may still be running there: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      });
   }
 }
 

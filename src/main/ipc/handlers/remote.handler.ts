@@ -498,20 +498,26 @@ export function registerRemoteHandlers(deps: RegisterRemoteHandlersDeps): () => 
       const session = assertString(sessionId, 'sessionId');
       const client = getOrCreateClient(id);
       if (!client) return { ok: false, error: 'unknown host' };
-      // Drop every live attach on this (host, session) FIRST — for any
-      // sender, since a session can legitimately be mirrored from more than
-      // one place. A stream left open against a session we are about to
-      // destroy would just feed the client's reconnect loop a target that no
-      // longer exists.
-      for (const [attachId, record] of [...attachRecords.entries()]) {
-        if (record.hostId === id && record.sessionId === session) detachAttach(attachId);
-      }
+      // DESTROY FIRST, DETACH AFTER — order matters, and the intuitive order
+      // is the wrong one. Detaching first would be failure-destructive: if
+      // the DELETE then fails (host offline, or a 403 after --allow-input was
+      // revoked), the session is still alive but every mirror of it has been
+      // cut, with no live attach left to retry from. The remote daemon's
+      // handleSessionDelete does not refuse a delete while SSE streams are
+      // open, so there is nothing to gain by going the other way.
       try {
         await client.closeSession(session);
-        return { ok: true };
       } catch (err) {
         return { ok: false, error: err instanceof Error ? err.message : String(err) };
       }
+      // The session is gone. Drop every live attach on this (host, session) —
+      // for any sender, since a session can legitimately be mirrored from
+      // more than one place — so nothing is left feeding the client's
+      // reconnect loop a target that no longer exists.
+      for (const [attachId, record] of [...attachRecords.entries()]) {
+        if (record.hostId === id && record.sessionId === session) detachAttach(attachId);
+      }
+      return { ok: true };
     }));
 
   // Attach descriptors — the persistence half of "attachments survive a

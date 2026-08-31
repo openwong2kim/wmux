@@ -105,6 +105,7 @@ describe('every explicit close path is wired to the teardown', () => {
     ['hooks/useKeyboard.ts', /destroyWorkspaceRemoteSessions\(/],
     ['hooks/useRpcBridge.ts', /destroySurfaceRemoteSession\(/],
     ['hooks/useRpcBridge.ts', /destroyRemoteSessions\(/],
+    ['hooks/useRpcBridge.ts', /destroyWorkspaceRemoteSessions\(/],
     ['components/Sidebar/Sidebar.tsx', /destroyWorkspaceRemoteSessions\(/],
     ['components/Settings/SettingsPanel.tsx', /destroyWorkspaceRemoteSessions\(/],
   ];
@@ -116,11 +117,44 @@ describe('every explicit close path is wired to the teardown', () => {
 });
 
 describe('failure handling', () => {
-  it('swallows a rejected close — the tab is already gone, there is nothing to report to', async () => {
+  it('never rejects into the caller on a thrown close, but leaves a trace', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => { /* keep the test output clean */ });
     sessionClose.mockRejectedValue(new Error('host offline'));
+
     expect(() => destroyRemoteSessions([{ hostId: 'h1', sessionId: 'web-1' }])).not.toThrow();
     // Let the rejection settle; an unhandled one would fail the run.
     await Promise.resolve();
+    await Promise.resolve();
+
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0][0]).toContain('web-1');
+    expect(warn.mock.calls[0][0]).toContain('h1');
+    expect(warn.mock.calls[0][0]).toContain('host offline');
+    warn.mockRestore();
+  });
+
+  // The orphan case: the surface (and its remoteOwned record) is already gone,
+  // so a refusal that logged nothing would be a session nobody can explain.
+  it('logs a refused close ({ ok: false }) too, not just a thrown one', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => { /* keep the test output clean */ });
+    sessionClose.mockResolvedValue({ ok: false, error: 'input-not-allowed' });
+
+    destroyRemoteSessions([{ hostId: 'h1', sessionId: 'web-1' }]);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0][0]).toContain('input-not-allowed');
+    warn.mockRestore();
+  });
+
+  it('stays quiet on success', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => { /* keep the test output clean */ });
+    destroyRemoteSessions([{ hostId: 'h1', sessionId: 'web-1' }]);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(warn).not.toHaveBeenCalled();
+    warn.mockRestore();
   });
 
   it('is a no-op when the preload bridge is absent', () => {

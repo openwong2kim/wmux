@@ -33,7 +33,7 @@ import { submitBracketedPasteToPty } from '../utils/ptyMessageDelivery';
 import { publishA2aTask } from '../events/publisher';
 import { resolvePaneAddress, activePaneTerminalPty, decideSameWsSend, decideReplyDelivery, REPLY_SUPPRESS_HINTS, countRoundTrips, maxSideMessages, REPLY_ROUND_CAP, isTerminalPtyInLeaves, resolveSelfPaneIdentity, resolveSenderPaneAddress, resolvePaneRole, findLeafPanes, type PaneAddress } from './a2aAddressing';
 import { resolveWorkspaceTarget } from './workspaceTargeting';
-import { destroyRemoteSessions, destroySurfaceRemoteSession } from '../utils/remoteSessionTeardown';
+import { destroyRemoteSessions, destroySurfaceRemoteSession, destroyWorkspaceRemoteSessions } from '../utils/remoteSessionTeardown';
 import { collectPaneTreeRemoteSessions } from '../../shared/paneUtils';
 import { findActivePtyId, buildWorkspaceListEntries } from './workspaceMirrorSnapshot';
 
@@ -664,6 +664,14 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
         void window.electronAPI.pty.dispose(ptyId).catch(() => { /* best-effort */ });
       } catch { /* best-effort */ }
     }
+    // #1129 — the remote half of the same teardown, and the same "one of the
+    // two paths forgot" bug class the comment above describes. A
+    // remote-terminal surface carries no ptyId, so the loop above cannot see
+    // it; and once removeWorkspace drops the workspace, its `remoteOwned`
+    // records go with it and the session becomes permanently unreapable.
+    // Placed under the same guards as the dispose loop: it only runs where
+    // the removal will actually happen.
+    destroyWorkspaceRemoteSessions(ws);
     store.removeWorkspace(id);
     // Confirm the removal actually landed before acknowledging it. Today this
     // cannot fail: nothing awaits between the guards above and here, so two
