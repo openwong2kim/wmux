@@ -17,6 +17,7 @@ interface CdpNode {
   backendDOMNodeId?: number;
   role?: { type: string; value: string };
   name?: { type: string; value: string };
+  value?: { type: string; value: string };
   childIds?: string[];
 }
 
@@ -27,6 +28,8 @@ interface Child {
   backendId: number;
   role: string;
   name: string;
+  /** Present for the password cases — Chrome puts the field's text here. */
+  value?: string;
 }
 
 /** Root plus one node per entry. `Iframe` roles are how a frame is hosted. */
@@ -46,6 +49,7 @@ function tree(children: Child[]): CdpNode[] {
       backendDOMNodeId: child.backendId,
       role: role(child.role),
       name: name(child.name),
+      ...(child.value !== undefined && { value: { type: 'string', value: child.value } }),
       childIds: [],
     });
   }
@@ -97,7 +101,18 @@ interface Harness {
   main: FakeDoc;
 }
 
-function makeHarness(main: FakeDoc): Harness {
+/**
+ * backendNodeIds DOM.performSearch reports for PASSWORD_FIELD_SELECTOR.
+ *
+ * Measured against real Chrome (headless chromium 1234, 2026-09-01) on a page
+ * whose same-process iframe held both an `input[type=password]` and an
+ * `input[type=text autocomplete=new-password]`: one search on the PAGE session,
+ * with no `pierce`, returned resultCount 3 — the host's field and BOTH of the
+ * child document's. backendNodeIds are unique per target, so the host's single
+ * search is the whole same-process subtree's answer, and the child frame's
+ * plaintext field came back masked end-to-end.
+ */
+function makeHarness(main: FakeDoc, passwordBackendIds: number[] = []): Harness {
   const counts = new Map<string, number>();
   const handles: string[] = [];
 
@@ -163,13 +178,21 @@ function makeHarness(main: FakeDoc): Harness {
       return { nodes: target.ax };
     }
     if (method === 'DOM.getDocument') return { root: { nodeId: docNodeId(main.frameId) } };
+    if (method === 'DOM.performSearch') {
+      return { searchId: 'pw', resultCount: passwordBackendIds.length };
+    }
+    if (method === 'DOM.getSearchResults') {
+      return { nodeIds: passwordBackendIds.map((id) => `pw:${id}`) };
+    }
     if (method === 'DOM.querySelectorAll') {
       const host = byDocNodeId().get(params?.nodeId);
       if (!host) return { nodeIds: [] };
       return { nodeIds: host.iframes.map((_, i) => iframeNodeId(host.frameId, i)) };
     }
     if (method === 'DOM.describeNode') {
-      const [, frameId, index] = String(params?.nodeId).split(':');
+      const raw = String(params?.nodeId);
+      if (raw.startsWith('pw:')) return { node: { backendNodeId: Number(raw.slice(3)) } };
+      const [, frameId, index] = raw.split(':');
       const host = flatten(main).get(frameId);
       const slot = host?.iframes[Number(index)];
       if (!slot) return {};
@@ -433,7 +456,10 @@ describe('the frame walk is bounded', () => {
     const out = await generateSnapshot(h.page, { format: 'ai' });
 
     expect(out.match(/button "Once"/g)?.length).toBe(1);
-    expect(out).toContain('could not be attached');
+    // Two slots on one document is a legitimate page, not a failure — and the
+    // contents ARE in the snapshot, under the first slot.
+    expect(out).toContain('same document as an earlier iframe');
+    expect(out).not.toContain('could not be attached');
   });
 });
 
@@ -693,5 +719,90 @@ describe('a frame cannot spend the whole snapshot, or reach the DOM fallback', (
     // for it — a DOM listing's tags are then the current truth.
     noteFrameRefsForScope(browserScopeKey(scope), null);
     expect(() => sanitizeRef(ref!, scope)).not.toThrow();
+  });
+});
+
+describe('a password inside a frame is masked (measured against real Chrome)', () => {
+  it('redacts a child document field the host session found', async () => {
+    // Backend id 950 is the child frame's `input[autocomplete=new-password]`,
+    // which Chrome hands over in PLAINTEXT — the case masking exists for. See
+    // makeHarness for the measurement that says one host-session performSearch
+    // reaches it without `pierce`.
+    const child = doc({
+      frameId: 'fp',
+      url: 'https://widget.test/login',
+      ax: tree([
+        { backendId: 950, role: 'textbox', name: 'New password', value: 'INNERPLAIN' },
+        { backendId: 951, role: 'button', name: 'Sign in' },
+      ]),
+    });
+    const h = makeHarness(
+      doc({
+        frameId: 'main',
+        ax: tree([
+          { backendId: 98, role: 'Iframe', name: 'login' },
+          { backendId: 99, role: 'textbox', name: 'Search', value: 'kittens' },
+        ]),
+        iframes: [hostedFrame(98, child)],
+      }),
+      [950],
+    );
+
+    const out = await generateSnapshot(h.page, { format: 'ai' });
+
+    expect(out).toContain('button "Sign in"');
+    expect(out).not.toContain('INNERPLAIN');
+    expect(out).toContain('[redacted:password]');
+    // Only the field the search named — an ordinary host-document textbox is
+    // not collateral damage.
+    expect(out).toContain('value="kittens"');
+  });
+});
+
+describe('a frame between documents is refused, not guessed', () => {
+  it('does not graft a frame with no settled URL', async () => {
+    const blank = doc({
+      frameId: 'fb',
+      url: '',
+      ax: tree([{ backendId: 960, role: 'button', name: 'Too early' }]),
+    });
+    const h = makeHarness(
+      doc({
+        frameId: 'main',
+        ax: tree([{ backendId: 100, role: 'Iframe', name: 'loading' }]),
+        iframes: [hostedFrame(100, blank)],
+      }),
+    );
+
+    const out = await generateSnapshot(h.page, { format: 'ai' });
+
+    // No hop can be recorded without a child URL, and a hop that skips its own
+    // check is worse than no ref at all.
+    expect(out).not.toContain('button "Too early"');
+    expect(out).toContain('still navigating');
+  });
+
+  it('refuses a ref whose frame is mid-navigation at resolution time', async () => {
+    const child = doc({
+      frameId: 'fn',
+      url: 'https://widget.test/form',
+      ax: tree([{ backendId: 970, role: 'button', name: 'Pay' }]),
+    });
+    const h = makeHarness(
+      doc({
+        frameId: 'main',
+        ax: tree([{ backendId: 101, role: 'Iframe', name: 'pay' }]),
+        iframes: [hostedFrame(101, child)],
+      }),
+    );
+    await generateSnapshot(h.page, { format: 'ai' });
+
+    // The frame is between documents. This used to be the one moment the check
+    // was skipped, i.e. the one moment the ref was accepted without proof.
+    child.url = '';
+
+    await expect(resolveRef(h.page, '0')).rejects.toBeInstanceOf(StaleRefError);
+    await expect(resolveRef(h.page, '0')).rejects.toThrow(/between documents/);
+    expect(h.handles).toEqual([]);
   });
 });

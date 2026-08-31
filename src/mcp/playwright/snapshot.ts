@@ -115,7 +115,21 @@ function descend(coord: FrameCoord, hop: FrameHop): FrameCoord {
 
 /** Why an `<iframe>`'s contents are not in the snapshot. */
 export type FrameBoundaryReason =
+  /** No document reachable through this element — removed, or never attached. */
   | 'not-attached'
+  /**
+   * The frame had no settled URL when the snapshot ran, so no hop could be
+   * recorded for it. Distinct from not-attached: the frame is there and will
+   * have contents shortly, which is a "snapshot again" answer rather than a
+   * "there is nothing here" one.
+   */
+  | 'navigating'
+  /**
+   * This document is already grafted under an earlier `<iframe>`. Two slots
+   * pointing at one document is a legitimate page, not a failure, so this
+   * reads differently from a frame that could not be read at all.
+   */
+  | 'already-grafted'
   | 'depth-cap'
   | 'count-cap'
   | 'empty';
@@ -244,6 +258,8 @@ const FRAME_TRUNCATED_NOTE = '(frame content truncated)';
 /** The sentence fragment naming why a frame was not read. */
 const FRAME_BOUNDARY_REASONS: Record<FrameBoundaryReason, string> = {
   'not-attached': '(separate document — could not be attached, contents not in this snapshot)',
+  navigating: '(separate document — still navigating, snapshot again for its contents)',
+  'already-grafted': '(same document as an earlier iframe — its contents are listed there)',
   'depth-cap': `(separate document — nested deeper than ${MAX_FRAME_DEPTH} frames, contents not in this snapshot)`,
   'count-cap': `(separate document — past the ${MAX_FRAMES}-frame budget for one snapshot, contents not in this snapshot)`,
   empty: FRAME_EMPTY_NOTE,
@@ -1296,6 +1312,16 @@ async function openOutOfProcessDocument(
  * before frames were reachable at all. A frame is never half-grafted: either
  * its nodes are in, and refs minted in it carry a route that resolves, or they
  * are not.
+ *
+ * Known limitation — the walk is not atomic. The CDP enumeration, the locator
+ * count and the per-frame trees are separate round trips, so a page that adds
+ * or removes an `<iframe>` mid-walk can have a hop recorded against an order
+ * that no longer holds. The count cross-check catches the common shape (the
+ * two enumerations disagree, and nothing is grafted), and anything that slips
+ * past it is caught at resolution time by the same count check plus the child
+ * URL re-read, which fail closed. So the cost of a race is a stale-ref error
+ * and a re-snapshot, never a wrong element — but a snapshot taken while frames
+ * are churning can be missing frames it would otherwise have had.
  */
 async function graftChildFrames(host: GraftHost, budget: GraftBudget): Promise<void> {
   let describedFrames: { nodeId: number; described: CdpDomNode | undefined }[];
@@ -1353,8 +1379,15 @@ async function graftChildFrames(host: GraftHost, budget: GraftBudget): Promise<v
     if (!hostAx) continue;
 
     const frameId = described?.frameId;
-    if (!frameId || budget.visited.has(frameId)) {
+    if (!frameId) {
       hostAx.frameBoundaryReason = 'not-attached';
+      continue;
+    }
+    if (budget.visited.has(frameId)) {
+      // Not a failure: the page legitimately points two slots at one document,
+      // and the contents ARE in the snapshot — under the first slot. Grafting
+      // them twice would mint a second set of refs for one set of elements.
+      hostAx.frameBoundaryReason = 'already-grafted';
       continue;
     }
     if (host.depth + 1 > MAX_FRAME_DEPTH) {
@@ -1384,11 +1417,22 @@ async function graftChildFrames(host: GraftHost, budget: GraftBudget): Promise<v
       continue;
     }
 
+    // A frame with no settled URL cannot be given a hop: `childUrlKey` is what
+    // makes an independent frame navigation detectable later, and an empty one
+    // would be a hop that skips its own check — a ref minted through it would
+    // resolve into whatever document that slot holds by then. Fail closed at
+    // capture time instead, so the ref is never minted.
+    const childUrlKey = documentKey(childFrame.url());
+    if (childUrlKey === undefined) {
+      hostAx.frameBoundaryReason = 'navigating';
+      continue;
+    }
+
     const hop: FrameHop = {
       hostIndex,
       hostTotal,
       hostSrcKey: documentKey(attributeOf(described, 'src')) ?? '',
-      childUrlKey: documentKey(childFrame.url()) ?? '',
+      childUrlKey,
     };
     const childCoord = descend(host.coord, hop);
 
@@ -1894,6 +1938,17 @@ export async function resolveRef(
  *
  * Returns `page` unchanged for the empty route, so every main-frame ref takes
  * exactly the path it took before frames existed.
+ *
+ * Known limitation — a frame REPLACED by another at the same position and the
+ * same URL reads as unchanged. All three checks pass: the count still matches,
+ * a document is reachable, and its URL is the recorded one. The ref then
+ * resolves inside a document that is a different instance of the same page,
+ * where role+name+nth is as good a locator as it ever was, so the outcome is
+ * an element of the right kind in the right place rather than a wrong one.
+ * Detecting the swap needs a per-document identity CDP does not expose to a
+ * locator walk (the frame's loaderId is not reachable without re-attaching a
+ * session per hop, which costs a round trip on every single ref resolution).
+ * Accepted deliberately; it is bounded by role+name still having to match.
  */
 async function resolveFrameRoot(
   page: Page,
@@ -1934,8 +1989,18 @@ async function resolveFrameRoot(
       );
     }
 
+    // Fail closed on BOTH shapes. An absent live URL used to skip the check,
+    // which turned the one moment a frame is provably mid-navigation into the
+    // one moment the ref was accepted without proof.
     const liveKey = documentKey(child.url());
-    if (liveKey !== undefined && hop.childUrlKey !== '' && liveKey !== hop.childUrlKey) {
+    if (liveKey === undefined) {
+      throw new StaleRefError(
+        `ref=${ref} is stale — ${where} is between documents right now, so it cannot be ` +
+          `shown to still be the one the ref was minted in. ` +
+          `Run browser_snapshot to get current refs.`,
+      );
+    }
+    if (liveKey !== hop.childUrlKey) {
       throw new StaleRefError(
         `ref=${ref} is stale — ${where} navigated on its own ` +
           `(${hop.childUrlKey} → ${liveKey}). Run browser_snapshot to get current refs.`,
