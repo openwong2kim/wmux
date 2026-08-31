@@ -310,6 +310,62 @@ for (const f of BUNDLED_FONTS) {
   lines.push('');
 }
 
+// --- Step 5: emit borrowed-technique attributions ---------------------------
+// Projects whose CODE is not bundled, but whose implementation approach was
+// reimplemented in wmux from reading their source. No npm dependency exists to
+// enumerate, so the notice is listed here and the borrow sites carry a
+// `mirrors <project> <file> <symbol>` comment.
+const BORROWED_SOURCES = [
+  {
+    name: 'browser-use',
+    license: 'MIT License',
+    repo: 'https://github.com/browser-use/browser-use',
+    copyright: 'Copyright (c) 2024 Gregor Zunic',
+    what:
+      'Browser-automation heuristics reimplemented in TypeScript: the nearest\n' +
+      'file-input search around a clicked element, the scrollable-container\n' +
+      'reporting rules, and the page-readiness (empty / skeleton) statistics.',
+  },
+];
+lines.push('BORROWED IMPLEMENTATION TECHNIQUES');
+lines.push('');
+lines.push('No code from the projects below is bundled with wmux. Their approach was');
+lines.push('reimplemented from the source named at each borrow site, and their license');
+lines.push('terms are reproduced here.');
+lines.push('');
+lines.push(SEP);
+lines.push('');
+for (const b of BORROWED_SOURCES) {
+  lines.push(b.name);
+  lines.push(`License: ${b.license}`);
+  lines.push(`Repository: ${b.repo}`);
+  lines.push('');
+  lines.push(b.copyright);
+  lines.push('');
+  lines.push(b.what);
+  lines.push('');
+  lines.push('Permission is hereby granted, free of charge, to any person obtaining a copy');
+  lines.push('of this software and associated documentation files (the "Software"), to deal');
+  lines.push('in the Software without restriction, including without limitation the rights');
+  lines.push('to use, copy, modify, merge, publish, distribute, sublicense, and/or sell');
+  lines.push('copies of the Software, and to permit persons to whom the Software is');
+  lines.push('furnished to do so, subject to the following conditions:');
+  lines.push('');
+  lines.push('The above copyright notice and this permission notice shall be included in all');
+  lines.push('copies or substantial portions of the Software.');
+  lines.push('');
+  lines.push('THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR');
+  lines.push('IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,');
+  lines.push('FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE');
+  lines.push('AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER');
+  lines.push('LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,');
+  lines.push('OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE');
+  lines.push('SOFTWARE.');
+  lines.push('');
+  lines.push(SEP);
+  lines.push('');
+}
+
 const rendered = lines.join('\n');
 
 if (DIGEST_ONLY) {

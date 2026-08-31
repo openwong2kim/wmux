@@ -415,6 +415,148 @@ function describeUploadTimeout(message: string): string {
 }
 
 /**
+ * The slice of Playwright's ElementHandle this module needs. Narrow on purpose
+ * so the proximity search is unit-testable against a plain object.
+ */
+interface ElementHandleLike {
+  evaluate: (fn: (node: unknown) => boolean) => Promise<boolean>;
+  evaluateHandle: (
+    fn: (node: unknown) => unknown,
+  ) => Promise<{ asElement?: () => unknown; dispose?: () => Promise<void> } | null>;
+  setInputFiles: (paths: string[], options: { timeout: number }) => Promise<void>;
+}
+
+/** The shape of the DOM nodes the proximity search walks. */
+interface ProximityNode {
+  nodeType?: number;
+  tagName?: string;
+  id?: string;
+  getAttribute?: (name: string) => string | null;
+  children?: ArrayLike<ProximityNode>;
+  parentElement?: ProximityNode | null;
+  closest?: (selector: string) => ProximityNode | null;
+}
+
+/**
+ * Find the file input at or near an anchor element.
+ *
+ * mirrors browser-use browser/session.py find_file_input_near_element: from the
+ * anchor, walk up to MAX_HEIGHT parents; at each level test the node itself,
+ * its descendants up to MAX_DESCENDANT_DEPTH, and its siblings, for an
+ * `input[type=file]`.
+ *
+ * Why it is needed: real uploaders style a <button>/<label> and keep the actual
+ * input visually hidden, so the ref an agent gets from a snapshot is the button,
+ * and setInputFiles on a button fails with an unhelpful error.
+ *
+ * Deliberately self-contained (no imports, no closure): it is handed to
+ * `ElementHandle.evaluateHandle` AS A FUNCTION, which Playwright serialises and
+ * calls with the element as its argument. It used to be passed as a source
+ * STRING, which Playwright evaluated as an expression instead — the search
+ * never ran on the anchor at all and every styled uploader reported "no file
+ * input found" (live dogfood).
+ */
+export function findFileInputNearElement(anchor: unknown): unknown {
+  const MAX_HEIGHT = 3;
+  const MAX_DESCENDANT_DEPTH = 3;
+  const start = anchor as ProximityNode | null;
+  const isFileInput = (n: ProximityNode | null | undefined): boolean =>
+    !!n &&
+    n.nodeType === 1 &&
+    n.tagName === 'INPUT' &&
+    String((n.getAttribute && n.getAttribute('type')) || '').toLowerCase() === 'file';
+
+  // Walking three levels up reaches sibling subtrees that can belong to a
+  // DIFFERENT widget — a second upload form on the same page. When either the
+  // anchor or the candidate sits in a <form>, they must sit in the SAME one;
+  // otherwise the files would be attached to someone else's form.
+  const anchorForm = start && start.closest ? start.closest('form') : null;
+  const sameOwner = (n: ProximityNode): boolean => {
+    const form = n.closest ? n.closest('form') : null;
+    if (anchorForm || form) return form === anchorForm;
+    return true;
+  };
+  const accept = (n: ProximityNode | null | undefined): boolean => !!n && isFileInput(n) && sameOwner(n);
+
+  const inDescendants = (n: ProximityNode | null | undefined, depth: number): ProximityNode | null => {
+    if (!n || depth < 0) return null;
+    if (accept(n)) return n;
+    const kids = n.children ? Array.prototype.slice.call(n.children) : [];
+    for (const child of kids as ProximityNode[]) {
+      const found = inDescendants(child, depth - 1);
+      if (found) return found;
+    }
+    return null;
+  };
+
+  let current: ProximityNode | null | undefined = start;
+  for (let level = 0; current && level <= MAX_HEIGHT; level++) {
+    if (accept(current)) return current;
+    const inside = inDescendants(current, MAX_DESCENDANT_DEPTH);
+    if (inside) return inside;
+    const parent: ProximityNode | null | undefined = current.parentElement;
+    if (parent) {
+      const siblings = parent.children ? Array.prototype.slice.call(parent.children) : [];
+      for (const sibling of siblings as ProximityNode[]) {
+        if (sibling === current) continue;
+        if (accept(sibling)) return sibling;
+        const found = inDescendants(sibling, MAX_DESCENDANT_DEPTH);
+        if (found) return found;
+      }
+    }
+    current = parent;
+  }
+  return null;
+}
+
+/** Hint appended when no file input can be reached from what the caller named. */
+const FILE_INPUT_PROXIMITY_HINT =
+  ' If the page uses a styled upload button, pass the visible upload button\'s ref instead of a selector — the nearby hidden input is found from there.';
+
+/**
+ * Resolve the element a `ref` names to the file input that should actually
+ * receive the files: the element itself when it already is one, otherwise the
+ * nearest `input[type=file]` around it. Null when neither exists.
+ */
+async function resolveFileInputFromRef(
+  el: ElementHandleLike,
+): Promise<ElementHandleLike | null> {
+  // Fail-open at every step: when the probe cannot run at all, the element the
+  // caller named is used exactly as it was before this search existed.
+  let isFileInput: boolean | null = null;
+  try {
+    isFileInput = await el.evaluate((node: unknown) => {
+      const n = node as { tagName?: string; getAttribute?: (a: string) => unknown } | null;
+      return (
+        !!n &&
+        n.tagName === 'INPUT' &&
+        String((n.getAttribute && n.getAttribute('type')) || '').toLowerCase() === 'file'
+      );
+    });
+  } catch {
+    isFileInput = null;
+  }
+  if (isFileInput !== false) return el;
+
+  let handle: { asElement?: () => unknown; dispose?: () => Promise<void> } | null | undefined;
+  try {
+    handle = await el.evaluateHandle(findFileInputNearElement);
+  } catch {
+    return el; // probe unavailable — keep the pre-existing behaviour
+  }
+  const found = handle?.asElement ? handle.asElement() : null;
+  // Playwright returns the handle ITSELF from asElement() for an element, so
+  // only a handle we are not about to use gets disposed — a null result (the
+  // page returned null) and any wrapper that is not the element included.
+  // Without this the miss path leaks a JSHandle into the page's context on
+  // every failed upload attempt.
+  if (handle && handle !== found && typeof handle.dispose === 'function') {
+    await handle.dispose().catch(() => undefined);
+  }
+  return (found as ElementHandleLike | null) ?? null;
+}
+
+/**
  * Register file-related MCP tools on the given server.
  *
  * Tools:
@@ -453,16 +595,23 @@ export function registerFileTools(server: McpServer, deps: BrowserToolDeps): voi
           if (!el) {
             throw new Error(`Could not resolve ref="${ref}" to an element.`);
           }
-          await setInputFilesTagged(el, safePaths, resolvedTimeout);
+          // The ref usually names the visible upload BUTTON, not the input.
+          const input = await resolveFileInputFromRef(el as unknown as ElementHandleLike);
+          if (!input) {
+            throw new Error(
+              `No file input found at or near ref="${ref}".` + FILE_INPUT_PROXIMITY_HINT,
+            );
+          }
+          await setInputFilesTagged(input, safePaths, resolvedTimeout);
         } else if (!(await uploadViaCdp(page, resolvedSelector, safePaths))) {
           // No CDP (or the selector matched nothing): fall back to the DOM
           // handle, which also produces the user-facing "no file input" error.
           const fileInput = await page.$(resolvedSelector);
           if (!fileInput) {
             throw new Error(
-              selector
+              (selector
                 ? `No file input element matches selector: ${resolvedSelector}`
-                : 'No file input element found on the page.',
+                : 'No file input element found on the page.') + FILE_INPUT_PROXIMITY_HINT,
             );
           }
           await setInputFilesTagged(fileInput, safePaths, resolvedTimeout);

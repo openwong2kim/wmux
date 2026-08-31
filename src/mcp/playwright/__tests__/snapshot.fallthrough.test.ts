@@ -107,7 +107,11 @@ describe('generateSnapshot — root-only fallthrough (#353)', () => {
     const out = await generateSnapshot(page as never, { format: 'ai' });
 
     expect(getAxCalls()).toBe(1); // not root-only → no retry
-    expect(page.evaluate).not.toHaveBeenCalled();
+    // The a11y path does evaluate once — the page-facts footer collector — so
+    // what must not appear is the DOM interactive listing expression.
+    expect(page.evaluate).not.toHaveBeenCalledWith(
+      expect.stringContaining('const interactiveOnly'),
+    );
     expect(out).toContain('button');
     expect(out).toContain('ref="0"');
   });
