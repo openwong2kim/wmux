@@ -225,8 +225,12 @@ describe('the ⋮ menu offers exactly what the cluster does', () => {
     // cluster keeps to icon-sized layout actions. new-remote (#1086/#1091) is
     // the same kind of deliberate menu-only addition, conditionally rendered
     // (only when a caller passes onAddRemote) rather than promoted to the
-    // icon cluster.
+    // icon cluster. split-right-remote / split-down-remote (#1140) are the
+    // same pattern again — conditionally rendered on onSplitHorizontalRemote
+    // / onSplitVerticalRemote, menu-only rather than icon cluster.
     for (const key of cluster) expect(menu).toContain(key);
-    expect(menu.filter((k) => !cluster.includes(k))).toEqual(['new-remote', 'rename-pane']);
+    expect(menu.filter((k) => !cluster.includes(k))).toEqual([
+      'new-remote', 'rename-pane', 'split-down-remote', 'split-right-remote',
+    ]);
   });
 });

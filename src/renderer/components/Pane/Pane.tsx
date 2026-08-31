@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, useMemo } from 'react';
+import { useCallback, useEffect, useState, useMemo, useRef } from 'react';
 import { Panel, Group, Separator } from 'react-resizable-panels';
 import type { PaneLeaf, Workspace } from '../../../shared/types';
 import { maybeDelegateExternalBrowser } from '../../utils/browserPaneActions';
@@ -187,6 +187,29 @@ export function pickOverlaySurfaces<T extends { surfaceType?: string }>(
   );
 }
 
+/**
+ * #1140 — where a freshly minted remote session (from AddRemotePaneModal)
+ * gets attached, given which flow opened the modal.
+ *
+ * `null` direction is the #1100 tab flow: always the pane whose ⋮ menu opened
+ * the modal, unchanged. A direction is the new split flow: `splitResult` is
+ * whatever `splitPane()` already returned by the time this runs (the caller
+ * must call it BEFORE this, in the same synchronous tick as the eventual
+ * addRemoteSurface call — see handleRemoteCreated's own comment for why that
+ * ordering matters against EmptyLeafFunnel). `splitPane` returns `false` when
+ * blocked at the per-workspace pane cap; this surfaces that as `null` — attach
+ * nowhere — rather than silently falling back to the original pane, which
+ * would put a second surface where the user asked for a new one instead.
+ */
+export function resolveRemoteAttachPaneId(
+  direction: 'horizontal' | 'vertical' | null,
+  currentPaneId: string,
+  splitResult: string | false,
+): string | null {
+  if (direction === null) return currentPaneId;
+  return splitResult || null;
+}
+
 /** The side effect the reboot-recovery pill performs on one primary-button
  *  click: the exact string written to the PTY, plus the two follow-ups the
  *  handler must apply (clear the hint / advance the progressive stage) and
@@ -286,6 +309,13 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
   const addBrowserSurface = useStore((s) => s.addBrowserSurface);
   const addRemoteSurface = useStore((s) => s.addRemoteSurface);
   const [addRemoteModalOpen, setAddRemoteModalOpen] = useState(false);
+  // #1140: the SAME modal (pick a host, mint a session) serves both the
+  // existing "New remote pane" tab flow and the new split-into-a-pane flow.
+  // null → tab (add to THIS pane, unchanged #1100 behavior); a direction →
+  // split first, then attach the minted session to the freshly created pane.
+  // A ref, not state: read synchronously inside handleRemoteCreated, which
+  // fires from the modal's async onCreated — no render needs to observe it.
+  const remoteSplitDirectionRef = useRef<'horizontal' | 'vertical' | null>(null);
   const splitPane = useStore((s) => s.splitPane);
   const closeSurface = useStore((s) => s.closeSurface);
   const updateSurfacePtyId = useStore((s) => s.updateSurfacePtyId);
@@ -415,12 +445,39 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
   }, [addBrowserSurface, pane.id, workspace.id]);
 
   const handleAddRemote = useCallback(() => {
+    remoteSplitDirectionRef.current = null;
+    setAddRemoteModalOpen(true);
+  }, []);
+
+  // #1140: same modal, but split first — a fresh pane, not another tab on
+  // this one. Mirrors handleSplitHorizontal/handleSplitVertical's direction
+  // semantics (Ctrl+D right, Ctrl+Shift+D down).
+  const handleSplitRemoteHorizontal = useCallback(() => {
+    remoteSplitDirectionRef.current = 'horizontal';
+    setAddRemoteModalOpen(true);
+  }, []);
+  const handleSplitRemoteVertical = useCallback(() => {
+    remoteSplitDirectionRef.current = 'vertical';
     setAddRemoteModalOpen(true);
   }, []);
 
   const handleRemoteCreated = useCallback((hostId: string, sessionId: string) => {
-    addRemoteSurface(pane.id, hostId, sessionId, undefined, undefined, workspace.id);
-  }, [addRemoteSurface, pane.id, workspace.id]);
+    const direction = remoteSplitDirectionRef.current;
+    remoteSplitDirectionRef.current = null;
+    // splitPane (when direction is set) creates an EMPTY leaf; EmptyLeafFunnel
+    // would otherwise race to spawn a local PTY into it. It runs here, and
+    // addRemoteSurface right after (via resolveRemoteAttachPaneId below), in
+    // the same synchronous tick (no await between them) — the leaf already
+    // carries a surface by the time React commits and the funnel's effect
+    // can observe it. The null-direction branch never calls splitPane at all,
+    // so `pane.id` there is just a truthy placeholder resolveRemoteAttachPaneId
+    // ignores in favor of currentPaneId.
+    const splitResult: string | false = direction === null ? pane.id : splitPane(pane.id, direction, workspace.id);
+    const targetPaneId = resolveRemoteAttachPaneId(direction, pane.id, splitResult);
+    if (targetPaneId) {
+      addRemoteSurface(targetPaneId, hostId, sessionId, undefined, undefined, workspace.id);
+    }
+  }, [addRemoteSurface, pane.id, splitPane, workspace.id]);
 
   const closePane = useStore((s) => s.closePane);
 
@@ -957,6 +1014,8 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
         onAddTerminal={handleAddTerminal}
         onAddBrowser={handleAddBrowser}
         onAddRemote={handleAddRemote}
+        onSplitHorizontalRemote={handleSplitRemoteHorizontal}
+        onSplitVerticalRemote={handleSplitRemoteVertical}
       />
       {addRemoteModalOpen && (
         <AddRemotePaneModal

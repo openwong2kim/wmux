@@ -194,6 +194,12 @@ interface SurfaceTabsProps {
    *  callers/tests that mount this component standalone keep working
    *  unchanged — omitted just drops the menu item. */
   onAddRemote?: () => void;
+  /** #1140 — split this pane side-by-side into a fresh remote-terminal pane,
+   *  instead of a tab on this one. Same optionality reasoning as onAddRemote:
+   *  omitted just drops the menu item. */
+  onSplitHorizontalRemote?: () => void;
+  /** #1140 — split this pane stacked into a fresh remote-terminal pane. */
+  onSplitVerticalRemote?: () => void;
   /**
    * How the pane-action cluster renders. Pane.tsx owns this because it is the
    * Settings toggle AND the width check — the cluster is fixed-width and
@@ -217,6 +223,8 @@ export default function SurfaceTabs({
   onAddTerminal,
   onAddBrowser,
   onAddRemote,
+  onSplitHorizontalRemote,
+  onSplitVerticalRemote,
   actionsMode,
 }: SurfaceTabsProps) {
   const t = useT();
@@ -411,6 +419,18 @@ export default function SurfaceTabs({
       icon: <IconExternalLink size={14} />,
       onSelect: onAddRemote,
     }] : []),
+    ...(onSplitHorizontalRemote ? [{
+      key: 'split-right-remote',
+      label: t('pane.splitRightRemote'),
+      icon: <IconSplitRight size={14} />,
+      onSelect: onSplitHorizontalRemote,
+    }] : []),
+    ...(onSplitVerticalRemote ? [{
+      key: 'split-down-remote',
+      label: t('pane.splitDownRemote'),
+      icon: <IconSplitDown size={14} />,
+      onSelect: onSplitVerticalRemote,
+    }] : []),
     {
       key: 'rename-pane',
       label: t('pane.rename'),
@@ -439,7 +459,8 @@ export default function SurfaceTabs({
       onSelect: toggleZoom,
     },
   ], [
-    t, onSplitHorizontal, onSplitVertical, onAddBrowser, onAddRemote, startPaneRename,
+    t, onSplitHorizontal, onSplitVertical, onAddBrowser, onAddRemote,
+    onSplitHorizontalRemote, onSplitVerticalRemote, startPaneRename,
     stashChord, stashDisabled, stashTooltip, stashThisPane, isZoomed, toggleZoom,
   ]);
 
