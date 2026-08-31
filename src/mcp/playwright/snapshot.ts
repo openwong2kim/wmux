@@ -1,4 +1,4 @@
-import type { Page, Frame, ElementHandle } from 'playwright-core';
+import type { Page, Frame, Locator, ElementHandle } from 'playwright-core';
 import { buildDomSnapshotExpression } from './dom-intelligence';
 import {
   REDACTED_PASSWORD,
@@ -191,6 +191,17 @@ const INTERACTIVE_ROLES = new Set([
  * FRAME_BOUNDARY_NOTE for why the contents are not stitched in instead.
  */
 const IFRAME_ROLES = new Set(['Iframe', 'IframePresentational']);
+
+/**
+ * The frame elements a hop counts, in the one form both sides can agree on.
+ *
+ * The capture side asks CDP `DOM.querySelectorAll` for this selector and the
+ * resolver asks a Playwright locator for it, and a hop's index is only sound
+ * while those two enumerate the SAME elements in the SAME order — both are
+ * document order over the same selector, so they do. `frame` is in the set
+ * because a legacy frameset page has frames and no iframes.
+ */
+const FRAME_ELEMENT_SELECTOR = 'iframe,frame';
 
 /**
  * What an iframe node says instead of its contents.
@@ -1306,6 +1317,75 @@ export async function resolveRef(
 }
 
 /**
+ * Walk a ref's frame route and hand back the document it was minted in.
+ *
+ * Three checks per hop, all of them fail-closed — a frame ref that cannot be
+ * proven to still name the same document is an error, never a best guess:
+ *
+ *  1. the host document still holds exactly as many frames as it did, so the
+ *     positional index still counts the same population;
+ *  2. the frame at that position still has a document we can reach (a frame
+ *     that was removed, or is not yet attached, resolves to null);
+ *  3. that document is still the one the ref was minted against — the live
+ *     `frame.url()` re-read that catches a frame which navigated on its own
+ *     (review ⑬), which no page-level URL check can see.
+ *
+ * Returns `page` unchanged for the empty route, so every main-frame ref takes
+ * exactly the path it took before frames existed.
+ */
+async function resolveFrameRoot(
+  page: Page,
+  path: FrameHop[],
+  ref: string,
+): Promise<Page | Frame> {
+  if (path.length === 0) return page;
+
+  let root: Page | Frame = page;
+  for (let depth = 0; depth < path.length; depth++) {
+    const hop = path[depth];
+    const where = `frame ${depth + 1} of ${path.length} on the route (${hop.hostSrcKey || 'about:blank'})`;
+
+    const frames: Locator = root.locator(FRAME_ELEMENT_SELECTOR);
+    const count = await frames.count();
+    if (count !== hop.hostTotal) {
+      throw new StaleRefError(
+        `ref=${ref} is stale — the document holding ${where} now has ${count} iframe(s), ` +
+          `not the ${hop.hostTotal} the last snapshot listed, so the ref no longer identifies ` +
+          `one frame. Run browser_snapshot to get current refs.`,
+      );
+    }
+
+    // elementHandle().contentFrame() rather than Locator.contentFrame(): a
+    // FrameLocator can search but cannot say what it is looking at, and the
+    // URL re-read below is the whole point of the hop.
+    const handle: ElementHandle | null = await frames
+      .nth(hop.hostIndex)
+      .elementHandle()
+      .catch(() => null);
+    const child: Frame | null = handle
+      ? await handle.contentFrame().catch(() => null)
+      : null;
+    if (!child) {
+      throw new StaleRefError(
+        `ref=${ref} is stale — ${where} no longer has a reachable document. ` +
+          `Run browser_snapshot to get current refs.`,
+      );
+    }
+
+    const liveKey = documentKey(child.url());
+    if (liveKey !== undefined && hop.childUrlKey !== '' && liveKey !== hop.childUrlKey) {
+      throw new StaleRefError(
+        `ref=${ref} is stale — ${where} navigated on its own ` +
+          `(${hop.childUrlKey} → ${liveKey}). Run browser_snapshot to get current refs.`,
+      );
+    }
+
+    root = child;
+  }
+  return root;
+}
+
+/**
  * Resolve a ref through the a11y refMap stored by generateSnapshot().
  *
  * Throws StaleRefError rather than returning a guess whenever the ref can be
@@ -1352,10 +1432,29 @@ async function resolveRefViaAxMap(
   // the nth-match count below is taken over the whole page and can land on an
   // identical role+name that the caller deliberately scoped out.
   const scopeSelector = pageRefScopes.get(page);
+
+  // A selector scope and a frame route are two different answers to "where do
+  // I count from", and there is no sound way to combine them: the selector was
+  // resolved in the main document, so it cannot name an element inside a
+  // frame, and applying it after the hops would silently re-scope the search to
+  // whatever that selector happens to match in the child document. Refused
+  // rather than guessed — a scoped snapshot never mints frame refs anyway
+  // (generateScopedSnapshot does not graft), so this can only be reached by
+  // replaying a ref across a change of snapshot mode.
+  if (target.framePath.length > 0 && scopeSelector !== undefined) {
+    throw new StaleRefError(
+      `ref=${ref} was minted inside an iframe, but the latest snapshot was scoped to ` +
+        `"${scopeSelector}" — a selector scope cannot reach into a frame. ` +
+        `Run browser_snapshot without a selector to get current refs.`,
+    );
+  }
+
+  const frameRoot = await resolveFrameRoot(page, target.framePath, ref);
+
   let count: number;
   let locator: ReturnType<Page['getByRole']>;
   try {
-    const root = scopeSelector ? page.locator(scopeSelector).first() : page;
+    const root = scopeSelector ? page.locator(scopeSelector).first() : frameRoot;
     locator = root.getByRole(target.role as any, {
       name: target.name || undefined,
       exact: true,
