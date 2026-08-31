@@ -132,6 +132,22 @@ describe('argvIdentifiesDaemonScript — unit (#1025/#1028)', () => {
     expect(psArgvFromCommand('/usr/bin/node /x/index.js', '/other/bin/node'))
       .toEqual(['/usr/bin/node', '/x/index.js']);
     expect(psArgvFromCommand('   ', '/usr/bin/node')).toBe(null);
+    // A TRUNCATED comm that happens to be a prefix must not cut mid-path:
+    // the remainder would not start with '/' or '-', so the strip is refused.
+    expect(psArgvFromCommand(
+      '/Applications/wmux 2.app/Contents/MacOS/wmux /Applications/wmux 2.app/x/daemon-bundle/index.js',
+      '/Applications/wmux',
+    )).toEqual([
+      '/Applications/wmux', '2.app/Contents/MacOS/wmux',
+      '/Applications/wmux', '2.app/x/daemon-bundle/index.js',
+    ]);
+    // Runtime flags after the executable are a legitimate remainder.
+    expect(psArgvFromCommand(
+      '/Applications/wmux 2.app/Contents/MacOS/wmux --max-old-space-size=4096 /a/b.js',
+      '/Applications/wmux 2.app/Contents/MacOS/wmux',
+    )).toEqual([
+      '/Applications/wmux 2.app/Contents/MacOS/wmux', '--max-old-space-size=4096', '/a/b.js',
+    ]);
     expect(psArgvFromCommand('/Applications/wmux 2.app/Contents/MacOS/wmux', '/Applications/wmux 2.app/Contents/MacOS/wmux'))
       .toEqual(['/Applications/wmux 2.app/Contents/MacOS/wmux']);
   });

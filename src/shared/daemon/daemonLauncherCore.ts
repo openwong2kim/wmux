@@ -250,8 +250,11 @@ function getProcessArgv(pid: number): string[] | null {
     if (command.length === 0) return null;
     let comm = '';
     try {
+      // Shorter budget than the command= probe on purpose: this call is an
+      // optional refinement, and two 3s probes back to back would double the
+      // worst-case synchronous block on the launch path.
       comm = execFileSync('/bin/ps', ['-p', String(pid), '-o', 'comm='], {
-        encoding: 'utf-8', timeout: 3000,
+        encoding: 'utf-8', timeout: 1000,
       }).trim();
     } catch { comm = ''; }
     return psArgvFromCommand(command, comm);
@@ -269,6 +272,13 @@ function getProcessArgv(pid: number): string[] | null {
  * that rewrote argv[0]), fall back to plain whitespace tokenization — the
  * historical behavior, which is refuse-safe.
  *
+ * The strip is also rejected when what follows is neither an absolute path
+ * nor a flag: a platform whose `comm` is TRUNCATED can end mid-path and still
+ * pass the prefix test (`/Applications/wmux` against `/Applications/wmux
+ * 2.app/...`), which would cut at the wrong boundary. macOS returns comm
+ * whole, so the real spawn shape — an absolute script path, optionally behind
+ * runtime flags — always survives this check.
+ *
  * Exported for tests only.
  */
 export function psArgvFromCommand(command: string, comm: string): string[] | null {
@@ -276,7 +286,10 @@ export function psArgvFromCommand(command: string, comm: string): string[] | nul
   if (trimmed.length === 0) return null;
   if (comm.length > 0 && (trimmed === comm || trimmed.startsWith(`${comm} `))) {
     const rest = trimmed.slice(comm.length).trim();
-    return rest.length > 0 ? [comm, ...tokenizeCommandLine(rest)] : [comm];
+    if (rest.length === 0) return [comm];
+    if (rest.startsWith('/') || rest.startsWith('-')) {
+      return [comm, ...tokenizeCommandLine(rest)];
+    }
   }
   return tokenizeCommandLine(trimmed);
 }
