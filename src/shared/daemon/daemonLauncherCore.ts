@@ -193,7 +193,7 @@ function getProcessImageName(pid: number): string | null {
  * deprecated and this path runs at most once per ensureDaemon() call.
  * Returns null on any failure; callers must treat null as "can't verify".
  */
-function getProcessCommandLine(pid: number): string | null {
+function getProcessArgv(pid: number): string[] | null {
   if (process.platform === 'win32') {
     try {
       const systemRoot = process.env.SystemRoot || 'C:\\Windows';
@@ -211,26 +211,87 @@ function getProcessCommandLine(pid: number): string | null {
         { encoding: 'utf-8', timeout: 5000, windowsHide: true },
       );
       const trimmed = result.trim();
-      return trimmed.length > 0 ? trimmed : null;
+      // The CIM string quotes arguments that carry spaces; the quote-aware
+      // tokenizer reconstructs the exact argv.
+      return trimmed.length > 0 ? tokenizeCommandLine(trimmed) : null;
     } catch { return null; }
   }
-  // Linux: /proc/<pid>/cmdline carries the argv joined by NUL.
+  // Linux: /proc/<pid>/cmdline is argv NUL-separated — the one platform
+  // where the exact array is recoverable. #1028: joining it with spaces and
+  // re-tokenizing shattered any install path containing a space, which is
+  // what could turn wmux's OWN daemon into a "mismatch" downstream. Keep
+  // the array; never round-trip it through a space-joined string.
   if (process.platform === 'linux') {
     try {
       const raw = fs.readFileSync(`/proc/${pid}/cmdline`, 'utf-8');
-      return raw.replace(/\0/g, ' ').trim() || null;
+      const argv = raw.split('\0').filter((part) => part.length > 0);
+      return argv.length > 0 ? argv : null;
     } catch { return null; }
   }
   // macOS / other POSIX without /proc: shell out to `ps`. (Codex
   // review #5 — Darwin builds need this path so the daemon verifier
-  // can confirm cmdline carries the daemon-script path.)
+  // can confirm cmdline carries the daemon-script path.) `ps -o command=`
+  // joins argv with spaces and the boundaries are genuinely gone — tokenize
+  // on whitespace; the matcher compensates with a progressive re-join
+  // against known candidate paths, and an unprovable identity refuses
+  // instead of cleaning (#1028).
+  //
+  // `ps -o comm=` is asked for in the same breath because it returns the
+  // executable path on ONE line, spaces intact. Without that anchor a
+  // packaged install whose path contains a space (`/Applications/wmux
+  // 2.app/...`, the name macOS gives a second copy) shatters the EXECUTABLE
+  // too, and the re-join then starts inside the executable's tail fragment
+  // and can never reach the script — wmux stopped recognizing its own
+  // daemon (#1132). Stripping the comm prefix restores `[exe, ...rest]`.
   try {
-    const result = execFileSync('/bin/ps', ['-p', String(pid), '-o', 'command='], {
+    const command = execFileSync('/bin/ps', ['-p', String(pid), '-o', 'command='], {
       encoding: 'utf-8', timeout: 3000,
-    });
-    const trimmed = result.trim();
-    return trimmed.length > 0 ? trimmed : null;
+    }).trim();
+    if (command.length === 0) return null;
+    let comm = '';
+    try {
+      // Shorter budget than the command= probe on purpose: this call is an
+      // optional refinement, and two 3s probes back to back would double the
+      // worst-case synchronous block on the launch path.
+      comm = execFileSync('/bin/ps', ['-p', String(pid), '-o', 'comm='], {
+        encoding: 'utf-8', timeout: 1000,
+      }).trim();
+    } catch { comm = ''; }
+    return psArgvFromCommand(command, comm);
   } catch { return null; }
+}
+
+/**
+ * Rebuild argv-shaped tokens from macOS `ps` output (#1132).
+ *
+ * `command=` is argv space-joined; `comm=` is argv[0] alone, whole. When the
+ * line starts with that executable path, emit it as a SINGLE token and
+ * tokenize only what follows, so the matcher's progressive re-join begins at
+ * the real entry position instead of inside a fragment of the executable.
+ * When comm is missing or is not the line's prefix (empty output, a process
+ * that rewrote argv[0]), fall back to plain whitespace tokenization — the
+ * historical behavior, which is refuse-safe.
+ *
+ * The strip is also rejected when what follows is neither an absolute path
+ * nor a flag: a platform whose `comm` is TRUNCATED can end mid-path and still
+ * pass the prefix test (`/Applications/wmux` against `/Applications/wmux
+ * 2.app/...`), which would cut at the wrong boundary. macOS returns comm
+ * whole, so the real spawn shape — an absolute script path, optionally behind
+ * runtime flags — always survives this check.
+ *
+ * Exported for tests only.
+ */
+export function psArgvFromCommand(command: string, comm: string): string[] | null {
+  const trimmed = command.trim();
+  if (trimmed.length === 0) return null;
+  if (comm.length > 0 && (trimmed === comm || trimmed.startsWith(`${comm} `))) {
+    const rest = trimmed.slice(comm.length).trim();
+    if (rest.length === 0) return [comm];
+    if (rest.startsWith('/') || rest.startsWith('-')) {
+      return [comm, ...tokenizeCommandLine(rest)];
+    }
+  }
+  return tokenizeCommandLine(trimmed);
 }
 
 /** Quote-aware split of a raw command line into argv-shaped tokens, so a
@@ -247,44 +308,78 @@ function tokenizeCommandLine(cmdline: string): string[] {
 }
 
 /**
- * Does this command line invoke one of wmux's daemon entry-script paths?
+ * Does this argv invoke one of wmux's daemon entry scripts? (#1025/#1028 redo)
  *
- * #1019 review: `.includes()` on the whole raw string has no path-boundary
- * awareness, so the bare `'daemon-bundle'` marker matches an unrelated
- * `/srv/my-daemon-bundle-backup/index.js` (that string genuinely contains
- * `daemon-bundle` as a substring) on a recycled PID. Segment-based matching
- * fixes exactly that: tokenize the cmdline (quote-aware, so a Windows path
- * with spaces in one argument isn't split apart), split each token on `/`
- * or `\`, and require the KNOWN marker to occupy its own path segment(s) —
- * `my-daemon-bundle-backup` is one segment, not two, so it can never equal
- * the segment `'daemon-bundle'` no matter what substring it contains.
+ * Decided from the ENTRY-SCRIPT POSITION, never from every token. The daemon
+ * is spawned `<node|electron> <script>` (see spawnDaemon), so the entry
+ * script is the first non-flag token after the executable. #1027's third
+ * defect was any-token comparison: `vim /path/daemon-bundle/index.js`
+ * carries our script path in argv and "verified" as the daemon.
  *
- * This does not (and cannot) resolve the adjacent, fuzzier case of a
- * genuinely unrelated program that happens to be installed at a path whose
- * LAST TWO segments are literally `daemon/index.js` — that is a real path
- * shape collision, not a substring artifact, and is accepted as a residual
- * false-positive risk the way it always has been (this marker was never the
- * only signal; image-name checks and `definitiveOnly` gate what a match is
- * allowed to authorize).
+ * Two signals, strongest first:
+ *
+ * **Identity.** `scriptCandidates` are the exact paths THIS host would spawn
+ * (`deps.resolveDaemonScriptCandidates()`). A match at the entry position is
+ * proof, not a pattern. On platforms whose probe returns a space-joined line
+ * (macOS `ps`), a path with spaces arrives shattered across tokens — so the
+ * comparison progressively re-joins tokens from the entry position, letting
+ * a known candidate still match exactly. (On Linux the probe preserves the
+ * NUL-split argv and no re-join is ever needed; on Windows the CIM command
+ * line is quoted and the tokenizer keeps spaced paths whole.)
+ *
+ * **Exclusive cross-host fallback (#1001).** A daemon spawned by the OTHER
+ * host kind (Electron vs the headless CLI) runs a script this host's
+ * candidate list cannot name. Every packaged install's entry script is
+ * `.../daemon-bundle/index.js` (package.json `build:daemon` esbuild
+ * outfile), so accept EXACTLY that shape — at the entry position only, with
+ * exact segment equality. #1027's second defect was `startsWith`: it
+ * accepted `daemon-bundler/…` and `daemon-bundle-backup/…`, which are other
+ * programs' names, not a renamed wmux directory. A cross-host DEV daemon
+ * (tsc layout, no bundle) is deliberately not covered: refusing degrades to
+ * the respawn budget, while a generic `daemon/index.js` marker is the exact
+ * false positive #1025 reproduced by execution.
+ *
+ * Callers that cannot supply candidates get the fallback alone — refusing
+ * to kill degrades safely, a false-positive kill does not.
+ *
+ * Known limitation (#1132): the fallback inspects the entry token alone, so
+ * a CROSS-HOST daemon installed under a path containing a space still fails
+ * to prove its identity on macOS — the script fragments and no candidate is
+ * available to re-join it against. Widening the fallback to re-joined spans
+ * would re-admit #1027's third defect (`node innocent.js <our path>`), and
+ * an unproven identity refuses rather than kills, so the limitation is
+ * accepted. The identity branch — the common case, same host — is fixed by
+ * the comm anchor in `psArgvFromCommand`.
  */
-function cmdlineMatchesDaemonScript(cmdline: string): boolean {
-  for (const token of tokenizeCommandLine(cmdline)) {
-    const segments = token.replace(/\\/g, '/').split('/').filter(Boolean);
-    for (let i = 0; i < segments.length; i++) {
-      // 'daemon-bundle' needs to START this segment, not equal it exactly —
-      // a build/test variant may suffix it (`daemon-bundle-fake-index.js`,
-      // a hashed hot-reload dir, etc), and `startsWith` still accepts that.
-      // It still rejects the false positive this fix exists for: a `my-`
-      // PREFIX before the marker (`my-daemon-bundle-backup`) fails
-      // `startsWith('daemon-bundle')`, because the marker isn't at the
-      // segment's start there — that's the actual boundary that matters,
-      // not "is this the ENTIRE segment".
-      if (segments[i].startsWith('daemon-bundle')) return true;
-      if (segments[i] === 'daemon' && segments[i + 1] === 'daemon' && segments[i + 2] === 'index.js') return true;
-      if (segments[i] === 'daemon' && segments[i + 1] === 'index.js') return true;
+export function argvIdentifiesDaemonScript(argv: string[], scriptCandidates: string[]): boolean {
+  // Windows path comparison is case-insensitive; POSIX is not, and folding
+  // case there would accept a genuinely different file.
+  const normalize = (raw: string): string => {
+    const slashed = raw.replace(/\\/g, '/');
+    return process.platform === 'win32' ? slashed.toLowerCase() : slashed;
+  };
+
+  let entryIdx = -1;
+  for (let i = 1; i < argv.length; i++) {
+    if (!argv[i].startsWith('-')) { entryIdx = i; break; }
+  }
+  if (entryIdx === -1) return false;
+
+  if (scriptCandidates.length > 0) {
+    const wanted = new Set(scriptCandidates.map(normalize));
+    let joined = '';
+    for (let k = entryIdx; k < argv.length; k++) {
+      joined = joined.length === 0 ? argv[k] : `${joined} ${argv[k]}`;
+      if (wanted.has(normalize(joined))) return true;
     }
   }
-  return false;
+
+  const segments = normalize(argv[entryIdx]).split('/').filter(Boolean);
+  return (
+    segments.length >= 2 &&
+    segments[segments.length - 2] === 'daemon-bundle' &&
+    segments[segments.length - 1] === 'index.js'
+  );
 }
 
 export interface DaemonPingResult {
@@ -966,11 +1061,12 @@ export async function ensureDaemon(deps: DaemonLauncherDeps): Promise<DaemonInfo
     //
     //   (a) Verified-daemon → kill, then spawn. Safe because we know
     //       what we're killing.
-    //   (b) Verified-stale-reuse (we are sure the PID is NOT our daemon
-    //       anymore — it's ourselves, an unrelated program, or another
-    //       Electron app whose cmdline doesn't carry the daemon script
-    //       path) → don't kill, but the stale-files cleanup + spawn
-    //       path below is safe because the actual daemon is gone.
+    //   (b) Verified-stale-reuse (the PID is provably NOT our daemon —
+    //       it's ourselves) → don't kill; the stale-files cleanup + spawn
+    //       path below is safe because the actual daemon is gone. A mere
+    //       cmdline mismatch is NOT proof since #1025's redo (#1028): an
+    //       unprovable path can be our own daemon, so that case refuses /
+    //       asks instead of cleaning.
     //   (c) Unverified-live (process is alive but we couldn't read its
     //       image or command line at all) → refuse to act. Spawning over
     //       an unverified live daemon would orphan its PTYs and produce
@@ -1037,8 +1133,8 @@ export async function ensureDaemon(deps: DaemonLauncherDeps): Promise<DaemonInfo
               `could be a daemon spawned by a different host (Electron vs headless CLI); checking cmdline before deciding`,
           );
         }
-        const cmdline = getProcessCommandLine(existingPid);
-        if (cmdline === null) {
+        const argv = getProcessArgv(existingPid);
+        if (argv === null) {
           // (c) Lookup failed — same recovery dance as the image path, and the
           // same escalated re-ping FIRST. The image already matches wmux here,
           // so a daemon that answers a ping is almost certainly the real one:
@@ -1071,12 +1167,48 @@ export async function ensureDaemon(deps: DaemonLauncherDeps): Promise<DaemonInfo
             `[launcher] user approved cleanup of unverified PID ${existingPid} (cmdline lookup failed)`,
           );
         } else {
-          const cmdlineMatches = cmdlineMatchesDaemonScript(cmdline);
+          // #1028: a resolver throw must degrade to "no candidates" (the
+          // exact-shape fallback alone), never crash the launcher — #1027
+          // called it outside every try/catch.
+          let scriptCandidates: string[] = [];
+          try { scriptCandidates = deps.resolveDaemonScriptCandidates(); } catch { /* shape-only */ }
+          const cmdlineMatches = argvIdentifiesDaemonScript(argv, scriptCandidates);
           if (!cmdlineMatches) {
-            // (b) Same image but different app (e.g. another Electron
-            // tool). Don't kill, but the cleanup path below is safe.
+            // (b) Same image, argv does not identify the daemon script.
+            // #1027's disqualifying defect lived here: under identity
+            // matching, a mismatch no longer proves "someone else's app on
+            // a recycled PID" — it can also be wmux's OWN daemon whose path
+            // this host failed to prove (a space-joined `ps` line on macOS,
+            // a throwing resolver). Cleaning + spawning on that ambiguity
+            // IS the #537/#543 split-brain. So this branch now refuses by
+            // default (#1028): escalated re-ping first — a process that
+            // answers on the authed pipe is our daemon regardless of path
+            // proof — then the user decides; cleanup happens only on
+            // explicit approval, exactly like the blocked-probe paths.
+            const outcome = await recoverFromBlockedProbe({
+              token,
+              reping: (timeoutMs) => pingDaemon(pipeName, token, timeoutMs),
+              sleep: (ms) => new Promise<void>((resolve) => setTimeout(resolve, ms)),
+              askUser: () =>
+                deps.askUserToRecoverFromStalePid({
+                  reason: `PID ${existingPid} (image "${imageName}") is alive but its command line does not identify the wmux daemon script — an unrelated process on a recycled PID, or a wmux daemon whose script path could not be proven`,
+                  pid: existingPid,
+                  pidFile,
+                }),
+            });
+            if (outcome === 'reuse') {
+              (deps.log ?? console.log)(
+                `[launcher] Daemon (PID ${existingPid}) answered escalated re-ping despite an unproven cmdline — reusing, no kill`,
+              );
+              return { pid: existingPid, authToken: token, pipeName, spawned: false };
+            }
+            if (outcome === 'refuse') {
+              throw new Error(
+                `[launcher] daemon.pid=${existingPid} alive but its command line does not identify the wmux daemon script; refusing to spawn over a possibly-live daemon. Manually delete ${pidFile} if you have verified the daemon is gone (or in elevated PowerShell: taskkill /F /PID ${existingPid}).`,
+              );
+            }
             (deps.warn ?? console.warn)(
-              `[launcher] PID ${existingPid} image matches but cmdline does not reference daemon script — stale-PID reuse by sibling Electron app, cleaning + spawning fresh`,
+              `[launcher] user approved cleanup of unproven PID ${existingPid} (cmdline mismatch)`,
             );
           } else {
             // (a) Verified wmux daemon (image+cmdline match) that missed the
@@ -1285,7 +1417,7 @@ export async function ensureDaemon(deps: DaemonLauncherDeps): Promise<DaemonInfo
  * Best-effort: never throws. Returns true only when a verified daemon was
  * signalled.
  */
-export function killDaemonByPidFile(): boolean {
+export function killDaemonByPidFile(scriptCandidates: string[] = []): boolean {
   try {
     const wmuxDir = getWmuxDir();
     const pidStr = fs.readFileSync(path.join(wmuxDir, 'daemon.pid'), 'utf8').trim();
@@ -1293,7 +1425,7 @@ export function killDaemonByPidFile(): boolean {
     // Before-quit mode: indeterminate verification still proceeds — this
     // path runs seconds after we were actively talking to that PID, so
     // reuse is near-impossible and an orphan is the worse outcome.
-    return killVerifiedDaemonPid(pid, { definitiveOnly: false });
+    return killVerifiedDaemonPid(pid, { definitiveOnly: false, scriptCandidates });
   } catch {
     return false;
   }
@@ -1320,7 +1452,7 @@ export function killDaemonByPidFile(): boolean {
  */
 export function killVerifiedDaemonPid(
   pid: number,
-  opts: { definitiveOnly: boolean },
+  opts: { definitiveOnly: boolean; scriptCandidates?: string[] },
 ): boolean {
   try {
     if (!Number.isFinite(pid) || pid <= 0 || pid === process.pid) return false;
@@ -1344,8 +1476,8 @@ export function killVerifiedDaemonPid(
     if (image === null) {
       if (opts.definitiveOnly) return false; // indeterminate — refuse
     }
-    const cmdline = getProcessCommandLine(pid);
-    if (cmdline === null) {
+    const argv = getProcessArgv(pid);
+    if (argv === null) {
       // `definitiveOnly` already refuses on any indeterminate cmdline. Below
       // that threshold, a null cmdline COMBINED with an already-confirmed
       // image mismatch is refused too: neither signal alone proves the PID
@@ -1354,7 +1486,7 @@ export function killVerifiedDaemonPid(
       // mismatch blocks the kill — it just needs the second, cmdline signal
       // to also fail to clear it, rather than mismatch alone.
       if (opts.definitiveOnly || imageDefinitivelyMismatched) return false;
-    } else if (!cmdlineMatchesDaemonScript(cmdline)) {
+    } else if (!argvIdentifiesDaemonScript(argv, opts.scriptCandidates ?? [])) {
       return false; // definitive: same image but not our daemon script
     }
 

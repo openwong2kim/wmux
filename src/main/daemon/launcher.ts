@@ -15,8 +15,8 @@ import {
   pollDaemonReady,
   isDaemonPipeGone,
   ensureDaemon as ensureDaemonCore,
-  killDaemonByPidFile,
-  killVerifiedDaemonPid,
+  killDaemonByPidFile as killDaemonByPidFileCore,
+  killVerifiedDaemonPid as killVerifiedDaemonPidCore,
   type DaemonInfo,
   type DaemonLauncherDeps,
   type ProcessLiveness,
@@ -48,8 +48,6 @@ export {
   DAEMON_READY_HARD_CEILING_MS,
   pollDaemonReady,
   isDaemonPipeGone,
-  killDaemonByPidFile,
-  killVerifiedDaemonPid,
 };
 export type {
   DaemonInfo,
@@ -143,6 +141,29 @@ function resolveDaemonScriptCandidates(): string[] {
     path.join(projectRoot, 'dist', 'daemon', 'daemon', 'index.js'),
     path.join(projectRoot, 'dist', 'daemon', 'index.js'),
   ];
+}
+
+/**
+ * #1025/#1028 — the kill gate identifies a PID by comparing its argv entry
+ * script against the exact daemon scripts this host would spawn, so both
+ * kill entry points hand the resolver's answer down. #1027 called the
+ * resolver OUTSIDE the core's try/catch, so a throwing app.getAppPath()
+ * would have crashed a path documented as "never throws"; here a resolver
+ * failure degrades to the exact-shape fallback (no candidates) instead.
+ */
+function safeScriptCandidates(): string[] {
+  try { return resolveDaemonScriptCandidates(); } catch { return []; }
+}
+
+export function killDaemonByPidFile(): boolean {
+  return killDaemonByPidFileCore(safeScriptCandidates());
+}
+
+export function killVerifiedDaemonPid(
+  pid: number,
+  opts: { definitiveOnly: boolean },
+): boolean {
+  return killVerifiedDaemonPidCore(pid, { ...opts, scriptCandidates: safeScriptCandidates() });
 }
 
 const electronDeps: DaemonLauncherDeps = {
