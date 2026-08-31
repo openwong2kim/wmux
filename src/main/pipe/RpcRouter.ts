@@ -181,9 +181,11 @@ export class RpcRouter {
   /**
    * Phase 2.2 enforcer wiring (shadow mode). main/index.ts injects a lookup
    * backed by PluginTrustStore.get; tests inject synchronous stubs. When
-   * unset, the enforcer runs with trust=undefined for every request (which
-   * is treated as legacy/grandfather → allow), making the router behave
-   * identically to pre-Phase-2.2 dispatch.
+   * unset, the enforcer runs with trust=undefined for every request. Before
+   * #1111 that meant legacy/grandfather → allow; now an envelope-less wire
+   * caller is REJECTED instead, while a named one falls through to the
+   * unconfirmed branch. Only the in-process (`operator` / `firstParty`) and
+   * commander lanes still allow without a record.
    */
   setTrustLookup(lookup: TrustLookup | undefined): void {
     this.trustLookup = lookup;
@@ -477,9 +479,10 @@ export class RpcRouter {
     // Phase 2.2 enforcement (shadow mode in this commit).
     //
     // Trust lookup is awaited only when a clientName is present — the
-    // enforcer's first-line branches (identity bootstrap, no-clientName
-    // legacy path) don't need a record, so we save a microtask hop on
-    // every legacy / pre-handshake RPC.
+    // enforcer's first-line branches (identity bootstrap; the closed
+    // no-clientName lane and its in-process/commander exemptions, #1111)
+    // decide without a record, so we save a microtask hop on every
+    // envelope-less / pre-handshake RPC.
     //
     // Behaviour in this commit (pre-commit 3, shadow only): we call the
     // enforcer, record any non-allow outcome to the shadow sink, and THEN
@@ -622,6 +625,15 @@ function renderRejectionMessage(
     case 'identity-status':
       if (r.status === 'denied') {
         return `${r.method}: plugin is denied${observed}; edit ~/.wmux/plugin-trust.json to restore`;
+      }
+      if (r.status === 'legacy') {
+        // Two distinct callers land here and the remedy differs. No observed
+        // clientName = the closed envelope-less lane; an observed one = a
+        // trust row still carrying the grandfathered `legacy` status.
+        if (!observedClientName) {
+          return `${r.method}: requests without a clientName are not accepted — the legacy grandfather lane is closed (wmux#1111, announced for 2026-09-30). Send a clientName in the request envelope and call mcp.identify + mcp.declarePermissions — see docs/api/mcp-plugin-spec.md`;
+        }
+        return `${r.method}: this caller's trust row is still \`legacy\`${observed} and the legacy grandfather lane is closed (wmux#1111); call mcp.identify + mcp.declarePermissions to move it to unconfirmed and get an approval prompt`;
       }
       if (r.pendingApproval) {
         return `${r.method}: awaiting user approval (promptId=${r.pendingApproval.promptId})`;

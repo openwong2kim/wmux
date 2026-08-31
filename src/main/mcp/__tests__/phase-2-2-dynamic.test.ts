@@ -120,8 +120,9 @@ afterEach(() => {
 describe('phase 2.2 dynamic — full plugin lifecycle against real disk', () => {
   it('replays the unconfirmed → trusted → capability-mismatch sequence', async () => {
     // === Step 1: envelope-less RPC. Legacy path runs — trust DB gets a
-    // 'legacy' row, traffic counter ticks (milestone 1 → log entry), but
-    // the enforcer ALLOWS legacy so no shadow rejection lands.
+    // 'legacy' row and the traffic counter ticks (milestone 1 → log entry).
+    // Both survive the #1111 close — they are the evidence of who used the
+    // lane. The enforcer now REJECTS it, so a shadow rejection lands too.
     await router.dispatch({ id: 's1', method: 'pane.list', params: {} });
     await drainWrites();
     await settle();
@@ -130,7 +131,8 @@ describe('phase 2.2 dynamic — full plugin lifecycle against real disk', () => 
     expect(legacyEntries()).toHaveLength(1);
     expect(legacyEntries()[0].method).toBe('pane.list');
     expect(legacyEntries()[0].count).toBe(1);
-    expect(rejectionEntries()).toHaveLength(0);
+    expect(rejectionEntries()).toHaveLength(1);
+    expect(rejectionEntries()[0].rejection.reason).toBe('identity-status');
 
     // === Step 2: envelope-with-clientName but no trust record yet. Spec
     // says plugins must call mcp.identify first; if they don't, enforcer
@@ -146,13 +148,14 @@ describe('phase 2.2 dynamic — full plugin lifecycle against real disk', () => 
     await settle();
 
     const rejs = rejectionEntries();
-    expect(rejs).toHaveLength(1);
-    expect(rejs[0].clientName).toBe('fresh-plugin');
-    expect(rejs[0].method).toBe('pane.list');
-    expect(rejs[0].rejection.reason).toBe('identity-status');
-    if (rejs[0].rejection.reason === 'identity-status') {
-      expect(rejs[0].rejection.status).toBe('unconfirmed');
-      expect(rejs[0].rejection.pendingApproval).toBeUndefined();
+    // [0] is the envelope-less call from Step 1 (grandfather lane closed).
+    expect(rejs).toHaveLength(2);
+    expect(rejs[1].clientName).toBe('fresh-plugin');
+    expect(rejs[1].method).toBe('pane.list');
+    expect(rejs[1].rejection.reason).toBe('identity-status');
+    if (rejs[1].rejection.reason === 'identity-status') {
+      expect(rejs[1].rejection.status).toBe('unconfirmed');
+      expect(rejs[1].rejection.pendingApproval).toBeUndefined();
     }
 
     // === Step 3: proper handshake. mcp.identify + mcp.declarePermissions
@@ -183,7 +186,7 @@ describe('phase 2.2 dynamic — full plugin lifecycle against real disk', () => 
       'meta.write:custom.foo.*',
     ]);
     // mcp.identify + mcp.declarePermissions don't emit rejections — still 1.
-    expect(rejectionEntries()).toHaveLength(1);
+    expect(rejectionEntries()).toHaveLength(2);
 
     // === Step 4: unconfirmed plugin tries to use a declared capability.
     // Even though `pane.read` IS declared, the trust status is still
@@ -199,9 +202,9 @@ describe('phase 2.2 dynamic — full plugin lifecycle against real disk', () => 
     await drainWrites();
     await settle();
     const rejsAfter4 = rejectionEntries();
-    expect(rejsAfter4).toHaveLength(2);
-    expect(rejsAfter4[1].clientName).toBe('demo-plugin');
-    expect(rejsAfter4[1].rejection.reason).toBe('identity-status');
+    expect(rejsAfter4).toHaveLength(3);
+    expect(rejsAfter4[2].clientName).toBe('demo-plugin');
+    expect(rejsAfter4[2].rejection.reason).toBe('identity-status');
 
     // === Step 5: forge user-approved 'trusted' state (no UI in this PR).
     const raw = JSON.parse(fs.readFileSync(dbPath, 'utf8'));
@@ -218,7 +221,7 @@ describe('phase 2.2 dynamic — full plugin lifecycle against real disk', () => 
     });
     await drainWrites();
     await settle();
-    expect(rejectionEntries()).toHaveLength(2); // unchanged
+    expect(rejectionEntries()).toHaveLength(3); // unchanged
 
     // === Step 6: trusted plugin tries an UNDECLARED capability
     // (input.send → terminal.send, not declared). Enforcer rejects with
@@ -232,11 +235,11 @@ describe('phase 2.2 dynamic — full plugin lifecycle against real disk', () => 
     await drainWrites();
     await settle();
     const rejsAfter6 = rejectionEntries();
-    expect(rejsAfter6).toHaveLength(3);
-    expect(rejsAfter6[2].method).toBe('input.send');
-    expect(rejsAfter6[2].rejection.reason).toBe('capability-not-declared');
-    if (rejsAfter6[2].rejection.reason === 'capability-not-declared') {
-      expect(rejsAfter6[2].rejection.capability).toBe('terminal.send');
+    expect(rejsAfter6).toHaveLength(4);
+    expect(rejsAfter6[3].method).toBe('input.send');
+    expect(rejsAfter6[3].rejection.reason).toBe('capability-not-declared');
+    if (rejsAfter6[3].rejection.reason === 'capability-not-declared') {
+      expect(rejsAfter6[3].rejection.capability).toBe('terminal.send');
     }
 
     // === Step 7: trusted plugin tries setMetadata with a path NOT covered
@@ -252,8 +255,8 @@ describe('phase 2.2 dynamic — full plugin lifecycle against real disk', () => 
     await drainWrites();
     await settle();
     const rejsAfter7 = rejectionEntries();
-    expect(rejsAfter7).toHaveLength(4);
-    const r7 = rejsAfter7[3];
+    expect(rejsAfter7).toHaveLength(5);
+    const r7 = rejsAfter7[4];
     expect(r7.method).toBe('pane.setMetadata');
     expect(r7.rejection.reason).toBe('paths-partially-allowed');
     if (r7.rejection.reason === 'paths-partially-allowed') {
@@ -271,7 +274,7 @@ describe('phase 2.2 dynamic — full plugin lifecycle against real disk', () => 
     });
     await drainWrites();
     await settle();
-    expect(rejectionEntries()).toHaveLength(4); // unchanged
+    expect(rejectionEntries()).toHaveLength(5); // unchanged
 
     // === Step 9: identity-bootstrap RPCs (mcp.identify) always allowed.
     // No shadow log even though the caller is in a hostile trust state.
@@ -286,7 +289,7 @@ describe('phase 2.2 dynamic — full plugin lifecycle against real disk', () => 
     });
     await drainWrites();
     await settle();
-    expect(rejectionEntries()).toHaveLength(4); // unchanged
+    expect(rejectionEntries()).toHaveLength(5); // unchanged
 
     // === Step 10: denied plugin trying real RPC → identity-status:denied
     // shadow log entry, no pendingApproval (spec §4.3: denied never
@@ -300,11 +303,11 @@ describe('phase 2.2 dynamic — full plugin lifecycle against real disk', () => 
     await drainWrites();
     await settle();
     const rejs10 = rejectionEntries();
-    expect(rejs10).toHaveLength(5);
-    expect(rejs10[4].rejection.reason).toBe('identity-status');
-    if (rejs10[4].rejection.reason === 'identity-status') {
-      expect(rejs10[4].rejection.status).toBe('denied');
-      expect(rejs10[4].rejection.pendingApproval).toBeUndefined();
+    expect(rejs10).toHaveLength(6);
+    expect(rejs10[5].rejection.reason).toBe('identity-status');
+    if (rejs10[5].rejection.reason === 'identity-status') {
+      expect(rejs10[5].rejection.status).toBe('denied');
+      expect(rejs10[5].rejection.pendingApproval).toBeUndefined();
     }
   });
 
@@ -326,8 +329,10 @@ describe('phase 2.2 dynamic — full plugin lifecycle against real disk', () => 
     expect(legacy.map((e) => e.count)).toEqual([1, 3, 5]);
     expect(legacy.every((e) => e.method === 'pane.list')).toBe(true);
 
-    // No rejection entries — legacy is allowed.
-    expect(rejectionEntries()).toHaveLength(0);
+    // The lane is closed (#1111), so every one of the 6 envelope-less calls
+    // is also a rejection — while the legacy counter keeps ticking, because
+    // the recorder is the evidence trail and outlives the close.
+    expect(rejectionEntries()).toHaveLength(6);
   });
 
   it('counts distinct methods separately', async () => {
@@ -552,12 +557,47 @@ describe('phase 2.2 dynamic — enforce mode (pre-commit 6)', () => {
     expect(d.ok).toBe(true);
   });
 
-  it('allows legacy callers (no clientName envelope) in enforce mode', async () => {
+  // #1111 Stage 3: the grandfather lane closed on 2026-09-30. In enforce mode
+  // an envelope-less caller is refused; the named callers above still work.
+  it('rejects legacy callers (no clientName envelope) in enforce mode', async () => {
     const r = await router.dispatch({
       id: 'legacy-1',
       method: 'pane.list',
       params: {},
     });
+    expect(r.ok).toBe(false);
+    if (r.ok) throw new Error('expected rejection');
+    expect(r.rejection?.reason).toBe('identity-status');
+    if (r.rejection?.reason === 'identity-status') {
+      expect(r.rejection.status).toBe('legacy');
+    }
+    expect(r.error).toMatch(/clientName/);
+  });
+
+  // The capability-gate bypass closes with it: `wmux.internal` methods were
+  // reachable envelope-less because the old allow returned before the gate.
+  it('rejects envelope-less wmux.internal calls in enforce mode', async () => {
+    router.register('surface.list', async () => ({ surfaces: [] }));
+    const r = await router.dispatch({
+      id: 'legacy-internal',
+      method: 'surface.list',
+      params: {},
+    });
+    expect(r.ok).toBe(false);
+    if (r.ok) throw new Error('expected rejection');
+    expect(r.rejection?.reason).toBe('identity-status');
+    if (r.rejection?.reason === 'identity-status') {
+      expect(r.rejection.status).toBe('legacy');
+    }
+  });
+
+  // The renderer bridge dispatches envelope-less with `{ operator: true }`.
+  // If the #1111 close caught it, enforce mode would take the whole UI down.
+  it('still allows the in-process operator lane in enforce mode', async () => {
+    const r = await router.dispatch(
+      { id: 'operator-1', method: 'pane.list', params: {} },
+      { operator: true },
+    );
     expect(r.ok).toBe(true);
   });
 });

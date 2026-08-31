@@ -29,9 +29,14 @@
 //   - Identity-bootstrap RPCs (mcp.identify / mcp.declarePermissions) carry
 //     `capability: null` in methodCapabilityMap; the enforcer recognises
 //     this and allows unconditionally. NO hard-coded special-case here.
-//   - `legacy` status (no clientName envelope upstream) is allowed and
-//     recorded by the shadow log in Pre-commit 3+4. The enforcer treats it
-//     as 'allow' so substrate ships without breaking v2.x callers.
+//   - `legacy` status (no clientName envelope upstream) WAS allowed so
+//     substrate could ship without breaking v2.x callers. #1111 Stage 3
+//     closes that grandfather lane, for the first release on or after the
+//     announced 2026-09-30 date: both the no-clientName check and the
+//     `legacy` trust status reject with identity-status:legacy, and they
+//     move together by rule. The trusted in-process lanes (renderer
+//     `operator`, plugin-host `firstParty`) and the token-authenticated
+//     commander lane are exempt — none of them has an envelope to send.
 //   - `denied` is rejected with no pendingApproval (spec §4.3: denied
 //     never regresses). User must edit plugin-trust.json by hand.
 //   - `unconfirmed` is rejected with `pendingApproval` so the client can
@@ -178,12 +183,6 @@ export function check(input: EnforcerInput): EnforcerOutcome {
     return { kind: 'allow' };
   }
 
-  // Legacy: caller didn't send a clientName envelope, RpcRouter is already
-  // grandfathering them via the legacy recorder. Allow at this layer.
-  if (!input.ctx.clientName) {
-    return { kind: 'allow' };
-  }
-
   // Commander brain lane (BYOB P4). ctx.commanderWorkspace is set ONLY by
   // RpcRouter after validating the per-spawn commander token
   // (commanderTrust.ts) — it cannot arrive from a raw envelope field. The
@@ -196,9 +195,54 @@ export function check(input: EnforcerInput): EnforcerOutcome {
   // rejected by the router before this runs. A method outside the set falls
   // through to normal enforcement — a coverage gap surfaces as a rejection,
   // never as silent widening.
+  //
+  // Deliberately ABOVE the #1111 closed-lane reject: "the token is the auth,
+  // not the clientName" is only true if a commander with empty clientInfo
+  // still reaches this check. Ordering is load-bearing, not cosmetic.
   if (input.ctx.commanderWorkspace && COMMANDER_RPC_METHODS.has(input.method)) {
     return { kind: 'allow' };
   }
+
+  // Grandfather lane CLOSED (#1111 Stage 3; announced close date 2026-09-30).
+  // A caller that sends no clientName envelope used to be allowed here —
+  // before the capability gate below ever ran, which is what made the lane a
+  // capability bypass rather than merely an unscoped one. It is now rejected.
+  //
+  // This point and the `trust.status === 'legacy'` allow further down are a
+  // pair: closing one without the other leaves the lane half-open, so they
+  // must always move together.
+  //
+  // EXCEPT for the trusted in-process surfaces, which have no envelope to
+  // send and never had one. `operator` is the renderer IPC bridge (the wmux
+  // UI itself, src/main/index.ts `invokeRendererRpc`) and `firstParty` is the
+  // broader in-process marker that also covers the iframe plugin host. Both
+  // are dispatch-option arguments set by main, mutually exclusive with
+  // `externalWire`, so a wire client can never forge either. Without this the
+  // close would refuse every renderer-bridged RPC under the production
+  // enforce-mode default and take the whole UI down with the lane — a
+  // breakage shadow mode (the dev/test default) would have hidden entirely.
+  // Narrowly scoped on purpose: it only re-admits callers that reached the
+  // old grandfather through in-process dispatch, never anything off the wire.
+  //
+  // For everyone else there is no approval path out of this rejection —
+  // nothing is pending, because an anonymous caller has no identity to
+  // approve. The fix is to send a clientName and declare permissions
+  // (docs/api/mcp-plugin-spec.md).
+  if (!input.ctx.clientName) {
+    if (input.ctx.operator || input.ctx.firstParty) {
+      return { kind: 'allow' };
+    }
+    return {
+      kind: 'reject',
+      rejection: {
+        reason: 'identity-status',
+        method: input.method,
+        capability,
+        status: 'legacy',
+      },
+    };
+  }
+
 
   // First-party bundled wmux MCP server (recognised by the host clientName it
   // reports). It ships inside wmux and never goes through the external-plugin
@@ -297,8 +341,21 @@ export function check(input: EnforcerInput): EnforcerOutcome {
     };
   }
   if (input.trust.status === 'legacy') {
-    // Grandfathered. Shadow log records it (Pre-commit 4).
-    return { kind: 'allow' };
+    // Grandfather lane CLOSED (#1111 Stage 3) — the second half of the pair
+    // with the no-clientName check above. A trust row still carrying the
+    // grandfathered `legacy` status no longer grants anything. Note this
+    // caller DID send a clientName (the branch above returned otherwise), so
+    // the remedy differs: re-identify and declare, and the row moves to
+    // unconfirmed/trusted through the normal flow.
+    return {
+      kind: 'reject',
+      rejection: {
+        reason: 'identity-status',
+        method: input.method,
+        capability,
+        status: 'legacy',
+      },
+    };
   }
 
   // status === 'trusted'. Capability declaration must include this entry's

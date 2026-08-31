@@ -122,14 +122,12 @@ handler when `err.code` is `EPERM` or `ENOENT` and `tcpFallback()` is non-null.
   UTF-8 and `.trim()`.
 - **Endpoint and token must match the same wmux user.** Both are derived from
   the OS user; you cannot read user A's token and connect to user B's pipe.
-- **`clientName` is optional, but omitting it changes enforcement.** A request
-  with no `clientName` is recorded as `legacy` and grandfathered through the
-  permission gate (always allowed, even in enforce mode). The moment you send a
-  `clientName`, you opt into the identity + declaration flow — see
-  [react-to-events](./react-to-events.md) and `PROTOCOL.md` §4.
-  **Deprecated:** the `legacy` grandfather closes in the first release on or
-  after **2026-09-30** (#1111) — after that, a request without a `clientName`
-  is refused. Send one now.
+- **`clientName` is becoming required.** A request with no `clientName` is
+  recorded as `legacy` and grandfathered through the permission gate — but the
+  grandfather closes in the first release on or after **2026-09-30** (#1111),
+  and from that release such a request is refused. Sending a `clientName` opts
+  you into the identity + declaration flow — see
+  [react-to-events](./react-to-events.md) and `PROTOCOL.md` §4. Send one now.
 - **One reply per `id`; correlate, don't assume order.** Replies can interleave
   if you have multiple in-flight requests. Match on `id`.
 - **Caps you can hit:** `MAX_CONNECTIONS = 50` concurrent sockets per daemon;

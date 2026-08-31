@@ -319,7 +319,12 @@ export type RpcRejection =
       reason: 'identity-status';
       method: RpcMethod;
       capability: string;
-      status: 'denied' | 'unconfirmed';
+      // 'legacy' (#1111 Stage 3): the caller sent no clientName envelope, or
+      // its trust row is still the grandfathered `legacy` status. The lane
+      // that used to allow this closed on 2026-09-30; there is no approval
+      // path back into it — the caller must send a clientName and declare
+      // permissions.
+      status: 'denied' | 'unconfirmed' | 'legacy';
       pendingApproval?: { promptId: string };
     };
 
