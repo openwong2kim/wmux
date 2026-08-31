@@ -23,9 +23,9 @@
  * the daemon; the methods UNDER TEST override it with their own clientName so
  * we exercise the first-party enforce path. They used to omit clientName and
  * ride the `legacy` grandfather, which #1111 closes in the first release on or
- * after 2026-09-30.
- * KNOWN GAP (#1111): `pane.close` is not in WMUX_CLI_METHODS, so the reap step
- * still needs the allowlist decision.
+ * after 2026-09-30. `pane.close` is not in WMUX_CLI_METHODS, but this script
+ * calls it with the first-party `claude-code` clientName (it is one of the
+ * methods under test), so it never depended on the CLI lane.
  *
  * Run (PowerShell): npm run package; node scripts/issue-285-pane-lifecycle-enforce-dogfood.mjs
  */

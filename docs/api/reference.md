@@ -33,8 +33,9 @@ Total: **152** methods (`ALL_RPC_METHODS` in
 - `capability` is the `wmuxPermissions` capability the method requires.
   `null` = bootstrap/introspection (any caller, no declaration needed).
   `wmux.internal` = reserved prefix no plugin can declare (internal-only;
-  envelope-less callers grandfather through until #1111 closes that lane —
-  first release on or after 2026-09-30 — after which they are refused too).
+  envelope-less callers grandfather through until #1111 closes that lane
+  — first release on or after 2026-09-30 — after which they are refused
+  too).
 - `riskClass` drives the approval-dialog wording; blank for `null` and
   `wmux.internal` methods.
 
