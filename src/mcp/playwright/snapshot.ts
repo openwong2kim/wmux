@@ -1,4 +1,4 @@
-import type { Page, ElementHandle } from 'playwright-core';
+import type { Page, Frame, ElementHandle } from 'playwright-core';
 import { buildDomSnapshotExpression } from './dom-intelligence';
 import {
   REDACTED_PASSWORD,
@@ -48,6 +48,78 @@ interface CdpAXNode {
   ignored?: boolean;
 }
 
+// ---------------------------------------------------------------------------
+// Frame coordinates
+// ---------------------------------------------------------------------------
+
+/**
+ * One `<iframe>` hop from a host document into a child document.
+ *
+ * A ref minted inside a frame is only meaningful together with the route that
+ * reaches that frame, and the route has to be re-walkable later without
+ * trusting anything the page can rewrite. So a hop stores a POSITION, not an
+ * identity: the `<iframe>` element's index in document order among the host
+ * document's frames, plus how many the host had. Matching by `src` was the
+ * obvious alternative and is the wrong one — two frames can share a src, and a
+ * page can change one at will, so a src match resolves a ref into whichever
+ * frame answers to that string now (decision D2: tag the coordinate, then
+ * fail closed when it no longer matches).
+ *
+ * `childUrlKey` is the child document's URL at capture time. It is what makes
+ * a frame that navigated on its own detectable at resolution time: the hop
+ * still lands on frame #1 of 2, but frame #1 is a different document now.
+ */
+export interface FrameHop {
+  /** Document-order index of the `<iframe>` among the host document's frames. */
+  hostIndex: number;
+  /** How many frames the host document held when the ref was minted. */
+  hostTotal: number;
+  /** documentKey() of the `<iframe>` element's src, for the error message only. */
+  hostSrcKey: string;
+  /** documentKey() of the child document's own URL when the ref was minted. */
+  childUrlKey: string;
+}
+
+/**
+ * Where a node lives, as a route from the main frame.
+ *
+ * An empty path is the main frame, and every main-frame code path stays
+ * byte-for-byte what it was before frames existed — that equivalence is the
+ * whole reason the coordinate is a path rather than a rewrite of the ref.
+ */
+export interface FrameCoord {
+  path: FrameHop[];
+  /** Deterministic string form of `path`, used as a map key. `''` = main frame. */
+  key: string;
+}
+
+/** The main frame's coordinate: the route of length zero. */
+const MAIN_FRAME: FrameCoord = { path: [], key: '' };
+
+/**
+ * The map key for a route.
+ *
+ * Includes each hop's child URL so a frame that navigates gets a NEW key: its
+ * old backendDOMNodeIds mean nothing in the new document, and a fresh key
+ * retires them without touching any other frame's numbering.
+ */
+function frameKeyOf(path: FrameHop[]): string {
+  return path.map((hop) => `${hop.hostIndex}\u0000${hop.childUrlKey}`).join('\u0001');
+}
+
+/** Extend a route by one hop. */
+function descend(coord: FrameCoord, hop: FrameHop): FrameCoord {
+  const path = [...coord.path, hop];
+  return { path, key: frameKeyOf(path) };
+}
+
+/** Why an `<iframe>`'s contents are not in the snapshot. */
+export type FrameBoundaryReason =
+  | 'not-attached'
+  | 'depth-cap'
+  | 'count-cap'
+  | 'empty';
+
 /** Normalised tree node built from CDP data */
 export interface AXNode {
   role: string;
@@ -65,6 +137,22 @@ export interface AXNode {
   selected?: boolean;
   pressed?: boolean | 'mixed';
   valuetext?: string;
+  /**
+   * Set on the FIRST node of a grafted child document (see graftChildFrames).
+   * Every descendant inherits it during serialisation, which is what stamps a
+   * frame coordinate onto the refs minted inside the frame. Absent on main
+   * frame nodes, where the coordinate is the empty path.
+   */
+  frameCoord?: FrameCoord;
+  /**
+   * Set on an `<iframe>` node whose child document was actually stitched in.
+   * Distinguishes "empty frame" from "contents not in this snapshot", and keeps
+   * the node alive through the interactive filter even when the frame holds no
+   * interactive elements of its own.
+   */
+  graftedFrame?: boolean;
+  /** Why this iframe's contents are absent, when they are. See frameBoundaryNote. */
+  frameBoundaryReason?: FrameBoundaryReason;
 }
 
 // Roles considered interactive — these get a ref number in 'ai' format
@@ -327,10 +415,20 @@ export interface RefEntry {
    * removing a node no longer renumbers everything after it.
    */
   ref: number;
-  /** Position of this entry among the snapshot's entries sharing role+name. */
+  /**
+   * Position of this entry among the snapshot's entries sharing role+name
+   * WITHIN THE SAME FRAME. Frame-local on purpose: the resolver counts matches
+   * with a locator rooted at the entry's own frame, so a page-wide population
+   * would not be the population that index is an index into (review ⑫ — get
+   * this wrong and every existing click on a page with iframes regresses).
+   */
   sameNameIndex: number;
-  /** How many entries the snapshot listed with this exact role+name. */
+  /** How many entries the snapshot listed with this role+name in that frame. */
   sameNameTotal: number;
+  /** Route from the main frame to the document this ref was minted in. */
+  framePath: FrameHop[];
+  /** frameKeyOf(framePath). `''` = main frame. */
+  frameKey: string;
 }
 
 /**
@@ -349,8 +447,15 @@ export interface RefEntry {
  * removed element can never come back pointing at a different one.
  */
 interface RefIdentity {
-  /** backendDOMNodeId → the ref number that node was given. */
-  byBackendId: Map<number, number>;
+  /**
+   * frameKey → (backendDOMNodeId → the ref number that node was given).
+   *
+   * Two levels rather than one because backendDOMNodeId is only unique within
+   * a CDP target: an out-of-process iframe numbers its own DOM from its own
+   * id space, so a flat map would have a frame's node collide with a main-frame
+   * node and silently hand both the same ref.
+   */
+  byBackendId: Map<string, Map<number, number>>;
   /** Next unused ref number. */
   next: number;
   /** URL the number space belongs to; a different document restarts it. */
@@ -371,13 +476,22 @@ const REF_IDENTITY_CAP = 5000;
 
 const pageRefIdentity = new WeakMap<Page, RefIdentity>();
 
-/** What the last snapshot on this page was taken against. */
+/** What the last snapshot on this page was taken against, per frame. */
 interface SnapshotStamp {
   generation: number;
   url: string | undefined;
 }
 
-const pageSnapshotStamps = new WeakMap<Page, SnapshotStamp>();
+/**
+ * frameKey → the document that frame held when the last snapshot ran.
+ *
+ * Per frame rather than per page because a frame can navigate on its own
+ * (review ⑬) and the page URL says nothing about it. The stored stamp is the
+ * cheap half of that check; the resolver also re-reads `frame.url()` live on
+ * every hop, so a frame that navigated and came back to the same URL between
+ * snapshots cannot slip through on the stored value alone.
+ */
+const pageSnapshotStamps = new WeakMap<Page, Map<string, SnapshotStamp>>();
 
 /**
  * Thrown instead of returning null when a ref can be shown to be stale — the
@@ -415,11 +529,23 @@ function pageUrl(page: Page): string | undefined {
  * a navigation (refs are retired, which is safe) and a POST that lands back on
  * the same URL does not (the refMap checks below are what catch that).
  */
-function documentKey(page: Page): string | undefined {
-  const url = pageUrl(page);
-  if (url === undefined) return undefined;
+function documentKey(url: string | undefined): string | undefined {
+  if (url === undefined || url.length === 0) return undefined;
   const hash = url.indexOf('#');
   return hash === -1 ? url : url.slice(0, hash);
+}
+
+/**
+ * documentKey() of a page's current URL.
+ *
+ * Split from documentKey so the same rule can be applied to a FRAME's url
+ * (which arrives as a plain string from `frame.url()`), rather than having two
+ * near-identical normalisations drift apart — the frame check is only worth
+ * anything while it agrees with the page check about what "same document"
+ * means.
+ */
+function pageDocumentKey(page: Page): string | undefined {
+  return documentKey(pageUrl(page));
 }
 
 /**
@@ -427,7 +553,7 @@ function documentKey(page: Page): string | undefined {
  * moved to a different document (its backendDOMNodeIds mean nothing there).
  */
 function beginRefGeneration(page: Page): RefIdentity {
-  const url = documentKey(page);
+  const url = pageDocumentKey(page);
   let identity = pageRefIdentity.get(page);
   if (!identity) {
     identity = { byBackendId: new Map(), next: 0, url, generation: 0 };
@@ -439,19 +565,40 @@ function beginRefGeneration(page: Page): RefIdentity {
     // guard cannot catch it once the URL comes back round (A → B → A).
     identity.byBackendId.clear();
   }
-  if (identity.byBackendId.size > REF_IDENTITY_CAP) identity.byBackendId.clear();
+  if (countRememberedNodes(identity) > REF_IDENTITY_CAP) identity.byBackendId.clear();
   identity.url = url;
   identity.generation++;
   return identity;
 }
 
-/** The ref number for this node, minting one the first time we see it. */
-function assignRef(identity: RefIdentity, backendDOMNodeId?: number): number {
+/** Remembered nodes across every frame — what REF_IDENTITY_CAP is a cap on. */
+function countRememberedNodes(identity: RefIdentity): number {
+  let total = 0;
+  for (const perFrame of identity.byBackendId.values()) total += perFrame.size;
+  return total;
+}
+
+/**
+ * The ref number for this node, minting one the first time we see it.
+ *
+ * `frameKey` selects the id space: a backendDOMNodeId means something only
+ * inside the document that issued it.
+ */
+function assignRef(
+  identity: RefIdentity,
+  frameKey: string,
+  backendDOMNodeId?: number,
+): number {
   if (backendDOMNodeId === undefined) return identity.next++;
-  const existing = identity.byBackendId.get(backendDOMNodeId);
+  let perFrame = identity.byBackendId.get(frameKey);
+  if (!perFrame) {
+    perFrame = new Map();
+    identity.byBackendId.set(frameKey, perFrame);
+  }
+  const existing = perFrame.get(backendDOMNodeId);
   if (existing !== undefined) return existing;
   const ref = identity.next++;
-  identity.byBackendId.set(backendDOMNodeId, ref);
+  perFrame.set(backendDOMNodeId, ref);
   return ref;
 }
 
@@ -464,15 +611,23 @@ function assignRef(identity: RefIdentity, backendDOMNodeId?: number): number {
  * clamping onto whichever element happens to sit at that index now.
  */
 function finalizeRefs(refs: RefEntry[]): void {
+  // Keyed by frame as well as role+name (review ⑫). Two frames showing the
+  // same widget each hold their own `Submit` button; counting them together
+  // would give the second frame's button index 1, and the resolver — which
+  // counts inside ONE frame — would then look for a second `Submit` that frame
+  // does not have. Every ref on every page with a duplicated iframe would go
+  // stale or resolve wrongly.
+  const populationKey = (entry: RefEntry) =>
+    `${entry.frameKey}\u0002${entry.role}\u0000${entry.name}`;
   const totals = new Map<string, number>();
   for (const entry of refs) {
-    const key = `${entry.role}\u0000${entry.name}`;
+    const key = populationKey(entry);
     const seen = totals.get(key) ?? 0;
     entry.sameNameIndex = seen;
     totals.set(key, seen + 1);
   }
   for (const entry of refs) {
-    entry.sameNameTotal = totals.get(`${entry.role}\u0000${entry.name}`) ?? 1;
+    entry.sameNameTotal = totals.get(populationKey(entry)) ?? 1;
   }
 }
 
@@ -491,12 +646,49 @@ const pageRefScopes = new WeakMap<Page, string>();
 function setPageRefs(page: Page, refs: RefEntry[], scopeSelector?: string): void {
   finalizeRefs(refs);
   pageRefMaps.set(page, refs);
-  pageSnapshotStamps.set(page, {
-    generation: pageRefIdentity.get(page)?.generation ?? 0,
-    url: documentKey(page),
-  });
+  const generation = pageRefIdentity.get(page)?.generation ?? 0;
+  const stamps = new Map<string, SnapshotStamp>();
+  stamps.set(MAIN_FRAME.key, { generation, url: pageDocumentKey(page) });
+  for (const entry of refs) {
+    if (entry.frameKey === MAIN_FRAME.key || stamps.has(entry.frameKey)) continue;
+    const last = entry.framePath[entry.framePath.length - 1];
+    stamps.set(entry.frameKey, { generation, url: last?.childUrlKey });
+  }
+  pageSnapshotStamps.set(page, stamps);
+  rememberFrameRefs(page, refs);
   if (scopeSelector === undefined) pageRefScopes.delete(page);
   else pageRefScopes.set(page, scopeSelector);
+}
+
+/**
+ * Pages whose LAST snapshot minted at least one frame ref, and which numbers
+ * those were.
+ *
+ * A WeakMap cannot answer "is any frame ref outstanding anywhere", and that is
+ * the only question the RPC transport can ask: the RPC path exists precisely
+ * because there is no Page to look anything up on. So this is a real Map, kept
+ * small by construction — an entry is deleted the moment that page takes a
+ * snapshot with no frame refs in it, and the oldest is evicted past the cap.
+ */
+const FRAME_REF_PAGE_CAP = 32;
+const framePagesWithRefs = new Map<Page, Set<number>>();
+
+function rememberFrameRefs(page: Page, refs: RefEntry[]): void {
+  const numbers = new Set<number>();
+  for (const entry of refs) {
+    if (entry.frameKey !== MAIN_FRAME.key) numbers.add(entry.ref);
+  }
+  if (numbers.size === 0) {
+    framePagesWithRefs.delete(page);
+    return;
+  }
+  framePagesWithRefs.delete(page);
+  framePagesWithRefs.set(page, numbers);
+  while (framePagesWithRefs.size > FRAME_REF_PAGE_CAP) {
+    const oldest = framePagesWithRefs.keys().next().value;
+    if (oldest === undefined) break;
+    framePagesWithRefs.delete(oldest);
+  }
 }
 
 /**
@@ -532,14 +724,28 @@ interface SerializeCtx {
   occlusion: OcclusionInfo | null;
 }
 
+/**
+ * The frame a node is being serialised in.
+ *
+ * Threaded through the recursion rather than stored on every node: only the
+ * root of a grafted document carries `frameCoord`, and everything under it
+ * inherits — which is what keeps the main-frame walk allocation-for-allocation
+ * identical to what it was before frames existed.
+ */
+function frameOf(node: AXNode, inherited: FrameCoord): FrameCoord {
+  return node.frameCoord ?? inherited;
+}
+
 function serializeNode(
   node: AXNode,
   ctx: SerializeCtx,
   currentDepth: number,
   indent: number,
+  inheritedFrame: FrameCoord = MAIN_FRAME,
 ): string {
   if (currentDepth > ctx.maxDepth) return '';
 
+  const frame = frameOf(node, inheritedFrame);
   const pad = '  '.repeat(indent);
   const role = node.role;
   const name = node.name || '';
@@ -548,7 +754,7 @@ function serializeNode(
   const attrs: string[] = [];
 
   if (ctx.format === 'ai' && isInteractive(role)) {
-    const ref = assignRef(ctx.identity, node.backendDOMNodeId);
+    const ref = assignRef(ctx.identity, frame.key, node.backendDOMNodeId);
     ctx.refs.push({
       role,
       name,
@@ -557,6 +763,8 @@ function serializeNode(
       // Filled in by finalizeRefs once the whole walk is known.
       sameNameIndex: 0,
       sameNameTotal: 0,
+      framePath: frame.path,
+      frameKey: frame.key,
     });
     attrs.push(`ref="${ref}"`);
   }
@@ -615,7 +823,7 @@ function serializeNode(
   if (node.children) {
     for (const child of node.children) {
       if (ctx.format === 'ai' && isFragmentParent && child.role === INLINE_TEXT_ROLE) continue;
-      const childStr = serializeNode(child, ctx, currentDepth + 1, indent + 1);
+      const childStr = serializeNode(child, ctx, currentDepth + 1, indent + 1, frame);
       if (childStr) childLines.push(childStr);
     }
   }
@@ -652,7 +860,7 @@ function serializeForest(nodes: AXNode[], ctx: SerializeCtx): string {
   const lines: string[] = [];
 
   for (const node of nodes) {
-    const s = serializeNode(node, ctx, 0, 0);
+    const s = serializeNode(node, ctx, 0, 0, MAIN_FRAME);
     if (s) lines.push(s);
   }
 
@@ -1115,8 +1323,8 @@ async function resolveRefViaAxMap(
   // the data-wmux-ref locator instead — not a staleness signal.
   if (!refs || refs.length === 0) return null;
 
-  const stamp = pageSnapshotStamps.get(page);
-  const liveUrl = documentKey(page);
+  const stamp = pageSnapshotStamps.get(page)?.get(MAIN_FRAME.key);
+  const liveUrl = pageDocumentKey(page);
   if (stamp?.url !== undefined && liveUrl !== undefined && stamp.url !== liveUrl) {
     throw new StaleRefError(
       `ref=${ref} is stale — the page navigated since snapshot #${stamp.generation} ` +
