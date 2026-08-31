@@ -1083,7 +1083,7 @@ server.tool(
 
 server.tool(
   'deck_ask_decision',
-  'Pause your working loop and ask the human operator for a decision you should NOT make yourself — an ambiguous requirement, a risky or irreversible action, a genuine fork between approaches. First check the binding policy rules / standing conventions / your memory: a question whose answer you can already cite is not a decision for the human. Your loop STOPS and will not auto-advance until they answer; the pending decision survives a restart, so they can answer later and you resume from here. After calling this, END YOUR TURN. Never for progress updates or questions you can resolve yourself.',
+  'Pause your working loop and ask the human operator for a decision you should NOT make yourself — an ambiguous requirement, a risky or irreversible action, a genuine fork between approaches. First check the binding policy rules / standing conventions / your memory: a question whose answer you can already cite is not a decision for the human. Your loop STOPS and will not auto-advance until they answer; the pending decision survives a restart, so they can answer later and you resume from here. After calling this, END YOUR TURN and take no further action. Never for progress updates or questions you can resolve yourself.',
   DECK_ASK_DECISION_SHAPE,
   async ({ question, options, context }) => {
     // Only the commander brain has WMUX_COMMANDER_TOKEN; a non-commander caller

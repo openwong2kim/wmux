@@ -190,8 +190,8 @@ const CHANNEL_READ_SHAPE = {
     .min(0)
     .optional()
     .describe(
-      'Return messages with seq >= since_seq (forward pagination). With limit, the floor applies ' +
-        'first, then the most recent `limit` of the remainder.',
+      'Return messages with seq >= since_seq (forward pagination). With limit you get the OLDEST ' +
+        '`limit` messages at or after the floor, so pages are contiguous.',
     ),
   limit: z
     .number()
