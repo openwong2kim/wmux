@@ -94,6 +94,20 @@ const TRANSIENT_CONNECT_CODES = new Set([
 ]);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// #1111: the envelope-less `legacy` grandfather these hook RPCs used to ride
+// closes in the first release on or after 2026-09-30. `hooks.signal` on the
+// MAIN pipe is `wmux.internal`, so no declaration can ever grant it; the
+// enforcer instead recognises this exact clientName and allows that ONE method
+// (src/main/mcp/hookBridge.ts). Keep it in lockstep with
+// WMUX_HOOK_BRIDGE_CLIENT_NAME in src/shared/rpc.ts. Harmless on the daemon
+// control pipe, which has no enforcer and ignores the extra envelope field.
+//
+// A LITERAL, not an import: this bridge is a standalone .mjs outside the main
+// build and cannot import from src/. Every sibling bridge spells it the same
+// way for the same reason — hookBridge.lockstep.test.ts is what keeps the five
+// of them honest, by parsing these sources for this exact string.
+const WMUX_CLIENT_NAME = 'wmux-hook-bridge';
+
 // Codex payloads carry whole assistant replies and whole tool inputs, so cap
 // what we will even hold in memory. Anything past this is a payload this
 // bridge has no business reading. Matches the Kiro bridge's cap.
@@ -528,19 +542,13 @@ async function main() {
 
   // One id across the walk so a fallback is correlatable in the log; each
   // target carries its own method + token (see resolveTargets).
-  //
-  // TODO(#1111): this request sends no `clientName`, so the daemon sees it as
-  // an anonymous wmux.internal caller on `hooks.signal`. That is not a local
-  // omission — neither wmux-codex-notify.mjs nor wmux-kiro-bridge.mjs sends one
-  // either, and the lane closure needs ONE identification pattern across all
-  // the bridges rather than three. Deliberately not invented here; adopt
-  // whatever #1111 lands for the existing bridges.
   const requestId = `codex-hook-${randomUUID()}`;
   const { result: rpcResult, target } = await sendToTargets(targets, (t) => ({
     id: requestId,
     method: t.method,
     params: envelope,
     token: t.token,
+    clientName: WMUX_CLIENT_NAME,
   }), envelope.kind);
   const outerOk = rpcResult && rpcResult.ok === true;
   const innerOk = outerOk && rpcResult.result && rpcResult.result.ok === true;

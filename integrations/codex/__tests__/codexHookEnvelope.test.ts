@@ -1,4 +1,6 @@
 import { describe, it, expect } from 'vitest';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 // The bridge is plain .mjs (Codex spawns it directly); it exports the pure
 // envelope builder so this test can validate the shape without a live codex-cli.
 import { buildCodexHookEnvelope, shouldTryNextTarget } from '../bin/wmux-codex-hooks-bridge.mjs';
@@ -246,5 +248,41 @@ describe('shouldTryNextTarget', () => {
 
   it('advances on an explicit refusal from an older endpoint', () => {
     expect(shouldTryNextTarget({ ok: false, error: 'Unknown method' })).toBe(true);
+  });
+});
+
+// #1111 lockstep, asserted locally.
+//
+// The canonical guard is src/main/mcp/__tests__/hookBridge.lockstep.test.ts,
+// which parses every bridge source against the enforcer's own constants. It
+// does not exist on this branch — #1111 is still in flight — and this bridge
+// still has to be added to its BRIDGES list when the two land together.
+//
+// Until then these two assertions stand in for it, deliberately duplicating
+// its logic rather than trusting the follow-up to remember: without the
+// clientName the enforcer refuses this bridge's main-pipe `hooks.signal` as
+// identity-status:legacy, and turn-state reporting degrades silently — which
+// is the exact failure mode #1107 exists to remove.
+describe('hook-bridge lane lockstep (#1111)', () => {
+  const SRC = fs.readFileSync(
+    path.join(__dirname, '..', 'bin', 'wmux-codex-hooks-bridge.mjs'),
+    'utf8',
+  );
+
+  it('declares the recognised clientName and puts it on the envelope', () => {
+    // The literal the lockstep test greps for. Spelled out here rather than
+    // imported: src/shared/rpc.ts is not reachable from a standalone bridge,
+    // and a drifting copy is precisely what both tests exist to catch.
+    expect(SRC).toContain("'wmux-hook-bridge'");
+    expect(/clientName:/.test(SRC)).toBe(true);
+  });
+
+  it('calls no main-pipe method outside the one-method lane', () => {
+    const found = new Set(
+      [...SRC.matchAll(/method:\s*'([a-zA-Z][A-Za-z0-9]*\.[A-Za-z0-9.]+)'/g)].map((m) => m[1]),
+    );
+    // `daemon.*` goes to the DaemonPipeServer, which has no enforcer.
+    const mainPipe = [...found].filter((m) => !m.startsWith('daemon.'));
+    expect(mainPipe).toEqual(['hooks.signal']);
   });
 });

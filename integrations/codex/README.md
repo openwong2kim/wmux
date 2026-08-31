@@ -186,6 +186,25 @@ If you use this bridge, remove the `notify = [...]` line — otherwise every tur
 reports `agent.stop` twice. The `HookSignalRouter` dedup window swallows the
 duplicate, so nothing breaks, but the second spawn is pure waste.
 
+## Identity on the main pipe (#1111)
+
+Both bridges send `clientName: 'wmux-hook-bridge'` on every request. On the
+daemon control pipe it is ignored — there is no enforcer there. On the MAIN
+pipe it is load-bearing: `hooks.signal` is `wmux.internal`, so no declaration
+can ever grant it, and the enforcer instead recognises that exact name and
+allows that one method (`src/main/mcp/hookBridge.ts`). Without it the signal is
+refused as `identity-status:legacy` once the envelope-less grandfather closes,
+and turn-state reporting degrades **silently** — the failure this integration
+exists to remove.
+
+The name is a literal in each bridge rather than an import, because a bridge is
+a standalone `.mjs` outside the main build. `hookBridge.lockstep.test.ts` parses
+the bridge sources to keep the copies honest; this bridge additionally carries
+the same two assertions in `__tests__/codexHookEnvelope.test.ts`.
+
+`hooks.signal` is the only main-pipe method either bridge calls. Adding another
+means widening the lane in `hookBridge.ts` deliberately.
+
 ## Harmlessness
 
 Both bridges are covered by `scripts/lib/hookHarmlessness.mjs`, which runs each
