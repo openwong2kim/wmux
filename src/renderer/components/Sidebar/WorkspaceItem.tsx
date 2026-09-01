@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, memo } from 'react';
+import { useState, useRef, useEffect, useCallback, memo } from 'react';
 import type { GitSyncStatus, PrStatus, WorkspaceMetadata } from '../../../shared/types';
 import { useStore } from '../../stores';
 import { selectWorkspaceById } from '../../stores/selectors/workspaceProjections';
@@ -14,7 +14,7 @@ import { openUrlInBrowserPane } from '../../utils/browserPaneActions';
 import WorkspaceProfileModal from './WorkspaceProfileModal';
 import WorkspaceAccountMenu from './WorkspaceAccountMenu';
 import WorkspaceChromeProfileMenu from './WorkspaceChromeProfileMenu';
-import WorkspaceAgentRoster from './WorkspaceAgentRoster';
+import WorkspaceAgentRoster, { WorkspaceRosterSummaryMemo } from './WorkspaceAgentRoster';
 import { displayPath } from '../../utils/displayPath';
 import { WORKSPACE_COLOR_IDS, WORKSPACE_COLOR_HEX, workspaceColorHex, workspaceColorLabelKey } from '../../../shared/workspaceColors';
 
@@ -284,6 +284,21 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
   // `metadata.agentStatus` directly only ever saw the active pane and never
   // self-healed. Scalar return → Object.is subscription re-renders only on change.
   const agentStatus = useStore((s) => selectWorkspaceAgentStatus(s, workspaceId));
+  // #997 — the roster's expanded state. It lives here, not in the roster,
+  // because the control that toggles it now sits on THIS row while the list it
+  // reveals is rendered below; the two would otherwise need to agree across a
+  // sibling boundary. The list keeps its own store subscription, so roster
+  // churn still does not rerender this component.
+  const [rosterOpen, setRosterOpen] = useState(isActive);
+  const toggleRoster = useCallback(() => setRosterOpen((value) => !value), []);
+  const openRoster = useCallback(() => setRosterOpen(true), []);
+  // Newly selected workspaces reveal their agents automatically; workspaces
+  // that move to the background collapse back to the count. The user can still
+  // explicitly toggle either state until selection changes again.
+  useEffect(() => {
+    setRosterOpen(isActive);
+  }, [isActive]);
+
   // X5 wmux.json badge state for this workspace (transient, probe-driven).
   const projectState = useStore((s) => s.projectConfigs[workspaceId]);
   // J3 §4 — 태스크 워크스페이스의 페인 cwd가 worktree 경계 밖으로 이탈했는지(경고만).
@@ -731,6 +746,18 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
           )}
         </div>
 
+        {/* #997 — roster disclosure + agent count. Lives on this row, not on
+            a line of its own: see WorkspaceRosterSummary's own comment. */}
+        {!editing && (
+          <div className="flex-shrink-0 mt-0.5">
+            <WorkspaceRosterSummaryMemo
+              workspaceId={workspaceId}
+              open={rosterOpen}
+              onToggle={toggleRoster}
+            />
+          </div>
+        )}
+
         {/* Agent status mark (play/pause), right-aligned. */}
         {(() => {
           const st = AGENT_STATUS_ICON[agentStatus];
@@ -778,7 +805,11 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
         </button>
         </div>
         {!editing && (
-          <WorkspaceAgentRoster workspaceId={workspaceId} isActive={isActive} />
+          <WorkspaceAgentRoster
+            workspaceId={workspaceId}
+            open={rosterOpen}
+            onRequestOpen={openRoster}
+          />
         )}
       </div>
 

@@ -22,11 +22,11 @@ const source = readFileSync(
   'utf8',
 );
 
-/** The effect whose dependency array is exactly `[dep]`. */
-function effectKeyedOn(dep: string): string {
-  const marker = `}, [${dep}]);`;
+/** The effect whose dependency array is exactly `[deps]`. */
+function effectKeyedOn(deps: string): string {
+  const marker = `}, [${deps}]);`;
   const end = source.indexOf(marker);
-  expect(end, `no effect keyed on [${dep}]`).toBeGreaterThanOrEqual(0);
+  expect(end, `no effect keyed on [${deps}]`).toBeGreaterThanOrEqual(0);
   const start = source.lastIndexOf('useEffect(() => {', end);
   expect(start).toBeGreaterThanOrEqual(0);
   return source.slice(start, end + marker.length);
@@ -34,9 +34,13 @@ function effectKeyedOn(dep: string): string {
 
 describe('WorkspaceAgentRoster — stash pulse', () => {
   it('consumes the pulse in an effect that owns no timeout', () => {
-    const consume = effectKeyedOn('pulsedPaneId');
+    // #997 moved the expanded state up to WorkspaceItem (the control that
+    // toggles it now sits on the workspace row), so the pulse asks its owner
+    // to open instead of setting local state — the two-effect split, which is
+    // what this file exists to protect, is unchanged.
+    const consume = effectKeyedOn('pulsedPaneId, onRequestOpen');
     expect(consume).toContain('clearStashPulse()');
-    expect(consume).toContain('setOpen(true)');
+    expect(consume).toContain('onRequestOpen()');
     expect(consume).toContain('setPulsingPaneId(pulsedPaneId)');
     // The trap: clearStashPulse re-runs this effect immediately, so a timeout
     // registered here would be cleaned up before it could ever fire.
