@@ -1966,7 +1966,21 @@ function UpdateStatus() {
         )}
       </div>
       <div className="flex gap-2 shrink-0 ml-3">
-        {state === 'downloaded' ? (
+        {/* "Check" stays visible while an install is staged. It used to be
+            replaced by "Install now", so once one update was downloaded there
+            was no way to ask for a newer one — a staged 3.49.2 hid the 3.49.3
+            published minutes later until the 30-minute poll got around to it.
+            A check always offers the latest, so re-checking over a staged
+            install is safe. */}
+        <Button
+          variant="secondary"
+          onClick={handleCheck}
+          disabled={state === 'checking' || state === 'downloading'}
+          style={{ border: 'none', opacity: state === 'checking' || state === 'downloading' ? 0.5 : 1 }}
+        >
+          {t('settings.checkUpdate')}
+        </Button>
+        {state === 'downloaded' && (
           <Button
             onClick={handleInstall}
             style={{ backgroundColor: 'var(--accent-green)', color: 'var(--bg-base)', border: 'none' }}
@@ -1975,15 +1989,6 @@ function UpdateStatus() {
                 the line above already reports — a button labelled with a state
                 does not tell you what pressing it does. */}
             {t('update.installNow')}
-          </Button>
-        ) : (
-          <Button
-            variant="secondary"
-            onClick={handleCheck}
-            disabled={state === 'checking' || state === 'downloading'}
-            style={{ border: 'none', opacity: state === 'checking' || state === 'downloading' ? 0.5 : 1 }}
-          >
-            {t('settings.checkUpdate')}
           </Button>
         )}
       </div>
