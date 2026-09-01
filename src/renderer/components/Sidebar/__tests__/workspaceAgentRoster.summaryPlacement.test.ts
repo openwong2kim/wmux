@@ -125,3 +125,18 @@ describe('#997 — the summary chip is a number, its accessible name is not', ()
     expect(label).not.toContain('Agents 0');
   });
 });
+
+describe('#997 — the chip drops the stash glyph, the accessible name never does', () => {
+  it('agents + stash: the glyph is off the chip, so the name is the only account of it', () => {
+    // The visible chip renders the agent count alone in this combination
+    // (the glyph cost 17px of the name column); the panes it stands for are
+    // still announced here and still headed inside the expanded list.
+    const summaryPart = rosterSource.slice(
+      rosterSource.indexOf('function WorkspaceRosterSummary('),
+      rosterSource.indexOf('export const WorkspaceRosterSummaryMemo'),
+    );
+    expect(summaryPart).toContain('agentCount === 0 && stashedCount > 0');
+    expect(rosterSummaryAriaLabel({ agentCount: 2, stashedCount: 1 }, false, t))
+      .toContain('Stashed 1');
+  });
+});

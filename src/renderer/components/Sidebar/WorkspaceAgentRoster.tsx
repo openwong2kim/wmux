@@ -209,11 +209,18 @@ function WorkspaceRosterSummary({
       >
         <IconChevron size={8} />
       </span>
-      {roster.agentCount > 0 && <span>{roster.agentCount}</span>}
-      {roster.stashedCount > 0 && (
+      {agentCount > 0 && <span>{agentCount}</span>}
+      {/* The stash glyph draws only when it is the ONLY thing to report.
+          Beside an agent count it cost 17px of a row whose name column has
+          none to spare (measured: it was the difference between eleven
+          readable characters and fourteen), while the same panes are already
+          announced in this control's accessible name and headed by their own
+          group inside the expanded list. Alone, it is what stops a workspace
+          holding nothing but stashed panes from reading as empty. */}
+      {agentCount === 0 && stashedCount > 0 && (
         <span className="flex items-center gap-0.5">
           <IconEyeOff size={8} />
-          {roster.stashedCount}
+          {stashedCount}
         </span>
       )}
     </button>
