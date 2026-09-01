@@ -224,10 +224,21 @@ const SKELETON_TEXT_PER_ELEMENT = 5;
 /**
  * The readiness note, or '' when the page looks normal.
  *
- * Mirrors browser-use agent/prompts.py:229-241, with one deliberate change:
- * `pendingRequests` only STRENGTHENS the skeleton verdict, never gates it. The
- * builtin backend does not attach pageCapture at all, so a pending-gated hint
- * would simply never fire there.
+ * Mirrors browser-use agent/prompts.py:229-241.
+ *
+ * The skeleton verdict is GATED on `pendingRequests`, not merely strengthened
+ * by it. Density alone does not separate "still painting" from "an application
+ * UI", and measurement says the two sit on opposite sides of any threshold you
+ * pick for the wrong reason: a finished GitHub pull-request list reads 0.78
+ * chars per element while the Node docs read 8.39. Ungated, the note fired on
+ * every app-shaped page — icons, nav, and chrome are elements without text —
+ * and told the agent a fully rendered page was still loading.
+ *
+ * The cost of gating is that the builtin backend, which never attaches
+ * pageCapture and so always reports zero in flight, no longer produces this
+ * note at all. Saying nothing there is the better failure: the nearly-empty
+ * verdict below still covers a genuinely blank page, and it does not depend on
+ * request counts.
  */
 export function describePageReadiness(
   facts: PageFacts,
@@ -254,12 +265,11 @@ export function describePageReadiness(
       : 'nearly empty — may still be loading';
   }
   if (
+    pendingRequests > 0 &&
     facts.totalElements > SKELETON_MIN_ELEMENTS &&
     facts.textChars < facts.totalElements * SKELETON_TEXT_PER_ELEMENT
   ) {
-    return pendingRequests > 0
-      ? `skeleton screen likely — ${pendingRequests} request(s) in flight and little text rendered`
-      : 'skeleton screen likely — little text rendered for this many elements';
+    return `skeleton screen likely — ${pendingRequests} request(s) in flight and little text rendered`;
   }
   return '';
 }

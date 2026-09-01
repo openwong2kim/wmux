@@ -3,6 +3,14 @@ import { generateSnapshot, resolveRef, StaleRefError, isFrameRef } from '../snap
 import { browserScopeKey, noteFrameRefsForScope } from '../snapshot';
 import { sanitizeRef } from '../tools/interaction';
 
+// The skeleton verdict is gated on in-flight requests and these harness pages
+// carry no capture state, so the one case that asserts it says so explicitly.
+let pendingRequests = 0;
+vi.mock('../pageCapture', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../pageCapture')>()),
+  peekRecentPendingRequests: () => pendingRequests,
+}));
+
 // Frame-aware refs (B2). browser_snapshot used to stop at the iframe element
 // and every ref resolved through page.getByRole(), which searches the main
 // frame only — so a payment or login widget was an invisible dead end.
@@ -890,7 +898,9 @@ describe('the page-facts footer does not contradict the tree above it', () => {
       },
     );
 
+    pendingRequests = 2;
     const out = await generateSnapshot(h.page, { format: 'ai' });
+    pendingRequests = 0;
     expect(out).toContain('skeleton screen likely');
   });
 });

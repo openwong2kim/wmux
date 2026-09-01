@@ -234,6 +234,23 @@ export const FIRST_PARTY_METHODS: ReadonlySet<RpcMethod> = new Set<RpcMethod>([
   'browser.lease.acquire',
   'browser.lease.renew',
   'browser.lease.release',
+  // The main-side half of the lifecycle drain that prepends [browser events]
+  // to every browser result. Its failure path is deliberately silent, so a
+  // packaged build simply stopped reporting navigations on the backend that
+  // has no local mirror (builtin) and nobody had a symptom to report.
+  'browser.lifecycle.get',
+  // browser_replay's store. Missing here, every action of that tool — list
+  // included — was refused as an unconfirmed plugin in a packaged build, so
+  // the whole tool was dead for the first-party client while every dev build
+  // (where enforcement is off) looked fine.
+  'browser.actionCache.list',
+  'browser.actionCache.get',
+  'browser.actionCache.put',
+  'browser.actionCache.stats',
+  'browser.actionCache.forget',
+  'browser.actionCache.promote',
+  'browser.actionCache.demote',
+  'browser.actionCache.promoted',
   // agent-to-agent
   'a2a.resolve.identity',
   'a2a.whoami',
