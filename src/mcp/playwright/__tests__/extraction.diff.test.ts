@@ -87,13 +87,24 @@ const ROWS = Array.from({ length: 40 }, (_, i) => ({
   name: `Item ${i}`,
 }));
 
-function makePage(nodes: CdpNode[], url = 'https://example.test/a') {
+function makePage(nodes: CdpNode[], url = 'https://example.test/a', body = 'body text') {
+  const listeners: ((frame: unknown) => void)[] = [];
+  const mainFrame = { id: 'main' };
   const page = {
     nodes,
     currentUrl: url,
+    body,
     url: () => page.currentUrl,
     title: async () => 'Page',
-    innerText: async () => 'body text',
+    innerText: async () => page.body,
+    on: (event: string, fn: (frame: unknown) => void) => {
+      if (event === 'framenavigated') listeners.push(fn);
+    },
+    mainFrame: () => mainFrame,
+    /** Fire a main-frame navigation the way Playwright would. */
+    navigate: () => {
+      for (const fn of listeners) fn(mainFrame);
+    },
     context: () => ({
       newCDPSession: async () => ({
         send: vi.fn(async (method: string) =>
@@ -106,6 +117,17 @@ function makePage(nodes: CdpNode[], url = 'https://example.test/a') {
     getByRole: vi.fn(),
   };
   return page;
+}
+
+function rpcPayload(url = 'https://example.test/a') {
+  return {
+    value: {
+      url,
+      title: 'Page',
+      content: 'body text',
+      elements: ROWS.map((row, i) => ({ ref: i + 1, role: row.role, name: row.name })),
+    },
+  };
 }
 
 const tool = smartSnapshotTool();
@@ -190,19 +212,75 @@ describe('browser_smart_snapshot auto-diff (CDP lane)', () => {
 describe('browser_smart_snapshot auto-diff (RPC lane)', () => {
   it('always returns the full listing while refs are positional', async () => {
     getPage.mockResolvedValue(null);
-    mockSendRpc.mockResolvedValue({
-      value: {
-        url: 'https://example.test/a',
-        title: 'Page',
-        content: 'body text',
-        elements: ROWS.map((row, i) => ({ ref: i + 1, role: row.role, name: row.name })),
-      },
-    });
+    mockSendRpc.mockResolvedValue(rpcPayload());
 
     expect((await snapshot()).startsWith('[snapshot: full]')).toBe(true);
     // Second identical call: the CDP lane would answer "no changes" here.
     const second = await snapshot();
     expect(second.startsWith('[snapshot: full]')).toBe(true);
     expect(second).toContain('Item 30');
+  });
+
+  it('does not leave a baseline the CDP lane will diff against', async () => {
+    // The two lanes number their refs differently, so a positional listing is
+    // not a baseline an identity listing may be compared with. The lane marker
+    // in the attrs key is what keeps them apart.
+    getPage.mockResolvedValue(null);
+    mockSendRpc.mockResolvedValue(rpcPayload());
+    await snapshot();
+
+    getPage.mockResolvedValue(makePage(tree(ROWS)));
+    const onCdp = await snapshot();
+
+    expect(onCdp.startsWith('[snapshot: full]')).toBe(true);
+    expect(onCdp).toContain('Item 30');
+  });
+});
+
+describe('a diff never crosses a document or a page', () => {
+  it('returns the full listing after a reload of the same URL', async () => {
+    const page = makePage(tree(ROWS));
+    getPage.mockResolvedValue(page);
+    await snapshot();
+
+    // Same URL, new document: the URL guard sees nothing, and the new
+    // document's low backendDOMNodeIds take the old document's refs.
+    page.navigate();
+    const after = await snapshot();
+
+    expect(after.startsWith('[snapshot: full]')).toBe(true);
+    expect(after).not.toContain('no changes');
+  });
+
+  it('returns the full listing for a second tab on the same URL', async () => {
+    getPage.mockResolvedValue(makePage(tree(ROWS)));
+    await snapshot();
+
+    // A different page, same surface key and same URL — identical text, and
+    // "(no changes since previous snapshot)" would be about a page this call
+    // never compared against.
+    getPage.mockResolvedValue(makePage(tree(ROWS)));
+    const other = await snapshot();
+
+    expect(other.startsWith('[snapshot: full]')).toBe(true);
+    expect(other).toContain('Item 30');
+  });
+});
+
+describe('a truncated page text says the diff is partial', () => {
+  it('notes the cap when it answers with a diff', async () => {
+    const page = makePage(tree(ROWS), 'https://example.test/a', 'x'.repeat(5000));
+    getPage.mockResolvedValue(page);
+    await snapshot({ maxContentLength: 20 });
+
+    const second = await snapshot({ maxContentLength: 20 });
+    expect(second).toContain('(no changes since previous snapshot)');
+    expect(second).toContain('page text is capped at 20 characters');
+  });
+
+  it('stays quiet when nothing was cut', async () => {
+    getPage.mockResolvedValue(makePage(tree(ROWS)));
+    await snapshot();
+    expect(await snapshot()).not.toContain('page text is capped');
   });
 });

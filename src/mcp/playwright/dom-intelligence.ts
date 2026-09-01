@@ -120,12 +120,24 @@ export interface IndexedElement {
   /** Playwright locator string to find this element */
   locator: string;
   /**
-   * Position of this element among the same role+name population the snapshot
-   * saw, so `getByRole(role, { name }).nth(i)` picks the instance the ref was
-   * numbered against. Absent on the RPC lane, whose locator is a CSS selector
-   * that already names one element.
+   * Position among the same role+name population the snapshot saw, so
+   * `getByRole(role, { name, exact: true }).nth(i)` picks the instance the ref
+   * was numbered against. Zeroed on the RPC lane, whose locator is a CSS
+   * selector that already names one element.
    */
-  sameNameIndex?: number;
+  sameNameIndex: number;
+  /** How many elements the snapshot listed with this role+name. */
+  sameNameTotal: number;
+  /**
+   * The same pair over the whole ROLE population, ignoring names.
+   *
+   * An unnamed element cannot be located with a name filter, and
+   * `getByRole(role)` with no filter counts the named siblings too — so the
+   * name-keyed index is not an index into the population that locator returns.
+   * Resolution uses this pair instead for an unnamed element (review ①).
+   */
+  roleIndex: number;
+  roleTotal: number;
 }
 
 export interface SmartSnapshot {
@@ -139,6 +151,12 @@ export interface SmartSnapshot {
 export interface SmartSnapshotOptions {
   /** Maximum length for the page text content (default 3000) */
   maxContentLength?: number;
+  /**
+   * Surface the snapshot was requested for. Stored with the cache so a later
+   * click on ANOTHER surface is refused rather than resolved against the wrong
+   * page — one connection can drive several (review 7).
+   */
+  surfaceId?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -184,25 +202,62 @@ interface CdpAXNode {
 }
 
 // ---------------------------------------------------------------------------
-// Element cache — stores indexed elements from the last snapshot
+// Element cache — the last smart snapshot, and what it was taken against
 // ---------------------------------------------------------------------------
+
+/**
+ * The last smart snapshot this connection took, with everything a later
+ * `browser_click({ smartRef })` needs to prove the ref still means what the
+ * agent thinks it means.
+ *
+ * The page and surface are recorded because neither the ref number nor the
+ * cache is scoped to one (review 7): ref numbers restart at 1 per Page, the
+ * cache is per CONNECTION, and one connection can drive several surfaces and
+ * tabs. Without them, snapshotting tab A and then clicking on tab B resolves
+ * A's ref against B's DOM and reports success. A WeakRef, so holding the cache
+ * can never keep a closed page alive.
+ */
+interface SmartSnapshotRecord {
+  elements: IndexedElement[];
+  /** The page the snapshot was taken on. Absent on the RPC lane. */
+  page: WeakRef<Page> | null;
+  /** Surface the snapshot was taken on, when the caller named one. */
+  surfaceId: string | undefined;
+  /** identity.generation at capture time — which snapshot minted these refs. */
+  generation: number;
+  /** identity.documentEpoch at capture time. */
+  documentEpoch: number;
+}
+
+const EMPTY_RECORD: SmartSnapshotRecord = {
+  elements: [],
+  page: null,
+  surfaceId: undefined,
+  generation: 0,
+  documentEpoch: 0,
+};
 
 // Fallback store for single-child mode (no connection scope active). Under the
 // broker each connection keeps its OWN cache on its AsyncLocalStorage scope so
 // concurrent agents' smart refs never collide — see getElementCache/setElementCache.
-let moduleElementCache: IndexedElement[] = [];
+let moduleElementCache: SmartSnapshotRecord = EMPTY_RECORD;
 
-function getElementCache(): IndexedElement[] {
+function getSnapshotRecord(): SmartSnapshotRecord {
   const scope = getConnectionScope();
-  if (scope) return (scope.elementCache as IndexedElement[] | undefined) ?? [];
+  if (scope) return (scope.elementCache as SmartSnapshotRecord | undefined) ?? EMPTY_RECORD;
   return moduleElementCache;
 }
 
-function setElementCache(elements: IndexedElement[]): void {
-  const scope = getConnectionScope();
-  if (scope) scope.elementCache = elements;
-  else moduleElementCache = elements;
+function getElementCache(): IndexedElement[] {
+  return getSnapshotRecord().elements;
 }
+
+function setSnapshotRecord(record: SmartSnapshotRecord): void {
+  const scope = getConnectionScope();
+  if (scope) scope.elementCache = record;
+  else moduleElementCache = record;
+}
+
 
 // ---------------------------------------------------------------------------
 // Smart-ref identity — refs keyed on the DOM node, not on the walk position
@@ -223,6 +278,17 @@ function setElementCache(elements: IndexedElement[]): void {
  *
  * Numbers are only ever handed out, never recycled, so a ref that named a
  * removed element can never come back pointing at a different one.
+ *
+ * One level, not the frameKey-keyed two-level map RefIdentity uses, because
+ * this walk never leaves the main frame. `Accessibility.getFullAXTree` on a
+ * page target stops AT the `<iframe>` element — `childIds: []`, the child
+ * document's nodes simply absent, same-origin or not (measured on Chrome 141;
+ * see IFRAME_ROLES in snapshot.ts). browser_snapshot reaches frame contents
+ * only by grafting them with an explicit per-frame `getFullAXTree({ frameId })`,
+ * which is why it needs the second level; this walk makes no such call, so
+ * every backendDOMNodeId it ever sees was issued by one document. That is also
+ * what keeps the sameNameIndex population and the `page.getByRole` population
+ * the same set — both are main-frame-only.
  */
 interface SmartRefIdentity {
   /** backendDOMNodeId → the smart ref that node was given. */
@@ -231,6 +297,19 @@ interface SmartRefIdentity {
   next: number;
   /** URL the number space belongs to; a different document restarts it. */
   url: string | undefined;
+  /** Bumped once per snapshot. Names the snapshot a ref came from. */
+  generation: number;
+  /**
+   * Bumped on every main-frame navigation, reload included.
+   *
+   * The URL alone cannot see a reload, a back/forward to the same URL, or a
+   * re-submitted form: `smartDocumentKey` reads the same string on both sides
+   * while the document underneath is new and its low backendDOMNodeIds would
+   * be handed the refs of the old one (review ④). The epoch is what makes that
+   * boundary visible — it also lands in the diff baseline's attrs key, so the
+   * baseline for the old document can never be diffed against the new one.
+   */
+  documentEpoch: number;
 }
 
 /**
@@ -238,10 +317,78 @@ interface SmartRefIdentity {
  * churns nodes forever would otherwise grow it without bound). `next` is NOT
  * rewound with it — recycling a number is the confusion this exists to
  * prevent — so the cost of hitting the cap is one renumbering of live nodes.
+ *
+ * In practice unreachable now that each snapshot prunes to the nodes it saw
+ * (review ⑨); kept as the backstop it always was.
  */
 const SMART_REF_IDENTITY_CAP = 5000;
 
 const pageSmartRefIdentity = new WeakMap<Page, SmartRefIdentity>();
+
+/** What the last smart snapshot on this page was taken against. */
+interface SmartSnapshotStamp {
+  generation: number;
+  documentEpoch: number;
+  url: string | undefined;
+}
+
+const pageSmartStamps = new WeakMap<Page, SmartSnapshotStamp>();
+
+/** Pages already carrying the `framenavigated` listener below. */
+const navigationHooked = new WeakSet<Page>();
+
+/** Stable per-Page number, so a baseline key can name the page it describes. */
+const pageIds = new WeakMap<Page, number>();
+let nextPageId = 1;
+
+function pageId(page: Page): number {
+  const existing = pageIds.get(page);
+  if (existing !== undefined) return existing;
+  const id = nextPageId++;
+  pageIds.set(page, id);
+  return id;
+}
+
+/**
+ * Identity of the exact document this page is showing, for the diff baseline's
+ * attrs key.
+ *
+ * Two things the surface key alone cannot separate (review ④ and ⑦): a second
+ * tab or surface on the same URL, whose listing is a different page entirely,
+ * and a reload of the same URL, whose refs are a different number space. Both
+ * come back as a different token, and an attrs mismatch drops the baseline —
+ * so neither can be answered with "(no changes since previous snapshot)".
+ */
+export function smartPageToken(page: Page): string {
+  const identity = pageSmartRefIdentity.get(page);
+  return `p${pageId(page)}e${identity?.documentEpoch ?? 0}`;
+}
+
+/**
+ * Retire the number space when the page navigates, reload included.
+ *
+ * Playwright reports every main-frame commit here, which is the signal
+ * `smartDocumentKey` cannot supply on its own. Attached once per page and
+ * never removed: the listener outlives no more than the Page itself, and
+ * `page.on` is absent on the RPC lane and on test doubles, so its absence is
+ * tolerated rather than required.
+ */
+function hookNavigation(page: Page, identity: SmartRefIdentity): void {
+  if (navigationHooked.has(page)) return;
+  const on = (page as { on?: (event: string, fn: (frame: unknown) => void) => void }).on;
+  if (typeof on !== 'function') return;
+  navigationHooked.add(page);
+  try {
+    on.call(page, 'framenavigated', (frame: unknown) => {
+      const main = (page as { mainFrame?: () => unknown }).mainFrame?.();
+      if (main !== undefined && frame !== main) return;
+      identity.byBackendId.clear();
+      identity.documentEpoch++;
+    });
+  } catch {
+    /* a page that cannot take a listener keeps the URL check alone */
+  }
+}
 
 /**
  * The part of the URL that decides whether this is still the same document.
@@ -275,19 +422,39 @@ function beginSmartRefGeneration(page: Page): SmartRefIdentity {
   const url = smartDocumentKey(page);
   let identity = pageSmartRefIdentity.get(page);
   if (!identity) {
-    identity = { byBackendId: new Map(), next: 1, url };
+    identity = { byBackendId: new Map(), next: 1, url, generation: 0, documentEpoch: 0 };
     pageSmartRefIdentity.set(page, identity);
   } else if (identity.url !== undefined && url !== undefined && identity.url !== url) {
     identity.byBackendId.clear();
   }
   if (identity.byBackendId.size > SMART_REF_IDENTITY_CAP) identity.byBackendId.clear();
   identity.url = url;
+  identity.generation++;
+  hookNavigation(page, identity);
   return identity;
 }
 
+/**
+ * Forget every node this walk did not see (review 9).
+ *
+ * The map is otherwise append-only, so a long session on a churning SPA walks
+ * it into SMART_REF_IDENTITY_CAP and the whole map is dropped at once —
+ * renumbering every live element in one go, which is the loudest possible
+ * outcome for the quietest possible cause. Pruning per snapshot keeps the map
+ * the size of the page. The cost is deliberate and small: an element that
+ * leaves the tree and comes back gets a NEW ref rather than its old one, which
+ * is the answer the agent already gets for anything the last snapshot did not
+ * list — and never a reused number.
+ */
+function pruneSmartRefIdentity(identity: SmartRefIdentity, seen: Set<number>): void {
+  if (identity.byBackendId.size === seen.size) return;
+  for (const backendId of [...identity.byBackendId.keys()]) {
+    if (!seen.has(backendId)) identity.byBackendId.delete(backendId);
+  }
+}
+
 /** The smart ref for this node, minting one the first time we see it. */
-function assignSmartRef(identity: SmartRefIdentity, backendDOMNodeId?: number): number {
-  if (backendDOMNodeId === undefined) return identity.next++;
+function assignSmartRef(identity: SmartRefIdentity, backendDOMNodeId: number): number {
   const existing = identity.byBackendId.get(backendDOMNodeId);
   if (existing !== undefined) return existing;
   const ref = identity.next++;
@@ -296,19 +463,32 @@ function assignSmartRef(identity: SmartRefIdentity, backendDOMNodeId?: number): 
 }
 
 /**
- * Record, per element, its position among the same role+name population.
+ * Record, per element, the populations resolution counts it against.
  *
  * resolveSmartRefLocator locates through `getByRole(...).nth(i)`, which is only
- * sound against the population the snapshot saw — and a stable ref number says
- * nothing about where the element now sits in that population.
+ * sound against the population the snapshot saw — a stable ref number says
+ * nothing about where the element now sits in that population. Both pairs are
+ * stored because the locator differs by whether the element has a name: see
+ * IndexedElement.roleIndex.
  */
-function finalizeSameNameIndices(elements: IndexedElement[]): void {
-  const seen = new Map<string, number>();
+function finalizeSmartPopulations(elements: IndexedElement[]): void {
+  // NUL-separated (review 8): neither a role nor a name can contain one, so no
+  // role+name pair can be spelled two ways. A plain space let `button` + `a b`
+  // and `button a` + `b` collide into a single population.
+  const nameKey = (element: IndexedElement) => `${element.role}\u0000${element.name}`;
+  const nameCounts = new Map<string, number>();
+  const roleCounts = new Map<string, number>();
   for (const element of elements) {
-    const key = `${element.role} ${element.name}`;
-    const index = seen.get(key) ?? 0;
-    element.sameNameIndex = index;
-    seen.set(key, index + 1);
+    const byName = nameCounts.get(nameKey(element)) ?? 0;
+    element.sameNameIndex = byName;
+    nameCounts.set(nameKey(element), byName + 1);
+    const byRole = roleCounts.get(element.role) ?? 0;
+    element.roleIndex = byRole;
+    roleCounts.set(element.role, byRole + 1);
+  }
+  for (const element of elements) {
+    element.sameNameTotal = nameCounts.get(nameKey(element)) ?? 1;
+    element.roleTotal = roleCounts.get(element.role) ?? 1;
   }
 }
 
@@ -342,6 +522,9 @@ function buildLocatorString(role: string, name: string): string {
  * Recursively walk the CDP accessibility tree and collect interactive
  * elements into the provided array, assigning refs out of the page's identity
  * number space (see SmartRefIdentity).
+ *
+ * `seen` collects every backendDOMNodeId this walk numbered, so the identity
+ * map can be pruned back to the live page afterwards.
  */
 function collectInteractiveElements(
   nodeMap: Map<string, CdpAXNode>,
@@ -349,6 +532,7 @@ function collectInteractiveElements(
   elements: IndexedElement[],
   passwordBackendIds: Set<number>,
   identity: SmartRefIdentity,
+  seen: Set<number>,
 ): void {
   const role = node.role?.value ?? 'none';
   const name = node.name?.value ?? '';
@@ -358,23 +542,33 @@ function collectInteractiveElements(
   // (html → body → generic) directly under the RootWebArea, so returning early
   // here skipped the entire document. Same splice rule as buildTree() in
   // snapshot.ts — see the comment there for the measurement.
-  if (!node.ignored && INTERACTIVE_ROLES.has(role)) {
-    const ref = assignSmartRef(identity, node.backendDOMNodeId);
+  //
+  // A node with no backendDOMNodeId is passed over entirely (review 11). There
+  // is nothing to key its ref on, so it drew a fresh number out of the space on
+  // every single snapshot: the ref an agent read was never the ref the next
+  // snapshot would print, and its line changed in every diff, which is exactly
+  // the churn identity refs exist to stop. Listing an element the agent cannot
+  // hold on to is worse than not listing it.
+  if (!node.ignored && INTERACTIVE_ROLES.has(role) && node.backendDOMNodeId !== undefined) {
+    const backendId = node.backendDOMNodeId;
+    seen.add(backendId);
     const element: IndexedElement = {
-      ref,
+      ref: assignSmartRef(identity, backendId),
       role,
       name,
       locator: buildLocatorString(role, name),
+      // Filled in by finalizeSmartPopulations once the whole walk is known.
+      sameNameIndex: 0,
+      sameNameTotal: 0,
+      roleIndex: 0,
+      roleTotal: 0,
     };
 
     if (node.value?.value) {
       // A password field reports its name, role and ref as usual; only the
       // contents are withheld. Chrome pre-masks `type=password` here, but not a
       // `type=text` field marked autocomplete="new-password" — see redact.ts.
-      element.value =
-        node.backendDOMNodeId !== undefined && passwordBackendIds.has(node.backendDOMNodeId)
-          ? REDACTED_PASSWORD
-          : node.value.value;
+      element.value = passwordBackendIds.has(backendId) ? REDACTED_PASSWORD : node.value.value;
     }
     if (node.description?.value) {
       element.description = node.description.value;
@@ -388,7 +582,7 @@ function collectInteractiveElements(
     for (const childId of node.childIds) {
       const child = nodeMap.get(childId);
       if (child) {
-        collectInteractiveElements(nodeMap, child, elements, passwordBackendIds, identity);
+        collectInteractiveElements(nodeMap, child, elements, passwordBackendIds, identity, seen);
       }
     }
   }
@@ -399,6 +593,7 @@ function collectInteractiveElements(
  * elements.
  */
 async function getInteractiveElements(page: Page): Promise<IndexedElement[]> {
+  const identity = beginSmartRefGeneration(page);
   const client = await page.context().newCDPSession(page);
   try {
     const { nodes } = (await client.send('Accessibility.getFullAXTree' as any)) as {
@@ -419,14 +614,10 @@ async function getInteractiveElements(page: Page): Promise<IndexedElement[]> {
     for (const n of nodes) nodeMap.set(n.nodeId, n);
 
     const elements: IndexedElement[] = [];
-    collectInteractiveElements(
-      nodeMap,
-      nodes[0],
-      elements,
-      passwordBackendIds,
-      beginSmartRefGeneration(page),
-    );
-    finalizeSameNameIndices(elements);
+    const seen = new Set<number>();
+    collectInteractiveElements(nodeMap, nodes[0], elements, passwordBackendIds, identity, seen);
+    pruneSmartRefIdentity(identity, seen);
+    finalizeSmartPopulations(elements);
     return elements;
   } finally {
     await client.detach().catch(() => {
@@ -474,8 +665,21 @@ export async function getSmartSnapshot(
     getPageContent(page, maxContentLength),
   ]);
 
-  // Update element cache
-  setElementCache(elements);
+  // Stamp what these refs were minted against, so a later click can tell a
+  // live ref from one the page has moved out from under.
+  const identity = pageSmartRefIdentity.get(page);
+  pageSmartStamps.set(page, {
+    generation: identity?.generation ?? 0,
+    documentEpoch: identity?.documentEpoch ?? 0,
+    url: smartDocumentKey(page),
+  });
+  setSnapshotRecord({
+    elements,
+    page: new WeakRef(page),
+    surfaceId: options?.surfaceId,
+    generation: identity?.generation ?? 0,
+    documentEpoch: identity?.documentEpoch ?? 0,
+  });
 
   return { url, title, elements, content };
 }
@@ -579,11 +783,24 @@ export async function getSmartSnapshotViaEval(
     ...(e.value !== undefined && { value: e.value }),
     ...(e.description !== undefined && { description: e.description }),
     locator: `[data-wmux-ref="${e.ref}"]`,
+    // The populations are unused on this lane: its locator is a CSS selector
+    // naming one tagged element, so nothing counts a role or a name.
+    sameNameIndex: 0,
+    sameNameTotal: 1,
+    roleIndex: 0,
+    roleTotal: 1,
   }));
 
-  // Cache so browser_click({smartRef}) resolves via getLocatorByRef even if
-  // getPage() flips null->page between this snapshot and the click.
-  setElementCache(elements);
+  // Cache so browser_click({smartRef}) resolves via the data attribute even if
+  // getPage() flips null->page between this snapshot and the click. No page is
+  // recorded: this lane has none, and the attribute selector is page-agnostic.
+  setSnapshotRecord({
+    elements,
+    page: null,
+    surfaceId: options?.surfaceId,
+    generation: 0,
+    documentEpoch: 0,
+  });
 
   return {
     url: raw?.url ?? '',
@@ -615,23 +832,169 @@ export function getLocatorByRef(ref: number): string | null {
 }
 
 /**
+ * Thrown instead of resolving a smart ref that can be shown not to name what
+ * the caller thinks it names — the page navigated, the element is gone, the
+ * click is aimed at another page, or the population the ref indexes into has
+ * changed size.
+ *
+ * The sibling of snapshot.ts's StaleRefError, declared here rather than
+ * imported because snapshot.ts already imports this module. browser_click
+ * turns the message into its tool result, so the agent is told to re-snapshot
+ * instead of being handed a silently substituted element.
+ */
+export class StaleSmartRefError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'StaleSmartRefError';
+  }
+}
+
+const RESNAPSHOT = 'Run browser_smart_snapshot to get current refs.';
+
+/**
  * Resolve a smart ref to a live Playwright locator.
  *
  * The two lanes store two different kinds of locator and only one of them is a
  * selector: the RPC lane's `[data-wmux-ref="N"]` is CSS and goes straight to
  * `page.locator()`, while the CDP lane's `getByRole('button', { name: 'OK' })`
  * is a source snippet that `page.locator()` cannot parse at all. Rebuild the
- * latter through the real `getByRole` API, pinned with `.nth()` to the
- * instance the ref was numbered against.
+ * latter through the real `getByRole` API, pinned with `.nth()` to the instance
+ * the ref was numbered against.
+ *
+ * Every check here mirrors resolveRefViaAxMap in snapshot.ts, and for the same
+ * reason: a stable ref number says the element has not been renumbered, not
+ * that it is still there. Before this, a ref replayed after the page moved
+ * resolved to whatever now sat at that index and reported a successful click
+ * (review 2) — the older positional locator at least failed to parse.
  */
-export function resolveSmartRefLocator(page: Page, ref: number): Locator | null {
-  const element = getSmartElementByRef(ref);
-  if (!element) return null;
+export async function resolveSmartRefLocator(page: Page, ref: number): Promise<Locator> {
+  const record = getSnapshotRecord();
+  const element = record.elements.find((e) => e.ref === ref);
+
+  // Wrong page, whatever the ref says. Checked before anything else: on the
+  // CDP lane the refs belong to ONE page, and every check below would
+  // otherwise be run against a DOM the snapshot never saw (review 7).
+  const capturedPage = record.page?.deref();
+  if (capturedPage !== undefined && capturedPage !== page) {
+    throw new StaleSmartRefError(
+      `smartRef=${ref} was taken on a different page than the one this click targets` +
+        `${record.surfaceId ? ` (snapshot surface "${record.surfaceId}")` : ''}. ${RESNAPSHOT}`,
+    );
+  }
+
+  const identity = pageSmartRefIdentity.get(page);
+  const stamp = pageSmartStamps.get(page);
+  if (stamp) {
+    const liveUrl = smartDocumentKey(page);
+    if (stamp.url !== undefined && liveUrl !== undefined && stamp.url !== liveUrl) {
+      throw new StaleSmartRefError(
+        `smartRef=${ref} is stale — the page navigated since snapshot #${stamp.generation} ` +
+          `(${stamp.url} → ${liveUrl}). ${RESNAPSHOT}`,
+      );
+    }
+    // Same URL, different document: a reload, a back/forward, or a re-submitted
+    // form. The URL comparison above cannot see any of them (review 4).
+    if (identity && identity.documentEpoch !== stamp.documentEpoch) {
+      throw new StaleSmartRefError(
+        `smartRef=${ref} is stale — the page reloaded since snapshot #${stamp.generation}, ` +
+          `so its refs name elements that no longer exist. ${RESNAPSHOT}`,
+      );
+    }
+  }
+
+  if (!element) {
+    // The number was handed out on this document but the latest snapshot does
+    // not list it: the element it named is gone. The number is never reissued,
+    // so retrying cannot help — only re-snapshotting can.
+    if (identity && ref >= 1 && ref < identity.next) {
+      throw new StaleSmartRefError(
+        `smartRef=${ref} is stale — the element it named is no longer in the page snapshot ` +
+          `(current snapshot #${identity.generation}). ${RESNAPSHOT}`,
+      );
+    }
+    throw new StaleSmartRefError(`Element with smartRef=${ref} not found. ${RESNAPSHOT}`);
+  }
+
   if (element.locator.startsWith('[data-wmux-ref=')) return page.locator(element.locator);
-  const byRole = element.name
-    ? page.getByRole(element.role as Parameters<Page['getByRole']>[0], { name: element.name })
-    : page.getByRole(element.role as Parameters<Page['getByRole']>[0]);
-  return byRole.nth(element.sameNameIndex ?? 0);
+
+  const role = element.role as Parameters<Page['getByRole']>[0];
+  // `exact: true` (review 1): getByRole's name filter is substring- and
+  // case-insensitive by default, so a ref for "Save" matched "Save draft" and
+  // the index it was paired with then indexed into a population the snapshot
+  // never counted.
+  //
+  // An unnamed element cannot use the name filter at all, and `getByRole(role)`
+  // sweeps the named siblings too — so it is counted against the whole-role
+  // population instead, which is the population that locator actually returns.
+  const named = element.name.length > 0;
+  const locator = named
+    ? page.getByRole(role, { name: element.name, exact: true })
+    : page.getByRole(role);
+  const index = named ? element.sameNameIndex : element.roleIndex;
+  const total = named ? element.sameNameTotal : element.roleTotal;
+
+  let count: number;
+  try {
+    count = await locator.count();
+  } catch {
+    throw new StaleSmartRefError(
+      `smartRef=${ref} (${element.role} "${element.name}") could not be located. ${RESNAPSHOT}`,
+    );
+  }
+  if (count === 0) {
+    throw new StaleSmartRefError(
+      `smartRef=${ref} is stale — no ${element.role} element` +
+        `${named ? ` named "${element.name}"` : ''} is on the page any more. ${RESNAPSHOT}`,
+    );
+  }
+
+  // The nth-match below is only sound while the page still holds the elements
+  // the snapshot numbered. Narrow on purpose, exactly as resolveRefViaAxMap is:
+  // a population of one indexes to 0 either way, so comparing counts there buys
+  // no safety and only costs false rejections.
+  if (total > 1 && count !== total) {
+    throw new StaleSmartRefError(
+      `smartRef=${ref} is stale — the page now has ${count} ${element.role} element(s)` +
+        `${named ? ` named "${element.name}"` : ''}, not the ${total} the last snapshot ` +
+        `listed, so the ref no longer identifies one element. ${RESNAPSHOT}`,
+    );
+  }
+
+  return locator.nth(Math.min(index, count - 1));
+}
+
+/**
+ * The identity of a smart ref, in the shape the replay recorder stores.
+ *
+ * browser_click recorded its smartRef steps as a CSS axis built from
+ * IndexedElement.locator, which on the CDP lane is the SOURCE TEXT of a
+ * getByRole call — `page.locator()` cannot parse it, so every such step failed
+ * on replay while the live click succeeded, quietly filling traces with steps
+ * that could never run (review 6). The ref axis carries the same 4-tuple
+ * browser_snapshot records, which the replay runner already knows how to
+ * re-resolve.
+ *
+ * Returns null for the RPC lane, whose CSS selector is a real selector and is
+ * recorded as one.
+ */
+export function smartRefAxisEntry(ref: number): {
+  role: string;
+  name: string;
+  sameNameIndex: number;
+  sameNameTotal: number;
+  frameKey: string;
+} | null {
+  const element = getSmartElementByRef(ref);
+  if (!element || element.locator.startsWith('[data-wmux-ref=')) return null;
+  const named = element.name.length > 0;
+  return {
+    role: element.role,
+    name: element.name,
+    sameNameIndex: named ? element.sameNameIndex : element.roleIndex,
+    sameNameTotal: named ? element.sameNameTotal : element.roleTotal,
+    // Always the main frame: this walk never leaves it (see SmartRefIdentity).
+    frameKey: '',
+  };
 }
 
 /**
@@ -639,5 +1002,5 @@ export function resolveSmartRefLocator(page: Page, ref: number): Locator | null 
  * to avoid stale refs.
  */
 export function clearElementCache(): void {
-  setElementCache([]);
+  setSnapshotRecord(EMPTY_RECORD);
 }

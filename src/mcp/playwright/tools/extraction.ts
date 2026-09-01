@@ -2,7 +2,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { PlaywrightEngine } from '../PlaywrightEngine';
 import { withAutomationLease } from '../automationLease';
-import { getSmartSnapshot, getSmartSnapshotViaEval } from '../dom-intelligence';
+import { getSmartSnapshot, getSmartSnapshotViaEval, smartPageToken } from '../dom-intelligence';
 import { extractMarkdown, extractStructuredData } from '../markdown-extractor';
 import { resolveEvaluator, rpcEvaluator } from '../page-eval';
 import { formatSnapshotResult } from '../snapshotDiff';
@@ -77,9 +77,13 @@ export function registerExtractionTools(server: McpServer, deps: BrowserToolDeps
         // available (packaged builds, issue #105) fall back to a DOM-based
         // snapshot over the RPC channel.
         const page = await engine.getPageForScope(scope).catch(allowScopedRpcFallback);
+        const capLength = maxContentLength ?? 3000;
         const snapshot = page
-          ? await getSmartSnapshot(page, { maxContentLength: maxContentLength ?? 3000 })
-          : await getSmartSnapshotViaEval(rpcEvaluator(scope), { maxContentLength: maxContentLength ?? 3000 });
+          ? await getSmartSnapshot(page, { maxContentLength: capLength, surfaceId: scope.surfaceId })
+          : await getSmartSnapshotViaEval(rpcEvaluator(scope), {
+              maxContentLength: capLength,
+              surfaceId: scope.surfaceId,
+            });
 
         // Format the snapshot output: indexed elements + content summary
         const lines: string[] = [];
@@ -113,15 +117,34 @@ export function registerExtractionTools(server: McpServer, deps: BrowserToolDeps
         // as a saving. It still writes its baseline: the contract is a diff
         // against the last listing this tool returned, whichever lane produced
         // it.
+        //
+        // The attrs key carries the lane and, on the CDP lane, the page token
+        // (review 5 and 7 and 4). The lane, because the two number their refs
+        // differently and a positional listing is not a baseline an identity
+        // listing may be diffed against. The token, because one surface key
+        // covers every tab on that surface and survives a reload — and neither
+        // a second tab on the same URL nor a fresh document is something the
+        // URL guard alone can see, so both would have been answered with
+        // "(no changes since previous snapshot)" about a page never compared.
         const key = snapshotSurfaceKey(scope.workspaceId, scope.surfaceId, 'smart');
-        const attrs = `smart|${maxContentLength ?? 3000}`;
+        const attrs = page
+          ? `smart|cdp|${smartPageToken(page)}|${capLength}`
+          : `smart|rpc|${capLength}`;
         const baseline =
           full || !page ? null : getSnapshotBaseline(key, attrs, snapshot.url || undefined);
         const rendered = formatSnapshotResult(baseline?.text ?? null, text);
         setSnapshotBaseline(key, attrs, text, snapshot.url || undefined);
 
+        // The content summary is cut at maxContentLength, so a diff — "(no
+        // changes)" most of all — speaks only for what fits (review 10).
+        const truncated = snapshot.content.endsWith('... (truncated)');
+        const note =
+          rendered.usedDiff && truncated
+            ? `\n(page text is capped at ${capLength} characters; anything past the cut is not compared)`
+            : '';
+
         return {
-          content: [{ type: 'text' as const, text: rendered.text }],
+          content: [{ type: 'text' as const, text: rendered.text + note }],
         };
       } catch (error) {
         const message = describeToolError(error);

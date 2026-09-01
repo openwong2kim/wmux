@@ -10,6 +10,7 @@ import {
   refEntryToAxis,
   refMapShapeHash,
   stripUrlUserinfo,
+  type RefEntryLike,
   type ReplayableTool,
   type StepAxis,
   type TraceStep,
@@ -130,8 +131,19 @@ export interface RecordActionInput {
   ref?: string;
   /** Second ref, for browser_drag. */
   targetRef?: string;
-  /** CSS selector, when the action came from browser_smart_snapshot. */
+  /** CSS selector, when the action addressed one directly. */
   selector?: string;
+  /**
+   * Element identity supplied by the caller, for a lane that mints no RefEntry
+   * of its own.
+   *
+   * browser_smart_snapshot keeps its own ref map, and its CDP-lane "locator" is
+   * the SOURCE TEXT of a getByRole call — recorded as a css axis it could never
+   * be replayed, because `page.locator()` cannot parse it. Passing the identity
+   * instead puts the step on the same ref axis browser_snapshot records, which
+   * the replay runner already re-resolves against a live snapshot.
+   */
+  refEntry?: RefEntryLike;
   args?: Record<string, string | number | boolean>;
   /** Force a hole — the password case decides this before the value is known. */
   unrecordable?: UnrecordableReason;
@@ -139,10 +151,21 @@ export interface RecordActionInput {
   url?: string;
 }
 
-function axisFor(page: Page | null, ref: string | undefined, selector: string | undefined): {
+function axisFor(
+  page: Page | null,
+  ref: string | undefined,
+  selector: string | undefined,
+  refEntry?: RefEntryLike,
+): {
   axis: StepAxis;
   unrecordable?: UnrecordableReason;
 } {
+  if (refEntry !== undefined) {
+    const axis = refEntryToAxis(refEntry);
+    // No sound axis means no replayable step. An honest hole beats a step that
+    // reports success now and cannot run later.
+    return axis ? { axis } : { axis: NO_AXIS, unrecordable: 'unresolved-axis' };
+  }
   if (selector !== undefined) return { axis: { kind: 'css', selector } };
   if (ref === undefined) return { axis: NO_AXIS };
   // No page means the action went over the RPC lane, which resolves elements
@@ -199,7 +222,7 @@ export function recordAction(deps: BrowserToolDeps, input: RecordActionInput): v
   try {
     const ring = ringFor(deps);
     if (!ring) return;
-    const resolved = axisFor(input.page, input.ref, input.selector);
+    const resolved = axisFor(input.page, input.ref, input.selector, input.refEntry);
     const target = input.targetRef === undefined
       ? undefined
       : axisFor(input.page, input.targetRef, undefined);
