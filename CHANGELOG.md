@@ -1,3 +1,172 @@
+## [Unreleased]
+
+## [3.49.3] — 2026-09-01
+
+### Added
+
+- **A remote session can now split into its own pane, not just a tab.** "Split right — remote" / "Split down — remote" join the pane's ⋮ menu alongside the existing "New remote pane" — same host picker, same minted session, attached to a fresh pane instead of another tab on the one you clicked from.
+
+- **Codex panes can report their turn boundaries from lifecycle hooks.** wmux
+  previously inferred whether a Codex pane was working by scraping its
+  terminal. A new hooks bridge lets Codex tell wmux directly when a session
+  starts, when a prompt is submitted, and when a turn ends. It needs
+  codex-cli 0.141.0 or newer, and the hook has to be trusted once in Codex —
+  see `integrations/codex/README.md` for setup.
+
+- `browser_snapshot` now ends with a short page-facts footer when it has
+  something to say: a readiness note when the page is nearly empty or looks
+  like a skeleton screen, and the list of scrollable containers (by CSS
+  selector, with size and scrollHeight) so a container can be scrolled
+  deliberately instead of by guessing. The footer is charged against
+  `maxLength`, so a snapshot never grows past the budget the caller asked for,
+  and it is not added to selector-scoped snapshots.
+
+- `browser_file_upload` with a `ref` now accepts the VISIBLE upload button:
+  when the ref is not itself an `<input type=file>`, the nearby hidden input is
+  found (up to 3 levels of ancestors, their descendants and siblings) and the
+  files go there. The "no file input" errors now say to pass that button's ref.
+
+- `browser_click` accepts `x`/`y` for the cases a ref cannot reach (a canvas, a
+  map, a custom-drawn control). Coordinates are viewport CSS pixels; passing
+  both a ref and coordinates is refused, and the RPC lane — which resolves
+  elements by ref only — says a chrome-backend page is required.
+
+- **`browser_snapshot` reaches inside iframes, and a ref minted in one
+  resolves there.** A page's payment form, consent banner or login widget lives
+  in a separate document, and the snapshot used to stop at its edge with a note
+  saying the contents were not included — so an agent could see that a frame
+  existed and could not act on anything in it. Frame contents are now stitched
+  into the tree, cross-origin ones included, and a ref keeps the route back to
+  the document it came from, so clicking, typing and filling work inside a
+  frame exactly as they do on the page.
+
+- **An iframe now says why its contents are absent, when they are.** One
+  sentence used to cover four different situations. It now distinguishes a
+  frame that could not be attached, one nested past the depth limit, one past
+  the per-snapshot frame budget, and one that was read and simply holds
+  nothing — the last of which used to be indistinguishable from "contents
+  withheld", leaving an agent re-snapshotting for content that was never
+  coming.
+
+- **A browser flow that worked can be replayed without reading a snapshot.**
+  An agent repeating the same web task — log in, filter a report, export a
+  CSV — used to pay for a full accessibility snapshot on every step, every
+  time. Successful browser actions are now recorded automatically, and the new
+  `browser_replay` tool names the last run of a flow (`save`), repeats it
+  (`run`), lists what has been recorded, and deletes one. A replay resolves its
+  elements internally and returns no snapshot at all, which is where the saving
+  is. Flows are stored per workspace by the wmux app rather than by the MCP
+  session, so they survive the session ending — and one workspace can never see
+  another's. Needs the chrome browser backend, since flows are keyed on what the
+  accessibility snapshot calls each element. See
+  [Replay a browser flow](docs/how-to/replay-browser-flows.md).
+
+- **A replay that cannot find an element hands the page back rather than
+  guessing.** Elements are re-found by what the snapshot called them — role,
+  accessible name, and position among the same-named elements in the same
+  frame — so a page whose refs were renumbered, or which was restructured
+  around the button, still replays. When a step's element is genuinely gone the
+  run stops at that step and reports which, why, and how the page's shape
+  compares to the recording, leaving the page exactly there so the flow can be
+  finished by hand and re-saved. A flow is also refused outright when run from
+  a page it was not recorded on, and when the count of same-named elements
+  changed under a step that was not addressing the first of them — a row
+  inserted above shifts the rest, and replaying position N would act on
+  whatever moved into that slot.
+
+- **After a navigation, wmux names the recorded flows for the page you landed
+  on.** One line, only on a landing, and only for flows that have actually
+  worked and are not quarantined — not a snapshot footer, which would spend
+  more context than the feature saves.
+
+- **A password is never stored, and a flow containing one refuses to run.** A
+  `browser_type` or `browser_fill` into a password field is recorded as a
+  marked hole whose value was never captured, so it cannot reach the stored
+  flow or the cache file — and `browser_fill` decides this per field, so the
+  ordinary fields of a login form are still recorded normally. A URL carrying a
+  credential is stripped and holed the same way. The same treatment covers an
+  action that fell back to the RPC transport and an argument too long to store
+  intact; coordinate clicks are not recorded at all, because a coordinate does
+  not survive a re-render. Values that should vary between runs are stored as
+  `{{placeholders}}` and supplied at replay time.
+
+- `browser_replay` gained `promote` and `demote`. Promoting a proven recorded
+  flow keeps it permanently — it carries its own copy of the steps, so it
+  survives the 30-day expiry of the recording it came from — and has it offered
+  to you automatically whenever a navigation lands on its page, naming the exact
+  call that runs it. A flow must have succeeded at least three times to be
+  promoted; a refusal says how many more runs it needs. Promoted flows live in
+  `~/.wmux/promoted-skills/`, one file per workspace per flow, are archived
+  after 30 idle days and deleted from the archive after 90 — nothing is deleted
+  straight out of the live tree — and `demote` undoes a promotion without
+  touching the underlying recording. Note that promoting stores the flow's
+  typed values in plain text indefinitely; password fields were never captured,
+  but variable-ise any other sensitive value before promoting.
+
+### Changed
+
+- On the `chrome` backend, `browser_click` reports when the click opened a
+  popup, naming its URL. The popup is not a wmux surface and the note says so.
+  The builtin webview loads popups into the same webview and is unaffected.
+
+- `browser_screenshot` now returns a short text part alongside the image
+  stating the coordinate basis of that shot: a viewport capture names its
+  devicePixelRatio so image pixels can be converted to the CSS pixels
+  `browser_click` expects, while fullPage and element captures are explicitly
+  marked as NOT usable for coordinate clicks. Callers that assumed an
+  image-only result now see one extra text part.
+
+### Fixed
+
+- The sidebar's listening-port badge could stay lit long after the port
+  closed — even across a full app restart. The stale value was being saved
+  into the session file and restored verbatim, closing the pane that owned
+  the ports never recomputed the workspace badge, and a session whose
+  process died was dropped without a final "no ports" signal. All three
+  paths now clear the badge, an already-saved stale value is stripped on
+  load, and a server that was listening before an app restart is
+  re-announced to the new window instead of staying invisible. (#1135, #1137)
+
+- While a remote workspace mirror was on screen, some jumps back to the
+  already-active local workspace silently did nothing: Fleet View cards and
+  notification rows that target a workspace rather than a pane, OS toast
+  clicks, and the promotion that happens when a company or department is
+  torn down all left the mirror painted while the sidebar highlighted the
+  local workspace. One click now always surfaces the local tree. (#1086, #1138)
+
+- On Windows 11 with Windows Terminal set as the default terminal, clicking
+  Install flashed a visible terminal window while the updater's install
+  waiter launched. The waiter now starts through a hidden GUI-subsystem
+  launcher that never allocates a console, with the previous transports kept
+  as fallbacks for machines where Windows Script Host is disabled. (#1136, #1142)
+
+- Closing a remote-terminal tab only detached from the session, so the shell
+  it started — and the one-shot `remote-pane-*` workspace row derived from
+  it — kept running on the remote host forever. Closing the tab (or its
+  pane, or its workspace, by any route) now destroys the session it minted.
+  A tab that merely views a session started elsewhere is never destructive,
+  and sessions leaked before this fix are left for host-side cleanup, since
+  their ownership cannot be proven retroactively. (#1129, #1143)
+
+- A lifecycle signal that arrived on the main pipe without a matching brain
+  pane was discarded before it could mark the pane as working, so the turn's
+  completion signal was discarded too — no notification, no lifecycle event.
+  (#1107, #1144)
+
+- **The remote host-picker dialog closes on Escape and says which action opened it.** Escape now dismisses the dialog (backdrop click was the only way out), and its heading shows "Split right — remote" / "Split down — remote" when a #1141 split entry opened it instead of always reading "New remote pane".
+
+- **A ref from a frame that changed underneath you is refused rather than
+  clicked.** A frame can navigate on its own while the page's URL never
+  changes, and iframes can be added or removed between snapshots. Replaying a
+  ref across any of those now reports what moved and asks for a fresh
+  snapshot, instead of resolving to whatever occupies that position now. The
+  same refusal covers a frame ref reaching the DOM-attribute fallback, which
+  tags the main document only and could otherwise match an unrelated element.
+
+- **One frame can no longer spend the whole snapshot.** A chatty ad or tracking
+  frame is capped at a share of the output budget, so it cannot push the page's
+  own buttons past the truncation point. A frame cut short says so.
+
 ## [3.49.2] — 2026-08-31
 
 ### Added
