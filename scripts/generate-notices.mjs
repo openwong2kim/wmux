@@ -339,7 +339,17 @@ const BORROWED_SOURCES = [
       'for out-of-process frame targets, and the frame-owning-session helper —\n' +
       'the idea that a frame is read over a CDP session bound to its own\n' +
       'target rather than through the page session. No selector-resolution or\n' +
-      'XPath code was taken.',
+      'XPath code was taken.\n' +
+      '\n' +
+      'Separately, three operating principles of its action cache were adopted\n' +
+      'for browser_replay: best-effort (a cache miss or a mismatched page shape\n' +
+      'may never break the underlying action), replay-fallback self-heal (a\n' +
+      'replay that stops reports where and why and hands the live page back so\n' +
+      'the flow can be finished and re-recorded), and variable placeholders (a\n' +
+      'value that must vary is stored as a placeholder and substituted at\n' +
+      'replay time, so secrets are never written). wmux keys its steps on the\n' +
+      "snapshot's own role/name/index tuple rather than on Stagehand's XPath\n" +
+      'axis, and again no code was taken.',
   },
 ];
 lines.push('BORROWED IMPLEMENTATION TECHNIQUES');

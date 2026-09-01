@@ -1,0 +1,35 @@
+### Added
+
+- **A browser flow that worked can be replayed without reading a snapshot.**
+  An agent repeating the same web task — log in, filter a report, export a
+  CSV — used to pay for a full accessibility snapshot on every step, every
+  time. Successful browser actions are now recorded automatically, and the new
+  `browser_replay` tool names the last run of a flow (`save`), repeats it
+  (`run`), lists what has been recorded, and deletes one. A replay resolves its
+  elements internally and returns no snapshot at all, which is where the saving
+  is. Flows are stored per workspace by the wmux app rather than by the MCP
+  session, so they survive the session ending — and one workspace can never see
+  another's. See [Replay a browser flow](docs/how-to/replay-browser-flows.md).
+
+- **A replay that cannot find an element hands the page back rather than
+  guessing.** Elements are re-found by what the snapshot called them — role,
+  accessible name, and position among the same-named elements in the same
+  frame — so a page whose refs were renumbered, or which was restructured
+  around the button, still replays. When a step's element is genuinely gone the
+  run stops at that step and reports which, why, and how the page's shape
+  compares to the recording, leaving the page exactly there so the flow can be
+  finished by hand and re-saved. A same-name population that merely changed
+  size is a warning, not a stop.
+
+- **After a navigation, wmux names the recorded flows for the page you landed
+  on.** One line, only on a landing, and only for flows that have actually
+  worked and are not quarantined — not a snapshot footer, which would spend
+  more context than the feature saves.
+
+- **A password is never stored, and a flow containing one refuses to run.** A
+  `browser_type` into a password field is recorded as a marked hole whose value
+  was never captured, so it cannot reach the stored flow or the cache file. The
+  same applies to an action that fell back to the RPC transport and to an
+  argument too long to store intact; coordinate clicks are not recorded at all,
+  because a coordinate does not survive a re-render. Values that should vary
+  between runs are stored as `{{placeholders}}` and supplied at replay time.

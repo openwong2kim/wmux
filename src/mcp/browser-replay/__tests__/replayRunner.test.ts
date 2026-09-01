@@ -18,7 +18,7 @@ vi.mock('../../playwright/snapshot', () => ({
   generateSnapshot: async () => snapshotText,
   listRefEntries: () => refEntries,
   resolveRef: async (_page: unknown, ref: string) =>
-    resolved.has(ref) ? ({ click: async () => {}, fill: async () => {} } as never) : null,
+    resolved.has(ref) ? ({ click: async () => undefined, fill: async () => undefined } as never) : null,
 }));
 
 import { replayBlockedReason, replayTrace } from '../replayRunner';
@@ -34,7 +34,11 @@ const page = {
   keyboard: { press: async (key: string) => { pressed.push(key); } },
   locator: () => ({ count: async () => 0, elementHandle: async () => null }),
   evaluate: async () => undefined,
-  mouse: { move: async () => {}, down: async () => {}, up: async () => {} },
+  mouse: {
+    move: async () => undefined,
+    down: async () => undefined,
+    up: async () => undefined,
+  },
 } as never;
 
 function element(tag: string) {
@@ -44,7 +48,7 @@ function element(tag: string) {
     fill: async (value: string) => { clicks.push(`${tag}:fill=${value}`); },
     hover: async () => { clicks.push(`${tag}:hover`); },
     selectOption: async () => { clicks.push(`${tag}:select`); },
-    scrollIntoViewIfNeeded: async () => {},
+    scrollIntoViewIfNeeded: async () => undefined,
     evaluate: async () => undefined,
     boundingBox: async () => ({ x: 0, y: 0, width: 10, height: 10 }),
   } as never;
