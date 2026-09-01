@@ -312,6 +312,26 @@ describe('wmuxEntryArgs / entryProfileFlags', () => {
     // no opinion + no existing entry → the default
     expect(wmuxEntryArgs('/x.js', undefined, null)).toEqual(['/x.js']);
   });
+
+  it('carries unrecognized argv tokens through instead of dropping them', () => {
+    // Only PROFILE_FLAGS are rewritten. Anything else — a user's own addition,
+    // or a flag from a newer wmux sharing this config — must survive, or every
+    // automatic re-registration would quietly delete it.
+    const custom = { command: 'node', args: ['/old.js', '--core', '--verbose'] };
+    expect(wmuxEntryArgs('/x.js', undefined, custom)).toEqual(['/x.js', '--core', '--verbose']);
+    // an explicit profile replaces the PROFILE flag only
+    expect(wmuxEntryArgs('/x.js', 'full', custom)).toEqual(['/x.js', '--verbose']);
+    expect(wmuxEntryArgs('/x.js', 'core', custom)).toEqual(['/x.js', '--core', '--verbose']);
+    // residual survives even with no profile flag present at all
+    expect(wmuxEntryArgs('/x.js', undefined, { command: 'node', args: ['/old.js', '--future-flag'] }))
+      .toEqual(['/x.js', '--future-flag']);
+  });
+
+  it('de-duplicates a hand-edited repeated profile flag', () => {
+    const dupe = { command: 'node', args: ['/old.js', '--core', '--core'] };
+    expect(entryProfileFlags(dupe)).toEqual(['--core']);
+    expect(wmuxEntryArgs('/x.js', undefined, dupe)).toEqual(['/x.js', '--core']);
+  });
 });
 
 describe('upsertMcpServer — launch profile', () => {

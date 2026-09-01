@@ -173,6 +173,17 @@ describe('selectedProfile — `wmux mcp register --profile`', () => {
     expect(selectedProfile(['register', '--json', '--profile', 'full'])).toBe('full');
   });
 
+  it('parses the attached --profile=<value> form', () => {
+    // The form most people reach for first. Parsing only the separated one let
+    // `--profile=core` fall through as "no flag" and print a success message
+    // for a registration that ignored the request.
+    expect(selectedProfile(['register', '--profile=core'])).toBe('core');
+    expect(selectedProfile(['register', '--profile=full'])).toBe('full');
+    expect(selectedProfile(['register', '--profile=core', '--json'])).toBe('core');
+    expect(selectedProfile(['register', '--profile=cores'])).toBeNull();
+    expect(selectedProfile(['register', '--profile='])).toBeNull();
+  });
+
   it('returns null for an unknown or missing value so the caller can error out', () => {
     // A typo must not silently register the default over someone's --core.
     expect(selectedProfile(['register', '--profile', 'cores'])).toBeNull();

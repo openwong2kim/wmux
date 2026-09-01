@@ -85,10 +85,27 @@ function selectedTargets(args: string[]): McpTarget[] | null {
 // the caller can error out rather than silently registering the default: a
 // `--profile cores` typo must not quietly write `full` over someone's `core`.
 export function selectedProfile(args: string[]): WmuxMcpEntryProfile | null | undefined {
+  const value = profileArgValue(args);
+  if (value === undefined) return undefined;
+  return value === 'full' || value === 'core' ? value : null;
+}
+
+/** The raw `--profile` value exactly as typed, or undefined when the flag is
+ *  absent. Accepts BOTH `--profile core` and `--profile=core`: the attached form
+ *  is what most people reach for, and parsing only the separated one meant
+ *  `--profile=core` silently fell through as "no flag" and printed a success
+ *  message for a registration that ignored the request. Exported so the error
+ *  path can echo the value back. */
+export function profileArgValue(args: string[]): string | undefined {
+  const inline = args.find((a) => a.startsWith('--profile='));
+  if (inline !== undefined) return inline.slice('--profile='.length);
   const i = args.indexOf('--profile');
   if (i === -1) return undefined;
-  const value = args[i + 1];
-  return value === 'full' || value === 'core' ? value : null;
+  // Present but with nothing after it (`wmux mcp register --profile`) is an
+  // ERROR, not an absent flag: `?? ''` keeps it distinguishable from undefined
+  // so it takes the same "unknown value" exit as a typo, rather than silently
+  // registering the default.
+  return args[i + 1] ?? '';
 }
 
 function formatModified(d: Date | null): string {
@@ -112,8 +129,11 @@ function printCheck(statuses: TargetRegStatus[], jsonMode: boolean): void {
       console.log(`  not detected — ${s.configPath}`);
       continue;
     }
-    const fmt = (srv: { registered: boolean; path: string | null }) =>
-      srv.registered ? `registered → ${srv.path}` : 'NOT REGISTERED';
+    // Show the profile alongside the path: the surface an entry launches with
+    // is invisible otherwise, and "registered" alone cannot answer "did my
+    // --profile core actually take?".
+    const fmt = (srv: { registered: boolean; path: string | null; profile: string | null }) =>
+      srv.registered ? `registered (${srv.profile}) → ${srv.path}` : 'NOT REGISTERED';
     console.log(`  wmux:   ${fmt(s.wmux)}`);
     console.log(`  config: ${s.configPath} (${formatModified(s.configModified)})`);
   }
@@ -397,8 +417,7 @@ export async function handleMcp(args: string[], jsonMode: boolean): Promise<void
     case 'register': {
       const profile = selectedProfile(args);
       if (profile === null) {
-        const pi = args.indexOf('--profile');
-        console.error(`Unknown --profile "${args[pi + 1] ?? ''}". Valid: full, core.`);
+        console.error(`Unknown --profile "${profileArgValue(args) ?? ''}". Valid: full, core.`);
         process.exit(1);
         return;
       }
@@ -451,9 +470,12 @@ export async function handleMcp(args: string[], jsonMode: boolean): Promise<void
         }
         if (result.wrote.length > 0) {
           wroteAny = true;
-          console.log(`${target.displayName}: wrote ${result.wrote.join(', ')} → ${result.configPath}`);
+          // Name the profile: without it there is no way to confirm a
+          // `--profile core` landed, or to notice that a profile-less register
+          // preserved a `core` you forgot about.
+          console.log(`${target.displayName}: wrote ${result.wrote.join(', ')} (${result.profile}) → ${result.configPath}`);
         } else {
-          console.log(`${target.displayName}: already up to date`);
+          console.log(`${target.displayName}: already up to date${result.profile ? ` (${result.profile})` : ''}`);
         }
         if (result.foreign.length > 0) {
           console.warn(`  left foreign key(s) ${result.foreign.join(', ')} untouched`);

@@ -30,7 +30,7 @@ describe('registerTarget — Claude (json, createIfMissing)', () => {
     const r = registerTarget(claudeTarget, home, WMUX_SCRIPT);
     expect(r.skipped).toBeNull();
     expect(r.wrote).toEqual(['wmux']);
-    expect(readTargetStatus(claudeTarget, home).wmux).toEqual({ registered: true, path: WMUX_SCRIPT });
+    expect(readTargetStatus(claudeTarget, home).wmux).toEqual({ registered: true, path: WMUX_SCRIPT, profile: 'full' });
   });
 
   it('is idempotent — re-register writes nothing the second time', () => {
@@ -104,6 +104,76 @@ describe('registerTarget — launch profile', () => {
     expect(r.wrote).toEqual(['wmux']);
     expect(argsOf()).toEqual([WMUX_SCRIPT]);
   });
+
+  it('reports the profile in the register result and in readTargetStatus', () => {
+    const r = registerTarget(claudeTarget, home, WMUX_SCRIPT, undefined, 'core');
+    expect(r.profile).toBe('core');
+    expect(readTargetStatus(claudeTarget, home).wmux.profile).toBe('core');
+    // a profile-less re-register still reports what is actually on disk
+    expect(registerTarget(claudeTarget, home, WMUX_SCRIPT).profile).toBe('core');
+  });
+
+  it('PRESERVES a custom argv token across a profile-less re-register, and stays idempotent', () => {
+    // The whole-array comparison must not turn "an arg we do not recognize"
+    // into "rewrite the entry without it" on every app boot.
+    const p = claudeTarget.configPath(home);
+    fs.writeFileSync(p, JSON.stringify({
+      mcpServers: { wmux: { command: 'node', args: [WMUX_SCRIPT, '--core', '--verbose'] } },
+    }), 'utf8');
+
+    const first = registerTarget(claudeTarget, home, WMUX_SCRIPT);
+    expect(first.wrote).toEqual([]); // nothing to change → no write at all
+    expect(argsOf()).toEqual([WMUX_SCRIPT, '--core', '--verbose']);
+
+    const second = registerTarget(claudeTarget, home, WMUX_SCRIPT);
+    expect(second.wrote).toEqual([]); // and it does not oscillate
+    expect(argsOf()).toEqual([WMUX_SCRIPT, '--core', '--verbose']);
+  });
+
+  it('keeps a custom argv token when a PATH refresh rewrites the entry', () => {
+    const p = claudeTarget.configPath(home);
+    fs.writeFileSync(p, JSON.stringify({
+      mcpServers: { wmux: { command: 'node', args: ['C:\\\\old\\\\index.js', '--verbose'] } },
+    }), 'utf8');
+    registerTarget(claudeTarget, home, WMUX_SCRIPT);
+    expect(argsOf()).toEqual([WMUX_SCRIPT, '--verbose']);
+  });
+
+  it('an explicit --profile full drops only --core, never a custom token', () => {
+    const p = claudeTarget.configPath(home);
+    fs.writeFileSync(p, JSON.stringify({
+      mcpServers: { wmux: { command: 'node', args: [WMUX_SCRIPT, '--core', '--verbose'] } },
+    }), 'utf8');
+    const r = registerTarget(claudeTarget, home, WMUX_SCRIPT, undefined, 'full');
+    expect(r.wrote).toEqual(['wmux']);
+    expect(argsOf()).toEqual([WMUX_SCRIPT, '--verbose']);
+  });
+});
+
+describe('registerTarget — launch profile on the TOML (Codex) target', () => {
+  const tomlArgs = (): string[] => {
+    const text = fs.readFileSync(codexTarget.configPath(home), 'utf8');
+    const m = text.match(/^args = \[(.*)\]$/m);
+    return m ? (JSON.parse(`[${m[1]}]`) as string[]) : [];
+  };
+
+  beforeEach(() => {
+    fs.mkdirSync(path.dirname(codexTarget.configPath(home)), { recursive: true });
+    fs.writeFileSync(codexTarget.configPath(home), 'model = "gpt-5.5"\n', 'utf8');
+  });
+
+  it('registers --core when the caller opts in', () => {
+    registerTarget(codexTarget, home, WMUX_SCRIPT, undefined, 'core');
+    expect(tomlArgs()).toEqual([WMUX_SCRIPT, '--core']);
+  });
+
+  it('a profile-less PATH refresh PRESERVES --core in the surgical TOML rewrite', () => {
+    registerTarget(codexTarget, home, 'C:\\old\\index.js', undefined, 'core');
+    registerTarget(codexTarget, home, WMUX_SCRIPT);
+    expect(tomlArgs()).toEqual([WMUX_SCRIPT, '--core']);
+    // the surrounding config is still byte-preserved
+    expect(fs.readFileSync(codexTarget.configPath(home), 'utf8')).toContain('model = "gpt-5.5"');
+  });
 });
 
 describe('registerTarget — Codex (toml, only if installed)', () => {
@@ -126,7 +196,7 @@ describe('registerTarget — Codex (toml, only if installed)', () => {
     expect(after).toContain('# hand-written');
     expect(after).toContain(`[projects.'d:\\wmux']`); // backslash key NOT corrupted
     expect(after).toContain('[mcp_servers.wmux]');
-    expect(readTargetStatus(codexTarget, home).wmux).toEqual({ registered: true, path: WMUX_SCRIPT });
+    expect(readTargetStatus(codexTarget, home).wmux).toEqual({ registered: true, path: WMUX_SCRIPT, profile: 'full' });
   });
 
   it('leaves a malformed config.toml untouched (never clobbers)', () => {

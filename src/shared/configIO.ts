@@ -15,7 +15,7 @@
 //          a surgical append; this matches it.)
 //
 //   ┌─ upsertMcpServer ────────────────────────────────────────────────┐
-//   │ resolve args = [script, ...profile flags]  (wmuxEntryArgs)         │
+//   │ resolve args = [script, ...profile flags, ...residual] (wmuxEntryArgs) │
 //   │ json:  parse → mcpServers[key] = {command:'node', args}            │
 //   │        → JSON.stringify(2-space)                                   │
 //   │ toml:  find [mcp_servers.<key>] block → replace, else append       │
@@ -84,15 +84,26 @@ function profileFlags(profile: WmuxMcpEntryProfile): string[] {
   return profile === 'core' ? [CORE_MODE_ARG] : [];
 }
 
-/** The profile flags an already-written entry carries, in argv order. Empty for
- *  a `full` entry, a missing entry, or a foreign one. */
+/** The profile flags an already-written entry carries, in argv order,
+ *  de-duplicated (a hand-edited `--core --core` collapses to one). Empty for a
+ *  `full` entry, a missing entry, or a foreign one. args[0] is the script path,
+ *  never a flag, so it is skipped. */
 export function entryProfileFlags(entry: McpServerEntry | null): string[] {
   if (!entry) return [];
-  return entry.args.filter((arg) => PROFILE_FLAGS.includes(arg));
+  return [...new Set(entry.args.slice(1).filter((arg) => PROFILE_FLAGS.includes(arg)))];
+}
+
+/** Everything after the script path that is NOT a profile flag: a token the
+ *  user added by hand, or one written by a NEWER wmux than the one rewriting
+ *  this file. */
+function entryResidualArgs(entry: McpServerEntry | null): string[] {
+  if (!entry) return [];
+  return entry.args.slice(1).filter((arg) => !PROFILE_FLAGS.includes(arg));
 }
 
 /**
- * The full `args` array for a wmux entry: the script, then the profile flags.
+ * The full `args` array for a wmux entry: the script, the profile flags, then
+ * every other token the existing entry carried.
  *
  * `profile` is the CALLER'S EXPLICIT CHOICE and always wins — that is how
  * `wmux mcp register --profile full` walks a config back off `core`. Omitting
@@ -101,18 +112,25 @@ export function entryProfileFlags(entry: McpServerEntry | null): string[] {
  * entry already carries and fall back to {@link DEFAULT_HOST_PROFILE} only for
  * an entry that does not exist yet. Without that, a routine path refresh would
  * silently undo a user's `--core` on the next launch.
+ *
+ * RESIDUAL TOKENS PASS THROUGH VERBATIM, and that is load-bearing: this
+ * function REWRITES only the args it recognises. Rebuilding the array from a
+ * whitelist instead would make every automatic re-registration quietly delete a
+ * token wmux did not put there — a user's own addition, or a flag from a newer
+ * wmux sharing the config (two installs, or a downgrade). The registration path
+ * is not a place to have opinions about argv it does not own.
  */
 export function wmuxEntryArgs(
   scriptPath: string,
   profile?: WmuxMcpEntryProfile,
   existing?: McpServerEntry | null,
 ): string[] {
+  const entry = existing ?? null;
+  const existingFlags = entryProfileFlags(entry);
   const flags = profile
     ? profileFlags(profile)
-    : (entryProfileFlags(existing ?? null).length > 0
-        ? entryProfileFlags(existing ?? null)
-        : profileFlags(DEFAULT_HOST_PROFILE));
-  return [scriptPath, ...flags];
+    : (existingFlags.length > 0 ? existingFlags : profileFlags(DEFAULT_HOST_PROFILE));
+  return [scriptPath, ...flags, ...entryResidualArgs(entry)];
 }
 
 export function wmuxMcpEntry(
