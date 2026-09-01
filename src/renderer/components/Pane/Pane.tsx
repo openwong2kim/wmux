@@ -1068,6 +1068,15 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
         <AddRemotePaneModal
           onClose={() => setAddRemoteModalOpen(false)}
           onCreated={handleRemoteCreated}
+          // Reading the ref during render is safe here: every handler that
+          // opens the modal writes the ref before setAddRemoteModalOpen(true),
+          // so by the render that mounts this it already names the flow — and
+          // it stays put until handleRemoteCreated/onClose unmounts us.
+          title={
+            remoteSplitDirectionRef.current === 'horizontal' ? t('pane.splitRightRemote')
+            : remoteSplitDirectionRef.current === 'vertical' ? t('pane.splitDownRemote')
+            : undefined
+          }
         />
       )}
 
