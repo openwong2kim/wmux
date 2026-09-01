@@ -15,8 +15,28 @@
 // is not installed here, so it stays unverified and is never created.
 
 import * as path from 'path';
+import { dataSuffix } from './constants';
 
 export type McpConfigFormat = 'json' | 'toml';
+
+/**
+ * #1151 — why external agent-config registration is being skipped, or null to
+ * proceed. Every target in this table lives at a suffix-BLIND path
+ * (`~/.claude.json`, `~/.codex/config.toml`, …), so an isolated instance
+ * (WMUX_DATA_SUFFIX set — dev's automatic "-dev" included) writing them
+ * retargets the user's production agents at this instance's bundle.
+ * WMUX_MCP_REGISTER_EXTERNAL=1 opts back in for dogfood runs that
+ * deliberately claim the slot. The two callers deliberately DIVERGE on what
+ * they do with it: `McpRegistrar` (daemon boot, Settings — implicit actions)
+ * skips; the `wmux mcp` CLI (an explicit user action) warns and proceeds.
+ */
+export function externalRegistrationSkipReason(): string | null {
+  const suffix = dataSuffix();
+  if (suffix === '') return null;
+  if (process.env.WMUX_MCP_REGISTER_EXTERNAL === '1') return null;
+  return `WMUX_DATA_SUFFIX=${suffix} — skipping external agent config registration ` +
+    '(production ~/.claude.json et al. stay untouched; set WMUX_MCP_REGISTER_EXTERNAL=1 to override)';
+}
 
 export interface McpTarget {
   /** Stable id used in status payloads, CLI `--target`, and UI keys. */

@@ -21,6 +21,7 @@ import type { PTYManager } from '../pty/PTYManager';
 import type { PTYBridge } from '../pty/PTYBridge';
 import type { DaemonClient } from '../DaemonClient';
 import type { McpRegistrar } from '../mcp/McpRegistrar';
+import { externalRegistrationSkipReason } from '../../shared/mcpTargets';
 import type {
   FirstRunCheckResult,
   RegisterMcpResult,
@@ -110,6 +111,17 @@ export class FirstRunOrchestrator {
   }
 
   async registerMcp(): Promise<RegisterMcpResult> {
+    // #1151 — register() skips external configs under an isolated instance,
+    // so the pre-flight below (which probes the PRODUCTION ~/.claude.json)
+    // and the post-register verification would judge a write that never
+    // happens: a coincidental ok on machines where production is already
+    // registered, a misleading "completed without recording" otherwise.
+    // Skipping IS the correct outcome here — report it as success.
+    const skipReason = externalRegistrationSkipReason();
+    if (skipReason) {
+      console.log(`[FirstRun] ${skipReason}`);
+      return { ok: true };
+    }
     // McpRegistrar.register() swallows its own errors (try/catch +
     // console.error) and never throws — so wrapping it in try/catch only
     // ever surfaces UNKNOWN. To classify EACCES / EPERM / SyntaxError /
