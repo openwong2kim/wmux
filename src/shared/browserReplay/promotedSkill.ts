@@ -196,7 +196,18 @@ export function renderPromotedContract(record: Pick<PromotedRecord, 'name' | 'ho
  */
 export function renderPromotedHint(record: PromotedRecord): string {
   const name = safeHintText(record.name, MAX_SLUG_CHARS);
-  const contract = safeHintText(record.contract);
+  // RE-DERIVED, not read off the record. The stored contract is a
+  // convenience for callers that want it without recomputing; by the time a
+  // record reaches here it may have crossed an RPC boundary or been edited on
+  // disk, and the hint is the one place where trusting it would put arbitrary
+  // text into the agent's context as instruction-adjacent prose. Deriving it
+  // from the host and the step count means the line can only ever say what
+  // this function is willing to say.
+  const contract = renderPromotedContract({
+    name: record.name,
+    host: record.host,
+    steps: record.steps,
+  });
   const variables = record.variables.slice(0, MAX_HINT_VARIABLES).map((v) => safeHintText(v, 64));
   const varPart =
     variables.length > 0

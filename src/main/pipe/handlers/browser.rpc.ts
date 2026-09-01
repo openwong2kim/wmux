@@ -13,6 +13,7 @@ import { getPromotedSkillStore } from '../../browser-session/PromotedSkillStore'
 import {
   buildPromotedRecord,
   promoteBlockedReason,
+  recordPromotedRun,
   toPromotedSlug,
 } from '../../../shared/browserReplay/promotedSkill';
 import { stepsFingerprint } from '../../../shared/browserReplay/actionTrace';
@@ -826,6 +827,24 @@ export function registerBrowserRpc(
       ok: params['ok'] === true,
       ...(failedStep !== undefined && { failedStep }),
     });
+    // Usage for the promoted store rides on the stats call because it is the
+    // one point EVERY replay passes through, whether the trace came from the
+    // cache or was restored from a promoted copy. A no-op unless the flow is
+    // actually promoted, and never allowed to fail the run: a lost counter
+    // costs an archive decision months from now, a thrown error costs the
+    // agent its replay right now.
+    try {
+      const record = promotedSkills.getByName(workspaceId, name);
+      if (record) {
+        // A FAILED run counts too. The counter answers "is this flow still
+        // part of the agent's life", and a flow being reached for weekly and
+        // failing is being used — archiving it would delete the record whose
+        // failures are the signal that it needs re-recording.
+        await promotedSkills.touch(workspaceId, record.slug, recordPromotedRun(record));
+      }
+    } catch {
+      /* usage is bookkeeping; it never fails a replay */
+    }
     return { trace };
   });
 
