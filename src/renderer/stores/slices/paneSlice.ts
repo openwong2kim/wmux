@@ -1,6 +1,6 @@
 import type { StateCreator } from 'zustand';
 import type { StoreState } from '../index';
-import type { Pane, PaneLeaf, PaneBranch, StashedPane, Workspace, AgentStatus } from '../../../shared/types';
+import type { Pane, PaneBranch, StashedPane, Workspace, AgentStatus } from '../../../shared/types';
 import type { AgentSlug } from '../../../shared/events';
 import {
   createLeafPane,
@@ -284,50 +284,109 @@ const ATTENTION_STATUSES: ReadonlySet<AgentStatus> = new Set<AgentStatus>([
   'awaiting_input',
 ]);
 
-/** First (leftmost/topmost) leaf of a subtree. */
-function firstLeaf(pane: Pane): PaneLeaf {
-  if (pane.type === 'leaf') return pane;
-  return firstLeaf(pane.children[0]);
-}
+/** Normalized leaf rectangle in a 0–100 coordinate space (both axes). */
+interface LeafRect { x: number; y: number; w: number; h: number }
 
-/** Last (rightmost/bottommost) leaf of a subtree. */
-function lastLeaf(pane: Pane): PaneLeaf {
-  if (pane.type === 'leaf') return pane;
-  return lastLeaf(pane.children[pane.children.length - 1]);
+/**
+ * #1147 — geometry of every leaf, derived purely from the tree: each branch
+ * splits its box along `direction` by `sizes` percentages, with the same
+ * `100 / children.length` fallback PaneContainer renders, so these rects match
+ * the screen without touching the DOM (navigateFrom is shared with
+ * moveActivePaneDirection and runs in jsdom-free store tests; a DOM read would
+ * also go stale for zoom-hidden panes).
+ */
+export function computeLeafRects(root: Pane): Map<string, LeafRect> {
+  const rects = new Map<string, LeafRect>();
+  const walk = (pane: Pane, x: number, y: number, w: number, h: number): void => {
+    if (pane.type === 'leaf') {
+      rects.set(pane.id, { x, y, w, h });
+      return;
+    }
+    const n = pane.children.length;
+    // Normalize by the actual sum, not an assumed 100: the screen renders
+    // sizes as flexGrow RATIOS, so a persisted/edited tree whose sizes don't
+    // sum to 100 still lays out proportionally — un-normalized fracs would
+    // let the last child's rect spill past the box (sum > 100, making the
+    // far neighbour fail the direction filter → focus stuck) or leave a
+    // phantom gap (sum < 100). Sum == 100 makes this a no-op.
+    const parts = pane.children.map((_, i) => pane.sizes?.[i] ?? 100 / n);
+    const sum = parts.reduce((a, b) => a + b, 0) || 1;
+    let offset = 0;
+    for (let i = 0; i < n; i++) {
+      const frac = parts[i] / sum;
+      if (pane.direction === 'horizontal') walk(pane.children[i], x + offset * w, y, w * frac, h);
+      else walk(pane.children[i], x, y + offset * h, w, h * frac);
+      offset += frac;
+    }
+  };
+  walk(root, 0, 0, 100, 100);
+  return rects;
 }
 
 /**
- * Tree-based spatial navigation: the leaf you reach by moving `dir` out of
- * `paneId`. Walks up until it finds an ancestor split along the requested axis
- * with a sibling on that side, then descends to the nearest leaf.
+ * Geometric spatial navigation (#1147): the leaf you reach by moving `dir` out
+ * of `paneId` — the candidate whose facing edge is nearest, tie-broken by the
+ * largest perpendicular overlap with the current pane, then by center
+ * distance (tmux's pick, roughly). Replaces the tree-order walk that, in a
+ * 2×2 grid built as [[TL,BL],[TR,BR]], sent focusLeft from TR to BL: the
+ * old code descended to the sibling column's LAST leaf regardless of where
+ * the cursor actually sat.
  *
- * Shared by `focusPaneDirection` and (issue #645) `moveActivePaneDirection`, so
- * "the pane to my right" means the same thing whether you are moving focus or
- * moving the pane itself. It is tree-order-based, not geometric — in deeply
- * nested asymmetric layouts the neighbour can differ from what is literally
- * adjacent on screen, which has always been true of focus movement here.
+ * Shared by `focusPaneDirection` and (issue #645) `moveActivePaneDirection`,
+ * so "the pane to my right" means the same thing whether you are moving focus
+ * or moving the pane itself. Returns null at the layout edge (no candidate).
  */
 function navigateFrom(root: Pane, paneId: string, dir: 'up' | 'down' | 'left' | 'right'): string | null {
-  const parent = findParent(root, paneId);
-  if (!parent) return null; // at root
+  const rects = computeLeafRects(root);
+  const cur = rects.get(paneId);
+  if (!cur) return null;
+  // Float slack: sizes come from resize events and rarely sum to exactly 100.
+  const EPS = 0.1;
 
-  const idx = parent.children.findIndex((c) => c.id === paneId);
-  const isAligned =
-    (parent.direction === 'horizontal' && (dir === 'left' || dir === 'right')) ||
-    (parent.direction === 'vertical' && (dir === 'up' || dir === 'down'));
+  let best: string | null = null;
+  let bestEdge = Infinity;
+  let bestOverlap = -Infinity;
+  let bestCenter = Infinity;
+  const curCx = cur.x + cur.w / 2;
+  const curCy = cur.y + cur.h / 2;
 
-  if (isAligned) {
-    const delta = dir === 'right' || dir === 'down' ? 1 : -1;
-    const nextIdx = idx + delta;
-    if (nextIdx >= 0 && nextIdx < parent.children.length) {
-      // Move to adjacent sibling — descend to nearest leaf
-      const sibling = parent.children[nextIdx];
-      return (delta > 0 ? firstLeaf(sibling) : lastLeaf(sibling)).id;
+  for (const [id, r] of rects) {
+    if (id === paneId) continue;
+    let edge: number;
+    if (dir === 'left') {
+      if (r.x + r.w > cur.x + EPS) continue;
+      edge = cur.x - (r.x + r.w);
+    } else if (dir === 'right') {
+      if (r.x < cur.x + cur.w - EPS) continue;
+      edge = r.x - (cur.x + cur.w);
+    } else if (dir === 'up') {
+      if (r.y + r.h > cur.y + EPS) continue;
+      edge = cur.y - (r.y + r.h);
+    } else {
+      if (r.y < cur.y + cur.h - EPS) continue;
+      edge = r.y - (cur.y + cur.h);
+    }
+    const overlap = dir === 'left' || dir === 'right'
+      ? Math.min(cur.y + cur.h, r.y + r.h) - Math.max(cur.y, r.y)
+      : Math.min(cur.x + cur.w, r.x + r.w) - Math.max(cur.x, r.x);
+    const center = dir === 'left' || dir === 'right'
+      ? Math.abs(r.y + r.h / 2 - curCy)
+      : Math.abs(r.x + r.w / 2 - curCx);
+
+    if (
+      edge < bestEdge - EPS ||
+      (Math.abs(edge - bestEdge) <= EPS && (
+        overlap > bestOverlap + EPS ||
+        (Math.abs(overlap - bestOverlap) <= EPS && center < bestCenter)
+      ))
+    ) {
+      best = id;
+      bestEdge = edge;
+      bestOverlap = overlap;
+      bestCenter = center;
     }
   }
-
-  // Direction not aligned or no sibling in that direction — go up
-  return navigateFrom(root, parent.id, dir);
+  return best;
 }
 
 /**

@@ -412,6 +412,88 @@ describe('PaneSlice', () => {
       const wsAfterMove = getActiveWorkspace(store);
       expect(wsAfterMove.activePaneId).toBe(leaves[1].id);
     });
+
+    // #1147 — the repro: a 2×2 grid built as two vertical columns. The old
+    // tree-order walk sent focusLeft from TR to the sibling column's LAST
+    // leaf (BL); geometric navigation must land on the row-aligned TL.
+    const build2x2 = (): { tl: string; bl: string; tr: string; br: string } => {
+      const ws = getActiveWorkspace(store);
+      store.getState().splitPane(ws.rootPane.id, 'horizontal'); // [L, R]
+      let leaves = getLeafPanes(getActiveWorkspace(store).rootPane);
+      const [left, right] = [leaves[0].id, leaves[1].id];
+      store.getState().splitPane(left, 'vertical');  // L → [TL, BL]
+      store.getState().splitPane(right, 'vertical'); // R → [TR, BR]
+      leaves = getLeafPanes(getActiveWorkspace(store).rootPane);
+      expect(leaves).toHaveLength(4);
+      return { tl: left, bl: leaves[1].id, tr: right, br: leaves[3].id };
+    };
+
+    it('#1147 repro: focusLeft from TR of a 2×2 grid lands on TL, not BL', () => {
+      const { tl, tr } = build2x2();
+      store.getState().setActivePane(tr);
+      store.getState().focusPaneDirection('left');
+      expect(getActiveWorkspace(store).activePaneId).toBe(tl);
+    });
+
+    it('#1147: focusRight from BL lands on BR; focusDown from TR lands on BR', () => {
+      const { bl, tr, br } = build2x2();
+      store.getState().setActivePane(bl);
+      store.getState().focusPaneDirection('right');
+      expect(getActiveWorkspace(store).activePaneId).toBe(br);
+
+      store.getState().setActivePane(tr);
+      store.getState().focusPaneDirection('down');
+      expect(getActiveWorkspace(store).activePaneId).toBe(br);
+    });
+
+    it('#1147: custom sizes shift the perpendicular-overlap pick', () => {
+      // Left column split 80/20, right column 20/80: from BR (tall, y 20–100)
+      // moving left, BL (y 80–100, overlap 20) loses to TL? No — TL spans
+      // y 0–80, overlap with BR (20–100) is 60 → TL wins. The tree-order
+      // walk would have picked BL (last leaf) regardless.
+      const { tl, bl, br } = build2x2();
+      const ws = getActiveWorkspace(store);
+      const root = ws.rootPane;
+      if (root.type !== 'branch') throw new Error('expected branch root');
+      const [leftCol, rightCol] = root.children;
+      if (leftCol.type !== 'branch' || rightCol.type !== 'branch') throw new Error('expected column branches');
+      store.getState().updatePaneSizes(leftCol.id, [80, 20]);
+      store.getState().updatePaneSizes(rightCol.id, [20, 80]);
+
+      store.getState().setActivePane(br);
+      store.getState().focusPaneDirection('left');
+      expect(getActiveWorkspace(store).activePaneId).toBe(tl);
+
+      store.getState().setActivePane(bl);
+      store.getState().focusPaneDirection('right');
+      expect(getActiveWorkspace(store).activePaneId).toBe(br);
+    });
+
+    it('#1147: sizes that do not sum to 100 are treated as ratios (flexGrow parity)', () => {
+      // The screen renders sizes as flexGrow RATIOS, so [150, 50] means 75/25
+      // — the rects must agree or the far neighbour falls out of the
+      // direction filter and focus gets stuck.
+      const { tl, tr } = build2x2();
+      const ws = getActiveWorkspace(store);
+      const root = ws.rootPane;
+      if (root.type !== 'branch') throw new Error('expected branch root');
+      store.getState().updatePaneSizes(root.id, [150, 50]);
+
+      store.getState().setActivePane(tr);
+      store.getState().focusPaneDirection('left');
+      expect(getActiveWorkspace(store).activePaneId).toBe(tl);
+    });
+
+    it('#1147: moveActivePaneDirection shares the geometric pick (TR moved left displaces TL)', () => {
+      const { tl, tr } = build2x2();
+      store.getState().setActivePane(tr);
+      const moved = store.getState().moveActivePaneDirection('left');
+      expect(moved).toBe(true);
+      // The displaced neighbour must have been TL (row-aligned), not BL: the
+      // moved pane lands on TL's left edge, so TL is now to its right.
+      store.getState().focusPaneDirection('right');
+      expect(getActiveWorkspace(store).activePaneId).toBe(tl);
+    });
   });
 
   describe('cyclePane', () => {
