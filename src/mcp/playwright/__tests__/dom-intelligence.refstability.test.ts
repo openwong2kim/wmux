@@ -318,7 +318,7 @@ describe('smart snapshot refs are keyed on DOM node identity', () => {
     expect(second.elements).toEqual(first.elements);
   });
 
-  it('prunes nodes the walk no longer sees rather than growing forever', async () => {
+  it('gives a toggled element its old ref back — trimming waits for the cap', async () => {
     clearElementCache();
     const page = makePage(
       tree([
@@ -334,16 +334,17 @@ describe('smart snapshot refs are keyed on DOM node identity', () => {
     ]);
     await getSmartSnapshot(page);
 
-    // …and reopened. The pruned id gets a fresh number rather than its old one,
-    // which is the visible cost of not letting the map grow without bound.
+    // …and reopened. Forgetting the id while the map still fits would renumber
+    // the item on every open/close cycle — a diff line each time, and a ref the
+    // agent was holding gone for no reason.
     (page as unknown as FakePage).nodes = tree([
       { backendId: 100, role: 'button', name: 'Menu item' },
       { backendId: 101, role: 'button', name: 'Toggle' },
     ]);
     const back = await getSmartSnapshot(page);
 
+    expect(refOf(back.elements, 'Menu item')).toBe(1);
     expect(refOf(back.elements, 'Toggle')).toBe(2);
-    expect(refOf(back.elements, 'Menu item')).toBe(3);
   });
 
   it('reads one accessibility tree per snapshot, so refs come from one document', async () => {

@@ -313,13 +313,10 @@ interface SmartRefIdentity {
 }
 
 /**
- * Above this many remembered nodes the identity map is dropped (an SPA that
- * churns nodes forever would otherwise grow it without bound). `next` is NOT
- * rewound with it — recycling a number is the confusion this exists to
- * prevent — so the cost of hitting the cap is one renumbering of live nodes.
- *
- * In practice unreachable now that each snapshot prunes to the nodes it saw
- * (review ⑨); kept as the backstop it always was.
+ * How many remembered nodes the identity map may hold before it is trimmed (an
+ * SPA that churns nodes forever would otherwise grow it without bound). `next`
+ * is NOT rewound by any trim — recycling a number is exactly the confusion this
+ * exists to prevent. See capSmartRefIdentity for the order a trim takes.
  */
 const SMART_REF_IDENTITY_CAP = 5000;
 
@@ -427,7 +424,6 @@ function beginSmartRefGeneration(page: Page): SmartRefIdentity {
   } else if (identity.url !== undefined && url !== undefined && identity.url !== url) {
     identity.byBackendId.clear();
   }
-  if (identity.byBackendId.size > SMART_REF_IDENTITY_CAP) identity.byBackendId.clear();
   identity.url = url;
   identity.generation++;
   hookNavigation(page, identity);
@@ -435,22 +431,33 @@ function beginSmartRefGeneration(page: Page): SmartRefIdentity {
 }
 
 /**
- * Forget every node this walk did not see (review 9).
+ * Keep the identity map under SMART_REF_IDENTITY_CAP, in the order that costs
+ * the least (review 9).
  *
- * The map is otherwise append-only, so a long session on a churning SPA walks
- * it into SMART_REF_IDENTITY_CAP and the whole map is dropped at once —
- * renumbering every live element in one go, which is the loudest possible
- * outcome for the quietest possible cause. Pruning per snapshot keeps the map
- * the size of the page. The cost is deliberate and small: an element that
- * leaves the tree and comes back gets a NEW ref rather than its old one, which
- * is the answer the agent already gets for anything the last snapshot did not
- * list — and never a reused number.
+ * Nothing is forgotten while the map fits, and remembering a node the current
+ * walk did not see is the whole point of the map on this side of the cap: a
+ * menu that closes and reopens, a tab panel that swaps out and back, a row
+ * scrolled out of a virtualised list — each comes back to the ref it had, which
+ * keeps it out of the diff and keeps a ref the agent is holding valid. An
+ * earlier draft pruned to the walk on every snapshot and turned every one of
+ * those round trips into a renumber.
+ *
+ * Over the cap, the entries this walk did not see have the least claim to the
+ * space, so they go first; only if the live page ALONE still exceeds the cap is
+ * the map dropped whole. That last case renumbers every live element at once —
+ * loud, and correct: every outstanding ref goes stale rather than quietly
+ * meaning something new, and `next` is never rewound, so no number is reused.
+ *
+ * A document boundary is a different question and keeps its own answer: every
+ * backendDOMNodeId means nothing in a new document, so a changed URL and the
+ * `framenavigated` hook clear the map outright.
  */
-function pruneSmartRefIdentity(identity: SmartRefIdentity, seen: Set<number>): void {
-  if (identity.byBackendId.size === seen.size) return;
+function capSmartRefIdentity(identity: SmartRefIdentity, seen: Set<number>): void {
+  if (identity.byBackendId.size <= SMART_REF_IDENTITY_CAP) return;
   for (const backendId of [...identity.byBackendId.keys()]) {
     if (!seen.has(backendId)) identity.byBackendId.delete(backendId);
   }
+  if (identity.byBackendId.size > SMART_REF_IDENTITY_CAP) identity.byBackendId.clear();
 }
 
 /** The smart ref for this node, minting one the first time we see it. */
@@ -523,8 +530,8 @@ function buildLocatorString(role: string, name: string): string {
  * elements into the provided array, assigning refs out of the page's identity
  * number space (see SmartRefIdentity).
  *
- * `seen` collects every backendDOMNodeId this walk numbered, so the identity
- * map can be pruned back to the live page afterwards.
+ * `seen` collects every backendDOMNodeId this walk numbered, so an over-cap
+ * identity map can be trimmed back to the live page afterwards.
  */
 function collectInteractiveElements(
   nodeMap: Map<string, CdpAXNode>,
@@ -616,7 +623,7 @@ async function getInteractiveElements(page: Page): Promise<IndexedElement[]> {
     const elements: IndexedElement[] = [];
     const seen = new Set<number>();
     collectInteractiveElements(nodeMap, nodes[0], elements, passwordBackendIds, identity, seen);
-    pruneSmartRefIdentity(identity, seen);
+    capSmartRefIdentity(identity, seen);
     finalizeSmartPopulations(elements);
     return elements;
   } finally {
