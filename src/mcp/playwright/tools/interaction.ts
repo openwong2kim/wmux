@@ -3,7 +3,12 @@ import type { ElementHandle } from 'playwright-core';
 import { z } from 'zod';
 import { PlaywrightEngine } from '../PlaywrightEngine';
 import { withAutomationLease } from '../automationLease';
-import { resolveRef } from '../snapshot';
+import {
+  browserScopeKey,
+  frameRefFallbackMessage,
+  isOutstandingFrameRef,
+  resolveRef,
+} from '../snapshot';
 import { getLocatorByRef } from '../dom-intelligence';
 import { typeHumanlike } from '../human-typing';
 import { describeToolError } from '../toolError';
@@ -147,14 +152,28 @@ async function rpcEval(expression: string, scope: BrowserTargetScope): Promise<s
  * Exported so other tool modules that interpolate a ref into injected JS
  * (e.g. browser_highlight in inspection.ts) reuse the same guard.
  */
-export function sanitizeRef(ref: string): string {
+export function sanitizeRef(ref: string, scope: BrowserTargetScope): string {
   if (!/^[a-zA-Z0-9_-]+$/.test(ref)) throw new Error(`Invalid ref: "${ref}"`);
+  // Every `[data-wmux-ref]` resolution in the tool layer — RPC click, fill,
+  // hover, drag, select, scroll, scroll-into-view, the password probe, and
+  // browser_highlight — passes through here first, which makes this the one
+  // place a frame ref can be stopped before it reaches a selector that can
+  // only ever match a main-document element. Fail closed: a frame ref has no
+  // data-attr representation at all, so attempting it either finds nothing or,
+  // worse, finds whatever a previous DOM snapshot tagged with that number.
+  //
+  // Asked per surface, not globally: another surface's frame refs say nothing
+  // about this one's numbering, and refusing on them would block a good DOM
+  // ref here for as long as some unrelated page held that number.
+  if (isOutstandingFrameRef(browserScopeKey(scope), ref)) {
+    throw new Error(frameRefFallbackMessage(ref));
+  }
   return ref;
 }
 
 async function rpcClick(ref: string, scope: BrowserTargetScope, _double?: boolean): Promise<void> {
   // Use CDP click: first get element coordinates via JS, then dispatch mouse events
-  const safeRef = sanitizeRef(ref);
+  const safeRef = sanitizeRef(ref, scope);
   await sendScopedBrowserRpc('browser.click.cdp', scope, {
     selector: `[data-wmux-ref="${safeRef}"]`,
   });
@@ -199,7 +218,7 @@ async function isPasswordElement(el: ElementHandle): Promise<boolean> {
 /** Same question over the RPC transport, resolved through the data-wmux-ref tag. */
 async function rpcIsPasswordElement(ref: string, scope: BrowserTargetScope): Promise<boolean> {
   try {
-    const safeRef = sanitizeRef(ref);
+    const safeRef = sanitizeRef(ref, scope);
     const val = await rpcEval(`(() => {
       const isPasswordField = ${PASSWORD_FIELD_PREDICATE_JS};
       return isPasswordField(document.querySelector('[data-wmux-ref="${safeRef}"]')) ? 'yes' : 'no';
@@ -634,7 +653,7 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
           await el.hover();
         } else {
           // RPC fallback: dispatch mouseover event
-          const safeRef = sanitizeRef(ref);
+          const safeRef = sanitizeRef(ref, scope);
           const val = await rpcEval(`(() => {
             const el = document.querySelector('[data-wmux-ref="${safeRef}"]');
             if (!el) return 'not_found';
@@ -693,8 +712,8 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
           await page.mouse.up();
         } else {
           // RPC fallback: simplified drag via JS events
-          const safeSrc = sanitizeRef(sourceRef);
-          const safeTgt = sanitizeRef(targetRef);
+          const safeSrc = sanitizeRef(sourceRef, scope);
+          const safeTgt = sanitizeRef(targetRef, scope);
           const val = await rpcEval(`(() => {
             const src = document.querySelector('[data-wmux-ref="${safeSrc}"]');
             const tgt = document.querySelector('[data-wmux-ref="${safeTgt}"]');
@@ -740,7 +759,7 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
           if (!el) throw new Error(refNotFound(ref));
           await el.selectOption(values);
         } else {
-          const safeRef = sanitizeRef(ref);
+          const safeRef = sanitizeRef(ref, scope);
           const escapedValues = JSON.stringify(values);
           const val = await rpcEval(`(() => {
             const el = document.querySelector('[data-wmux-ref="${safeRef}"]');
@@ -782,7 +801,7 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
           if (!el) throw new Error(refNotFound(ref));
           await el.scrollIntoViewIfNeeded();
         } else {
-          const safeRef = sanitizeRef(ref);
+          const safeRef = sanitizeRef(ref, scope);
           const val = await rpcEval(`(() => {
             const el = document.querySelector('[data-wmux-ref="${safeRef}"]');
             if (!el) return 'not_found';
@@ -836,7 +855,7 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
         } else {
           // RPC fallback
           if (ref) {
-            const safeRef = sanitizeRef(ref);
+            const safeRef = sanitizeRef(ref, scope);
             await rpcEval(`(() => {
               const el = document.querySelector('[data-wmux-ref="${safeRef}"]');
               if (!el) return 'not_found';

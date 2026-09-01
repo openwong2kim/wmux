@@ -6,7 +6,9 @@ import { withAutomationLease } from '../automationLease';
 import {
   generateScopedSnapshot,
   generateSnapshot,
+  browserScopeKey,
   markDomRefsActive,
+  noteFrameRefsForScope,
   resolveRef,
 } from '../snapshot';
 import { buildDomSnapshotExpression } from '../dom-intelligence';
@@ -363,6 +365,14 @@ export function registerInspectionTools(server: McpServer, deps: BrowserToolDeps
             text = `(note: aria format unavailable — no live page, returning the DOM interactive listing)\n${text}`;
           }
         }
+
+        // What this surface's refs are, for the RPC lane's fail-closed guard.
+        // Registered here rather than inside generateSnapshot because the scope
+        // is a tool-layer fact, and every route that mints refs for a surface —
+        // a11y, scoped, DOM listing, RPC — passes through this one handler.
+        // A route that mints no frame refs clears the surface, which is what
+        // keeps a later DOM snapshot's tags resolvable.
+        noteFrameRefsForScope(browserScopeKey(scope), page ?? null);
 
         // Auto-diff: a repeat snapshot with the same attributes returns a diff
         // against the previous one when that is genuinely smaller (D1). The
@@ -760,7 +770,7 @@ export function registerInspectionTools(server: McpServer, deps: BrowserToolDeps
         } else {
           // RPC fallback (packaged builds): resolve via the data-wmux-ref tag set
           // by browser_snapshot / browser_smart_snapshot and set the outline inline.
-          const safeRef = sanitizeRef(ref);
+          const safeRef = sanitizeRef(ref, scope);
           const result = await sendScopedBrowserRpc<{ value: string }>('browser.evaluate', scope, {
             expression: `(() => {
               const el = document.querySelector('[data-wmux-ref="${safeRef}"]');

@@ -1,0 +1,17 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Widget</title>
+<h1>Widget</h1>
+<label>Card <input name="card"></label>
+<label>PIN <input type="password" name="pin"></label>
+<button id="submit">Submit</button>
+<p id="out"></p>
+<script>
+  // Names the frame that actually got the click, which is the whole question
+  // fixture 1 exists to answer.
+  document.getElementById('submit').addEventListener('click', () => {
+    const which = new URLSearchParams(location.search).get('slot') || '?';
+    document.getElementById('out').textContent = 'clicked in slot ' + which;
+    document.title = 'Widget ' + which + ' clicked';
+  });
+</script>

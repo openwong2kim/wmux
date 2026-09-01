@@ -17,7 +17,15 @@ vi.mock('../PlaywrightEngine', () => ({
   PlaywrightEngine: { getInstance: () => ({ getPageForScope: getPage }) },
 }));
 
-vi.mock('../snapshot', () => ({ resolveRef }));
+// isOutstandingFrameRef/frameRefFallbackMessage: the fail-closed guard
+// sanitizeRef consults before any data-wmux-ref resolution. Stubbed to "no
+// frame refs outstanding", which is what these RPC-lane cases are about.
+vi.mock('../snapshot', () => ({
+  resolveRef,
+  browserScopeKey: () => 'test-scope',
+  isOutstandingFrameRef: () => false,
+  frameRefFallbackMessage: (ref: string) => `frame ref ${ref}`,
+}));
 
 import { registerInteractionTools } from '../tools/interaction';
 import { REDACTED_PASSWORD, isPasswordFieldNode } from '../redact';

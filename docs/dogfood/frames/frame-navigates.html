@@ -1,0 +1,9 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>One frame navigates</title>
+<h1>Independent frame navigation</h1>
+<p>Click "Go elsewhere" inside frame one. Refs minted in frame one must then
+report as stale, while refs in frame two keep working — the page URL never
+changes, so nothing at page level can see this.</p>
+<iframe src="navigator.html" width="360" height="160" title="frame one"></iframe>
+<iframe src="widget.html?slot=2" width="360" height="200" title="frame two"></iframe>

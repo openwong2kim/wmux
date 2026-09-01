@@ -1,4 +1,4 @@
-import type { Page, ElementHandle } from 'playwright-core';
+import type { Page, Frame, Locator, ElementHandle } from 'playwright-core';
 import { buildDomSnapshotExpression } from './dom-intelligence';
 import {
   REDACTED_PASSWORD,
@@ -48,6 +48,92 @@ interface CdpAXNode {
   ignored?: boolean;
 }
 
+// ---------------------------------------------------------------------------
+// Frame coordinates
+// ---------------------------------------------------------------------------
+
+/**
+ * One `<iframe>` hop from a host document into a child document.
+ *
+ * A ref minted inside a frame is only meaningful together with the route that
+ * reaches that frame, and the route has to be re-walkable later without
+ * trusting anything the page can rewrite. So a hop stores a POSITION, not an
+ * identity: the `<iframe>` element's index in document order among the host
+ * document's frames, plus how many the host had. Matching by `src` was the
+ * obvious alternative and is the wrong one — two frames can share a src, and a
+ * page can change one at will, so a src match resolves a ref into whichever
+ * frame answers to that string now (decision D2: tag the coordinate, then
+ * fail closed when it no longer matches).
+ *
+ * `childUrlKey` is the child document's URL at capture time. It is what makes
+ * a frame that navigated on its own detectable at resolution time: the hop
+ * still lands on frame #1 of 2, but frame #1 is a different document now.
+ */
+export interface FrameHop {
+  /** Document-order index of the `<iframe>` among the host document's frames. */
+  hostIndex: number;
+  /** How many frames the host document held when the ref was minted. */
+  hostTotal: number;
+  /** documentKey() of the `<iframe>` element's src, for the error message only. */
+  hostSrcKey: string;
+  /** documentKey() of the child document's own URL when the ref was minted. */
+  childUrlKey: string;
+}
+
+/**
+ * Where a node lives, as a route from the main frame.
+ *
+ * An empty path is the main frame, and every main-frame code path stays
+ * byte-for-byte what it was before frames existed — that equivalence is the
+ * whole reason the coordinate is a path rather than a rewrite of the ref.
+ */
+export interface FrameCoord {
+  path: FrameHop[];
+  /** Deterministic string form of `path`, used as a map key. `''` = main frame. */
+  key: string;
+}
+
+/** The main frame's coordinate: the route of length zero. */
+const MAIN_FRAME: FrameCoord = { path: [], key: '' };
+
+/**
+ * The map key for a route.
+ *
+ * Includes each hop's child URL so a frame that navigates gets a NEW key: its
+ * old backendDOMNodeIds mean nothing in the new document, and a fresh key
+ * retires them without touching any other frame's numbering.
+ */
+function frameKeyOf(path: FrameHop[]): string {
+  return path.map((hop) => `${hop.hostIndex}\u0000${hop.childUrlKey}`).join('\u0001');
+}
+
+/** Extend a route by one hop. */
+function descend(coord: FrameCoord, hop: FrameHop): FrameCoord {
+  const path = [...coord.path, hop];
+  return { path, key: frameKeyOf(path) };
+}
+
+/** Why an `<iframe>`'s contents are not in the snapshot. */
+export type FrameBoundaryReason =
+  /** No document reachable through this element — removed, or never attached. */
+  | 'not-attached'
+  /**
+   * The frame had no settled URL when the snapshot ran, so no hop could be
+   * recorded for it. Distinct from not-attached: the frame is there and will
+   * have contents shortly, which is a "snapshot again" answer rather than a
+   * "there is nothing here" one.
+   */
+  | 'navigating'
+  /**
+   * This document is already grafted under an earlier `<iframe>`. Two slots
+   * pointing at one document is a legitimate page, not a failure, so this
+   * reads differently from a frame that could not be read at all.
+   */
+  | 'already-grafted'
+  | 'depth-cap'
+  | 'count-cap'
+  | 'empty';
+
 /** Normalised tree node built from CDP data */
 export interface AXNode {
   role: string;
@@ -65,6 +151,22 @@ export interface AXNode {
   selected?: boolean;
   pressed?: boolean | 'mixed';
   valuetext?: string;
+  /**
+   * Set on the FIRST node of a grafted child document (see graftChildFrames).
+   * Every descendant inherits it during serialisation, which is what stamps a
+   * frame coordinate onto the refs minted inside the frame. Absent on main
+   * frame nodes, where the coordinate is the empty path.
+   */
+  frameCoord?: FrameCoord;
+  /**
+   * Set on an `<iframe>` node whose child document was actually stitched in.
+   * Distinguishes "empty frame" from "contents not in this snapshot", and keeps
+   * the node alive through the interactive filter even when the frame holds no
+   * interactive elements of its own.
+   */
+  graftedFrame?: boolean;
+  /** Why this iframe's contents are absent, when they are. See frameBoundaryNote. */
+  frameBoundaryReason?: FrameBoundaryReason;
 }
 
 // Roles considered interactive — these get a ref number in 'ai' format
@@ -105,6 +207,31 @@ const INTERACTIVE_ROLES = new Set([
 const IFRAME_ROLES = new Set(['Iframe', 'IframePresentational']);
 
 /**
+ * The frame elements a hop counts, in the one form both sides can agree on.
+ *
+ * The capture side asks CDP `DOM.querySelectorAll` for this selector and the
+ * resolver asks a Playwright locator for it, and a hop's index is only sound
+ * while those two enumerate the SAME elements in the SAME order — both are
+ * document order over the same selector, so they do. `frame` is in the set
+ * because a legacy frameset page has frames and no iframes.
+ */
+const FRAME_ELEMENT_SELECTOR = 'iframe,frame';
+
+/**
+ * How deep the graft follows nested frames.
+ *
+ * Mirrors browser-use's own frame walk (dom/service.py), which caps depth and
+ * frame count rather than trusting a page not to nest. An ad frame inside a
+ * consent frame inside a widget is three, so five leaves headroom while still
+ * bounding the number of CDP round-trips a hostile page can force.
+ */
+const MAX_FRAME_DEPTH = 5;
+
+/** Total frames grafted per snapshot, across the whole tree. */
+const MAX_FRAMES = 100;
+
+
+/**
  * What an iframe node says instead of its contents.
  *
  * Stitching the child frame's tree in was the obvious alternative and is the
@@ -114,6 +241,44 @@ const IFRAME_ROLES = new Set(['Iframe', 'IframePresentational']);
  * frame contents reachable needs frame-aware ref resolution first.
  */
 const FRAME_BOUNDARY_NOTE = '(separate document — contents not in this snapshot)';
+
+/**
+ * What an `<iframe>` says once the graft has actually looked inside it.
+ *
+ * "Read and empty" and "not read" are different facts and used to render
+ * identically, which is the same conflation FRAME_BOUNDARY_NOTE was introduced
+ * to end one level up: an agent that cannot tell them apart re-snapshots
+ * forever waiting for contents that are never coming.
+ */
+const FRAME_EMPTY_NOTE = '(separate document — read, no content in it)';
+
+/** Appended where a frame's own share of the output budget ran out. */
+const FRAME_TRUNCATED_NOTE = '(frame content truncated)';
+
+/** The sentence fragment naming why a frame was not read. */
+const FRAME_BOUNDARY_REASONS: Record<FrameBoundaryReason, string> = {
+  'not-attached': '(separate document — could not be attached, contents not in this snapshot)',
+  navigating: '(separate document — still navigating, snapshot again for its contents)',
+  'already-grafted': '(same document as an earlier iframe — its contents are listed there)',
+  'depth-cap': `(separate document — nested deeper than ${MAX_FRAME_DEPTH} frames, contents not in this snapshot)`,
+  'count-cap': `(separate document — past the ${MAX_FRAMES}-frame budget for one snapshot, contents not in this snapshot)`,
+  empty: FRAME_EMPTY_NOTE,
+};
+
+/**
+ * The note an `<iframe>` node carries instead of its contents, if any.
+ *
+ * A frame with content in the tree says nothing extra — the content IS the
+ * answer. Everything else names the specific reason rather than the generic
+ * boundary, except the plain unread case, which keeps its original wording.
+ */
+function frameBoundaryNote(node: AXNode): string {
+  if (!IFRAME_ROLES.has(node.role)) return '';
+  if (node.children?.length) return '';
+  if (node.frameBoundaryReason) return ` ${FRAME_BOUNDARY_REASONS[node.frameBoundaryReason]}`;
+  if (node.graftedFrame) return ` ${FRAME_EMPTY_NOTE}`;
+  return ` ${FRAME_BOUNDARY_NOTE}`;
+}
 
 /**
  * The two text roles Chrome stacks under every piece of visible text, and the
@@ -327,10 +492,20 @@ export interface RefEntry {
    * removing a node no longer renumbers everything after it.
    */
   ref: number;
-  /** Position of this entry among the snapshot's entries sharing role+name. */
+  /**
+   * Position of this entry among the snapshot's entries sharing role+name
+   * WITHIN THE SAME FRAME. Frame-local on purpose: the resolver counts matches
+   * with a locator rooted at the entry's own frame, so a page-wide population
+   * would not be the population that index is an index into (review ⑫ — get
+   * this wrong and every existing click on a page with iframes regresses).
+   */
   sameNameIndex: number;
-  /** How many entries the snapshot listed with this exact role+name. */
+  /** How many entries the snapshot listed with this role+name in that frame. */
   sameNameTotal: number;
+  /** Route from the main frame to the document this ref was minted in. */
+  framePath: FrameHop[];
+  /** frameKeyOf(framePath). `''` = main frame. */
+  frameKey: string;
 }
 
 /**
@@ -349,8 +524,15 @@ export interface RefEntry {
  * removed element can never come back pointing at a different one.
  */
 interface RefIdentity {
-  /** backendDOMNodeId → the ref number that node was given. */
-  byBackendId: Map<number, number>;
+  /**
+   * frameKey → (backendDOMNodeId → the ref number that node was given).
+   *
+   * Two levels rather than one because backendDOMNodeId is only unique within
+   * a CDP target: an out-of-process iframe numbers its own DOM from its own
+   * id space, so a flat map would have a frame's node collide with a main-frame
+   * node and silently hand both the same ref.
+   */
+  byBackendId: Map<string, Map<number, number>>;
   /** Next unused ref number. */
   next: number;
   /** URL the number space belongs to; a different document restarts it. */
@@ -371,13 +553,23 @@ const REF_IDENTITY_CAP = 5000;
 
 const pageRefIdentity = new WeakMap<Page, RefIdentity>();
 
-/** What the last snapshot on this page was taken against. */
+/** What the last snapshot on this page was taken against, per frame. */
 interface SnapshotStamp {
   generation: number;
   url: string | undefined;
 }
 
-const pageSnapshotStamps = new WeakMap<Page, SnapshotStamp>();
+/**
+ * frameKey → the document that frame held when the last snapshot ran.
+ *
+ * Only the main frame is stamped. A frame's own document is already recorded
+ * in every ref's FrameHop, and the resolver re-reads `frame.url()` live on each
+ * hop rather than trusting either copy — a second stored copy would be a value
+ * nothing reads, which is worse than absent because it looks like a check.
+ * The map shape is kept for the per-frame stamps this would need if the live
+ * read ever became too expensive to do on every hop.
+ */
+const pageSnapshotStamps = new WeakMap<Page, Map<string, SnapshotStamp>>();
 
 /**
  * Thrown instead of returning null when a ref can be shown to be stale — the
@@ -415,11 +607,23 @@ function pageUrl(page: Page): string | undefined {
  * a navigation (refs are retired, which is safe) and a POST that lands back on
  * the same URL does not (the refMap checks below are what catch that).
  */
-function documentKey(page: Page): string | undefined {
-  const url = pageUrl(page);
-  if (url === undefined) return undefined;
+function documentKey(url: string | undefined): string | undefined {
+  if (url === undefined || url.length === 0) return undefined;
   const hash = url.indexOf('#');
   return hash === -1 ? url : url.slice(0, hash);
+}
+
+/**
+ * documentKey() of a page's current URL.
+ *
+ * Split from documentKey so the same rule can be applied to a FRAME's url
+ * (which arrives as a plain string from `frame.url()`), rather than having two
+ * near-identical normalisations drift apart — the frame check is only worth
+ * anything while it agrees with the page check about what "same document"
+ * means.
+ */
+function pageDocumentKey(page: Page): string | undefined {
+  return documentKey(pageUrl(page));
 }
 
 /**
@@ -427,7 +631,7 @@ function documentKey(page: Page): string | undefined {
  * moved to a different document (its backendDOMNodeIds mean nothing there).
  */
 function beginRefGeneration(page: Page): RefIdentity {
-  const url = documentKey(page);
+  const url = pageDocumentKey(page);
   let identity = pageRefIdentity.get(page);
   if (!identity) {
     identity = { byBackendId: new Map(), next: 0, url, generation: 0 };
@@ -439,19 +643,40 @@ function beginRefGeneration(page: Page): RefIdentity {
     // guard cannot catch it once the URL comes back round (A → B → A).
     identity.byBackendId.clear();
   }
-  if (identity.byBackendId.size > REF_IDENTITY_CAP) identity.byBackendId.clear();
+  if (countRememberedNodes(identity) > REF_IDENTITY_CAP) identity.byBackendId.clear();
   identity.url = url;
   identity.generation++;
   return identity;
 }
 
-/** The ref number for this node, minting one the first time we see it. */
-function assignRef(identity: RefIdentity, backendDOMNodeId?: number): number {
+/** Remembered nodes across every frame — what REF_IDENTITY_CAP is a cap on. */
+function countRememberedNodes(identity: RefIdentity): number {
+  let total = 0;
+  for (const perFrame of identity.byBackendId.values()) total += perFrame.size;
+  return total;
+}
+
+/**
+ * The ref number for this node, minting one the first time we see it.
+ *
+ * `frameKey` selects the id space: a backendDOMNodeId means something only
+ * inside the document that issued it.
+ */
+function assignRef(
+  identity: RefIdentity,
+  frameKey: string,
+  backendDOMNodeId?: number,
+): number {
   if (backendDOMNodeId === undefined) return identity.next++;
-  const existing = identity.byBackendId.get(backendDOMNodeId);
+  let perFrame = identity.byBackendId.get(frameKey);
+  if (!perFrame) {
+    perFrame = new Map();
+    identity.byBackendId.set(frameKey, perFrame);
+  }
+  const existing = perFrame.get(backendDOMNodeId);
   if (existing !== undefined) return existing;
   const ref = identity.next++;
-  identity.byBackendId.set(backendDOMNodeId, ref);
+  perFrame.set(backendDOMNodeId, ref);
   return ref;
 }
 
@@ -464,15 +689,23 @@ function assignRef(identity: RefIdentity, backendDOMNodeId?: number): number {
  * clamping onto whichever element happens to sit at that index now.
  */
 function finalizeRefs(refs: RefEntry[]): void {
+  // Keyed by frame as well as role+name (review ⑫). Two frames showing the
+  // same widget each hold their own `Submit` button; counting them together
+  // would give the second frame's button index 1, and the resolver — which
+  // counts inside ONE frame — would then look for a second `Submit` that frame
+  // does not have. Every ref on every page with a duplicated iframe would go
+  // stale or resolve wrongly.
+  const populationKey = (entry: RefEntry) =>
+    `${entry.frameKey}\u0002${entry.role}\u0000${entry.name}`;
   const totals = new Map<string, number>();
   for (const entry of refs) {
-    const key = `${entry.role}\u0000${entry.name}`;
+    const key = populationKey(entry);
     const seen = totals.get(key) ?? 0;
     entry.sameNameIndex = seen;
     totals.set(key, seen + 1);
   }
   for (const entry of refs) {
-    entry.sameNameTotal = totals.get(`${entry.role}\u0000${entry.name}`) ?? 1;
+    entry.sameNameTotal = totals.get(populationKey(entry)) ?? 1;
   }
 }
 
@@ -491,12 +724,126 @@ const pageRefScopes = new WeakMap<Page, string>();
 function setPageRefs(page: Page, refs: RefEntry[], scopeSelector?: string): void {
   finalizeRefs(refs);
   pageRefMaps.set(page, refs);
-  pageSnapshotStamps.set(page, {
-    generation: pageRefIdentity.get(page)?.generation ?? 0,
-    url: documentKey(page),
-  });
+  const generation = pageRefIdentity.get(page)?.generation ?? 0;
+  const stamps = new Map<string, SnapshotStamp>();
+  stamps.set(MAIN_FRAME.key, { generation, url: pageDocumentKey(page) });
+  pageSnapshotStamps.set(page, stamps);
   if (scopeSelector === undefined) pageRefScopes.delete(page);
   else pageRefScopes.set(page, scopeSelector);
+}
+
+/**
+ * The registry key for one browser surface.
+ *
+ * A surface, not a workspace: two surfaces in one workspace have separate
+ * pages and separate ref numbering, so folding them together would recreate
+ * the cross-surface false refusal this key exists to prevent.
+ */
+export function browserScopeKey(scope: {
+  workspaceId: string;
+  surfaceId?: string;
+}): string {
+  return `${scope.workspaceId}\u0000${scope.surfaceId ?? ''}`;
+}
+
+/**
+ * Browser scope → the frame-ref numbers that scope's last snapshot minted.
+ *
+ * The RPC transport is reached precisely because there is no Page to look
+ * anything up on, so its guard needs an answer keyed by something it still
+ * has: the scope it was called for. Keying by scope rather than "any page
+ * anywhere" is what keeps one surface's frame refs from refusing an unrelated
+ * surface's perfectly good DOM ref.
+ *
+ * Holds numbers and strings only — never a Page. An earlier version kept the
+ * Page as the key of a strong Map, which pinned every page that had ever
+ * snapshotted a frame for the life of the process.
+ *
+ * Entries are replaced on every snapshot of that scope and deleted the moment
+ * one mints no frame refs, so the map holds at most one entry per live browser
+ * surface; the cap is a backstop for a session that churns surfaces.
+ */
+const FRAME_REF_SCOPE_CAP = 64;
+const frameRefsByScope = new Map<string, Set<number>>();
+
+/**
+ * Record what the snapshot just taken for `scopeKey` minted, so the RPC lane
+ * can refuse a frame ref for THIS surface without touching any other.
+ *
+ * Called by the snapshot tool for both routes: the a11y route registers what it
+ * minted, and the DOM route registers nothing, which clears the scope — its
+ * data-wmux-ref tags ARE the current truth and must stay resolvable.
+ */
+export function noteFrameRefsForScope(scopeKey: string, page: Page | null): void {
+  const numbers = new Set<number>();
+  for (const entry of (page && pageRefMaps.get(page)) || []) {
+    if (entry.frameKey !== MAIN_FRAME.key) numbers.add(entry.ref);
+  }
+  frameRefsByScope.delete(scopeKey);
+  if (numbers.size === 0) return;
+  frameRefsByScope.set(scopeKey, numbers);
+  while (frameRefsByScope.size > FRAME_REF_SCOPE_CAP) {
+    const oldest = frameRefsByScope.keys().next().value;
+    if (oldest === undefined) break;
+    frameRefsByScope.delete(oldest);
+  }
+}
+
+/**
+ * Was this ref minted inside an iframe?
+ *
+ * Exported for the fail-closed guard in the tool layer: a frame ref must never
+ * reach a `[data-wmux-ref]` lookup. Those attributes are written into the MAIN
+ * document only, so the selector cannot find the element the ref names — but it
+ * CAN find an unrelated main-document element that a previous DOM snapshot
+ * tagged with the same number, and then click it. That is the loudest failure
+ * this feature can produce, so it is refused rather than attempted.
+ */
+export function isFrameRef(page: Page, ref: string): boolean {
+  const wanted = refNumber(ref);
+  if (wanted === null) return false;
+  const refs = pageRefMaps.get(page);
+  if (!refs) return false;
+  return refs.some((entry) => entry.ref === wanted && entry.frameKey !== MAIN_FRAME.key);
+}
+
+/**
+ * A ref string as the number it names, or null when it does not name one.
+ *
+ * Strict, not parseInt: `parseInt('12abc')` is 12 and `parseInt('0x10')` is 16,
+ * so a guard built on it answers questions about a ref the caller never asked
+ * about. A ref is a run of digits and nothing else — the same shape
+ * REF_ATTR_PATTERN already enforces on the data-attr side.
+ */
+function refNumber(ref: string): number | null {
+  return /^\d+$/.test(ref) ? Number(ref) : null;
+}
+
+/**
+ * Same question with no Page to ask it of — the RPC transport's only option.
+ *
+ * Scoped to the surface the call is for. An unrelated surface's frame refs say
+ * nothing about this one's numbering, and refusing on them would block a
+ * perfectly good DOM ref on an RPC-only surface for as long as some other page
+ * happened to hold that number.
+ *
+ * A surface with no entry is not refused: either it never took an a11y
+ * snapshot, or its last one had no frames, and in both cases its
+ * data-wmux-ref tags are the current truth.
+ */
+export function isOutstandingFrameRef(scopeKey: string, ref: string): boolean {
+  const wanted = refNumber(ref);
+  if (wanted === null) return false;
+  return frameRefsByScope.get(scopeKey)?.has(wanted) === true;
+}
+
+/** The message both guards raise, so the agent reads one explanation. */
+export function frameRefFallbackMessage(ref: string): string {
+  return (
+    `ref=${ref} was minted inside an iframe and cannot be resolved through the ` +
+    `data-wmux-ref fallback, which only tags the main document. ` +
+    `Run browser_snapshot to get current refs.`
+  );
 }
 
 /**
@@ -530,6 +877,42 @@ interface SerializeCtx {
   identity: RefIdentity;
   /** Null when nothing is covering the page, which is the normal case. */
   occlusion: OcclusionInfo | null;
+  /**
+   * Characters left for frame content — ONE pool for the whole snapshot,
+   * drawn down by every grafted frame in it.
+   *
+   * A page's own controls are what the caller asked about; a frame's are a
+   * bonus. Without a cap a chatty ad frame fills the output and pushes the
+   * page's own buttons past the truncation point, which leaves the snapshot
+   * worse than it was when frames were unreachable.
+   *
+   * Shared rather than per frame, because a per-frame allowance is not a cap
+   * at all: ten sibling ad frames at 40% each is 400% of the budget, and the
+   * host document is squeezed out by exactly the case the cap exists for.
+   * One pool also gives nesting the right shape for free — a child frame can
+   * only spend what its parent has not, since both draw on the same counter.
+   *
+   * The consequence is deliberate: frames are served in document order and an
+   * early greedy frame can leave a later one with nothing. A later frame that
+   * gets nothing says so (FRAME_TRUNCATED_NOTE), which is the same contract a
+   * truncated one already has.
+   */
+  frameBudgetRemaining: number;
+}
+
+/** The share of one snapshot's budget ALL grafted frames together may spend. */
+const FRAME_BUDGET_SHARE = 0.4;
+
+/**
+ * The frame a node is being serialised in.
+ *
+ * Threaded through the recursion rather than stored on every node: only the
+ * root of a grafted document carries `frameCoord`, and everything under it
+ * inherits — which is what keeps the main-frame walk allocation-for-allocation
+ * identical to what it was before frames existed.
+ */
+function frameOf(node: AXNode, inherited: FrameCoord): FrameCoord {
+  return node.frameCoord ?? inherited;
 }
 
 function serializeNode(
@@ -537,9 +920,11 @@ function serializeNode(
   ctx: SerializeCtx,
   currentDepth: number,
   indent: number,
+  inheritedFrame: FrameCoord = MAIN_FRAME,
 ): string {
   if (currentDepth > ctx.maxDepth) return '';
 
+  const frame = frameOf(node, inheritedFrame);
   const pad = '  '.repeat(indent);
   const role = node.role;
   const name = node.name || '';
@@ -548,7 +933,7 @@ function serializeNode(
   const attrs: string[] = [];
 
   if (ctx.format === 'ai' && isInteractive(role)) {
-    const ref = assignRef(ctx.identity, node.backendDOMNodeId);
+    const ref = assignRef(ctx.identity, frame.key, node.backendDOMNodeId);
     ctx.refs.push({
       role,
       name,
@@ -557,6 +942,8 @@ function serializeNode(
       // Filled in by finalizeRefs once the whole walk is known.
       sameNameIndex: 0,
       sameNameTotal: 0,
+      framePath: frame.path,
+      frameKey: frame.key,
     });
     attrs.push(`ref="${ref}"`);
   }
@@ -602,8 +989,7 @@ function serializeNode(
   // Only when the node really is a dead end. Chrome 141 always stops at the
   // iframe element, but a version or engine that inlines the child document
   // would turn this note into a lie.
-  const frameStr =
-    IFRAME_ROLES.has(role) && !node.children?.length ? ` ${FRAME_BOUNDARY_NOTE}` : '';
+  const frameStr = frameBoundaryNote(node);
 
   let line = `${pad}- ${role}${nameStr}${attrStr}${frameStr}`;
 
@@ -612,13 +998,39 @@ function serializeNode(
   // INLINE_TEXT_ROLE — so neither it nor its subtree is walked.
   const isFragmentParent = TEXT_FRAGMENT_PARENTS.has(role);
   const childLines: string[] = [];
+  // Only a grafted frame's contents are metered; everything else is not, which
+  // keeps the main-document walk exactly as it was.
+  const metered = node.graftedFrame === true;
+  let frameTruncated = false;
   if (node.children) {
     for (const child of node.children) {
       if (ctx.format === 'ai' && isFragmentParent && child.role === INLINE_TEXT_ROLE) continue;
-      const childStr = serializeNode(child, ctx, currentDepth + 1, indent + 1);
-      if (childStr) childLines.push(childStr);
+      // Where the refs for this child start, so a child that does not make it
+      // into the output does not leave a ref behind either. A ref for a line
+      // the agent cannot see is a ref it cannot have meant to use.
+      const refMark = ctx.refs.length;
+      const remainingBefore = ctx.frameBudgetRemaining;
+      const childStr = serializeNode(child, ctx, currentDepth + 1, indent + 1, frame);
+      if (!childStr) continue;
+      if (metered) {
+        // A nested grafted frame inside this child has already charged its own
+        // bytes to the same pool, so charging the child's full length again
+        // would bill that content twice and cut this frame short by the size of
+        // its own children's frames.
+        const chargedByNested = remainingBefore - ctx.frameBudgetRemaining;
+        const own = childStr.length - chargedByNested;
+        if (own > ctx.frameBudgetRemaining) {
+          ctx.refs.length = refMark;
+          ctx.frameBudgetRemaining = remainingBefore;
+          frameTruncated = true;
+          break;
+        }
+        ctx.frameBudgetRemaining -= own;
+      }
+      childLines.push(childStr);
     }
   }
+  if (frameTruncated) childLines.push(`${pad}  - ${FRAME_TRUNCATED_NOTE}`);
 
   // The echo: an only child that serialised to nothing but the parent's own
   // name. Tested against the produced LINE rather than against the node, so a
@@ -652,7 +1064,7 @@ function serializeForest(nodes: AXNode[], ctx: SerializeCtx): string {
   const lines: string[] = [];
 
   for (const node of nodes) {
-    const s = serializeNode(node, ctx, 0, 0);
+    const s = serializeNode(node, ctx, 0, 0, MAIN_FRAME);
     if (s) lines.push(s);
   }
 
@@ -666,14 +1078,24 @@ function serializeTree(root: AXNode, ctx: SerializeCtx): string {
 
 function stripNonInteractive(node: AXNode): AXNode | null {
   if (isInteractive(node.role)) return node;
-  // A childless iframe survives the interactive filter as a bare boundary
-  // marker. It is not interactive, so it would otherwise vanish — and its
-  // disappearance is exactly the wrong signal: the controls inside the frame
-  // are not in the snapshot either, so a filtered tree with no iframe line
-  // reads as "this page has no such button" when the truth is "look inside the
-  // frame". An iframe that DOES carry children falls through to the ordinary
-  // path, so its interactive descendants decide whether it is kept.
-  if (IFRAME_ROLES.has(node.role) && !node.children?.length) return node;
+  // An iframe ALWAYS survives the interactive filter. It is not interactive, so
+  // it would otherwise vanish — and its disappearance is exactly the wrong
+  // signal in both directions. For a frame that was never read, the controls
+  // inside it are not in the snapshot either, so a filtered tree with no iframe
+  // line reads as "this page has no such button" when the truth is "look inside
+  // the frame". For a frame that WAS read and holds nothing interactive, the
+  // line is the evidence of that: dropping it turns a checked-and-empty frame
+  // back into an unexplained absence, and the graft would look like it never
+  // ran.
+  if (IFRAME_ROLES.has(node.role)) {
+    const inside = (node.children ?? [])
+      .map(stripNonInteractive)
+      .filter((c): c is AXNode => c !== null);
+    if (inside.length > 0) return { ...node, children: inside };
+    // Childless here means "nothing interactive in it", which frameBoundaryNote
+    // renders as read-and-empty when the frame was actually grafted.
+    return { ...node, children: undefined };
+  }
 
   if (!node.children) return null;
 
@@ -708,7 +1130,15 @@ type CdpClient = {
 };
 
 /** Fetch and build the full a11y tree over an already-open CDP session. */
-async function fetchAccessibilityTree(client: CdpClient): Promise<BuiltTree | null> {
+async function fetchAccessibilityTree(
+  client: CdpClient,
+  /**
+   * Present only on the whole-page path. A scoped snapshot deliberately does
+   * NOT graft: its refs are numbered inside one selector-matched element, and
+   * a selector scope cannot be combined with a frame route (see resolveRef).
+   */
+  graftInto?: { page: Page; extraSessions: CdpClient[] },
+): Promise<BuiltTree | null> {
   // Enable the Accessibility domain before querying. Without it, getFullAXTree
   // is racy on heavy pages — the domain computes the tree lazily on enable.
   await client.send('Accessibility.enable').catch(() => { /* best-effort */ });
@@ -738,7 +1168,370 @@ async function fetchAccessibilityTree(client: CdpClient): Promise<BuiltTree | nu
     );
   }
 
+  if (built && graftInto) {
+    // Fail-open around the whole walk: a frame that cannot be read costs its
+    // own boundary note, and a walk that throws costs the frames it had not
+    // reached yet — never the page's own tree.
+    try {
+      const doc = (await client.send('DOM.getDocument', { depth: 0 })) as {
+        root?: { nodeId?: number };
+      };
+      const documentNodeId = doc?.root?.nodeId;
+      if (documentNodeId) {
+        await graftChildFrames(
+          {
+            client,
+            root: graftInto.page,
+            documentNodeId,
+            built,
+            coord: MAIN_FRAME,
+            depth: 0,
+            passwordBackendIds,
+          },
+          {
+            remaining: MAX_FRAMES,
+            visited: new Set<string>(),
+            extraSessions: graftInto.extraSessions,
+            page: graftInto.page,
+          },
+        );
+      }
+    } catch {
+      /* the page's own tree is worth more than the frames under it */
+    }
+  }
+
   return built;
+}
+
+// ---------------------------------------------------------------------------
+// Child-frame grafting
+// ---------------------------------------------------------------------------
+
+/** CDP `DOM.describeNode` fields the graft reads. */
+interface CdpDomNode {
+  backendNodeId?: number;
+  frameId?: string;
+  contentDocument?: { nodeId?: number };
+  attributes?: string[];
+}
+
+/** Read one attribute out of CDP's flat [name, value, name, value] array. */
+function attributeOf(node: CdpDomNode | undefined, wanted: string): string | undefined {
+  const attrs = node?.attributes;
+  if (!attrs) return undefined;
+  for (let i = 0; i + 1 < attrs.length; i += 2) {
+    if (attrs[i] === wanted) return attrs[i + 1];
+  }
+  return undefined;
+}
+
+/** Everything one host document contributes to the walk. */
+interface GraftHost {
+  /** CDP session the host document lives on. */
+  client: CdpClient;
+  /** Playwright handle on the same document — the index cross-check. */
+  root: Page | Frame;
+  /** CDP nodeId of the host document, for DOM.querySelectorAll. */
+  documentNodeId: number;
+  /** The host's built tree, so an `<iframe>` element can find its AX node. */
+  built: BuiltTree;
+  /** Route from the main frame to this host. */
+  coord: FrameCoord;
+  depth: number;
+  /**
+   * Password fields to mask, in this session's backendNodeId space.
+   *
+   * Shared with the host document on purpose: `DOM.performSearch` was measured
+   * to reach same-process iframes already (redact.ts), and backendNodeIds are
+   * unique per target — so the host's one search covers every same-process
+   * frame under it. An out-of-process frame gets its own search on its own
+   * session, because its ids live in a different space.
+   */
+  passwordBackendIds: Set<number>;
+}
+
+/** Mutable budget shared by every host in one snapshot's walk. */
+interface GraftBudget {
+  remaining: number;
+  /** frameIds already grafted — a page that re-parents a frame cannot loop us. */
+  visited: Set<string>;
+  /** Extra CDP sessions opened for out-of-process frames, closed by the caller. */
+  extraSessions: CdpClient[];
+  /** The page the walk started on — the only handle that can mint a session. */
+  page: Page;
+}
+
+/**
+ * A cross-origin frame's tree, over a session bound to its own target.
+ *
+ * Fail-open like everything else in the walk: an unattachable target (a frame
+ * still navigating, a target the connection cannot see) leaves the caller's
+ * boundary note in place, which is exactly what the snapshot said before.
+ */
+async function openOutOfProcessDocument(
+  childFrame: Frame,
+  budget: GraftBudget,
+): Promise<ChildDocument | null> {
+  let session: CdpClient | null = null;
+  try {
+    session = (await budget.page
+      .context()
+      .newCDPSession(childFrame)) as unknown as CdpClient;
+    budget.extraSessions.push(session);
+
+    await session.send('Accessibility.enable').catch(() => { /* best-effort */ });
+    const passwordBackendIds = await getPasswordFieldBackendIds(session);
+    const doc = (await session.send('DOM.getDocument', { depth: 0 })) as {
+      root?: { nodeId?: number };
+    };
+    const documentNodeId = doc?.root?.nodeId;
+    if (!documentNodeId) return null;
+
+    const nodes = (await session.send('Accessibility.getFullAXTree')) as {
+      nodes?: CdpAXNode[];
+    };
+    const built = buildTree(nodes?.nodes ?? [], passwordBackendIds);
+    if (!built) return null;
+    return { built, client: session, documentNodeId, passwordBackendIds };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Stitch child documents into the host tree, in place.
+ *
+ * In place matters: the overflow path in generateSnapshot re-serialises the
+ * ORIGINAL tree after stripping non-interactive nodes, so a graft that built a
+ * new tree would be silently discarded on exactly the large pages that most
+ * need it.
+ *
+ * Every failure is fail-open — the `<iframe>` node keeps a boundary note
+ * saying why its contents are absent, which is strictly what the snapshot said
+ * before frames were reachable at all. A frame is never half-grafted: either
+ * its nodes are in, and refs minted in it carry a route that resolves, or they
+ * are not.
+ *
+ * Known limitation — the walk is not atomic. The CDP enumeration, the locator
+ * count and the per-frame trees are separate round trips, so a page that adds
+ * or removes an `<iframe>` mid-walk can have a hop recorded against an order
+ * that no longer holds. The count cross-check catches the common shape (the
+ * two enumerations disagree, and nothing is grafted), and anything that slips
+ * past it is caught at resolution time by the same count check plus the child
+ * URL re-read, which fail closed. So the cost of a race is a stale-ref error
+ * and a re-snapshot, never a wrong element — but a snapshot taken while frames
+ * are churning can be missing frames it would otherwise have had.
+ */
+async function graftChildFrames(host: GraftHost, budget: GraftBudget): Promise<void> {
+  let describedFrames: { nodeId: number; described: CdpDomNode | undefined }[];
+  let hostTotal: number;
+  try {
+    const found = (await host.client.send('DOM.querySelectorAll', {
+      nodeId: host.documentNodeId,
+      selector: FRAME_ELEMENT_SELECTOR,
+    })) as { nodeIds?: number[] };
+    const nodeIds = found?.nodeIds ?? [];
+    if (nodeIds.length === 0) return;
+    hostTotal = nodeIds.length;
+
+    describedFrames = [];
+    for (const nodeId of nodeIds) {
+      const described = (await host.client.send('DOM.describeNode', {
+        nodeId,
+        // depth 1 + pierce is what exposes contentDocument, and contentDocument
+        // is also the same-process/out-of-process discriminator: an OOPIF's
+        // document belongs to another target and is simply not here.
+        depth: 1,
+        pierce: true,
+      })) as { node?: CdpDomNode };
+      describedFrames.push({ nodeId, described: described?.node });
+    }
+  } catch {
+    return;
+  }
+
+  // The resolver counts frames with a Playwright locator over the same
+  // selector, so a ref's positional index is only sound while the two
+  // enumerations agree. They are both document order over one selector, so
+  // they do — but if they ever disagree, minting refs against an index the
+  // resolver will read differently is exactly the silent wrong-element bug
+  // this design exists to avoid. Graft nothing instead.
+  let liveCount: number;
+  try {
+    liveCount = await host.root.locator(FRAME_ELEMENT_SELECTOR).count();
+  } catch {
+    return;
+  }
+  if (liveCount !== hostTotal) return;
+
+  for (let hostIndex = 0; hostIndex < describedFrames.length; hostIndex++) {
+    const { described } = describedFrames[hostIndex];
+    const backendNodeId = described?.backendNodeId;
+    if (backendNodeId === undefined) continue;
+
+    const hostAx = host.built.byBackendId.get(backendNodeId)?.[0];
+    // No a11y node for this `<iframe>` means Chrome did not render it —
+    // display:none, zero-box, or an ad blocker's leftover. browser-use walks
+    // only visible frames for the same reason; here the visibility test is
+    // free, because absence from the a11y tree IS the answer, and grafting
+    // into nothing would mint refs no serialisation ever emits.
+    if (!hostAx) continue;
+
+    const frameId = described?.frameId;
+    if (!frameId) {
+      hostAx.frameBoundaryReason = 'not-attached';
+      continue;
+    }
+    if (budget.visited.has(frameId)) {
+      // Not a failure: the page legitimately points two slots at one document,
+      // and the contents ARE in the snapshot — under the first slot. Grafting
+      // them twice would mint a second set of refs for one set of elements.
+      hostAx.frameBoundaryReason = 'already-grafted';
+      continue;
+    }
+    if (host.depth + 1 > MAX_FRAME_DEPTH) {
+      hostAx.frameBoundaryReason = 'depth-cap';
+      continue;
+    }
+    if (budget.remaining <= 0) {
+      hostAx.frameBoundaryReason = 'count-cap';
+      continue;
+    }
+
+    // The Playwright side of the same hop. Taken through an element handle
+    // rather than Locator.contentFrame() because the child's url() is what the
+    // hop records, and a FrameLocator cannot say what it points at.
+    let childFrame: Frame | null = null;
+    try {
+      const handle = await host.root
+        .locator(FRAME_ELEMENT_SELECTOR)
+        .nth(hostIndex)
+        .elementHandle();
+      childFrame = handle ? await handle.contentFrame() : null;
+    } catch {
+      childFrame = null;
+    }
+    if (!childFrame) {
+      hostAx.frameBoundaryReason = 'not-attached';
+      continue;
+    }
+
+    // A frame with no settled URL cannot be given a hop: `childUrlKey` is what
+    // makes an independent frame navigation detectable later, and an empty one
+    // would be a hop that skips its own check — a ref minted through it would
+    // resolve into whatever document that slot holds by then. Fail closed at
+    // capture time instead, so the ref is never minted.
+    const childUrlKey = documentKey(childFrame.url());
+    if (childUrlKey === undefined) {
+      hostAx.frameBoundaryReason = 'navigating';
+      continue;
+    }
+
+    const hop: FrameHop = {
+      hostIndex,
+      hostTotal,
+      hostSrcKey: documentKey(attributeOf(described, 'src')) ?? '',
+      childUrlKey,
+    };
+    const childCoord = descend(host.coord, hop);
+
+    const child = await openChildDocument(host, frameId, described, childFrame, budget);
+    if (!child) {
+      hostAx.frameBoundaryReason = 'not-attached';
+      continue;
+    }
+
+    budget.visited.add(frameId);
+    budget.remaining--;
+
+    // Grafted either way: the agent now knows the frame WAS read, so an empty
+    // one reads as "nothing in here" instead of "contents withheld".
+    hostAx.graftedFrame = true;
+    const injected = child.built.root.children ?? [];
+    if (injected.length === 0) {
+      hostAx.frameBoundaryReason = 'empty';
+      continue;
+    }
+    hostAx.frameBoundaryReason = undefined;
+
+    // Only the top level is stamped; serializeNode inherits the coordinate
+    // down the subtree, which keeps the main-frame walk untouched.
+    for (const node of injected) node.frameCoord = childCoord;
+    // Appended after the iframe node's own children (Chrome gives it none, but
+    // a future engine might) so the order is deterministic — the overflow
+    // re-serialisation has to reproduce it exactly.
+    hostAx.children = [...(hostAx.children ?? []), ...injected];
+
+    await graftChildFrames(
+      {
+        client: child.client,
+        root: childFrame,
+        documentNodeId: child.documentNodeId,
+        built: child.built,
+        coord: childCoord,
+        depth: host.depth + 1,
+        passwordBackendIds: child.passwordBackendIds,
+      },
+      budget,
+    );
+  }
+}
+
+/** A child document opened for grafting: its tree, its session, its DOM root. */
+interface ChildDocument {
+  built: BuiltTree;
+  client: CdpClient;
+  documentNodeId: number;
+  /** In `client`'s backendNodeId space — the host's set, or the frame's own. */
+  passwordBackendIds: Set<number>;
+}
+
+/**
+ * Read one child frame's accessibility tree.
+ *
+ * Same-process frames answer on the host's own session: `getFullAXTree` takes a
+ * frameId, and `DOM.describeNode(pierce)` already handed us the child document
+ * node.
+ *
+ * A cross-origin frame is a separate CDP target and has no contentDocument
+ * here, so it gets a session of its own — the frame-owning-session idea mirrors
+ * stagehand understudy/cdp.ts (MIT, Browserbase Inc.), which attaches per frame
+ * target rather than trying to reach one through the page's session. The
+ * attach itself goes through Playwright's own `newCDPSession(frame)` instead of
+ * `Target.setAutoAttach`/`attachToTarget`, because Playwright already owns the
+ * target bookkeeping on this connection and a second auto-attach probe would
+ * register a session it never closes.
+ *
+ * Its backendNodeIds live in a different id space, so it also gets its own
+ * password search — reusing the host's set would mask by coincidence.
+ */
+async function openChildDocument(
+  host: GraftHost,
+  frameId: string,
+  described: CdpDomNode | undefined,
+  childFrame: Frame,
+  budget: GraftBudget,
+): Promise<ChildDocument | null> {
+  const documentNodeId = described?.contentDocument?.nodeId;
+  if (documentNodeId === undefined) {
+    return await openOutOfProcessDocument(childFrame, budget);
+  }
+  try {
+    const nodes = (await host.client.send('Accessibility.getFullAXTree', { frameId })) as {
+      nodes?: CdpAXNode[];
+    };
+    const built = buildTree(nodes?.nodes ?? [], host.passwordBackendIds);
+    if (!built) return null;
+    return {
+      built,
+      client: host.client,
+      documentNodeId,
+      passwordBackendIds: host.passwordBackendIds,
+    };
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -806,17 +1599,26 @@ interface SnapshotSource {
 }
 
 async function getAccessibilityTree(page: Page): Promise<SnapshotSource> {
-  return withCdpSession<SnapshotSource>(
-    page,
-    async (client) => ({
-      tree: (await fetchAccessibilityTree(client))?.root ?? null,
+  // Sessions opened for out-of-process frames during the graft. Detached here
+  // rather than inside the walk so one frame's cleanup cannot abort the rest.
+  const extraSessions: CdpClient[] = [];
+  try {
+    return await withCdpSession<SnapshotSource>(
+      page,
+      async (client) => ({
+        tree: (await fetchAccessibilityTree(client, { page, extraSessions }))?.root ?? null,
       // After the tree, never instead of it: a thrown occlusion probe must not
       // cost the caller its snapshot (collectOcclusion swallows its own
       // failures, and this ordering keeps the tree even if that ever changes).
-      occlusion: await collectOcclusion(client).catch(() => null),
-    }),
-    { tree: null, occlusion: null },
-  );
+        occlusion: await collectOcclusion(client).catch(() => null),
+      }),
+      { tree: null, occlusion: null },
+    );
+  } finally {
+    for (const extra of extraSessions) {
+      await extra.detach().catch(() => { /* best-effort */ });
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -906,7 +1708,14 @@ export async function generateSnapshot(
   }
 
   const refs: RefEntry[] = [];
-  const ctx: SerializeCtx = { format, maxDepth: depth, refs, identity, occlusion };
+  const ctx: SerializeCtx = {
+    format,
+    maxDepth: depth,
+    refs,
+    identity,
+    occlusion,
+    frameBudgetRemaining: Math.floor(maxLength * FRAME_BUDGET_SHARE),
+  };
   let output = serializeTree(effectiveTree, ctx);
 
   // The overlay note is prepended AFTER truncation — it is the one line that
@@ -922,8 +1731,14 @@ export async function generateSnapshot(
   // applied in generateScopedSnapshot: a scoped snapshot is a small subtree by
   // definition, so "nearly empty" would fire on every correct result.
   const facts = await collectPageFacts(page);
+  // pageFacts counts the main document only, so a page whose controls all live
+  // in an iframe measures as empty. Now that those controls ARE in the tree,
+  // let the footer know rather than have it contradict the lines above it
+  // (dogfood, 2026-09-01: same-src.html listed seven refs under a footer that
+  // called the page nearly empty).
+  const hasFrameContent = refs.some((entry) => entry.frameKey !== MAIN_FRAME.key);
   const footer = facts
-    ? formatPageFactsFooter(facts, peekRecentPendingRequests(page))
+    ? formatPageFactsFooter(facts, peekRecentPendingRequests(page), { hasFrameContent })
     : '';
   const budget = Math.max(0, maxLength - note.length - footer.length);
 
@@ -933,6 +1748,9 @@ export async function generateSnapshot(
     const trimmed = stripNonInteractive(tree);
     if (trimmed) {
       refs.length = 0;
+      // The pool is per rendering, not per call: the first pass spent it, and
+      // a retry that starts empty would truncate every frame at once.
+      ctx.frameBudgetRemaining = Math.floor(maxLength * FRAME_BUDGET_SHARE);
       output = serializeTree(trimmed, ctx);
     }
   }
@@ -1027,7 +1845,14 @@ export async function generateScopedSnapshot(
   }
 
   const refs: RefEntry[] = [];
-  const ctx: SerializeCtx = { format, maxDepth: depth, refs, identity, occlusion };
+  const ctx: SerializeCtx = {
+    format,
+    maxDepth: depth,
+    refs,
+    identity,
+    occlusion,
+    frameBudgetRemaining: Math.floor(maxLength * FRAME_BUDGET_SHARE),
+  };
   // Unlike the page-level tree, the matched element is content, not a container
   // — `dialog "Settings"` is exactly the context the selector asked about — so
   // serialize the forest as-is instead of dropping its top level.
@@ -1044,6 +1869,7 @@ export async function generateScopedSnapshot(
       .filter((n): n is AXNode => n !== null);
     if (trimmed.length > 0) {
       refs.length = 0;
+      ctx.frameBudgetRemaining = Math.floor(maxLength * FRAME_BUDGET_SHARE);
       output = serializeForest(trimmed, ctx);
     }
   }
@@ -1094,7 +1920,102 @@ export async function resolveRef(
   // backend-flap fix — DOM-minted refs stay usable through the Playwright path).
   const refs = pageRefMaps.get(page);
   if (refs && refs.length > 0) return null;
+  // Belt and braces for the frame case: a populated refMap already blocks the
+  // fallback above, but a frame ref reaching the data-attr locator is the one
+  // outcome that resolves to a confidently wrong element, so it is named and
+  // refused rather than left to depend on that branch staying as it is.
+  if (isFrameRef(page, ref)) throw new StaleRefError(frameRefFallbackMessage(ref));
   return resolveRefViaDataAttr(page, ref);
+}
+
+/**
+ * Walk a ref's frame route and hand back the document it was minted in.
+ *
+ * Three checks per hop, all of them fail-closed — a frame ref that cannot be
+ * proven to still name the same document is an error, never a best guess:
+ *
+ *  1. the host document still holds exactly as many frames as it did, so the
+ *     positional index still counts the same population;
+ *  2. the frame at that position still has a document we can reach (a frame
+ *     that was removed, or is not yet attached, resolves to null);
+ *  3. that document is still the one the ref was minted against — the live
+ *     `frame.url()` re-read that catches a frame which navigated on its own
+ *     (review ⑬), which no page-level URL check can see.
+ *
+ * Returns `page` unchanged for the empty route, so every main-frame ref takes
+ * exactly the path it took before frames existed.
+ *
+ * Known limitation — a frame REPLACED by another at the same position and the
+ * same URL reads as unchanged. All three checks pass: the count still matches,
+ * a document is reachable, and its URL is the recorded one. The ref then
+ * resolves inside a document that is a different instance of the same page,
+ * where role+name+nth is as good a locator as it ever was, so the outcome is
+ * an element of the right kind in the right place rather than a wrong one.
+ * Detecting the swap needs a per-document identity CDP does not expose to a
+ * locator walk (the frame's loaderId is not reachable without re-attaching a
+ * session per hop, which costs a round trip on every single ref resolution).
+ * Accepted deliberately; it is bounded by role+name still having to match.
+ */
+async function resolveFrameRoot(
+  page: Page,
+  path: FrameHop[],
+  ref: string,
+): Promise<Page | Frame> {
+  if (path.length === 0) return page;
+
+  let root: Page | Frame = page;
+  for (let depth = 0; depth < path.length; depth++) {
+    const hop = path[depth];
+    const where = `frame ${depth + 1} of ${path.length} on the route (${hop.hostSrcKey || 'about:blank'})`;
+
+    const frames: Locator = root.locator(FRAME_ELEMENT_SELECTOR);
+    const count = await frames.count();
+    if (count !== hop.hostTotal) {
+      throw new StaleRefError(
+        `ref=${ref} is stale — the document holding ${where} now has ${count} iframe(s), ` +
+          `not the ${hop.hostTotal} the last snapshot listed, so the ref no longer identifies ` +
+          `one frame. Run browser_snapshot to get current refs.`,
+      );
+    }
+
+    // elementHandle().contentFrame() rather than Locator.contentFrame(): a
+    // FrameLocator can search but cannot say what it is looking at, and the
+    // URL re-read below is the whole point of the hop.
+    const handle: ElementHandle | null = await frames
+      .nth(hop.hostIndex)
+      .elementHandle()
+      .catch(() => null);
+    const child: Frame | null = handle
+      ? await handle.contentFrame().catch(() => null)
+      : null;
+    if (!child) {
+      throw new StaleRefError(
+        `ref=${ref} is stale — ${where} no longer has a reachable document. ` +
+          `Run browser_snapshot to get current refs.`,
+      );
+    }
+
+    // Fail closed on BOTH shapes. An absent live URL used to skip the check,
+    // which turned the one moment a frame is provably mid-navigation into the
+    // one moment the ref was accepted without proof.
+    const liveKey = documentKey(child.url());
+    if (liveKey === undefined) {
+      throw new StaleRefError(
+        `ref=${ref} is stale — ${where} is between documents right now, so it cannot be ` +
+          `shown to still be the one the ref was minted in. ` +
+          `Run browser_snapshot to get current refs.`,
+      );
+    }
+    if (liveKey !== hop.childUrlKey) {
+      throw new StaleRefError(
+        `ref=${ref} is stale — ${where} navigated on its own ` +
+          `(${hop.childUrlKey} → ${liveKey}). Run browser_snapshot to get current refs.`,
+      );
+    }
+
+    root = child;
+  }
+  return root;
 }
 
 /**
@@ -1107,16 +2028,16 @@ async function resolveRefViaAxMap(
   page: Page,
   ref: string,
 ): Promise<ElementHandle | null> {
-  const wanted = parseInt(ref, 10);
-  if (Number.isNaN(wanted) || wanted < 0) return null;
+  const wanted = refNumber(ref);
+  if (wanted === null) return null;
 
   const refs = pageRefMaps.get(page);
   // An empty map is the DOM-fallthrough case, which resolveRef serves through
   // the data-wmux-ref locator instead — not a staleness signal.
   if (!refs || refs.length === 0) return null;
 
-  const stamp = pageSnapshotStamps.get(page);
-  const liveUrl = documentKey(page);
+  const stamp = pageSnapshotStamps.get(page)?.get(MAIN_FRAME.key);
+  const liveUrl = pageDocumentKey(page);
   if (stamp?.url !== undefined && liveUrl !== undefined && stamp.url !== liveUrl) {
     throw new StaleRefError(
       `ref=${ref} is stale — the page navigated since snapshot #${stamp.generation} ` +
@@ -1144,10 +2065,29 @@ async function resolveRefViaAxMap(
   // the nth-match count below is taken over the whole page and can land on an
   // identical role+name that the caller deliberately scoped out.
   const scopeSelector = pageRefScopes.get(page);
+
+  // A selector scope and a frame route are two different answers to "where do
+  // I count from", and there is no sound way to combine them: the selector was
+  // resolved in the main document, so it cannot name an element inside a
+  // frame, and applying it after the hops would silently re-scope the search to
+  // whatever that selector happens to match in the child document. Refused
+  // rather than guessed — a scoped snapshot never mints frame refs anyway
+  // (generateScopedSnapshot does not graft), so this can only be reached by
+  // replaying a ref across a change of snapshot mode.
+  if (target.framePath.length > 0 && scopeSelector !== undefined) {
+    throw new StaleRefError(
+      `ref=${ref} was minted inside an iframe, but the latest snapshot was scoped to ` +
+        `"${scopeSelector}" — a selector scope cannot reach into a frame. ` +
+        `Run browser_snapshot without a selector to get current refs.`,
+    );
+  }
+
+  const frameRoot = await resolveFrameRoot(page, target.framePath, ref);
+
   let count: number;
   let locator: ReturnType<Page['getByRole']>;
   try {
-    const root = scopeSelector ? page.locator(scopeSelector).first() : page;
+    const root = scopeSelector ? page.locator(scopeSelector).first() : frameRoot;
     locator = root.getByRole(target.role as any, {
       name: target.name || undefined,
       exact: true,
