@@ -4,6 +4,9 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 const rpcCalls: Array<{ method: string; params: Record<string, unknown> }> = [];
 let listResponse: unknown[] = [];
 let getResponse: unknown = null;
+let promotedResponse: unknown[] = [];
+let promoteResponse: unknown = null;
+let demoteResponse: unknown = null;
 
 vi.mock('../../playwright/browserScope', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../playwright/browserScope')>();
@@ -17,6 +20,9 @@ vi.mock('../../playwright/browserScope', async (importOriginal) => {
         return { ok: true, trace: (params.trace as Record<string, unknown>) };
       }
       if (method === 'browser.actionCache.forget') return { removed: 1 };
+      if (method === 'browser.actionCache.promoted') return { promoted: promotedResponse };
+      if (method === 'browser.actionCache.promote') return promoteResponse;
+      if (method === 'browser.actionCache.demote') return demoteResponse;
       return {};
     },
   };
@@ -74,6 +80,9 @@ beforeEach(() => {
   rpcCalls.length = 0;
   listResponse = [];
   getResponse = null;
+  promotedResponse = [];
+  promoteResponse = null;
+  demoteResponse = null;
   pageForScope = null;
   ring = new ActionRing();
   deps = { resolveWorkspaceId: async () => 'ws-1', actionRing: ring };
@@ -90,7 +99,12 @@ describe('browser_replay — the tool surface', () => {
   it('lists nothing helpfully when the workspace has no flows', async () => {
     const result = await invoke({ action: 'list' });
     expect(result.content[0].text).toContain('No recorded flows');
-    expect(rpcCalls.map((c) => c.method)).toEqual(['browser.actionCache.list']);
+    // list reads both stores: a promoted flow outlives its recording, so a
+    // list that consulted only the cache would under-report.
+    expect(rpcCalls.map((c) => c.method).sort()).toEqual([
+      'browser.actionCache.list',
+      'browser.actionCache.promoted',
+    ]);
   });
 
   it('refuses save/run/forget without a usable name', async () => {
@@ -364,5 +378,128 @@ describe('browser_replay forget', () => {
       method: 'browser.actionCache.forget',
       params: { name: 'flow' },
     });
+  });
+});
+
+// ── Promotion (track D) ────────────────────────────────────────────────────
+
+const promotedRecord = (over: Record<string, unknown> = {}) => ({
+  version: 1,
+  slug: 'invoice-export',
+  workspaceId: 'ws-1',
+  name: 'invoice export',
+  urlKey: 'https://billing.example.com/invoices',
+  host: 'billing.example.com',
+  contract: 'proven 2-step flow on billing.example.com',
+  variables: ['email'],
+  steps: [
+    {
+      tool: 'browser_navigate',
+      axis: { kind: 'none' },
+      args: { url: 'https://billing.example.com/invoices' },
+    },
+    {
+      tool: 'browser_click',
+      axis: { kind: 'ref', role: 'button', name: 'Export', sameNameIndex: 0, sameNameTotal: 1, frameKey: '' },
+      args: {},
+    },
+  ],
+  fingerprint: 'fp',
+  promotedAt: 1_000,
+  lastRunAt: 1_000,
+  runCount: 0,
+  ...over,
+});
+
+describe('browser_replay promote', () => {
+  it('reports what promotion bought and how to undo it', async () => {
+    promoteResponse = { ok: true, record: promotedRecord() };
+    const res = await invoke({ action: 'promote', name: 'invoice export' });
+    expect(res.isError).toBeFalsy();
+    expect(res.content[0].text).toContain('Promoted "invoice export"');
+    expect(res.content[0].text).toContain('billing.example.com');
+    expect(res.content[0].text).toContain('Variables: email');
+    expect(res.content[0].text).toContain('survives the 30-day recording cache');
+    expect(res.content[0].text).toContain('action:"demote"');
+  });
+
+  it('passes the store refusal through verbatim rather than reinterpreting it', async () => {
+    // The shortfall message is the whole point of the gate — an agent told
+    // "2 successful runs, 3 needed" runs the flow again.
+    promoteResponse = { ok: false, reason: 'it has 2 successful run(s) and promotion needs 3' };
+    const res = await invoke({ action: 'promote', name: 'invoice export' });
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toContain('promotion needs 3');
+  });
+
+  it('rejects an unusable name before any RPC', async () => {
+    const res = await invoke({ action: 'promote', name: '../escape' });
+    expect(res.isError).toBe(true);
+    expect(rpcCalls).toHaveLength(0);
+  });
+});
+
+describe('browser_replay demote', () => {
+  it('confirms the demotion and says the recording is untouched', async () => {
+    demoteResponse = { ok: true };
+    const res = await invoke({ action: 'demote', name: 'invoice export' });
+    expect(res.isError).toBeFalsy();
+    expect(res.content[0].text).toContain('Demoted "invoice export"');
+    expect(res.content[0].text).toContain('cache is untouched');
+  });
+
+  it('refuses to demote a flow that was never promoted', async () => {
+    demoteResponse = { ok: false, reason: '"x" is not promoted in this workspace' };
+    const res = await invoke({ action: 'demote', name: 'x' });
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toContain('not promoted');
+  });
+
+  it('works without a live browser', async () => {
+    // The lease mock would hide a lease dependency, so this asserts the shape
+    // that matters instead: no page is available and demote still lands. The
+    // moment an agent most needs to demote is when the session that recorded
+    // the flow has died.
+    pageForScope = null;
+    demoteResponse = { ok: true };
+    const res = await invoke({ action: 'demote', name: 'invoice export' });
+    expect(res.isError).toBeFalsy();
+    expect(rpcCalls.map((c) => c.method)).toEqual(['browser.actionCache.demote']);
+  });
+});
+
+describe('browser_replay list with promoted flows', () => {
+  it('marks a cached flow that is also promoted', async () => {
+    listResponse = [
+      {
+        id: 'tr_1',
+        name: 'invoice export',
+        urlKey: 'https://billing.example.com/invoices',
+        surfaceShape: '',
+        steps: [{ tool: 'browser_click', axis: { kind: 'none' }, args: {} }],
+        observedCount: 1,
+        successCount: 3,
+        failCount: 0,
+        createdAt: 1,
+        lastUsedAt: 2,
+      } satisfies TraceRecord,
+    ];
+    promotedResponse = [promotedRecord()];
+    const res = await invoke({ action: 'list' });
+    expect(res.content[0].text).toContain('proven, promoted');
+  });
+
+  it('still lists a promoted flow whose recording has expired', async () => {
+    // The day the cache forgets it is the day promotion has to show its work.
+    listResponse = [];
+    promotedResponse = [promotedRecord()];
+    const res = await invoke({ action: 'list' });
+    expect(res.content[0].text).toContain('invoice export');
+    expect(res.content[0].text).toContain('recording has expired');
+  });
+
+  it('says nothing is recorded when neither store holds anything', async () => {
+    const res = await invoke({ action: 'list' });
+    expect(res.content[0].text).toContain('No recorded flows');
   });
 });
