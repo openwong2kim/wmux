@@ -10,6 +10,15 @@ import {
 } from '../pageFacts';
 import { generateScopedSnapshot, generateSnapshot } from '../snapshot';
 
+// The skeleton verdict is gated on in-flight requests, and a mock page has no
+// capture state, so the integration cases below have to say what the network
+// was doing. Everything else in pageCapture stays real.
+let pendingRequests = 0;
+vi.mock('../pageCapture', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../pageCapture')>()),
+  peekRecentPendingRequests: () => pendingRequests,
+}));
+
 function facts(over: Partial<PageFacts> = {}): PageFacts {
   return {
     totalElements: 200,
@@ -39,15 +48,24 @@ describe('pageFacts: readiness verdicts', () => {
     );
   });
 
-  it('calls a dense-but-textless page a skeleton without needing pending requests', () => {
-    const note = describePageReadiness(facts({ totalElements: 400, textChars: 100 }), 0);
+  it('calls a dense-but-textless page a skeleton while requests are in flight', () => {
+    const note = describePageReadiness(facts({ totalElements: 400, textChars: 100 }), 3);
     expect(note).toContain('skeleton screen likely');
-    expect(note).not.toContain('in flight');
+    expect(note).toContain('3 request(s) in flight');
   });
 
-  it('strengthens the skeleton verdict with in-flight requests when they are known', () => {
-    const note = describePageReadiness(facts({ totalElements: 400, textChars: 100 }), 3);
-    expect(note).toContain('3 request(s) in flight');
+  it('[fix] stays quiet about a finished application UI, however low its text density', () => {
+    // Measured on a fully rendered GitHub pull-request list: 954 chars of text
+    // across 1226 elements, readyState "complete", nothing in flight. Density
+    // alone called it a skeleton. Icons, nav and chrome are elements without
+    // text, so every app-shaped page tripped it.
+    expect(
+      describePageReadiness(facts({ totalElements: 1226, textChars: 954, interactiveElements: 184 }), 0),
+    ).toBe('');
+  });
+
+  it('[fix] keeps quiet on a low-density page whose requests have all settled', () => {
+    expect(describePageReadiness(facts({ totalElements: 400, textChars: 100 }), 0)).toBe('');
   });
 
   it('says nothing about an ordinary page', () => {
@@ -189,7 +207,9 @@ function makePage(nodes: CdpNode[]) {
 
 describe('snapshot: page-facts footer', () => {
   it('appends the readiness note and scrollable list to a page snapshot', async () => {
+    pendingRequests = 2;
     const out = await generateSnapshot(makePage(bigTree()) as never, { format: 'ai' });
+    pendingRequests = 0;
     expect(out).toContain('skeleton screen likely');
     expect(out).toContain('#feed (800x600, scrollHeight 9000)');
   });
