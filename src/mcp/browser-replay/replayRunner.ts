@@ -50,8 +50,19 @@ export interface ReplayResult {
   liveShape: string;
 }
 
+/**
+ * The shape comparison, or nothing.
+ *
+ * Silence when EITHER side is missing is the whole point. The two hashes are
+ * only comparable when both were measured at the same point in the flow — on
+ * the page the flow's element steps were numbered against. When the recorder
+ * had no ref map to stamp (a flow whose first action is a navigate, recorded
+ * before the destination was ever snapshotted), there is no baseline, and a
+ * warning built on one would fire on every single replay of a page that never
+ * changed. A missing baseline is not evidence of a changed page.
+ */
 function shapeWarning(recorded: string, live: string): string | null {
-  if (!recorded || recorded === live) return null;
+  if (!recorded || !live || recorded === live) return null;
   return (
     `page shape differs from the recording (recorded ${recorded.slice(0, 12)}, ` +
     `live ${live.slice(0, 12)}) — continuing, since the per-step element checks ` +
@@ -275,13 +286,29 @@ export async function replayTrace(
   trace: TraceRecord,
   variables: Record<string, string> | undefined,
 ): Promise<ReplayResult> {
-  await generateSnapshot(page, { format: 'ai' }).catch(() => '');
-  const liveShape = refMapShapeHash(listRefEntries(page));
   const warnings: string[] = [];
-  const shapeNote = shapeWarning(trace.surfaceShape, liveShape);
-  if (shapeNote) warnings.push(shapeNote);
-
   const steps: StepReport[] = [];
+
+  // WHERE the live shape is measured has to match where the recorded one was.
+  // A flow that starts by navigating was recorded against its DESTINATION, so
+  // measuring here — before that navigate has run — would hash whatever page
+  // the agent happened to be on when it called run, and report a difference
+  // that says nothing about the flow (dogfood: the same successful replay
+  // reported two different "live" hashes purely from two different starting
+  // pages). For those flows the measurement is deferred until after step 1.
+  const startsWithNavigate = trace.steps[0]?.tool === 'browser_navigate';
+  let liveShape = '';
+  const measureShape = (): void => {
+    liveShape = refMapShapeHash(listRefEntries(page));
+    const note = shapeWarning(trace.surfaceShape, liveShape);
+    if (note) warnings.push(note);
+  };
+
+  if (!startsWithNavigate) {
+    await generateSnapshot(page, { format: 'ai' }).catch(() => '');
+    measureShape();
+  }
+
   for (let i = 0; i < trace.steps.length; i++) {
     const step = trace.steps[i];
     const index = i + 1;
@@ -343,6 +370,9 @@ export async function replayTrace(
     // resolve against, so re-charge it. Still internal, still never shown.
     if (i + 1 < trace.steps.length) {
       await generateSnapshot(page, { format: 'ai' }).catch(() => '');
+      // The leading navigate has now landed, so this is the flow's own page —
+      // the point the recorder's baseline was taken at.
+      if (i === 0 && startsWithNavigate) measureShape();
     }
   }
 

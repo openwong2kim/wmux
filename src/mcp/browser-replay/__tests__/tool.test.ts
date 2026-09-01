@@ -210,6 +210,42 @@ describe('browser_replay save — cutting the ring', () => {
     expect(trace.urlKey).toBe('https://example.com/b');
   });
 
+  it('takes the shape baseline from the first action that HAD a ref map', async () => {
+    // A navigate is recorded before its destination is ever snapshotted, so it
+    // carries no shape. Storing that empty hash filed every trace under the
+    // hash of nothing, which then differed from every live page forever
+    // (dogfood D1: a spurious warning on 3 of 3 successful replays).
+    const ring2 = new ActionRing();
+    const deps2 = { resolveWorkspaceId: async () => 'ws-1', actionRing: ring2 };
+    ring2.push({
+      step: { tool: 'browser_navigate', axis: { kind: 'none' }, args: { url: 'https://example.com/a' } },
+      urlKey: 'https://example.com/a',
+      scopeKey: 'ws-1\u0000',
+      surfaceShape: '',
+      at: 1,
+    });
+    ring2.push({
+      step: { tool: 'browser_click', axis: { kind: 'none' }, args: {} },
+      urlKey: 'https://example.com/a',
+      scopeKey: 'ws-1\u0000',
+      surfaceShape: 'destination-shape',
+      at: 2,
+    });
+
+    const [tool] = createReplayToolCatalog(deps2);
+    await tool.invoke({ action: 'save', name: 'flow' }, { principal: { kind: 'unattributed' } });
+    const put = rpcCalls.find((c) => c.method === 'browser.actionCache.put');
+    expect((put!.params.trace as TraceRecord).surfaceShape).toBe('destination-shape');
+  });
+
+  it('stores no baseline at all when no action had a ref map', async () => {
+    // Better than a hash of nothing: the runner skips the comparison entirely.
+    recordAction(deps, { scope, tool: 'browser_click', page: null, url: 'https://example.com/a' });
+    await invoke({ action: 'save', name: 'flow' });
+    const put = rpcCalls.find((c) => c.method === 'browser.actionCache.put');
+    expect((put!.params.trace as TraceRecord).surfaceShape).toBe('');
+  });
+
   it('refuses an over-long flow rather than silently keeping its tail', async () => {
     // Truncating would save a flow that starts in the middle and still reports
     // success on replay.

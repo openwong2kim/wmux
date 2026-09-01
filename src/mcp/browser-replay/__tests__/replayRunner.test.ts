@@ -79,6 +79,9 @@ function trace(steps: TraceStep[], surfaceShape = refMapShapeHash(refEntries)): 
 }
 
 beforeEach(() => {
+  // Cases spy on the snapshot module to script what the page holds; without a
+  // restore the last one's script leaks into the next.
+  vi.restoreAllMocks();
   clicks.length = 0;
   pressed.length = 0;
   goneTo.length = 0;
@@ -227,6 +230,64 @@ describe('replayTrace — flow control', () => {
     const result = await replayTrace(page, trace([refStep()], 'a-different-shape'), undefined);
     expect(result.ok).toBe(true);
     expect(result.warnings.join(' ')).toContain('page shape differs');
+  });
+
+  it('says nothing about shape when the trace carries no baseline', async () => {
+    // A flow recorded starting from a navigate has no ref map to stamp on its
+    // first action. A warning built on that empty baseline fired on every
+    // replay of a page that had not changed at all (dogfood D1).
+    const mod = await import('../../playwright/snapshot');
+    vi.spyOn(mod, 'resolveRef').mockResolvedValue(element('a'));
+    const result = await replayTrace(page, trace([refStep()], ''), undefined);
+    expect(result.ok).toBe(true);
+    expect(result.warnings).toEqual([]);
+  });
+
+  it('measures the live shape AFTER a leading navigate, not before it', async () => {
+    // Dogfood D2: the live hash used to be taken on whatever page the agent
+    // was on when it called run, so one successful replay reported two
+    // different "live" shapes purely from two different starting pages.
+    const mod = await import('../../playwright/snapshot');
+    vi.spyOn(mod, 'resolveRef').mockResolvedValue(element('a'));
+
+    // Before the navigate the page holds something else entirely; after it,
+    // the page the flow was recorded on.
+    refEntries = [{ role: 'link', name: 'Somewhere else', sameNameIndex: 0, sameNameTotal: 1, frameKey: '', ref: 9 }];
+    const destination = [
+      { role: 'button', name: 'Sign in', sameNameIndex: 0, sameNameTotal: 1, frameKey: '', ref: 1 },
+    ];
+    const recorded = refMapShapeHash(destination);
+    vi.spyOn(mod, 'generateSnapshot').mockImplementation(async () => {
+      refEntries = destination;
+      return '';
+    });
+
+    const nav: TraceStep = {
+      tool: 'browser_navigate',
+      axis: { kind: 'none' },
+      args: { url: 'https://example.com/app' },
+    };
+    const result = await replayTrace(page, trace([nav, refStep()], recorded), undefined);
+
+    expect(result.ok).toBe(true);
+    // The destination matched the recording, so a correct measurement is silent.
+    expect(result.warnings).toEqual([]);
+    expect(result.liveShape).toBe(recorded);
+  });
+
+  it('still stops at the changed step even when the shape agrees', async () => {
+    // The shape check is advisory; the per-step element resolution is what
+    // actually protects the run (dogfood step 7).
+    refEntries = [];
+    const nav: TraceStep = {
+      tool: 'browser_navigate',
+      axis: { kind: 'none' },
+      args: { url: 'https://example.com/app' },
+    };
+    const result = await replayTrace(page, trace([nav, refStep()], ''), undefined);
+    expect(result.ok).toBe(false);
+    expect(result.failedStep).toBe(2);
+    expect(result.steps[1].detail).toContain('no button "Sign in" on the page any more');
   });
 
   it('treats a mid-flow navigate as the end of the replayable flow', async () => {

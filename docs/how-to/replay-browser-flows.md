@@ -8,6 +8,14 @@ flow that worked and repeats it later without reading a single snapshot.
 The snapshot is the cost being removed. A replay does take snapshots
 internally, to re-resolve the elements; none of them are returned.
 
+## Requires the chrome backend
+
+Flows are keyed on what the accessibility snapshot calls each element. The
+builtin webview can fall back to a DOM snapshot that mints no accessibility
+refs at all — a flow recorded then is saved with every step marked
+unreplayable, so it will never run. Set the workspace's browser backend to
+`chrome` before recording.
+
 ## Record
 
 There is no "start recording". Every successful action from the ten

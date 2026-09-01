@@ -9,7 +9,9 @@
   elements internally and returns no snapshot at all, which is where the saving
   is. Flows are stored per workspace by the wmux app rather than by the MCP
   session, so they survive the session ending — and one workspace can never see
-  another's. See [Replay a browser flow](docs/how-to/replay-browser-flows.md).
+  another's. Needs the chrome browser backend, since flows are keyed on what the
+  accessibility snapshot calls each element. See
+  [Replay a browser flow](docs/how-to/replay-browser-flows.md).
 
 - **A replay that cannot find an element hands the page back rather than
   guessing.** Elements are re-found by what the snapshot called them — role,

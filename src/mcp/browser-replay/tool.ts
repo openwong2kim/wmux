@@ -122,7 +122,9 @@ export function createReplayToolCatalog(deps: BrowserToolDeps) {
       'Record and replay a browser flow. After a flow works, save it by name; a later run repeats ' +
       'it without reading a single snapshot, which is where the saving is. A run that cannot find ' +
       'an element stops at that step and reports why, leaving the page there for you to finish live. ' +
-      'Steps that typed into a password field are never stored and make a flow unrunnable.',
+      'Steps that typed into a password field are never stored and make a flow unrunnable. ' +
+      'Needs the chrome browser backend: the builtin webview can fall back to a DOM snapshot that ' +
+      'mints no accessibility refs, and a flow recorded then saves but can never run.',
     inputSchema: BROWSER_REPLAY_SHAPE,
     profiles: ['full'],
     invoke: async ({ action, name, steps, variables, surfaceId }) =>
@@ -194,13 +196,18 @@ export function createReplayToolCatalog(deps: BrowserToolDeps) {
       );
     }
     const cut = tail;
-    // The shape belongs to the page the flow STARTED on — the page a future run
-    // begins against. Hashing the live page at SAVE time compares the wrong two
-    // things: by then the flow has run and the page is its end state, so every
-    // replay would report a shape mismatch against a page that never changed.
-    // The recorder stamps each action with the shape of the page it happened
-    // on, so the first cut action already carries the right answer.
-    const surfaceShape = cut[0].surfaceShape;
+    // The baseline is the shape of the page the flow's ELEMENT steps were
+    // numbered against, which is not always the first action's page.
+    //
+    // A flow that opens with a navigate is recorded before its destination has
+    // ever been snapshotted, so that first action carries an empty ref map —
+    // and storing its hash meant every trace was filed under the hash of
+    // nothing, which then differed from every live page forever (dogfood: a
+    // spurious mismatch warning on all 3 of 3 successful replays). Taking the
+    // first action that actually had a ref map lands on the destination page,
+    // which is exactly where the replay re-measures. If no action had one,
+    // there is no baseline and the comparison is skipped rather than faked.
+    const surfaceShape = cut.find((entry) => entry.surfaceShape !== '')?.surfaceShape ?? '';
     const page = await engine.getPageForScope(scope).catch(() => null);
     const trace = {
       id: `tr_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`,
@@ -277,7 +284,8 @@ export function createReplayToolCatalog(deps: BrowserToolDeps) {
     if (!page) {
       return text(
         `Cannot replay "${name}": this workspace's browser backend provides no live page, and ` +
-          'replay resolves elements through the accessibility snapshot rather than by selector.',
+          'replay resolves elements through the accessibility snapshot rather than by selector. ' +
+          'Switch the workspace to the chrome backend.',
         true,
       );
     }
