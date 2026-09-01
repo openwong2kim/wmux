@@ -303,25 +303,6 @@ const A2A_SET_SKILLS_SHAPE = {
   description: z.string().optional().describe('Short description of what this agent does'),
 };
 
-const COMPANY_A2A_SEND_SHAPE = {
-  to: z.string().describe('Target agent name, department name, or "CEO"'),
-  message: z.string().describe('Message content'),
-  priority: z.enum(['low', 'normal', 'high']).optional().describe('Message priority (default: normal)'),
-};
-
-const COMPANY_A2A_BROADCAST_SHAPE = {
-  message: z.string().describe('Broadcast message content'),
-  priority: z.enum(['low', 'normal', 'high']).optional().describe('Message priority'),
-};
-
-const COMPANY_A2A_INBOX_SHAPE = {
-  unread_only: z.boolean().optional().describe('Only return unread messages (default: true)'),
-};
-
-const COMPANY_A2A_ACK_SHAPE = {
-  message_ids: z.array(z.string()).describe('Array of message IDs to acknowledge'),
-};
-
 // send_message / a2a_task_send share this shape (identical param contract).
 const SEND_MESSAGE_SHAPE = {
   to: z.string().optional().describe('Target: workspace number (1, 2, 3), name ("Workspace 1"), or ID'),
@@ -443,7 +424,8 @@ function logIdentityEnvOnce(): void {
 //
 // `--core` (src/shared/coreSurface.ts) is the third launch-time profile: the
 // same mechanism, but an OPTIMIZATION rather than a role. It drops browser_*
-// and company_a2a_* from tools/list for agents that never use them and
+// from tools/list for agents that never use them (and any future company_*
+// tool, a prefix the manifest still guards even though none ship today) and
 // changes nothing else — no token, no role claim, no RPC allow lane, no
 // PermissionEnforcer difference. A core-mode process keeps exactly the
 // authority an ordinary pane agent has.
@@ -807,8 +789,8 @@ async function resolveWorkspaceId(): Promise<string> {
  * Returns 'absent' only on positive proof the id is gone; 'unknown' when
  * workspace.list is unavailable (threw, or a retryable envelope during boot
  * reconcile) so callers keep trusting the hint instead of hard-failing. The
- * classification is shared with src/company/mcp via classifyWorkspaceListResult
- * so both surfaces behave identically.
+ * classification lives in classifyWorkspaceListResult (src/mcp/
+ * workspaceIdentity.ts) so it stays one implementation.
  */
 async function isLiveWorkspace(wsId: string): Promise<WorkspaceLiveness> {
   try {
@@ -1511,80 +1493,15 @@ server.tool(
   },
 );
 
-// === Company A2A tools ===
-// These expose the company-mode member-level A2A (inbox/ack pattern) on the
-// main MCP server so agents don't need a second MCP connection. The legacy
-// wmux-company standalone server still exists for lightweight launches but
-// ships the same `company_a2a_*` tool names, so both surfaces are
-// interchangeable. Only useful when a wmux "company" has been provisioned
-// on the active workspace — otherwise the underlying RPCs return an empty
-// / unavailable response.
-
-server.tool(
-  'company_a2a_whoami',
-  'Company mode: identify who you are in the company hierarchy (name, role, department, status). Requires an active company on the workspace — use a2a_whoami for plain workspace identity instead.',
-  {},
-  async () => {
-    const wsId = await requireWorkspaceId();
-    return callRpc('company.a2a.whoami', { workspaceId: wsId });
-  },
-);
-
-server.tool(
-  'company_a2a_send',
-  'Company mode: send a structured message to another agent by name (resolves by department → lead, member name, or "CEO"). Prefer this over send_message when the target is a company member rather than a raw workspace.',
-  COMPANY_A2A_SEND_SHAPE,
-  async ({ to, message, priority }) => {
-    const wsId = await requireWorkspaceId();
-    return callRpc('company.a2a.send', {
-      to,
-      message,
-      priority: priority || 'normal',
-      workspaceId: wsId,
-    });
-  },
-);
-
-server.tool(
-  'company_a2a_broadcast',
-  'Company mode: broadcast a message to ALL agents in the company. Use sparingly. For workspace-wide broadcast (not company members), use a2a_broadcast.',
-  COMPANY_A2A_BROADCAST_SHAPE,
-  async ({ message, priority }) => {
-    const wsId = await requireWorkspaceId();
-    return callRpc('company.a2a.broadcast', {
-      message,
-      priority: priority || 'normal',
-      workspaceId: wsId,
-    });
-  },
-);
-
-server.tool(
-  'company_a2a_inbox',
-  'Company mode: pull your inbox of structured messages from other agents. Returns messages with IDs — call company_a2a_ack to mark them as read. Canonical delivery channel (inbox/ack) rather than PTY paste.',
-  COMPANY_A2A_INBOX_SHAPE,
-  async ({ unread_only }) => {
-    const wsId = await requireWorkspaceId();
-    return callRpc('company.a2a.inbox', { workspaceId: wsId, unreadOnly: unread_only !== false });
-  },
-);
-
-server.tool(
-  'company_a2a_ack',
-  'Company mode: acknowledge (mark as read) inbox messages by their IDs.',
-  COMPANY_A2A_ACK_SHAPE,
-  async ({ message_ids }) => {
-    const wsId = await requireWorkspaceId();
-    return callRpc('company.a2a.ack', { workspaceId: wsId, messageIds: message_ids });
-  },
-);
-
-server.tool(
-  'company_a2a_status',
-  'Company mode: get the full company status — all departments, members, roles, and online status. Use this to discover who you can communicate with.',
-  {},
-  async () => callRpc('company.a2a.status'),
-);
+// The six `company_a2a_*` tools were removed from every MCP profile. Nothing
+// drove them — no prompt, skill, or doc called one — while they cost six tool
+// schemas in the `tools/list` every session pays for before it does any work,
+// and their jobs are all covered by the workspace-level A2A and channel tools
+// (whoami → a2a_whoami, send → send_message / a2a_task_send, broadcast →
+// a2a_broadcast, ack → channel_ack, inbox → channel_read / channel_unread,
+// status → a2a_discover + workspace_list). Company mode itself is untouched:
+// its renderer UI and the `company.*` RPC handlers behind it stay exactly as
+// they were — only the MCP projection is gone.
 
 // === A2A channel tools ===
 // Ten channel tools plus three WorkTask mission tools expose the

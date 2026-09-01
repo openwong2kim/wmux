@@ -4,7 +4,7 @@
 // bundled wmux MCP server identifies as `claude-code` and is recorded
 // `unconfirmed` in the trust DB, but must still be allowed to call the method
 // set it actually uses — including `wmux.internal` methods (surface.list,
-// company.a2a.*) that can never be declared/approved.
+// surface.new/close, browser.tabs) that can never be declared/approved.
 
 import { afterEach, describe, expect, it } from 'vitest';
 import type { PluginIdentityRecord, RpcContext, RpcMethod } from '../../../shared/rpc';
@@ -38,7 +38,7 @@ const SAMPLE_ALLOWED: RpcMethod[] = [
   'pane.setMetadata',
   'surface.list',
   'browser.tabs',
-  'company.a2a.whoami',
+  'surface.new',
 ];
 
 describe('PermissionEnforcer.check — first-party allowlist', () => {
@@ -69,12 +69,12 @@ describe('PermissionEnforcer.check — first-party allowlist', () => {
     expect(out).toEqual({ kind: 'allow' });
   });
 
-  it('allows wmux.internal methods (surface.list, browser.tabs, company.a2a.*) that can never be declared', () => {
+  it('allows wmux.internal methods (surface.list, browser.tabs, surface.new/close) that can never be declared', () => {
     for (const method of [
       'surface.list',
       'browser.tabs',
-      'company.a2a.send',
-      'company.a2a.status',
+      'surface.new',
+      'surface.close',
     ] as const) {
       const out = check({
         method,

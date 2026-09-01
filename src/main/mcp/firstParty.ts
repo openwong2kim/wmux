@@ -294,13 +294,11 @@ export const FIRST_PARTY_METHODS: ReadonlySet<RpcMethod> = new Set<RpcMethod>([
   // server-derived in the handler and the spawn is approval-gated, so the grant
   // is to ATTEMPT the call; an unverifiable caller still fails closed.
   'task.fanout.start',
-  // company mode (all wmux.internal — undeclarable, hence the need for this list)
-  'company.a2a.whoami',
-  'company.a2a.send',
-  'company.a2a.broadcast',
-  'company.a2a.inbox',
-  'company.a2a.ack',
-  'company.a2a.status',
+  // `company.a2a.*` used to be granted here for the six company_a2a_* tools.
+  // Those tools are gone, so the grants went with them (least privilege — a
+  // reserved wmux.internal method must not stay reachable by a clientName
+  // impersonator once nothing in src/mcp/** calls it). The RPCs themselves are
+  // untouched; Company mode drives them over renderer IPC, not this lane.
 ]);
 
 /**

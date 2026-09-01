@@ -148,7 +148,7 @@ The full list lives in `src/shared/rpc.ts` (`ALL_RPC_METHODS`). For the MCP-faci
 | Method | Tier | Notes |
 |---|---|---|
 | `company.{create, destroy, status, addDept, removeDept, addMember, removeMember, broadcast, sendDept, sendMember, message, save, restore, templates, worktreeSetup, mergeDept, provision, provisionAll, provisionCeo}` | **experimental** | 3-tier orchestration (CEO → Department → Teammate). Per the Substrate 3.0 decision (memory `project_company_mode_vision.md`), Company Mode is being re-evaluated at the post-v3.0 gate as a first-party reference orchestrator on top of the substrate, not a core wmux feature. |
-| `company.a2a.{whoami, send, broadcast, inbox, ack, status}` | **experimental** | Company-scoped A2A surface. |
+| `company.a2a.{whoami, send, broadcast, inbox, ack, status}` | **experimental** | Company-scoped A2A surface. Reachable from the Company mode UI only — the matching `company_a2a_*` MCP tools were removed (see [Company A2A (removed)](#company-a2a-removed)). |
 
 ---
 
@@ -210,11 +210,18 @@ Backed by **no RPC method**: the sessions are child processes of the MCP server 
 
 There is intentionally no `channel_archive` MCP tool: archiving tears a channel down for everyone, so — like kicking a member — it is a humans-only action that rides the renderer-only `channels:mutate-local` IPC and is never agent-reachable. Of the read-only pipe RPCs (capability `a2a.channel.read`), `a2a.channel.getMessages` and `a2a.channel.getMembers` are already surfaced as the `channel_read` and `channel_get_members` MCP tools; only `a2a.channel.get` is not yet exposed as an MCP tool. The history-shaping `channel.history` MCP tool is explicitly deferred per plan Scope Boundaries — pagination and streaming shape is unsettled.
 
-### Company A2A (experimental)
+### Company A2A (removed)
 
-| MCP tool | Notes |
+**Deprecation — the six `company_a2a_*` MCP tools (`whoami`, `send`, `broadcast`, `inbox`, `ack`, `status`) were removed from every profile.** They were never driven by any prompt, skill, or documented flow, and each one cost schema bytes in the `tools/list` every session pays for before it does any work. **Company mode itself is unchanged** — its renderer UI and the `company.*` / `company.a2a.*` RPC surface listed above remain exactly as they were; only the MCP projection is gone. Agents use the workspace-level replacements:
+
+| Removed tool | Replacement |
 |---|---|
-| `company_a2a_whoami`, `company_a2a_send`, `company_a2a_broadcast`, `company_a2a_inbox`, `company_a2a_ack`, `company_a2a_status` | Company-scoped agent messaging. Behind the Phase 4 gate. |
+| `company_a2a_whoami` | `a2a_whoami` |
+| `company_a2a_send` | `send_message` / `a2a_task_send` |
+| `company_a2a_broadcast` | `a2a_broadcast` |
+| `company_a2a_ack` | `channel_ack` |
+| `company_a2a_inbox` | `channel_read` / `channel_unread` |
+| `company_a2a_status` | `a2a_discover` + `workspace_list` |
 
 ### Browser / CDP (experimental)
 
