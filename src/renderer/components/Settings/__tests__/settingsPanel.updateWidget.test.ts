@@ -59,4 +59,18 @@ describe('SettingsPanel — update widget reads state on mount', () => {
     // warning the user gets before the app quits under them.
     expect(updateWidget()).toMatch(/settings\.updateEndsSessions/);
   });
+
+  it('keeps the check button when an install is staged', () => {
+    // The check button was the ELSE branch of the install button, so a staged
+    // download hid the only way to ask for a newer release. Both must render:
+    // the check button unconditionally, the install button gated on
+    // 'downloaded' — never a ternary between them.
+    const body = updateWidget();
+    expect(body).toMatch(/\{state === 'downloaded' && \(\s*<Button\s+onClick=\{handleInstall\}/);
+    expect(body).not.toMatch(/state === 'downloaded' \? \(/);
+    const checkIdx = body.indexOf('onClick={handleCheck}');
+    const installIdx = body.indexOf('onClick={handleInstall}');
+    expect(checkIdx).toBeGreaterThan(-1);
+    expect(checkIdx).toBeLessThan(installIdx);
+  });
 });
