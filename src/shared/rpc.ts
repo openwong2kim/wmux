@@ -398,6 +398,9 @@ export type RpcMethod =
   | 'browser.actionCache.put'
   | 'browser.actionCache.stats'
   | 'browser.actionCache.forget'
+  | 'browser.actionCache.promote'
+  | 'browser.actionCache.demote'
+  | 'browser.actionCache.promoted'
   | 'browser.lease.acquire'
   | 'browser.lease.renew'
   | 'browser.lease.release'
@@ -581,6 +584,9 @@ export const ALL_RPC_METHODS = [
   'browser.actionCache.put',
   'browser.actionCache.stats',
   'browser.actionCache.forget',
+  'browser.actionCache.promote',
+  'browser.actionCache.demote',
+  'browser.actionCache.promoted',
   'browser.lease.acquire',
   'browser.lease.renew',
   'browser.lease.release',
