@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { getWmuxDir } from '../../daemon/config';
-import { atomicReadJSONSync, atomicWriteJSON } from '../../daemon/util/atomicWrite';
+import { atomicWriteJSON, BACKUP_SUFFIXES } from '../../daemon/util/atomicWrite';
 import { isUnsafeKey } from '../account/accountStore';
 import {
   PROMOTED_DELETE_MS,
@@ -207,13 +207,7 @@ export class PromotedSkillStore {
     return this.run(() => {
       const existing = this.readFile(file);
       if (!existing || existing.workspaceId !== workspaceId) return false;
-      try {
-        fs.rmSync(file, { force: true });
-        return true;
-      } catch (err) {
-        console.warn(`[PromotedSkillStore] could not remove ${file}:`, err);
-        return false;
-      }
+      return this.unlinkWithSidecars(file);
     });
   }
 
@@ -274,15 +268,7 @@ export class PromotedSkillStore {
             `(workspace ${record.workspaceId}, unused since ` +
             `${new Date(record.lastRunAt).toISOString()})`,
         );
-        const done = await this.run(() => {
-          try {
-            fs.rmSync(file, { force: true });
-            return true;
-          } catch (err) {
-            console.warn(`[PromotedSkillStore] could not delete ${file}:`, err);
-            return false;
-          }
-        });
+        const done = await this.run(() => this.unlinkWithSidecars(file));
         if (done) result.removed++;
       }
     }
@@ -309,12 +295,62 @@ export class PromotedSkillStore {
 
   // ── Internals ────────────────────────────────────────────────────────────
 
+  /**
+   * Read one record file, or null.
+   *
+   * Plain read + parse rather than atomicReadJSONSync, for two reasons that
+   * both matter here and not in the action cache.
+   *
+   * atomicReadJSONSync falls back through BACKUP_SUFFIXES on a failed parse.
+   * For a store where the FILE is the record's existence, that fallback is a
+   * resurrection: a flow demoted or archived a moment ago would come back from
+   * its own `.bak` on the next read, and the delete would appear to have
+   * silently failed. Here the primary file is the only truth.
+   *
+   * And it logs the parse error with a stack. A corrupt record is an expected,
+   * handled condition on this path — the sweep quarantines it and says so in
+   * one line — so a stack trace per read is noise that buries the line that
+   * matters.
+   */
   private readFile(file: string): PromotedRecord | null {
     try {
-      return sanitizePromotedRecord(atomicReadJSONSync<unknown>(file));
+      return sanitizePromotedRecord(JSON.parse(fs.readFileSync(file, 'utf8')));
     } catch {
       return null;
     }
+  }
+
+  /**
+   * Every backup atomicWriteJSON may have left beside a record.
+   *
+   * These have to be dealt with explicitly on every removal path. A backup is
+   * a full copy of the record — including the steps, and so including whatever
+   * the agent typed — and promotion's documented remedy for a value that
+   * should not have been made permanent is to demote. A demote that left the
+   * values sitting in a sidecar would not be that remedy. They are also what
+   * the read fallback above would resurrect the record from.
+   */
+  private sidecarsFor(file: string): string[] {
+    return BACKUP_SUFFIXES.map((suffix) => `${file}${suffix}`);
+  }
+
+  /** Delete a record file and every backup beside it. Best-effort. */
+  private unlinkWithSidecars(file: string): boolean {
+    let ok = true;
+    try {
+      fs.rmSync(file, { force: true });
+    } catch (err) {
+      console.warn(`[PromotedSkillStore] could not remove ${file}:`, err);
+      ok = false;
+    }
+    for (const sidecar of this.sidecarsFor(file)) {
+      try {
+        fs.rmSync(sidecar, { force: true });
+      } catch {
+        /* a leftover backup is not worth failing the removal over */
+      }
+    }
+    return ok;
   }
 
   /**
@@ -345,6 +381,17 @@ export class PromotedSkillStore {
       try {
         fs.mkdirSync(path.dirname(to), { recursive: true });
         fs.renameSync(from, to);
+        // The backups stay behind and are deleted, not carried over. Left in
+        // the live tree they would be a record the sweep just archived, ready
+        // to be read back; copied to the archive they would be stale duplicates
+        // of a file that is already there.
+        for (const sidecar of this.sidecarsFor(from)) {
+          try {
+            fs.rmSync(sidecar, { force: true });
+          } catch {
+            /* best-effort */
+          }
+        }
         return true;
       } catch (err) {
         console.warn(`[PromotedSkillStore] could not archive ${from}:`, err);
@@ -379,7 +426,7 @@ export class PromotedSkillStore {
       if (this.readFile(file)) continue;
       let raw: unknown = null;
       try {
-        raw = atomicReadJSONSync<unknown>(file);
+        raw = JSON.parse(fs.readFileSync(file, 'utf8'));
       } catch {
         raw = null;
       }
@@ -397,8 +444,17 @@ export class PromotedSkillStore {
         try {
           fs.mkdirSync(path.dirname(to), { recursive: true });
           fs.renameSync(file, to);
+          for (const sidecar of this.sidecarsFor(file)) {
+            try {
+              fs.rmSync(sidecar, { force: true });
+            } catch {
+              /* best-effort */
+            }
+          }
         } catch (err) {
-          console.warn(`[PromotedSkillStore] could not archive ${file}:`, err);
+          console.warn(
+            `[PromotedSkillStore] could not archive ${file}: ${(err as Error)?.message ?? err}`,
+          );
         }
         return true;
       });

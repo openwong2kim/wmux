@@ -412,3 +412,86 @@ describe('check-then-act is atomic', () => {
     expect(present === !removed || present).toBe(true);
   });
 });
+
+describe('removal leaves no readable copy behind', () => {
+  // atomicWriteJSON keeps a `.bak` beside each record, and atomicReadJSONSync
+  // falls back through those suffixes. Both facts make a leftover backup more
+  // than untidy: it is a full copy of the steps (so of whatever was typed),
+  // and it is a file a read could bring the record back from.
+  const bakOf = (workspaceId: string, slug: string) =>
+    path.join(getPromotedSkillsDir(dir), workspaceId, `${slug}.json.bak`);
+
+  const seedWithBackup = async (workspaceId: string, slug: string) => {
+    const record = recordFor(workspaceId, slug);
+    await store.put(record);
+    // A second write of the same fingerprint is what mints the .bak.
+    await store.touch(workspaceId, slug, { ...record, runCount: 1, lastRunAt: 5 });
+    await store.drain();
+    return record;
+  };
+
+  it('mints a backup in the ordinary course of writing (guards the premise)', async () => {
+    await seedWithBackup('ws1', 'invoice-export');
+    expect(fs.existsSync(bakOf('ws1', 'invoice-export'))).toBe(true);
+  });
+
+  it('demote removes the backup along with the record', async () => {
+    await seedWithBackup('ws1', 'invoice-export');
+    expect(await store.remove('ws1', 'invoice-export')).toBe(true);
+    await store.drain();
+    expect(fs.existsSync(bakOf('ws1', 'invoice-export'))).toBe(false);
+    expect(store.get('ws1', 'invoice-export')).toBeNull();
+  });
+
+  it('a demoted flow cannot be read back from its backup', async () => {
+    const record = await seedWithBackup('ws1', 'invoice-export');
+    await store.remove('ws1', 'invoice-export');
+    await store.drain();
+    // Recreate only the backup, as a stale one would have survived before.
+    fs.writeFileSync(bakOf('ws1', 'invoice-export'), JSON.stringify(record));
+    expect(store.get('ws1', 'invoice-export')).toBeNull();
+    expect(store.list('ws1')).toEqual([]);
+  });
+
+  it('archiving takes the backup out of the live tree', async () => {
+    const now = 3_000_000_000_000;
+    await seedWithBackup('ws1', 'idle');
+    await store.touch('ws1', 'idle', {
+      ...recordFor('ws1', 'idle'),
+      runCount: 1,
+      lastRunAt: now - PROMOTED_ARCHIVE_MS - 1,
+    });
+    await store.drain();
+    expect((await store.sweep(now)).archived).toBe(1);
+    await store.drain();
+    expect(fs.existsSync(bakOf('ws1', 'idle'))).toBe(false);
+    expect(store.list('ws1')).toEqual([]);
+    expect(fs.existsSync(path.join(getPromotedArchiveDir(dir), 'ws1', 'idle.json'))).toBe(true);
+  });
+
+  it('deleting from the archive removes its backups too', async () => {
+    const now = 4_000_000_000_000;
+    const archived = path.join(getPromotedArchiveDir(dir), 'ws1', 'dead.json');
+    fs.mkdirSync(path.dirname(archived), { recursive: true });
+    const record = { ...recordFor('ws1', 'dead'), lastRunAt: now - PROMOTED_DELETE_MS - 1 };
+    fs.writeFileSync(archived, JSON.stringify(record));
+    fs.writeFileSync(`${archived}.bak`, JSON.stringify(record));
+    expect((await store.sweep(now)).removed).toBe(1);
+    await store.drain();
+    expect(fs.existsSync(archived)).toBe(false);
+    expect(fs.existsSync(`${archived}.bak`)).toBe(false);
+  });
+
+  it('quarantining a corrupt record does not strand its backup', async () => {
+    const now = 5_000_000_000_000;
+    const file = path.join(getPromotedSkillsDir(dir), 'ws1', 'corrupt.json');
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, '{ not json');
+    fs.writeFileSync(`${file}.bak`, '{ also not json');
+    await store.sweep(now);
+    await store.drain();
+    expect(fs.existsSync(file)).toBe(false);
+    expect(fs.existsSync(`${file}.bak`)).toBe(false);
+    expect(fs.existsSync(path.join(getPromotedArchiveDir(dir), 'ws1', 'corrupt.json'))).toBe(true);
+  });
+});
