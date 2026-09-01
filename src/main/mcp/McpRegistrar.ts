@@ -5,7 +5,7 @@ import { getAuthTokenPath } from '../../shared/constants';
 import { secureWriteTokenFile } from '../../shared/security';
 import { isMac } from '../../shared/platform';
 import { formatMacosError, MACOS_ERRORS } from '../../shared/errors/macos';
-import { MCP_TARGETS } from '../../shared/mcpTargets';
+import { MCP_TARGETS, externalRegistrationSkipReason } from '../../shared/mcpTargets';
 import { isMcpBrokerEnabled } from './BrokerSupervisor';
 import { canConnectBrokerPipe } from './brokerProbe';
 import { stabilizeMcpBundle } from './stabilizeBundle';
@@ -107,6 +107,12 @@ export class McpRegistrar {
    * left intact.
    */
   forceUnregister(): void {
+    // #1151 — symmetric guard: an isolated instance must not DELETE the
+    // production registration either (same suffix-blind config paths).
+    if (externalRegistrationSkipReason()) {
+      console.log(`[McpRegistrar] ${externalRegistrationSkipReason()} (unregister)`);
+      return;
+    }
     for (const target of MCP_TARGETS) {
       try {
         const result = unregisterTarget(target, this.home);
@@ -169,6 +175,21 @@ export class McpRegistrar {
       } else {
         secureWriteTokenFile(this.authTokenPath, authToken);
         console.log(`[McpRegistrar] Auth token written to ${this.authTokenPath}`);
+      }
+
+      // #1151 — an isolated instance must not rewrite the PRODUCTION agent
+      // configs. Every external target below (`~/.claude.json` et al., Codex
+      // notify, the OpenCode plugin) lives at a suffix-blind path, so a
+      // WMUX_DATA_SUFFIX boot — dev's automatic "-dev" included — would point
+      // the user's daily agents at this instance's bundle. The entry is only a
+      // script-path slot anyway (which instance a pane talks to is decided by
+      // the WMUX_DATA_SUFFIX env the pane inherits), so the isolated instance
+      // gains nothing by claiming it. The auth token above is already written
+      // to a suffixed path and stays. WMUX_MCP_REGISTER_EXTERNAL=1 opts back
+      // in for dogfood runs that deliberately want to claim the slot.
+      if (externalRegistrationSkipReason()) {
+        console.log(`[McpRegistrar] ${externalRegistrationSkipReason()}`);
+        return;
       }
 
       const mcpScript = this.getMcpScriptPath(useShim);

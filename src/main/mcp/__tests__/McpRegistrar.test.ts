@@ -29,6 +29,7 @@ vi.mock('../brokerProbe', () => ({ canConnectBrokerPipe: vi.fn() }));
 // IMPORTANT: import the SUT after vi.mock() declarations.
 import { McpRegistrar, type McpRegistrarStatus, type McpTargetStatus } from '../McpRegistrar';
 import { canConnectBrokerPipe } from '../brokerProbe';
+import { secureWriteTokenFile } from '../../../shared/security';
 
 const claudeJson = () => path.join(tmpHome, '.claude.json');
 const codexToml = () => path.join(tmpHome, '.codex', 'config.toml');
@@ -208,6 +209,44 @@ describe('McpRegistrar.register (broker topology selection)', () => {
     await new McpRegistrar().register('tok');
     expect(canConnectBrokerPipe).not.toHaveBeenCalled();
     expect(registeredPath()).toBe(entryPath());
+  });
+});
+
+describe('McpRegistrar — #1151 isolated-instance guard (WMUX_DATA_SUFFIX)', () => {
+  const distDir = () => path.join(tmpHome, 'dist', 'mcp', 'mcp');
+
+  beforeEach(() => {
+    fs.mkdirSync(distDir(), { recursive: true });
+    fs.writeFileSync(path.join(distDir(), 'entry.js'), '// entry', 'utf8');
+    process.env.WMUX_DATA_SUFFIX = '-t1151';
+  });
+  afterEach(() => {
+    delete process.env.WMUX_DATA_SUFFIX;
+    delete process.env.WMUX_MCP_REGISTER_EXTERNAL;
+  });
+
+  it('register() with a suffix writes NO external config but still writes the auth token', async () => {
+    await new McpRegistrar().register('tok', { useShim: false });
+    expect(fs.existsSync(claudeJson())).toBe(false);
+    expect(fs.existsSync(codexToml())).toBe(false);
+    expect(vi.mocked(secureWriteTokenFile)).toHaveBeenCalled();
+  });
+
+  it('WMUX_MCP_REGISTER_EXTERNAL=1 opts back in to external registration', async () => {
+    process.env.WMUX_MCP_REGISTER_EXTERNAL = '1';
+    await new McpRegistrar().register('tok', { useShim: false });
+    expect(fs.existsSync(claudeJson())).toBe(true);
+  });
+
+  it('forceUnregister() with a suffix leaves an existing production entry intact', () => {
+    fs.writeFileSync(
+      claudeJson(),
+      JSON.stringify({ mcpServers: { wmux: { command: 'node', args: ['/x/wmux.js'] } } }),
+      'utf8',
+    );
+    new McpRegistrar().forceUnregister();
+    const after = JSON.parse(fs.readFileSync(claudeJson(), 'utf8')) as { mcpServers?: Record<string, unknown> };
+    expect(after.mcpServers?.wmux).toBeDefined();
   });
 });
 

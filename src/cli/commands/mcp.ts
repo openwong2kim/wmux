@@ -374,6 +374,12 @@ export async function handleMcp(args: string[], jsonMode: boolean): Promise<void
     }
 
     case 'register': {
+      // #1151 — explicit user action, so warn rather than skip: the target
+      // configs are suffix-blind, so this writes the PRODUCTION entries even
+      // when this CLI itself runs inside an isolated instance.
+      if (process.env.WMUX_DATA_SUFFIX && !jsonMode) {
+        console.error(`warning: WMUX_DATA_SUFFIX=${process.env.WMUX_DATA_SUFFIX} is set — this writes the production agent configs (~/.claude.json et al.)`);
+      }
       const wmuxScript = await resolveWmuxScript();
       // The wmux MCP script is required; bail if the bundle can't be found.
       if (!wmuxScript) {
@@ -429,6 +435,11 @@ export async function handleMcp(args: string[], jsonMode: boolean): Promise<void
     }
 
     case 'unregister': {
+      // #1151 — same warning as `register`: suffix-blind config paths mean
+      // this removes the PRODUCTION entries.
+      if (process.env.WMUX_DATA_SUFFIX && !jsonMode) {
+        console.error(`warning: WMUX_DATA_SUFFIX=${process.env.WMUX_DATA_SUFFIX} is set — this removes the production agent config entries (~/.claude.json et al.)`);
+      }
       // unregisterTarget propagates write errors — capture per-target (same as
       // register) so one failure neither crashes the CLI nor is swallowed.
       const results = targets.map((t) => {
