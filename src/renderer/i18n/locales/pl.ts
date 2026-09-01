@@ -922,7 +922,7 @@ export const pl = {
   'settings.currentVersion': 'Bieżąca',
   'settings.latestVersion': 'Najnowsza',
   'settings.updateReady': 'Aktualizacja gotowa',
-  'settings.updateEndsSessions': 'Instalacja zamknie uruchomione sesje.',
+  'settings.updateEndsSessions': 'Instalacja zamyka każdy panel.',
   'update.installFailed': 'Nie udało się zainstalować aktualizacji. {error}',
   'settings.checkFailed': 'Sprawdzanie nie powiodło się',
   'settings.unknownError': 'Nieznany błąd',

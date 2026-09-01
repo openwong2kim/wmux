@@ -82,4 +82,14 @@ describe('update session-loss warning locale contract', () => {
       expect(copy.length, `${locale} copy is suspiciously short`).toBeGreaterThan(8);
     }
   });
+
+  // #1030 — the warning must describe what the updater actually does on every
+  // platform: panes close; on macOS the daemon detaches and SESSIONS SURVIVE,
+  // so "closes your running sessions" was false there and disagreed with
+  // update.readyToInstall in the same file. Pin the en wording so a rewrite
+  // back to session language fails loudly.
+  it('en: warns about panes, not sessions (macOS keeps sessions alive)', () => {
+    expect(en[KEY]).toBe('Installing closes every pane.');
+    expect(en['update.readyToInstall']).toContain('Installing closes every pane.');
+  });
 });
