@@ -18,8 +18,11 @@
   around the button, still replays. When a step's element is genuinely gone the
   run stops at that step and reports which, why, and how the page's shape
   compares to the recording, leaving the page exactly there so the flow can be
-  finished by hand and re-saved. A same-name population that merely changed
-  size is a warning, not a stop.
+  finished by hand and re-saved. A flow is also refused outright when run from
+  a page it was not recorded on, and when the count of same-named elements
+  changed under a step that was not addressing the first of them — a row
+  inserted above shifts the rest, and replaying position N would act on
+  whatever moved into that slot.
 
 - **After a navigation, wmux names the recorded flows for the page you landed
   on.** One line, only on a landing, and only for flows that have actually
@@ -27,9 +30,12 @@
   more context than the feature saves.
 
 - **A password is never stored, and a flow containing one refuses to run.** A
-  `browser_type` into a password field is recorded as a marked hole whose value
-  was never captured, so it cannot reach the stored flow or the cache file. The
-  same applies to an action that fell back to the RPC transport and to an
-  argument too long to store intact; coordinate clicks are not recorded at all,
-  because a coordinate does not survive a re-render. Values that should vary
-  between runs are stored as `{{placeholders}}` and supplied at replay time.
+  `browser_type` or `browser_fill` into a password field is recorded as a
+  marked hole whose value was never captured, so it cannot reach the stored
+  flow or the cache file — and `browser_fill` decides this per field, so the
+  ordinary fields of a login form are still recorded normally. A URL carrying a
+  credential is stripped and holed the same way. The same treatment covers an
+  action that fell back to the RPC transport and an argument too long to store
+  intact; coordinate clicks are not recorded at all, because a coordinate does
+  not survive a re-render. Values that should vary between runs are stored as
+  `{{placeholders}}` and supplied at replay time.

@@ -1,6 +1,5 @@
 import type { Page } from 'playwright-core';
-import { getRefEntry } from '../playwright/snapshot';
-import { browserScopeKey, listRefEntries } from '../playwright/snapshot';
+import { browserScopeKey, getRefEntry, listRefEntries } from '../playwright/snapshot';
 import type { BrowserTargetScope, BrowserToolDeps } from '../playwright/browserScope';
 import { redactPasswordParams } from '../playwright/redact';
 import {

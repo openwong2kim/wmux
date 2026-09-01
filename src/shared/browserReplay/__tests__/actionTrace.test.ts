@@ -20,6 +20,7 @@ import {
   refMapShapeHash,
   sanitizeTraceRecord,
   sanitizeTraceStep,
+  stepsFingerprint,
   stripUrlUserinfo,
   traceVariableNames,
   type TraceRecord,
@@ -304,12 +305,14 @@ describe('sanitizeTraceStep', () => {
     expect(isReplayableTool('browser_evaluate')).toBe(false);
   });
 
-  it('drops a ref axis whose index falls outside its own population', () => {
-    expect(
-      sanitizeTraceStep(step({
-        axis: { kind: 'ref', role: 'button', name: 'x', sameNameIndex: 3, sameNameTotal: 2, frameKey: '' },
-      })),
-    ).toBeNull();
+  it('holds an untrustworthy axis as a hole rather than dropping the step', () => {
+    // Dropping it would hand back a SHORTER flow that still reports success.
+    const out = sanitizeTraceStep(step({
+      axis: { kind: 'ref', role: 'button', name: 'x', sameNameIndex: 3, sameNameTotal: 2, frameKey: '' },
+    }));
+    expect(out).not.toBeNull();
+    expect(out?.unrecordable).toBe('unresolved-axis');
+    expect(out?.axis).toEqual({ kind: 'none' });
   });
 
   it('keeps a declared unrecordable reason', () => {
@@ -332,8 +335,21 @@ describe('sanitizeTraceRecord', () => {
     expect(sanitizeTraceRecord(trace(), NOW)).toMatchObject({ name: 'login', successCount: 1 });
   });
 
-  it('rejects a record whose every step was unusable', () => {
+  it('rejects a record containing an entry that is not a step at all', () => {
+    // Nothing to hold as a hole, and skipping it would shorten the flow.
     expect(sanitizeTraceRecord(trace({ steps: [{ tool: 'nope' } as never] }), NOW)).toBeNull();
+    expect(
+      sanitizeTraceRecord(trace({ steps: [step(), { tool: 'nope' } as never] }), NOW),
+    ).toBeNull();
+  });
+
+  it('keeps a record whose step merely lost its axis, as a hole', () => {
+    const holed = sanitizeTraceRecord(
+      trace({ steps: [step(), step({ axis: { kind: 'bogus' } as never })] }),
+      NOW,
+    );
+    expect(holed?.steps).toHaveLength(2);
+    expect(holed?.steps[1].unrecordable).toBe('unresolved-axis');
   });
 
   it('rejects a name that could not be safely used as a key or rendered', () => {
@@ -342,9 +358,13 @@ describe('sanitizeTraceRecord', () => {
     expect(sanitizeTraceRecord(trace({ name: 'a'.repeat(200) }), NOW)).toBeNull();
   });
 
-  it('caps the step count', () => {
-    const long = trace({ steps: Array.from({ length: MAX_STEPS_PER_TRACE + 10 }, () => step()) });
-    expect(sanitizeTraceRecord(long, NOW)?.steps).toHaveLength(MAX_STEPS_PER_TRACE);
+  it('refuses an over-long record rather than truncating it to the cap', () => {
+    // A truncated trace runs the first 30 steps of a 40-step flow and reports
+    // success — a half-completed checkout is worse than no cached checkout.
+    const long = trace({ steps: Array.from({ length: MAX_STEPS_PER_TRACE + 1 }, () => step()) });
+    expect(sanitizeTraceRecord(long, NOW)).toBeNull();
+    const atCap = trace({ steps: Array.from({ length: MAX_STEPS_PER_TRACE }, () => step()) });
+    expect(sanitizeTraceRecord(atCap, NOW)?.steps).toHaveLength(MAX_STEPS_PER_TRACE);
   });
 
   it('repairs negative counters instead of trusting them', () => {
@@ -352,5 +372,40 @@ describe('sanitizeTraceRecord', () => {
       successCount: 0,
       failCount: 0,
     });
+  });
+});
+
+describe('stepsFingerprint', () => {
+  it('is equal for the same flow recorded twice', () => {
+    expect(stepsFingerprint([step(), step()])).toBe(stepsFingerprint([step(), step()]));
+  });
+
+  it('ignores argument VALUES — a login with a different email is the same flow', () => {
+    expect(stepsFingerprint([step({ tool: 'browser_type', args: { text: 'a@b.c' } })])).toBe(
+      stepsFingerprint([step({ tool: 'browser_type', args: { text: 'd@e.f' } })]),
+    );
+  });
+
+  it('changes when a step is added', () => {
+    expect(stepsFingerprint([step()])).not.toBe(stepsFingerprint([step(), step()]));
+  });
+
+  it('changes when a step targets a different element', () => {
+    const other = step({
+      axis: { kind: 'ref', role: 'button', name: 'Cancel', sameNameIndex: 0, sameNameTotal: 1, frameKey: '' },
+    });
+    expect(stepsFingerprint([step()])).not.toBe(stepsFingerprint([other]));
+  });
+
+  it('changes when a step becomes a hole', () => {
+    expect(stepsFingerprint([step()])).not.toBe(
+      stepsFingerprint([step({ unrecordable: 'password' })]),
+    );
+  });
+
+  it('changes when an argument key appears', () => {
+    expect(stepsFingerprint([step()])).not.toBe(
+      stepsFingerprint([step({ args: { double: true } })]),
+    );
   });
 });

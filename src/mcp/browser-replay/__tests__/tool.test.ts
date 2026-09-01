@@ -52,7 +52,7 @@ let pageForScope: unknown = null;
 
 import { createReplayToolCatalog } from '../tool';
 import { ActionRing, recordAction } from '../actionRing';
-import type { TraceRecord } from '../../../shared/browserReplay/actionTrace';
+import { MAX_STEPS_PER_TRACE, type TraceRecord } from '../../../shared/browserReplay/actionTrace';
 
 // The lease mock resolves every call to this scope, so the ring's scope key and
 // the tool's cut key have to agree on it.
@@ -208,6 +208,28 @@ describe('browser_replay save — cutting the ring', () => {
     const trace = put!.params.trace as TraceRecord;
     expect(trace.steps.map((s) => s.tool)).toEqual(['browser_navigate', 'browser_click']);
     expect(trace.urlKey).toBe('https://example.com/b');
+  });
+
+  it('refuses an over-long flow rather than silently keeping its tail', async () => {
+    // Truncating would save a flow that starts in the middle and still reports
+    // success on replay.
+    for (let i = 0; i < MAX_STEPS_PER_TRACE + 1; i++) {
+      recordAction(deps, { scope, tool: 'browser_click', page: null, url: 'https://example.com/a' });
+    }
+    const result = await invoke({ action: 'save', name: 'long' });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain(`at most ${MAX_STEPS_PER_TRACE}`);
+    expect(result.content[0].text).toContain('steps:<n>');
+    expect(rpcCalls).toEqual([]);
+  });
+
+  it('an explicit count brings an over-long flow back under the cap', async () => {
+    for (let i = 0; i < MAX_STEPS_PER_TRACE + 1; i++) {
+      recordAction(deps, { scope, tool: 'browser_click', page: null, url: 'https://example.com/a' });
+    }
+    await invoke({ action: 'save', name: 'long', steps: 5 });
+    const put = rpcCalls.find((c) => c.method === 'browser.actionCache.put');
+    expect((put!.params.trace as TraceRecord).steps).toHaveLength(5);
   });
 
   it('honours an explicit step count', async () => {

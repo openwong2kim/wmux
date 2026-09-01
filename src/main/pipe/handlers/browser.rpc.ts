@@ -8,7 +8,7 @@ import {
   validateBrowserProfileName,
 } from '../../browser-session/ProfileManager';
 import { PortAllocator } from '../../browser-session/PortAllocator';
-import { ActionCacheStore } from '../../browser-session/ActionCacheStore';
+import { getActionCacheStore } from '../../browser-session/ActionCacheStore';
 import { HumanBehavior } from '../../browser-session/HumanBehavior';
 import { WebviewCdpManager } from '../../browser-session/WebviewCdpManager';
 import { BrowserCaptureManager } from '../../browser-session/BrowserCaptureManager';
@@ -763,7 +763,7 @@ export function registerBrowserRpc(
   // fallback would let a caller read and overwrite another workspace's recorded
   // flows just by naming it in params. A cache miss costs a replay; a
   // cross-workspace hit hands one agent another agent's actions.
-  const actionCache = new ActionCacheStore();
+  const actionCache = getActionCacheStore();
 
   const cacheWorkspace = (
     method: RpcMethod,

@@ -184,7 +184,16 @@ export function createReplayToolCatalog(deps: BrowserToolDeps) {
         true,
       );
     }
-    const cut = tail.slice(-MAX_STEPS_PER_TRACE);
+    // Refused, not truncated: silently keeping the last 30 of 40 actions saves
+    // a flow that starts in the middle and still reports success.
+    if (tail.length > MAX_STEPS_PER_TRACE) {
+      return text(
+        `That is ${tail.length} actions, and a flow holds at most ${MAX_STEPS_PER_TRACE}. ` +
+          `Pass steps:<n> to name the tail you want, or save the flow in shorter parts.`,
+        true,
+      );
+    }
+    const cut = tail;
     // The shape belongs to the page the flow STARTED on — the page a future run
     // begins against. Hashing the live page at SAVE time compares the wrong two
     // things: by then the flow has run and the page is its end state, so every

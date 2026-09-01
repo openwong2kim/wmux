@@ -433,6 +433,30 @@ export function applyRunOutcome(trace: TraceRecord, outcome: RunOutcome): TraceR
   };
 }
 
+/**
+ * A stable fingerprint of a trace's STEPS, ignoring everything else about it.
+ *
+ * A re-save under an existing name may be either of two things and they have
+ * to be told apart: the same flow recorded again (keep its success history —
+ * otherwise the serving threshold is unreachable for any flow the agent
+ * repeats), or a DIFFERENT flow that reused the name (a fresh history, because
+ * the old flow's successes say nothing about these steps and its quarantine
+ * would unfairly condemn them).
+ */
+export function stepsFingerprint(steps: readonly TraceStep[]): string {
+  const hash = createHash('sha256');
+  for (const step of steps) {
+    hash.update(step.tool).update('\u0000');
+    hash.update(JSON.stringify(step.axis)).update('\u0000');
+    hash.update(JSON.stringify(step.target2 ?? null)).update('\u0000');
+    // Argument KEYS, not values: a login recorded with a different email is
+    // the same flow. A changed value is what variables exist for.
+    hash.update(Object.keys(step.args).sort().join(',')).update('\u0000');
+    hash.update(step.unrecordable ?? '').update('\n');
+  }
+  return hash.digest('hex');
+}
+
 // ── Pruning ────────────────────────────────────────────────────────────────
 
 /**
@@ -505,18 +529,29 @@ function sanitizeArgs(raw: unknown): Record<string, string | number | boolean> {
   return out;
 }
 
+/**
+ * Sanitise one step.
+ *
+ * Returns null ONLY when the entry names no replayable tool — i.e. when there
+ * is no step here at all. Everything else that fails to sanitise (an axis that
+ * cannot be trusted, a drag target that did not survive) comes back as a HOLE
+ * rather than as null, because the caller's only other option is to drop it,
+ * and a trace with a step quietly missing replays a shorter, different flow
+ * that still reports success. A hole refuses to run and says why.
+ */
 export function sanitizeTraceStep(raw: unknown): TraceStep | null {
   if (!raw || typeof raw !== 'object') return null;
   const s = raw as Record<string, unknown>;
   if (!isReplayableTool(s.tool)) return null;
-  const axis = sanitizeAxis(s.axis);
-  if (!axis) return null;
+  const sanitizedAxis = sanitizeAxis(s.axis);
+  const axis = sanitizedAxis ?? NO_AXIS;
+  const axisLost = sanitizedAxis === null;
   const target2 = s.target2 === undefined ? undefined : sanitizeAxis(s.target2);
   // A drag whose target does not survive sanitising is a hole, not a click.
   const targetLost = s.target2 !== undefined && target2 === null;
   const reason = UNRECORDABLE_REASONS.includes(s.unrecordable as UnrecordableReason)
     ? (s.unrecordable as UnrecordableReason)
-    : targetLost
+    : targetLost || axisLost
       ? 'unresolved-axis'
       : undefined;
   return {
@@ -542,10 +577,17 @@ export function sanitizeTraceRecord(raw: unknown, now: number = Date.now()): Tra
   if (typeof r.id !== 'string' || r.id.length === 0 || r.id.length > 64) return null;
   if (typeof r.urlKey !== 'string' || r.urlKey.length === 0 || r.urlKey.length > 2048) return null;
   const rawSteps = Array.isArray(r.steps) ? r.steps : [];
+  // Over the cap the whole record is REFUSED, not truncated. Truncating gives
+  // back a trace that runs the first 30 steps of a 40-step flow and reports
+  // success — a half-completed checkout is worse than no cached checkout.
+  if (rawSteps.length > MAX_STEPS_PER_TRACE) return null;
   const steps: TraceStep[] = [];
-  for (const entry of rawSteps.slice(0, MAX_STEPS_PER_TRACE)) {
+  for (const entry of rawSteps) {
     const step = sanitizeTraceStep(entry);
-    if (step) steps.push(step);
+    // A non-step (no replayable tool named) is the one thing that cannot be
+    // held as a hole — there is nothing to hold. The record goes instead.
+    if (!step) return null;
+    steps.push(step);
   }
   if (steps.length === 0) return null;
   const createdAt = typeof r.createdAt === 'number' && Number.isFinite(r.createdAt) ? r.createdAt : now;

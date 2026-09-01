@@ -8,6 +8,7 @@ import {
   isValidTraceName,
   pruneTraces,
   sanitizeTraceRecord,
+  stepsFingerprint,
   type RunOutcome,
   type TraceRecord,
 } from '../../shared/browserReplay/actionTrace';
@@ -31,6 +32,9 @@ import {
 const SCHEMA_VERSION = 1;
 /** Coalescing window for stats churn (every replay updates lastUsedAt). */
 export const WRITE_DEBOUNCE_MS = 300;
+/** Extra attempts after a failed write, doubling from WRITE_RETRY_BASE_MS. */
+export const WRITE_RETRIES = 2;
+export const WRITE_RETRY_BASE_MS = 200;
 
 interface ActionCacheFile {
   version: number;
@@ -116,6 +120,16 @@ export class ActionCacheStore {
   private debounceTimer: ReturnType<typeof setTimeout> | null = null;
   /** Set when a debounced write is owed for the current in-memory cache. */
   private dirty = false;
+  /**
+   * Bumped by every mutation. A write captures it before serialising and only
+   * clears `dirty` if it still matches afterwards — a mutation that landed
+   * while the write was in flight is NOT on disk, and clearing the flag for it
+   * would send the next mutation back to stale bytes and silently drop it.
+   */
+  private revision = 0;
+  /** A write is queued on the chain. Keeps the debounce from stacking more
+   *  writes behind one that is already retrying. */
+  private writePending = false;
 
   constructor(dir?: string) {
     this.filePath = getActionCachePath(dir);
@@ -153,10 +167,21 @@ export class ActionCacheStore {
   /**
    * Store a trace, replacing any same-named one in the workspace.
    *
-   * A re-save is an OBSERVATION of the same flow, not a new trace: the name is
-   * how the agent refers to it, so re-recording keeps the id and the success
-   * history and bumps observedCount. Losing the history on every re-save would
-   * make the serving threshold unreachable for any flow the agent refines.
+   * A re-save under an existing name is one of two different things, and they
+   * are told apart by the STEPS, not by the name:
+   *
+   *   same steps — the agent recorded the same flow again. Keep the id and the
+   *     success history and bump observedCount, because losing the history on
+   *     every re-save would put the serving threshold out of reach for any
+   *     flow the agent repeats.
+   *
+   *   different steps — the name was reused for a different flow (or the flow
+   *     was healed after a failure). Start the history over: the old steps'
+   *     successes say nothing about these ones, and inheriting them would let
+   *     a brand-new flow be volunteered as proven on its first save.
+   *
+   * The name still identifies the record either way — it is how the agent
+   * refers to it — so the id is kept in both cases.
    */
   async put(workspaceId: string, raw: unknown): Promise<PutTraceResult> {
     if (isUnsafeKey(workspaceId) || !workspaceId) {
@@ -171,17 +196,21 @@ export class ActionCacheStore {
     await this.mutate((file) => {
       const list = file.workspaces[workspaceId] ?? [];
       const previous = list.find((t) => t.name === incoming.name);
+      const sameFlow =
+        previous !== undefined &&
+        stepsFingerprint(previous.steps) === stepsFingerprint(incoming.steps);
       stored = previous
         ? {
             ...incoming,
             id: previous.id,
             createdAt: previous.createdAt,
-            observedCount: previous.observedCount + 1,
-            successCount: previous.successCount,
-            failCount: previous.failCount,
+            observedCount: sameFlow ? previous.observedCount + 1 : 1,
+            successCount: sameFlow ? previous.successCount : 0,
+            failCount: sameFlow ? previous.failCount : 0,
             lastUsedAt: now,
-            // A re-record is the agent asserting this is the current path, so
-            // the quarantine that the OLD steps earned must not outlive them.
+            // Either way the quarantine goes: on the same flow because a
+            // re-record is the agent asserting this is still the path, and on
+            // a different flow because it was never these steps' quarantine.
             consecutiveFailsAtStep: 0,
           }
         : { ...incoming, observedCount: 1, createdAt: now, lastUsedAt: now };
@@ -244,6 +273,16 @@ export class ActionCacheStore {
     }
   }
 
+  /** Test/teardown seam: settle every queued write. */
+  async drain(): Promise<void> {
+    if (this.debounceTimer !== null) {
+      clearTimeout(this.debounceTimer);
+      this.debounceTimer = null;
+    }
+    this.queueWrite();
+    await this.writeChain;
+  }
+
   // ── Internals ────────────────────────────────────────────────────────────
 
   /**
@@ -274,6 +313,7 @@ export class ActionCacheStore {
       enforceFileBudget(file);
       this.cache = file;
       this.dirty = true;
+      this.revision++;
       this.scheduleWrite();
     });
     this.writeChain = run.catch(() => undefined);
@@ -281,17 +321,86 @@ export class ActionCacheStore {
   }
 
   private scheduleWrite(): void {
-    if (this.debounceTimer !== null) return;
+    if (this.debounceTimer !== null || this.writePending) return;
     this.debounceTimer = setTimeout(() => {
       this.debounceTimer = null;
-      const snapshot = this.cache;
-      if (!snapshot) return;
-      this.dirty = false;
-      void atomicWriteJSON(this.filePath, snapshot, { durable: true }).catch(() => {
-        // Losing a write costs the agent a trace, never a page action.
-        this.dirty = true;
-      });
+      this.queueWrite();
     }, WRITE_DEBOUNCE_MS);
     (this.debounceTimer as { unref?: () => void }).unref?.();
   }
+
+  /**
+   * Put the write ON the mutation chain rather than beside it.
+   *
+   * A write that ran independently could still be in flight when the next
+   * mutation started, and that mutation would see `dirty` already cleared and
+   * re-read the pre-write bytes from disk — losing every change the in-flight
+   * write was carrying. Sharing the chain makes the ordering explicit.
+   */
+  private queueWrite(): void {
+    if (this.writePending) return;
+    this.writePending = true;
+    const run = this.writeChain.then(async () => {
+      try {
+        await this.writeOnce();
+      } finally {
+        this.writePending = false;
+      }
+    });
+    this.writeChain = run.catch(() => undefined);
+  }
+
+  /**
+   * Serialise the cache to disk, retrying with a doubling backoff.
+   *
+   * On final failure the store stays dirty on purpose: the next mutation
+   * writes it, and until then the in-memory cache is the truth this process
+   * serves. Losing a write costs the agent a flow on the next launch — never a
+   * page action, and never this session.
+   */
+  private async writeOnce(): Promise<void> {
+    if (!this.dirty || !this.cache) return;
+    const revision = this.revision;
+    const snapshot = JSON.parse(JSON.stringify(this.cache)) as ActionCacheFile;
+    for (let attempt = 0; ; attempt++) {
+      try {
+        await atomicWriteJSON(this.filePath, snapshot, { durable: true });
+        // Only if nothing changed while we were writing: a later mutation is
+        // not in `snapshot`, so the store still owes the disk a write.
+        if (this.revision === revision) this.dirty = false;
+        return;
+      } catch (err) {
+        if (attempt >= WRITE_RETRIES) {
+          console.warn(
+            `[ActionCacheStore] write to ${this.filePath} failed after ` +
+              `${WRITE_RETRIES + 1} attempts; recorded flows are held in memory only:`,
+            err,
+          );
+          return;
+        }
+        await new Promise((resolve) => {
+          const timer = setTimeout(resolve, WRITE_RETRY_BASE_MS * 2 ** attempt);
+          (timer as { unref?: () => void }).unref?.();
+        });
+      }
+    }
+  }
+}
+
+/**
+ * The process-wide store.
+ *
+ * A singleton because main is by design the ONE writer: two instances over the
+ * same file would each hold their own cache and each believe it was current,
+ * and the later write would silently discard the other's flows. The RPC
+ * handlers and the shutdown flush have to be looking at the same object for
+ * the flush to mean anything.
+ *
+ * Tests construct the class directly against a temp directory instead.
+ */
+let sharedStore: ActionCacheStore | null = null;
+
+export function getActionCacheStore(): ActionCacheStore {
+  if (!sharedStore) sharedStore = new ActionCacheStore();
+  return sharedStore;
 }

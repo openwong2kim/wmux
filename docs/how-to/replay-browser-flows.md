@@ -20,18 +20,25 @@ into a 40-slot ring on your connection. When a flow works, name it:
 { "action": "save", "name": "weekly-export" }
 ```
 
-By default this keeps everything since your last `browser_navigate`. Pass
-`steps: N` to keep exactly your last N actions instead.
+By default this keeps everything since your last `browser_navigate`, on the
+surface you are saving from. Pass `steps: N` to keep exactly your last N
+actions instead. A cut longer than 30 steps is refused rather than trimmed —
+a flow saved from its middle would replay from the middle and report success.
 
-Saving the same name again re-records the flow. It keeps the name's success
-history and lifts any quarantine, because you are asserting that these steps
-are now the current path.
+Saving the same name again re-records the flow. If the steps are the same, it
+keeps the name's success history and lifts any quarantine, because you are
+asserting these steps are still the current path. If the steps changed, the
+history starts over: the old flow's successes say nothing about the new one.
 
 ## Replay
 
 ```json
 { "action": "run", "name": "weekly-export" }
 ```
+
+A flow only runs on the page it was recorded on, unless its first step is a
+`browser_navigate` — elsewhere its stored elements would match whatever
+happens to share their role and name.
 
 Elements are re-found by what the snapshot called them — role, accessible
 name, and position among the same-named elements in the same frame — not by a
@@ -46,8 +53,11 @@ left exactly where the replay stopped, so the cheapest recovery is to take a
 snapshot, finish the flow by hand from there, and `save` under the same name.
 That re-records the healed path.
 
-A step whose same-name population merely changed size (a third "Delete" button
-appeared) is a warning, not a stop.
+If the page's count of same-named elements changed, what happens depends on
+where the recorded element sat: the *first* "Delete" is still the first one
+however many rows were added, so that is a warning; any later position is
+refused, because a row inserted above shifts everything below it and the
+replay would act on whatever moved into that slot.
 
 ## Variables
 
@@ -73,9 +83,14 @@ A `browser_type` into a password field is recorded as a marked hole. The value
 is never captured, so it cannot reach the trace, the store, or the cache file.
 A flow containing one is listed but refuses to run — perform it live.
 
-Two other things become the same kind of hole: an action that fell back to the
-RPC transport (which resolves elements by attribute and mints nothing to
-re-resolve against), and an argument too long to store intact.
+The same applies to `browser_fill`, which fills a whole form at once: its
+credential fields are holes and its ordinary fields are not.
+
+Three other things become the same kind of hole: an action that fell back to
+the RPC transport (which resolves elements by attribute and mints nothing to
+re-resolve against), an argument too long to store intact, and a URL that
+carried a credential (in `user:pass@host` or a password-family query
+parameter) — the secret is stripped, which necessarily changes the URL.
 
 Coordinate clicks (`browser_click` with `x`/`y`) are not recorded at all. A
 coordinate does not survive a re-render.
