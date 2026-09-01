@@ -17,7 +17,15 @@ import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
+// #997 moved the pulse into WorkspaceItem: the pulse's first job is to OPEN
+// the list, and the list is only mounted once open, so a pulse owned by the
+// list could never open it. The two-effect split this file protects is
+// unchanged — only its address is.
 const source = readFileSync(
+  resolve(process.cwd(), 'src/renderer/components/Sidebar/WorkspaceItem.tsx'),
+  'utf8',
+);
+const rosterSource = readFileSync(
   resolve(process.cwd(), 'src/renderer/components/Sidebar/WorkspaceAgentRoster.tsx'),
   'utf8',
 );
@@ -34,13 +42,9 @@ function effectKeyedOn(deps: string): string {
 
 describe('WorkspaceAgentRoster — stash pulse', () => {
   it('consumes the pulse in an effect that owns no timeout', () => {
-    // #997 moved the expanded state up to WorkspaceItem (the control that
-    // toggles it now sits on the workspace row), so the pulse asks its owner
-    // to open instead of setting local state — the two-effect split, which is
-    // what this file exists to protect, is unchanged.
-    const consume = effectKeyedOn('pulsedPaneId, onRequestOpen');
+    const consume = effectKeyedOn('pulsedPaneId');
     expect(consume).toContain('clearStashPulse()');
-    expect(consume).toContain('onRequestOpen()');
+    expect(consume).toContain('setRosterOpen(true)');
     expect(consume).toContain('setPulsingPaneId(pulsedPaneId)');
     // The trap: clearStashPulse re-runs this effect immediately, so a timeout
     // registered here would be cleaned up before it could ever fire.
@@ -57,8 +61,8 @@ describe('WorkspaceAgentRoster — stash pulse', () => {
   });
 
   it('bounds the highlight to a duration a human reads as a flash', () => {
-    expect(source).toMatch(/const STASH_PULSE_MS = \d{3,4};/);
-    const ms = Number(/const STASH_PULSE_MS = (\d+);/.exec(source)?.[1]);
+    expect(rosterSource).toMatch(/const STASH_PULSE_MS = \d{3,4};/);
+    const ms = Number(/const STASH_PULSE_MS = (\d+);/.exec(rosterSource)?.[1]);
     expect(ms).toBeGreaterThan(0);
     expect(ms).toBeLessThanOrEqual(3000);
   });

@@ -31,9 +31,10 @@ describe('#997 — roster summary sits on the workspace row', () => {
   it('WorkspaceItem renders the summary control and owns the expanded state', () => {
     expect(itemSource).toContain('WorkspaceRosterSummaryMemo');
     expect(itemSource).toContain('const [rosterOpen, setRosterOpen]');
-    // The list is a sibling BELOW the row and must be told the state rather
-    // than keeping its own copy, or the chevron and the list could disagree.
-    expect(itemSource).toMatch(/<WorkspaceAgentRoster[\s\S]*?open=\{rosterOpen\}/);
+    // The list is mounted only while expanded — a collapsed list would still
+    // subscribe to the whole roster projection to render nothing, and with
+    // eleven collapsed workspaces that is eleven pointless subscriptions.
+    expect(itemSource).toMatch(/rosterOpen && \(\s*<WorkspaceAgentRoster/);
   });
 
   it('the list renders no disclosure row of its own', () => {
@@ -45,44 +46,82 @@ describe('#997 — roster summary sits on the workspace row', () => {
     expect(listPart).not.toContain("t('workspace.showAgents')");
   });
 
-  it('the summary keeps the full wording in its accessible name', () => {
+  it('the toggle says what it expands, now that its visible label is a number', () => {
     const summaryPart = rosterSource.slice(
       rosterSource.indexOf('function WorkspaceRosterSummary('),
-      rosterSource.indexOf('function WorkspaceAgentRoster('),
+      rosterSource.indexOf('export const WorkspaceRosterSummaryMemo'),
     );
-    // The visible chip is a bare number; a screen reader must still hear
-    // "Agents 3, Show agent list" rather than "3".
-    expect(summaryPart).toContain("t('workspace.agentCount'");
-    expect(summaryPart).toContain("t('workspace.showAgents')");
-    expect(summaryPart).toContain("t('workspace.hideAgents')");
     expect(summaryPart).toContain('aria-expanded');
-    // A workspace holding only stashed panes must not read "Agents 0".
-    expect(summaryPart).toContain("t('roster.stashedOnly'");
+    expect(summaryPart).toContain('aria-controls');
+    // The list is no longer the button's next sibling — five controls sit
+    // between them in DOM order — so the relationship has to be explicit.
+    expect(rosterSource).toContain('id={rosterListId(workspaceId)}');
   });
 
-  it('the summary does not restate needs-you, which the row dot already carries', () => {
+  it('the chevron neither selects the workspace nor starts its drag', () => {
     const summaryPart = rosterSource.slice(
       rosterSource.indexOf('function WorkspaceRosterSummary('),
-      rosterSource.indexOf('function WorkspaceAgentRoster('),
+      rosterSource.indexOf('export const WorkspaceRosterSummaryMemo'),
     );
-    // WorkspaceItem's leading dot is selectWorkspaceAgentStatus — the
-    // most-urgent status rolled up across the whole workspace — so it is
-    // already red whenever an agent here awaits input. A count beside it would
-    // render the same signal twice and spend the row's scarcest space.
-    expect(summaryPart).not.toContain('needsAttentionCount');
-    expect(itemSource).toContain('selectWorkspaceAgentStatus');
+    // Click: the row underneath selects the workspace, so the toggle must
+    // stop the gesture in its OWN onClick — not merely somewhere in the file.
+    const onClick = summaryPart.slice(summaryPart.indexOf('onClick='), summaryPart.indexOf('onMouseDown='));
+    expect(onClick).toContain('event.stopPropagation()');
+    // Drag: the row is a native drag source. Two independent guards — the
+    // marker the row's own handleDragStart tests for, and the mousedown
+    // default that would otherwise arm a drag.
+    expect(summaryPart).toContain('data-workspace-agent-roster');
+    expect(itemSource).toContain('[data-workspace-agent-roster]');
+    const onMouseDown = summaryPart.slice(summaryPart.indexOf('onMouseDown='));
+    expect(onMouseDown).toContain('event.preventDefault()');
+    // …and that preventDefault costs the button its focus unless it is given
+    // back, which would leave the focus ring unreachable by mouse.
+    expect(onMouseDown).toContain('event.currentTarget.focus()');
   });
 
-  it('the summary stops the gesture reaching the row underneath it', () => {
-    const summaryPart = rosterSource.slice(
-      rosterSource.indexOf('function WorkspaceRosterSummary('),
-      rosterSource.indexOf('function WorkspaceAgentRoster('),
-    );
-    // The row selects the workspace on click and is a native drag source;
-    // without both guards the chevron would switch workspaces, or start a
-    // drag instead of arming the click.
-    expect(summaryPart).toContain('event.stopPropagation()');
-    expect(summaryPart).toContain('onMouseDown');
-    expect(summaryPart).toContain('onDragStart');
+  it('the summary subscribes on counts alone, not on every roster field', () => {
+    // The projection's reference changes whenever any row field does — an
+    // activity string, a focus flag. This control draws two integers, and it
+    // now sits on a row that renders for every workspace.
+    expect(rosterSource).toContain('createWorkspaceRosterCountsSelector(workspaceId)');
+  });
+});
+
+// ─── The accessible name, asserted rather than grepped ───────────────────────
+
+import { rosterSummaryAriaLabel } from '../WorkspaceAgentRoster';
+
+/** Stands in for useT: renders the real en strings' shape without i18n setup. */
+const t = ((key: string, vars?: Record<string, string | number>) => {
+  switch (key) {
+    case 'workspace.agentCount': return `Agents ${vars?.count}`;
+    case 'roster.stashedCount': return `Stashed ${vars?.count}`;
+    case 'roster.stashedOnly': return `Stashed ${vars?.count}`;
+    case 'workspace.showAgents': return 'Show agent list';
+    case 'workspace.hideAgents': return 'Hide agent list';
+    default: return key;
+  }
+}) as Parameters<typeof rosterSummaryAriaLabel>[2];
+
+describe('#997 — the summary chip is a number, its accessible name is not', () => {
+  it('agents only: the count keeps its noun and the toggle its verb', () => {
+    expect(rosterSummaryAriaLabel({ agentCount: 3, stashedCount: 0 }, false, t))
+      .toBe('Agents 3, Show agent list');
+  });
+
+  it('expanded: the verb flips, so the control never lies about what it does', () => {
+    expect(rosterSummaryAriaLabel({ agentCount: 3, stashedCount: 0 }, true, t))
+      .toBe('Agents 3, Hide agent list');
+  });
+
+  it('agents and stash: both counts are announced, the chip only draws them', () => {
+    expect(rosterSummaryAriaLabel({ agentCount: 2, stashedCount: 1 }, false, t))
+      .toBe('Agents 2, Stashed 1, Show agent list');
+  });
+
+  it('stash only: leads with the stash, never "Agents 0"', () => {
+    const label = rosterSummaryAriaLabel({ agentCount: 0, stashedCount: 1 }, false, t);
+    expect(label).toBe('Stashed 1, Show agent list');
+    expect(label).not.toContain('Agents 0');
   });
 });

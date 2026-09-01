@@ -14,7 +14,7 @@ import { openUrlInBrowserPane } from '../../utils/browserPaneActions';
 import WorkspaceProfileModal from './WorkspaceProfileModal';
 import WorkspaceAccountMenu from './WorkspaceAccountMenu';
 import WorkspaceChromeProfileMenu from './WorkspaceChromeProfileMenu';
-import WorkspaceAgentRoster, { WorkspaceRosterSummaryMemo } from './WorkspaceAgentRoster';
+import WorkspaceAgentRoster, { WorkspaceRosterSummaryMemo, STASH_PULSE_MS } from './WorkspaceAgentRoster';
 import { displayPath } from '../../utils/displayPath';
 import { WORKSPACE_COLOR_IDS, WORKSPACE_COLOR_HEX, workspaceColorHex, workspaceColorLabelKey } from '../../../shared/workspaceColors';
 
@@ -291,13 +291,40 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
   // churn still does not rerender this component.
   const [rosterOpen, setRosterOpen] = useState(isActive);
   const toggleRoster = useCallback(() => setRosterOpen((value) => !value), []);
-  const openRoster = useCallback(() => setRosterOpen(true), []);
   // Newly selected workspaces reveal their agents automatically; workspaces
   // that move to the background collapse back to the count. The user can still
   // explicitly toggle either state until selection changes again.
   useEffect(() => {
     setRosterOpen(isActive);
   }, [isActive]);
+
+  // #977 — a pane that was just stashed disappeared from the layout. If the
+  // list it moved into is collapsed, the gesture is indistinguishable from a
+  // delete, so open the list and flash the row once. The pulse lives HERE
+  // because its first job is to open the list, and the list is only mounted
+  // once open — a pulse owned by the list could never open it.
+  const stashPulse = useStore((s) => s.stashPulse);
+  const pulsedPaneId = stashPulse?.workspaceId === workspaceId ? stashPulse.paneId : null;
+  const [pulsingPaneId, setPulsingPaneId] = useState<string | null>(null);
+
+  // TWO effects on purpose. Consuming the pulse and owning its timeout in one
+  // effect is self-defeating: clearStashPulse() nulls `pulsedPaneId` on the very
+  // next render, the effect re-runs, its cleanup clears the pending timeout, and
+  // the highlight never turns off — a permanent bar identical to the focused
+  // style. Splitting them lets the consume run once and the timeout live on its
+  // own key.
+  useEffect(() => {
+    if (!pulsedPaneId) return;
+    setRosterOpen(true);
+    setPulsingPaneId(pulsedPaneId);
+    useStore.getState().clearStashPulse();
+  }, [pulsedPaneId]);
+
+  useEffect(() => {
+    if (!pulsingPaneId) return;
+    const timer = setTimeout(() => setPulsingPaneId(null), STASH_PULSE_MS);
+    return () => clearTimeout(timer);
+  }, [pulsingPaneId]);
 
   // X5 wmux.json badge state for this workspace (transient, probe-driven).
   const projectState = useStore((s) => s.projectConfigs[workspaceId]);
@@ -749,13 +776,11 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
         {/* #997 — roster disclosure + agent count. Lives on this row, not on
             a line of its own: see WorkspaceRosterSummary's own comment. */}
         {!editing && (
-          <div className="flex-shrink-0 mt-0.5">
-            <WorkspaceRosterSummaryMemo
-              workspaceId={workspaceId}
-              open={rosterOpen}
-              onToggle={toggleRoster}
-            />
-          </div>
+          <WorkspaceRosterSummaryMemo
+            workspaceId={workspaceId}
+            open={rosterOpen}
+            onToggle={toggleRoster}
+          />
         )}
 
         {/* Agent status mark (play/pause), right-aligned. */}
@@ -804,12 +829,10 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
           <IconX size={11} />
         </button>
         </div>
-        {!editing && (
-          <WorkspaceAgentRoster
-            workspaceId={workspaceId}
-            open={rosterOpen}
-            onRequestOpen={openRoster}
-          />
+        {/* Mounted only when expanded: a collapsed list would subscribe to the
+            whole roster projection to render nothing. */}
+        {!editing && rosterOpen && (
+          <WorkspaceAgentRoster workspaceId={workspaceId} pulsingPaneId={pulsingPaneId} />
         )}
       </div>
 
