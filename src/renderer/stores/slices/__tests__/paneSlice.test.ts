@@ -451,7 +451,7 @@ describe('PaneSlice', () => {
       // moving left, BL (y 80–100, overlap 20) loses to TL? No — TL spans
       // y 0–80, overlap with BR (20–100) is 60 → TL wins. The tree-order
       // walk would have picked BL (last leaf) regardless.
-      const { tl, bl, tr, br } = build2x2();
+      const { tl, bl, br } = build2x2();
       const ws = getActiveWorkspace(store);
       const root = ws.rootPane;
       if (root.type !== 'branch') throw new Error('expected branch root');
@@ -459,7 +459,6 @@ describe('PaneSlice', () => {
       if (leftCol.type !== 'branch' || rightCol.type !== 'branch') throw new Error('expected column branches');
       store.getState().updatePaneSizes(leftCol.id, [80, 20]);
       store.getState().updatePaneSizes(rightCol.id, [20, 80]);
-      void tr;
 
       store.getState().setActivePane(br);
       store.getState().focusPaneDirection('left');
@@ -468,6 +467,32 @@ describe('PaneSlice', () => {
       store.getState().setActivePane(bl);
       store.getState().focusPaneDirection('right');
       expect(getActiveWorkspace(store).activePaneId).toBe(br);
+    });
+
+    it('#1147: sizes that do not sum to 100 are treated as ratios (flexGrow parity)', () => {
+      // The screen renders sizes as flexGrow RATIOS, so [150, 50] means 75/25
+      // — the rects must agree or the far neighbour falls out of the
+      // direction filter and focus gets stuck.
+      const { tl, tr } = build2x2();
+      const ws = getActiveWorkspace(store);
+      const root = ws.rootPane;
+      if (root.type !== 'branch') throw new Error('expected branch root');
+      store.getState().updatePaneSizes(root.id, [150, 50]);
+
+      store.getState().setActivePane(tr);
+      store.getState().focusPaneDirection('left');
+      expect(getActiveWorkspace(store).activePaneId).toBe(tl);
+    });
+
+    it('#1147: moveActivePaneDirection shares the geometric pick (TR moved left displaces TL)', () => {
+      const { tl, tr } = build2x2();
+      store.getState().setActivePane(tr);
+      const moved = store.getState().moveActivePaneDirection('left');
+      expect(moved).toBe(true);
+      // The displaced neighbour must have been TL (row-aligned), not BL: the
+      // moved pane lands on TL's left edge, so TL is now to its right.
+      store.getState().focusPaneDirection('right');
+      expect(getActiveWorkspace(store).activePaneId).toBe(tl);
     });
   });
 

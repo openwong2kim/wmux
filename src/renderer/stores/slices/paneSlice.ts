@@ -1,6 +1,6 @@
 import type { StateCreator } from 'zustand';
 import type { StoreState } from '../index';
-import type { Pane, PaneLeaf, PaneBranch, StashedPane, Workspace, AgentStatus } from '../../../shared/types';
+import type { Pane, PaneBranch, StashedPane, Workspace, AgentStatus } from '../../../shared/types';
 import type { AgentSlug } from '../../../shared/events';
 import {
   createLeafPane,
@@ -303,9 +303,17 @@ export function computeLeafRects(root: Pane): Map<string, LeafRect> {
       return;
     }
     const n = pane.children.length;
+    // Normalize by the actual sum, not an assumed 100: the screen renders
+    // sizes as flexGrow RATIOS, so a persisted/edited tree whose sizes don't
+    // sum to 100 still lays out proportionally — un-normalized fracs would
+    // let the last child's rect spill past the box (sum > 100, making the
+    // far neighbour fail the direction filter → focus stuck) or leave a
+    // phantom gap (sum < 100). Sum == 100 makes this a no-op.
+    const parts = pane.children.map((_, i) => pane.sizes?.[i] ?? 100 / n);
+    const sum = parts.reduce((a, b) => a + b, 0) || 1;
     let offset = 0;
     for (let i = 0; i < n; i++) {
-      const frac = (pane.sizes?.[i] ?? 100 / n) / 100;
+      const frac = parts[i] / sum;
       if (pane.direction === 'horizontal') walk(pane.children[i], x + offset * w, y, w * frac, h);
       else walk(pane.children[i], x, y + offset * h, w, h * frac);
       offset += frac;
