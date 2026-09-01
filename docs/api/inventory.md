@@ -148,7 +148,7 @@ The full list lives in `src/shared/rpc.ts` (`ALL_RPC_METHODS`). For the MCP-faci
 | Method | Tier | Notes |
 |---|---|---|
 | `company.{create, destroy, status, addDept, removeDept, addMember, removeMember, broadcast, sendDept, sendMember, message, save, restore, templates, worktreeSetup, mergeDept, provision, provisionAll, provisionCeo}` | **experimental** | 3-tier orchestration (CEO → Department → Teammate). Per the Substrate 3.0 decision (memory `project_company_mode_vision.md`), Company Mode is being re-evaluated at the post-v3.0 gate as a first-party reference orchestrator on top of the substrate, not a core wmux feature. |
-| `company.a2a.{whoami, send, broadcast, inbox, ack, status}` | **experimental** | Company-scoped A2A surface. Reachable from the Company mode UI only — the matching `company_a2a_*` MCP tools were removed (see [Company A2A (removed)](#company-a2a-removed)). |
+| `company.a2a.{whoami, send, broadcast, inbox, ack, status}` | **experimental** | Company-scoped A2A surface. **Currently has no caller.** The six `company_a2a_*` MCP tools were its only entry point and have been removed (see [Company A2A (removed)](#company-a2a-removed)); no renderer, preload, or daemon path reaches these handlers. They are retained rather than deleted pending the Company mode re-evaluation. |
 
 ---
 
@@ -212,16 +212,20 @@ There is intentionally no `channel_archive` MCP tool: archiving tears a channel 
 
 ### Company A2A (removed)
 
-**Deprecation — the six `company_a2a_*` MCP tools (`whoami`, `send`, `broadcast`, `inbox`, `ack`, `status`) were removed from every profile.** They were never driven by any prompt, skill, or documented flow, and each one cost schema bytes in the `tools/list` every session pays for before it does any work. **Company mode itself is unchanged** — its renderer UI and the `company.*` / `company.a2a.*` RPC surface listed above remain exactly as they were; only the MCP projection is gone. Agents use the workspace-level replacements:
+**Deprecation — the six `company_a2a_*` MCP tools (`whoami`, `send`, `broadcast`, `inbox`, `ack`, `status`) were removed from every profile.** They were never driven by any prompt, skill, or documented flow, and each one cost schema bytes in the `tools/list` every session pays for before it does any work.
+
+**Company mode's UI is unaffected** — the panel, spawn, and the `company.*` provisioning/mutation RPCs behind them work exactly as before. **Company A2A messaging (the member inbox) currently has no caller**, however: these six tools were the only entry point into `company.a2a.*`, and no renderer, preload, or daemon path reaches those handlers. The pipe handlers are retained rather than deleted, pending the Company mode re-evaluation.
+
+Two of the six have a direct workspace-level equivalent. The other four do not — department/CEO name routing, the member inbox, and the department tree were Company-mode-only features and are removed from MCP outright:
 
 | Removed tool | Replacement |
 |---|---|
 | `company_a2a_whoami` | `a2a_whoami` |
-| `company_a2a_send` | `send_message` / `a2a_task_send` |
 | `company_a2a_broadcast` | `a2a_broadcast` |
-| `company_a2a_ack` | `channel_ack` |
-| `company_a2a_inbox` | `channel_read` / `channel_unread` |
-| `company_a2a_status` | `a2a_discover` + `workspace_list` |
+| `company_a2a_send` | **No equivalent.** It resolved a target by department → lead, member name, or `"CEO"`; `send_message` / `a2a_task_send` only resolve workspaces. |
+| `company_a2a_inbox` | **No equivalent.** The member inbox is a Company-mode store; `channel_read` / `channel_unread` read channels, which are a different store. |
+| `company_a2a_ack` | **No equivalent.** `channel_ack` acknowledges by channel `seq`, not by the inbox `messageId` these took. |
+| `company_a2a_status` | **No equivalent.** It returned the department tree with per-member roles; `a2a_discover` + `workspace_list` enumerate workspaces, which is not the same graph. |
 
 ### Browser / CDP (experimental)
 
