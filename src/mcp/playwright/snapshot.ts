@@ -733,6 +733,17 @@ function setPageRefs(page: Page, refs: RefEntry[], scopeSelector?: string): void
 }
 
 /**
+ * Every RefEntry the last snapshot minted for this page.
+ *
+ * The replay runner takes ONE internal snapshot and then re-resolves each
+ * stored step against this list, so the agent never sees a snapshot during a
+ * replay — which is the whole saving the feature exists for.
+ */
+export function listRefEntries(page: Page): readonly RefEntry[] {
+  return pageRefMaps.get(page) ?? [];
+}
+
+/**
  * The RefEntry the last snapshot minted for `ref` on this page, if any.
  *
  * The action recorder needs the 4-tuple a ref stands for, not the element the
