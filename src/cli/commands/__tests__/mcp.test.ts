@@ -21,7 +21,7 @@ vi.mock('net', () => ({ connect: connectMock, default: { connect: connectMock } 
 vi.mock('fs');
 
 import * as fs from 'fs';
-import { canConnectBrokerPipe, resolveWmuxScript } from '../mcp';
+import { canConnectBrokerPipe, resolveWmuxScript, selectedProfile } from '../mcp';
 
 const existsSyncMock = fs.existsSync as unknown as ReturnType<typeof vi.fn>;
 
@@ -155,5 +155,28 @@ describe('canConnectBrokerPipe', () => {
   it('resolves false on connection error and never rejects', async () => {
     scriptConnect('error');
     await expect(canConnectBrokerPipe(300)).resolves.toBe(false);
+  });
+});
+
+describe('selectedProfile — `wmux mcp register --profile`', () => {
+  it('is undefined when the flag is absent (= preserve what is on disk)', () => {
+    // Not 'full': "no flag" must NOT mean "write the default", or every
+    // re-register would undo an opted-in --core.
+    expect(selectedProfile(['register'])).toBeUndefined();
+    expect(selectedProfile(['register', '--target', 'claude', '--json'])).toBeUndefined();
+  });
+
+  it('parses both valid values, anywhere in the argv', () => {
+    expect(selectedProfile(['register', '--profile', 'core'])).toBe('core');
+    expect(selectedProfile(['register', '--profile', 'full'])).toBe('full');
+    expect(selectedProfile(['register', '--profile', 'core', '--json'])).toBe('core');
+    expect(selectedProfile(['register', '--json', '--profile', 'full'])).toBe('full');
+  });
+
+  it('returns null for an unknown or missing value so the caller can error out', () => {
+    // A typo must not silently register the default over someone's --core.
+    expect(selectedProfile(['register', '--profile', 'cores'])).toBeNull();
+    expect(selectedProfile(['register', '--profile', 'commander'])).toBeNull();
+    expect(selectedProfile(['register', '--profile'])).toBeNull();
   });
 });

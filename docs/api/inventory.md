@@ -156,6 +156,18 @@ The full list lives in `src/shared/rpc.ts` (`ALL_RPC_METHODS`). For the MCP-faci
 
 The wmux MCP server (hosted in-process, named-pipe transport to the daemon) exposes a curated subset of the RPC surface as MCP tools. Tool names match `mcp__wmux__<tool>` when used from a Claude Desktop / Claude Code client.
 
+### Tool profiles
+
+The surface a server registers is chosen once, by a launch argument in the host config's `args` — never by an environment variable, so an env-stripping host cannot silently change it.
+
+| Profile | Launch arg | Contents |
+|---|---|---|
+| `full` | *(none)* | Every tool. **The default every registration writes.** |
+| `core` | `--core` | `full` minus `browser_*` (and any `company_*`), for agents that never touch the browser. Saves roughly 27 KB of `tools/list` schema per session. An optimization, not a permission boundary — a core-mode agent has exactly the authority an ordinary one does. |
+| `commander` | `--commander` | The orchestrator role surface. Set by the deck brain adapters at spawn time, not by host-config registration. |
+
+`wmux mcp register --profile core` opts a host into the smaller surface; `--profile full` moves it back. Registration without `--profile` **preserves** whatever profile the entry already carries, so an automatic re-registration (app boot, bundle-path refresh after an upgrade) never undoes the choice.
+
 ### Substrate surface (stable in v3.0)
 
 | MCP tool | Backs RPC method | Notes |

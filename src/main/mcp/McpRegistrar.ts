@@ -202,6 +202,10 @@ export class McpRegistrar {
 
       for (const target of MCP_TARGETS) {
         try {
+          // No profile argument on purpose. This is the AUTOMATIC path (boot,
+          // path refresh), and it must never overrule a profile the user chose
+          // with `wmux mcp register --profile`: omitting it preserves whatever
+          // the config already carries. Only that CLI flag sets one explicitly.
           const result = registerTarget(target, this.home, mcpScript, this.ownedFor(target.id));
           if (result.wrote.length > 0) {
             console.log(`[McpRegistrar] ${target.displayName}: wrote ${result.wrote.join(', ')} → ${result.configPath}`);

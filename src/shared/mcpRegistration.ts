@@ -27,10 +27,12 @@ import {
   getMcpServerScript,
   isWmuxOwnedEntry,
   upsertMcpServer,
+  wmuxEntryArgs,
   removeMcpServers,
   isWmuxOwnedNotify,
   upsertNotifyToml,
   removeNotifyToml,
+  type WmuxMcpEntryProfile,
 } from './configIO';
 
 export interface ServerRegState {
@@ -105,6 +107,10 @@ export function readAllTargetStatuses(home: string): TargetRegStatus[] {
   return MCP_TARGETS.map((t) => readTargetStatus(t, home));
 }
 
+function arraysEqual(a: readonly string[], b: readonly string[]): boolean {
+  return a.length === b.length && a.every((v, i) => v === b[i]);
+}
+
 export interface RegisterTargetResult {
   configPath: string;
   /** 'absent' = uninstalled (skipped, not created); 'malformed' = corrupt (untouched). */
@@ -119,12 +125,17 @@ export interface RegisterTargetResult {
  * Ensure the `wmux` MCP server points at `wmuxScript` in one target's config.
  * `ownedKeys` (optional) tracks keys written this session so a key wmux already
  * owns is updated even if its on-disk shape looks foreign-adjacent.
+ *
+ * `profile` (optional) is an explicit surface choice — `wmux mcp register
+ * --profile core|full`. Automatic callers (McpRegistrar on boot, lifecycle
+ * refresh) pass nothing, which preserves the profile already on disk.
  */
 export function registerTarget(
   target: McpTarget,
   home: string,
   wmuxScript: string,
   ownedKeys?: Set<string>,
+  profile?: WmuxMcpEntryProfile,
 ): RegisterTargetResult {
   const configPath = target.configPath(home);
   const exists = fs.existsSync(configPath);
@@ -163,16 +174,23 @@ export function registerTarget(
       if (!isWmuxOwnedEntry(existing)) {
         foreign.push(WMUX_SERVER_KEY); // foreign hand-authored entry — never modify
         skip = true;
-      } else if (existing.args[0] === wmuxScript) {
+      } else if (
+        // Compare the WHOLE args array, not just args[0]. The profile flags
+        // live in args too, so a script-path match alone would call an entry
+        // "up to date" while an explicit `--profile core|full` sat unapplied.
+        // With no explicit profile the desired args preserve the on-disk ones,
+        // so this still short-circuits every unchanged boot re-registration.
+        arraysEqual(existing.args, wmuxEntryArgs(wmuxScript, profile, existing))
+      ) {
         ownedKeys?.add(WMUX_SERVER_KEY); // already up to date
         skip = true;
       }
-      // else: ours but stale path → update below
+      // else: ours but stale path / different profile → update below
     }
     if (!skip) {
       // upsert validates its INPUT and OUTPUT, so an inline-table entry the
       // line-based editor can't target (which would duplicate) throws here.
-      newText = upsertMcpServer(newText, target.format, WMUX_SERVER_KEY, wmuxScript);
+      newText = upsertMcpServer(newText, target.format, WMUX_SERVER_KEY, wmuxScript, profile);
       wrote.push(WMUX_SERVER_KEY);
       ownedKeys?.add(WMUX_SERVER_KEY);
     }

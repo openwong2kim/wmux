@@ -15,6 +15,7 @@ import {
   unregisterTarget,
   type TargetRegStatus,
 } from '../../shared/mcpRegistration';
+import type { WmuxMcpEntryProfile } from '../../shared/configIO';
 
 /**
  * `wmux mcp …` — inspect / manage MCP registration across the installed agent
@@ -52,6 +53,14 @@ SUBCOMMANDS
 
 OPTIONS
   --target <id>  Limit to one agent: claude | codex | gemini (default: all).
+  --profile <p>  register only. Tool surface the registered server launches
+                 with: full | core (default: full).
+                   full  every tool, including the browser family.
+                   core  drops browser_* — about 27 KB less tools/list schema
+                         for agents that never touch the browser.
+                 Without this flag an existing entry KEEPS the profile it
+                 already has, so re-registering never undoes your choice.
+                 Pass --profile full to move a core entry back.
   --json         Output raw JSON (useful for scripting).
 `.trimStart();
 
@@ -68,6 +77,18 @@ function selectedTargets(args: string[]): McpTarget[] | null {
   const id = args[i + 1];
   const t = MCP_TARGETS.find((x) => x.id === id);
   return t ? [t] : null;
+}
+
+// The explicit `--profile` choice for `register`. `undefined` when the flag is
+// absent — that is "no opinion", and registerTarget then PRESERVES whatever
+// profile the config already carries. Returns null for an unrecognized value so
+// the caller can error out rather than silently registering the default: a
+// `--profile cores` typo must not quietly write `full` over someone's `core`.
+export function selectedProfile(args: string[]): WmuxMcpEntryProfile | null | undefined {
+  const i = args.indexOf('--profile');
+  if (i === -1) return undefined;
+  const value = args[i + 1];
+  return value === 'full' || value === 'core' ? value : null;
 }
 
 function formatModified(d: Date | null): string {
@@ -374,6 +395,13 @@ export async function handleMcp(args: string[], jsonMode: boolean): Promise<void
     }
 
     case 'register': {
+      const profile = selectedProfile(args);
+      if (profile === null) {
+        const pi = args.indexOf('--profile');
+        console.error(`Unknown --profile "${args[pi + 1] ?? ''}". Valid: full, core.`);
+        process.exit(1);
+        return;
+      }
       // #1151 — explicit user action, so warn rather than skip: the target
       // configs are suffix-blind, so this writes the PRODUCTION entries even
       // when this CLI itself runs inside an isolated instance.
@@ -397,7 +425,7 @@ export async function handleMcp(args: string[], jsonMode: boolean): Promise<void
       // issues are 'malformed'); capture them per-target so one failure neither
       // aborts the rest nor is silently swallowed.
       const results = targets.map((t) => {
-        try { return { target: t, result: registerTarget(t, home, wmuxScript), error: null as string | null }; }
+        try { return { target: t, result: registerTarget(t, home, wmuxScript, undefined, profile), error: null as string | null }; }
         catch (e) { return { target: t, result: null, error: e instanceof Error ? e.message : String(e) }; }
       });
       if (jsonMode) {

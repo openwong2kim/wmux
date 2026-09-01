@@ -66,6 +66,46 @@ describe('registerTarget — Claude (json, createIfMissing)', () => {
   });
 });
 
+describe('registerTarget — launch profile', () => {
+  const argsOf = (): string[] => {
+    const parsed = JSON.parse(fs.readFileSync(claudeTarget.configPath(home), 'utf8')) as
+      { mcpServers: Record<string, { args: string[] }> };
+    return parsed.mcpServers.wmux.args;
+  };
+
+  it('registers the full surface by default', () => {
+    registerTarget(claudeTarget, home, WMUX_SCRIPT);
+    expect(argsOf()).toEqual([WMUX_SCRIPT]);
+  });
+
+  it('registers --core when the caller opts in', () => {
+    registerTarget(claudeTarget, home, WMUX_SCRIPT, undefined, 'core');
+    expect(argsOf()).toEqual([WMUX_SCRIPT, '--core']);
+  });
+
+  it('a profile-less re-register PRESERVES an opted-in --core', () => {
+    registerTarget(claudeTarget, home, WMUX_SCRIPT, undefined, 'core');
+    const r = registerTarget(claudeTarget, home, WMUX_SCRIPT);
+    expect(r.wrote).toEqual([]); // unchanged → still idempotent
+    expect(argsOf()).toEqual([WMUX_SCRIPT, '--core']);
+  });
+
+  it('a profile-less PATH refresh keeps --core while updating the script', () => {
+    registerTarget(claudeTarget, home, 'C:\\old\\index.js', undefined, 'core');
+    const r = registerTarget(claudeTarget, home, WMUX_SCRIPT);
+    expect(r.wrote).toContain('wmux');
+    expect(argsOf()).toEqual([WMUX_SCRIPT, '--core']);
+  });
+
+  it('switching profile is a WRITE even when the script path is unchanged', () => {
+    // args[0] alone would call this "already up to date" and drop the change.
+    registerTarget(claudeTarget, home, WMUX_SCRIPT, undefined, 'core');
+    const r = registerTarget(claudeTarget, home, WMUX_SCRIPT, undefined, 'full');
+    expect(r.wrote).toEqual(['wmux']);
+    expect(argsOf()).toEqual([WMUX_SCRIPT]);
+  });
+});
+
 describe('registerTarget — Codex (toml, only if installed)', () => {
   it('SKIPS when ~/.codex/config.toml does not exist (never created)', () => {
     const r = registerTarget(codexTarget, home, WMUX_SCRIPT);
