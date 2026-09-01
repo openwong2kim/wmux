@@ -4,6 +4,7 @@ import { FitAddon } from '@xterm/addon-fit';
 import { WebglAddon } from '@xterm/addon-webgl';
 import { SearchAddon } from '@xterm/addon-search';
 import { applyUnicodeWidthModel } from '../../shared/terminalUnicode';
+import { matchesDisabledShortcut } from '../../shared/keymap';
 import { xtermWindowsBuildNumber } from '../../shared/conptyWindows';
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import { useStore } from '../stores';
@@ -1623,17 +1624,13 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       // the PTY like any other terminal byte: return true so xterm PROCESSES
       // the key (encoding e.g. Ctrl+T as 0x14) instead of bubbling it to
       // useKeyboard, whose own disabled-gate would drop it without
-      // preventDefault — leaving the key dead in both worlds.
-      {
-        const disabledShortcuts = useStore.getState().disabledShortcuts;
-        if (disabledShortcuts.length > 0 && e.ctrlKey && !e.altKey) {
-          const mods = e.shiftKey ? 'Ctrl+Shift+' : 'Ctrl+';
-          const byKey = e.key.length === 1 ? mods + e.key.toUpperCase() : mods + e.key;
-          const byCode = e.code.startsWith('Key') ? mods + e.code.slice(3) : null;
-          if (disabledShortcuts.includes(byKey) || (byCode !== null && disabledShortcuts.includes(byCode))) {
-            return true;
-          }
-        }
+      // preventDefault — leaving the key dead in both worlds. Same shared
+      // matcher as that gate, so the two can never disagree about which
+      // combos are off.
+      if (matchesDisabledShortcut(
+        useStore.getState().disabledShortcuts, e, isMac ? 'darwin' : 'win32',
+      )) {
+        return true;
       }
       const bubbleKeys = isMac
         ? ['b', 'm', 'ArrowUp', 'ArrowDown']

@@ -6,6 +6,7 @@ import { MAX_PANES_PER_WORKSPACE } from './paneSlice';
 import { markRetentionMigrationDone } from '../retentionMigration';
 import { DEFAULT_BROWSER_BACKEND, isBrowserBackend, type BrowserBackend } from '../../../shared/browserBackend';
 import { CHROME_PRESET_VALUES } from '../../../shared/chromePresets';
+import { ADVERTISED_SHORTCUTS } from '../../../shared/keymap';
 
 /**
  * #517: read main's authoritative browser backend synchronously at store-module
@@ -1450,6 +1451,11 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
   disabledShortcuts: [],
 
   toggleShortcutDisabled: (combo) => set((state) => {
+    // Same whitelist the session loader applies (advertised rows only) —
+    // otherwise a programmatic caller could disable a combo the UI renders
+    // no re-enable toggle for, and the state would silently revert on the
+    // next load anyway.
+    if (!ADVERTISED_SHORTCUTS.some((k) => k.combo === combo)) return;
     state.disabledShortcuts = state.disabledShortcuts.includes(combo)
       ? state.disabledShortcuts.filter((c) => c !== combo)
       : [...state.disabledShortcuts, combo];

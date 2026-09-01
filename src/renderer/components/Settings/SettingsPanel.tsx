@@ -521,7 +521,9 @@ function KbdRow({ keys, description, disabled, onToggleDisabled, toggleTitle }: 
             checked={!disabled}
             onChange={onToggleDisabled}
             title={toggleTitle}
-            aria-label={toggleTitle}
+            // Unique per row — thirteen checkboxes all reading the same hint
+            // would be indistinguishable to a screen reader.
+            aria-label={`${description} (${keys})`}
             className="cursor-pointer"
           />
         )}
@@ -4221,8 +4223,11 @@ function TabShortcuts() {
   // never fired. Derived from WMUX_KEYMAP now (#818), and resolved for the
   // running platform — on macOS a built-in that fires on ⌘ cannot collide with
   // a custom binding, which is matched on literal Ctrl.
-  const BUILTIN_KEYS = builtinCombosFor(
-    window.electronAPI?.platform === 'darwin' ? 'darwin' : 'win32',
+  // #1152 — a disabled built-in no longer claims its combo, so a custom
+  // keybinding on it is a deliberate rebind, not a conflict to warn about.
+  const BUILTIN_KEYS = new Set(
+    [...builtinCombosFor(window.electronAPI?.platform === 'darwin' ? 'darwin' : 'win32')]
+      .filter((c) => !disabledShortcuts.includes(c)),
   );
 
   const prefixKeyDisplay = `Ctrl+${keyCodeToDisplay(prefixConfig.key)}`;

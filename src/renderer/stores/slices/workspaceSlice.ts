@@ -2,7 +2,7 @@ import type { StateCreator } from 'zustand';
 import type { StoreState } from '../index';
 import { createWorkspace, clonePaneTreeFresh, assignPaneOrdinals, generateId, BUILTIN_TEMPLATES, DEFAULT_PREFIX_CONFIG, buildDefaultCustomKeybindings, upgradeDefaultKeybindingsForPlatform, TERMINAL_STATES, NOTIFICATION_CATEGORIES, type Pane, type PaneLeaf, type SessionData, type StashedPane, type Workspace, type WorkspaceMetadata, type WorkspaceProfile } from '../../../shared/types';
 import { normalizeWorkspaceProfile } from '../../../shared/workspaceProfile';
-import { WMUX_KEYMAP } from '../../../shared/keymap';
+import { ADVERTISED_SHORTCUTS } from '../../../shared/keymap';
 import { normalizeWorkspaceColor, type WorkspaceColorId } from '../../../shared/workspaceColors';
 import { normalizeRoleBindings } from '../../../shared/orchestratorRole';
 import { getPresetById } from '../../../shared/layoutPresets';
@@ -1182,10 +1182,12 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
         state.customKeybindings = [...migrated, ...missingDefaults.map((k) => ({ ...k }))];
       }
       if (Array.isArray(data.disabledShortcuts)) {
-        // #1152 — whitelist against the CURRENT keymap so a stale session
-        // can't carry a combo that no longer exists (or junk from a hand-
-        // edited file) into the disabled set forever.
-        const known = new Set(WMUX_KEYMAP.map((k) => k.combo));
+        // #1152 — whitelist against the ADVERTISED rows only, not the whole
+        // keymap: only advertised rows render a re-enable toggle, so an
+        // unadvertised combo (Ctrl+B prefix, Ctrl+Tab, …) planted by a
+        // hand-edited or future-version session would be OFF with no way
+        // back short of editing session.json.
+        const known = new Set(ADVERTISED_SHORTCUTS.map((k) => k.combo));
         state.disabledShortcuts = data.disabledShortcuts.filter(
           (c): c is string => typeof c === 'string' && known.has(c),
         );

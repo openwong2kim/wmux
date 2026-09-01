@@ -167,6 +167,78 @@ export function builtinCombosFor(platform: NodeJS.Platform): ReadonlySet<string>
  * binding is literal-Ctrl on every OS. Mirrors `shortcutLabel()`'s old inline
  * logic in SettingsPanel and the `cmdOrCtrl` split in useKeyboard.ts.
  */
+/** The subset of KeyboardEvent both disabled-shortcut gates match against. */
+export interface ShortcutKeyEventLike {
+  key: string;
+  code: string;
+  ctrlKey: boolean;
+  metaKey: boolean;
+  shiftKey: boolean;
+  altKey: boolean;
+}
+
+// Physical-code → combo character, for the non-letter keys the keymap owns.
+// Letters/digits are derived from the Key*/Digit* prefix; these are the rest.
+const CODE_TO_COMBO_CHAR: Record<string, string> = {
+  Backquote: '`',
+  Comma: ',',
+  Minus: '-',
+  Equal: '=',
+};
+
+function comboCharFromCode(code: string): string | null {
+  if (code.startsWith('Key')) return code.slice(3);
+  if (code.startsWith('Digit')) return code.slice(5);
+  return CODE_TO_COMBO_CHAR[code] ?? null;
+}
+
+/**
+ * #1152 — does this keydown match a user-disabled built-in combo?
+ *
+ * ONE function shared by BOTH gates (useKeyboard's capture handler and
+ * useTerminal's xterm handler) so they can never disagree about which keys
+ * are off — a combo caught by only one side would die in both worlds
+ * (swallowed by the other gate) or stay half-bound.
+ *
+ * Combos are stored in WMUX_KEYMAP's cross-OS form ('Ctrl+T'), which on
+ * macOS means ⌘ for the cmdOrCtrl family and literal Ctrl only for
+ * `literalCtrl` rows — the same platform reading `builtinCombosFor` and the
+ * individual useKeyboard handlers apply. Matching literal Ctrl for
+ * everything on mac would swallow readline bytes (Ctrl+D EOF et al.) that
+ * were never app shortcuts there.
+ *
+ * Matches by e.key AND by physical code (KeyX, DigitN, Backquote, Comma, …)
+ * so a Hangul / non-Latin IME — where e.key is a composed glyph or
+ * 'Process' — disables the same keys a Latin layout does.
+ */
+export function matchesDisabledShortcut(
+  disabled: readonly string[],
+  e: ShortcutKeyEventLike,
+  platform: NodeJS.Platform,
+): boolean {
+  if (disabled.length === 0 || e.altKey) return false;
+  if (!e.ctrlKey && !e.metaKey) return false;
+
+  const mods = e.shiftKey ? 'Ctrl+Shift+' : 'Ctrl+';
+  const candidates: string[] = [];
+  if (e.key.length === 1) candidates.push(mods + e.key.toUpperCase());
+  else if (e.key !== 'Process' && e.key !== 'Dead') candidates.push(mods + e.key);
+  const byCode = comboCharFromCode(e.code);
+  if (byCode !== null) candidates.push(mods + byCode);
+
+  const mac = platform === 'darwin';
+  for (const combo of candidates) {
+    if (!disabled.includes(combo)) continue;
+    const entry = WMUX_KEYMAP.find((k) => k.combo === combo);
+    const wantsLiteralCtrl = entry?.literalCtrl === true;
+    const modifierMatches = mac
+      ? (wantsLiteralCtrl ? e.ctrlKey && !e.metaKey : e.metaKey)
+      : e.ctrlKey;
+    if (modifierMatches) return true;
+  }
+  return false;
+}
+
 export function macDisplayCombo(entry: KeymapEntry): string {
   return entry.literalCtrl ? entry.combo : entry.combo.replace(/Ctrl/g, '⌘');
 }
