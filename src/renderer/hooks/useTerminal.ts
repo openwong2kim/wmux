@@ -4,6 +4,7 @@ import { FitAddon } from '@xterm/addon-fit';
 import { WebglAddon } from '@xterm/addon-webgl';
 import { SearchAddon } from '@xterm/addon-search';
 import { applyUnicodeWidthModel } from '../../shared/terminalUnicode';
+import { matchesDisabledShortcut } from '../../shared/keymap';
 import { xtermWindowsBuildNumber } from '../../shared/conptyWindows';
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import { useStore } from '../stores';
@@ -1619,6 +1620,18 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       // Ctrl+K(kill-line) 등 readline 컨트롤 문자가 PTY에도 못 가고 죽는다
       // (owner-reported 2026-07-19). mac에서는 literal-Ctrl 바인딩만(b=프리픽스,
       // m=북마크, Ctrl+Arrow) 버블시키고 나머지는 xterm→PTY로 통과.
+      // #1152 — a combo the user disabled in Settings → Shortcuts must reach
+      // the PTY like any other terminal byte: return true so xterm PROCESSES
+      // the key (encoding e.g. Ctrl+T as 0x14) instead of bubbling it to
+      // useKeyboard, whose own disabled-gate would drop it without
+      // preventDefault — leaving the key dead in both worlds. Same shared
+      // matcher as that gate, so the two can never disagree about which
+      // combos are off.
+      if (matchesDisabledShortcut(
+        useStore.getState().disabledShortcuts, e, isMac ? 'darwin' : 'win32',
+      )) {
+        return true;
+      }
       const bubbleKeys = isMac
         ? ['b', 'm', 'ArrowUp', 'ArrowDown']
         : [',', 'b', 'd', 'k', 'i', 'n', 't', 'm', 'ArrowUp', 'ArrowDown', '`'];

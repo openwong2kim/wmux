@@ -5,6 +5,7 @@ import { collectPaneTreePtyIds, findLeaf, getLeafPanes, getWorkspacePtyIds } fro
 import { terminalRegistry } from './useTerminal';
 import { t } from '../i18n';
 import { pastePtyChunked } from '../utils/clipboardChunk';
+import { matchesDisabledShortcut } from '../../shared/keymap';
 import { createTerminalSurface } from '../utils/createTerminalSurface';
 import { openUrlInBrowserPane } from '../utils/browserPaneActions';
 import {
@@ -324,6 +325,67 @@ export function useKeyboard() {
 
       // Read prefix mode from store (fresh, no stale closure)
       const prefixMode = store.getState().prefixMode;
+
+      // Custom-keybinding dispatch, extracted so BOTH exits can reach it: the
+      // normal tail (after every built-in declined) and the #1152 disabled
+      // gate below — disabling a built-in must still let a custom macro the
+      // user rebound onto that combo fire, not silently die with it.
+      const dispatchCustomKeybinding = (): boolean => {
+        // Custom keybindings are stored in literal "Ctrl+…" form for cross-OS
+        // consistency; match against literalCtrl so user-defined combos behave
+        // identically on Windows / Linux / macOS.
+        const { customKeybindings } = store.getState();
+        if (customKeybindings.length === 0) return false;
+        const pressed = formatKeyCombo(literalCtrl, shift, alt, key);
+        const match = customKeybindings.find((kb) => kb.key === pressed);
+        if (!match) return false;
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        const state = store.getState();
+        const ws = state.workspaces.find((w) => w.id === state.activeWorkspaceId);
+        if (ws) {
+          const leaf = findLeaf(ws.rootPane, ws.activePaneId);
+          if (leaf) {
+            const surface = leaf.surfaces.find((s) => s.id === leaf.activeSurfaceId);
+            if (surface?.ptyId) {
+              const text = match.sendEnter ? match.command + '\r' : match.command;
+              // Route through the paste chunker. User-authored keybinding
+              // commands can contain multi-line shell snippets pasted into
+              // the settings field; chunking normalizes CRLF, paces IPC,
+              // and keeps the payload under the 100KB backstop. The
+              // trailing `\r` from `sendEnter` is preserved by the
+              // normalizer (lone `\r` is left alone).
+              const surfacePtyId = surface.ptyId;
+              void pastePtyChunked(
+                (d) => window.electronAPI.pty.write(surfacePtyId, d),
+                text,
+                null,
+              ).catch((err) => console.error('[wmux:keybinding] chunk write failed:', err));
+            }
+          }
+        }
+        return true;
+      };
+
+      // #1152 — a built-in the user disabled (Settings → Shortcuts) skips
+      // every built-in handler below. A custom macro rebound onto the combo
+      // still fires; otherwise the event leaves with no preventDefault, so
+      // the key falls through to whatever has focus — useTerminal's twin
+      // gate (matchesDisabledShortcut, the SAME function) then lets xterm
+      // encode it for the PTY, and Ctrl+T opens Codex's own transcript
+      // instead of a new surface. Prefix-mode SUB-commands stay unaffected.
+      // The CURRENT prefix trigger is exempt: a user who moved the prefix
+      // onto an advertised combo (prefixConfig.key is free-form) and then
+      // disabled that combo's built-in must still be able to enter prefix
+      // mode — losing the trigger would strand every prefix binding at once.
+      const isPrefixTrigger =
+        literalCtrl && !shift && !alt && code === store.getState().prefixConfig.key;
+      if (!prefixMode && !isPrefixTrigger && matchesDisabledShortcut(
+        store.getState().disabledShortcuts, e, isMac ? 'darwin' : 'win32',
+      )) {
+        dispatchCustomKeybinding();
+        return;
+      }
 
       // ─── Prefix mode: intercept the next key ───────────────────────
       if (prefixMode) {
@@ -835,42 +897,8 @@ export function useKeyboard() {
       }
 
       // ─── Custom keybindings → terminal input ─────────────────────────
-      // Custom keybindings are stored in literal "Ctrl+…" form for cross-OS
-      // consistency; match against literalCtrl so user-defined combos behave
-      // identically on Windows / Linux / macOS.
-      const { customKeybindings } = store.getState();
-      if (customKeybindings.length > 0) {
-        const pressed = formatKeyCombo(literalCtrl, shift, alt, key);
-        const match = customKeybindings.find((kb) => kb.key === pressed);
-        if (match) {
-          e.preventDefault();
-          e.stopImmediatePropagation();
-          const state = store.getState();
-          const ws = state.workspaces.find((w) => w.id === state.activeWorkspaceId);
-          if (ws) {
-            const leaf = findLeaf(ws.rootPane, ws.activePaneId);
-            if (leaf) {
-              const surface = leaf.surfaces.find((s) => s.id === leaf.activeSurfaceId);
-              if (surface?.ptyId) {
-                const text = match.sendEnter ? match.command + '\r' : match.command;
-                // Route through the paste chunker. User-authored keybinding
-                // commands can contain multi-line shell snippets pasted into
-                // the settings field; chunking normalizes CRLF, paces IPC,
-                // and keeps the payload under the 100KB backstop. The
-                // trailing `\r` from `sendEnter` is preserved by the
-                // normalizer (lone `\r` is left alone).
-                const surfacePtyId = surface.ptyId;
-                void pastePtyChunked(
-                  (d) => window.electronAPI.pty.write(surfacePtyId, d),
-                  text,
-                  null,
-                ).catch((err) => console.error('[wmux:keybinding] chunk write failed:', err));
-              }
-            }
-          }
-          return;
-        }
-      }
+      // Custom keybindings (extracted above so the #1152 gate can share it).
+      dispatchCustomKeybinding();
     };
 
     // Use capture phase so we run BEFORE xterm's stopPropagation

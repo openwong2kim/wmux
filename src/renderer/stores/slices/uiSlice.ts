@@ -6,6 +6,7 @@ import { MAX_PANES_PER_WORKSPACE } from './paneSlice';
 import { markRetentionMigrationDone } from '../retentionMigration';
 import { DEFAULT_BROWSER_BACKEND, isBrowserBackend, type BrowserBackend } from '../../../shared/browserBackend';
 import { CHROME_PRESET_VALUES } from '../../../shared/chromePresets';
+import { ADVERTISED_SHORTCUTS } from '../../../shared/keymap';
 
 /**
  * #517: read main's authoritative browser backend synchronously at store-module
@@ -544,6 +545,15 @@ export interface UISlice {
   addKeybinding: (kb: Omit<CustomKeybinding, 'id'>) => void;
   updateKeybinding: (id: string, kb: Partial<Omit<CustomKeybinding, 'id'>>) => void;
   removeKeybinding: (id: string) => void;
+  /**
+   * #1152 — built-in combos (WMUX_KEYMAP storage form, e.g. 'Ctrl+T') the
+   * user has switched OFF. A disabled combo is fully unbound: useKeyboard
+   * skips its handler and useTerminal stops bubbling it, so the key reaches
+   * the PTY like any other terminal byte (Ctrl+T then opens Codex's own
+   * transcript instead of a new wmux surface). Persisted in session.json.
+   */
+  disabledShortcuts: string[];
+  toggleShortcutDisabled: (combo: string) => void;
 
   // ─── File tree ────────────────────────────────────────────────────────
   fileTreeVisible: boolean;
@@ -1436,6 +1446,19 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
 
   removeKeybinding: (id) => set((state) => {
     state.customKeybindings = state.customKeybindings.filter((k) => k.id !== id);
+  }),
+
+  disabledShortcuts: [],
+
+  toggleShortcutDisabled: (combo) => set((state) => {
+    // Same whitelist the session loader applies (advertised rows only) —
+    // otherwise a programmatic caller could disable a combo the UI renders
+    // no re-enable toggle for, and the state would silently revert on the
+    // next load anyway.
+    if (!ADVERTISED_SHORTCUTS.some((k) => k.combo === combo)) return;
+    state.disabledShortcuts = state.disabledShortcuts.includes(combo)
+      ? state.disabledShortcuts.filter((c) => c !== combo)
+      : [...state.disabledShortcuts, combo];
   }),
 
   // ─── File tree ────────────────────────────────────────────────────────

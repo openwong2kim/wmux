@@ -336,6 +336,7 @@ export const zh = {
   'accounts.notLoggedIn': '未登录',
   'accounts.newTerminalsNote': '仅对新终端生效；正在运行的终端保持原账号。',
   'settings.shortcuts': '键盘快捷键',
+  'settings.shortcutDisableHint': '开：wmux 处理该按键。关：按键将传递给终端。',
   'settings.tabGeneral': '常规',
   'settings.tabAppearance': '外观',
   'settings.tabNotifications': '通知',

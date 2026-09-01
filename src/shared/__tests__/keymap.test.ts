@@ -104,3 +104,50 @@ describe('ADVERTISED_SHORTCUTS', () => {
     expect(ADVERTISED_SHORTCUTS.map((e) => e.combo)).toEqual(expected);
   });
 });
+
+// ─── #1152 matchesDisabledShortcut ───────────────────────────────────────────
+
+import { matchesDisabledShortcut, type ShortcutKeyEventLike } from '../keymap';
+
+const ev = (over: Partial<ShortcutKeyEventLike>): ShortcutKeyEventLike => ({
+  key: 't', code: 'KeyT', ctrlKey: true, metaKey: false, shiftKey: false, altKey: false, ...over,
+});
+
+describe('matchesDisabledShortcut (#1152)', () => {
+  it('matches a disabled combo on Windows by e.key', () => {
+    expect(matchesDisabledShortcut(['Ctrl+T'], ev({}), 'win32')).toBe(true);
+  });
+
+  it('matches by physical code under an IME (e.key is a composed glyph)', () => {
+    expect(matchesDisabledShortcut(['Ctrl+T'], ev({ key: 'ㅅ' }), 'win32')).toBe(true);
+    expect(matchesDisabledShortcut(['Ctrl+T'], ev({ key: 'Process' }), 'win32')).toBe(true);
+  });
+
+  it('matches Ctrl+` by the Backquote code (non-Key* physical code)', () => {
+    expect(matchesDisabledShortcut(['Ctrl+`'], ev({ key: 'Process', code: 'Backquote' }), 'win32')).toBe(true);
+  });
+
+  it('shift combos are distinct from their base combo', () => {
+    expect(matchesDisabledShortcut(['Ctrl+Shift+D'], ev({ key: 'D', code: 'KeyD', shiftKey: true }), 'win32')).toBe(true);
+    expect(matchesDisabledShortcut(['Ctrl+Shift+D'], ev({ key: 'd', code: 'KeyD' }), 'win32')).toBe(false);
+    expect(matchesDisabledShortcut(['Ctrl+D'], ev({ key: 'D', code: 'KeyD', shiftKey: true }), 'win32')).toBe(false);
+  });
+
+  it('macOS: a cmdOrCtrl-family combo matches ⌘, NOT literal Ctrl (readline bytes stay alive)', () => {
+    // Disabling "Ctrl+T" (rendered ⌘T on mac) must catch Cmd+T…
+    expect(matchesDisabledShortcut(['Ctrl+T'], ev({ ctrlKey: false, metaKey: true }), 'darwin')).toBe(true);
+    // …and must NOT catch literal Ctrl+T, which was never an app shortcut on
+    // mac — swallowing it would kill readline control bytes and any custom
+    // literal-Ctrl keybinding the user defined.
+    expect(matchesDisabledShortcut(['Ctrl+T'], ev({}), 'darwin')).toBe(false);
+  });
+
+  it('does not match with Alt held or with no Ctrl/⌘ at all', () => {
+    expect(matchesDisabledShortcut(['Ctrl+T'], ev({ altKey: true }), 'win32')).toBe(false);
+    expect(matchesDisabledShortcut(['Ctrl+T'], ev({ ctrlKey: false }), 'win32')).toBe(false);
+  });
+
+  it('empty disabled list is a cheap no-op', () => {
+    expect(matchesDisabledShortcut([], ev({}), 'win32')).toBe(false);
+  });
+});
