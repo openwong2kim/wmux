@@ -31,6 +31,19 @@ const RAW_PROTOCOL_VERSIONS = [
 ];
 
 const packageJson = JSON.parse(readFileSync(PACKAGE_PATH, 'utf8'));
+// `maxListBytes` per profile lives in the baseline file (JSON, so it cannot
+// carry this note itself). It is a HOST budget, not a hard protocol limit: a
+// tools/list result has to stay small enough that a client's context is not
+// dominated by the schema dump before any work starts. Raising it is a
+// deliberate act, recorded here so the next raise has to argue with a number
+// that already had a reason.
+//
+//   full: 75000 -> 78000 (browser_replay, PR-C). The full profile measured
+//   74,652 bytes with 92 tools, i.e. 348 bytes of headroom — less than a
+//   single tool's schema. One more tool could not be added at all without a
+//   raise, and a 3 KB cushion buys roughly one more tool after this one
+//   before the question has to be re-argued. core (49000) and commander
+//   (45000) are untouched; browser_replay is full-only.
 const baseline = JSON.parse(readFileSync(BASELINE_PATH, 'utf8'));
 
 function sha256(value) {

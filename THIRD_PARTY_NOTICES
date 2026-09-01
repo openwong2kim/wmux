@@ -8630,6 +8630,16 @@ the idea that a frame is read over a CDP session bound to its own
 target rather than through the page session. No selector-resolution or
 XPath code was taken.
 
+Separately, three operating principles of its action cache were adopted
+for browser_replay: best-effort (a cache miss or a mismatched page shape
+may never break the underlying action), replay-fallback self-heal (a
+replay that stops reports where and why and hands the live page back so
+the flow can be finished and re-recorded), and variable placeholders (a
+value that must vary is stored as a placeholder and substituted at
+replay time, so secrets are never written). wmux keys its steps on the
+snapshot's own role/name/index tuple rather than on Stagehand's XPath
+axis, and again no code was taken.
+
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
 in the Software without restriction, including without limitation the rights

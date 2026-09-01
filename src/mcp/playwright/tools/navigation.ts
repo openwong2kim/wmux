@@ -10,6 +10,7 @@ import {
 import { withAutomationLease } from '../automationLease';
 import { describeToolError } from '../toolError';
 import { redactPasswordParams } from '../redact';
+import { recordAction } from '../../browser-replay/actionRing';
 import {
   browserTabsError,
   isBrowserTabsResult,
@@ -155,6 +156,16 @@ export function registerNavigationTools(server: McpServer, deps: BrowserToolDeps
               if (!page) throw new Error('browser_navigate: no chrome page resolved for this scope.');
               await page.goto(url, { waitUntil: 'domcontentloaded' });
               finalUrl = page.url();
+              // The landing URL, not the requested one: a trace filed under a
+              // redirect's source would never match the page it actually runs
+              // against. `url` is what the step replays, so both are kept.
+              recordAction(deps, {
+                scope,
+                tool: 'browser_navigate',
+                page,
+                args: { url },
+                url: finalUrl,
+              });
               return {
                 content: [{ type: 'text' as const, text: `Navigated to ${redactPasswordParams(finalUrl)}` }],
               };
@@ -174,6 +185,13 @@ export function registerNavigationTools(server: McpServer, deps: BrowserToolDeps
             finalUrl = await sendScopedBrowserRpc<{ value: string }>('browser.evaluate', scope, {
               expression: 'location.href',
             }).then((r) => r?.value || url).catch(() => url);
+            recordAction(deps, {
+              scope,
+              tool: 'browser_navigate',
+              page: null,
+              args: { url },
+              url: finalUrl,
+            });
             return {
               content: [{ type: 'text' as const, text: `Navigated to ${redactPasswordParams(finalUrl)}` }],
             };

@@ -102,6 +102,7 @@ import { BrowserBackendStore } from './browser-session/BrowserBackendStore';
 import { ChromeLauncherRegistry } from './browser-session/ChromeLauncher';
 import { ChromeProfileStore } from './browser-session/ChromeProfileStore';
 import { ChromeSurfaceStore } from './browser-session/ChromeSurfaceStore';
+import { getActionCacheStore } from './browser-session/ActionCacheStore';
 import { isBrowserBackend } from '../shared/browserBackend';
 import { DaemonClient, getDaemonPipeName, readDaemonAuthToken } from './DaemonClient';
 import { raceDaemonShutdown } from './daemonShutdownRace';
@@ -1951,6 +1952,7 @@ function prepareInstallQuit(): void {
   try {
     chromeRegistry.disposeAll();
     chromeSurfaceStore.flushSync();
+    getActionCacheStore().flushSync();
   } catch (err) {
     console.error('[Main] install-quit chromeRegistry.disposeAll failed:', err);
   }
@@ -2229,6 +2231,10 @@ app.on('before-quit', async (e) => {
   safeStep('webviewCdpManager.disposeAll', () => webviewCdpManager.disposeAll());
   safeStep('chromeRegistry.disposeAll', () => chromeRegistry.disposeAll());
   safeStep('chromeSurfaceStore.flushSync', () => chromeSurfaceStore.flushSync());
+  // Recorded browser flows are written on a debounce, so a quit inside that
+  // window would drop the save the agent just made — the one it is most likely
+  // to want on the next launch.
+  safeStep('actionCacheStore.flushSync', () => getActionCacheStore().flushSync());
   safeStep('pipeServer.stop', () => pipeServer.stop());
   safeStep('mcpRegistrar.unregister', () => mcpRegistrar.unregister());
   safeStep('autoUpdater.stop', () => autoUpdater.stop());

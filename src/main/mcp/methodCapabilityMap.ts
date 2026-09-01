@@ -317,6 +317,18 @@ export const METHOD_CAPABILITY: Record<RpcMethod, RequiredCapability> = {
   'browser.cookies':           { capability: 'browser.cookies',  riskClass: 'browser' },
   'browser.resize':            { capability: 'browser.evaluate', riskClass: 'browser' },
   'browser.emulate':           { capability: 'browser.emulate',  riskClass: 'browser' },
+  // Browser action cache (#browser_replay). Reads are `browser.read`; the
+  // three mutating methods reuse `browser.click` rather than minting a new
+  // capability, because a caller that can already click can perform every
+  // action a stored trace can replay — the cache grants nothing it did not
+  // already have, and a new capability would surface in the consent UI as a
+  // permission users have no way to reason about.
+  'browser.actionCache.list':   { capability: 'browser.read',  riskClass: 'browser' },
+  'browser.actionCache.get':    { capability: 'browser.read',  riskClass: 'browser' },
+  'browser.actionCache.put':    { capability: 'browser.click', riskClass: 'browser' },
+  'browser.actionCache.stats':  { capability: 'browser.click', riskClass: 'browser' },
+  'browser.actionCache.forget': { capability: 'browser.click', riskClass: 'browser' },
+
   // Lease methods pin a guest at full speed (or strip that exemption from a
   // real automation op), i.e. they mutate the app's resource policy — a
   // read-only integration must not hold that lever (codex, PR #528). Gate on

@@ -733,6 +733,35 @@ function setPageRefs(page: Page, refs: RefEntry[], scopeSelector?: string): void
 }
 
 /**
+ * Every RefEntry the last snapshot minted for this page.
+ *
+ * The replay runner takes ONE internal snapshot and then re-resolves each
+ * stored step against this list, so the agent never sees a snapshot during a
+ * replay — which is the whole saving the feature exists for.
+ */
+export function listRefEntries(page: Page): readonly RefEntry[] {
+  return pageRefMaps.get(page) ?? [];
+}
+
+/**
+ * The RefEntry the last snapshot minted for `ref` on this page, if any.
+ *
+ * The action recorder needs the 4-tuple a ref stands for, not the element the
+ * ref resolves to: the tuple is what a replayed step re-resolves against, and
+ * reading it here means the recorder shares one source of truth with
+ * resolveRef instead of re-deriving role and name from the DOM (where they
+ * would be computed differently and match differently at replay time).
+ *
+ * Returns undefined for a DOM-fallthrough snapshot, which mints no RefEntry at
+ * all — the caller records that step as unrepresentable rather than guessing.
+ */
+export function getRefEntry(page: Page, ref: string): RefEntry | undefined {
+  const wanted = refNumber(ref);
+  if (wanted === null) return undefined;
+  return pageRefMaps.get(page)?.find((entry) => entry.ref === wanted);
+}
+
+/**
  * The registry key for one browser surface.
  *
  * A surface, not a workspace: two surfaces in one workspace have separate

@@ -9,6 +9,11 @@ import {
 import { redactPasswordParams } from './redact';
 import { invalidateSnapshotBaseline, invalidateSnapshotBaselineIfStale } from './snapshotCache';
 import { PlaywrightEngine } from './PlaywrightEngine';
+import {
+  isServable,
+  normalizeUrlKey,
+  type TraceRecord,
+} from '../../shared/browserReplay/actionTrace';
 
 // Renew well inside main's 30s RPC-lease TTL so a long-running tool op
 // (browser_wait_for, slow page interactions) never lapses mid-flight.
@@ -126,6 +131,60 @@ function prependBrowserEvents<T>(result: T, events: LifecycleEventWire[]): T {
   return result;
 }
 
+/**
+ * Tell the agent a recorded flow exists for the page it just landed on.
+ *
+ * Attached ONLY to a successful navigation, and never to a snapshot footer.
+ * A footer would be self-defeating: browser_replay exists to spare the agent
+ * the snapshot, so paying for the hint with snapshot bytes on every single
+ * snapshot spends more than the feature saves. A navigation is also the one
+ * moment the hint is actionable — the flow starts here or it does not start.
+ *
+ * Only PROVEN, unquarantined traces are named (isServable): suggesting a flow
+ * that has never worked costs the agent an attempt it did not ask for.
+ *
+ * Failure is silence. An older main without the actionCache methods, a torn
+ * cache, an unresolvable scope — none of them may turn a working navigation
+ * into a failed one.
+ */
+async function prependReplayHints<T>(
+  result: T,
+  events: LifecycleEventWire[],
+  scope: BrowserTargetScope,
+): Promise<T> {
+  const shaped = result as
+    | { content?: Array<{ type: string; text?: string }>; isError?: boolean }
+    | null
+    | undefined;
+  if (!shaped || !Array.isArray(shaped.content)) return result;
+  // A failed tool call is not a landing, and hinting on one would advertise a
+  // flow for a page the agent is not on.
+  if (shaped.isError === true) return result;
+
+  const landed = [...events].reverse().find((e) => e.type === 'navigated' && e.url);
+  if (!landed?.url) return result;
+
+  try {
+    const urlKey = normalizeUrlKey(landed.url);
+    const res = await sendScopedBrowserRpc<{ traces?: TraceRecord[] }>(
+      'browser.actionCache.list',
+      scope,
+      { urlKey },
+    );
+    const names = (res?.traces ?? []).filter(isServable).map((t) => t.name);
+    if (names.length === 0) return result;
+    shaped.content.unshift({
+      type: 'text',
+      text:
+        `[replay] ${names.length} recorded flow(s) for this page: ${names.join(', ')} — ` +
+        `browser_replay {action:"run", name:"..."} repeats one without a snapshot.\n`,
+    });
+  } catch {
+    /* no hint is always an acceptable outcome */
+  }
+  return result;
+}
+
 /** Options for withAutomationLease (navigation self-echo suppression). */
 export interface AutomationLeaseOpts<T> {
   /**
@@ -234,10 +293,14 @@ export async function withAutomationLease<T>(
       // finally's lease bracket — browser.lifecycle.get is a leased RPC and
       // must not hit a re-throttled guest.
       const postEvents = await drainLifecycleEventsPost(scope);
-      return prependBrowserEvents(
+      // The hint reads the RAW post-drain slice, before self-echo suppression:
+      // browser_navigate's own `navigated` is exactly the landing worth
+      // hinting on, and it is the event suppression removes.
+      const withEvents = prependBrowserEvents(
         result,
         [...lateEvents, ...suppressSelfEcho(postEvents, result, opts)],
       );
+      return prependReplayHints(withEvents, [...lateEvents, ...postEvents], scope);
     } finally {
       done = true;
       clearInterval(lateTimer);
@@ -262,10 +325,11 @@ export async function withAutomationLease<T>(
     const result = await fn(scope);
     // Post-drain still inside the lease bracket (see the late-acquire branch).
     const postEvents = await drainLifecycleEventsPost(scope);
-    return prependBrowserEvents(
+    const withEvents = prependBrowserEvents(
       result,
       [...events, ...suppressSelfEcho(postEvents, result, opts)],
     );
+    return prependReplayHints(withEvents, [...events, ...postEvents], scope);
   } finally {
     clearInterval(renewTimer);
     sendRpc('browser.lease.release', { token: heldToken }).catch(() => {

@@ -24,6 +24,7 @@ import {
   type BrowserTargetScope,
   type BrowserToolDeps,
 } from '../browserScope';
+import { recordAction } from '../../browser-replay/actionRing';
 
 // Optional surfaceId schema reused across tools
 const optionalSurfaceId = z
@@ -429,6 +430,10 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
               ...(double && { clickCount: 2 }),
             });
             const note = coordWatch ? await coordWatch.note() : '';
+            // Coordinate clicks are deliberately NOT recorded: a coordinate
+            // does not survive a re-render, so a trace built on one replays a
+            // click into whatever has moved under it. The escape hatch stays
+            // an escape hatch.
             return {
               content: [
                 {
@@ -464,6 +469,13 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
               const locator = page.locator(selector);
               if (double) await locator.dblclick();
               else await locator.click();
+              recordAction(deps, {
+                scope,
+                tool: 'browser_click',
+                page,
+                selector,
+                ...(double && { args: { double: true } }),
+              });
               return {
                 content: [{ type: 'text' as const, text: `Clicked${double ? ' (double)' : ''} element smartRef=${smartRef}${await popupNote()}` }],
               };
@@ -475,6 +487,13 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
             if (!el) throw new Error(refNotFound(ref));
             if (double) await el.dblclick();
             else await el.click();
+            recordAction(deps, {
+              scope,
+              tool: 'browser_click',
+              page,
+              ref,
+              ...(double && { args: { double: true } }),
+            });
             return {
               content: [{ type: 'text' as const, text: `Clicked${double ? ' (double)' : ''} element ref=${ref}${await popupNote()}` }],
             };
@@ -489,6 +508,7 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
         if (!ref && smartRef === undefined) throw new Error('Either ref or smartRef must be provided.');
         const resolvedRef = ref ?? String(smartRef);
         await rpcClick(resolvedRef, scope, double);
+        recordAction(deps, { scope, tool: 'browser_click', page: null, ref: resolvedRef });
         return {
           content: [{ type: 'text' as const, text: `Clicked${double ? ' (double)' : ''} element ref=${resolvedRef}` }],
         };
@@ -540,6 +560,21 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
         // only re-enter the value into the transcript and the logs.
         const echoed = isPassword ? REDACTED_PASSWORD : text;
 
+        // A password step is recorded as a HOLE, never as a step carrying its
+        // own value: the text does not enter the ring, so it cannot reach the
+        // save handler, the put RPC, or the cache file. The step is still
+        // listed so the flow reads honestly and refuses to run — silently
+        // dropping it would produce a trace that "logs in" without a password
+        // and reports success.
+        recordAction(deps, {
+          scope,
+          tool: 'browser_type',
+          page,
+          ref,
+          args: isPassword ? {} : { text, ...(submit && { submit: true }) },
+          ...(isPassword && { unrecordable: 'password' as const }),
+        });
+
         return {
           content: [
             {
@@ -571,19 +606,45 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
 
         let filled = 0;
         const errors: string[] = [];
+        // Which fields were credentials. Decided per field BEFORE the fill, the
+        // same rule and the same predicate browser_type uses: a form filled in
+        // one call may well be a login form, and recording it wholesale would
+        // put the password into the trace that browser_type is careful never to
+        // put there (panel review conf10 — the two tools have to give the same
+        // guarantee or the guarantee is worthless).
+        const isPassword: boolean[] = [];
 
-        for (const field of fields) {
+        for (let i = 0; i < fields.length; i++) {
+          const field = fields[i];
           try {
             if (page) {
               const el = await resolveRef(page, field.ref);
               if (!el) { errors.push(refNotFound(field.ref)); continue; }
+              isPassword[i] = await isPasswordElement(el);
               await el.fill(field.value);
             } else {
+              isPassword[i] = await rpcIsPasswordElement(field.ref, scope);
               await rpcFill(field.ref, field.value, scope);
             }
             filled++;
           } catch (err) {
             errors.push(describeToolError(err));
+          }
+        }
+
+        // Recorded only when EVERY field landed: a partially filled form
+        // replayed as if it were whole is a wrong run that reports success.
+        if (filled === fields.length && fields.length > 0) {
+          for (let i = 0; i < fields.length; i++) {
+            const credential = isPassword[i] === true;
+            recordAction(deps, {
+              scope,
+              tool: 'browser_fill',
+              page,
+              ref: fields[i].ref,
+              args: credential ? {} : { value: fields[i].value },
+              ...(credential && { unrecordable: 'password' as const }),
+            });
           }
         }
 
@@ -622,6 +683,8 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
         } else {
           await rpcPressKey(key, scope);
         }
+
+        recordAction(deps, { scope, tool: 'browser_press_key', page, args: { key } });
 
         return {
           content: [{ type: 'text' as const, text: `Pressed key: ${key}` }],
@@ -664,6 +727,8 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
           })()`, scope);
           if (val === 'not_found') throw new Error(refNotFound(ref));
         }
+
+        recordAction(deps, { scope, tool: 'browser_hover', page, ref });
 
         return {
           content: [{ type: 'text' as const, text: `Hovered over element ref=${ref}` }],
@@ -730,6 +795,8 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
           if (val === 'target_not_found') throw new Error(refNotFound(targetRef));
         }
 
+        recordAction(deps, { scope, tool: 'browser_drag', page, ref: sourceRef, targetRef });
+
         return {
           content: [{ type: 'text' as const, text: `Dragged element ref=${sourceRef} to ref=${targetRef}` }],
         };
@@ -772,6 +839,14 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
           if (val === 'not_found') throw new Error(refNotFound(ref));
         }
 
+        recordAction(deps, {
+          scope,
+          tool: 'browser_select',
+          page,
+          ref,
+          args: { values: values.join('\u0000') },
+        });
+
         return {
           content: [{ type: 'text' as const, text: `Selected value(s) [${values.join(', ')}] in element ref=${ref}` }],
         };
@@ -810,6 +885,8 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
           })()`, scope);
           if (val === 'not_found') throw new Error(refNotFound(ref));
         }
+
+        recordAction(deps, { scope, tool: 'browser_scroll_into_view', page, ref });
 
         return {
           content: [{ type: 'text' as const, text: `Scrolled element ref=${ref} into view` }],
@@ -869,6 +946,14 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
             })()`, scope);
           }
         }
+
+        recordAction(deps, {
+          scope,
+          tool: 'browser_scroll',
+          page,
+          ...(ref !== undefined && { ref }),
+          args: { direction, amount: px },
+        });
 
         return {
           content: [{ type: 'text' as const, text: `Scrolled ${direction} by ${px}px${ref ? ` (element ref=${ref})` : ''}` }],
