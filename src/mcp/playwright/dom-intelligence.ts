@@ -214,13 +214,17 @@ interface CdpAXNode {
  * cache is scoped to one (review 7): ref numbers restart at 1 per Page, the
  * cache is per CONNECTION, and one connection can drive several surfaces and
  * tabs. Without them, snapshotting tab A and then clicking on tab B resolves
- * A's ref against B's DOM and reports success. A WeakRef, so holding the cache
- * can never keep a closed page alive.
+ * A's ref against B's DOM and reports success.
+ *
+ * A plain reference, not a WeakRef: the record is replaced wholesale by the
+ * next smart snapshot and lives on the connection scope, so at most one closed
+ * Page is held, and only until that connection snapshots again or goes away.
+ * (WeakRef is also absent from the MCP build's ES2020 lib.)
  */
 interface SmartSnapshotRecord {
   elements: IndexedElement[];
   /** The page the snapshot was taken on. Absent on the RPC lane. */
-  page: WeakRef<Page> | null;
+  page: Page | null;
   /** Surface the snapshot was taken on, when the caller named one. */
   surfaceId: string | undefined;
   /** identity.generation at capture time — which snapshot minted these refs. */
@@ -682,7 +686,7 @@ export async function getSmartSnapshot(
   });
   setSnapshotRecord({
     elements,
-    page: new WeakRef(page),
+    page,
     surfaceId: options?.surfaceId,
     generation: identity?.generation ?? 0,
     documentEpoch: identity?.documentEpoch ?? 0,
@@ -881,8 +885,7 @@ export async function resolveSmartRefLocator(page: Page, ref: number): Promise<L
   // Wrong page, whatever the ref says. Checked before anything else: on the
   // CDP lane the refs belong to ONE page, and every check below would
   // otherwise be run against a DOM the snapshot never saw (review 7).
-  const capturedPage = record.page?.deref();
-  if (capturedPage !== undefined && capturedPage !== page) {
+  if (record.page !== null && record.page !== page) {
     throw new StaleSmartRefError(
       `smartRef=${ref} was taken on a different page than the one this click targets` +
         `${record.surfaceId ? ` (snapshot surface "${record.surfaceId}")` : ''}. ${RESNAPSHOT}`,
