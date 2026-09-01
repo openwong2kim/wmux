@@ -2,6 +2,7 @@ import { memo, useEffect, useMemo, useState } from 'react';
 import { useStore } from '../../stores';
 import {
   createWorkspaceAgentRosterSelector,
+  createWorkspaceRosterCountsSelector,
   type WorkspaceAgentRosterRow,
 } from '../../stores/selectors/workspaceAgentRoster';
 import { focusNotificationTarget, focusPaneByPtyId } from '../../hooks/useNotificationListener';
@@ -13,11 +14,59 @@ import { AGENT_STATUS_ICON } from './agentStatusIcon';
 
 /** How long the just-stashed row stays highlighted. Long enough to catch the
  *  eye after the pane vanishes from the layout, short enough not to linger. */
-const STASH_PULSE_MS = 1500;
+export const STASH_PULSE_MS = 1500;
+
+/** Ties the summary's `aria-controls` to the list it expands. */
+export function rosterListId(workspaceId: string): string {
+  return `roster-list-${workspaceId}`;
+}
+
+/**
+ * The summary's accessible name — the words its visible chip drops.
+ *
+ * The chip is a bare number (plus a stash glyph); a screen reader must still
+ * hear "Agents 3, Stashed 1, Show agent list". A workspace whose only entries
+ * are stashed panes leads with the stash rather than announcing "Agents 0" —
+ * the zero is the least useful number it could open with.
+ *
+ * Pure so the three shapes can actually be asserted, rather than grepped for.
+ */
+export function rosterSummaryAriaLabel(
+  roster: { agentCount: number; stashedCount: number },
+  open: boolean,
+  t: (key: 'workspace.agentCount' | 'roster.stashedCount' | 'roster.stashedOnly'
+    | 'workspace.showAgents' | 'workspace.hideAgents', vars?: Record<string, string | number>) => string,
+): string {
+  const countLabel =
+    roster.agentCount === 0
+      ? t('roster.stashedOnly', { count: roster.stashedCount })
+      : roster.stashedCount > 0
+        // Comma, not the "·" this string carried when it was also the VISIBLE
+        // label: it is spoken now, and a middle dot is either silence or the
+        // words "middle dot" depending on the screen reader.
+        ? `${t('workspace.agentCount', { count: roster.agentCount })}, ${t('roster.stashedCount', { count: roster.stashedCount })}`
+        : t('workspace.agentCount', { count: roster.agentCount });
+  return [countLabel, open ? t('workspace.hideAgents') : t('workspace.showAgents')].join(', ');
+}
 
 interface WorkspaceAgentRosterProps {
   workspaceId: string;
-  isActive: boolean;
+  /**
+   * The row to flash once, from the #977 stash pulse. WorkspaceItem owns the
+   * pulse because the pulse's first job is to OPEN this list, and this
+   * component is only mounted once it is open.
+   */
+  pulsingPaneId: string | null;
+}
+
+interface WorkspaceRosterSummaryProps {
+  workspaceId: string;
+  /** Both counts come from WorkspaceItem's own counts subscription, so this
+   *  control holds no store subscription of its own and memoizes on numbers. */
+  agentCount: number;
+  stashedCount: number;
+  open: boolean;
+  onToggle: () => void;
 }
 
 /**
@@ -78,46 +127,115 @@ export function rosterHasMixedVendors(rows: readonly WorkspaceAgentRosterRow[]):
   return false;
 }
 
-function WorkspaceAgentRoster({ workspaceId, isActive }: WorkspaceAgentRosterProps) {
+/**
+ * #997 — the roster summary, rendered INSIDE the workspace row.
+ *
+ * It used to be a row of its own directly under the workspace: a chevron and
+ * "Agents 3", costing one line per workspace that has any agents at all. That
+ * line named nothing, and in the expanded state its count restated what the
+ * rows immediately below it already showed — it was redundant exactly when it
+ * was most expensive. With eleven workspaces open the eleven lines were the
+ * difference between seeing the list and scrolling it.
+ *
+ * The count moves onto the workspace row and the line goes away. What does NOT
+ * move with it is a needs-you count: the workspace row's leading dot is
+ * `selectWorkspaceAgentStatus`, the most-urgent status rolled up across the
+ * whole workspace, so it already turns red when an agent here reaches
+ * awaiting_input / waiting / error. That is the signal, and the row's scarcest
+ * space should not render it twice.
+ *
+ * Two known gaps in that dot, neither introduced here and neither an argument
+ * for a second indicator in this one place: `selectFleetPanes` (the dot's
+ * source) reads neither `surfacePendingQuestion` — which this roster promotes
+ * to awaiting_input — nor a stashed pane's `exited` liveness, so a pane
+ * blocked on a question can sit under a green dot. The dot also drives
+ * MiniSidebar, the titlebar vitals and the deck Fleet, so the fix belongs at
+ * its source rather than behind a number that would only correct the sidebar.
+ * Tracked separately.
+ *
+ * Stash keeps its own glyph rather than a word — the same `IconEyeOff` the
+ * expanded list's stash group header uses, so a collapsed workspace still
+ * accounts for panes that are running but off-screen.
+ */
+function WorkspaceRosterSummary({
+  workspaceId,
+  agentCount,
+  stashedCount,
+  open,
+  onToggle,
+}: WorkspaceRosterSummaryProps) {
+  const t = useT();
+  const roster = { agentCount, stashedCount };
+
+  if (agentCount === 0 && stashedCount === 0) return null;
+
+  const ariaLabel = rosterSummaryAriaLabel(roster, open, t);
+
+  return (
+    <button
+      type="button"
+      draggable={false}
+      // The row's own handleDragStart rejects gestures that begin on
+      // `[data-workspace-agent-roster]`. Carrying the marker puts this control
+      // behind that already-proven guard instead of leaving the mousedown
+      // preventDefault below as the single line of defence.
+      data-workspace-agent-roster
+      className={`mt-0.5 flex flex-shrink-0 items-center gap-0.5 rounded px-0.5 text-[9px] font-mono tabular-nums text-[var(--text-muted)] transition-colors hover:text-[var(--text-sub)] ${FOCUS_RING}`}
+      aria-expanded={open}
+      aria-controls={rosterListId(workspaceId)}
+      aria-label={ariaLabel}
+      title={ariaLabel}
+      onClick={(event) => {
+        // The workspace row selects the workspace on click; this control must
+        // only expand, so it stops the gesture before the row sees it.
+        event.stopPropagation();
+        onToggle();
+      }}
+      onMouseDown={(event) => {
+        // The row is a native drag source. Without this, pressing the chevron
+        // starts a workspace drag instead of arming the click.
+        event.preventDefault();
+        event.stopPropagation();
+        // preventDefault also suppresses the focus mousedown would have given
+        // the button, which would leave the keyboard's idea of "here" behind
+        // on whatever was focused before — and the focus ring never appears.
+        event.currentTarget.focus();
+      }}
+      onDoubleClick={(event) => event.stopPropagation()}
+    >
+      <span
+        className="flex-shrink-0 transition-transform duration-150"
+        style={{ transform: open ? 'rotate(90deg)' : undefined }}
+      >
+        <IconChevron size={8} />
+      </span>
+      {agentCount > 0 && <span>{agentCount}</span>}
+      {/* The stash glyph draws only when it is the ONLY thing to report.
+          Beside an agent count it cost 17px of a row whose name column has
+          none to spare (measured: it was the difference between eleven
+          readable characters and fourteen), while the same panes are already
+          announced in this control's accessible name and headed by their own
+          group inside the expanded list. Alone, it is what stops a workspace
+          holding nothing but stashed panes from reading as empty. */}
+      {agentCount === 0 && stashedCount > 0 && (
+        <span className="flex items-center gap-0.5">
+          <IconEyeOff size={8} />
+          {stashedCount}
+        </span>
+      )}
+    </button>
+  );
+}
+
+export const WorkspaceRosterSummaryMemo = memo(WorkspaceRosterSummary);
+
+function WorkspaceAgentRoster({ workspaceId, pulsingPaneId }: WorkspaceAgentRosterProps) {
   const t = useT();
   const selector = useMemo(
     () => createWorkspaceAgentRosterSelector(workspaceId),
     [workspaceId],
   );
   const roster = useStore(selector);
-  const [open, setOpen] = useState(isActive);
-  // #977 — a pane that was just stashed disappeared from the layout. If the
-  // list it moved into is collapsed, the gesture is indistinguishable from a
-  // delete, so open the list and flash the row once.
-  const stashPulse = useStore((s) => s.stashPulse);
-  const pulsedPaneId = stashPulse?.workspaceId === workspaceId ? stashPulse.paneId : null;
-  const [pulsingPaneId, setPulsingPaneId] = useState<string | null>(null);
-
-  // TWO effects on purpose. Consuming the pulse and owning its timeout in one
-  // effect is self-defeating: clearStashPulse() nulls `pulsedPaneId` on the very
-  // next render, the effect re-runs, its cleanup clears the pending timeout, and
-  // the highlight never turns off — a permanent bar identical to the focused
-  // style. Splitting them lets the consume run once and the timeout live on its
-  // own key.
-  useEffect(() => {
-    if (!pulsedPaneId) return;
-    setOpen(true);
-    setPulsingPaneId(pulsedPaneId);
-    useStore.getState().clearStashPulse();
-  }, [pulsedPaneId]);
-
-  useEffect(() => {
-    if (!pulsingPaneId) return;
-    const timer = setTimeout(() => setPulsingPaneId(null), STASH_PULSE_MS);
-    return () => clearTimeout(timer);
-  }, [pulsingPaneId]);
-
-  // Newly selected workspaces reveal their agents automatically; workspaces
-  // that move to the background collapse back to the compact summary. The user
-  // can still explicitly toggle either state until selection changes again.
-  useEffect(() => {
-    setOpen(isActive);
-  }, [isActive]);
 
   if (roster.agentCount === 0 && roster.stashedCount === 0) return null;
 
@@ -125,23 +243,10 @@ function WorkspaceAgentRoster({ workspaceId, isActive }: WorkspaceAgentRosterPro
   // only when the workspace actually mixes vendors.
   const mixedVendors = rosterHasMixedVendors(roster.rows);
 
-  // A workspace whose only roster entries are stashed panes leads with the
-  // stash, not with "Agents 0" — the zero is the least useful number on the row
-  // and would push the count that matters off the end of a 240px sidebar.
-  const countLabel =
-    roster.agentCount === 0
-      ? t('roster.stashedOnly', { count: roster.stashedCount })
-      : roster.stashedCount > 0
-        ? `${t('workspace.agentCount', { count: roster.agentCount })} · ${t('roster.stashedCount', { count: roster.stashedCount })}`
-        : t('workspace.agentCount', { count: roster.agentCount });
-  const disclosureLabel = open
-    ? t('workspace.hideAgents')
-    : t('workspace.showAgents');
-  const disclosureAriaLabel = [countLabel, disclosureLabel].join(', ');
-
   return (
     <div
       className="mt-1 w-full min-w-0"
+      id={rosterListId(workspaceId)}
       data-workspace-agent-roster
       onMouseDown={(event) => {
         // Prevent Chromium from promoting the draggable WorkspaceItem ancestor
@@ -151,35 +256,7 @@ function WorkspaceAgentRoster({ workspaceId, isActive }: WorkspaceAgentRosterPro
       }}
       onDoubleClick={(event) => event.stopPropagation()}
     >
-      <div className="flex max-w-full items-center gap-1">
-      <button
-        type="button"
-        draggable={false}
-        className="flex min-w-0 flex-1 items-center gap-1 rounded px-0.5 py-0.5 text-[9px] font-mono text-[var(--text-muted)] transition-colors hover:text-[var(--text-sub)]"
-        aria-expanded={open}
-        aria-label={disclosureAriaLabel}
-        title={disclosureAriaLabel}
-        onClick={(event) => {
-          event.stopPropagation();
-          setOpen((value) => !value);
-        }}
-        onDragStart={(event) => {
-          event.preventDefault();
-          event.stopPropagation();
-        }}
-      >
-        <span
-          className="flex-shrink-0 transition-transform duration-150"
-          style={{ transform: open ? 'rotate(90deg)' : undefined }}
-        >
-          <IconChevron size={8} />
-        </span>
-        <span className="truncate">{countLabel}</span>
-      </button>
-      </div>
-
-      {open && (
-        <div className="mt-0.5 ml-1 border-l border-[var(--border-soft)] pl-1.5">
+      <div className="ml-1 border-l border-[var(--border-soft)] pl-1.5">
           {roster.rows.map((row, index) => {
             // The one-line group header, immediately before the FIRST stashed
             // row. With six of seven panes stashed the list otherwise looked
@@ -325,8 +402,7 @@ function WorkspaceAgentRoster({ workspaceId, isActive }: WorkspaceAgentRosterPro
               </div>
             );
           })}
-        </div>
-      )}
+      </div>
     </div>
   );
 }

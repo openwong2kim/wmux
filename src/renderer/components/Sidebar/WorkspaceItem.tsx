@@ -1,8 +1,9 @@
-import { useState, useRef, useEffect, memo } from 'react';
+import { useState, useRef, useEffect, useCallback, useMemo, memo } from 'react';
 import type { GitSyncStatus, PrStatus, WorkspaceMetadata } from '../../../shared/types';
 import { useStore } from '../../stores';
 import { selectWorkspaceById } from '../../stores/selectors/workspaceProjections';
 import { selectWorkspaceAgentStatus } from '../../stores/selectors/fleet';
+import { createWorkspaceRosterCountsSelector } from '../../stores/selectors/workspaceAgentRoster';
 import { useT } from '../../hooks/useT';
 import type { TranslationKey } from '../../i18n/locales/en';
 import { AGENT_STATUS_ICON } from './agentStatusIcon';
@@ -14,7 +15,7 @@ import { openUrlInBrowserPane } from '../../utils/browserPaneActions';
 import WorkspaceProfileModal from './WorkspaceProfileModal';
 import WorkspaceAccountMenu from './WorkspaceAccountMenu';
 import WorkspaceChromeProfileMenu from './WorkspaceChromeProfileMenu';
-import WorkspaceAgentRoster from './WorkspaceAgentRoster';
+import WorkspaceAgentRoster, { WorkspaceRosterSummaryMemo, STASH_PULSE_MS } from './WorkspaceAgentRoster';
 import { displayPath } from '../../utils/displayPath';
 import { WORKSPACE_COLOR_IDS, WORKSPACE_COLOR_HEX, workspaceColorHex, workspaceColorLabelKey } from '../../../shared/workspaceColors';
 
@@ -284,6 +285,56 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
   // `metadata.agentStatus` directly only ever saw the active pane and never
   // self-healed. Scalar return → Object.is subscription re-renders only on change.
   const agentStatus = useStore((s) => selectWorkspaceAgentStatus(s, workspaceId));
+  // #997 — the roster's expanded state. It lives here, not in the roster,
+  // because the control that toggles it now sits on THIS row while the list it
+  // reveals is rendered below; the two would otherwise need to agree across a
+  // sibling boundary. The list keeps its own store subscription, so roster
+  // churn still does not rerender this component.
+  const [rosterOpen, setRosterOpen] = useState(isActive);
+  const toggleRoster = useCallback(() => setRosterOpen((value) => !value), []);
+  // Counts only — a reference-stable projection of two integers, so this does
+  // not rerender the row on terminal output the way the full roster would.
+  const rosterCountsSelector = useMemo(
+    () => createWorkspaceRosterCountsSelector(workspaceId),
+    [workspaceId],
+  );
+  const rosterCounts = useStore(rosterCountsSelector);
+  const hasRoster = rosterCounts.agentCount > 0 || rosterCounts.stashedCount > 0;
+  // Newly selected workspaces reveal their agents automatically; workspaces
+  // that move to the background collapse back to the count. The user can still
+  // explicitly toggle either state until selection changes again.
+  useEffect(() => {
+    setRosterOpen(isActive);
+  }, [isActive]);
+
+  // #977 — a pane that was just stashed disappeared from the layout. If the
+  // list it moved into is collapsed, the gesture is indistinguishable from a
+  // delete, so open the list and flash the row once. The pulse lives HERE
+  // because its first job is to open the list, and the list is only mounted
+  // once open — a pulse owned by the list could never open it.
+  const stashPulse = useStore((s) => s.stashPulse);
+  const pulsedPaneId = stashPulse?.workspaceId === workspaceId ? stashPulse.paneId : null;
+  const [pulsingPaneId, setPulsingPaneId] = useState<string | null>(null);
+
+  // TWO effects on purpose. Consuming the pulse and owning its timeout in one
+  // effect is self-defeating: clearStashPulse() nulls `pulsedPaneId` on the very
+  // next render, the effect re-runs, its cleanup clears the pending timeout, and
+  // the highlight never turns off — a permanent bar identical to the focused
+  // style. Splitting them lets the consume run once and the timeout live on its
+  // own key.
+  useEffect(() => {
+    if (!pulsedPaneId) return;
+    setRosterOpen(true);
+    setPulsingPaneId(pulsedPaneId);
+    useStore.getState().clearStashPulse();
+  }, [pulsedPaneId]);
+
+  useEffect(() => {
+    if (!pulsingPaneId) return;
+    const timer = setTimeout(() => setPulsingPaneId(null), STASH_PULSE_MS);
+    return () => clearTimeout(timer);
+  }, [pulsingPaneId]);
+
   // X5 wmux.json badge state for this workspace (transient, probe-driven).
   const projectState = useStore((s) => s.projectConfigs[workspaceId]);
   // J3 §4 — 태스크 워크스페이스의 페인 cwd가 worktree 경계 밖으로 이탈했는지(경고만).
@@ -670,7 +721,16 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
           ) : (
             <>
               <div className="flex items-center gap-1">
-                <span className="text-caption font-mono truncate">{workspace.name}</span>
+                {/* The name truncates in a 240px sidebar and had no tooltip at
+                    all, so a clipped name was simply unreadable. It carries the
+                    idle minutes too, which is where they go when the roster
+                    chip takes their place on the row (#997). */}
+                <span
+                  className="text-caption font-mono truncate"
+                  title={idleLabel ? `${workspace.name} · ${t('workspace.idleTooltip', { time: idleLabel })}` : workspace.name}
+                >
+                  {workspace.name}
+                </span>
                 {hasProfile && (
                   <span
                     className="text-[8px] leading-none flex-shrink-0 text-[var(--accent-blue)]"
@@ -717,7 +777,13 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
                     ⚠ {t('workspace.departed')}
                   </span>
                 )}
-                {idleLabel && (
+                {/* #997 — the idle label and the roster chip answer the same
+                    question ("is anything happening here?"), and the chip plus
+                    the leading status dot answer it better. Showing both cost
+                    the NAME half its width at 240px: measured 87.6px → 43.7px,
+                    a 22-character workspace truncated to seven. The idle
+                    minutes stay one hover away on the row's own tooltip. */}
+                {idleLabel && !hasRoster && (
                   <span
                     className="text-[9px] font-mono text-[var(--text-muted)] flex-shrink-0"
                     title={t('workspace.idleTooltip', { time: idleLabel })}
@@ -730,6 +796,18 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
             </>
           )}
         </div>
+
+        {/* #997 — roster disclosure + agent count. Lives on this row, not on
+            a line of its own: see WorkspaceRosterSummary's own comment. */}
+        {!editing && (
+          <WorkspaceRosterSummaryMemo
+            workspaceId={workspaceId}
+            agentCount={rosterCounts.agentCount}
+            stashedCount={rosterCounts.stashedCount}
+            open={rosterOpen}
+            onToggle={toggleRoster}
+          />
+        )}
 
         {/* Agent status mark (play/pause), right-aligned. */}
         {(() => {
@@ -777,8 +855,10 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
           <IconX size={11} />
         </button>
         </div>
-        {!editing && (
-          <WorkspaceAgentRoster workspaceId={workspaceId} isActive={isActive} />
+        {/* Mounted only when expanded: a collapsed list would subscribe to the
+            whole roster projection to render nothing. */}
+        {!editing && rosterOpen && (
+          <WorkspaceAgentRoster workspaceId={workspaceId} pulsingPaneId={pulsingPaneId} />
         )}
       </div>
 

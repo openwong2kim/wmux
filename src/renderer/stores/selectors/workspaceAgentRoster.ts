@@ -268,6 +268,30 @@ function rowsEqual(
  * projection reference across unrelated store writes so activity in one
  * workspace does not rerender every sidebar row.
  */
+/**
+ * Counts only, reference-stable (#997).
+ *
+ * The full projection's reference changes whenever ANY row field does — an
+ * activity string, a focus flag, a status. The summary chip on the workspace
+ * row draws two integers and is mounted for every workspace, so subscribing it
+ * to the full projection would rerender it on every byte a terminal in that
+ * workspace prints. zustand v5 dropped the equality-function argument, so the
+ * memoization lives in the selector, exactly as it does above.
+ */
+export function createWorkspaceRosterCountsSelector(
+  workspaceId: string,
+): (state: StoreState) => { agentCount: number; stashedCount: number } {
+  let previous: { agentCount: number; stashedCount: number } | undefined;
+  return (state) => {
+    const { agentCount, stashedCount } = selectWorkspaceAgentRoster(state, workspaceId);
+    if (previous && previous.agentCount === agentCount && previous.stashedCount === stashedCount) {
+      return previous;
+    }
+    previous = { agentCount, stashedCount };
+    return previous;
+  };
+}
+
 export function createWorkspaceAgentRosterSelector(
   workspaceId: string,
 ): (state: StoreState) => WorkspaceAgentRosterProjection {
