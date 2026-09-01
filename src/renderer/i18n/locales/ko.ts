@@ -287,6 +287,7 @@ export const ko = {
   'settings.updateAvailable': '업데이트 있음',
   'settings.close': '닫기',
   'settings.shortcuts': '단축키',
+  'settings.shortcutDisableHint': '켜짐: wmux가 이 키를 처리합니다. 꺼짐: 키가 터미널로 전달됩니다.',
   'settings.tabGeneral': '일반',
   'settings.tabTerminal': '터미널',
   'settings.tabAppearance': '외관',

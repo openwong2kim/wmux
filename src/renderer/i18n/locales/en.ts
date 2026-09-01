@@ -674,6 +674,9 @@ export const en = {
   'accounts.notLoggedIn': 'not logged in',
   'accounts.newTerminalsNote': 'Applies to new terminals; running ones keep their account.',
   'settings.shortcuts': 'Keyboard Shortcuts',
+  // #1152 — checkbox on each advertised row; unchecked = the built-in is
+  // unbound and the key passes through to the terminal (e.g. Codex Ctrl+T).
+  'settings.shortcutDisableHint': 'On: wmux handles this key. Off: the key goes to the terminal instead.',
   'settings.tabGeneral': 'General',
   'settings.tabTerminal': 'Terminal',
   'settings.tabAppearance': 'Appearance',

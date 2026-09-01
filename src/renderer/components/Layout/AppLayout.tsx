@@ -365,6 +365,7 @@ function buildSessionData(dumped: Map<string, boolean>): SessionData {
     anthropicUsageEnabled: state.anthropicUsageEnabled,
     mutedNotificationCategories: state.mutedNotificationCategories,
     customKeybindings: state.customKeybindings,
+    disabledShortcuts: state.disabledShortcuts,
     autoUpdateEnabled: state.autoUpdateEnabled,
     customThemeColors: state.customThemeColors ?? undefined,
     onboardingCompleted: state.onboardingCompleted,

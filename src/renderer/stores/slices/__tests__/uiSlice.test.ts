@@ -736,3 +736,21 @@ describe('UISlice — browser backend mirror (#517)', () => {
     expect(store.getState().browserBackendHydrated).toBe(true);
   });
 });
+
+describe('UISlice — #1152 disabled built-in shortcuts', () => {
+  let store: ReturnType<typeof createTestStore>;
+  beforeEach(() => { store = createTestStore(); });
+
+  it('starts with nothing disabled', () => {
+    expect(store.getState().disabledShortcuts).toEqual([]);
+  });
+
+  it('toggleShortcutDisabled adds, then removes, a combo', () => {
+    store.getState().toggleShortcutDisabled('Ctrl+T');
+    expect(store.getState().disabledShortcuts).toEqual(['Ctrl+T']);
+    store.getState().toggleShortcutDisabled('Ctrl+D');
+    expect(store.getState().disabledShortcuts).toEqual(['Ctrl+T', 'Ctrl+D']);
+    store.getState().toggleShortcutDisabled('Ctrl+T');
+    expect(store.getState().disabledShortcuts).toEqual(['Ctrl+D']);
+  });
+});

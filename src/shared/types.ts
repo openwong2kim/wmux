@@ -813,6 +813,8 @@ export interface SessionData {
   /** Categories whose surface actions are suppressed (#516). */
   mutedNotificationCategories?: NotificationCategory[];
   customKeybindings?: CustomKeybinding[];
+  /** #1152 — built-in combos (WMUX_KEYMAP storage form) the user disabled. */
+  disabledShortcuts?: string[];
   autoUpdateEnabled?: boolean;
   customThemeColors?: CustomThemeColors;
   sidebarMode?: 'workspaces' | 'company';

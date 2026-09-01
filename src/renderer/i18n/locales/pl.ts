@@ -680,6 +680,7 @@ export const pl = {
   'accounts.notLoggedIn': 'nie zalogowano',
   'accounts.newTerminalsNote': 'Dotyczy nowych terminali; działające zachowują swoje konto.',
   'settings.shortcuts': 'Skróty klawiszowe',
+  'settings.shortcutDisableHint': 'Wł.: wmux obsługuje ten klawisz. Wył.: klawisz trafia do terminala.',
   'settings.tabGeneral': 'Ogólne',
   'settings.tabTerminal': 'Terminal',
   'settings.tabAppearance': 'Wygląd',

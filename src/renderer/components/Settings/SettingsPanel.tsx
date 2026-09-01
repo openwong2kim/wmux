@@ -487,15 +487,44 @@ function SectionLabel({ id, label }: { id?: string; label: string }) {
 
 // ─── Keyboard shortcut badge ──────────────────────────────────────────────────
 
-function KbdRow({ keys, description }: { keys: string; description: string }) {
+function KbdRow({ keys, description, disabled, onToggleDisabled, toggleTitle }: {
+  keys: string;
+  description: string;
+  /** #1152 — undefined hides the toggle (rows that cannot be disabled). */
+  disabled?: boolean;
+  onToggleDisabled?: () => void;
+  toggleTitle?: string;
+}) {
   return (
     <div className="flex items-center justify-between py-1.5 px-3 rounded-lg hover:bg-[color:var(--bg-mantle)] transition-colors">
-      <span className="text-[12px] text-[color:var(--text-sub)]">{description}</span>
       <span
-        className="text-[10px] font-mono tabular-nums px-2 py-0.5 rounded"
-        style={{ backgroundColor: 'var(--bg-surface)', color: 'var(--accent-blue)', border: '1px solid var(--bg-overlay)' }}
+        className="text-[12px] text-[color:var(--text-sub)]"
+        style={disabled ? { textDecoration: 'line-through', opacity: 0.5 } : undefined}
       >
-        {keys}
+        {description}
+      </span>
+      <span className="flex items-center gap-2">
+        <span
+          className="text-[10px] font-mono tabular-nums px-2 py-0.5 rounded"
+          style={{
+            backgroundColor: 'var(--bg-surface)',
+            color: disabled ? 'var(--text-subtle)' : 'var(--accent-blue)',
+            border: '1px solid var(--bg-overlay)',
+            ...(disabled ? { textDecoration: 'line-through' } : {}),
+          }}
+        >
+          {keys}
+        </span>
+        {onToggleDisabled !== undefined && (
+          <input
+            type="checkbox"
+            checked={!disabled}
+            onChange={onToggleDisabled}
+            title={toggleTitle}
+            aria-label={toggleTitle}
+            className="cursor-pointer"
+          />
+        )}
       </span>
     </div>
   );
@@ -4174,6 +4203,8 @@ function TabShortcuts() {
   const addKeybinding = useStore((s) => s.addKeybinding);
   const updateKeybinding = useStore((s) => s.updateKeybinding);
   const removeKeybinding = useStore((s) => s.removeKeybinding);
+  const disabledShortcuts = useStore((s) => s.disabledShortcuts);
+  const toggleShortcutDisabled = useStore((s) => s.toggleShortcutDisabled);
   const prefixConfig = useStore((s) => s.prefixConfig);
   const setPrefixKey = useStore((s) => s.setPrefixKey);
   const setPrefixBinding = useStore((s) => s.setPrefixBinding);
@@ -4201,10 +4232,13 @@ function TabShortcuts() {
   // tmux/bookmark family. prefixKeyDisplay always renders as literal Ctrl
   // because the prefix combo stays on Ctrl across every OS.
   const shortcuts = [
-    { keys: prefixKeyDisplay, description: t('settings.prefixMode') },
+    // The prefix row keeps its own config below — no toggle (combo: undefined).
+    { keys: prefixKeyDisplay, description: t('settings.prefixMode'), combo: undefined as string | undefined },
     ...ADVERTISED_SHORTCUTS.map((entry) => ({
       keys: shortcutLabel(entry),
       description: t(entry.descriptionKey as Parameters<typeof t>[0]),
+      // #1152 — the storage-form combo keys the disable toggle.
+      combo: entry.combo as string | undefined,
     })),
   ];
 
@@ -4216,7 +4250,16 @@ function TabShortcuts() {
         style={{ backgroundColor: 'var(--bg-mantle)', border: '1px solid var(--bg-surface)' }}
       >
         {shortcuts.map((s) => (
-          <KbdRow key={s.keys} keys={s.keys} description={s.description} />
+          <KbdRow
+            key={s.keys}
+            keys={s.keys}
+            description={s.description}
+            // #1152 — advertised built-ins can be switched off; the key then
+            // passes through to the terminal (Codex Ctrl+T et al.).
+            disabled={s.combo ? disabledShortcuts.includes(s.combo) : undefined}
+            onToggleDisabled={s.combo ? () => toggleShortcutDisabled(s.combo as string) : undefined}
+            toggleTitle={t('settings.shortcutDisableHint')}
+          />
         ))}
       </div>
       {/* Prefix mode configuration */}

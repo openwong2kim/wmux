@@ -325,6 +325,23 @@ export function useKeyboard() {
       // Read prefix mode from store (fresh, no stale closure)
       const prefixMode = store.getState().prefixMode;
 
+      // #1152 — a built-in the user disabled (Settings → Shortcuts) must act
+      // as if it were never bound: no preventDefault, no handler, so the key
+      // falls through to whatever has focus. useTerminal stops bubbling
+      // disabled combos, so inside a terminal the byte reaches the PTY —
+      // Ctrl+T then opens Codex's own transcript instead of a new surface.
+      // Prefix-mode SUB-commands are not top-level combos and stay unaffected;
+      // matching covers e.key and the physical code (IME layouts) the same
+      // way the individual handlers below do.
+      if (!prefixMode && (cmdOrCtrl || literalCtrl)) {
+        const disabled = store.getState().disabledShortcuts;
+        if (disabled.length > 0) {
+          const byKey = formatKeyCombo(true, shift, alt, key);
+          const byCode = code.startsWith('Key') ? formatKeyCombo(true, shift, alt, code.slice(3)) : null;
+          if (disabled.includes(byKey) || (byCode !== null && disabled.includes(byCode))) return;
+        }
+      }
+
       // ─── Prefix mode: intercept the next key ───────────────────────
       if (prefixMode) {
         e.preventDefault();

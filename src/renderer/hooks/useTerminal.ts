@@ -1619,6 +1619,22 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       // Ctrl+K(kill-line) 등 readline 컨트롤 문자가 PTY에도 못 가고 죽는다
       // (owner-reported 2026-07-19). mac에서는 literal-Ctrl 바인딩만(b=프리픽스,
       // m=북마크, Ctrl+Arrow) 버블시키고 나머지는 xterm→PTY로 통과.
+      // #1152 — a combo the user disabled in Settings → Shortcuts must reach
+      // the PTY like any other terminal byte: return true so xterm PROCESSES
+      // the key (encoding e.g. Ctrl+T as 0x14) instead of bubbling it to
+      // useKeyboard, whose own disabled-gate would drop it without
+      // preventDefault — leaving the key dead in both worlds.
+      {
+        const disabledShortcuts = useStore.getState().disabledShortcuts;
+        if (disabledShortcuts.length > 0 && e.ctrlKey && !e.altKey) {
+          const mods = e.shiftKey ? 'Ctrl+Shift+' : 'Ctrl+';
+          const byKey = e.key.length === 1 ? mods + e.key.toUpperCase() : mods + e.key;
+          const byCode = e.code.startsWith('Key') ? mods + e.code.slice(3) : null;
+          if (disabledShortcuts.includes(byKey) || (byCode !== null && disabledShortcuts.includes(byCode))) {
+            return true;
+          }
+        }
+      }
       const bubbleKeys = isMac
         ? ['b', 'm', 'ArrowUp', 'ArrowDown']
         : [',', 'b', 'd', 'k', 'i', 'n', 't', 'm', 'ArrowUp', 'ArrowDown', '`'];
