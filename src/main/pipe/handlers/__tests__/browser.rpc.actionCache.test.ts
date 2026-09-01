@@ -30,6 +30,11 @@ const CACHE_METHODS = [
   'browser.actionCache.put',
   'browser.actionCache.stats',
   'browser.actionCache.forget',
+  // Promotion writes a permanent, hint-announced store, so it is held to the
+  // same fail-closed scope rule as the cache rather than a weaker one.
+  'browser.actionCache.promote',
+  'browser.actionCache.demote',
+  'browser.actionCache.promoted',
 ] as const;
 
 function register(enforcementMode: 'shadow' | 'enforce'): RpcRouter {
@@ -134,5 +139,45 @@ describe('browser.actionCache.* — verified scope only', () => {
     const res = await dispatch(router, 'browser.actionCache.get', { name: 'flow' }, legacyCtx());
     expect(String(res.error)).toContain('browser.actionCache.get');
     expect(String(res.error)).toContain('never served on an unverified scope');
+  });
+});
+
+describe('browser.actionCache.promote — the gate', () => {
+  // These cases all stop before any file is written: promote resolves the
+  // trace from the (empty) action cache first, so the store is never reached.
+  it('refuses to promote a flow that was never recorded', async () => {
+    const router = register('shadow');
+    const res = await dispatch(
+      router,
+      'browser.actionCache.promote',
+      { workspaceId: 'ws-1', name: 'never-saved' },
+      operatorCtx(),
+    );
+    expect(res.error).toBeFalsy();
+    expect(res.result).toMatchObject({ ok: false });
+    expect(String((res.result as { reason: string }).reason)).toContain('no flow named');
+  });
+
+  it('refuses to demote a flow that is not promoted', async () => {
+    const router = register('shadow');
+    const res = await dispatch(
+      router,
+      'browser.actionCache.demote',
+      { workspaceId: 'ws-1', name: 'never-promoted' },
+      operatorCtx(),
+    );
+    expect(res.result).toMatchObject({ ok: false });
+    expect(String((res.result as { reason: string }).reason)).toContain('not promoted');
+  });
+
+  it('lists nothing for a workspace that has promoted nothing', async () => {
+    const router = register('shadow');
+    const res = await dispatch(
+      router,
+      'browser.actionCache.promoted',
+      { workspaceId: 'ws-nothing-here', urlKey: 'https://example.com/x' },
+      operatorCtx(),
+    );
+    expect(res.result).toEqual({ promoted: [] });
   });
 });

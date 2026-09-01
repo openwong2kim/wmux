@@ -14,6 +14,10 @@ import {
   normalizeUrlKey,
   type TraceRecord,
 } from '../../shared/browserReplay/actionTrace';
+import {
+  renderPromotedHintBlock,
+  type PromotedRecord,
+} from '../../shared/browserReplay/promotedSkill';
 
 // Renew well inside main's 30s RPC-lease TTL so a long-running tool op
 // (browser_wait_for, slow page interactions) never lapses mid-flight.
@@ -143,6 +147,16 @@ function prependBrowserEvents<T>(result: T, events: LifecycleEventWire[]): T {
  * Only PROVEN, unquarantined traces are named (isServable): suggesting a flow
  * that has never worked costs the agent an attempt it did not ask for.
  *
+ * PROMOTED flows are announced here too, and this is the whole push half of
+ * promotion. A promoted flow gets its own line carrying a one-line contract
+ * and a literal, runnable call, so the agent can act on it in its very next
+ * tool use rather than having to call list first. That line is rendered
+ * through renderPromotedHint, which admits exactly one page-derived string
+ * (the host, character-whitelisted and length-capped) — a hint is
+ * instruction-adjacent text in the agent's context, and anything richer would
+ * let a page the agent merely visited write into its prompt on some later,
+ * unrelated navigation.
+ *
  * Failure is silence. An older main without the actionCache methods, a torn
  * cache, an unresolvable scope — none of them may turn a working navigation
  * into a failed one.
@@ -166,19 +180,39 @@ async function prependReplayHints<T>(
 
   try {
     const urlKey = normalizeUrlKey(landed.url);
-    const res = await sendScopedBrowserRpc<{ traces?: TraceRecord[] }>(
-      'browser.actionCache.list',
-      scope,
-      { urlKey },
-    );
-    const names = (res?.traces ?? []).filter(isServable).map((t) => t.name);
-    if (names.length === 0) return result;
-    shaped.content.unshift({
-      type: 'text',
-      text:
-        `[replay] ${names.length} recorded flow(s) for this page: ${names.join(', ')} — ` +
-        `browser_replay {action:"run", name:"..."} repeats one without a snapshot.\n`,
-    });
+    // Both stores, in one round trip pair. A promoted flow may have outlived
+    // its recording, so consulting only the cache would go silent on exactly
+    // the flows the user chose to keep.
+    const [res, promotedRes] = await Promise.all([
+      sendScopedBrowserRpc<{ traces?: TraceRecord[] }>('browser.actionCache.list', scope, {
+        urlKey,
+      }),
+      sendScopedBrowserRpc<{ promoted?: PromotedRecord[] }>(
+        'browser.actionCache.promoted',
+        scope,
+        { urlKey },
+      ).catch(() => ({ promoted: [] as PromotedRecord[] })),
+    ]);
+    const promoted = promotedRes?.promoted ?? [];
+    const promotedNames = new Set(promoted.map((r) => r.name));
+    // A promoted flow is announced by its own richer line, so it must not
+    // also appear in the plain [replay] list — one flow, one hint.
+    const names = (res?.traces ?? [])
+      .filter(isServable)
+      .map((t) => t.name)
+      .filter((name) => !promotedNames.has(name));
+
+    // Promoted first: it is the stronger claim (permanent, proven at least
+    // three times, chosen by hand) and it carries a call the agent can make
+    // without any further lookup.
+    const promotedBlock = renderPromotedHintBlock(promoted);
+    const replayBlock =
+      names.length > 0
+        ? `[replay] ${names.length} recorded flow(s) for this page: ${names.join(', ')} — ` +
+          `browser_replay {action:"run", name:"..."} repeats one without a snapshot.\n`
+        : '';
+    if (!promotedBlock && !replayBlock) return result;
+    shaped.content.unshift({ type: 'text', text: `${promotedBlock}${replayBlock}` });
   } catch {
     /* no hint is always an acceptable outcome */
   }

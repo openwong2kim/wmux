@@ -103,6 +103,7 @@ import { ChromeLauncherRegistry } from './browser-session/ChromeLauncher';
 import { ChromeProfileStore } from './browser-session/ChromeProfileStore';
 import { ChromeSurfaceStore } from './browser-session/ChromeSurfaceStore';
 import { getActionCacheStore } from './browser-session/ActionCacheStore';
+import { getPromotedSkillStore } from './browser-session/PromotedSkillStore';
 import { isBrowserBackend } from '../shared/browserBackend';
 import { DaemonClient, getDaemonPipeName, readDaemonAuthToken } from './DaemonClient';
 import { raceDaemonShutdown } from './daemonShutdownRace';
@@ -444,6 +445,43 @@ const autoUpdater = new AutoUpdater(() => mainWindow, {
 // install waiter's post-exit verification (installTeardown.ts) covers it on
 // the update path.
 void app.whenReady().then(() => { try { warnOnInstallIntegrityGap(); } catch { /* best-effort */ } });
+
+// ── Promoted browser flows: the idle sweep ─────────────────────────────────
+//
+// Promoted flows are permanent by design, which is precisely why they need a
+// sweep: without one, a flow promoted for a page that has since been redesigned
+// out of existence would be announced on every landing forever.
+//
+// Boot plus a 24h timer, rather than a timer alone. wmux is frequently quit and
+// relaunched, so a machine that never stays up for a day would otherwise never
+// sweep at all; and a machine that stays up for months would never sweep
+// without the timer. The two together cover both.
+//
+// Deliberately not awaited and never allowed to reject: an unsweepable store
+// must not delay or fail startup. The ladder itself (30 days to the archive,
+// 90 to deletion) is enforced in the pure layer against the record's own
+// lastRunAt, so a missed sweep only ever postpones a decision.
+const PROMOTED_SWEEP_INTERVAL_MS = 24 * 60 * 60 * 1000;
+
+function sweepPromotedSkills(): void {
+  void getPromotedSkillStore()
+    .sweep()
+    .then(({ archived, removed }) => {
+      if (archived > 0 || removed > 0) {
+        console.log(
+          `[Main] promoted browser flows swept: ${archived} archived, ${removed} deleted`,
+        );
+      }
+    })
+    .catch((err) => console.warn('[Main] promoted flow sweep failed:', err));
+}
+
+void app.whenReady().then(() => {
+  sweepPromotedSkills();
+  const timer = setInterval(sweepPromotedSkills, PROMOTED_SWEEP_INTERVAL_MS);
+  // Housekeeping must never be the reason the process stays alive.
+  timer.unref?.();
+});
 
 const rpcRouter = new RpcRouter();
 markBoot('pre-pipe-server-ctor');

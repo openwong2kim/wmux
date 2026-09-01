@@ -9,6 +9,14 @@ import {
 } from '../../browser-session/ProfileManager';
 import { PortAllocator } from '../../browser-session/PortAllocator';
 import { getActionCacheStore } from '../../browser-session/ActionCacheStore';
+import { getPromotedSkillStore } from '../../browser-session/PromotedSkillStore';
+import {
+  buildPromotedRecord,
+  promoteBlockedReason,
+  recordPromotedRun,
+  toPromotedSlug,
+} from '../../../shared/browserReplay/promotedSkill';
+import { stepsFingerprint } from '../../../shared/browserReplay/actionTrace';
 import { HumanBehavior } from '../../browser-session/HumanBehavior';
 import { WebviewCdpManager } from '../../browser-session/WebviewCdpManager';
 import { BrowserCaptureManager } from '../../browser-session/BrowserCaptureManager';
@@ -764,6 +772,7 @@ export function registerBrowserRpc(
   // flows just by naming it in params. A cache miss costs a replay; a
   // cross-workspace hit hands one agent another agent's actions.
   const actionCache = getActionCacheStore();
+  const promotedSkills = getPromotedSkillStore();
 
   const cacheWorkspace = (
     method: RpcMethod,
@@ -818,6 +827,24 @@ export function registerBrowserRpc(
       ok: params['ok'] === true,
       ...(failedStep !== undefined && { failedStep }),
     });
+    // Usage for the promoted store rides on the stats call because it is the
+    // one point EVERY replay passes through, whether the trace came from the
+    // cache or was restored from a promoted copy. A no-op unless the flow is
+    // actually promoted, and never allowed to fail the run: a lost counter
+    // costs an archive decision months from now, a thrown error costs the
+    // agent its replay right now.
+    try {
+      const record = promotedSkills.getByName(workspaceId, name);
+      if (record) {
+        // A FAILED run counts too. The counter answers "is this flow still
+        // part of the agent's life", and a flow being reached for weekly and
+        // failing is being used — archiving it would delete the record whose
+        // failures are the signal that it needs re-recording.
+        await promotedSkills.touch(workspaceId, record.slug, recordPromotedRun(record));
+      }
+    } catch {
+      /* usage is bookkeeping; it never fails a replay */
+    }
     return { trace };
   });
 
@@ -825,6 +852,61 @@ export function registerBrowserRpc(
     const workspaceId = cacheWorkspace('browser.actionCache.forget', params, ctx);
     const name = typeof params['name'] === 'string' ? params['name'] : undefined;
     return { removed: await actionCache.forget(workspaceId, name) };
+  });
+
+  // ── Promotion (track D) ─────────────────────────────────────────────────
+  //
+  // Promotion writes a SEPARATE, permanent store, so it goes through the same
+  // fail-closed cacheWorkspace() gate as the cache: a caller whose workspace
+  // wmux did not itself resolve gets nothing. The stakes are higher here than
+  // for the cache — a promoted flow is announced on every landing and survives
+  // the cache that produced it — so there is no shadow-mode fallback either.
+
+  router.register('browser.actionCache.promote', async (params, ctx) => {
+    const workspaceId = cacheWorkspace('browser.actionCache.promote', params, ctx);
+    const name = typeof params['name'] === 'string' ? params['name'] : '';
+    const trace = actionCache.get(workspaceId, name);
+    if (!trace) return { ok: false, reason: `no flow named "${name}" in this workspace` };
+
+    const blocked = promoteBlockedReason(trace);
+    if (blocked) return { ok: false, reason: blocked };
+
+    const slug = toPromotedSlug(trace.name);
+    if (!slug) {
+      return {
+        ok: false,
+        reason:
+          'the flow name has no letters or digits to build a file name from. ' +
+          'Save it under a name containing at least one',
+      };
+    }
+    const record = buildPromotedRecord(trace, {
+      workspaceId,
+      slug,
+      fingerprint: stepsFingerprint(trace.steps),
+    });
+    return promotedSkills.put(record);
+  });
+
+  router.register('browser.actionCache.demote', async (params, ctx) => {
+    const workspaceId = cacheWorkspace('browser.actionCache.demote', params, ctx);
+    const name = typeof params['name'] === 'string' ? params['name'] : '';
+    // Resolved by NAME, not by slug: the agent knows the flow by the name it
+    // saved it under, and asking it to work out the slug would be asking it to
+    // reimplement toPromotedSlug.
+    const record = promotedSkills.getByName(workspaceId, name);
+    if (!record) return { ok: false, reason: `"${name}" is not promoted in this workspace` };
+    const removed = await promotedSkills.remove(workspaceId, record.slug);
+    return removed ? { ok: true } : { ok: false, reason: 'the promoted flow could not be removed' };
+  });
+
+  router.register('browser.actionCache.promoted', async (params, ctx) => {
+    const workspaceId = cacheWorkspace('browser.actionCache.promoted', params, ctx);
+    const urlKey = typeof params['urlKey'] === 'string' ? params['urlKey'] : undefined;
+    const records = urlKey
+      ? promotedSkills.listForUrlKey(workspaceId, urlKey)
+      : promotedSkills.list(workspaceId);
+    return { promoted: records };
   });
 
   // ── Automation lease RPC (#517) ─────────────────────────────────────────

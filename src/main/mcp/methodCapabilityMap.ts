@@ -328,6 +328,10 @@ export const METHOD_CAPABILITY: Record<RpcMethod, RequiredCapability> = {
   'browser.actionCache.put':    { capability: 'browser.click', riskClass: 'browser' },
   'browser.actionCache.stats':  { capability: 'browser.click', riskClass: 'browser' },
   'browser.actionCache.forget': { capability: 'browser.click', riskClass: 'browser' },
+  // promote/demote write the permanent store; promoted only reads it.
+  'browser.actionCache.promote':{ capability: 'browser.click', riskClass: 'browser' },
+  'browser.actionCache.demote': { capability: 'browser.click', riskClass: 'browser' },
+  'browser.actionCache.promoted':{ capability: 'browser.read', riskClass: 'browser' },
 
   // Lease methods pin a guest at full speed (or strip that exemption from a
   // real automation op), i.e. they mutate the app's resource policy — a

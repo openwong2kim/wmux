@@ -24,6 +24,11 @@ import {
   traceVariableNames,
   type TraceRecord,
 } from '../../shared/browserReplay/actionTrace';
+import {
+  traceFromPromoted,
+  type PromotedRecord,
+} from '../../shared/browserReplay/promotedSkill';
+import { requireBrowserTargetScope } from '../playwright/browserScope';
 import { ringFor } from './actionRing';
 import { replayBlockedReason, replayTrace, type ReplayResult } from './replayRunner';
 
@@ -42,15 +47,18 @@ import { replayBlockedReason, replayTrace, type ReplayResult } from './replayRun
 
 const BROWSER_REPLAY_SHAPE = {
   action: z
-    .enum(['list', 'save', 'run', 'forget'])
+    .enum(['list', 'save', 'run', 'forget', 'promote', 'demote'])
     .describe(
       'list: recorded flows for this workspace. save: name the actions you just ' +
-        'performed. run: replay a saved flow without reading a snapshot. forget: delete one.',
+        'performed. run: replay a saved flow without reading a snapshot. forget: delete one. ' +
+        'promote: keep a proven flow permanently and have it offered whenever you land on its ' +
+        'page — this stores its typed values in plain text indefinitely, so variable-ise any ' +
+        'sensitive one first. demote: undo a promote.',
     ),
   name: z
     .string()
     .optional()
-    .describe('Flow name. Required for save, run, and forget.'),
+    .describe('Flow name. Required for save, run, forget, promote, and demote.'),
   steps: z
     .number()
     .int()
@@ -71,7 +79,7 @@ function text(body: string, isError = false) {
   return { content: [{ type: 'text' as const, text: body }], ...(isError && { isError: true }) };
 }
 
-function describeTrace(trace: TraceRecord): string {
+function describeTrace(trace: TraceRecord, promoted = false): string {
   const variables = traceVariableNames(trace);
   const health = isQuarantined(trace)
     ? 'quarantined (the same step failed twice running)'
@@ -82,7 +90,7 @@ function describeTrace(trace: TraceRecord): string {
         : 'unproven';
   return [
     `- ${trace.name} — ${trace.steps.length} step(s) on ${trace.urlKey}`,
-    `  ${health}; ${trace.successCount} ok / ${trace.failCount} failed`,
+    `  ${health}${promoted ? ', promoted' : ''}; ${trace.successCount} ok / ${trace.failCount} failed`,
     variables.length > 0 ? `  variables: ${variables.join(', ')}` : null,
   ]
     .filter((line): line is string => line !== null)
@@ -127,16 +135,37 @@ export function createReplayToolCatalog(deps: BrowserToolDeps) {
       'mints no accessibility refs, and a flow recorded then saves but can never run.',
     inputSchema: BROWSER_REPLAY_SHAPE,
     profiles: ['full'],
-    invoke: async ({ action, name, steps, variables, surfaceId }) =>
-      withAutomationLease(deps, surfaceId, async (scope: BrowserTargetScope) => {
+    invoke: async ({ action, name, steps, variables, surfaceId }) => {
+      const nameError = () =>
+        text(
+          `browser_replay ${action} needs a name (letters, digits, and " _.:-", up to 64 characters).`,
+          true,
+        );
+
+      // promote and demote run OUTSIDE the automation lease.
+      //
+      // They touch no page: promote reads a recorded trace and writes the
+      // permanent store, demote deletes from it. Taking a lease would make
+      // both of them depend on a live browser, and the moment an agent most
+      // needs to demote a flow is when the session that recorded it has died
+      // — a lease there would refuse exactly the call that fixes the problem.
+      // Scope is still resolved, so the workspace boundary is unchanged.
+      if (action === 'promote' || action === 'demote') {
+        try {
+          if (!isValidTraceName(name)) return nameError();
+          const scope = await requireBrowserTargetScope(deps, surfaceId);
+          return action === 'promote'
+            ? await promoteTrace(scope, name)
+            : await demoteTrace(scope, name);
+        } catch (error) {
+          return text(describeToolError(error), true);
+        }
+      }
+
+      return withAutomationLease(deps, surfaceId, async (scope: BrowserTargetScope) => {
         try {
           if (action === 'list') return await listTraces(scope);
-          if (!isValidTraceName(name)) {
-            return text(
-              `browser_replay ${action} needs a name (letters, digits, and " _.:-", up to 64 characters).`,
-              true,
-            );
-          }
+          if (!isValidTraceName(name)) return nameError();
           if (action === 'forget') {
             const res = await sendScopedBrowserRpc<{ removed: number }>(
               'browser.actionCache.forget',
@@ -152,22 +181,83 @@ export function createReplayToolCatalog(deps: BrowserToolDeps) {
         } catch (error) {
           return text(describeToolError(error), true);
         }
-      }),
+      });
+    },
   });
 
-  async function listTraces(scope: BrowserTargetScope) {
-    const res = await sendScopedBrowserRpc<{ traces: TraceRecord[] }>(
-      'browser.actionCache.list',
+  async function promoteTrace(scope: BrowserTargetScope, name: string) {
+    const res = await sendScopedBrowserRpc<{ ok: boolean; reason?: string; record?: PromotedRecord }>(
+      'browser.actionCache.promote',
       scope,
+      { name },
     );
+    if (!res?.ok || !res.record) {
+      return text(`Cannot promote "${name}": ${res?.reason ?? 'the store refused it'}.`, true);
+    }
+    const record = res.record;
+    const vars = record.variables.length > 0 ? ` Variables: ${record.variables.join(', ')}.` : '';
+    return text(
+      `Promoted "${record.name}" — ${record.steps.length} step(s) on ${record.host}.${vars}\n` +
+        'It is now kept permanently, survives the 30-day recording cache, and is offered ' +
+        'automatically whenever a navigation lands on its page.\n' +
+        'Note: promoting stores this flow\'s typed values in plain text and keeps them ' +
+        'indefinitely. Password fields were never captured, but any other sensitive value you ' +
+        'typed is in the steps — demote and re-save it with {{placeholders}} if so. ' +
+        `Undo with browser_replay {action:"demote", name:"${record.name}"}.`,
+    );
+  }
+
+  async function demoteTrace(scope: BrowserTargetScope, name: string) {
+    const res = await sendScopedBrowserRpc<{ ok: boolean; reason?: string }>(
+      'browser.actionCache.demote',
+      scope,
+      { name },
+    );
+    return res?.ok
+      ? text(
+          `Demoted "${name}". It is no longer offered on landing and no longer kept ` +
+            'permanently; any recording of it in the 30-day cache is untouched.',
+        )
+      : text(`Cannot demote "${name}": ${res?.reason ?? 'the store refused it'}.`, true);
+  }
+
+  async function listTraces(scope: BrowserTargetScope) {
+    const [res, promotedRes] = await Promise.all([
+      sendScopedBrowserRpc<{ traces: TraceRecord[] }>('browser.actionCache.list', scope),
+      sendScopedBrowserRpc<{ promoted: PromotedRecord[] }>(
+        'browser.actionCache.promoted',
+        scope,
+      ).catch(() => ({ promoted: [] as PromotedRecord[] })),
+    ]);
     const traces = res?.traces ?? [];
-    if (traces.length === 0) {
+    const promoted = promotedRes?.promoted ?? [];
+    // Promoted flows are listed even when the cache no longer holds them: the
+    // whole point of promoting is that the flow outlives the recording, so a
+    // list that showed only the cache would report a promoted flow as gone on
+    // the day it mattered most.
+    const promotedNames = new Set(promoted.map((r) => r.name));
+    const orphaned = promoted.filter((r) => !traces.some((t) => t.name === r.name));
+
+    if (traces.length === 0 && promoted.length === 0) {
       return text(
         'No recorded flows in this workspace yet. Perform a flow, then ' +
           'browser_replay {action:"save", name:"..."}.',
       );
     }
-    return text(`${traces.length} recorded flow(s):\n${traces.map(describeTrace).join('\n')}`);
+    const lines: string[] = [];
+    if (traces.length > 0) {
+      lines.push(`${traces.length} recorded flow(s):`);
+      for (const trace of traces) {
+        lines.push(describeTrace(trace, promotedNames.has(trace.name)));
+      }
+    }
+    for (const record of orphaned) {
+      lines.push(
+        `- ${record.name} — ${record.steps.length} step(s) on ${record.urlKey}\n` +
+          '  promoted; the 30-day recording has expired but the promoted copy still runs',
+      );
+    }
+    return text(lines.join('\n'));
   }
 
   async function saveTrace(scope: BrowserTargetScope, name: string, count: number | undefined) {
@@ -252,7 +342,24 @@ export function createReplayToolCatalog(deps: BrowserToolDeps) {
       scope,
       { name },
     );
-    const trace = res?.trace ?? null;
+    let trace = res?.trace ?? null;
+    let restoredFromPromotion = false;
+    if (!trace) {
+      // The recording cache expired it (or the workspace was pruned), but a
+      // promoted flow carries its own copy of the steps. Restoring here is
+      // what makes promotion mean PERMANENT rather than merely "listed for
+      // longer" — without it a promoted flow would die with its cache entry
+      // on day 31, which is the exact failure promotion exists to prevent.
+      const promotedRes = await sendScopedBrowserRpc<{ promoted: PromotedRecord[] }>(
+        'browser.actionCache.promoted',
+        scope,
+      ).catch(() => ({ promoted: [] as PromotedRecord[] }));
+      const record = (promotedRes?.promoted ?? []).find((r) => r.name === name);
+      if (record) {
+        trace = traceFromPromoted(record);
+        restoredFromPromotion = true;
+      }
+    }
     if (!trace) return text(`No flow named "${name}" in this workspace.`, true);
 
     const blocked = replayBlockedReason(trace);
@@ -263,6 +370,11 @@ export function createReplayToolCatalog(deps: BrowserToolDeps) {
     // whatever is open now — which is not a failed replay, it is a successful
     // replay of the wrong actions. A flow whose first step is a navigate
     // carries its own starting page and is exempt.
+    //
+    // This runs on `trace` whatever its origin, so a flow restored from a
+    // promoted copy is held to exactly the same contract as a cached one —
+    // deliberately, since a restored flow is the one most likely to be run
+    // long after anyone remembers which page it belonged to.
     const startsWithNavigate = trace.steps[0]?.tool === 'browser_navigate';
     if (!startsWithNavigate) {
       const livePage = await engine.getPageForScope(scope).catch(() => null);
@@ -298,7 +410,11 @@ export function createReplayToolCatalog(deps: BrowserToolDeps) {
     }).catch(() => {
       /* statistics are an optimization for the hint pipe; never fail a run on them */
     });
-    return text(renderRun(name, result), !result.ok);
+    const restoreNote = restoredFromPromotion
+      ? '\n  (restored from the promoted copy — the 30-day recording had expired. ' +
+        'A successful run does not re-create the recording; save it again if you want one.)'
+      : '';
+    return text(`${renderRun(name, result)}${restoreNote}`, !result.ok);
   }
 
   return Object.freeze([tool]);
