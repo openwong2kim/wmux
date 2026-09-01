@@ -116,6 +116,43 @@ describe('recordAction', () => {
     expect(ringFor(deps).all()[0].step.unrecordable).toBe('unresolved-axis');
   });
 
+  it('strips a credential out of a recorded navigate URL and holes the step', () => {
+    recordAction(deps, {
+      tool: 'browser_navigate',
+      page: null,
+      args: { url: 'https://alice:hunter2@example.com/app' },
+      url: 'https://example.com/app',
+    });
+    const [entry] = ringFor(deps).all();
+    expect(JSON.stringify(entry)).not.toContain('hunter2');
+    // Changed URL cannot replay what worked, so it is an honest hole.
+    expect(entry.step.unrecordable).toBe('redacted-url');
+  });
+
+  it('masks a password-family query parameter and holes the step', () => {
+    recordAction(deps, {
+      tool: 'browser_navigate',
+      page: null,
+      args: { url: 'https://example.com/login?user=a&password=hunter2' },
+      url: 'https://example.com/login',
+    });
+    const [entry] = ringFor(deps).all();
+    expect(JSON.stringify(entry)).not.toContain('hunter2');
+    expect(entry.step.unrecordable).toBe('redacted-url');
+  });
+
+  it('leaves a clean navigate URL replayable', () => {
+    recordAction(deps, {
+      tool: 'browser_navigate',
+      page: null,
+      args: { url: 'https://example.com/app?q=cats' },
+      url: 'https://example.com/app',
+    });
+    const [entry] = ringFor(deps).all();
+    expect(entry.step.args.url).toBe('https://example.com/app?q=cats');
+    expect(entry.step.unrecordable).toBeUndefined();
+  });
+
   it('records a css axis for a smart-snapshot click', () => {
     recordAction(deps, { tool: 'browser_click', page: fakePage, selector: '#go' });
     expect(ringFor(deps).all()[0].step.axis).toEqual({ kind: 'css', selector: '#go' });

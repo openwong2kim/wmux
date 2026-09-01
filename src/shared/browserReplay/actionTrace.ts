@@ -89,7 +89,14 @@ export type UnrecordableReason =
   /** The action ran over the RPC lane, which mints no RefEntry to key on. */
   | 'rpc-transport'
   /** The element could not be reduced to any axis this version understands. */
-  | 'unresolved-axis';
+  | 'unresolved-axis'
+  /**
+   * The step's URL carried a credential — userinfo, or a password-family query
+   * parameter. The secret is stripped before storage, which necessarily makes
+   * the stored URL different from the one that worked, so the step is a hole
+   * rather than a step that would replay a broken URL.
+   */
+  | 'redacted-url';
 
 export interface TraceStep {
   tool: ReplayableTool;
@@ -177,6 +184,30 @@ export function normalizeUrlKey(url: string): string {
     return `${parsed.origin}${path}`;
   } catch {
     return raw.toLowerCase();
+  }
+}
+
+/**
+ * Strip the userinfo from a URL that will be STORED and later replayed.
+ *
+ * normalizeUrlKey drops the whole query, so it is safe for a key but useless
+ * for a navigate step, which has to replay the real URL. This keeps the query
+ * and removes only `user:password@`, and reports whether it had to — a URL
+ * that was changed no longer replays what worked, so the caller turns the step
+ * into a hole rather than storing a URL that will fail differently.
+ *
+ * Unparseable input is returned untouched and unflagged: there is no authority
+ * to strip, and refusing here would break a `data:` or `about:` step.
+ */
+export function stripUrlUserinfo(url: string): { url: string; stripped: boolean } {
+  try {
+    const parsed = new URL(url);
+    if (!parsed.username && !parsed.password) return { url, stripped: false };
+    parsed.username = '';
+    parsed.password = '';
+    return { url: parsed.toString(), stripped: true };
+  } catch {
+    return { url, stripped: false };
   }
 }
 
@@ -428,6 +459,7 @@ const UNRECORDABLE_REASONS: readonly UnrecordableReason[] = [
   'password',
   'rpc-transport',
   'unresolved-axis',
+  'redacted-url',
 ];
 
 function sanitizeAxis(raw: unknown): StepAxis | null {

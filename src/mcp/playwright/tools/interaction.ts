@@ -603,14 +603,24 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
 
         let filled = 0;
         const errors: string[] = [];
+        // Which fields were credentials. Decided per field BEFORE the fill, the
+        // same rule and the same predicate browser_type uses: a form filled in
+        // one call may well be a login form, and recording it wholesale would
+        // put the password into the trace that browser_type is careful never to
+        // put there (panel review conf10 — the two tools have to give the same
+        // guarantee or the guarantee is worthless).
+        const isPassword: boolean[] = [];
 
-        for (const field of fields) {
+        for (let i = 0; i < fields.length; i++) {
+          const field = fields[i];
           try {
             if (page) {
               const el = await resolveRef(page, field.ref);
               if (!el) { errors.push(refNotFound(field.ref)); continue; }
+              isPassword[i] = await isPasswordElement(el);
               await el.fill(field.value);
             } else {
+              isPassword[i] = await rpcIsPasswordElement(field.ref, scope);
               await rpcFill(field.ref, field.value, scope);
             }
             filled++;
@@ -622,12 +632,14 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
         // Recorded only when EVERY field landed: a partially filled form
         // replayed as if it were whole is a wrong run that reports success.
         if (filled === fields.length && fields.length > 0) {
-          for (const field of fields) {
+          for (let i = 0; i < fields.length; i++) {
+            const credential = isPassword[i] === true;
             recordAction(deps, {
               tool: 'browser_fill',
               page,
-              ref: field.ref,
-              args: { value: field.value },
+              ref: fields[i].ref,
+              args: credential ? {} : { value: fields[i].value },
+              ...(credential && { unrecordable: 'password' as const }),
             });
           }
         }

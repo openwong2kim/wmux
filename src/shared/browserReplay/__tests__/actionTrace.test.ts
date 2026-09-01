@@ -19,6 +19,7 @@ import {
   refEntryToAxis,
   sanitizeTraceRecord,
   sanitizeTraceStep,
+  stripUrlUserinfo,
   surfaceShapeHash,
   traceVariableNames,
   type TraceRecord,
@@ -79,6 +80,31 @@ describe('normalizeUrlKey', () => {
 
   it('falls back to the trimmed input rather than throwing', () => {
     expect(normalizeUrlKey('  NOT a url  ')).toBe('not a url');
+  });
+});
+
+describe('stripUrlUserinfo', () => {
+  it('removes a credential from the authority and says it had to', () => {
+    const out = stripUrlUserinfo('https://alice:hunter2@example.com/app?keep=1');
+    expect(out.stripped).toBe(true);
+    expect(out.url).not.toContain('hunter2');
+    expect(out.url).not.toContain('alice');
+    // The query survives — unlike a url KEY, a navigate step has to replay it.
+    expect(out.url).toContain('keep=1');
+  });
+
+  it('flags a userinfo with no password half too', () => {
+    expect(stripUrlUserinfo('https://alice@example.com/app').stripped).toBe(true);
+  });
+
+  it('leaves a clean URL untouched and unflagged', () => {
+    const out = stripUrlUserinfo('https://example.com/app?q=1');
+    expect(out).toEqual({ url: 'https://example.com/app?q=1', stripped: false });
+  });
+
+  it('passes an unparseable or non-hierarchical URL straight through', () => {
+    expect(stripUrlUserinfo('data:text/html,<p>hi</p>').stripped).toBe(false);
+    expect(stripUrlUserinfo('not a url')).toEqual({ url: 'not a url', stripped: false });
   });
 });
 

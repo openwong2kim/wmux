@@ -59,7 +59,16 @@ describe('browser_fill RPC fallback workspace scope', () => {
       surfaceId: 'surface-1',
     });
     expect(browserToolDeps.resolveWorkspaceId).toHaveBeenCalledTimes(1);
-    expect(mockSendRpc.mock.calls).toEqual([
+    // The password probe runs FIRST and on the same target: browser_fill has
+    // to know whether a field is a credential before it fills it, because the
+    // answer decides whether the value may be recorded. It is asserted here
+    // rather than filtered out — a probe that quietly stopped running would
+    // put passwords into the action cache.
+    const calls = mockSendRpc.mock.calls;
+    expect(calls[0][0]).toBe('browser.evaluate');
+    expect(String(calls[0][1].expression)).toContain('isPasswordField');
+    expect(calls[0][1]).toMatchObject({ workspaceId: 'ws-test', surfaceId: 'surface-1' });
+    expect(calls.slice(1)).toEqual([
       ['browser.click.cdp', {
         selector: '[data-wmux-ref="field-1"]',
         workspaceId: 'ws-test',

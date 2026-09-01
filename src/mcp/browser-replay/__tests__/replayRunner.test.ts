@@ -216,6 +216,42 @@ describe('replayTrace — flow control', () => {
     expect(goneTo).toEqual(['https://example.com/start']);
   });
 
+  it('refuses a recorded URL the live navigate tool would itself refuse', async () => {
+    // The cache file is ordinary JSON in the user's home directory, so a
+    // stored URL is untrusted input by the time it is replayed.
+    const nav: TraceStep = {
+      tool: 'browser_navigate',
+      axis: { kind: 'none' },
+      args: { url: 'javascript:alert(1)' },
+    };
+    const result = await replayTrace(page, trace([nav]), undefined);
+    expect(result.ok).toBe(false);
+    expect(result.steps[0].detail).toContain('not navigable');
+    expect(goneTo).toEqual([]);
+  });
+
+  it('strips userinfo out of a recorded URL before navigating to it', async () => {
+    const nav: TraceStep = {
+      tool: 'browser_navigate',
+      axis: { kind: 'none' },
+      args: { url: 'https://alice:hunter2@example.com/app' },
+    };
+    await replayTrace(page, trace([nav]), undefined);
+    expect(goneTo).toHaveLength(1);
+    expect(goneTo[0]).not.toContain('hunter2');
+  });
+
+  it('refuses a URL smuggled in through a variable substitution', async () => {
+    const nav: TraceStep = {
+      tool: 'browser_navigate',
+      axis: { kind: 'none' },
+      args: { url: '{{target}}' },
+    };
+    const result = await replayTrace(page, trace([nav]), { target: 'javascript:alert(1)' });
+    expect(result.ok).toBe(false);
+    expect(goneTo).toEqual([]);
+  });
+
   it('stops on a placeholder the caller did not supply', async () => {
     const typing = refStep({ tool: 'browser_type', args: { text: '{{email}}' } });
     const result = await replayTrace(page, trace([typing]), {});

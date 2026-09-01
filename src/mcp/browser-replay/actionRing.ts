@@ -1,12 +1,14 @@
 import type { Page } from 'playwright-core';
 import { getRefEntry } from '../playwright/snapshot';
 import type { BrowserToolDeps } from '../playwright/browserScope';
+import { redactPasswordParams } from '../playwright/redact';
 import {
   ACTION_RING_CAPACITY,
   NO_AXIS,
   clampArgValue,
   normalizeUrlKey,
   refEntryToAxis,
+  stripUrlUserinfo,
   type ReplayableTool,
   type StepAxis,
   type TraceStep,
@@ -128,6 +130,25 @@ function axisFor(page: Page | null, ref: string | undefined, selector: string | 
   return { axis };
 }
 
+/**
+ * Sanitise a URL that is about to be STORED as a step's argument.
+ *
+ * Two credential shapes reach a URL: `scheme://user:pass@host` and a
+ * password-family query parameter. `redactPasswordParams` is what the tool
+ * layer already applies before echoing a URL to the agent, so recording uses
+ * the same rule — a value wmux refuses to put in the transcript has no
+ * business going to disk, where it lives for thirty days.
+ *
+ * Both cases change the URL, so neither can be replayed as recorded. The step
+ * is reported back as a hole rather than stored as a URL that would navigate
+ * somewhere else (or nowhere) on replay.
+ */
+function sanitizeRecordedUrl(url: string): { url: string; redacted: boolean } {
+  const withoutUserinfo = stripUrlUserinfo(url);
+  const masked = redactPasswordParams(withoutUserinfo.url);
+  return { url: masked, redacted: withoutUserinfo.stripped || masked !== withoutUserinfo.url };
+}
+
 function pageUrl(page: Page | null): string {
   try {
     return page?.url() ?? '';
@@ -158,7 +179,17 @@ export function recordAction(deps: BrowserToolDeps, input: RecordActionInput): v
       : axisFor(input.page, input.targetRef, undefined);
     const args: Record<string, string | number | boolean> = {};
     let truncated = false;
+    let redactedUrl = false;
     for (const [key, value] of Object.entries(input.args ?? {})) {
+      // `url` is the one argument that is itself a credential carrier.
+      if (key === 'url' && typeof value === 'string') {
+        const safe = sanitizeRecordedUrl(value);
+        redactedUrl = redactedUrl || safe.redacted;
+        const clampedUrl = clampArgValue(safe.url);
+        args[key] = clampedUrl.value;
+        truncated = truncated || clampedUrl.truncated;
+        continue;
+      }
       const clamped = clampArgValue(value);
       args[key] = clamped.value;
       truncated = truncated || clamped.truncated;
@@ -167,6 +198,7 @@ export function recordAction(deps: BrowserToolDeps, input: RecordActionInput): v
       input.unrecordable ??
       resolved.unrecordable ??
       target?.unrecordable ??
+      (redactedUrl ? 'redacted-url' : undefined) ??
       // A clamped argument replays a DIFFERENT value than the one that worked,
       // which is a wrong run wearing a right run's clothes.
       (truncated ? 'unresolved-axis' : undefined);

@@ -1,10 +1,12 @@
 import type { ElementHandle, Page } from 'playwright-core';
 import { generateSnapshot, listRefEntries, resolveRef } from '../playwright/snapshot';
 import { describeToolError } from '../playwright/toolError';
+import { validateNavigationUrl } from '../../shared/types';
 import {
   applyVariables,
   describeAxis,
   hasUnrecordableStep,
+  stripUrlUserinfo,
   surfaceShapeHash,
   type RefAxis,
   type StepAxis,
@@ -142,8 +144,16 @@ async function runStep(
   args: Record<string, string | number | boolean>,
 ): Promise<StepOutcome> {
   if (step.tool === 'browser_navigate') {
-    const url = String(args.url ?? '');
-    await page.goto(url, { waitUntil: 'domcontentloaded' });
+    // The cache file is ordinary JSON in the user's home directory and a
+    // variable substitution is caller-supplied, so a stored URL is untrusted
+    // input by the time it gets here — not something wmux wrote and can
+    // vouch for. It goes through the SAME gate browser_navigate applies to an
+    // agent-supplied URL, plus a userinfo strip, so a hand-edited trace cannot
+    // reach a target the live tool would have refused.
+    const stripped = stripUrlUserinfo(String(args.url ?? ''));
+    const check = validateNavigationUrl(stripped.url);
+    if (!check.valid) return { error: `the recorded URL is not navigable: ${check.reason}` };
+    await page.goto(stripped.url, { waitUntil: 'domcontentloaded' });
     return { detail: `navigated to ${page.url()}` };
   }
   if (step.tool === 'browser_press_key') {
