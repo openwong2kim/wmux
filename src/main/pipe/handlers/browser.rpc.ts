@@ -754,18 +754,37 @@ export function registerBrowserRpc(
   // cache unreadable exactly when it is most useful — before a browser is open,
   // when the agent is deciding whether it needs one at all.
   //
-  // Isolation is free rather than enforced here: every caller reaches these
-  // through sendScopedBrowserRpc, which overwrites `workspaceId` with the
-  // resolved scope, and `scopeFor` is still the enforcement point. A workspace
-  // therefore cannot name another workspace's traces even by constructing the
-  // params by hand.
+  // Scope is resolved here rather than through `scopeFor`, and it is
+  // fail-closed IN BOTH ENFORCEMENT MODES. `scopeFor` deliberately falls back
+  // to the caller-supplied workspaceId while `mcp.mode` is 'shadow', which is
+  // the right trade for the existing browser methods — the alternative there is
+  // breaking automation that works today. It is the wrong trade here: this
+  // store is brand new, so there is no working behaviour to preserve, and the
+  // fallback would let a caller read and overwrite another workspace's recorded
+  // flows just by naming it in params. A cache miss costs a replay; a
+  // cross-workspace hit hands one agent another agent's actions.
   const actionCache = new ActionCacheStore();
 
-  const cacheWorkspace = (method: RpcMethod, params: Record<string, unknown>, ctx?: RpcContext): string => {
-    const workspaceId = scopeFor(method, params, ctx);
+  const cacheWorkspace = (
+    method: RpcMethod,
+    params: Record<string, unknown>,
+    ctx?: RpcContext,
+  ): string => {
+    const decision = callerScope(ctx, params);
+    // 'scoped' is a workspace wmux itself resolved for this caller. The
+    // operator lane is the renderer, which is wmux. Everything else — the
+    // 'legacy' lane included — is refused rather than trusted with a
+    // workspaceId it supplied itself.
+    const workspaceId =
+      decision.kind === 'scoped'
+        ? decision.workspaceId
+        : decision.kind === 'allowed' && decision.lane === 'operator'
+          ? decision.workspaceId
+          : undefined;
     if (!workspaceId) {
       throw new Error(
-        `${method}: the action cache is per-workspace and this caller's workspace could not be resolved.`,
+        `${method}: the browser action cache is per-workspace and this caller's workspace ` +
+          'could not be verified. Recorded flows are never served on an unverified scope.',
       );
     }
     return workspaceId;

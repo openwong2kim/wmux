@@ -26,6 +26,7 @@ vi.mock('../PlaywrightEngine', () => ({
 vi.mock('../snapshot', () => ({
   resolveRef,
   getRefEntry,
+  listRefEntries: () => [],
   browserScopeKey: () => 'test-scope',
   isOutstandingFrameRef: () => false,
   frameRefFallbackMessage: (ref: string) => `frame ref ${ref}`,

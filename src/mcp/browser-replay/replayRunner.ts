@@ -6,8 +6,8 @@ import {
   applyVariables,
   describeAxis,
   hasUnrecordableStep,
+  refMapShapeHash,
   stripUrlUserinfo,
-  surfaceShapeHash,
   type RefAxis,
   type StepAxis,
   type TraceRecord,
@@ -63,12 +63,25 @@ function shapeWarning(recorded: string, live: string): string | null {
  * Find the live ref number for a stored axis.
  *
  * The match is role + name + position among the same-named elements in the
- * same frame, i.e. exactly the population resolveRef counts against. A
- * `sameNameTotal` that no longer agrees is a WARNING and not a refusal: an
- * added third "Delete" button does not necessarily move the first one, and
- * refusing there would make the cache useless on any page that grows a row.
- * A missing element IS a refusal — that is the case where continuing would
- * click something else.
+ * same frame, i.e. exactly the population resolveRef counts against.
+ *
+ * What a changed population size means depends entirely on WHERE the recorded
+ * element sat in it:
+ *
+ *   index 0 — the first "Delete" is still the first "Delete" whether the list
+ *     holds two rows or five. Adding rows below it cannot move it. Warn and
+ *     continue, because refusing here would make the cache useless on every
+ *     page that grows a row.
+ *
+ *   index > 0 — position N only means the same element while the N elements
+ *     before it are the same N elements. A row inserted anywhere above shifts
+ *     the whole tail by one, and the replay then acts on the row that moved
+ *     into that slot: a successful-looking run against the wrong item, which
+ *     on a "Delete" is exactly the outcome that must never be guessed at.
+ *     Refuse (panel review ⑦).
+ *
+ * A missing element is always a refusal — that is the other case where
+ * continuing would act on something else.
  */
 function matchRefAxis(
   page: Page,
@@ -92,12 +105,22 @@ function matchRefAxis(
     };
   }
   if (population.length !== axis.sameNameTotal) {
+    if (axis.sameNameIndex > 0) {
+      return {
+        error:
+          `${describeAxis(axis)} can no longer be identified: the page has ` +
+          `${population.length} element(s) with that role and name, the recording had ` +
+          `${axis.sameNameTotal}. Position ${axis.sameNameIndex + 1} only names the same ` +
+          'element while everything before it is unchanged, so this would act on whatever ' +
+          'moved into that slot',
+      };
+    }
     return {
       ref: String(match.ref),
       warning:
         `${describeAxis(axis)}: the page now has ${population.length} such element(s), ` +
-        `the recording had ${axis.sameNameTotal} — replaying against position ` +
-        `${axis.sameNameIndex + 1} anyway`,
+        `the recording had ${axis.sameNameTotal} — the first one cannot have been ` +
+        'displaced, so replaying against it',
     };
   }
   return { ref: String(match.ref) };
@@ -252,8 +275,8 @@ export async function replayTrace(
   trace: TraceRecord,
   variables: Record<string, string> | undefined,
 ): Promise<ReplayResult> {
-  const snapshotText = await generateSnapshot(page, { format: 'ai' }).catch(() => '');
-  const liveShape = surfaceShapeHash(snapshotText);
+  await generateSnapshot(page, { format: 'ai' }).catch(() => '');
+  const liveShape = refMapShapeHash(listRefEntries(page));
   const warnings: string[] = [];
   const shapeNote = shapeWarning(trace.surfaceShape, liveShape);
   if (shapeNote) warnings.push(shapeNote);

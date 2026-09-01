@@ -20,6 +20,7 @@ import { registerInspectionTools } from './playwright/tools/inspection';
 import { registerStateTools } from './playwright/tools/state';
 import { registerWaitTools } from './playwright/tools/wait';
 import { registerReplayTools } from './browser-replay/tool';
+import { ActionRing } from './browser-replay/actionRing';
 import { registerFileTools } from './playwright/tools/file';
 import { registerUtilityTools } from './playwright/tools/utility';
 import { registerExtractionTools } from './playwright/tools/extraction';
@@ -958,7 +959,14 @@ server.tool(
 );
 
 // === Playwright browser tools ===
-const browserToolDeps = { resolveWorkspaceId: requireWorkspaceId };
+// One recording ring per SERVER, i.e. per broker connection. Not a module
+// singleton: the broker gives every accepted connection its own McpServer, and
+// a shared ring would let one agent's actions be cut into another agent's
+// saved flow with nothing in the result to show it happened.
+const browserToolDeps = {
+  resolveWorkspaceId: requireWorkspaceId,
+  actionRing: new ActionRing(),
+};
 registerNavigationTools(server, browserToolDeps);
 registerInteractionTools(server, browserToolDeps);
 registerInspectionTools(server, browserToolDeps);

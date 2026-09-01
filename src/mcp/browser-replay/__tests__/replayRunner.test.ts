@@ -22,7 +22,7 @@ vi.mock('../../playwright/snapshot', () => ({
 }));
 
 import { replayBlockedReason, replayTrace } from '../replayRunner';
-import { surfaceShapeHash, type TraceRecord, type TraceStep } from '../../../shared/browserReplay/actionTrace';
+import { refMapShapeHash, type TraceRecord, type TraceStep } from '../../../shared/browserReplay/actionTrace';
 
 const clicks: string[] = [];
 const pressed: string[] = [];
@@ -63,7 +63,7 @@ function refStep(overrides: Partial<TraceStep> = {}): TraceStep {
   };
 }
 
-function trace(steps: TraceStep[], surfaceShape = surfaceShapeHash(snapshotText)): TraceRecord {
+function trace(steps: TraceStep[], surfaceShape = refMapShapeHash(refEntries)): TraceRecord {
   return {
     id: 'tr_1',
     name: 'flow',
@@ -148,7 +148,8 @@ describe('replayTrace — resolution on the 4-tuple axis', () => {
     expect(result.steps[0].ok).toBe(true);
   });
 
-  it('warns but continues when the same-name population grew', async () => {
+  it('warns but continues when the population grew AROUND the recorded first element', async () => {
+    // Index 0: nothing can have been inserted above it, so it is still itself.
     refEntries = [
       { role: 'button', name: 'Sign in', sameNameIndex: 0, sameNameTotal: 2, frameKey: '', ref: 1 },
       { role: 'button', name: 'Sign in', sameNameIndex: 1, sameNameTotal: 2, frameKey: '', ref: 2 },
@@ -159,6 +160,43 @@ describe('replayTrace — resolution on the 4-tuple axis', () => {
     const result = await replayTrace(page, trace([refStep()]), undefined);
     expect(result.ok).toBe(true);
     expect(result.warnings.join(' ')).toContain('the recording had 1');
+  });
+
+  it('REFUSES when the population changed and the recorded element was not first', async () => {
+    // Index 1 of 2 recorded; the page now holds 3. A row inserted above shifts
+    // the tail, so "position 2" may well be a different row now — acting on it
+    // would be a successful-looking run against the wrong element.
+    refEntries = [
+      { role: 'button', name: 'Delete', sameNameIndex: 0, sameNameTotal: 3, frameKey: '', ref: 1 },
+      { role: 'button', name: 'Delete', sameNameIndex: 1, sameNameTotal: 3, frameKey: '', ref: 2 },
+      { role: 'button', name: 'Delete', sameNameIndex: 2, sameNameTotal: 3, frameKey: '', ref: 3 },
+    ];
+    const mod = await import('../../playwright/snapshot');
+    vi.spyOn(mod, 'resolveRef').mockResolvedValue(element('a'));
+
+    const displaced = refStep({
+      axis: { kind: 'ref', role: 'button', name: 'Delete', sameNameIndex: 1, sameNameTotal: 2, frameKey: '' },
+    });
+    const result = await replayTrace(page, trace([displaced]), undefined);
+    expect(result.ok).toBe(false);
+    expect(result.failedStep).toBe(1);
+    expect(result.steps[0].detail).toContain('can no longer be identified');
+    expect(clicks).toEqual([]);
+  });
+
+  it('still runs a non-first element when the population is unchanged', async () => {
+    refEntries = [
+      { role: 'button', name: 'Delete', sameNameIndex: 0, sameNameTotal: 2, frameKey: '', ref: 1 },
+      { role: 'button', name: 'Delete', sameNameIndex: 1, sameNameTotal: 2, frameKey: '', ref: 2 },
+    ];
+    const mod = await import('../../playwright/snapshot');
+    vi.spyOn(mod, 'resolveRef').mockResolvedValue(element('second-delete'));
+    const step = refStep({
+      axis: { kind: 'ref', role: 'button', name: 'Delete', sameNameIndex: 1, sameNameTotal: 2, frameKey: '' },
+    });
+    const result = await replayTrace(page, trace([step]), undefined);
+    expect(result.ok).toBe(true);
+    expect(clicks).toEqual(['second-delete']);
   });
 
   it('refuses when the recorded position no longer exists in the population', async () => {

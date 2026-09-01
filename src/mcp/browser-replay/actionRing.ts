@@ -1,6 +1,7 @@
 import type { Page } from 'playwright-core';
 import { getRefEntry } from '../playwright/snapshot';
-import type { BrowserToolDeps } from '../playwright/browserScope';
+import { browserScopeKey, listRefEntries } from '../playwright/snapshot';
+import type { BrowserTargetScope, BrowserToolDeps } from '../playwright/browserScope';
 import { redactPasswordParams } from '../playwright/redact';
 import {
   ACTION_RING_CAPACITY,
@@ -8,6 +9,7 @@ import {
   clampArgValue,
   normalizeUrlKey,
   refEntryToAxis,
+  refMapShapeHash,
   stripUrlUserinfo,
   type ReplayableTool,
   type StepAxis,
@@ -29,17 +31,32 @@ import {
 //      simply moves on, something has to close the session and decide what to
 //      do with the half-recorded flow. A ring has nothing to close.
 //
-// The ring is per-CONNECTION, not global: two agents driving two workspaces
-// must not cut each other's actions into their traces. The module-level ring
-// is a fallback for call sites that predate the deps field, and is scoped by
-// nothing — which is safe only because it is used when there is exactly one
-// server in the process.
+// The ring is per-CONNECTION and there is NO process-wide fallback. The broker
+// hands every accepted connection its own McpServer, so a shared ring would let
+// one agent's actions be cut into another agent's trace — and both would look
+// perfectly ordinary in the result. A connection without a ring records
+// nothing, which costs a save and can never mix two agents together.
+//
+// Within one connection the entries are still tagged with the browser scope
+// they happened in, because a single agent can drive several workspaces and
+// surfaces through one server.
 // ---------------------------------------------------------------------------
 
 export interface RecordedAction {
   step: TraceStep;
   /** The page the action happened on, for cutting and for the trace's urlKey. */
   urlKey: string;
+  /** browserScopeKey of the surface the action was performed on. */
+  scopeKey: string;
+  /**
+   * Shape of the page this action happened on, stamped at record time.
+   *
+   * Stamped per action rather than read once at save time because by the time
+   * the agent saves, the flow has already run and the live page is its END
+   * state — a shape read then would mismatch on every future replay of a page
+   * that never changed. Costs nothing: the ref map is already in memory.
+   */
+  surfaceShape: string;
   at: number;
 }
 
@@ -63,43 +80,51 @@ export class ActionRing {
   }
 
   /**
-   * The tail a save should take.
+   * The tail a save should take, for one browser scope.
    *
-   * With an explicit count, the last `count` actions. Without one, everything
-   * from the most recent navigate onward — a navigate is where a flow starts
-   * in practice, and cutting there is what makes `save` usable with no
-   * argument at all. With no navigate in the ring, the whole ring is the flow.
+   * Two cuts, in order:
+   *
+   *   1. the trailing CONTIGUOUS run of actions performed on `scopeKey`. One
+   *      agent can drive two surfaces through one connection, and interleaving
+   *      them produces a "flow" that never happened on either page. Contiguity
+   *      rather than a filter is the point: skipping over another surface's
+   *      actions would splice two halves of a session into one trace.
+   *   2. within that run, from the most recent navigate onward — a navigate is
+   *      where a flow starts in practice, and cutting there is what makes
+   *      `save` usable with no argument at all.
+   *
+   * An explicit `count` replaces the second cut only. The scope run still
+   * bounds it, so `steps: 30` can never reach past the surface switch.
    */
-  tail(count?: number): RecordedAction[] {
+  tail(scopeKey: string, count?: number): RecordedAction[] {
     const all = this.all();
-    if (count !== undefined && count > 0) return all.slice(-count);
-    for (let i = all.length - 1; i >= 0; i--) {
-      if (all[i].step.tool === 'browser_navigate') return all.slice(i);
+    let start = all.length;
+    while (start > 0 && all[start - 1].scopeKey === scopeKey) start--;
+    const run = all.slice(start);
+    if (count !== undefined && count > 0) return run.slice(-count);
+    for (let i = run.length - 1; i >= 0; i--) {
+      if (run[i].step.tool === 'browser_navigate') return run.slice(i);
     }
-    return all;
+    return run;
   }
 }
 
-/** Deps may carry a per-connection ring; a call site without one shares this. */
-const moduleRing = new ActionRing();
-
+/** Deps carrying the per-connection ring. Absent = this connection records
+ *  nothing, which is the fail-closed outcome (see the module comment). */
 export interface ActionRingDeps extends BrowserToolDeps {
   actionRing?: ActionRing;
 }
 
-export function ringFor(deps: BrowserToolDeps): ActionRing {
-  return (deps as ActionRingDeps).actionRing ?? moduleRing;
-}
-
-/** Test seam: reset the fallback ring between cases. */
-export function resetModuleRing(): void {
-  moduleRing.clear();
+export function ringFor(deps: BrowserToolDeps): ActionRing | null {
+  return (deps as ActionRingDeps).actionRing ?? null;
 }
 
 // ── Recording ──────────────────────────────────────────────────────────────
 
 export interface RecordActionInput {
   tool: ReplayableTool;
+  /** The surface the action was performed on. Tags the entry for the cut. */
+  scope: BrowserTargetScope;
   /** The live page, when the action took the Playwright lane. */
   page: Page | null;
   /** Ref the action addressed, when it addressed one. */
@@ -173,6 +198,8 @@ function pageUrl(page: Page | null): string {
  */
 export function recordAction(deps: BrowserToolDeps, input: RecordActionInput): void {
   try {
+    const ring = ringFor(deps);
+    if (!ring) return;
     const resolved = axisFor(input.page, input.ref, input.selector);
     const target = input.targetRef === undefined
       ? undefined
@@ -209,9 +236,11 @@ export function recordAction(deps: BrowserToolDeps, input: RecordActionInput): v
       args,
       ...(unrecordable && { unrecordable }),
     };
-    ringFor(deps).push({
+    ring.push({
       step,
       urlKey: normalizeUrlKey(input.url ?? pageUrl(input.page)),
+      scopeKey: browserScopeKey(input.scope),
+      surfaceShape: input.page ? refMapShapeHash(listRefEntries(input.page)) : '',
       at: Date.now(),
     });
   } catch {

@@ -209,8 +209,12 @@ describe('MCP workspace routing (source-level invariants)', () => {
     // complementary production seam: every browser registration must share the
     // strict requireWorkspaceId dependency, never the weak/UI-active resolver.
     expect(src).toMatch(
-      /const browserToolDeps\s*=\s*\{\s*resolveWorkspaceId:\s*requireWorkspaceId\s*\}/,
+      /const browserToolDeps\s*=\s*\{\s*resolveWorkspaceId:\s*requireWorkspaceId\s*,/,
     );
+    // The recording ring rides the same object and must be constructed HERE,
+    // inside createWmuxServer — one per broker connection. A module-level ring
+    // would let one agent's actions be cut into another agent's saved flow.
+    expect(src).toMatch(/const browserToolDeps\s*=[\s\S]{0,200}?actionRing:\s*new ActionRing\(\)/);
     for (const name of [
       'Navigation',
       'Interaction',

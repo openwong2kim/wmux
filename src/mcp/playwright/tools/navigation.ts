@@ -160,6 +160,7 @@ export function registerNavigationTools(server: McpServer, deps: BrowserToolDeps
               // redirect's source would never match the page it actually runs
               // against. `url` is what the step replays, so both are kept.
               recordAction(deps, {
+                scope,
                 tool: 'browser_navigate',
                 page,
                 args: { url },
@@ -185,6 +186,7 @@ export function registerNavigationTools(server: McpServer, deps: BrowserToolDeps
               expression: 'location.href',
             }).then((r) => r?.value || url).catch(() => url);
             recordAction(deps, {
+              scope,
               tool: 'browser_navigate',
               page: null,
               args: { url },

@@ -2,7 +2,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { PlaywrightEngine } from '../playwright/PlaywrightEngine';
 import { withAutomationLease } from '../playwright/automationLease';
-import { generateSnapshot } from '../playwright/snapshot';
+import { browserScopeKey } from '../playwright/snapshot';
 import { describeToolError } from '../playwright/toolError';
 import {
   sendScopedBrowserRpc,
@@ -21,7 +21,6 @@ import {
   isServable,
   isValidTraceName,
   normalizeUrlKey,
-  surfaceShapeHash,
   traceVariableNames,
   type TraceRecord,
 } from '../../shared/browserReplay/actionTrace';
@@ -170,19 +169,30 @@ export function createReplayToolCatalog(deps: BrowserToolDeps) {
   }
 
   async function saveTrace(scope: BrowserTargetScope, name: string, count: number | undefined) {
-    const tail = ringFor(deps).tail(count);
+    const ring = ringFor(deps);
+    if (!ring) {
+      return text(
+        'This connection has no action recorder, so there is nothing to save. ' +
+          'Perform the flow again on a connection that records.',
+        true,
+      );
+    }
+    const tail = ring.tail(browserScopeKey(scope), count);
     if (tail.length === 0) {
       return text(
-        'Nothing to save — no successful browser actions have been recorded on this connection yet.',
+        'Nothing to save — no successful browser actions have been recorded on this surface yet.',
         true,
       );
     }
     const cut = tail.slice(-MAX_STEPS_PER_TRACE);
-    // The shape is read from the page the flow STARTED on, which is the page a
-    // future run will begin against; hashing the end state would compare the
-    // wrong two things.
+    // The shape belongs to the page the flow STARTED on — the page a future run
+    // begins against. Hashing the live page at SAVE time compares the wrong two
+    // things: by then the flow has run and the page is its end state, so every
+    // replay would report a shape mismatch against a page that never changed.
+    // The recorder stamps each action with the shape of the page it happened
+    // on, so the first cut action already carries the right answer.
+    const surfaceShape = cut[0].surfaceShape;
     const page = await engine.getPageForScope(scope).catch(() => null);
-    const surfaceShape = page ? surfaceShapeHash(await generateSnapshot(page, { format: 'ai' }).catch(() => '')) : '';
     const trace = {
       id: `tr_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`,
       name,
@@ -231,6 +241,24 @@ export function createReplayToolCatalog(deps: BrowserToolDeps) {
 
     const blocked = replayBlockedReason(trace);
     if (blocked) return text(`Cannot replay "${name}": ${blocked}`, true);
+
+    // A flow's stored axes were numbered against ONE page. Replaying them from
+    // somewhere else resolves role+name matches that happen to exist on
+    // whatever is open now — which is not a failed replay, it is a successful
+    // replay of the wrong actions. A flow whose first step is a navigate
+    // carries its own starting page and is exempt.
+    const startsWithNavigate = trace.steps[0]?.tool === 'browser_navigate';
+    if (!startsWithNavigate) {
+      const livePage = await engine.getPageForScope(scope).catch(() => null);
+      const liveKey = normalizeUrlKey(livePage?.url() ?? '');
+      if (liveKey !== trace.urlKey) {
+        return text(
+          `Cannot replay "${name}" from here: it was recorded on ${trace.urlKey}, and this ` +
+            `surface is on ${liveKey || 'no page'}. Navigate there first, then run it again.`,
+          true,
+        );
+      }
+    }
 
     // A live Page is required, and the RPC lane is refused rather than
     // emulated: replay resolves stored axes through the accessibility ref map,

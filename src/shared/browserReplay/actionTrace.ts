@@ -213,32 +213,6 @@ export function stripUrlUserinfo(url: string): { url: string; stripped: boolean 
 
 // ── Surface shape ──────────────────────────────────────────────────────────
 
-/** `ref=12` / `[ref=12]` / `ref="12"` in any snapshot rendering. */
-const REF_NUMBER_PATTERN = /\bref\s*=\s*"?\[?(\d+)\]?"?/g;
-
-/**
- * A hash of "what this page looks like", with the ref NUMBERS removed.
- *
- * Ref numbers are minted per document and change whenever the identity map is
- * rebuilt, so hashing the raw snapshot would report every page as a different
- * page and make the shape check pure noise. Stripping them leaves the roles,
- * names and structure — the things a trace actually depends on.
- *
- * A mismatch is a WARNING, never a refusal (best-effort principle above): the
- * page having gained a banner does not stop a login flow from working, and the
- * step-level axis resolution is the real correctness check.
- */
-export function surfaceShapeHash(snapshotText: string): string {
-  const normalized = (snapshotText ?? '')
-    .replace(REF_NUMBER_PATTERN, 'ref=#')
-    .replace(/[ \t]+/g, ' ')
-    .replace(/\r\n/g, '\n')
-    .trim();
-  return createHash('sha256').update(normalized).digest('hex');
-}
-
-// ── Axis construction ──────────────────────────────────────────────────────
-
 /** The RefEntry fields an axis is built from. Structural on purpose: the
  *  recorder lives in the MCP process and must not drag snapshot.ts (and its
  *  playwright-core types) into the shared layer. */
@@ -249,6 +223,36 @@ export interface RefEntryLike {
   sameNameTotal: number;
   frameKey: string;
 }
+
+
+/**
+ * A hash of "what this page looks like", computed from the snapshot's own ref
+ * map rather than from its rendered text.
+ *
+ * The ref map is the right input for two reasons. It is already in memory
+ * whenever an action is recorded, so stamping a shape onto every action costs
+ * no extra snapshot — which is what lets a save use the shape of the page the
+ * flow STARTED on instead of the page it ended on. And it contains exactly the
+ * things a trace depends on (role, name, and same-name position per frame) and
+ * none of the things it does not, including the ref NUMBERS, which are minted
+ * per document and change whenever the identity map is rebuilt.
+ *
+ * A mismatch is a WARNING, never a refusal: a page that grew a cookie banner
+ * still logs in fine, and the per-step axis resolution is the real correctness
+ * check.
+ */
+export function refMapShapeHash(entries: readonly RefEntryLike[]): string {
+  const hash = createHash('sha256');
+  // Sorted, so a snapshot that walks the tree in a different order (a frame
+  // that attached earlier this time) does not read as a different page.
+  const lines = entries
+    .map((e) => `${e.frameKey ?? ''}\u0000${e.role}\u0000${e.name}\u0000${e.sameNameIndex}`)
+    .sort();
+  for (const line of lines) hash.update(line).update('\n');
+  return hash.digest('hex');
+}
+
+// ── Axis construction ──────────────────────────────────────────────────────
 
 /**
  * Reduce a live RefEntry to a storable axis.

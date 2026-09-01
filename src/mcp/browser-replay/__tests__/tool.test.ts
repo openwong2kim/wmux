@@ -36,6 +36,8 @@ vi.mock('../../playwright/snapshot', () => ({
   generateSnapshot: async () => 'button "Sign in" [ref=1]',
   listRefEntries: () => [],
   resolveRef: async () => null,
+  browserScopeKey: (scope: { workspaceId: string; surfaceId?: string }) =>
+    `${scope.workspaceId}\u0000${scope.surfaceId ?? ''}`,
 }));
 
 vi.mock('../../playwright/PlaywrightEngine', () => ({
@@ -49,10 +51,14 @@ vi.mock('../../playwright/PlaywrightEngine', () => ({
 let pageForScope: unknown = null;
 
 import { createReplayToolCatalog } from '../tool';
-import { recordAction, resetModuleRing } from '../actionRing';
+import { ActionRing, recordAction } from '../actionRing';
 import type { TraceRecord } from '../../../shared/browserReplay/actionTrace';
 
-const deps = { resolveWorkspaceId: async () => 'ws-1' };
+// The lease mock resolves every call to this scope, so the ring's scope key and
+// the tool's cut key have to agree on it.
+const scope = { workspaceId: 'ws-1' };
+let ring: ActionRing;
+let deps: { resolveWorkspaceId: () => Promise<string>; actionRing: ActionRing };
 
 function invoke(input: Record<string, unknown>) {
   const [tool] = createReplayToolCatalog(deps);
@@ -69,7 +75,8 @@ beforeEach(() => {
   listResponse = [];
   getResponse = null;
   pageForScope = null;
-  resetModuleRing();
+  ring = new ActionRing();
+  deps = { resolveWorkspaceId: async () => 'ws-1', actionRing: ring };
 });
 
 describe('browser_replay — the tool surface', () => {
@@ -107,6 +114,7 @@ describe('browser_replay save — a password never reaches the put RPC', () => {
     // Exactly what interaction.ts does for a password field: the value is
     // omitted at the recorder, so there is nothing downstream to leak.
     recordAction(deps, {
+      scope,
       tool: 'browser_type',
       page: null,
       args: {},
@@ -147,6 +155,7 @@ describe('browser_replay save — a password never reaches the put RPC', () => {
 
   it('a non-password type step does carry its text, so the guard is not vacuous', async () => {
     recordAction(deps, {
+      scope,
       tool: 'browser_type',
       page: null,
       args: { text: 'a search term' },
@@ -158,6 +167,31 @@ describe('browser_replay save — a password never reaches the put RPC', () => {
 });
 
 describe('browser_replay save — cutting the ring', () => {
+  it('refuses to save on a connection with no recorder rather than borrowing one', async () => {
+    const ringless = { resolveWorkspaceId: async () => 'ws-1' };
+    const [tool] = createReplayToolCatalog(ringless);
+    const result = (await tool.invoke(
+      { action: 'save', name: 'flow' },
+      { principal: { kind: 'unattributed' } },
+    )) as { content: Array<{ text: string }>; isError?: boolean };
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('no action recorder');
+    expect(rpcCalls).toEqual([]);
+  });
+
+  it('does not cut another surface\'s actions into this surface\'s flow', async () => {
+    recordAction(deps, {
+      scope: { workspaceId: 'ws-1', surfaceId: 'other' },
+      tool: 'browser_click',
+      page: null,
+      url: 'https://example.com/other',
+    });
+    const result = await invoke({ action: 'save', name: 'flow' });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('on this surface');
+    expect(rpcCalls).toEqual([]);
+  });
+
   it('refuses to save when no action has been recorded', async () => {
     const result = await invoke({ action: 'save', name: 'nothing' });
     expect(result.isError).toBe(true);
@@ -165,9 +199,9 @@ describe('browser_replay save — cutting the ring', () => {
   });
 
   it('cuts from the last navigate by default', async () => {
-    recordAction(deps, { tool: 'browser_click', page: null, url: 'https://example.com/a' });
-    recordAction(deps, { tool: 'browser_navigate', page: null, args: { url: 'https://example.com/b' }, url: 'https://example.com/b' });
-    recordAction(deps, { tool: 'browser_click', page: null, url: 'https://example.com/b' });
+    recordAction(deps, { scope, tool: 'browser_click', page: null, url: 'https://example.com/a' });
+    recordAction(deps, { scope, tool: 'browser_navigate', page: null, args: { url: 'https://example.com/b' }, url: 'https://example.com/b' });
+    recordAction(deps, { scope, tool: 'browser_click', page: null, url: 'https://example.com/b' });
 
     await invoke({ action: 'save', name: 'flow' });
     const put = rpcCalls.find((c) => c.method === 'browser.actionCache.put');
@@ -178,7 +212,7 @@ describe('browser_replay save — cutting the ring', () => {
 
   it('honours an explicit step count', async () => {
     for (let i = 0; i < 4; i++) {
-      recordAction(deps, { tool: 'browser_click', page: null, url: 'https://example.com/a' });
+      recordAction(deps, { scope, tool: 'browser_click', page: null, url: 'https://example.com/a' });
     }
     await invoke({ action: 'save', name: 'flow', steps: 2 });
     const put = rpcCalls.find((c) => c.method === 'browser.actionCache.put');
@@ -193,18 +227,67 @@ describe('browser_replay run — page requirement and stats', () => {
     expect(result.content[0].text).toContain('No flow named "nope"');
   });
 
+  const clickFlow = (urlKey: string): TraceRecord => ({
+    id: 'tr_1',
+    name: 'flow',
+    urlKey,
+    surfaceShape: '',
+    steps: [
+      {
+        tool: 'browser_click',
+        axis: { kind: 'ref', role: 'button', name: 'Go', sameNameIndex: 0, sameNameTotal: 1, frameKey: '' },
+        args: {},
+      },
+    ],
+    observedCount: 1,
+    successCount: 1,
+    failCount: 0,
+    createdAt: 0,
+    lastUsedAt: 0,
+  });
+
+  it('refuses to replay a flow from a page it was not recorded on', async () => {
+    // The stored axes were numbered against one page. Elsewhere they would
+    // match whatever role+name happens to exist — a successful replay of the
+    // wrong actions, which is worse than a failed one.
+    getResponse = clickFlow('https://example.com/a');
+    pageForScope = { url: () => 'https://example.com/somewhere-else' };
+
+    const result = await invoke({ action: 'run', name: 'flow' });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('recorded on https://example.com/a');
+    expect(result.content[0].text).toContain('Navigate there first');
+    expect(rpcCalls.some((c) => c.method === 'browser.actionCache.stats')).toBe(false);
+  });
+
+  it('ignores the query string when deciding it is the same page', async () => {
+    getResponse = clickFlow('https://example.com/a');
+    pageForScope = { url: () => 'https://example.com/a?page=2' };
+
+    const result = await invoke({ action: 'run', name: 'flow' });
+    expect(result.content[0].text).not.toContain('Navigate there first');
+  });
+
+  it('exempts a flow that starts with its own navigate', async () => {
+    getResponse = {
+      ...clickFlow('https://example.com/a'),
+      steps: [
+        { tool: 'browser_navigate', axis: { kind: 'none' }, args: { url: 'https://example.com/a' } },
+      ],
+    } satisfies TraceRecord;
+    pageForScope = null;
+
+    const result = await invoke({ action: 'run', name: 'flow' });
+    // It got past the page gate and stopped on the missing page instead.
+    expect(result.content[0].text).toContain('no live page');
+  });
+
   it('refuses the RPC lane instead of replaying against a different addressing scheme', async () => {
     getResponse = {
-      id: 'tr_1',
-      name: 'flow',
-      urlKey: 'https://example.com/a',
-      surfaceShape: '',
-      steps: [{ tool: 'browser_click', axis: { kind: 'ref', role: 'button', name: 'Go', sameNameIndex: 0, sameNameTotal: 1, frameKey: '' }, args: {} }],
-      observedCount: 1,
-      successCount: 1,
-      failCount: 0,
-      createdAt: 0,
-      lastUsedAt: 0,
+      ...clickFlow('https://example.com/a'),
+      steps: [
+        { tool: 'browser_navigate', axis: { kind: 'none' }, args: { url: 'https://example.com/a' } },
+      ],
     } satisfies TraceRecord;
     pageForScope = null;
 

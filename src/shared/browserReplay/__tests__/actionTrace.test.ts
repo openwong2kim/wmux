@@ -17,10 +17,10 @@ import {
   normalizeUrlKey,
   pruneTraces,
   refEntryToAxis,
+  refMapShapeHash,
   sanitizeTraceRecord,
   sanitizeTraceStep,
   stripUrlUserinfo,
-  surfaceShapeHash,
   traceVariableNames,
   type TraceRecord,
   type TraceStep,
@@ -108,31 +108,48 @@ describe('stripUrlUserinfo', () => {
   });
 });
 
-describe('surfaceShapeHash', () => {
-  it('is invariant under ref renumbering', () => {
-    const before = 'button "Sign in" [ref=12]\ntextbox "Email" [ref=13]';
-    const after = 'button "Sign in" [ref=904]\ntextbox "Email" [ref=905]';
-    expect(surfaceShapeHash(after)).toBe(surfaceShapeHash(before));
+describe('refMapShapeHash', () => {
+  const entry = (role: string, name: string, sameNameIndex = 0, frameKey = '') => ({
+    role,
+    name,
+    sameNameIndex,
+    sameNameTotal: 1,
+    frameKey,
   });
 
-  it('handles the ref=N and ref="N" renderings too', () => {
-    expect(surfaceShapeHash('a ref=1 b')).toBe(surfaceShapeHash('a ref="77" b'));
+  it('is invariant under ref renumbering — it never sees a ref number', () => {
+    // Same page, refs 12/13 vs 904/905: the input carries no ref at all, which
+    // is exactly why a restart cannot invalidate a stored shape.
+    const page = [entry('button', 'Sign in'), entry('textbox', 'Email')];
+    expect(refMapShapeHash(page)).toBe(refMapShapeHash([...page]));
+  });
+
+  it('is invariant under snapshot walk order', () => {
+    const a = [entry('button', 'Sign in'), entry('textbox', 'Email')];
+    expect(refMapShapeHash(a)).toBe(refMapShapeHash([...a].reverse()));
   });
 
   it('changes when a real element appears', () => {
-    const before = 'button "Sign in" [ref=1]';
-    const after = 'button "Sign in" [ref=1]\nbanner "Cookies" [ref=2]';
-    expect(surfaceShapeHash(after)).not.toBe(surfaceShapeHash(before));
-  });
-
-  it('changes when a name changes even at the same ref', () => {
-    expect(surfaceShapeHash('button "Sign in" [ref=1]')).not.toBe(
-      surfaceShapeHash('button "Log in" [ref=1]'),
+    const before = [entry('button', 'Sign in')];
+    expect(refMapShapeHash([...before, entry('banner', 'Cookies')])).not.toBe(
+      refMapShapeHash(before),
     );
   });
 
-  it('is stable for the empty snapshot', () => {
-    expect(surfaceShapeHash('')).toBe(surfaceShapeHash('   \n  '));
+  it('changes when a name changes', () => {
+    expect(refMapShapeHash([entry('button', 'Sign in')])).not.toBe(
+      refMapShapeHash([entry('button', 'Log in')]),
+    );
+  });
+
+  it('distinguishes the same element in a different frame', () => {
+    expect(refMapShapeHash([entry('button', 'Pay')])).not.toBe(
+      refMapShapeHash([entry('button', 'Pay', 0, 'f1')]),
+    );
+  });
+
+  it('is stable for an empty ref map', () => {
+    expect(refMapShapeHash([])).toBe(refMapShapeHash([]));
   });
 });
 

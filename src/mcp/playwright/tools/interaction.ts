@@ -470,6 +470,7 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
               if (double) await locator.dblclick();
               else await locator.click();
               recordAction(deps, {
+                scope,
                 tool: 'browser_click',
                 page,
                 selector,
@@ -487,6 +488,7 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
             if (double) await el.dblclick();
             else await el.click();
             recordAction(deps, {
+              scope,
               tool: 'browser_click',
               page,
               ref,
@@ -506,7 +508,7 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
         if (!ref && smartRef === undefined) throw new Error('Either ref or smartRef must be provided.');
         const resolvedRef = ref ?? String(smartRef);
         await rpcClick(resolvedRef, scope, double);
-        recordAction(deps, { tool: 'browser_click', page: null, ref: resolvedRef });
+        recordAction(deps, { scope, tool: 'browser_click', page: null, ref: resolvedRef });
         return {
           content: [{ type: 'text' as const, text: `Clicked${double ? ' (double)' : ''} element ref=${resolvedRef}` }],
         };
@@ -565,6 +567,7 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
         // dropping it would produce a trace that "logs in" without a password
         // and reports success.
         recordAction(deps, {
+          scope,
           tool: 'browser_type',
           page,
           ref,
@@ -635,6 +638,7 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
           for (let i = 0; i < fields.length; i++) {
             const credential = isPassword[i] === true;
             recordAction(deps, {
+              scope,
               tool: 'browser_fill',
               page,
               ref: fields[i].ref,
@@ -680,7 +684,7 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
           await rpcPressKey(key, scope);
         }
 
-        recordAction(deps, { tool: 'browser_press_key', page, args: { key } });
+        recordAction(deps, { scope, tool: 'browser_press_key', page, args: { key } });
 
         return {
           content: [{ type: 'text' as const, text: `Pressed key: ${key}` }],
@@ -724,7 +728,7 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
           if (val === 'not_found') throw new Error(refNotFound(ref));
         }
 
-        recordAction(deps, { tool: 'browser_hover', page, ref });
+        recordAction(deps, { scope, tool: 'browser_hover', page, ref });
 
         return {
           content: [{ type: 'text' as const, text: `Hovered over element ref=${ref}` }],
@@ -791,7 +795,7 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
           if (val === 'target_not_found') throw new Error(refNotFound(targetRef));
         }
 
-        recordAction(deps, { tool: 'browser_drag', page, ref: sourceRef, targetRef });
+        recordAction(deps, { scope, tool: 'browser_drag', page, ref: sourceRef, targetRef });
 
         return {
           content: [{ type: 'text' as const, text: `Dragged element ref=${sourceRef} to ref=${targetRef}` }],
@@ -836,6 +840,7 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
         }
 
         recordAction(deps, {
+          scope,
           tool: 'browser_select',
           page,
           ref,
@@ -881,7 +886,7 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
           if (val === 'not_found') throw new Error(refNotFound(ref));
         }
 
-        recordAction(deps, { tool: 'browser_scroll_into_view', page, ref });
+        recordAction(deps, { scope, tool: 'browser_scroll_into_view', page, ref });
 
         return {
           content: [{ type: 'text' as const, text: `Scrolled element ref=${ref} into view` }],
@@ -943,6 +948,7 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
         }
 
         recordAction(deps, {
+          scope,
           tool: 'browser_scroll',
           page,
           ...(ref !== undefined && { ref }),
