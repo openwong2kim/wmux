@@ -38,7 +38,14 @@ function collectTsFiles(dir: string): string[] {
 
 function extractCalledMethods(): Set<string> {
   const called = new Set<string>();
-  const re = /\b(?:callRpc|sendRpc)\(\s*'([a-zA-Z0-9_.]+)'/g;
+  // Every wrapper that ends in an RPC send has to be listed here. The regex
+  // knew only callRpc/sendRpc, so browser_replay — which sends through
+  // sendScopedBrowserRpc — was invisible to this invariant and shipped with
+  // none of its eight methods allowlisted: the tool was refused outright in a
+  // packaged build while every dev build looked fine. A new send helper must
+  // be added here, or it takes its methods out of this guard's sight.
+  const re =
+    /\b(?:callRpc|sendRpc|sendScopedBrowserRpc)(?:<[^>]*>)?\(\s*\n?\s*'([a-zA-Z0-9_.]+)'/g;
   for (const file of collectTsFiles(MCP_DIR)) {
     const src = fs.readFileSync(file, 'utf8');
     let m: RegExpExecArray | null;
