@@ -2,6 +2,7 @@ import { ipcMain } from 'electron';
 import { IPC } from '../../../shared/constants';
 import { wrapHandler } from '../wrapHandler';
 import type { McpRegistrar, McpRegistrarStatus } from '../../mcp/McpRegistrar';
+import { externalRegistrationSkipReason } from '../../../shared/mcpTargets';
 
 /**
  * Serializable shape returned to the renderer. Mirrors {@link McpRegistrarStatus}
@@ -78,6 +79,11 @@ export function registerMcpHandlers(
         // Pipe server not yet ready — surface to renderer rather than crash.
         throw new Error('MCP re-register unavailable: auth token not ready (pipe server still starting)');
       }
+      // #1151 — register() would silently skip under an isolated instance;
+      // a Settings click deserves a visible explanation (useIpc → toast),
+      // not a button that appears to do nothing.
+      const reregisterSkip = externalRegistrationSkipReason();
+      if (reregisterSkip) throw new Error(reregisterSkip);
       // No opts: register() probes broker health itself, so a re-register while
       // the broker is down writes the full bundle instead of a dead shim (RISK 6).
       await registrar.register(token);
@@ -89,6 +95,9 @@ export function registerMcpHandlers(
   ipcMain.handle(
     IPC.MCP_UNREGISTER,
     wrapHandler(IPC.MCP_UNREGISTER, async (): Promise<McpStatusPayload> => {
+      // #1151 — same visible-explanation rule as re-register above.
+      const unregisterSkip = externalRegistrationSkipReason();
+      if (unregisterSkip) throw new Error(unregisterSkip);
       registrar.forceUnregister();
       return serialize(registrar.getStatus());
     }),

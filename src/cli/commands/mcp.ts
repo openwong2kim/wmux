@@ -377,8 +377,11 @@ export async function handleMcp(args: string[], jsonMode: boolean): Promise<void
       // #1151 — explicit user action, so warn rather than skip: the target
       // configs are suffix-blind, so this writes the PRODUCTION entries even
       // when this CLI itself runs inside an isolated instance.
-      if (process.env.WMUX_DATA_SUFFIX && !jsonMode) {
-        console.error(`warning: WMUX_DATA_SUFFIX=${process.env.WMUX_DATA_SUFFIX} is set — this writes the production agent configs (~/.claude.json et al.)`);
+      if (process.env.WMUX_DATA_SUFFIX) {
+        // stderr in BOTH modes: --json consumers (the most automated callers,
+        // e.g. a CLI run from inside an isolated instance's pane) are exactly
+        // who must see this, and stderr never pollutes the stdout JSON.
+        console.error(`warning: WMUX_DATA_SUFFIX=${process.env.WMUX_DATA_SUFFIX} is set — this writes the production agent configs (~/.claude.json et al.), and the script path it registers may live inside a disposable checkout`);
       }
       const wmuxScript = await resolveWmuxScript();
       // The wmux MCP script is required; bail if the bundle can't be found.
@@ -437,7 +440,8 @@ export async function handleMcp(args: string[], jsonMode: boolean): Promise<void
     case 'unregister': {
       // #1151 — same warning as `register`: suffix-blind config paths mean
       // this removes the PRODUCTION entries.
-      if (process.env.WMUX_DATA_SUFFIX && !jsonMode) {
+      if (process.env.WMUX_DATA_SUFFIX) {
+        // stderr in both modes — see the `register` case for why.
         console.error(`warning: WMUX_DATA_SUFFIX=${process.env.WMUX_DATA_SUFFIX} is set — this removes the production agent config entries (~/.claude.json et al.)`);
       }
       // unregisterTarget propagates write errors — capture per-target (same as

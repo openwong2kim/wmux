@@ -109,8 +109,9 @@ export class McpRegistrar {
   forceUnregister(): void {
     // #1151 — symmetric guard: an isolated instance must not DELETE the
     // production registration either (same suffix-blind config paths).
-    if (externalRegistrationSkipReason()) {
-      console.log(`[McpRegistrar] ${externalRegistrationSkipReason()} (unregister)`);
+    const skipReason = externalRegistrationSkipReason();
+    if (skipReason) {
+      console.log(`[McpRegistrar] ${skipReason} (unregister)`);
       return;
     }
     for (const target of MCP_TARGETS) {
@@ -187,8 +188,9 @@ export class McpRegistrar {
       // gains nothing by claiming it. The auth token above is already written
       // to a suffixed path and stays. WMUX_MCP_REGISTER_EXTERNAL=1 opts back
       // in for dogfood runs that deliberately want to claim the slot.
-      if (externalRegistrationSkipReason()) {
-        console.log(`[McpRegistrar] ${externalRegistrationSkipReason()}`);
+      const skipReason = externalRegistrationSkipReason();
+      if (skipReason) {
+        console.log(`[McpRegistrar] ${skipReason}`);
         return;
       }
 

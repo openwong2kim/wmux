@@ -26,8 +26,9 @@ export type McpConfigFormat = 'json' | 'toml';
  * (WMUX_DATA_SUFFIX set — dev's automatic "-dev" included) writing them
  * retargets the user's production agents at this instance's bundle.
  * WMUX_MCP_REGISTER_EXTERNAL=1 opts back in for dogfood runs that
- * deliberately claim the slot. Shared here so `McpRegistrar` (main) and the
- * `wmux mcp` CLI apply the identical policy.
+ * deliberately claim the slot. The two callers deliberately DIVERGE on what
+ * they do with it: `McpRegistrar` (daemon boot, Settings — implicit actions)
+ * skips; the `wmux mcp` CLI (an explicit user action) warns and proceeds.
  */
 export function externalRegistrationSkipReason(): string | null {
   const suffix = dataSuffix();
