@@ -161,11 +161,29 @@ promoted flow is permanent and volunteered on every landing.
 A refusal names the shortfall (`2 successful run(s) and promotion needs 3`), so
 running the flow once more is usually the whole fix.
 
+### What promotion makes permanent
+
+Promoting is an explicit act with an explicit consequence: the flow's recorded
+steps, **including the values that were typed**, are stored in plain text and
+kept indefinitely — well past the 30 days the recording itself would have
+lasted.
+
+Password fields are not affected: they were never captured, and a flow
+containing one cannot be promoted because it cannot run. But nothing else is
+special-cased. An API token, an account number, or an internal URL typed into
+an ordinary field is in the steps and stays there.
+
+Variable-ise anything sensitive before promoting: re-perform the flow with the
+value supplied as a `{{placeholder}}`, save it again, and promote that. The
+flow then stores the placeholder and takes the value at run time.
+
 ### Lifecycle
 
 A promoted flow that goes **30 days without a run** is moved to
 `~/.wmux/promoted-archive/`, out of the live tree, and is no longer offered.
-After **90 days** it is deleted. Any run — successful or not — resets the
+After **90 days** a later sweep deletes it from there. Nothing is ever deleted
+straight out of the live tree — every flow gets a stop in the archive first,
+where you can still recover it by hand. Any run — successful or not — resets the
 clock, because a flow you keep reaching for and that keeps failing is one you
 still want, and its failures are the signal to re-record it.
 
@@ -177,6 +195,11 @@ flow being kept permanently and offered on landing.
 `~/.wmux/promoted-skills/<workspace>/<name>.json`, one file per flow, written
 by the wmux app. One workspace can never see or demote another's. To clear one
 out by hand, delete its file — the next sweep tidies up whatever is left.
+
+A file this version of wmux cannot read is moved to the archive rather than
+deleted. One exception: a file written by a *newer* wmux is left strictly
+alone, so running an older build once never destroys flows the newer one
+wrote.
 
 Promoting the same flow again is fine and keeps its usage history. Promoting a
 *different* flow whose name shortens to one already in use is refused, so a

@@ -405,6 +405,7 @@ const promotedRecord = (over: Record<string, unknown> = {}) => ({
     },
   ],
   fingerprint: 'fp',
+  surfaceShape: '',
   promotedAt: 1_000,
   lastRunAt: 1_000,
   runCount: 0,
@@ -501,5 +502,55 @@ describe('browser_replay list with promoted flows', () => {
   it('says nothing is recorded when neither store holds anything', async () => {
     const res = await invoke({ action: 'list' });
     expect(res.content[0].text).toContain('No recorded flows');
+  });
+});
+
+describe('running a flow restored from its promoted copy', () => {
+  it('warns that promoting stores typed values in plain text', async () => {
+    // promote is an explicit act, and it makes anything the agent typed
+    // permanent. Password fields were never captured; nothing else is exempt.
+    promoteResponse = { ok: true, record: promotedRecord() };
+    const res = await invoke({ action: 'promote', name: 'invoice export' });
+    expect(res.content[0].text).toContain('plain text');
+    expect(res.content[0].text).toContain('{{placeholders}}');
+  });
+
+  it('refuses a restored flow from the wrong page, exactly like a cached one', async () => {
+    // A restored flow is the one most likely to be run long after anyone
+    // remembers which page it belonged to, so it is held to the same contract.
+    getResponse = null;
+    promotedResponse = [
+      promotedRecord({
+        steps: [
+          {
+            tool: 'browser_click',
+            axis: { kind: 'ref', role: 'button', name: 'Export', sameNameIndex: 0, sameNameTotal: 1, frameKey: '' },
+            args: {},
+          },
+        ],
+      }),
+    ];
+    pageForScope = { url: () => 'https://elsewhere.example.com/other' };
+    const res = await invoke({ action: 'run', name: 'invoice export' });
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toContain('it was recorded on https://billing.example.com/invoices');
+    expect(res.content[0].text).toContain('Navigate there first');
+  });
+
+  it('exempts a restored flow whose first step is a navigate', async () => {
+    // It carries its own starting page, so there is nothing to be wrong about.
+    getResponse = null;
+    promotedResponse = [promotedRecord()];
+    pageForScope = { url: () => 'https://elsewhere.example.com/other' };
+    const res = await invoke({ action: 'run', name: 'invoice export' });
+    expect(res.content[0].text).not.toContain('Navigate there first');
+  });
+
+  it('says the flow came from the promoted copy', async () => {
+    getResponse = null;
+    promotedResponse = [promotedRecord()];
+    pageForScope = { url: () => 'https://billing.example.com/invoices' };
+    const res = await invoke({ action: 'run', name: 'invoice export' });
+    expect(res.content[0].text).toContain('restored from the promoted copy');
   });
 });

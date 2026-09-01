@@ -4,6 +4,9 @@ import { getWmuxDir } from '../../daemon/config';
 import { atomicReadJSONSync, atomicWriteJSON } from '../../daemon/util/atomicWrite';
 import { isUnsafeKey } from '../account/accountStore';
 import {
+  PROMOTED_DELETE_MS,
+  PROMOTED_SCHEMA_VERSION,
+  peekPromotedVersion,
   sanitizePromotedRecord,
   sweepPromoted,
   toPromotedSlug,
@@ -89,24 +92,40 @@ export class PromotedSkillStore {
 
   /** Every live promoted flow for one workspace. Never throws. */
   list(workspaceId: string): PromotedRecord[] {
+    return this.listIn(this.liveDir, workspaceId);
+  }
+
+  /** Records under one base directory. Shared by the live and archive walks. */
+  private listIn(base: string, workspaceId: string): PromotedRecord[] {
     if (!workspaceId || isUnsafeKey(workspaceId)) return [];
-    const dir = path.join(this.liveDir, workspaceId);
-    let names: string[];
-    try {
-      names = fs.readdirSync(dir);
-    } catch {
-      // ENOENT is the ordinary case: this workspace has promoted nothing.
-      return [];
-    }
+    const dir = path.join(base, workspaceId);
     const records: PromotedRecord[] = [];
-    for (const entry of names) {
-      if (!entry.endsWith('.json')) continue;
+    for (const entry of this.jsonEntriesIn(dir)) {
       const record = this.readFile(path.join(dir, entry));
       // A record whose stored workspaceId disagrees with the directory it was
       // found in is not this workspace's to serve — it was moved or copied.
       if (record && record.workspaceId === workspaceId) records.push(record);
     }
     return records.sort((a, b) => b.lastRunAt - a.lastRunAt);
+  }
+
+  /** Workspace directory names under a base. Missing base is simply empty. */
+  private workspacesIn(base: string): string[] {
+    try {
+      return fs.readdirSync(base).filter((name) => !isUnsafeKey(name));
+    } catch {
+      return [];
+    }
+  }
+
+  /** `*.json` entries in one directory. Missing directory is simply empty. */
+  private jsonEntriesIn(dir: string): string[] {
+    try {
+      return fs.readdirSync(dir).filter((entry) => entry.endsWith('.json'));
+    } catch {
+      // ENOENT is the ordinary case: this workspace has promoted nothing.
+      return [];
+    }
   }
 
   /** Live promoted flows for one workspace filed under one page. */
@@ -139,25 +158,37 @@ export class PromotedSkillStore {
   async put(record: PromotedRecord): Promise<PromoteResult> {
     const file = this.fileFor(record.workspaceId, record.slug, this.liveDir);
     if (!file) return { ok: false, reason: 'the flow name or workspace identity is unusable' };
-    const existing = this.readFile(file);
-    if (existing && existing.fingerprint !== record.fingerprint) {
-      return {
-        ok: false,
-        reason:
-          `"${existing.name}" is already promoted under the same short name and its steps ` +
-          'are different. Demote it first, or save this flow under another name',
-      };
-    }
-    // A re-promote keeps the usage history: the flow did not become new just
-    // because it was promoted again, and resetting would restart its idle
-    // clock and its run count for no reason the agent would expect.
-    const merged: PromotedRecord = existing
-      ? { ...record, promotedAt: existing.promotedAt, lastRunAt: existing.lastRunAt, runCount: existing.runCount }
-      : record;
-    const written = await this.write(file, merged);
-    return written
-      ? { ok: true, record: merged }
-      : { ok: false, reason: 'the flow could not be written to disk' };
+    // The existence check, the fingerprint comparison, the merge, and the
+    // write are ONE step on the chain. Split across the chain, a sweep could
+    // archive the resident file between the check and the write — and the
+    // merge would then carry counters from a record that is no longer there,
+    // resurrecting a flow that had just been swept.
+    return this.run(async () => {
+      const existing = this.readFile(file);
+      if (existing && existing.fingerprint !== record.fingerprint) {
+        return {
+          ok: false,
+          reason:
+            `"${existing.name}" is already promoted under the same short name and its steps ` +
+            'are different. Demote it first, or save this flow under another name',
+        };
+      }
+      // A re-promote keeps the usage history: the flow did not become new just
+      // because it was promoted again, and resetting would restart its idle
+      // clock and its run count for no reason the agent would expect.
+      const merged: PromotedRecord = existing
+        ? {
+            ...record,
+            promotedAt: existing.promotedAt,
+            lastRunAt: existing.lastRunAt,
+            runCount: existing.runCount,
+          }
+        : record;
+      const written = await this.writeNow(file, merged);
+      return written
+        ? { ok: true, record: merged }
+        : { ok: false, reason: 'the flow could not be written to disk' };
+    });
   }
 
   /**
@@ -170,9 +201,12 @@ export class PromotedSkillStore {
   async remove(workspaceId: string, slug: string): Promise<boolean> {
     const file = this.fileFor(workspaceId, slug, this.liveDir);
     if (!file) return false;
-    const existing = this.readFile(file);
-    if (!existing || existing.workspaceId !== workspaceId) return false;
+    // Ownership check and delete on one chain step, so a concurrent put
+    // cannot land between them and have its brand-new record deleted by a
+    // demote that was authorised against the record it replaced.
     return this.run(() => {
+      const existing = this.readFile(file);
+      if (!existing || existing.workspaceId !== workspaceId) return false;
       try {
         fs.rmSync(file, { force: true });
         return true;
@@ -183,14 +217,30 @@ export class PromotedSkillStore {
     });
   }
 
-  /** Fold one run into a flow's usage counters. Best-effort by design. */
+  /**
+   * Fold one run into a flow's usage counters. Best-effort by design.
+   *
+   * Re-reads inside the chain step and merges ONLY the two counter fields,
+   * rather than writing the caller's whole record. The caller resolved that
+   * record before the replay ran — seconds to minutes earlier — and writing it
+   * back wholesale would silently revert a re-promote that landed in between,
+   * restoring the old steps under the new fingerprint. Counters are the only
+   * thing a run is entitled to change.
+   */
   async touch(workspaceId: string, slug: string, next: PromotedRecord): Promise<void> {
     const file = this.fileFor(workspaceId, slug, this.liveDir);
     if (!file) return;
-    // Only touch a record that is actually there: a run of a flow that was
-    // demoted mid-session must not recreate its file.
-    if (!this.readFile(file)) return;
-    await this.write(file, next);
+    await this.run(async () => {
+      const current = this.readFile(file);
+      // Only touch a record that is actually there: a run of a flow that was
+      // demoted mid-session must not recreate its file.
+      if (!current || current.workspaceId !== workspaceId) return false;
+      return this.writeNow(file, {
+        ...current,
+        lastRunAt: next.lastRunAt,
+        runCount: next.runCount,
+      });
+    });
   }
 
   /**
@@ -202,30 +252,58 @@ export class PromotedSkillStore {
    */
   async sweep(now: number = Date.now()): Promise<SweepResult> {
     const result: SweepResult = { archived: 0, removed: 0 };
-    let workspaces: string[];
-    try {
-      workspaces = fs.readdirSync(this.liveDir);
-    } catch {
-      return result;
+
+    // The archive is swept FIRST, and this is where deletion actually happens.
+    //
+    // First, so that a flow archived by the live walk below gets a real stop
+    // in the archive rather than passing through it inside one call. The
+    // ladder's promise is a rung, not a formality: anything archived now is
+    // considered for deletion on the NEXT sweep, never this one.
+    //
+    // The walk itself is what makes the 90-day rung reachable at all.
+    // Without this pass the 90-day rung was unreachable: archiving MOVES the
+    // file out of the live tree, so the next sweep's live walk could never see
+    // it again and an archived flow would sit there forever.
+    for (const workspaceId of this.workspacesIn(this.archiveDir)) {
+      for (const record of this.listIn(this.archiveDir, workspaceId)) {
+        if (now - record.lastRunAt < PROMOTED_DELETE_MS) continue;
+        const file = this.fileFor(record.workspaceId, record.slug, this.archiveDir);
+        if (!file) continue;
+        console.log(
+          `[PromotedSkillStore] deleting archived flow "${record.name}" ` +
+            `(workspace ${record.workspaceId}, unused since ` +
+            `${new Date(record.lastRunAt).toISOString()})`,
+        );
+        const done = await this.run(() => {
+          try {
+            fs.rmSync(file, { force: true });
+            return true;
+          } catch (err) {
+            console.warn(`[PromotedSkillStore] could not delete ${file}:`, err);
+            return false;
+          }
+        });
+        if (done) result.removed++;
+      }
     }
-    for (const workspaceId of workspaces) {
-      if (isUnsafeKey(workspaceId)) continue;
+
+    for (const workspaceId of this.workspacesIn(this.liveDir)) {
       const records = this.list(workspaceId);
-      // Orphans: a file in the tree that no longer parses as a record at all.
-      // Nothing can ever serve one, so leaving it costs a slug forever.
-      await this.removeUnparseable(workspaceId);
+      await this.quarantineUnreadable(workspaceId);
       const decision = sweepPromoted(records, now);
       for (const record of decision.archive) {
         if (await this.archiveOne(record)) result.archived++;
       }
+      // A live record already past the delete threshold is archived FIRST and
+      // deleted on a later sweep, never deleted straight from the live tree.
+      // The ladder's whole promise is that nothing disappears without a stop
+      // in the archive, and a machine that was off for three months would
+      // otherwise skip that rung for every flow it holds.
       for (const record of decision.remove) {
-        console.log(
-          `[PromotedSkillStore] deleting promoted flow "${record.name}" ` +
-            `(workspace ${record.workspaceId}, unused since ${new Date(record.lastRunAt).toISOString()})`,
-        );
-        if (await this.remove(record.workspaceId, record.slug)) result.removed++;
+        if (await this.archiveOne(record)) result.archived++;
       }
     }
+
     return result;
   }
 
@@ -239,17 +317,20 @@ export class PromotedSkillStore {
     }
   }
 
-  private async write(file: string, record: PromotedRecord): Promise<boolean> {
-    return this.run(async () => {
-      try {
-        fs.mkdirSync(path.dirname(file), { recursive: true });
-        await atomicWriteJSON(file, record, { durable: true });
-        return true;
-      } catch (err) {
-        console.warn(`[PromotedSkillStore] could not write ${file}:`, err);
-        return false;
-      }
-    });
+  /**
+   * Write one record. Deliberately NOT chained itself — every caller is
+   * already inside a this.run() step, and re-entering the chain from within it
+   * would deadlock on a promise that cannot settle until the caller returns.
+   */
+  private async writeNow(file: string, record: PromotedRecord): Promise<boolean> {
+    try {
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      await atomicWriteJSON(file, record, { durable: true });
+      return true;
+    } catch (err) {
+      console.warn(`[PromotedSkillStore] could not write ${file}:`, err);
+      return false;
+    }
   }
 
   private async archiveOne(record: PromotedRecord): Promise<boolean> {
@@ -272,25 +353,52 @@ export class PromotedSkillStore {
     });
   }
 
-  /** Drop files that no longer parse as records — they can never be served. */
-  private async removeUnparseable(workspaceId: string): Promise<void> {
+  /**
+   * Deal with files in the live tree that this build cannot read.
+   *
+   * Two cases that sanitizePromotedRecord cannot tell apart — it returns null
+   * for both — and they must NOT be treated the same:
+   *
+   *   a FUTURE schema version. The file was written by a newer wmux and is
+   *     left strictly alone. Deleting it would mean that launching an older
+   *     build once — a downgrade, a rollback, an old copy on a shared home
+   *     directory — silently destroyed flows the newer build wrote and could
+   *     still read perfectly well. Skipped, with one log line so the state is
+   *     not invisible.
+   *
+   *   anything else (a torn write, a hand-edit that broke the shape, a past
+   *     version with no migration). Nothing can ever serve it, so it is moved
+   *     to the archive — not deleted. The ladder's promise is that a flow gets
+   *     a stop in the archive before it is gone, and a corrupt file is exactly
+   *     the case where a human might still want to look at what was in it.
+   */
+  private async quarantineUnreadable(workspaceId: string): Promise<void> {
     const dir = path.join(this.liveDir, workspaceId);
-    let names: string[];
-    try {
-      names = fs.readdirSync(dir);
-    } catch {
-      return;
-    }
-    for (const entry of names) {
-      if (!entry.endsWith('.json')) continue;
+    for (const entry of this.jsonEntriesIn(dir)) {
       const file = path.join(dir, entry);
       if (this.readFile(file)) continue;
-      console.log(`[PromotedSkillStore] dropping unreadable promoted flow file ${file}`);
+      let raw: unknown = null;
+      try {
+        raw = atomicReadJSONSync<unknown>(file);
+      } catch {
+        raw = null;
+      }
+      const version = peekPromotedVersion(raw);
+      if (version !== null && version > PROMOTED_SCHEMA_VERSION) {
+        console.log(
+          `[PromotedSkillStore] leaving ${file} alone: schema version ${version} is newer ` +
+            `than this build understands (${PROMOTED_SCHEMA_VERSION})`,
+        );
+        continue;
+      }
+      const to = path.join(this.archiveDir, workspaceId, entry);
+      console.log(`[PromotedSkillStore] archiving unreadable promoted flow file ${file}`);
       await this.run(() => {
         try {
-          fs.rmSync(file, { force: true });
-        } catch {
-          /* best-effort */
+          fs.mkdirSync(path.dirname(to), { recursive: true });
+          fs.renameSync(file, to);
+        } catch (err) {
+          console.warn(`[PromotedSkillStore] could not archive ${file}:`, err);
         }
         return true;
       });

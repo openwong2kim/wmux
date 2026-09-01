@@ -52,7 +52,8 @@ const BROWSER_REPLAY_SHAPE = {
       'list: recorded flows for this workspace. save: name the actions you just ' +
         'performed. run: replay a saved flow without reading a snapshot. forget: delete one. ' +
         'promote: keep a proven flow permanently and have it offered whenever you land on its ' +
-        'page. demote: undo a promote.',
+        'page — this stores its typed values in plain text indefinitely, so variable-ise any ' +
+        'sensitive one first. demote: undo a promote.',
     ),
   name: z
     .string()
@@ -198,7 +199,10 @@ export function createReplayToolCatalog(deps: BrowserToolDeps) {
     return text(
       `Promoted "${record.name}" — ${record.steps.length} step(s) on ${record.host}.${vars}\n` +
         'It is now kept permanently, survives the 30-day recording cache, and is offered ' +
-        'automatically whenever a navigation lands on its page. ' +
+        'automatically whenever a navigation lands on its page.\n' +
+        'Note: promoting stores this flow\'s typed values in plain text and keeps them ' +
+        'indefinitely. Password fields were never captured, but any other sensitive value you ' +
+        'typed is in the steps — demote and re-save it with {{placeholders}} if so. ' +
         `Undo with browser_replay {action:"demote", name:"${record.name}"}.`,
     );
   }
@@ -366,6 +370,11 @@ export function createReplayToolCatalog(deps: BrowserToolDeps) {
     // whatever is open now — which is not a failed replay, it is a successful
     // replay of the wrong actions. A flow whose first step is a navigate
     // carries its own starting page and is exempt.
+    //
+    // This runs on `trace` whatever its origin, so a flow restored from a
+    // promoted copy is held to exactly the same contract as a cached one —
+    // deliberately, since a restored flow is the one most likely to be run
+    // long after anyone remembers which page it belonged to.
     const startsWithNavigate = trace.steps[0]?.tool === 'browser_navigate';
     if (!startsWithNavigate) {
       const livePage = await engine.getPageForScope(scope).catch(() => null);

@@ -33,6 +33,7 @@ import {
   hasUnrecordableStep,
   isQuarantined,
   isServable,
+  isValidTraceName,
   sanitizeTraceStep,
   traceVariableNames,
   type TraceRecord,
@@ -64,6 +65,10 @@ export const MAX_CONTRACT_CHARS = 120;
 export const MAX_SLUG_CHARS = 64;
 /** Variables named in a hint before the list is elided. */
 export const MAX_HINT_VARIABLES = 6;
+/** A variable may only be NAMED in a hint if it matches this exactly. */
+export const HINT_VARIABLE_PATTERN = /^[A-Za-z0-9_-]{1,32}$/;
+/** Promoted flows announced in full on one landing; the rest are counted. */
+export const MAX_HINT_LINES = 3;
 
 export interface PromotedRecord {
   version: number;
@@ -86,6 +91,16 @@ export interface PromotedRecord {
   steps: TraceStep[];
   /** stepsFingerprint of `steps` at promotion, for overwrite protection. */
   fingerprint: string;
+  /**
+   * The trace's surfaceShape at promotion.
+   *
+   * Carried so a restored run keeps the page-shape comparison the cached run
+   * has. Without it every restored replay would run with no baseline and the
+   * "the page changed underneath this flow" warning — the one signal that a
+   * promoted flow has quietly gone stale — would be silently unavailable on
+   * exactly the runs that need it most.
+   */
+  surfaceShape: string;
   promotedAt: number;
   /** Touched by every run, successful or not — see recordPromotedRun. */
   lastRunAt: number;
@@ -199,7 +214,21 @@ export function renderPromotedContract(record: Pick<PromotedRecord, 'name' | 'ho
  * record hand-edited on disk gets sanitised on the way OUT as well as in.
  */
 export function renderPromotedHint(record: PromotedRecord): string {
-  const name = safeHintText(record.name, MAX_SLUG_CHARS);
+  // The name is validated, not escaped, and not slugged.
+  //
+  // The literal call in this line is the part an agent copies, so the name
+  // inside it is the highest-value injection target in the feature: a trace
+  // name is agent-chosen, but an agent can be talked into a name by the page
+  // it is reading. isValidTraceName's alphabet is [A-Za-z0-9 _.:-], which
+  // contains no quote, brace, backslash, or newline — nothing that can close
+  // the JSON literal early and open something else.
+  //
+  // Validated rather than slugged because run() resolves by NAME: a slugged
+  // name would be safe and WRONG, telling the agent to run something that
+  // does not exist. A name that fails validation drops the whole line instead,
+  // and the agent falls back to list — the safe direction to be wrong in.
+  if (!isValidTraceName(record.name)) return '';
+  const name = record.name;
   // RE-DERIVED, not read off the record. The stored contract is a
   // convenience for callers that want it without recomputing; by the time a
   // record reaches here it may have crossed an RPC boundary or been edited on
@@ -212,7 +241,14 @@ export function renderPromotedHint(record: PromotedRecord): string {
     host: record.host,
     steps: record.steps,
   });
-  const variables = record.variables.slice(0, MAX_HINT_VARIABLES).map((v) => safeHintText(v, 64));
+  // Variable names reach the record from {{placeholders}} inside recorded
+  // argument values — page-influenced text. A name that does not match the
+  // placeholder alphabet is OMITTED from the hint rather than escaped: the
+  // hint is a convenience, and a flow whose variables cannot be named safely
+  // is still perfectly runnable once the agent calls list.
+  const variables = record.variables
+    .filter((v) => HINT_VARIABLE_PATTERN.test(v))
+    .slice(0, MAX_HINT_VARIABLES);
   const varPart =
     variables.length > 0
       ? `, variables:{${variables.map((v) => `${v}:"..."`).join(', ')}}`
@@ -231,7 +267,24 @@ export function renderPromotedHint(record: PromotedRecord): string {
  */
 export function renderPromotedHintBlock(records: readonly PromotedRecord[]): string {
   if (records.length === 0) return '';
-  return `${records.map(renderPromotedHint).join('\n')}\n`;
+  // Capped, because this block is prepended to a tool result the agent did
+  // not ask for. A workspace that promoted a dozen flows on one page would
+  // otherwise spend more context announcing them on every landing than the
+  // replay saves — the feature would start costing what it exists to save.
+  //
+  // Most-recently-run first: the flow used last week is a better guess than
+  // the one promoted first. The overflow is COUNTED rather than dropped
+  // silently, so the agent knows to call list instead of concluding the other
+  // flows are gone.
+  const ordered = [...records].sort((a, b) => b.lastRunAt - a.lastRunAt);
+  const shown = ordered.slice(0, MAX_HINT_LINES).map(renderPromotedHint).filter((l) => l !== '');
+  const hidden = records.length - shown.length;
+  if (shown.length === 0) return '';
+  const overflow =
+    hidden > 0
+      ? `[skill] ${hidden} more promoted flow(s) for this page — browser_replay {action:"list"}\n`
+      : '';
+  return `${shown.join('\n')}\n${overflow}`;
 }
 
 // ── Promotion gate ─────────────────────────────────────────────────────────
@@ -292,6 +345,7 @@ export function buildPromotedRecord(
     variables: traceVariableNames(trace),
     steps,
     fingerprint: opts.fingerprint,
+    surfaceShape: trace.surfaceShape ?? '',
     promotedAt: now,
     lastRunAt: now,
     runCount: 0,
@@ -361,7 +415,10 @@ export function sanitizePromotedRecord(raw: unknown): PromotedRecord | null {
   const slug = toPromotedSlug(r.slug);
   if (!slug || slug !== r.slug) return null;
   if (typeof r.workspaceId !== 'string' || r.workspaceId.length === 0) return null;
-  if (typeof r.name !== 'string' || r.name.length === 0 || r.name.length > 64) return null;
+  // The same name rule the trace store enforces. A record whose name would
+  // be refused as a trace name can never be run (run resolves by name), so
+  // serving it would only ever produce a hint for something unrunnable.
+  if (!isValidTraceName(r.name)) return null;
   if (typeof r.urlKey !== 'string' || r.urlKey.length === 0 || r.urlKey.length > 2048) return null;
   if (typeof r.fingerprint !== 'string' || r.fingerprint.length === 0) return null;
 
@@ -389,6 +446,9 @@ export function sanitizePromotedRecord(raw: unknown): PromotedRecord | null {
     variables: traceVariableNames({ steps }),
     steps,
     fingerprint: r.fingerprint,
+    // Absent or unusable is '', which the runner already reads as "no
+    // baseline, skip the comparison" rather than as a mismatch.
+    surfaceShape: typeof r.surfaceShape === 'string' ? r.surfaceShape.slice(0, 64) : '',
     promotedAt,
     lastRunAt: num(r.lastRunAt, promotedAt),
     runCount: Math.max(0, Math.floor(num(r.runCount, 0))),
@@ -401,15 +461,17 @@ export function sanitizePromotedRecord(raw: unknown): PromotedRecord | null {
  * This is the restore path: the cache expired the original, the agent runs the
  * flow anyway, and the replay runner needs a trace to work from. The counters
  * come back as a promoted flow's counters (it is proven — that is why it was
- * promoted), and surfaceShape comes back empty, which the runner already
- * treats as "no baseline, skip the comparison" rather than as a mismatch.
+ * promoted), and the surfaceShape recorded at promotion comes back with them,
+ * so a restored run keeps the same page-shape warning a cached run would give.
+ * A record written without one carries '', which the runner already reads as
+ * "no baseline, skip the comparison" rather than as a mismatch.
  */
 export function traceFromPromoted(record: PromotedRecord): TraceRecord {
   return {
     id: `pr_${record.slug}`,
     name: record.name,
     urlKey: record.urlKey,
-    surfaceShape: '',
+    surfaceShape: record.surfaceShape,
     steps: record.steps.map((s) => ({ ...s })),
     observedCount: 1,
     successCount: Math.max(PROMOTE_MIN_SUCCESS, record.runCount),
@@ -417,4 +479,20 @@ export function traceFromPromoted(record: PromotedRecord): TraceRecord {
     createdAt: record.promotedAt,
     lastUsedAt: record.lastRunAt,
   };
+}
+
+
+/**
+ * Read a record file's schema version without validating anything else.
+ *
+ * The sweep needs to tell two failures apart that look identical to
+ * sanitizePromotedRecord (both return null): a file this build is too OLD to
+ * understand, and a file that is simply corrupt. Deleting the first would mean
+ * a downgrade — running an older wmux once — silently destroying flows the
+ * newer build wrote and the newer build could still read.
+ */
+export function peekPromotedVersion(raw: unknown): number | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const version = (raw as Record<string, unknown>).version;
+  return typeof version === 'number' && Number.isFinite(version) ? version : null;
 }

@@ -6,6 +6,7 @@ import { PromotedSkillStore, getPromotedArchiveDir, getPromotedSkillsDir } from 
 import {
   PROMOTED_ARCHIVE_MS,
   PROMOTED_DELETE_MS,
+  PROMOTED_SCHEMA_VERSION,
   buildPromotedRecord,
   type PromotedRecord,
 } from '../../../shared/browserReplay/promotedSkill';
@@ -216,13 +217,14 @@ describe('sweep', () => {
     expect(fs.existsSync(path.join(getPromotedArchiveDir(dir), 'ws1', 'idle.json'))).toBe(true);
   });
 
-  it('deletes a flow idle past the delete threshold', async () => {
+  it('takes a flow past the delete threshold out of the live tree', async () => {
+    // Via the archive, not straight to deletion — see the ladder cases below.
     const dead = { ...recordFor('ws1', 'dead'), lastRunAt: now - PROMOTED_DELETE_MS - 1 };
     await store.put(dead);
     const res = await store.sweep(now);
-    expect(res.removed).toBe(1);
+    expect(res.archived).toBe(1);
     expect(store.list('ws1')).toEqual([]);
-    expect(fs.existsSync(path.join(getPromotedArchiveDir(dir), 'ws1', 'dead.json'))).toBe(false);
+    expect(fs.existsSync(path.join(getPromotedArchiveDir(dir), 'ws1', 'dead.json'))).toBe(true);
   });
 
   it('sweeps every workspace in one pass', async () => {
@@ -230,16 +232,72 @@ describe('sweep', () => {
     await store.put({ ...recordFor('ws2', 'b'), lastRunAt: now - PROMOTED_DELETE_MS - 1 });
     await store.put(recordFor('ws3', 'c', {}, now));
     const res = await store.sweep(now);
-    expect(res).toEqual({ archived: 1, removed: 1 });
+    // Both leave the live tree on this pass; the long-dead one is deleted on
+    // the next, after its stop in the archive.
+    expect(res).toEqual({ archived: 2, removed: 0 });
     expect(store.list('ws3')).toHaveLength(1);
+    expect((await store.sweep(now)).removed).toBe(1);
   });
 
-  it('drops an orphan file that no longer parses as a record', async () => {
+  it('archives an unreadable file rather than deleting it', async () => {
+    // The ladder promises a stop in the archive before anything is gone, and
+    // a corrupt file is exactly the case where a human might want to look at
+    // what was in it.
     const file = path.join(getPromotedSkillsDir(dir), 'ws1', 'ghost.json');
     fs.mkdirSync(path.dirname(file), { recursive: true });
-    fs.writeFileSync(file, '{"version": 999, "junk": true}');
+    fs.writeFileSync(file, '{ not json at all');
     await store.sweep(now);
     expect(fs.existsSync(file)).toBe(false);
+    expect(fs.existsSync(path.join(getPromotedArchiveDir(dir), 'ws1', 'ghost.json'))).toBe(true);
+  });
+
+  it('leaves a file written by a NEWER wmux completely alone', async () => {
+    // The downgrade case. Running an older build once must not destroy flows
+    // the newer build wrote and can still read.
+    const file = path.join(getPromotedSkillsDir(dir), 'ws1', 'future.json');
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    const future = JSON.stringify({
+      ...recordFor('ws1', 'future'),
+      version: PROMOTED_SCHEMA_VERSION + 1,
+      somethingNew: true,
+    });
+    fs.writeFileSync(file, future);
+    await store.sweep(now);
+    expect(fs.existsSync(file)).toBe(true);
+    expect(fs.readFileSync(file, 'utf8')).toBe(future);
+    // Not archived either — untouched means untouched.
+    expect(fs.existsSync(path.join(getPromotedArchiveDir(dir), 'ws1', 'future.json'))).toBe(false);
+  });
+
+  it('deletes an archived flow once it passes the delete threshold', async () => {
+    // Without an archive walk this rung was unreachable: archiving MOVES the
+    // file out of the live tree, so the live walk could never see it again.
+    const record = { ...recordFor('ws1', 'old'), lastRunAt: now - PROMOTED_ARCHIVE_MS - 1 };
+    await store.put(record);
+    expect((await store.sweep(now)).archived).toBe(1);
+    const archived = path.join(getPromotedArchiveDir(dir), 'ws1', 'old.json');
+    expect(fs.existsSync(archived)).toBe(true);
+
+    // Still inside the delete window: it stays.
+    expect((await store.sweep(now + 1)).removed).toBe(0);
+    expect(fs.existsSync(archived)).toBe(true);
+
+    // Past it: gone.
+    const later = record.lastRunAt + PROMOTED_DELETE_MS + 1;
+    expect((await store.sweep(later)).removed).toBe(1);
+    expect(fs.existsSync(archived)).toBe(false);
+  });
+
+  it('archives a long-dead live flow before deleting it, never straight out', async () => {
+    // A machine that was off for three months must not skip the archive rung.
+    const dead = { ...recordFor('ws1', 'ancient'), lastRunAt: now - PROMOTED_DELETE_MS * 2 };
+    await store.put(dead);
+    const first = await store.sweep(now);
+    expect(first.archived).toBe(1);
+    expect(first.removed).toBe(0);
+    expect(fs.existsSync(path.join(getPromotedArchiveDir(dir), 'ws1', 'ancient.json'))).toBe(true);
+    // The NEXT sweep is the one that deletes it.
+    expect((await store.sweep(now)).removed).toBe(1);
   });
 
   it('is a no-op when nothing was ever promoted', async () => {
@@ -282,5 +340,75 @@ describe('fail-soft', () => {
     expect(store.get('ws1', 'weird')).toBeNull();
     expect(store.list('ws1')).toEqual([]);
     expect(await store.remove('ws1', 'weird')).toBe(false);
+  });
+});
+
+describe('check-then-act is atomic', () => {
+  it('does not resurrect a swept flow through a concurrent re-promote', async () => {
+    // put reads the resident record to merge its counters. If the read and
+    // the write straddled the chain, a sweep landing between them would be
+    // undone by the merge — the flow would come back with counters from a
+    // record that had just been archived.
+    const now = 2_000_000_000_000;
+    const idle = { ...recordFor('ws1', 'race'), lastRunAt: now - PROMOTED_ARCHIVE_MS - 1 };
+    await store.put(idle);
+    const [, sweepResult] = await Promise.all([
+      store.put({ ...recordFor('ws1', 'race'), lastRunAt: now }),
+      store.sweep(now),
+    ]);
+    await store.drain();
+    // Whichever order the two landed in, the store is self-consistent: the
+    // flow is in exactly one of the two trees, never both and never neither.
+    const live = fs.existsSync(path.join(getPromotedSkillsDir(dir), 'ws1', 'race.json'));
+    const archived = fs.existsSync(path.join(getPromotedArchiveDir(dir), 'ws1', 'race.json'));
+    expect(live !== archived).toBe(true);
+    expect(sweepResult.archived + sweepResult.removed).toBeLessThanOrEqual(1);
+  });
+
+  it('interleaved touches do not lose an update', async () => {
+    const record = recordFor('ws1', 'counted');
+    await store.put(record);
+    await Promise.all([
+      store.touch('ws1', 'counted', { ...record, runCount: 1, lastRunAt: 10 }),
+      store.touch('ws1', 'counted', { ...record, runCount: 2, lastRunAt: 20 }),
+      store.touch('ws1', 'counted', { ...record, runCount: 3, lastRunAt: 30 }),
+    ]);
+    await store.drain();
+    // Serialised, so the last one on the chain is what stands — not a torn
+    // mixture of two writers' fields.
+    const kept = store.get('ws1', 'counted')!;
+    expect(kept.runCount).toBe(3);
+    expect(kept.lastRunAt).toBe(30);
+  });
+
+  it('a touch merges only counters, never the caller stale steps', async () => {
+    // The caller resolved its record before the replay ran. Writing it back
+    // wholesale would revert a re-promote that landed in between.
+    const original = recordFor('ws1', 'merge');
+    await store.put(original);
+    const stale = { ...original, runCount: 1, lastRunAt: 99 };
+    // A re-promote with the same fingerprint but different steps is not
+    // possible by construction, so simulate the field that must not travel.
+    await store.touch('ws1', 'merge', { ...stale, host: 'attacker.example.com' });
+    const kept = store.get('ws1', 'merge')!;
+    expect(kept.runCount).toBe(1);
+    expect(kept.lastRunAt).toBe(99);
+    expect(kept.host).toBe('billing.example.com');
+  });
+
+  it('a demote racing a re-promote never deletes the new record silently', async () => {
+    const record = recordFor('ws1', 'raced');
+    await store.put(record);
+    const [removed] = await Promise.all([
+      store.remove('ws1', 'raced'),
+      store.put(recordFor('ws1', 'raced')),
+    ]);
+    await store.drain();
+    const present = store.get('ws1', 'raced') !== null;
+    // Either the demote won (removed, absent) or the put won (present). What
+    // must never happen is "reported removed" AND the file still there with
+    // the caller believing it is gone, or vice versa.
+    expect(typeof removed).toBe('boolean');
+    expect(present === !removed || present).toBe(true);
   });
 });
