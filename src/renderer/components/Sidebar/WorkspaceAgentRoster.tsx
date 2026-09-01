@@ -61,6 +61,10 @@ interface WorkspaceAgentRosterProps {
 
 interface WorkspaceRosterSummaryProps {
   workspaceId: string;
+  /** Both counts come from WorkspaceItem's own counts subscription, so this
+   *  control holds no store subscription of its own and memoizes on numbers. */
+  agentCount: number;
+  stashedCount: number;
   open: boolean;
   onToggle: () => void;
 }
@@ -153,17 +157,17 @@ export function rosterHasMixedVendors(rows: readonly WorkspaceAgentRosterRow[]):
  * expanded list's stash group header uses, so a collapsed workspace still
  * accounts for panes that are running but off-screen.
  */
-function WorkspaceRosterSummary({ workspaceId, open, onToggle }: WorkspaceRosterSummaryProps) {
+function WorkspaceRosterSummary({
+  workspaceId,
+  agentCount,
+  stashedCount,
+  open,
+  onToggle,
+}: WorkspaceRosterSummaryProps) {
   const t = useT();
-  // Counts only: this chip draws two integers and is mounted for every
-  // workspace, so it must not rerender on every byte a terminal here prints.
-  const selector = useMemo(
-    () => createWorkspaceRosterCountsSelector(workspaceId),
-    [workspaceId],
-  );
-  const roster = useStore(selector);
+  const roster = { agentCount, stashedCount };
 
-  if (roster.agentCount === 0 && roster.stashedCount === 0) return null;
+  if (agentCount === 0 && stashedCount === 0) return null;
 
   const ariaLabel = rosterSummaryAriaLabel(roster, open, t);
 

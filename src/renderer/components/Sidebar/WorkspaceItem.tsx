@@ -1,8 +1,9 @@
-import { useState, useRef, useEffect, useCallback, memo } from 'react';
+import { useState, useRef, useEffect, useCallback, useMemo, memo } from 'react';
 import type { GitSyncStatus, PrStatus, WorkspaceMetadata } from '../../../shared/types';
 import { useStore } from '../../stores';
 import { selectWorkspaceById } from '../../stores/selectors/workspaceProjections';
 import { selectWorkspaceAgentStatus } from '../../stores/selectors/fleet';
+import { createWorkspaceRosterCountsSelector } from '../../stores/selectors/workspaceAgentRoster';
 import { useT } from '../../hooks/useT';
 import type { TranslationKey } from '../../i18n/locales/en';
 import { AGENT_STATUS_ICON } from './agentStatusIcon';
@@ -291,6 +292,14 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
   // churn still does not rerender this component.
   const [rosterOpen, setRosterOpen] = useState(isActive);
   const toggleRoster = useCallback(() => setRosterOpen((value) => !value), []);
+  // Counts only — a reference-stable projection of two integers, so this does
+  // not rerender the row on terminal output the way the full roster would.
+  const rosterCountsSelector = useMemo(
+    () => createWorkspaceRosterCountsSelector(workspaceId),
+    [workspaceId],
+  );
+  const rosterCounts = useStore(rosterCountsSelector);
+  const hasRoster = rosterCounts.agentCount > 0 || rosterCounts.stashedCount > 0;
   // Newly selected workspaces reveal their agents automatically; workspaces
   // that move to the background collapse back to the count. The user can still
   // explicitly toggle either state until selection changes again.
@@ -712,7 +721,16 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
           ) : (
             <>
               <div className="flex items-center gap-1">
-                <span className="text-caption font-mono truncate">{workspace.name}</span>
+                {/* The name truncates in a 240px sidebar and had no tooltip at
+                    all, so a clipped name was simply unreadable. It carries the
+                    idle minutes too, which is where they go when the roster
+                    chip takes their place on the row (#997). */}
+                <span
+                  className="text-caption font-mono truncate"
+                  title={idleLabel ? `${workspace.name} · ${t('workspace.idleTooltip', { time: idleLabel })}` : workspace.name}
+                >
+                  {workspace.name}
+                </span>
                 {hasProfile && (
                   <span
                     className="text-[8px] leading-none flex-shrink-0 text-[var(--accent-blue)]"
@@ -759,7 +777,13 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
                     ⚠ {t('workspace.departed')}
                   </span>
                 )}
-                {idleLabel && (
+                {/* #997 — the idle label and the roster chip answer the same
+                    question ("is anything happening here?"), and the chip plus
+                    the leading status dot answer it better. Showing both cost
+                    the NAME half its width at 240px: measured 87.6px → 43.7px,
+                    a 22-character workspace truncated to seven. The idle
+                    minutes stay one hover away on the row's own tooltip. */}
+                {idleLabel && !hasRoster && (
                   <span
                     className="text-[9px] font-mono text-[var(--text-muted)] flex-shrink-0"
                     title={t('workspace.idleTooltip', { time: idleLabel })}
@@ -778,6 +802,8 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
         {!editing && (
           <WorkspaceRosterSummaryMemo
             workspaceId={workspaceId}
+            agentCount={rosterCounts.agentCount}
+            stashedCount={rosterCounts.stashedCount}
             open={rosterOpen}
             onToggle={toggleRoster}
           />

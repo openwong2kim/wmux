@@ -83,7 +83,7 @@ describe('#997 — roster summary sits on the workspace row', () => {
     // The projection's reference changes whenever any row field does — an
     // activity string, a focus flag. This control draws two integers, and it
     // now sits on a row that renders for every workspace.
-    expect(rosterSource).toContain('createWorkspaceRosterCountsSelector(workspaceId)');
+    expect(itemSource).toContain('createWorkspaceRosterCountsSelector(workspaceId)');
   });
 });
 
