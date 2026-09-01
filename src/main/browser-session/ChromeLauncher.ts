@@ -771,6 +771,9 @@ export class ChromeLauncher implements ChromeBackendClient {
         `--remote-debugging-port=${pinned ?? 0}`,
         // connectOverCDP's websocket handshake (Chrome 111+ origin check).
         '--remote-allow-origins=*',
+        // `--remote-debugging-port` alone flips `navigator.webdriver` to true on
+        // every page, even with no client attached; this restores its normal value.
+        '--disable-blink-features=AutomationControlled',
         '--no-first-run',
         '--no-default-browser-check',
       ],
