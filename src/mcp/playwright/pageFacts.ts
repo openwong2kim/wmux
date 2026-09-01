@@ -1,4 +1,5 @@
 import type { Page } from 'playwright-core';
+import { evaluateIsolated } from './isolated-eval';
 
 // ---------------------------------------------------------------------------
 // One-round-trip page facts for snapshot annotation.
@@ -180,7 +181,8 @@ export async function collectPageFacts(
     // The evaluation keeps running in the page after a timeout — there is no
     // way to cancel it — but its promise is deliberately dropped, so attach a
     // catch to it here or an eventual rejection becomes an unhandled one.
-    const evaluation = page.evaluate(buildPageFactsExpression());
+    // Isolated world: reads only DOM/layout, which the isolated world shares.
+    const evaluation = evaluateIsolated(page, buildPageFactsExpression());
     evaluation.catch(() => undefined);
     const raw = (await Promise.race([
       evaluation,

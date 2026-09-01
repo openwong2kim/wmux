@@ -525,6 +525,8 @@ async function resolveFileInputFromRef(
   // caller named is used exactly as it was before this search existed.
   let isFileInput: boolean | null = null;
   try {
+    // Main world, deliberately: element-scoped, and an ElementHandle cannot be
+    // adopted into an isolated context (see isolated-eval.ts).
     isFileInput = await el.evaluate((node: unknown) => {
       const n = node as { tagName?: string; getAttribute?: (a: string) => unknown } | null;
       return (
@@ -540,6 +542,9 @@ async function resolveFileInputFromRef(
 
   let handle: { asElement?: () => unknown; dispose?: () => Promise<void> } | null | undefined;
   try {
+    // Main world, deliberately: the RESULT is a handle Playwright then passes
+    // to setInputFiles, so it has to live in the world Playwright resolved the
+    // element in.
     handle = await el.evaluateHandle(findFileInputNearElement);
   } catch {
     return el; // probe unavailable — keep the pre-existing behaviour

@@ -1,5 +1,6 @@
 import type { Page } from 'playwright-core';
 import type { PlaywrightEngine } from './PlaywrightEngine';
+import { evaluateIsolated } from './isolated-eval';
 import {
   allowScopedRpcFallback,
   sendScopedBrowserRpc,
@@ -23,9 +24,15 @@ import {
 /** Evaluate a JS expression string and resolve its JSON-serialisable value. */
 export type JsonEvaluator = (expression: string) => Promise<unknown>;
 
-/** Evaluator backed by a live Playwright Page (dev / when getPage succeeds). */
+/**
+ * Evaluator backed by a live Playwright Page (dev / when getPage succeeds).
+ *
+ * Runs in the page's isolated world: these scripts only read the DOM, which is
+ * shared, and keeping them out of the main world stops the site from watching
+ * or rewriting the extraction (see isolated-eval.ts).
+ */
 export function pageEvaluator(page: Page): JsonEvaluator {
-  return (expression) => page.evaluate(expression);
+  return (expression) => evaluateIsolated(page, expression);
 }
 
 /**
@@ -83,10 +90,10 @@ export async function evalFunctionOrRpc<A, R>(
   scope: BrowserTargetScope,
 ): Promise<R> {
   if (page) {
-    // Playwright types page.evaluate's function param as PageFunction<Unboxed<A>, R>,
-    // which a free generic A cannot satisfy. The function is correct at runtime
-    // (it ran identically before #105 via the same call), so cast at this boundary.
-    return (await page.evaluate(fn as (a: unknown) => R, arg)) as R;
+    // Isolated world (same DOM, no shared globals) so the site cannot observe
+    // or rewrite the extraction; `arg` is passed as the single parameter,
+    // exactly as page.evaluate(fn, arg) did.
+    return await evaluateIsolated<R, A>(page, fn, arg);
   }
   const expression = `(${fn.toString()})(${JSON.stringify(arg)})`;
   const result = await sendScopedBrowserRpc<{ value: R }>('browser.evaluate', scope, {

@@ -8,6 +8,7 @@ import {
 import { collectOcclusion, occlusionNote, type OcclusionInfo } from './occlusion';
 import { collectPageFacts, formatPageFactsFooter } from './pageFacts';
 import { peekRecentPendingRequests } from './pageCapture';
+import { createIsolatedContext, evaluateIsolated } from './isolated-eval';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -1639,7 +1640,10 @@ async function getAccessibilityTree(page: Page): Promise<SnapshotSource> {
       // After the tree, never instead of it: a thrown occlusion probe must not
       // cost the caller its snapshot (collectOcclusion swallows its own
       // failures, and this ordering keeps the tree even if that ever changes).
-        occlusion: await collectOcclusion(client).catch(() => null),
+        occlusion: await collectOcclusion(
+          client,
+          await createIsolatedContext(client),
+        ).catch(() => null),
       }),
       { tree: null, occlusion: null },
     );
@@ -1693,9 +1697,10 @@ export async function generateSnapshot(
       // gets the same URL redaction the network listing does (inspection.ts
       // applies it to its own two DOM-listing branches).
       let domSnapshot = redactPasswordParams(
-        (await page.evaluate(
+        (await evaluateIsolated<string>(
+          page,
           buildDomSnapshotExpression(undefined, { filter: options?.filter }),
-        )) as string,
+        )),
       );
       // aria has no DOM-listing equivalent — say so instead of silently
       // returning the ai-style listing (same honesty rule as the selector
@@ -1848,7 +1853,10 @@ export async function generateScopedSnapshot(
         // Occlusion is a whole-page fact, so it is worth just as much inside a
         // scope — a selector aimed at the page behind an overlay is exactly the
         // case where the agent is about to click something inert.
-        occlusion: await collectOcclusion(client).catch(() => null),
+        occlusion: await collectOcclusion(
+          client,
+          await createIsolatedContext(client),
+        ).catch(() => null),
       };
     },
     { forest: null, occlusion: null },
