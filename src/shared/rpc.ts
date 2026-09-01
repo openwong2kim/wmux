@@ -393,6 +393,11 @@ export type RpcMethod =
   | 'browser.cookies'
   | 'browser.resize'
   | 'browser.emulate'
+  | 'browser.actionCache.list'
+  | 'browser.actionCache.get'
+  | 'browser.actionCache.put'
+  | 'browser.actionCache.stats'
+  | 'browser.actionCache.forget'
   | 'browser.lease.acquire'
   | 'browser.lease.renew'
   | 'browser.lease.release'
@@ -571,6 +576,11 @@ export const ALL_RPC_METHODS = [
   'browser.cookies',
   'browser.resize',
   'browser.emulate',
+  'browser.actionCache.list',
+  'browser.actionCache.get',
+  'browser.actionCache.put',
+  'browser.actionCache.stats',
+  'browser.actionCache.forget',
   'browser.lease.acquire',
   'browser.lease.renew',
   'browser.lease.release',

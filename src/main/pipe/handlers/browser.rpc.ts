@@ -8,6 +8,7 @@ import {
   validateBrowserProfileName,
 } from '../../browser-session/ProfileManager';
 import { PortAllocator } from '../../browser-session/PortAllocator';
+import { ActionCacheStore } from '../../browser-session/ActionCacheStore';
 import { HumanBehavior } from '../../browser-session/HumanBehavior';
 import { WebviewCdpManager } from '../../browser-session/WebviewCdpManager';
 import { BrowserCaptureManager } from '../../browser-session/BrowserCaptureManager';
@@ -745,6 +746,67 @@ export function registerBrowserRpc(
       return webviewCdpManager.withAutomationLease(resolved, () => handler(params, scope, ctx));
     });
   };
+
+  // ── Browser action cache RPC (browser_replay) ───────────────────────────
+  //
+  // Plain `router.register`, NOT registerLeased: these methods touch a JSON
+  // file and never drive a page, so requiring a live CDP target would make the
+  // cache unreadable exactly when it is most useful — before a browser is open,
+  // when the agent is deciding whether it needs one at all.
+  //
+  // Isolation is free rather than enforced here: every caller reaches these
+  // through sendScopedBrowserRpc, which overwrites `workspaceId` with the
+  // resolved scope, and `scopeFor` is still the enforcement point. A workspace
+  // therefore cannot name another workspace's traces even by constructing the
+  // params by hand.
+  const actionCache = new ActionCacheStore();
+
+  const cacheWorkspace = (method: RpcMethod, params: Record<string, unknown>, ctx?: RpcContext): string => {
+    const workspaceId = scopeFor(method, params, ctx);
+    if (!workspaceId) {
+      throw new Error(
+        `${method}: the action cache is per-workspace and this caller's workspace could not be resolved.`,
+      );
+    }
+    return workspaceId;
+  };
+
+  router.register('browser.actionCache.list', async (params, ctx) => {
+    const workspaceId = cacheWorkspace('browser.actionCache.list', params, ctx);
+    const urlKey = typeof params['urlKey'] === 'string' ? params['urlKey'] : undefined;
+    const traces = actionCache.list(workspaceId);
+    return { traces: urlKey ? traces.filter((t) => t.urlKey === urlKey) : traces };
+  });
+
+  router.register('browser.actionCache.get', async (params, ctx) => {
+    const workspaceId = cacheWorkspace('browser.actionCache.get', params, ctx);
+    const name = typeof params['name'] === 'string' ? params['name'] : '';
+    return { trace: actionCache.get(workspaceId, name) };
+  });
+
+  router.register('browser.actionCache.put', async (params, ctx) => {
+    const workspaceId = cacheWorkspace('browser.actionCache.put', params, ctx);
+    return actionCache.put(workspaceId, params['trace']);
+  });
+
+  router.register('browser.actionCache.stats', async (params, ctx) => {
+    const workspaceId = cacheWorkspace('browser.actionCache.stats', params, ctx);
+    const name = typeof params['name'] === 'string' ? params['name'] : '';
+    const failedStep = Number.isInteger(params['failedStep'])
+      ? (params['failedStep'] as number)
+      : undefined;
+    const trace = await actionCache.stats(workspaceId, name, {
+      ok: params['ok'] === true,
+      ...(failedStep !== undefined && { failedStep }),
+    });
+    return { trace };
+  });
+
+  router.register('browser.actionCache.forget', async (params, ctx) => {
+    const workspaceId = cacheWorkspace('browser.actionCache.forget', params, ctx);
+    const name = typeof params['name'] === 'string' ? params['name'] : undefined;
+    return { removed: await actionCache.forget(workspaceId, name) };
+  });
 
   // ── Automation lease RPC (#517) ─────────────────────────────────────────
   // Out-of-process automation (Playwright in the MCP process) drives the guest
