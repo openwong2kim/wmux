@@ -9,7 +9,7 @@ import {
   isOutstandingFrameRef,
   resolveRef,
 } from '../snapshot';
-import { getLocatorByRef } from '../dom-intelligence';
+import { getLocatorByRef, resolveSmartRefLocator } from '../dom-intelligence';
 import { typeHumanlike } from '../human-typing';
 import { describeToolError } from '../toolError';
 import {
@@ -460,13 +460,18 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
 
           try {
             if (smartRef !== undefined) {
+              // Ref-keyed, not `cache[smartRef - 1]`: smart refs are keyed on
+              // DOM node identity now, so the cache is no longer a dense 1..n
+              // range. `selector` stays whatever the snapshot stored — that is
+              // what the trace has always recorded — while the click itself
+              // goes through the locator resolveSmartRefLocator rebuilds.
               const selector = getLocatorByRef(smartRef);
-              if (!selector) {
+              const locator = resolveSmartRefLocator(page, smartRef);
+              if (!selector || !locator) {
                 throw new Error(
                   `Element with smartRef=${smartRef} not found. Run browser_smart_snapshot to get current refs.`,
                 );
               }
-              const locator = page.locator(selector);
               if (double) await locator.dblclick();
               else await locator.click();
               recordAction(deps, {
