@@ -27,7 +27,9 @@ export interface SnapshotBaseline {
 // Bounds: a handful of surfaces per agent is the realistic ceiling; TTL is a
 // backstop against diffing a snapshot from a long-abandoned page state when a
 // navigation event was missed (e.g. main lacked browser.lifecycle.get).
-const MAX_BASELINES = 8;
+// 16, not 8: entries are per surface AND per tool now, so the old cap would
+// have halved the surfaces a diff can survive across.
+const MAX_BASELINES = 16;
 const BASELINE_TTL_MS = 5 * 60 * 1000;
 
 let moduleBaselines: Map<string, SnapshotBaseline> | undefined;
@@ -45,9 +47,35 @@ function getStore(): Map<string, SnapshotBaseline> {
   return moduleBaselines;
 }
 
-/** Surface key mirroring PlaywrightEngine.resolveSelectionContext. */
-export function snapshotSurfaceKey(workspaceId: string | undefined, surfaceId: string | undefined): string {
-  return `ws:${workspaceId ?? ''}:surf:${surfaceId ?? ''}`;
+/**
+ * Surface key mirroring PlaywrightEngine.resolveSelectionContext.
+ *
+ * `tool` namespaces the baseline so browser_snapshot and browser_smart_snapshot
+ * do not clobber each other's on a shared surface. The attrs guard would keep
+ * the output correct either way, but alternating the two tools would then mean
+ * neither ever diffs. browser_snapshot keeps the bare key it always had.
+ */
+export function snapshotSurfaceKey(
+  workspaceId: string | undefined,
+  surfaceId: string | undefined,
+  tool?: string,
+): string {
+  const base = `ws:${workspaceId ?? ''}:surf:${surfaceId ?? ''}`;
+  return tool === undefined ? base : `${base}:tool:${tool}`;
+}
+
+/**
+ * Every key for one surface, whatever tool wrote it. Membership, not a plain
+ * `startsWith`: the bare key of surface `s` is also a prefix of surface `s2`.
+ */
+function surfaceKeys(
+  store: Map<string, SnapshotBaseline>,
+  workspaceId: string | undefined,
+  surfaceId: string | undefined,
+): string[] {
+  const base = snapshotSurfaceKey(workspaceId, surfaceId);
+  const prefix = `${base}:tool:`;
+  return [...store.keys()].filter((key) => key === base || key.startsWith(prefix));
 }
 
 export function getSnapshotBaseline(
@@ -86,9 +114,10 @@ export function setSnapshotBaseline(
   }
 }
 
-/** Drop the baseline for a surface (drained `navigated`/`closed` event). */
+/** Drop every baseline for a surface (drained `navigated`/`closed` event). */
 export function invalidateSnapshotBaseline(workspaceId: string | undefined, surfaceId: string | undefined): void {
-  getStore().delete(snapshotSurfaceKey(workspaceId, surfaceId));
+  const store = getStore();
+  for (const key of surfaceKeys(store, workspaceId, surfaceId)) store.delete(key);
 }
 
 /**
@@ -109,9 +138,10 @@ export function invalidateSnapshotBaselineIfStale(
   currentUrl: string | undefined,
 ): void {
   const store = getStore();
-  const key = snapshotSurfaceKey(workspaceId, surfaceId);
-  const entry = store.get(key);
-  if (!entry) return;
-  if (entry.url !== undefined && currentUrl !== undefined && entry.url === currentUrl) return;
-  store.delete(key);
+  for (const key of surfaceKeys(store, workspaceId, surfaceId)) {
+    const entry = store.get(key);
+    if (!entry) continue;
+    if (entry.url !== undefined && currentUrl !== undefined && entry.url === currentUrl) continue;
+    store.delete(key);
+  }
 }

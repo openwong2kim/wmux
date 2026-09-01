@@ -5,6 +5,8 @@ import { withAutomationLease } from '../automationLease';
 import { getSmartSnapshot, getSmartSnapshotViaEval } from '../dom-intelligence';
 import { extractMarkdown, extractStructuredData } from '../markdown-extractor';
 import { resolveEvaluator, rpcEvaluator } from '../page-eval';
+import { formatSnapshotResult } from '../snapshotDiff';
+import { getSnapshotBaseline, setSnapshotBaseline, snapshotSurfaceKey } from '../snapshotCache';
 import { allowScopedRpcFallback, type BrowserToolDeps } from '../browserScope';
 import { describeToolError } from '../toolError';
 
@@ -21,6 +23,7 @@ const BROWSER_SMART_SNAPSHOT_SHAPE = {
     .number()
     .optional()
     .describe('Content summary cap in characters (default 3000).'),
+  full: z.boolean().optional().describe('Force the complete tree instead of a diff.'),
   surfaceId: optionalSurfaceId,
 };
 
@@ -66,9 +69,9 @@ export function registerExtractionTools(server: McpServer, deps: BrowserToolDeps
   // -----------------------------------------------------------------------
   server.tool(
     'browser_smart_snapshot',
-    'Indexed interactive elements plus clean page text. Pass a returned ref to browser_click as smartRef.',
+    'Indexed interactive elements plus clean page text. Pass a returned ref to browser_click as smartRef. A repeat call returns a diff; pass full:true for the whole listing.',
     BROWSER_SMART_SNAPSHOT_SHAPE,
-    async ({ maxContentLength, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
+    async ({ maxContentLength, full, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
       try {
         // Playwright path uses the CDP accessibility tree; when no Page is
         // available (packaged builds, issue #105) fall back to a DOM-based
@@ -97,8 +100,28 @@ export function registerExtractionTools(server: McpServer, deps: BrowserToolDeps
           lines.push(snapshot.content);
         }
 
+        const text = lines.join('\n');
+
+        // Auto-diff, same machinery and same 50%/800-line fallback as
+        // browser_snapshot (snapshotDiff.ts): a repeat call with the same
+        // attributes on the same URL returns only what moved, and the first
+        // line always declares which of the two it is.
+        //
+        // Only the CDP lane may diff. The RPC lane still numbers refs by walk
+        // position (see getSmartSnapshotViaEval), so a single insertion
+        // renumbers the whole listing and a "diff" there is noise dressed up
+        // as a saving. It still writes its baseline: the contract is a diff
+        // against the last listing this tool returned, whichever lane produced
+        // it.
+        const key = snapshotSurfaceKey(scope.workspaceId, scope.surfaceId, 'smart');
+        const attrs = `smart|${maxContentLength ?? 3000}`;
+        const baseline =
+          full || !page ? null : getSnapshotBaseline(key, attrs, snapshot.url || undefined);
+        const rendered = formatSnapshotResult(baseline?.text ?? null, text);
+        setSnapshotBaseline(key, attrs, text, snapshot.url || undefined);
+
         return {
-          content: [{ type: 'text' as const, text: lines.join('\n') }],
+          content: [{ type: 'text' as const, text: rendered.text }],
         };
       } catch (error) {
         const message = describeToolError(error);
