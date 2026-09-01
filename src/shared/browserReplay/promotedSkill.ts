@@ -180,6 +180,10 @@ export function safeHintText(value: unknown, max = MAX_CONTRACT_CHARS): string {
  * this do, and what do I type to do it. Hence the literal tool call — the
  * agent that reads this hint can act on it in its very next tool use, which is
  * the difference between a discoverable feature and a used one.
+ *
+ * mirrors skill-forge (MIT, BrowserAct) SKILL.md structure — the pairing of a
+ * short situational contract with a runnable invocation, none of its code or
+ * prose. wmux emits it as a hint on navigation rather than as a file on disk.
  */
 export function renderPromotedContract(record: Pick<PromotedRecord, 'name' | 'host' | 'steps'>): string {
   const host = safeHintHost(record.host) || 'this page';

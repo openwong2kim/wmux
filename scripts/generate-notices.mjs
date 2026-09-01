@@ -351,6 +351,30 @@ const BORROWED_SOURCES = [
       "snapshot's own role/name/index tuple rather than on Stagehand's XPath\n" +
       'axis, and again no code was taken.',
   },
+  {
+    name: 'Hermes Agent',
+    license: 'MIT License',
+    repo: 'https://github.com/NousResearch/hermes-agent',
+    copyright: 'Copyright (c) 2024 Nous Research',
+    what:
+      'The lifecycle shape for promoted browser flows: usage counters kept\n' +
+      'beside the artifact rather than inside the cache that produced it, and\n' +
+      'an idle ladder that archives before it deletes so a forgotten entry is\n' +
+      'recoverable rather than gone. wmux applies it to promoted browser_replay\n' +
+      'flows with its own thresholds and its own file layout. No code was taken.',
+  },
+  {
+    name: 'skill-forge',
+    license: 'MIT License',
+    repo: 'https://github.com/BrowserAct/skill-forge',
+    copyright: 'Copyright (c) 2025 BrowserAct',
+    what:
+      'The document shape for a promoted browser flow: a short situational\n' +
+      'contract line paired with a literal, runnable invocation, so the reader\n' +
+      'can act on it without a further lookup. wmux emits this as a one-line\n' +
+      'hint on navigation rather than as a file on disk, and derives every\n' +
+      'field from its own records. No code or prose was taken.',
+  },
 ];
 lines.push('BORROWED IMPLEMENTATION TECHNIQUES');
 lines.push('');
