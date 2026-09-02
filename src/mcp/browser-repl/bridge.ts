@@ -12,6 +12,7 @@
 import { z } from 'zod';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import type { CollectedTool } from '../playwright/toolCollector';
+import { isHintBlock } from '../playwright/hintBlock';
 import { redactPasswordParams } from '../playwright/redact';
 import {
   getConnectionScope,
@@ -79,29 +80,6 @@ function maskTypedText(key: string, raw: unknown): unknown {
   return raw;
 }
 
-/** Ref arguments the tool schemas type as strings; `smartRef` is a number and is left alone. */
-const STRING_REF_KEYS = new Set(['ref', 'sourceRef', 'targetRef']);
-
-/**
- * Snapshot listings number their refs, so a snippet that computed one — or
- * that kept an older, numeric `refs[i].ref` — hands `browser.type` a number
- * where the schema wants a string, and the call is rejected before it runs.
- * Applied at every depth, so `browser.fill({fields:[{ref, value}]})` is
- * treated the same as a top-level `ref`.
- */
-function coerceRefArgs(raw: unknown): unknown {
-  if (Array.isArray(raw)) return raw.map(coerceRefArgs);
-  if (raw && typeof raw === 'object') {
-    return Object.fromEntries(
-      Object.entries(raw as Record<string, unknown>).map(([key, value]) => [
-        key,
-        STRING_REF_KEYS.has(key) && typeof value === 'number' ? String(value) : coerceRefArgs(value),
-      ]),
-    );
-  }
-  return raw;
-}
-
 export interface SnapshotRef {
   /**
    * The ref as its target argument's schema wants it: a string for `ref`, a
@@ -134,12 +112,7 @@ export type BridgeOutcome =
       /** `[replay]`/`[skill]` blocks this call carried; the run collects them. */
       readonly hints?: readonly string[];
     }
-  | {
-      readonly ok: false;
-      readonly error: string;
-      readonly ledger: string;
-      readonly hints?: readonly string[];
-    };
+  | { readonly ok: false; readonly error: string; readonly ledger: string };
 
 export interface BrowserBridgeOptions {
   /** Injected into every call whose schema accepts `surfaceId` and whose args omit it. */
@@ -207,16 +180,15 @@ export function parseSnapshotRefs(text: string, tool: string): SnapshotRef[] {
  * they are kept out of the value and reported once per run instead. Any block
  * that matches neither is body. Non-text blocks are noted, never returned.
  *
- * The lease blocks are recognized by prefix, and page text can start with
- * anything — so the match is kept tight: lease blocks only ever precede the
- * handler's own content, and an events block is every line in the lease's
+ * A hint is recognized by the marker only the lease can set, never by its text
+ * (see hintBlock.ts): `browser_extract_text` hands back page text as its first
+ * block, and a page whose text opened with `[skill] ` would otherwise empty the
+ * script's value and get its own string printed as a hint. The events block has
+ * no such marker, so its match is kept tight instead — it only ever precedes
+ * the handler's own content, and every one of its lines must be in the lease's
  * `- type[: url] (N ago)` form. Once a body block is seen, the rest is body.
  */
 const EVENT_LINE = /^- [\w-]+(?::.*)? \([^()]* ago\)$/;
-
-function isHintBlock(text: string): boolean {
-  return text.startsWith('[replay] ') || text.startsWith('[skill] ');
-}
 
 function parseEventsBlock(text: string): string[] | null {
   if (!text.startsWith('[browser events]\n')) return null;
@@ -247,10 +219,10 @@ export function shapeResult(result: CallToolResult, tool: string): ShapedResult 
         events.push(...eventLines);
         continue;
       }
-      if (isHintBlock(text)) {
-        hints.push(text);
-        continue;
-      }
+    }
+    if (isHintBlock(block)) {
+      hints.push(text);
+      continue;
     }
     body.push(text);
   }
@@ -261,21 +233,19 @@ export function shapeResult(result: CallToolResult, tool: string): ShapedResult 
   return { value: { text, events }, hints };
 }
 
-/** The reason a failed call gives the script, and the hints it still carried. */
-function shapeError(result: CallToolResult): { text: string; hints: string[] } {
-  const texts: string[] = [];
-  const hints: string[] = [];
-  for (const block of result.content ?? []) {
-    if (block.type !== 'text') continue;
+/**
+ * The reason a failed call gives the script. Only the event block is dropped —
+ * the lease refuses to hint on a failure (a failed call is not a landing), so
+ * every other block is the tool's own words and dropping one would cost the
+ * script the reason it failed.
+ */
+function errorText(result: CallToolResult): string {
+  const texts = (result.content ?? [])
+    .filter((b): b is { type: 'text'; text: string } => b.type === 'text')
+    .map((b) => b.text)
     // The lease still prepends events to error results; the script wants the reason.
-    if (parseEventsBlock(block.text) !== null) continue;
-    if (isHintBlock(block.text)) {
-      hints.push(block.text);
-      continue;
-    }
-    texts.push(block.text);
-  }
-  return { text: texts.join('\n').trim() || 'tool returned an error without a message', hints };
+    .filter((t) => parseEventsBlock(t) === null);
+  return texts.join('\n').trim() || 'tool returned an error without a message';
 }
 
 /**
@@ -309,7 +279,7 @@ export function createBrowserBridge(
       };
     }
 
-    const args = coerceRefArgs(rawArgs) as Record<string, unknown>;
+    const args: Record<string, unknown> = { ...rawArgs };
     if (options.surfaceId !== undefined && 'surfaceId' in collected.shape && args.surfaceId === undefined) {
       args.surfaceId = options.surfaceId;
     }
@@ -346,13 +316,7 @@ export function createBrowserBridge(
       return { ok: false, error: `browser.${name}: ${message}`, ledger: ledgerFor(args, 'THREW') };
     }
     if (result.isError) {
-      const failure = shapeError(result);
-      return {
-        ok: false,
-        error: `browser.${name}: ${failure.text}`,
-        ledger: ledgerFor(args, 'FAILED'),
-        hints: failure.hints,
-      };
+      return { ok: false, error: `browser.${name}: ${errorText(result)}`, ledger: ledgerFor(args, 'FAILED') };
     }
     const { value, hints } = shapeResult(result, name);
     const eventNote = value.events.length > 0 ? ` · ${value.events.length} event(s)` : '';

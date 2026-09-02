@@ -6,6 +6,7 @@ import {
   type BrowserToolDeps,
 } from './browserScope';
 
+import { hintBlockMeta } from './hintBlock';
 import { redactPasswordParams } from './redact';
 import { invalidateSnapshotBaseline, invalidateSnapshotBaselineIfStale } from './snapshotCache';
 import { PlaywrightEngine } from './PlaywrightEngine';
@@ -167,7 +168,10 @@ async function prependReplayHints<T>(
   scope: BrowserTargetScope,
 ): Promise<T> {
   const shaped = result as
-    | { content?: Array<{ type: string; text?: string }>; isError?: boolean }
+    | {
+        content?: Array<{ type: string; text?: string; _meta?: Record<string, unknown> }>;
+        isError?: boolean;
+      }
     | null
     | undefined;
   if (!shaped || !Array.isArray(shaped.content)) return result;
@@ -212,7 +216,13 @@ async function prependReplayHints<T>(
           `browser_replay {action:"run", name:"..."} repeats one without a snapshot.\n`
         : '';
     if (!promotedBlock && !replayBlock) return result;
-    shaped.content.unshift({ type: 'text', text: `${promotedBlock}${replayBlock}` });
+    // Marked, not just prefixed: browser_repl separates hints from tool output
+    // by this marker, and a page must not be able to forge one. See hintBlock.ts.
+    shaped.content.unshift({
+      type: 'text',
+      text: `${promotedBlock}${replayBlock}`,
+      _meta: hintBlockMeta(),
+    });
   } catch {
     /* no hint is always an acceptable outcome */
   }

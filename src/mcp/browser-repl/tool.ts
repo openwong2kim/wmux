@@ -164,6 +164,7 @@ export function formatBrowserReplOutcome(outcome: BrowserReplRunOutcome): string
   }
   if (outcome.hints && outcome.hints.length > 0) {
     lines.push('', '--- hints ---', ...outcome.hints);
+    if (outcome.hintsElided) lines.push(`(${outcome.hintsElided} more hint line(s) not shown)`);
   }
   if (outcome.ok && outcome.result && outcome.result.text !== 'undefined') {
     lines.push('', '--- result ---', outcome.result.text);
