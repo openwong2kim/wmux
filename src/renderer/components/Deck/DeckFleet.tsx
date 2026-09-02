@@ -73,11 +73,12 @@ export default function DeckFleet({
   const surfaceActivity = useStore((s) => s.surfaceActivity);
   const paneLabel = useStore((s) => s.paneLabel);
   const surfaceAgent = useStore((s) => s.surfaceAgent);
+  const surfacePendingQuestion = useStore((s) => s.surfacePendingQuestion);
   const paneRole = useStore((s) => s.paneRole);
   const roleBindings = useStore((s) => s.orchestratorRoleBindings);
 
   const panes = useMemo(() => {
-    const all = selectFleetPanes({ workspaces, surfaceAgentStatus, surfaceActivity, paneLabel, surfaceAgent });
+    const all = selectFleetPanes({ workspaces, surfaceAgentStatus, surfaceActivity, paneLabel, surfaceAgent, surfacePendingQuestion });
     // Roster = live terminal panes of the ACTIVE workspace only (M1.5: the
     // deck is this workspace's orchestrator, so its roster is this
     // workspace's agents — the fleet-wide view lives in the titlebar vitals).
@@ -89,7 +90,7 @@ export default function DeckFleet({
       ),
       'attention',
     );
-  }, [workspaces, activeWorkspaceId, surfaceAgentStatus, surfaceActivity, paneLabel, surfaceAgent]);
+  }, [workspaces, activeWorkspaceId, surfaceAgentStatus, surfaceActivity, paneLabel, surfaceAgent, surfacePendingQuestion]);
 
   if (panes.length === 0) return null;
 

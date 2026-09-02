@@ -314,3 +314,49 @@ describe('buildFleetSnapshots — stashed panes (#977)', () => {
     ).toBe('running');
   });
 });
+
+// ─── #1168 — a pane blocked on a question must reach the mirror too ───────────
+//
+// The deck heartbeat and the completion gate read this payload. A stop that
+// asks a question writes `complete` AND the question in one broadcast, so
+// before this the row said `complete` and the gate could finish over an agent
+// that was waiting on an answer.
+describe('buildFleetSnapshots — pending question (#1168)', () => {
+  const ws = workspace('ws-1', 'alpha', leaf('p1', [surface('s1', 'pty-1')]), 'p1');
+
+  it('reports awaiting_input for a question the stop delivered alongside complete', () => {
+    const st = {
+      workspaces: [ws],
+      surfaceAgentStatus: { 'pty-1': 'complete' as AgentStatus },
+      surfaceActivity: {},
+      surfacePendingQuestion: { 'pty-1': 'Which branch should I target?' },
+    } satisfies FleetSelectorState;
+    const [fleet] = buildFleetSnapshots(st, 42);
+    expect(fleet.panes).toHaveLength(1);
+    expect(fleet.panes[0]).toMatchObject({ ptyId: 'pty-1', agentStatus: 'awaiting_input' });
+  });
+
+  it('reports a question that outlived its retained status', () => {
+    // Focusing the pane clears `surfaceAgentStatus`; nothing clears the
+    // question. The pane is still blocked, so the row still has to say so.
+    const st = {
+      workspaces: [ws],
+      surfaceAgentStatus: {},
+      surfaceActivity: {},
+      surfacePendingQuestion: { 'pty-1': 'Which branch should I target?' },
+    } satisfies FleetSelectorState;
+    const [fleet] = buildFleetSnapshots(st, 42);
+    expect(fleet.panes[0]).toMatchObject({ ptyId: 'pty-1', agentStatus: 'awaiting_input' });
+  });
+
+  it('leaves the base derivation alone when there is no question', () => {
+    const st = {
+      workspaces: [ws],
+      surfaceAgentStatus: { 'pty-1': 'complete' as AgentStatus },
+      surfaceActivity: {},
+      surfacePendingQuestion: { 'pty-1': '   ' },
+    } satisfies FleetSelectorState;
+    const [fleet] = buildFleetSnapshots(st, 42);
+    expect(fleet.panes[0]).toMatchObject({ ptyId: 'pty-1', agentStatus: 'complete' });
+  });
+});
