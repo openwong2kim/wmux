@@ -11,9 +11,14 @@ vi.mock('../../wmux-client', () => ({
 }));
 
 const navigateFromPage = vi.fn(async () => null);
-vi.mock('../link-navigation', () => ({
+vi.mock('../link-navigation', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../link-navigation')>()),
   navigateFromPage: (...args: unknown[]) => navigateFromPage(...(args as [])),
 }));
+
+// The tool distinguishes "nothing was requested" from "the request failed" by
+// this class, so the tests raise the real one.
+import { NavigationNotCommittedError as FakeNotCommitted } from '../link-navigation';
 
 const recordAction = vi.fn();
 vi.mock('../../browser-replay/actionRing', () => ({
@@ -134,9 +139,11 @@ describe('browser_navigate referer route (chrome backend)', () => {
     });
   });
 
-  it('falls back to goto WITHOUT a referer when the in-page route fails', async () => {
+  it('falls back to goto WITHOUT a referer when the in-page route never commits', async () => {
     const { page } = fakePage('https://from.test/article', 'https://to.test/landing');
-    navigateFromPage.mockRejectedValue(new Error('Timeout 30000ms exceeded.'));
+    navigateFromPage.mockRejectedValue(
+      new FakeNotCommitted('no navigation committed within 4000ms of the assignment'),
+    );
     getPageForScope.mockResolvedValue(page);
 
     const res = await navigate({ url: 'https://to.test/landing' });
@@ -148,17 +155,22 @@ describe('browser_navigate referer route (chrome backend)', () => {
     // pairing it with Sec-Fetch-Site: none.
     expect(page.goto.mock.calls[0][1]).not.toHaveProperty('referer');
     expect(res.isError).toBeUndefined();
+    // The caller asked for one shape of request and got another; the result
+    // says so rather than leaving the swap invisible.
+    expect(res.content[0].text).toContain('retried without a referer');
   });
 
-  it('surfaces a real navigation error from the fallback goto', async () => {
+  it('reports a real navigation failure without requesting the URL a second time', async () => {
     const { page } = fakePage('https://from.test/article');
     navigateFromPage.mockRejectedValue(new Error('net::ERR_NAME_NOT_RESOLVED'));
-    page.goto.mockRejectedValue(new Error('net::ERR_NAME_NOT_RESOLVED'));
     getPageForScope.mockResolvedValue(page);
 
     const res = await navigate({ url: 'https://nowhere.invalid/x' });
 
     expect(res.isError).toBe(true);
     expect(res.content[0].text).toContain('ERR_NAME_NOT_RESOLVED');
+    // A retry here would be a second request, not a second chance: for a
+    // download or a one-time token URL that is a second consumption.
+    expect(page.goto).not.toHaveBeenCalled();
   });
 });

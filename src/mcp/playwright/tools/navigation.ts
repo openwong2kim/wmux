@@ -12,7 +12,7 @@ import { describeToolError } from '../toolError';
 import { redactPasswordParams } from '../redact';
 import { recordAction } from '../../browser-replay/actionRing';
 import { refererFor } from '../../../shared/referer';
-import { navigateFromPage } from '../link-navigation';
+import { NavigationNotCommittedError, navigateFromPage } from '../link-navigation';
 import {
   browserTabsError,
   isBrowserTabsResult,
@@ -144,6 +144,10 @@ export function registerNavigationTools(server: McpServer, deps: BrowserToolDeps
         // next tool call. The self-echo — a lone navigated matching the URL
         // this result already reports — is suppressed via opts.
         let finalUrl: string | undefined;
+        // Set when the in-page (referer-carrying) route did not commit and the
+        // plain navigation was used instead: the agent asked for one request
+        // and got a differently-shaped one, so the result says so.
+        let refererRetryNote: string | undefined;
         return await withAutomationLease(
           deps,
           surfaceId,
@@ -174,12 +178,17 @@ export function registerNavigationTools(server: McpServer, deps: BrowserToolDeps
               if (referer) {
                 try {
                   await navigateFromPage(page, url);
-                } catch {
-                  // The in-page route did not get there — a page that blocks
-                  // the assignment, or a commit that never arrived. Fall back
-                  // to the plain address-bar navigation, WITHOUT a referer:
-                  // the contradictory pair is worse than the missing header,
-                  // and a real navigation error surfaces here unchanged.
+                } catch (error) {
+                  // Only one failure may be retried: the one where nothing was
+                  // requested. A navigation that was attempted and failed is
+                  // the caller's answer — repeating it would issue the same
+                  // request twice, which for a download or a one-time token
+                  // URL is not a retry but a second consumption.
+                  if (!(error instanceof NavigationNotCommittedError)) throw error;
+                  refererRetryNote =
+                    'referer navigation did not commit; retried without a referer';
+                  // Plain address-bar navigation, WITHOUT a referer: the
+                  // contradictory pair is worse than the missing header.
                   await page.goto(url, { waitUntil: 'domcontentloaded' });
                 }
               } else {
@@ -197,7 +206,14 @@ export function registerNavigationTools(server: McpServer, deps: BrowserToolDeps
                 url: finalUrl,
               });
               return {
-                content: [{ type: 'text' as const, text: `Navigated to ${redactPasswordParams(finalUrl)}` }],
+                content: [
+                  {
+                    type: 'text' as const,
+                    text: refererRetryNote
+                      ? `Navigated to ${redactPasswordParams(finalUrl)}\n${refererRetryNote}`
+                      : `Navigated to ${redactPasswordParams(finalUrl)}`,
+                  },
+                ],
               };
             }
             // Use RPC for fast, reliable navigation (bypasses Playwright CDP discovery)

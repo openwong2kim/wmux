@@ -48,7 +48,20 @@ function harness() {
 
   const pages: Page[] = [];
   const listeners = new Map<string, ((p: Page) => void)[]>();
-  const page = { once: vi.fn(), isClosed: () => false } as unknown as Page;
+  const makePage = (): Page => {
+    const frame = {};
+    return {
+      once: vi.fn(),
+      // The module re-applies the preset after every main-frame commit,
+      // because the library re-initialises its own emulation there.
+      on: vi.fn(),
+      mainFrame: () => frame,
+      viewportSize: () => ({ width: 390, height: 664 }),
+      setViewportSize: vi.fn(async () => undefined),
+      isClosed: () => false,
+    } as unknown as Page;
+  };
+  const page = makePage();
   pages.push(page);
 
   const context = {
@@ -61,13 +74,24 @@ function harness() {
     browser: () => ({}),
   } as unknown as BrowserContext;
 
-  return { sent, detached, context, page, pages, newPage: (p: Page) => {
+  return { sent, detached, context, page, pages, makePage, newPage: (p: Page) => {
     pages.push(p);
     for (const handler of listeners.get('page') ?? []) handler(p);
   } };
 }
 
 const methods = (sent: Sent[]): string[] => sent.map((s) => s.method);
+/**
+ * The command sequence with repeats collapsed.
+ *
+ * The preset is deliberately written more than once — once per session, then
+ * again over the caller's page after every other session has been touched,
+ * because overrides from different sessions are merged by the last write. What
+ * matters here is which commands go out and in what order, not how many times
+ * the last-write pass repeats them.
+ */
+const distinctSequence = (sent: Sent[]): string[] =>
+  methods(sent).filter((method, i, all) => method !== all[i - 1]);
 const paramsOf = (sent: Sent[], method: string): Record<string, unknown> | undefined =>
   sent.find((s) => s.method === method)?.params;
 
@@ -84,7 +108,11 @@ describe('applyUserAgentEmulation with a device preset', () => {
       IPHONE_METRICS,
     );
     expect(ok).toBe(true);
-    expect(methods(h.sent)).toEqual([
+    expect(distinctSequence(h.sent)).toEqual([
+      'Emulation.setUserAgentOverride',
+      'Emulation.setDeviceMetricsOverride',
+      'Emulation.setTouchEmulationEnabled',
+      // The last-write pass over the caller's page.
       'Emulation.setUserAgentOverride',
       'Emulation.setDeviceMetricsOverride',
       'Emulation.setTouchEmulationEnabled',
@@ -105,6 +133,9 @@ describe('applyUserAgentEmulation with a device preset', () => {
       mobile: true,
       screenWidth: 390,
       screenHeight: 844,
+      // A portrait phone whose screen.orientation reads "landscape-primary"
+      // contradicts its own dimensions.
+      screenOrientation: { angle: 0, type: 'portraitPrimary' },
     });
     expect(paramsOf(h.sent, 'Emulation.setTouchEmulationEnabled')).toEqual({
       enabled: true,
@@ -130,10 +161,12 @@ describe('applyUserAgentEmulation with a device preset', () => {
     await applyUserAgentEmulation(h.context, h.page, IPHONE_UA, null, IPHONE_METRICS);
     h.sent.length = 0;
 
-    h.newPage({ once: vi.fn(), isClosed: () => false } as unknown as Page);
+    h.newPage(h.makePage());
     await new Promise((resolve) => setTimeout(resolve, 0));
 
-    expect(methods(h.sent)).toEqual([
+    // The new tab gets the identity whole — the UA alone would leave it on
+    // this machine's pixel ratio and without a touchscreen.
+    expect(distinctSequence(h.sent)).toEqual([
       'Emulation.setUserAgentOverride',
       'Emulation.setDeviceMetricsOverride',
       'Emulation.setTouchEmulationEnabled',
@@ -143,7 +176,9 @@ describe('applyUserAgentEmulation with a device preset', () => {
   it('sends no metrics commands when no preset was given', async () => {
     const h = harness();
     await applyUserAgentEmulation(h.context, h.page, IPHONE_UA);
-    expect(methods(h.sent)).toEqual(['Emulation.setUserAgentOverride']);
+    // Written twice (the last-write pass), but never anything else: a UA
+    // without a preset must not drag the caller's viewport around with it.
+    expect(new Set(methods(h.sent))).toEqual(new Set(['Emulation.setUserAgentOverride']));
   });
 });
 

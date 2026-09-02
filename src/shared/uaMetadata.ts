@@ -83,6 +83,16 @@ function chromeFullVersion(ua: string): string | undefined {
  * omit the metadata entirely rather than send the empty list, see
  * `UserAgentOverride.userAgentMetadata`.
  */
+/**
+ * Whether this UA belongs to a Chromium-based browser — the only kind whose
+ * Client Hints surface (navigator.userAgentData, Sec-CH-UA*) can be emulated to
+ * agree with the string. A Safari UA has no hints to give, and Chromium's own
+ * keep answering underneath it.
+ */
+export function isChromiumUserAgent(ua: string): boolean {
+  return brandsForUserAgent(ua).length > 0;
+}
+
 export function brandsForUserAgent(ua: string): UserAgentBrand[] {
   const major = chromeMajorVersion(ua);
   if (!major) return [];

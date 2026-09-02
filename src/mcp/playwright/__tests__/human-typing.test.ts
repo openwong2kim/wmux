@@ -7,7 +7,7 @@ import { KEY_HOLD_MAX_MS, KEY_HOLD_MIN_MS } from '../../../shared/humanRhythm';
 // the same millisecond. These cover the split, the hold that sits between the
 // two events, and the fallback for characters that cannot be a key at all.
 
-type KeyEvent = { type: 'down' | 'up' | 'press'; key: string; at: number };
+type KeyEvent = { type: 'down' | 'up' | 'press' | 'insert'; key: string; at: number };
 
 /** A fake Page recording every keyboard event with the (fake) clock time. */
 function fakePage(opts?: { downRejects?: (char: string) => boolean }): {
@@ -26,7 +26,14 @@ function fakePage(opts?: { downRejects?: (char: string) => boolean }): {
         events.push({ type: 'up', key, at: Date.now() });
       }),
       press: vi.fn(async (key: string) => {
+        // press() calls down() internally, so a character down() refuses is
+        // refused here too. The fake mirrors that rather than pretending
+        // press() is a second way in.
+        if (opts?.downRejects?.(key)) throw new Error(`Unknown key: "${key}"`);
         events.push({ type: 'press', key, at: Date.now() });
+      }),
+      insertText: vi.fn(async (text: string) => {
+        events.push({ type: 'insert', key: text, at: Date.now() });
       }),
     },
   } as unknown as Page;
@@ -66,7 +73,10 @@ describe('typeHumanlike key hold', () => {
 
   it('holds every key inside the 30-150 ms band', async () => {
     const { page, events } = fakePage();
-    await typeOnFakeClock(page, 'the quick brown fox');
+    // Short enough that the schedule's budget is not the binding constraint:
+    // when it is, delays and holds are scaled together and a hold may land
+    // under the band's floor by design (see generateKeystrokeSchedule).
+    await typeOnFakeClock(page, 'the quick');
 
     const holds: number[] = [];
     for (let i = 0; i < events.length; i += 2) {
@@ -74,7 +84,7 @@ describe('typeHumanlike key hold', () => {
       expect(events[i + 1].type).toBe('up');
       holds.push(events[i + 1].at - events[i].at);
     }
-    expect(holds).toHaveLength('the quick brown fox'.length);
+    expect(holds).toHaveLength('the quick'.length);
     for (const hold of holds) {
       // The defect: press() produced a ~1 ms dwell time on every key.
       expect(hold).toBeGreaterThanOrEqual(Math.floor(KEY_HOLD_MIN_MS));
@@ -84,15 +94,28 @@ describe('typeHumanlike key hold', () => {
     expect(new Set(holds).size).toBeGreaterThan(1);
   });
 
-  it('falls back to press() for a character that cannot be a key', async () => {
-    // CJK and emoji halves: keyboard.down() cannot describe them, and press()
-    // is the path that still inserts them as text.
+  it('inserts a character that cannot be a key, rather than losing it', async () => {
+    // CJK and emoji halves: keyboard.down() cannot describe them — and neither
+    // can press(), which calls down() itself. insertText is the path that puts
+    // the character in, at the cost of that one keystroke's hold.
     const { page, events } = fakePage({ downRejects: (c) => c === '한' });
     await typeOnFakeClock(page, 'a한b');
 
     expect(events.map((e) => `${e.type}:${e.key}`)).toEqual([
-      'down:a', 'up:a', 'press:한', 'down:b', 'up:b',
+      'down:a', 'up:a', 'insert:한', 'down:b', 'up:b',
     ]);
+  });
+
+  it('keeps a long text inside the schedule budget, holds included', async () => {
+    const { page, events } = fakePage();
+    const text = 'the quick brown fox jumps over the lazy dog, twice over';
+    await typeOnFakeClock(page, text);
+
+    const spent = events[events.length - 1].at - events[0].at;
+    // 120 ms per character plus 1500 ms of slack is the cap the schedule
+    // promises; adding every hold on top of an already-capped delay list blew
+    // through it by more than half.
+    expect(spent).toBeLessThanOrEqual(text.length * 120 + 1500);
   });
 
   it('clicks the selector first when one is given', async () => {

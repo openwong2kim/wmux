@@ -48,9 +48,25 @@ export interface IsolatedCdpSession extends IsolatedCdpSender {
 /** A page function, or a bare JavaScript expression to evaluate. */
 export type IsolatedScript<A, R> = string | ((arg: A) => R | Promise<R>);
 
+/** Thrown when `requireIsolated` is set and no isolated world can be had. */
+export class IsolatedWorldUnavailableError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'IsolatedWorldUnavailableError';
+  }
+}
+
 export interface IsolatedEvalOptions {
   /** Treat the call as user-initiated (transient activation). Default false. */
   userGesture?: boolean;
+  /**
+   * Refuse to run in the page's own world when no isolated one is available,
+   * throwing instead. For scripts whose whole point is that page code cannot
+   * observe or redirect them — a navigation the page could hijack by hooking
+   * `setTimeout` or `location.assign` — running in the main world is worse
+   * than not running at all.
+   */
+  requireIsolated?: boolean;
 }
 
 interface PageState {
@@ -298,6 +314,11 @@ export async function evaluateIsolated<R = unknown, A = unknown>(
   // with the SAME arity as before this module existed, so a one-argument
   // page.evaluate stays a one-argument call.
   const mainWorld = (): Promise<R> => {
+    if (options?.requireIsolated) {
+      throw new IsolatedWorldUnavailableError(
+        'no isolated world on this page, and this script refuses the main world',
+      );
+    }
     if (!state.warned) {
       state.warned = true;
       console.warn(

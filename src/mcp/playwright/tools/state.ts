@@ -6,6 +6,7 @@ import { PlaywrightEngine } from '../PlaywrightEngine';
 import { withAutomationLease } from '../automationLease';
 import { matchSensitiveDomain } from '../security';
 import { evalFunctionOrRpc } from '../page-eval';
+import { isChromiumUserAgent } from '../../../shared/uaMetadata';
 import { describeToolError } from '../toolError';
 import {
   applyUserAgentEmulation,
@@ -537,6 +538,22 @@ export function registerStateTools(server: McpServer, deps: BrowserToolDeps): vo
                 applied.push('clientHints=unavailable (UA header applied without matching hints or device metrics)');
               }
               applied.push(`device=${device} (${deviceDescriptor.viewport.width}x${deviceDescriptor.viewport.height})`);
+              // A Safari/iOS preset on a Chromium browser cannot be made whole:
+              // navigator.userAgentData and the Sec-CH-UA* headers are
+              // Chromium's own and there is no Safari value to give them. Say
+              // so where the caller reads the result, rather than let them
+              // assume the identity is seamless.
+              // Two things a preset does not reach, said here rather than left
+              // for the caller to discover: navigator.platform keeps this
+              // machine's value on a page under automation, and a
+              // non-Chromium preset cannot fill the Client Hints surface at
+              // all.
+              applied.push('note=navigator.platform still reports the host platform');
+              if (!isChromiumUserAgent(deviceDescriptor.userAgent)) {
+                applied.push(
+                  'note=this preset emulates a non-Chromium browser; navigator.userAgentData and Sec-CH-UA* still report Chromium. A Chrome-based preset (e.g. "Pixel 7") gives a consistent mobile identity.',
+                );
+              }
             } else {
               // A reset has to undo the UA too. Leaving the override and the
               // User-Agent header in place meant a caller who switched to a

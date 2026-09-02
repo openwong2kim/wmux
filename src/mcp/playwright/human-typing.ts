@@ -1,5 +1,9 @@
 import type { Page } from 'playwright-core';
-import { generateKeyHolds, generateTypingDelays } from '../../shared/humanRhythm';
+import {
+  generateKeyHolds,
+  generateKeystrokeSchedule,
+  generateTypingDelays,
+} from '../../shared/humanRhythm';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -30,15 +34,17 @@ function sleep(ms: number): Promise<void> {
  * hold between the two events; see `shared/humanRhythm`'s key-hold section.
  *
  * A character `keyboard.down()` cannot describe as a key (CJK, an emoji's
- * surrogate half) still has to be inserted, and `press()` is the path that
- * inserts it as text. That fallback is why this is wrapped: losing the hold on
- * those characters is the cost, dropping them entirely is not an option.
+ * surrogate half) still has to be inserted. `press()` is NOT that path — it
+ * calls `down()` itself and fails on exactly the same characters — so the
+ * fallback is `insertText()`, which puts the character in without pretending
+ * it was a keystroke. Losing the hold on those characters is the cost;
+ * dropping them entirely is not an option.
  */
 async function pressWithHold(page: Page, char: string, holdMs: number): Promise<void> {
   try {
     await page.keyboard.down(char);
   } catch {
-    await page.keyboard.press(char);
+    await page.keyboard.insertText(char);
     return;
   }
   await sleep(holdMs);
@@ -98,8 +104,9 @@ export async function typeHumanlike(
     await page.click(selector);
   }
 
-  const delays = generateDelaySchedule(text, options);
-  const holds = generateHoldSchedule(text, options);
+  // Drawn together: the holds are part of what typing spends, so budgeting the
+  // gaps alone let a long text overrun its cap by the sum of every dwell.
+  const { delays, holds } = generateKeystrokeSchedule(text, options);
 
   for (let i = 0; i < text.length; i++) {
     await pressWithHold(page, text[i], holds[i]);

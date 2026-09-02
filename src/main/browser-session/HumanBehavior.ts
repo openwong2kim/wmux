@@ -1,4 +1,10 @@
-import { generateKeyHolds, generateTypingDelays, typingDelayFor } from '../../shared/humanRhythm';
+import {
+  generateKeyHolds,
+  generateKeystrokeSchedule,
+  generateTypingDelays,
+  typingDelayFor,
+  type KeystrokeSchedule,
+} from '../../shared/humanRhythm';
 
 export interface HumanBehaviorConfig {
   typingDelay: { min: number; max: number };
@@ -80,5 +86,18 @@ export class HumanBehavior {
    */
   generateHoldSchedule(text: string): number[] {
     return generateKeyHolds(text);
+  }
+
+  /**
+   * Both halves of the keystroke stream, drawn against one budget.
+   *
+   * Taking the two schedules separately double-counted the time: the gap cap
+   * was applied to the gaps alone and every dwell was then added on top. A
+   * caller that reports or reserves a duration needs the pair that actually
+   * fits.
+   */
+  generateKeystrokeSchedule(text: string): KeystrokeSchedule {
+    const { min, max } = this.config.typingDelay;
+    return generateKeystrokeSchedule(text, { minDelay: min, maxDelay: max });
   }
 }
