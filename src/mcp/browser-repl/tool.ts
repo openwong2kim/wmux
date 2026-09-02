@@ -46,6 +46,17 @@ function text(body: string, isError = false): CallToolResult {
 let processSession: BrowserReplSession | null = null;
 const liveSessions = new Set<BrowserReplSession>();
 let sweepTimer: NodeJS.Timeout | null = null;
+/**
+ * True once this process hosts several agents' connections (set by the broker).
+ * The process-wide fallback below is only right when the process belongs to
+ * one agent; under the broker a call that lost its scope must fail rather than
+ * land on a worker shared with everyone else — same rule as `getReplRegistry`.
+ */
+let brokerMode = false;
+
+export function setBrowserReplBrokerMode(): void {
+  brokerMode = true;
+}
 
 function forgetSession(session: BrowserReplSession): void {
   liveSessions.delete(session);
@@ -87,6 +98,12 @@ function getSession(create: () => BrowserReplSession): BrowserReplSession {
       trackSession(session);
     }
     return session;
+  }
+  if (brokerMode) {
+    throw new Error(
+      'internal: no MCP connection scope is active, so this browser_repl call cannot be attributed ' +
+        "to a caller. Refusing rather than risking another agent's runtime.",
+    );
   }
   if (!processSession || !liveSessions.has(processSession)) {
     processSession = create();

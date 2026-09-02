@@ -62,6 +62,23 @@ const TYPED_TEXT_KEYS = new Set(['text', 'value']);
 
 const LEDGER_ARGS_MAX = 160;
 
+/**
+ * Typed text can be a password; the handler decides what to record in the
+ * trace, the ledger only says how much was typed. Applied at every depth so
+ * `browser_fill({fields:[{ref, value}]})` is masked the same way as
+ * `browser_type({text})`.
+ */
+function maskTypedText(key: string, raw: unknown): unknown {
+  if (TYPED_TEXT_KEYS.has(key) && typeof raw === 'string') return `…(${raw.length})`;
+  if (Array.isArray(raw)) return raw.map((item) => maskTypedText('', item));
+  if (raw && typeof raw === 'object') {
+    return Object.fromEntries(
+      Object.entries(raw as Record<string, unknown>).map(([k, v]) => [k, maskTypedText(k, v)]),
+    );
+  }
+  return raw;
+}
+
 export interface SnapshotRef {
   /** Numeric ref from the snapshot listing. */
   readonly ref: number;
@@ -104,15 +121,9 @@ export function summarizeArgs(args: Record<string, unknown>): string {
   const parts: string[] = [];
   for (const [key, raw] of Object.entries(args)) {
     if (raw === undefined) continue;
-    if (TYPED_TEXT_KEYS.has(key) && typeof raw === 'string') {
-      // Typed text can be a password; the handler decides what to record in
-      // the trace, the ledger only says how much was typed.
-      parts.push(`${key}:"…"(${raw.length})`);
-      continue;
-    }
     let rendered: string;
     try {
-      rendered = JSON.stringify(raw) ?? String(raw);
+      rendered = JSON.stringify(maskTypedText(key, raw)) ?? String(raw);
     } catch {
       rendered = String(raw);
     }
@@ -155,7 +166,21 @@ export function parseSnapshotRefs(text: string, tool: string): SnapshotRef[] {
  * and the `[replay]`/`[skill]` hints — which are addressed to the model, not
  * to code: events are surfaced as data, hints are dropped. Any block that
  * matches neither is body. Non-text blocks are noted, never returned.
+ *
+ * The lease blocks are recognized by prefix, and page text can start with
+ * anything — so the match is kept tight: lease blocks only ever precede the
+ * handler's own content, and an events block is every line in the lease's
+ * `- type[: url] (N ago)` form. Once a body block is seen, the rest is body.
  */
+const EVENT_LINE = /^- [\w-]+(?::.*)? \([^()]* ago\)$/;
+
+function parseEventsBlock(text: string): string[] | null {
+  if (!text.startsWith('[browser events]\n')) return null;
+  const lines = text.slice('[browser events]\n'.length).split('\n').filter((line) => line.trim() !== '');
+  if (lines.length === 0 || !lines.every((line) => EVENT_LINE.test(line))) return null;
+  return lines.map((line) => line.slice(2));
+}
+
 export function shapeResult(result: CallToolResult, tool: string): BridgeValue {
   const events: string[] = [];
   const body: string[] = [];
@@ -165,14 +190,14 @@ export function shapeResult(result: CallToolResult, tool: string): BridgeValue {
       continue;
     }
     const text = block.text;
-    if (text.startsWith('[browser events]\n')) {
-      for (const line of text.slice('[browser events]\n'.length).split('\n')) {
-        const trimmed = line.replace(/^-\s*/, '').trim();
-        if (trimmed) events.push(trimmed);
+    if (body.length === 0) {
+      const eventLines = parseEventsBlock(text);
+      if (eventLines) {
+        events.push(...eventLines);
+        continue;
       }
-      continue;
+      if (text.startsWith('[replay] ') || text.startsWith('[skill] ')) continue;
     }
-    if (text.startsWith('[replay] ') || text.startsWith('[skill] ')) continue;
     body.push(text);
   }
   const text = body.join('\n');
@@ -187,7 +212,7 @@ function errorText(result: CallToolResult): string {
     .filter((b): b is { type: 'text'; text: string } => b.type === 'text')
     .map((b) => b.text)
     // The lease still prepends events to error results; the script wants the reason.
-    .filter((t) => !t.startsWith('[browser events]\n') && !t.startsWith('[replay] ') && !t.startsWith('[skill] '));
+    .filter((t) => parseEventsBlock(t) === null && !t.startsWith('[replay] ') && !t.startsWith('[skill] '));
   return texts.join('\n').trim() || 'tool returned an error without a message';
 }
 

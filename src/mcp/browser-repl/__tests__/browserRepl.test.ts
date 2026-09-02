@@ -200,8 +200,22 @@ describe('browser_repl bridge', () => {
   });
 
   it('never shows typed text in the ledger and masks password query params', () => {
-    expect(summarizeArgs({ ref: '3', text: 'hunter2', value: 'x' })).toBe('ref:"3", text:"…"(7), value:"…"(1)');
+    expect(summarizeArgs({ ref: '3', text: 'hunter2', value: 'x' })).toBe('ref:"3", text:"…(7)", value:"…(1)"');
     expect(summarizeArgs({ url: 'https://h/?password=abc' })).not.toContain('abc');
+    // browser_fill nests the typed values one level down.
+    const fill = summarizeArgs({ fields: [{ ref: '1', value: 'hunter2' }, { ref: '2', value: 'me@x' }] });
+    expect(fill).toBe('fields:[{"ref":"1","value":"…(7)"},{"ref":"2","value":"…(4)"}]');
+  });
+
+  it('does not mistake page text for a lease block', () => {
+    const decoy = '[browser events]\n- this is prose, not an event line';
+    expect(shapeResult(ok(decoy), 'extract_text')).toEqual({ text: decoy, events: [] });
+    // Hints only ever precede the body; the same prefix inside the body stays body.
+    const shaped = shapeResult(
+      { content: [{ type: 'text', text: 'Body' }, { type: 'text', text: '[replay] literal in page' }] },
+      'extract_text',
+    );
+    expect(shaped.text).toBe('Body\n[replay] literal in page');
   });
 });
 
@@ -321,6 +335,81 @@ describe('browser_repl session', () => {
     expect(out.result?.text).toBe('7');
     session.dispose();
     await expect(session.run('1', 1000, bridge)).rejects.toThrow('disposed');
+  });
+
+  it('refuses browser calls that arrive after their run finished', async () => {
+    const h = harness();
+    const bridge = createBrowserBridge(h.tools, {});
+    const session = newSession();
+    // The un-awaited call fires after this run has reported back.
+    await session.run(
+      'globalThis.late = new Promise((r) => setTimeout(() => browser.click({ ref: "x" }).then(() => r("ran"), (e) => r(e.message)), 20)); 0',
+      10_000,
+      bridge,
+    );
+    await new Promise((r) => setTimeout(r, 80));
+    const out = await session.run('await globalThis.late', 10_000, bridge);
+    expect(out.result?.text).toContain('called after its browser_repl run finished');
+    expect(h.calls).toHaveLength(0);
+  });
+
+  it('lets a killed run\'s in-flight handler land before the next run touches the page', async () => {
+    const h = harness();
+    const bridge = createBrowserBridge(h.tools, {});
+    const session = newSession();
+    const out = await session.run('await browser.wait({ ms: 400 }); await browser.click({ ref: "dead" });', 100, bridge);
+    expect(out.timedOut).toBe(true);
+    const next = await session.run('await browser.click({ ref: "next" }); 1', 10_000, bridge);
+    expect(next.ok).toBe(true);
+    // wait finished (and its late click never happened: the worker is gone), then the new run's click.
+    expect(h.calls.map((c) => `${c.name}:${String(c.args.ref ?? '')}`)).toEqual(['wait:', 'click:next']);
+  });
+
+  it('answers a bridge rejection as a tool error instead of hanging the script', async () => {
+    const h = harness();
+    const bridge = createBrowserBridge(h.tools, {});
+    const broken = async (name: string, args: Record<string, unknown>) => {
+      if (name === 'click') throw new Error('bridge exploded');
+      return bridge(name, args);
+    };
+    const session = newSession();
+    const out = await session.run('let why;\ntry { await browser.click({ ref: "1" }) } catch (e) { why = e.message }\nwhy', 10_000, broken);
+    expect(out.ok).toBe(true);
+    expect(out.result?.text).toContain('bridge failure: bridge exploded');
+    expect(out.ledger[0]).toBe('click(…) THREW bridge exploded');
+  });
+
+  it('caps the ledger and says how many calls were elided', async () => {
+    const h = harness();
+    const bridge = createBrowserBridge(h.tools, {});
+    const session = newSession();
+    const out = await session.run('for (let i = 0; i < 205; i++) await browser.extract_text(); 1', 10_000, bridge);
+    expect(out.ok).toBe(true);
+    expect(out.ledger).toHaveLength(201);
+    expect(out.ledger[200]).toBe('(5 more call(s) not shown)');
+  });
+
+  it('explains a redeclared top-level binding instead of a bare SyntaxError', async () => {
+    const h = harness();
+    const bridge = createBrowserBridge(h.tools, {});
+    const session = newSession();
+    await session.run('let twice = 1;', 10_000, bridge);
+    const out = await session.run('let twice = 2;', 10_000, bridge);
+    expect(out.ok).toBe(false);
+    expect(out.error).toContain('has already been declared');
+    expect(out.error).toContain('assign to globalThis');
+  });
+
+  it('recovers from a worker that died between runs', async () => {
+    const h = harness();
+    const bridge = createBrowserBridge(h.tools, {});
+    const session = newSession();
+    await session.run('setTimeout(() => process.exit(3), 10); 1', 10_000, bridge);
+    await new Promise((r) => setTimeout(r, 150));
+    const out = await session.run('1', 10_000, bridge);
+    expect(out.ok).toBe(true);
+    expect(out.freshRuntime).toBe(true);
+    expect(out.previousDeath).toContain('between runs');
   });
 });
 

@@ -143,7 +143,16 @@ parentPort.on('message', (msg) => {
   if (msg.type === 'run' && typeof msg.code === 'string') {
     const id = msg.id;
     const options = { displayErrors: true, filename: 'browser_repl' };
-    const fail = (error) => parentPort.postMessage({ type: 'result', id, ok: false, error: trimStack(error) });
+    const fail = (error) => {
+      let rendered = trimStack(error);
+      // Top-level let/const survive between runs, so re-running a snippet that
+      // declares one is a SyntaxError here — a surprise the agent would otherwise
+      // read as a bug in its own code.
+      if (error instanceof SyntaxError && /has already been declared/.test(String(error.message))) {
+        rendered += '\n(hint: this runtime keeps top-level declarations between browser_repl calls — reuse the name without let/const, pick another, or assign to globalThis)';
+      }
+      parentPort.postMessage({ type: 'result', id, ok: false, error: rendered });
+    };
     let value;
     try {
       value = vm.runInThisContext(msg.code, options);

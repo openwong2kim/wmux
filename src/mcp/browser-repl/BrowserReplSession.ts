@@ -11,7 +11,9 @@
  * loop, and it costs the script's state; the outcome says so and the next run
  * starts a fresh worker. Handler calls still in flight when the worker dies
  * run to completion (a half-finished click is worse than a finished one) and
- * their results are dropped.
+ * their results are dropped — but the next run waits for them to land first,
+ * or the dead run's late click would slip between the new run's snapshot and
+ * its own click, which is exactly the interleaving the queue exists to stop.
  */
 import { Worker } from 'worker_threads';
 import { OutputBuffer, truncateText, type TruncatedText } from '../repl/truncate';
@@ -20,6 +22,8 @@ import { BROWSER_REPL_WORKER_SOURCE } from './workerSource';
 
 export const CONSOLE_CAP_BYTES = 32 * 1024;
 export const RESULT_CAP_BYTES = 16 * 1024;
+/** Ledger lines kept per run; a snapshot loop must not turn the result into megabytes. */
+export const LEDGER_MAX_LINES = 200;
 /** Worker startup is local and fast; anything slower is a broken runtime. */
 const READY_TIMEOUT_MS = 10_000;
 
@@ -60,6 +64,10 @@ export class BrowserReplSession {
   private disposed = false;
   private lastUsedAt = Date.now();
   private runsInFlight = 0;
+  /** Handler calls started by a run that is over (timed out or crashed). */
+  private readonly straggling = new Set<Promise<unknown>>();
+  /** Id of the run currently executing, if any; stray calls outside it are refused. */
+  private activeRunId: number | null = null;
 
   constructor(private readonly tools: readonly string[]) {}
 
@@ -83,7 +91,13 @@ export class BrowserReplSession {
       () => this.execute(code, timeoutMs, bridge),
       () => this.execute(code, timeoutMs, bridge),
     );
-    this.tail = next.finally(() => {
+    // The caller gets `next` with its rejection intact; the chain itself must
+    // swallow it, or a rejected last run is an unhandled rejection that takes
+    // the whole server process down.
+    this.tail = next.then(
+      () => undefined,
+      () => undefined,
+    ).finally(() => {
       this.runsInFlight--;
       this.lastUsedAt = Date.now();
     });
@@ -116,6 +130,18 @@ export class BrowserReplSession {
       stderr: true,
     });
     this.worker = worker;
+    // Nothing reads these; an unconsumed pipe just buffers whatever a snippet
+    // writes to process.stdout directly.
+    worker.stdout.resume();
+    worker.stderr.resume();
+    // Between runs no run-scoped listener is attached, so a worker that dies
+    // then would be found only by the next run's timeout. Notice it now and
+    // let that run start a fresh worker instead.
+    const onIdleDeath = (reason: string) => {
+      if (this.activeRunId === null && this.worker === worker) this.killWorker(reason);
+    };
+    worker.on('error', (err) => onIdleDeath(`crashed between runs: ${err.message}`));
+    worker.on('exit', (code) => onIdleDeath(`exited between runs (code ${code})`));
     this.ready = new Promise<void>((resolve, reject) => {
       const timer = setTimeout(() => reject(new Error('browser_repl worker did not start')), READY_TIMEOUT_MS);
       const onMessage = (msg: WorkerMessage) => {
@@ -132,6 +158,20 @@ export class BrowserReplSession {
       });
       worker.postMessage({ type: 'init', tools: this.tools });
     });
+    // A `browser.*` call that arrives with no run active — a setTimeout or an
+    // un-awaited promise left behind by the previous run — gets an immediate
+    // refusal instead of silence: no listener would otherwise answer it, the
+    // worker-side promise would hang forever, and the browser must not be
+    // driven by code whose run already reported back.
+    worker.on('message', (msg: WorkerMessage) => {
+      if (this.activeRunId !== null || msg?.type !== 'call' || this.worker !== worker) return;
+      worker.postMessage({
+        type: 'callResult',
+        callId: msg.callId,
+        ok: false,
+        error: `browser.${typeof msg.name === 'string' ? msg.name : '?'}: called after its browser_repl run finished — await every browser call inside the run`,
+      });
+    });
     return { worker, ready: this.ready, fresh: true };
   }
 
@@ -139,6 +179,11 @@ export class BrowserReplSession {
     if (this.disposed) throw new Error('browser_repl session is disposed');
     const started = Date.now();
     const ledger: string[] = [];
+    let elidedCalls = 0;
+    const record = (line: string) => {
+      if (ledger.length < LEDGER_MAX_LINES) ledger.push(line);
+      else elidedCalls++;
+    };
     const consoleBuf = new OutputBuffer(CONSOLE_CAP_BYTES);
     const previousDeath = this.previousDeath;
     this.previousDeath = undefined;
@@ -159,17 +204,28 @@ export class BrowserReplSession {
       };
     }
 
+    // Let a dead run's in-flight handler calls land before this run touches
+    // the page. They cannot be cancelled, only waited for.
+    if (this.straggling.size > 0) await Promise.allSettled([...this.straggling]);
+
     const id = this.nextRunId++;
+    const inFlight = new Set<Promise<unknown>>();
 
     return new Promise<BrowserReplRunOutcome>((resolve) => {
       let settled = false;
       const finish = (outcome: Omit<BrowserReplRunOutcome, 'ledger' | 'freshRuntime' | 'previousDeath' | 'elapsedMs' | 'console'>) => {
         if (settled) return;
         settled = true;
+        this.activeRunId = null;
         clearTimeout(timer);
         worker.off('message', onMessage);
         worker.off('error', onError);
         worker.off('exit', onExit);
+        for (const pending of inFlight) {
+          this.straggling.add(pending);
+          void pending.finally(() => this.straggling.delete(pending));
+        }
+        if (elidedCalls > 0) ledger.push(`(${elidedCalls} more call(s) not shown)`);
         resolve({ ...base, ...outcome, elapsedMs: Date.now() - started, console: consoleBuf.render() });
       };
 
@@ -192,17 +248,27 @@ export class BrowserReplSession {
             const callId = msg.callId;
             const name = typeof msg.name === 'string' ? msg.name : '';
             const args = msg.args && typeof msg.args === 'object' ? msg.args : {};
-            void bridge(name, args).then((outcome) => {
-              ledger.push(outcome.ledger);
+            const reply = (message: Record<string, unknown>) => {
               // After a timeout the worker is gone; the handler ran to
               // completion for the page's sake and the reply has nowhere to go.
               if (settled || this.worker !== worker) return;
-              worker.postMessage(
-                outcome.ok
-                  ? { type: 'callResult', callId, ok: true, value: outcome.value }
-                  : { type: 'callResult', callId, ok: false, error: outcome.error },
-              );
-            });
+              worker.postMessage({ type: 'callResult', callId, ...message });
+            };
+            const pending = bridge(name, args).then(
+              (outcome) => {
+                record(outcome.ledger);
+                reply(outcome.ok ? { ok: true, value: outcome.value } : { ok: false, error: outcome.error });
+              },
+              // The bridge reports handler failures as outcomes; a rejection here
+              // is a bug in the bridge itself. Still answer, or the script hangs.
+              (error: unknown) => {
+                const message = error instanceof Error ? error.message : String(error);
+                record(`${name}(…) THREW ${message}`);
+                reply({ ok: false, error: `browser.${name}: bridge failure: ${message}` });
+              },
+            );
+            inFlight.add(pending);
+            void pending.finally(() => inFlight.delete(pending));
             return;
           }
           case 'result':
@@ -234,6 +300,7 @@ export class BrowserReplSession {
       worker.on('message', onMessage);
       worker.on('error', onError);
       worker.on('exit', onExit);
+      this.activeRunId = id;
       worker.postMessage({ type: 'run', id, code });
     });
   }
