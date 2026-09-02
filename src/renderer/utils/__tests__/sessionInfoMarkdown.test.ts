@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import { createRemoteSurface } from '../../../shared/types';
 import type { Surface, PaneLeaf, PaneBranch, Workspace } from '../../../shared/types';
 import {
   buildExportPayload,
@@ -199,5 +200,75 @@ describe('sessionInfoMarkdown', () => {
     // treats them as attachment mime types.
     expect(WMUX_EXPORT_MIME).toBe('text/x-wmux-export+json');
     expect(WMUX_REORDER_MIME).toBe('text/x-wmux-reorder');
+  });
+});
+
+// ─── Remote surfaces (#1140 dogfood) ──────────────────────────────────────
+//
+// The same complaint the tab glyph answers, in the output you get by dragging
+// that tab out or copying pane info: a remote surface rendered as "Terminal",
+// with an empty "PTY ID:" line (it has no local PTY) and a bare "CWD:" that
+// is a real directory on somebody else's machine. Pasted into an agent's
+// prompt, that is a path it will confidently try to use.
+describe('buildPaneMarkdown — remote surfaces', () => {
+  // Built through the SAME factory the app calls, with the SAME arguments its
+  // one caller passes (Pane.tsx's handleRemoteCreated supplies no shell and no
+  // cwd). An earlier version of this suite hand-wrote a surface carrying both,
+  // and every assertion passed against a shape the product cannot produce —
+  // the dogfood found two of the asserted lines were dead in the live app.
+  function remoteWorkspace(surface: Surface): Workspace {
+    const leaf: PaneLeaf = {
+      id: 'pane-r',
+      type: 'leaf',
+      surfaces: [surface],
+      activeSurfaceId: surface.id,
+    };
+    return { id: 'ws-r', name: 'Remote WS', rootPane: leaf, activePaneId: 'pane-r' } as Workspace;
+  }
+
+  /**
+   * Exactly what the app produces: Pane.tsx passes no shell and no cwd, and
+   * `addRemoteSurface` turns those into the empty strings this factory takes.
+   */
+  function asShipped(): Surface {
+    return createRemoteSurface('host-1', 'sess-9', '', '', true);
+  }
+
+  it('names it a remote terminal, with no shell it does not know', () => {
+    const md = buildPaneMarkdown(remoteWorkspace(asShipped()), 'pane-r');
+    expect(md).toContain('Remote terminal');
+    expect(md).not.toContain('Terminal — ');
+    // The old fallback printed this on every remote surface, always.
+    expect(md).not.toContain('unknown');
+  });
+
+  it('prints no PTY ID line, because a remote surface has no local PTY', () => {
+    const md = buildPaneMarkdown(remoteWorkspace(asShipped()), 'pane-r');
+    expect(md).not.toContain('PTY ID:');
+  });
+
+  it('carries the identifiers that say WHICH machine and session', () => {
+    const md = buildPaneMarkdown(remoteWorkspace(asShipped()), 'pane-r');
+    expect(md).toContain('Host ID: host-1');
+    expect(md).toContain('Remote session: sess-9');
+  });
+
+  it('reports the title the remote shell set, once it has set one', () => {
+    // The only field that changes after creation (updateRemoteSurfaceTitle).
+    const md = buildPaneMarkdown(
+      remoteWorkspace({ ...asShipped(), title: 'pwsh — build' }),
+      'pane-r',
+    );
+    expect(md).toContain('Title: pwsh — build');
+  });
+
+  it('labels a remote working directory as remote, if one is ever known', () => {
+    const md = buildPaneMarkdown(
+      remoteWorkspace({ ...asShipped(), cwd: 'C:\\Users\\someone' }),
+      'pane-r',
+    );
+    expect(md).toContain('CWD (remote): C:\\Users\\someone');
+    // Never as a plain local CWD — that is what made it dangerous to paste.
+    expect(md).not.toContain('- CWD: C:\\Users\\someone');
   });
 });

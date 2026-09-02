@@ -66,6 +66,8 @@ export const ko = {
 
   // Surface
   'surface.terminal': '터미널',
+  'surface.remoteTooltip': '원격 터미널 — {path}',
+  'surface.remoteTerminal': '원격 터미널',
   'surface.closeTab': '탭 닫기',
 
   // Search

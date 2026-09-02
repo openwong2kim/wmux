@@ -321,6 +321,8 @@ export const en = {
 
   // Surface
   'surface.terminal': 'Terminal',
+  'surface.remoteTooltip': 'Remote terminal — {path}',
+  'surface.remoteTerminal': 'Remote terminal',
   'surface.closeTab': 'Close tab',
 
   // Search

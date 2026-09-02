@@ -118,6 +118,63 @@ export function paneFitsActionCluster(width: number | null): boolean {
  *  useKeyboard.ts so a tooltip advertises the shortcut the user can actually
  *  press. Read lazily (electronAPI is absent under jsdom tests). */
 const IS_MAC = typeof window !== 'undefined' && window.electronAPI?.platform === 'darwin';
+/**
+ * The one thing on a remote tab that says the shell is somewhere else.
+ *
+ * `role="img"` with a name, not a bare `aria-label` on a span: a span has no
+ * implicit role, so screen readers are free to ignore a label on it — and
+ * this glyph is the only VISUAL signal that the tab is remote, since the
+ * tab's text is an OSC title the remote shell sets and reads identically to a
+ * local one. (The tab container itself is a plain div with no role, so this
+ * name is read in browse mode, not by tabbing — that gap is older and wider
+ * than this glyph.)
+ *
+ * `currentColor`, deliberately not an accent. Steel is this file's focus
+ * signal — the active pane's tab strip is underlined with `--accent-blue`
+ * (see the `paneActive` boxShadow), and the workspace-tag comment above
+ * already rejected a blue-ish mark on a tab because it "would read as focus".
+ * A provenance marker that is neither focused nor clickable must not borrow
+ * that. Inheriting the tab's own colour also means it dims and brightens with
+ * the active/inactive text, which is exactly the emphasis it should have.
+ * Shape carries the meaning regardless.
+ */
+export function RemoteSurfaceGlyph({ label }: { label: string }) {
+  return (
+    <span className="shrink-0" role="img" aria-label={label}>
+      <IconExternalLink size={12} />
+    </span>
+  );
+}
+
+/**
+ * What a tab says on hover.
+ *
+ * A local tab shows its working directory — the one thing that distinguishes
+ * two shells in the same pane. A REMOTE tab leads with the fact that it is
+ * remote (#1140 dogfood): its title and cwd both come from the other
+ * machine's shell over OSC, so `C:\Program Files\…\pwsh` renders identically
+ * whether the shell is here or on a host across the network, and the path it
+ * names does not exist on this machine. Saying so is the difference between a
+ * path the user can act on and one they cannot.
+ */
+export function surfaceTabTooltip(
+  surface: { surfaceType?: string; cwd?: string; title?: string },
+  t: (
+    key: 'surface.terminal' | 'surface.remoteTooltip',
+    vars?: Record<string, string | number>,
+  ) => string,
+): string {
+  const local = displayPath(surface.cwd) || surface.title || t('surface.terminal');
+  // One interpolated key rather than a separator concatenated here: the
+  // order and the dash are a locale's call, not this function's — CJK
+  // punctuates differently and RTL would otherwise be handed a hardcoded
+  // LTR run. It also leaves room for a host name later without reopening
+  // every translation.
+  return surface.surfaceType === 'remote-terminal'
+    ? t('surface.remoteTooltip', { path: local })
+    : local;
+}
+
 /** Append a keyboard hint to a tooltip label, e.g. "New terminal (Ctrl+T)". */
 function withShortcut(label: string, keys: string): string {
   return `${label} (${keys})`;
@@ -614,9 +671,20 @@ export default function SurfaceTabs({
           onDoubleClick={() => startRename(s)}
           // Hover shows the terminal's working directory (cwd is always present
           // once the shell renders its first prompt; before that, the name).
-          title={editingId === s.id ? undefined : (displayPath(s.cwd) || s.title || t('surface.terminal'))}
+          // A remote tab leads with WHERE it runs: its title is an OSC title
+          // from the other machine's shell, so it reads exactly like a local
+          // one — "C:\Program Files\…\pwsh" on both — and the path it shows
+          // does not exist on this machine.
+          title={editingId === s.id ? undefined : surfaceTabTooltip(s, t)}
         >
           <SurfaceTabStatusDot ptyId={s.ptyId} active={s.id === activeSurfaceId} />
+          {/* #1140 dogfood — a remote tab was indistinguishable from a local
+              one: same glyph, and a title the remote shell sets to a path that
+              looks local. Same icon the ⋮ menu's remote entries use, so the
+              action and the tab it produces read as one thing. */}
+          {s.surfaceType === 'remote-terminal' && (
+            <RemoteSurfaceGlyph label={t('surface.remoteTerminal')} />
+          )}
           {editingId === s.id ? (
             <input
               ref={inputRef}
