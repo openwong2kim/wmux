@@ -102,10 +102,15 @@ function makePage(nodes: CdpNode[], url = 'https://example.test/a') {
       }),
     }),
     locator: vi.fn(),
+    // A real click walks the pointer to the element first, so the fakes carry
+    // the shape that approach reads: a viewport, a mouse, and a box per element.
+    mouse: { move: async () => {} },
+    viewportSize: () => ({ width: 1280, height: 720 }),
     getByRole: (r: string, opts?: { name?: string }) => ({
       count: async () => page.nodes.filter((n) => n.role?.value === r
         && (opts?.name === undefined || (n.name?.value ?? '') === opts.name)).length,
       nth: (i: number) => ({
+        boundingBox: async () => ({ x: 100, y: 100, width: 120, height: 40 }),
         click: async () => { clicked.push(`${r} ${opts?.name ?? ''}#${i}`); },
         dblclick: async () => { clicked.push(`dbl ${r} ${opts?.name ?? ''}#${i}`); },
       }),
