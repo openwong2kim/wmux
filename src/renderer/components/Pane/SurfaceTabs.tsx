@@ -118,7 +118,28 @@ export function paneFitsActionCluster(width: number | null): boolean {
  *  useKeyboard.ts so a tooltip advertises the shortcut the user can actually
  *  press. Read lazily (electronAPI is absent under jsdom tests). */
 const IS_MAC = typeof window !== 'undefined' && window.electronAPI?.platform === 'darwin';
-/** Append a keyboard hint to a tooltip label, e.g. "New terminal (Ctrl+T)". */
+/**
+ * The one thing on a remote tab that says the shell is somewhere else.
+ *
+ * `role="img"` with a name, not a bare `aria-label` on a span: a span has no
+ * implicit role, so screen readers are free to ignore a label on it — and
+ * this glyph is the ONLY non-text signal that the tab is remote, since the
+ * tab's text is an OSC title the remote shell sets and reads identically to a
+ * local one.
+ *
+ * Steel blue, not amber: DESIGN.md gives amber to alive/attention and steel
+ * to navigation — and an external-link glyph pointing at another machine is
+ * squarely the latter. Shape carries the meaning either way, so the colour is
+ * not load-bearing for anyone who cannot see it.
+ */
+export function RemoteSurfaceGlyph({ label }: { label: string }) {
+  return (
+    <span className="shrink-0 text-[var(--accent-blue)]" role="img" aria-label={label}>
+      <IconExternalLink size={12} />
+    </span>
+  );
+}
+
 /**
  * What a tab says on hover.
  *
@@ -140,6 +161,7 @@ export function surfaceTabTooltip(
     : local;
 }
 
+/** Append a keyboard hint to a tooltip label, e.g. "New terminal (Ctrl+T)". */
 function withShortcut(label: string, keys: string): string {
   return `${label} (${keys})`;
 }
@@ -647,12 +669,7 @@ export default function SurfaceTabs({
               looks local. Same icon the ⋮ menu's remote entries use, so the
               action and the tab it produces read as one thing. */}
           {s.surfaceType === 'remote-terminal' && (
-            <span
-              className="shrink-0 text-[var(--accent-blue)]"
-              aria-label={t('surface.remoteTerminal')}
-            >
-              <IconExternalLink size={10} />
-            </span>
+            <RemoteSurfaceGlyph label={t('surface.remoteTerminal')} />
           )}
           {editingId === s.id ? (
             <input

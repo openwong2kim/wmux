@@ -16,7 +16,9 @@
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { surfaceTabTooltip } from '../SurfaceTabs';
+import { createElement } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
+import { RemoteSurfaceGlyph, surfaceTabTooltip } from '../SurfaceTabs';
 
 const t = ((key: string) => (key === 'surface.remoteTerminal' ? 'Remote terminal' : 'Terminal')) as
   Parameters<typeof surfaceTabTooltip>[1];
@@ -47,20 +49,24 @@ describe('surfaceTabTooltip', () => {
 });
 
 describe('the remote glyph', () => {
-  const source = readFileSync(
-    resolve(process.cwd(), 'src/renderer/components/Pane/SurfaceTabs.tsx'),
-    'utf8',
-  );
-
-  it('marks remote tabs, and reuses the icon the remote menu entries already use', () => {
-    expect(source).toContain("s.surfaceType === 'remote-terminal'");
-    // The ⋮ menu's "New remote pane" / "Split … — remote" entries carry
-    // IconExternalLink; the tab they produce carrying anything else would make
-    // the action and its result read as two unrelated things.
-    expect(source).toMatch(/remote-terminal'[\s\S]{0,400}IconExternalLink/);
+  it('exposes an accessible name through a real role, not a bare span label', () => {
+    // A span has no implicit role, so a screen reader may drop an aria-label
+    // sitting on one — and this glyph is the ONLY non-text signal that the tab
+    // is remote. Rendered, not grepped: the markup is what a reader sees.
+    const html = renderToStaticMarkup(createElement(RemoteSurfaceGlyph, { label: 'Remote terminal' }));
+    expect(html).toContain('role="img"');
+    expect(html).toContain('aria-label="Remote terminal"');
+    // …and the glyph itself is drawn, so the label is not naming an empty box.
+    expect(html).toContain('<svg');
   });
 
-  it('the glyph is labelled, since it is the only thing that says "remote"', () => {
-    expect(source).toMatch(/aria-label=\{t\('surface\.remoteTerminal'\)\}/);
+  it('the tab renders it only for remote surfaces', () => {
+    // The condition lives in the tab body, which needs the whole store to
+    // render; this pins the branch that decides.
+    const source = readFileSync(
+      resolve(process.cwd(), 'src/renderer/components/Pane/SurfaceTabs.tsx'),
+      'utf8',
+    );
+    expect(source).toMatch(/s\.surfaceType === 'remote-terminal' && \(\s*<RemoteSurfaceGlyph/);
   });
 });
