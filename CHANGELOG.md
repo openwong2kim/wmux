@@ -1,5 +1,179 @@
 ## [Unreleased]
 
+## [3.50.0] — 2026-09-02
+
+### Added
+
+- **Built-in shortcuts can be switched off.** Every advertised row in Settings → Shortcuts now has a checkbox; unchecking it fully unbinds the combo and the key reaches the terminal instead — Ctrl+T then opens Codex's own transcript rather than a new wmux tab. Custom keybindings rebound onto a disabled combo still fire, and the setting survives restarts.
+
+- **The `core` MCP tool profile can now be selected: `wmux mcp register --profile core`.**
+  The profile itself shipped earlier, but nothing could actually choose it — every
+  registration path wrote the full entry regardless. `core` drops the `browser_*`
+  family, cutting roughly 27 KB of schema off the `tools/list` an agent reads
+  before it does any work; it is an optimization, not a permission boundary, so a
+  core-mode agent keeps exactly the authority an ordinary one has. Use it for
+  hosts doing terminal, pane, workspace, channel, and delegation work that never
+  touch the browser. `--profile full` moves a host back.
+
+  The default is unchanged and stays `full`: the browser tools are first-class,
+  and an agent driving the workspace browser works with nothing to wire up
+  precisely because the default registration carries them.
+
+- **`browser_repl`: drive the browser through many steps in one tool call.**
+  A snapshot, a `refs.find`, a click, a wait and a text extraction used to cost an
+  agent five round trips, each one re-reading a page of tool output. The new
+  full-profile tool runs a JavaScript snippet instead, where every allowed
+  `browser_X` tool is `await browser.X(args)` with its usual arguments. Snapshot
+  results come back with the refs already parsed, a failed step throws a
+  catchable error, `console.log` is captured, and the run's call ledger (tool,
+  redacted arguments, timing, browser events) is printed with the result so the
+  agent still sees what happened. State survives between calls; a snippet that
+  overruns its timeout has its runtime terminated and the next call starts fresh.
+
+  The snippet runs in a worker thread and every browser step goes through the
+  existing tool handler, so automation leases, password redaction, ref maps and
+  the action trace behind `browser_replay` all behave exactly as they do for
+  direct calls. One thing does change: approving a single `browser_repl` call
+  covers the 21 tools it exposes (navigate, navigate_back, tabs, click, type,
+  fill, press_key, hover, drag, select, scroll, scroll_into_view, snapshot,
+  smart_snapshot, extract_text, extract_data, wait, console, highlight, resize,
+  dialog). Tools with a heavier footprint — `evaluate`, `screenshot`, cookies,
+  storage, downloads, uploads, PDF, tracing, replay and surface lifecycle — stay
+  separate calls. (#1177)
+
+### Changed
+
+- **`browser_smart_snapshot` returns a diff, and its refs hold still.** The
+  tool re-sent its whole indexed listing on every call, which on an
+  act-then-verify loop is the same few hundred lines over and over. A repeat
+  call now returns only what moved, against the same baseline machinery
+  `browser_snapshot` uses — with the same fallback to the full listing when the
+  diff stops being a saving, and a first line that always says which of the two
+  you got. Pass `full: true` for the complete listing.
+
+  What made that possible is a fix worth having on its own: smart refs were a
+  running count over the page, so one element appearing above another
+  renumbered it and everything after it. Replaying a ref you were given a
+  moment ago clicked the neighbouring element instead, and said nothing. A ref
+  is now tied to the element itself, so it means the same thing until that
+  element goes away — and it never comes back naming a different one. Clicking
+  by `smartRef` against a live page was broken outright and now works, and a
+  ref that no longer names one element on the page you are looking at — the
+  page navigated or reloaded under it, the element went away, several elements
+  now answer to the same description, or the click is aimed at a different tab —
+  is refused with an explanation instead of clicking whatever moved into its
+  place. Saved flows record these clicks in a form that can actually be
+  replayed; before, the step always failed on replay while the live click
+  looked fine. In packaged builds, where the underlying identity is not
+  available, the listing stays complete rather than diffed. (#1166)
+
+- **The sidebar spends one less line per workspace.** The "Agents N" disclosure row is gone; its chevron and count now sit on the workspace row itself, so an expanded workspace starts listing its agents immediately. Measured at 21px saved per collapsed workspace — with eleven open, the difference between seeing the list and scrolling it. The idle label now yields to the agent count (its minutes moved to the workspace name's tooltip, which also means a truncated name is finally readable on hover).
+
+- **Browser tools now run their own page scripts in an isolated world.** A
+  website can no longer see the scripts the agent injects to read the page, nor
+  hand them doctored results by redefining the DOM methods they call — the
+  snapshot, extraction, wait and scroll scripts share the page's DOM but not
+  its JavaScript, so they are invisible to it. `browser_evaluate` runs there
+  too by default and gained a `mainWorld` option for the expressions that
+  genuinely need the page's own globals — as does the backend that has no
+  isolated world to offer, which now says so in its answer. (#1172)
+
+- **The agent types with a human rhythm instead of a metronome.** Inter-keystroke
+  delays used to be drawn flat from a 50–150 ms range, which no typist produces.
+  They now cluster around a median with a long tail, run longer after full stops,
+  commas and word breaks, and occasionally pause the way someone does mid-sentence.
+  (#1173)
+
+- **Clicks move the pointer there first, and land off-centre.** A click used to
+  teleport the pointer onto the exact centre of the target and press. It now
+  travels from wherever the pointer was left to a point somewhere inside the
+  element, which is what the page sees when a person clicks it. Hovering and
+  dragging in the builtin browser now go through the same real pointer input,
+  rather than events synthesised inside the page. Two new pipe RPC methods back
+  this — `browser.hover.cdp` and `browser.drag.cdp` — and they are gated on the
+  `browser.click` capability rather than `browser.evaluate`. A caller granted
+  hover and drag is being granted pointer input, which is what `browser.click`
+  means; routing them through `browser.evaluate` would have required handing out
+  arbitrary script execution to move a pointer. (#1173)
+
+- **Navigations carry the page they came from.** Following a link from one page
+  to another now sends a `Referer`, as a real click-through does. A first
+  navigation, a reload, or a jump out of a blank or browser-internal page still
+  sends none. (#1173)
+
+- **Emulated devices are consistent about what they claim to be.** `browser_emulate`
+  used to change the User-Agent string alone, leaving the browser's Client Hints
+  answering with the real machine — so an emulated phone described itself as a
+  phone in one place and as your desktop in another. The user-agent data,
+  platform and Accept-Language now match the preset, and resetting the preset
+  restores all of them together. (#1173)
+
+- **A remote terminal now looks remote.** Its tab carries a marker, its tooltip reads "Remote terminal — …", and copying or dragging out pane info reports it as a remote terminal with its host and session — instead of calling it a plain terminal and handing you a working directory that only exists on the other machine.
+
+### Removed
+
+- **The six `company_a2a_*` MCP tools are gone.** `company_a2a_whoami`, `_send`,
+  `_broadcast`, `_inbox`, `_ack`, and `_status` no longer appear in any tool
+  profile. Nothing drove them — no prompt, skill, or documented flow called one —
+  while every session paid for their schemas in the `tools/list` it reads before
+  doing any work. The full profile drops from 93 tools to 87 and from 76,410 to
+  73,610 bytes on the wire; the `core` (47) and `commander` (41) profiles are
+  unchanged, because neither ever carried them.
+
+  Two of the six have a direct workspace-level equivalent: use `a2a_whoami` in
+  place of whoami, and `a2a_broadcast` in place of broadcast. The other four do
+  not. Sending by department, lead, member name or `"CEO"`, the member inbox,
+  acknowledging inbox messages by id, and reading the department tree were all
+  Company-mode-only features, and they are removed from MCP rather than
+  replaced — `send_message` resolves workspaces, not company members, and
+  `channel_ack` acknowledges a channel `seq`, which is a different store from an
+  inbox message id.
+
+  **Company mode's UI is unaffected** — the panel, spawn, and the provisioning
+  RPCs behind them are untouched. Company A2A messaging, though, currently has
+  no caller at all: these tools were its only entry point. The pipe handlers are
+  kept rather than deleted, pending the Company mode re-evaluation.
+
+### Fixed
+
+- Settings keeps the "Check for updates" button next to "Install now" once an update is staged. It used to be replaced, so a downloaded update hid any newer release published afterwards until the 30-minute background poll caught up.
+
+- **An isolated instance no longer hijacks the production MCP registration.** A `WMUX_DATA_SUFFIX` boot — the dev build's automatic `-dev` included — used to rewrite the `wmux` entry in `~/.claude.json`, `~/.codex/config.toml`, and `~/.gemini/settings.json` to its own (often disposable) bundle path, silently retargeting your daily agents. Isolated instances now skip those writes (`WMUX_MCP_REGISTER_EXTERNAL=1` opts back in), the `wmux mcp` CLI warns before touching production configs, and Settings → MCP explains the skip instead of silently doing nothing.
+
+- `browser_replay` works in a packaged build. Every one of its actions — `list` included — was refused as "plugin is unconfirmed" for Claude Code, because the eight `browser.actionCache.*` methods behind it were never added to the first-party allowlist. Dev builds do not enforce that lane, so the tool looked healthy everywhere it was tested and was dead everywhere it shipped. `browser.lifecycle.get` was missing the same way, which silently stopped navigation events from being reported on the builtin backend.
+
+- The allowlist's source-invariant guard now sees RPCs sent through `sendScopedBrowserRpc`, not just `callRpc`/`sendRpc`. It was the guard's blind spot that let both methods above ship unlisted.
+
+- The snapshot footer no longer calls a finished application UI a skeleton screen. The verdict now requires requests actually in flight; text density alone was calling every icon-and-nav-heavy page "still loading" — a fully rendered GitHub pull-request list measures 0.78 characters of text per element against the Node docs' 8.39, so no density threshold separates loading from app-shaped. The trade is that the builtin backend, which never tracks requests, stops producing this note at all; the "nearly empty" note, which needs no request counts, still covers a genuinely blank page.
+
+- **Directional pane focus (prefix + arrows) now lands on the pane that is actually adjacent on screen.** Focus and move-pane navigation used tree order, so in nested layouts (e.g. a 2×2 grid) moving left from a top-right pane could land on the bottom-left one. Navigation is now geometric — nearest facing edge, then largest overlap — and respects custom pane sizes.
+
+- **The update warning now says what actually happens: panes close.** "Installing closes your running sessions." was false on macOS (the daemon detaches and sessions survive) and contradicted the ready-to-install banner in the same screen. All 23 locales now use the pane wording in both strings, and a long-dead fan-out key was removed from 19 locales.
+
+- **A profile you chose is no longer overwritten the next time wmux registers.**
+  Re-registration happens on its own — at app boot, and whenever an upgrade moves
+  the bundle path — and it used to rewrite the entry as the full profile every
+  time, silently undoing a hand-added `--core`. Registration without an explicit
+  `--profile` now preserves whatever profile the entry already carries, and only a
+  brand-new entry gets the default. `--commander` entries are preserved the same
+  way.
+
+- **The dedicated browser no longer announces itself as automated.** Every page
+  it opened saw `navigator.webdriver = true` — not because an agent was driving
+  it, but because Chrome sets that flag the moment a debugging port is passed at
+  launch, attached client or not. Sites that check it treated the browser as a
+  robot. It now launches with `--disable-blink-features=AutomationControlled`, so
+  Chrome reports its normal value, with no page scripts injected. (#1171)
+
+- **The workspace dot no longer reads green while an agent is blocked.** When a
+  Claude turn ends on a question, the same signal carries "turn complete" and
+  the question itself — and the sidebar dot only ever read the first half, so it
+  went green while the row directly beneath it said "Needs input" and printed
+  the question. It now turns red, and so do the mini sidebar, the titlebar
+  vitals chip and the deck roster, which all read from the same place. A
+  workspace whose only pane is a stashed session that has since died now shows
+  red too, instead of the grey dot that meant "nothing here". (#1175)
+
 ## [3.49.3] — 2026-09-01
 
 ### Added
