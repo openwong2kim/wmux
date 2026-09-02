@@ -64,7 +64,7 @@ export function refererFor(
   // A secure page never leaks its URL to an insecure one.
   if (from.protocol === 'https:' && target.protocol === 'http:') return undefined;
 
-  // Same page, fragment aside: a reload, not a click-through.
+  // Same page once the fragment is ignored: a reload, not a click-through.
   if (from.href === stripped(target).href) return undefined;
 
   return from.origin === target.origin ? from.href : `${from.origin}/`;
