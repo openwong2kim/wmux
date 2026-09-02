@@ -12,6 +12,9 @@ import {
   upsertNotifyToml,
   removeNotifyToml,
   wmuxMcpEntry,
+  wmuxEntryArgs,
+  entryProfileFlags,
+  DEFAULT_HOST_PROFILE,
 } from '../configIO';
 
 // ── TOML (Codex) — surgical block, must preserve every other byte ────────────
@@ -275,5 +278,110 @@ describe('wmuxMcpEntry', () => {
       command: 'node',
       args: ['/opt/wmux/mcp.js', '--core'],
     });
+  });
+
+  it('defaults to the one profile constant every writer resolves through', () => {
+    // Pin the product default so flipping it is a deliberate one-line change
+    // that shows up here, not something a caller can drift into.
+    expect(DEFAULT_HOST_PROFILE).toBe('full');
+    expect(wmuxMcpEntry('/x.js').args).toEqual(wmuxMcpEntry('/x.js', DEFAULT_HOST_PROFILE).args);
+  });
+});
+
+// ── Profile threading + preservation ────────────────────────────────────────
+
+describe('wmuxEntryArgs / entryProfileFlags', () => {
+  it('reads the profile flags back off an existing entry', () => {
+    expect(entryProfileFlags(null)).toEqual([]);
+    expect(entryProfileFlags({ command: 'node', args: ['/x.js'] })).toEqual([]);
+    expect(entryProfileFlags({ command: 'node', args: ['/x.js', '--core'] })).toEqual(['--core']);
+    expect(entryProfileFlags({ command: 'node', args: ['/x.js', '--commander'] })).toEqual(['--commander']);
+    // A non-profile argv token is not mistaken for one.
+    expect(entryProfileFlags({ command: 'node', args: ['/x.js', '--verbose'] })).toEqual([]);
+  });
+
+  it('an explicit profile wins; omitting one preserves the existing entry', () => {
+    const core = { command: 'node', args: ['/old.js', '--core'] };
+    // explicit core / full
+    expect(wmuxEntryArgs('/x.js', 'core')).toEqual(['/x.js', '--core']);
+    expect(wmuxEntryArgs('/x.js', 'full')).toEqual(['/x.js']);
+    // explicit full walks a core entry back — the opt-in must be reversible
+    expect(wmuxEntryArgs('/x.js', 'full', core)).toEqual(['/x.js']);
+    // no opinion + existing core → preserved (this is the overwrite bug)
+    expect(wmuxEntryArgs('/x.js', undefined, core)).toEqual(['/x.js', '--core']);
+    // no opinion + no existing entry → the default
+    expect(wmuxEntryArgs('/x.js', undefined, null)).toEqual(['/x.js']);
+  });
+
+  it('carries unrecognized argv tokens through instead of dropping them', () => {
+    // Only PROFILE_FLAGS are rewritten. Anything else — a user's own addition,
+    // or a flag from a newer wmux sharing this config — must survive, or every
+    // automatic re-registration would quietly delete it.
+    const custom = { command: 'node', args: ['/old.js', '--core', '--verbose'] };
+    expect(wmuxEntryArgs('/x.js', undefined, custom)).toEqual(['/x.js', '--core', '--verbose']);
+    // an explicit profile replaces the PROFILE flag only
+    expect(wmuxEntryArgs('/x.js', 'full', custom)).toEqual(['/x.js', '--verbose']);
+    expect(wmuxEntryArgs('/x.js', 'core', custom)).toEqual(['/x.js', '--core', '--verbose']);
+    // residual survives even with no profile flag present at all
+    expect(wmuxEntryArgs('/x.js', undefined, { command: 'node', args: ['/old.js', '--future-flag'] }))
+      .toEqual(['/x.js', '--future-flag']);
+  });
+
+  it('de-duplicates a hand-edited repeated profile flag', () => {
+    const dupe = { command: 'node', args: ['/old.js', '--core', '--core'] };
+    expect(entryProfileFlags(dupe)).toEqual(['--core']);
+    expect(wmuxEntryArgs('/x.js', undefined, dupe)).toEqual(['/x.js', '--core']);
+  });
+});
+
+describe('upsertMcpServer — launch profile', () => {
+  it('writes the default (full) entry when no profile is given', () => {
+    const json = JSON.parse(upsertMcpServer('', 'json', 'wmux', '/abs/index.js')) as
+      { mcpServers: Record<string, { args: string[] }> };
+    expect(json.mcpServers.wmux.args).toEqual(['/abs/index.js']);
+    expect(upsertMcpServer('', 'toml', 'wmux', '/abs/index.js')).toContain('args = ["/abs/index.js"]');
+  });
+
+  it('writes --core when the caller opts in (json + toml)', () => {
+    const json = JSON.parse(upsertMcpServer('', 'json', 'wmux', '/abs/index.js', 'core')) as
+      { mcpServers: Record<string, { command: string; args: string[] }> };
+    expect(json.mcpServers.wmux).toEqual({ command: 'node', args: ['/abs/index.js', '--core'] });
+    expect(upsertMcpServer('', 'toml', 'wmux', '/abs/index.js', 'core'))
+      .toContain('args = ["/abs/index.js", "--core"]');
+  });
+
+  it('PRESERVES a hand-edited --core across a profile-less rewrite (json)', () => {
+    // The regression this locks: an automatic re-registration (new bundle path
+    // on upgrade) used to rewrite the entry as `full`, silently undoing the
+    // user's opt-in on the next app launch.
+    const seeded = upsertMcpServer('', 'json', 'wmux', '/old/index.js', 'core');
+    const refreshed = JSON.parse(upsertMcpServer(seeded, 'json', 'wmux', '/new/index.js')) as
+      { mcpServers: Record<string, { args: string[] }> };
+    expect(refreshed.mcpServers.wmux.args).toEqual(['/new/index.js', '--core']);
+  });
+
+  it('PRESERVES a hand-edited --core across a profile-less rewrite (toml)', () => {
+    const seeded = upsertMcpServer(CODEX_CONFIG, 'toml', 'wmux', '/old/index.js', 'core');
+    expect(seeded).toContain('"--core"');
+    const refreshed = upsertMcpServer(seeded, 'toml', 'wmux', '/new/index.js');
+    expect(refreshed).toContain('args = ["/new/index.js", "--core"]');
+    // and the surgical-write guarantee still holds
+    expect(refreshed).toContain("[projects.'d:\\wmux']");
+  });
+
+  it('PRESERVES --commander, which no host writer ever emits itself', () => {
+    const seeded = JSON.stringify({
+      mcpServers: { wmux: { command: 'node', args: ['/old.js', '--commander'] } },
+    });
+    const refreshed = JSON.parse(upsertMcpServer(seeded, 'json', 'wmux', '/new.js')) as
+      { mcpServers: Record<string, { args: string[] }> };
+    expect(refreshed.mcpServers.wmux.args).toEqual(['/new.js', '--commander']);
+  });
+
+  it('an explicit full profile walks a --core entry back', () => {
+    const seeded = upsertMcpServer('', 'json', 'wmux', '/x.js', 'core');
+    const back = JSON.parse(upsertMcpServer(seeded, 'json', 'wmux', '/x.js', 'full')) as
+      { mcpServers: Record<string, { args: string[] }> };
+    expect(back.mcpServers.wmux.args).toEqual(['/x.js']);
   });
 });

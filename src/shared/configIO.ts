@@ -15,14 +15,22 @@
 //          a surgical append; this matches it.)
 //
 //   ┌─ upsertMcpServer ────────────────────────────────────────────────┐
-//   │ json:  parse → mcpServers[key] = {command:'node',args:[script]}   │
+//   │ resolve args = [script, ...profile flags, ...residual] (wmuxEntryArgs) │
+//   │ json:  parse → mcpServers[key] = {command:'node', args}            │
 //   │        → JSON.stringify(2-space)                                   │
 //   │ toml:  find [mcp_servers.<key>] block → replace, else append       │
 //   └────────────────────────────────────────────────────────────────────┘
+//
+// PROFILE — the surface the registered server launches with (DEFAULT_HOST_
+// PROFILE below) is threaded through upsertMcpServer to every writer, so one
+// constant decides what a fresh registration gets. An explicit caller profile
+// wins; omitting it preserves the profile already on disk, which is what keeps
+// an automatic re-registration from undoing a user's `--core`.
 
 import { parse as parseTomlText } from 'smol-toml';
 import type { McpConfigFormat } from './mcpTargets';
 import { CORE_MODE_ARG } from './coreSurface';
+import { COMMANDER_MODE_ARG } from './commanderSurface';
 
 /** Thrown when a config file is present but unparseable. Callers choose: abort
  *  a write (never clobber a file we can't understand) vs. report "not
@@ -42,27 +50,94 @@ export interface McpServerEntry {
 // The wmux MCP entry shape written into every target. `node` (not the Electron
 // execPath) + the absolute bundle script. No `env` field — Claude Code may
 // replace rather than merge the subprocess environment.
-// Optional launch-time surface profile. Omitted (or 'full') keeps the
-// compatibility default; 'core' appends CORE_MODE_ARG so the child registers
-// the browser-free / company-free surface. The flag lives in `args` rather
-// than `env` on purpose: Claude Code may replace the subprocess environment,
-// so an env-carried profile could silently change between launches.
 //
-// NOT YET THREADED THROUGH THE WRITERS. upsertMcpServer takes no profile, so
-// every registration path still writes the `full` entry — which also means a
-// hand-added `--core` in a user's config is replaced on the next upsert. Wiring
-// a profile choice through mcpTargets and the settings UI is deliberately a
-// separate change; this signature exists so the flag has one owner when that
-// lands, not so callers can half-use it today.
+// The launch-time surface profile rides in `args`, not `env`, on purpose:
+// Claude Code may replace the subprocess environment, so an env-carried profile
+// could silently change between launches.
 export type WmuxMcpEntryProfile = 'full' | 'core';
+
+/**
+ * The profile every registration path writes unless the user asks for another.
+ *
+ * `full`, deliberately: the browser tools are first-class here — an agent
+ * driving the workspace browser is a headline capability, and it works with
+ * nothing to wire up precisely because the default registration carries
+ * `browser_*`. `core` is an opt-in for hosts that do not need the browser
+ * surface and would rather not pay ~27 KB of `tools/list` schema for it.
+ *
+ * ONE owner for the value: every writer resolves through here, so changing the
+ * product default is a one-line change rather than an audit of each caller.
+ */
+export const DEFAULT_HOST_PROFILE: WmuxMcpEntryProfile = 'full';
+
+/** Every argv flag that selects a launch profile. Used to READ a profile back
+ *  off an existing entry, which is what makes a rewrite preserve the user's
+ *  choice. `--commander` is included because it must survive a rewrite too,
+ *  even though no host-config writer ever emits it (the deck brain adapters
+ *  pass it at spawn time). */
+const PROFILE_FLAGS: readonly string[] = [CORE_MODE_ARG, COMMANDER_MODE_ARG];
+
+/** The argv flags a profile contributes. `full` is the bare surface — it adds
+ *  no flag at all, which is also why it stays wire-compatible with every entry
+ *  wmux has ever written. */
+function profileFlags(profile: WmuxMcpEntryProfile): string[] {
+  return profile === 'core' ? [CORE_MODE_ARG] : [];
+}
+
+/** The profile flags an already-written entry carries, in argv order,
+ *  de-duplicated (a hand-edited `--core --core` collapses to one). Empty for a
+ *  `full` entry, a missing entry, or a foreign one. args[0] is the script path,
+ *  never a flag, so it is skipped. */
+export function entryProfileFlags(entry: McpServerEntry | null): string[] {
+  if (!entry) return [];
+  return [...new Set(entry.args.slice(1).filter((arg) => PROFILE_FLAGS.includes(arg)))];
+}
+
+/** Everything after the script path that is NOT a profile flag: a token the
+ *  user added by hand, or one written by a NEWER wmux than the one rewriting
+ *  this file. */
+function entryResidualArgs(entry: McpServerEntry | null): string[] {
+  if (!entry) return [];
+  return entry.args.slice(1).filter((arg) => !PROFILE_FLAGS.includes(arg));
+}
+
+/**
+ * The full `args` array for a wmux entry: the script, the profile flags, then
+ * every other token the existing entry carried.
+ *
+ * `profile` is the CALLER'S EXPLICIT CHOICE and always wins — that is how
+ * `wmux mcp register --profile full` walks a config back off `core`. Omitting
+ * it means "I have no opinion", which is the case for every automatic
+ * re-registration (app boot, path refresh). Those PRESERVE whatever profile the
+ * entry already carries and fall back to {@link DEFAULT_HOST_PROFILE} only for
+ * an entry that does not exist yet. Without that, a routine path refresh would
+ * silently undo a user's `--core` on the next launch.
+ *
+ * RESIDUAL TOKENS PASS THROUGH VERBATIM, and that is load-bearing: this
+ * function REWRITES only the args it recognises. Rebuilding the array from a
+ * whitelist instead would make every automatic re-registration quietly delete a
+ * token wmux did not put there — a user's own addition, or a flag from a newer
+ * wmux sharing the config (two installs, or a downgrade). The registration path
+ * is not a place to have opinions about argv it does not own.
+ */
+export function wmuxEntryArgs(
+  scriptPath: string,
+  profile?: WmuxMcpEntryProfile,
+  existing?: McpServerEntry | null,
+): string[] {
+  const entry = existing ?? null;
+  const existingFlags = entryProfileFlags(entry);
+  const flags = profile
+    ? profileFlags(profile)
+    : (existingFlags.length > 0 ? existingFlags : profileFlags(DEFAULT_HOST_PROFILE));
+  return [scriptPath, ...flags, ...entryResidualArgs(entry)];
+}
 
 export function wmuxMcpEntry(
   scriptPath: string,
-  profile: WmuxMcpEntryProfile = 'full',
+  profile: WmuxMcpEntryProfile = DEFAULT_HOST_PROFILE,
 ): McpServerEntry & { command: string } {
-  const args = [scriptPath];
-  if (profile === 'core') args.push(CORE_MODE_ARG);
-  return { command: 'node', args };
+  return { command: 'node', args: wmuxEntryArgs(scriptPath, profile) };
 }
 
 /** The container key that holds MCP server definitions for a given format.
@@ -140,12 +215,12 @@ export function isWmuxOwnedEntry(entry: McpServerEntry | null): boolean {
 
 // ── JSON writers (object round-trip — lossless, JSON has no comments) ────────
 
-function upsertJson(text: string, key: string, scriptPath: string): string {
+function upsertJson(text: string, key: string, args: string[]): string {
   const config = parseConfig(text, 'json');
   const servers = (config.mcpServers && typeof config.mcpServers === 'object'
     ? config.mcpServers
     : (config.mcpServers = {})) as Record<string, unknown>;
-  servers[key] = wmuxMcpEntry(scriptPath);
+  servers[key] = { command: 'node', args };
   return JSON.stringify(config, null, 2) + '\n';
 }
 
@@ -258,24 +333,23 @@ function tomlKeySegment(key: string): string {
 }
 
 /** The canonical wmux block text (no leading/trailing blank lines). */
-function tomlBlock(key: string, scriptPath: string, eol: string): string {
+function tomlBlock(key: string, args: string[], eol: string): string {
   // JSON.stringify yields a valid TOML basic string for the path (escapes \ and
   // " the same way TOML does), so Windows backslash paths round-trip correctly.
-  // Derive args from wmuxMcpEntry rather than restating `[scriptPath]`: the
-  // JSON writer already goes through it, and two hand-kept arg lists would let
-  // a TOML host and a JSON host end up on different surfaces.
-  const entry = wmuxMcpEntry(scriptPath);
+  // Both writers are handed the SAME resolved `args` by upsertMcpServer rather
+  // than each rebuilding one: two hand-kept arg lists would let a TOML host and
+  // a JSON host end up on different surfaces.
   return [
     `[mcp_servers.${tomlKeySegment(key)}]`,
-    `command = ${JSON.stringify(entry.command)}`,
-    `args = [${entry.args.map((arg) => JSON.stringify(arg)).join(', ')}]`,
+    `command = ${JSON.stringify('node')}`,
+    `args = [${args.map((arg) => JSON.stringify(arg)).join(', ')}]`,
   ].join(eol);
 }
 
-function upsertToml(text: string, key: string, scriptPath: string): string {
+function upsertToml(text: string, key: string, args: string[]): string {
   const eol = detectEol(text);
   const lines = text.split(/\r?\n/);
-  const blockLines = tomlBlock(key, scriptPath, eol).split(eol);
+  const blockLines = tomlBlock(key, args, eol).split(eol);
   const range = findTomlBlockRange(lines, key);
   let result: string[];
   if (range) {
@@ -311,17 +385,22 @@ function removeToml(text: string, keys: string[]): string {
 // ── Unified text→text API used by McpRegistrar + CLI ─────────────────────────
 
 /** Return new file text with `key` set to the wmux `node <script>` entry.
- *  Throws ConfigParseError if the existing text is malformed (caller aborts). */
+ *  Throws ConfigParseError if the existing text is malformed (caller aborts).
+ *
+ *  `profile` is the caller's explicit choice; omit it to preserve whatever
+ *  profile the existing entry carries (see {@link wmuxEntryArgs}). */
 export function upsertMcpServer(
   text: string,
   format: McpConfigFormat,
   key: string,
   scriptPath: string,
+  profile?: WmuxMcpEntryProfile,
 ): string {
   // Validate parseability up-front so a malformed file aborts instead of being
   // clobbered (TOML append would otherwise blindly tack a block onto garbage).
-  parseConfig(text, format);
-  const out = format === 'json' ? upsertJson(text, key, scriptPath) : upsertToml(text, key, scriptPath);
+  const parsed = parseConfig(text, format);
+  const args = wmuxEntryArgs(scriptPath, profile, getMcpServerEntry(parsed, format, key));
+  const out = format === 'json' ? upsertJson(text, key, args) : upsertToml(text, key, args);
   // Never RETURN invalid TOML: the line-based surgical editor can't target an
   // inline-table entry (`wmux = { ... }` under `[mcp_servers]`) and would append
   // a duplicate table. Validate the output and throw rather than hand a caller a
