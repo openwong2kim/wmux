@@ -23,17 +23,27 @@ export interface UserAgentBrand {
 
 export interface UserAgentMetadata {
   brands: UserAgentBrand[];
+  fullVersionList: UserAgentBrand[];
   fullVersion?: string;
   platform: string;
   platformVersion: string;
   architecture: string;
   model: string;
   mobile: boolean;
+  bitness: string;
+  wow64: boolean;
 }
 
 export interface UserAgentOverride {
   userAgent: string;
-  userAgentMetadata: UserAgentMetadata;
+  /**
+   * Absent for a non-Chromium preset. Chromium fills the Client Hints surface
+   * from whatever it is given, so handing it `brands: []` would produce a
+   * `navigator.userAgentData` that exists but is empty — a shape no real
+   * browser has. Safari has no `userAgentData` at all, and omitting the field
+   * is how you get that.
+   */
+  userAgentMetadata?: UserAgentMetadata;
   acceptLanguage?: string;
 }
 
@@ -58,8 +68,9 @@ function chromeFullVersion(ua: string): string | undefined {
 /**
  * Chromium's brand list for a given major version: the greased entry plus
  * Chromium and Google Chrome, which is the shape real Chrome reports.
- * A non-Chromium UA (Safari on iOS) gets an empty list, because Safari does not
- * expose Client Hints at all — an empty list is the honest answer there.
+ * A non-Chromium UA (Safari on iOS) gets an empty list — and callers must then
+ * omit the metadata entirely rather than send the empty list, see
+ * `UserAgentOverride.userAgentMetadata`.
  */
 export function brandsForUserAgent(ua: string): UserAgentBrand[] {
   const major = chromeMajorVersion(ua);
@@ -68,6 +79,20 @@ export function brandsForUserAgent(ua: string): UserAgentBrand[] {
     { brand: GREASE_BRAND, version: GREASE_VERSION },
     { brand: 'Chromium', version: major },
     { brand: 'Google Chrome', version: major },
+  ];
+}
+
+/**
+ * The same list at full precision, which is what `getHighEntropyValues()`
+ * returns for `fullVersionList`.
+ */
+export function fullVersionListForUserAgent(ua: string): UserAgentBrand[] {
+  const full = chromeFullVersion(ua);
+  if (!full) return [];
+  return [
+    { brand: GREASE_BRAND, version: `${GREASE_VERSION}.0.0.0` },
+    { brand: 'Chromium', version: full },
+    { brand: 'Google Chrome', version: full },
   ];
 }
 
@@ -151,19 +176,38 @@ export function buildUserAgentOverride(
   userAgent: string,
   locale?: string | null,
 ): UserAgentOverride {
+  const brands = brandsForUserAgent(userAgent);
+
+  // Not Chromium (Safari on an iPhone/iPad preset): send the UA string alone,
+  // so navigator.userAgentData stays absent as it is in the browser being
+  // emulated. An empty-but-present hints object would be a fingerprint of its
+  // own — no shipping browser produces one.
+  if (brands.length === 0) {
+    return {
+      userAgent,
+      ...(locale && { acceptLanguage: locale }),
+    };
+  }
+
   const facts = platformFactsFor(userAgent);
   const fullVersion = chromeFullVersion(userAgent);
 
   return {
     userAgent,
     userAgentMetadata: {
-      brands: brandsForUserAgent(userAgent),
+      brands,
+      fullVersionList: fullVersionListForUserAgent(userAgent),
       ...(fullVersion && { fullVersion }),
       platform: facts.platform,
       platformVersion: facts.platformVersion,
       architecture: facts.architecture,
       model: facts.model,
       mobile: facts.mobile,
+      // getHighEntropyValues reports these too; a desktop Chrome that answers
+      // for architecture but not for bitness is not a shape Chrome produces.
+      // Mobile reports neither, matching architecture/model above.
+      bitness: facts.mobile ? '' : '64',
+      wow64: false,
     },
     ...(locale && { acceptLanguage: locale }),
   };

@@ -190,12 +190,20 @@ interface ApproachTarget {
   boundingBox(): Promise<{ x: number; y: number; width: number; height: number } | null>;
   click(options?: { position?: { x: number; y: number } }): Promise<void>;
   dblclick(options?: { position?: { x: number; y: number } }): Promise<void>;
+  scrollIntoViewIfNeeded?(): Promise<void>;
 }
 
 interface ApproachPage {
   mouse: { move(x: number, y: number): Promise<void> };
   viewportSize(): { width: number; height: number } | null;
 }
+
+/**
+ * Below this, in either dimension, an element is too small to miss the middle
+ * of convincingly: the offset would be a pixel or two and the only thing it
+ * could achieve is landing on a border.
+ */
+const MIN_OFFSET_SIZE_PX = 24;
 
 /**
  * Click `el`, but move the pointer there first and land off-centre.
@@ -211,30 +219,65 @@ interface ApproachPage {
  * no path to walk, so it falls straight through to the plain click and lets
  * Playwright's own waiting produce the error or the retry.
  */
-async function clickWithApproach(
+export async function clickWithApproach(
   page: ApproachPage,
   el: ApproachTarget,
   double: boolean,
 ): Promise<void> {
-  const box = await el.boundingBox().catch(() => null);
-  if (!box || box.width <= 0 || box.height <= 0) {
+  const plainClick = async (): Promise<void> => {
     if (double) await el.dblclick();
     else await el.click();
+  };
+
+  // Scroll first, THEN measure. A box read before scrolling describes where the
+  // element was, so the approach would walk to a point outside the viewport and
+  // leave the tracker pointing there.
+  if (el.scrollIntoViewIfNeeded) {
+    await el.scrollIntoViewIfNeeded().catch(() => {});
+  }
+
+  const box = await el.boundingBox().catch(() => null);
+  if (!box || box.width <= 0 || box.height <= 0) {
+    await plainClick();
     return;
   }
 
-  const target = clickPointInBox(box);
-  const from = getLastPointer(page) ?? defaultStartPoint(page.viewportSize() ?? undefined);
-  const steps = stepsForDistance(distance(from, target));
+  // A small control has no room for a meaningful offset — aim at the centre.
+  const target =
+    box.width < MIN_OFFSET_SIZE_PX || box.height < MIN_OFFSET_SIZE_PX
+      ? { x: box.x + box.width / 2, y: box.y + box.height / 2 }
+      : clickPointInBox(box);
 
+  // Still off-screen, or in a frame whose coordinates we cannot place: a path
+  // to a point outside the viewport is worse than no path at all.
+  const viewport = page.viewportSize();
+  if (
+    target.x < 0 ||
+    target.y < 0 ||
+    (viewport && (target.x > viewport.width || target.y > viewport.height))
+  ) {
+    await plainClick();
+    return;
+  }
+
+  const from = getLastPointer(page) ?? defaultStartPoint(viewport ?? undefined);
+  const steps = stepsForDistance(distance(from, target));
   for (const point of pathPoints(from, target, steps)) {
     await page.mouse.move(point.x, point.y);
   }
   setLastPointer(page, target);
 
   const position = { x: target.x - box.x, y: target.y - box.y };
-  if (double) await el.dblclick({ position });
-  else await el.click({ position });
+  try {
+    if (double) await el.dblclick({ position });
+    else await el.click({ position });
+  } catch {
+    // The element moved, something now covers the point we aimed at, or the
+    // element is rotated so a point inside its axis-aligned box is outside the
+    // element itself. Playwright's own centre-targeted click resolves all
+    // three, so give it exactly one go before surfacing the failure.
+    await plainClick();
+  }
 }
 
 async function rpcClick(ref: string, scope: BrowserTargetScope, _double?: boolean): Promise<void> {

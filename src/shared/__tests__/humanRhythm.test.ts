@@ -98,6 +98,41 @@ describe('humanRhythm typing distribution', () => {
     expect(average).toBeLessThan(6000);
   });
 
+  it('keeps a very long string inside a total-duration budget', () => {
+    const text = 'a. '.repeat(667).slice(0, 2000);
+    expect(text).toHaveLength(2000);
+    const delays = generateTypingDelays(text, { rng: seeded(3) });
+    const total = delays.reduce((s, d) => s + d, 0);
+    // 120ms/char plus 1.5s slack — a 2,000-char paste must not sit in a
+    // multi-minute loop just because the pauses stacked up.
+    // Summing 2,000 scaled floats drifts a fraction of a millisecond past the
+    // ceiling; the budget is a duration, not an exact arithmetic identity.
+    expect(total).toBeLessThanOrEqual(2000 * 120 + 1500 + 1);
+    expect(delays).toHaveLength(2000);
+    for (const d of delays) expect(d).toBeGreaterThan(0);
+  });
+
+  it('scales a budget-capped schedule without flattening its shape', () => {
+    // Forced over budget by a band far above the per-character allowance.
+    const text = 'a'.repeat(500);
+    const delays = generateTypingDelays(text, {
+      minDelay: 400, maxDelay: 800, rng: seeded(4),
+    });
+    const total = delays.reduce((s, d) => s + d, 0);
+    expect(total).toBeLessThanOrEqual(500 * 120 + 1500 + 1);
+    // Still right-skewed after scaling: a uniform squeeze preserves the ratios.
+    expect(mean(delays)).toBeGreaterThan(median(delays));
+  });
+
+  it('leaves a schedule that fits its budget untouched', () => {
+    const text = 'hello there';
+    // Same seed, so an unscaled schedule equals the raw per-character draws.
+    const scheduled = generateTypingDelays(text, { rng: seeded(77) });
+    const rng = seeded(77);
+    const raw = Array.from({ length: text.length }, (_v, i) => typingDelayFor(text[i], { rng }));
+    expect(scheduled).toEqual(raw);
+  });
+
   it('honours a custom band', () => {
     const values = Array.from({ length: 5000 }, () => 0).map((_v, i) =>
       typingDelayFor('a', { minDelay: 200, maxDelay: 400, rng: seeded(900 + i) }));

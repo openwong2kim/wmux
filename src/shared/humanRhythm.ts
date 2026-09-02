@@ -98,12 +98,35 @@ export function typingDelayFor(
   return clamped + punctuationExtra(char) + pause;
 }
 
-/** Per-character delays for `text`, index i being the wait after `text[i]`. */
+/**
+ * Ceiling on a whole schedule: this much per character, plus fixed slack so a
+ * short string is not squeezed by one unlucky pause.
+ */
+const BUDGET_PER_CHAR_MS = 120;
+const BUDGET_SLACK_MS = 1500;
+
+/**
+ * Per-character delays for `text`, index i being the wait after `text[i]`.
+ *
+ * The draws are independent, so a long string can accumulate enough pauses to
+ * take absurdly long — a 2,000-character paste has no business sitting in a
+ * multi-minute typing loop. When a schedule exceeds its budget every delay is
+ * scaled down by the same factor, which shortens the schedule without
+ * flattening its shape: the tail, the pauses and the punctuation allowances
+ * all stay proportionally where they were.
+ */
 export function generateTypingDelays(
   text: string,
   options?: TypingRhythmOptions,
 ): number[] {
-  return Array.from({ length: text.length }, (_unused, i) =>
+  const delays = Array.from({ length: text.length }, (_unused, i) =>
     typingDelayFor(text[i], options),
   );
+
+  const budget = text.length * BUDGET_PER_CHAR_MS + BUDGET_SLACK_MS;
+  const total = delays.reduce((sum, d) => sum + d, 0);
+  if (total <= budget) return delays;
+
+  const scale = budget / total;
+  return delays.map((d) => d * scale);
 }

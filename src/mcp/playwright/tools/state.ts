@@ -7,7 +7,11 @@ import { withAutomationLease } from '../automationLease';
 import { matchSensitiveDomain } from '../security';
 import { evalFunctionOrRpc } from '../page-eval';
 import { describeToolError } from '../toolError';
-import { buildUserAgentOverride } from '../../../shared/uaMetadata';
+import {
+  applyUserAgentEmulation,
+  clearUserAgentEmulation,
+  hasUserAgentEmulation,
+} from '../ua-emulation';
 import {
   allowScopedRpcFallback,
   sendScopedBrowserRpc,
@@ -485,24 +489,35 @@ export function registerStateTools(server: McpServer, deps: BrowserToolDeps): vo
               // The header alone leaves navigator.userAgentData — and the
               // Sec-CH-UA* headers built from it — answering out of the REAL
               // browser, so an emulated phone announced itself as a phone in
-              // one place and as this desktop in the other. Override both
-              // together with metadata derived from the preset's own UA.
-              const override = buildUserAgentOverride(
+              // one place and as this desktop in the other. ua-emulation holds
+              // the CDP session open (the override dies with its session) and
+              // re-applies to tabs opened later, matching the context-wide
+              // reach of the header above.
+              const ok = await applyUserAgentEmulation(
+                context,
+                page,
                 deviceDescriptor.userAgent,
                 locale ?? undefined,
               );
-              const uaClient = await context.newCDPSession(page);
-              try {
-                await uaClient.send('Emulation.setUserAgentOverride', override);
-              } catch {
+              if (!ok) {
                 // Client Hints stay on the real browser's values; the UA header
                 // is still applied. Worth reporting, not worth failing on.
                 applied.push('clientHints=unavailable (UA header applied without matching hints)');
-              } finally {
-                await uaClient.detach().catch(() => {});
               }
               applied.push(`device=${device} (${deviceDescriptor.viewport.width}x${deviceDescriptor.viewport.height})`);
             } else {
+              // A reset has to undo the UA too. Leaving the override and the
+              // User-Agent header in place meant a caller who switched to a
+              // phone preset and then reset stayed on the mobile identity for
+              // every subsequent page.
+              if (hasUserAgentEmulation(context)) {
+                await clearUserAgentEmulation(context);
+                // Re-send the caller's headers without the preset's User-Agent.
+                // setExtraHTTPHeaders replaces the whole set, so passing the
+                // rest back is what removes just that one.
+                await context.setExtraHTTPHeaders({ ...(headers ?? {}) });
+                applied.push('userAgent=reset');
+              }
               applied.push('device=reset (use browser_resize to set viewport)');
             }
           }

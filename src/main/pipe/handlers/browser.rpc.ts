@@ -403,15 +403,29 @@ const humanBehavior = new HumanBehavior();
 // ── Pointer movement for the builtin webview lane ───────────────────────────
 // Where the pointer was last left, per webContents. A pointer that starts every
 // interaction from the same place is as distinctive as one that never moves, so
-// each move continues from the last one. Keyed by id and pruned on move, since
-// a numeric id cannot be weakly held.
+// each move continues from the last one. Keyed by id, because a numeric id
+// cannot be weakly held — the entry is dropped when the WebContents is
+// destroyed, see rememberPointerFor below.
 const pointerPositions = new Map<number, Point>();
+/** WebContents ids already carrying a destroyed-listener, so we add one once. */
+const pointerCleanupBound = new Set<number>();
 
-function setPointerPosition(webContentsId: number, point: Point): void {
+function setPointerPosition(wc: WebContents, webContentsId: number, point: Point): void {
   pointerPositions.set(webContentsId, { x: point.x, y: point.y });
+  if (!pointerCleanupBound.has(webContentsId)) {
+    pointerCleanupBound.add(webContentsId);
+    wc.once('destroyed', () => {
+      pointerPositions.delete(webContentsId);
+      pointerCleanupBound.delete(webContentsId);
+    });
+  }
 }
 
-/** The viewport coordinates of `selector`'s centre, scrolled into view first. */
+/**
+ * The viewport coordinates of `selector`'s centre, scrolled into view first,
+ * or null when the element is absent or has no area. A zero-size rect would
+ * otherwise send a click to a point that belongs to whatever is behind it.
+ */
 async function elementCenter(
   wc: WebContents,
   selector: string,
@@ -422,11 +436,70 @@ async function elementCenter(
       if (!el) return null;
       el.scrollIntoView({ block: 'center', behavior: 'instant' });
       const r = el.getBoundingClientRect();
+      if (r.width <= 0 || r.height <= 0) return null;
       return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
     })()`,
     returnByValue: true,
   }) as { result: { value: Point | null } };
   return result.result?.value ?? null;
+}
+
+/**
+ * Is (x, y) still on `selector`, or on something inside it?
+ *
+ * Moving the pointer takes time, and anything the page does in that window —
+ * a sticky header settling, a lazy image reflowing the column — can slide the
+ * target out from under the coordinates we computed before the move. Pressing
+ * anyway reports a successful click on whatever happened to be there instead.
+ */
+async function pointIsOnTarget(
+  wc: WebContents,
+  selector: string,
+  point: Point,
+): Promise<boolean> {
+  const result = await wc.debugger.sendCommand('Runtime.evaluate', {
+    expression: `(() => {
+      const el = document.querySelector(${JSON.stringify(selector)});
+      if (!el) return false;
+      const hit = document.elementFromPoint(${point.x}, ${point.y});
+      return !!hit && (hit === el || el.contains(hit));
+    })()`,
+    returnByValue: true,
+  }) as { result: { value: boolean } };
+  return result.result?.value === true;
+}
+
+/**
+ * Walk the pointer to `selector` and return the point the press should use.
+ *
+ * Re-resolves once if the element has moved during the walk, and refuses
+ * rather than pressing on whatever is now under the coordinates.
+ */
+async function approachElement(
+  wc: WebContents,
+  webContentsId: number,
+  selector: string,
+  method: string,
+): Promise<Point> {
+  let point = await elementCenter(wc, selector);
+  if (!point) throw new Error(`Element not found: ${selector}`);
+  await movePointerTo(wc, webContentsId, point.x, point.y);
+
+  if (await pointIsOnTarget(wc, selector, point)) return point;
+
+  // Moved mid-approach: recompute once and walk the rest of the way.
+  const again = await elementCenter(wc, selector);
+  if (!again) throw new Error(`Element not found: ${selector}`);
+  await movePointerTo(wc, webContentsId, again.x, again.y);
+  point = again;
+
+  if (!(await pointIsOnTarget(wc, selector, point))) {
+    throw new Error(
+      `${method}: ${selector} is not the element at (${Math.round(point.x)}, ${Math.round(point.y)}) ` +
+      `— it is moving, or something is covering it. Refusing to click what is there instead.`,
+    );
+  }
+  return point;
 }
 
 /** The intermediate points between two positions, step count from the distance. */
@@ -450,7 +523,7 @@ async function movePointerTo(
       type: 'mouseMoved', x: point.x, y: point.y,
     });
   }
-  setPointerPosition(webContentsId, { x, y });
+  setPointerPosition(wc, webContentsId, { x, y });
 }
 // CDP event capture for browser_console / browser_network / browser_response_body
 // in packaged builds (#106). Lazy: enables domains on first drain call.
@@ -2064,37 +2137,27 @@ export function registerBrowserRpc(
     let y = typeof params['y'] === 'number' ? params['y'] : 0;
 
     if (selector) {
-      // Scroll element into view and get its viewport coordinates.
-      // Without scrollIntoView, off-screen elements return coordinates outside
-      // the viewport bounds, causing CDP mouse events to miss the target.
-      const coordResult = await wc.debugger.sendCommand('Runtime.evaluate', {
-        expression: `(() => {
-          const el = document.querySelector(${JSON.stringify(selector)});
-          if (!el) return null;
-          el.scrollIntoView({ block: 'center', behavior: 'instant' });
-          const r = el.getBoundingClientRect();
-          return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
-        })()`,
-        returnByValue: true,
-      }) as { result: { value: { x: number; y: number } | null } };
-
-      const coords = coordResult.result?.value;
-      if (!coords) throw new Error(`Element not found: ${selector}`);
-      x = coords.x;
-      y = coords.y;
+      // Walk the pointer to the target before pressing. A single mouseMoved
+      // onto the exact spot, from a pointer that has never been anywhere else,
+      // is not what a page sees from a person. The intermediate moves also keep
+      // the original reason a move was here at all: some frameworks (React,
+      // Vue) need hover state before a click registers on a hover-revealed
+      // element. approachElement also scrolls the target into view, and refuses
+      // rather than pressing on something that slid under the coordinates.
+      const point = await approachElement(wc, target.webContentsId, selector, 'browser.click.cdp');
+      x = point.x;
+      y = point.y;
+    } else {
+      await movePointerTo(wc, target.webContentsId, x, y);
     }
 
-    // Walk the pointer to the target before pressing. A single mouseMoved onto
-    // the exact spot, from a pointer that has never been anywhere else, is not
-    // what a page sees from a person. The intermediate moves also keep the
-    // original reason this event was here: some frameworks (React, Vue) need
-    // hover state before a click registers on a hover-revealed element.
-    await movePointerTo(wc, target.webContentsId, x, y);
     await wc.debugger.sendCommand('Input.dispatchMouseEvent', {
-      type: 'mousePressed', x, y, button: 'left', clickCount: 1,
+      // `buttons` is the bitmask of what is held DURING the event; a press with
+      // buttons:0 says the left button is down and simultaneously not down.
+      type: 'mousePressed', x, y, button: 'left', buttons: 1, clickCount: 1,
     });
     await wc.debugger.sendCommand('Input.dispatchMouseEvent', {
-      type: 'mouseReleased', x, y, button: 'left', clickCount: 1,
+      type: 'mouseReleased', x, y, button: 'left', buttons: 0, clickCount: 1,
     });
 
     return { ok: true, x, y };
@@ -2120,10 +2183,7 @@ export function registerBrowserRpc(
     const wc = webContents.fromId(target.webContentsId);
     if (!wc || wc.isDestroyed()) throw new Error('browser.hover.cdp: WebContents unavailable');
 
-    const point = await elementCenter(wc, selector);
-    if (!point) throw new Error(`Element not found: ${selector}`);
-
-    await movePointerTo(wc, target.webContentsId, point.x, point.y);
+    const point = await approachElement(wc, target.webContentsId, selector, 'browser.hover.cdp');
     return { ok: true, x: point.x, y: point.y };
   });
 
@@ -2149,14 +2209,58 @@ export function registerBrowserRpc(
     const wc = webContents.fromId(target.webContentsId);
     if (!wc || wc.isDestroyed()) throw new Error('browser.drag.cdp: WebContents unavailable');
 
-    const from = await elementCenter(wc, sourceSelector);
-    if (!from) throw new Error(`Element not found: ${sourceSelector}`);
+    // HTML5 drag-and-drop is not reachable from raw mouse events: Chromium
+    // hands a mouse drag on a `draggable` element to the browser's own native
+    // drag loop, which never surfaces as dragstart/dragover/drop to the page
+    // unless the client is intercepting drags. So the two kinds of drop target
+    // need two different mechanisms, and which one applies is decided by the
+    // source element, not by guessing after the fact.
+    const nativeDraggable = await wc.debugger.sendCommand('Runtime.evaluate', {
+      expression: `(() => {
+        const el = document.querySelector(${JSON.stringify(sourceSelector)});
+        if (!el) return null;
+        return !!(el.draggable || el.closest('[draggable="true"]'));
+      })()`,
+      returnByValue: true,
+    }) as { result: { value: boolean | null } };
+
+    if (nativeDraggable.result?.value === null) {
+      throw new Error(`Element not found: ${sourceSelector}`);
+    }
+
+    if (nativeDraggable.result?.value === true) {
+      // HTML5 drag source: synthesised DragEvents are the only thing that
+      // reaches the handlers. Known limitation — these carry
+      // isTrusted === false, unlike the pointer path below.
+      const val = await wc.debugger.sendCommand('Runtime.evaluate', {
+        expression: `(() => {
+          const src = document.querySelector(${JSON.stringify(sourceSelector)});
+          const tgt = document.querySelector(${JSON.stringify(targetSelector)});
+          if (!src) return 'source_not_found';
+          if (!tgt) return 'target_not_found';
+          const dt = new DataTransfer();
+          src.dispatchEvent(new DragEvent('dragstart', { bubbles: true, dataTransfer: dt }));
+          tgt.dispatchEvent(new DragEvent('dragover', { bubbles: true, dataTransfer: dt }));
+          tgt.dispatchEvent(new DragEvent('drop', { bubbles: true, dataTransfer: dt }));
+          src.dispatchEvent(new DragEvent('dragend', { bubbles: true, dataTransfer: dt }));
+          return 'ok';
+        })()`,
+        returnByValue: true,
+      }) as { result: { value: string } };
+      const outcome = val.result?.value;
+      if (outcome === 'source_not_found') throw new Error(`Element not found: ${sourceSelector}`);
+      if (outcome === 'target_not_found') throw new Error(`Element not found: ${targetSelector}`);
+      return { ok: true, mode: 'html5' };
+    }
+
+    // Everything else — anything built on pointer/mouse events — gets a real
+    // press, move and release.
+    const from = await approachElement(wc, target.webContentsId, sourceSelector, 'browser.drag.cdp');
     const to = await elementCenter(wc, targetSelector);
     if (!to) throw new Error(`Element not found: ${targetSelector}`);
 
-    await movePointerTo(wc, target.webContentsId, from.x, from.y);
     await wc.debugger.sendCommand('Input.dispatchMouseEvent', {
-      type: 'mousePressed', x: from.x, y: from.y, button: 'left', clickCount: 1,
+      type: 'mousePressed', x: from.x, y: from.y, button: 'left', buttons: 1, clickCount: 1,
     });
     // Held-button moves: the drag itself, not a hover, so the button is named
     // on every intermediate event.
@@ -2166,11 +2270,11 @@ export function registerBrowserRpc(
       });
     }
     await wc.debugger.sendCommand('Input.dispatchMouseEvent', {
-      type: 'mouseReleased', x: to.x, y: to.y, button: 'left', clickCount: 1,
+      type: 'mouseReleased', x: to.x, y: to.y, button: 'left', buttons: 0, clickCount: 1,
     });
-    setPointerPosition(target.webContentsId, to);
+    setPointerPosition(wc, target.webContentsId, to);
 
-    return { ok: true, from, to };
+    return { ok: true, mode: 'pointer', from, to };
   });
 
   /**

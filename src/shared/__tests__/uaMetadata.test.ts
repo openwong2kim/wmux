@@ -40,46 +40,71 @@ describe('buildUserAgentOverride', () => {
   });
 
   it('describes desktop Chrome on macOS', () => {
-    const { userAgentMetadata: meta } = buildUserAgentOverride(UA.desktopMac);
-    expect(meta.platform).toBe('macOS');
-    expect(meta.platformVersion).toBe('10.15.7');
-    expect(meta.architecture).toBe('x86');
-    expect(meta.mobile).toBe(false);
-    expect(meta.model).toBe('');
+    const meta = buildUserAgentOverride(UA.desktopMac).userAgentMetadata;
+    expect(meta?.platform).toBe('macOS');
+    expect(meta?.platformVersion).toBe('10.15.7');
+    expect(meta?.architecture).toBe('x86');
+    expect(meta?.mobile).toBe(false);
+    expect(meta?.model).toBe('');
   });
 
   it('describes desktop Chrome on Windows', () => {
-    const { userAgentMetadata: meta } = buildUserAgentOverride(UA.desktopWindows);
-    expect(meta.platform).toBe('Windows');
-    expect(meta.platformVersion).toBe('10.0.0');
-    expect(meta.architecture).toBe('x86');
-    expect(meta.mobile).toBe(false);
+    const meta = buildUserAgentOverride(UA.desktopWindows).userAgentMetadata;
+    expect(meta?.platform).toBe('Windows');
+    expect(meta?.platformVersion).toBe('10.0.0');
+    expect(meta?.architecture).toBe('x86');
+    expect(meta?.mobile).toBe(false);
   });
 
-  it('describes an iPhone preset as mobile iOS with no brands', () => {
-    const { userAgentMetadata: meta } = buildUserAgentOverride(UA.iPhone13);
-    expect(meta.platform).toBe('iOS');
-    expect(meta.platformVersion).toBe('15.0.0');
-    expect(meta.mobile).toBe(true);
-    expect(meta.brands).toEqual([]);
-    // Client Hints report neither on mobile.
-    expect(meta.architecture).toBe('');
-    expect(meta.model).toBe('');
+  it('omits the metadata entirely for a non-Chromium preset', () => {
+    // Safari has no navigator.userAgentData at all. An empty-but-present hints
+    // object is a shape no shipping browser produces, so it would be a
+    // fingerprint of its own.
+    const override = buildUserAgentOverride(UA.iPhone13);
+    expect(override.userAgentMetadata).toBeUndefined();
+    expect('userAgentMetadata' in override).toBe(false);
+    expect(override.userAgent).toBe(UA.iPhone13);
+  });
+
+  it('still carries acceptLanguage for a non-Chromium preset', () => {
+    expect(buildUserAgentOverride(UA.iPhone13, 'ja-JP').acceptLanguage).toBe('ja-JP');
   });
 
   it('describes an Android preset with its model', () => {
-    const { userAgentMetadata: meta } = buildUserAgentOverride(UA.pixel5);
-    expect(meta.platform).toBe('Android');
-    expect(meta.platformVersion).toBe('11.0.0');
-    expect(meta.mobile).toBe(true);
-    expect(meta.model).toBe('Pixel 5');
-    expect(meta.brands).toHaveLength(3);
+    const meta = buildUserAgentOverride(UA.pixel5).userAgentMetadata;
+    expect(meta).toBeDefined();
+    expect(meta?.platform).toBe('Android');
+    expect(meta?.platformVersion).toBe('11.0.0');
+    expect(meta?.mobile).toBe(true);
+    expect(meta?.model).toBe('Pixel 5');
+    expect(meta?.brands).toHaveLength(3);
+    // Mobile Chrome reports neither architecture nor bitness.
+    expect(meta?.architecture).toBe('');
+    expect(meta?.bitness).toBe('');
   });
 
   it('strips the Build token out of an Android model', () => {
-    const { userAgentMetadata: meta } = buildUserAgentOverride(UA.galaxyS9);
-    expect(meta.model).toBe('SM-G965U');
-    expect(meta.platformVersion).toBe('8.0.0');
+    const meta = buildUserAgentOverride(UA.galaxyS9).userAgentMetadata;
+    expect(meta?.model).toBe('SM-G965U');
+    expect(meta?.platformVersion).toBe('8.0.0');
+  });
+
+  it('fills the whole getHighEntropyValues shape for a Chromium preset', () => {
+    const meta = buildUserAgentOverride(UA.desktopMac).userAgentMetadata;
+    expect(meta?.bitness).toBe('64');
+    expect(meta?.wow64).toBe(false);
+    expect(meta?.fullVersion).toBe('145.0.7632.6');
+    expect(meta?.fullVersionList).toEqual(
+      expect.arrayContaining([
+        { brand: 'Chromium', version: '145.0.7632.6' },
+        { brand: 'Google Chrome', version: '145.0.7632.6' },
+      ]),
+    );
+    expect(meta?.fullVersionList).toHaveLength(3);
+    // The brand names must agree between the two lists.
+    expect(meta?.fullVersionList.map((b) => b.brand)).toEqual(
+      meta?.brands.map((b) => b.brand),
+    );
   });
 
   it('carries the emulated locale as acceptLanguage, and omits it otherwise', () => {
@@ -90,7 +115,9 @@ describe('buildUserAgentOverride', () => {
 
   it('never leaves the metadata disagreeing with the UA about mobile', () => {
     for (const ua of Object.values(UA)) {
-      const { userAgentMetadata: meta } = buildUserAgentOverride(ua);
+      const meta = buildUserAgentOverride(ua).userAgentMetadata;
+      // Non-Chromium presets carry no metadata to disagree with.
+      if (!meta) continue;
       expect(meta.mobile).toBe(/Mobile|iPhone|iPad|Android/.test(ua));
     }
   });
