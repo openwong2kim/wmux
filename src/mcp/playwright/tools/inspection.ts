@@ -530,7 +530,7 @@ export function registerInspectionTools(server: McpServer, deps: BrowserToolDeps
   // -----------------------------------------------------------------------
   server.tool(
     'browser_evaluate',
-    'Evaluate a JavaScript expression in the page. Patterns that enable prompt-injection exfiltration (fetch, XHR, cookies, storage, eval, Function) are BLOCKED unless allowDangerous:true. Blocking is a case-sensitive whole-word text scan that reads strings and comments too: the call forms (fetch/eval/require/import) need a "(" next, whitespace allowed — retrieval, evaluateScore(), prefetch() and myFetch() all pass, while both window.fetch(url) and fetch (url) are blocked — while the rest (localStorage, WebSocket, document.cookie) match the bare word anywhere, even in a comment. Strings return verbatim, everything else as JSON (DOM nodes/Map/functions become {}); a returned Promise is awaited, top-level await is a SyntaxError. Runs in an isolated world that shares the DOM but not the page\'s JS globals, so pass mainWorld:true to read those.',
+    'Evaluate a JavaScript expression in the page. Patterns that enable prompt-injection exfiltration (fetch, XHR, cookies, storage, eval, Function) are BLOCKED unless allowDangerous:true. Blocking is a case-sensitive whole-word text scan that reads strings and comments too: the call forms (fetch/eval/require/import) need a "(" next, whitespace allowed — retrieval, evaluateScore(), prefetch() and myFetch() all pass, while both window.fetch(url) and fetch (url) are blocked — while the rest (localStorage, WebSocket, document.cookie) match the bare word anywhere, even in a comment. Strings return verbatim, everything else as JSON (DOM nodes/Map/functions become {}); a returned Promise is awaited, top-level await is a SyntaxError. On the Chrome backend it runs in an isolated world that shares the DOM but not the page\'s JS globals; pass mainWorld:true to read those.',
     BROWSER_EVALUATE_SHAPE,
     async ({ expression, allowDangerous, mainWorld, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
       try {
@@ -549,6 +549,9 @@ export function registerInspectionTools(server: McpServer, deps: BrowserToolDeps
         }
 
         let result: unknown;
+        // Set when the isolated world was asked for and could not be had, so
+        // the answer says which world it actually came from.
+        let worldNote = '';
 
         // Try Playwright first for gesture-aware evaluation
         const page = await engine.getPageForScope(scope).catch(allowScopedRpcFallback);
@@ -560,18 +563,23 @@ export function registerInspectionTools(server: McpServer, deps: BrowserToolDeps
             ? await evaluateWithGesture(page, expression)
             : await evaluateIsolated(page, expression);
         } else {
-          // Fallback: RPC evaluation via main process webContents
+          // Fallback: RPC evaluation via main process webContents. This lane
+          // drives a guest webContents and has no isolated world at all, so
+          // say so rather than let the tool description imply one.
           const rpcResult = await sendScopedBrowserRpc<{ value: unknown }>('browser.evaluate', scope, {
             expression,
           });
           result = rpcResult.value;
+          if (!mainWorld) {
+            worldNote = "\n(ran in the page's main world: this backend has no isolated world)";
+          }
         }
 
         const text =
           typeof result === 'string' ? result : (JSON.stringify(result, null, 2) ?? 'undefined');
 
         return {
-          content: [{ type: 'text' as const, text: text ?? 'undefined' }],
+          content: [{ type: 'text' as const, text: (text ?? 'undefined') + worldNote }],
         };
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);

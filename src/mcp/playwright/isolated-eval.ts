@@ -60,8 +60,21 @@ interface PageState {
   contextId: number | null;
   /** In-flight creation, so concurrent callers share one round trip. */
   creating: Promise<number | null> | null;
-  /** Set when the world could not be created — stop retrying every call. */
-  unavailable: boolean;
+  /**
+   * Bumped every time the document underneath us changes. A creation that was
+   * already in flight when that happened describes the OLD document, so its
+   * result is discarded rather than cached.
+   */
+  epoch: number;
+  /**
+   * True only when this Page can never give us an isolated world: no CDP
+   * session, or a session we could not subscribe to. A world that merely
+   * FAILED to be created is retried — a getFrameTree that lost a race with a
+   * navigation must not downgrade the page to the main world for its lifetime.
+   */
+  sessionUnusable: boolean;
+  /** One main-world warning per page is diagnosable; one per call is noise. */
+  warned: boolean;
 }
 
 /**
@@ -108,10 +121,10 @@ export async function createIsolatedContext(
     const world = (await client.send('Page.createIsolatedWorld', {
       frameId: targetFrameId,
       worldName: WORLD_NAME,
-      // The DOM is shared regardless; universal access additionally lets the
-      // script reach same-page cross-origin objects the way main-world code
-      // reaching them would, so behaviour does not change under our feet.
-      grantUniveralAccess: true,
+      // Parity with the main world is the goal, not extra privilege: universal
+      // access would let an agent-supplied browser_evaluate script reach into
+      // cross-origin frames that main-world code cannot touch.
+      grantUniveralAccess: false,
     })) as { executionContextId?: number };
     return typeof world?.executionContextId === 'number' ? world.executionContextId : null;
   } catch {
@@ -132,9 +145,17 @@ async function openState(page: Page): Promise<PageState> {
     client,
     contextId: null,
     creating: null,
-    unavailable: client === null,
+    epoch: 0,
+    sessionUnusable: client === null,
+    warned: false,
   };
   if (!client) return state;
+
+  /** The document changed: retire the context AND any creation in flight. */
+  const invalidate = (): void => {
+    state.contextId = null;
+    state.epoch += 1;
+  };
 
   // Cache invalidation is not optional: a context id that outlives its
   // document silently evaluates nothing. If the subscriptions below cannot be
@@ -146,26 +167,31 @@ async function openState(page: Page): Promise<PageState> {
     await client.send('Runtime.enable').catch(() => undefined);
     await client.send('Page.enable').catch(() => undefined);
 
-    client.on('Runtime.executionContextsCleared', () => {
-      state.contextId = null;
-    });
+    client.on('Runtime.executionContextsCleared', invalidate);
     client.on('Runtime.executionContextDestroyed', (payload: { executionContextId?: number }) => {
-      if (payload?.executionContextId === state.contextId) state.contextId = null;
+      if (payload?.executionContextId === state.contextId) invalidate();
     });
     client.on('Page.frameNavigated', (payload: { frame?: { parentId?: string } }) => {
       // Only the main frame's navigation retires our world; a subframe moving
-      // is none of our business.
-      if (!payload?.frame?.parentId) state.contextId = null;
+      // is none of our business. (Same-document navigation arrives as
+      // navigatedWithinDocument and keeps the context, correctly.)
+      if (!payload?.frame?.parentId) invalidate();
     });
 
     const drop = (): void => {
       states.delete(page);
+      void Promise.resolve()
+        .then(() => (client as unknown as { detach?: () => Promise<void> }).detach?.())
+        .catch(() => undefined);
     };
     page.on('close', drop);
     page.on('crash', drop);
+    // A page that was ALREADY closed never fires 'close', so the entry (and
+    // its session) would sit in the map for the rest of the process.
+    if (page.isClosed()) drop();
   } catch {
     state.client = null;
-    state.unavailable = true;
+    state.sessionUnusable = true;
   }
 
   return state;
@@ -182,37 +208,69 @@ async function stateFor(page: Page): Promise<PageState> {
   return created;
 }
 
-/** Resolve the page's isolated context id, creating the world on demand. */
+/**
+ * Resolve the page's isolated context id, creating the world on demand.
+ *
+ * A failure is transient by default — a getFrameTree that lost a race with a
+ * navigation says nothing about the next call — so nothing is latched here.
+ * Only a Page that could never give us a session is written off, in openState.
+ */
 async function contextIdFor(state: PageState): Promise<number | null> {
-  if (state.contextId !== null) return state.contextId;
-  if (state.unavailable) return null;
-  if (!state.creating) {
+  // Two attempts: one for the ordinary case, one for a document that changed
+  // WHILE the world was being created (the id we got describes the old one).
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    if (state.contextId !== null) return state.contextId;
     const client = state.client;
-    if (!client) return null;
-    state.creating = createIsolatedContext(client)
-      .then((id) => {
-        state.contextId = id;
-        if (id === null) state.unavailable = true;
-        return id;
-      })
-      .finally(() => {
-        state.creating = null;
-      });
+    if (!client || state.sessionUnusable) return null;
+    if (!state.creating) {
+      const epoch = state.epoch;
+      state.creating = createIsolatedContext(client)
+        .then((id) => {
+          if (id !== null && state.epoch === epoch) state.contextId = id;
+          return id;
+        })
+        .finally(() => {
+          state.creating = null;
+        });
+    }
+    const created = await state.creating;
+    if (created === null) return null;
+    if (state.contextId !== null) return state.contextId;
   }
-  return state.creating;
+  return null;
 }
 
 /**
- * Wrap a script for `Runtime.callFunctionOn`.
- *
- * A function is sent as-is and receives `arg` as its single parameter, exactly
- * like `page.evaluate(fn, arg)`. A string is treated as an expression, exactly
- * like `page.evaluate(expression)` — the newlines matter, so a trailing line
- * comment in the source cannot swallow the closing parenthesis.
+ * CDP hands NaN, +/-Infinity and -0 back as `unserializableValue` instead of
+ * `value`, because JSON has no spelling for them. `page.evaluate` restores
+ * them, so this does too — otherwise they would silently arrive as undefined.
  */
-function functionDeclarationFor<A, R>(script: IsolatedScript<A, R>): string {
-  if (typeof script === 'function') return script.toString();
-  return `function () { return (\n${script}\n); }`;
+function decodeResult(result?: { value?: unknown; unserializableValue?: string }): unknown {
+  if (!result) return undefined;
+  if (result.unserializableValue === undefined) return result.value;
+  switch (result.unserializableValue) {
+    case 'NaN':
+      return NaN;
+    case 'Infinity':
+      return Infinity;
+    case '-Infinity':
+      return -Infinity;
+    case '-0':
+      return -0;
+    default:
+      // Anything else (BigInt literals) has no JSON form either way.
+      return undefined;
+  }
+}
+
+function throwPageException(details?: {
+  text?: string;
+  exception?: { description?: string };
+}): void {
+  if (!details) return;
+  throw new Error(
+    details.exception?.description ?? details.text ?? 'Isolated evaluation threw an exception',
+  );
 }
 
 /**
@@ -235,38 +293,51 @@ export async function evaluateIsolated<R = unknown, A = unknown>(
   options?: IsolatedEvalOptions,
 ): Promise<R> {
   const state = await stateFor(page);
-  const declaration = functionDeclarationFor(script);
 
   // Main-world fallback, used only when no isolated world can be had. Called
   // with the SAME arity as before this module existed, so a one-argument
   // page.evaluate stays a one-argument call.
   const mainWorld = (): Promise<R> => {
+    if (!state.warned) {
+      state.warned = true;
+      console.warn(
+        '[isolated-eval] no isolated world on this page; page scripts run in the main world',
+      );
+    }
     const evaluatable = script as unknown as (a: unknown) => R;
     return (arg === undefined
       ? page.evaluate(evaluatable)
       : page.evaluate(evaluatable, arg)) as Promise<R>;
   };
 
+  type EvalReply = {
+    result?: { value?: unknown; unserializableValue?: string };
+    exceptionDetails?: { text?: string; exception?: { description?: string } };
+  };
+
   const call = async (contextId: number, client: IsolatedCdpSession): Promise<R> => {
-    const result = (await client.send('Runtime.callFunctionOn', {
-      functionDeclaration: declaration,
-      executionContextId: contextId,
-      arguments: [{ value: arg }],
-      returnByValue: true,
-      awaitPromise: true,
-      userGesture: options?.userGesture ?? false,
-    })) as {
-      result?: { value?: unknown };
-      exceptionDetails?: { text?: string; exception?: { description?: string } };
-    };
-    if (result?.exceptionDetails) {
-      throw new Error(
-        result.exceptionDetails.exception?.description ??
-          result.exceptionDetails.text ??
-          'Isolated evaluation threw an exception',
-      );
-    }
-    return result?.result?.value as R;
+    // A STRING goes through Runtime.evaluate, not callFunctionOn: the old
+    // page.evaluate(string) / Runtime.evaluate({expression}) path accepted
+    // whole scripts ("const a = document.title; a.length"), and wrapping those
+    // in `return (...)` would turn them into a SyntaxError.
+    const reply = (await (typeof script === 'string'
+      ? client.send('Runtime.evaluate', {
+          expression: script,
+          contextId,
+          returnByValue: true,
+          awaitPromise: true,
+          userGesture: options?.userGesture ?? false,
+        })
+      : client.send('Runtime.callFunctionOn', {
+          functionDeclaration: script.toString(),
+          executionContextId: contextId,
+          arguments: [{ value: arg }],
+          returnByValue: true,
+          awaitPromise: true,
+          userGesture: options?.userGesture ?? false,
+        }))) as EvalReply;
+    throwPageException(reply?.exceptionDetails);
+    return decodeResult(reply?.result) as R;
   };
 
   let contextId = await contextIdFor(state);
@@ -287,6 +358,26 @@ export async function evaluateIsolated<R = unknown, A = unknown>(
     if (contextId === null) return await mainWorld();
     return await call(contextId, client);
   }
+}
+
+/**
+ * The cached session and isolated context for `page`, for callers that must
+ * send raw CDP themselves (the occlusion probe needs remote handles, not
+ * values). Reusing this session is what keeps Chromium from minting a fresh
+ * isolated world per snapshot: worlds are cached per (session, frame, name),
+ * so a new session per snapshot would accumulate them in the renderer.
+ *
+ * Null when the page has no isolated world; the caller then does what it did
+ * before, in the main world.
+ */
+export async function isolatedProbeTarget(
+  page: Page,
+): Promise<{ client: IsolatedCdpSession; contextId: number } | null> {
+  const state = await stateFor(page).catch(() => null);
+  if (!state) return null;
+  const contextId = await contextIdFor(state);
+  if (contextId === null || !state.client) return null;
+  return { client: state.client, contextId };
 }
 
 function sleep(ms: number): Promise<void> {
@@ -315,7 +406,11 @@ export async function waitForIsolated<A = unknown>(
     try {
       if (await evaluateIsolated<unknown, A>(page, script, arg)) return;
     } catch (error) {
-      if (first) throw error;
+      // A malformed predicate must fail fast rather than expire as a timeout,
+      // so the first evaluation re-throws — except for the context error a
+      // wait started right after a click or a navigation routinely hits, which
+      // page.waitForFunction simply waited out.
+      if (first && !isStaleContextError(errorMessage(error))) throw error;
     }
     first = false;
     if (hasDeadline && Date.now() >= deadline) {

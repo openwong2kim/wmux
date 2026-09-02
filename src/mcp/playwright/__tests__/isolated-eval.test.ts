@@ -26,15 +26,18 @@ function makePage(options: FakeOptions = {}) {
         worldId += 1;
         return { executionContextId: worldId };
       }
-      if (method === 'Runtime.callFunctionOn') {
-        const value =
+      if (method === 'Runtime.callFunctionOn' || method === 'Runtime.evaluate') {
+        const produced =
           typeof options.result === 'function'
             ? (options.result as (p: any) => unknown)(params)
             : options.result;
-        return { result: { value } };
+        return typeof produced === 'string' && produced.startsWith('@unserializable:')
+          ? { result: { unserializableValue: produced.slice('@unserializable:'.length) } }
+          : { result: { value: produced } };
       }
       return {};
     }),
+    detach: vi.fn(async () => undefined),
     on: (event: string, handler: Handler) => {
       const list = handlers.get(event) ?? [];
       list.push(handler);
@@ -46,6 +49,7 @@ function makePage(options: FakeOptions = {}) {
     context: () => ({ newCDPSession: async () => client }),
     evaluate: vi.fn(async () => 'main-world'),
     on: vi.fn(),
+    isClosed: () => false,
   };
 
   const emit = (event: string, payload?: unknown): void => {
@@ -70,13 +74,14 @@ describe('evaluateIsolated', () => {
 
     const world = sent.find((entry) => entry.method === 'Page.createIsolatedWorld');
     expect(world?.params.frameId).toBe('FRAME-1');
-    expect(world?.params.grantUniveralAccess).toBe(true);
     // The world name must not name the product — it is the one string about us
     // that reaches the browser at all.
     expect(String(world?.params.worldName)).not.toMatch(/wmux|automation|playwright/i);
+    // Parity with the main world, not extra privilege.
+    expect(world?.params.grantUniveralAccess).toBe(false);
 
-    const call = sent.find((entry) => entry.method === 'Runtime.callFunctionOn');
-    expect(call?.params.executionContextId).toBe(101);
+    const call = sent.find((entry) => entry.method === 'Runtime.evaluate');
+    expect(call?.params.contextId).toBe(101);
     expect(call?.params.returnByValue).toBe(true);
     expect(call?.params.awaitPromise).toBe(true);
   });
@@ -99,7 +104,7 @@ describe('evaluateIsolated', () => {
     await evaluateIsolated(page, 'c');
 
     expect(callsTo(sent, 'Page.createIsolatedWorld')).toBe(1);
-    expect(callsTo(sent, 'Runtime.callFunctionOn')).toBe(3);
+    expect(callsTo(sent, 'Runtime.evaluate')).toBe(3);
   });
 
   it('drops the cached context when the page clears its execution contexts', async () => {
@@ -110,19 +115,21 @@ describe('evaluateIsolated', () => {
     await evaluateIsolated(page, 'b');
 
     expect(callsTo(sent, 'Page.createIsolatedWorld')).toBe(2);
-    const calls = sent.filter((entry) => entry.method === 'Runtime.callFunctionOn');
-    expect(calls.map((entry) => entry.params.executionContextId)).toEqual([101, 102]);
+    const calls = sent.filter((entry) => entry.method === 'Runtime.evaluate');
+    expect(calls.map((entry) => entry.params.contextId)).toEqual([101, 102]);
   });
 
   it('re-throws a page exception with the page\'s own message', async () => {
     const { page } = makePage({});
+    (page as any).isClosed = () => false;
     (page as any).context = () => ({
       newCDPSession: async () => ({
         on: () => undefined,
+        detach: async () => undefined,
         send: async (method: string) => {
           if (method === 'Page.getFrameTree') return { frameTree: { frame: { id: 'F' } } };
           if (method === 'Page.createIsolatedWorld') return { executionContextId: 7 };
-          if (method === 'Runtime.callFunctionOn') {
+          if (method === 'Runtime.evaluate') {
             return {
               exceptionDetails: {
                 text: 'Uncaught',
@@ -147,7 +154,88 @@ describe('evaluateIsolated', () => {
     expect(rawPage.evaluate).toHaveBeenCalledTimes(1);
     // One argument, exactly as the pre-existing page.evaluate(expression) call.
     expect(rawPage.evaluate.mock.calls[0]).toHaveLength(1);
+    expect(callsTo(sent, 'Runtime.evaluate')).toBe(0);
+  });
+
+  it('sends a multi-statement string as an expression, not a return-wrapped body', async () => {
+    const { page, sent } = makePage({ result: 5 });
+    const script = 'const a = document.title;\na.length';
+
+    expect(await evaluateIsolated(page, script)).toBe(5);
+
+    const call = sent.find((entry) => entry.method === 'Runtime.evaluate');
+    // Wrapping this in `function () { return (...) }` would be a SyntaxError,
+    // and page.evaluate(string) always accepted it.
+    expect(call?.params.expression).toBe(script);
     expect(callsTo(sent, 'Runtime.callFunctionOn')).toBe(0);
+  });
+
+  it('restores the values JSON cannot carry (NaN, Infinity, -0)', async () => {
+    for (const [wire, expected] of [
+      ['NaN', NaN],
+      ['Infinity', Infinity],
+      ['-Infinity', -Infinity],
+    ] as Array<[string, number]>) {
+      resetIsolatedEval();
+      const { page } = makePage({ result: `@unserializable:${wire}` });
+      expect(await evaluateIsolated(page, 'x')).toBe(expected);
+    }
+    resetIsolatedEval();
+    const { page } = makePage({ result: '@unserializable:-0' });
+    expect(Object.is(await evaluateIsolated(page, 'x'), -0)).toBe(true);
+  });
+
+  it('retries once on a stale context instead of surfacing the race', async () => {
+    let calls = 0;
+    const { page, sent } = makePage({
+      result: () => {
+        calls += 1;
+        if (calls === 1) throw new Error('Cannot find context with specified id');
+        return 'second';
+      },
+    });
+
+    expect(await evaluateIsolated(page, 'x')).toBe('second');
+    expect(callsTo(sent, 'Page.createIsolatedWorld')).toBe(2);
+  });
+
+  it('retries the world after a failure instead of writing the page off', async () => {
+    let allowWorld = false;
+    const sent: Array<{ method: string }> = [];
+    const handlers = new Map<string, Handler[]>();
+    const client = {
+      send: vi.fn(async (method: string) => {
+        sent.push({ method });
+        if (method === 'Page.getFrameTree') {
+          // First attempt loses a race with a navigation.
+          if (!allowWorld) throw new Error('Session closed');
+          return { frameTree: { frame: { id: 'F' } } };
+        }
+        if (method === 'Page.createIsolatedWorld') return { executionContextId: 9 };
+        if (method === 'Runtime.evaluate') return { result: { value: 'isolated' } };
+        return {};
+      }),
+      on: (event: string, handler: Handler) => {
+        const list = handlers.get(event) ?? [];
+        list.push(handler);
+        handlers.set(event, list);
+      },
+      detach: vi.fn(async () => undefined),
+    };
+    const page = {
+      context: () => ({ newCDPSession: async () => client }),
+      evaluate: vi.fn(async () => 'main-world'),
+      on: vi.fn(),
+      isClosed: () => false,
+    } as unknown as Page;
+
+    expect(await evaluateIsolated(page, 'x')).toBe('main-world');
+
+    // The page navigates; the next call must try the isolated world again
+    // rather than stay downgraded for the page's whole life.
+    allowWorld = true;
+    for (const handler of handlers.get('Page.frameNavigated') ?? []) handler({ frame: {} });
+    expect(await evaluateIsolated(page, 'x')).toBe('isolated');
   });
 });
 
@@ -167,6 +255,30 @@ describe('waitForIsolated', () => {
 
     await waitForIsolated(page, 'ready', undefined, 5000);
     expect(polls).toBe(3);
+  });
+
+  it('waits out a stale context on the first poll instead of failing', async () => {
+    let calls = 0;
+    const { page } = makePage({
+      result: () => {
+        calls += 1;
+        if (calls === 1) throw new Error('Execution context was destroyed');
+        return calls >= 2;
+      },
+    });
+
+    await waitForIsolated(page, 'ready', undefined, 5000);
+    expect(calls).toBe(2);
+  });
+
+  it('still fails fast on a malformed predicate', async () => {
+    const { page } = makePage({
+      result: () => {
+        throw new Error('SyntaxError: Unexpected token');
+      },
+    });
+
+    await expect(waitForIsolated(page, 'nope(', undefined, 5000)).rejects.toThrow('SyntaxError');
   });
 
   it('throws a timeout error when the predicate never satisfies', async () => {
