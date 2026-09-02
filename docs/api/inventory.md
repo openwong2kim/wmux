@@ -131,7 +131,7 @@ Validation limits live in `src/shared/types.ts` (PANE_METADATA_MAX_BYTES, PANE_M
 | `browser.open` | `{ url? }` | experimental | The browser/CDP surface backs the MCP `browser_*` tools. Wire shapes may evolve before v3.0. Currently the primary AI-agent capability driver, but not part of the substrate identity. |
 | `browser.navigate`, `browser.goBack`, `browser.close` | various | experimental | |
 | `browser.session.{start,stop,status,list}` | various | experimental | |
-| `browser.type.humanlike`, `browser.type.cdp`, `browser.click.cdp`, `browser.press.cdp` | various | experimental | |
+| `browser.type.humanlike`, `browser.type.cdp`, `browser.click.cdp`, `browser.hover.cdp`, `browser.drag.cdp`, `browser.press.cdp` | various | experimental | |
 | `browser.cdp.target`, `browser.cdp.info` | various | experimental | |
 | `browser.screenshot`, `browser.evaluate` | various | experimental | |
 
@@ -350,7 +350,7 @@ The capability column below summarises the table. Three sentinels:
 | `meta.setStatus` / `meta.setProgress` / `meta.setSkills` | `meta.write` | — | metadata |
 | `system.identify` / `system.capabilities` | `null` (bootstrap) | — | — |
 | `browser.navigate` / `browser.open` / `browser.goBack` / `browser.close` | `browser.navigate` | — | browser |
-| `browser.click.cdp` | `browser.click` | — | browser |
+| `browser.click.cdp` / `browser.hover.cdp` / `browser.drag.cdp` | `browser.click` | — | browser |
 | `browser.type.humanlike` / `browser.type.cdp` / `browser.press.cdp` | `browser.type` | — | browser |
 | `browser.screenshot` | `browser.screenshot` | — | browser |
 | `browser.evaluate` | `browser.evaluate` | — | browser |

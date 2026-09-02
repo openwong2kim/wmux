@@ -1,4 +1,4 @@
-import type { BrowserWindow } from 'electron';
+import type { BrowserWindow, WebContents } from 'electron';
 import { shell, webContents } from 'electron';
 import type { RpcRouter } from '../RpcRouter';
 import { sendToRenderer } from './_bridge';
@@ -18,6 +18,9 @@ import {
 } from '../../../shared/browserReplay/promotedSkill';
 import { stepsFingerprint } from '../../../shared/browserReplay/actionTrace';
 import { HumanBehavior } from '../../browser-session/HumanBehavior';
+import { approachPath, defaultStartPoint, type Point } from '../../../shared/pointerPath';
+import { refererFor } from '../../../shared/referer';
+import { buildUserAgentOverride } from '../../../shared/uaMetadata';
 import { WebviewCdpManager } from '../../browser-session/WebviewCdpManager';
 import { BrowserCaptureManager } from '../../browser-session/BrowserCaptureManager';
 import { validateResolvedNavigationUrl } from '../../security/navigationPolicy';
@@ -396,6 +399,132 @@ export function callerScope(
 const profileManager = new ProfileManager();
 const portAllocator = new PortAllocator();
 const humanBehavior = new HumanBehavior();
+
+// ── Pointer movement for the builtin webview lane ───────────────────────────
+// Where the pointer was last left, per webContents. A pointer that starts every
+// interaction from the same place is as distinctive as one that never moves, so
+// each move continues from the last one. Keyed by id, because a numeric id
+// cannot be weakly held — the entry is dropped when the WebContents is
+// destroyed, see rememberPointerFor below.
+const pointerPositions = new Map<number, Point>();
+/** WebContents ids already carrying a destroyed-listener, so we add one once. */
+const pointerCleanupBound = new Set<number>();
+
+function setPointerPosition(wc: WebContents, webContentsId: number, point: Point): void {
+  pointerPositions.set(webContentsId, { x: point.x, y: point.y });
+  if (!pointerCleanupBound.has(webContentsId)) {
+    pointerCleanupBound.add(webContentsId);
+    wc.once('destroyed', () => {
+      pointerPositions.delete(webContentsId);
+      pointerCleanupBound.delete(webContentsId);
+    });
+  }
+}
+
+/**
+ * The viewport coordinates of `selector`'s centre, scrolled into view first,
+ * or null when the element is absent or has no area. A zero-size rect would
+ * otherwise send a click to a point that belongs to whatever is behind it.
+ */
+async function elementCenter(
+  wc: WebContents,
+  selector: string,
+): Promise<Point | null> {
+  const result = await wc.debugger.sendCommand('Runtime.evaluate', {
+    expression: `(() => {
+      const el = document.querySelector(${JSON.stringify(selector)});
+      if (!el) return null;
+      el.scrollIntoView({ block: 'center', behavior: 'instant' });
+      const r = el.getBoundingClientRect();
+      if (r.width <= 0 || r.height <= 0) return null;
+      return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+    })()`,
+    returnByValue: true,
+  }) as { result: { value: Point | null } };
+  return result.result?.value ?? null;
+}
+
+/**
+ * Is (x, y) still on `selector`, or on something inside it?
+ *
+ * Moving the pointer takes time, and anything the page does in that window —
+ * a sticky header settling, a lazy image reflowing the column — can slide the
+ * target out from under the coordinates we computed before the move. Pressing
+ * anyway reports a successful click on whatever happened to be there instead.
+ */
+async function pointIsOnTarget(
+  wc: WebContents,
+  selector: string,
+  point: Point,
+): Promise<boolean> {
+  const result = await wc.debugger.sendCommand('Runtime.evaluate', {
+    expression: `(() => {
+      const el = document.querySelector(${JSON.stringify(selector)});
+      if (!el) return false;
+      const hit = document.elementFromPoint(${point.x}, ${point.y});
+      return !!hit && (hit === el || el.contains(hit));
+    })()`,
+    returnByValue: true,
+  }) as { result: { value: boolean } };
+  return result.result?.value === true;
+}
+
+/**
+ * Walk the pointer to `selector` and return the point the press should use.
+ *
+ * Re-resolves once if the element has moved during the walk, and refuses
+ * rather than pressing on whatever is now under the coordinates.
+ */
+async function approachElement(
+  wc: WebContents,
+  webContentsId: number,
+  selector: string,
+  method: string,
+): Promise<Point> {
+  let point = await elementCenter(wc, selector);
+  if (!point) throw new Error(`Element not found: ${selector}`);
+  await movePointerTo(wc, webContentsId, point.x, point.y);
+
+  if (await pointIsOnTarget(wc, selector, point)) return point;
+
+  // Moved mid-approach: recompute once and walk the rest of the way.
+  const again = await elementCenter(wc, selector);
+  if (!again) throw new Error(`Element not found: ${selector}`);
+  await movePointerTo(wc, webContentsId, again.x, again.y);
+  point = again;
+
+  if (!(await pointIsOnTarget(wc, selector, point))) {
+    throw new Error(
+      `${method}: ${selector} is not the element at (${Math.round(point.x)}, ${Math.round(point.y)}) ` +
+      `— it is moving, or something is covering it. Refusing to click what is there instead.`,
+    );
+  }
+  return point;
+}
+
+/** The intermediate points between two positions, step count from the distance. */
+function pointerPath(from: Point, to: Point): Point[] {
+  return approachPath(from, to);
+}
+
+/**
+ * Walk the pointer to (x, y) with intermediate `mouseMoved` events, then record
+ * where it ended up.
+ */
+async function movePointerTo(
+  wc: WebContents,
+  webContentsId: number,
+  x: number,
+  y: number,
+): Promise<void> {
+  const from = pointerPositions.get(webContentsId) ?? defaultStartPoint();
+  for (const point of pointerPath(from, { x, y })) {
+    await wc.debugger.sendCommand('Input.dispatchMouseEvent', {
+      type: 'mouseMoved', x: point.x, y: point.y,
+    });
+  }
+  setPointerPosition(wc, webContentsId, { x, y });
+}
 // CDP event capture for browser_console / browser_network / browser_response_body
 // in packaged builds (#106). Lazy: enables domains on first drain call.
 const captureManager = new BrowserCaptureManager();
@@ -1313,9 +1442,20 @@ export function registerBrowserRpc(
       wc.on('did-fail-load', onFail);
       // Full load still resolves us if it beats the commit event (about:blank,
       // cached documents); a rejection here is a real navigation error.
-      wc.loadURL(url).then(() => finish(), (err: unknown) => finish(
-        err instanceof Error ? err : new Error(String(err)),
-      ));
+      // Send the page we are leaving as the Referer when there is a real one,
+      // which is what a click-through produces; see shared/referer for when
+      // there is not (first load, about:blank, a browser-internal page).
+      // getURL is guarded like getUserAgent below: a transport without it must
+      // still navigate, just without a referer.
+      const currentUrl = typeof wc.getURL === 'function' ? wc.getURL() : undefined;
+      const referrer = refererFor(currentUrl, url);
+      // Called with one argument when there is no referer, so the plain
+      // navigation path keeps exactly the shape it had.
+      const load = referrer ? wc.loadURL(url, { httpReferrer: referrer }) : wc.loadURL(url);
+      load.then(
+        () => finish(),
+        (err: unknown) => finish(err instanceof Error ? err : new Error(String(err))),
+      );
     });
 
   const requireNavigateUrl = (params: Record<string, unknown>): string => {
@@ -1997,40 +2137,105 @@ export function registerBrowserRpc(
     let y = typeof params['y'] === 'number' ? params['y'] : 0;
 
     if (selector) {
-      // Scroll element into view and get its viewport coordinates.
-      // Without scrollIntoView, off-screen elements return coordinates outside
-      // the viewport bounds, causing CDP mouse events to miss the target.
-      const coordResult = await wc.debugger.sendCommand('Runtime.evaluate', {
-        expression: `(() => {
-          const el = document.querySelector(${JSON.stringify(selector)});
-          if (!el) return null;
-          el.scrollIntoView({ block: 'center', behavior: 'instant' });
-          const r = el.getBoundingClientRect();
-          return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
-        })()`,
-        returnByValue: true,
-      }) as { result: { value: { x: number; y: number } | null } };
-
-      const coords = coordResult.result?.value;
-      if (!coords) throw new Error(`Element not found: ${selector}`);
-      x = coords.x;
-      y = coords.y;
+      // Walk the pointer to the target before pressing. A single mouseMoved
+      // onto the exact spot, from a pointer that has never been anywhere else,
+      // is not what a page sees from a person. The intermediate moves also keep
+      // the original reason a move was here at all: some frameworks (React,
+      // Vue) need hover state before a click registers on a hover-revealed
+      // element. approachElement also scrolls the target into view, and refuses
+      // rather than pressing on something that slid under the coordinates.
+      const point = await approachElement(wc, target.webContentsId, selector, 'browser.click.cdp');
+      x = point.x;
+      y = point.y;
+    } else {
+      await movePointerTo(wc, target.webContentsId, x, y);
     }
 
-    // Simulate mouse click via CDP.
-    // Dispatch mouseMoved first — some frameworks (React, Vue) require hover
-    // state before a click registers (e.g. onClick handlers on hover-revealed elements).
     await wc.debugger.sendCommand('Input.dispatchMouseEvent', {
-      type: 'mouseMoved', x, y,
+      // `buttons` is the bitmask of what is held DURING the event; a press with
+      // buttons:0 says the left button is down and simultaneously not down.
+      type: 'mousePressed', x, y, button: 'left', buttons: 1, clickCount: 1,
     });
     await wc.debugger.sendCommand('Input.dispatchMouseEvent', {
-      type: 'mousePressed', x, y, button: 'left', clickCount: 1,
-    });
-    await wc.debugger.sendCommand('Input.dispatchMouseEvent', {
-      type: 'mouseReleased', x, y, button: 'left', clickCount: 1,
+      type: 'mouseReleased', x, y, button: 'left', buttons: 0, clickCount: 1,
     });
 
     return { ok: true, x, y };
+  });
+
+  /**
+   * browser.hover.cdp
+   * Hover an element via real CDP Input mouse moves.
+   * The DOM-event fallback this replaces dispatched a synthetic MouseEvent, so
+   * every handler on the page saw `isTrusted === false` — a single boolean that
+   * separates our hover from every hover a person performs. `Input.*` events
+   * enter through the browser's own input pipeline and carry no such marker.
+   * params: { selector: string, surfaceId?: string }
+   */
+  registerLeased('browser.hover.cdp', async (params, scope) => {
+    const selector = typeof params['selector'] === 'string' ? params['selector'] : '';
+    if (!selector) throw new Error('browser.hover.cdp: missing "selector"');
+    const surfaceId = typeof params['surfaceId'] === 'string' ? params['surfaceId'] : undefined;
+
+    const target = webviewCdpManager.getTarget(surfaceId, scope);
+    if (!target) throw noTargetError('browser.hover.cdp', surfaceId, scope);
+
+    const wc = webContents.fromId(target.webContentsId);
+    if (!wc || wc.isDestroyed()) throw new Error('browser.hover.cdp: WebContents unavailable');
+
+    const point = await approachElement(wc, target.webContentsId, selector, 'browser.hover.cdp');
+    return { ok: true, x: point.x, y: point.y };
+  });
+
+  /**
+   * browser.drag.cdp
+   * Drag one element onto another via real CDP Input mouse events:
+   * move to the source, press, move across in steps, release. The DOM-event
+   * fallback this replaces synthesised DragEvents, which are untrusted and also
+   * never reach anything built on pointer events rather than HTML5 drag-drop.
+   * params: { sourceSelector: string, targetSelector: string, surfaceId?: string }
+   */
+  registerLeased('browser.drag.cdp', async (params, scope) => {
+    const sourceSelector = typeof params['sourceSelector'] === 'string' ? params['sourceSelector'] : '';
+    const targetSelector = typeof params['targetSelector'] === 'string' ? params['targetSelector'] : '';
+    if (!sourceSelector || !targetSelector) {
+      throw new Error('browser.drag.cdp: missing "sourceSelector" or "targetSelector"');
+    }
+    const surfaceId = typeof params['surfaceId'] === 'string' ? params['surfaceId'] : undefined;
+
+    const target = webviewCdpManager.getTarget(surfaceId, scope);
+    if (!target) throw noTargetError('browser.drag.cdp', surfaceId, scope);
+
+    const wc = webContents.fromId(target.webContentsId);
+    if (!wc || wc.isDestroyed()) throw new Error('browser.drag.cdp: WebContents unavailable');
+
+    // One mechanism covers both kinds of drop target. Measured on Chrome 145:
+    // a press/move/release sent as raw `Input.dispatchMouseEvent` — no
+    // `Input.setInterceptDrags` — fires dragstart and drop on an HTML5
+    // `draggable` element as well as mousedown/mousemove/mouseup on a
+    // pointer-event one. Falling back to synthesised DragEvents for draggable
+    // sources would trade real input for events carrying isTrusted === false,
+    // which is the thing this handler exists to stop doing.
+    const from = await approachElement(wc, target.webContentsId, sourceSelector, 'browser.drag.cdp');
+    const to = await elementCenter(wc, targetSelector);
+    if (!to) throw new Error(`Element not found: ${targetSelector}`);
+
+    await wc.debugger.sendCommand('Input.dispatchMouseEvent', {
+      type: 'mousePressed', x: from.x, y: from.y, button: 'left', buttons: 1, clickCount: 1,
+    });
+    // Held-button moves: the drag itself, not a hover, so the button is named
+    // on every intermediate event.
+    for (const point of pointerPath(from, to)) {
+      await wc.debugger.sendCommand('Input.dispatchMouseEvent', {
+        type: 'mouseMoved', x: point.x, y: point.y, button: 'left', buttons: 1,
+      });
+    }
+    await wc.debugger.sendCommand('Input.dispatchMouseEvent', {
+      type: 'mouseReleased', x: to.x, y: to.y, button: 'left', buttons: 0, clickCount: 1,
+    });
+    setPointerPosition(wc, target.webContentsId, to);
+
+    return { ok: true, from, to };
   });
 
   /**
@@ -2282,7 +2487,15 @@ export function registerBrowserRpc(
         deviceScaleFactor: dm.deviceScaleFactor ?? 0, mobile: dm.mobile ?? false,
       });
       if (typeof params['userAgent'] === 'string') {
-        await send('Emulation.setUserAgentOverride', { userAgent: params['userAgent'] });
+        // Metadata is derived here rather than sent over the wire, so the
+        // Client Hints surface (navigator.userAgentData, Sec-CH-UA*) agrees
+        // with the UA string instead of still answering out of the real
+        // browser. See shared/uaMetadata.
+        const emulatedLocale = typeof params['locale'] === 'string' ? params['locale'] : undefined;
+        await send(
+          'Emulation.setUserAgentOverride',
+          buildUserAgentOverride(params['userAgent'], emulatedLocale) as unknown as Record<string, unknown>,
+        );
       }
       const label = typeof params['deviceLabel'] === 'string' ? params['deviceLabel'] : `${dm.width}x${dm.height}`;
       applied.push(`device=${label}`);
@@ -2295,7 +2508,15 @@ export function registerBrowserRpc(
       await send('Emulation.clearDeviceMetricsOverride');
       try {
         const ua = typeof wc.getUserAgent === 'function' ? wc.getUserAgent() : undefined;
-        if (ua) await send('Emulation.setUserAgentOverride', { userAgent: ua });
+        // Restore the metadata alongside the string: re-applying the real UA
+        // while the preset's Client Hints stayed in place would leave exactly
+        // the mismatch the preset path now avoids.
+        if (ua) {
+          await send(
+            'Emulation.setUserAgentOverride',
+            buildUserAgentOverride(ua) as unknown as Record<string, unknown>,
+          );
+        }
       } catch {
         /* getUserAgent / UA override unavailable on this transport; metrics still cleared */
       }

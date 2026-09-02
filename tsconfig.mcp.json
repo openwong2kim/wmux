@@ -11,6 +11,10 @@
   },
   "include": [
     "src/mcp/**/*",
+    "src/shared/humanRhythm.ts",
+    "src/shared/pointerPath.ts",
+    "src/shared/referer.ts",
+    "src/shared/uaMetadata.ts",
     "src/shared/rpc.ts",
     "src/shared/constants.ts",
     "src/shared/types.ts"
