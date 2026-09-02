@@ -98,6 +98,9 @@ describe('ChromeLauncher', () => {
     // port produces no file (measured on Chrome 151, #1064 dogfood).
     expect(args).toContain('--remote-debugging-port=0');
     expect(args).toContain('--remote-allow-origins=*');
+    // Without this switch the debugging port alone makes every page report
+    // `navigator.webdriver === true` (measured on Chrome 152).
+    expect(args).toContain('--disable-blink-features=AutomationControlled');
   });
 
   it('a stale DevToolsActivePort (dead previous instance) is neither adopted nor mistaken for the fresh write', async () => {
