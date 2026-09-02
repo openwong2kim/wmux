@@ -1372,8 +1372,14 @@ export function registerBrowserRpc(
       // Send the page we are leaving as the Referer when there is a real one,
       // which is what a click-through produces; see shared/referer for when
       // there is not (first load, about:blank, a browser-internal page).
-      const referrer = refererFor(wc.getURL(), url);
-      wc.loadURL(url, { ...(referrer && { httpReferrer: referrer }) }).then(
+      // getURL is guarded like getUserAgent below: a transport without it must
+      // still navigate, just without a referer.
+      const currentUrl = typeof wc.getURL === 'function' ? wc.getURL() : undefined;
+      const referrer = refererFor(currentUrl, url);
+      // Called with one argument when there is no referer, so the plain
+      // navigation path keeps exactly the shape it had.
+      const load = referrer ? wc.loadURL(url, { httpReferrer: referrer }) : wc.loadURL(url);
+      load.then(
         () => finish(),
         (err: unknown) => finish(err instanceof Error ? err : new Error(String(err))),
       );
