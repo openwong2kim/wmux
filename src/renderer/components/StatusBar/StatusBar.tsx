@@ -112,6 +112,7 @@ export default function StatusBar() {
         surfaceAgentStatus: s.surfaceAgentStatus,
         surfaceActivity: s.surfaceActivity,
         surfaceAgent: s.surfaceAgent,
+        surfacePendingQuestion: s.surfacePendingQuestion,
       }).filter((p) => p.ptyId !== '' && p.surfaceType === 'terminal');
       return {
         running: panes.filter((p) => p.agentStatus === 'running').length,
@@ -128,6 +129,7 @@ export default function StatusBar() {
         surfaceAgentStatus: s.surfaceAgentStatus,
         surfaceActivity: s.surfaceActivity,
         surfaceAgent: s.surfaceAgent,
+        surfacePendingQuestion: s.surfacePendingQuestion,
       }).filter((p) => p.ptyId !== '' && p.surfaceType === 'terminal'),
       'attention',
     );

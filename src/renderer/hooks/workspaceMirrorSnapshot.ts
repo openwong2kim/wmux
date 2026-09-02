@@ -145,7 +145,10 @@ export function buildFleetSnapshots(state: FleetSelectorState, ts: number): Flee
   // derivation). This is what the active surface carries when the attention
   // actually belongs to a background surface.
   const baseByPane = new Map<string, AgentStatus>();
-  for (const p of selectFleetPanes({ ...state, surfaceAgentStatus: {} })) {
+  // #1168 — the pending-question map is a SECOND attention source inside the
+  // selector, so stripping only `surfaceAgentStatus` would leave a blocked pane
+  // reporting `awaiting_input` as its non-attention base status. Both go.
+  for (const p of selectFleetPanes({ ...state, surfaceAgentStatus: {}, surfacePendingQuestion: {} })) {
     baseByPane.set(p.paneId, p.agentStatus);
   }
 

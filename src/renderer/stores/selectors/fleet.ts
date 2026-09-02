@@ -1,5 +1,6 @@
 import type { AgentStatus, Task, PaneLeaf, Surface } from '../../../shared/types';
 import { getLeafPanes, getWorkspaceLeafPanes } from '../../../shared/paneUtils';
+import { stashedPaneLiveness } from '../../../shared/paneStash';
 import { isBrainPtyId } from '../../../shared/constants';
 import type { StoreState } from '../index';
 
@@ -78,6 +79,11 @@ export type FleetSelectorState = Pick<StoreState, 'workspaces' | 'surfaceAgentSt
    *  non-agent active pane (e.g. btop) never borrows the agent's name/status.
    *  Optional so existing fixtures stay terse. */
   surfaceAgent?: StoreState['surfaceAgent'];
+  /** #1168 — per-PTY transcript-derived pending question. The roster promotes
+   *  this straight to `awaiting_input` ("the strongest evidence that this agent
+   *  needs input"); this pass has to read the same signal or the dot above the
+   *  roster contradicts it. Optional so existing fixtures stay terse. */
+  surfacePendingQuestion?: StoreState['surfacePendingQuestion'];
 };
 
 /**
@@ -238,7 +244,15 @@ export function selectFleetPanes(state: FleetSelectorState): FleetPane[] {
       // shown as idle. The card otherwise stays keyed on the active surface.
       let attention: AgentStatus | undefined;
       for (const s of leaf.surfaces) {
-        const st = s.ptyId ? state.surfaceAgentStatus[s.ptyId] : undefined;
+        if (!s.ptyId) continue;
+        // #1168 — a transcript-derived pending question outranks whatever the
+        // stop payload settled this surface to, exactly as it does in
+        // workspaceAgentRoster. Without it a payload carrying `complete`
+        // alongside an unanswered question painted a green "nothing to see"
+        // dot over a red roster row that was printing the question.
+        const st = state.surfacePendingQuestion?.[s.ptyId]?.trim()
+          ? 'awaiting_input'
+          : state.surfaceAgentStatus[s.ptyId];
         if (st && (attention === undefined || STATUS_RANK[st] < STATUS_RANK[attention])) {
           attention = st;
         }
@@ -283,11 +297,21 @@ export function selectFleetPanes(state: FleetSelectorState): FleetPane[] {
         activityAt !== undefined &&
         state.agentClockMs !== undefined &&
         state.agentClockMs - activityAt <= HOOK_RUNNING_TTL_MS;
-      const status: AgentStatus =
-        attention
-        ?? (metaStatus && metaStatus !== 'idle' ? metaStatus : undefined)
-        ?? (hookRunning ? 'running' : undefined)
-        ?? 'idle';
+      // #1168 — a stashed pane whose every terminal surface has lost its pty is
+      // a session the daemon has confirmed gone. The roster reports that as
+      // `error` / needs-you and offers recovery; this pass had no liveness
+      // handling at all, so the workspace's only entry being a dead stash left
+      // the dot neutral grey — "nothing here" for the one state that most wants
+      // the user. It cannot collide with the attention scan above: `exited`
+      // means no terminal surface still holds a ptyId, and every attention
+      // source is keyed by one.
+      const stashedExited = stashed && stashedPaneLiveness(leaf) === 'exited';
+      const status: AgentStatus = stashedExited
+        ? 'error'
+        : (attention
+          ?? (metaStatus && metaStatus !== 'idle' ? metaStatus : undefined)
+          ?? (hookRunning ? 'running' : undefined)
+          ?? 'idle');
       result.push({
         workspaceId: ws.id,
         workspaceName: ws.name,

@@ -54,6 +54,7 @@ export default function FleetView() {
   // #850: per-PTY agent identity — gates workspace metadata inheritance so a
   // non-agent active pane never borrows the real agent's name/status.
   const surfaceAgent = useStore((s) => s.surfaceAgent);
+  const surfacePendingQuestion = useStore((s) => s.surfacePendingQuestion);
   // X8 supervision mirror — subscribed here so the selector re-runs when a
   // supervised pane arms/stops or its restart count changes.
   const supervisionByPtyId = useStore((s) => s.supervisionByPtyId);
@@ -89,8 +90,8 @@ export default function FleetView() {
   // trees or the per-pty attention map change (the two inputs the selector
   // reads), not on every unrelated store mutation.
   const panes = useMemo(
-    () => sortFleetPanes(selectFleetPanes({ workspaces, surfaceAgentStatus, surfaceActivity, paneLabel, supervisionByPtyId, surfaceAgent }), fleetSortMode),
-    [workspaces, surfaceAgentStatus, surfaceActivity, paneLabel, supervisionByPtyId, surfaceAgent, fleetSortMode],
+    () => sortFleetPanes(selectFleetPanes({ workspaces, surfaceAgentStatus, surfaceActivity, paneLabel, supervisionByPtyId, surfaceAgent, surfacePendingQuestion }), fleetSortMode),
+    [workspaces, surfaceAgentStatus, surfaceActivity, paneLabel, supervisionByPtyId, surfaceAgent, surfacePendingQuestion, fleetSortMode],
   );
   const needsCount = useMemo(() => countNeedsAttention(panes), [panes]);
   // Stable identity key of the terminal ptyIds to poll for RAM. `panes`
