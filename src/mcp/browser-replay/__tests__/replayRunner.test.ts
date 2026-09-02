@@ -14,11 +14,17 @@ let refEntries: FakeRefEntry[] = [];
 let snapshotText = 'button "Sign in" [ref=1]';
 const resolved = new Set<string>();
 
+/** The runner narrows on this class, so the mock has to hand out the same one. */
+const { StaleRefError } = vi.hoisted(() => ({
+  StaleRefError: class StaleRefError extends Error {},
+}));
+
 vi.mock('../../playwright/snapshot', () => ({
   generateSnapshot: async () => snapshotText,
   listRefEntries: () => refEntries,
   resolveRef: async (_page: unknown, ref: string) =>
     resolved.has(ref) ? ({ click: async () => undefined, fill: async () => undefined } as never) : null,
+  StaleRefError,
 }));
 
 import { replayBlockedReason, replayTrace } from '../replayRunner';
@@ -129,7 +135,7 @@ describe('replayTrace — resolution on the 4-tuple axis', () => {
     const spy = vi.spyOn(mod, 'resolveRef').mockResolvedValue(element('sign-in'));
 
     await replayTrace(page, trace([refStep()]), undefined);
-    expect(spy).toHaveBeenCalledWith(page, '904');
+    expect(spy).toHaveBeenCalledWith(page, '904', { strictCount: true });
   });
 
   it('stops at the step whose element is gone and says which and why', async () => {
@@ -168,6 +174,8 @@ describe('replayTrace — resolution on the 4-tuple axis', () => {
     expect(result.failedStep).toBe(1);
     expect(result.steps[0].detail).toContain('can no longer be identified');
     expect(result.steps[0].detail).toContain('the recording had 1');
+    expect(result.steps[0].detail).toContain('were added');
+    expect(result.inconclusive).toBe(true);
     expect(clicks).toEqual([]);
   });
 
@@ -201,6 +209,8 @@ describe('replayTrace — resolution on the 4-tuple axis', () => {
     expect(result.ok).toBe(false);
     expect(result.failedStep).toBe(1);
     expect(result.steps[0].detail).toContain('no button "Sign in" on the page any more');
+    // A vanished element IS evidence about the flow — it must still quarantine.
+    expect(result.inconclusive).toBeUndefined();
     expect(clicks).toEqual([]);
   });
 
@@ -241,7 +251,10 @@ describe('replayTrace — resolution on the 4-tuple axis', () => {
     expect(clicks).toEqual(['second-delete']);
   });
 
-  it('refuses when the recorded position no longer exists in the population', async () => {
+  it('reports the COUNT when the population shrank past the recorded position', async () => {
+    // The count comparison runs before the index lookup (panel ④). Ordered the
+    // other way, this reported only "nothing at position 3" and never said that
+    // the population is what changed.
     refEntries = [
       { role: 'button', name: 'Sign in', sameNameIndex: 0, sameNameTotal: 1, frameKey: '', ref: 1 },
     ];
@@ -250,7 +263,46 @@ describe('replayTrace — resolution on the 4-tuple axis', () => {
     });
     const result = await replayTrace(page, trace([step]), undefined);
     expect(result.ok).toBe(false);
-    expect(result.steps[0].detail).toContain('none at position 3');
+    expect(result.steps[0].detail).toContain('the recording had 3');
+    expect(result.steps[0].detail).toContain('were removed');
+    expect(result.inconclusive).toBe(true);
+  });
+
+  it('stops when the population grew AFTER the internal snapshot was taken', async () => {
+    // The population compared in matchRefAxis was counted before the step ran.
+    // A decoy that appears in the window between that snapshot and the click is
+    // invisible to it, and is caught by resolveRef's strict count instead.
+    const mod = await import('../../playwright/snapshot');
+    const spy = vi
+      .spyOn(mod, 'resolveRef')
+      .mockRejectedValue(new StaleRefError('ref=1 is stale — the page now has 2 button element(s) named "Sign in"'));
+
+    const result = await replayTrace(page, trace([refStep()]), undefined);
+    expect(spy).toHaveBeenCalledWith(page, '1', { strictCount: true });
+    expect(result.ok).toBe(false);
+    expect(result.failedStep).toBe(1);
+    expect(result.steps[0].detail).toContain('the page now has 2');
+    expect(result.inconclusive).toBe(true);
+    expect(clicks).toEqual([]);
+  });
+
+  it('does not count-check an UNNAMED axis, whose stored total is a role count', async () => {
+    // smartRefAxisEntry stores roleIndex/roleTotal in the sameName fields for an
+    // element with no accessible name, measured over a different walk from the
+    // snapshot ref map counted here. Demanding equality would stop flows on
+    // pages that never changed.
+    refEntries = [
+      { role: 'button', name: '', sameNameIndex: 0, sameNameTotal: 1, frameKey: '', ref: 7 },
+    ];
+    const mod = await import('../../playwright/snapshot');
+    vi.spyOn(mod, 'resolveRef').mockResolvedValue(element('unnamed'));
+
+    const step = refStep({
+      axis: { kind: 'ref', role: 'button', name: '', sameNameIndex: 0, sameNameTotal: 4, frameKey: '' },
+    });
+    const result = await replayTrace(page, trace([step]), undefined);
+    expect(result.ok).toBe(true);
+    expect(clicks).toEqual(['unnamed']);
   });
 
   it('does not match an entry in a different frame', async () => {

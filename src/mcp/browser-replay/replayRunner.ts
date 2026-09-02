@@ -1,5 +1,5 @@
 import type { ElementHandle, Page } from 'playwright-core';
-import { generateSnapshot, listRefEntries, resolveRef } from '../playwright/snapshot';
+import { generateSnapshot, listRefEntries, resolveRef, StaleRefError } from '../playwright/snapshot';
 import { describeToolError } from '../playwright/toolError';
 import { validateNavigationUrl } from '../../shared/types';
 import {
@@ -46,6 +46,11 @@ export interface ReplayResult {
   failedStep?: number;
   /** Set when the run ended early on purpose rather than on a failure. */
   stoppedEarly?: string;
+  /**
+   * The run stopped because the PAGE changed shape, not because the flow is
+   * broken. Kept out of the trace's failure streak (see StepFailure).
+   */
+  inconclusive?: boolean;
   recordedShape: string;
   liveShape: string;
 }
@@ -93,10 +98,16 @@ function shapeWarning(recorded: string, live: string): string | null {
  * no cheaper fallback than stopping: the agent takes one snapshot and finishes
  * the flow live, which is also the next recording.
  *
+ * What this does NOT catch, and cannot with what is recorded: a change that
+ * leaves the COUNT the same — one look-alike added above, one element removed
+ * below. The population still measures N, the index still resolves, and the
+ * element it lands on is a different one. Closing that needs a disambiguator
+ * the recording does not carry.
+ *
  * A missing element is always a refusal — that is the other case where
  * continuing would act on something else.
  */
-function matchRefAxis(page: Page, axis: RefAxis): { ref: string } | { error: string } {
+function matchRefAxis(page: Page, axis: RefAxis): { ref: string } | StepFailure {
   const population = listRefEntries(page).filter(
     (entry) =>
       entry.role === axis.role &&
@@ -106,23 +117,48 @@ function matchRefAxis(page: Page, axis: RefAxis): { ref: string } | { error: str
   if (population.length === 0) {
     return { error: `no ${describeAxis(axis)} on the page any more` };
   }
+  // Before the index lookup, not after: a population that shrank past the
+  // recorded index would otherwise report only "no element at that position"
+  // and never say that the count is what changed.
+  //
+  // Unnamed axes are exempt, exactly as resolveRef's own count check is, and
+  // for a sharper reason here: their stored total is not a same-name count at
+  // all. smartRefAxisEntry (dom-intelligence) records roleIndex/roleTotal in
+  // these two fields for an element with no accessible name, measured over its
+  // own full-tree walk, while the number compared against is counted from this
+  // module's snapshot ref map (depth-capped, filtered when it overflows). The
+  // two enumerations do not have to agree on an unchanged page, so demanding
+  // equality would stop flows that nothing is wrong with.
+  //
+  // A NAMED smartRef axis is compared anyway, and the same two enumerations
+  // could in principle disagree there too. The axis carries no record of which
+  // recorder minted it, and giving it one would widen the stored format, so
+  // this takes the trade the whole check is built on: a stop the agent can
+  // finish live costs less than a click on the wrong element.
+  if (axis.name !== '' && population.length !== axis.sameNameTotal) {
+    const grew = population.length > axis.sameNameTotal;
+    return {
+      error:
+        `${describeAxis(axis)} can no longer be identified by position: the page has ` +
+        `${population.length} element(s) with that role and name, the recording had ` +
+        `${axis.sameNameTotal} — ` +
+        (grew
+          ? `element(s) were added, and one added at or above position ` +
+            `${axis.sameNameIndex + 1} moves a different element into that slot`
+          : `element(s) were removed, so position ${axis.sameNameIndex + 1} no longer ` +
+            'counts the same population'),
+      // The page changed shape under the recording. That says nothing about
+      // whether the flow itself is still good, so it must not push the trace
+      // toward quarantine (panel ⑤).
+      inconclusive: true,
+    };
+  }
   const match = population.find((entry) => entry.sameNameIndex === axis.sameNameIndex);
   if (!match) {
     return {
       error:
         `${describeAxis(axis)} is gone — the page now has ${population.length} ` +
         `element(s) with that role and name, none at position ${axis.sameNameIndex + 1}`,
-    };
-  }
-  if (population.length !== axis.sameNameTotal) {
-    return {
-      error:
-        `${describeAxis(axis)} can no longer be identified: the page has ` +
-        `${population.length} element(s) with that role and name, the recording had ` +
-        `${axis.sameNameTotal}. Position ${axis.sameNameIndex + 1} only names the same ` +
-        'element while that population is unchanged — an insertion anywhere, the first ' +
-        'position included, moves something else into that slot, so there is no telling ' +
-        'which one was recorded',
     };
   }
   return { ref: String(match.ref) };
@@ -132,7 +168,22 @@ interface Resolved {
   element: ElementHandle;
 }
 
-async function resolveAxis(page: Page, axis: StepAxis): Promise<Resolved | { error: string }> {
+/**
+ * Why a step could not act, and whether that is evidence about the FLOW.
+ *
+ * `inconclusive` marks a stop caused by the page having changed shape under
+ * the recording — a same-name population that grew or shrank, a ref the live
+ * page moved out from under the snapshot. The flow may well be perfectly good;
+ * refusing was about not guessing which element. Those stops still end the run,
+ * but they are kept out of the failure streak that quarantines a trace, so a
+ * page that sprouts a banner cannot permanently demote a working recording.
+ */
+interface StepFailure {
+  error: string;
+  inconclusive?: boolean;
+}
+
+async function resolveAxis(page: Page, axis: StepAxis): Promise<Resolved | StepFailure> {
   if (axis.kind === 'none') return { error: 'this step names no element' };
   if (axis.kind === 'css') {
     const locator = page.locator(axis.selector);
@@ -147,12 +198,29 @@ async function resolveAxis(page: Page, axis: StepAxis): Promise<Resolved | { err
   }
   const matched = matchRefAxis(page, axis);
   if ('error' in matched) return matched;
-  const element = await resolveRef(page, matched.ref).catch(() => null);
+  // strictCount, because the population compared above was counted from the
+  // internal snapshot — a measurement taken BEFORE this step. Anything the page
+  // added since is invisible to it, and on a singleton population resolveRef's
+  // own count check is off by default, so a decoy that appears in that window
+  // would be clicked as position 0. This closes the window at the moment of
+  // acting, which is the only place it can be closed.
+  let element: ElementHandle | null = null;
+  let moved: string | null = null;
+  try {
+    element = await resolveRef(page, matched.ref, { strictCount: true });
+  } catch (error) {
+    // StaleRefError is resolveRef's "the page is no longer the page this ref
+    // was numbered against" — same class as a changed population, and equally
+    // silent about whether the flow is still good. Anything else keeps the
+    // generic message it has always produced.
+    if (error instanceof StaleRefError) moved = error.message;
+  }
+  if (moved !== null) return { error: `${describeAxis(axis)}: ${moved}`, inconclusive: true };
   if (!element) return { error: `${describeAxis(axis)} could not be resolved to a live element` };
   return { element };
 }
 
-type StepOutcome = { detail: string } | { error: string };
+type StepOutcome = { detail: string } | StepFailure;
 
 /**
  * Separator the recorder joins a browser_select's values on, and the only
@@ -348,6 +416,7 @@ export async function replayTrace(
         steps,
         warnings,
         failedStep: index,
+        ...(outcome.inconclusive === true && { inconclusive: true }),
         recordedShape: trace.surfaceShape,
         liveShape,
       };

@@ -228,6 +228,32 @@ describe('resolveRef refuses a stale ref instead of substituting an element', ()
     expect(await resolveRef(page, '0')).toBe('button Copy#0');
   });
 
+  it('DOES block that singleton when the caller asks for strictCount', async () => {
+    // The replay lane opts in: there, index 0 is not reassuring, because a
+    // look-alike inserted above the recorded element between the internal
+    // snapshot and the click takes over position 0 and would be clicked as if
+    // it were the recorded one.
+    const page = makePage(tree([{ backendId: 86, role: 'button', name: 'Submit order' }]));
+    await generateSnapshot(page, { format: 'ai' });
+    (page as unknown as FakePage).liveCounts.set('button Submit order', 2);
+
+    await expect(
+      resolveRef(page, '0', { strictCount: true }),
+    ).rejects.toBeInstanceOf(StaleRefError);
+    expect((page as unknown as FakePage).handles).toEqual([]);
+  });
+
+  it('leaves an unnamed ref alone even under strictCount', async () => {
+    // No name filter means the locator counts named siblings too, so the two
+    // numbers are not comparable at all — strictness there is just a wrong
+    // answer, not a stricter one.
+    const page = makePage(tree([{ backendId: 87, role: 'button', name: '' }]));
+    await generateSnapshot(page, { format: 'ai' });
+    (page as unknown as FakePage).liveCounts.set('button ', 4);
+
+    expect(await resolveRef(page, '0', { strictCount: true })).toBe('button #0');
+  });
+
   it('still resolves the right instance while the page is unchanged', async () => {
     const page = makePage(
       tree([
