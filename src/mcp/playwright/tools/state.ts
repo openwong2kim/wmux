@@ -149,6 +149,21 @@ async function currentUrl(page: Page | null, scope: BrowserTargetScope): Promise
 // ---------------------------------------------------------------------------
 
 /**
+ * A device preset's screen size, which differs from its viewport (an iPhone 13
+ * is 390x664 of viewport inside a 390x844 screen). Playwright's device table
+ * ships it, but its public `DeviceDescriptor` type does not list the field, so
+ * it is read through a narrowing rather than assumed present.
+ */
+function screenOf(
+  descriptor: { viewport: { width: number; height: number } },
+): { width: number; height: number } | undefined {
+  const screen = (descriptor as { screen?: { width?: number; height?: number } }).screen;
+  return typeof screen?.width === 'number' && typeof screen?.height === 'number'
+    ? { width: screen.width, height: screen.height }
+    : undefined;
+}
+
+/**
  * Register state-management MCP tools on the given server.
  *
  * Tools:
@@ -398,6 +413,7 @@ export function registerStateTools(server: McpServer, deps: BrowserToolDeps): vo
         // any partial emulation is applied.
         // B0: devices lives in the lazy playwright chunk (first use loads it).
         const deviceDescriptor = device ? loadPlaywright().devices[device] : undefined;
+        const deviceScreen = deviceDescriptor ? screenOf(deviceDescriptor) : undefined;
         if (device && !deviceDescriptor) {
           throw new Error(
             `Unknown device "${device}". Use a name from Playwright's device list (e.g. "iPhone 13", "Pixel 5").`,
@@ -493,16 +509,32 @@ export function registerStateTools(server: McpServer, deps: BrowserToolDeps): vo
               // the CDP session open (the override dies with its session) and
               // re-applies to tabs opened later, matching the context-wide
               // reach of the header above.
+              // The UA string and the viewport were the whole of the preset;
+              // navigator.platform, devicePixelRatio, maxTouchPoints and the
+              // mobile flag stayed on the real machine and contradicted it.
+              // The descriptor already carries all four, so hand them over
+              // with the UA rather than applying half a device.
               const ok = await applyUserAgentEmulation(
                 context,
                 page,
                 deviceDescriptor.userAgent,
                 locale ?? undefined,
+                {
+                  width: deviceDescriptor.viewport.width,
+                  height: deviceDescriptor.viewport.height,
+                  deviceScaleFactor: deviceDescriptor.deviceScaleFactor,
+                  mobile: deviceDescriptor.isMobile,
+                  hasTouch: deviceDescriptor.hasTouch,
+                  ...(deviceScreen && {
+                    screenWidth: deviceScreen.width,
+                    screenHeight: deviceScreen.height,
+                  }),
+                },
               );
               if (!ok) {
                 // Client Hints stay on the real browser's values; the UA header
                 // is still applied. Worth reporting, not worth failing on.
-                applied.push('clientHints=unavailable (UA header applied without matching hints)');
+                applied.push('clientHints=unavailable (UA header applied without matching hints or device metrics)');
               }
               applied.push(`device=${device} (${deviceDescriptor.viewport.width}x${deviceDescriptor.viewport.height})`);
             } else {
@@ -539,6 +571,16 @@ export function registerStateTools(server: McpServer, deps: BrowserToolDeps): vo
               emulateParams.deviceMetrics = {
                 width: deviceDescriptor.viewport.width,
                 height: deviceDescriptor.viewport.height,
+                // Same reason as the Playwright branch above: without these the
+                // packaged lane emulates a phone's UA on a desktop's pixel
+                // ratio, touch points and viewport semantics.
+                deviceScaleFactor: deviceDescriptor.deviceScaleFactor,
+                mobile: deviceDescriptor.isMobile,
+                hasTouch: deviceDescriptor.hasTouch,
+                ...(deviceScreen && {
+                  screenWidth: deviceScreen.width,
+                  screenHeight: deviceScreen.height,
+                }),
               };
               emulateParams.deviceLabel = `${device} (${deviceDescriptor.viewport.width}x${deviceDescriptor.viewport.height})`;
               emulateParams.userAgent = deviceDescriptor.userAgent;

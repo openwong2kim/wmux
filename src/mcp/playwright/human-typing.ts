@@ -1,5 +1,5 @@
 import type { Page } from 'playwright-core';
-import { generateTypingDelays } from '../../shared/humanRhythm';
+import { generateKeyHolds, generateTypingDelays } from '../../shared/humanRhythm';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -22,6 +22,29 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/**
+ * Press one character, holding the key down for `holdMs` before releasing it.
+ *
+ * `keyboard.press()` does the down and the up back to back, which is a ~1 ms
+ * dwell time — no hand produces that. Splitting the press is what puts a real
+ * hold between the two events; see `shared/humanRhythm`'s key-hold section.
+ *
+ * A character `keyboard.down()` cannot describe as a key (CJK, an emoji's
+ * surrogate half) still has to be inserted, and `press()` is the path that
+ * inserts it as text. That fallback is why this is wrapped: losing the hold on
+ * those characters is the cost, dropping them entirely is not an option.
+ */
+async function pressWithHold(page: Page, char: string, holdMs: number): Promise<void> {
+  try {
+    await page.keyboard.down(char);
+  } catch {
+    await page.keyboard.press(char);
+    return;
+  }
+  await sleep(holdMs);
+  await page.keyboard.up(char);
+}
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -42,12 +65,25 @@ export function generateDelaySchedule(
 }
 
 /**
+ * Per-character key hold times (in ms) for the given text — how long each key
+ * stays down, as opposed to the gap after it that `generateDelaySchedule`
+ * returns. Same source module, so both lanes hold keys alike.
+ */
+export function generateHoldSchedule(
+  text: string,
+  options?: HumanTypingOptions,
+): number[] {
+  return generateKeyHolds(text, options);
+}
+
+/**
  * Type `text` into the element identified by `selector` with randomised
- * inter-keystroke delays that mimic human typing.
+ * keystroke timing that mimics human typing.
  *
- * Each character is pressed individually via `page.keyboard.press()`, with the
- * pause after it drawn from the shared typing rhythm — see
- * `generateDelaySchedule` and `shared/humanRhythm`.
+ * Each character is pressed individually, held down for a randomised dwell time
+ * and then released, with the pause after it drawn from the shared typing
+ * rhythm — see `generateDelaySchedule`, `generateHoldSchedule` and
+ * `shared/humanRhythm`.
  *
  * If `selector` is provided the element is clicked first to ensure focus.
  */
@@ -63,9 +99,10 @@ export async function typeHumanlike(
   }
 
   const delays = generateDelaySchedule(text, options);
+  const holds = generateHoldSchedule(text, options);
 
   for (let i = 0; i < text.length; i++) {
-    await page.keyboard.press(text[i]);
+    await pressWithHold(page, text[i], holds[i]);
     await sleep(delays[i]);
   }
 }

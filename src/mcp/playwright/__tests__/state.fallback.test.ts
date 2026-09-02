@@ -206,6 +206,22 @@ describe('browser_emulate RPC fallback', () => {
     expect(params.deviceReset).toBeUndefined();
   });
 
+  it('sends the whole preset, not just its viewport and UA', async () => {
+    // The packaged lane used to receive width + height + UA and nothing else,
+    // so an emulated iPhone kept the real machine's pixel ratio, touch points
+    // and desktop viewport semantics — each one contradicting the UA.
+    mockSendRpc.mockResolvedValue({ applied: ['device=iPhone 13'] });
+    await emulate({ device: 'iPhone 13' });
+    const params = mockSendRpc.mock.calls[0][1] as Record<string, unknown>;
+    expect(params.deviceMetrics).toMatchObject({
+      deviceScaleFactor: 3,
+      mobile: true,
+      hasTouch: true,
+      screenWidth: expect.any(Number),
+      screenHeight: expect.any(Number),
+    });
+  });
+
   it('flags an unknown device before any RPC', async () => {
     const res = await emulate({ device: 'NoSuchPhone 99' });
     expect(res.isError).toBe(true);

@@ -13,13 +13,45 @@
 //
 // So this module holds one live session per page for as long as the emulation
 // is meant to last, and re-applies the override to pages that appear later.
+//
+// The same session carries the rest of the preset. A device preset used to
+// reach the page as a UA string and a viewport width and nothing else, so an
+// emulated iPhone answered `navigator.platform === 'MacIntel'`,
+// `maxTouchPoints === 0` and `devicePixelRatio === 1` — every one of them
+// contradicting the UA it had just announced. `platform` rides along on the UA
+// override; the metrics and the touch points need their own commands, sent
+// here so they live and die with the same session.
 // ---------------------------------------------------------------------------
 
 import type { Browser, BrowserContext, CDPSession, Page } from 'playwright-core';
 import { buildUserAgentOverride, type UserAgentOverride } from '../../shared/uaMetadata';
 
+/**
+ * The physical half of a device preset, straight off Playwright's descriptor.
+ * Kept separate from the UA override because CDP takes them as different
+ * commands, not because they are separable — a preset applies both or neither.
+ */
+export interface EmulatedDeviceMetrics {
+  width: number;
+  height: number;
+  /** `window.devicePixelRatio`. 3 on an iPhone, 1 on the desktop it was 1 on. */
+  deviceScaleFactor: number;
+  /** Mobile viewport semantics: meta-viewport, overlay scrollbars, text autosizing. */
+  mobile: boolean;
+  /** Whether the device has a touchscreen at all — drives `maxTouchPoints`. */
+  hasTouch: boolean;
+  /** `screen.width`/`screen.height`, which differ from the viewport on a phone. */
+  screenWidth?: number;
+  screenHeight?: number;
+}
+
+/** What a touchscreen device reports for `navigator.maxTouchPoints`. */
+const TOUCH_POINTS = 5;
+
 interface EmulationState {
   override: UserAgentOverride;
+  /** Absent when the caller emulated a UA without a device preset. */
+  metrics?: EmulatedDeviceMetrics;
   /** Live sessions, one per page, held open so the override survives. */
   sessions: Map<Page, CDPSession>;
   /** Listener re-applying the override to pages opened later. */
@@ -46,6 +78,25 @@ async function applyToPage(
   try {
     const session = await context.newCDPSession(page);
     await loose(session).send('Emulation.setUserAgentOverride', state.override);
+    if (state.metrics) {
+      const m = state.metrics;
+      await loose(session).send('Emulation.setDeviceMetricsOverride', {
+        width: m.width,
+        height: m.height,
+        deviceScaleFactor: m.deviceScaleFactor,
+        mobile: m.mobile,
+        ...(m.screenWidth !== undefined && m.screenHeight !== undefined && {
+          screenWidth: m.screenWidth,
+          screenHeight: m.screenHeight,
+        }),
+      });
+      // Sent on both branches: a preset that turns touch OFF (a desktop preset
+      // after a phone one) has to say so, and "enabled: false" is how.
+      await loose(session).send('Emulation.setTouchEmulationEnabled', {
+        enabled: m.hasTouch,
+        maxTouchPoints: m.hasTouch ? TOUCH_POINTS : 0,
+      });
+    }
     state.sessions.set(page, session);
     // A closed page's session is dead; drop it rather than leaking the entry.
     page.once('close', () => {
@@ -58,8 +109,9 @@ async function applyToPage(
 }
 
 /**
- * Apply `userAgent` (plus matching Client Hints) to every page in `context`,
- * now and as new ones open.
+ * Apply `userAgent` (plus matching Client Hints, `navigator.platform` and, when
+ * `metrics` is given, the preset's pixel ratio, mobile flag and touch points)
+ * to every page in `context`, now and as new ones open.
  *
  * Returns false when CDP refused, in which case the caller's UA header is still
  * in force and only the hints are missing.
@@ -69,11 +121,13 @@ export async function applyUserAgentEmulation(
   page: Page,
   userAgent: string,
   locale?: string | null,
+  metrics?: EmulatedDeviceMetrics,
 ): Promise<boolean> {
   await clearUserAgentEmulation(context);
 
   const state: EmulationState = {
     override: buildUserAgentOverride(userAgent, locale),
+    ...(metrics && { metrics }),
     sessions: new Map(),
     onPage: () => {},
   };
@@ -94,8 +148,9 @@ export async function applyUserAgentEmulation(
 }
 
 /**
- * Undo an emulated UA: restore the browser's real UA and hints, drop the
- * new-page listener, and close the sessions being held open.
+ * Undo an emulated UA: restore the browser's real UA and hints, drop any
+ * device metrics and touch emulation the preset installed, drop the new-page
+ * listener, and close the sessions being held open.
  *
  * The real UA has to be re-applied rather than merely dropped — CDP has no
  * "clear user agent override" command, and detaching the session while the
@@ -115,6 +170,18 @@ export async function clearUserAgentEmulation(context: BrowserContext): Promise<
           'Emulation.setUserAgentOverride',
           buildUserAgentOverride(realUserAgent),
         );
+      }
+      if (state.metrics) {
+        // Undo the physical half too. A reset that restored the desktop UA but
+        // left devicePixelRatio 3 and five touch points behind would be the
+        // same contradiction the preset path exists to remove, only pointing
+        // the other way. The viewport override goes with it — which is why the
+        // tool's reset message points at browser_resize.
+        await loose(session).send('Emulation.clearDeviceMetricsOverride');
+        await loose(session).send('Emulation.setTouchEmulationEnabled', {
+          enabled: false,
+          maxTouchPoints: 0,
+        });
       }
     } catch {
       /* the page is gone, or CDP refused; the session detach below is enough */

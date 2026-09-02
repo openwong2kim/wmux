@@ -130,3 +130,46 @@ export function generateTypingDelays(
   const scale = budget / total;
   return delays.map((d) => d * scale);
 }
+
+// ---------------------------------------------------------------------------
+// Key hold (dwell time)
+// ---------------------------------------------------------------------------
+//
+// The inter-key delay above says how long to wait BETWEEN keystrokes. It says
+// nothing about how long each key is held, and both lanes used to press and
+// release in the same breath: keydown → keyup in about a millisecond. A person
+// holds a key for tens of milliseconds, and dwell time is a standard input of
+// keystroke-dynamics biometrics — a stream of ~1 ms holds is as distinctive as
+// a stream of perfectly uniform gaps was.
+//
+// Same shape as the inter-key draw (log-normal, injectable RNG) around a
+// median in the middle of the range people actually produce.
+
+/** Median hold, in ms — the middle of the 40–120 ms band typists produce. */
+export const KEY_HOLD_MEDIAN_MS = 70;
+/** Spread of the log-normal hold. Matches the inter-key draw's skew. */
+const HOLD_SIGMA = 0.35;
+/** A hold never falls below this… */
+export const KEY_HOLD_MIN_MS = 30;
+/** …nor above this. The tail is long, but not "leaning on the key" long. */
+export const KEY_HOLD_MAX_MS = 150;
+
+/**
+ * How long to hold one key down, in ms.
+ *
+ * Only `rng` is read from `options`: the hold is a property of the hand, not of
+ * the typist's chosen speed band, so it does not scale with min/maxDelay.
+ */
+export function keyHoldFor(options?: TypingRhythmOptions): number {
+  const rng = options?.rng ?? Math.random;
+  const base = KEY_HOLD_MEDIAN_MS * Math.exp(HOLD_SIGMA * gaussian(rng));
+  return Math.min(Math.max(base, KEY_HOLD_MIN_MS), KEY_HOLD_MAX_MS);
+}
+
+/** Per-character hold times for `text`, index i being the hold of `text[i]`. */
+export function generateKeyHolds(
+  text: string,
+  options?: TypingRhythmOptions,
+): number[] {
+  return Array.from({ length: text.length }, () => keyHoldFor(options));
+}

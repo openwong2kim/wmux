@@ -1745,12 +1745,18 @@ export function registerBrowserRpc(
     const selector = typeof params['selector'] === 'string' ? params['selector'] : undefined;
 
     const delays = humanBehavior.generateTypingSchedule(text);
+    // The gaps alone describe a typist who presses and releases every key in
+    // the same millisecond. `holds` is how long each key stays down, so a
+    // caller driving the keyboard from this schedule produces a real dwell
+    // time rather than a biometric giveaway.
+    const holds = humanBehavior.generateHoldSchedule(text);
     const config = humanBehavior.getConfig();
 
     return {
       text,
       ...(selector && { selector }),
       delays,
+      holds,
       totalDuration: delays.reduce((sum, d) => sum + d, 0),
       config: {
         typingDelay: config.typingDelay,
@@ -2481,11 +2487,25 @@ export function registerBrowserRpc(
     }
 
     if (params['deviceMetrics'] && typeof params['deviceMetrics'] === 'object') {
-      const dm = params['deviceMetrics'] as { width: number; height: number; deviceScaleFactor?: number; mobile?: boolean };
+      const dm = params['deviceMetrics'] as {
+        width: number; height: number; deviceScaleFactor?: number; mobile?: boolean;
+        hasTouch?: boolean; screenWidth?: number; screenHeight?: number;
+      };
       await send('Emulation.setDeviceMetricsOverride', {
         width: dm.width, height: dm.height,
         deviceScaleFactor: dm.deviceScaleFactor ?? 0, mobile: dm.mobile ?? false,
+        ...(dm.screenWidth !== undefined && dm.screenHeight !== undefined
+          ? { screenWidth: dm.screenWidth, screenHeight: dm.screenHeight }
+          : {}),
       });
+      if (dm.hasTouch !== undefined) {
+        // navigator.maxTouchPoints stayed 0 under a phone preset, contradicting
+        // the UA the same call had just installed. Sent on both branches so a
+        // desktop preset after a phone one actually turns touch back off.
+        await send('Emulation.setTouchEmulationEnabled', {
+          enabled: dm.hasTouch, maxTouchPoints: dm.hasTouch ? 5 : 0,
+        });
+      }
       if (typeof params['userAgent'] === 'string') {
         // Metadata is derived here rather than sent over the wire, so the
         // Client Hints surface (navigator.userAgentData, Sec-CH-UA*) agrees
@@ -2506,6 +2526,10 @@ export function registerBrowserRpc(
       // subsequent page. CDP has no "clear UA override" command, so re-apply the
       // WebContents' own UA to shed the mobile one set by the preset above.
       await send('Emulation.clearDeviceMetricsOverride');
+      // The touch points the preset installed outlive clearDeviceMetricsOverride,
+      // so a reset that skipped this left a desktop UA reporting a touchscreen.
+      await send('Emulation.setTouchEmulationEnabled', { enabled: false, maxTouchPoints: 0 })
+        .catch(() => { /* transport without touch emulation; metrics still cleared */ });
       try {
         const ua = typeof wc.getUserAgent === 'function' ? wc.getUserAgent() : undefined;
         // Restore the metadata alongside the string: re-applying the real UA

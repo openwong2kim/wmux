@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { brandsForUserAgent, buildUserAgentOverride } from '../uaMetadata';
+import { brandsForUserAgent, buildUserAgentOverride, platformForUserAgent } from '../uaMetadata';
 
 // Verbatim UA strings from Playwright's device table, plus the macOS desktop
 // Chrome string the "chrome" backend runs under.
@@ -119,6 +119,60 @@ describe('buildUserAgentOverride', () => {
       // Non-Chromium presets carry no metadata to disagree with.
       if (!meta) continue;
       expect(meta.mobile).toBe(/Mobile|iPhone|iPad|Android/.test(ua));
+    }
+  });
+});
+
+describe('platformForUserAgent', () => {
+  // navigator.platform is the legacy string every browser still ships, and the
+  // one an emulated iPhone used to answer "MacIntel" for — contradicting the UA
+  // it had just announced. These are the values the real devices report, not
+  // descriptions of them.
+  it('reports what each emulated device actually reports', () => {
+    expect(platformForUserAgent(UA.iPhone13)).toBe('iPhone');
+    expect(platformForUserAgent(UA.pixel5)).toBe('Linux armv8l');
+    expect(platformForUserAgent(UA.galaxyS9)).toBe('Linux armv8l');
+    expect(platformForUserAgent(UA.desktopMac)).toBe('MacIntel');
+    expect(platformForUserAgent(UA.desktopWindows)).toBe('Win32');
+  });
+
+  it('reads an iPad as an iPad, not as the Mac its UA mentions', () => {
+    const iPad =
+      'Mozilla/5.0 (iPad; CPU OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1';
+    expect(platformForUserAgent(iPad)).toBe('iPad');
+  });
+
+  it('reports desktop Linux distinctly from Android', () => {
+    expect(
+      platformForUserAgent(
+        'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36',
+      ),
+    ).toBe('Linux x86_64');
+  });
+});
+
+describe('buildUserAgentOverride platform', () => {
+  it('carries the platform on a Chromium preset', () => {
+    expect(buildUserAgentOverride(UA.pixel5).platform).toBe('Linux armv8l');
+  });
+
+  it('carries the platform on a non-Chromium preset, which has no hints to carry it', () => {
+    const override = buildUserAgentOverride(UA.iPhone13);
+    expect(override.userAgentMetadata).toBeUndefined();
+    expect(override.platform).toBe('iPhone');
+  });
+
+  it('omits the platform rather than reporting the empty string no browser reports', () => {
+    const override = buildUserAgentOverride('Some/1.0 (unrecognised platform)');
+    expect('platform' in override).toBe(false);
+  });
+
+  it('never leaves the platform disagreeing with the UA about the device', () => {
+    for (const ua of Object.values(UA)) {
+      const platform = buildUserAgentOverride(ua).platform!;
+      expect(platform).not.toBe('');
+      const isMobileUa = /iPhone|iPad|iPod|Android/.test(ua);
+      expect(['iPhone', 'iPad', 'Linux armv8l'].includes(platform)).toBe(isMobileUa);
     }
   });
 });

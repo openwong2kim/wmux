@@ -37,6 +37,17 @@ export interface UserAgentMetadata {
 export interface UserAgentOverride {
   userAgent: string;
   /**
+   * What `navigator.platform` answers. Not derived from `userAgentMetadata` —
+   * a Safari UA carries no metadata at all, and an emulated iPhone that still
+   * reported "MacIntel" contradicted its own UA string in the one property
+   * every fingerprinting script reads first.
+   *
+   * Absent when the UA names no platform we recognise: leaving the real one in
+   * place is a smaller lie than overriding it with the empty string, which no
+   * browser reports.
+   */
+  platform?: string;
+  /**
    * Absent for a non-Chromium preset. Chromium fills the Client Hints surface
    * from whatever it is given, so handing it `brands: []` would produce a
    * `navigator.userAgentData` that exists but is empty — a shape no real
@@ -94,6 +105,26 @@ export function fullVersionListForUserAgent(ua: string): UserAgentBrand[] {
     { brand: 'Chromium', version: full },
     { brand: 'Google Chrome', version: full },
   ];
+}
+
+/**
+ * `navigator.platform` for an emulated UA — the legacy string every browser
+ * still ships, and the one a device preset used to leave answering out of the
+ * real machine.
+ *
+ * These are the exact values the emulated browsers report, not descriptions of
+ * them: iOS Safari says "iPhone"/"iPad", Chrome on Android says "Linux armv8l",
+ * Chrome on macOS says "MacIntel" (on Apple silicon too), Windows "Win32"
+ * (on 64-bit too) and desktop Linux "Linux x86_64".
+ */
+export function platformForUserAgent(ua: string): string {
+  if (/iPad/.test(ua)) return 'iPad';
+  if (/iPhone|iPod/.test(ua)) return 'iPhone';
+  if (/Android/.test(ua)) return 'Linux armv8l';
+  if (/Macintosh|Mac OS X/.test(ua)) return 'MacIntel';
+  if (/Windows/.test(ua)) return 'Win32';
+  if (/Linux|X11/.test(ua)) return 'Linux x86_64';
+  return '';
 }
 
 interface PlatformFacts {
@@ -182,9 +213,12 @@ export function buildUserAgentOverride(
   // so navigator.userAgentData stays absent as it is in the browser being
   // emulated. An empty-but-present hints object would be a fingerprint of its
   // own — no shipping browser produces one.
+  const platform = platformForUserAgent(userAgent);
+
   if (brands.length === 0) {
     return {
       userAgent,
+      ...(platform && { platform }),
       ...(locale && { acceptLanguage: locale }),
     };
   }
@@ -194,6 +228,7 @@ export function buildUserAgentOverride(
 
   return {
     userAgent,
+    ...(platform && { platform }),
     userAgentMetadata: {
       brands,
       fullVersionList: fullVersionListForUserAgent(userAgent),
