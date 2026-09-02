@@ -14,7 +14,7 @@
 //
 // It can't go through the normal declare/approve flow either: several tools
 // it exposes map to `wmux.internal` methods (surface.list, surface.new/close
-// [issue #285], company.a2a.*) which `permissionGrammar` deliberately forbids
+// [issue #285], browser.tabs) which `permissionGrammar` deliberately forbids
 // from ever appearing in a declaration (RESERVED_PREFIXES = ['wmux.']). No
 // amount of user approval can grant those — the source-qualified,
 // name-recognised wire lane is the only path.
@@ -294,13 +294,13 @@ export const FIRST_PARTY_METHODS: ReadonlySet<RpcMethod> = new Set<RpcMethod>([
   // server-derived in the handler and the spawn is approval-gated, so the grant
   // is to ATTEMPT the call; an unverifiable caller still fails closed.
   'task.fanout.start',
-  // company mode (all wmux.internal — undeclarable, hence the need for this list)
-  'company.a2a.whoami',
-  'company.a2a.send',
-  'company.a2a.broadcast',
-  'company.a2a.inbox',
-  'company.a2a.ack',
-  'company.a2a.status',
+  // `company.a2a.*` used to be granted here for the six company_a2a_* tools.
+  // Those tools are gone, so the grants went with them (least privilege — a
+  // reserved wmux.internal method must not stay reachable by a clientName
+  // impersonator once nothing in src/mcp/** calls it). The pipe handlers
+  // themselves remain registered but currently have no caller: those six tools
+  // were the only one they ever had. They are kept, not deleted, pending the
+  // Company mode re-evaluation.
 ]);
 
 /**

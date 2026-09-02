@@ -3,7 +3,7 @@
   "profiles": {
     "full": {
       "maxListBytes": 78000,
-      "wireResultSha256": "91f906b2d8a6e0cc0b52c3f322a3dc3198dcc085d76aa664acf462eebb4631a9",
+      "wireResultSha256": "e82d7dfd4f92ab9425f69a2a5648f18c57ab64f9dbc4b56b948153d9311aa1a1",
       "instructionSha256": "f18849bb1ea62bcf5a1e46a73d633c787b4e08e763cc04b01c4e557df8f833eb",
       "toolNames": [
         "browser_open",
@@ -69,12 +69,6 @@
         "a2a_task_cancel",
         "a2a_broadcast",
         "a2a_set_skills",
-        "company_a2a_whoami",
-        "company_a2a_send",
-        "company_a2a_broadcast",
-        "company_a2a_inbox",
-        "company_a2a_ack",
-        "company_a2a_status",
         "channel_list",
         "channel_create",
         "channel_post",

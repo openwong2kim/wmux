@@ -126,8 +126,8 @@ describe('FIRST_PARTY_METHODS source invariant', () => {
     );
 
     // The reserved methods the bundled first-party server legitimately calls:
-    // a workspace/window read, workspace-exact browser tab lifecycle, the
-    // company-scoped A2A messaging tools, and — per issue #285 (security review:
+    // a workspace/window read, workspace-exact browser tab lifecycle, and
+    // — per issue #285 (security review:
     // plans/issue-285-pane-lifecycle-mcp-tools.md §6) — surface lifecycle
     // (new/close), so a supervisor agent can spawn/reap its own terminals
     // through MCP. The bypass still never reaches WORKSPACE lifecycle, daemon
@@ -142,12 +142,9 @@ describe('FIRST_PARTY_METHODS source invariant', () => {
       // issue #285 — supervisor pane/surface lifecycle (reserved wmux.internal)
       'surface.new',
       'surface.close',
-      'company.a2a.whoami',
-      'company.a2a.send',
-      'company.a2a.broadcast',
-      'company.a2a.inbox',
-      'company.a2a.ack',
-      'company.a2a.status',
+      // `company.a2a.*` was here for the six company_a2a_* tools; both the
+      // tools and the grants are gone (the least-privilege assertion below is
+      // what would have caught them lingering).
     ]);
 
     const leaked = reserved

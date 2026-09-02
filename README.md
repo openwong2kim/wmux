@@ -105,7 +105,7 @@ winget install openwong2kim.wmux
 | 🔔 **Knows when an agent finishes** | Desktop notification + taskbar flash on completion. Flags `rm -rf`, `git push --force`, `DROP TABLE` for your approval. |
 | ⏰ **Prompts arrive when the quota resets** | Schedule an exact prompt for one daemon-owned agent session — including a one-click **+5h** target. wmux persists an at-most-once occurrence, waits through running turns, approvals, and active typing, re-verifies the agent before paste and submit, then delivers when the session is ready. |
 | 💾 **Survives quit, crash & reboot** | A tmux-style daemon owns every PTY. Reopen and your sessions are **still running — processes and all.** A pane declared in `wmux.json` is **supervised like an init system** — auto-restarted across crashes and reboots (the app relaunches at login), resuming the *exact* Claude conversation it was on. |
-| 🤖 **Zero-config MCP** | Launch wmux and Claude Code just works — **86 tools** (browser, terminal, panes, channels, A2A, fan-out) register themselves, scoped to the workspace that called them. |
+| 🤖 **Zero-config MCP** | Launch wmux and Claude Code just works — **87 tools** (browser, terminal, panes, channels, A2A, fan-out) register themselves, scoped to the workspace that called them. |
 | 🌐 **A browser is in the workspace** | Chrome over CDP is integrated, so browser work happens in the same window as the panes and channels — your agent clicks, types, and screenshots through the same MCP surface, with nothing to wire up. Works with React inputs and CJK text. |
 
 ---
@@ -184,7 +184,7 @@ winget install openwong2kim.wmux
 
 **Daemon** — background session management (survives app restart), scrollback dump + auto-recovery, start-at-login registration on Windows and macOS (relaunches after reboot), dead-session TTL reaping.
 
-**MCP tools** — `browser_*` (open / navigate / screenshot / snapshot / click / fill / type / evaluate / press_key), `terminal_read` / `terminal_read_events` (OSC 133) / `terminal_send` / `terminal_send_key`, `workspace_list` / `surface_list` / `surface_new` / `pane_list` / `pane_split` / `pane_close` / `pane_focus`, `channel_*` (create / post / read / ack / invite / join / list), `a2a_*` agent-to-agent + task delegation, `company_a2a_*`, `wmux_events_poll` / `wmux_search_panes`. Every browser tool takes a `surfaceId` so each session drives its own browser.
+**MCP tools** — `browser_*` (open / navigate / screenshot / snapshot / click / fill / type / evaluate / press_key), `terminal_read` / `terminal_read_events` (OSC 133) / `terminal_send` / `terminal_send_key`, `workspace_list` / `surface_list` / `surface_new` / `pane_list` / `pane_split` / `pane_close` / `pane_focus`, `channel_*` (create / post / read / ack / invite / join / list), `a2a_*` agent-to-agent + task delegation, `wmux_events_poll` / `wmux_search_panes`. Every browser tool takes a `surfaceId` so each session drives its own browser.
 
 </details>
 
