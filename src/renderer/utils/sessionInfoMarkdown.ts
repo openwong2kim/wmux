@@ -67,12 +67,20 @@ function renderSurfaceLines(
       // empty "PTY ID:" line; and its cwd is a real path on ANOTHER machine,
       // so pasting this into an agent's prompt handed it a directory that
       // does not exist here, labelled exactly like one that does.
-      out.push(`${idx}. ${activeTag}Remote terminal — ${s.shell || 'unknown'}`);
+      // No `— ${shell}` on the heading: nothing populates a remote surface's
+      // shell. `addRemoteSurface` is called from exactly one place and passes
+      // undefined for it, and only the title is updated afterwards, so the
+      // usual fallback rendered a permanent "— unknown". The OSC title the
+      // remote shell reports is the one live description, so it goes on its
+      // own line where it is not pretending to be a shell name.
+      out.push(`${idx}. ${activeTag}Remote terminal`);
       out.push(`   - Surface ID: ${s.id}`);
       if (s.remoteHostId) out.push(`   - Host ID: ${s.remoteHostId}`);
       if (s.remoteSessionId) out.push(`   - Remote session: ${s.remoteSessionId}`);
-      // Deliberately labelled as remote — `meta.cwd` is this desktop's probe
-      // of a LOCAL pane and must not be substituted for the other machine's.
+      if (s.title) out.push(`   - Title: ${s.title}`);
+      // Guarded, and labelled as remote when it does arrive: `meta.cwd` is
+      // this desktop's probe of a LOCAL pane and must never stand in for the
+      // other machine's directory.
       if (s.cwd) out.push(`   - CWD (remote): ${s.cwd}`);
     } else {
       out.push(`${idx}. ${activeTag}Terminal — ${s.shell || 'unknown'}`);

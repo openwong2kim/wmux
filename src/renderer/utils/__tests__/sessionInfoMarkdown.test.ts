@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import { createRemoteSurface } from '../../../shared/types';
 import type { Surface, PaneLeaf, PaneBranch, Workspace } from '../../../shared/types';
 import {
   buildExportPayload,
@@ -210,51 +211,64 @@ describe('sessionInfoMarkdown', () => {
 // is a real directory on somebody else's machine. Pasted into an agent's
 // prompt, that is a path it will confidently try to use.
 describe('buildPaneMarkdown — remote surfaces', () => {
-  function makeRemoteWorkspace(): Workspace {
-    const remote: Surface = {
-      id: 'srf-remote',
-      ptyId: '',
-      title: 'pwsh',
-      shell: 'pwsh',
-      cwd: 'C:\\Users\\someone',
-      surfaceType: 'remote-terminal',
-      remoteHostId: 'host-1',
-      remoteSessionId: 'sess-9',
-    };
+  // Built through the SAME factory the app calls, with the SAME arguments its
+  // one caller passes (Pane.tsx's handleRemoteCreated supplies no shell and no
+  // cwd). An earlier version of this suite hand-wrote a surface carrying both,
+  // and every assertion passed against a shape the product cannot produce —
+  // the dogfood found two of the asserted lines were dead in the live app.
+  function remoteWorkspace(surface: Surface): Workspace {
     const leaf: PaneLeaf = {
       id: 'pane-r',
       type: 'leaf',
-      surfaces: [remote],
-      activeSurfaceId: 'srf-remote',
+      surfaces: [surface],
+      activeSurfaceId: surface.id,
     };
-    return {
-      id: 'ws-r',
-      name: 'Remote WS',
-      rootPane: leaf,
-      activePaneId: 'pane-r',
-    } as Workspace;
+    return { id: 'ws-r', name: 'Remote WS', rootPane: leaf, activePaneId: 'pane-r' } as Workspace;
   }
 
-  it('names it a remote terminal, not a terminal', () => {
-    const md = buildPaneMarkdown(makeRemoteWorkspace(), 'pane-r');
-    expect(md).toContain('Remote terminal — pwsh');
+  /**
+   * Exactly what the app produces: Pane.tsx passes no shell and no cwd, and
+   * `addRemoteSurface` turns those into the empty strings this factory takes.
+   */
+  function asShipped(): Surface {
+    return createRemoteSurface('host-1', 'sess-9', '', '', true);
+  }
+
+  it('names it a remote terminal, with no shell it does not know', () => {
+    const md = buildPaneMarkdown(remoteWorkspace(asShipped()), 'pane-r');
+    expect(md).toContain('Remote terminal');
+    expect(md).not.toContain('Terminal — ');
+    // The old fallback printed this on every remote surface, always.
+    expect(md).not.toContain('unknown');
   });
 
   it('prints no PTY ID line, because a remote surface has no local PTY', () => {
-    const md = buildPaneMarkdown(makeRemoteWorkspace(), 'pane-r');
+    const md = buildPaneMarkdown(remoteWorkspace(asShipped()), 'pane-r');
     expect(md).not.toContain('PTY ID:');
   });
 
-  it('labels the working directory as the other machine\'s', () => {
-    const md = buildPaneMarkdown(makeRemoteWorkspace(), 'pane-r');
-    expect(md).toContain('CWD (remote): C:\\Users\\someone');
-    // …and never as a plain local CWD, which is what made it dangerous.
-    expect(md).not.toContain('- CWD: C:\\Users\\someone');
-  });
-
   it('carries the identifiers that say WHICH machine and session', () => {
-    const md = buildPaneMarkdown(makeRemoteWorkspace(), 'pane-r');
+    const md = buildPaneMarkdown(remoteWorkspace(asShipped()), 'pane-r');
     expect(md).toContain('Host ID: host-1');
     expect(md).toContain('Remote session: sess-9');
+  });
+
+  it('reports the title the remote shell set, once it has set one', () => {
+    // The only field that changes after creation (updateRemoteSurfaceTitle).
+    const md = buildPaneMarkdown(
+      remoteWorkspace({ ...asShipped(), title: 'pwsh — build' }),
+      'pane-r',
+    );
+    expect(md).toContain('Title: pwsh — build');
+  });
+
+  it('labels a remote working directory as remote, if one is ever known', () => {
+    const md = buildPaneMarkdown(
+      remoteWorkspace({ ...asShipped(), cwd: 'C:\\Users\\someone' }),
+      'pane-r',
+    );
+    expect(md).toContain('CWD (remote): C:\\Users\\someone');
+    // Never as a plain local CWD — that is what made it dangerous to paste.
+    expect(md).not.toContain('- CWD: C:\\Users\\someone');
   });
 });
