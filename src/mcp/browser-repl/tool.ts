@@ -133,7 +133,7 @@ export function disposeBrowserRepl(): void {
 export function formatBrowserReplOutcome(outcome: BrowserReplRunOutcome): string {
   const lines: string[] = [];
   lines.push(
-    `browser_repl · ${outcome.ok ? 'ok' : 'error'} · ${outcome.elapsedMs}ms · ${outcome.ledger.length} browser call(s)`,
+    `browser_repl · ${outcome.ok ? 'ok' : 'error'} · ${outcome.elapsedMs}ms · ${outcome.callCount} browser call(s)`,
   );
   if (outcome.freshRuntime) {
     lines.push(
@@ -145,14 +145,16 @@ export function formatBrowserReplOutcome(outcome: BrowserReplRunOutcome): string
   if (outcome.timedOut) {
     lines.push('note: the runtime was terminated. Variables are cleared; the next call starts fresh.');
   }
-  if (outcome.ledger.length > ACTION_RING_CAPACITY) {
+  if (outcome.callCount > ACTION_RING_CAPACITY) {
     lines.push(
-      `note: ${outcome.ledger.length} calls exceed the ${ACTION_RING_CAPACITY}-step action ring; ` +
+      `note: ${outcome.callCount} calls exceed the ${ACTION_RING_CAPACITY}-step action ring; ` +
         'only the last steps are available to browser_replay save.',
     );
   }
   if (outcome.ledger.length > 0) {
     lines.push('', '--- calls ---', ...outcome.ledger.map((l, i) => `${i + 1}. ${l}`));
+    const elided = outcome.callCount - outcome.ledger.length;
+    if (elided > 0) lines.push(`(${elided} more call(s) not shown)`);
   }
   if (outcome.console.text) {
     lines.push('', '--- console ---', outcome.console.text.replace(/\n$/, ''));

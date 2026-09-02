@@ -385,8 +385,24 @@ describe('browser_repl session', () => {
     const session = newSession();
     const out = await session.run('for (let i = 0; i < 205; i++) await browser.extract_text(); 1', 10_000, bridge);
     expect(out.ok).toBe(true);
-    expect(out.ledger).toHaveLength(201);
-    expect(out.ledger[200]).toBe('(5 more call(s) not shown)');
+    expect(out.ledger).toHaveLength(200);
+    expect(out.callCount).toBe(205);
+    const rendered = formatBrowserReplOutcome(out);
+    expect(rendered).toContain('205 browser call(s)');
+    expect(rendered).toContain('(5 more call(s) not shown)');
+  });
+
+  it('does not wait past its own deadline for a killed run\'s handler that never settles', async () => {
+    const h = harness({ wait: () => new Promise(() => { /* never settles */ }) });
+    const bridge = createBrowserBridge(h.tools, {});
+    const session = newSession();
+    const dead = await session.run('await browser.wait({ ms: 1 });', 100, bridge);
+    expect(dead.timedOut).toBe(true);
+    const started = Date.now();
+    const next = await session.run('1', 200, bridge);
+    expect(next.ok).toBe(false);
+    expect(next.error).toContain('still running after 200ms');
+    expect(Date.now() - started).toBeLessThan(2000);
   });
 
   it('explains a redeclared top-level binding instead of a bare SyntaxError', async () => {
@@ -419,6 +435,7 @@ describe('formatBrowserReplOutcome', () => {
       ok: true,
       elapsedMs: 12,
       ledger: ['snapshot(full:true) ok 5ms', 'click(ref:"3") ok 4ms · 1 event(s)'],
+      callCount: 2,
       console: { text: 'hi\n', truncated: false, totalBytes: 3, elidedBytes: 0 },
       result: { text: "'done'", truncated: false, totalBytes: 6, elidedBytes: 0 },
       timedOut: false,

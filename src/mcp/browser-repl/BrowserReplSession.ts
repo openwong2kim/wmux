@@ -30,8 +30,10 @@ const READY_TIMEOUT_MS = 10_000;
 export interface BrowserReplRunOutcome {
   readonly ok: boolean;
   readonly elapsedMs: number;
-  /** One line per `browser.*` call, in order, including refused/failed ones. */
+  /** One line per `browser.*` call, in order, including refused/failed ones; capped at LEDGER_MAX_LINES. */
   readonly ledger: readonly string[];
+  /** Every `browser.*` call the run made, including the ones the ledger elided. */
+  readonly callCount: number;
   readonly console: TruncatedText;
   readonly result?: TruncatedText;
   readonly error?: string;
@@ -179,41 +181,62 @@ export class BrowserReplSession {
     if (this.disposed) throw new Error('browser_repl session is disposed');
     const started = Date.now();
     const ledger: string[] = [];
-    let elidedCalls = 0;
+    let callCount = 0;
     const record = (line: string) => {
+      callCount++;
       if (ledger.length < LEDGER_MAX_LINES) ledger.push(line);
-      else elidedCalls++;
     };
     const consoleBuf = new OutputBuffer(CONSOLE_CAP_BYTES);
     const previousDeath = this.previousDeath;
     this.previousDeath = undefined;
     const { worker, ready, fresh } = this.ensureWorker();
     const base = { ledger, freshRuntime: fresh, previousDeath: fresh ? previousDeath : undefined };
+    const abort = (error: string) => ({
+      ...base,
+      callCount,
+      ok: false,
+      elapsedMs: Date.now() - started,
+      console: consoleBuf.render(),
+      error,
+      timedOut: false,
+    });
 
     try {
       await ready;
     } catch (error) {
       this.killWorker('failed to start');
-      return {
-        ...base,
-        ok: false,
-        elapsedMs: Date.now() - started,
-        console: consoleBuf.render(),
-        error: `browser_repl runtime failed to start: ${error instanceof Error ? error.message : String(error)}`,
-        timedOut: false,
-      };
+      return abort(`browser_repl runtime failed to start: ${error instanceof Error ? error.message : String(error)}`);
     }
 
     // Let a dead run's in-flight handler calls land before this run touches
-    // the page. They cannot be cancelled, only waited for.
-    if (this.straggling.size > 0) await Promise.allSettled([...this.straggling]);
+    // the page. They cannot be cancelled, only waited for — but not past this
+    // run's own deadline, or a handler that never settles pins every later
+    // run on this connection.
+    if (this.straggling.size > 0) {
+      let waitTimer: NodeJS.Timeout | undefined;
+      const landed = await Promise.race([
+        Promise.allSettled([...this.straggling]).then(() => true),
+        new Promise<boolean>((resolve) => {
+          waitTimer = setTimeout(() => resolve(false), timeoutMs);
+        }),
+      ]);
+      clearTimeout(waitTimer);
+      if (!landed) {
+        return abort(
+          `a browser call started by the previous (killed) run is still running after ${timeoutMs}ms; ` +
+            'this run did not start — retry once it finishes',
+        );
+      }
+    }
 
     const id = this.nextRunId++;
     const inFlight = new Set<Promise<unknown>>();
 
     return new Promise<BrowserReplRunOutcome>((resolve) => {
       let settled = false;
-      const finish = (outcome: Omit<BrowserReplRunOutcome, 'ledger' | 'freshRuntime' | 'previousDeath' | 'elapsedMs' | 'console'>) => {
+      const finish = (
+        outcome: Omit<BrowserReplRunOutcome, 'ledger' | 'callCount' | 'freshRuntime' | 'previousDeath' | 'elapsedMs' | 'console'>,
+      ) => {
         if (settled) return;
         settled = true;
         this.activeRunId = null;
@@ -225,8 +248,7 @@ export class BrowserReplSession {
           this.straggling.add(pending);
           void pending.finally(() => this.straggling.delete(pending));
         }
-        if (elidedCalls > 0) ledger.push(`(${elidedCalls} more call(s) not shown)`);
-        resolve({ ...base, ...outcome, elapsedMs: Date.now() - started, console: consoleBuf.render() });
+        resolve({ ...base, ...outcome, callCount, elapsedMs: Date.now() - started, console: consoleBuf.render() });
       };
 
       const timer = setTimeout(() => {
