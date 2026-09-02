@@ -65,7 +65,7 @@ describe('refererFor', () => {
     expect(refererFor('/relative/path', 'https://example.com')).toBeUndefined();
   });
 
-  it('sends nothing when reloading the same URL, fragment aside', () => {
+  it('sends nothing when reloading the same URL, ignoring the fragment', () => {
     expect(refererFor('https://example.com/a', 'https://example.com/a')).toBeUndefined();
     // Normalised on both sides: a differing fragment is still the same page.
     expect(refererFor('https://example.com/a#one', 'https://example.com/a#two')).toBeUndefined();
