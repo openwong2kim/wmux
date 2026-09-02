@@ -76,28 +76,27 @@ function shapeWarning(recorded: string, live: string): string | null {
  * The match is role + name + position among the same-named elements in the
  * same frame, i.e. exactly the population resolveRef counts against.
  *
- * What a changed population size means depends entirely on WHERE the recorded
- * element sat in it:
+ * A same-name population whose SIZE changed is a refusal at EVERY position.
+ * Position N names the recorded element only while the population around it is
+ * still the one that was counted: an element inserted anywhere — above the
+ * first one included — shifts every index from the insertion point on, and the
+ * replay would act on whatever moved into the slot.
  *
- *   index 0 — the first "Delete" is still the first "Delete" whether the list
- *     holds two rows or five. Adding rows below it cannot move it. Warn and
- *     continue, because refusing here would make the cache useless on every
- *     page that grows a row.
+ * Index 0 used to be exempt, on the theory that nothing can displace the first
+ * element. A decoy `button "Submit order"` inserted BEFORE the real one
+ * disproved that live: the replay clicked the decoy, the real submit never
+ * fired, and the step was reported `ok` with a warning saying the first one
+ * could not have been displaced. Silently acting on the wrong element is the
+ * one outcome a replay must never produce, so the exemption is gone.
  *
- *   index > 0 — position N only means the same element while the N elements
- *     before it are the same N elements. A row inserted anywhere above shifts
- *     the whole tail by one, and the replay then acts on the row that moved
- *     into that slot: a successful-looking run against the wrong item, which
- *     on a "Delete" is exactly the outcome that must never be guessed at.
- *     Refuse (panel review ⑦).
+ * The axis stores nothing beyond the 4-tuple to disambiguate with, so there is
+ * no cheaper fallback than stopping: the agent takes one snapshot and finishes
+ * the flow live, which is also the next recording.
  *
  * A missing element is always a refusal — that is the other case where
  * continuing would act on something else.
  */
-function matchRefAxis(
-  page: Page,
-  axis: RefAxis,
-): { ref: string; warning?: string } | { error: string } {
+function matchRefAxis(page: Page, axis: RefAxis): { ref: string } | { error: string } {
   const population = listRefEntries(page).filter(
     (entry) =>
       entry.role === axis.role &&
@@ -116,22 +115,14 @@ function matchRefAxis(
     };
   }
   if (population.length !== axis.sameNameTotal) {
-    if (axis.sameNameIndex > 0) {
-      return {
-        error:
-          `${describeAxis(axis)} can no longer be identified: the page has ` +
-          `${population.length} element(s) with that role and name, the recording had ` +
-          `${axis.sameNameTotal}. Position ${axis.sameNameIndex + 1} only names the same ` +
-          'element while everything before it is unchanged, so this would act on whatever ' +
-          'moved into that slot',
-      };
-    }
     return {
-      ref: String(match.ref),
-      warning:
-        `${describeAxis(axis)}: the page now has ${population.length} such element(s), ` +
-        `the recording had ${axis.sameNameTotal} — the first one cannot have been ` +
-        'displaced, so replaying against it',
+      error:
+        `${describeAxis(axis)} can no longer be identified: the page has ` +
+        `${population.length} element(s) with that role and name, the recording had ` +
+        `${axis.sameNameTotal}. Position ${axis.sameNameIndex + 1} only names the same ` +
+        'element while that population is unchanged — an insertion anywhere, the first ' +
+        'position included, moves something else into that slot, so there is no telling ' +
+        'which one was recorded',
     };
   }
   return { ref: String(match.ref) };
@@ -139,7 +130,6 @@ function matchRefAxis(
 
 interface Resolved {
   element: ElementHandle;
-  warning?: string;
 }
 
 async function resolveAxis(page: Page, axis: StepAxis): Promise<Resolved | { error: string }> {
@@ -159,10 +149,10 @@ async function resolveAxis(page: Page, axis: StepAxis): Promise<Resolved | { err
   if ('error' in matched) return matched;
   const element = await resolveRef(page, matched.ref).catch(() => null);
   if (!element) return { error: `${describeAxis(axis)} could not be resolved to a live element` };
-  return { element, ...(matched.warning !== undefined && { warning: matched.warning }) };
+  return { element };
 }
 
-type StepOutcome = { detail: string; warning?: string } | { error: string };
+type StepOutcome = { detail: string } | { error: string };
 
 /**
  * Separator the recorder joins a browser_select's values on, and the only
@@ -206,29 +196,28 @@ async function runStep(
   const resolved = await resolveAxis(page, step.axis);
   if ('error' in resolved) return resolved;
   const { element } = resolved;
-  const warn = resolved.warning !== undefined ? { warning: resolved.warning } : {};
 
   switch (step.tool) {
     case 'browser_click':
       if (args.double === true) await element.dblclick();
       else await element.click();
-      return { detail: `clicked ${describeAxis(step.axis)}`, ...warn };
+      return { detail: `clicked ${describeAxis(step.axis)}` };
     case 'browser_type':
       await element.fill(String(args.text ?? ''));
       if (args.submit === true) await page.keyboard.press('Enter');
-      return { detail: `typed into ${describeAxis(step.axis)}`, ...warn };
+      return { detail: `typed into ${describeAxis(step.axis)}` };
     case 'browser_fill':
       await element.fill(String(args.value ?? ''));
-      return { detail: `filled ${describeAxis(step.axis)}`, ...warn };
+      return { detail: `filled ${describeAxis(step.axis)}` };
     case 'browser_hover':
       await element.hover();
-      return { detail: `hovered ${describeAxis(step.axis)}`, ...warn };
+      return { detail: `hovered ${describeAxis(step.axis)}` };
     case 'browser_select':
       await element.selectOption(String(args.values ?? '').split(SELECT_VALUE_SEPARATOR));
-      return { detail: `selected in ${describeAxis(step.axis)}`, ...warn };
+      return { detail: `selected in ${describeAxis(step.axis)}` };
     case 'browser_scroll_into_view':
       await element.scrollIntoViewIfNeeded();
-      return { detail: `scrolled ${describeAxis(step.axis)} into view`, ...warn };
+      return { detail: `scrolled ${describeAxis(step.axis)} into view` };
     case 'browser_scroll': {
       const px = typeof args.amount === 'number' ? args.amount : 500;
       const direction = String(args.direction ?? 'down');
@@ -238,7 +227,7 @@ async function runStep(
         (node, [x, y]) => { (node as Element).scrollBy(x, y); },
         [dx, dy] as [number, number],
       );
-      return { detail: `scrolled inside ${describeAxis(step.axis)}`, ...warn };
+      return { detail: `scrolled inside ${describeAxis(step.axis)}` };
     }
     case 'browser_drag': {
       if (!step.target2) return { error: 'the recorded drag has no target' };
@@ -251,7 +240,7 @@ async function runStep(
       await page.mouse.down();
       await page.mouse.move(to.x + to.width / 2, to.y + to.height / 2, { steps: 10 });
       await page.mouse.up();
-      return { detail: `dragged ${describeAxis(step.axis)}`, ...warn };
+      return { detail: `dragged ${describeAxis(step.axis)}` };
     }
     default:
       return { error: `${step.tool} cannot be replayed by this version` };
@@ -363,7 +352,6 @@ export async function replayTrace(
         liveShape,
       };
     }
-    if (outcome.warning !== undefined) warnings.push(`step ${index}: ${outcome.warning}`);
     steps.push({ index, tool: step.tool, ok: true, detail: outcome.detail });
 
     // A step that changed the page invalidates the ref map the remaining steps

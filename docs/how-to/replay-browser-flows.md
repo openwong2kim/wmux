@@ -61,11 +61,11 @@ left exactly where the replay stopped, so the cheapest recovery is to take a
 snapshot, finish the flow by hand from there, and `save` under the same name.
 That re-records the healed path.
 
-If the page's count of same-named elements changed, what happens depends on
-where the recorded element sat: the *first* "Delete" is still the first one
-however many rows were added, so that is a warning; any later position is
-refused, because a row inserted above shifts everything below it and the
-replay would act on whatever moved into that slot.
+A changed count of same-named elements also stops the run, at every position
+including the first. Position N names the recorded element only while that
+population is the one that was counted: an element inserted anywhere — above
+the first one included — moves something else into that slot, and the replay
+would act on it. Take a snapshot and finish the flow live instead.
 
 ## Variables
 
