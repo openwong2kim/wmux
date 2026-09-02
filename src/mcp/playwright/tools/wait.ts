@@ -4,6 +4,7 @@ import { PlaywrightEngine } from '../PlaywrightEngine';
 import { withAutomationLease } from '../automationLease';
 import { detectDangerousPatterns } from '../security';
 import { rpcEvaluator } from '../page-eval';
+import { waitForIsolated } from '../isolated-eval';
 import { allowScopedRpcFallback, type BrowserToolDeps } from '../browserScope';
 import { describeToolError } from '../toolError';
 import {
@@ -252,10 +253,15 @@ export function createWaitToolCatalog(deps: BrowserToolDeps) {
         }
 
         if (text) {
-          await page.waitForFunction(
-            (t: string) => document.body.innerText.includes(t),
+          // waitForIsolated rather than page.waitForFunction: the predicate
+          // reads document.body, and a page that hooks innerText should not be
+          // able to watch (or answer) the poll. Same timeout semantics,
+          // timeout:0 included.
+          await waitForIsolated(
+            page,
+            (t: string) => !!(document.body && document.body.innerText.includes(t)),
             text,
-            { timeout: resolvedTimeout },
+            resolvedTimeout,
           );
           return {
             content: [{ type: 'text' as const, text: `Wait completed: text "${text}" found` }],
@@ -267,7 +273,12 @@ export function createWaitToolCatalog(deps: BrowserToolDeps) {
           if (warnings.length > 0) {
             console.warn(`[browser_wait] Dangerous patterns in fn: ${warnings.join(', ')}`);
           }
-          await page.waitForFunction(fn, undefined, { timeout: resolvedTimeout });
+          // Mirrors page.waitForFunction(string): a function-looking string is
+          // CALLED each poll, a bare expression is evaluated, and the result is
+          // coerced to a boolean in the page so a non-serialisable truthy value
+          // (a DOM node) still satisfies the wait.
+          const expression = isFunctionExpression(fn) ? `!!((${fn})())` : `!!(${fn})`;
+          await waitForIsolated(page, expression, undefined, resolvedTimeout);
           const warningPrefix = warnings.length > 0
             ? `⚠ Security warning: fn contains potentially dangerous patterns: ${warnings.join(', ')}.\n`
             : '';

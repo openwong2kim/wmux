@@ -8,6 +8,7 @@ import {
 import { collectOcclusion, occlusionNote, type OcclusionInfo } from './occlusion';
 import { collectPageFacts, formatPageFactsFooter } from './pageFacts';
 import { peekRecentPendingRequests } from './pageCapture';
+import { evaluateIsolated, isolatedProbeTarget } from './isolated-eval';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -1621,6 +1622,19 @@ async function withCdpSession<T>(
   }
 }
 
+/**
+ * Run the overlay probe in the page's isolated world when there is one, on the
+ * session that owns it; otherwise on `fallback`, in the main world, which is
+ * what this did before isolated worlds existed.
+ */
+async function occlusionFor(page: Page, fallback: CdpClient): Promise<OcclusionInfo | null> {
+  const probe = await isolatedProbeTarget(page).catch(() => null);
+  return await collectOcclusion(
+    probe?.client ?? fallback,
+    probe?.contextId,
+  ).catch(() => null);
+}
+
 /** The a11y tree plus the annotations that only a live CDP session can supply. */
 interface SnapshotSource {
   tree: AXNode | null;
@@ -1639,7 +1653,12 @@ async function getAccessibilityTree(page: Page): Promise<SnapshotSource> {
       // After the tree, never instead of it: a thrown occlusion probe must not
       // cost the caller its snapshot (collectOcclusion swallows its own
       // failures, and this ordering keeps the tree even if that ever changes).
-        occlusion: await collectOcclusion(client).catch(() => null),
+        // The probe runs on the module's CACHED per-page session, not on this
+        // short-lived one: Chromium caches an isolated world per (session,
+        // frame, name), so minting one per snapshot would pile them up in the
+        // renderer of a long-lived SPA. Falls back to this session, main
+        // world, exactly as before, when there is no isolated world.
+        occlusion: await occlusionFor(page, client),
       }),
       { tree: null, occlusion: null },
     );
@@ -1693,9 +1712,10 @@ export async function generateSnapshot(
       // gets the same URL redaction the network listing does (inspection.ts
       // applies it to its own two DOM-listing branches).
       let domSnapshot = redactPasswordParams(
-        (await page.evaluate(
+        (await evaluateIsolated<string>(
+          page,
           buildDomSnapshotExpression(undefined, { filter: options?.filter }),
-        )) as string,
+        )),
       );
       // aria has no DOM-listing equivalent — say so instead of silently
       // returning the ai-style listing (same honesty rule as the selector
@@ -1848,7 +1868,7 @@ export async function generateScopedSnapshot(
         // Occlusion is a whole-page fact, so it is worth just as much inside a
         // scope — a selector aimed at the page behind an overlay is exactly the
         // case where the agent is about to click something inert.
-        occlusion: await collectOcclusion(client).catch(() => null),
+        occlusion: await occlusionFor(page, client),
       };
     },
     { forest: null, occlusion: null },

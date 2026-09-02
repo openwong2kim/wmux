@@ -215,7 +215,11 @@ function propOf(props: RemoteProp[], name: string): RemoteProp['value'] {
  * failure. Fail-open is deliberate: this is an annotation on top of a
  * snapshot, and a snapshot without it is exactly today's snapshot.
  */
-export async function collectOcclusion(client: CdpSender): Promise<OcclusionInfo | null> {
+export async function collectOcclusion(
+  client: CdpSender,
+  /** Isolated-world context to probe in; omitted (or null) means main world. */
+  contextId?: number | null,
+): Promise<OcclusionInfo | null> {
   const objectGroup = 'wmux-occlusion';
   const deadline = Date.now() + TOTAL_BUDGET_MS;
 
@@ -241,6 +245,10 @@ export async function collectOcclusion(client: CdpSender): Promise<OcclusionInfo
         returnByValue: false,
         objectGroup,
         timeout: TOTAL_BUDGET_MS,
+        // The probe walks the DOM, which the isolated world shares, so the page
+        // cannot see the walk or hook the methods it uses. The handles it
+        // returns still resolve through DOM.describeNode either way.
+        ...(typeof contextId === 'number' ? { contextId } : {}),
       }),
     )) as { result?: { objectId?: string } } | null;
 

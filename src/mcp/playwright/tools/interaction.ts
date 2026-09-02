@@ -11,6 +11,7 @@ import {
 } from '../snapshot';
 import { getLocatorByRef, resolveSmartRefLocator, smartRefAxisEntry } from '../dom-intelligence';
 import { typeHumanlike } from '../human-typing';
+import { evaluateIsolated } from '../isolated-eval';
 import { describeToolError } from '../toolError';
 import {
   PASSWORD_FIELD_PREDICATE_JS,
@@ -210,6 +211,11 @@ async function rpcFill(ref: string, value: string, scope: BrowserTargetScope): P
  */
 async function isPasswordElement(el: ElementHandle): Promise<boolean> {
   try {
+    // Main world, deliberately: the predicate is scoped to an ElementHandle,
+    // and a handle belongs to the world it was resolved in — there is no way
+    // to hand it to an isolated context. It reads two properties off the node
+    // it was given and touches no page global, so the exposure is a property
+    // read a page could equally observe from its own input listener.
     return await el.evaluate(isPasswordFieldNode);
   } catch {
     return false;
@@ -405,9 +411,10 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
             // bounds check was dead exactly where it matters (live dogfood:
             // x=99999 reported success). The page's own innerWidth/innerHeight
             // is the same CSS-pixel space x/y are defined in.
-            const size = await page
-              .evaluate('[window.innerWidth, window.innerHeight]')
-              .catch(() => null);
+            const size = await evaluateIsolated(
+              page,
+              '[window.innerWidth, window.innerHeight]',
+            ).catch(() => null);
             if (Array.isArray(size) && typeof size[0] === 'number' && typeof size[1] === 'number') {
               viewport = { width: size[0], height: size[1] };
             }
@@ -924,14 +931,17 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
           if (ref) {
             const el = await resolveRef(page, ref);
             if (!el) throw new Error(refNotFound(ref));
+            // Main world, deliberately: element-scoped, and an ElementHandle
+            // cannot be adopted into an isolated context (see isolated-eval.ts).
             await el.evaluate(
               (node, [dx, dy]) => { (node as Element).scrollBy(dx, dy); },
               [deltaX, deltaY] as [number, number],
             );
           } else {
-            await page.evaluate(
+            await evaluateIsolated<void, [number, number]>(
+              page,
               ([dx, dy]) => { window.scrollBy(dx, dy); },
-              [deltaX, deltaY] as [number, number],
+              [deltaX, deltaY],
             );
           }
         } else {
