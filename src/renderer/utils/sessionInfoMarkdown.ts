@@ -61,6 +61,19 @@ function renderSurfaceLines(
       out.push(`${idx}. ${activeTag}Diff`);
       out.push(`   - Surface ID: ${s.id}`);
       if (s.diffTaskId) out.push(`   - Task ID: ${s.diffTaskId}`);
+    } else if (surfaceType === 'remote-terminal') {
+      // Same reason the diff branch exists, plus one more. A remote surface
+      // has no local PTY (`ptyId` is ''), so the shared branch printed an
+      // empty "PTY ID:" line; and its cwd is a real path on ANOTHER machine,
+      // so pasting this into an agent's prompt handed it a directory that
+      // does not exist here, labelled exactly like one that does.
+      out.push(`${idx}. ${activeTag}Remote terminal — ${s.shell || 'unknown'}`);
+      out.push(`   - Surface ID: ${s.id}`);
+      if (s.remoteHostId) out.push(`   - Host ID: ${s.remoteHostId}`);
+      if (s.remoteSessionId) out.push(`   - Remote session: ${s.remoteSessionId}`);
+      // Deliberately labelled as remote — `meta.cwd` is this desktop's probe
+      // of a LOCAL pane and must not be substituted for the other machine's.
+      if (s.cwd) out.push(`   - CWD (remote): ${s.cwd}`);
     } else {
       out.push(`${idx}. ${activeTag}Terminal — ${s.shell || 'unknown'}`);
       out.push(`   - Surface ID: ${s.id}`);

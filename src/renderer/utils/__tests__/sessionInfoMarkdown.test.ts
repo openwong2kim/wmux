@@ -201,3 +201,60 @@ describe('sessionInfoMarkdown', () => {
     expect(WMUX_REORDER_MIME).toBe('text/x-wmux-reorder');
   });
 });
+
+// ─── Remote surfaces (#1140 dogfood) ──────────────────────────────────────
+//
+// The same complaint the tab glyph answers, in the output you get by dragging
+// that tab out or copying pane info: a remote surface rendered as "Terminal",
+// with an empty "PTY ID:" line (it has no local PTY) and a bare "CWD:" that
+// is a real directory on somebody else's machine. Pasted into an agent's
+// prompt, that is a path it will confidently try to use.
+describe('buildPaneMarkdown — remote surfaces', () => {
+  function makeRemoteWorkspace(): Workspace {
+    const remote: Surface = {
+      id: 'srf-remote',
+      ptyId: '',
+      title: 'pwsh',
+      shell: 'pwsh',
+      cwd: 'C:\Users\someone',
+      surfaceType: 'remote-terminal',
+      remoteHostId: 'host-1',
+      remoteSessionId: 'sess-9',
+    };
+    const leaf: PaneLeaf = {
+      id: 'pane-r',
+      type: 'leaf',
+      surfaces: [remote],
+      activeSurfaceId: 'srf-remote',
+    };
+    return {
+      id: 'ws-r',
+      name: 'Remote WS',
+      rootPane: leaf,
+      activePaneId: 'pane-r',
+    } as Workspace;
+  }
+
+  it('names it a remote terminal, not a terminal', () => {
+    const md = buildPaneMarkdown(makeRemoteWorkspace(), 'pane-r');
+    expect(md).toContain('Remote terminal — pwsh');
+  });
+
+  it('prints no PTY ID line, because a remote surface has no local PTY', () => {
+    const md = buildPaneMarkdown(makeRemoteWorkspace(), 'pane-r');
+    expect(md).not.toContain('PTY ID:');
+  });
+
+  it('labels the working directory as the other machine\'s', () => {
+    const md = buildPaneMarkdown(makeRemoteWorkspace(), 'pane-r');
+    expect(md).toContain('CWD (remote): C:\Users\someone');
+    // …and never as a plain local CWD, which is what made it dangerous.
+    expect(md).not.toMatch(/- CWD: C:\\Users\\someone/);
+  });
+
+  it('carries the identifiers that say WHICH machine and session', () => {
+    const md = buildPaneMarkdown(makeRemoteWorkspace(), 'pane-r');
+    expect(md).toContain('Host ID: host-1');
+    expect(md).toContain('Remote session: sess-9');
+  });
+});

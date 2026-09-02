@@ -327,6 +327,7 @@ export const pl = {
 
   // Surface
   'surface.terminal': 'Terminal',
+  'surface.remoteTooltip': 'Terminal zdalny — {path}',
   'surface.remoteTerminal': 'Terminal zdalny',
   'surface.closeTab': 'Zamknij kartę',
 

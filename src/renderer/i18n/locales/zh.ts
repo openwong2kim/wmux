@@ -191,6 +191,7 @@ export const zh = {
 
   // Surface
   'surface.terminal': '终端',
+  'surface.remoteTooltip': '远程终端 — {path}',
   'surface.remoteTerminal': '远程终端',
   'surface.closeTab': '关闭标签',
 

@@ -123,18 +123,24 @@ const IS_MAC = typeof window !== 'undefined' && window.electronAPI?.platform ===
  *
  * `role="img"` with a name, not a bare `aria-label` on a span: a span has no
  * implicit role, so screen readers are free to ignore a label on it — and
- * this glyph is the ONLY non-text signal that the tab is remote, since the
+ * this glyph is the only VISUAL signal that the tab is remote, since the
  * tab's text is an OSC title the remote shell sets and reads identically to a
- * local one.
+ * local one. (The tab container itself is a plain div with no role, so this
+ * name is read in browse mode, not by tabbing — that gap is older and wider
+ * than this glyph.)
  *
- * Steel blue, not amber: DESIGN.md gives amber to alive/attention and steel
- * to navigation — and an external-link glyph pointing at another machine is
- * squarely the latter. Shape carries the meaning either way, so the colour is
- * not load-bearing for anyone who cannot see it.
+ * `currentColor`, deliberately not an accent. Steel is this file's focus
+ * signal — the active pane's tab strip is underlined with `--accent-blue`
+ * (see the `paneActive` boxShadow), and the workspace-tag comment above
+ * already rejected a blue-ish mark on a tab because it "would read as focus".
+ * A provenance marker that is neither focused nor clickable must not borrow
+ * that. Inheriting the tab's own colour also means it dims and brightens with
+ * the active/inactive text, which is exactly the emphasis it should have.
+ * Shape carries the meaning regardless.
  */
 export function RemoteSurfaceGlyph({ label }: { label: string }) {
   return (
-    <span className="shrink-0 text-[var(--accent-blue)]" role="img" aria-label={label}>
+    <span className="shrink-0" role="img" aria-label={label}>
       <IconExternalLink size={12} />
     </span>
   );
@@ -153,11 +159,19 @@ export function RemoteSurfaceGlyph({ label }: { label: string }) {
  */
 export function surfaceTabTooltip(
   surface: { surfaceType?: string; cwd?: string; title?: string },
-  t: (key: 'surface.terminal' | 'surface.remoteTerminal') => string,
+  t: (
+    key: 'surface.terminal' | 'surface.remoteTooltip',
+    vars?: Record<string, string | number>,
+  ) => string,
 ): string {
   const local = displayPath(surface.cwd) || surface.title || t('surface.terminal');
+  // One interpolated key rather than a separator concatenated here: the
+  // order and the dash are a locale's call, not this function's — CJK
+  // punctuates differently and RTL would otherwise be handed a hardcoded
+  // LTR run. It also leaves room for a host name later without reopening
+  // every translation.
   return surface.surfaceType === 'remote-terminal'
-    ? `${t('surface.remoteTerminal')} — ${local}`
+    ? t('surface.remoteTooltip', { path: local })
     : local;
 }
 
