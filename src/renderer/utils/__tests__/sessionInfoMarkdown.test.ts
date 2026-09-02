@@ -216,7 +216,7 @@ describe('buildPaneMarkdown — remote surfaces', () => {
       ptyId: '',
       title: 'pwsh',
       shell: 'pwsh',
-      cwd: 'C:\Users\someone',
+      cwd: 'C:\\Users\\someone',
       surfaceType: 'remote-terminal',
       remoteHostId: 'host-1',
       remoteSessionId: 'sess-9',
@@ -247,9 +247,9 @@ describe('buildPaneMarkdown — remote surfaces', () => {
 
   it('labels the working directory as the other machine\'s', () => {
     const md = buildPaneMarkdown(makeRemoteWorkspace(), 'pane-r');
-    expect(md).toContain('CWD (remote): C:\Users\someone');
+    expect(md).toContain('CWD (remote): C:\\Users\\someone');
     // …and never as a plain local CWD, which is what made it dangerous.
-    expect(md).not.toMatch(/- CWD: C:\\Users\\someone/);
+    expect(md).not.toContain('- CWD: C:\\Users\\someone');
   });
 
   it('carries the identifiers that say WHICH machine and session', () => {
