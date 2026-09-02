@@ -162,6 +162,9 @@ export function formatBrowserReplOutcome(outcome: BrowserReplRunOutcome): string
       lines.push(`(console truncated: ${outcome.console.totalBytes} bytes total)`);
     }
   }
+  if (outcome.hints && outcome.hints.length > 0) {
+    lines.push('', '--- hints ---', ...outcome.hints);
+  }
   if (outcome.ok && outcome.result && outcome.result.text !== 'undefined') {
     lines.push('', '--- result ---', outcome.result.text);
     if (outcome.result.truncated) {

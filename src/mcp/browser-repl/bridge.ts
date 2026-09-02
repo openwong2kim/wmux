@@ -79,9 +79,37 @@ function maskTypedText(key: string, raw: unknown): unknown {
   return raw;
 }
 
+/** Ref arguments the tool schemas type as strings; `smartRef` is a number and is left alone. */
+const STRING_REF_KEYS = new Set(['ref', 'sourceRef', 'targetRef']);
+
+/**
+ * Snapshot listings number their refs, so a snippet that computed one — or
+ * that kept an older, numeric `refs[i].ref` — hands `browser.type` a number
+ * where the schema wants a string, and the call is rejected before it runs.
+ * Applied at every depth, so `browser.fill({fields:[{ref, value}]})` is
+ * treated the same as a top-level `ref`.
+ */
+function coerceRefArgs(raw: unknown): unknown {
+  if (Array.isArray(raw)) return raw.map(coerceRefArgs);
+  if (raw && typeof raw === 'object') {
+    return Object.fromEntries(
+      Object.entries(raw as Record<string, unknown>).map(([key, value]) => [
+        key,
+        STRING_REF_KEYS.has(key) && typeof value === 'number' ? String(value) : coerceRefArgs(value),
+      ]),
+    );
+  }
+  return raw;
+}
+
 export interface SnapshotRef {
-  /** Numeric ref from the snapshot listing. */
-  readonly ref: number;
+  /**
+   * The ref as its target argument's schema wants it: a string for `ref`, a
+   * number for `smartRef`. Both listings number their refs, but the tools do
+   * not agree on the type, and `refs[i].ref` is documented as passable
+   * straight to `refs[i].param` — so the parse, not the caller, converts.
+   */
+  readonly ref: string | number;
   /** Which browser_click argument takes it: `ref` (snapshot) or `smartRef` (smart_snapshot). */
   readonly param: 'ref' | 'smartRef';
   readonly role: string;
@@ -99,8 +127,19 @@ export interface BridgeValue {
 }
 
 export type BridgeOutcome =
-  | { readonly ok: true; readonly value: BridgeValue; readonly ledger: string }
-  | { readonly ok: false; readonly error: string; readonly ledger: string };
+  | {
+      readonly ok: true;
+      readonly value: BridgeValue;
+      readonly ledger: string;
+      /** `[replay]`/`[skill]` blocks this call carried; the run collects them. */
+      readonly hints?: readonly string[];
+    }
+  | {
+      readonly ok: false;
+      readonly error: string;
+      readonly ledger: string;
+      readonly hints?: readonly string[];
+    };
 
 export interface BrowserBridgeOptions {
   /** Injected into every call whose schema accepts `surfaceId` and whose args omit it. */
@@ -146,7 +185,7 @@ export function parseSnapshotRefs(text: string, tool: string): SnapshotRef[] {
   for (const line of text.split('\n')) {
     if (tool === 'snapshot') {
       const m = SNAPSHOT_LINE.exec(line);
-      if (m) refs.push({ ref: Number(m[3]), param: 'ref', role: m[1], name: m[2] ?? '' });
+      if (m) refs.push({ ref: m[3], param: 'ref', role: m[1], name: m[2] ?? '' });
       continue;
     }
     const m = SMART_LINE.exec(line);
@@ -161,11 +200,12 @@ export function parseSnapshotRefs(text: string, tool: string): SnapshotRef[] {
 }
 
 /**
- * Split a handler result into the script-facing text and the lease's event
- * lines. The lease prepends up to two extra text blocks — `[browser events]`
- * and the `[replay]`/`[skill]` hints — which are addressed to the model, not
- * to code: events are surfaced as data, hints are dropped. Any block that
- * matches neither is body. Non-text blocks are noted, never returned.
+ * Split a handler result into the script-facing text, the lease's event lines,
+ * and its hint blocks. The lease prepends up to two extra text blocks —
+ * `[browser events]` and the `[replay]`/`[skill]` hints. Events are surfaced
+ * to the script as data; hints are addressed to whoever wrote the snippet, so
+ * they are kept out of the value and reported once per run instead. Any block
+ * that matches neither is body. Non-text blocks are noted, never returned.
  *
  * The lease blocks are recognized by prefix, and page text can start with
  * anything — so the match is kept tight: lease blocks only ever precede the
@@ -174,6 +214,10 @@ export function parseSnapshotRefs(text: string, tool: string): SnapshotRef[] {
  */
 const EVENT_LINE = /^- [\w-]+(?::.*)? \([^()]* ago\)$/;
 
+function isHintBlock(text: string): boolean {
+  return text.startsWith('[replay] ') || text.startsWith('[skill] ');
+}
+
 function parseEventsBlock(text: string): string[] | null {
   if (!text.startsWith('[browser events]\n')) return null;
   const lines = text.slice('[browser events]\n'.length).split('\n').filter((line) => line.trim() !== '');
@@ -181,8 +225,15 @@ function parseEventsBlock(text: string): string[] | null {
   return lines.map((line) => line.slice(2));
 }
 
-export function shapeResult(result: CallToolResult, tool: string): BridgeValue {
+export interface ShapedResult {
+  readonly value: BridgeValue;
+  /** `[replay]`/`[skill]` blocks the lease prepended, verbatim. */
+  readonly hints: readonly string[];
+}
+
+export function shapeResult(result: CallToolResult, tool: string): ShapedResult {
   const events: string[] = [];
+  const hints: string[] = [];
   const body: string[] = [];
   for (const block of result.content ?? []) {
     if (block.type !== 'text') {
@@ -196,24 +247,35 @@ export function shapeResult(result: CallToolResult, tool: string): BridgeValue {
         events.push(...eventLines);
         continue;
       }
-      if (text.startsWith('[replay] ') || text.startsWith('[skill] ')) continue;
+      if (isHintBlock(text)) {
+        hints.push(text);
+        continue;
+      }
     }
     body.push(text);
   }
   const text = body.join('\n');
   if (SNAPSHOT_TOOLS.has(tool)) {
-    return { text, events, refs: parseSnapshotRefs(text, tool) };
+    return { value: { text, events, refs: parseSnapshotRefs(text, tool) }, hints };
   }
-  return { text, events };
+  return { value: { text, events }, hints };
 }
 
-function errorText(result: CallToolResult): string {
-  const texts = (result.content ?? [])
-    .filter((b): b is { type: 'text'; text: string } => b.type === 'text')
-    .map((b) => b.text)
+/** The reason a failed call gives the script, and the hints it still carried. */
+function shapeError(result: CallToolResult): { text: string; hints: string[] } {
+  const texts: string[] = [];
+  const hints: string[] = [];
+  for (const block of result.content ?? []) {
+    if (block.type !== 'text') continue;
     // The lease still prepends events to error results; the script wants the reason.
-    .filter((t) => parseEventsBlock(t) === null && !t.startsWith('[replay] ') && !t.startsWith('[skill] '));
-  return texts.join('\n').trim() || 'tool returned an error without a message';
+    if (parseEventsBlock(block.text) !== null) continue;
+    if (isHintBlock(block.text)) {
+      hints.push(block.text);
+      continue;
+    }
+    texts.push(block.text);
+  }
+  return { text: texts.join('\n').trim() || 'tool returned an error without a message', hints };
 }
 
 /**
@@ -247,7 +309,7 @@ export function createBrowserBridge(
       };
     }
 
-    const args: Record<string, unknown> = { ...rawArgs };
+    const args = coerceRefArgs(rawArgs) as Record<string, unknown>;
     if (options.surfaceId !== undefined && 'surfaceId' in collected.shape && args.surfaceId === undefined) {
       args.surfaceId = options.surfaceId;
     }
@@ -284,10 +346,16 @@ export function createBrowserBridge(
       return { ok: false, error: `browser.${name}: ${message}`, ledger: ledgerFor(args, 'THREW') };
     }
     if (result.isError) {
-      return { ok: false, error: `browser.${name}: ${errorText(result)}`, ledger: ledgerFor(args, 'FAILED') };
+      const failure = shapeError(result);
+      return {
+        ok: false,
+        error: `browser.${name}: ${failure.text}`,
+        ledger: ledgerFor(args, 'FAILED'),
+        hints: failure.hints,
+      };
     }
-    const value = shapeResult(result, name);
+    const { value, hints } = shapeResult(result, name);
     const eventNote = value.events.length > 0 ? ` · ${value.events.length} event(s)` : '';
-    return { ok: true, value, ledger: `${ledgerFor(args, 'ok')}${eventNote}` };
+    return { ok: true, value, ledger: `${ledgerFor(args, 'ok')}${eventNote}`, hints };
   };
 }

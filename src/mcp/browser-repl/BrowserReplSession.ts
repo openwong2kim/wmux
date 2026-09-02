@@ -24,6 +24,8 @@ export const CONSOLE_CAP_BYTES = 32 * 1024;
 export const RESULT_CAP_BYTES = 16 * 1024;
 /** Ledger lines kept per run; a snapshot loop must not turn the result into megabytes. */
 export const LEDGER_MAX_LINES = 200;
+/** Hint lines kept per run. Deduped already, so this only bounds a page that varies them. */
+export const HINT_MAX_LINES = 20;
 /** Worker startup is local and fast; anything slower is a broken runtime. */
 const READY_TIMEOUT_MS = 10_000;
 
@@ -34,6 +36,12 @@ export interface BrowserReplRunOutcome {
   readonly ledger: readonly string[];
   /** Every `browser.*` call the run made, including the ones the ledger elided. */
   readonly callCount: number;
+  /**
+   * `[replay]`/`[skill]` hint lines the calls carried, deduped, in first-seen
+   * order. A direct browser_X call shows these to the model; inside a run the
+   * model is the snippet's author, so the run reports them once at the end.
+   */
+  readonly hints?: readonly string[];
   readonly console: TruncatedText;
   readonly result?: TruncatedText;
   readonly error?: string;
@@ -186,11 +194,23 @@ export class BrowserReplSession {
       callCount++;
       if (ledger.length < LEDGER_MAX_LINES) ledger.push(line);
     };
+    const hints: string[] = [];
+    const seenHints = new Set<string>();
+    const recordHints = (blocks: readonly string[] | undefined) => {
+      for (const block of blocks ?? []) {
+        for (const line of block.split('\n')) {
+          const trimmed = line.trim();
+          if (trimmed === '' || seenHints.has(trimmed)) continue;
+          seenHints.add(trimmed);
+          if (hints.length < HINT_MAX_LINES) hints.push(trimmed);
+        }
+      }
+    };
     const consoleBuf = new OutputBuffer(CONSOLE_CAP_BYTES);
     const previousDeath = this.previousDeath;
     this.previousDeath = undefined;
     const { worker, ready, fresh } = this.ensureWorker();
-    const base = { ledger, freshRuntime: fresh, previousDeath: fresh ? previousDeath : undefined };
+    const base = { ledger, hints, freshRuntime: fresh, previousDeath: fresh ? previousDeath : undefined };
     const abort = (error: string) => ({
       ...base,
       callCount,
@@ -235,7 +255,7 @@ export class BrowserReplSession {
     return new Promise<BrowserReplRunOutcome>((resolve) => {
       let settled = false;
       const finish = (
-        outcome: Omit<BrowserReplRunOutcome, 'ledger' | 'callCount' | 'freshRuntime' | 'previousDeath' | 'elapsedMs' | 'console'>,
+        outcome: Omit<BrowserReplRunOutcome, 'ledger' | 'hints' | 'callCount' | 'freshRuntime' | 'previousDeath' | 'elapsedMs' | 'console'>,
       ) => {
         if (settled) return;
         settled = true;
@@ -279,6 +299,7 @@ export class BrowserReplSession {
             const pending = bridge(name, args).then(
               (outcome) => {
                 record(outcome.ledger);
+                recordHints(outcome.hints);
                 reply(outcome.ok ? { ok: true, value: outcome.value } : { ok: false, error: outcome.error });
               },
               // The bridge reports handler failures as outcomes; a rejection here
