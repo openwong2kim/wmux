@@ -215,6 +215,16 @@ describe('MCP workspace routing (source-level invariants)', () => {
     // inside createWmuxServer — one per broker connection. A module-level ring
     // would let one agent's actions be cut into another agent's saved flow.
     expect(src).toMatch(/const browserToolDeps\s*=[\s\S]{0,200}?actionRing:\s*new ActionRing\(\)/);
+    // Browser tools register through a collecting VIEW of the server so
+    // browser_repl can reach the same handlers; the view must wrap the real
+    // server and nothing else, and browser_repl itself registers on the real
+    // server (it is not a browser handler and must not collect itself).
+    expect(src).toMatch(
+      /const browserServer\s*=\s*collectingServer\(\s*server\s*,\s*browserTools\s*\)/,
+    );
+    expect(src).toMatch(
+      /registerBrowserReplTool\(\s*server\s*,\s*browserTools\s*,\s*MCP_CATALOG_OPTIONS\s*\)/,
+    );
     for (const name of [
       'Navigation',
       'Interaction',
@@ -229,7 +239,7 @@ describe('MCP workspace routing (source-level invariants)', () => {
       expect(allCalls, `${name} tools must be registered exactly once`).toHaveLength(1);
       const strictCalls = src.match(
         new RegExp(
-          `register${name}Tools\\(\\s*server\\s*,\\s*browserToolDeps\\s*(?:,|\\))`,
+          `register${name}Tools\\(\\s*browserServer\\s*,\\s*browserToolDeps\\s*(?:,|\\))`,
           'g',
         ),
       ) ?? [];
@@ -300,7 +310,7 @@ describe('MCP workspace routing (source-level invariants)', () => {
 
   it('browser_wait is wired through the same immutable catalog profile', () => {
     expect(src).toMatch(
-      /registerWaitTools\(\s*server\s*,\s*browserToolDeps\s*,\s*MCP_CATALOG_OPTIONS\s*\)/,
+      /registerWaitTools\(\s*browserServer\s*,\s*browserToolDeps\s*,\s*MCP_CATALOG_OPTIONS\s*\)/,
     );
   });
 });

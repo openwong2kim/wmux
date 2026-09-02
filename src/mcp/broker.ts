@@ -34,6 +34,7 @@ import {
 } from './connectionScope';
 import type { PlaywrightEngine } from './playwright/PlaywrightEngine';
 import { disposeReplRegistry, setReplBrokerMode } from './repl/replRegistry';
+import { disposeBrowserRepl } from './browser-repl/tool';
 
 interface ShimHandshake {
   wmuxShim: number;
@@ -143,6 +144,9 @@ async function hostConnection(socket: net.Socket, handshake: ShimHandshake): Pro
         // self-exit when their IPC channel closes, which is what covers the case
         // this handler cannot — the broker being killed outright.
         disposeReplRegistry();
+        // And this caller's browser_repl worker, which holds script globals
+        // the same way a REPL child does.
+        disposeBrowserRepl();
         // Close the per-connection McpServer too — without this, repeated shim
         // reconnects accumulate server instances in the broker process.
         void server.close().catch(() => { /* best-effort */ });

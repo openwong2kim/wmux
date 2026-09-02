@@ -72,6 +72,12 @@ export interface ConnectionScope {
    * module); it owns the cast.
    */
   repl?: unknown;
+  /**
+   * Per-connection `browser_repl` worker session, for the same reason as
+   * `repl`. Typed as unknown to avoid an import cycle; browser-repl/tool owns
+   * the cast.
+   */
+  browserRepl?: unknown;
 }
 
 const storage = new AsyncLocalStorage<ConnectionScope>();

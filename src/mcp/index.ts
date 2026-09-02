@@ -21,6 +21,8 @@ import { registerStateTools } from './playwright/tools/state';
 import { registerWaitTools } from './playwright/tools/wait';
 import { registerReplayTools } from './browser-replay/tool';
 import { ActionRing } from './browser-replay/actionRing';
+import { collectingServer, type CollectedTool } from './playwright/toolCollector';
+import { registerBrowserReplTool } from './browser-repl/tool';
 import { registerFileTools } from './playwright/tools/file';
 import { registerUtilityTools } from './playwright/tools/utility';
 import { registerExtractionTools } from './playwright/tools/extraction';
@@ -949,15 +951,22 @@ const browserToolDeps = {
   resolveWorkspaceId: requireWorkspaceId,
   actionRing: new ActionRing(),
 };
-registerNavigationTools(server, browserToolDeps);
-registerInteractionTools(server, browserToolDeps);
-registerInspectionTools(server, browserToolDeps);
-registerStateTools(server, browserToolDeps);
-registerWaitTools(server, browserToolDeps, MCP_CATALOG_OPTIONS);
-registerFileTools(server, browserToolDeps);
-registerUtilityTools(server, browserToolDeps);
-registerExtractionTools(server, browserToolDeps);
-registerReplayTools(server, browserToolDeps, MCP_CATALOG_OPTIONS);
+// Registration goes through a collecting view of the server so browser_repl
+// can call the same handlers (lease, redaction, trace recording included)
+// that the MCP dispatcher does. The real server sees every registration
+// unchanged.
+const browserTools = new Map<string, CollectedTool>();
+const browserServer = collectingServer(server, browserTools);
+registerNavigationTools(browserServer, browserToolDeps);
+registerInteractionTools(browserServer, browserToolDeps);
+registerInspectionTools(browserServer, browserToolDeps);
+registerStateTools(browserServer, browserToolDeps);
+registerWaitTools(browserServer, browserToolDeps, MCP_CATALOG_OPTIONS);
+registerFileTools(browserServer, browserToolDeps);
+registerUtilityTools(browserServer, browserToolDeps);
+registerExtractionTools(browserServer, browserToolDeps);
+registerReplayTools(browserServer, browserToolDeps, MCP_CATALOG_OPTIONS);
+registerBrowserReplTool(server, browserTools, MCP_CATALOG_OPTIONS);
 
 // The engine's auto-open (getPage Strategy 4) issues browser.open outside any
 // tool handler, so it cannot rely on the per-tool requireWorkspaceId() guard
