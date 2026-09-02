@@ -44,8 +44,11 @@ describe('getSmartSnapshotViaEval', () => {
     expect(snap.url).toBe('https://x.test/');
     expect(snap.title).toBe('X');
     expect(snap.content).toBe('hello');
+    // The populations are inert on this lane — its locator is a CSS selector
+    // naming one tagged element — but they are part of the shape.
+    const inert = { sameNameIndex: 0, sameNameTotal: 1, roleIndex: 0, roleTotal: 1 };
     expect(snap.elements).toEqual([
-      { ref: 1, role: 'button', name: 'OK', locator: '[data-wmux-ref="1"]' },
+      { ref: 1, role: 'button', name: 'OK', locator: '[data-wmux-ref="1"]', ...inert },
       {
         ref: 2,
         role: 'textbox',
@@ -53,6 +56,7 @@ describe('getSmartSnapshotViaEval', () => {
         value: 'q',
         description: 'main search',
         locator: '[data-wmux-ref="2"]',
+        ...inert,
       },
     ]);
   });

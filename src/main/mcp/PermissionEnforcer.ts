@@ -203,8 +203,9 @@ export function check(input: EnforcerInput): EnforcerOutcome {
   // First-party bundled wmux MCP server (recognised by the host clientName it
   // reports). It ships inside wmux and never goes through the external-plugin
   // declare/approve flow — and it couldn't if it tried, because several tools
-  // it exposes map to `wmux.internal` methods (surface.list, company.a2a.*)
-  // that the permission grammar forbids from any declaration. Grant exactly
+  // it exposes map to `wmux.internal` methods (surface.list, surface.new,
+  // surface.close, browser.tabs) that the permission grammar forbids from any
+  // declaration. Grant exactly
   // the method set it calls (firstParty.ts), nothing more, regardless of the
   // trust-DB `unconfirmed` status that the bundled server is otherwise stuck
   // in. Four guards keep this from becoming a blanket bypass:

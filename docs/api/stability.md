@@ -312,7 +312,7 @@ Additional codes may be added in minors; clients should treat unknown error code
 
 Listed here so clients know what to avoid binding to.
 
-- **All `experimental` surfaces from [`inventory.md`](./inventory.md):** browser/CDP, Company Mode, company A2A. These may move within v3.x and need feature-detection.
+- **All `experimental` surfaces from [`inventory.md`](./inventory.md):** browser/CDP, Company Mode, and the `company.a2a.*` RPCs. These may move within v3.x and need feature-detection. The `company_a2a_*` MCP tools that used to project that RPC surface have been removed outright — agents use `a2a_*` / `channel_*` instead.
 - **All `internal` surfaces from [`inventory.md`](./inventory.md):** `daemon.*`. Use the pane/terminal/workspace surfaces instead.
 - **Renderer-internal IPC channels:** `pane:*`, `workspace:*` via the Electron preload bridge. Not reachable over the public JSON-RPC surface; external tooling must not rely on them.
 - **Implementation-internal IDs:** `paneId` and `ptyId` are stable only within a single daemon run (`bootId` window). Clients that persist these must reconcile via `pane.list` on `bootId` mismatch.

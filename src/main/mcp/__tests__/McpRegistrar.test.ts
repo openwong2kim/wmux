@@ -51,7 +51,7 @@ describe('McpRegistrar.getStatus (multi-target)', () => {
     for (const t of status.targets) {
       expect(t.configExists).toBe(false);
       expect(t.configModified).toBeNull();
-      expect(t.wmux).toEqual({ registered: false, path: null });
+      expect(t.wmux).toEqual({ registered: false, path: null, profile: null });
     }
     expect(target(status, 'claude').configPath).toBe(claudeJson());
     expect(target(status, 'codex').configPath).toBe(codexToml());
@@ -75,7 +75,7 @@ describe('McpRegistrar.getStatus (multi-target)', () => {
     const claude = target(new McpRegistrar().getStatus(), 'claude');
     expect(claude.configExists).toBe(true);
     expect(claude.configModified).toBeInstanceOf(Date);
-    expect(claude.wmux).toEqual({ registered: true, path: '/abs/mcp-bundle/index.js' });
+    expect(claude.wmux).toEqual({ registered: true, path: '/abs/mcp-bundle/index.js', profile: 'full' });
   });
 
   it('extracts registered script paths from Codex TOML (mcp_servers table)', () => {
@@ -88,7 +88,7 @@ describe('McpRegistrar.getStatus (multi-target)', () => {
     const codex = target(new McpRegistrar().getStatus(), 'codex');
     expect(codex.configExists).toBe(true);
     expect(codex.format).toBe('toml');
-    expect(codex.wmux).toEqual({ registered: true, path: 'C:\\w\\index.js' });
+    expect(codex.wmux).toEqual({ registered: true, path: 'C:\\w\\index.js', profile: 'full' });
   });
 
   it('treats malformed entries / corrupt configs as not registered (no throw)', () => {

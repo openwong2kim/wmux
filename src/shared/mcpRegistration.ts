@@ -21,21 +21,33 @@ import {
   type McpTarget,
   type McpConfigFormat,
 } from './mcpTargets';
+import { CORE_MODE_ARG } from './coreSurface';
+import { COMMANDER_MODE_ARG } from './commanderSurface';
 import {
   parseConfig,
   getMcpServerEntry,
   getMcpServerScript,
   isWmuxOwnedEntry,
   upsertMcpServer,
+  wmuxEntryArgs,
+  entryProfileFlags,
   removeMcpServers,
   isWmuxOwnedNotify,
   upsertNotifyToml,
   removeNotifyToml,
+  type WmuxMcpEntryProfile,
+  type McpServerEntry,
 } from './configIO';
+
+/** The surface a registered entry launches with, read back off its argv. Null
+ *  when nothing is registered. `commander` can appear even though no host
+ *  writer emits it — a hand-edited or externally-managed entry can carry it. */
+export type RegisteredProfile = 'full' | 'core' | 'commander';
 
 export interface ServerRegState {
   registered: boolean;
   path: string | null;
+  profile: RegisteredProfile | null;
 }
 
 export interface TargetRegStatus {
@@ -80,10 +92,14 @@ export function readTargetStatus(target: McpTarget, home: string): TargetRegStat
   }
 
   let wmuxPath: string | null = null;
+  let wmuxProfile: RegisteredProfile | null = null;
   if (configExists) {
     try {
       const parsed = parseConfig(fs.readFileSync(configPath, 'utf8'), target.format);
       wmuxPath = getMcpServerScript(parsed, target.format, WMUX_SERVER_KEY);
+      if (wmuxPath !== null) {
+        wmuxProfile = profileOf(getMcpServerEntry(parsed, target.format, WMUX_SERVER_KEY));
+      }
     } catch {
       // corrupted → not registered
     }
@@ -97,12 +113,27 @@ export function readTargetStatus(target: McpTarget, home: string): TargetRegStat
     configExists,
     configModified,
     verified: target.verified,
-    wmux: { registered: wmuxPath !== null, path: wmuxPath },
+    wmux: { registered: wmuxPath !== null, path: wmuxPath, profile: wmuxProfile },
   };
+}
+
+/** Name the surface an entry's argv selects. `commander` wins over `core` the
+ *  same way the server itself resolves a contradictory launch (see
+ *  src/mcp/index.ts): the security role beats the optimization flag. An entry
+ *  with no profile flag is `full`. */
+export function profileOf(entry: McpServerEntry | null): RegisteredProfile {
+  const flags = entryProfileFlags(entry);
+  if (flags.includes(COMMANDER_MODE_ARG)) return 'commander';
+  if (flags.includes(CORE_MODE_ARG)) return 'core';
+  return 'full';
 }
 
 export function readAllTargetStatuses(home: string): TargetRegStatus[] {
   return MCP_TARGETS.map((t) => readTargetStatus(t, home));
+}
+
+function arraysEqual(a: readonly string[], b: readonly string[]): boolean {
+  return a.length === b.length && a.every((v, i) => v === b[i]);
 }
 
 export interface RegisterTargetResult {
@@ -113,23 +144,32 @@ export interface RegisterTargetResult {
   wrote: string[];
   /** keys left untouched because a foreign (non-node) entry occupies them. */
   foreign: string[];
+  /** The surface the wmux entry carries AFTER this call — what the caller
+   *  asked for, or what was preserved. Null when nothing was registered
+   *  (skipped / foreign), so "no entry" is distinguishable from "full". */
+  profile: RegisteredProfile | null;
 }
 
 /**
  * Ensure the `wmux` MCP server points at `wmuxScript` in one target's config.
  * `ownedKeys` (optional) tracks keys written this session so a key wmux already
  * owns is updated even if its on-disk shape looks foreign-adjacent.
+ *
+ * `profile` (optional) is an explicit surface choice — `wmux mcp register
+ * --profile core|full`. Automatic callers (McpRegistrar on boot, lifecycle
+ * refresh) pass nothing, which preserves the profile already on disk.
  */
 export function registerTarget(
   target: McpTarget,
   home: string,
   wmuxScript: string,
   ownedKeys?: Set<string>,
+  profile?: WmuxMcpEntryProfile,
 ): RegisterTargetResult {
   const configPath = target.configPath(home);
   const exists = fs.existsSync(configPath);
   if (!exists && !target.createIfMissing) {
-    return { configPath, skipped: 'absent', wrote: [], foreign: [] };
+    return { configPath, skipped: 'absent', wrote: [], foreign: [], profile: null };
   }
 
   let text = '';
@@ -137,7 +177,7 @@ export function registerTarget(
     try {
       text = fs.readFileSync(configPath, 'utf8');
     } catch {
-      return { configPath, skipped: 'malformed', wrote: [], foreign: [] };
+      return { configPath, skipped: 'malformed', wrote: [], foreign: [], profile: null };
     }
   }
 
@@ -145,12 +185,15 @@ export function registerTarget(
   try {
     parsed = parseConfig(text, target.format);
   } catch {
-    return { configPath, skipped: 'malformed', wrote: [], foreign: [] };
+    return { configPath, skipped: 'malformed', wrote: [], foreign: [], profile: null };
   }
 
   let newText = text;
   const wrote: string[] = [];
   const foreign: string[] = [];
+  // The surface the entry ends up on. Stays null for a foreign key so callers
+  // can tell "we left someone else's entry alone" from "it is on full".
+  let resultProfile: RegisteredProfile | null = null;
   // Build + validate the new text. Parse/edit failures mean the config is in a
   // shape we can't safely edit → 'malformed' (graceful skip, never clobber).
   // The actual WRITE is intentionally OUTSIDE this catch so a permission/rename
@@ -163,18 +206,30 @@ export function registerTarget(
       if (!isWmuxOwnedEntry(existing)) {
         foreign.push(WMUX_SERVER_KEY); // foreign hand-authored entry — never modify
         skip = true;
-      } else if (existing.args[0] === wmuxScript) {
+      } else if (
+        // Compare the WHOLE args array, not just args[0]. The profile flags
+        // live in args too, so a script-path match alone would call an entry
+        // "up to date" while an explicit `--profile core|full` sat unapplied.
+        // With no explicit profile the desired args preserve the on-disk ones,
+        // so this still short-circuits every unchanged boot re-registration.
+        arraysEqual(existing.args, wmuxEntryArgs(wmuxScript, profile, existing))
+      ) {
         ownedKeys?.add(WMUX_SERVER_KEY); // already up to date
         skip = true;
+        resultProfile = profileOf(existing);
       }
-      // else: ours but stale path → update below
+      // else: ours but stale path / different profile → update below
     }
     if (!skip) {
       // upsert validates its INPUT and OUTPUT, so an inline-table entry the
       // line-based editor can't target (which would duplicate) throws here.
-      newText = upsertMcpServer(newText, target.format, WMUX_SERVER_KEY, wmuxScript);
+      newText = upsertMcpServer(newText, target.format, WMUX_SERVER_KEY, wmuxScript, profile);
       wrote.push(WMUX_SERVER_KEY);
       ownedKeys?.add(WMUX_SERVER_KEY);
+      resultProfile = profileOf({
+        command: 'node',
+        args: wmuxEntryArgs(wmuxScript, profile, existing),
+      });
     }
 
     // Legacy cleanup only applies to Claude's JSON (old wmux-playwright keys
@@ -183,11 +238,11 @@ export function registerTarget(
       newText = removeMcpServers(newText, 'json', ['wmux-playwright', 'wmux-devtools', 'wmux-a2a']);
     }
   } catch {
-    return { configPath, skipped: 'malformed', wrote: [], foreign };
+    return { configPath, skipped: 'malformed', wrote: [], foreign, profile: null };
   }
 
   if (newText !== text) writeFileAtomic(configPath, newText); // write errors propagate
-  return { configPath, skipped: null, wrote, foreign };
+  return { configPath, skipped: null, wrote, foreign, profile: resultProfile };
 }
 
 export interface UnregisterTargetResult {

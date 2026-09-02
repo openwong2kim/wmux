@@ -1,7 +1,7 @@
 /**
- * Shared workspace-identity helpers for both MCP surfaces (src/mcp and
- * src/company/mcp), kept here so the two servers classify identity
- * IDENTICALLY rather than drifting between hand-copied implementations.
+ * Workspace-identity helpers for the MCP server. Kept in their own module so
+ * the classification has exactly one implementation rather than drifting
+ * between hand-copied copies at each call site.
  */
 
 export type WorkspaceLiveness = 'live' | 'absent' | 'unknown';

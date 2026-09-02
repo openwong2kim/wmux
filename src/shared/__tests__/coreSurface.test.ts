@@ -18,10 +18,10 @@ const baseline = JSON.parse(
  *  browser_/company_ tool is excluded automatically, and anything else new
  *  must be added to CORE_TOOL_SURFACE explicitly.
  *
- *  `company_`, not `company_a2a_`: today every company tool is company_a2a_*
- *  so the two are equivalent, but the probe bans the whole `company_` family
- *  from core. Matching the wider prefix here keeps the two drift gates from
- *  disagreeing the day a company tool lands under a different sub-prefix. */
+ *  `company_` is kept even though the full surface ships no company tool
+ *  today (the six `company_a2a_*` tools were removed): the probe bans the
+ *  whole `company_` family from core, and matching the wider prefix here keeps
+ *  the two drift gates from disagreeing the day a company tool comes back. */
 const EXCLUDED_PREFIXES = ['browser_', 'company_'];
 
 describe('core surface manifest invariants', () => {

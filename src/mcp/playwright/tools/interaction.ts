@@ -9,7 +9,7 @@ import {
   isOutstandingFrameRef,
   resolveRef,
 } from '../snapshot';
-import { getLocatorByRef } from '../dom-intelligence';
+import { getLocatorByRef, resolveSmartRefLocator, smartRefAxisEntry } from '../dom-intelligence';
 import { typeHumanlike } from '../human-typing';
 import { describeToolError } from '../toolError';
 import {
@@ -460,20 +460,25 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
 
           try {
             if (smartRef !== undefined) {
-              const selector = getLocatorByRef(smartRef);
-              if (!selector) {
-                throw new Error(
-                  `Element with smartRef=${smartRef} not found. Run browser_smart_snapshot to get current refs.`,
-                );
-              }
-              const locator = page.locator(selector);
+              // Ref-keyed, not `cache[smartRef - 1]`: smart refs are keyed on
+              // DOM node identity now, so the cache is no longer a dense 1..n
+              // range. Throws StaleSmartRefError rather than clicking a
+              // substitute when the ref no longer names one live element.
+              const locator = await resolveSmartRefLocator(page, smartRef);
               if (double) await locator.dblclick();
               else await locator.click();
+              // A ref axis, not the css axis this used to record: the CDP
+              // lane's stored "locator" is getByRole SOURCE TEXT, which
+              // page.locator() cannot parse, so every replay of such a step
+              // failed while the live click succeeded. The RPC lane's selector
+              // is a real one and stays a css axis.
+              const axisEntry = smartRefAxisEntry(smartRef);
+              const selector = axisEntry ? undefined : getLocatorByRef(smartRef) ?? undefined;
               recordAction(deps, {
                 scope,
                 tool: 'browser_click',
                 page,
-                selector,
+                ...(axisEntry ? { refEntry: axisEntry } : { selector }),
                 ...(double && { args: { double: true } }),
               });
               return {

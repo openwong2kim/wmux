@@ -31,7 +31,7 @@ function wireEnforced(): void {
   // we assert on whether the enforcer let dispatch REACH them).
   router.register('browser.open', async () => ({ ok: true, opened: true }));
   router.register('surface.list', async () => ({ surfaces: [] }));
-  router.register('company.a2a.whoami', async () => ({ name: 'agent' }));
+  router.register('surface.new', async () => ({ ok: true, surfaceId: 's1' }));
   router.register('pane.setMetadata', async () => ({
     ok: true,
     paneId: 'p1',
@@ -65,13 +65,13 @@ function dispatchWire(request: Parameters<RpcRouter['dispatch']>[0]) {
 }
 
 describe('enforce-mode dispatch — first-party bundled server (the lockout fix)', () => {
-  it('allows browser.open / surface.list / company.a2a.whoami for claude-code recorded unconfirmed', async () => {
+  it('allows browser.open / surface.list / surface.new for claude-code recorded unconfirmed', async () => {
     // Mirror the live trust DB: mcp.identify recorded claude-code unconfirmed,
     // no declaration. This is the exact state ~/.wmux/plugin-trust.json showed.
     await store.upsertContact(CLAUDE, '2.1.167');
     expect((await store.get(CLAUDE))?.status).toBe('unconfirmed');
 
-    for (const method of ['browser.open', 'surface.list', 'company.a2a.whoami'] as const) {
+    for (const method of ['browser.open', 'surface.list', 'surface.new'] as const) {
       const res = await dispatchWire({
         id: `fp-${method}`,
         method,
@@ -95,7 +95,7 @@ describe('enforce-mode dispatch — first-party bundled server (the lockout fix)
 
   it('REGRESSION GUARD: an external unconfirmed plugin is still rejected for the same methods', async () => {
     await store.upsertContact('evil-plugin');
-    for (const method of ['browser.open', 'surface.list', 'company.a2a.whoami'] as const) {
+    for (const method of ['browser.open', 'surface.list', 'surface.new'] as const) {
       const res = await dispatchWire({
         id: `evil-${method}`,
         method,

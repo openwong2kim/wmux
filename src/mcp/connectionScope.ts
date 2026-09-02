@@ -54,10 +54,10 @@ export interface ConnectionScope {
    * dom-intelligence smart-snapshot element cache (ref → locator), per
    * connection instead of per process — otherwise a second connection's
    * snapshot would overwrite the first's refs and browser_click({smartRef})
-   * would resolve against the wrong agent's page. Typed as unknown[] to avoid
+   * would resolve against the wrong agent's page. Typed as unknown to avoid
    * an import cycle (dom-intelligence imports this module); it owns the cast.
    */
-  elementCache?: unknown[];
+  elementCache?: unknown;
   /**
    * browser_snapshot auto-diff baselines (surface key → last snapshot), per
    * connection for the same reason as elementCache. Typed as unknown to avoid

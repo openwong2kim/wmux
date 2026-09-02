@@ -148,13 +148,25 @@ The full list lives in `src/shared/rpc.ts` (`ALL_RPC_METHODS`). For the MCP-faci
 | Method | Tier | Notes |
 |---|---|---|
 | `company.{create, destroy, status, addDept, removeDept, addMember, removeMember, broadcast, sendDept, sendMember, message, save, restore, templates, worktreeSetup, mergeDept, provision, provisionAll, provisionCeo}` | **experimental** | 3-tier orchestration (CEO → Department → Teammate). Per the Substrate 3.0 decision (memory `project_company_mode_vision.md`), Company Mode is being re-evaluated at the post-v3.0 gate as a first-party reference orchestrator on top of the substrate, not a core wmux feature. |
-| `company.a2a.{whoami, send, broadcast, inbox, ack, status}` | **experimental** | Company-scoped A2A surface. |
+| `company.a2a.{whoami, send, broadcast, inbox, ack, status}` | **experimental** | Company-scoped A2A surface. **Currently has no caller.** The six `company_a2a_*` MCP tools were its only entry point and have been removed (see [Company A2A (removed)](#company-a2a-removed)); no renderer, preload, or daemon path reaches these handlers. They are retained rather than deleted pending the Company mode re-evaluation. |
 
 ---
 
 ## MCP tools
 
 The wmux MCP server (hosted in-process, named-pipe transport to the daemon) exposes a curated subset of the RPC surface as MCP tools. Tool names match `mcp__wmux__<tool>` when used from a Claude Desktop / Claude Code client.
+
+### Tool profiles
+
+The surface a server registers is chosen once, by a launch argument in the host config's `args` — never by an environment variable, so an env-stripping host cannot silently change it.
+
+| Profile | Launch arg | Contents |
+|---|---|---|
+| `full` | *(none)* | Every tool. **The default every registration writes.** |
+| `core` | `--core` | `full` minus `browser_*` (and any `company_*`), for agents that never touch the browser. Saves roughly 27 KB of `tools/list` schema per session. An optimization, not a permission boundary — a core-mode agent has exactly the authority an ordinary one does. |
+| `commander` | `--commander` | The orchestrator role surface. Set by the deck brain adapters at spawn time, not by host-config registration. |
+
+`wmux mcp register --profile core` opts a host into the smaller surface; `--profile full` moves it back. Registration without `--profile` **preserves** whatever profile the entry already carries, so an automatic re-registration (app boot, bundle-path refresh after an upgrade) never undoes the choice.
 
 ### Substrate surface (stable in v3.0)
 
@@ -210,11 +222,22 @@ Backed by **no RPC method**: the sessions are child processes of the MCP server 
 
 There is intentionally no `channel_archive` MCP tool: archiving tears a channel down for everyone, so — like kicking a member — it is a humans-only action that rides the renderer-only `channels:mutate-local` IPC and is never agent-reachable. Of the read-only pipe RPCs (capability `a2a.channel.read`), `a2a.channel.getMessages` and `a2a.channel.getMembers` are already surfaced as the `channel_read` and `channel_get_members` MCP tools; only `a2a.channel.get` is not yet exposed as an MCP tool. The history-shaping `channel.history` MCP tool is explicitly deferred per plan Scope Boundaries — pagination and streaming shape is unsettled.
 
-### Company A2A (experimental)
+### Company A2A (removed)
 
-| MCP tool | Notes |
+**Deprecation — the six `company_a2a_*` MCP tools (`whoami`, `send`, `broadcast`, `inbox`, `ack`, `status`) were removed from every profile.** They were never driven by any prompt, skill, or documented flow, and each one cost schema bytes in the `tools/list` every session pays for before it does any work.
+
+**Company mode's UI is unaffected** — the panel, spawn, and the `company.*` provisioning/mutation RPCs behind them work exactly as before. **Company A2A messaging (the member inbox) currently has no caller**, however: these six tools were the only entry point into `company.a2a.*`, and no renderer, preload, or daemon path reaches those handlers. The pipe handlers are retained rather than deleted, pending the Company mode re-evaluation.
+
+Two of the six have a direct workspace-level equivalent. The other four do not — department/CEO name routing, the member inbox, and the department tree were Company-mode-only features and are removed from MCP outright:
+
+| Removed tool | Replacement |
 |---|---|
-| `company_a2a_whoami`, `company_a2a_send`, `company_a2a_broadcast`, `company_a2a_inbox`, `company_a2a_ack`, `company_a2a_status` | Company-scoped agent messaging. Behind the Phase 4 gate. |
+| `company_a2a_whoami` | `a2a_whoami` |
+| `company_a2a_broadcast` | `a2a_broadcast` |
+| `company_a2a_send` | **No equivalent.** It resolved a target by department → lead, member name, or `"CEO"`; `send_message` / `a2a_task_send` only resolve workspaces. |
+| `company_a2a_inbox` | **No equivalent.** The member inbox is a Company-mode store; `channel_read` / `channel_unread` read channels, which are a different store. |
+| `company_a2a_ack` | **No equivalent.** `channel_ack` acknowledges by channel `seq`, not by the inbox `messageId` these took. |
+| `company_a2a_status` | **No equivalent.** It returned the department tree with per-member roles; `a2a_discover` + `workspace_list` enumerate workspaces, which is not the same graph. |
 
 ### Browser / CDP (experimental)
 
