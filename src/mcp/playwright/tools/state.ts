@@ -7,6 +7,7 @@ import { withAutomationLease } from '../automationLease';
 import { matchSensitiveDomain } from '../security';
 import { evalFunctionOrRpc } from '../page-eval';
 import { describeToolError } from '../toolError';
+import { buildUserAgentOverride } from '../../../shared/uaMetadata';
 import {
   allowScopedRpcFallback,
   sendScopedBrowserRpc,
@@ -481,6 +482,25 @@ export function registerStateTools(server: McpServer, deps: BrowserToolDeps): vo
                 ...(headers ?? {}),
                 'User-Agent': deviceDescriptor.userAgent,
               });
+              // The header alone leaves navigator.userAgentData — and the
+              // Sec-CH-UA* headers built from it — answering out of the REAL
+              // browser, so an emulated phone announced itself as a phone in
+              // one place and as this desktop in the other. Override both
+              // together with metadata derived from the preset's own UA.
+              const override = buildUserAgentOverride(
+                deviceDescriptor.userAgent,
+                locale ?? undefined,
+              );
+              const uaClient = await context.newCDPSession(page);
+              try {
+                await uaClient.send('Emulation.setUserAgentOverride', override);
+              } catch {
+                // Client Hints stay on the real browser's values; the UA header
+                // is still applied. Worth reporting, not worth failing on.
+                applied.push('clientHints=unavailable (UA header applied without matching hints)');
+              } finally {
+                await uaClient.detach().catch(() => {});
+              }
               applied.push(`device=${device} (${deviceDescriptor.viewport.width}x${deviceDescriptor.viewport.height})`);
             } else {
               applied.push('device=reset (use browser_resize to set viewport)');

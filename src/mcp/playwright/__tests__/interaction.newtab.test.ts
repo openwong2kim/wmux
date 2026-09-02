@@ -77,6 +77,9 @@ function makePage(opts: { popupUrl?: string; popupUrls?: string[]; clickThrows?:
       if (opts.clickThrows) throw new Error('Element is not attached to the DOM');
     }),
     dblclick: vi.fn(async () => undefined),
+    // The click path walks the pointer to the element's box before pressing,
+    // so a stand-in element has to have one.
+    boundingBox: vi.fn(async () => ({ x: 10, y: 20, width: 100, height: 40 })),
   };
   return {
     el,
@@ -89,6 +92,8 @@ function makePage(opts: { popupUrl?: string; popupUrls?: string[]; clickThrows?:
       },
       off: (event: string, fn: Handler) => handlers.get(event)?.delete(fn),
       locator: vi.fn(),
+      mouse: { move: vi.fn(async () => undefined) },
+      viewportSize: () => ({ width: 1280, height: 720 }),
     },
   };
 }

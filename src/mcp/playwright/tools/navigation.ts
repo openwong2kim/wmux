@@ -11,6 +11,7 @@ import { withAutomationLease } from '../automationLease';
 import { describeToolError } from '../toolError';
 import { redactPasswordParams } from '../redact';
 import { recordAction } from '../../browser-replay/actionRing';
+import { refererFor } from '../../../shared/referer';
 import {
   browserTabsError,
   isBrowserTabsResult,
@@ -154,7 +155,15 @@ export function registerNavigationTools(server: McpServer, deps: BrowserToolDeps
             if ((await engine.resolveWorkspaceBackend(scope.workspaceId)) === 'chrome') {
               const page = await engine.getPageForScope(scope);
               if (!page) throw new Error('browser_navigate: no chrome page resolved for this scope.');
-              await page.goto(url, { waitUntil: 'domcontentloaded' });
+              // A person reaching this URL by clicking a link arrives with the
+              // page they left in the Referer header; page.goto() sends none
+              // unless told to. refererFor() decides when there is a real one
+              // to send — see shared/referer.
+              const referer = refererFor(page.url(), url);
+              await page.goto(url, {
+                waitUntil: 'domcontentloaded',
+                ...(referer && { referer }),
+              });
               finalUrl = page.url();
               // The landing URL, not the requested one: a trace filed under a
               // redirect's source would never match the page it actually runs

@@ -12,6 +12,15 @@ import {
 import { getLocatorByRef, resolveSmartRefLocator, smartRefAxisEntry } from '../dom-intelligence';
 import { typeHumanlike } from '../human-typing';
 import { evaluateIsolated } from '../isolated-eval';
+import {
+  clickPointInBox,
+  defaultStartPoint,
+  distance,
+  getLastPointer,
+  pathPoints,
+  setLastPointer,
+  stepsForDistance,
+} from '../pointer-path';
 import { describeToolError } from '../toolError';
 import {
   PASSWORD_FIELD_PREDICATE_JS,
@@ -171,6 +180,61 @@ export function sanitizeRef(ref: string, scope: BrowserTargetScope): string {
     throw new Error(frameRefFallbackMessage(ref));
   }
   return ref;
+}
+
+/**
+ * The subset of Locator / ElementHandle that `clickWithApproach` needs. Both
+ * satisfy it, so the two click paths below share one implementation.
+ */
+interface ApproachTarget {
+  boundingBox(): Promise<{ x: number; y: number; width: number; height: number } | null>;
+  click(options?: { position?: { x: number; y: number } }): Promise<void>;
+  dblclick(options?: { position?: { x: number; y: number } }): Promise<void>;
+}
+
+interface ApproachPage {
+  mouse: { move(x: number, y: number): Promise<void> };
+  viewportSize(): { width: number; height: number } | null;
+}
+
+/**
+ * Click `el`, but move the pointer there first and land off-centre.
+ *
+ * A bare `locator.click()` emits one `mousemove` onto the exact centre of the
+ * box and presses — a pointer that has never been anywhere else and never
+ * misses the middle. This walks the pointer from wherever it last was on this
+ * page (see `pointer-path`) and then hands Playwright the landing point as a
+ * `position`, so actionability, `force` and `timeout` behave exactly as before
+ * and the click does not jump away from where the pointer already is.
+ *
+ * An element with no box — detached, `display:none`, still animating in — has
+ * no path to walk, so it falls straight through to the plain click and lets
+ * Playwright's own waiting produce the error or the retry.
+ */
+async function clickWithApproach(
+  page: ApproachPage,
+  el: ApproachTarget,
+  double: boolean,
+): Promise<void> {
+  const box = await el.boundingBox().catch(() => null);
+  if (!box || box.width <= 0 || box.height <= 0) {
+    if (double) await el.dblclick();
+    else await el.click();
+    return;
+  }
+
+  const target = clickPointInBox(box);
+  const from = getLastPointer(page) ?? defaultStartPoint(page.viewportSize() ?? undefined);
+  const steps = stepsForDistance(distance(from, target));
+
+  for (const point of pathPoints(from, target, steps)) {
+    await page.mouse.move(point.x, point.y);
+  }
+  setLastPointer(page, target);
+
+  const position = { x: target.x - box.x, y: target.y - box.y };
+  if (double) await el.dblclick({ position });
+  else await el.click({ position });
 }
 
 async function rpcClick(ref: string, scope: BrowserTargetScope, _double?: boolean): Promise<void> {
@@ -436,6 +500,9 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
             await page.mouse.click(x as number, y as number, {
               ...(double && { clickCount: 2 }),
             });
+            // Keep the tracker honest: the next ref click should approach from
+            // here, not from wherever the pointer was before this one.
+            setLastPointer(page, { x: x as number, y: y as number });
             const note = coordWatch ? await coordWatch.note() : '';
             // Coordinate clicks are deliberately NOT recorded: a coordinate
             // does not survive a re-render, so a trace built on one replays a
@@ -472,8 +539,7 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
               // range. Throws StaleSmartRefError rather than clicking a
               // substitute when the ref no longer names one live element.
               const locator = await resolveSmartRefLocator(page, smartRef);
-              if (double) await locator.dblclick();
-              else await locator.click();
+              await clickWithApproach(page as unknown as ApproachPage, locator, !!double);
               // A ref axis, not the css axis this used to record: the CDP
               // lane's stored "locator" is getByRole SOURCE TEXT, which
               // page.locator() cannot parse, so every replay of such a step
@@ -497,8 +563,7 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
 
             const el = await resolveRef(page, ref);
             if (!el) throw new Error(refNotFound(ref));
-            if (double) await el.dblclick();
-            else await el.click();
+            await clickWithApproach(page as unknown as ApproachPage, el, !!double);
             recordAction(deps, {
               scope,
               tool: 'browser_click',
@@ -727,17 +792,14 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
           if (!el) throw new Error(refNotFound(ref));
           await el.hover();
         } else {
-          // RPC fallback: dispatch mouseover event
+          // RPC fallback: real pointer movement over CDP Input. The synthetic
+          // MouseEvent this replaces arrived with isTrusted === false, which any
+          // handler on the page can read — a single boolean separating our
+          // hover from every hover a person performs.
           const safeRef = sanitizeRef(ref, scope);
-          const val = await rpcEval(`(() => {
-            const el = document.querySelector('[data-wmux-ref="${safeRef}"]');
-            if (!el) return 'not_found';
-            el.scrollIntoView({ block: 'center', behavior: 'instant' });
-            el.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
-            el.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }));
-            return 'ok';
-          })()`, scope);
-          if (val === 'not_found') throw new Error(refNotFound(ref));
+          await sendScopedBrowserRpc('browser.hover.cdp', scope, {
+            selector: `[data-wmux-ref="${safeRef}"]`,
+          });
         }
 
         recordAction(deps, { scope, tool: 'browser_hover', page, ref });
@@ -788,23 +850,16 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
           await page.mouse.move(targetX, targetY, { steps: 10 });
           await page.mouse.up();
         } else {
-          // RPC fallback: simplified drag via JS events
+          // RPC fallback: press, move, release over CDP Input — the same shape
+          // as the Playwright path above. The synthesised DragEvents this
+          // replaces were untrusted, and they also never reached anything built
+          // on pointer events rather than HTML5 drag-and-drop.
           const safeSrc = sanitizeRef(sourceRef, scope);
           const safeTgt = sanitizeRef(targetRef, scope);
-          const val = await rpcEval(`(() => {
-            const src = document.querySelector('[data-wmux-ref="${safeSrc}"]');
-            const tgt = document.querySelector('[data-wmux-ref="${safeTgt}"]');
-            if (!src) return 'source_not_found';
-            if (!tgt) return 'target_not_found';
-            const dt = new DataTransfer();
-            src.dispatchEvent(new DragEvent('dragstart', { bubbles: true, dataTransfer: dt }));
-            tgt.dispatchEvent(new DragEvent('dragover', { bubbles: true, dataTransfer: dt }));
-            tgt.dispatchEvent(new DragEvent('drop', { bubbles: true, dataTransfer: dt }));
-            src.dispatchEvent(new DragEvent('dragend', { bubbles: true, dataTransfer: dt }));
-            return 'ok';
-          })()`, scope);
-          if (val === 'source_not_found') throw new Error(refNotFound(sourceRef));
-          if (val === 'target_not_found') throw new Error(refNotFound(targetRef));
+          await sendScopedBrowserRpc('browser.drag.cdp', scope, {
+            sourceSelector: `[data-wmux-ref="${safeSrc}"]`,
+            targetSelector: `[data-wmux-ref="${safeTgt}"]`,
+          });
         }
 
         recordAction(deps, { scope, tool: 'browser_drag', page, ref: sourceRef, targetRef });
@@ -838,6 +893,12 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
           if (!el) throw new Error(refNotFound(ref));
           await el.selectOption(values);
         } else {
+          // Deliberately still a DOM assignment, unlike hover and drag above.
+          // A native <select> opens an OS-drawn popup that lives outside the
+          // page — CDP Input events go to the document, not to that popup, so
+          // there is no mouse sequence that reliably picks an option. Setting
+          // `selected` and firing `change` is the only path that works here;
+          // the trade-off is that the change event carries isTrusted === false.
           const safeRef = sanitizeRef(ref, scope);
           const escapedValues = JSON.stringify(values);
           const val = await rpcEval(`(() => {

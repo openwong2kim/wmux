@@ -1,3 +1,5 @@
+import { generateTypingDelays, typingDelayFor } from '../../shared/humanRhythm';
+
 export interface HumanBehaviorConfig {
   typingDelay: { min: number; max: number };
   actionInterval: { min: number; max: number };
@@ -22,9 +24,15 @@ export class HumanBehavior {
     this.config = { ...DEFAULT_CONFIG, ...config };
   }
 
-  getTypingDelay(): number {
+  /**
+   * The pause after one keystroke. `char` is the character just typed, which
+   * lengthens the pause after punctuation and word breaks; omit it for a
+   * context-free draw. The distribution lives in `shared/humanRhythm` so this
+   * lane and the MCP lane stay identical.
+   */
+  getTypingDelay(char?: string): number {
     const { min, max } = this.config.typingDelay;
-    return Math.random() * (max - min) + min;
+    return typingDelayFor(char, { minDelay: min, maxDelay: max });
   }
 
   getActionInterval(): number {
@@ -59,6 +67,7 @@ export class HumanBehavior {
   }
 
   generateTypingSchedule(text: string): number[] {
-    return Array.from({ length: text.length }, () => this.getTypingDelay());
+    const { min, max } = this.config.typingDelay;
+    return generateTypingDelays(text, { minDelay: min, maxDelay: max });
   }
 }

@@ -1,26 +1,22 @@
 import type { Page } from 'playwright-core';
+import { generateTypingDelays } from '../../shared/humanRhythm';
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
 export interface HumanTypingOptions {
-  /** Minimum inter-keystroke delay in ms (default 50) */
+  /** Low end of the typist's band in ms (default 50) */
   minDelay?: number;
-  /** Maximum inter-keystroke delay in ms (default 150) */
+  /** High end of the typist's band in ms (default 150) */
   maxDelay?: number;
+  /** Uniform [0,1) source. Defaults to `Math.random`; inject for determinism. */
+  rng?: () => number;
 }
 
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
-
-const DEFAULT_MIN_DELAY = 50;
-const DEFAULT_MAX_DELAY = 150;
-
-function randomDelay(min: number, max: number): number {
-  return Math.random() * (max - min) + min;
-}
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -31,26 +27,27 @@ function sleep(ms: number): Promise<void> {
 // ---------------------------------------------------------------------------
 
 /**
- * Generate an array of per-character delay values (in ms) for the given
- * text.  This mirrors `HumanBehavior.generateTypingSchedule()` from the
- * main process but is independent of that class.
+ * Generate an array of per-character delay values (in ms) for the given text.
+ *
+ * The shape comes from `shared/humanRhythm`, which the main process's
+ * `HumanBehavior.generateTypingSchedule()` also uses, so the two lanes cannot
+ * drift apart: log-normal around the band's midpoint, longer after punctuation
+ * and word breaks, with an occasional thinking pause.
  */
 export function generateDelaySchedule(
   text: string,
   options?: HumanTypingOptions,
 ): number[] {
-  const min = options?.minDelay ?? DEFAULT_MIN_DELAY;
-  const max = options?.maxDelay ?? DEFAULT_MAX_DELAY;
-
-  return Array.from({ length: text.length }, () => randomDelay(min, max));
+  return generateTypingDelays(text, options);
 }
 
 /**
  * Type `text` into the element identified by `selector` with randomised
  * inter-keystroke delays that mimic human typing.
  *
- * Each character is pressed individually via `page.keyboard.press()` with
- * a random pause between `minDelay` and `maxDelay` milliseconds.
+ * Each character is pressed individually via `page.keyboard.press()`, with the
+ * pause after it drawn from the shared typing rhythm — see
+ * `generateDelaySchedule` and `shared/humanRhythm`.
  *
  * If `selector` is provided the element is clicked first to ensure focus.
  */

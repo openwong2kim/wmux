@@ -389,6 +389,8 @@ export type RpcMethod =
   | 'browser.responseBody.get'
   | 'browser.type.cdp'
   | 'browser.click.cdp'
+  | 'browser.hover.cdp'
+  | 'browser.drag.cdp'
   | 'browser.press.cdp'
   | 'browser.cookies'
   | 'browser.resize'
@@ -575,6 +577,8 @@ export const ALL_RPC_METHODS = [
   'browser.responseBody.get',
   'browser.type.cdp',
   'browser.click.cdp',
+  'browser.hover.cdp',
+  'browser.drag.cdp',
   'browser.press.cdp',
   'browser.cookies',
   'browser.resize',

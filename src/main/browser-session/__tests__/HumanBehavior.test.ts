@@ -17,11 +17,17 @@ describe('HumanBehavior', () => {
     expect(config.activeHours).toEqual({ start: 8, end: 22 });
   });
 
-  it('should return getTypingDelay() within 50-150ms range', () => {
-    for (let i = 0; i < 100; i++) {
+  // The draw is log-normal around the band's midpoint with an occasional
+  // longer pause, so it is no longer bounded by the band itself — only by the
+  // rhythm module's clamp (0.6x min .. 5x max). Distribution shape is asserted
+  // in shared/__tests__/humanRhythm.test.ts.
+  it('should return getTypingDelay() inside the rhythm clamp', () => {
+    for (let i = 0; i < 200; i++) {
       const delay = behavior.getTypingDelay();
-      expect(delay).toBeGreaterThanOrEqual(50);
-      expect(delay).toBeLessThan(150);
+      expect(delay).toBeGreaterThanOrEqual(50 * 0.6);
+      // The clamp caps the base draw at 5x max; a thinking pause can add up to
+      // another 700ms on top.
+      expect(delay).toBeLessThanOrEqual(150 * 5 + 700);
     }
   });
 
@@ -91,9 +97,11 @@ describe('HumanBehavior', () => {
     const text = 'hello';
     const schedule = behavior.generateTypingSchedule(text);
     expect(schedule).toHaveLength(text.length);
+    // Bounded by the rhythm clamp, not by the band — see the getTypingDelay
+    // test above.
     for (const delay of schedule) {
-      expect(delay).toBeGreaterThanOrEqual(50);
-      expect(delay).toBeLessThan(150);
+      expect(delay).toBeGreaterThanOrEqual(50 * 0.6);
+      expect(delay).toBeLessThanOrEqual(150 * 5 + 700);
     }
   });
 

@@ -301,6 +301,8 @@ export const METHOD_CAPABILITY: Record<RpcMethod, RequiredCapability> = {
   'browser.responseBody.get':  { capability: 'browser.read',       riskClass: 'browser' },
   'browser.type.cdp':          { capability: 'browser.type',  riskClass: 'browser' },
   'browser.click.cdp':         { capability: 'browser.click', riskClass: 'browser' },
+  'browser.hover.cdp':         { capability: 'browser.click', riskClass: 'browser' },
+  'browser.drag.cdp':          { capability: 'browser.click', riskClass: 'browser' },
   'browser.press.cdp':         { capability: 'browser.type',  riskClass: 'browser' },
   // State tools (#111 packaged RPC fallback). resize stays under
   // `browser.evaluate`: a caller that can already run arbitrary JS can resize the
