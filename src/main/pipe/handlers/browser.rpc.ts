@@ -2209,52 +2209,13 @@ export function registerBrowserRpc(
     const wc = webContents.fromId(target.webContentsId);
     if (!wc || wc.isDestroyed()) throw new Error('browser.drag.cdp: WebContents unavailable');
 
-    // HTML5 drag-and-drop is not reachable from raw mouse events: Chromium
-    // hands a mouse drag on a `draggable` element to the browser's own native
-    // drag loop, which never surfaces as dragstart/dragover/drop to the page
-    // unless the client is intercepting drags. So the two kinds of drop target
-    // need two different mechanisms, and which one applies is decided by the
-    // source element, not by guessing after the fact.
-    const nativeDraggable = await wc.debugger.sendCommand('Runtime.evaluate', {
-      expression: `(() => {
-        const el = document.querySelector(${JSON.stringify(sourceSelector)});
-        if (!el) return null;
-        return !!(el.draggable || el.closest('[draggable="true"]'));
-      })()`,
-      returnByValue: true,
-    }) as { result: { value: boolean | null } };
-
-    if (nativeDraggable.result?.value === null) {
-      throw new Error(`Element not found: ${sourceSelector}`);
-    }
-
-    if (nativeDraggable.result?.value === true) {
-      // HTML5 drag source: synthesised DragEvents are the only thing that
-      // reaches the handlers. Known limitation — these carry
-      // isTrusted === false, unlike the pointer path below.
-      const val = await wc.debugger.sendCommand('Runtime.evaluate', {
-        expression: `(() => {
-          const src = document.querySelector(${JSON.stringify(sourceSelector)});
-          const tgt = document.querySelector(${JSON.stringify(targetSelector)});
-          if (!src) return 'source_not_found';
-          if (!tgt) return 'target_not_found';
-          const dt = new DataTransfer();
-          src.dispatchEvent(new DragEvent('dragstart', { bubbles: true, dataTransfer: dt }));
-          tgt.dispatchEvent(new DragEvent('dragover', { bubbles: true, dataTransfer: dt }));
-          tgt.dispatchEvent(new DragEvent('drop', { bubbles: true, dataTransfer: dt }));
-          src.dispatchEvent(new DragEvent('dragend', { bubbles: true, dataTransfer: dt }));
-          return 'ok';
-        })()`,
-        returnByValue: true,
-      }) as { result: { value: string } };
-      const outcome = val.result?.value;
-      if (outcome === 'source_not_found') throw new Error(`Element not found: ${sourceSelector}`);
-      if (outcome === 'target_not_found') throw new Error(`Element not found: ${targetSelector}`);
-      return { ok: true, mode: 'html5' };
-    }
-
-    // Everything else — anything built on pointer/mouse events — gets a real
-    // press, move and release.
+    // One mechanism covers both kinds of drop target. Measured on Chrome 145:
+    // a press/move/release sent as raw `Input.dispatchMouseEvent` — no
+    // `Input.setInterceptDrags` — fires dragstart and drop on an HTML5
+    // `draggable` element as well as mousedown/mousemove/mouseup on a
+    // pointer-event one. Falling back to synthesised DragEvents for draggable
+    // sources would trade real input for events carrying isTrusted === false,
+    // which is the thing this handler exists to stop doing.
     const from = await approachElement(wc, target.webContentsId, sourceSelector, 'browser.drag.cdp');
     const to = await elementCenter(wc, targetSelector);
     if (!to) throw new Error(`Element not found: ${targetSelector}`);
@@ -2274,7 +2235,7 @@ export function registerBrowserRpc(
     });
     setPointerPosition(wc, target.webContentsId, to);
 
-    return { ok: true, mode: 'pointer', from, to };
+    return { ok: true, from, to };
   });
 
   /**
