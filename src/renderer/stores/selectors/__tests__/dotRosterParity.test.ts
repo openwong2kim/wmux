@@ -170,31 +170,6 @@ describe('#1168 — workspace dot vs. roster', () => {
     expectDotCoversRoster(s, 'ws-1');
   });
 
-  it('settles a dead stash on error even when a browser tab of it still has a status', () => {
-    // The one case where liveness and the attention scan genuinely disagree, so
-    // the order they are applied in matters. `stashedPaneLiveness` weighs only
-    // TERMINAL surfaces — a stash whose shell died but whose browser tab still
-    // holds a ptyId reads 'exited' while the per-surface scan can still find
-    // that tab's retained status. The roster picks a terminal representative for
-    // the same pane and reports error; the dot has to land in the same place.
-    const dead = leaf('p-st', [
-      surface('s-term', ''),
-      surface('s-web', 'pty-web', { surfaceType: 'browser' }),
-    ]);
-    const ws: Workspace = {
-      ...workspace('ws-1', leaf('p1', [surface('s1', 'pty-1')]), 'p1'),
-      stashedPanes: [{ pane: dead, stashedAt: NOW - 60_000 }],
-    };
-    const s = state({
-      workspaces: [ws],
-      surfaceAgent: { 'pty-1': { name: 'Claude Code', status: 'idle' } },
-      surfaceAgentStatus: { 'pty-web': 'complete' },
-    });
-
-    expect(selectWorkspaceAgentRoster(s, 'ws-1').rows.find((r) => r.stashed)?.status).toBe('error');
-    expect(selectWorkspaceAgentStatus(s, 'ws-1')).toBe('error');
-  });
-
   it('leaves a live stashed pane alone', () => {
     // The guard on the fix above: only an EXITED stash is promoted. A stashed
     // pane that is still running keeps deriving its status normally, or every

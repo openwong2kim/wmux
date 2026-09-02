@@ -171,7 +171,20 @@ export function buildFleetSnapshots(state: FleetSelectorState, ts: number): Flee
       // (1) One row per surface holding its OWN retained attention status.
       for (const s of leaf.surfaces) {
         if (!s.ptyId) continue;
-        const att = state.surfaceAgentStatus[s.ptyId];
+        // #1168 — a pending question is an attention source in its own right,
+        // promoted here for the same reason selectFleetPanes promotes it. The
+        // stripped base pass below cannot carry it (that pass exists to produce
+        // the NON-attention status), so without this the mirror is the one
+        // consumer the fix misses — and it is the expensive one to miss: a stop
+        // that asks a question writes `complete` and the question in ONE
+        // broadcast, so the row read `complete` and `reasonFor` never called the
+        // pane blocked. The deck heartbeat and the completion gate then treat a
+        // workspace waiting on an answer as quiescent, which is the same class
+        // of error the #977 note below describes. It also emits a row for a
+        // question that OUTLIVED its retained status — focusing the pane clears
+        // `surfaceAgentStatus` but not the question.
+        const blocked = !!state.surfacePendingQuestion?.[s.ptyId]?.trim();
+        const att = blocked ? 'awaiting_input' : state.surfaceAgentStatus[s.ptyId];
         if (att === undefined) continue;
         const isActiveSurface = s.id === leaf.activeSurfaceId;
         const row: FleetSnapshotPane = {

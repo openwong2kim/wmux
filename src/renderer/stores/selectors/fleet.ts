@@ -302,15 +302,14 @@ export function selectFleetPanes(state: FleetSelectorState): FleetPane[] {
       // `error` / needs-you and offers recovery; this pass had no liveness
       // handling at all, so the workspace's only entry being a dead stash left
       // the dot neutral grey — "nothing here" for the one state that most wants
-      // the user. It is tested BEFORE the attention scan's result, matching the
-      // roster, which also settles liveness first: once the daemon has confirmed
-      // the session gone, a status or question left behind on the pane is not
-      // something the user can still act on. That ordering is load-bearing and
-      // not merely defensive — `stashedPaneLiveness` weighs only TERMINAL
-      // surfaces, so a stash whose lone browser tab still holds a ptyId reads
-      // `exited` while the scan above can still find that tab's retained status.
-      // The roster's representative-surface picker is terminal-only for the same
-      // reason, so both land on 'error' for that pane.
+      // the user. It cannot contradict the attention scan above, which is why it
+      // can sit in front of it: `stashedPaneLiveness` weighs only TERMINAL
+      // surfaces, but the only other type a pane may hold and still be stashable
+      // is `browser` (STASHABLE_SURFACE_TYPES), and a browser surface is created
+      // with `ptyId: ''` and never assigned one — `updateSurfacePtyId` is
+      // reached only from the terminal spawn callback and from reconcile. So
+      // `exited` really does mean no surface in this leaf holds a ptyId, and
+      // every attention source is keyed by one.
       const stashedExited = stashed && stashedPaneLiveness(leaf) === 'exited';
       const status: AgentStatus = stashedExited
         ? 'error'

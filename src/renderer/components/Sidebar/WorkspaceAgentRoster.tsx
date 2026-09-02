@@ -144,14 +144,14 @@ export function rosterHasMixedVendors(rows: readonly WorkspaceAgentRosterRow[]):
  * awaiting_input / waiting / error. That is the signal, and the row's scarcest
  * space should not render it twice.
  *
- * Two known gaps in that dot, neither introduced here and neither an argument
- * for a second indicator in this one place: `selectFleetPanes` (the dot's
- * source) reads neither `surfacePendingQuestion` — which this roster promotes
- * to awaiting_input — nor a stashed pane's `exited` liveness, so a pane
- * blocked on a question can sit under a green dot. The dot also drives
- * MiniSidebar, the titlebar vitals and the deck Fleet, so the fix belongs at
- * its source rather than behind a number that would only correct the sidebar.
- * Tracked separately.
+ * That reading was only true once #1168 closed. The dot's source,
+ * `selectFleetPanes`, used to read neither `surfacePendingQuestion` — which
+ * this roster promotes to awaiting_input — nor a stashed pane's `exited`
+ * liveness, so a pane blocked on a question sat under a green dot while the
+ * row right below it printed the question. Because the same roll-up drives
+ * MiniSidebar, the titlebar vitals and the deck Fleet, the fix went in at the
+ * source rather than behind a number that would only have corrected the
+ * sidebar; that is still the reason not to add a second indicator here.
  *
  * Stash keeps its own glyph rather than a word — the same `IconEyeOff` the
  * expanded list's stash group header uses, so a collapsed workspace still
