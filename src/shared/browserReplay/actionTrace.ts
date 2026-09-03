@@ -183,6 +183,79 @@ export const MAX_ARG_BYTES = 512;
  * and a long label still compares equal to itself.
  */
 export const MAX_CONTEXT_CHARS = 96;
+
+// ── Ancestor context ─────────────────────────────────────────────────────────
+//
+// The `context` an element carries is `role "name"` of the nearest ancestor
+// that both has a structural role and is named. It is minted during the
+// accessibility walk (snapshot.ts) AND the smart-snapshot walk
+// (dom-intelligence.ts), and the two MUST produce the identical string: a flow
+// recorded on one lane is replayed by re-resolving against the other, and a
+// verifier that read `region "Checkout"` at record time but `Checkout` at
+// replay would stop every replay it was meant to pass. So the role set and the
+// formatting live here, in the one layer both lanes already depend on, rather
+// than as two copies that drift.
+
+/**
+ * Ancestor roles whose accessible name says WHERE an element sits.
+ *
+ * Landmarks, table rows, list items, cards, and dialogs — the containers a
+ * page names because a human needs to tell one copy of a repeated control from
+ * another ("Delete" in row "Alice Chen" versus row "Bob Lee"). A `generic` or
+ * an unnamed wrapper is deliberately absent: it would contribute a label that
+ * changes with the markup rather than with the meaning, which is the DOM-path
+ * brittleness the ref axis refuses.
+ */
+export const CONTEXT_ANCESTOR_ROLES: ReadonlySet<string> = new Set([
+  // landmarks
+  'region',
+  'form',
+  'search',
+  'navigation',
+  'main',
+  'banner',
+  'contentinfo',
+  'complementary',
+  // grouping
+  'article',
+  'group',
+  'figure',
+  'toolbar',
+  'menu',
+  'menubar',
+  'tabpanel',
+  'dialog',
+  'alertdialog',
+  // collections
+  'list',
+  'listitem',
+  'table',
+  'grid',
+  'treegrid',
+  'rowgroup',
+  'row',
+  'cell',
+  'gridcell',
+  'columnheader',
+  'rowheader',
+]);
+
+/**
+ * The context an element's CHILDREN inherit: this node when it is a named
+ * container, otherwise whatever it inherited itself. Nearest wins, so a row
+ * beats the table it sits in, and an element is never its own context (the walk
+ * passes the INHERITED value to the element and this value to its children).
+ *
+ * Truncation happens here, at the mint site, so the string a recording saves
+ * and the string a replay compares it against are cut by the same rule — a
+ * label clipped one way at record and another at replay would never match
+ * itself.
+ */
+export function ancestorContext(role: string, name: string, inherited: string): string {
+  if (name.length === 0 || !CONTEXT_ANCESTOR_ROLES.has(role)) return inherited;
+  const label = `${role} "${name}"`;
+  return label.length <= MAX_CONTEXT_CHARS ? label : `${label.slice(0, MAX_CONTEXT_CHARS - 1)}\u2026`;
+}
 /** Whole-file ceiling; over it the oldest workspaces are dropped. */
 export const MAX_FILE_BYTES = 512 * 1024;
 /** A trace unused for this long is forgotten on the next load. */

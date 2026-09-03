@@ -502,6 +502,44 @@ describe('replay axis for a smart ref', () => {
     });
   });
 
+  it('carries the nearest named ancestor as context, matching the a11y lane', async () => {
+    clearElementCache();
+    // region "Primary checkout" > button "Submit order" — the #1182 fixture.
+    // A smartRef-recorded click must get the same context an a11y-recorded one
+    // does, or a flow recorded on one lane cannot be verified on the other.
+    const nodes: CdpNode[] = [
+      { nodeId: '1', backendDOMNodeId: 1, role: role('RootWebArea'), name: name('Checkout'), childIds: ['2'] },
+      { nodeId: '2', backendDOMNodeId: 2, role: role('region'), name: name('Primary checkout'), childIds: ['3'] },
+      { nodeId: '3', backendDOMNodeId: 3, role: role('button'), name: name('Submit order'), childIds: [] },
+    ];
+    await getSmartSnapshot(makePage(nodes));
+
+    expect(getSmartElementByRef(1)?.context).toBe('region "Primary checkout"');
+    expect(smartRefAxisEntry(1)).toMatchObject({ context: 'region "Primary checkout"' });
+  });
+
+  it('inherits the nearest ancestor through an ignored wrapper', async () => {
+    clearElementCache();
+    const nodes: CdpNode[] = [
+      { nodeId: '1', backendDOMNodeId: 1, role: role('RootWebArea'), name: name('People'), childIds: ['2'] },
+      { nodeId: '2', backendDOMNodeId: 2, role: role('row'), name: name('Alice Chen'), childIds: ['3'] },
+      // A generic, unnamed wrapper between the row and the button contributes
+      // no context of its own — the row still wins.
+      { nodeId: '3', role: role('generic'), name: name(''), childIds: ['4'] },
+      { nodeId: '4', backendDOMNodeId: 4, role: role('button'), name: name('Delete'), childIds: [] },
+    ];
+    await getSmartSnapshot(makePage(nodes));
+    expect(getSmartElementByRef(1)?.context).toBe('row "Alice Chen"');
+  });
+
+  it('leaves context empty when nothing above is a named container', async () => {
+    clearElementCache();
+    await getSmartSnapshot(makePage(tree([{ backendId: 5, role: 'button', name: 'OK' }])));
+    expect(getSmartElementByRef(1)?.context).toBe('');
+    // ...and smartRefAxisEntry omits the key entirely, like refEntryToAxis.
+    expect(smartRefAxisEntry(1)).not.toHaveProperty('context');
+  });
+
   it('has no ref axis on the RPC lane, whose selector is a real one', async () => {
     clearElementCache();
     const evaluate = async () => ({

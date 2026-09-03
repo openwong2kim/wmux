@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { generateSnapshot, listRefEntries } from '../snapshot';
+import { generateSnapshot, listRefEntries, getRefEntry } from '../snapshot';
 import { MAX_CONTEXT_CHARS } from '../../../shared/browserReplay/actionTrace';
 
 // The ancestor context a RefEntry carries (#1182). The replay runner compares
@@ -122,6 +122,39 @@ describe('RefEntry.context', () => {
     const context = listRefEntries(page as never)[0].context;
     expect(context.length).toBe(MAX_CONTEXT_CHARS);
     expect(context.endsWith('…')).toBe(true);
+  });
+
+  it('survives filter:interactive and reaches getRefEntry — the recording path', async () => {
+    // The recorder reads context off getRefEntry(page, ref) after a snapshot.
+    // filter:'interactive' keeps a named container that holds a control, so
+    // the context is still stamped on the ref the click records against
+    // (the #1182 dogfood path: browser.snapshot({filter:'interactive'})).
+    const page = makePage([
+      node(1, 'RootWebArea', 'Checkout', [2]),
+      node(2, 'region', 'Primary checkout', [3]),
+      node(3, 'button', 'Submit order'),
+    ]);
+
+    await generateSnapshot(page, { format: 'ai', filter: 'interactive' });
+    const entry = listRefEntries(page as never)[0];
+    expect(entry.context).toBe('region "Primary checkout"');
+    expect(getRefEntry(page as never, String(entry.ref))?.context).toBe('region "Primary checkout"');
+  });
+
+  it('inherits the container through a generic wrapper and a text child', async () => {
+    // A realistic Chrome shape: region > generic > button, with the button's
+    // label carried by a StaticText child. Context must still be the region.
+    const page = makePage([
+      node(1, 'RootWebArea', 'Checkout', [2]),
+      node(2, 'region', 'Express checkout', [3]),
+      node(3, 'generic', '', [4]),
+      { ...node(4, 'button', 'Submit order', [5]) },
+      node(5, 'StaticText', 'Submit order'),
+    ]);
+
+    await generateSnapshot(page, { format: 'ai', filter: 'interactive' });
+    const button = listRefEntries(page as never).find((e) => e.role === 'button');
+    expect(button?.context).toBe('region "Express checkout"');
   });
 
   it('stays out of the snapshot the agent reads', async () => {

@@ -9,7 +9,7 @@ import { collectOcclusion, occlusionNote, type OcclusionInfo } from './occlusion
 import { collectPageFacts, formatPageFactsFooter } from './pageFacts';
 import { peekRecentPendingRequests } from './pageCapture';
 import { evaluateIsolated, isolatedProbeTarget } from './isolated-eval';
-import { MAX_CONTEXT_CHARS } from '../../shared/browserReplay/actionTrace';
+import { ancestorContext } from '../../shared/browserReplay/actionTrace';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -958,71 +958,6 @@ function frameOf(node: AXNode, inherited: FrameCoord): FrameCoord {
   return node.frameCoord ?? inherited;
 }
 
-/**
- * Ancestor roles whose accessible name says WHERE an element sits.
- *
- * Landmarks, table rows, list items, cards, and dialogs — the containers a
- * page names because a human needs to tell one copy of a repeated control from
- * another ("Delete" in row "Alice Chen" versus row "Bob Lee"). A `generic` or
- * an unnamed wrapper is deliberately absent: it would contribute a label that
- * changes with the markup rather than with the meaning, which is the DOM-path
- * brittleness this whole axis refuses.
- *
- * The element's own accessible DESCRIPTION was considered as a second
- * component and left out: aria-describedby routinely carries live text (a
- * running total, a countdown), and a verifier that changes on its own turns
- * every replay into a stop.
- */
-const CONTEXT_ANCESTOR_ROLES = new Set([
-  // landmarks
-  'region',
-  'form',
-  'search',
-  'navigation',
-  'main',
-  'banner',
-  'contentinfo',
-  'complementary',
-  // grouping
-  'article',
-  'group',
-  'figure',
-  'toolbar',
-  'menu',
-  'menubar',
-  'tabpanel',
-  'dialog',
-  'alertdialog',
-  // collections
-  'list',
-  'listitem',
-  'table',
-  'grid',
-  'treegrid',
-  'rowgroup',
-  'row',
-  'cell',
-  'gridcell',
-  'columnheader',
-  'rowheader',
-]);
-
-/**
- * The context an element's CHILDREN inherit: this node when it is a named
- * container, otherwise whatever it inherited itself. Nearest wins, so a row
- * beats the table it sits in.
- *
- * Truncation happens HERE rather than at the storage layer so that the string
- * the recorder saves and the string the replay compares it against were cut by
- * the same rule — a label clipped one way at record and another at replay
- * would never match itself.
- */
-function contextForChildren(role: string, name: string, inherited: string): string {
-  if (name.length === 0 || !CONTEXT_ANCESTOR_ROLES.has(role)) return inherited;
-  const label = `${role} "${name}"`;
-  return label.length <= MAX_CONTEXT_CHARS ? label : `${label.slice(0, MAX_CONTEXT_CHARS - 1)}\u2026`;
-}
-
 function serializeNode(
   node: AXNode,
   ctx: SerializeCtx,
@@ -1037,7 +972,7 @@ function serializeNode(
   const pad = '  '.repeat(indent);
   const role = node.role;
   const name = node.name || '';
-  const childContext = contextForChildren(role, name, inheritedContext);
+  const childContext = ancestorContext(role, name, inheritedContext);
 
   // Build attribute string
   const attrs: string[] = [];
