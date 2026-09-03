@@ -1195,7 +1195,6 @@ export const ko = {
   'missions.done': '완료 ({count})',
   'missions.empty': '아직 태스크 없음',
   'missions.doneSummary': '최근: {title}',
-  'missions.parentless': '다른 워크스페이스',
   'fanout.taskReady': '태스크 "{title}" 준비됨',
   'fanout.tasksReady': '태스크 {count}개 준비됨',
   'fanout.openDiff': 'diff 열기',

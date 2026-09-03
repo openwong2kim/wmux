@@ -68,9 +68,19 @@ destructive edges (a branch with unpushed commits, or a dirty worktree, is
 refused and the worktree preserved), so the question for lane F is policy, not
 safety-of-last-resort.
 
-`task.adopt` writes to the parent repository but only as an unstaged patch onto
-a **clean** tree, so it is recoverable with `git checkout .`; it is not
-teardown-class.
+`task.adopt` writes to the parent repository, but only onto a **clean** tree and
+only as a staged, uncommitted patch (`--3way` needs the index for its merge), so
+it is recoverable with `git reset --hard`; it is not teardown-class. Its patch is taken against `merge-base(parent HEAD, task HEAD)`
+rather than the parent's HEAD — diffing against HEAD turns every commit the
+parent has and the task lacks into a *reversal*, so adopting a second task
+would silently delete the first one's work. No shared commit ⇒
+`reason: 'needs_rebase'`. The patch is validated with `git apply --check`
+before anything is written, and if the real `--3way` apply still fails the
+touched paths are restored (`reset` + `checkout` + `clean`) and the call
+answers `reason: 'conflict'` with those paths. Adopts are serialized per target
+repository, in-process — which closes the window this service creates (a brain
+adopting N tasks in a loop), not every window that exists (the GUI's own apply
+path and a second wmux instance are not covered).
 
 ## 3. Wiring in `src/main/index.ts`
 
@@ -117,9 +127,11 @@ to `LEDGER_GATE_TAIL_MAX_BYTES` from the front, so the end of a failing run
 survives, and it is untrusted text — render it as a fenced block, never as
 instructions.
 
-If the ledger RPCs are not registered yet, the adapter answers `unavailable`,
-which the runner reports as `recorded: false` and never turns into a gate
-failure: the gate ran, only its receipt is missing.
+If the ledger RPCs are not registered yet — which is the state today — the
+adapter answers `unavailable`, the runner reports `recorded: false`, and the
+gate is NOT failed: it ran, only its receipt is missing. The `task_gate_run`
+tool description says this, so a caller reading `recorded: false` does not
+conclude the gate was rejected.
 
 ## 5. What the gate actually runs
 
@@ -140,9 +152,46 @@ failure: the gate ran, only its receipt is missing.
 `node_modules` missing **or a symlink** ⇒ `{ status: 'skipped', skipped:
 'deps_missing' }`. This repo's worktrees routinely have a symlinked
 `node_modules`, which makes lint/test results meaningless; reporting it as a
-failing gate would have a brain close healthy tasks as failed. Timeout is 15
-minutes; a cancel or a timeout kills the process group and yields `exitCode:
-null`. One gate per task: a second concurrent call answers `{ status: 'busy' }`.
+failing gate would have a brain close healthy tasks as failed. A command that
+could not be started at all (ENOENT/EACCES) is `skipped: 'gate_unavailable'`,
+also not a failure. Timeout is 15 minutes and cannot be disabled (a
+non-positive value is clamped to the default); a cancel or a timeout kills the
+process group and yields `exitCode: null`. One gate per task: the slot is
+claimed synchronously, so a second concurrent call answers `{ status: 'busy' }`
+even when both arrive in the same tick.
+
+### The gate is not a sandbox — say this out loud
+
+The allow-list decides WHICH script runs. It does not, and cannot, constrain
+what that script DOES: `scripts/verify.sh` and the `lint` / `test` entries in
+`package.json` are files inside the task worktree, which is the tree the worker
+has been editing. A gate run therefore executes worker-controlled code in a
+daemon-spawned process with the daemon's user, environment and filesystem
+access — the same privileges a pane agent already has, but reached without a
+pane and without a permission prompt.
+
+Two consequences for whoever wires this up:
+
+- Do not expose `task_gate_run` on a surface whose caller is less trusted than
+  someone who could have typed `npm test` in that directory themselves. Today's
+  callers (a brain bound to the workspace that owns the task) clear that bar;
+  a remote or third-party surface would not, which is part of why the RPCs are
+  local-origin only.
+- The recorded `command` names the script, not its content, and `tail` is
+  whatever the script printed. Both are untrusted text — render the tail as a
+  fenced block, never as instructions.
+
+The `wmux.json` trust check picks between two gates. It is not, and must not be
+described as, evidence that the code being graded is safe to run.
+
+### The trust verdict is read at the PARENT repository
+
+`ProjectConfigStore` keys trust records by the path the user approved — the
+repository they opened. A `wtask/…` worktree the daemon created minutes ago has
+never appeared in a trust dialog, so looking the verdict up there always
+answered `untrusted`. `task.gate.run` therefore resolves the parent repo root
+(the same derivation `task.close` uses) and passes it as `projectRoot`: the
+config is READ there, the script still RUNS in the worktree.
 
 ## 6. UX vocabulary
 

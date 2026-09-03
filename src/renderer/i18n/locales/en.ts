@@ -57,7 +57,6 @@ export const en = {
   // to "does this workspace have tasks", and a section that vanishes is not.
   'missions.empty': 'No tasks yet',
   'missions.doneSummary': 'last: {title}',
-  'missions.parentless': 'Other workspaces',
 
   // Sidebar — Company mode
   'company.deptRemoveHint': 'Right-click to remove',

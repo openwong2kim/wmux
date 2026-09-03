@@ -3,10 +3,12 @@
 - Tasks can now be finished from an agent, not only from the GUI: `task_gate_run`
   runs a task's completion gate (its trusted verify script, or npm lint + test)
   inside the task's own worktree and reports a structured verdict; `task_adopt`
-  takes all of a task's changes into the parent repository as an unstaged patch;
-  `task_close` and `task_pr` close a task or open its pull request. Each refuses
-  with a named reason — a dirty worktree, unpushed commits, missing dependencies
-  — instead of failing silently.
+  takes all of a task's changes into the parent repository as a staged,
+  uncommitted patch; `task_close` and `task_pr` close a task or open its pull
+  request. Each refuses with a named reason — a dirty worktree, unpushed
+  commits, missing dependencies, a task branch that needs rebasing — instead of
+  failing silently, and an adopt that will not apply cleanly leaves the parent
+  repository untouched.
 - `git_status`, `git_log` and `gh_pr_view` read a task's worktree as data, so a
   supervising agent no longer has to infer what a task produced from a terminal
   screen.

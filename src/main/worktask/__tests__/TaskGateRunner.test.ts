@@ -5,12 +5,15 @@
 // npm's behaviour.
 
 import { describe, it, expect, vi } from 'vitest';
+import * as path from 'node:path';
 
 import {
   TaskGateRunner,
   boundTail,
   GATE_TAIL_LINES,
+  GATE_TIMEOUT_MS,
   GATE_VERIFY_SCRIPT,
+  type GateExit,
   type GateProcess,
   type GateSpawn,
 } from '../TaskGateRunner';
@@ -18,6 +21,8 @@ import { LEDGER_GATE_TAIL_MAX_BYTES } from '../../../shared/ledger';
 import type { LedgerPort, LedgerGateWrite } from '../ledgerPort';
 
 const WT = '/tmp/wt-task-1';
+/** The parent repository — the path a wmux.json trust record is keyed by. */
+const REPO = '/repo';
 
 /** A ledger that accepts everything and records what it was handed. */
 function fakeLedger(): LedgerPort & { writes: LedgerGateWrite[] } {
@@ -33,29 +38,32 @@ function fakeLedger(): LedgerPort & { writes: LedgerGateWrite[] } {
 }
 
 /** A spawn that answers with `code` and optionally never resolves (for the
- *  timeout/cancel cases, where the runner's own kill must end the wait). */
+ *  timeout/cancel cases, where the runner's own kill must end the wait).
+ *  `unavailable` models a process that never started at all (ENOENT/EACCES). */
 function fakeSpawn(opts: {
   code?: number | null;
   hang?: boolean;
+  unavailable?: string;
   output?: string;
   seen?: string[][];
 }): GateSpawn {
   return (cmd, args) => {
     opts.seen?.push([cmd, ...args]);
-    let settle: ((code: number | null) => void) | undefined;
+    let settle: ((exit: GateExit) => void) | undefined;
     const proc: GateProcess = {
       onOutput(cb) {
         if (opts.output) cb(opts.output);
       },
       wait() {
-        if (!opts.hang) return Promise.resolve(opts.code ?? 0);
-        return new Promise<number | null>((resolve) => {
+        if (opts.unavailable) return Promise.resolve({ kind: 'unavailable', message: opts.unavailable });
+        if (!opts.hang) return Promise.resolve({ kind: 'exited', code: opts.code ?? 0 });
+        return new Promise<GateExit>((resolve) => {
           settle = resolve;
         });
       },
       kill() {
         // A real kill makes `wait` settle with a signal death.
-        settle?.(null);
+        settle?.({ kind: 'exited', code: null });
       },
     };
     return proc;
@@ -153,11 +161,18 @@ describe('TaskGateRunner', () => {
         }),
       },
     });
-    const res = await runner.run({ taskId: 'wtask-1', worktreePath: WT, systemWorkspaceId: 'ws-daemon' });
+    const res = await runner.run({
+      taskId: 'wtask-1',
+      worktreePath: WT,
+      systemWorkspaceId: 'ws-daemon',
+      projectRoot: REPO,
+    });
     expect(res.status).toBe('completed');
     expect(seen).toHaveLength(1);
     expect(seen[0]?.[0]).toBe('bash');
-    expect(seen[0]?.[1]).toContain(GATE_VERIFY_SCRIPT);
+    // Path-separator agnostic: on win32 path.join yields backslashes, so a
+    // literal 'scripts/verify.sh' never matches (CI, PR #1197).
+    expect(seen[0]?.[1]).toContain(path.join('scripts', 'verify.sh'));
   });
 
   it('skips with deps_missing rather than failing when node_modules is absent or symlinked', async () => {
@@ -190,7 +205,6 @@ describe('TaskGateRunner', () => {
       spawn: fakeSpawn({ hang: true }),
       readPackageScripts: () => npmProject,
       depsState: () => 'ok',
-      timeoutMs: 0,
     });
     const first = runner.run({ taskId: 'wtask-1', worktreePath: WT, systemWorkspaceId: 'ws-daemon' });
     // Let the first call get past its awaits and claim the task.
@@ -202,13 +216,134 @@ describe('TaskGateRunner', () => {
     await first;
   });
 
+  // The check used to sit before two awaits and the claim after them, so two
+  // calls issued in the SAME tick both saw an empty map: both spawned, the
+  // second's closure replaced the first's (making one gate uncancellable), and
+  // whichever finished first deleted the other's entry.
+  it('claims the slot before its first await, so same-tick calls cannot both start', async () => {
+    const seen: string[][] = [];
+    const runner = new TaskGateRunner({
+      ledger: fakeLedger(),
+      spawn: fakeSpawn({ hang: true, seen }),
+      readPackageScripts: () => npmProject,
+      depsState: () => 'ok',
+    });
+    const input = { taskId: 'wtask-1', worktreePath: WT, systemWorkspaceId: 'ws-daemon' };
+    const [a, b] = [runner.run(input), runner.run(input)];
+    const second = await b;
+    expect(second).toMatchObject({ ok: false, status: 'busy' });
+    await new Promise((r) => setTimeout(r, 0));
+    // Exactly one gate is running, and it is still the cancellable one.
+    expect(seen).toHaveLength(1);
+    expect(runner.cancel('wtask-1')).toBe(true);
+    await a;
+  });
+
+  it('releases the slot on every early return, and never another run\'s slot', async () => {
+    const runner = new TaskGateRunner({
+      ledger: fakeLedger(),
+      spawn: fakeSpawn({ code: 0 }),
+      readPackageScripts: () => ({}),
+      depsState: () => 'ok',
+    });
+    // A skip is an early return from inside the claim.
+    expect(await runner.run({ taskId: 'wtask-1', worktreePath: WT, systemWorkspaceId: 'ws-daemon' })).toMatchObject({
+      status: 'skipped',
+    });
+    expect(runner.isRunning('wtask-1')).toBe(false);
+    // deps_missing returns even earlier.
+    const noDeps = new TaskGateRunner({
+      ledger: fakeLedger(),
+      spawn: fakeSpawn({ code: 0 }),
+      readPackageScripts: () => npmProject,
+      depsState: () => 'missing',
+    });
+    await noDeps.run({ taskId: 'wtask-2', worktreePath: WT, systemWorkspaceId: 'ws-daemon' });
+    expect(noDeps.isRunning('wtask-2')).toBe(false);
+  });
+
+  it('skips with gate_unavailable when the command could not be started at all', async () => {
+    const runner = new TaskGateRunner({
+      ledger: fakeLedger(),
+      spawn: fakeSpawn({ unavailable: 'spawn npm ENOENT' }),
+      readPackageScripts: () => npmProject,
+      depsState: () => 'ok',
+    });
+    const res = await runner.run({ taskId: 'wtask-1', worktreePath: WT, systemWorkspaceId: 'ws-daemon' });
+    // NOT a failing gate: nothing was graded. exitCode null would have a brain
+    // close a healthy task as failed because of the daemon's PATH.
+    expect(res).toMatchObject({ ok: true, status: 'skipped', skipped: 'gate_unavailable' });
+    if (res.status !== 'skipped') throw new Error('unreachable');
+    expect(res.detail).toContain('ENOENT');
+  });
+
+  it('clamps a non-positive timeout to the default instead of disabling it', async () => {
+    vi.useFakeTimers();
+    try {
+      for (const timeoutMs of [0, -1]) {
+        const runner = new TaskGateRunner({
+          ledger: fakeLedger(),
+          spawn: fakeSpawn({ hang: true }),
+          readPackageScripts: () => npmProject,
+          depsState: () => 'ok',
+          timeoutMs,
+        });
+        const pending = runner.run({ taskId: 'wtask-1', worktreePath: WT, systemWorkspaceId: 'ws-daemon' });
+        await vi.advanceTimersByTimeAsync(0);
+        // A disabled timer would leave this pending forever, holding the task's
+        // only gate slot until the daemon restarts.
+        await vi.advanceTimersByTimeAsync(GATE_TIMEOUT_MS + 1);
+        const res = await pending;
+        if (res.status !== 'completed') throw new Error('unreachable');
+        expect(res.result.exitCode).toBeNull();
+        expect(res.result.tail).toContain('timed out');
+      }
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('reads the wmux.json verdict at the PARENT root, not the wtask worktree', async () => {
+    const asked: string[] = [];
+    const seen: string[][] = [];
+    const runner = new TaskGateRunner({
+      ledger: fakeLedger(),
+      spawn: fakeSpawn({ code: 0, seen }),
+      readPackageScripts: () => npmProject,
+      depsState: () => 'ok',
+      fileExists: () => true,
+      project: {
+        getState: async (cwd: string) => {
+          asked.push(cwd);
+          // Trust records are keyed by the path the USER approved. A worktree
+          // the daemon minted minutes ago has never been in a trust dialog, so
+          // looking it up there always answered 'untrusted' and the whole
+          // verify branch was dead code.
+          return cwd === REPO
+            ? { trust: 'trusted', config: { commands: [{ id: 'verify', command: GATE_VERIFY_SCRIPT }] } }
+            : { trust: 'untrusted' };
+        },
+      },
+    });
+    const res = await runner.run({
+      taskId: 'wtask-1',
+      worktreePath: WT,
+      systemWorkspaceId: 'ws-daemon',
+      projectRoot: REPO,
+    });
+    expect(res.status).toBe('completed');
+    expect(asked).toEqual([REPO]);
+    // …and the script still RUNS in the worktree.
+    expect(seen[0]?.[1]).toContain(path.join('scripts', 'verify.sh'));
+    expect(seen[0]?.[1]).toContain(WT.replace(/\//g, path.sep));
+  });
+
   it('cancel kills the gate and the verdict is a signal death, not a pass', async () => {
     const runner = new TaskGateRunner({
       ledger: fakeLedger(),
       spawn: fakeSpawn({ hang: true }),
       readPackageScripts: () => npmProject,
       depsState: () => 'ok',
-      timeoutMs: 0,
     });
     const pending = runner.run({ taskId: 'wtask-1', worktreePath: WT, systemWorkspaceId: 'ws-daemon' });
     await new Promise((r) => setTimeout(r, 0));

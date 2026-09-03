@@ -58,6 +58,8 @@ function harness(opts?: {
   ownerWorkspaceId?: string | null;
   onDisk?: boolean;
   exec?: WorktaskExec;
+  /** 'throw' = transport failure, 'not-ok' = the daemon refusing. */
+  missionList?: 'throw' | 'not-ok';
 }): Harness {
   const handlers = new Map<string, Handler>();
   const router = { register: (m: string, h: Handler) => handlers.set(m, h) } as unknown as RpcRouter;
@@ -79,6 +81,8 @@ function harness(opts?: {
     rpc: vi.fn(async (method: string, params: Record<string, unknown>) => {
       if (method !== 'task.mission.list') throw new Error(`unexpected daemon rpc: ${method}`);
       missionParams = params;
+      if (opts?.missionList === 'throw') throw new Error('daemon socket closed');
+      if (opts?.missionList === 'not-ok') return { ok: false, error: { message: 'mission log unavailable' } };
       return { ok: true, tasks: opts?.tasks ?? [TASK] };
     }),
   };
@@ -194,10 +198,14 @@ describe('task.gate.run', () => {
   it('runs the gate in the task worktree as a system actor', async () => {
     const h = harness();
     const res = await h.call('task.gate.run', { taskId: TASK.id, senderPtyId: 'pty-1' });
+    // The wmux.json trust verdict is keyed by the parent repository, never by a
+    // wtask/ worktree the daemon minted (which has no trust record at all, so
+    // the whole verify branch was dead).
     expect(h.gateRun).toHaveBeenCalledWith({
       taskId: TASK.id,
       worktreePath: TASK.worktreePath,
       systemWorkspaceId: 'ws-daemon',
+      projectRoot: '/repo',
     });
     expect(res).toMatchObject({ ok: true, status: 'completed', title: TASK.title });
   });
@@ -312,10 +320,14 @@ describe('task.pr', () => {
 describe('task.git.status', () => {
   it('runs a fixed argv in the task worktree and returns structure, not text', async () => {
     const h = harness({
-      exec: async () => ({ stdout: '## wtask/lane-one...origin/wtask/lane-one [ahead 2]\n M src/a.ts\n?? src/new.ts\n', stderr: '', code: 0 }),
+      exec: async () => ({
+        stdout: '## wtask/lane-one...origin/wtask/lane-one [ahead 2]\0 M src/a.ts\0?? src/new.ts\0',
+        stderr: '',
+        code: 0,
+      }),
     });
     const res = await h.call('task.git.status', { taskId: TASK.id, senderPtyId: 'pty-1' });
-    expect(h.exec).toHaveBeenCalledWith('git', ['status', '--porcelain=v1', '--branch'], TASK.worktreePath);
+    expect(h.exec).toHaveBeenCalledWith('git', ['status', '--porcelain=v1', '--branch', '-z'], TASK.worktreePath);
     expect(res).toMatchObject({
       ok: true,
       branch: 'wtask/lane-one',
@@ -386,21 +398,84 @@ describe('task.gh.prView', () => {
 });
 
 describe('porcelain parsing', () => {
-  it('reads a rename as its destination path', () => {
-    const parsed = parseGitStatus('## main\nR  old.ts -> new.ts\n');
-    expect(parsed.files).toEqual([{ status: 'R ', path: 'new.ts' }]);
+  it('reads a rename as its destination and consumes the origin record', () => {
+    const parsed = parseGitStatus('## main\0R  new.ts\0old.ts\0 M other.ts\0');
+    expect(parsed.files).toEqual([
+      { status: 'R ', path: 'new.ts' },
+      { status: ' M', path: 'other.ts' },
+    ]);
+  });
+
+  // Without -z git quotes non-ASCII paths and splits a path containing a
+  // newline across two lines, so a caller acting on `path` was handed a name
+  // that does not exist on disk.
+  it('keeps a path containing a newline as one entry', () => {
+    expect(parseGitStatus('## main\0 M src/a\nb.ts\0').files).toEqual([{ status: ' M', path: 'src/a\nb.ts' }]);
+  });
+
+  it('reads a non-ASCII path verbatim rather than git-quoted', () => {
+    expect(parseGitStatus('## main\0 M src/é.ts\0').files).toEqual([{ status: ' M', path: 'src/é.ts' }]);
   });
 
   it('reports a branch with no upstream and no changes as clean', () => {
-    const parsed = parseGitStatus('## wtask/x\n');
+    const parsed = parseGitStatus('## wtask/x\0');
     expect(parsed).toMatchObject({ branch: 'wtask/x', ahead: 0, behind: 0, clean: true });
   });
 
   it('reads ahead and behind together', () => {
-    expect(parseGitStatus('## a...origin/a [ahead 1, behind 3]\n')).toMatchObject({ ahead: 1, behind: 3 });
+    expect(parseGitStatus('## a...origin/a [ahead 1, behind 3]\0')).toMatchObject({ ahead: 1, behind: 3 });
   });
 
   it('ignores empty log output', () => {
     expect(parseGitLog('')).toEqual([]);
+  });
+});
+
+// ── A closed or detached task is not something to act on ───────────────────
+// Its worktree has been removed (closed) or deliberately handed away
+// (detached); running a gate or opening a PR there is at best a confusing git
+// error and at worst work done in a directory nobody is watching.
+describe.each(['task.gate.run', 'task.adopt', 'task.pr'])('%s — the task must still be live', (method) => {
+  it('refuses a closed task', async () => {
+    const h = harness({ tasks: [{ ...TASK, status: 'closed' }] });
+    const res = await h.call(method, { taskId: TASK.id, senderPtyId: 'pty-1' });
+    expect(res).toMatchObject({ ok: false, error: { code: 'FAILED_PRECONDITION' } });
+  });
+
+  it('refuses a detached task', async () => {
+    const h = harness({ tasks: [{ ...TASK, detachedAt: 1 }] });
+    const res = await h.call(method, { taskId: TASK.id, senderPtyId: 'pty-1' });
+    expect(res).toMatchObject({ ok: false, error: { code: 'FAILED_PRECONDITION' } });
+  });
+});
+
+describe('reads and close still work on a finished task', () => {
+  it.each(['task.git.status', 'task.git.log', 'task.gh.prView'])('%s reads a closed task', async (method) => {
+    const h = harness({ tasks: [{ ...TASK, status: 'closed' }] });
+    const res = await h.call(method, { taskId: TASK.id, senderPtyId: 'pty-1' });
+    expect(res).not.toMatchObject({ error: { code: 'FAILED_PRECONDITION' } });
+  });
+
+  it('task.close reconciles an already-closed task instead of refusing', async () => {
+    const h = harness({ tasks: [{ ...TASK, status: 'closed' }] });
+    await h.call('task.close', { taskId: TASK.id, senderPtyId: 'pty-1' });
+    expect(h.closeTask).toHaveBeenCalled();
+  });
+});
+
+// ── A daemon outage is not "no such task" ──────────────────────────────────
+// NOT_FOUND is the one answer that tells a caller to stop retrying and go look
+// for a bug in its own bookkeeping.
+describe.each(WORKTASK_RPC_METHODS)('%s — daemon reachability', (method) => {
+  it('reports a transport failure as UNAVAILABLE', async () => {
+    const h = harness({ missionList: 'throw' });
+    const res = await h.call(method, { taskId: TASK.id, senderPtyId: 'pty-1' });
+    expect(res).toMatchObject({ ok: false, error: { code: 'UNAVAILABLE' } });
+  });
+
+  it('reports a refusing daemon as UNAVAILABLE too', async () => {
+    const h = harness({ missionList: 'not-ok' });
+    const res = await h.call(method, { taskId: TASK.id, senderPtyId: 'pty-1' });
+    expect(res).toMatchObject({ ok: false, error: { code: 'UNAVAILABLE' } });
   });
 });

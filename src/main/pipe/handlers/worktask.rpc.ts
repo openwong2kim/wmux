@@ -127,12 +127,30 @@ function deny(code: string, message: string): { ok: false; error: { code: string
   return { ok: false, error: { code, message } };
 }
 
-async function listMissions(daemon: WorktaskRpcDaemonPort, verifiedWorkspaceId: string): Promise<ProjectionTask[]> {
-  const res = (await daemon.rpc('task.mission.list', { verifiedWorkspaceId })) as
-    | { ok?: boolean; tasks?: ProjectionTask[] }
-    | undefined;
-  if (!res || res.ok !== true || !Array.isArray(res.tasks)) return [];
-  return res.tasks;
+/**
+ * The caller's own tasks, or WHY we could not ask. Collapsing a daemon outage
+ * into `[]` made every method answer NOT_FOUND — "no such task" — for a task
+ * that plainly exists, which is the one answer that tells a caller to stop
+ * retrying and go looking for a bug in its own bookkeeping.
+ */
+async function listMissions(
+  daemon: WorktaskRpcDaemonPort,
+  verifiedWorkspaceId: string,
+): Promise<{ tasks: ProjectionTask[] } | { code: string; message: string }> {
+  let res: { ok?: boolean; tasks?: ProjectionTask[]; error?: { message?: unknown } } | undefined;
+  try {
+    res = (await daemon.rpc('task.mission.list', { verifiedWorkspaceId })) as typeof res;
+  } catch (err) {
+    return {
+      code: 'UNAVAILABLE',
+      message: `could not reach the daemon to list your tasks: ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
+  if (!res || res.ok !== true || !Array.isArray(res.tasks)) {
+    const detail = typeof res?.error?.message === 'string' ? `: ${res.error.message}` : '';
+    return { code: 'UNAVAILABLE', message: `the daemon could not list your tasks${detail}` };
+  }
+  return { tasks: res.tasks };
 }
 
 /**
@@ -174,11 +192,22 @@ async function resolveCaller(
   return { workspaceId };
 }
 
-/** The caller + the task it named, or the wire error to answer with. */
+/**
+ * The caller + the task it named, or the wire error to answer with.
+ *
+ * `requireLive` is for the methods that ACT on a task (gate, adopt, PR). A
+ * closed task's worktree has been removed and a detached one has been handed
+ * away deliberately — running a gate in either is at best a confusing git error
+ * and at worst work done in a directory nobody is watching. The read-only
+ * methods and `task.close` itself do not set it: reading a finished task is
+ * useful, and closing an already-closed one is how the cleanup scan
+ * reconciles.
+ */
 async function resolveOwnedTask(
   deps: WorktaskRpcDeps,
   params: Record<string, unknown>,
   ctx: RpcContext | undefined,
+  requireLive = false,
 ): Promise<{ workspaceId: string; task: ProjectionTask } | { code: string; message: string }> {
   const taskId = typeof params['taskId'] === 'string' ? params['taskId'].trim() : '';
   if (!taskId) return { code: 'INVALID_ARGUMENT', message: 'taskId is required' };
@@ -186,14 +215,27 @@ async function resolveOwnedTask(
   const caller = await resolveCaller(deps.getWindow, params, ctx);
   if (!('workspaceId' in caller)) return caller;
 
-  const tasks = await listMissions(deps.daemon, caller.workspaceId);
-  const task = tasks.find((t) => t.id === taskId);
+  const listed = await listMissions(deps.daemon, caller.workspaceId);
+  if (!('tasks' in listed)) return listed;
+  const task = listed.tasks.find((t) => t.id === taskId);
   if (!task) {
     // Owner-scoped list: unknown id and another workspace's id are the same
     // answer, and saying which would confirm a task exists elsewhere.
     return {
       code: 'NOT_FOUND',
-      message: `no task '${taskId}' is owned by your workspace — list your missions to see the ones you may act on`,
+      message: `no task '${taskId}' is owned by your workspace — list your tasks to see the ones you may act on`,
+    };
+  }
+  if (requireLive && task.detachedAt !== undefined) {
+    return {
+      code: 'FAILED_PRECONDITION',
+      message: `task '${taskId}' was detached — its worktree is no longer this orchestrator's to act on`,
+    };
+  }
+  if (requireLive && task.status !== 'open') {
+    return {
+      code: 'FAILED_PRECONDITION',
+      message: `task '${taskId}' is closed; reopen the work as a new task rather than acting on a closed one`,
     };
   }
   return { workspaceId: caller.workspaceId, task };
@@ -249,9 +291,15 @@ async function runGitLike(cmd: 'git' | 'gh', args: string[], cwd: string): Promi
   }
 }
 
-/** `git status --porcelain=v1 --branch` → structured. The first line is the
- *  branch header; every other line is `XY <path>`. Renames carry ` -> `, and
- *  the destination is the path that matters to a reader. */
+/**
+ * `git status --porcelain=v1 --branch -z` → structured.
+ *
+ * NUL-framed, not line-split. Without `-z` git QUOTES any path that is not
+ * plain ASCII (`"src/\303\251.ts"`) and a path containing a newline arrives as
+ * two lines — so a caller acting on `files[].path` was handed names that do not
+ * exist on disk. The branch header is the first record; a rename carries its
+ * source in the FOLLOWING record, which is consumed with it.
+ */
 export function parseGitStatus(stdout: string): {
   branch: string;
   ahead: number;
@@ -259,14 +307,15 @@ export function parseGitStatus(stdout: string): {
   clean: boolean;
   files: { status: string; path: string }[];
 } {
-  const lines = stdout.split('\n').filter((l) => l.length > 0);
+  const records = stdout.split('\0').filter((r) => r.length > 0);
   let branch = '';
   let ahead = 0;
   let behind = 0;
   const files: { status: string; path: string }[] = [];
-  for (const line of lines) {
-    if (line.startsWith('## ')) {
-      const header = line.slice(3);
+  for (let i = 0; i < records.length; i++) {
+    const rec = records[i] as string;
+    if (rec.startsWith('## ')) {
+      const header = rec.slice(3);
       const nameEnd = header.indexOf(' [');
       const name = nameEnd === -1 ? header : header.slice(0, nameEnd);
       branch = name.split('...')[0]?.trim() ?? '';
@@ -276,10 +325,12 @@ export function parseGitStatus(stdout: string): {
       behind = behindMatch ? Number(behindMatch[1]) : 0;
       continue;
     }
-    const status = line.slice(0, 2);
-    const rest = line.slice(3);
-    const arrow = rest.indexOf(' -> ');
-    files.push({ status, path: arrow === -1 ? rest : rest.slice(arrow + 4) });
+    if (rec.length < 4) continue;
+    const status = rec.slice(0, 2);
+    files.push({ status, path: rec.slice(3) });
+    // R/C put the ORIGIN path in the next record — it is part of this entry,
+    // not a file of its own.
+    if (status[0] === 'R' || status[0] === 'C') i += 1;
   }
   return { branch, ahead, behind, clean: files.length === 0, files };
 }
@@ -324,16 +375,22 @@ export function registerWorktaskRpc(router: RpcRouter, deps: WorktaskRpcDeps): v
   register('task.gate.run', async (params, ctx?: RpcContext) => {
     const blocked = localOnly(ctx, 'task.gate.run');
     if (blocked) return blocked;
-    const owned = await resolveOwnedTask(deps, params, ctx);
+    const owned = await resolveOwnedTask(deps, params, ctx, true);
     if (!('task' in owned)) return deny(owned.code, owned.message);
     const { task } = owned;
     if (!task.worktreePath || !fileExists(task.worktreePath)) {
       return deny('FAILED_PRECONDITION', `task '${task.id}' has no worktree on disk, so there is nothing to run a gate in`);
     }
+    // The wmux.json trust verdict is keyed by the path the USER approved — the
+    // parent repository — not by a wtask/ worktree the daemon minted minutes
+    // ago. Resolved here and handed to the runner, which reads the config there
+    // and still RUNS the gate in the worktree.
+    const repo = await resolveRepoInfo(task.worktreePath);
     const result = await deps.gate.run({
       taskId: task.id,
       worktreePath: task.worktreePath,
       systemWorkspaceId,
+      ...(repo ? { projectRoot: repo.repoRoot } : {}),
     });
     // `busy` and `refused` are answers, not transport failures — the envelope
     // carries them so a poller can tell them apart without parsing text.
@@ -355,7 +412,7 @@ export function registerWorktaskRpc(router: RpcRouter, deps: WorktaskRpcDeps): v
   register('task.adopt', async (params, ctx?: RpcContext) => {
     const blocked = localOnly(ctx, 'task.adopt');
     if (blocked) return blocked;
-    const owned = await resolveOwnedTask(deps, params, ctx);
+    const owned = await resolveOwnedTask(deps, params, ctx, true);
     if (!('task' in owned)) return deny(owned.code, owned.message);
     const { task } = owned;
     if (!task.worktreePath || !fileExists(task.worktreePath)) {
@@ -397,7 +454,7 @@ export function registerWorktaskRpc(router: RpcRouter, deps: WorktaskRpcDeps): v
   register('task.pr', async (params, ctx?: RpcContext) => {
     const blocked = localOnly(ctx, 'task.pr');
     if (blocked) return blocked;
-    const owned = await resolveOwnedTask(deps, params, ctx);
+    const owned = await resolveOwnedTask(deps, params, ctx, true);
     if (!('task' in owned)) return deny(owned.code, owned.message);
     const { task, workspaceId } = owned;
     if (!task.worktreePath || !task.branch) {
@@ -430,7 +487,7 @@ export function registerWorktaskRpc(router: RpcRouter, deps: WorktaskRpcDeps): v
     if (!task.worktreePath || !fileExists(task.worktreePath)) {
       return deny('FAILED_PRECONDITION', `task '${task.id}' has no worktree on disk`);
     }
-    const res = await exec('git', ['status', '--porcelain=v1', '--branch'], task.worktreePath);
+    const res = await exec('git', ['status', '--porcelain=v1', '--branch', '-z'], task.worktreePath);
     if (res.code !== 0) {
       return { ok: false as const, taskId: task.id, reason: 'git-failed' as const, error: res.stderr.trim() };
     }

@@ -55,7 +55,6 @@ export const pl = {
   'missions.done': 'Ukończone ({count})',
   'missions.empty': 'Brak zadań',
   'missions.doneSummary': 'ostatnie: {title}',
-  'missions.parentless': 'Inne przestrzenie robocze',
 
   // Sidebar — Company mode
   'company.deptRemoveHint': 'Kliknij prawym przyciskiem, aby usunąć',

@@ -7,9 +7,9 @@
 // structured verdict into the task ledger, so `completed` means a gate passed
 // rather than a worker having said so.
 //
-// What it is NOT: a shell. There is no caller-supplied command anywhere in this
-// file. The only three argv arrays it will ever spawn are ALLOWED_GATE_ARGV
-// below, chosen by the runner from what the project itself declares:
+// The caller supplies no command. The only argv arrays this file will ever
+// spawn are `allowedGateArgv()`, chosen by the runner from what the project
+// itself declares:
 //
 //   1. `scripts/verify.sh` — ONLY when the project's `wmux.json` is currently
 //      TRUSTED (ProjectConfigStore verdict, i.e. the user approved these exact
@@ -19,6 +19,26 @@
 //      believes it declared its own gate is never silently graded by another.
 //   2. otherwise `npm run lint`, then `npm test` — each only if package.json
 //      actually declares that script. Sequential, first failure stops.
+//
+// ── WHAT THIS IS NOT: A SANDBOX ─────────────────────────────────────────────
+//
+// The allow-list constrains WHICH script runs. It does not constrain what that
+// script DOES, and it cannot: `scripts/verify.sh` and the `lint`/`test` entries
+// in package.json are files inside the task worktree, which is exactly the tree
+// the worker has been editing. Running the gate therefore executes code the
+// worker controls, in a daemon-spawned process, with the daemon's own user,
+// environment and filesystem access — the same privileges any pane agent
+// already has, but reached without a pane and without a permission prompt.
+//
+// Two consequences that must not be forgotten by anyone reading this file:
+//   * A gate run is not a safe way to inspect an untrusted worktree. Do not
+//     expose it on a surface where the caller is less trusted than the person
+//     who could have typed `npm test` in that directory themselves.
+//   * The `command` recorded in the ledger names the script, not its content,
+//     and the `tail` is whatever that script printed. Both are untrusted.
+//
+// The trust check on `wmux.json` is therefore about which of two GATES the
+// project picked, never about whether the code being graded is safe to run.
 //
 // `node_modules` missing (or a symlink, which is how worktrees in this repo get
 // a false `npm test` failure) is reported as `skipped: 'deps_missing'`, never as
@@ -94,13 +114,20 @@ export function allowedGateArgv(worktreePath: string): readonly (readonly string
 
 // ── Injected seams ───────────────────────────────────────────────────────────
 
+/**
+ * How a gate step ended. `exited` carries the process's own exit code (`null`
+ * when a signal killed it); `unavailable` means the process never started at
+ * all — ENOENT, EACCES — which is a SKIP, not a failure.
+ */
+export type GateExit = { kind: 'exited'; code: number | null } | { kind: 'unavailable'; message: string };
+
 /** A running child, reduced to what the runner needs. The default
  *  implementation wraps `child_process.spawn`; tests inject a fake. */
 export interface GateProcess {
   /** Combined stdout+stderr, chunk by chunk. */
   onOutput(cb: (chunk: string) => void): void;
-  /** Resolves with the exit code, or `null` when the child died on a signal. */
-  wait(): Promise<number | null>;
+  /** How the step ended — see GateExit. */
+  wait(): Promise<GateExit>;
   /** Kill the whole process group (a test runner spawns children of its own). */
   kill(): void;
 }
@@ -134,7 +161,7 @@ export interface TaskGateRunnerOptions {
 
 // ── Results ──────────────────────────────────────────────────────────────────
 
-export type GateSkipReason = 'deps_missing' | 'no_gate_command';
+export type GateSkipReason = 'deps_missing' | 'no_gate_command' | 'gate_unavailable';
 
 export type GateRunResult =
   /** The gate ran to a verdict. `result.exitCode === 0` is the only pass. */
@@ -151,6 +178,20 @@ export interface GateRunInput {
   worktreePath: string;
   /** The daemon's own workspace id — the gate is a `system` write. */
   systemWorkspaceId: string;
+  /**
+   * The PARENT repository root, for the wmux.json trust lookup.
+   *
+   * Trust records are keyed by the path the user approved, which is the repo
+   * they opened — never a `wtask/…` worktree the daemon created minutes ago and
+   * that no dialog has ever named. Looking the verdict up under the worktree
+   * path therefore always answered `untrusted`, which made the entire
+   * project-verify branch dead code. The config is READ from the parent root;
+   * the script still RUNS in the worktree.
+   *
+   * Omitted (tests, an unresolvable parent) ⇒ the worktree path, i.e. the old
+   * behaviour: no verdict, npm only.
+   */
+  projectRoot?: string;
 }
 
 // ── Tail bounding ────────────────────────────────────────────────────────────
@@ -183,6 +224,12 @@ const defaultSpawn: GateSpawn = (cmd, args, opts) => {
     // Own process group so a cancel/timeout kills the test runner's children
     // too, not just the npm wrapper that would otherwise be orphaned.
     detached: process.platform !== 'win32',
+    // win32 only: `npm.cmd` is a batch file, and current Node refuses to spawn
+    // one without a shell (EINVAL, the CVE-2024-27980 fix). The argv stays an
+    // ARRAY — Node quotes each element for cmd.exe — and every element here is
+    // a constant from allowedGateArgv() plus a server-derived path, so there is
+    // still no caller string being interpolated into a command line.
+    ...(process.platform === 'win32' ? { shell: true } : {}),
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   return {
@@ -191,9 +238,15 @@ const defaultSpawn: GateSpawn = (cmd, args, opts) => {
       child.stderr?.on('data', (d: Buffer) => cb(d.toString('utf8')));
     },
     wait() {
-      return new Promise<number | null>((resolve) => {
-        child.once('error', () => resolve(null));
-        child.once('close', (code: number | null) => resolve(code));
+      return new Promise<GateExit>((resolve) => {
+        // An `error` event is the process never having RUN — npm not on PATH,
+        // the script not executable. That is not a failing gate, and reporting
+        // it as one (exitCode null) had a brain mark a healthy task failed
+        // because the daemon's PATH was short.
+        child.once('error', (err: NodeJS.ErrnoException) =>
+          resolve({ kind: 'unavailable', message: err.message }),
+        );
+        child.once('close', (code: number | null) => resolve({ kind: 'exited', code }));
       });
     },
     kill() {
@@ -256,7 +309,13 @@ export class TaskGateRunner {
     this.ledger = opts.ledger;
     this.project = opts.project;
     this.spawn = opts.spawn ?? defaultSpawn;
-    this.timeoutMs = opts.timeoutMs ?? GATE_TIMEOUT_MS;
+    // Clamped, never disabled. A `0` (or a negative) used to mean "no timer",
+    // which is indistinguishable from "hangs forever holding this task's gate
+    // slot" — and the slot is exclusive, so one wedged gate would make every
+    // later run on that task answer `busy` until the daemon restarts. Tests
+    // that want a short deadline pass a small positive number.
+    this.timeoutMs =
+      typeof opts.timeoutMs === 'number' && opts.timeoutMs > 0 ? opts.timeoutMs : GATE_TIMEOUT_MS;
     this.now = opts.now ?? Date.now;
     this.readPackageScripts = opts.readPackageScripts ?? defaultReadPackageScripts;
     this.depsState = opts.depsState ?? defaultDepsState;
@@ -284,8 +343,11 @@ export class TaskGateRunner {
    */
   async resolveSteps(
     worktreePath: string,
+    configRoot: string = worktreePath,
   ): Promise<{ steps: GateStep[] } | { refused: string }> {
-    const declared = await this.declaredVerifyCommand(worktreePath);
+    // The verdict is read at the PARENT root (that is where the user approved a
+    // wmux.json); the script runs in the worktree.
+    const declared = await this.declaredVerifyCommand(configRoot);
     if (declared !== null) {
       if (!VERIFY_COMMAND_SPELLINGS.includes(declared)) {
         return {
@@ -313,11 +375,11 @@ export class TaskGateRunner {
 
   /** The trusted project's `verify` command string, or null when there is none
    *  (no config, not trusted, or no such command). */
-  private async declaredVerifyCommand(worktreePath: string): Promise<string | null> {
+  private async declaredVerifyCommand(configRoot: string): Promise<string | null> {
     if (!this.project) return null;
     let state: { trust?: string; config?: { commands?: { id: string; command: string }[] } };
     try {
-      state = await this.project.getState(worktreePath);
+      state = await this.project.getState(configRoot);
     } catch {
       return null;
     }
@@ -330,45 +392,57 @@ export class TaskGateRunner {
 
   async run(input: GateRunInput): Promise<GateRunResult> {
     const { taskId, worktreePath } = input;
+
+    // ── Claim the slot in the SAME TICK the check happens ────────────────
+    // The check used to sit before two awaits (depsState, resolveSteps) and the
+    // claim after them, so two concurrent runs both saw an empty map, both
+    // spawned, the second overwrote the first's cancel closure — leaving one
+    // gate uncancellable — and the first to finish deleted the OTHER one's
+    // entry, after which a third call started a third npm on the same
+    // node_modules. A placeholder token closes that window: it is inserted
+    // synchronously, removed on every early-return path, and `finally` deletes
+    // it only if the entry is still the token this call inserted.
     if (this.active.has(taskId)) return { ok: false, status: 'busy', taskId };
-
-    const deps = this.depsState(worktreePath);
-    if (deps !== 'ok') {
-      return {
-        ok: true,
-        status: 'skipped',
-        taskId,
-        skipped: 'deps_missing',
-        detail:
-          deps === 'missing'
-            ? 'node_modules is missing in the task worktree — run npm ci there, then re-run the gate'
-            : 'node_modules in the task worktree is a symlink, which makes lint/test results meaningless — run a real npm ci there',
-      };
-    }
-
-    const resolved = await this.resolveSteps(worktreePath);
-    if ('refused' in resolved) return { ok: false, status: 'refused', taskId, error: resolved.refused };
-    if (resolved.steps.length === 0) {
-      return {
-        ok: true,
-        status: 'skipped',
-        taskId,
-        skipped: 'no_gate_command',
-        detail: 'this project declares no verify script and no npm lint/test scripts, so there is no gate to run',
-      };
-    }
-
-    // Claimed synchronously with respect to the awaits above: everything that
-    // could reject has already run, so from here a concurrent call is `busy`.
     let cancelled = false;
     let current: GateProcess | null = null;
-    const cancel = (): void => {
-      cancelled = true;
-      current?.kill();
+    const token: ActiveGate = {
+      cancel: (): void => {
+        cancelled = true;
+        current?.kill();
+      },
     };
-    this.active.set(taskId, { cancel });
+    this.active.set(taskId, token);
+    const release = (): void => {
+      if (this.active.get(taskId) === token) this.active.delete(taskId);
+    };
 
     try {
+      const deps = this.depsState(worktreePath);
+      if (deps !== 'ok') {
+        return {
+          ok: true,
+          status: 'skipped',
+          taskId,
+          skipped: 'deps_missing',
+          detail:
+            deps === 'missing'
+              ? 'node_modules is missing in the task worktree — run npm ci there, then re-run the gate'
+              : 'node_modules in the task worktree is a symlink, which makes lint/test results meaningless — run a real npm ci there',
+        };
+      }
+
+      const resolved = await this.resolveSteps(worktreePath, input.projectRoot ?? worktreePath);
+      if ('refused' in resolved) return { ok: false, status: 'refused', taskId, error: resolved.refused };
+      if (resolved.steps.length === 0) {
+        return {
+          ok: true,
+          status: 'skipped',
+          taskId,
+          skipped: 'no_gate_command',
+          detail: 'this project declares no verify script and no npm lint/test scripts, so there is no gate to run',
+        };
+      }
+
       let output = '';
       const append = (chunk: string): void => {
         output += chunk;
@@ -381,32 +455,46 @@ export class TaskGateRunner {
       let exitCode: number | null = 0;
       let label = resolved.steps[resolved.steps.length - 1]?.label ?? '';
 
-      for (const s of resolved.steps) {
+      for (const step of resolved.steps) {
         if (cancelled) {
           exitCode = null;
-          label = s.label;
+          label = step.label;
           break;
         }
-        label = s.label;
-        const [cmd, ...args] = s.argv;
+        label = step.label;
+        const [cmd, ...args] = step.argv;
         const proc = this.spawn(cmd as string, args, { cwd: worktreePath });
         current = proc;
         proc.onOutput(append);
 
-        let timer: ReturnType<typeof setTimeout> | undefined;
         let timedOut = false;
-        if (this.timeoutMs > 0) {
-          timer = setTimeout(() => {
-            timedOut = true;
-            proc.kill();
-          }, this.timeoutMs);
-        }
+        const timer = setTimeout(() => {
+          timedOut = true;
+          proc.kill();
+        }, this.timeoutMs);
+        let exit: GateExit;
         try {
-          exitCode = await proc.wait();
+          exit = await proc.wait();
         } finally {
-          if (timer) clearTimeout(timer);
+          clearTimeout(timer);
           current = null;
         }
+
+        // The process never ran (ENOENT: npm is not on the daemon's PATH;
+        // EACCES: verify.sh is not executable). Nothing was graded, so this is
+        // a SKIP — reporting it as exitCode null would have a brain close a
+        // healthy task as failed because of the daemon's environment.
+        if (exit.kind === 'unavailable') {
+          return {
+            ok: true,
+            status: 'skipped',
+            taskId,
+            skipped: 'gate_unavailable',
+            detail: `the gate command could not be started (${step.label}): ${exit.message}`,
+          };
+        }
+        exitCode = exit.code;
+
         if (timedOut || cancelled) {
           // A killed gate reports `null` whatever the platform turned the signal
           // into — the ledger's rule is that only an explicit 0 passes.
@@ -432,7 +520,7 @@ export class TaskGateRunner {
       const recorded = await this.record(taskId, input.systemWorkspaceId, result);
       return { ok: true, status: 'completed', taskId, result, recorded };
     } finally {
-      this.active.delete(taskId);
+      release();
     }
   }
 
