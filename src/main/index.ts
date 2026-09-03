@@ -78,6 +78,7 @@ import { RemoteAttachmentsStore } from './remote/RemoteAttachmentsStore';
 import { registerFanOutHandler } from './ipc/handlers/fanout.handler';
 import { createFanOutService } from './worktask/createFanOutService';
 import { registerFanOutRpc } from './pipe/handlers/fanout.rpc';
+import { registerLedgerRpc } from './pipe/handlers/ledger.rpc';
 import { registerWorktaskHandlers } from './ipc/handlers/worktask.handler';
 import { registerDeckHandler } from './ipc/handlers/deck.handler';
 import { registerWorkspaceMirrorHandler } from './ipc/handlers/workspaceMirror.handler';
@@ -858,6 +859,7 @@ registerRemoteHandlers({
 const fanOutService = createFanOutService(() => daemonClient, () => mainWindow);
 registerFanOutHandler(fanOutService);
 registerFanOutRpc(rpcRouter, fanOutService, () => mainWindow);
+registerLedgerRpc(rpcRouter, () => mainWindow);
 // J3 태스크 수명주기 — close(remove→close 순서)·1클릭 PR(gh 4중 게이트)·정리 스캔
 // (디스크 정본)·미발사 재발사(prompt.md 읽기). 물질화 필드는 데몬 projection에서
 // 역참조하므로 렌더러는 taskId만 싣는다(단일 정본). 파이프 미노출(renderer-trusted).

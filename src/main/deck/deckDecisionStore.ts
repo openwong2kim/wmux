@@ -29,6 +29,8 @@ import path from 'node:path';
 import { getWmuxDir } from '../../daemon/config';
 import { atomicReadJSONSync, atomicWriteJSON } from '../../daemon/util/atomicWrite';
 import type { AgentMode } from './deckAutonomyStore';
+import { readLedgerGateInput } from './taskLedgerHost';
+import { describeOpenLedgerTasksForDecision } from './stopGate';
 
 export type DecisionStatus = 'pending' | 'resolved';
 
@@ -193,6 +195,32 @@ function mutate(
 /** Raise (or replace) a workspace's pending decision. Callers should reject a
  *  second raise while one is already pending (RPC layer) so the brain can't
  *  stack decisions; this store itself is last-writer-wins. */
+/** The ledger prefix may take at most this share of the context budget, so a
+ *  long open-task list can never evict the brain's own context. */
+export const DECISION_LEDGER_PREFIX_MAX_CHARS = Math.floor(DECISION_LIMITS.MAX_CONTEXT_CHARS / 4);
+
+/** Prefix first, within ITS budget; then the brain's context in what is left.
+ *  Exported for the unit test. */
+export function composeDecisionContext(prefix: string, context: string): string {
+  const head = prefix.length > DECISION_LEDGER_PREFIX_MAX_CHARS
+    ? `${prefix.slice(0, DECISION_LEDGER_PREFIX_MAX_CHARS - 1)}…`
+    : prefix;
+  const room = DECISION_LIMITS.MAX_CONTEXT_CHARS - head.length;
+  return `${head}${context.slice(0, Math.max(0, room))}`.trim();
+}
+
+/** The open-task line for a decision context (empty when the gate is off,
+ *  nothing is open, or the ledger cannot be read). Never throws. */
+function ledgerDecisionPrefix(workspaceId: string): string {
+  try {
+    const gate = readLedgerGateInput(workspaceId);
+    if (!gate.enabled || !gate.openTasks || gate.openTasks.length === 0) return '';
+    return `${describeOpenLedgerTasksForDecision(gate.openTasks)}\n`;
+  } catch {
+    return '';
+  }
+}
+
 export async function raiseDecision(
   workspaceId: string,
   args: { question: string; options?: string[]; context?: string },
@@ -200,16 +228,18 @@ export async function raiseDecision(
 ): Promise<WorkspaceDecision | null> {
   const question = args.question.trim();
   if (!question) return null;
+  // Lane F: while the ledger gate is on, the human answering this decision
+  // sees what the brain still has open — prepended to the context, never to
+  // the question (which the brain wrote and the UI keys on).
+  const rawContext = typeof args.context === 'string' ? args.context.trim() : '';
+  const context = composeDecisionContext(ledgerDecisionPrefix(workspaceId), rawContext);
   return mutate(
     workspaceId,
     () => ({
       id: randomUUID(),
       question: question.slice(0, DECISION_LIMITS.MAX_QUESTION_CHARS),
       options: sanitizeOptions(args.options),
-      context:
-        typeof args.context === 'string'
-          ? args.context.trim().slice(0, DECISION_LIMITS.MAX_CONTEXT_CHARS)
-          : '',
+      context,
       status: 'pending',
       raisedAt: Date.now(),
     }),

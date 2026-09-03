@@ -59,6 +59,11 @@ const KNOWN_CAPABILITIES = new Set<string>([
   // of risk.
   'a2a.channel.read',
   'a2a.channel.send',
+  // Task ledger (ledger.list / ledger.update). Its own pair rather than a
+  // ride on a2a.channel.*: a channel-send approval must not silently cover
+  // rewriting task status, and a ledger grant must not open channel posts.
+  'ledger.read',
+  'ledger.write',
   // Plugin host UI contribution points (B-1). Enforced at contribution
   // registration time — the host refuses to mount the iframe/widget when
   // the capability is missing or the plugin isn't trusted; per-RPC

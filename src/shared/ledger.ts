@@ -56,6 +56,10 @@ export interface LedgerGateResult {
   /** Epoch ms. */
   at: number;
   command: string;
+  /** Provenance. The writer stamps `'system'` on a gate it recorded itself
+   *  (the gate runner); `completed` trusts ONLY such a gate. Absent on a
+   *  result that did not come through the writer's own recordGate path. */
+  recordedBy?: LedgerActorKind;
 }
 
 export interface LedgerEntry {

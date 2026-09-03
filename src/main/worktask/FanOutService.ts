@@ -37,6 +37,7 @@ import {
 import { TaskWorktreeManager } from './TaskWorktreeManager';
 import type { TaskWorktreePlan } from './TaskWorktreeManager';
 import type { ProjectConfigState } from '../../shared/wmuxProjectConfig';
+import { getTaskLedger, rememberMissionChannel, noteWorkTaskClosed } from '../deck/taskLedgerHost';
 import {
   FANOUT_TASK_PORT_ENV,
   assignFanoutPorts,
@@ -70,6 +71,14 @@ You are running in a wmux pane. When this task is done and you go idle:
 - A channel post that mentions only your *workspace* — or that mentions nobody — is **not** pasted. It raises an unread badge and nothing else.
 
 So going idle is not "waiting for the next message": nothing wakes you for the third case. If you are expecting follow-up work, check \`channel_unread\` / \`a2a_task_query\` yourself before you stop. And report completion in your mission channel (\`channel_post\`) — an idle worker and a hung worker look identical from the outside, and the only difference the sender can see is what you said.
+
+## How completion is recorded (task ledger)
+
+Your task has a row in the task ledger; the brain reads that row, not your prose. A natural-language "done" is **not** completion.
+
+- When the task is done **and your own gate passed** (tsc / lint / tests for what you touched): \`ledger_update({task_id, status: "review_requested", expected_rev, summary})\` — the summary says what landed and what you verified.
+- On a blocker you cannot clear yourself: \`ledger_update({task_id, status: "input_required", expected_rev, summary})\` — the summary names what you need.
+- \`expected_rev\` is the rev you last read (1 right after fan-out); a stale rev is refused, so re-read and retry. Only the brain can mark \`completed\`.
 `;
 
 /** 데몬 RPC 최소 표면(테스트 주입 가능). daemonClient.rpc의 부분집합. */
@@ -598,6 +607,21 @@ export class FanOutService {
     } catch (err) {
       return { ...base, unmaterialized: true, error: `task.update threw: ${(err as Error).message}` };
     }
+    // Lane F: the materialized task enters the ledger as `working` right here,
+    // so the owner's brain, the Stop gate and the workers read one state from
+    // the first second. Best-effort: a ledger write failure never fails the
+    // fan-out (the reconciler mirrors it on the next look).
+    try {
+      rememberMissionChannel(taskId, channelId);
+      await getTaskLedger().register({
+        id: taskId,
+        taskWorkspaceId: workspaceId,
+        ownerWorkspaceId: ctx.verifiedWorkspaceId,
+        title: ctx.title,
+      });
+    } catch {
+      // best-effort — see above.
+    }
 
     // ⑤ 채널 invite — 태스크 워크스페이스를 미션 채널 멤버로(실패 비치명 §2 C3).
     let channelDisconnected = false;
@@ -626,7 +650,9 @@ export class FanOutService {
     _plan?: TaskWorktreePlan,
   ): Promise<void> {
     try {
-      await this.daemon.rpc('task.mission.close', { taskId, verifiedWorkspaceId });
+      const closed = (await this.daemon.rpc('task.mission.close', { taskId, verifiedWorkspaceId })) as { ok?: boolean } | undefined;
+      // Lane F: a closed task leaves the ledger `cancelled` right away.
+      if (closed?.ok) await noteWorkTaskClosed(taskId);
     } catch {
       // best-effort 보상 — 실패해도 fan-out은 계속한다.
     }
