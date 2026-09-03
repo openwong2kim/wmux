@@ -543,12 +543,18 @@ export function registerStateTools(server: McpServer, deps: BrowserToolDeps): vo
               // Chromium's own and there is no Safari value to give them. Say
               // so where the caller reads the result, rather than let them
               // assume the identity is seamless.
-              // Two things a preset does not reach, said here rather than left
-              // for the caller to discover: navigator.platform keeps this
-              // machine's value on a page under automation, and a
-              // non-Chromium preset cannot fill the Client Hints surface at
-              // all.
-              applied.push('note=navigator.platform still reports the host platform');
+              // What a preset does not reach, said here rather than left for
+              // the caller to discover. The page reports a touchscreen, but
+              // the automated input over it is still mouse input: this
+              // process attached to a context that was built without touch,
+              // so page.tap() is refused and browser_click lands as
+              // pointerType "mouse". Only worth saying for a preset that
+              // claims touch in the first place.
+              if (deviceDescriptor.hasTouch) {
+                applied.push(
+                  'note=touch is reported, not dispatched: maxTouchPoints and (pointer:coarse) match the device, but browser_click still sends mouse events. A page that gates behaviour on touch events will not see them.',
+                );
+              }
               if (!isChromiumUserAgent(deviceDescriptor.userAgent)) {
                 applied.push(
                   'note=this preset emulates a non-Chromium browser; navigator.userAgentData and Sec-CH-UA* still report Chromium. A Chrome-based preset (e.g. "Pixel 7") gives a consistent mobile identity.',

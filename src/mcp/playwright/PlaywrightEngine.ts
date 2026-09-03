@@ -14,6 +14,7 @@ import {
   type BrowserTargetScope,
 } from './browserScope';
 import { attachPageCapture } from './pageCapture';
+import { reassertUserAgentEmulation } from './ua-emulation';
 
 export { WORKSPACE_SCOPE_UNRESOLVED_CODE } from './browserScope';
 
@@ -575,6 +576,15 @@ export class PlaywrightEngine {
     if (page && this.workspaceBackend !== 'builtin') {
       attachPageCapture(page);
     }
+    // Last, after every throwaway CDP session this resolution opened has
+    // detached again. Chromium keeps the emulated `navigator.platform` as a
+    // page-wide setting, and a detaching session clears it whether or not it
+    // ever set one — so the id probes above (Target.getTargetInfo on each
+    // candidate, the target listing) were themselves undoing the platform half
+    // of an active device preset, one tool call after it was applied. This is
+    // the single door every browser tool comes through, which makes it the one
+    // place a re-send covers them all. A no-op when nothing is emulated.
+    if (page) await reassertUserAgentEmulation(page);
     return page;
   }
 

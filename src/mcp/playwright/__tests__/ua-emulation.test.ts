@@ -4,6 +4,7 @@ import {
   applyUserAgentEmulation,
   clearUserAgentEmulation,
   hasUserAgentEmulation,
+  reassertUserAgentEmulation,
 } from '../ua-emulation';
 
 // A device preset is one identity, not a UA string with some hardware left over
@@ -59,6 +60,8 @@ function harness() {
       viewportSize: () => ({ width: 390, height: 664 }),
       setViewportSize: vi.fn(async () => undefined),
       isClosed: () => false,
+      // reassertUserAgentEmulation looks the state up from the page.
+      context: () => context,
     } as unknown as Page;
   };
   const page = makePage();
@@ -208,6 +211,41 @@ describe('clearUserAgentEmulation', () => {
   it('is a no-op on a context that was never emulated', async () => {
     const h = harness();
     await clearUserAgentEmulation(h.context);
+    expect(h.sent).toEqual([]);
+  });
+});
+
+describe('reassertUserAgentEmulation', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('re-sends the UA override, and nothing else, for an emulated page', async () => {
+    const h = harness();
+    await applyUserAgentEmulation(h.context, h.page, IPHONE_UA, null, IPHONE_METRICS);
+    h.sent.length = 0;
+
+    await reassertUserAgentEmulation(h.page);
+
+    // Only the override: the metrics and the touch points survive a foreign
+    // session detaching, and every extra command is a round-trip charged to
+    // every tool call.
+    expect(methods(h.sent)).toEqual(['Emulation.setUserAgentOverride']);
+    expect(paramsOf(h.sent, 'Emulation.setUserAgentOverride')!.platform).toBe('iPhone');
+  });
+
+  it('is a no-op on a page whose context is not emulated', async () => {
+    const h = harness();
+    await reassertUserAgentEmulation(h.page);
+    expect(h.sent).toEqual([]);
+  });
+
+  it('is a no-op once the emulation has been cleared', async () => {
+    const h = harness();
+    await applyUserAgentEmulation(h.context, h.page, IPHONE_UA, null, IPHONE_METRICS);
+    await clearUserAgentEmulation(h.context);
+    h.sent.length = 0;
+
+    await reassertUserAgentEmulation(h.page);
+
     expect(h.sent).toEqual([]);
   });
 });
