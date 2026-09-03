@@ -49,6 +49,11 @@ const packageJson = JSON.parse(readFileSync(PACKAGE_PATH, 'utf8'));
 //   headroom. The task-ledger / gate / adopt tools (ledger_*, task_*,
 //   git_*) add about nine schemas, roughly 7-8 KB, so a 15 KB raise lands
 //   them with one more small tool of cushion before this is re-argued.
+//   Note the budget now exceeds core (49000): today the subset invariant
+//   (commander ⊆ core ⊆ full, below) makes the gap unreachable, on purpose —
+//   the brain tools land as commander-ONLY registrations that relax that
+//   invariant to "commander ⊆ core ∪ COMMANDER_ONLY_TOOLS", at which point
+//   this number is the one that binds.
 const baseline = JSON.parse(readFileSync(BASELINE_PATH, 'utf8'));
 
 function sha256(value) {
