@@ -1,5 +1,6 @@
 import type { ElementHandle, Page } from 'playwright-core';
 import { generateSnapshot, listRefEntries, resolveRef, StaleRefError } from '../playwright/snapshot';
+import { countSmartNamedPopulation } from '../playwright/dom-intelligence';
 import { describeToolError } from '../playwright/toolError';
 import { validateNavigationUrl } from '../../shared/types';
 import {
@@ -246,7 +247,7 @@ function ownVerdict(
  * contextVerdict on the neighbourhood the element sat in, then, where that
  * abstains, ownVerdict on the element's own identifying attribute.
  */
-function matchRefAxis(page: Page, axis: RefAxis): { ref: string } | StepFailure {
+async function matchRefAxis(page: Page, axis: RefAxis): Promise<{ ref: string } | StepFailure> {
   const population = listRefEntries(page).filter(
     (entry) =>
       entry.role === axis.role &&
@@ -281,18 +282,28 @@ function matchRefAxis(page: Page, axis: RefAxis): { ref: string } | StepFailure 
   // Unnamed axes are exempt, exactly as resolveRef's own count check is, and
   // for a sharper reason here: their stored total is not a same-name count at
   // all. smartRefAxisEntry (dom-intelligence) records roleIndex/roleTotal in
-  // these two fields for an element with no accessible name, measured over its
-  // own full-tree walk, while the number compared against is counted from this
-  // module's snapshot ref map (depth-capped, filtered when it overflows). The
-  // two enumerations do not have to agree on an unchanged page, so demanding
-  // equality would stop flows that nothing is wrong with.
+  // these two fields for an element with no accessible name, so the number
+  // would not even be a same-name count to compare.
   //
-  // A NAMED smartRef axis is compared anyway, and the same two enumerations
-  // could in principle disagree there too. The axis carries no record of which
-  // recorder minted it, and giving it one would widen the stored format, so
-  // this takes the trade the whole check is built on: a stop the agent can
-  // finish live costs less than a click on the wrong element.
+  // The comparison is otherwise between two DIFFERENT enumerations whenever
+  // the axis was minted by the smart lane: that lane walks the whole
+  // accessibility tree, while the number counted here comes from this module's
+  // snapshot ref map, which is depth-capped and filtered when the output
+  // overflows. The two do not have to agree on a page that has not changed,
+  // and a named smartRef axis used to be compared across them anyway — so an
+  // unchanged page could stop a replay for no reason. The axis now records
+  // WHICH lane minted it (`via`), and a disagreement is put to that lane's own
+  // count before it is treated as a change. Only a disagreement, so the
+  // ordinary path costs nothing extra.
   if (axis.name !== '' && population.length !== axis.sameNameTotal) {
+    if (axis.via === 'smart') {
+      const smartCount = await countSmartNamedPopulation(page, axis.role, axis.name);
+      // Same measurement on both sides now. Equal means the page did not
+      // change and the a11y map merely counts a different set; the step
+      // proceeds to the index lookup below, which is what it did before this
+      // check existed. A null answer (the walk could not run) keeps the stop.
+      if (smartCount === axis.sameNameTotal) return indexLookup(axis, population);
+    }
     const grew = population.length > axis.sameNameTotal;
     return {
       error:
@@ -310,6 +321,17 @@ function matchRefAxis(page: Page, axis: RefAxis): { ref: string } | StepFailure 
       inconclusive: true,
     };
   }
+  return indexLookup(axis, population);
+}
+
+/**
+ * The last resort: the recorded position, in a population whose size the
+ * checks above have accepted.
+ *
+ * Its own refusal matters — a population that no longer HAS the recorded
+ * position must stop rather than clamp onto the nearest one.
+ */
+function indexLookup(axis: RefAxis, population: readonly LiveEntry[]): { ref: string } | StepFailure {
   const match = population.find((entry) => entry.sameNameIndex === axis.sameNameIndex);
   if (!match) {
     return {
@@ -353,7 +375,7 @@ async function resolveAxis(page: Page, axis: StepAxis): Promise<Resolved | StepF
     const element = await locator.elementHandle().catch(() => null);
     return element ? { element } : { error: `css ${axis.selector} could not be resolved` };
   }
-  const matched = matchRefAxis(page, axis);
+  const matched = await matchRefAxis(page, axis);
   if ('error' in matched) return matched;
   // strictCount, because the population compared above was counted from the
   // internal snapshot — a measurement taken BEFORE this step. Anything the page

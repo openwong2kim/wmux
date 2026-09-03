@@ -171,6 +171,9 @@ describe('IndexedElement.own — the smart lane mints the identical string', () 
       name: 'Submit order',
       context: 'region "Checkout"',
       own: 'data-testid=submit-secondary',
+      // The counts above were measured over THIS walk, so the axis says so —
+      // the replay runner counts the live population the same way.
+      via: 'smart',
     });
   });
 

@@ -76,6 +76,14 @@ means the position no longer counts the same population. Take a snapshot and
 finish the flow live instead. A stop like this is not held against the flow;
 it does not count toward the failure streak that retires a recording.
 
+A step recorded from `browser_smart_snapshot` is counted against *that* tool's
+listing rather than `browser_snapshot`'s: the two walk the page differently —
+one is depth-capped and trimmed when the output is long, the other is not — so
+comparing a total taken from one against a population counted by the other used
+to stop replays on pages that had not changed at all. Each step now records
+which listing its numbers came from, and the count is re-read from that same
+listing before a mismatch is treated as a change.
+
 A change that leaves the count the *same* is not detected — one look-alike
 added above and one element removed below still measures N, the position still
 resolves, and the element it lands on is a different one. Telling those apart

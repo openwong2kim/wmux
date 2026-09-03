@@ -29,6 +29,17 @@ vi.mock('../../playwright/snapshot', () => ({
   StaleRefError,
 }));
 
+/** What the smart lane says its own walk currently counts. Scripted per case. */
+let smartCount: number | null = null;
+const smartCountCalls: Array<[string, string]> = [];
+
+vi.mock('../../playwright/dom-intelligence', () => ({
+  countSmartNamedPopulation: async (_page: unknown, role: string, name: string) => {
+    smartCountCalls.push([role, name]);
+    return smartCount;
+  },
+}));
+
 import { replayBlockedReason, replayTrace } from '../replayRunner';
 import { refMapShapeHash, type TraceRecord, type TraceStep } from '../../../shared/browserReplay/actionTrace';
 
@@ -95,6 +106,8 @@ beforeEach(() => {
   goneTo.length = 0;
   resolved.clear();
   snapshotText = 'button "Sign in" [ref=1]';
+  smartCount = null;
+  smartCountCalls.length = 0;
   refEntries = [
     { role: 'button', name: 'Sign in', sameNameIndex: 0, sameNameTotal: 1, frameKey: '', ref: 1 },
   ];
@@ -615,6 +628,116 @@ describe('replayTrace — the own-attribute verifier', () => {
     const result = await replayTrace(page, trace([step]), undefined);
     expect(result.ok).toBe(true);
     expect(clicks).toEqual(['alice-delete']);
+  });
+});
+
+describe('replayTrace — provenance, so the count compares like with like', () => {
+  // The smart lane walks the whole accessibility tree; this module counts from
+  // browser_snapshot's ref map, which is depth-capped and filtered on
+  // overflow. A named axis minted over there used to be compared against a
+  // number measured over here, and stopped replays on unchanged pages.
+
+  it('does not STOP a smart-recorded step when only the ENUMERATIONS differ', async () => {
+    // The ref map lists two; the smart walk that recorded the step saw three.
+    // Nothing about the page changed — the two walks simply see different sets.
+    refEntries = [
+      { role: 'button', name: 'Delete', sameNameIndex: 0, sameNameTotal: 2, frameKey: '', ref: 1 },
+      { role: 'button', name: 'Delete', sameNameIndex: 1, sameNameTotal: 2, frameKey: '', ref: 2 },
+    ];
+    smartCount = 3;
+    const mod = await import('../../playwright/snapshot');
+    vi.spyOn(mod, 'resolveRef').mockResolvedValue(element('delete'));
+
+    const step = refStep({
+      axis: {
+        kind: 'ref', role: 'button', name: 'Delete', sameNameIndex: 0, sameNameTotal: 3,
+        frameKey: '', via: 'smart',
+      },
+    });
+    const result = await replayTrace(page, trace([step]), undefined);
+    expect(result.ok).toBe(true);
+    expect(clicks).toEqual(['delete']);
+    // Asked the lane that minted the number, not a second guess at it.
+    expect(smartCountCalls).toEqual([['button', 'Delete']]);
+  });
+
+  it('still STOPS a smart-recorded step when that lane\u2019s OWN count changed', async () => {
+    refEntries = [
+      { role: 'button', name: 'Delete', sameNameIndex: 0, sameNameTotal: 2, frameKey: '', ref: 1 },
+      { role: 'button', name: 'Delete', sameNameIndex: 1, sameNameTotal: 2, frameKey: '', ref: 2 },
+    ];
+    // The smart walk saw three at record time and sees two now: a real change.
+    smartCount = 2;
+    const mod = await import('../../playwright/snapshot');
+    vi.spyOn(mod, 'resolveRef').mockResolvedValue(element('delete'));
+
+    const step = refStep({
+      axis: {
+        kind: 'ref', role: 'button', name: 'Delete', sameNameIndex: 0, sameNameTotal: 3,
+        frameKey: '', via: 'smart',
+      },
+    });
+    const result = await replayTrace(page, trace([step]), undefined);
+    expect(result.ok).toBe(false);
+    expect(result.inconclusive).toBe(true);
+    expect(result.steps[0].detail).toContain('element(s) with that role and name');
+    expect(clicks).toEqual([]);
+  });
+
+  it('keeps the stop when the smart walk cannot answer', async () => {
+    refEntries = [
+      { role: 'button', name: 'Delete', sameNameIndex: 0, sameNameTotal: 2, frameKey: '', ref: 1 },
+      { role: 'button', name: 'Delete', sameNameIndex: 1, sameNameTotal: 2, frameKey: '', ref: 2 },
+    ];
+    smartCount = null;
+    const step = refStep({
+      axis: {
+        kind: 'ref', role: 'button', name: 'Delete', sameNameIndex: 0, sameNameTotal: 3,
+        frameKey: '', via: 'smart',
+      },
+    });
+    const result = await replayTrace(page, trace([step]), undefined);
+    expect(result.ok).toBe(false);
+    expect(clicks).toEqual([]);
+  });
+
+  it('does not consult the smart lane for an axis that did not come from it', async () => {
+    // Absent `via` means the accessibility lane, which is the enumeration this
+    // module already counts — there is nothing to reconcile, and an old trace
+    // must keep the exact behaviour it had.
+    refEntries = [
+      { role: 'button', name: 'Delete', sameNameIndex: 0, sameNameTotal: 2, frameKey: '', ref: 1 },
+      { role: 'button', name: 'Delete', sameNameIndex: 1, sameNameTotal: 2, frameKey: '', ref: 2 },
+    ];
+    smartCount = 3;
+    const step = refStep({
+      axis: {
+        kind: 'ref', role: 'button', name: 'Delete', sameNameIndex: 0, sameNameTotal: 3, frameKey: '',
+      },
+    });
+    const result = await replayTrace(page, trace([step]), undefined);
+    expect(result.ok).toBe(false);
+    expect(smartCountCalls).toEqual([]);
+  });
+
+  it('still refuses a position the live population does not have', async () => {
+    // The enumerations reconcile, but the ref map has no index 2 to act on —
+    // the reconciliation clears the COUNT, never the position.
+    refEntries = [
+      { role: 'button', name: 'Delete', sameNameIndex: 0, sameNameTotal: 2, frameKey: '', ref: 1 },
+      { role: 'button', name: 'Delete', sameNameIndex: 1, sameNameTotal: 2, frameKey: '', ref: 2 },
+    ];
+    smartCount = 3;
+    const step = refStep({
+      axis: {
+        kind: 'ref', role: 'button', name: 'Delete', sameNameIndex: 2, sameNameTotal: 3,
+        frameKey: '', via: 'smart',
+      },
+    });
+    const result = await replayTrace(page, trace([step]), undefined);
+    expect(result.ok).toBe(false);
+    expect(result.steps[0].detail).toContain('none at position 3');
+    expect(clicks).toEqual([]);
   });
 });
 

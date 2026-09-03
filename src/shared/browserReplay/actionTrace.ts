@@ -105,6 +105,23 @@ export interface RefAxis {
    * It can only confirm or contradict the element the index found.
    */
   own?: string;
+  /**
+   * WHICH lane minted this axis, and therefore which enumeration
+   * `sameNameTotal` was counted over.
+   *
+   * The two lanes do not count the same set. browser_snapshot's ref map is
+   * depth-capped and filtered when the output overflows; the smart lane walks
+   * the whole tree with no cap. Comparing a total recorded by one against a
+   * population counted by the other is comparing two different measurements,
+   * and it stopped replays on pages that had not changed at all (#1179
+   * review). The replay runner reads this to count the live population the
+   * same way the recording did.
+   *
+   * Omitted for 'a11y', which is both the common case and what an axis
+   * recorded before this field existed must be read as — the smart lane is
+   * the one that has to declare itself.
+   */
+  via?: 'a11y' | 'smart';
 }
 
 /** An element addressed by the CSS selector browser_smart_snapshot minted. */
@@ -405,6 +422,8 @@ export interface RefEntryLike {
   context?: string;
   /** See RefAxis.own. Absent when the element carries none of the four. */
   own?: string;
+  /** See RefAxis.via. Absent means 'a11y' — only the smart lane declares. */
+  via?: 'a11y' | 'smart';
 }
 
 
@@ -463,6 +482,9 @@ export function refEntryToAxis(entry: RefEntryLike | null | undefined): RefAxis 
     // the same thing (no verdict available) and the absent one costs nothing.
     ...(context.length > 0 && { context }),
     ...(own.length > 0 && { own }),
+    // Only the smart lane is stored. 'a11y' is what an absent field already
+    // means, so writing it would cost every step bytes to say nothing.
+    ...(entry.via === 'smart' && { via: 'smart' as const }),
   };
 }
 
@@ -726,6 +748,9 @@ function sanitizeAxis(raw: unknown): StepAxis | null {
     frameKey: typeof a.frameKey === 'string' ? a.frameKey.slice(0, 256) : '',
     ...(context.length > 0 && { context }),
     ...(own.length > 0 && { own }),
+    // Anything but the one recognised marker reads as 'a11y', which is the
+    // conservative direction: the count check it selects is the stricter one.
+    ...(a.via === 'smart' && { via: 'smart' as const }),
   };
 }
 

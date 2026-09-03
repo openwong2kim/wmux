@@ -634,18 +634,26 @@ function collectInteractiveElements(
 }
 
 /**
- * Fetch the full accessibility tree via CDP and return indexed interactive
- * elements.
+ * One walk of the page's accessibility tree, indexed.
+ *
+ * Split out of getInteractiveElements so the replay runner's population
+ * recount can reuse it EXACTLY — a second, parallel counting walk would drift
+ * from this one, and a count that disagrees with the one the recording was
+ * made from is the whole defect being fixed. The caller supplies the ref
+ * identity, which is what lets the recount use a scratch one and leave the
+ * live smart-ref numbering untouched.
  */
-async function getInteractiveElements(page: Page): Promise<IndexedElement[]> {
-  const identity = beginSmartRefGeneration(page);
+async function walkInteractiveElements(
+  page: Page,
+  identity: SmartRefIdentity,
+): Promise<{ elements: IndexedElement[]; seen: Set<number> }> {
   const client = await page.context().newCDPSession(page);
   try {
     const { nodes } = (await client.send('Accessibility.getFullAXTree' as any)) as {
       nodes: CdpAXNode[];
     };
 
-    if (nodes.length === 0) return [];
+    if (nodes.length === 0) return { elements: [], seen: new Set<number>() };
 
     // Password fields are identified DOM-side and matched to a11y nodes through
     // backendNodeId — the a11y node itself carries neither `type` nor
@@ -670,13 +678,63 @@ async function getInteractiveElements(page: Page): Promise<IndexedElement[]> {
     collectInteractiveElements(
       nodeMap, nodes[0], elements, passwordBackendIds, identity, seen, ownLabels,
     );
-    capSmartRefIdentity(identity, seen);
     finalizeSmartPopulations(elements);
-    return elements;
+    return { elements, seen };
   } finally {
     await client.detach().catch(() => {
       /* best-effort cleanup */
     });
+  }
+}
+
+/**
+ * Fetch the full accessibility tree via CDP and return indexed interactive
+ * elements.
+ */
+async function getInteractiveElements(page: Page): Promise<IndexedElement[]> {
+  const identity = beginSmartRefGeneration(page);
+  const { elements, seen } = await walkInteractiveElements(page, identity);
+  capSmartRefIdentity(identity, seen);
+  return elements;
+}
+
+/**
+ * How many elements THIS lane's walk currently sees with `role` + `name`.
+ *
+ * The replay runner asks when a step whose axis was minted here reports a
+ * changed same-name count: that count came from this uncapped walk, while the
+ * number it was compared against came from browser_snapshot's depth-capped,
+ * overflow-filtered ref map. The two enumerations need not agree on a page
+ * that has not changed, and the disagreement stopped replays that nothing was
+ * wrong with (#1179 review). Counting here puts both sides of the comparison
+ * on the same measurement.
+ *
+ * A SCRATCH identity, deliberately: this is a measurement taken mid-replay,
+ * not a snapshot the agent asked for, and numbering it into the page's live
+ * ref space would renumber refs under an agent that is holding them. Nothing
+ * about the page's smart-ref state is touched.
+ *
+ * Returns null when the walk cannot run at all, which the caller reads as "no
+ * second opinion" and falls back to the count it already has.
+ */
+export async function countSmartNamedPopulation(
+  page: Page,
+  role: string,
+  name: string,
+): Promise<number | null> {
+  try {
+    const scratch: SmartRefIdentity = {
+      byBackendId: new Map<number, number>(),
+      next: 1,
+      url: undefined,
+      generation: 0,
+      documentEpoch: 0,
+    };
+    const { elements } = await walkInteractiveElements(page, scratch);
+    if (elements.length === 0) return null;
+    return elements.filter((e) => e.role === role && e.name === name).length;
+  } catch {
+    return null;
   }
 }
 
@@ -1043,6 +1101,7 @@ export function smartRefAxisEntry(ref: number): {
   frameKey: string;
   context?: string;
   own?: string;
+  via: 'smart';
 } | null {
   const element = getSmartElementByRef(ref);
   if (!element || element.locator.startsWith('[data-wmux-ref=')) return null;
@@ -1061,6 +1120,10 @@ export function smartRefAxisEntry(ref: number): {
     // The second verifier, for the identical siblings the context cannot
     // separate. Same string the a11y lane would have stamped on this element.
     ...(element.own.length > 0 && { own: element.own }),
+    // Which walk the counts above were measured over. This one is uncapped and
+    // unfiltered; browser_snapshot's ref map is neither, so a replay that
+    // compared the two would stop on pages nothing had happened to.
+    via: 'smart',
   };
 }
 

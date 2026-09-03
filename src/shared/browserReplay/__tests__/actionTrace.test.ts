@@ -207,6 +207,21 @@ describe('refEntryToAxis', () => {
     ).not.toHaveProperty('own');
   });
 
+  it('records the minting lane only when it is the smart one', () => {
+    // 'a11y' is what an absent field already means, so storing it would cost
+    // every step bytes to say nothing.
+    expect(
+      refEntryToAxis({
+        role: 'button', name: 'Go', sameNameIndex: 0, sameNameTotal: 2, frameKey: '', via: 'smart',
+      }),
+    ).toMatchObject({ via: 'smart' });
+    expect(
+      refEntryToAxis({
+        role: 'button', name: 'Go', sameNameIndex: 0, sameNameTotal: 2, frameKey: '', via: 'a11y',
+      }),
+    ).not.toHaveProperty('via');
+  });
+
   it('leaves an entry that carries neither verifier exactly as it was', () => {
     // Additive: the fields cost a pre-#1182 recording nothing.
     expect(
@@ -446,6 +461,28 @@ describe('sanitizeTraceStep', () => {
     });
     expect(stripped?.unrecordable).toBeUndefined();
     expect(stripped?.axis).not.toHaveProperty('own');
+  });
+
+  it('keeps the smart-lane marker and drops anything else it finds there', () => {
+    const smart = sanitizeTraceStep(step({
+      axis: {
+        kind: 'ref', role: 'button', name: 'Go', sameNameIndex: 0, sameNameTotal: 2,
+        frameKey: '', via: 'smart',
+      },
+    }));
+    expect(smart?.axis).toMatchObject({ via: 'smart' });
+
+    // Anything unrecognised reads as the accessibility lane, which selects the
+    // stricter count check — the conservative direction to be wrong in.
+    const junk = sanitizeTraceStep({
+      ...step(),
+      axis: {
+        kind: 'ref', role: 'button', name: 'Go', sameNameIndex: 0, sameNameTotal: 2,
+        frameKey: '', via: 'whatever',
+      },
+    });
+    expect(junk?.unrecordable).toBeUndefined();
+    expect(junk?.axis).not.toHaveProperty('via');
   });
 
   it('keeps a declared unrecordable reason', () => {
