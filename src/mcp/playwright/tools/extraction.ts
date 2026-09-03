@@ -7,6 +7,7 @@ import { extractMarkdown, extractStructuredData } from '../markdown-extractor';
 import { resolveEvaluator, rpcEvaluator } from '../page-eval';
 import { formatSnapshotResult } from '../snapshotDiff';
 import { getSnapshotBaseline, setSnapshotBaseline, snapshotSurfaceKey } from '../snapshotCache';
+import { captureSnapshotListing } from '../snapshotListing';
 import { allowScopedRpcFallback, type BrowserToolDeps } from '../browserScope';
 import { describeToolError } from '../toolError';
 
@@ -134,6 +135,9 @@ export function registerExtractionTools(server: McpServer, deps: BrowserToolDeps
           full || !page ? null : getSnapshotBaseline(key, attrs, snapshot.url || undefined);
         const rendered = formatSnapshotResult(baseline?.text ?? null, text);
         setSnapshotBaseline(key, attrs, text, snapshot.url || undefined);
+        // The complete listing, for a caller that needs every ref even when
+        // it is handed a diff (snapshotListing.ts).
+        captureSnapshotListing(text);
 
         // The content summary is cut at maxContentLength, so a diff — "(no
         // changes)" most of all — speaks only for what fits (review 10).

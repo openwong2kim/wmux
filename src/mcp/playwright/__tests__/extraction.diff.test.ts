@@ -24,6 +24,7 @@ vi.mock('../PlaywrightEngine', () => ({
 import { registerExtractionTools } from '../tools/extraction';
 import { clearElementCache } from '../dom-intelligence';
 import { invalidateSnapshotBaseline } from '../snapshotCache';
+import { withSnapshotListingCapture } from '../snapshotListing';
 
 // browser_smart_snapshot's auto-diff. Refs are keyed on DOM node identity on
 // the Playwright/CDP lane (dom-intelligence.refstability.test.ts), which is
@@ -264,6 +265,32 @@ describe('a diff never crosses a document or a page', () => {
 
     expect(other.startsWith('[snapshot: full]')).toBe(true);
     expect(other).toContain('Item 30');
+  });
+});
+
+describe('the complete listing on the side channel', () => {
+  it('publishes every element even on the call that returns a diff', async () => {
+    const page = makePage(tree(ROWS));
+    getPage.mockResolvedValue(page);
+    await snapshot();
+
+    page.nodes = tree([{ backendId: 999, role: 'button', name: 'Inserted' }, ...ROWS]);
+    const captured = await withSnapshotListingCapture(() => snapshot());
+
+    // The text is the diff; the listing is what full:true would have returned,
+    // which is what browser_repl parses its refs from (snapshotListing.ts).
+    expect(captured.result.startsWith('[snapshot: diff vs previous')).toBe(true);
+    expect(captured.result).not.toContain('Item 30');
+    expect(captured.listing).toBeDefined();
+    expect(captured.listing).toContain('Item 30');
+    expect(captured.listing).toContain('Inserted');
+    // The header belongs to the rendering, not the listing.
+    expect(captured.listing?.startsWith('[snapshot:')).toBe(false);
+  });
+
+  it('costs nothing when no capture is active', async () => {
+    getPage.mockResolvedValue(makePage(tree(ROWS)));
+    expect((await snapshot()).startsWith('[snapshot: full]')).toBe(true);
   });
 });
 
