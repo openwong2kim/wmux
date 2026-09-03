@@ -110,6 +110,33 @@ export const COMMANDER_TOOL_SURFACE: readonly string[] = [
   'deck_resolve_decision',
 ];
 
+/** Tools registered ONLY under `--commander` — never in the full or core
+ *  profile (the full tools/list sits a few hundred bytes under its budget, and
+ *  these are brain-only anyway: a pane agent has no ledger to read). A second
+ *  SSOT list beside COMMANDER_TOOL_SURFACE, which is a FILTER of the full
+ *  registration; this one is an ADDITION. The probe's subset invariant reads
+ *  `commander ⊆ core ∪ COMMANDER_ONLY_TOOLS`, and the SDK auto-allow list
+ *  derives from both lists. */
+export const COMMANDER_ONLY_TOOLS: readonly string[] = [
+  // Task ledger read: every task this brain owns, with rev/status/summary.
+  'ledger_list',
+];
+
+/** Commander-only names RESERVED for the gate/adopt/close/PR and git read
+ *  tools (orchestrator track, lane O2). Listed so the registration point in
+ *  src/mcp/index.ts and the invariant tests agree on the names before the
+ *  tools exist: a test asserts each stays ABSENT from every profile until it
+ *  is wired, then moves it into COMMANDER_ONLY_TOOLS. */
+export const COMMANDER_ONLY_RESERVED_TOOLS: readonly string[] = [
+  'task_gate_run',
+  'task_adopt',
+  'task_close',
+  'task_pr',
+  'git_status',
+  'git_log',
+  'gh_pr_view',
+];
+
 /** Pipe RPC methods the commander tool surface actually invokes — the
  *  PermissionEnforcer allow lane for a VALIDATED commander token. Least
  *  privilege: derived from what the tools above call (see the invariant test
@@ -173,6 +200,8 @@ export const COMMANDER_RPC_METHODS: ReadonlySet<string> = new Set<string>([
   // workspace from the validated commander binding, and every spawn still
   // passes the approval prompt).
   'task.fanout.start',
+  // task ledger (commander-only ledger_list; the brain's own rows)
+  'ledger.list',
 ]);
 
 /** Teardown-EFFECT methods a validated commander is refused server-side

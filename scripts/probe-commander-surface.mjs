@@ -14,6 +14,7 @@ import { copyFileSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createRequire } from 'node:module';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 
@@ -55,6 +56,12 @@ const packageJson = JSON.parse(readFileSync(PACKAGE_PATH, 'utf8'));
 //   invariant to "commander ⊆ core ∪ COMMANDER_ONLY_TOOLS", at which point
 //   this number is the one that binds.
 const baseline = JSON.parse(readFileSync(BASELINE_PATH, 'utf8'));
+// The commander-only SSOT (src/shared/commanderSurface.ts), read from the tsc
+// output the bundle is built from — the same list the MCP entry registers
+// against, never a copy typed into this script.
+const { COMMANDER_ONLY_TOOLS, COMMANDER_ONLY_RESERVED_TOOLS } = createRequire(import.meta.url)(
+  path.join(REPO_ROOT, 'dist', 'mcp', 'shared', 'commanderSurface.js'),
+);
 
 function sha256(value) {
   return createHash('sha256').update(value).digest('hex');
@@ -440,10 +447,13 @@ async function main() {
   const fullOrder = byProfile.get('full');
   const fullNames = new Set(fullOrder);
 
-  // Every narrower profile is a strict, order-preserving subset of full: a
-  // host that cached the full ordering must never see a tool move.
+  // core is a strict, order-preserving subset of full: a host that cached the
+  // full ordering must never see a tool move. commander is the same for the
+  // part of it that comes from full; its commander-ONLY tools (see below) are
+  // appended after that part.
+  const commanderOnly = new Set(COMMANDER_ONLY_TOOLS);
   for (const profile of ['core', 'commander']) {
-    const names = byProfile.get(profile);
+    const names = byProfile.get(profile).filter((name) => !(profile === 'commander' && commanderOnly.has(name)));
     assert.ok(
       names.every((name) => fullNames.has(name)),
       `${profile} surface must be a strict subset of the full surface`,
@@ -460,13 +470,39 @@ async function main() {
     );
   }
 
-  // commander ⊆ core: commander drops browser_/company_ too, so the security
-  // role can never name a tool the optimization profile already removed.
+  // commander ⊆ core ∪ COMMANDER_ONLY_TOOLS: commander drops browser_/company_
+  // too, so the security role can never name a full-profile tool the
+  // optimization profile already removed; what it ADDS is exactly the
+  // commander-only SSOT, appended after the full-derived part.
   const coreNames = new Set(byProfile.get('core'));
+  const commanderNames = byProfile.get('commander');
   assert.ok(
-    byProfile.get('commander').every((name) => coreNames.has(name)),
-    'commander surface must be contained in the core surface',
+    commanderNames.every((name) => coreNames.has(name) || commanderOnly.has(name)),
+    'commander surface must be contained in core ∪ COMMANDER_ONLY_TOOLS',
   );
+  const fromFull = commanderNames.filter((name) => !commanderOnly.has(name));
+  assert.deepEqual(
+    commanderNames.slice(fromFull.length),
+    [...COMMANDER_ONLY_TOOLS],
+    'commander-only tools must be exactly COMMANDER_ONLY_TOOLS, appended after the full-derived part',
+  );
+  // No commander-only name may leak into full or core, and no reserved (not
+  // yet wired) name may appear anywhere.
+  for (const profile of ['full', 'core']) {
+    assert.deepEqual(
+      byProfile.get(profile).filter((name) => commanderOnly.has(name)),
+      [],
+      `${profile} surface must not contain a commander-only tool`,
+    );
+  }
+  const reserved = new Set(COMMANDER_ONLY_RESERVED_TOOLS);
+  for (const [profile, names] of byProfile) {
+    assert.deepEqual(
+      names.filter((name) => reserved.has(name)),
+      [],
+      `${profile} surface must not contain a reserved commander-only name before it is wired`,
+    );
+  }
 
   // The point of the core profile: no browser tools at all.
   assert.deepEqual(

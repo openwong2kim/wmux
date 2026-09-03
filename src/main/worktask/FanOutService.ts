@@ -71,6 +71,14 @@ You are running in a wmux pane. When this task is done and you go idle:
 - A channel post that mentions only your *workspace* — or that mentions nobody — is **not** pasted. It raises an unread badge and nothing else.
 
 So going idle is not "waiting for the next message": nothing wakes you for the third case. If you are expecting follow-up work, check \`channel_unread\` / \`a2a_task_query\` yourself before you stop. And report completion in your mission channel (\`channel_post\`) — an idle worker and a hung worker look identical from the outside, and the only difference the sender can see is what you said.
+
+## How completion is recorded (task ledger)
+
+Your task has a row in the task ledger; the brain reads that row, not your prose. A natural-language "done" is **not** completion.
+
+- When the task is done **and your own gate passed** (tsc / lint / tests for what you touched): \`ledger_update({task_id, status: "review_requested", expected_rev, summary})\` — the summary says what landed and what you verified.
+- On a blocker you cannot clear yourself: \`ledger_update({task_id, status: "input_required", expected_rev, summary})\` — the summary names what you need.
+- \`expected_rev\` is the rev you last read (1 right after fan-out); a stale rev is refused, so re-read and retry. Only the brain can mark \`completed\`.
 `;
 
 /** 데몬 RPC 최소 표면(테스트 주입 가능). daemonClient.rpc의 부분집합. */

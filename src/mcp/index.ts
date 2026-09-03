@@ -2,7 +2,7 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { sendRpc, setClientIdentity, setCommanderRole, setWorkspaceToken } from './wmux-client';
-import { COMMANDER_TOOL_SURFACE } from '../shared/commanderSurface';
+import { COMMANDER_TOOL_SURFACE, COMMANDER_ONLY_TOOLS } from '../shared/commanderSurface';
 import { CORE_TOOL_SURFACE } from '../shared/coreSurface';
 import type { RpcMethod } from '../shared/rpc';
 import {
@@ -28,6 +28,7 @@ import { registerUtilityTools } from './playwright/tools/utility';
 import { registerExtractionTools } from './playwright/tools/extraction';
 import { registerChannelTools } from './channels';
 import { registerFanOutTools } from './fanout';
+import { registerLedgerUpdateTool, registerLedgerListTool } from './ledger';
 import { registerPaneLifecycleTools } from './paneLifecycle';
 import { registerReplTools } from './repl/tools';
 import { getWmuxMcpServerInstructions, resolveMcpServerVersion } from './serverMetadata';
@@ -480,6 +481,11 @@ if (COMMANDER_MODE) {
 // Legacy (non-catalog) registration sites are filtered by an explicit manifest
 // for every profile that is narrower than `full`. `full` registers everything
 // and needs no patch at all.
+// Lane F: the UNFILTERED registration binding, captured BEFORE the manifest
+// patch below so the commander-only lane (end of this function) can register a
+// tool that is deliberately absent from COMMANDER_TOOL_SURFACE (which is a
+// filter of the full surface) — see COMMANDER_ONLY_TOOLS.
+const registerToolUnfiltered = server.tool.bind(server);
 const LEGACY_SURFACE: readonly string[] | null =
   SURFACE_PROFILE === 'commander'
     ? COMMANDER_TOOL_SURFACE
@@ -1558,6 +1564,14 @@ registerFanOutTools(server, {
   resolveWorkspaceId: requireWorkspaceId,
 });
 
+// === Task ledger — worker side (full + core) ===
+// Same walk-hit-only provenance as fan-out: the handler resolves the caller's
+// workspace from this ptyId and the ledger scopes the write to that task.
+registerLedgerUpdateTool(server, {
+  getSenderPtyId: () => MY_PTY_ID,
+  resolveWorkspaceId: requireWorkspaceId,
+});
+
 // === Pane + surface lifecycle tools (issue #285) ===
 // Five MCP tools (pane_split / pane_close / pane_focus, surface_new /
 // surface_close) that mirror the workspace-scoped pane/surface lifecycle RPCs
@@ -1585,6 +1599,28 @@ registerPaneLifecycleTools(
 // authorize. The authority ceiling is unchanged — a caller holding
 // `terminal_send` already drives an arbitrary shell in its own pane as the user.
 registerReplTools(server, MCP_CATALOG_OPTIONS);
+
+// === Commander-only registration lane ===
+// Tools that exist ONLY under --commander. They bypass the manifest filter on
+// purpose (registerToolUnfiltered) and are appended AFTER every full-profile
+// tool so the full ordering the probe pins is untouched. Every name here MUST
+// be in COMMANDER_ONLY_TOOLS (shared/commanderSurface.ts) — the invariant
+// tests and the probe read that list; a name outside it is a bug.
+//
+// Reserved, NOT yet wired (lane O2 — task_gate_run, task_adopt, task_close,
+// task_pr, git_status, git_log, gh_pr_view): register them here, through
+// registerCommanderOnly, and move each name from COMMANDER_ONLY_RESERVED_TOOLS
+// to COMMANDER_ONLY_TOOLS in the same commit.
+if (COMMANDER_MODE) {
+  const commanderOnly = new Set(COMMANDER_ONLY_TOOLS);
+  const registerCommanderOnly: typeof server.tool = ((name: string, ...rest: unknown[]) => {
+    if (!commanderOnly.has(name)) {
+      throw new Error(`[wmux-mcp] ${name} is not listed in COMMANDER_ONLY_TOOLS`);
+    }
+    return (registerToolUnfiltered as (...a: unknown[]) => ReturnType<typeof server.tool>)(name, ...rest);
+  }) as typeof server.tool;
+  registerLedgerListTool(registerCommanderOnly);
+}
 
 // Hook the MCP initialize handshake so wmux substrate learns the declared
 // plugin identity (clientInfo.name + version). Fire `mcp.identify` once so

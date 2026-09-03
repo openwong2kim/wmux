@@ -1,9 +1,14 @@
 import { describe, expect, it } from 'vitest';
+import { readFileSync, readdirSync, statSync } from 'node:fs';
+import path from 'node:path';
 import {
   COMMANDER_TOOL_SURFACE,
   COMMANDER_RPC_METHODS,
   COMMANDER_TEARDOWN_DENY,
+  COMMANDER_ONLY_TOOLS,
+  COMMANDER_ONLY_RESERVED_TOOLS,
 } from '../commanderSurface';
+import { CORE_TOOL_SURFACE } from '../coreSurface';
 import {
   DEFAULT_ALLOWED_TOOLS,
   DEFAULT_ALLOWED_TOOLS_FROM_SURFACE,
@@ -58,5 +63,66 @@ describe('commander surface manifest invariants', () => {
     ]) {
       expect(COMMANDER_TEARDOWN_DENY.has(required)).toBe(true);
     }
+  });
+});
+
+// Lane F: the commander-only lane (src/mcp/index.ts) ADDS tools to the
+// commander profile that no other profile registers. Every enforcement layer
+// must agree on that second list too.
+const baseline = JSON.parse(
+  readFileSync(path.join(__dirname, '..', '..', '..', 'scripts', 'mcp-protocol-baseline.json'), 'utf8'),
+) as { profiles: Record<string, { toolNames: string[] }> };
+
+function walkSources(dir: string, out: string[] = []): string[] {
+  for (const name of readdirSync(dir)) {
+    const p = path.join(dir, name);
+    if (statSync(p).isDirectory()) {
+      if (name !== '__tests__') walkSources(p, out);
+    } else if (p.endsWith('.ts')) {
+      out.push(readFileSync(p, 'utf8'));
+    }
+  }
+  return out;
+}
+
+describe('commander-only lane invariants (COMMANDER_ONLY_TOOLS)', () => {
+  it('is disjoint from the filtered commander surface, core and full', () => {
+    const full = new Set(baseline.profiles.full.toolNames);
+    for (const name of COMMANDER_ONLY_TOOLS) {
+      expect(COMMANDER_TOOL_SURFACE).not.toContain(name);
+      expect(CORE_TOOL_SURFACE).not.toContain(name);
+      expect(full.has(name), `${name} leaked into the full profile`).toBe(false);
+      expect(baseline.profiles.core.toolNames).not.toContain(name);
+    }
+  });
+
+  it('the published commander baseline === COMMANDER_TOOL_SURFACE (full order) + COMMANDER_ONLY_TOOLS', () => {
+    const fullOrder = baseline.profiles.full.toolNames;
+    const filtered = new Set(COMMANDER_TOOL_SURFACE);
+    expect(baseline.profiles.commander.toolNames).toEqual([
+      ...fullOrder.filter((n) => filtered.has(n)),
+      ...COMMANDER_ONLY_TOOLS,
+    ]);
+  });
+
+  it('SDK auto-allow list covers the commander-only tools too (invariant ①, extended)', () => {
+    for (const name of COMMANDER_ONLY_TOOLS) {
+      expect(DEFAULT_ALLOWED_TOOLS).toContain(`mcp__wmux__${name}`);
+    }
+  });
+
+  it('reserved lane-O2 names are absent from every profile and from every src/mcp registration', () => {
+    const sources = walkSources(path.join(__dirname, '..', '..', 'mcp')).join('\n');
+    for (const name of COMMANDER_ONLY_RESERVED_TOOLS) {
+      expect(COMMANDER_ONLY_TOOLS).not.toContain(name);
+      expect(COMMANDER_TOOL_SURFACE).not.toContain(name);
+      for (const profile of Object.values(baseline.profiles)) expect(profile.toolNames).not.toContain(name);
+      expect(sources.includes(`'${name}'`), `${name} is registered in src/mcp before being wired`).toBe(false);
+    }
+  });
+
+  it('the commander RPC lane carries the ledger read the commander-only tool calls', () => {
+    expect(COMMANDER_RPC_METHODS.has('ledger.list')).toBe(true);
+    expect(COMMANDER_RPC_METHODS.has('ledger.update')).toBe(false);
   });
 });

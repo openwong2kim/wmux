@@ -30,7 +30,7 @@ import { loadCommanderMemory, getMemoryRootDir } from './commanderMemory';
 import { getAccountStore, VENDOR_ENV_KEYS } from '../account/accountStore';
 import { mintCommanderToken, revokeCommanderToken } from './commanderTrust';
 import { evaluateCommanderToolPermission } from './commanderToolSandbox';
-import { COMMANDER_MODE_ARG, COMMANDER_TOOL_SURFACE } from '../../shared/commanderSurface';
+import { COMMANDER_MODE_ARG, COMMANDER_TOOL_SURFACE, COMMANDER_ONLY_TOOLS } from '../../shared/commanderSurface';
 import {
   type BrainAdapter,
   type BrainEvent,
@@ -232,7 +232,10 @@ const WMUX = (t: string): string => `mcp__wmux__${t}`;
 // auto-allow list and the actually-registered surface cannot drift. The
 // literal list below is retained as documentation + a change-review speed
 // bump: the test suite asserts it equals the derivation.
-export const DEFAULT_ALLOWED_TOOLS_FROM_SURFACE: string[] = COMMANDER_TOOL_SURFACE.map(WMUX);
+export const DEFAULT_ALLOWED_TOOLS_FROM_SURFACE: string[] = [
+  ...COMMANDER_TOOL_SURFACE,
+  ...COMMANDER_ONLY_TOOLS,
+].map(WMUX);
 
 export const DEFAULT_ALLOWED_TOOLS: string[] = [
   // Read / observe — the whole family.
@@ -293,6 +296,9 @@ export const DEFAULT_ALLOWED_TOOLS: string[] = [
   // record — the server RPC (deck.rpc.ts) enforces every precondition (auto
   // mode, TTL elapsed, substance floor), so a disallowed call is refused there.
   WMUX('deck_resolve_decision'),
+  // Commander-only (never in full/core): the task ledger read. A pure read of
+  // the brain's own rows, so it auto-allows like the other observe tools.
+  WMUX('ledger_list'),
 ];
 
 // Built-in CLI tools the orchestrator must NEVER hold. `allowedTools` only

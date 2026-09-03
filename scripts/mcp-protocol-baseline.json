@@ -3,7 +3,7 @@
   "profiles": {
     "full": {
       "maxListBytes": 78000,
-      "wireResultSha256": "64e84f5161fc63162ef9115ffd0fe4931711d4b5d97658c876991ba1e981d3bf",
+      "wireResultSha256": "504255f85dcbed53fe00be73c6fd2791fc0def68fd3284e43c1af90c5271ac3b",
       "instructionSha256": "f18849bb1ea62bcf5a1e46a73d633c787b4e08e763cc04b01c4e557df8f833eb",
       "toolNames": [
         "browser_open",
@@ -84,6 +84,7 @@
         "channel_mission_close",
         "channel_mission_list",
         "fanout_start",
+        "ledger_update",
         "pane_split",
         "pane_close",
         "pane_focus",
@@ -98,7 +99,7 @@
     },
     "core": {
       "maxListBytes": 49000,
-      "wireResultSha256": "de8e90800228d2d47e1ca4c16205e6fd1a22305d1c7f5d4b468a66d3a6cb7ecb",
+      "wireResultSha256": "311894d5db23232d284c67a8126243b354c028150f8289a1dff6af1bc2c4e585",
       "instructionSha256": "0c313d4e88ad9313bb6a51ff00717abbb243ebcdd18f8e226cba2c738e43c95a",
       "toolNames": [
         "terminal_read",
@@ -138,6 +139,7 @@
         "channel_mission_close",
         "channel_mission_list",
         "fanout_start",
+        "ledger_update",
         "pane_split",
         "pane_close",
         "pane_focus",
@@ -152,7 +154,7 @@
     },
     "commander": {
       "maxListBytes": 60000,
-      "wireResultSha256": "de1a64379698f49626012b826d8d03e4a28c43a1fb54028f9dd54a7cfe6c16a5",
+      "wireResultSha256": "5d41335c653c0916a0f2658b991b3daba44b89bc4cf0b60a80c6fffe78f975fb",
       "instructionSha256": "5a97f851c892326eba7cbcf46292f6925834d5794172461d1ced997d90ac1deb",
       "toolNames": [
         "terminal_read",
@@ -195,7 +197,8 @@
         "pane_focus",
         "surface_new",
         "pane_stash",
-        "pane_unstash"
+        "pane_unstash",
+        "ledger_list"
       ]
     }
   }
