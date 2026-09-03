@@ -430,13 +430,14 @@ async function runStep(
   }
   if (step.tool === 'browser_wait') {
     // The same priority order as the live tool. `fn` is never here: a wait on
-    // a stored script is recorded as a hole and blocks the run before this.
-    // The timeout comes from the cache file, so it is clamped: 0 means "for
-    // ever" to Playwright, and a hand-edited value must not hang a replay.
+    // a JS predicate is not recorded. The timeout comes from the cache file,
+    // so it is clamped: 0 means "for ever" to Playwright, and a hand-edited
+    // value must not hang a replay. The URL is a glob under its own key so
+    // the recorder's credential scrub of `url` never rewrites it.
     const timeout = clampWaitTimeout(args.timeout);
-    if (typeof args.url === 'string' && args.url !== '') {
-      await page.waitForURL(args.url, { timeout });
-      return { detail: `waited for URL "${args.url}"` };
+    if (typeof args.urlGlob === 'string' && args.urlGlob !== '') {
+      await page.waitForURL(args.urlGlob, { timeout });
+      return { detail: `waited for URL "${args.urlGlob}"` };
     }
     if (typeof args.selector === 'string' && args.selector !== '') {
       await page.waitForSelector(args.selector, { timeout });
@@ -530,8 +531,13 @@ async function runStep(
 const SETTLE_TIMEOUT_MS = 3000;
 /** Gap between two shape reads that have to agree before the page counts as settled. */
 const SETTLE_POLL_MS = 250;
-/** How long after a step a navigation is still attributed to that step. */
+/**
+ * How long after a step a navigation is still attributed to that step. Paid
+ * in full only by a step that did NOT navigate; a navigation ends it early.
+ */
 const NAVIGATION_GRACE_MS = 300;
+/** Most shape reads a settle may spend; each one is a full a11y dump. */
+const SETTLE_MAX_READS = 4;
 
 /**
  * Watch the main frame for a navigation the step is about to start. Returns
@@ -547,16 +553,27 @@ const NAVIGATION_GRACE_MS = 300;
  */
 function watchNavigation(page: Page): { didNavigate: () => Promise<boolean>; stop: () => void } {
   let navigated = false;
+  const isMainFrame = (frame: { parentFrame?: () => unknown } | null | undefined): boolean =>
+    !!frame && (typeof frame.parentFrame !== 'function' || frame.parentFrame() === null);
+  // Only the main frame: an ad iframe navigating is not the page moving.
   const onNavigated = (frame: { parentFrame?: () => unknown }): void => {
-    // Only the main frame: an ad iframe navigating is not the page moving.
-    if (typeof frame.parentFrame !== 'function' || frame.parentFrame() === null) navigated = true;
+    if (isMainFrame(frame)) navigated = true;
+  };
+  // A hard navigation commits only after the server answers, which can be
+  // well past the grace period on a slow origin; its REQUEST starts at once.
+  const onRequest = (request: { isNavigationRequest?: () => boolean; frame?: () => unknown }): void => {
+    if (request.isNavigationRequest?.() && isMainFrame(request.frame?.() as never)) navigated = true;
   };
   const events = page as unknown as {
-    on?: (event: 'framenavigated', fn: typeof onNavigated) => void;
-    off?: (event: 'framenavigated', fn: typeof onNavigated) => void;
+    on?: (event: string, fn: (arg: never) => void) => void;
+    off?: (event: string, fn: (arg: never) => void) => void;
   };
   events.on?.('framenavigated', onNavigated);
-  const stop = (): void => { events.off?.('framenavigated', onNavigated); };
+  events.on?.('request', onRequest);
+  const stop = (): void => {
+    events.off?.('framenavigated', onNavigated);
+    events.off?.('request', onRequest);
+  };
   return {
     didNavigate: async () => {
       const deadline = Date.now() + NAVIGATION_GRACE_MS;
@@ -587,7 +604,7 @@ async function settleAfterNavigation(page: Page): Promise<void> {
   await page.waitForLoadState('domcontentloaded', { timeout: SETTLE_TIMEOUT_MS }).catch(() => undefined);
   const deadline = Date.now() + SETTLE_TIMEOUT_MS;
   let previous = '';
-  while (Date.now() < deadline) {
+  for (let reads = 0; reads < SETTLE_MAX_READS && Date.now() < deadline; reads++) {
     await generateSnapshot(page, { format: 'ai' }).catch(() => '');
     const shape = refMapShapeHash(listRefEntries(page));
     if (shape !== '' && shape === previous) return;
@@ -615,8 +632,7 @@ export function replayBlockedReason(trace: TraceRecord): string | null {
       .join(', ');
     return (
       `the trace has unreplayable steps — ${holes}. Perform this flow live; ` +
-      'a password step is never stored and never can be, and a wait on a JS ' +
-      'predicate is never replayed from the cache file.'
+      'a password step is never stored and never can be.'
     );
   }
   return null;
@@ -719,8 +735,10 @@ export async function replayTrace(
     // A step that changed the page invalidates the ref map the remaining steps
     // resolve against, so re-charge it. Still internal, still never shown.
     if (i + 1 < trace.steps.length) {
+      // The settle's last read IS the re-charge; a second dump would only
+      // renumber the refs it just minted.
       if (await navigation.didNavigate()) await settleAfterNavigation(page);
-      await generateSnapshot(page, { format: 'ai' }).catch(() => '');
+      else await generateSnapshot(page, { format: 'ai' }).catch(() => '');
       // The leading navigate has now landed, so this is the flow's own page —
       // the point the recorder's baseline was taken at.
       if (i === 0 && startsWithNavigate) measureShape();

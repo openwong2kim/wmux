@@ -944,12 +944,12 @@ describe('settling after a step (#1193)', () => {
       { role: 'link', name: 'Closed', sameNameIndex: 0, sameNameTotal: 1, frameKey: '', ref: 2 },
     ];
     // Snapshot 1 (pre-flight), then the click navigates; the page is still
-    // the OLD document on the next two reads and becomes the destination
-    // only afterwards — which is exactly the window #1193 fell into.
+    // the OLD document on the next read and becomes the destination only
+    // afterwards — which is exactly the window #1193 fell into.
     let reads = 0;
     vi.spyOn(mod, 'generateSnapshot').mockImplementation(async () => {
       reads++;
-      if (reads >= 4) refEntries = destination;
+      if (reads >= 3) refEntries = destination;
       return '';
     });
     resolved.add('2');
@@ -967,12 +967,15 @@ describe('settling after a step (#1193)', () => {
     expect(result.steps.map((s) => s.ok)).toEqual([true, true]);
     expect(waits).toEqual(['load:domcontentloaded']);
     expect(navListeners.size).toBe(0);
+    // pre-flight 1 + settle reads until two agree (old, new, new) = 4, with
+    // no extra re-charge dump after the settle.
+    expect(reads).toBe(4);
     mockedResolve.mockRestore();
   });
 
   it('replays a recorded browser_wait by its condition, text through the isolated poll', async () => {
     const waitText: TraceStep = { tool: 'browser_wait', axis: { kind: 'none' }, args: { text: 'Closed', timeout: 5000 } };
-    const waitUrl: TraceStep = { tool: 'browser_wait', axis: { kind: 'none' }, args: { url: '**/pulls**' } };
+    const waitUrl: TraceStep = { tool: 'browser_wait', axis: { kind: 'none' }, args: { urlGlob: '**/pulls**' } };
     const waitIdle: TraceStep = { tool: 'browser_wait', axis: { kind: 'none' }, args: {} };
 
     const result = await replayTrace(page, trace([waitText, waitUrl, waitIdle]), undefined);
@@ -988,17 +991,34 @@ describe('settling after a step (#1193)', () => {
   });
 
   it('clamps a hostile wait timeout from the cache file instead of waiting for ever', async () => {
-    const forever: TraceStep = { tool: 'browser_wait', axis: { kind: 'none' }, args: { url: '**/x', timeout: 0 } };
-    const huge: TraceStep = { tool: 'browser_wait', axis: { kind: 'none' }, args: { url: '**/y', timeout: 1e9 } };
+    const forever: TraceStep = { tool: 'browser_wait', axis: { kind: 'none' }, args: { urlGlob: '**/x', timeout: 0 } };
+    const huge: TraceStep = { tool: 'browser_wait', axis: { kind: 'none' }, args: { urlGlob: '**/y', timeout: 1e9 } };
     const timeouts: number[] = [];
     const waitForURL = async (_url: string, opts: { timeout: number }) => { timeouts.push(opts.timeout); };
     const result = await replayTrace({ ...(page as object), waitForURL } as never, trace([forever, huge]), undefined);
     expect(result.ok).toBe(true);
     expect(timeouts).toEqual([30000, 60000]);
   });
+});
 
-  it('refuses a trace whose wait was on a stored script', () => {
-    const hole: TraceStep = { tool: 'browser_wait', axis: { kind: 'none' }, args: {}, unrecordable: 'stored-script' };
-    expect(replayBlockedReason(trace([hole]))).toContain('step 1 (stored-script)');
+describe('navigation watch (#1193)', () => {
+  it('treats a main-frame navigation REQUEST as a navigation, so a slow origin is not missed', async () => {
+    const mod = await import('../../playwright/snapshot');
+    let reads = 0;
+    vi.spyOn(mod, 'generateSnapshot').mockImplementation(async () => { reads++; return ''; });
+    const mockedResolve = vi.spyOn(mod, 'resolveRef').mockImplementation(async (_p, ref) => {
+      if (ref === '1') {
+        for (const fn of navListeners) {
+          (fn as (arg: unknown) => void)({ isNavigationRequest: () => true, frame: () => ({ parentFrame: () => null }) });
+        }
+      }
+      return resolved.has(ref) ? ({ click: async () => undefined } as never) : null;
+    });
+    const result = await replayTrace(page, trace([refStep(), refStep()]), undefined);
+    expect(result.ok).toBe(true);
+    expect(waits).toEqual(['load:domcontentloaded']);
+    // A settle ran: at least two reads after the pre-flight one.
+    expect(reads).toBeGreaterThanOrEqual(3);
+    mockedResolve.mockRestore();
   });
 });

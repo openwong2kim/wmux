@@ -147,20 +147,25 @@ export function createWaitToolCatalog(deps: BrowserToolDeps) {
       const resolvedTimeout = timeout ?? 30000;
       // A wait is part of the flow: a replay that skips it acts on the page
       // before the thing the agent waited for has happened (#1193). Recorded
-      // on success only, like every other step. A `fn` wait is a hole — the
-      // stored script would be evaluated from an untrusted cache file.
-      const record = (page: Parameters<typeof recordAction>[1]['page']): void => {
+      // on success only, like every other step, and only on the Playwright
+      // lane — the RPC lane has no page to key a urlKey off. A `fn` wait is
+      // not recorded at all: the cache file is untrusted input by the time a
+      // replay reads it, so a stored script would never be evaluated, and a
+      // hole would refuse the whole flow for a step the runner's own settle
+      // covers in practice. No page and no shape are stamped: a wait touches
+      // no element, so it must not become the trace's shape baseline either.
+      const record = (page: { url?: () => string }): void => {
+        if (fn && !url && !selector && !text) return;
         const args: Record<string, string | number> = { timeout: resolvedTimeout };
-        if (url) args.url = url;
+        if (url) args.urlGlob = url;
         else if (selector) args.selector = selector;
         else if (text) args.text = text;
-        recordAction(deps, {
-          scope,
-          tool: 'browser_wait',
-          page,
-          args,
-          ...(!url && !selector && !text && fn && { unrecordable: 'stored-script' as const }),
-        });
+        // Never lets a recording problem fail the wait that just succeeded.
+        try {
+          recordAction(deps, { scope, tool: 'browser_wait', page: null, url: page.url?.() ?? '', args });
+        } catch {
+          /* recording is observation only */
+        }
       };
 
       try {
@@ -244,7 +249,6 @@ export function createWaitToolCatalog(deps: BrowserToolDeps) {
               // Otherwise transient (e.g. body not ready mid-navigation): keep polling.
             }
             if (ok) {
-              record(null);
               return {
                 content: [{ type: 'text' as const, text: warningPrefix + `Wait completed: ${label}` }],
               };

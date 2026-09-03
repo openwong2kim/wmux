@@ -64,7 +64,7 @@ const BROWSER_REPLAY_SHAPE = {
     .int()
     .positive()
     .optional()
-    .describe('save: how many of your most recent actions to keep. Default: everything since your last navigate.'),
+    .describe('save: how many of your most recent actions to keep (a browser_wait counts as one). Default: everything since your last navigate.'),
   variables: z
     .record(z.string(), z.string())
     .optional()
