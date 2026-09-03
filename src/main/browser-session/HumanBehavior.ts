@@ -1,4 +1,10 @@
-import { generateTypingDelays, typingDelayFor } from '../../shared/humanRhythm';
+import {
+  generateKeyHolds,
+  generateKeystrokeSchedule,
+  generateTypingDelays,
+  typingDelayFor,
+  type KeystrokeSchedule,
+} from '../../shared/humanRhythm';
 
 export interface HumanBehaviorConfig {
   typingDelay: { min: number; max: number };
@@ -69,5 +75,29 @@ export class HumanBehavior {
   generateTypingSchedule(text: string): number[] {
     const { min, max } = this.config.typingDelay;
     return generateTypingDelays(text, { minDelay: min, maxDelay: max });
+  }
+
+  /**
+   * How long each key is held DOWN, as opposed to the gap after it that
+   * `generateTypingSchedule` returns. A caller executing the schedule with a
+   * press-and-release per character produces a ~1 ms dwell time, which is a
+   * keystroke-dynamics signature of its own; this is the other half of the
+   * schedule it needs.
+   */
+  generateHoldSchedule(text: string): number[] {
+    return generateKeyHolds(text);
+  }
+
+  /**
+   * Both halves of the keystroke stream, drawn against one budget.
+   *
+   * Taking the two schedules separately double-counted the time: the gap cap
+   * was applied to the gaps alone and every dwell was then added on top. A
+   * caller that reports or reserves a duration needs the pair that actually
+   * fits.
+   */
+  generateKeystrokeSchedule(text: string): KeystrokeSchedule {
+    const { min, max } = this.config.typingDelay;
+    return generateKeystrokeSchedule(text, { minDelay: min, maxDelay: max });
   }
 }

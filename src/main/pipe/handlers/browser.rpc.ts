@@ -19,6 +19,24 @@ import {
 import { stepsFingerprint } from '../../../shared/browserReplay/actionTrace';
 import { HumanBehavior } from '../../browser-session/HumanBehavior';
 import { approachPath, defaultStartPoint, type Point } from '../../../shared/pointerPath';
+
+/**
+ * The physical half of the device preset currently emulated on a WebContents.
+ *
+ * `Emulation.setDeviceMetricsOverride` replaces the whole override, so any
+ * later command that sends only a width and a height — browser.resize — would
+ * drop the preset's pixel ratio and mobile flag while its UA and touch points
+ * stayed behind. Keyed weakly: a closed WebContents takes its entry with it.
+ */
+const activePreset = new WeakMap<
+  WebContents,
+  {
+    deviceScaleFactor: number;
+    mobile: boolean;
+    screenWidth?: number;
+    screenHeight?: number;
+  }
+>();
 import { refererFor } from '../../../shared/referer';
 import { buildUserAgentOverride } from '../../../shared/uaMetadata';
 import { WebviewCdpManager } from '../../browser-session/WebviewCdpManager';
@@ -1745,14 +1763,22 @@ export function registerBrowserRpc(
     const text: string = params['text'];
     const selector = typeof params['selector'] === 'string' ? params['selector'] : undefined;
 
-    const delays = humanBehavior.generateTypingSchedule(text);
+    // The gaps alone describe a typist who presses and releases every key in
+    // the same millisecond. `holds` is how long each key stays down, so a
+    // caller driving the keyboard from this schedule produces a real dwell
+    // time rather than a biometric giveaway. Both are drawn against one
+    // budget — a caller reserving `totalDuration` has to be told the time the
+    // holds spend too, or it plans for a schedule shorter than the one it got.
+    const { delays, holds } = humanBehavior.generateKeystrokeSchedule(text);
     const config = humanBehavior.getConfig();
 
     return {
       text,
       ...(selector && { selector }),
       delays,
-      totalDuration: delays.reduce((sum, d) => sum + d, 0),
+      holds,
+      totalDuration:
+        delays.reduce((sum, d) => sum + d, 0) + holds.reduce((sum, h) => sum + h, 0),
       config: {
         typingDelay: config.typingDelay,
       },
@@ -2378,8 +2404,21 @@ export function registerBrowserRpc(
     }
     const surfaceId = typeof params['surfaceId'] === 'string' ? params['surfaceId'] : undefined;
     const wc = resolveWc(surfaceId, 'browser.resize', scope);
+    // setDeviceMetricsOverride replaces the whole override, so sending the
+    // desktop defaults here silently undid an active device preset's pixel
+    // ratio and mobile flag while its UA and touch points stayed — the
+    // contradiction the preset path exists to remove, reintroduced by a
+    // resize. Carry the preset's values through instead.
+    const preset = activePreset.get(wc);
     await wc.debugger.sendCommand('Emulation.setDeviceMetricsOverride', {
-      width, height, deviceScaleFactor: 0, mobile: false,
+      width,
+      height,
+      deviceScaleFactor: preset?.deviceScaleFactor ?? 0,
+      mobile: preset?.mobile ?? false,
+      ...(preset?.screenWidth !== undefined && preset?.screenHeight !== undefined && {
+        screenWidth: preset.screenWidth,
+        screenHeight: preset.screenHeight,
+      }),
     });
     return { ok: true, width, height };
   });
@@ -2481,12 +2520,32 @@ export function registerBrowserRpc(
       applied.push(locale ? `locale=${locale}` : 'locale=reset');
     }
 
+    let touchUnavailable = false;
     if (params['deviceMetrics'] && typeof params['deviceMetrics'] === 'object') {
-      const dm = params['deviceMetrics'] as { width: number; height: number; deviceScaleFactor?: number; mobile?: boolean };
+      const dm = params['deviceMetrics'] as {
+        width: number; height: number; deviceScaleFactor?: number; mobile?: boolean;
+        hasTouch?: boolean; screenWidth?: number; screenHeight?: number;
+      };
       await send('Emulation.setDeviceMetricsOverride', {
         width: dm.width, height: dm.height,
         deviceScaleFactor: dm.deviceScaleFactor ?? 0, mobile: dm.mobile ?? false,
+        ...(dm.screenWidth !== undefined && dm.screenHeight !== undefined
+          ? { screenWidth: dm.screenWidth, screenHeight: dm.screenHeight }
+          : {}),
       });
+      if (dm.hasTouch !== undefined) {
+        // navigator.maxTouchPoints stayed 0 under a phone preset, contradicting
+        // the UA the same call had just installed. Sent on both branches so a
+        // desktop preset after a phone one actually turns touch back off.
+        await send('Emulation.setTouchEmulationEnabled', {
+          enabled: dm.hasTouch, maxTouchPoints: dm.hasTouch ? 5 : 0,
+        }).catch(() => {
+          // Same guard the reset path has: a transport without touch
+          // emulation must not take the whole preset down with it — the UA,
+          // the metrics and the pixel ratio are still worth applying.
+          touchUnavailable = true;
+        });
+      }
       if (typeof params['userAgent'] === 'string') {
         // Metadata is derived here rather than sent over the wire, so the
         // Client Hints surface (navigator.userAgentData, Sec-CH-UA*) agrees
@@ -2498,15 +2557,33 @@ export function registerBrowserRpc(
           buildUserAgentOverride(params['userAgent'], emulatedLocale) as unknown as Record<string, unknown>,
         );
       }
+      // Remembered so browser.resize can keep the preset's pixel ratio, mobile
+      // flag and touch instead of flattening them back to the desktop values —
+      // a resize used to leave a phone UA on a desktop pixel ratio with a
+      // touchscreen still attached, which is a contradiction of its own.
+      activePreset.set(wc, {
+        deviceScaleFactor: dm.deviceScaleFactor ?? 0,
+        mobile: dm.mobile ?? false,
+        ...(dm.screenWidth !== undefined && dm.screenHeight !== undefined && {
+          screenWidth: dm.screenWidth,
+          screenHeight: dm.screenHeight,
+        }),
+      });
       const label = typeof params['deviceLabel'] === 'string' ? params['deviceLabel'] : `${dm.width}x${dm.height}`;
       applied.push(`device=${label}`);
+      if (touchUnavailable) applied.push('touch=unavailable on this transport');
     } else if (params['deviceReset'] === true) {
       // Actually undo the preset over CDP: drop the device metrics override and
       // restore the real user agent. Without this, a packaged caller who switches
       // to a phone preset and then resets stays on the mobile UA/metrics for every
       // subsequent page. CDP has no "clear UA override" command, so re-apply the
       // WebContents' own UA to shed the mobile one set by the preset above.
+      activePreset.delete(wc);
       await send('Emulation.clearDeviceMetricsOverride');
+      // The touch points the preset installed outlive clearDeviceMetricsOverride,
+      // so a reset that skipped this left a desktop UA reporting a touchscreen.
+      await send('Emulation.setTouchEmulationEnabled', { enabled: false, maxTouchPoints: 0 })
+        .catch(() => { /* transport without touch emulation; metrics still cleared */ });
       try {
         const ua = typeof wc.getUserAgent === 'function' ? wc.getUserAgent() : undefined;
         // Restore the metadata alongside the string: re-applying the real UA

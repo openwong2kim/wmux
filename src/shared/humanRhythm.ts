@@ -123,10 +123,115 @@ export function generateTypingDelays(
     typingDelayFor(text[i], options),
   );
 
-  const budget = text.length * BUDGET_PER_CHAR_MS + BUDGET_SLACK_MS;
-  const total = delays.reduce((sum, d) => sum + d, 0);
+  const budget = budgetFor(text);
+  const total = sum(delays);
   if (total <= budget) return delays;
 
   const scale = budget / total;
   return delays.map((d) => d * scale);
+}
+
+/** The ceiling a whole keystroke schedule — gaps and holds — has to fit in. */
+function budgetFor(text: string): number {
+  return text.length * BUDGET_PER_CHAR_MS + BUDGET_SLACK_MS;
+}
+
+function sum(values: number[]): number {
+  return values.reduce((total, value) => total + value, 0);
+}
+
+// ---------------------------------------------------------------------------
+// Key hold (dwell time)
+// ---------------------------------------------------------------------------
+//
+// The inter-key delay above says how long to wait BETWEEN keystrokes. It says
+// nothing about how long each key is held, and both lanes used to press and
+// release in the same breath: keydown → keyup in about a millisecond. A person
+// holds a key for tens of milliseconds, and dwell time is a standard input of
+// keystroke-dynamics biometrics — a stream of ~1 ms holds is as distinctive as
+// a stream of perfectly uniform gaps was.
+//
+// Same shape as the inter-key draw (log-normal, injectable RNG) around a
+// median in the middle of the range people actually produce.
+
+/** Median hold, in ms — the middle of the 40–120 ms band typists produce. */
+export const KEY_HOLD_MEDIAN_MS = 70;
+/** Spread of the log-normal hold. Matches the inter-key draw's skew. */
+const HOLD_SIGMA = 0.35;
+/** A hold never falls below this… */
+export const KEY_HOLD_MIN_MS = 30;
+/** …nor above this. The tail is long, but not "leaning on the key" long. */
+export const KEY_HOLD_MAX_MS = 150;
+
+/**
+ * How many times a draw outside the band is redrawn before it is clamped.
+ *
+ * Clamping alone put every out-of-band draw exactly ON the bound: ~1.5% of
+ * holds at 150.0 ms and ~0.8% at 30.0 ms, two spikes no hand produces and both
+ * of them at the round numbers a detector would look for. Redrawing keeps the
+ * distribution's own shape near the edges. The attempt count is bounded so a
+ * degenerate rng (a test stub returning a constant) cannot spin here.
+ */
+const HOLD_RESAMPLE_ATTEMPTS = 8;
+
+/**
+ * How long to hold one key down, in ms.
+ *
+ * Only `rng` is read from `options`: the hold is a property of the hand, not of
+ * the typist's chosen speed band, so it does not scale with min/maxDelay.
+ */
+export function keyHoldFor(options?: TypingRhythmOptions): number {
+  const rng = options?.rng ?? Math.random;
+  let base = 0;
+  for (let attempt = 0; attempt < HOLD_RESAMPLE_ATTEMPTS; attempt++) {
+    base = KEY_HOLD_MEDIAN_MS * Math.exp(HOLD_SIGMA * gaussian(rng));
+    if (base >= KEY_HOLD_MIN_MS && base <= KEY_HOLD_MAX_MS) return base;
+  }
+  // Last resort, for an rng that keeps landing outside the band.
+  return Math.min(Math.max(base, KEY_HOLD_MIN_MS), KEY_HOLD_MAX_MS);
+}
+
+/** Per-character hold times for `text`, index i being the hold of `text[i]`. */
+export function generateKeyHolds(
+  text: string,
+  options?: TypingRhythmOptions,
+): number[] {
+  return Array.from({ length: text.length }, () => keyHoldFor(options));
+}
+
+/** The two halves of one keystroke stream, drawn against one budget. */
+export interface KeystrokeSchedule {
+  /** Wait after `text[i]` is released. */
+  delays: number[];
+  /** How long `text[i]` stays down. */
+  holds: number[];
+}
+
+/**
+ * Per-character delays AND holds for `text`, budgeted together.
+ *
+ * `generateTypingDelays` caps the gaps on their own. Typing also spends the
+ * hold of every key, so a caller that added holds on top of an already-capped
+ * delay schedule blew straight through the cap — with the default band, by
+ * about 58% on a long text, which is enough to push a browser_type past its
+ * tool timeout. Both halves are drawn first and scaled by the same factor, so
+ * the schedule keeps its shape and its delay-to-hold ratio while the pair fits
+ * the budget. A scaled hold can land under KEY_HOLD_MIN_MS; a schedule that
+ * cannot run at all is worse than one typed briskly.
+ */
+export function generateKeystrokeSchedule(
+  text: string,
+  options?: TypingRhythmOptions,
+): KeystrokeSchedule {
+  const delays = Array.from({ length: text.length }, (_unused, i) =>
+    typingDelayFor(text[i], options),
+  );
+  const holds = Array.from({ length: text.length }, () => keyHoldFor(options));
+
+  const budget = budgetFor(text);
+  const total = sum(delays) + sum(holds);
+  if (total <= budget) return { delays, holds };
+
+  const scale = budget / total;
+  return { delays: delays.map((d) => d * scale), holds: holds.map((h) => h * scale) };
 }

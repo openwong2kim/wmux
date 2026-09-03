@@ -12,6 +12,7 @@ import { describeToolError } from '../toolError';
 import { redactPasswordParams } from '../redact';
 import { recordAction } from '../../browser-replay/actionRing';
 import { refererFor } from '../../../shared/referer';
+import { NavigationNotCommittedError, navigateFromPage } from '../link-navigation';
 import {
   browserTabsError,
   isBrowserTabsResult,
@@ -143,6 +144,10 @@ export function registerNavigationTools(server: McpServer, deps: BrowserToolDeps
         // next tool call. The self-echo — a lone navigated matching the URL
         // this result already reports — is suppressed via opts.
         let finalUrl: string | undefined;
+        // Set when the in-page (referer-carrying) route did not commit and the
+        // plain navigation was used instead: the agent asked for one request
+        // and got a differently-shaped one, so the result says so.
+        let refererRetryNote: string | undefined;
         return await withAutomationLease(
           deps,
           surfaceId,
@@ -159,11 +164,36 @@ export function registerNavigationTools(server: McpServer, deps: BrowserToolDeps
               // page they left in the Referer header; page.goto() sends none
               // unless told to. refererFor() decides when there is a real one
               // to send — see shared/referer.
+              //
+              // But goto with a referer is not a link click: it is an
+              // address-bar navigation carrying someone else's Referer, and
+              // Chromium labels it `Sec-Fetch-Site: none` + `Sec-Fetch-User:
+              // ?1` — a combination that contradicts the header it was given.
+              // So when there IS a referer to send, navigate from inside the
+              // page instead and let Chromium fill the whole set in agreement
+              // (see link-navigation). goto keeps the first navigation, the
+              // ones leaving about:blank, and anything the in-page route
+              // cannot do.
               const referer = refererFor(page.url(), url);
-              await page.goto(url, {
-                waitUntil: 'domcontentloaded',
-                ...(referer && { referer }),
-              });
+              if (referer) {
+                try {
+                  await navigateFromPage(page, url);
+                } catch (error) {
+                  // Only one failure may be retried: the one where nothing was
+                  // requested. A navigation that was attempted and failed is
+                  // the caller's answer — repeating it would issue the same
+                  // request twice, which for a download or a one-time token
+                  // URL is not a retry but a second consumption.
+                  if (!(error instanceof NavigationNotCommittedError)) throw error;
+                  refererRetryNote =
+                    'referer navigation did not commit; retried without a referer';
+                  // Plain address-bar navigation, WITHOUT a referer: the
+                  // contradictory pair is worse than the missing header.
+                  await page.goto(url, { waitUntil: 'domcontentloaded' });
+                }
+              } else {
+                await page.goto(url, { waitUntil: 'domcontentloaded' });
+              }
               finalUrl = page.url();
               // The landing URL, not the requested one: a trace filed under a
               // redirect's source would never match the page it actually runs
@@ -176,7 +206,14 @@ export function registerNavigationTools(server: McpServer, deps: BrowserToolDeps
                 url: finalUrl,
               });
               return {
-                content: [{ type: 'text' as const, text: `Navigated to ${redactPasswordParams(finalUrl)}` }],
+                content: [
+                  {
+                    type: 'text' as const,
+                    text: refererRetryNote
+                      ? `Navigated to ${redactPasswordParams(finalUrl)}\n${refererRetryNote}`
+                      : `Navigated to ${redactPasswordParams(finalUrl)}`,
+                  },
+                ],
               };
             }
             // Use RPC for fast, reliable navigation (bypasses Playwright CDP discovery)

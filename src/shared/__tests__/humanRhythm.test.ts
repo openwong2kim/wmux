@@ -2,7 +2,12 @@ import { describe, expect, it } from 'vitest';
 import {
   DEFAULT_MAX_DELAY,
   DEFAULT_MIN_DELAY,
+  generateKeyHolds,
   generateTypingDelays,
+  KEY_HOLD_MAX_MS,
+  KEY_HOLD_MEDIAN_MS,
+  KEY_HOLD_MIN_MS,
+  keyHoldFor,
   typingDelayFor,
 } from '../humanRhythm';
 
@@ -138,5 +143,46 @@ describe('humanRhythm typing distribution', () => {
       typingDelayFor('a', { minDelay: 200, maxDelay: 400, rng: seeded(900 + i) }));
     expect(median(values)).toBeGreaterThan(270);
     expect(median(values)).toBeLessThan(330);
+  });
+});
+
+describe('humanRhythm key hold distribution', () => {
+  /** A long run of holds from one deterministic stream. */
+  function holds(count: number, seed = 7): number[] {
+    const rng = seeded(seed);
+    return Array.from({ length: count }, () => keyHoldFor({ rng }));
+  }
+
+  it('centres the median on the configured hold median', () => {
+    const m = median(holds(20_000));
+    expect(m).toBeGreaterThan(KEY_HOLD_MEDIAN_MS * 0.95);
+    expect(m).toBeLessThan(KEY_HOLD_MEDIAN_MS * 1.05);
+  });
+
+  it('is right-skewed, like the inter-key draw', () => {
+    const sampled = holds(20_000);
+    expect(mean(sampled)).toBeGreaterThan(median(sampled));
+  });
+
+  it('never leaves the 30-150 ms clamp, and never lands near a bare press', () => {
+    // The defect this replaces: keydown and keyup in the same millisecond.
+    // Asserted on the extremes rather than per draw — 20k expect() calls are
+    // slower than the whole distribution they check.
+    const sampled = holds(20_000, 11);
+    expect(Math.min(...sampled)).toBeGreaterThanOrEqual(KEY_HOLD_MIN_MS);
+    expect(Math.max(...sampled)).toBeLessThanOrEqual(KEY_HOLD_MAX_MS);
+  });
+
+  it('does not scale with the typist band — the hold is the hand, not the speed', () => {
+    const slow = median(Array.from({ length: 5_000 }, ((rng) => () => keyHoldFor({ rng, minDelay: 400, maxDelay: 900 }))(seeded(5))));
+    const fast = median(Array.from({ length: 5_000 }, ((rng) => () => keyHoldFor({ rng, minDelay: 10, maxDelay: 30 }))(seeded(5))));
+    expect(slow).toBeCloseTo(fast, 5);
+  });
+
+  it('generateKeyHolds returns one hold per character', () => {
+    const rng = seeded(2);
+    const schedule = generateKeyHolds('hello world', { rng });
+    expect(schedule).toHaveLength('hello world'.length);
+    expect(generateKeyHolds('', { rng })).toEqual([]);
   });
 });
