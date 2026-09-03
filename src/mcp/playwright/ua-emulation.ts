@@ -41,16 +41,20 @@
 // `reassertUserAgentEmulation` below is where the page is put back before a
 // tool looks at it.
 //
-// What this still cannot reach, said here rather than left to be discovered:
-// input. `Emulation.setTouchEmulationEnabled` gives the page a touchscreen to
-// report, but automated clicks are still mouse events, and the context this
-// process attached to was built without touch, so `page.tap()` is refused
-// client-side. Two ways out were measured and both are worse than the gap:
-// `Emulation.setEmitTouchEventsForMouse` does convert the clicks into real
-// touch events, but the mouse dispatch that produced them then never returns
-// (>30s, every click), and a device-built context is not this architecture —
-// it would be a fresh incognito-like context with none of the user's cookies,
-// history or extensions, which is a louder signal than the one it removes.
+// Input reaches the page too, and by the same route. `page.tap()` is refused
+// client-side — the context this process attached to was built without touch —
+// and two ways round that were measured and rejected:
+// `Emulation.setEmitTouchEventsForMouse` does convert clicks into real touch
+// events, but the mouse dispatch that produced them then never returns (>30s,
+// every click), and a device-built context is not this architecture — it would
+// be a fresh incognito-like context with none of the user's cookies, history or
+// extensions, which is a louder signal than the one it removes.
+//
+// So the touch events are sent directly, as `Input.dispatchTouchEvent`, on the
+// session held here (`activeTouchSession` below, dispatched from
+// `touch-input.ts`). Reusing this session rather than opening one is not an
+// economy: a session opened for the tap and detached afterwards would reset
+// `navigator.platform` on the way out, for the reason set out above.
 // ---------------------------------------------------------------------------
 
 import type { Browser, BrowserContext, CDPSession, Page } from 'playwright-core';
@@ -306,6 +310,34 @@ export async function reassertUserAgentEmulation(page: Page): Promise<void> {
   const session = state.sessions.get(page);
   if (!session) return;
   await loose(session).send('Emulation.setUserAgentOverride', state.override).catch(() => {});
+}
+
+/**
+ * The live session for `page` when the preset on it claims a touchscreen, or
+ * undefined when there is no preset, no touch in it, or no session for this
+ * page.
+ *
+ * This is what makes touch input possible at all: the emulation that told the
+ * page it has a touchscreen and the commands that put a finger on it have to
+ * travel on the same session, or the second is a mouse pretending again.
+ *
+ * Deliberately narrow: callers get something they can `send` on and nothing
+ * they can detach, because detaching this session is what would undo the
+ * emulation it belongs to.
+ */
+export function activeTouchSession(
+  page: Page,
+): { send(method: string, params?: unknown): Promise<unknown> } | undefined {
+  let context: BrowserContext;
+  try {
+    context = page.context();
+  } catch {
+    return undefined;
+  }
+  const state = stateByContext.get(context);
+  if (!state?.metrics?.hasTouch) return undefined;
+  const session = state.sessions.get(page);
+  return session ? loose(session) : undefined;
 }
 
 /** Whether `context` currently has an emulated UA applied. */

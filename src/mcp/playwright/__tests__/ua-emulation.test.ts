@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { BrowserContext, Page } from 'playwright-core';
 import {
+  activeTouchSession,
   applyUserAgentEmulation,
   clearUserAgentEmulation,
   hasUserAgentEmulation,
@@ -247,5 +248,47 @@ describe('reassertUserAgentEmulation', () => {
     await reassertUserAgentEmulation(h.page);
 
     expect(h.sent).toEqual([]);
+  });
+});
+
+// Touch input travels on the session this module is already holding open: one
+// opened for the tap and detached afterwards would put navigator.platform back
+// to the host's on the way out, which is the reason these sessions are held at
+// all.
+describe('activeTouchSession', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('hands back the live session for a preset with a touchscreen', async () => {
+    const h = harness();
+    await applyUserAgentEmulation(h.context, h.page, IPHONE_UA, 'en-US', IPHONE_METRICS);
+
+    const session = activeTouchSession(h.page);
+    expect(session).toBeDefined();
+
+    const before = h.sent.length;
+    await session!.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [] });
+    // The very session that installed the touch emulation, not a new one.
+    expect(h.sent.length).toBe(before + 1);
+    expect(h.sent[before].method).toBe('Input.dispatchTouchEvent');
+  });
+
+  it('is undefined for a preset without a touchscreen', async () => {
+    const h = harness();
+    await applyUserAgentEmulation(h.context, h.page, REAL_UA, undefined, {
+      ...IPHONE_METRICS,
+      hasTouch: false,
+    });
+
+    expect(activeTouchSession(h.page)).toBeUndefined();
+  });
+
+  it('is undefined with no preset, and again after a reset', async () => {
+    const h = harness();
+    expect(activeTouchSession(h.page)).toBeUndefined();
+
+    await applyUserAgentEmulation(h.context, h.page, IPHONE_UA, 'en-US', IPHONE_METRICS);
+    await clearUserAgentEmulation(h.context);
+
+    expect(activeTouchSession(h.page)).toBeUndefined();
   });
 });

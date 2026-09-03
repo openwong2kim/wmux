@@ -543,16 +543,16 @@ export function registerStateTools(server: McpServer, deps: BrowserToolDeps): vo
               // Chromium's own and there is no Safari value to give them. Say
               // so where the caller reads the result, rather than let them
               // assume the identity is seamless.
-              // What a preset does not reach, said here rather than left for
-              // the caller to discover. The page reports a touchscreen, but
-              // the automated input over it is still mouse input: this
-              // process attached to a context that was built without touch,
-              // so page.tap() is refused and browser_click lands as
-              // pointerType "mouse". Only worth saying for a preset that
-              // claims touch in the first place.
-              if (deviceDescriptor.hasTouch) {
+              // What the touchscreen half of the preset now means for input,
+              // said where the caller reads the result: browser_click stops
+              // being a mouse press and becomes a real touch sequence, and the
+              // two gestures a touchscreen does not have keep the mouse. Only
+              // worth saying for a preset that claims touch in the first place.
+              // `ok` gates it: without the held session there is no emulated
+              // touchscreen to report and nothing to dispatch a tap on.
+              if (deviceDescriptor.hasTouch && ok) {
                 applied.push(
-                  'note=touch is reported, not dispatched: maxTouchPoints and (pointer:coarse) match the device, but browser_click still sends mouse events. A page that gates behaviour on touch events will not see them.',
+                  'note=touch is dispatched: browser_click sends touchstart/touchend, so a page gating on touch events sees them. A double click and browser_hover stay mouse input — a touchscreen has neither.',
                 );
               }
               if (!isChromiumUserAgent(deviceDescriptor.userAgent)) {
