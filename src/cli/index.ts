@@ -139,7 +139,8 @@ BROWSER COMMANDS
 MCP COMMANDS
   mcp check                         Show whether wmux MCP servers are registered
   mcp clients                       List MCP clients wmux saw, by reported name
-  mcp register                      Add wmux entries to ~/.claude.json
+  mcp register [--profile <name>]   Add wmux entries to ~/.claude.json
+                                    (full: every tool, the default; core: no browser_* tools)
   mcp unregister                    Remove wmux entries from ~/.claude.json
 
 CLAUDE CODE INTEGRATION
