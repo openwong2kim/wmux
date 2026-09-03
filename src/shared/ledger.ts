@@ -40,7 +40,10 @@ export interface LedgerActor {
 /** Result of one gate run, recorded by the gate runner. `command` is the
  *  allow-listed command that ran — never caller-supplied text. */
 export interface LedgerGateResult {
-  exitCode: number;
+  /** Process exit code; `null` when the gate died on a signal (timeout,
+   *  cancel, OOM). Consumers MUST treat `null` as a failure — only an
+   *  explicit 0 is a pass. */
+  exitCode: number | null;
   /** Last lines of combined output, bounded by the runner. */
   tail: string;
   /** Epoch ms. */
@@ -78,6 +81,8 @@ export const WORKER_SETTABLE_STATUSES: readonly LedgerStatus[] = [
  *  not expressible here). */
 export const LEDGER_TRANSITIONS: Readonly<Record<LedgerStatus, readonly LedgerStatus[]>> = {
   working: ['input_required', 'review_requested', 'failed', 'cancelled'],
+  // A blocked worker may clear its own blocker and hand the task straight to
+  // review; forcing a `working` hop in between would only add a write.
   input_required: ['working', 'review_requested', 'failed', 'cancelled'],
   review_requested: ['working', 'completed', 'failed', 'cancelled'],
   completed: [],
@@ -89,6 +94,9 @@ export function isLedgerStatus(value: unknown): value is LedgerStatus {
   return typeof value === 'string' && (LEDGER_STATUSES as readonly string[]).includes(value);
 }
 
-export function canTransition(from: LedgerStatus, to: LedgerStatus): boolean {
+/** False for any unknown status on either side — the MCP surface hands this
+ *  raw strings, and a lookup miss must be a refusal, not a TypeError. */
+export function canTransition(from: string, to: string): boolean {
+  if (!isLedgerStatus(from) || !isLedgerStatus(to)) return false;
   return LEDGER_TRANSITIONS[from].includes(to);
 }

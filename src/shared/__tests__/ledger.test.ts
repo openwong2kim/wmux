@@ -21,5 +21,7 @@ describe('ledger vocabulary', () => {
     for (const s of LEDGER_STATUSES) expect(Object.keys(LEDGER_TRANSITIONS)).toContain(s);
     expect(isLedgerStatus('review_requested')).toBe(true);
     expect(isLedgerStatus('done')).toBe(false);
+    expect(canTransition('done', 'working')).toBe(false);
+    expect(canTransition('working', 'done')).toBe(false);
   });
 });
