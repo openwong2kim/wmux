@@ -42,8 +42,13 @@ const packageJson = JSON.parse(readFileSync(PACKAGE_PATH, 'utf8'));
 //   74,652 bytes with 92 tools, i.e. 348 bytes of headroom — less than a
 //   single tool's schema. One more tool could not be added at all without a
 //   raise, and a 3 KB cushion buys roughly one more tool after this one
-//   before the question has to be re-argued. core (49000) and commander
-//   (45000) are untouched; browser_replay is full-only.
+//   before the question has to be re-argued. core (49000) is untouched;
+//   browser_replay is full-only.
+//   commander: 45000 -> 60000 (orchestrator track, 2026-09). The commander
+//   profile measured ~43,000 bytes against 45,000 — under one tool of
+//   headroom. The task-ledger / gate / adopt tools (ledger_*, task_*,
+//   git_*) add about nine schemas, roughly 7-8 KB, so a 15 KB raise lands
+//   them with one more small tool of cushion before this is re-argued.
 const baseline = JSON.parse(readFileSync(BASELINE_PATH, 'utf8'));
 
 function sha256(value) {
