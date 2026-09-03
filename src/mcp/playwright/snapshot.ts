@@ -1936,6 +1936,25 @@ export async function generateScopedSnapshot(
   return filterNote ? `${filterNote}\n${output}` : output;
 }
 
+export interface ResolveRefOptions {
+  /**
+   * Also count-check a ref whose snapshot population was a SINGLETON.
+   *
+   * Off by default because the snapshot's count and the locator's count are
+   * not measured the same way (see resolveRefViaAxMap), so on a singleton —
+   * where the index is 0 whatever the count — the comparison mostly costs
+   * false rejections.
+   *
+   * The replay runner turns it on, because there the index being 0 is not
+   * reassuring: a look-alike inserted ABOVE the recorded element between the
+   * internal snapshot and the click takes over position 0, and clicking it
+   * would be the silent wrong-element outcome a replay must never produce. A
+   * replay that stops too often is recoverable — the agent finishes live — so
+   * that lane takes the false rejections in exchange.
+   */
+  strictCount?: boolean;
+}
+
 /**
  * Resolve a ref number (produced by `generateSnapshot` with format='ai')
  * back to a live ElementHandle.
@@ -1954,9 +1973,10 @@ export async function generateScopedSnapshot(
 export async function resolveRef(
   page: Page,
   ref: string,
+  options?: ResolveRefOptions,
 ): Promise<ElementHandle | null> {
   // Primary: the a11y refMap from the last generateSnapshot() on this page.
-  const primary = await resolveRefViaAxMap(page, ref);
+  const primary = await resolveRefViaAxMap(page, ref, options?.strictCount === true);
   if (primary) return primary;
 
   // Fallback: DOM snapshots (the RPC fallback + the root-only fallthrough) tag
@@ -2076,6 +2096,7 @@ async function resolveFrameRoot(
 async function resolveRefViaAxMap(
   page: Page,
   ref: string,
+  strictCount = false,
 ): Promise<ElementHandle | null> {
   const wanted = refNumber(ref);
   if (wanted === null) return null;
@@ -2163,11 +2184,14 @@ async function resolveRefViaAxMap(
   //    counts named siblings too and the totals are not comparable at all.
   //  - Entries the snapshot saw only one of are exempt: the index is 0 either
   //    way, so the count buys no safety and only costs false rejections.
+  //    UNLESS the caller asked for strictCount — see ResolveRefOptions. On a
+  //    replay, a singleton is exactly where a look-alike inserted above the
+  //    recorded element hides, and index 0 then names the look-alike.
   //
   // What is left is exactly the case the index is load-bearing for: the
   // snapshot listed several elements with this role+name, and which one a ref
   // means depends on that population still being what it was.
-  if (target.name && target.sameNameTotal > 1 && count !== target.sameNameTotal) {
+  if (target.name && (strictCount || target.sameNameTotal > 1) && count !== target.sameNameTotal) {
     throw new StaleRefError(
       `ref=${ref} is stale — the page now has ${count} ${target.role} element(s) named ` +
         `"${target.name}", not the ${target.sameNameTotal} the last snapshot listed, so the ref ` +

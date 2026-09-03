@@ -267,6 +267,28 @@ describe('applyRunOutcome', () => {
     expect(isQuarantined(second)).toBe(true);
   });
 
+  it('an inconclusive stop moves no counter, so it cannot quarantine a flow', () => {
+    // The page grew a same-name element and the replay refused to guess which
+    // one. That is not evidence the flow is broken, and counting it twice would
+    // retire a working recording because a banner appeared (panel ⑤).
+    const first = applyRunOutcome(trace({ successCount: 3 }), {
+      ok: false,
+      failedStep: 2,
+      inconclusive: true,
+      now: NOW,
+    });
+    const second = applyRunOutcome(first, {
+      ok: false,
+      failedStep: 2,
+      inconclusive: true,
+      now: NOW,
+    });
+    expect(isQuarantined(second)).toBe(false);
+    expect(second.failCount).toBe(0);
+    expect(second.successCount).toBe(3);
+    expect(second.lastUsedAt).toBe(NOW);
+  });
+
   it('does not quarantine when the failures are at different steps', () => {
     const first = applyRunOutcome(trace({ successCount: 3 }), { ok: false, failedStep: 2, now: NOW });
     const second = applyRunOutcome(first, { ok: false, failedStep: 4, now: NOW });

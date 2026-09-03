@@ -401,6 +401,12 @@ export interface RunOutcome {
   ok: boolean;
   /** 1-based step index a failed run stopped at. */
   failedStep?: number;
+  /**
+   * The run stopped because the page changed shape under the recording, not
+   * because the flow is wrong — a same-name population that grew or shrank,
+   * where refusing to guess which element was the correct move.
+   */
+  inconclusive?: boolean;
   now?: number;
 }
 
@@ -414,6 +420,13 @@ export interface RunOutcome {
  */
 export function applyRunOutcome(trace: TraceRecord, outcome: RunOutcome): TraceRecord {
   const now = outcome.now ?? Date.now();
+  // An inconclusive stop is not evidence either way, so it moves no counter but
+  // the clock. Counting it as a failure would let a page that merely sprouted a
+  // second "Save" quarantine a working flow on its second try and drop it out
+  // of the hint pipe for good — a permanent demotion bought by a banner.
+  if (!outcome.ok && outcome.inconclusive === true) {
+    return { ...trace, lastUsedAt: now };
+  }
   if (outcome.ok) {
     return {
       ...trace,

@@ -955,6 +955,7 @@ export function registerBrowserRpc(
     const trace = await actionCache.stats(workspaceId, name, {
       ok: params['ok'] === true,
       ...(failedStep !== undefined && { failedStep }),
+      ...(params['inconclusive'] === true && { inconclusive: true }),
     });
     // Usage for the promoted store rides on the stats call because it is the
     // one point EVERY replay passes through, whether the trace came from the

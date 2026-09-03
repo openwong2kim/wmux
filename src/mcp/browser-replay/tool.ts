@@ -407,6 +407,7 @@ export function createReplayToolCatalog(deps: BrowserToolDeps) {
       name,
       ok: result.ok,
       ...(result.failedStep !== undefined && { failedStep: result.failedStep }),
+      ...(result.inconclusive === true && { inconclusive: true }),
     }).catch(() => {
       /* statistics are an optimization for the hint pipe; never fail a run on them */
     });
