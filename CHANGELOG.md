@@ -1,5 +1,176 @@
 ## [Unreleased]
 
+## [3.50.1] — 2026-09-03
+
+### Changed
+
+- A replay whose same-name population merely changed SIZE no longer stops when
+  the recorded element can be positively identified by its container, which
+  turns some of the previous refusals back into successful runs. (#1185)
+
+- **`browser_repl` snapshots return a diff again, with the refs still
+  complete.** A `browser.snapshot()` or `browser.smart_snapshot()` inside a
+  script used to be forced to render the whole tree, because the script's
+  `refs[]` was parsed out of the returned text and a diff names only what
+  moved — so an act-then-verify loop paid for a full listing on every
+  iteration (a Node.js API page cost about 78 KB and 7–8 seconds each time,
+  where the direct tool answered with a few lines). The handler now hands the
+  bridge the complete listing alongside whatever it returned, so the script's
+  `text` is the ordinary diff-or-full the direct tools give — its first line
+  still says `[snapshot: full]` or `[snapshot: diff …]` — while `refs[]` keeps
+  every element on the page. `full: true` still forces the whole tree, and the
+  entries are unchanged: `ref` is a string for `snapshot`, a number for
+  `smart_snapshot`. (#1188)
+
+- **A touch preset now dispatches touch.** Under `browser_emulate {device:
+  "Pixel 7"}` the page reported a touchscreen — `maxTouchPoints: 5`,
+  `(pointer: coarse)` — and then received mouse input, so anything gated on
+  `touchstart`, or reading `pointerdown.pointerType`, saw a desktop pressing
+  the button. `browser_click` now sends a real `touchStart`/`touchEnd` pair on
+  the session the preset is already held open on, and `browser_drag` sends
+  `touchStart` → moves → `touchEnd`. Measured on the same fixture and click:
+  before, `pointerdown: mouse` and no touch events at all; after,
+  `pointerdown: touch`, `touchstart`, `touchend`, then the `click` Chrome
+  derives from them, all `isTrusted`. The element is still checked for
+  actionability exactly as a mouse click checks it, and the approach the mouse
+  walks is skipped — a touchscreen has no pointer resting on the page between
+  gestures. Two gestures a touchscreen does not have stay on the mouse and say
+  so in the result: a double click, and `browser_hover`, which would otherwise
+  turn every hover-revealed menu into a silent failure. Nothing changes without
+  a device preset. (#1190)
+
+### Fixed
+
+- **A replay stops when the number of same-name elements changed, instead of
+  clicking by position anyway.** A step recorded against the *first*
+  `button "Submit order"` on a page used to replay against whatever sat at that
+  position later, on the reasoning that the first element cannot have been
+  displaced. It can: a look-alike with the same accessible name inserted above
+  the real one takes over position one, and the run clicked the look-alike,
+  never fired the real submit, and still reported the step as `ok`. A live
+  population whose size differs from the recorded one now stops the run at that
+  step — at every position, the first included — saying which way the count
+  moved. The count is also re-checked against the live page at the moment of
+  acting, so an element that appears between the internal snapshot and the click
+  is caught too. A stop of this kind no longer counts toward the failure streak
+  that retires a flow, since a page growing a banner says nothing about whether
+  the recording is still good. The page is left where it stopped, so the
+  recovery is unchanged: take a snapshot, finish the flow live, and `save` under
+  the same name to re-record the healed path. A change that leaves the count
+  unchanged — one look-alike added above, one element removed below — is still
+  not detectable from what a recording stores. (#1179)
+
+- **`browser_repl` snapshot refs are the type their tool wants.** A snapshot
+  inside a script handed back `refs[i].ref` as a number, but every browser tool
+  types `ref` as a string — so the tool's own documented usage, passing
+  `refs[i].ref` as the arg named `refs[i].param`, was rejected as "expected
+  string, received number" before the click ever happened. Refs now come back
+  as strings where the argument is `ref`, and stay numbers for `smartRef`. Note
+  for existing snippets: a snapshot-lane `refs[i].ref` is now a string, so a
+  comparison written as `r.ref === 3` has to compare `'3'`. (#1180)
+
+- **`browser_repl` shows the hints its calls carried.** A page with a promoted
+  flow advertises it to a direct `browser_navigate` call — `[skill]
+  fixture-submit — proven 4-step flow` — but the same call inside a script said
+  nothing, exactly where a proven flow saves the most steps. A run now collects
+  those `[replay]`/`[skill]` hints across its calls, dedupes them, and prints a
+  `--- hints ---` block beside `--- calls ---` and `--- console ---`. (#1180)
+
+- **A navigation that carries a Referer no longer contradicts it.** When the
+  agent left one page for another, the Referer header said a link had been
+  followed while Chromium's own `Sec-Fetch-Site: none` said the URL was typed
+  into the address bar — a pair no real browser sends. With a referer to send,
+  the navigation now happens from inside the page, so the whole header set
+  agrees; without one, `page.goto` is used as before. (#1181)
+
+- **`browser_emulate` device presets apply the whole device.** Choosing
+  `iPhone 13` set the User-Agent and viewport and stopped there, leaving no
+  touch points, a desktop pixel ratio and desktop viewport semantics behind the
+  mobile UA. The preset now carries device metrics, screen size, orientation
+  and touch on both backends, holds them across navigations, and `device: null`
+  clears all of it. One limit the result now states outright: a non-Chromium
+  preset such as an iPhone cannot fill `navigator.userAgentData` or the
+  `Sec-CH-UA*` headers, which keep answering as Chromium — a Chrome-based
+  preset gives a consistent mobile identity. (#1181)
+
+- **Humanlike typing holds each key for a human interval.** Keys were pressed
+  and released within a millisecond; the dwell is now drawn from the same
+  log-normal rhythm as the inter-key delay (median 70 ms). (#1181)
+
+- **`wmux --help` now shows `mcp register --profile`.** The `core` profile
+  shipped in 3.50.0 but the help text still listed `mcp register` bare, so the
+  flag could only be found in the changelog. The row names it and says what
+  `full` and `core` mean. (#1184)
+
+- `browser_replay` now records the accessible name of the nearest named
+  container each element sat in, and checks it before acting. A flow whose
+  page was restructured underneath it — a look-alike inserted above the
+  recorded element and another removed below, which leaves the same-name count
+  unchanged and used to resolve silently by position — now stops at that step
+  and hands the page back live instead of clicking a stranger. Recordings made
+  before this release keep replaying under the previous rules. (#1185)
+
+- **A device preset now holds `navigator.platform`.** Under `browser_emulate
+  {device: "Pixel 7"}` the page answered `MacIntel` from the next tool call
+  onward, while its User-Agent, Client Hints, pixel ratio and touch points all
+  said Android. Of everything a preset installs, the platform is the one value
+  Chromium keeps as a page-wide setting rather than as state owned by the
+  session that wrote it — and every debugger session that detaches from the
+  page clears that setting, including a session that never set a platform of
+  its own. wmux opens and closes short-lived sessions on the page while
+  resolving which tab a tool is talking to, so the preset was being undone by
+  wmux's own bookkeeping. The override is now re-sent once the page has been
+  resolved, so `navigator.platform` agrees with the rest of the identity across
+  navigations and tool calls, and `device: null` still returns the host's.
+  (#1186)
+
+- **`wmux mcp check` now says when it is speaking for an isolated instance.**
+  An instance launched with `WMUX_DATA_SUFFIX` never registers itself in the
+  agent configs, but `check` still listed `~/.claude.json`, `~/.codex/config.toml`
+  and `~/.gemini/settings.json` with no hint of that — so the production entry
+  read like this instance's own, which is exactly the confusion that made the
+  original hijack hard to spot. `check` now prints a heading naming the suffix
+  and saying the rows below belong to your production wmux (`--json` gains a
+  matching `isolated` field), and the `register` / `unregister` warnings read
+  the shared `dataSuffix()` helper instead of the env var directly, so every
+  subcommand agrees with the rest of the suffix-aware paths. (#1187)
+
+- **A replay can now tell two identical siblings apart by the attribute the
+  page gives them.** The neighbourhood check added in the previous release
+  abstains on the one shape it was built around: two elements with the same
+  role, the same accessible name, and the same container are under the same
+  neighbourhood, so it has nothing to say about them and the count rules decide
+  by position. Real pages almost always distinguish those siblings on the
+  element itself — a `data-testid`, an `id`, a `name`, or an `aria-label` — and
+  a recorded step now carries whichever of those the element had, as a second
+  verify-only signal. Where the neighbourhood gives no verdict, the sibling
+  carrying the recorded attribute wins if it is unique and still at the
+  recorded position; if it moved, or if the population carries attributes but
+  not that one, the run stops and hands the page back live instead of clicking
+  the twin. Nothing is ever *located* by the attribute, and a population that
+  carries none at all abstains exactly as before, so no existing flow changes
+  behaviour. Both recording lanes — `browser_snapshot` and
+  `browser_smart_snapshot` — mint the value from the same pass, so a flow
+  recorded on one replays against the other. Traces recorded before this
+  release replay unchanged. The irreducible case is now genuinely irreducible:
+  identical siblings that carry no identifying attribute at all.
+
+- **A flow recorded from `browser_smart_snapshot` no longer stops on a page
+  that has not changed.** A replay refuses to act when the number of
+  same-named elements differs from the recording, which is right — but the two
+  snapshot tools do not walk a page the same way: `browser_snapshot`'s listing
+  is depth-capped and trimmed when the output runs long, while
+  `browser_smart_snapshot`'s is neither. A step recorded from the smart
+  listing therefore had its count compared against a *different* measurement
+  at replay, and could stop on an untouched page, reporting a population
+  change that had never happened. Each step now records which listing its
+  numbers came from, and a disagreement is re-read from that same listing
+  before it is treated as a change — so a real change still stops the run, and
+  a difference that is only between the two ways of counting no longer does.
+  The extra reading happens only on a disagreement, so ordinary replays are
+  unaffected, and traces recorded before this release keep the behaviour they
+  had. (#1191)
+
 ## [3.50.0] — 2026-09-02
 
 ### Added
