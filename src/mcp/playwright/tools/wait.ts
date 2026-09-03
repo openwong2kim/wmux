@@ -7,6 +7,7 @@ import { rpcEvaluator } from '../page-eval';
 import { waitForIsolated } from '../isolated-eval';
 import { allowScopedRpcFallback, type BrowserToolDeps } from '../browserScope';
 import { describeToolError } from '../toolError';
+import { recordAction } from '../../browser-replay/actionRing';
 import {
   defineWmuxTool,
   registerWmuxTools,
@@ -144,6 +145,28 @@ export function createWaitToolCatalog(deps: BrowserToolDeps) {
     profiles: ['full'],
     invoke: async ({ url, selector, text, fn, timeout, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
       const resolvedTimeout = timeout ?? 30000;
+      // A wait is part of the flow: a replay that skips it acts on the page
+      // before the thing the agent waited for has happened (#1193). Recorded
+      // on success only, like every other step, and only on the Playwright
+      // lane — the RPC lane has no page to key a urlKey off. A `fn` wait is
+      // not recorded at all: the cache file is untrusted input by the time a
+      // replay reads it, so a stored script would never be evaluated, and a
+      // hole would refuse the whole flow for a step the runner's own settle
+      // covers in practice. No page and no shape are stamped: a wait touches
+      // no element, so it must not become the trace's shape baseline either.
+      const record = (page: { url?: () => string }): void => {
+        if (fn && !url && !selector && !text) return;
+        const args: Record<string, string | number> = { timeout: resolvedTimeout };
+        if (url) args.urlGlob = url;
+        else if (selector) args.selector = selector;
+        else if (text) args.text = text;
+        // Never lets a recording problem fail the wait that just succeeded.
+        try {
+          recordAction(deps, { scope, tool: 'browser_wait', page: null, url: page.url?.() ?? '', args });
+        } catch {
+          /* recording is observation only */
+        }
+      };
 
       try {
         const page = await engine.getPageForScope(scope).catch(allowScopedRpcFallback);
@@ -240,6 +263,7 @@ export function createWaitToolCatalog(deps: BrowserToolDeps) {
         // Priority: url > selector > text > fn > networkidle
         if (url) {
           await page.waitForURL(url, { timeout: resolvedTimeout });
+          record(page);
           return {
             content: [{ type: 'text' as const, text: `Wait completed: URL matched "${url}"` }],
           };
@@ -247,6 +271,7 @@ export function createWaitToolCatalog(deps: BrowserToolDeps) {
 
         if (selector) {
           await page.waitForSelector(selector, { timeout: resolvedTimeout });
+          record(page);
           return {
             content: [{ type: 'text' as const, text: `Wait completed: selector "${selector}" found` }],
           };
@@ -263,6 +288,7 @@ export function createWaitToolCatalog(deps: BrowserToolDeps) {
             text,
             resolvedTimeout,
           );
+          record(page);
           return {
             content: [{ type: 'text' as const, text: `Wait completed: text "${text}" found` }],
           };
@@ -279,6 +305,7 @@ export function createWaitToolCatalog(deps: BrowserToolDeps) {
           // (a DOM node) still satisfies the wait.
           const expression = isFunctionExpression(fn) ? `!!((${fn})())` : `!!(${fn})`;
           await waitForIsolated(page, expression, undefined, resolvedTimeout);
+          record(page);
           const warningPrefix = warnings.length > 0
             ? `⚠ Security warning: fn contains potentially dangerous patterns: ${warnings.join(', ')}.\n`
             : '';
@@ -289,6 +316,7 @@ export function createWaitToolCatalog(deps: BrowserToolDeps) {
 
         // Default: wait for network idle
         await page.waitForLoadState('networkidle', { timeout: resolvedTimeout });
+        record(page);
         return {
           content: [{ type: 'text' as const, text: `Wait completed: network idle` }],
         };

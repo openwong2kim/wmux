@@ -38,6 +38,7 @@ export const REPLAYABLE_TOOLS = [
   'browser_select',
   'browser_scroll_into_view',
   'browser_scroll',
+  'browser_wait',
 ] as const;
 
 export type ReplayableTool = (typeof REPLAYABLE_TOOLS)[number];

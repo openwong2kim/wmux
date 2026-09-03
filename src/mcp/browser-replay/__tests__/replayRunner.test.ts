@@ -33,6 +33,11 @@ vi.mock('../../playwright/snapshot', () => ({
 let smartCount: number | null = null;
 const smartCountCalls: Array<[string, string]> = [];
 
+const isolatedWaits: string[] = [];
+vi.mock('../../playwright/isolated-eval', () => ({
+  waitForIsolated: async (_page: unknown, _fn: unknown, arg: string) => { isolatedWaits.push(arg); },
+}));
+
 vi.mock('../../playwright/dom-intelligence', () => ({
   countSmartNamedPopulation: async (_page: unknown, role: string, name: string) => {
     smartCountCalls.push([role, name]);
@@ -46,11 +51,23 @@ import { refMapShapeHash, type TraceRecord, type TraceStep } from '../../../shar
 const clicks: string[] = [];
 const pressed: string[] = [];
 const goneTo: string[] = [];
+/** Every page-level wait the runner asked for, in order. */
+const waits: string[] = [];
+const navListeners = new Set<(frame: unknown) => void>();
+/** Simulate the main frame navigating (a Turbo click, a pushState). */
+function fireNavigation(): void {
+  for (const fn of navListeners) fn({ parentFrame: () => null });
+}
 
 const page = {
   url: () => 'https://example.com/app',
   goto: async (url: string) => { goneTo.push(url); },
   keyboard: { press: async (key: string) => { pressed.push(key); } },
+  waitForLoadState: async (state: string) => { waits.push(`load:${state}`); },
+  on: (_event: string, fn: (frame: unknown) => void) => { navListeners.add(fn); },
+  off: (_event: string, fn: (frame: unknown) => void) => { navListeners.delete(fn); },
+  waitForURL: async (url: string) => { waits.push(`url:${url}`); },
+  waitForSelector: async (selector: string) => { waits.push(`selector:${selector}`); },
   locator: () => ({ count: async () => 0, elementHandle: async () => null }),
   evaluate: async () => undefined,
   mouse: {
@@ -104,6 +121,9 @@ beforeEach(() => {
   clicks.length = 0;
   pressed.length = 0;
   goneTo.length = 0;
+  waits.length = 0;
+  isolatedWaits.length = 0;
+  navListeners.clear();
   resolved.clear();
   snapshotText = 'button "Sign in" [ref=1]';
   smartCount = null;
@@ -907,5 +927,98 @@ describe('replayTrace — flow control', () => {
     const result = await replayTrace(page, trace([refStep()]), undefined);
     expect(result.ok).toBe(false);
     expect(result.steps[0].detail).toContain('not visible');
+  });
+});
+
+describe('settling after a step (#1193)', () => {
+  it('does not wait after a step that did not navigate', async () => {
+    const result = await replayTrace(page, trace([refStep(), refStep()]), undefined);
+    expect(result.ok).toBe(true);
+    expect(waits).toEqual([]);
+    expect(navListeners.size).toBe(0);
+  });
+
+  it('after a step that navigated, waits until two consecutive page shapes agree before the next step', async () => {
+    const mod = await import('../../playwright/snapshot');
+    const destination: FakeRefEntry[] = [
+      { role: 'link', name: 'Closed', sameNameIndex: 0, sameNameTotal: 1, frameKey: '', ref: 2 },
+    ];
+    // Snapshot 1 (pre-flight), then the click navigates; the page is still
+    // the OLD document on the next read and becomes the destination only
+    // afterwards — which is exactly the window #1193 fell into.
+    let reads = 0;
+    vi.spyOn(mod, 'generateSnapshot').mockImplementation(async () => {
+      reads++;
+      if (reads >= 3) refEntries = destination;
+      return '';
+    });
+    resolved.add('2');
+    const clickSignIn = refStep();
+    const clickClosed = refStep({
+      axis: { kind: 'ref', role: 'link', name: 'Closed', sameNameIndex: 0, sameNameTotal: 1, frameKey: '' },
+    });
+    const mockedResolve = vi.spyOn(mod, 'resolveRef').mockImplementation(async (_p, ref) => {
+      if (ref === '1') fireNavigation();
+      return resolved.has(ref) ? ({ click: async () => undefined } as never) : null;
+    });
+
+    const result = await replayTrace(page, trace([clickSignIn, clickClosed]), undefined);
+
+    expect(result.steps.map((s) => s.ok)).toEqual([true, true]);
+    expect(waits).toEqual(['load:domcontentloaded']);
+    expect(navListeners.size).toBe(0);
+    // pre-flight 1 + settle reads until two agree (old, new, new) = 4, with
+    // no extra re-charge dump after the settle.
+    expect(reads).toBe(4);
+    mockedResolve.mockRestore();
+  });
+
+  it('replays a recorded browser_wait by its condition, text through the isolated poll', async () => {
+    const waitText: TraceStep = { tool: 'browser_wait', axis: { kind: 'none' }, args: { text: 'Closed', timeout: 5000 } };
+    const waitUrl: TraceStep = { tool: 'browser_wait', axis: { kind: 'none' }, args: { urlGlob: '**/pulls**' } };
+    const waitIdle: TraceStep = { tool: 'browser_wait', axis: { kind: 'none' }, args: {} };
+
+    const result = await replayTrace(page, trace([waitText, waitUrl, waitIdle]), undefined);
+
+    expect(result.ok).toBe(true);
+    expect(result.steps.map((s) => s.detail)).toEqual([
+      'waited for text "Closed"',
+      'waited for URL "**/pulls**"',
+      'waited for network idle',
+    ]);
+    expect(isolatedWaits).toEqual(['Closed']);
+    expect(waits).toContain('url:**/pulls**');
+  });
+
+  it('clamps a hostile wait timeout from the cache file instead of waiting for ever', async () => {
+    const forever: TraceStep = { tool: 'browser_wait', axis: { kind: 'none' }, args: { urlGlob: '**/x', timeout: 0 } };
+    const huge: TraceStep = { tool: 'browser_wait', axis: { kind: 'none' }, args: { urlGlob: '**/y', timeout: 1e9 } };
+    const timeouts: number[] = [];
+    const waitForURL = async (_url: string, opts: { timeout: number }) => { timeouts.push(opts.timeout); };
+    const result = await replayTrace({ ...(page as object), waitForURL } as never, trace([forever, huge]), undefined);
+    expect(result.ok).toBe(true);
+    expect(timeouts).toEqual([30000, 60000]);
+  });
+});
+
+describe('navigation watch (#1193)', () => {
+  it('treats a main-frame navigation REQUEST as a navigation, so a slow origin is not missed', async () => {
+    const mod = await import('../../playwright/snapshot');
+    let reads = 0;
+    vi.spyOn(mod, 'generateSnapshot').mockImplementation(async () => { reads++; return ''; });
+    const mockedResolve = vi.spyOn(mod, 'resolveRef').mockImplementation(async (_p, ref) => {
+      if (ref === '1') {
+        for (const fn of navListeners) {
+          (fn as (arg: unknown) => void)({ isNavigationRequest: () => true, frame: () => ({ parentFrame: () => null }) });
+        }
+      }
+      return resolved.has(ref) ? ({ click: async () => undefined } as never) : null;
+    });
+    const result = await replayTrace(page, trace([refStep(), refStep()]), undefined);
+    expect(result.ok).toBe(true);
+    expect(waits).toEqual(['load:domcontentloaded']);
+    // A settle ran: at least two reads after the pre-flight one.
+    expect(reads).toBeGreaterThanOrEqual(3);
+    mockedResolve.mockRestore();
   });
 });

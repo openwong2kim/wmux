@@ -33,6 +33,7 @@ import {
   registerWaitTools,
 } from '../tools/wait';
 import type { WmuxToolProfile } from '../../toolCatalog';
+import { ActionRing } from '../../browser-replay/actionRing';
 import {
   expectCommanderCatalogLockstep,
   expectCoreCatalogLockstep,
@@ -289,5 +290,35 @@ describe('browser_wait RPC fallback', () => {
       ['browser.lease.acquire', { workspaceId: 'ws-test', surfaceId: 'surface-1' }],
       ['browser.lease.release', { token: 'lease-1' }],
     ]);
+  });
+});
+
+describe('browser_wait recording (#1193)', () => {
+  function pageWith(): { url: () => string; waitForURL: () => Promise<void>; waitForLoadState: () => Promise<void> } {
+    return { url: () => 'https://example.com/pulls', waitForURL: async () => undefined, waitForLoadState: async () => undefined };
+  }
+
+  it('records a url wait under urlGlob with no page shape, and skips a fn wait', async () => {
+    const actionRing = new ActionRing();
+    const tools = new Map<string, ToolHandler>();
+    registerWaitTools(
+      { registerTool: (name: string, _c: unknown, h: ToolHandler) => { tools.set(name, h); } } as never,
+      { ...browserToolDeps, actionRing } as never,
+      { profile: 'full', context: { principal: { kind: 'unattributed' } } },
+    );
+    getPage.mockResolvedValue(pageWith());
+    const handler = tools.get('browser_wait');
+    if (!handler) throw new Error('browser_wait failed to register');
+
+    await handler({ url: '**/pulls**', timeout: 5000 });
+    await handler({});
+    await handler({ fn: 'true' });
+
+    const steps = actionRing.all();
+    expect(steps.map((a) => a.step.tool)).toEqual(['browser_wait', 'browser_wait']);
+    expect(steps[0].step.args).toEqual({ timeout: 5000, urlGlob: '**/pulls**' });
+    expect(steps[0].step.unrecordable).toBeUndefined();
+    expect(steps[0].urlKey).toBe('https://example.com/pulls');
+    expect(steps[0].surfaceShape).toBe('');
   });
 });
