@@ -8,8 +8,14 @@ import {
   takeOrphanBacklog,
   createWorkTaskReconciler,
   getMissionChannelId,
+  rememberMissionChannel,
+  readLedgerGateInput,
+  formatLedgerTransition,
+  installLedgerChannelEmitter,
   setTaskLedgerForTests,
 } from '../taskLedgerHost';
+import { overrideLedgerGateForTests } from '../deckLedgerGateStore';
+import { raiseDecision } from '../deckDecisionStore';
 import type { CoalescerInput } from '../CommanderEventCoalescer';
 
 let dir: string;
@@ -23,6 +29,7 @@ beforeEach(async () => {
 });
 afterEach(() => {
   setTaskLedgerForTests(null);
+  overrideLedgerGateForTests(null);
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
@@ -100,5 +107,63 @@ describe('createWorkTaskReconciler', () => {
     clock = 2_000;
     await reconcile();
     expect(calls).toBe(4);
+  });
+});
+
+describe('readLedgerGateInput (step 4)', () => {
+  it('reports disabled with no read while the flag is off', () => {
+    overrideLedgerGateForTests(false);
+    expect(readLedgerGateInput('ws-parent')).toEqual({ enabled: false, openTasks: null });
+  });
+
+  it('lists only this owner\'s open tasks when on, and null when the ledger throws', async () => {
+    overrideLedgerGateForTests(true);
+    await ledger.register({ id: 'wtask-2', taskWorkspaceId: 'ws-t2', ownerWorkspaceId: 'ws-other', title: 'not mine' });
+    await ledger.update({ id: 'wtask-1', status: 'input_required', actor: { kind: 'worker', workspaceId: 'ws-task' }, expectedRev: 1 });
+    expect(readLedgerGateInput('ws-parent')).toEqual({
+      enabled: true,
+      openTasks: [{ id: 'wtask-1', title: 'lane', status: 'input_required' }],
+    });
+    const broken = { list: () => { throw new Error('disk'); } } as unknown as TaskLedger;
+    expect(readLedgerGateInput('ws-parent', broken)).toEqual({ enabled: true, openTasks: null });
+  });
+
+  it('deck_ask_decision context is prefixed with the open-task list while the gate is on', async () => {
+    overrideLedgerGateForTests(true);
+    const d = await raiseDecision('ws-parent', { question: 'merge?', context: 'details' }, dir);
+    expect(d?.context).toBe('[open tasks in the ledger: wtask-1 "lane" (working)]\ndetails');
+    expect(d?.question).toBe('merge?');
+    overrideLedgerGateForTests(false);
+    const off = await raiseDecision('ws-parent', { question: 'merge?', context: 'details' }, dir);
+    expect(off?.context).toBe('details');
+  });
+});
+
+describe('ledger → mission channel emitter (step 5)', () => {
+  it('formats one line per transition and posts it to the task\'s mission channel as the owner', async () => {
+    const posts: Array<{ channelId: string; ownerWorkspaceId: string; text: string; clientMsgId: string }> = [];
+    const dispose = installLedgerChannelEmitter({ post: async (p) => { posts.push(p); return { ok: true }; } });
+    rememberMissionChannel('wtask-1', 'ch-1');
+    await ledger.update({ id: 'wtask-1', status: 'review_requested', actor: { kind: 'worker', workspaceId: 'ws-task' }, expectedRev: 1, summary: 'gate  green\nall tests' });
+    // No channel known for this task → skipped, not thrown.
+    await ledger.register({ id: 'wtask-5', taskWorkspaceId: 'ws-t5', ownerWorkspaceId: 'ws-parent', title: 'quiet' });
+    dispose();
+    await ledger.update({ id: 'wtask-1', status: 'working', actor: { kind: 'brain', workspaceId: 'ws-parent' }, expectedRev: 2 });
+    expect(posts).toEqual([{
+      channelId: 'ch-1',
+      ownerWorkspaceId: 'ws-parent',
+      text: '[ledger] wtask-1 working→review_requested worker@ws-task gate green all tests',
+      clientMsgId: 'ledger:wtask-1:2',
+    }]);
+  });
+
+  it('formatLedgerTransition renders a first registration as new→working', () => {
+    const line = formatLedgerTransition({
+      entry: { id: 'wtask-9', rev: 1 } as never,
+      from: null,
+      to: 'working',
+      by: { kind: 'system', workspaceId: 'daemon' },
+    });
+    expect(line).toBe('[ledger] wtask-9 new→working system@daemon');
   });
 });

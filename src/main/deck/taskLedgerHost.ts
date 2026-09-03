@@ -16,8 +16,10 @@
 // when a brain boots for it.
 
 import { getWmuxDir } from '../../daemon/config';
-import { TaskLedger } from '../../daemon/ledger/TaskLedger';
+import { TaskLedger, type LedgerTransition } from '../../daemon/ledger/TaskLedger';
 import type { CoalescerInput } from './CommanderEventCoalescer';
+import { loadLedgerGateEnabled } from './deckLedgerGateStore';
+import type { StopGateLedgerInput } from './stopGate';
 
 let ledger: TaskLedger | null = null;
 
@@ -96,6 +98,66 @@ export function takeOrphanBacklog(workspaceId: string, instance?: TaskLedger): C
     if (isCoalescerInput(o.payload)) out.push(o.payload);
   }
   return out;
+}
+
+// ── Stop gate + decision prompt inputs (lane F step 4) ──────────────────────
+
+/** The ledger's view for one Stop of `workspaceId`'s brain. `openTasks` is
+ *  null when the ledger threw — the gate then falls back to the snapshot
+ *  inference. Never throws. */
+export function readLedgerGateInput(workspaceId: string, instance?: TaskLedger): StopGateLedgerInput {
+  let enabled = false;
+  try {
+    enabled = loadLedgerGateEnabled();
+  } catch {
+    enabled = false;
+  }
+  if (!enabled) return { enabled: false, openTasks: null };
+  try {
+    const l = instance ?? getTaskLedger();
+    return {
+      enabled: true,
+      openTasks: l
+        .list({ ownerWorkspaceId: workspaceId, openOnly: true })
+        .map((e) => ({ id: e.id, title: e.title, status: e.status })),
+    };
+  } catch {
+    return { enabled: true, openTasks: null };
+  }
+}
+
+// ── mission-channel emitter (lane F step 5) ─────────────────────────────────
+
+/** `[ledger] <taskId> <from>→<to> <by> <summary?>` — one line per transition. */
+export function formatLedgerTransition(t: LedgerTransition): string {
+  const by = `${t.by.kind}@${t.by.workspaceId}`;
+  const summary = t.summary ? ` ${t.summary.replace(/\s+/g, ' ').trim().slice(0, 500)}` : '';
+  return `[ledger] ${t.entry.id} ${t.from ?? 'new'}→${t.to} ${by}${summary}`;
+}
+
+export interface LedgerChannelPort {
+  /** Post `text` to `channelId` as the owner workspace (the mission channel's
+   *  creator). Resolves to the daemon's envelope; rejections are swallowed. */
+  post: (input: { channelId: string; ownerWorkspaceId: string; text: string; clientMsgId: string }) => Promise<unknown>;
+}
+
+/** Subscribe the hosted ledger to a mission-channel poster. Every transition
+ *  whose task has a known mission channel is posted there; a task with no
+ *  channel yet (not reconciled) is skipped. Returns the unsubscribe. */
+export function installLedgerChannelEmitter(port: LedgerChannelPort, instance?: TaskLedger): () => void {
+  const l = instance ?? getTaskLedger();
+  return l.onTransition((t) => {
+    const channelId = getMissionChannelId(t.entry.id);
+    if (!channelId) return;
+    void port
+      .post({
+        channelId,
+        ownerWorkspaceId: t.entry.ownerWorkspaceId,
+        text: formatLedgerTransition(t),
+        clientMsgId: `ledger:${t.entry.id}:${t.entry.rev}`,
+      })
+      .catch(() => undefined);
+  });
 }
 
 // ── reconcile with WorkTask (the identity source) ───────────────────────────

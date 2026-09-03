@@ -56,6 +56,8 @@ import {
   routeWorkerEventToOwner,
   takeOrphanBacklog,
   createWorkTaskReconciler,
+  readLedgerGateInput,
+  installLedgerChannelEmitter,
 } from '../../deck/taskLedgerHost';
 import { createGlobalTurnGate, type GlobalTurnGate } from '../../deck/globalTurnGate';
 import { loadDeckHeartbeat } from '../../deck/deckHeartbeatStore';
@@ -342,7 +344,14 @@ export function registerDeckHandler(
                 // this exact state, re-blocking on it next turn only re-buys
                 // the same refusal run.
                 suppressedFingerprint: suppressedGateFingerprint(workspaceId),
+                // Lane F: open ledger tasks hold the turn while
+                // deck.ledgerGate is on (default off); a read failure falls
+                // back to the snapshot inference above.
+                ledger: readLedgerGateInput(workspaceId),
               });
+              if (!verdict.block && verdict.ledgerReleased) {
+                console.warn(`[deck] ledger_gate_released workspace=${workspaceId} after ${consecutiveBlocks} consecutive blocks`);
+              }
               // Record which panes are holding the gate so input.rpc can refuse
               // session-terminating input aimed at them (#733). The list comes
               // off the verdict, never off the snapshot: an active-work hold on
@@ -1451,6 +1460,22 @@ export function registerDeckHandler(
       return client.rpc('task.mission.list', { verifiedWorkspaceId: owner });
     },
   });
+  // Lane F step 5: every ledger transition is posted to the task's mission
+  // channel as the owner workspace, so the channel transcript and the ledger
+  // never disagree about what happened.
+  const disposeLedgerEmitter = installLedgerChannelEmitter({
+    post: async ({ channelId, ownerWorkspaceId, text, clientMsgId }) => {
+      const client = opts.getDaemonClient?.() ?? null;
+      if (!client) return null;
+      return client.rpc('a2a.channel.post', {
+        channelId,
+        sender: { workspaceId: ownerWorkspaceId, memberId: ownerWorkspaceId },
+        text,
+        verifiedWorkspaceId: ownerWorkspaceId,
+        clientMsgId,
+      });
+    },
+  });
   coalescer = new CommanderEventCoalescer({
     runTurn: (workspaceId, prompt) => runTurnForWorkspace(prompt, workspaceId),
     // Lane F: worker events parked while this workspace had no brain.
@@ -2520,6 +2545,7 @@ export function registerDeckHandler(
     clearTimeout(reconcileTimer);
     offBus();
     coalescer?.dispose();
+    disposeLedgerEmitter();
     globalTurnGate.dispose();
     scheduler.stop();
     heartbeat.stop();

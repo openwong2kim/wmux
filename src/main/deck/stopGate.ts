@@ -44,6 +44,23 @@
 //      it — both the caller's job, see stopGateState).
 
 import type { FleetSnapshot, FleetSnapshotPane } from '../../shared/workspaceMirror';
+import type { LedgerStatus } from '../../shared/ledger';
+
+/** One OPEN ledger row owned by the brain being gated (lane F). */
+export interface StopGateLedgerTask {
+  id: string;
+  title: string;
+  status: LedgerStatus;
+}
+
+/** The ledger's view for one Stop (lane F, `deck.ledgerGate`). `openTasks`
+ *  is null when the ledger could not be read — the gate then falls back to
+ *  today's snapshot inference (fail-open toward the shipped behaviour, never
+ *  toward a wedge). */
+export interface StopGateLedgerInput {
+  enabled: boolean;
+  openTasks: readonly StopGateLedgerTask[] | null;
+}
 
 /** Default ceiling on consecutive refusals for one turn. */
 export const DEFAULT_MAX_CONSECUTIVE_BLOCKS = 3;
@@ -85,6 +102,9 @@ export type StopGateVerdict =
        * of refusals on the next turn. Absent on every other allow.
        */
       cappedOutFingerprint?: string;
+      /** Lane F: this allow ended a run of LEDGER-held refusals at the cap —
+       *  the caller logs `ledger_gate_released`. */
+      ledgerReleased?: true;
     }
   /**
    * `outstandingPtyIds` is the set of panes this refusal is actually about, and
@@ -128,13 +148,47 @@ function describePane(pane: FleetSnapshotPane): string {
 function gateFingerprint(
   activeWork: { id: string; updatedAt?: number } | null,
   outstanding: readonly FleetSnapshotPane[],
+  openTasks: readonly StopGateLedgerTask[] = [],
 ): string {
   const work = activeWork ? `${activeWork.id}@${activeWork.updatedAt ?? 0}` : '';
   const panes = outstanding
     .map((p) => `${p.ptyId}:${p.agentStatus}`)
     .sort()
     .join(',');
-  return `${work}|${panes}`;
+  const tasks = openTasks
+    .map((t) => `${t.id}:${t.status}`)
+    .sort()
+    .join(',');
+  return tasks.length > 0 ? `${work}|${panes}|${tasks}` : `${work}|${panes}`;
+}
+
+/** Lane F: the ledger's refusal text. One line per open task with the action
+ *  that clears it, plus the same no-kill / no-repeat rules as the pane branch. */
+function describeLedgerHold(openTasks: readonly StopGateLedgerTask[]): string {
+  const lines = openTasks.map((t) => {
+    const hint =
+      t.status === 'review_requested'
+        ? 'the worker claims done — run the gate and complete it, or bounce it back'
+        : t.status === 'input_required'
+          ? 'the worker is blocked — answer it (ledger_list shows its summary) or decide'
+          : 'the worker is still working — check its pane or wait for its report';
+    return `${t.id} "${t.title}" (${t.status}: ${hint})`;
+  });
+  const noun = openTasks.length === 1 ? 'task' : 'tasks';
+  return (
+    `Do not end this turn yet: the task ledger still lists ${openTasks.length} open ${noun} you own — ${lines.join('; ')}. ` +
+    'Read ledger_list for their current rev and summary and drive each one to completed, failed or cancelled. '
+  );
+}
+
+/** The ledger portion of a decision prompt (lane F): prepended to the context
+ *  of deck_ask_decision while the ledger gate is on, so the human sees what
+ *  is still open when the brain asks. Empty when nothing is open. */
+export function describeOpenLedgerTasksForDecision(openTasks: readonly StopGateLedgerTask[]): string {
+  if (openTasks.length === 0) return '';
+  return (
+    `[open tasks in the ledger: ${openTasks.map((t) => `${t.id} "${t.title}" (${t.status})`).join(', ')}]`
+  );
 }
 
 /**
@@ -161,6 +215,9 @@ export function evaluateStopGate(input: {
    *  5). Matching the current state means the gate already gave up on exactly
    *  this hold — stay quiet instead of re-buying the same refusal run. */
   suppressedFingerprint?: string | null;
+  /** Lane F: the task ledger's view (see StopGateLedgerInput). Absent or
+   *  `enabled: false` = the shipped snapshot-inferred gate, unchanged. */
+  ledger?: StopGateLedgerInput;
   /** How many times in a row this turn's Stop has already been refused. */
   consecutiveBlocks: number;
   maxConsecutiveBlocks?: number;
@@ -187,23 +244,55 @@ export function evaluateStopGate(input: {
       ? snapshot.panes.filter((p) => isOutstanding(p.agentStatus))
       : [];
 
-  // Nothing held — no active work, no outstanding panes. The common allow.
-  if (!activeWork && outstanding.length === 0) return { block: false };
+  // Lane F — the ledger path (`deck.ledgerGate`). Open tasks owned by this
+  // brain hold the turn exactly like outstanding panes do, through the SAME
+  // cap (rule 3) and hysteresis (rule 5). A ledger that could not be read
+  // (openTasks null) contributes nothing: that is rule 2 applied to the
+  // ledger — a missing signal cannot prove work, so the snapshot inference
+  // above decides, never a wedge.
+  const openTasks: readonly StopGateLedgerTask[] =
+    input.ledger?.enabled && input.ledger.openTasks ? input.ledger.openTasks : [];
+
+  // Nothing held — no active work, no outstanding panes, no open tasks. The
+  // common allow.
+  if (!activeWork && outstanding.length === 0 && openTasks.length === 0) return { block: false };
 
   // Rule 5: the gate already capped out on exactly this state. Stay quiet
   // until the state changes; the caller's TTL and the next human turn bound
   // how long "quiet" can last.
-  const fingerprint = gateFingerprint(activeWork ?? null, outstanding);
+  const fingerprint = gateFingerprint(activeWork ?? null, outstanding, openTasks);
   if (input.suppressedFingerprint != null && input.suppressedFingerprint === fingerprint) {
     return { block: false };
   }
 
   // Rule 3: the refusal-run cap. The fingerprint travels with this allow so
   // the caller can record what was held on — an allow for exhaustion, not for
-  // completion.
+  // completion. A ledger-held run that caps out is flagged so the caller can
+  // log `ledger_gate_released`.
   const max = input.maxConsecutiveBlocks ?? DEFAULT_MAX_CONSECUTIVE_BLOCKS;
   if (input.consecutiveBlocks >= max) {
-    return { block: false, cappedOutFingerprint: fingerprint };
+    return {
+      block: false,
+      cappedOutFingerprint: fingerprint,
+      ...(openTasks.length > 0 ? { ledgerReleased: true as const } : {}),
+    };
+  }
+
+  // Ledger hold: refuse, naming the open tasks. Outstanding panes (if any)
+  // ride along so input.rpc keeps protecting them (#733); the reason leads
+  // with the ledger because that is the state the brain can actually change.
+  if (openTasks.length > 0) {
+    return {
+      block: true,
+      outstandingPtyIds: outstanding.map((p) => p.ptyId),
+      fingerprint,
+      reason:
+        `${describeLedgerHold(openTasks)}` +
+        (outstanding.length > 0
+          ? `Panes still needing you: ${outstanding.map(describePane).join(', ')}. `
+          : '') +
+        `${NO_KILL_SENTENCE} ${NO_REPEAT_SENTENCE}`,
+    };
   }
 
   // A durable active-work record is stronger than the renderer-derived pane
