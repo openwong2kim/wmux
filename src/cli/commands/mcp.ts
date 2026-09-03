@@ -2,7 +2,7 @@ import * as fs from 'fs';
 import * as net from 'net';
 import * as os from 'os';
 import * as path from 'path';
-import { getMcpBrokerPipeName, getPluginTrustPath } from '../../shared/constants';
+import { dataSuffix, getMcpBrokerPipeName, getPluginTrustPath } from '../../shared/constants';
 import {
   MAX_PLUGIN_NAME_LEN,
   NON_IDENTIFYING_CLIENT_NAMES,
@@ -108,6 +108,41 @@ export function profileArgValue(args: string[]): string | undefined {
   return args[i + 1] ?? '';
 }
 
+/**
+ * #1151 — the single place this CLI decides it is speaking for an ISOLATED
+ * instance. Reads the shared `dataSuffix()` helper rather than the env var, so
+ * it agrees with every other suffix-aware path (socket, auth token, data dir).
+ *
+ * Every agent config this command touches lives at a suffix-BLIND path
+ * (`~/.claude.json`, `~/.codex/config.toml`, `~/.gemini/settings.json`), so
+ * there is no isolated variant to read or write: an isolated instance is always
+ * looking at, or editing, the PRODUCTION entries. `McpRegistrar` (an implicit
+ * boot/Settings action) therefore skips outright; this CLI is an explicit user
+ * action, so it says what it is doing and proceeds. `check` gets the same
+ * sentence as a heading so nobody reads the production rows as this instance's
+ * own registration.
+ *
+ * Returns null when this is the user's daily (unsuffixed) instance.
+ */
+export function isolatedInstanceNotice(action: 'check' | 'register' | 'unregister'): string | null {
+  const suffix = dataSuffix();
+  if (suffix === '') return null;
+  const head = `WMUX_DATA_SUFFIX=${suffix} is set — this is an isolated instance`;
+  switch (action) {
+    case 'check':
+      return `note: ${head}. It never registers itself in the agent configs, so the ` +
+        'entries below belong to your production wmux, not to this instance. Agents reach ' +
+        `this instance by running with WMUX_DATA_SUFFIX=${suffix}.`;
+    case 'register':
+      return `warning: ${head} — this writes the production agent configs ` +
+        '(~/.claude.json et al.), and the script path it registers may live inside a ' +
+        'disposable checkout';
+    case 'unregister':
+      return `warning: ${head} — this removes the production agent config entries ` +
+        '(~/.claude.json et al.)';
+  }
+}
+
 function formatModified(d: Date | null): string {
   if (!d) return 'does not exist';
   const pad = (n: number) => String(n).padStart(2, '0');
@@ -118,10 +153,17 @@ function formatModified(d: Date | null): string {
 }
 
 function printCheck(statuses: TargetRegStatus[], jsonMode: boolean): void {
+  // #1151 — an isolated instance reads the PRODUCTION configs here (there is no
+  // suffixed variant of ~/.claude.json), so say so before the rows rather than
+  // letting them be read as this instance's own registration.
+  const notice = isolatedInstanceNotice('check');
   if (jsonMode) {
-    console.log(JSON.stringify({ targets: statuses }, null, 2));
+    // Additive field: existing `--json` consumers keep reading `targets`.
+    const isolated = notice === null ? null : { suffix: dataSuffix(), note: notice };
+    console.log(JSON.stringify({ isolated, targets: statuses }, null, 2));
     return;
   }
+  if (notice) console.log(`${notice}\n`);
   for (const s of statuses) {
     const tag = s.verified ? '' : ' (experimental)';
     console.log(`${s.displayName}${tag}:`);
@@ -424,12 +466,11 @@ export async function handleMcp(args: string[], jsonMode: boolean): Promise<void
       // #1151 — explicit user action, so warn rather than skip: the target
       // configs are suffix-blind, so this writes the PRODUCTION entries even
       // when this CLI itself runs inside an isolated instance.
-      if (process.env.WMUX_DATA_SUFFIX) {
-        // stderr in BOTH modes: --json consumers (the most automated callers,
-        // e.g. a CLI run from inside an isolated instance's pane) are exactly
-        // who must see this, and stderr never pollutes the stdout JSON.
-        console.error(`warning: WMUX_DATA_SUFFIX=${process.env.WMUX_DATA_SUFFIX} is set — this writes the production agent configs (~/.claude.json et al.), and the script path it registers may live inside a disposable checkout`);
-      }
+      // stderr in BOTH modes: --json consumers (the most automated callers,
+      // e.g. a CLI run from inside an isolated instance's pane) are exactly
+      // who must see this, and stderr never pollutes the stdout JSON.
+      const registerNotice = isolatedInstanceNotice('register');
+      if (registerNotice) console.error(registerNotice);
       const wmuxScript = await resolveWmuxScript();
       // The wmux MCP script is required; bail if the bundle can't be found.
       if (!wmuxScript) {
@@ -489,11 +530,10 @@ export async function handleMcp(args: string[], jsonMode: boolean): Promise<void
 
     case 'unregister': {
       // #1151 — same warning as `register`: suffix-blind config paths mean
-      // this removes the PRODUCTION entries.
-      if (process.env.WMUX_DATA_SUFFIX) {
-        // stderr in both modes — see the `register` case for why.
-        console.error(`warning: WMUX_DATA_SUFFIX=${process.env.WMUX_DATA_SUFFIX} is set — this removes the production agent config entries (~/.claude.json et al.)`);
-      }
+      // this removes the PRODUCTION entries. stderr in both modes — see the
+      // `register` case for why.
+      const unregisterNotice = isolatedInstanceNotice('unregister');
+      if (unregisterNotice) console.error(unregisterNotice);
       // unregisterTarget propagates write errors — capture per-target (same as
       // register) so one failure neither crashes the CLI nor is swallowed.
       const results = targets.map((t) => {

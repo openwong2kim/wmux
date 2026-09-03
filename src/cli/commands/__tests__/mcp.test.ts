@@ -21,7 +21,12 @@ vi.mock('net', () => ({ connect: connectMock, default: { connect: connectMock } 
 vi.mock('fs');
 
 import * as fs from 'fs';
-import { canConnectBrokerPipe, resolveWmuxScript, selectedProfile } from '../mcp';
+import {
+  canConnectBrokerPipe,
+  isolatedInstanceNotice,
+  resolveWmuxScript,
+  selectedProfile,
+} from '../mcp';
 
 const existsSyncMock = fs.existsSync as unknown as ReturnType<typeof vi.fn>;
 
@@ -189,5 +194,44 @@ describe('selectedProfile — `wmux mcp register --profile`', () => {
     expect(selectedProfile(['register', '--profile', 'cores'])).toBeNull();
     expect(selectedProfile(['register', '--profile', 'commander'])).toBeNull();
     expect(selectedProfile(['register', '--profile'])).toBeNull();
+  });
+});
+
+describe('isolatedInstanceNotice — #1151 isolated instance (WMUX_DATA_SUFFIX)', () => {
+  const saved = process.env.WMUX_DATA_SUFFIX;
+  afterEach(() => {
+    if (saved === undefined) delete process.env.WMUX_DATA_SUFFIX;
+    else process.env.WMUX_DATA_SUFFIX = saved;
+  });
+
+  it('stays silent on the daily (unsuffixed) instance — behavior unchanged', () => {
+    delete process.env.WMUX_DATA_SUFFIX;
+    expect(isolatedInstanceNotice('check')).toBeNull();
+    expect(isolatedInstanceNotice('register')).toBeNull();
+    expect(isolatedInstanceNotice('unregister')).toBeNull();
+  });
+
+  it('treats an empty suffix as unsuffixed (dataSuffix() semantics)', () => {
+    process.env.WMUX_DATA_SUFFIX = '';
+    expect(isolatedInstanceNotice('check')).toBeNull();
+  });
+
+  it('`check` says the instance is isolated and names the suffix', () => {
+    process.env.WMUX_DATA_SUFFIX = '-demo';
+    const notice = isolatedInstanceNotice('check');
+    // The whole point: the rows that follow are the PRODUCTION configs, and an
+    // isolated instance is never the thing registered in them.
+    expect(notice).toContain('isolated instance');
+    expect(notice).toContain('WMUX_DATA_SUFFIX=-demo');
+    expect(notice).toContain('never registers itself');
+  });
+
+  it('`register` / `unregister` warn that the PRODUCTION configs are the target', () => {
+    process.env.WMUX_DATA_SUFFIX = '-demo';
+    // The CLI is an explicit user action, so it proceeds — but it must never do
+    // so silently, because the config paths are suffix-blind.
+    expect(isolatedInstanceNotice('register')).toContain('~/.claude.json');
+    expect(isolatedInstanceNotice('register')).toContain('production agent configs');
+    expect(isolatedInstanceNotice('unregister')).toContain('removes the production');
   });
 });
