@@ -14,6 +14,7 @@ import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import type { CollectedTool } from '../playwright/toolCollector';
 import { isHintBlock } from '../playwright/hintBlock';
 import { redactPasswordParams } from '../playwright/redact';
+import { withSnapshotListingCapture } from '../playwright/snapshotListing';
 import {
   getConnectionScope,
   runInConnectionScope,
@@ -55,7 +56,7 @@ export const BROWSER_REPL_TOOLS: readonly string[] = Object.freeze([
   'dialog',
 ]);
 
-/** Snapshot tools default to `full:true` inside a script — see `shapeResult`. */
+/** Tools whose value carries a parsed `refs[]` — see `shapeResult`. */
 const SNAPSHOT_TOOLS = new Set(['snapshot', 'smart_snapshot']);
 
 /** Argument keys whose values are typed into the page and never shown in the ledger. */
@@ -100,7 +101,11 @@ export interface BridgeValue {
   readonly text: string;
   /** `[browser events]` lines the lease reported alongside this call. */
   readonly events: readonly string[];
-  /** Snapshot tools only: refs parsed from the listing. Empty when the format is not recognized. */
+  /**
+   * Snapshot tools only: every ref the snapshot minted, even when `text` is a
+   * diff that names only a few of them. Empty when the format is not
+   * recognized.
+   */
   readonly refs?: readonly SnapshotRef[];
 }
 
@@ -203,7 +208,17 @@ export interface ShapedResult {
   readonly hints: readonly string[];
 }
 
-export function shapeResult(result: CallToolResult, tool: string): ShapedResult {
+/**
+ * `listing` is the complete snapshot listing the handler published on the side
+ * channel (snapshotListing.ts). It exists so `refs` can stay complete while
+ * `text` is a diff; without one — an unrecognized route, or a tool that is not
+ * a snapshot — the returned text is the only source there is.
+ */
+export function shapeResult(
+  result: CallToolResult,
+  tool: string,
+  listing?: string,
+): ShapedResult {
   const events: string[] = [];
   const hints: string[] = [];
   const body: string[] = [];
@@ -228,7 +243,7 @@ export function shapeResult(result: CallToolResult, tool: string): ShapedResult 
   }
   const text = body.join('\n');
   if (SNAPSHOT_TOOLS.has(tool)) {
-    return { value: { text, events, refs: parseSnapshotRefs(text, tool) }, hints };
+    return { value: { text, events, refs: parseSnapshotRefs(listing ?? text, tool) }, hints };
   }
   return { value: { text, events }, hints };
 }
@@ -283,12 +298,6 @@ export function createBrowserBridge(
     if (options.surfaceId !== undefined && 'surfaceId' in collected.shape && args.surfaceId === undefined) {
       args.surfaceId = options.surfaceId;
     }
-    // A diff is a saving for the model reading it; for code parsing refs it is
-    // a listing with most of the elements missing.
-    if (SNAPSHOT_TOOLS.has(name) && 'full' in collected.shape && args.full === undefined) {
-      args.full = true;
-    }
-
     let validator = validators.get(name);
     if (!validator) {
       validator = z.object(collected.shape);
@@ -307,10 +316,24 @@ export function createBrowserBridge(
     }
 
     const invoke = () => collected.handler(parsed.data as Record<string, unknown>);
-    let result: CallToolResult;
-    try {
+    const scoped = async (): Promise<CallToolResult> => {
       const scope = options.scope ?? getConnectionScope();
-      result = scope ? await runInConnectionScope(scope, invoke) : await invoke();
+      return scope ? await runInConnectionScope(scope, invoke) : await invoke();
+    };
+    let result: CallToolResult;
+    // The script gets the same diff-or-full text a direct call would (its
+    // first line says which), and the refs come from the full listing the
+    // handler publishes alongside it — so `refs.find(...)` still sees every
+    // element without the snapshot being taken in full every time.
+    let listing: string | undefined;
+    try {
+      if (SNAPSHOT_TOOLS.has(name)) {
+        const captured = await withSnapshotListingCapture(scoped);
+        result = captured.result;
+        listing = captured.listing;
+      } else {
+        result = await scoped();
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       return { ok: false, error: `browser.${name}: ${message}`, ledger: ledgerFor(args, 'THREW') };
@@ -318,7 +341,7 @@ export function createBrowserBridge(
     if (result.isError) {
       return { ok: false, error: `browser.${name}: ${errorText(result)}`, ledger: ledgerFor(args, 'FAILED') };
     }
-    const { value, hints } = shapeResult(result, name);
+    const { value, hints } = shapeResult(result, name, listing);
     const eventNote = value.events.length > 0 ? ` · ${value.events.length} event(s)` : '';
     return { ok: true, value, ledger: `${ledgerFor(args, 'ok')}${eventNote}`, hints };
   };

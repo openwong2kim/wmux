@@ -9,6 +9,7 @@ import {
   type ConnectionScope,
 } from '../../connectionScope';
 import { hintBlockMeta } from '../../playwright/hintBlock';
+import { captureSnapshotListing } from '../../playwright/snapshotListing';
 import {
   BROWSER_REPL_TOOLS,
   createBrowserBridge,
@@ -42,8 +43,8 @@ function fail(text: string): CallToolResult {
   return { content: [{ type: 'text' as const, text }], isError: true };
 }
 
-const SNAPSHOT_TEXT = [
-  '[snapshot: full]',
+/** The complete listing a snapshot handler renders from, before diffing. */
+const SNAPSHOT_BODY = [
   '- document "Home"',
   '  - link "Log in" ref="3"',
   '  - button "Search" focused ref="7"',
@@ -51,13 +52,32 @@ const SNAPSHOT_TEXT = [
   '  - StaticText "no ref here"',
 ].join('\n');
 
-const SMART_TEXT = [
+const SNAPSHOT_TEXT = `[snapshot: full]\n${SNAPSHOT_BODY}`;
+
+/** What a repeat call returns: one hunk, naming one of the three refs. */
+const SNAPSHOT_DIFF = [
+  '[snapshot: diff vs previous — unchanged lines omitted; pass full:true for the complete tree]',
+  '@ line 4',
+  '- textbox "Email" ref="9" value="a@b"',
+  '+ textbox "Email" ref="9" value="c@d"',
+].join('\n');
+
+const SMART_BODY = [
   'Interactive elements (2):',
   '  [1] link "Log in"',
   '  [2] button "Search" - primary action',
   '',
   'Page text:',
   'Welcome',
+].join('\n');
+
+const SMART_TEXT = `[snapshot: full]\n${SMART_BODY}`;
+
+const SMART_DIFF = [
+  '[snapshot: diff vs previous — unchanged lines omitted; pass full:true for the complete tree]',
+  '@ line 6',
+  '- Welcome',
+  '+ Welcome back',
 ].join('\n');
 
 const SMART_DOM_TEXT = ['  [ref=4] a "Log in"', '  [ref=5] input[type=submit] "Go"'].join('\n');
@@ -89,8 +109,27 @@ function harness(overrides: Partial<Record<string, (args: Record<string, unknown
     ok(`Clicked ${String(a.ref ?? a.smartRef)}`),
   );
   add('type', { ref: z.string(), text: z.string() }, async () => ok('Typed'));
-  add('snapshot', { full: z.boolean().optional(), surfaceId: z.string().optional() }, async () => ok(SNAPSHOT_TEXT));
-  add('smart_snapshot', { full: z.boolean().optional() }, async () => ok(SMART_TEXT));
+  // Both snapshot tools behave as the real handlers do: the first call renders
+  // the whole tree, a repeat renders a diff unless full:true forces otherwise,
+  // and either way the complete listing goes out on the side channel.
+  const rendered = new Map<string, number>();
+  const snapshotImpl = (tool: string, body: string, full: string, diff: string) =>
+    async (a: Record<string, unknown>) => {
+      captureSnapshotListing(body);
+      const seen = rendered.get(tool) ?? 0;
+      rendered.set(tool, seen + 1);
+      return ok(a.full === true || seen === 0 ? full : diff);
+    };
+  add(
+    'snapshot',
+    { full: z.boolean().optional(), surfaceId: z.string().optional() },
+    snapshotImpl('snapshot', SNAPSHOT_BODY, SNAPSHOT_TEXT, SNAPSHOT_DIFF),
+  );
+  add(
+    'smart_snapshot',
+    { full: z.boolean().optional() },
+    snapshotImpl('smart_snapshot', SMART_BODY, SMART_TEXT, SMART_DIFF),
+  );
   add('extract_text', { surfaceId: z.string().optional() }, async () => ok('Hello world'));
   add('wait', { ms: z.number().optional() }, async (a) => {
     await new Promise((r) => setTimeout(r, Number(a.ms ?? 0)));
@@ -142,27 +181,70 @@ describe('browser_repl bridge', () => {
     expect(h.calls.map((c) => c.args.surfaceId)).toEqual(['surf-1', 'surf-2', undefined]);
   });
 
-  it('defaults snapshot tools to full:true and parses refs for both listing formats', async () => {
+  const SNAPSHOT_REFS = [
+    { ref: '3', param: 'ref', role: 'link', name: 'Log in' },
+    { ref: '7', param: 'ref', role: 'button', name: 'Search' },
+    { ref: '9', param: 'ref', role: 'textbox', name: 'Email' },
+  ];
+  const SMART_REFS = [
+    { ref: 1, param: 'smartRef', role: 'link', name: 'Log in' },
+    { ref: 2, param: 'smartRef', role: 'button', name: 'Search' },
+  ];
+
+  it('parses refs for both listing formats and leaves `full` to the tool', async () => {
     const h = harness();
     const bridge = createBrowserBridge(h.tools, {});
     const snap = await bridge('snapshot', {});
-    expect(h.calls[0].args.full).toBe(true);
-    expect(snap.ok && snap.value.refs).toEqual([
-      { ref: '3', param: 'ref', role: 'link', name: 'Log in' },
-      { ref: '7', param: 'ref', role: 'button', name: 'Search' },
-      { ref: '9', param: 'ref', role: 'textbox', name: 'Email' },
-    ]);
+    expect(h.calls[0].args.full).toBeUndefined();
+    expect(snap.ok && snap.value.refs).toEqual(SNAPSHOT_REFS);
     const smart = await bridge('smart_snapshot', { full: false });
     expect(h.calls[1].args.full).toBe(false);
-    expect(smart.ok && smart.value.refs).toEqual([
-      { ref: 1, param: 'smartRef', role: 'link', name: 'Log in' },
-      { ref: 2, param: 'smartRef', role: 'button', name: 'Search' },
-    ]);
+    expect(smart.ok && smart.value.refs).toEqual(SMART_REFS);
     expect(parseSnapshotRefs(SMART_DOM_TEXT, 'smart_snapshot')).toEqual([
       { ref: 4, param: 'smartRef', role: 'a', name: 'Log in' },
       { ref: 5, param: 'smartRef', role: 'input', name: 'Go' },
     ]);
     expect(parseSnapshotRefs('garbage', 'snapshot')).toEqual([]);
+  });
+
+  it('lets a repeat snapshot return diff text while refs stay the complete listing', async () => {
+    const h = harness();
+    const bridge = createBrowserBridge(h.tools, {});
+    await bridge('snapshot', {});
+    const second = await bridge('snapshot', {});
+    expect(second.ok && second.value.text.split('\n')[0]).toBe(
+      '[snapshot: diff vs previous — unchanged lines omitted; pass full:true for the complete tree]',
+    );
+    // The diff names one ref; the value still carries all three, unchanged in
+    // shape and in type — that is the whole point of the side channel.
+    expect(second.ok && second.value.text).not.toContain('ref="3"');
+    expect(second.ok && second.value.refs).toEqual(SNAPSHOT_REFS);
+    expect(second.ok && second.value.refs?.every((r) => typeof r.ref === 'string')).toBe(true);
+
+    await bridge('smart_snapshot', {});
+    const smartSecond = await bridge('smart_snapshot', {});
+    expect(smartSecond.ok && smartSecond.value.text.split('\n')[0]).toContain('[snapshot: diff');
+    expect(smartSecond.ok && smartSecond.value.refs).toEqual(SMART_REFS);
+    expect(smartSecond.ok && smartSecond.value.refs?.every((r) => typeof r.ref === 'number')).toBe(
+      true,
+    );
+  });
+
+  it('still forces the full tree when the script asks for full:true', async () => {
+    const h = harness();
+    const bridge = createBrowserBridge(h.tools, {});
+    await bridge('snapshot', {});
+    const forced = await bridge('snapshot', { full: true });
+    expect(h.calls[1].args.full).toBe(true);
+    expect(forced.ok && forced.value.text.split('\n')[0]).toBe('[snapshot: full]');
+    expect(forced.ok && forced.value.refs).toEqual(SNAPSHOT_REFS);
+  });
+
+  it('falls back to the returned text when no handler published a listing', async () => {
+    const h = harness({ snapshot: async () => ok(SNAPSHOT_TEXT) });
+    const bridge = createBrowserBridge(h.tools, {});
+    const snap = await bridge('snapshot', {});
+    expect(snap.ok && snap.value.refs).toEqual(SNAPSHOT_REFS);
   });
 
   it('splits lease event blocks into events, lifts the hints out of the value, keeps the body', () => {
@@ -303,7 +385,7 @@ describe('browser_repl session', () => {
     expect(out.result?.text).toBe('Hello world');
     expect(out.console.text).toBe('clicked 3\n');
     expect(out.ledger).toHaveLength(3);
-    expect(out.ledger[0]).toMatch(/^snapshot\(full:true\) ok \d+ms$/);
+    expect(out.ledger[0]).toMatch(/^snapshot\(\) ok \d+ms$/);
     expect(out.ledger[1]).toMatch(/^click\(ref:"3"\) ok/);
     expect(h.calls.map((c) => c.name)).toEqual(['snapshot', 'click', 'extract_text']);
     expect(out.freshRuntime).toBe(true);

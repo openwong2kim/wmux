@@ -15,6 +15,7 @@ import { buildDomSnapshotExpression } from '../dom-intelligence';
 import { pageEvaluator, rpcEvaluator } from '../page-eval';
 import { formatSnapshotResult } from '../snapshotDiff';
 import { getSnapshotBaseline, setSnapshotBaseline, snapshotSurfaceKey } from '../snapshotCache';
+import { captureSnapshotListing } from '../snapshotListing';
 import { evaluateWithGesture } from '../user-gesture';
 import { evaluateIsolated } from '../isolated-eval';
 import { detectDangerousPatterns } from '../security';
@@ -396,6 +397,10 @@ export function registerInspectionTools(server: McpServer, deps: BrowserToolDeps
         const baseline = full ? null : getSnapshotBaseline(key, attrs, currentUrl);
         const rendered = formatSnapshotResult(baseline?.text ?? null, text);
         setSnapshotBaseline(key, attrs, text, currentUrl);
+        // `text` is the whole tree whatever `rendered` turned out to be; a
+        // caller that needs every ref (browser_repl) reads it from here
+        // instead of forcing full:true (snapshotListing.ts).
+        captureSnapshotListing(text);
 
         return {
           content: [{ type: 'text' as const, text: rendered.text }],

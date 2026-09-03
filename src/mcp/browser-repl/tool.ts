@@ -186,7 +186,7 @@ export function formatBrowserReplOutcome(outcome: BrowserReplRunOutcome): string
 const BROWSER_REPL_DESCRIPTION =
   'Run a JavaScript snippet that drives the browser through many steps in ONE call. ' +
   'Each allowed browser_X tool is `await browser.X(args)` with the same args, resolving to ' +
-  '{text, events} (+ refs:[{ref,param,role,name}] for snapshot/smart_snapshot, full listing by default; ' +
+  '{text, events} (+ refs:[{ref,param,role,name}] for snapshot/smart_snapshot, diff text, all refs; ' +
   'pass refs[i].ref as the arg named refs[i].param). A failed step throws (catchable). ' +
   `Allowed: ${BROWSER_REPL_TOOLS.join(', ')}. ` +
   'Other browser_* tools stay separate calls. Top-level await works; state persists between calls ' +
