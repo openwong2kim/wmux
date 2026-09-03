@@ -22,6 +22,13 @@ type GetWindow = () => BrowserWindow | null;
  * fused `text\r` chunk is read as a multi-line PASTE by TUI editors (Claude
  * Code / ink) and lands the \r as a soft newline instead of submitting.
  * Live-tunable if a TUI still coalesces at 20ms on a slow host.
+ *
+ * The value has not been re-measured against a live Claude pane in this
+ * change, and it no longer needs to be tuned blind: a delay too short for the
+ * host now shows up as `accepted:false` and re-sends the Enter (see the submit
+ * receipt below), instead of silently stranding the prompt in the composer.
+ * The number to raise, if a host is found where the retry keeps firing, is
+ * this one.
  */
 const SUBMIT_ENTER_DELAY_MS = 20;
 
