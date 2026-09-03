@@ -296,6 +296,10 @@ export const FIRST_PARTY_METHODS: ReadonlySet<RpcMethod> = new Set<RpcMethod>([
   // server-derived in the handler and the spawn is approval-gated, so the grant
   // is to ATTEMPT the call; an unverifiable caller still fails closed.
   'task.fanout.start',
+  // Task ledger — ledger_update (every profile, worker-scoped by the ledger's
+  // authz) and ledger_list (commander-only tool, also in the commander lane).
+  'ledger.list',
+  'ledger.update',
   // `company.a2a.*` used to be granted here for the six company_a2a_* tools.
   // Those tools are gone, so the grants went with them (least privilege — a
   // reserved wmux.internal method must not stay reachable by a clientName

@@ -37,6 +37,7 @@ import {
 import { TaskWorktreeManager } from './TaskWorktreeManager';
 import type { TaskWorktreePlan } from './TaskWorktreeManager';
 import type { ProjectConfigState } from '../../shared/wmuxProjectConfig';
+import { getTaskLedger, rememberMissionChannel } from '../deck/taskLedgerHost';
 import {
   FANOUT_TASK_PORT_ENV,
   assignFanoutPorts,
@@ -597,6 +598,21 @@ export class FanOutService {
       }
     } catch (err) {
       return { ...base, unmaterialized: true, error: `task.update threw: ${(err as Error).message}` };
+    }
+    // Lane F: the materialized task enters the ledger as `working` right here,
+    // so the owner's brain, the Stop gate and the workers read one state from
+    // the first second. Best-effort: a ledger write failure never fails the
+    // fan-out (the reconciler mirrors it on the next look).
+    try {
+      rememberMissionChannel(taskId, channelId);
+      await getTaskLedger().register({
+        id: taskId,
+        taskWorkspaceId: workspaceId,
+        ownerWorkspaceId: ctx.verifiedWorkspaceId,
+        title: ctx.title,
+      });
+    } catch {
+      // best-effort — see above.
     }
 
     // ⑤ 채널 invite — 태스크 워크스페이스를 미션 채널 멤버로(실패 비치명 §2 C3).

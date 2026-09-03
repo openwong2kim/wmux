@@ -514,7 +514,12 @@ export type RpcMethod =
   // fixed. Identity rides the same senderPtyId→verifiedWorkspaceId stamp as
   // `task.mission.*`, the spawn is approval-gated, and the call is
   // accept-then-poll (re-send the key to read the state).
-  | 'task.fanout.start';
+  | 'task.fanout.start'
+  // Task ledger (pipe/handlers/ledger.rpc.ts) — the status log behind
+  // src/shared/ledger.ts. Reads are scoped to the caller's own rows (owner or
+  // task workspace); updates are authorized by the ledger's canActorSet.
+  | 'ledger.list'
+  | 'ledger.update';
 
 // All available methods as array (for system.capabilities)
 export const ALL_RPC_METHODS = [
@@ -682,6 +687,8 @@ export const ALL_RPC_METHODS = [
   'task.mission.list',
   'task.mission.update',
   'task.fanout.start',
+  'ledger.list',
+  'ledger.update',
 ] as const satisfies readonly RpcMethod[];
 
 // === RPC Parameter Types ===

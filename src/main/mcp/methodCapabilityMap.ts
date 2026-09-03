@@ -466,6 +466,11 @@ export const METHOD_CAPABILITY: Record<RpcMethod, RequiredCapability> = {
   // decides whether a plugin may reach the surface at all.
   'task.fanout.start': { capability: 'a2a.execute', riskClass: 'a2a' },
 
+  // --- Task ledger (pipe/handlers/ledger.rpc.ts) --- same read/mutation
+  // split as task.mission.*; actor/transition authz is enforced in the ledger.
+  'ledger.list':   { capability: 'a2a.channel.read', riskClass: 'a2a' },
+  'ledger.update': { capability: 'a2a.channel.send', riskClass: 'a2a' },
+
   // --- Company subsystem (substrate-internal team/orchestration). All
   //     internal for v3.0; can be re-classified once spec covers a2a teams.
   'company.create':         { capability: 'wmux.internal' },
