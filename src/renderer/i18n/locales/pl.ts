@@ -47,12 +47,15 @@ export const pl = {
   'sidebar.searchPlaceholder': 'Szukaj obszarów roboczych…',
 
   // Sidebar — Missions (fan-out tasks)
-  'missions.open': 'otwarte',
-  'missions.closed': 'zamknięte',
-  'missions.openChannel': 'Otwórz kanał misji',
-  'missions.openChannelFor': 'Otwórz kanał misji dla {title}',
-  'missions.title': 'Misje ({count})',
+  'missions.open': 'w toku',
+  'missions.closed': 'ukończone',
+  'missions.openChannel': 'Otwórz kanał zadania',
+  'missions.openChannelFor': 'Otwórz kanał zadania dla {title}',
+  'missions.title': 'Zadania ({count})',
   'missions.done': 'Ukończone ({count})',
+  'missions.empty': 'Brak zadań',
+  'missions.doneSummary': 'ostatnie: {title}',
+  'missions.parentless': 'Inne przestrzenie robocze',
 
   // Sidebar — Company mode
   'company.deptRemoveHint': 'Kliknij prawym przyciskiem, aby usunąć',
@@ -710,6 +713,8 @@ export const pl = {
     'Który runtime agenta napędza Command Deck. Mózg terminalowy jest domyślny — steruje Twoim własnym plikiem binarnym claude na Twojej subskrypcji. Hermes (ACP) wymaga zainstalowanego i uwierzytelnionego Hermes Agent CLI na tej maszynie — najpierw uruchom jego własną konfigurację. Obowiązuje od następnej tury mózgu; każdy mózg trzyma własną historię rozmowy.',
   'settings.orchestratorBrainClaude': 'Claude Code (SDK)',
   'settings.orchestratorBrainClaudePty': 'Claude Code (terminal, domyślny) — subskrypcja',
+  'settings.orchestratorBrainClaudePtyNote':
+    'Uruchamia orkiestratora jako terminal: panel pokazuje TUI Claude Code zamiast widoku czatu.',
   'settings.orchestratorBrainHermes': 'Hermes Agent (ACP) — eksperymentalny',
   'settings.orchestratorModel': 'Model orkiestratora',
   'settings.orchestratorModelDesc':
@@ -1720,7 +1725,11 @@ export const pl = {
   'fanout.summaryUnmaterialized': '{count} niezmaterializowanych',
   'fanout.summaryDisconnected': '{count} z rozłączonym kanałem',
   'fanout.taskReady': 'Zadanie "{title}" gotowe',
+  'fanout.tasksReady': 'Gotowych zadań: {count}',
   'fanout.openDiff': 'Otwórz diff',
+  'fanout.openFirstDiff': 'Otwórz pierwszy diff',
+  'fanout.confirmEmpty':
+    'Żadne z tych {n} zadań nie ma promptu. Otworzą się z worktree i bezczynnym panelem agenta, a treść wpiszesz samodzielnie. Uruchomić mimo to?',
 
   // ─── Diff panel: task-output review, hunk adoption, comments, PR/close ────
   'diff.taskNotFound': 'Nie znaleziono zadania — worktree utracony lub uszkodzony',

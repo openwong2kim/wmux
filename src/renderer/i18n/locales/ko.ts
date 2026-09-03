@@ -313,11 +313,13 @@ export const ko = {
   // agent (커맨드 데크 브레인) 설정 — 명칭은 영문 "agent" 고정(번역·한글화
   // 금지, 오너 결정 2026-07-13: "오케스트레이터"는 한글 UI에서 넘침).
   'settings.orchestrator': 'agent',
-  'settings.orchestratorBrain': 'agent 브레인',
+  'settings.orchestratorBrain': 'agent 런타임',
   'settings.orchestratorBrainDesc':
-    '커맨드 데크를 구동할 에이전트 런타임. 기본은 터미널 브레인으로, 본인 claude 바이너리를 구독으로 구동합니다. Hermes(ACP)는 이 PC에 Hermes Agent CLI 설치·인증이 필요합니다(자체 setup 먼저). 다음 agent 턴부터 적용되며 브레인별로 대화 이력이 따로 유지됩니다.',
+    'agent를 구동할 에이전트 런타임. 기본은 터미널 런타임으로, 본인 claude 바이너리를 구독으로 구동합니다. Hermes(ACP)는 이 PC에 Hermes Agent CLI 설치·인증이 필요합니다(자체 setup 먼저). 다음 agent 턴부터 적용되며 런타임별로 대화 이력이 따로 유지됩니다.',
   'settings.orchestratorBrainClaude': 'Claude Code (SDK)',
   'settings.orchestratorBrainClaudePty': 'Claude Code (터미널, 기본) — 구독',
+  'settings.orchestratorBrainClaudePtyNote':
+    'agent가 터미널로 동작합니다 — 패널이 채팅 화면 대신 Claude Code TUI를 표시합니다.',
   'settings.orchestratorBrainHermes': 'Hermes Agent (ACP) — 실험적',
   'settings.orchestratorModel': 'agent 모델',
   'settings.orchestratorModelDesc':
@@ -1184,8 +1186,22 @@ export const ko = {
   'fanout.summaryFailed': '실패 {fail}',
   'fanout.summaryUnmaterialized': '미물질화 {count}',
   'fanout.summaryDisconnected': '채널 미연결 {count}',
+  // 사이드바 태스크 섹션(영문 키 이름은 mission이지만 UI 어휘는 태스크).
+  'missions.open': '실행 중',
+  'missions.closed': '완료',
+  'missions.openChannel': '태스크 채널 열기',
+  'missions.openChannelFor': '{title} 태스크 채널 열기',
+  'missions.title': '태스크 ({count})',
+  'missions.done': '완료 ({count})',
+  'missions.empty': '아직 태스크 없음',
+  'missions.doneSummary': '최근: {title}',
+  'missions.parentless': '다른 워크스페이스',
   'fanout.taskReady': '태스크 "{title}" 준비됨',
+  'fanout.tasksReady': '태스크 {count}개 준비됨',
   'fanout.openDiff': 'diff 열기',
+  'fanout.openFirstDiff': '첫 diff 열기',
+  'fanout.confirmEmpty':
+    '{n}개 태스크 모두 프롬프트가 없습니다. worktree와 빈 에이전트 페인만 열리고 직접 입력해야 합니다. 그래도 시작할까요?',
 
   // ─── Diff panel: task-output review, hunk adoption, comments, PR/close ────
   'diff.taskNotFound': '태스크를 찾을 수 없음 — worktree 소실 또는 손상',

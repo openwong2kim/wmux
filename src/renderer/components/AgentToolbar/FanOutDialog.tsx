@@ -89,6 +89,10 @@ export default function FanOutDialog({ onClose, workspaceId, align = 'left' }: F
   const [roles, setRoles] = useState<string[]>([]);
   const roleBindings = useStore((s) => s.orchestratorRoleBindings);
   const [submitting, setSubmitting] = useState(false);
+  // Two-step launch for the all-empty case (see handleSubmit). Not a modal: the
+  // dialog is already a popover, and a second popover over it would be a worse
+  // place to read a warning than the button you are about to press again.
+  const [confirmEmpty, setConfirmEmpty] = useState(false);
 
   // repo 기본값이 늦게 로드되면 반영.
   useEffect(() => {
@@ -134,6 +138,12 @@ export default function FanOutDialog({ onClose, workspaceId, align = 'left' }: F
   const promptOverCap = effectiveBytes.some((b) => b > FANOUT_PROMPT_MAX_BYTES);
   // 정보성 힌트일 뿐 제출을 막지 않는다(§7 — 환경만 조성도 정당한 사용).
   const promptAllEmpty = effectiveBytes.every((b) => b === 0);
+
+  // Typing a prompt withdraws the question — a stale "are you sure it's empty?"
+  // sitting over a filled form is worse than no warning at all.
+  useEffect(() => {
+    if (!promptAllEmpty) setConfirmEmpty(false);
+  }, [promptAllEmpty]);
 
   // The checkbox is a projection of the agentCmd string, not a second state:
   // typing the flag by hand ticks it, unchecking strips it. That is what keeps
@@ -187,6 +197,14 @@ export default function FanOutDialog({ onClose, workspaceId, align = 'left' }: F
       pushToast({ level: 'warn', message: t('fanout.errRepoRequired') });
       return;
     }
+    // §7 still holds — N environments with no prompt is a legitimate use — but
+    // it is almost never what someone means when they have just filled in
+    // titles and roles and forgotten the prompt. So it is confirmed, not
+    // refused: press Launch again and it goes.
+    if (promptAllEmpty && !confirmEmpty) {
+      setConfirmEmpty(true);
+      return;
+    }
     setSubmitting(true);
     // 호출 단위 멱등키 1회 발급(§2 G1) — 더블클릭·재시도가 N배 worktree를 못 찍는다.
     const idempotencyKey = generateId('fanout');
@@ -220,7 +238,7 @@ export default function FanOutDialog({ onClose, workspaceId, align = 'left' }: F
     } finally {
       setSubmitting(false);
     }
-  }, [submitting, prompt, promptOverCap, repoPath, titles, effectiveTaskPrompts, roles, n, effectiveAgentCmd, workspace, pushToast, t]);
+  }, [submitting, prompt, promptOverCap, promptAllEmpty, confirmEmpty, repoPath, titles, effectiveTaskPrompts, roles, n, effectiveAgentCmd, workspace, pushToast, t]);
 
   const label = 'text-[11px] text-[var(--text-sub)] mb-1 block';
 
@@ -319,12 +337,14 @@ export default function FanOutDialog({ onClose, workspaceId, align = 'left' }: F
                   how one fan-out puts its review task on a different CLI than
                   its build tasks. Unbound roles stay selectable — the task then
                   launches on the command above, unchanged. */}
-              {/* Capped: a bound role reads "Reviewer — claude", which would
-                  otherwise size the select wide enough to squeeze the title. */}
+              {/* Bounded at both ends. The old floor (92px) was narrow enough
+                  that a bound role — "Reviewer — claude" — was cut mid-word in
+                  the closed select, which is the one state you read it in; the
+                  ceiling stays so it cannot squeeze the title field. */}
               <select
                 aria-label={t('fanout.roleLabel', { k: k + 1 })}
                 className="ui-input shrink-0 text-[11px] py-0.5"
-                style={{ minWidth: 92, maxWidth: 148 }}
+                style={{ minWidth: 132, maxWidth: 168 }}
                 value={roles[k] ?? ''}
                 onChange={(e) => setRoleAt(k, e.target.value)}
                 data-testid={`fanout-role-${k}`}
@@ -426,6 +446,16 @@ export default function FanOutDialog({ onClose, workspaceId, align = 'left' }: F
           <span className="text-[var(--text-muted)]"> {t('fanout.commandPreviewPromptArg')}</span>
         )}
       </code>
+
+      {confirmEmpty && (
+        <div
+          className="mb-2 rounded-[4px] border border-[var(--accent-amber,var(--accent))] px-2 py-1 text-[10px] text-[var(--text-sub)]"
+          role="alert"
+          data-testid="fanout-confirm-empty"
+        >
+          {t('fanout.confirmEmpty', { n })}
+        </div>
+      )}
 
       {/* Pinned footer. The dialog is a 70vh scroll container, so with the
           actions in normal flow the primary action sat below the fold — you
@@ -535,20 +565,24 @@ function reportResult(res: unknown, pushToast: PushToast, ownerWorkspaceId: stri
     message: parts.join(' · '),
   });
 
-  // F5 — 물질화된 성공 태스크마다 "diff 열기" 액션 토스트. 워크스페이스가 있어야
-  // 서피스를 열 수 있으므로 workspaceId·taskId가 채워진 태스크만 대상.
-  for (const task of tasks) {
-    if (!task.ok || !task.taskId || !task.workspaceId) continue;
-    const taskId = task.taskId;
-    const workspaceId = task.workspaceId;
-    const title = task.title ?? taskId;
-    pushToast({
-      level: 'info',
-      message: t('fanout.taskReady', { title }),
-      action: {
-        label: t('fanout.openDiff'),
-        onClick: () => openTaskDiff(taskId, workspaceId, title, ownerWorkspaceId),
-      },
-    });
-  }
+  // F5 — ONE toast for the diff entry point, not one per task. A fan-out of 8
+  // pushed 8 identical-looking cards on top of the summary that had just been
+  // posted, so the summary was off-screen before it could be read and the
+  // "open diff" action was 8 races to click the right card. The action now
+  // opens the first ready task's diff; the rest are one click away in the
+  // sidebar's task list, which is where they live permanently anyway.
+  const ready = tasks.filter((task) => task.ok && task.taskId && task.workspaceId);
+  const first = ready[0];
+  if (!first) return;
+  const taskId = first.taskId as string;
+  const workspaceId = first.workspaceId as string;
+  const title = first.title ?? taskId;
+  pushToast({
+    level: 'info',
+    message: ready.length === 1 ? t('fanout.taskReady', { title }) : t('fanout.tasksReady', { count: ready.length }),
+    action: {
+      label: ready.length === 1 ? t('fanout.openDiff') : t('fanout.openFirstDiff'),
+      onClick: () => openTaskDiff(taskId, workspaceId, title, ownerWorkspaceId),
+    },
+  });
 }
