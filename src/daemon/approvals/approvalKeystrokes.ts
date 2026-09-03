@@ -158,3 +158,78 @@ function escapeDigit(d: string): string {
   // Digits are regex-safe, but be explicit for safety.
   return d.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
+
+// ---------------------------------------------------------------------------
+// Press scope (orchestrator track, 2026-09-04)
+// ---------------------------------------------------------------------------
+//
+// The checks above answer "can these bytes be pressed". This one answers the
+// prior question: "may this pane be pressed AT ALL". They are different, and
+// conflating them is how an automated approve reaches a pane a human opened
+// for themselves — a keystroke into a session nobody delegated.
+//
+// Four conditions, all required:
+//   1. the target pane's workspace is a WorkTask TASK workspace. A pane the
+//      human opened by hand, and the PARENT workspace a fan-out was launched
+//      from, are both refused: neither was delegated to an agent;
+//   2. that workspace has autonomy enabled (mode ≠ 'off'). Autonomy off means
+//      the human answers their own prompts;
+//   3. the pending approval came from a HOOK. The screen-regex detector is a
+//      suspicion — it fires on a numbered list in a diff — and this surface
+//      writes bytes;
+//   4. a re-read taken NOW still shows the prompt (looksLikeApprovalPrompt).
+//      Everything upstream is a fact about when the hook fired, which is not
+//      a fact about the screen a press is about to land on.
+//
+// UNKNOWN IS A REFUSAL. Each fact is optional in the input because the daemon
+// cannot see all of them yet (task-workspace membership and autonomy mode live
+// in the main process), and a fact we cannot establish must never be assumed
+// favourable: the cost of a wrong refusal is a human walking to the desktop,
+// the cost of a wrong press is a keystroke in someone else's terminal.
+
+/** Where the pending approval came from. */
+export type ApprovalPromptOrigin = 'hook' | 'detector';
+
+/**
+ * The facts a press decision needs. Every field is optional and `undefined`
+ * means "not established" — never "fine". See the fail-closed note above.
+ */
+export interface ApprovalPressFacts {
+  /** The target pane's workspace is a WorkTask task workspace. */
+  isTaskWorkspace?: boolean;
+  /** The target workspace's deck autonomy mode ('off' | 'manual' | …). */
+  autonomyMode?: string;
+  /** Which signal created the pending approval. */
+  origin?: ApprovalPromptOrigin;
+  /** A re-read taken now still shows an answerable prompt. */
+  stillOnScreen?: boolean;
+}
+
+export type ApprovalPressRefusal =
+  | 'workspace-unknown'
+  | 'not-a-task-workspace'
+  | 'autonomy-unknown'
+  | 'autonomy-off'
+  | 'origin-unknown'
+  | 'detector-only'
+  | 'prompt-gone';
+
+export type ApprovalPressDecision =
+  | { press: true }
+  | { press: false; reason: ApprovalPressRefusal };
+
+/**
+ * May an approval be pressed into this pane? Pure — the caller gathers the
+ * facts, this decides. Order is narrowest-blame-first so the reported reason
+ * names the condition an operator can actually act on.
+ */
+export function decideApprovalPress(facts: ApprovalPressFacts): ApprovalPressDecision {
+  if (facts.isTaskWorkspace === undefined) return { press: false, reason: 'workspace-unknown' };
+  if (!facts.isTaskWorkspace) return { press: false, reason: 'not-a-task-workspace' };
+  if (facts.autonomyMode === undefined) return { press: false, reason: 'autonomy-unknown' };
+  if (facts.autonomyMode === 'off') return { press: false, reason: 'autonomy-off' };
+  if (facts.origin === undefined) return { press: false, reason: 'origin-unknown' };
+  if (facts.origin !== 'hook') return { press: false, reason: 'detector-only' };
+  if (facts.stillOnScreen !== true) return { press: false, reason: 'prompt-gone' };
+  return { press: true };
+}

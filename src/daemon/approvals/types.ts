@@ -168,7 +168,12 @@ export type ApprovalResolveFailure =
   | 'expired'
   | 'unsupported-agent'
   | 'prompt-gone'
-  | 'invalid-choice-key';
+  | 'invalid-choice-key'
+  // The pane is outside the press scope (`decideApprovalPress`): not a
+  // delegated task workspace, autonomy off, or a fact the daemon could not
+  // establish — unknown is a refusal. NOT an expiry: the request stays live and
+  // a human at the desktop can still answer it themselves.
+  | 'out-of-scope';
 
 export type ApprovalResolveResult =
   | {
