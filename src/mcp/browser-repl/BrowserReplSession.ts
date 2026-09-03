@@ -24,6 +24,16 @@ export const CONSOLE_CAP_BYTES = 32 * 1024;
 export const RESULT_CAP_BYTES = 16 * 1024;
 /** Ledger lines kept per run; a snapshot loop must not turn the result into megabytes. */
 export const LEDGER_MAX_LINES = 200;
+/** Hint lines shown per run, and how much text one line and the whole block may spend. */
+export const HINT_MAX_LINES = 20;
+export const HINT_LINE_MAX_BYTES = 512;
+export const HINT_CAP_BYTES = 8 * 1024;
+/**
+ * How many distinct hint lines the dedupe set remembers. A page is free to
+ * vary its hint on every call, and the set must not grow with the call count
+ * once the block is full anyway.
+ */
+const HINT_DEDUPE_MAX = 500;
 /** Worker startup is local and fast; anything slower is a broken runtime. */
 const READY_TIMEOUT_MS = 10_000;
 
@@ -34,6 +44,15 @@ export interface BrowserReplRunOutcome {
   readonly ledger: readonly string[];
   /** Every `browser.*` call the run made, including the ones the ledger elided. */
   readonly callCount: number;
+  /**
+   * `[replay]`/`[skill]` hint lines the calls carried, deduped, each prefixed
+   * with the ledger number of the call that produced it, in first-seen order.
+   * A direct browser_X call shows these to the model; inside a run the model is
+   * the snippet's author, so the run reports them once at the end.
+   */
+  readonly hints?: readonly string[];
+  /** Hint lines dropped by the caps; the result says so rather than truncating in silence. */
+  readonly hintsElided?: number;
   readonly console: TruncatedText;
   readonly result?: TruncatedText;
   readonly error?: string;
@@ -55,6 +74,24 @@ interface WorkerMessage {
   result?: string;
   error?: string;
   text?: string;
+}
+
+/**
+ * Cut a hint line to a byte budget on a codepoint boundary. A hint is one line
+ * of advice; a page that made it a paragraph gets the start of it, not the run
+ * result's whole budget.
+ */
+function clipToBytes(line: string, capBytes: number): string {
+  if (Buffer.byteLength(line, 'utf8') <= capBytes) return line;
+  let used = 0;
+  let out = '';
+  for (const ch of line) {
+    const size = Buffer.byteLength(ch, 'utf8');
+    if (used + size > capBytes - 3) break; // room for the ellipsis
+    out += ch;
+    used += size;
+  }
+  return `${out}…`;
 }
 
 export class BrowserReplSession {
@@ -186,13 +223,38 @@ export class BrowserReplSession {
       callCount++;
       if (ledger.length < LEDGER_MAX_LINES) ledger.push(line);
     };
+    const hints: string[] = [];
+    const seenHints = new Set<string>();
+    let hintBytes = 0;
+    let hintsElided = 0;
+    // The call number is carried into the line: two pages in one run both say
+    // "for this page", and merged into one anonymous list they would name flows
+    // for a page the reader cannot identify.
+    const recordHints = (blocks: readonly string[] | undefined, callIndex: number) => {
+      for (const block of blocks ?? []) {
+        for (const line of block.split('\n')) {
+          const trimmed = line.trim();
+          if (trimmed === '' || seenHints.has(trimmed)) continue;
+          if (seenHints.size < HINT_DEDUPE_MAX) seenHints.add(trimmed);
+          const rendered = `${callIndex}. ${clipToBytes(trimmed, HINT_LINE_MAX_BYTES)}`;
+          const cost = Buffer.byteLength(rendered, 'utf8') + 1;
+          if (hints.length >= HINT_MAX_LINES || hintBytes + cost > HINT_CAP_BYTES) {
+            hintsElided++;
+            continue;
+          }
+          hintBytes += cost;
+          hints.push(rendered);
+        }
+      }
+    };
     const consoleBuf = new OutputBuffer(CONSOLE_CAP_BYTES);
     const previousDeath = this.previousDeath;
     this.previousDeath = undefined;
     const { worker, ready, fresh } = this.ensureWorker();
-    const base = { ledger, freshRuntime: fresh, previousDeath: fresh ? previousDeath : undefined };
+    const base = { ledger, hints, freshRuntime: fresh, previousDeath: fresh ? previousDeath : undefined };
+    const withHintCount = () => ({ ...base, hintsElided });
     const abort = (error: string) => ({
-      ...base,
+      ...withHintCount(),
       callCount,
       ok: false,
       elapsedMs: Date.now() - started,
@@ -235,7 +297,7 @@ export class BrowserReplSession {
     return new Promise<BrowserReplRunOutcome>((resolve) => {
       let settled = false;
       const finish = (
-        outcome: Omit<BrowserReplRunOutcome, 'ledger' | 'callCount' | 'freshRuntime' | 'previousDeath' | 'elapsedMs' | 'console'>,
+        outcome: Omit<BrowserReplRunOutcome, 'ledger' | 'hints' | 'hintsElided' | 'callCount' | 'freshRuntime' | 'previousDeath' | 'elapsedMs' | 'console'>,
       ) => {
         if (settled) return;
         settled = true;
@@ -248,7 +310,7 @@ export class BrowserReplSession {
           this.straggling.add(pending);
           void pending.finally(() => this.straggling.delete(pending));
         }
-        resolve({ ...base, ...outcome, callCount, elapsedMs: Date.now() - started, console: consoleBuf.render() });
+        resolve({ ...withHintCount(), ...outcome, callCount, elapsedMs: Date.now() - started, console: consoleBuf.render() });
       };
 
       const timer = setTimeout(() => {
@@ -279,6 +341,9 @@ export class BrowserReplSession {
             const pending = bridge(name, args).then(
               (outcome) => {
                 record(outcome.ledger);
+                // The run is over: its outcome has been handed back already, so
+                // a late hint would be appended to an array nobody reads again.
+                if (!settled && outcome.ok) recordHints(outcome.hints, callCount);
                 reply(outcome.ok ? { ok: true, value: outcome.value } : { ok: false, error: outcome.error });
               },
               // The bridge reports handler failures as outcomes; a rejection here

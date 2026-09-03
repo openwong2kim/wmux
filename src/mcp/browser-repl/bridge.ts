@@ -12,6 +12,7 @@
 import { z } from 'zod';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import type { CollectedTool } from '../playwright/toolCollector';
+import { isHintBlock } from '../playwright/hintBlock';
 import { redactPasswordParams } from '../playwright/redact';
 import {
   getConnectionScope,
@@ -80,8 +81,13 @@ function maskTypedText(key: string, raw: unknown): unknown {
 }
 
 export interface SnapshotRef {
-  /** Numeric ref from the snapshot listing. */
-  readonly ref: number;
+  /**
+   * The ref as its target argument's schema wants it: a string for `ref`, a
+   * number for `smartRef`. Both listings number their refs, but the tools do
+   * not agree on the type, and `refs[i].ref` is documented as passable
+   * straight to `refs[i].param` — so the parse, not the caller, converts.
+   */
+  readonly ref: string | number;
   /** Which browser_click argument takes it: `ref` (snapshot) or `smartRef` (smart_snapshot). */
   readonly param: 'ref' | 'smartRef';
   readonly role: string;
@@ -99,7 +105,13 @@ export interface BridgeValue {
 }
 
 export type BridgeOutcome =
-  | { readonly ok: true; readonly value: BridgeValue; readonly ledger: string }
+  | {
+      readonly ok: true;
+      readonly value: BridgeValue;
+      readonly ledger: string;
+      /** `[replay]`/`[skill]` blocks this call carried; the run collects them. */
+      readonly hints?: readonly string[];
+    }
   | { readonly ok: false; readonly error: string; readonly ledger: string };
 
 export interface BrowserBridgeOptions {
@@ -146,7 +158,7 @@ export function parseSnapshotRefs(text: string, tool: string): SnapshotRef[] {
   for (const line of text.split('\n')) {
     if (tool === 'snapshot') {
       const m = SNAPSHOT_LINE.exec(line);
-      if (m) refs.push({ ref: Number(m[3]), param: 'ref', role: m[1], name: m[2] ?? '' });
+      if (m) refs.push({ ref: m[3], param: 'ref', role: m[1], name: m[2] ?? '' });
       continue;
     }
     const m = SMART_LINE.exec(line);
@@ -161,15 +173,19 @@ export function parseSnapshotRefs(text: string, tool: string): SnapshotRef[] {
 }
 
 /**
- * Split a handler result into the script-facing text and the lease's event
- * lines. The lease prepends up to two extra text blocks — `[browser events]`
- * and the `[replay]`/`[skill]` hints — which are addressed to the model, not
- * to code: events are surfaced as data, hints are dropped. Any block that
- * matches neither is body. Non-text blocks are noted, never returned.
+ * Split a handler result into the script-facing text, the lease's event lines,
+ * and its hint blocks. The lease prepends up to two extra text blocks —
+ * `[browser events]` and the `[replay]`/`[skill]` hints. Events are surfaced
+ * to the script as data; hints are addressed to whoever wrote the snippet, so
+ * they are kept out of the value and reported once per run instead. Any block
+ * that matches neither is body. Non-text blocks are noted, never returned.
  *
- * The lease blocks are recognized by prefix, and page text can start with
- * anything — so the match is kept tight: lease blocks only ever precede the
- * handler's own content, and an events block is every line in the lease's
+ * A hint is recognized by the marker only the lease can set, never by its text
+ * (see hintBlock.ts): `browser_extract_text` hands back page text as its first
+ * block, and a page whose text opened with `[skill] ` would otherwise empty the
+ * script's value and get its own string printed as a hint. The events block has
+ * no such marker, so its match is kept tight instead — it only ever precedes
+ * the handler's own content, and every one of its lines must be in the lease's
  * `- type[: url] (N ago)` form. Once a body block is seen, the rest is body.
  */
 const EVENT_LINE = /^- [\w-]+(?::.*)? \([^()]* ago\)$/;
@@ -181,8 +197,15 @@ function parseEventsBlock(text: string): string[] | null {
   return lines.map((line) => line.slice(2));
 }
 
-export function shapeResult(result: CallToolResult, tool: string): BridgeValue {
+export interface ShapedResult {
+  readonly value: BridgeValue;
+  /** `[replay]`/`[skill]` blocks the lease prepended, verbatim. */
+  readonly hints: readonly string[];
+}
+
+export function shapeResult(result: CallToolResult, tool: string): ShapedResult {
   const events: string[] = [];
+  const hints: string[] = [];
   const body: string[] = [];
   for (const block of result.content ?? []) {
     if (block.type !== 'text') {
@@ -196,23 +219,32 @@ export function shapeResult(result: CallToolResult, tool: string): BridgeValue {
         events.push(...eventLines);
         continue;
       }
-      if (text.startsWith('[replay] ') || text.startsWith('[skill] ')) continue;
+    }
+    if (isHintBlock(block)) {
+      hints.push(text);
+      continue;
     }
     body.push(text);
   }
   const text = body.join('\n');
   if (SNAPSHOT_TOOLS.has(tool)) {
-    return { text, events, refs: parseSnapshotRefs(text, tool) };
+    return { value: { text, events, refs: parseSnapshotRefs(text, tool) }, hints };
   }
-  return { text, events };
+  return { value: { text, events }, hints };
 }
 
+/**
+ * The reason a failed call gives the script. Only the event block is dropped —
+ * the lease refuses to hint on a failure (a failed call is not a landing), so
+ * every other block is the tool's own words and dropping one would cost the
+ * script the reason it failed.
+ */
 function errorText(result: CallToolResult): string {
   const texts = (result.content ?? [])
     .filter((b): b is { type: 'text'; text: string } => b.type === 'text')
     .map((b) => b.text)
     // The lease still prepends events to error results; the script wants the reason.
-    .filter((t) => parseEventsBlock(t) === null && !t.startsWith('[replay] ') && !t.startsWith('[skill] '));
+    .filter((t) => parseEventsBlock(t) === null);
   return texts.join('\n').trim() || 'tool returned an error without a message';
 }
 
@@ -286,8 +318,8 @@ export function createBrowserBridge(
     if (result.isError) {
       return { ok: false, error: `browser.${name}: ${errorText(result)}`, ledger: ledgerFor(args, 'FAILED') };
     }
-    const value = shapeResult(result, name);
+    const { value, hints } = shapeResult(result, name);
     const eventNote = value.events.length > 0 ? ` · ${value.events.length} event(s)` : '';
-    return { ok: true, value, ledger: `${ledgerFor(args, 'ok')}${eventNote}` };
+    return { ok: true, value, ledger: `${ledgerFor(args, 'ok')}${eventNote}`, hints };
   };
 }
