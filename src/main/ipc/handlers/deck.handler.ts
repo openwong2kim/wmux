@@ -52,6 +52,11 @@ import { loadCommanderSession, saveCommanderSession, clearCommanderSession } fro
 import { DeckScheduler } from '../../deck/DeckScheduler';
 import { DeckHeartbeat } from '../../deck/DeckHeartbeat';
 import { CommanderEventCoalescer } from '../../deck/CommanderEventCoalescer';
+import {
+  routeWorkerEventToOwner,
+  takeOrphanBacklog,
+  createWorkTaskReconciler,
+} from '../../deck/taskLedgerHost';
 import { createGlobalTurnGate, type GlobalTurnGate } from '../../deck/globalTurnGate';
 import { loadDeckHeartbeat } from '../../deck/deckHeartbeatStore';
 import { getWorkspaceMirror, type FleetSnapshot } from '../../workspace/WorkspaceMirror';
@@ -1435,8 +1440,21 @@ export function registerDeckHandler(
   // The main-process EventBus already carries agent.stop / agent.awaiting_input
   // (hook + detector sourced). Subscribe, coalesce per workspace, and wake the
   // owning orchestrator so it observes fleet lifecycle changes WITHOUT polling.
+  // Lane F: the ledger mirrors WorkTask (the identity source) on demand —
+  // every workspace the mirror knows is a candidate owner, listed through the
+  // daemon's owner-scoped `task.mission.list`. Throttled inside.
+  const reconcileTaskLedger = createWorkTaskReconciler({
+    candidateOwners: () => (getWorkspaceMirror().getEntries() ?? []).map((e) => e.id),
+    listTasks: async (owner) => {
+      const client = opts.getDaemonClient?.() ?? null;
+      if (!client) return null;
+      return client.rpc('task.mission.list', { verifiedWorkspaceId: owner });
+    },
+  });
   coalescer = new CommanderEventCoalescer({
     runTurn: (workspaceId, prompt) => runTurnForWorkspace(prompt, workspaceId),
+    // Lane F: worker events parked while this workspace had no brain.
+    takeOrphanBacklog: (workspaceId) => takeOrphanBacklog(workspaceId),
     isBusy: (workspaceId) =>
       managers.get(workspaceId)?.manager.getStatus().status === 'busy',
     // Fail-closed autonomy caps (summarize on, dangerous caps off by default).
@@ -1584,7 +1602,7 @@ export function registerDeckHandler(
     // Waking the deck brain on one would announce work that never ended —
     // same class of false "finished" the alarm exists to suppress.
     if (ev.decision === 'internal') return;
-    coalescer?.push({
+    const lifecycleInput = {
       workspaceId: ev.workspaceId,
       ptyId: ev.ptyId,
       kind: ev.kind,
@@ -1595,6 +1613,16 @@ export function registerDeckHandler(
       // Carries the pane's closing words on a hook-sourced stop so the wake
       // prompt can say whether the pane is blocked on a question.
       ...(ev.lastMessage ? { lastMessage: ev.lastMessage } : {}),
+    };
+    coalescer?.push(lifecycleInput);
+    // Lane F: a fan-out task workspace has no brain of its own, so ALSO copy
+    // the event to the owning (parent) workspace's coalescer, tagged with the
+    // task. The parent's 'none' wake policy lets tagged events through; an
+    // owner with no brain gets it parked in the ledger as an orphan backlog.
+    routeWorkerEventToOwner(lifecycleInput, {
+      hasBrain: (owner) => managers.has(owner) || loadWorkspaceMode(owner) !== 'off',
+      push: (copy) => coalescer?.push(copy),
+      reconcile: reconcileTaskLedger,
     });
   });
 

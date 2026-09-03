@@ -108,6 +108,17 @@ export interface A2aTaskDetail {
   verifiedItemCount?: number;
 }
 
+/** Tag on a lifecycle event that was COPIED from a fan-out task workspace to
+ *  its owning (parent) workspace. Lane F: the event is the parent's own
+ *  delegated work, so the parent's `wakePolicy: 'none'` does not swallow it —
+ *  a brain that fanned out must learn its workers finished. */
+export interface DelegatedTaskTag {
+  /** WorkTask id. */
+  taskId: string;
+  /** The task's dedicated workspace (where the event actually fired). */
+  taskWorkspaceId: string;
+}
+
 /** The minimal slice of an AgentLifecycleEvent the coalescer needs. */
 export interface CoalescerInput {
   workspaceId: string;
@@ -126,6 +137,8 @@ export interface CoalescerInput {
   a2a?: A2aTaskDetail;
   /** Only set for kind === 'agent.stop' from a hook (see AgentLastMessage). */
   lastMessage?: AgentLastMessage;
+  /** Set when this event was routed from a fan-out task workspace to its owner. */
+  task?: DelegatedTaskTag;
 }
 
 /** One buffered event: the last seen per (ptyId, kind). Exported so the pure
@@ -143,6 +156,8 @@ export interface BufferedEvent {
   a2a?: A2aTaskDetail;
   /** Only set for kind === 'agent.stop' from a hook (see AgentLastMessage). */
   lastMessage?: AgentLastMessage;
+  /** Set when this event was routed from a fan-out task workspace to its owner. */
+  task?: DelegatedTaskTag;
 }
 
 /** Internal per-workspace phase — surfaced only for tests/observability. The
@@ -243,6 +258,12 @@ export interface CoalescerDeps {
    *  flush prompt (e.g. "fleet: 3 running, 1 blocked"). Read fresh at flush;
    *  absent/throwing/empty = no line. Unused until WP4 wires it. */
   getFleetTail?: (workspaceId: string) => string | undefined;
+  /** Lane F: drain the worker events parked in the task ledger while this
+   *  workspace had no brain (`orphaned_event`). Called on the human send that
+   *  boots/addresses the brain, and the backlog is replayed through the
+   *  ordinary push path so it lands in the next wake. Absent/throwing = no
+   *  backlog. */
+  takeOrphanBacklog?: (workspaceId: string) => CoalescerInput[];
 }
 
 const DEFAULT_DEBOUNCE_MS = 1_500;
@@ -282,7 +303,7 @@ export class CommanderEventCoalescer {
   /** Ingest one lifecycle event. Drops kinds we don't wake on and events at/below
    *  the workspace watermark (already flushed). Buffers, then either debounces
    *  (idle) or holds (busy) until a flush point. */
-  push(ev: CoalescerInput): void {
+  push(ev: CoalescerInput, opts: { replay?: boolean } = {}): void {
     if (this.disposed) return;
     if (
       ev.kind !== 'agent.stop' &&
@@ -296,7 +317,10 @@ export class CommanderEventCoalescer {
       ev.kind !== 'a2a.canceled'
     ) return;
     const st = this.ensureState(ev.workspaceId);
-    if (ev.seq <= st.watermark) return; // idempotency — already delivered/consumed
+    // Idempotency — already delivered/consumed. A replayed orphan backlog
+    // skips the check: its seqs predate whatever this workspace has flushed
+    // since, yet by construction nobody ever delivered them.
+    if (!opts.replay && ev.seq <= st.watermark) return;
     const byKind = st.buffer.get(ev.ptyId) ?? new Map<CoalescedKind, BufferedEvent>();
     byKind.set(ev.kind, {
       ptyId: ev.ptyId,
@@ -308,6 +332,7 @@ export class CommanderEventCoalescer {
       ...(ev.detail ? { detail: ev.detail } : {}),
       ...(ev.a2a ? { a2a: ev.a2a } : {}),
       ...(ev.lastMessage ? { lastMessage: ev.lastMessage } : {}),
+      ...(ev.task ? { task: ev.task } : {}),
     });
     st.buffer.set(ev.ptyId, byKind);
 
@@ -504,6 +529,19 @@ export class CommanderEventCoalescer {
     st.buffer.clear();
     this.clearDebounce(st);
     st.phase = 'idle';
+    // Lane F: a human send means a brain exists (or is about to) for this
+    // workspace — hand it the worker events that fired while it had none.
+    for (const orphan of this.safeOrphanBacklog(workspaceId)) {
+      this.push({ ...orphan, workspaceId }, { replay: true });
+    }
+  }
+
+  private safeOrphanBacklog(workspaceId: string): CoalescerInput[] {
+    try {
+      return this.deps.takeOrphanBacklog?.(workspaceId) ?? [];
+    } catch {
+      return [];
+    }
   }
 
   /** Test/observability peek. */
@@ -809,17 +847,26 @@ export class CommanderEventCoalescer {
       ? { ...standingAutonomy, summarize: true, continueInstruction: true }
       : standingAutonomy;
     const policy: WakePolicy = loopRunning || workActive ? 'all' : standingAutonomy.wakePolicy;
-    if (policy === 'none') {
-      this.consume(st, events);
-      return;
-    }
     let flushEvents = events;
+    if (policy === 'none') {
+      // Lane F: 'none' swallows FOREIGN noise, not the workspace's own
+      // delegated work. An event tagged with a fan-out task the brain owns
+      // still wakes it; everything else is consumed as before.
+      const delegated = events.filter((e) => e.task !== undefined);
+      if (delegated.length === 0) {
+        this.consume(st, events);
+        return;
+      }
+      flushEvents = delegated;
+    }
     if (policy === 'value-filtered') {
       // assist surfaces the HIGH-VALUE kinds: a pane blocked on input, a PR
       // that just went red, and fresh review feedback. Plain agent.stop is the
-      // summary-spam we drop.
+      // summary-spam we drop. A delegated worker's stop is the parent's own
+      // result, never spam.
       const worthy = events.filter(
         (e) =>
+          e.task !== undefined ||
           e.kind === 'agent.awaiting_input' ||
           e.kind === 'pr.ci_failed' ||
           e.kind === 'pr.review_comment' ||
@@ -1019,7 +1066,9 @@ function renderEventLine(
   const a2a = e.a2a;
   const subjectLabel = a2a
     ? `task=${sanitizeSnippet(a2a.taskId)}(to=${sanitizeSnippet(a2a.to)})`
-    : `pane=${e.ptyId}(${e.agent ?? 'shell'})`;
+    : e.task
+      ? `worker-task=${sanitizeSnippet(e.task.taskId)} ws=${sanitizeSnippet(e.task.taskWorkspaceId)} pane=${e.ptyId}(${e.agent ?? 'shell'})`
+      : `pane=${e.ptyId}(${e.agent ?? 'shell'})`;
   const kindLabel =
     e.kind === 'agent.stop' ? 'stop'
     : e.kind === 'pr.ci_failed' ? 'ci-failed'
