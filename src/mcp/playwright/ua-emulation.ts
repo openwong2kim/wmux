@@ -22,14 +22,35 @@
 // override; the metrics and the touch points need their own commands, sent
 // here so they live and die with the same session.
 //
-// One measured limit, stated where it is implemented rather than hidden: on a
-// page this process drives, `navigator.platform` keeps the host's value even
-// though every override carries the preset's. The same command sequence on a
-// page with no other debugger session attached does change it, so the value is
-// being decided by another session on the target rather than by the payload.
-// Holding it would mean owning the emulation the way a purpose-built mobile
-// context does, which is a larger change than this one; until then the tool
-// says so in its result instead of claiming a platform it did not set.
+// `navigator.platform` needs one more thing than the others, and the reason is
+// measured rather than guessed. Of everything the override carries, platform is
+// the only value Chromium keeps as a page-wide setting instead of as state
+// belonging to the session that wrote it. Every DevTools session that detaches
+// from a target resets that setting on the way out — including a session that
+// never wrote a platform of its own. So a throwaway session opened on the page
+// for something unrelated (asking a target for its id, setting a timezone) put
+// the host's platform back the moment it detached, while the UA string, the
+// hints, the pixel ratio and the touch points all stayed. Measured on a live
+// page: after the preset, `Linux armv8l`; after one unrelated session attached
+// and detached, `MacIntel`, with everything else still emulated. That is why
+// the earlier reading of this — another session outwriting ours — was wrong:
+// nothing else writes a platform, and re-sending the override from the session
+// still held here restores it immediately.
+//
+// Re-sending is therefore not a one-time step but a standing obligation, and
+// `reassertUserAgentEmulation` below is where the page is put back before a
+// tool looks at it.
+//
+// What this still cannot reach, said here rather than left to be discovered:
+// input. `Emulation.setTouchEmulationEnabled` gives the page a touchscreen to
+// report, but automated clicks are still mouse events, and the context this
+// process attached to was built without touch, so `page.tap()` is refused
+// client-side. Two ways out were measured and both are worse than the gap:
+// `Emulation.setEmitTouchEventsForMouse` does convert the clicks into real
+// touch events, but the mouse dispatch that produced them then never returns
+// (>30s, every click), and a device-built context is not this architecture —
+// it would be a fresh incognito-like context with none of the user's cookies,
+// history or extensions, which is a louder signal than the one it removes.
 // ---------------------------------------------------------------------------
 
 import type { Browser, BrowserContext, CDPSession, Page } from 'playwright-core';
@@ -260,6 +281,31 @@ export async function clearUserAgentEmulation(context: BrowserContext): Promise<
   }
   state.sessions.clear();
   state.onNavigated.clear();
+}
+
+/**
+ * Put the emulated identity back on `page` before something reads it.
+ *
+ * Only the UA override is re-sent. The device metrics and the touch points
+ * survive a foreign session detaching — measured — and each extra command is a
+ * round-trip paid on every tool call, so this sends the one that does not.
+ *
+ * A no-op unless this page is under an emulation this module is holding open,
+ * and best-effort otherwise: a page that has gone away must not fail the call
+ * that was about to use it.
+ */
+export async function reassertUserAgentEmulation(page: Page): Promise<void> {
+  let context: BrowserContext;
+  try {
+    context = page.context();
+  } catch {
+    return;
+  }
+  const state = stateByContext.get(context);
+  if (!state) return;
+  const session = state.sessions.get(page);
+  if (!session) return;
+  await loose(session).send('Emulation.setUserAgentOverride', state.override).catch(() => {});
 }
 
 /** Whether `context` currently has an emulated UA applied. */
