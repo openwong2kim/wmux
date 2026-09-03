@@ -1,5 +1,6 @@
 import type { ElementHandle, Page } from 'playwright-core';
 import { generateSnapshot, listRefEntries, resolveRef, StaleRefError } from '../playwright/snapshot';
+import { countSmartNamedPopulation } from '../playwright/dom-intelligence';
 import { describeToolError } from '../playwright/toolError';
 import { validateNavigationUrl } from '../../shared/types';
 import {
@@ -80,6 +81,7 @@ interface LiveEntry {
   ref: number;
   sameNameIndex: number;
   context?: string;
+  own?: string;
 }
 
 /**
@@ -145,6 +147,70 @@ function contextVerdict(
 }
 
 /**
+ * The own-attribute verifier.
+ *
+ * What contextVerdict cannot do: two siblings that are genuinely identical —
+ * same role, same name, same container — sit under the SAME context, so it
+ * abstains on exactly the shape it was built to catch. Most real pages do
+ * distinguish those siblings, just not in the accessibility tree: they give
+ * one a `data-testid`, an `id`, a `name`, or an `aria-label`.
+ *
+ * Runs only where the context gave no verdict, which is precisely "several
+ * candidates share the recorded context" or "the page mints no context", and
+ * decides on the same three-way shape, with the element never LOCATED by it:
+ *
+ *   exactly one live element carries the recorded label
+ *     at the recorded index → confirmed, and (like the context) that outranks
+ *       a population whose size changed around it.
+ *     at a different index  → the element is still on the page but something
+ *       moved it; stop rather than follow it, which would be resolving by
+ *       position with extra steps.
+ *
+ *   none carries it, but some live element carries SOME label → the element
+ *     the recording identified is not in this population any more. Stop.
+ *
+ *   no live element carries any label at all → no verdict. The page mints
+ *     none (or the DOM pass could not run), so nothing may be concluded from
+ *     the absence, and the count rules decide exactly as before.
+ *
+ * The irreducible residual after this: siblings that are identical AND carry
+ * no attributes of their own. Nothing recorded can tell those apart, and the
+ * count rules are what decide — see the docs' "what this still cannot see".
+ */
+function ownVerdict(
+  axis: RefAxis,
+  population: readonly LiveEntry[],
+): { ref: string } | { error: string } | null {
+  if (!axis.own) return null;
+  // Absence is not evidence: a page whose labels this build could not read
+  // must abstain, not stop every step.
+  if (!population.some((entry) => (entry.own ?? '').length > 0)) return null;
+  const matches = population.filter((entry) => (entry.own ?? '') === axis.own);
+  if (matches.length === 1) {
+    const found = matches[0];
+    if (found.sameNameIndex === axis.sameNameIndex) return { ref: String(found.ref) };
+    return {
+      error:
+        `${describeAxis(axis)} was recorded as ${axis.own}, and the only element carrying ` +
+        `that now sits at position ${found.sameNameIndex + 1}, not ${axis.sameNameIndex + 1}. ` +
+        'The population shifted under this step, so replaying it would act on whatever ' +
+        'took its place',
+    };
+  }
+  if (matches.length === 0) {
+    return {
+      error:
+        `${describeAxis(axis)} was recorded as ${axis.own}, and no element with that role ` +
+        'and name carries it any more — the element at the recorded position is a ' +
+        'different one',
+    };
+  }
+  // Several carry the same label (a page with a duplicated id, say). It cannot
+  // tell them apart either, so it says nothing.
+  return null;
+}
+
+/**
  * Find the live ref number for a stored axis.
  *
  * The match is role + name + position among the same-named elements in the
@@ -176,11 +242,12 @@ function contextVerdict(
  * A missing element is always a refusal — that is the other case where
  * continuing would act on something else.
  *
- * All of that is the fallback. When the recorded axis carries a `context` and
- * the live page carries one too, contextVerdict runs first and may settle the
- * step outright — including the same-count swap this reasoning is blind to.
+ * All of that is the fallback. Two verifiers run before it and may settle the
+ * step outright — including the same-count swap this reasoning is blind to:
+ * contextVerdict on the neighbourhood the element sat in, then, where that
+ * abstains, ownVerdict on the element's own identifying attribute.
  */
-function matchRefAxis(page: Page, axis: RefAxis): { ref: string } | StepFailure {
+async function matchRefAxis(page: Page, axis: RefAxis): Promise<{ ref: string } | StepFailure> {
   const population = listRefEntries(page).filter(
     (entry) =>
       entry.role === axis.role &&
@@ -203,6 +270,11 @@ function matchRefAxis(page: Page, axis: RefAxis): { ref: string } | StepFailure 
     // stop replaced it; the verdict itself is the reasoning.)
     return verdict;
   }
+  // The context abstained: either several candidates share it, or the page
+  // mints none. That is exactly where the element's own attribute is the last
+  // evidence available, and it clears a size change on the same terms.
+  const byOwn = ownVerdict(axis, population);
+  if (byOwn !== null) return byOwn;
   // Before the index lookup, not after: a population that shrank past the
   // recorded index would otherwise report only "no element at that position"
   // and never say that the count is what changed.
@@ -210,18 +282,28 @@ function matchRefAxis(page: Page, axis: RefAxis): { ref: string } | StepFailure 
   // Unnamed axes are exempt, exactly as resolveRef's own count check is, and
   // for a sharper reason here: their stored total is not a same-name count at
   // all. smartRefAxisEntry (dom-intelligence) records roleIndex/roleTotal in
-  // these two fields for an element with no accessible name, measured over its
-  // own full-tree walk, while the number compared against is counted from this
-  // module's snapshot ref map (depth-capped, filtered when it overflows). The
-  // two enumerations do not have to agree on an unchanged page, so demanding
-  // equality would stop flows that nothing is wrong with.
+  // these two fields for an element with no accessible name, so the number
+  // would not even be a same-name count to compare.
   //
-  // A NAMED smartRef axis is compared anyway, and the same two enumerations
-  // could in principle disagree there too. The axis carries no record of which
-  // recorder minted it, and giving it one would widen the stored format, so
-  // this takes the trade the whole check is built on: a stop the agent can
-  // finish live costs less than a click on the wrong element.
+  // The comparison is otherwise between two DIFFERENT enumerations whenever
+  // the axis was minted by the smart lane: that lane walks the whole
+  // accessibility tree, while the number counted here comes from this module's
+  // snapshot ref map, which is depth-capped and filtered when the output
+  // overflows. The two do not have to agree on a page that has not changed,
+  // and a named smartRef axis used to be compared across them anyway — so an
+  // unchanged page could stop a replay for no reason. The axis now records
+  // WHICH lane minted it (`via`), and a disagreement is put to that lane's own
+  // count before it is treated as a change. Only a disagreement, so the
+  // ordinary path costs nothing extra.
   if (axis.name !== '' && population.length !== axis.sameNameTotal) {
+    if (axis.via === 'smart') {
+      const smartCount = await countSmartNamedPopulation(page, axis.role, axis.name);
+      // Same measurement on both sides now. Equal means the page did not
+      // change and the a11y map merely counts a different set; the step
+      // proceeds to the index lookup below, which is what it did before this
+      // check existed. A null answer (the walk could not run) keeps the stop.
+      if (smartCount === axis.sameNameTotal) return indexLookup(axis, population);
+    }
     const grew = population.length > axis.sameNameTotal;
     return {
       error:
@@ -239,6 +321,17 @@ function matchRefAxis(page: Page, axis: RefAxis): { ref: string } | StepFailure 
       inconclusive: true,
     };
   }
+  return indexLookup(axis, population);
+}
+
+/**
+ * The last resort: the recorded position, in a population whose size the
+ * checks above have accepted.
+ *
+ * Its own refusal matters — a population that no longer HAS the recorded
+ * position must stop rather than clamp onto the nearest one.
+ */
+function indexLookup(axis: RefAxis, population: readonly LiveEntry[]): { ref: string } | StepFailure {
   const match = population.find((entry) => entry.sameNameIndex === axis.sameNameIndex);
   if (!match) {
     return {
@@ -282,7 +375,7 @@ async function resolveAxis(page: Page, axis: StepAxis): Promise<Resolved | StepF
     const element = await locator.elementHandle().catch(() => null);
     return element ? { element } : { error: `css ${axis.selector} could not be resolved` };
   }
-  const matched = matchRefAxis(page, axis);
+  const matched = await matchRefAxis(page, axis);
   if ('error' in matched) return matched;
   // strictCount, because the population compared above was counted from the
   // internal snapshot — a measurement taken BEFORE this step. Anything the page

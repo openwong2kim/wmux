@@ -498,6 +498,10 @@ describe('replay axis for a smart ref', () => {
       name: 'Row',
       sameNameIndex: 1,
       sameNameTotal: 2,
+      // Which walk those counts were measured over, so the replay runner can
+      // count the live population the same way rather than across two
+      // different enumerations.
+      via: 'smart',
       frameKey: '',
     });
   });

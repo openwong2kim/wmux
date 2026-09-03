@@ -8,6 +8,7 @@ interface FakeRefEntry {
   frameKey: string;
   ref: number;
   context?: string;
+  own?: string;
 }
 
 /** What the page's "last snapshot" currently holds. Mutated per case. */
@@ -26,6 +27,17 @@ vi.mock('../../playwright/snapshot', () => ({
   resolveRef: async (_page: unknown, ref: string) =>
     resolved.has(ref) ? ({ click: async () => undefined, fill: async () => undefined } as never) : null,
   StaleRefError,
+}));
+
+/** What the smart lane says its own walk currently counts. Scripted per case. */
+let smartCount: number | null = null;
+const smartCountCalls: Array<[string, string]> = [];
+
+vi.mock('../../playwright/dom-intelligence', () => ({
+  countSmartNamedPopulation: async (_page: unknown, role: string, name: string) => {
+    smartCountCalls.push([role, name]);
+    return smartCount;
+  },
 }));
 
 import { replayBlockedReason, replayTrace } from '../replayRunner';
@@ -94,6 +106,8 @@ beforeEach(() => {
   goneTo.length = 0;
   resolved.clear();
   snapshotText = 'button "Sign in" [ref=1]';
+  smartCount = null;
+  smartCountCalls.length = 0;
   refEntries = [
     { role: 'button', name: 'Sign in', sameNameIndex: 0, sameNameTotal: 1, frameKey: '', ref: 1 },
   ];
@@ -445,6 +459,285 @@ describe('replayTrace — the context verifier (#1182)', () => {
     const result = await replayTrace(page, trace([refStep()]), undefined);
     expect(result.ok).toBe(true);
     expect(clicks).toEqual(['sign-in']);
+  });
+});
+
+describe('replayTrace — the own-attribute verifier', () => {
+  // Where the context verifier gives up: two siblings in the SAME container,
+  // same role, same name. The page tells them apart with an attribute on the
+  // element itself, so the replay can too.
+
+  it('resolves identical siblings by data-testid after they were swapped', async () => {
+    // Recorded position 0 = the primary submit. The two were then reordered:
+    // same container, same count, same names — nothing positional can see it.
+    refEntries = [
+      {
+        role: 'button', name: 'Submit order', sameNameIndex: 0, sameNameTotal: 2,
+        frameKey: '', ref: 1, context: 'region "Checkout"', own: 'data-testid=submit-secondary',
+      },
+      {
+        role: 'button', name: 'Submit order', sameNameIndex: 1, sameNameTotal: 2,
+        frameKey: '', ref: 2, context: 'region "Checkout"', own: 'data-testid=submit-primary',
+      },
+    ];
+    const mod = await import('../../playwright/snapshot');
+    vi.spyOn(mod, 'resolveRef').mockResolvedValue(element('primary'));
+
+    const step = refStep({
+      axis: {
+        kind: 'ref', role: 'button', name: 'Submit order', sameNameIndex: 0, sameNameTotal: 2,
+        frameKey: '', context: 'region "Checkout"', own: 'data-testid=submit-primary',
+      },
+    });
+    const result = await replayTrace(page, trace([step]), undefined);
+    // It MOVED, so the run stops rather than following it to index 1 — which
+    // is the same refusal the context verifier makes, one signal deeper.
+    expect(result.ok).toBe(false);
+    expect(result.steps[0].detail).toContain('sits at position 2');
+    expect(clicks).toEqual([]);
+  });
+
+  it('confirms the recorded sibling when its own attribute still sits there', async () => {
+    // The other half of the swap case: the page grew a third look-alike, so
+    // #1179 alone would refuse, but the recorded element is still at index 0
+    // and still carries its own testid.
+    refEntries = [
+      {
+        role: 'button', name: 'Submit order', sameNameIndex: 0, sameNameTotal: 3,
+        frameKey: '', ref: 1, context: 'region "Checkout"', own: 'data-testid=submit-primary',
+      },
+      {
+        role: 'button', name: 'Submit order', sameNameIndex: 1, sameNameTotal: 3,
+        frameKey: '', ref: 2, context: 'region "Checkout"', own: 'data-testid=submit-secondary',
+      },
+      {
+        role: 'button', name: 'Submit order', sameNameIndex: 2, sameNameTotal: 3,
+        frameKey: '', ref: 3, context: 'region "Checkout"', own: 'data-testid=submit-tertiary',
+      },
+    ];
+    const mod = await import('../../playwright/snapshot');
+    vi.spyOn(mod, 'resolveRef').mockResolvedValue(element('primary'));
+
+    const step = refStep({
+      axis: {
+        kind: 'ref', role: 'button', name: 'Submit order', sameNameIndex: 0, sameNameTotal: 2,
+        frameKey: '', context: 'region "Checkout"', own: 'data-testid=submit-primary',
+      },
+    });
+    const result = await replayTrace(page, trace([step]), undefined);
+    expect(result.ok).toBe(true);
+    expect(clicks).toEqual(['primary']);
+  });
+
+  it('STOPS when no sibling carries the recorded attribute any more', async () => {
+    refEntries = [
+      {
+        role: 'button', name: 'Submit order', sameNameIndex: 0, sameNameTotal: 2,
+        frameKey: '', ref: 1, context: 'region "Checkout"', own: 'data-testid=submit-a',
+      },
+      {
+        role: 'button', name: 'Submit order', sameNameIndex: 1, sameNameTotal: 2,
+        frameKey: '', ref: 2, context: 'region "Checkout"', own: 'data-testid=submit-b',
+      },
+    ];
+    const mod = await import('../../playwright/snapshot');
+    vi.spyOn(mod, 'resolveRef').mockResolvedValue(element('stranger'));
+
+    const step = refStep({
+      axis: {
+        kind: 'ref', role: 'button', name: 'Submit order', sameNameIndex: 0, sameNameTotal: 2,
+        frameKey: '', context: 'region "Checkout"', own: 'data-testid=submit-primary',
+      },
+    });
+    const result = await replayTrace(page, trace([step]), undefined);
+    expect(result.ok).toBe(false);
+    expect(result.steps[0].detail).toContain('data-testid=submit-primary');
+    expect(clicks).toEqual([]);
+  });
+
+  it('ABSTAINS on identical siblings that carry no attributes — the irreducible case', async () => {
+    // Nothing recorded can separate these. The verifier must stay silent and
+    // let the count rules decide, exactly as before the field existed.
+    refEntries = [
+      {
+        role: 'button', name: 'Delete', sameNameIndex: 0, sameNameTotal: 2,
+        frameKey: '', ref: 1, context: 'row "Alice"',
+      },
+      {
+        role: 'button', name: 'Delete', sameNameIndex: 1, sameNameTotal: 2,
+        frameKey: '', ref: 2, context: 'row "Alice"',
+      },
+    ];
+    const mod = await import('../../playwright/snapshot');
+    vi.spyOn(mod, 'resolveRef').mockResolvedValue(element('second-delete'));
+
+    const step = refStep({
+      axis: {
+        kind: 'ref', role: 'button', name: 'Delete', sameNameIndex: 1, sameNameTotal: 2,
+        frameKey: '', context: 'row "Alice"',
+      },
+    });
+    const result = await replayTrace(page, trace([step]), undefined);
+    expect(result.ok).toBe(true);
+    expect(clicks).toEqual(['second-delete']);
+  });
+
+  it('ABSTAINS when the recording has an attribute and the live page mints none', async () => {
+    // A recording made where the labels could be read, replayed where the DOM
+    // pass could not run. Absence is not a mismatch.
+    refEntries = [
+      {
+        role: 'button', name: 'Delete', sameNameIndex: 0, sameNameTotal: 2, frameKey: '', ref: 1,
+      },
+      {
+        role: 'button', name: 'Delete', sameNameIndex: 1, sameNameTotal: 2, frameKey: '', ref: 2,
+      },
+    ];
+    const mod = await import('../../playwright/snapshot');
+    vi.spyOn(mod, 'resolveRef').mockResolvedValue(element('first-delete'));
+
+    const step = refStep({
+      axis: {
+        kind: 'ref', role: 'button', name: 'Delete', sameNameIndex: 0, sameNameTotal: 2,
+        frameKey: '', own: 'id=delete-alice',
+      },
+    });
+    const result = await replayTrace(page, trace([step]), undefined);
+    expect(result.ok).toBe(true);
+    expect(clicks).toEqual(['first-delete']);
+  });
+
+  it('never runs when the CONTEXT already decided — the context outranks it', async () => {
+    // One element under the recorded context, at the recorded index: settled
+    // there, whatever the own labels say.
+    refEntries = [
+      {
+        role: 'button', name: 'Delete', sameNameIndex: 0, sameNameTotal: 1, frameKey: '', ref: 1,
+        context: 'row "Alice"', own: 'id=something-else',
+      },
+    ];
+    const mod = await import('../../playwright/snapshot');
+    vi.spyOn(mod, 'resolveRef').mockResolvedValue(element('alice-delete'));
+
+    const step = refStep({
+      axis: {
+        kind: 'ref', role: 'button', name: 'Delete', sameNameIndex: 0, sameNameTotal: 1,
+        frameKey: '', context: 'row "Alice"', own: 'id=delete-alice',
+      },
+    });
+    const result = await replayTrace(page, trace([step]), undefined);
+    expect(result.ok).toBe(true);
+    expect(clicks).toEqual(['alice-delete']);
+  });
+});
+
+describe('replayTrace — provenance, so the count compares like with like', () => {
+  // The smart lane walks the whole accessibility tree; this module counts from
+  // browser_snapshot's ref map, which is depth-capped and filtered on
+  // overflow. A named axis minted over there used to be compared against a
+  // number measured over here, and stopped replays on unchanged pages.
+
+  it('does not STOP a smart-recorded step when only the ENUMERATIONS differ', async () => {
+    // The ref map lists two; the smart walk that recorded the step saw three.
+    // Nothing about the page changed — the two walks simply see different sets.
+    refEntries = [
+      { role: 'button', name: 'Delete', sameNameIndex: 0, sameNameTotal: 2, frameKey: '', ref: 1 },
+      { role: 'button', name: 'Delete', sameNameIndex: 1, sameNameTotal: 2, frameKey: '', ref: 2 },
+    ];
+    smartCount = 3;
+    const mod = await import('../../playwright/snapshot');
+    vi.spyOn(mod, 'resolveRef').mockResolvedValue(element('delete'));
+
+    const step = refStep({
+      axis: {
+        kind: 'ref', role: 'button', name: 'Delete', sameNameIndex: 0, sameNameTotal: 3,
+        frameKey: '', via: 'smart',
+      },
+    });
+    const result = await replayTrace(page, trace([step]), undefined);
+    expect(result.ok).toBe(true);
+    expect(clicks).toEqual(['delete']);
+    // Asked the lane that minted the number, not a second guess at it.
+    expect(smartCountCalls).toEqual([['button', 'Delete']]);
+  });
+
+  it('still STOPS a smart-recorded step when that lane\u2019s OWN count changed', async () => {
+    refEntries = [
+      { role: 'button', name: 'Delete', sameNameIndex: 0, sameNameTotal: 2, frameKey: '', ref: 1 },
+      { role: 'button', name: 'Delete', sameNameIndex: 1, sameNameTotal: 2, frameKey: '', ref: 2 },
+    ];
+    // The smart walk saw three at record time and sees two now: a real change.
+    smartCount = 2;
+    const mod = await import('../../playwright/snapshot');
+    vi.spyOn(mod, 'resolveRef').mockResolvedValue(element('delete'));
+
+    const step = refStep({
+      axis: {
+        kind: 'ref', role: 'button', name: 'Delete', sameNameIndex: 0, sameNameTotal: 3,
+        frameKey: '', via: 'smart',
+      },
+    });
+    const result = await replayTrace(page, trace([step]), undefined);
+    expect(result.ok).toBe(false);
+    expect(result.inconclusive).toBe(true);
+    expect(result.steps[0].detail).toContain('element(s) with that role and name');
+    expect(clicks).toEqual([]);
+  });
+
+  it('keeps the stop when the smart walk cannot answer', async () => {
+    refEntries = [
+      { role: 'button', name: 'Delete', sameNameIndex: 0, sameNameTotal: 2, frameKey: '', ref: 1 },
+      { role: 'button', name: 'Delete', sameNameIndex: 1, sameNameTotal: 2, frameKey: '', ref: 2 },
+    ];
+    smartCount = null;
+    const step = refStep({
+      axis: {
+        kind: 'ref', role: 'button', name: 'Delete', sameNameIndex: 0, sameNameTotal: 3,
+        frameKey: '', via: 'smart',
+      },
+    });
+    const result = await replayTrace(page, trace([step]), undefined);
+    expect(result.ok).toBe(false);
+    expect(clicks).toEqual([]);
+  });
+
+  it('does not consult the smart lane for an axis that did not come from it', async () => {
+    // Absent `via` means the accessibility lane, which is the enumeration this
+    // module already counts — there is nothing to reconcile, and an old trace
+    // must keep the exact behaviour it had.
+    refEntries = [
+      { role: 'button', name: 'Delete', sameNameIndex: 0, sameNameTotal: 2, frameKey: '', ref: 1 },
+      { role: 'button', name: 'Delete', sameNameIndex: 1, sameNameTotal: 2, frameKey: '', ref: 2 },
+    ];
+    smartCount = 3;
+    const step = refStep({
+      axis: {
+        kind: 'ref', role: 'button', name: 'Delete', sameNameIndex: 0, sameNameTotal: 3, frameKey: '',
+      },
+    });
+    const result = await replayTrace(page, trace([step]), undefined);
+    expect(result.ok).toBe(false);
+    expect(smartCountCalls).toEqual([]);
+  });
+
+  it('still refuses a position the live population does not have', async () => {
+    // The enumerations reconcile, but the ref map has no index 2 to act on —
+    // the reconciliation clears the COUNT, never the position.
+    refEntries = [
+      { role: 'button', name: 'Delete', sameNameIndex: 0, sameNameTotal: 2, frameKey: '', ref: 1 },
+      { role: 'button', name: 'Delete', sameNameIndex: 1, sameNameTotal: 2, frameKey: '', ref: 2 },
+    ];
+    smartCount = 3;
+    const step = refStep({
+      axis: {
+        kind: 'ref', role: 'button', name: 'Delete', sameNameIndex: 2, sameNameTotal: 3,
+        frameKey: '', via: 'smart',
+      },
+    });
+    const result = await replayTrace(page, trace([step]), undefined);
+    expect(result.ok).toBe(false);
+    expect(result.steps[0].detail).toContain('none at position 3');
+    expect(clicks).toEqual([]);
   });
 });
 

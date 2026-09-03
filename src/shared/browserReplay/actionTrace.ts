@@ -59,11 +59,13 @@ export function isReplayableTool(value: unknown): value is ReplayableTool {
 // The 4-tuple alone cannot see a swap that keeps the count: insert one
 // look-alike above the recorded element and remove one below, and N is
 // unchanged, so the index still resolves and the click lands on a stranger
-// (#1182). The axis therefore carries one more field, `context` — the
-// accessible name of the nearest named ancestor. It is a VERIFIER, never a
-// locator: nothing is ever found by it, it can only contradict what the index
-// found and stop the run. That keeps the refusal to key on position intact
-// while removing the case where position lies silently.
+// (#1182). The axis therefore carries two more fields — `context`, the
+// accessible name of the nearest named ancestor, and `own`, the element's own
+// identifying attribute for the identical siblings a shared container cannot
+// separate. Both are VERIFIERS, never locators: nothing is ever found by
+// them, they can only contradict what the index found and stop the run. That
+// keeps the refusal to key on position intact while removing the cases where
+// position lies silently.
 
 /** An element addressed the way browser_snapshot addresses it. */
 export interface RefAxis {
@@ -88,6 +90,38 @@ export interface RefAxis {
    * brittleness this axis exists to avoid, one level up.
    */
   context?: string;
+  /**
+   * The element's OWN identifying attribute at record time, as `attr=value`
+   * (see ownAttributeLabel). Absent when the element carried none of them, and
+   * absent from every trace recorded before this field existed.
+   *
+   * `context` says where the element sat; two genuinely identical siblings sit
+   * in the same place, so it abstains on them. This is the second verify-only
+   * signal for exactly that case: most real pages give look-alike siblings a
+   * `data-testid`, an `id`, a `name`, or an `aria-label` of their own, and
+   * that is what tells them apart when the neighbourhood cannot.
+   *
+   * Verify-only on the same terms as `context`: nothing is ever LOCATED by it.
+   * It can only confirm or contradict the element the index found.
+   */
+  own?: string;
+  /**
+   * WHICH lane minted this axis, and therefore which enumeration
+   * `sameNameTotal` was counted over.
+   *
+   * The two lanes do not count the same set. browser_snapshot's ref map is
+   * depth-capped and filtered when the output overflows; the smart lane walks
+   * the whole tree with no cap. Comparing a total recorded by one against a
+   * population counted by the other is comparing two different measurements,
+   * and it stopped replays on pages that had not changed at all (#1179
+   * review). The replay runner reads this to count the live population the
+   * same way the recording did.
+   *
+   * Omitted for 'a11y', which is both the common case and what an axis
+   * recorded before this field existed must be read as — the smart lane is
+   * the one that has to declare itself.
+   */
+  via?: 'a11y' | 'smart';
 }
 
 /** An element addressed by the CSS selector browser_smart_snapshot minted. */
@@ -183,6 +217,60 @@ export const MAX_ARG_BYTES = 512;
  * and a long label still compares equal to itself.
  */
 export const MAX_CONTEXT_CHARS = 96;
+
+/**
+ * Characters of `RefAxis.own` kept.
+ *
+ * Same budget and the same arithmetic as MAX_CONTEXT_CHARS — the value is
+ * stored on every element step of every trace — and the truncation is likewise
+ * applied by whoever MINTS it, so a long `data-testid` is cut identically at
+ * record and at replay and still compares equal to itself.
+ */
+export const MAX_OWN_CHARS = 96;
+
+/**
+ * Attributes that identify an element in its OWN right, most trustworthy first.
+ *
+ * `data-testid` is deliberately at the top: it exists to name one element and
+ * nothing else, and a page that has it has already done the disambiguation for
+ * us. `id` and `name` come next (unique by contract, though pages break that),
+ * then `aria-label`, which is the weakest of the four because it is often the
+ * accessible name the axis already stores.
+ *
+ * Class names, `href`, and positional attributes are absent on purpose: they
+ * change with styling and routing rather than with identity, which is the
+ * DOM-path brittleness the ref axis refuses.
+ */
+export const OWN_IDENTITY_ATTRIBUTES: readonly string[] = [
+  'data-testid',
+  'id',
+  'name',
+  'aria-label',
+];
+
+/**
+ * The `attr=value` label an element's own attributes yield, or `''`.
+ *
+ * ONE attribute, the first present in preference order — not a set. A set
+ * would compare unequal the moment a page adds an unrelated attribute to the
+ * element, turning the verifier into a source of stops on unchanged flows.
+ *
+ * Lives here, in the layer both minting lanes already depend on, for the same
+ * reason ancestorContext does: a value read one way on the accessibility lane
+ * and another on the smart lane would stop every cross-lane replay it was
+ * meant to pass.
+ */
+export function ownAttributeLabel(
+  read: (attribute: string) => string | null | undefined,
+): string {
+  for (const attribute of OWN_IDENTITY_ATTRIBUTES) {
+    const value = read(attribute);
+    if (typeof value !== 'string' || value.length === 0) continue;
+    const label = `${attribute}=${value}`;
+    return label.length <= MAX_OWN_CHARS ? label : `${label.slice(0, MAX_OWN_CHARS - 1)}\u2026`;
+  }
+  return '';
+}
 
 // ── Ancestor context ─────────────────────────────────────────────────────────
 //
@@ -332,6 +420,10 @@ export interface RefEntryLike {
   frameKey: string;
   /** See RefAxis.context. Absent on a snapshot that minted no ancestor label. */
   context?: string;
+  /** See RefAxis.own. Absent when the element carries none of the four. */
+  own?: string;
+  /** See RefAxis.via. Absent means 'a11y' — only the smart lane declares. */
+  via?: 'a11y' | 'smart';
 }
 
 
@@ -378,6 +470,7 @@ export function refEntryToAxis(entry: RefEntryLike | null | undefined): RefAxis 
     ? entry.sameNameTotal
     : 1;
   const context = typeof entry.context === 'string' ? entry.context.slice(0, MAX_CONTEXT_CHARS) : '';
+  const own = typeof entry.own === 'string' ? entry.own.slice(0, MAX_OWN_CHARS) : '';
   return {
     kind: 'ref',
     role: entry.role,
@@ -388,6 +481,10 @@ export function refEntryToAxis(entry: RefEntryLike | null | undefined): RefAxis 
     // Omitted rather than stored empty: an absent field and an empty one mean
     // the same thing (no verdict available) and the absent one costs nothing.
     ...(context.length > 0 && { context }),
+    ...(own.length > 0 && { own }),
+    // Only the smart lane is stored. 'a11y' is what an absent field already
+    // means, so writing it would cost every step bytes to say nothing.
+    ...(entry.via === 'smart' && { via: 'smart' as const }),
   };
 }
 
@@ -638,6 +735,10 @@ function sanitizeAxis(raw: unknown): StepAxis | null {
   // step falls back to the pre-#1182 population rules, which is the same
   // contract every trace recorded before this field had.
   const context = typeof a.context === 'string' ? a.context.slice(0, MAX_CONTEXT_CHARS) : '';
+  // Same rule as context, for the same reason: an own label that cannot be
+  // trusted is DROPPED, leaving the step exactly the contract it had before
+  // the field existed.
+  const own = typeof a.own === 'string' ? a.own.slice(0, MAX_OWN_CHARS) : '';
   return {
     kind: 'ref',
     role: a.role,
@@ -646,6 +747,10 @@ function sanitizeAxis(raw: unknown): StepAxis | null {
     sameNameTotal,
     frameKey: typeof a.frameKey === 'string' ? a.frameKey.slice(0, 256) : '',
     ...(context.length > 0 && { context }),
+    ...(own.length > 0 && { own }),
+    // Anything but the one recognised marker reads as 'a11y', which is the
+    // conservative direction: the count check it selects is the stricter one.
+    ...(a.via === 'smart' && { via: 'smart' as const }),
   };
 }
 

@@ -161,6 +161,9 @@ describe('browser_click({ smartRef }) on the Playwright lane', () => {
       sameNameIndex: 1,
       sameNameTotal: 2,
       frameKey: '',
+      // The counts came from the smart walk, which is not the enumeration the
+      // replay runner counts by default — the axis says so.
+      via: 'smart',
     });
     // The old shape: a css axis holding a string page.locator() cannot parse.
     expect(recorded.step.axis.kind).not.toBe('css');
