@@ -1,0 +1,18 @@
+### Changed
+
+- **A touch preset now dispatches touch.** Under `browser_emulate {device:
+  "Pixel 7"}` the page reported a touchscreen — `maxTouchPoints: 5`,
+  `(pointer: coarse)` — and then received mouse input, so anything gated on
+  `touchstart`, or reading `pointerdown.pointerType`, saw a desktop pressing
+  the button. `browser_click` now sends a real `touchStart`/`touchEnd` pair on
+  the session the preset is already held open on, and `browser_drag` sends
+  `touchStart` → moves → `touchEnd`. Measured on the same fixture and click:
+  before, `pointerdown: mouse` and no touch events at all; after,
+  `pointerdown: touch`, `touchstart`, `touchend`, then the `click` Chrome
+  derives from them, all `isTrusted`. The element is still checked for
+  actionability exactly as a mouse click checks it, and the approach the mouse
+  walks is skipped — a touchscreen has no pointer resting on the page between
+  gestures. Two gestures a touchscreen does not have stay on the mouse and say
+  so in the result: a double click, and `browser_hover`, which would otherwise
+  turn every hover-revealed menu into a silent failure. Nothing changes without
+  a device preset. (#1183)

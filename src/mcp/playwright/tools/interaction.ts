@@ -21,6 +21,7 @@ import {
   setLastPointer,
   stepsForDistance,
 } from '../pointer-path';
+import { hasTouchEmulation, touchDragFor, touchTapFor } from '../touch-input';
 import { describeToolError } from '../toolError';
 import {
   PASSWORD_FIELD_PREDICATE_JS,
@@ -146,6 +147,42 @@ function refNotFound(ref: string): string {
   return REF_NOT_FOUND_HINT.replace('{ref}', ref);
 }
 
+/**
+ * What a hover reports under a touchscreen preset.
+ *
+ * The move still goes out, deliberately. A touchscreen cannot hover, so the
+ * consistent thing would be to refuse — but browser_hover exists to reveal
+ * hover-gated UI, and a no-op would turn every such call into a silent failure
+ * with no touch equivalent to replace it. So the caller is told what happened
+ * instead, and can drop the preset if it wants that fidelity.
+ */
+const TOUCH_HOVER_NOTE =
+  ' — as a mouse move; the emulated device has a touchscreen, which cannot hover';
+
+/**
+ * How a click that ran under a touchscreen preset is described.
+ *
+ * Silent when no preset with touch is active — that is the ordinary case and
+ * it reads exactly as it always has. When one IS active, every outcome is
+ * named, because "clicked" means two different things on the two paths and a
+ * caller emulating a phone is emulating it for a reason.
+ */
+function dispatchNote(
+  touchAvailable: boolean,
+  double: boolean | undefined,
+  dispatch: 'touch' | 'mouse',
+): string {
+  if (!touchAvailable) return '';
+  if (dispatch === 'touch') return ' (touch tap)';
+  if (double) {
+    // Two taps in quick succession are their own gesture on a phone, not a
+    // dblclick, and inventing a mapping between them would be a guess about
+    // what the page meant. The mouse double click is the honest fallback.
+    return ' (mouse double click — a touchscreen has no double click)';
+  }
+  return ' (mouse click — touch dispatch was unavailable for this element)';
+}
+
 // ---------------------------------------------------------------------------
 // RPC-based interaction helpers (used when Playwright page is unavailable)
 // These resolve elements via data-wmux-ref attributes set by browser_snapshot.
@@ -188,7 +225,7 @@ export function sanitizeRef(ref: string, scope: BrowserTargetScope): string {
  */
 interface ApproachTarget {
   boundingBox(): Promise<{ x: number; y: number; width: number; height: number } | null>;
-  click(options?: { position?: { x: number; y: number } }): Promise<void>;
+  click(options?: { position?: { x: number; y: number }; trial?: boolean }): Promise<void>;
   dblclick(options?: { position?: { x: number; y: number } }): Promise<void>;
   scrollIntoViewIfNeeded?(): Promise<void>;
 }
@@ -218,15 +255,23 @@ const MIN_OFFSET_SIZE_PX = 24;
  * An element with no box — detached, `display:none`, still animating in — has
  * no path to walk, so it falls straight through to the plain click and lets
  * Playwright's own waiting produce the error or the retry.
+ *
+ * `tap` is passed when the page is under a device preset with a touchscreen
+ * (see `touch-input`). The landing point is computed exactly as it is for the
+ * mouse, and then a finger is put on it instead of a cursor. Returns which of
+ * the two the click actually went out as, because a fallback to the mouse is
+ * something the caller has to be told rather than left to assume.
  */
 export async function clickWithApproach(
   page: ApproachPage,
   el: ApproachTarget,
   double: boolean,
-): Promise<void> {
-  const plainClick = async (): Promise<void> => {
+  tap?: (point: { x: number; y: number }) => Promise<void>,
+): Promise<'touch' | 'mouse'> {
+  const plainClick = async (): Promise<'mouse'> => {
     if (double) await el.dblclick();
     else await el.click();
+    return 'mouse';
   };
 
   // Scroll first, THEN measure. A box read before scrolling describes where the
@@ -238,8 +283,7 @@ export async function clickWithApproach(
 
   const box = await el.boundingBox().catch(() => null);
   if (!box || box.width <= 0 || box.height <= 0) {
-    await plainClick();
-    return;
+    return plainClick();
   }
 
   // A small control has no room for a meaningful offset — aim at the centre.
@@ -256,8 +300,40 @@ export async function clickWithApproach(
     target.y < 0 ||
     (viewport && (target.x > viewport.width || target.y > viewport.height))
   ) {
-    await plainClick();
-    return;
+    return plainClick();
+  }
+
+  const position = { x: target.x - box.x, y: target.y - box.y };
+
+  // `!double` as well as `tap`: a double click has no touch equivalent worth
+  // inventing, so it stays on the mouse whoever asks for it.
+  if (tap && !double) {
+    // A touchscreen has no pointer to walk. There is nothing resting on the
+    // page between one tap and the next, so the approach path is skipped
+    // outright — emitting mouse moves here would be the emulated device
+    // producing input it does not have — and `setLastPointer` is skipped with
+    // it, because the mouse genuinely did not move.
+    //
+    // The actionability the mouse path gets from `el.click()` is not given up
+    // with it: a trial click runs every one of those checks (attached, visible,
+    // stable, enabled, receiving events at this exact point) and dispatches
+    // nothing. A trial that refuses means the element is not clickable at all,
+    // which is not a touch-specific problem, so the mouse path takes it from
+    // there and reports its own error.
+    try {
+      await el.click({ position, trial: true });
+    } catch {
+      return plainClick();
+    }
+    try {
+      await tap(target);
+      return 'touch';
+    } catch {
+      // Touch dispatch refused (a transport without it, a target that went
+      // away mid-tap). A click that lands is worth more than one that matches
+      // the emulated hardware, so fall through rather than fail.
+      return plainClick();
+    }
   }
 
   const from = getLastPointer(page) ?? defaultStartPoint(viewport ?? undefined);
@@ -267,7 +343,6 @@ export async function clickWithApproach(
   }
   setLastPointer(page, target);
 
-  const position = { x: target.x - box.x, y: target.y - box.y };
   try {
     if (double) await el.dblclick({ position });
     else await el.click({ position });
@@ -278,14 +353,23 @@ export async function clickWithApproach(
     // three, so give it exactly one go before surfacing the failure.
     await plainClick();
   }
+  return 'mouse';
 }
 
-async function rpcClick(ref: string, scope: BrowserTargetScope, _double?: boolean): Promise<void> {
+async function rpcClick(
+  ref: string,
+  scope: BrowserTargetScope,
+  _double?: boolean,
+): Promise<'touch' | 'mouse'> {
   // Use CDP click: first get element coordinates via JS, then dispatch mouse events
   const safeRef = sanitizeRef(ref, scope);
-  await sendScopedBrowserRpc('browser.click.cdp', scope, {
+  // The handler decides between a tap and a press — it is the side that knows
+  // whether a device preset with a touchscreen is on this WebContents — and
+  // names which one it sent.
+  const res = await sendScopedBrowserRpc<{ dispatch?: string }>('browser.click.cdp', scope, {
     selector: `[data-wmux-ref="${safeRef}"]`,
   });
+  return res?.dispatch === 'touch' ? 'touch' : 'mouse';
 }
 
 async function rpcFill(ref: string, value: string, scope: BrowserTargetScope): Promise<void> {
@@ -575,6 +659,14 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
             : null;
           const popupNote = async () => (popupWatch ? await popupWatch.note() : '');
 
+          // Under a device preset with a touchscreen the click goes out as a
+          // real touch sequence rather than a mouse press — the page reported
+          // `maxTouchPoints: 5` and `(pointer: coarse)` the moment the preset
+          // was applied, and a mouse event under that identity contradicts it.
+          // Resolved once here so both ref shapes take the same path.
+          const tapper = touchTapFor(page);
+          const tap = double ? undefined : tapper;
+
           try {
             if (smartRef !== undefined) {
               // Ref-keyed, not `cache[smartRef - 1]`: smart refs are keyed on
@@ -582,7 +674,12 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
               // range. Throws StaleSmartRefError rather than clicking a
               // substitute when the ref no longer names one live element.
               const locator = await resolveSmartRefLocator(page, smartRef);
-              await clickWithApproach(page as unknown as ApproachPage, locator, !!double);
+              const dispatch = await clickWithApproach(
+                page as unknown as ApproachPage,
+                locator,
+                !!double,
+                tap,
+              );
               // A ref axis, not the css axis this used to record: the CDP
               // lane's stored "locator" is getByRole SOURCE TEXT, which
               // page.locator() cannot parse, so every replay of such a step
@@ -598,7 +695,7 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
                 ...(double && { args: { double: true } }),
               });
               return {
-                content: [{ type: 'text' as const, text: `Clicked${double ? ' (double)' : ''} element smartRef=${smartRef}${await popupNote()}` }],
+                content: [{ type: 'text' as const, text: `Clicked${double ? ' (double)' : ''} element smartRef=${smartRef}${dispatchNote(!!tapper, double, dispatch)}${await popupNote()}` }],
               };
             }
 
@@ -606,7 +703,12 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
 
             const el = await resolveRef(page, ref);
             if (!el) throw new Error(refNotFound(ref));
-            await clickWithApproach(page as unknown as ApproachPage, el, !!double);
+            const dispatch = await clickWithApproach(
+              page as unknown as ApproachPage,
+              el,
+              !!double,
+              tap,
+            );
             recordAction(deps, {
               scope,
               tool: 'browser_click',
@@ -615,7 +717,7 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
               ...(double && { args: { double: true } }),
             });
             return {
-              content: [{ type: 'text' as const, text: `Clicked${double ? ' (double)' : ''} element ref=${ref}${await popupNote()}` }],
+              content: [{ type: 'text' as const, text: `Clicked${double ? ' (double)' : ''} element ref=${ref}${dispatchNote(!!tapper, double, dispatch)}${await popupNote()}` }],
             };
           } finally {
             // Every exit — success, a ref that vanished, a click that threw —
@@ -627,10 +729,10 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
         // RPC fallback
         if (!ref && smartRef === undefined) throw new Error('Either ref or smartRef must be provided.');
         const resolvedRef = ref ?? String(smartRef);
-        await rpcClick(resolvedRef, scope, double);
+        const rpcDispatch = await rpcClick(resolvedRef, scope, double);
         recordAction(deps, { scope, tool: 'browser_click', page: null, ref: resolvedRef });
         return {
-          content: [{ type: 'text' as const, text: `Clicked${double ? ' (double)' : ''} element ref=${resolvedRef}` }],
+          content: [{ type: 'text' as const, text: `Clicked${double ? ' (double)' : ''} element ref=${resolvedRef}${rpcDispatch === 'touch' ? ' (touch tap)' : ''}` }],
         };
       } catch (error) {
         const message = describeToolError(error);
@@ -829,10 +931,12 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
     async ({ ref, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
       try {
         const page = await engine.getPageForScope(scope).catch(allowScopedRpcFallback);
+        let touchNote = '';
 
         if (page) {
           const el = await resolveRef(page, ref);
           if (!el) throw new Error(refNotFound(ref));
+          if (hasTouchEmulation(page)) touchNote = TOUCH_HOVER_NOTE;
           await el.hover();
         } else {
           // RPC fallback: real pointer movement over CDP Input. The synthetic
@@ -840,15 +944,18 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
           // handler on the page can read — a single boolean separating our
           // hover from every hover a person performs.
           const safeRef = sanitizeRef(ref, scope);
-          await sendScopedBrowserRpc('browser.hover.cdp', scope, {
-            selector: `[data-wmux-ref="${safeRef}"]`,
-          });
+          const res = await sendScopedBrowserRpc<{ touchPreset?: boolean }>(
+            'browser.hover.cdp',
+            scope,
+            { selector: `[data-wmux-ref="${safeRef}"]` },
+          );
+          if (res?.touchPreset) touchNote = TOUCH_HOVER_NOTE;
         }
 
         recordAction(deps, { scope, tool: 'browser_hover', page, ref });
 
         return {
-          content: [{ type: 'text' as const, text: `Hovered over element ref=${ref}` }],
+          content: [{ type: 'text' as const, text: `Hovered over element ref=${ref}${touchNote}` }],
         };
       } catch (error) {
         const message = describeToolError(error);
@@ -870,6 +977,7 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
     async ({ sourceRef, targetRef, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
       try {
         const page = await engine.getPageForScope(scope).catch(allowScopedRpcFallback);
+        let dragNote = '';
 
         if (page) {
           const sourceEl = await resolveRef(page, sourceRef);
@@ -888,10 +996,30 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
           const targetX = targetBox.x + targetBox.width / 2;
           const targetY = targetBox.y + targetBox.height / 2;
 
-          await page.mouse.move(sourceX, sourceY);
-          await page.mouse.down();
-          await page.mouse.move(targetX, targetY, { steps: 10 });
-          await page.mouse.up();
+          // A drag under a touchscreen preset is a finger sliding across the
+          // glass: press, a bounded run of moves, lift — the same three phases
+          // the mouse performs below, on the input the emulated device has.
+          // Both endpoints are already measured, so nothing else is needed.
+          const touchDrag = touchDragFor(page);
+          let dragged = false;
+          if (touchDrag) {
+            try {
+              await touchDrag({ x: sourceX, y: sourceY }, { x: targetX, y: targetY });
+              dragged = true;
+              dragNote = ' (touch drag)';
+            } catch {
+              // Touch dispatch refused; the mouse drag below still performs the
+              // gesture, and the note says which one the page actually saw.
+              dragNote = ' (mouse drag — touch dispatch was unavailable)';
+            }
+          }
+
+          if (!dragged) {
+            await page.mouse.move(sourceX, sourceY);
+            await page.mouse.down();
+            await page.mouse.move(targetX, targetY, { steps: 10 });
+            await page.mouse.up();
+          }
         } else {
           // RPC fallback: press, move, release over CDP Input — the same shape
           // as the Playwright path above. The synthesised DragEvents this
@@ -899,16 +1027,17 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
           // on pointer events rather than HTML5 drag-and-drop.
           const safeSrc = sanitizeRef(sourceRef, scope);
           const safeTgt = sanitizeRef(targetRef, scope);
-          await sendScopedBrowserRpc('browser.drag.cdp', scope, {
+          const res = await sendScopedBrowserRpc<{ dispatch?: string }>('browser.drag.cdp', scope, {
             sourceSelector: `[data-wmux-ref="${safeSrc}"]`,
             targetSelector: `[data-wmux-ref="${safeTgt}"]`,
           });
+          if (res?.dispatch === 'touch') dragNote = ' (touch drag)';
         }
 
         recordAction(deps, { scope, tool: 'browser_drag', page, ref: sourceRef, targetRef });
 
         return {
-          content: [{ type: 'text' as const, text: `Dragged element ref=${sourceRef} to ref=${targetRef}` }],
+          content: [{ type: 'text' as const, text: `Dragged element ref=${sourceRef} to ref=${targetRef}${dragNote}` }],
         };
       } catch (error) {
         const message = describeToolError(error);

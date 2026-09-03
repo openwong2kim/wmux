@@ -19,6 +19,11 @@ import {
 import { stepsFingerprint } from '../../../shared/browserReplay/actionTrace';
 import { HumanBehavior } from '../../browser-session/HumanBehavior';
 import { approachPath, defaultStartPoint, type Point } from '../../../shared/pointerPath';
+import {
+  dispatchTouchDrag,
+  dispatchTouchTap,
+  type TouchSender,
+} from '../../../shared/touchInput';
 
 /**
  * The physical half of the device preset currently emulated on a WebContents.
@@ -33,6 +38,8 @@ const activePreset = new WeakMap<
   {
     deviceScaleFactor: number;
     mobile: boolean;
+    /** Whether the preset gave the page a touchscreen — see `touchSenderFor`. */
+    hasTouch: boolean;
     screenWidth?: number;
     screenHeight?: number;
   }
@@ -518,6 +525,45 @@ async function approachElement(
     );
   }
   return point;
+}
+
+/**
+ * Is a device preset with a touchscreen active on this WebContents?
+ *
+ * When one is, input has to arrive as touch: the preset already told the page
+ * it has `maxTouchPoints: 5` and matches `(pointer: coarse)`, and a mouse press
+ * under that identity contradicts it in the one place a page can check cheaply.
+ */
+function touchPresetActive(wc: WebContents): boolean {
+  return activePreset.get(wc)?.hasTouch === true;
+}
+
+/** The debugger, in the shape the shared touch dispatch asks for. */
+function touchSenderFor(wc: WebContents): TouchSender {
+  return { send: (method: string, params?: unknown) => wc.debugger.sendCommand(method, params as Record<string, unknown>) };
+}
+
+/**
+ * The point a tap should land on, without walking a pointer to it.
+ *
+ * A touchscreen has nothing resting on the glass between gestures, so the
+ * approach the mouse path performs would be input the emulated device cannot
+ * produce. The rest of `approachElement`'s contract is kept: the element is
+ * scrolled into view, and a target that has slid out from under the
+ * coordinates is refused rather than tapped through.
+ */
+async function touchTargetPoint(
+  wc: WebContents,
+  selector: string,
+  method: string,
+): Promise<Point> {
+  const point = await elementCenter(wc, selector);
+  if (!point) throw new Error(`Element not found: ${selector}`);
+  if (await pointIsOnTarget(wc, selector, point)) return point;
+  throw new Error(
+    `${method}: ${selector} is not the element at (${Math.round(point.x)}, ${Math.round(point.y)}) ` +
+    `— it is moving, or something is covering it. Refusing to tap what is there instead.`,
+  );
 }
 
 /** The intermediate points between two positions, step count from the distance. */
@@ -2163,6 +2209,10 @@ export function registerBrowserRpc(
     let x = typeof params['x'] === 'number' ? params['x'] : 0;
     let y = typeof params['y'] === 'number' ? params['y'] : 0;
 
+    // Under a touchscreen preset this is a tap, not a press, and a tap has no
+    // pointer to walk to the target first.
+    const touch = touchPresetActive(wc);
+
     if (selector) {
       // Walk the pointer to the target before pressing. A single mouseMoved
       // onto the exact spot, from a pointer that has never been anywhere else,
@@ -2171,11 +2221,25 @@ export function registerBrowserRpc(
       // Vue) need hover state before a click registers on a hover-revealed
       // element. approachElement also scrolls the target into view, and refuses
       // rather than pressing on something that slid under the coordinates.
-      const point = await approachElement(wc, target.webContentsId, selector, 'browser.click.cdp');
+      const point = touch
+        ? await touchTargetPoint(wc, selector, 'browser.click.cdp')
+        : await approachElement(wc, target.webContentsId, selector, 'browser.click.cdp');
       x = point.x;
       y = point.y;
-    } else {
+    } else if (!touch) {
       await movePointerTo(wc, target.webContentsId, x, y);
+    }
+
+    if (touch) {
+      try {
+        await dispatchTouchTap(touchSenderFor(wc), { x, y });
+        return { ok: true, x, y, dispatch: 'touch' };
+      } catch {
+        // Touch dispatch refused on this transport. A click that lands is worth
+        // more than one that matches the emulated hardware, so fall through to
+        // the mouse — including the approach that was skipped for the tap.
+        await movePointerTo(wc, target.webContentsId, x, y);
+      }
     }
 
     await wc.debugger.sendCommand('Input.dispatchMouseEvent', {
@@ -2187,7 +2251,7 @@ export function registerBrowserRpc(
       type: 'mouseReleased', x, y, button: 'left', buttons: 0, clickCount: 1,
     });
 
-    return { ok: true, x, y };
+    return { ok: true, x, y, dispatch: 'mouse' };
   });
 
   /**
@@ -2211,7 +2275,11 @@ export function registerBrowserRpc(
     if (!wc || wc.isDestroyed()) throw new Error('browser.hover.cdp: WebContents unavailable');
 
     const point = await approachElement(wc, target.webContentsId, selector, 'browser.hover.cdp');
-    return { ok: true, x: point.x, y: point.y };
+    // Still a mouse move under a touchscreen preset, deliberately: a hover has
+    // no touch equivalent, and refusing would turn every hover-gated menu into
+    // a silent failure. Reported so the caller is told rather than left to
+    // assume the emulated device produced it.
+    return { ok: true, x: point.x, y: point.y, touchPreset: touchPresetActive(wc) };
   });
 
   /**
@@ -2243,9 +2311,25 @@ export function registerBrowserRpc(
     // pointer-event one. Falling back to synthesised DragEvents for draggable
     // sources would trade real input for events carrying isTrusted === false,
     // which is the thing this handler exists to stop doing.
-    const from = await approachElement(wc, target.webContentsId, sourceSelector, 'browser.drag.cdp');
+    const touch = touchPresetActive(wc);
+    const from = touch
+      ? await touchTargetPoint(wc, sourceSelector, 'browser.drag.cdp')
+      : await approachElement(wc, target.webContentsId, sourceSelector, 'browser.drag.cdp');
     const to = await elementCenter(wc, targetSelector);
     if (!to) throw new Error(`Element not found: ${targetSelector}`);
+
+    // A drag under a touchscreen preset is a finger sliding across the glass:
+    // the same three phases as below, on the input the emulated device has.
+    if (touch) {
+      try {
+        await dispatchTouchDrag(touchSenderFor(wc), from, to);
+        return { ok: true, from, to, dispatch: 'touch' };
+      } catch {
+        // Touch dispatch refused; the mouse drag below still performs the
+        // gesture, and the pointer has to be walked to the source first.
+        await movePointerTo(wc, target.webContentsId, from.x, from.y);
+      }
+    }
 
     await wc.debugger.sendCommand('Input.dispatchMouseEvent', {
       type: 'mousePressed', x: from.x, y: from.y, button: 'left', buttons: 1, clickCount: 1,
@@ -2262,7 +2346,7 @@ export function registerBrowserRpc(
     });
     setPointerPosition(wc, target.webContentsId, to);
 
-    return { ok: true, from, to };
+    return { ok: true, from, to, dispatch: 'mouse' };
   });
 
   /**
@@ -2564,6 +2648,10 @@ export function registerBrowserRpc(
       activePreset.set(wc, {
         deviceScaleFactor: dm.deviceScaleFactor ?? 0,
         mobile: dm.mobile ?? false,
+        // Recorded so the input handlers can dispatch touch rather than mouse.
+        // False when the transport refused the touch emulation: a page that was
+        // never given a touchscreen must not be sent touch events.
+        hasTouch: dm.hasTouch === true && !touchUnavailable,
         ...(dm.screenWidth !== undefined && dm.screenHeight !== undefined && {
           screenWidth: dm.screenWidth,
           screenHeight: dm.screenHeight,
