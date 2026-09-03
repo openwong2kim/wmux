@@ -154,7 +154,7 @@
     },
     "commander": {
       "maxListBytes": 60000,
-      "wireResultSha256": "5d41335c653c0916a0f2658b991b3daba44b89bc4cf0b60a80c6fffe78f975fb",
+      "wireResultSha256": "40697b75121ca418727474252ac949975a0242a9b6e613bb97f051eb0f2e0562",
       "instructionSha256": "5a97f851c892326eba7cbcf46292f6925834d5794172461d1ced997d90ac1deb",
       "toolNames": [
         "terminal_read",
@@ -198,7 +198,8 @@
         "surface_new",
         "pane_stash",
         "pane_unstash",
-        "ledger_list"
+        "ledger_list",
+        "ledger_update"
       ]
     }
   }

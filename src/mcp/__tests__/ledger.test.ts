@@ -11,7 +11,7 @@ vi.mock('../wmux-client', () => ({
 }));
 
 import { sendRpc } from '../wmux-client';
-import { registerLedgerUpdateTool, registerLedgerListTool } from '../ledger';
+import { registerLedgerUpdateTool, registerLedgerListTool, registerLedgerBrainUpdateTool } from '../ledger';
 import { FIRST_PARTY_METHODS } from '../../main/mcp/firstParty';
 import { COMMANDER_ONLY_TOOLS, COMMANDER_RPC_METHODS } from '../../shared/commanderSurface';
 import { CORE_TOOL_SURFACE } from '../../shared/coreSurface';
@@ -29,6 +29,16 @@ function collect(): { tools: Map<string, ToolHandler>; shapes: Map<string, Recor
   };
   registerLedgerUpdateTool({ tool } as never, { getSenderPtyId: () => 'pty-mine', resolveWorkspaceId: async () => 'ws-mine' });
   registerLedgerListTool(tool as never);
+  return { tools, shapes };
+}
+
+function collectBrain(): { tools: Map<string, ToolHandler>; shapes: Map<string, Record<string, unknown>> } {
+  const tools = new Map<string, ToolHandler>();
+  const shapes = new Map<string, Record<string, unknown>>();
+  registerLedgerBrainUpdateTool(((name: string, _d: string, schema: Record<string, unknown>, handler: ToolHandler) => {
+    tools.set(name, handler);
+    shapes.set(name, schema);
+  }) as never);
   return { tools, shapes };
 }
 
@@ -59,6 +69,25 @@ describe('ledger_update', () => {
   it('is on the core surface and its RPC is first-party', () => {
     expect(CORE_TOOL_SURFACE).toContain('ledger_update');
     expect(FIRST_PARTY_METHODS.has('ledger.update' as never)).toBe(true);
+  });
+});
+
+describe('ledger_update — brain variant (commander-only)', () => {
+  it('registers under the same name with the full status enum and force/reason, sending no identity', async () => {
+    mockSendRpc.mockResolvedValue({ ok: true, entry: { id: 'wtask-1', status: 'completed', rev: 4 } });
+    const { tools, shapes } = collectBrain();
+    const status = shapes.get('ledger_update')!['status'] as { options: string[] };
+    expect(status.options).toEqual(expect.arrayContaining(['completed', 'failed', 'cancelled', 'input_required', 'working']));
+    await tools.get('ledger_update')!({ task_id: 'wtask-1', status: 'completed', expected_rev: 3, summary: 'gate green', force: true, reason: 'owner waived' });
+    expect(mockSendRpc).toHaveBeenCalledWith('ledger.update', {
+      taskId: 'wtask-1', status: 'completed', expectedRev: 3, summary: 'gate green', force: true, reason: 'owner waived',
+    });
+    expect(Object.keys(shapes.get('ledger_update')!)).not.toContain('gate');
+  });
+
+  it('is on the commander lane with its RPC in the commander allow lane', () => {
+    expect(COMMANDER_ONLY_TOOLS).toContain('ledger_update');
+    expect(COMMANDER_RPC_METHODS.has('ledger.update')).toBe(true);
   });
 });
 

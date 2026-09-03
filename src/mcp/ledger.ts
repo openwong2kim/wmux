@@ -21,6 +21,11 @@ import { sendRpc } from './wmux-client';
 import type { RpcMethod } from '../shared/rpc';
 import { WORKER_SETTABLE_STATUSES, LEDGER_STATUSES } from '../shared/ledger';
 
+/** Statuses the BRAIN variant of ledger_update offers: everything the table
+ *  allows an owner to set. `completed` is still refused server-side without a
+ *  system-recorded passing gate or force + reason. */
+const BRAIN_SETTABLE_STATUSES = LEDGER_STATUSES;
+
 export interface LedgerToolDeps {
   /** The server's OWN verified senderPtyId (PID-map walk hit, '' on miss). */
   getSenderPtyId?: () => string;
@@ -35,6 +40,17 @@ const LEDGER_UPDATE_SHAPE = {
     .describe('review_requested = done AND your own gate passed; input_required = blocked, say on what; failed = cannot finish; working = resumed.'),
   expected_rev: z.number().int().describe('The rev you last read (1 right after fan-out). A stale rev is refused: re-read and retry.'),
   summary: z.string().max(2000).optional().describe('One or two lines: what landed / what blocks you.'),
+};
+
+const LEDGER_BRAIN_UPDATE_SHAPE = {
+  task_id: z.string().min(1).describe('A task you own (from ledger_list).'),
+  status: z
+    .enum(BRAIN_SETTABLE_STATUSES as unknown as [string, ...string[]])
+    .describe('completed = review_requested + a passing gate the gate runner recorded (or force + reason); input_required = bounce back with a question; working = resumed; failed / cancelled = closed without completion.'),
+  expected_rev: z.number().int().describe('The rev from ledger_list. A stale rev is refused: re-read and retry.'),
+  summary: z.string().max(2000).optional().describe('What you verified / why.'),
+  force: z.boolean().optional().describe('completed without a passing recorded gate. Requires reason; the reason is logged on the entry.'),
+  reason: z.string().max(500).optional().describe('Why force is justified.'),
 };
 
 const LEDGER_LIST_SHAPE = {
@@ -69,6 +85,29 @@ export function registerLedgerUpdateTool(server: McpServer, deps: LedgerToolDeps
       if (summary !== undefined) params['summary'] = summary;
       const pty = resolveSenderPtyId();
       if (pty) params['senderPtyId'] = pty;
+      try {
+        return toResult(await sendRpc('ledger.update' as RpcMethod, params));
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        return { content: [{ type: 'text' as const, text: `Error: ${message}` }], isError: true };
+      }
+    },
+  );
+}
+
+/** Register the BRAIN variant of `ledger_update` (commander-only). Same
+ *  name as the worker tool, wider status enum, force override; identity is
+ *  the commander token on the RPC and authz is the ledger's (owner rows). */
+export function registerLedgerBrainUpdateTool(register: McpServer['tool']): void {
+  register(
+    'ledger_update',
+    'Move one of YOUR tasks in the task ledger. Mark completed only after review_requested AND a passing gate recorded by the gate runner (task_gate_run) — the server refuses otherwise; force + reason is the logged exception. Bounce a review back with input_required, or close a task as failed / cancelled. Carry the rev you read.',
+    LEDGER_BRAIN_UPDATE_SHAPE,
+    async ({ task_id, status, expected_rev, summary, force, reason }) => {
+      const params: Record<string, unknown> = { taskId: task_id, status, expectedRev: expected_rev };
+      if (summary !== undefined) params['summary'] = summary;
+      if (force === true) params['force'] = true;
+      if (reason !== undefined) params['reason'] = reason;
       try {
         return toResult(await sendRpc('ledger.update' as RpcMethod, params));
       } catch (err) {

@@ -299,6 +299,10 @@ export const DEFAULT_ALLOWED_TOOLS: string[] = [
   // Commander-only (never in full/core): the task ledger read. A pure read of
   // the brain's own rows, so it auto-allows like the other observe tools.
   WMUX('ledger_list'),
+  // The brain-scoped ledger_update (commander variant): it can only move the
+  // brain's OWN tasks, and `completed` is refused server-side without a
+  // system-recorded passing gate or a logged force+reason.
+  WMUX('ledger_update'),
 ];
 
 // Built-in CLI tools the orchestrator must NEVER hold. `allowedTools` only

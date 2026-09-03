@@ -7,6 +7,7 @@ import {
   COMMANDER_TEARDOWN_DENY,
   COMMANDER_ONLY_TOOLS,
   COMMANDER_ONLY_RESERVED_TOOLS,
+  COMMANDER_VARIANT_TOOLS,
 } from '../commanderSurface';
 import { CORE_TOOL_SURFACE } from '../coreSurface';
 import {
@@ -86,14 +87,34 @@ function walkSources(dir: string, out: string[] = []): string[] {
 }
 
 describe('commander-only lane invariants (COMMANDER_ONLY_TOOLS)', () => {
-  it('is disjoint from the filtered commander surface, core and full', () => {
+  it('is disjoint from the filtered commander surface, core and full — except the declared variants', () => {
     const full = new Set(baseline.profiles.full.toolNames);
+    const variants = new Set(COMMANDER_VARIANT_TOOLS);
     for (const name of COMMANDER_ONLY_TOOLS) {
       expect(COMMANDER_TOOL_SURFACE).not.toContain(name);
+      if (variants.has(name)) {
+        // A variant re-registers a full/core name under the brain's schema;
+        // the worker registration must exist in full and core for it to be
+        // a variant at all.
+        expect(full.has(name), `${name} is declared a variant but is not in full`).toBe(true);
+        expect(CORE_TOOL_SURFACE).toContain(name);
+        continue;
+      }
       expect(CORE_TOOL_SURFACE).not.toContain(name);
       expect(full.has(name), `${name} leaked into the full profile`).toBe(false);
       expect(baseline.profiles.core.toolNames).not.toContain(name);
     }
+    for (const name of COMMANDER_VARIANT_TOOLS) expect(COMMANDER_ONLY_TOOLS).toContain(name);
+  });
+
+  it('the commander profile lists each name exactly once (a variant replaces, never duplicates)', () => {
+    const names = baseline.profiles.commander.toolNames;
+    expect(new Set(names).size).toBe(names.length);
+  });
+
+  it('the brain has a ledger write path: ledger_update on the commander lane and ledger.update in the RPC lane', () => {
+    expect(COMMANDER_ONLY_TOOLS).toContain('ledger_update');
+    expect(COMMANDER_RPC_METHODS.has('ledger.update')).toBe(true);
   });
 
   it('the published commander baseline === COMMANDER_TOOL_SURFACE (full order) + COMMANDER_ONLY_TOOLS', () => {
@@ -123,6 +144,5 @@ describe('commander-only lane invariants (COMMANDER_ONLY_TOOLS)', () => {
 
   it('the commander RPC lane carries the ledger read the commander-only tool calls', () => {
     expect(COMMANDER_RPC_METHODS.has('ledger.list')).toBe(true);
-    expect(COMMANDER_RPC_METHODS.has('ledger.update')).toBe(false);
   });
 });

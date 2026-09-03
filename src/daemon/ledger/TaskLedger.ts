@@ -6,29 +6,36 @@
 //
 // Storage: one JSONL file under the wmux data dir (WMUX_DATA_SUFFIX-scoped
 // through the caller-supplied dir, exactly like the deck-* stores). Every
-// accepted write appends one line through a single writer queue, so two
-// concurrent updates cannot interleave half-lines. Boot replays the file in
-// order; a truncated last line (crash mid-append) is ignored, never fatal.
-// Past LEDGER_ROTATE_BYTES the file is rotated: the old log moves to `.1` and
-// the new one opens with a `snapshot` line carrying every live entry, so a
-// replay of the fresh file alone reconstructs the full state.
+// write — the checks, the append and the in-memory commit — runs inside ONE
+// serialized section, so two concurrent updates cannot both pass the
+// compare-and-swap against the same snapshot, and memory only changes after
+// the line is on disk: a failed append returns `persist_failed`, commits
+// nothing and fires no listener. Boot replays the file in order; a truncated
+// last line (crash mid-append) is ignored, never fatal. Past LEDGER_ROTATE_BYTES
+// the file is rotated: the old log is hard-linked to `.1` and a snapshot line
+// (every live entry + parked orphan) is renamed over the live path, so at no
+// instant is there no ledger; a replay that finds no live file but a `.1`
+// recovers from `.1`.
 //
 // Rules enforced here (the contract lists them; this is the writer):
 //   - transitions: `canTransition`; a same-status resubmit is a no-op.
 //   - authz: `canActorSet` — the ONE predicate, never re-implemented.
+//   - gate results are written by the `system` actor only (`recordGate`,
+//     the gate runner); `update` ignores a caller-supplied gate.
 //   - `completed`: only by a `brain`, only from `review_requested` (table),
-//     only with a recorded gate whose exitCode is exactly 0 — unless
+//     only with a SYSTEM-recorded gate whose exitCode is exactly 0 — unless
 //     `force: true` with a non-empty `reason`, which is logged on the entry.
 //   - CAS: every update names the `expectedRev` it read; a stale one is
-//     refused so two writers cannot both pass the table against one snapshot.
+//     refused.
 //   - WorkTask closed/detached → `closeTask` forces `cancelled` unless the
 //     entry is already `completed`.
 //   - terminal entries older than LEDGER_TERMINAL_RETENTION_MS are pruned
-//     from the live map on load and on list.
+//     from the live map on load and on list (`onPrune` tells the host).
 //
 // Orphaned events (lane F step 1): a worker lifecycle event whose owner
-// workspace has no brain is parked here under `orphaned_event` and handed back
-// as a backlog (`takeOrphanedEvents`) when a brain boots for that workspace.
+// workspace has no brain is parked here under `orphaned_event`, bounded by
+// count and bytes (oldest dropped, logged), peeked as a backlog when a brain
+// boots and acknowledged only once a wake actually delivered it.
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
@@ -48,6 +55,14 @@ import {
 export const LEDGER_FILENAME = 'task-ledger.jsonl';
 /** Rotate past this many bytes (spec: 5 MB). */
 export const LEDGER_ROTATE_BYTES = 5 * 1024 * 1024;
+/** Caps on free text the writer stores (a worker/brain summary, the gate
+ *  command line). Bytes, truncated from the end — the head carries the
+ *  meaning. */
+export const LEDGER_SUMMARY_MAX_BYTES = 2 * 1024;
+export const LEDGER_GATE_COMMAND_MAX_BYTES = 512;
+/** Orphan backlog bounds (all owners together): oldest dropped past either. */
+export const LEDGER_ORPHAN_MAX_COUNT = 200;
+export const LEDGER_ORPHAN_MAX_BYTES = 256 * 1024;
 
 export function getTaskLedgerPath(dir: string): string {
   return path.join(dir, LEDGER_FILENAME);
@@ -88,7 +103,6 @@ export interface LedgerUpdateInput {
   actor: LedgerActor;
   expectedRev: number;
   summary?: string;
-  gate?: LedgerGateResult;
   force?: boolean;
   reason?: string;
 }
@@ -100,7 +114,8 @@ export type LedgerUpdateError =
   | 'not_authorized'
   | 'illegal_transition'
   | 'gate_required'
-  | 'force_reason_required';
+  | 'force_reason_required'
+  | 'persist_failed';
 
 export type LedgerUpdateResult =
   | { ok: true; entry: LedgerEntry; noop?: true }
@@ -136,20 +151,44 @@ export interface TaskLedgerOptions {
   now?: () => number;
   rotateBytes?: number;
   retentionMs?: number;
+  orphanMaxCount?: number;
+  orphanMaxBytes?: number;
   log?: (line: string) => void;
+  /** Called with every entry id the retention prune drops, so a host can
+   *  release what it keyed on the id. */
+  onPrune?: (id: string) => void;
 }
 
 const SYSTEM_ACTOR = (workspaceId = 'daemon'): LedgerActor => ({ kind: 'system', workspaceId });
 
-function truncateTail(tail: string): string {
-  const bytes = Buffer.byteLength(tail, 'utf8');
-  if (bytes <= LEDGER_GATE_TAIL_MAX_BYTES) return tail;
-  const buf = Buffer.from(tail, 'utf8');
-  return buf.subarray(buf.length - LEDGER_GATE_TAIL_MAX_BYTES).toString('utf8');
+/** Keep the LAST `maxBytes` of `text` without splitting a UTF-8 sequence:
+ *  after cutting, advance past any continuation bytes (10xxxxxx). */
+export function truncateTail(text: string, maxBytes: number = LEDGER_GATE_TAIL_MAX_BYTES): string {
+  const buf = Buffer.from(text, 'utf8');
+  if (buf.length <= maxBytes) return text;
+  let start = buf.length - maxBytes;
+  while (start < buf.length && (buf[start] & 0xc0) === 0x80) start += 1;
+  return buf.subarray(start).toString('utf8');
+}
+
+/** Keep the FIRST `maxBytes` of `text` without splitting a UTF-8 sequence:
+ *  back the cut up to the start of the sequence it landed inside. */
+export function truncateHead(text: string, maxBytes: number): string {
+  const buf = Buffer.from(text, 'utf8');
+  if (buf.length <= maxBytes) return text;
+  let end = maxBytes;
+  while (end > 0 && (buf[end] & 0xc0) === 0x80) end -= 1;
+  return buf.subarray(0, end).toString('utf8');
 }
 
 function boundGate(gate: LedgerGateResult): LedgerGateResult {
-  return { ...gate, tail: truncateTail(typeof gate.tail === 'string' ? gate.tail : '') };
+  return {
+    exitCode: gate.exitCode === null ? null : typeof gate.exitCode === 'number' ? gate.exitCode : null,
+    tail: truncateTail(typeof gate.tail === 'string' ? gate.tail : ''),
+    at: typeof gate.at === 'number' ? gate.at : Date.now(),
+    command: truncateHead(typeof gate.command === 'string' ? gate.command : '', LEDGER_GATE_COMMAND_MAX_BYTES),
+    recordedBy: 'system',
+  };
 }
 
 function isEntryShape(v: unknown): v is LedgerEntry {
@@ -165,19 +204,35 @@ function isEntryShape(v: unknown): v is LedgerEntry {
   );
 }
 
+function isOrphanShape(v: unknown): v is OrphanedEvent {
+  if (!v || typeof v !== 'object') return false;
+  const o = v as Record<string, unknown>;
+  return typeof o.ownerWorkspaceId === 'string' && typeof o.seq === 'number' && 'payload' in o;
+}
+
+function orphanBytes(o: OrphanedEvent): number {
+  return Buffer.byteLength(JSON.stringify(o), 'utf8');
+}
+
 export class TaskLedger {
   private readonly filePath: string;
   private readonly dir: string;
   private readonly now: () => number;
   private readonly rotateBytes: number;
   private readonly retentionMs: number;
+  private readonly orphanMaxCount: number;
+  private readonly orphanMaxBytes: number;
   private readonly log: (line: string) => void;
+  private readonly onPrune: (id: string) => void;
   private readonly entries = new Map<string, LedgerEntry>();
   private orphans: OrphanedEvent[] = [];
   private readonly listeners = new Set<(t: LedgerTransition) => void>();
-  private queue: Promise<void> = Promise.resolve();
+  /** Every write runs inside this chain — checks, append and commit together. */
+  private queue: Promise<unknown> = Promise.resolve();
   /** Lines the last load skipped (torn tail / malformed) — observability. */
   readonly skippedLines: number;
+  /** True when the last load recovered from the rotated `.1` file. */
+  readonly recoveredFromRotated: boolean;
 
   constructor(opts: TaskLedgerOptions) {
     this.dir = opts.dir;
@@ -185,8 +240,13 @@ export class TaskLedger {
     this.now = opts.now ?? Date.now;
     this.rotateBytes = opts.rotateBytes ?? LEDGER_ROTATE_BYTES;
     this.retentionMs = opts.retentionMs ?? LEDGER_TERMINAL_RETENTION_MS;
-    this.log = opts.log ?? (() => {});
-    this.skippedLines = this.replay();
+    this.orphanMaxCount = opts.orphanMaxCount ?? LEDGER_ORPHAN_MAX_COUNT;
+    this.orphanMaxBytes = opts.orphanMaxBytes ?? LEDGER_ORPHAN_MAX_BYTES;
+    this.log = opts.log ?? (() => undefined);
+    this.onPrune = opts.onPrune ?? (() => undefined);
+    const loaded = this.replay();
+    this.skippedLines = loaded.skipped;
+    this.recoveredFromRotated = loaded.recovered;
     this.pruneTerminal();
   }
 
@@ -211,6 +271,13 @@ export class TaskLedger {
     return best;
   }
 
+  /** Same, but only an OPEN entry: a finished task's workspace must not keep
+   *  routing events to the brain. */
+  findOpenByTaskWorkspace(taskWorkspaceId: string): LedgerEntry | null {
+    const e = this.findByTaskWorkspace(taskWorkspaceId);
+    return e && isOpenLedgerStatus(e.status) ? e : null;
+  }
+
   list(filter: LedgerListFilter = {}): LedgerEntry[] {
     this.pruneTerminal();
     const out: LedgerEntry[] = [];
@@ -233,29 +300,36 @@ export class TaskLedger {
   // ── writes ───────────────────────────────────────────────────────────────
 
   /** Mirror an existing WorkTask into the ledger as `working`. Idempotent:
-   *  an already-registered id returns its live entry and writes nothing. */
-  async register(input: LedgerRegisterInput): Promise<LedgerEntry> {
-    const existing = this.entries.get(input.id);
-    if (existing) return existing;
-    const by = input.actor ?? SYSTEM_ACTOR();
-    const entry: LedgerEntry = {
-      schemaVersion: LEDGER_SCHEMA_VERSION,
-      id: input.id,
-      taskWorkspaceId: input.taskWorkspaceId,
-      ownerWorkspaceId: input.ownerWorkspaceId,
-      title: input.title,
-      status: 'working',
-      rev: 1,
-      updatedAt: this.now(),
-      updatedBy: by,
-    };
-    this.entries.set(entry.id, entry);
-    await this.append({ op: 'entry', entry });
-    this.emit({ entry, from: null, to: 'working', by });
-    return entry;
+   *  an already-registered id returns its live entry and writes nothing.
+   *  Rejects when the line could not be persisted (nothing is committed). */
+  register(input: LedgerRegisterInput): Promise<LedgerEntry> {
+    return this.serialize(async () => {
+      const existing = this.entries.get(input.id);
+      if (existing) return existing;
+      const by = input.actor ?? SYSTEM_ACTOR();
+      const entry: LedgerEntry = {
+        schemaVersion: LEDGER_SCHEMA_VERSION,
+        id: input.id,
+        taskWorkspaceId: input.taskWorkspaceId,
+        ownerWorkspaceId: input.ownerWorkspaceId,
+        title: truncateHead(input.title, LEDGER_SUMMARY_MAX_BYTES),
+        status: 'working',
+        rev: 1,
+        updatedAt: this.now(),
+        updatedBy: by,
+      };
+      await this.append({ op: 'entry', entry });
+      this.entries.set(entry.id, entry);
+      this.emit({ entry, from: null, to: 'working', by });
+      return entry;
+    });
   }
 
-  async update(input: LedgerUpdateInput): Promise<LedgerUpdateResult> {
+  update(input: LedgerUpdateInput): Promise<LedgerUpdateResult> {
+    return this.serialize(() => this.updateLocked(input));
+  }
+
+  private async updateLocked(input: LedgerUpdateInput): Promise<LedgerUpdateResult> {
     const entry = this.entries.get(input.id);
     if (!entry) return { ok: false, error: 'not_found', message: `no ledger entry for task ${input.id}` };
     if (!isLedgerStatus(input.status)) {
@@ -297,8 +371,10 @@ export class TaskLedger {
           entry,
         };
       }
-      const gate = input.gate ?? entry.gate;
-      const gatePassed = gate !== undefined && gate.exitCode === 0;
+      // Provenance, not just value: the gate must have been RECORDED by the
+      // gate runner (system). A gate that arrived on the wire never counts.
+      const gate = entry.gate;
+      const gatePassed = gate !== undefined && gate.recordedBy === 'system' && gate.exitCode === 0;
       if (!gatePassed) {
         if (input.force !== true) {
           return {
@@ -319,13 +395,18 @@ export class TaskLedger {
             entry,
           };
         }
-        forcedReason = reason;
+        forcedReason = truncateHead(reason, LEDGER_SUMMARY_MAX_BYTES);
       }
     }
-    const summary =
+    const given =
       typeof input.summary === 'string' && input.summary.trim().length > 0
-        ? input.summary.trim()
-        : entry.summary;
+        ? truncateHead(input.summary.trim(), LEDGER_SUMMARY_MAX_BYTES)
+        : undefined;
+    const base = given ?? entry.summary;
+    const summary =
+      forcedReason !== undefined
+        ? truncateHead(`${base ? `${base} ` : ''}[forced: ${forcedReason}]`, LEDGER_SUMMARY_MAX_BYTES)
+        : base;
     const updated: LedgerEntry = {
       ...entry,
       status: next,
@@ -333,13 +414,13 @@ export class TaskLedger {
       updatedAt: this.now(),
       updatedBy: input.actor,
       ...(summary !== undefined ? { summary } : {}),
-      ...(input.gate ? { gate: boundGate(input.gate) } : {}),
-      ...(forcedReason !== undefined
-        ? { summary: `${summary ? `${summary} ` : ''}[forced: ${forcedReason}]` }
-        : {}),
     };
+    try {
+      await this.append({ op: 'entry', entry: updated });
+    } catch (err) {
+      return { ok: false, error: 'persist_failed', message: `ledger write failed: ${String(err)}`, entry };
+    }
     this.entries.set(updated.id, updated);
-    await this.append({ op: 'entry', entry: updated });
     this.emit({
       entry: updated,
       from: entry.status,
@@ -351,58 +432,118 @@ export class TaskLedger {
     return { ok: true, entry: updated };
   }
 
+  /** The gate runner's write: attach a gate result to an entry. SYSTEM only —
+   *  this is the one provenance `completed` trusts. Bumps the rev (a brain
+   *  holding an older rev re-reads and sees the result). No status change,
+   *  no transition event. */
+  recordGate(id: string, gate: LedgerGateResult, actor: LedgerActor = SYSTEM_ACTOR()): Promise<LedgerUpdateResult> {
+    return this.serialize(async () => {
+      const entry = this.entries.get(id);
+      if (!entry) return { ok: false, error: 'not_found', message: `no ledger entry for task ${id}` };
+      if (actor.kind !== 'system') {
+        return { ok: false, error: 'not_authorized', message: 'only the gate runner (system) may record a gate result', entry };
+      }
+      const updated: LedgerEntry = {
+        ...entry,
+        gate: boundGate(gate),
+        rev: entry.rev + 1,
+        updatedAt: this.now(),
+        updatedBy: actor,
+      };
+      try {
+        await this.append({ op: 'entry', entry: updated });
+      } catch (err) {
+        return { ok: false, error: 'persist_failed', message: `ledger write failed: ${String(err)}`, entry };
+      }
+      this.entries.set(id, updated);
+      return { ok: true, entry: updated };
+    });
+  }
+
   /** WorkTask closed or detached: force-terminate the entry (`cancelled`)
    *  unless it already reached `completed`. Returns the resulting entry, or
-   *  null for an unknown id. */
-  async closeTask(id: string, actor: LedgerActor = SYSTEM_ACTOR(), summary = 'WorkTask closed'): Promise<LedgerEntry | null> {
-    const entry = this.entries.get(id);
-    if (!entry) return null;
-    if (entry.status === 'completed' || entry.status === 'cancelled') return entry;
-    const updated: LedgerEntry = {
-      ...entry,
-      status: 'cancelled',
-      rev: entry.rev + 1,
-      updatedAt: this.now(),
-      updatedBy: actor,
-      summary,
-    };
-    this.entries.set(id, updated);
-    await this.append({ op: 'entry', entry: updated });
-    this.emit({ entry: updated, from: entry.status, to: 'cancelled', by: actor, summary });
-    return updated;
+   *  null for an unknown id; the previous entry when the write failed. */
+  closeTask(id: string, actor: LedgerActor = SYSTEM_ACTOR(), summary = 'WorkTask closed'): Promise<LedgerEntry | null> {
+    return this.serialize(async () => {
+      const entry = this.entries.get(id);
+      if (!entry) return null;
+      if (entry.status === 'completed' || entry.status === 'cancelled') return entry;
+      const updated: LedgerEntry = {
+        ...entry,
+        status: 'cancelled',
+        rev: entry.rev + 1,
+        updatedAt: this.now(),
+        updatedBy: actor,
+        summary: truncateHead(summary, LEDGER_SUMMARY_MAX_BYTES),
+      };
+      try {
+        await this.append({ op: 'entry', entry: updated });
+      } catch (err) {
+        this.log(`[ledger] closeTask ${id} not persisted: ${String(err)}`);
+        return entry;
+      }
+      this.entries.set(id, updated);
+      this.emit({ entry: updated, from: entry.status, to: 'cancelled', by: actor, summary: updated.summary });
+      return updated;
+    });
   }
 
   // ── orphaned events (worker events with no brain to receive them) ────────
 
-  async recordOrphanedEvent(event: OrphanedEvent): Promise<void> {
-    this.orphans.push(event);
-    await this.append({ op: 'orphaned_event', event });
+  /** Park an event. Bounded: past the count or byte cap the OLDEST parked
+   *  events are dropped (and logged) before this one is appended. */
+  recordOrphanedEvent(event: OrphanedEvent): Promise<void> {
+    return this.serialize(async () => {
+      const next = [...this.orphans, event];
+      let bytes = next.reduce((n, o) => n + orphanBytes(o), 0);
+      let dropped = 0;
+      while (next.length > 1 && (next.length > this.orphanMaxCount || bytes > this.orphanMaxBytes)) {
+        const gone = next.shift() as OrphanedEvent;
+        bytes -= orphanBytes(gone);
+        dropped += 1;
+      }
+      if (dropped > 0) {
+        this.log(`[ledger] orphan backlog over cap — dropped ${dropped} oldest parked event(s)`);
+      }
+      await this.append({ op: 'orphaned_event', event });
+      this.orphans = next;
+    });
   }
 
+  /** The backlog for one owner workspace, in seq order. Non-destructive: the
+   *  caller acknowledges what a wake actually delivered (`ackOrphanedEvents`). */
   peekOrphanedEvents(ownerWorkspaceId: string): OrphanedEvent[] {
     return this.orphans
       .filter((o) => o.ownerWorkspaceId === ownerWorkspaceId)
       .sort((a, b) => a.seq - b.seq);
   }
 
-  /** Drain the backlog for one owner workspace, in seq order. */
-  takeOrphanedEvents(ownerWorkspaceId: string): OrphanedEvent[] {
-    const taken = this.peekOrphanedEvents(ownerWorkspaceId);
-    if (taken.length === 0) return taken;
-    const upToSeq = taken[taken.length - 1].seq;
-    this.orphans = this.orphans.filter(
-      (o) => !(o.ownerWorkspaceId === ownerWorkspaceId && o.seq <= upToSeq),
-    );
-    void this.append({ op: 'orphans_drained', ownerWorkspaceId, upToSeq });
-    return taken;
+  /** Drop the parked events of `ownerWorkspaceId` at or below `upToSeq` —
+   *  they reached a brain. */
+  ackOrphanedEvents(ownerWorkspaceId: string, upToSeq: number): Promise<void> {
+    return this.serialize(async () => {
+      const remaining = this.orphans.filter(
+        (o) => !(o.ownerWorkspaceId === ownerWorkspaceId && o.seq <= upToSeq),
+      );
+      if (remaining.length === this.orphans.length) return;
+      await this.append({ op: 'orphans_drained', ownerWorkspaceId, upToSeq });
+      this.orphans = remaining;
+    });
   }
 
-  /** Resolves once every queued append (and any rotation) has hit disk. */
+  /** Resolves once every queued write (and any rotation) has settled. */
   flush(): Promise<void> {
-    return this.queue;
+    return this.queue.then(() => undefined, () => undefined);
   }
 
   // ── internals ────────────────────────────────────────────────────────────
+
+  /** Run `fn` after every earlier write, and before every later one. */
+  private serialize<T>(fn: () => Promise<T>): Promise<T> {
+    const run = this.queue.then(fn, fn);
+    this.queue = run.then(() => undefined, () => undefined);
+    return run;
+  }
 
   private emit(t: LedgerTransition): void {
     for (const l of this.listeners) {
@@ -419,53 +560,78 @@ export class TaskLedger {
     for (const [id, e] of this.entries) {
       if ((e.status === 'completed' || e.status === 'cancelled') && e.updatedAt < cutoff) {
         this.entries.delete(id);
+        try {
+          this.onPrune(id);
+        } catch {
+          // a host hook must not break the prune
+        }
       }
     }
   }
 
-  private append(line: LedgerLine): Promise<void> {
+  /** Append one line (caller holds the write section). Rejects on failure;
+   *  the caller then commits nothing. */
+  private async append(line: LedgerLine): Promise<void> {
     const text = `${JSON.stringify(line)}\n`;
-    this.queue = this.queue
-      .then(async () => {
-        await fs.promises.mkdir(this.dir, { recursive: true });
-        await fs.promises.appendFile(this.filePath, text, 'utf8');
-        const stat = await fs.promises.stat(this.filePath);
-        if (stat.size > this.rotateBytes) await this.rotate();
-      })
-      .catch((err) => {
-        this.log(`[ledger] append failed: ${String(err)}`);
-      });
-    return this.queue;
+    await fs.promises.mkdir(this.dir, { recursive: true });
+    await fs.promises.appendFile(this.filePath, text, 'utf8');
+    const stat = await fs.promises.stat(this.filePath);
+    if (stat.size > this.rotateBytes) {
+      try {
+        await this.rotate(line);
+      } catch (err) {
+        // The append itself succeeded; a failed rotation only delays the
+        // next one. Never fail the write for it.
+        this.log(`[ledger] rotation failed: ${String(err)}`);
+      }
+    }
   }
 
-  /** Move the full log aside and open a fresh one with a snapshot line, so
-   *  the new file alone replays to the current state. */
-  private async rotate(): Promise<void> {
-    const snapshot: LedgerLine = {
-      op: 'snapshot',
-      entries: [...this.entries.values()],
-      orphans: [...this.orphans],
-    };
+  /** Keep the old log as `.1` (hard link, so it exists before anything moves)
+   *  and rename a fresh snapshot over the live path — no instant without a
+   *  ledger. Refuses when the snapshot itself would exceed the cap: rotating
+   *  would immediately need rotating again, so the log is left to grow and a
+   *  warning is logged instead. `justAppended` is the line the snapshot must
+   *  already reflect — the caller commits it to memory only after append
+   *  returns, so it is folded in here. */
+  private async rotate(justAppended: LedgerLine): Promise<void> {
+    const entries = new Map(this.entries);
+    let orphans = [...this.orphans];
+    if (justAppended.op === 'entry') entries.set(justAppended.entry.id, justAppended.entry);
+    else if (justAppended.op === 'orphaned_event') orphans.push(justAppended.event);
+    else if (justAppended.op === 'orphans_drained') {
+      orphans = orphans.filter(
+        (o) => !(o.ownerWorkspaceId === justAppended.ownerWorkspaceId && o.seq <= justAppended.upToSeq),
+      );
+    }
+    const snapshot: LedgerLine = { op: 'snapshot', entries: [...entries.values()], orphans };
+    const text = `${JSON.stringify(snapshot)}\n`;
+    if (Buffer.byteLength(text, 'utf8') > this.rotateBytes) {
+      this.log('[ledger] snapshot would exceed the rotation cap — not rotating');
+      return;
+    }
     const rotated = `${this.filePath}.1`;
+    const tmp = `${this.filePath}.tmp-${process.pid}-${Date.now()}`;
+    await fs.promises.writeFile(tmp, text, 'utf8');
     await fs.promises.rm(rotated, { force: true });
-    await fs.promises.rename(this.filePath, rotated);
-    await fs.promises.writeFile(this.filePath, `${JSON.stringify(snapshot)}\n`, 'utf8');
+    await fs.promises.link(this.filePath, rotated);
+    await fs.promises.rename(tmp, this.filePath);
   }
 
-  /** Replay the log into memory. Returns the number of skipped lines. */
-  private replay(): number {
-    let raw: string;
-    try {
-      raw = fs.readFileSync(this.filePath, 'utf8');
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return 0;
-      this.log(`[ledger] read failed, starting empty: ${String(err)}`);
-      return 0;
+  /** Replay the log into memory. Falls back to the rotated `.1` file when the
+   *  live file is missing (a crash between the two rotation steps). */
+  private replay(): { skipped: number; recovered: boolean } {
+    let raw: string | null = this.readLog(this.filePath);
+    let recovered = false;
+    if (raw === null) {
+      raw = this.readLog(`${this.filePath}.1`);
+      if (raw === null) return { skipped: 0, recovered: false };
+      recovered = true;
+      this.log('[ledger] live log missing — recovering from the rotated .1 file');
     }
     const lines = raw.split('\n');
     let skipped = 0;
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i];
+    for (const line of lines) {
       if (line.length === 0) continue;
       let parsed: unknown;
       try {
@@ -479,7 +645,18 @@ export class TaskLedger {
       this.apply(parsed);
     }
     if (skipped > 0) this.log(`[ledger] replay skipped ${skipped} unreadable line(s)`);
-    return skipped;
+    return { skipped, recovered };
+  }
+
+  private readLog(p: string): string | null {
+    try {
+      return fs.readFileSync(p, 'utf8');
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+        this.log(`[ledger] read of ${p} failed: ${String(err)}`);
+      }
+      return null;
+    }
   }
 
   private apply(parsed: unknown): void {
@@ -497,14 +674,12 @@ export class TaskLedger {
         if (Array.isArray(s.entries)) {
           for (const e of s.entries) if (isEntryShape(e)) this.entries.set(e.id, e);
         }
-        this.orphans = Array.isArray(s.orphans) ? (s.orphans as OrphanedEvent[]) : [];
+        this.orphans = Array.isArray(s.orphans) ? s.orphans.filter(isOrphanShape) : [];
         return;
       }
       case 'orphaned_event': {
-        const ev = (line as { event?: unknown }).event as OrphanedEvent | undefined;
-        if (ev && typeof ev.ownerWorkspaceId === 'string' && typeof ev.seq === 'number') {
-          this.orphans.push(ev);
-        }
+        const ev = (line as { event?: unknown }).event;
+        if (isOrphanShape(ev)) this.orphans.push(ev);
         return;
       }
       case 'orphans_drained': {

@@ -16,19 +16,25 @@ const settle = async () => {
   await Promise.resolve();
 };
 
-function mk(autonomy: WorkspaceAutonomy, backlog: CoalescerInput[] = []) {
+function mk(autonomy: WorkspaceAutonomy, backlog: CoalescerInput[] = [], extra: { pendingDecision?: () => boolean; runOk?: () => boolean } = {}) {
   const prompts: { ws: string; prompt: string }[] = [];
+  const acks: number[] = [];
   const c = new CommanderEventCoalescer({
     runTurn: async (ws, prompt) => {
       prompts.push({ ws, prompt });
-      return { ok: true };
+      return extra.runOk ? { ok: extra.runOk(), code: 'spawn_failed' } : { ok: true };
     },
     isBusy: () => false,
     getAutonomy: () => autonomy,
-    takeOrphanBacklog: () => backlog.splice(0),
+    ...(extra.pendingDecision ? { hasPendingDecision: extra.pendingDecision } : {}),
+    peekOrphanBacklog: () => [...backlog],
+    ackOrphanBacklog: (_ws, upToSeq) => {
+      acks.push(upToSeq);
+      for (let i = backlog.length - 1; i >= 0; i--) if (backlog[i].seq <= upToSeq) backlog.splice(i, 1);
+    },
     debounceMs: 1_000,
   });
-  return { c, prompts };
+  return { c, prompts, acks };
 }
 
 function stop(over: Partial<CoalescerInput> = {}): CoalescerInput {
@@ -92,21 +98,54 @@ describe('delegated-task events under wakePolicy none', () => {
   });
 });
 
-describe('orphan backlog replay', () => {
-  it('a human send drains the backlog and its stale seqs still flush', async () => {
-    const backlog = [stop({ workspaceId: 'ws-parent', seq: 3, task: { taskId: 'wtask-1', taskWorkspaceId: 'ws-task' } })];
-    const { c, prompts } = mk({ ...DEFAULT_AUTONOMY, wakePolicy: 'none' }, backlog);
-    // Advance the watermark past the orphan's seq first.
+describe('orphan backlog replay (peek → deliver → ack)', () => {
+  const orphan = () => stop({ workspaceId: 'ws-parent', seq: 3, task: { taskId: 'wtask-1', taskWorkspaceId: 'ws-task' } });
+
+  it('a human send replays the backlog, its stale seq still flushes, and delivery acks it', async () => {
+    const backlog = [orphan()];
+    const { c, prompts, acks } = mk({ ...DEFAULT_AUTONOMY, wakePolicy: 'none' }, backlog);
     c.push(stop({ ptyId: 'pty-x', seq: 10 }));
     vi.advanceTimersByTime(1_000);
     await settle();
     expect(prompts).toHaveLength(0);
     c.notifyHumanSend('ws-parent');
+    expect(backlog).toHaveLength(1); // peeked, not taken
     c.notifyIdle('ws-parent');
     vi.advanceTimersByTime(1_000);
     await settle();
     expect(prompts).toHaveLength(1);
     expect(prompts[0].prompt).toContain('worker-task=wtask-1');
+    expect(acks).toEqual([3]);
+    expect(backlog).toHaveLength(0);
+  });
+
+  it('a flush consumed by a pending decision leaves the backlog parked (no ack)', async () => {
+    const backlog = [orphan()];
+    const { c, prompts, acks } = mk({ ...DEFAULT_AUTONOMY, wakePolicy: 'none' }, backlog, { pendingDecision: () => true });
+    c.notifyBrainBooted('ws-parent');
+    vi.advanceTimersByTime(1_000);
+    await settle();
+    expect(prompts).toHaveLength(0);
+    expect(acks).toEqual([]);
+    expect(backlog).toHaveLength(1);
+  });
+
+  it('a failed turn leaves the backlog parked; a later boot replays it', async () => {
+    const backlog = [orphan()];
+    let ok = false;
+    const { c, prompts, acks } = mk({ ...DEFAULT_AUTONOMY, wakePolicy: 'none' }, backlog, { runOk: () => ok });
+    c.notifyBrainBooted('ws-parent');
+    vi.advanceTimersByTime(1_000);
+    await settle();
+    expect(prompts).toHaveLength(1);
+    expect(acks).toEqual([]);
+    expect(backlog).toHaveLength(1);
+    ok = true;
+    c.notifyBrainBooted('ws-parent');
+    vi.advanceTimersByTime(1_000);
+    await settle();
+    expect(prompts).toHaveLength(2);
+    expect(acks).toEqual([3]);
     expect(backlog).toHaveLength(0);
   });
 });

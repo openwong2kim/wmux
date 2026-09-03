@@ -5,7 +5,9 @@ import path from 'node:path';
 import { TaskLedger } from '../../../daemon/ledger/TaskLedger';
 import {
   routeWorkerEventToOwner,
-  takeOrphanBacklog,
+  peekOrphanBacklog,
+  ackOrphanBacklog,
+  noteWorkTaskClosed,
   createWorkTaskReconciler,
   getMissionChannelId,
   rememberMissionChannel,
@@ -15,7 +17,7 @@ import {
   setTaskLedgerForTests,
 } from '../taskLedgerHost';
 import { overrideLedgerGateForTests } from '../deckLedgerGateStore';
-import { raiseDecision } from '../deckDecisionStore';
+import { raiseDecision, composeDecisionContext, DECISION_LEDGER_PREFIX_MAX_CHARS, DECISION_LIMITS } from '../deckDecisionStore';
 import type { CoalescerInput } from '../CommanderEventCoalescer';
 
 let dir: string;
@@ -53,15 +55,36 @@ describe('routeWorkerEventToOwner', () => {
     expect(pushed).toHaveLength(0);
   });
 
-  it('parks the event as an orphan backlog when the owner has no brain, drained later', async () => {
+  it('parks the event as an orphan backlog when the owner has no brain; peek is non-destructive, ack releases', async () => {
     const pushed: CoalescerInput[] = [];
     routeWorkerEventToOwner(ev(), { hasBrain: () => false, push: (e) => pushed.push(e) });
     await ledger.flush();
     expect(pushed).toHaveLength(0);
-    const backlog = takeOrphanBacklog('ws-parent');
+    const backlog = peekOrphanBacklog('ws-parent');
     expect(backlog).toHaveLength(1);
     expect(backlog[0].task?.taskId).toBe('wtask-1');
-    expect(takeOrphanBacklog('ws-parent')).toHaveLength(0);
+    expect(peekOrphanBacklog('ws-parent')).toHaveLength(1);
+    await ackOrphanBacklog('ws-parent', 5);
+    expect(peekOrphanBacklog('ws-parent')).toHaveLength(0);
+  });
+
+  it('does not route events from a finished task workspace (completed/cancelled entries stop waking the brain)', async () => {
+    await ledger.closeTask('wtask-1');
+    const pushed: CoalescerInput[] = [];
+    let reconciled = 0;
+    routeWorkerEventToOwner(ev(), { hasBrain: () => true, push: (e) => pushed.push(e), reconcile: async () => { reconciled += 1; } });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(pushed).toHaveLength(0);
+    expect(reconciled).toBe(0);
+    expect(peekOrphanBacklog('ws-parent')).toHaveLength(0);
+  });
+
+  it('noteWorkTaskClosed cancels the entry immediately and drops its channel mapping', async () => {
+    rememberMissionChannel('wtask-1', 'ch-1');
+    await noteWorkTaskClosed('wtask-1');
+    expect(ledger.get('wtask-1')?.status).toBe('cancelled');
+    expect(getMissionChannelId('wtask-1')).toBeNull();
+    await noteWorkTaskClosed('wtask-unknown');
   });
 
   it('reconciles once for an unknown workspace and delivers if the task appears', async () => {
@@ -132,6 +155,13 @@ describe('readLedgerGateInput (step 4)', () => {
     overrideLedgerGateForTests(true);
     const d = await raiseDecision('ws-parent', { question: 'merge?', context: 'details' }, dir);
     expect(d?.context).toBe('[open tasks in the ledger: wtask-1 "lane" (working)]\ndetails');
+    // A long open-task list gets its own budget and never evicts the brain's context.
+    const longPrefix = `[open tasks in the ledger: ${'wtask-x "very long title" (working), '.repeat(40)}]\n`;
+    const composed = composeDecisionContext(longPrefix, 'the question context');
+    expect(composed.length).toBeLessThanOrEqual(DECISION_LIMITS.MAX_CONTEXT_CHARS);
+    expect(composed.endsWith('the question context')).toBe(true);
+    expect(composed.indexOf('the question context')).toBeLessThanOrEqual(DECISION_LEDGER_PREFIX_MAX_CHARS);
+    expect(composeDecisionContext('', 'x'.repeat(2000)).length).toBe(DECISION_LIMITS.MAX_CONTEXT_CHARS);
     expect(d?.question).toBe('merge?');
     overrideLedgerGateForTests(false);
     const off = await raiseDecision('ws-parent', { question: 'merge?', context: 'details' }, dir);
@@ -152,7 +182,7 @@ describe('ledger → mission channel emitter (step 5)', () => {
     expect(posts).toEqual([{
       channelId: 'ch-1',
       ownerWorkspaceId: 'ws-parent',
-      text: '[ledger] wtask-1 working→review_requested worker@ws-task gate green all tests',
+      text: '[ledger] wtask-1 working→review_requested worker@ws-task worker: "gate green all tests"',
       clientMsgId: 'ledger:wtask-1:2',
     }]);
   });
@@ -165,5 +195,13 @@ describe('ledger → mission channel emitter (step 5)', () => {
       by: { kind: 'system', workspaceId: 'daemon' },
     });
     expect(line).toBe('[ledger] wtask-9 new→working system@daemon');
+    const quoted = formatLedgerTransition({
+      entry: { id: 'wtask-9', rev: 2 } as never,
+      from: 'working',
+      to: 'input_required',
+      by: { kind: 'worker', workspaceId: 'ws-t' },
+      summary: 'need the "API key"',
+    });
+    expect(quoted).toBe('[ledger] wtask-9 working→input_required worker@ws-t worker: "need the ”API key”"');
   });
 });

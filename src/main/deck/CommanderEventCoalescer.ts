@@ -158,6 +158,8 @@ export interface BufferedEvent {
   lastMessage?: AgentLastMessage;
   /** Set when this event was routed from a fan-out task workspace to its owner. */
   task?: DelegatedTaskTag;
+  /** Internal: replayed from the orphan backlog — acknowledged on delivery. */
+  replayed?: true;
 }
 
 /** Internal per-workspace phase — surfaced only for tests/observability. The
@@ -258,12 +260,16 @@ export interface CoalescerDeps {
    *  flush prompt (e.g. "fleet: 3 running, 1 blocked"). Read fresh at flush;
    *  absent/throwing/empty = no line. Unused until WP4 wires it. */
   getFleetTail?: (workspaceId: string) => string | undefined;
-  /** Lane F: drain the worker events parked in the task ledger while this
-   *  workspace had no brain (`orphaned_event`). Called on the human send that
-   *  boots/addresses the brain, and the backlog is replayed through the
-   *  ordinary push path so it lands in the next wake. Absent/throwing = no
-   *  backlog. */
-  takeOrphanBacklog?: (workspaceId: string) => CoalescerInput[];
+  /** Lane F: PEEK the worker events parked in the task ledger while this
+   *  workspace had no brain (`orphaned_event`). Read when a brain boots for
+   *  the workspace (manager created, mode turned on, human send) and replayed
+   *  through the ordinary push path; nothing leaves the backlog until
+   *  `ackOrphanBacklog` confirms a wake delivered it, so a flush that is
+   *  consumed instead (pending decision, auto-wake off, a failed turn) leaves
+   *  the events parked for the next boot. Absent/throwing = no backlog. */
+  peekOrphanBacklog?: (workspaceId: string) => CoalescerInput[];
+  /** Lane F: the parked events at or below `upToSeq` reached the brain. */
+  ackOrphanBacklog?: (workspaceId: string, upToSeq: number) => void;
 }
 
 const DEFAULT_DEBOUNCE_MS = 1_500;
@@ -333,6 +339,7 @@ export class CommanderEventCoalescer {
       ...(ev.a2a ? { a2a: ev.a2a } : {}),
       ...(ev.lastMessage ? { lastMessage: ev.lastMessage } : {}),
       ...(ev.task ? { task: ev.task } : {}),
+      ...(opts.replay ? { replayed: true as const } : {}),
     });
     st.buffer.set(ev.ptyId, byKind);
 
@@ -531,16 +538,39 @@ export class CommanderEventCoalescer {
     st.phase = 'idle';
     // Lane F: a human send means a brain exists (or is about to) for this
     // workspace — hand it the worker events that fired while it had none.
-    for (const orphan of this.safeOrphanBacklog(workspaceId)) {
+    this.replayOrphanBacklog(workspaceId);
+  }
+
+  /** Lane F: a brain just came up for this workspace (manager created, or
+   *  the mode left 'off') without a human send. Replay the parked worker
+   *  events so the first wake carries them; budgets are untouched. */
+  notifyBrainBooted(workspaceId: string): void {
+    if (this.disposed) return;
+    this.replayOrphanBacklog(workspaceId);
+  }
+
+  private replayOrphanBacklog(workspaceId: string): void {
+    let backlog: CoalescerInput[];
+    try {
+      backlog = this.deps.peekOrphanBacklog?.(workspaceId) ?? [];
+    } catch {
+      backlog = [];
+    }
+    for (const orphan of backlog) {
       this.push({ ...orphan, workspaceId }, { replay: true });
     }
   }
 
-  private safeOrphanBacklog(workspaceId: string): CoalescerInput[] {
+  /** Delivery confirmed for `events`: acknowledge the replayed ones so the
+   *  backlog releases them (up to the highest replayed seq). */
+  private ackReplayed(workspaceId: string, events: readonly BufferedEvent[]): void {
+    let maxSeq = -Infinity;
+    for (const e of events) if (e.replayed && e.seq > maxSeq) maxSeq = e.seq;
+    if (maxSeq === -Infinity) return;
     try {
-      return this.deps.takeOrphanBacklog?.(workspaceId) ?? [];
+      this.deps.ackOrphanBacklog?.(workspaceId, maxSeq);
     } catch {
-      return [];
+      // best-effort — an un-acked backlog only replays once more
     }
   }
 
@@ -931,6 +961,7 @@ export class CommanderEventCoalescer {
           this.recordWake(st, this.nowFn());
           if (snapshotMaxSeq > st.watermark) st.watermark = snapshotMaxSeq;
           this.pruneBuffer(st, snapshotMaxSeq);
+          this.ackReplayed(workspaceId, flushEvents);
           // Events may have arrived during the send — leave them for the next
           // idle-driven flush.
           st.phase = st.buffer.size > 0 ? 'buffering' : 'idle';

@@ -57,7 +57,7 @@ describe('ledger.update', () => {
     expect(stale.error.code).toBe('STALE_REV');
   });
 
-  it('a worker cannot complete or touch a stranger task; the brain completes with a passing gate', async () => {
+  it('a worker cannot complete or touch a stranger task; the brain completes only after the gate runner recorded a pass', async () => {
     const notMine = (await call('ledger.update', { senderPtyId: 'pty-task', taskId: 'wtask-9', status: 'failed', expectedRev: 1 })) as { error: { code: string } };
     expect(notMine.error.code).toBe('NOT_AUTHORIZED');
     await call('ledger.update', { senderPtyId: 'pty-task', taskId: 'wtask-1', status: 'review_requested', expectedRev: 1 });
@@ -65,9 +65,22 @@ describe('ledger.update', () => {
     expect(selfCertify.error.code).toBe('NOT_AUTHORIZED');
     const noGate = (await call('ledger.update', { taskId: 'wtask-1', status: 'completed', expectedRev: 2 }, brainCtx)) as { error: { code: string } };
     expect(noGate.error.code).toBe('GATE_REQUIRED');
-    const done = (await call('ledger.update', { taskId: 'wtask-1', status: 'completed', expectedRev: 2, gate: { exitCode: 0, tail: 'ok', at: 1, command: 'npm test' } }, brainCtx)) as { ok: boolean; entry: { status: string } };
+    // A caller-supplied gate is refused outright — for the brain AND the worker.
+    const wireGate = (await call('ledger.update', { taskId: 'wtask-1', status: 'completed', expectedRev: 2, gate: { exitCode: 0, tail: 'ok', at: 1, command: 'npm test' } }, brainCtx)) as { error: { code: string } };
+    expect(wireGate.error.code).toBe('INVALID_ARGUMENT');
+    const workerGate = (await call('ledger.update', { senderPtyId: 'pty-task', taskId: 'wtask-1', status: 'working', expectedRev: 2, gate: { exitCode: 0 } })) as { error: { code: string } };
+    expect(workerGate.error.code).toBe('INVALID_ARGUMENT');
+    expect(ledger.get('wtask-1')?.gate).toBeUndefined();
+    await ledger.recordGate('wtask-1', { exitCode: 0, tail: 'ok', at: 1, command: 'npm test' });
+    const done = (await call('ledger.update', { taskId: 'wtask-1', status: 'completed', expectedRev: 3 }, brainCtx)) as { ok: boolean; entry: { status: string } };
     expect(done.ok).toBe(true);
     expect(done.entry.status).toBe('completed');
+  });
+
+  it('clamps summary and reason bytes on the wire path', async () => {
+    const res = (await call('ledger.update', { senderPtyId: 'pty-task', taskId: 'wtask-1', status: 'input_required', expectedRev: 1, summary: 'x'.repeat(10_000) })) as { ok: boolean; entry: { summary: string } };
+    expect(res.ok).toBe(true);
+    expect(Buffer.byteLength(res.entry.summary)).toBe(2048);
   });
 
   it('validates the wire shape', async () => {

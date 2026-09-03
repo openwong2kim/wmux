@@ -289,8 +289,8 @@ Total: **164** methods (`ALL_RPC_METHODS` in
 | `task.mission.list` | `a2a.channel.read` | `a2a` |
 | `task.mission.update` | `a2a.channel.send` | `a2a` |
 | `task.fanout.start` | `a2a.execute` | `a2a` |
-| `ledger.list` | `a2a.channel.read` | `a2a` |
-| `ledger.update` | `a2a.channel.send` | `a2a` |
+| `ledger.list` | `ledger.read` | `a2a` |
+| `ledger.update` | `ledger.write` | `a2a` |
 
 ---
 

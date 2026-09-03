@@ -120,7 +120,19 @@ export const COMMANDER_TOOL_SURFACE: readonly string[] = [
 export const COMMANDER_ONLY_TOOLS: readonly string[] = [
   // Task ledger read: every task this brain owns, with rev/status/summary.
   'ledger_list',
+  // The BRAIN-scoped variant of ledger_update (see COMMANDER_VARIANT_TOOLS):
+  // the full/core registration of the same name is the worker's, filtered
+  // out of the commander profile; this one carries the brain's statuses
+  // (completed / failed / cancelled) and the force+reason override.
+  'ledger_update',
 ];
+
+/** Names in COMMANDER_ONLY_TOOLS that ALSO exist in full/core under a
+ *  different (narrower) schema. The commander lane registers the brain
+ *  variant after the manifest filter dropped the worker one, so the commander
+ *  profile still lists each name exactly once. Everything else in
+ *  COMMANDER_ONLY_TOOLS must be absent from full and core. */
+export const COMMANDER_VARIANT_TOOLS: readonly string[] = ['ledger_update'];
 
 /** Commander-only names RESERVED for the gate/adopt/close/PR and git read
  *  tools (orchestrator track, lane O2). Listed so the registration point in
@@ -200,8 +212,10 @@ export const COMMANDER_RPC_METHODS: ReadonlySet<string> = new Set<string>([
   // workspace from the validated commander binding, and every spawn still
   // passes the approval prompt).
   'task.fanout.start',
-  // task ledger (commander-only ledger_list; the brain's own rows)
+  // task ledger (commander-only ledger_list / brain-scoped ledger_update;
+  // the brain's own rows — authz is the ledger's canActorSet)
   'ledger.list',
+  'ledger.update',
 ]);
 
 /** Teardown-EFFECT methods a validated commander is refused server-side

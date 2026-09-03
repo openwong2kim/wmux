@@ -468,8 +468,8 @@ export const METHOD_CAPABILITY: Record<RpcMethod, RequiredCapability> = {
 
   // --- Task ledger (pipe/handlers/ledger.rpc.ts) --- same read/mutation
   // split as task.mission.*; actor/transition authz is enforced in the ledger.
-  'ledger.list':   { capability: 'a2a.channel.read', riskClass: 'a2a' },
-  'ledger.update': { capability: 'a2a.channel.send', riskClass: 'a2a' },
+  'ledger.list':   { capability: 'ledger.read',  riskClass: 'a2a' },
+  'ledger.update': { capability: 'ledger.write', riskClass: 'a2a' },
 
   // --- Company subsystem (substrate-internal team/orchestration). All
   //     internal for v3.0; can be re-classified once spec covers a2a teams.
@@ -554,6 +554,10 @@ export const CAPABILITY_RISK_CLASS: Record<string, RiskClass> = {
   // capability-level fence, not a UX differentiation.
   'a2a.channel.read': 'a2a',
   'a2a.channel.send': 'a2a',
+  // Task ledger — the orchestration ledger is agent-to-agent state, so the
+  // dialog wording is the a2a one; the capability ids stay distinct.
+  'ledger.read':  'a2a',
+  'ledger.write': 'a2a',
   // Plugin host UI contribution points (B-1) — enforced at mount time by
   // the renderer host, not per-RPC; classed here so the approval dialog
   // renders real copy instead of fallback text.
@@ -631,6 +635,9 @@ export const CAPABILITY_EFFECT: Record<string, 'read' | 'write'> = {
   'a2a.read':    'read',
   'a2a.channel.read': 'read',
   'a2a.channel.send': 'write',
+  // Task ledger: list observes, update changes task status.
+  'ledger.read':  'read',
+  'ledger.write': 'write',
   // Plugin host UI contribution points — enforced at mount time, never a
   // per-RPC gate, so the classification is nominal. Listed so the
   // completeness test covers the whole vocabulary.

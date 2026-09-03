@@ -54,7 +54,8 @@ import { DeckHeartbeat } from '../../deck/DeckHeartbeat';
 import { CommanderEventCoalescer } from '../../deck/CommanderEventCoalescer';
 import {
   routeWorkerEventToOwner,
-  takeOrphanBacklog,
+  peekOrphanBacklog,
+  ackOrphanBacklog,
   createWorkTaskReconciler,
   readLedgerGateInput,
   installLedgerChannelEmitter,
@@ -349,6 +350,10 @@ export function registerDeckHandler(
                 // back to the snapshot inference above.
                 ledger: readLedgerGateInput(workspaceId),
               });
+              // Keep the ledger honest against WorkTask right around the gate:
+              // a task closed elsewhere must not hold the next Stop. Throttled
+              // inside; the pass lands for the next evaluation.
+              void reconcileTaskLedger().catch(() => undefined);
               if (!verdict.block && verdict.ledgerReleased) {
                 console.warn(`[deck] ledger_gate_released workspace=${workspaceId} after ${consecutiveBlocks} consecutive blocks`);
               }
@@ -790,6 +795,9 @@ export function registerDeckHandler(
     });
     managerRef = manager;
     managers.set(workspaceId, { manager, model, fullPower, vendor });
+    // Lane F: a brain now exists for this workspace — replay the worker
+    // events parked while it had none (the manager's first idle flushes them).
+    coalescer?.notifyBrainBooted(workspaceId);
     return manager;
   };
 
@@ -1460,6 +1468,13 @@ export function registerDeckHandler(
       return client.rpc('task.mission.list', { verifiedWorkspaceId: owner });
     },
   });
+  // Periodic pass (lane F): fan-out registration and the unknown-workspace
+  // path both feed the ledger, but a task closed or detached elsewhere only
+  // shows up by re-reading WorkTask — so the reconciler also runs on a timer.
+  const ledgerReconcileTimer = setInterval(() => {
+    void reconcileTaskLedger().catch(() => undefined);
+  }, 60_000);
+  ledgerReconcileTimer.unref?.();
   // Lane F step 5: every ledger transition is posted to the task's mission
   // channel as the owner workspace, so the channel transcript and the ledger
   // never disagree about what happened.
@@ -1478,8 +1493,12 @@ export function registerDeckHandler(
   });
   coalescer = new CommanderEventCoalescer({
     runTurn: (workspaceId, prompt) => runTurnForWorkspace(prompt, workspaceId),
-    // Lane F: worker events parked while this workspace had no brain.
-    takeOrphanBacklog: (workspaceId) => takeOrphanBacklog(workspaceId),
+    // Lane F: worker events parked while this workspace had no brain —
+    // peeked at boot, acknowledged only once a wake delivered them.
+    peekOrphanBacklog: (workspaceId) => peekOrphanBacklog(workspaceId),
+    ackOrphanBacklog: (workspaceId, upToSeq) => {
+      void ackOrphanBacklog(workspaceId, upToSeq).catch(() => undefined);
+    },
     isBusy: (workspaceId) =>
       managers.get(workspaceId)?.manager.getStatus().status === 'busy',
     // Fail-closed autonomy caps (summarize on, dangerous caps off by default).
@@ -2217,6 +2236,9 @@ export function registerDeckHandler(
         }
       }
       const next = await setWorkspaceMode(workspaceId, mode as AgentMode);
+      // Lane F: leaving 'off' means wakes may boot a brain here again — replay
+      // the worker events parked while the workspace was off.
+      if (mode !== 'off') coalescer?.notifyBrainBooted(workspaceId);
       // setWorkspaceMode reset caps to the pure mode ceiling. If a loop is still
       // running, re-narrow that new ceiling by the loop tier — otherwise raising
       // the mode mid-loop would silently grant a `report` mission drive/press
@@ -2543,6 +2565,7 @@ export function registerDeckHandler(
   return () => {
     app.removeListener('before-quit', disposeAll);
     clearTimeout(reconcileTimer);
+    clearInterval(ledgerReconcileTimer);
     offBus();
     coalescer?.dispose();
     disposeLedgerEmitter();

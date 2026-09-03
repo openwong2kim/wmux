@@ -37,7 +37,7 @@ import {
 import { TaskWorktreeManager } from './TaskWorktreeManager';
 import type { TaskWorktreePlan } from './TaskWorktreeManager';
 import type { ProjectConfigState } from '../../shared/wmuxProjectConfig';
-import { getTaskLedger, rememberMissionChannel } from '../deck/taskLedgerHost';
+import { getTaskLedger, rememberMissionChannel, noteWorkTaskClosed } from '../deck/taskLedgerHost';
 import {
   FANOUT_TASK_PORT_ENV,
   assignFanoutPorts,
@@ -650,7 +650,9 @@ export class FanOutService {
     _plan?: TaskWorktreePlan,
   ): Promise<void> {
     try {
-      await this.daemon.rpc('task.mission.close', { taskId, verifiedWorkspaceId });
+      const closed = (await this.daemon.rpc('task.mission.close', { taskId, verifiedWorkspaceId })) as { ok?: boolean } | undefined;
+      // Lane F: a closed task leaves the ledger `cancelled` right away.
+      if (closed?.ok) await noteWorkTaskClosed(taskId);
     } catch {
       // best-effort 보상 — 실패해도 fan-out은 계속한다.
     }

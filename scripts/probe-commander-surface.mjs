@@ -59,7 +59,7 @@ const baseline = JSON.parse(readFileSync(BASELINE_PATH, 'utf8'));
 // The commander-only SSOT (src/shared/commanderSurface.ts), read from the tsc
 // output the bundle is built from — the same list the MCP entry registers
 // against, never a copy typed into this script.
-const { COMMANDER_ONLY_TOOLS, COMMANDER_ONLY_RESERVED_TOOLS } = createRequire(import.meta.url)(
+const { COMMANDER_ONLY_TOOLS, COMMANDER_ONLY_RESERVED_TOOLS, COMMANDER_VARIANT_TOOLS } = createRequire(import.meta.url)(
   path.join(REPO_ROOT, 'dist', 'mcp', 'shared', 'commanderSurface.js'),
 );
 
@@ -486,15 +486,28 @@ async function main() {
     [...COMMANDER_ONLY_TOOLS],
     'commander-only tools must be exactly COMMANDER_ONLY_TOOLS, appended after the full-derived part',
   );
-  // No commander-only name may leak into full or core, and no reserved (not
-  // yet wired) name may appear anywhere.
+  // No commander-only name may leak into full or core — except a declared
+  // VARIANT, which re-registers a full/core name under the brain's schema and
+  // must therefore exist in both — and no reserved (not yet wired) name may
+  // appear anywhere.
+  const variants = new Set(COMMANDER_VARIANT_TOOLS);
   for (const profile of ['full', 'core']) {
     assert.deepEqual(
-      byProfile.get(profile).filter((name) => commanderOnly.has(name)),
+      byProfile.get(profile).filter((name) => commanderOnly.has(name) && !variants.has(name)),
       [],
       `${profile} surface must not contain a commander-only tool`,
     );
+    assert.deepEqual(
+      [...variants].filter((name) => !byProfile.get(profile).includes(name)),
+      [],
+      `${profile} surface must contain every commander variant's base tool`,
+    );
   }
+  assert.equal(
+    new Set(commanderNames).size,
+    commanderNames.length,
+    'commander surface must list each name once (a variant replaces the base registration)',
+  );
   const reserved = new Set(COMMANDER_ONLY_RESERVED_TOOLS);
   for (const [profile, names] of byProfile) {
     assert.deepEqual(

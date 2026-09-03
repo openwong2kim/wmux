@@ -28,7 +28,7 @@ import { registerUtilityTools } from './playwright/tools/utility';
 import { registerExtractionTools } from './playwright/tools/extraction';
 import { registerChannelTools } from './channels';
 import { registerFanOutTools } from './fanout';
-import { registerLedgerUpdateTool, registerLedgerListTool } from './ledger';
+import { registerLedgerUpdateTool, registerLedgerListTool, registerLedgerBrainUpdateTool } from './ledger';
 import { registerPaneLifecycleTools } from './paneLifecycle';
 import { registerReplTools } from './repl/tools';
 import { getWmuxMcpServerInstructions, resolveMcpServerVersion } from './serverMetadata';
@@ -1620,6 +1620,10 @@ if (COMMANDER_MODE) {
     return (registerToolUnfiltered as (...a: unknown[]) => ReturnType<typeof server.tool>)(name, ...rest);
   }) as typeof server.tool;
   registerLedgerListTool(registerCommanderOnly);
+  // The brain's ledger_update: the worker registration of that name was
+  // filtered out above (not in COMMANDER_TOOL_SURFACE), so this is the only
+  // ledger_update a commander sees.
+  registerLedgerBrainUpdateTool(registerCommanderOnly);
 }
 
 // Hook the MCP initialize handshake so wmux substrate learns the declared

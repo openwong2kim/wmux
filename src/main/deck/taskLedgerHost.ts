@@ -12,8 +12,8 @@
 // brain that fanned out never learned its workers finished. `WorkTask.owner`
 // is the missing link: resolve it through the ledger (which mirrors WorkTask —
 // see the reconciler) and push a tagged COPY to the owner's coalescer. An
-// owner with no brain gets the event parked as `orphaned_event` and replayed
-// when a brain boots for it.
+// owner with no brain gets the event parked as `orphaned_event`, replayed when
+// a brain boots for it and acknowledged only once a wake delivered it.
 
 import { getWmuxDir } from '../../daemon/config';
 import { TaskLedger, type LedgerTransition } from '../../daemon/ledger/TaskLedger';
@@ -23,9 +23,17 @@ import type { StopGateLedgerInput } from './stopGate';
 
 let ledger: TaskLedger | null = null;
 
+/** taskId → mission channel id, learned from the projection / fan-out (step
+ *  5 posts transitions there). Released when the entry leaves the ledger. */
+const missionChannels = new Map<string, string>();
+
 export function getTaskLedger(): TaskLedger {
   if (!ledger) {
-    ledger = new TaskLedger({ dir: getWmuxDir(), log: (line) => console.warn(line) });
+    ledger = new TaskLedger({
+      dir: getWmuxDir(),
+      log: (line) => console.warn(line),
+      onPrune: (id) => missionChannels.delete(id),
+    });
   }
   return ledger;
 }
@@ -33,6 +41,7 @@ export function getTaskLedger(): TaskLedger {
 /** Tests only: swap the hosted instance (null = re-create lazily). */
 export function setTaskLedgerForTests(instance: TaskLedger | null): void {
   ledger = instance;
+  missionChannels.clear();
 }
 
 // ── worker event → owner ────────────────────────────────────────────────────
@@ -50,9 +59,10 @@ export interface WorkerEventRoutingPorts {
 }
 
 /**
- * If `ev.workspaceId` is a fan-out task workspace, deliver a copy of the event
- * to the owning workspace tagged `{taskId, taskWorkspaceId}`. Non-task
- * workspaces are left alone; the caller keeps its existing push regardless.
+ * If `ev.workspaceId` is the workspace of an OPEN fan-out task, deliver a copy
+ * of the event to the owning workspace tagged `{taskId, taskWorkspaceId}`. A
+ * finished task's workspace and non-task workspaces are left alone; the
+ * caller keeps its existing push regardless.
  */
 export function routeWorkerEventToOwner(ev: CoalescerInput, ports: WorkerEventRoutingPorts): void {
   const l = ports.ledger ?? getTaskLedger();
@@ -67,18 +77,22 @@ export function routeWorkerEventToOwner(ev: CoalescerInput, ports: WorkerEventRo
       ports.push(tagged);
       return;
     }
-    void l.recordOrphanedEvent({ ownerWorkspaceId: entry.ownerWorkspaceId, seq: ev.seq, payload: tagged });
+    l.recordOrphanedEvent({ ownerWorkspaceId: entry.ownerWorkspaceId, seq: ev.seq, payload: tagged }).catch(
+      (err) => console.warn(`[deck] could not park a worker event for ${entry.ownerWorkspaceId}: ${String(err)}`),
+    );
   };
-  const entry = l.findByTaskWorkspace(ev.workspaceId);
+  const entry = l.findOpenByTaskWorkspace(ev.workspaceId);
   if (entry) {
     deliver(entry);
     return;
   }
-  if (!ports.reconcile) return;
+  // Unknown workspace: it may be a task that materialized before the ledger
+  // heard of it. Only a task that is still open after the reconcile routes.
+  if (!ports.reconcile || l.findByTaskWorkspace(ev.workspaceId)) return;
   void ports
     .reconcile()
     .then(() => {
-      const late = l.findByTaskWorkspace(ev.workspaceId);
+      const late = l.findOpenByTaskWorkspace(ev.workspaceId);
       if (late) deliver(late);
     })
     .catch(() => undefined);
@@ -90,14 +104,22 @@ function isCoalescerInput(v: unknown): v is CoalescerInput {
   return typeof e.workspaceId === 'string' && typeof e.ptyId === 'string' && typeof e.kind === 'string' && typeof e.seq === 'number';
 }
 
-/** Drain the parked worker events for a workspace whose brain just booted. */
-export function takeOrphanBacklog(workspaceId: string, instance?: TaskLedger): CoalescerInput[] {
+/** The parked worker events for a workspace whose brain is booting — a PEEK:
+ *  nothing leaves the backlog until `ackOrphanBacklog` confirms a wake
+ *  delivered it. */
+export function peekOrphanBacklog(workspaceId: string, instance?: TaskLedger): CoalescerInput[] {
   const l = instance ?? getTaskLedger();
   const out: CoalescerInput[] = [];
-  for (const o of l.takeOrphanedEvents(workspaceId)) {
+  for (const o of l.peekOrphanedEvents(workspaceId)) {
     if (isCoalescerInput(o.payload)) out.push(o.payload);
   }
   return out;
+}
+
+/** Acknowledge parked events at or below `upToSeq` — they reached the brain. */
+export function ackOrphanBacklog(workspaceId: string, upToSeq: number, instance?: TaskLedger): Promise<void> {
+  const l = instance ?? getTaskLedger();
+  return l.ackOrphanedEvents(workspaceId, upToSeq);
 }
 
 // ── Stop gate + decision prompt inputs (lane F step 4) ──────────────────────
@@ -128,10 +150,15 @@ export function readLedgerGateInput(workspaceId: string, instance?: TaskLedger):
 
 // ── mission-channel emitter (lane F step 5) ─────────────────────────────────
 
-/** `[ledger] <taskId> <from>→<to> <by> <summary?>` — one line per transition. */
+/** `[ledger] <taskId> <from>→<to> <by> worker: "<summary>"` — one line per
+ *  transition. The summary is text the ACTOR wrote (a worker, usually) and
+ *  the post goes out under the owner's authorship, so it is quoted and
+ *  labelled with its author kind: provenance stays visible in the transcript. */
 export function formatLedgerTransition(t: LedgerTransition): string {
   const by = `${t.by.kind}@${t.by.workspaceId}`;
-  const summary = t.summary ? ` ${t.summary.replace(/\s+/g, ' ').trim().slice(0, 500)}` : '';
+  const summary = t.summary
+    ? ` ${t.by.kind}: "${t.summary.replace(/\s+/g, ' ').replace(/"/g, '”').trim().slice(0, 500)}"`
+    : '';
   return `[ledger] ${t.entry.id} ${t.from ?? 'new'}→${t.to} ${by}${summary}`;
 }
 
@@ -183,16 +210,25 @@ export interface WorkTaskReconcilerPorts {
   now?: () => number;
 }
 
-/** taskId → mission channel id, learned from the projection (step 5 posts
- *  transitions there). */
-const missionChannels = new Map<string, string>();
-
 export function getMissionChannelId(taskId: string): string | null {
   return missionChannels.get(taskId) ?? null;
 }
 
 export function rememberMissionChannel(taskId: string, channelId: string): void {
   missionChannels.set(taskId, channelId);
+}
+
+/** A WorkTask was closed (task.mission.close succeeded, or the task was
+ *  detached): force its ledger entry to `cancelled` NOW rather than on the
+ *  next reconcile pass, and release its channel mapping. Never throws. */
+export async function noteWorkTaskClosed(taskId: string, instance?: TaskLedger): Promise<void> {
+  const l = instance ?? getTaskLedger();
+  try {
+    if (l.get(taskId)) await l.closeTask(taskId);
+  } catch (err) {
+    console.warn(`[deck] ledger close for ${taskId} failed: ${String(err)}`);
+  }
+  missionChannels.delete(taskId);
 }
 
 function projectTasks(res: unknown): WorkTaskProjectionLike[] {
@@ -215,6 +251,8 @@ function projectTasks(res: unknown): WorkTaskProjectionLike[] {
  * materialized task (paneGroupId = its workspace) gets a `working` entry if it
  * has none; every closed task with a live entry is force-cancelled. The ledger
  * never invents a task — every entry here is a WorkTask the daemon returned.
+ * Runs from the periodic timer, before a Stop-gate evaluation and on an
+ * unknown-workspace event; the throttle makes all three cheap.
  */
 export function createWorkTaskReconciler(ports: WorkTaskReconcilerPorts): () => Promise<void> {
   const now = ports.now ?? Date.now;
@@ -236,18 +274,23 @@ export function createWorkTaskReconciler(ports: WorkTaskReconcilerPorts): () => 
           continue;
         }
         for (const t of tasks) {
-          if (typeof t.missionChannelId === 'string') missionChannels.set(t.id, t.missionChannelId);
           if (t.status === 'closed') {
             if (l.get(t.id)) await l.closeTask(t.id);
+            missionChannels.delete(t.id);
             continue;
           }
+          if (typeof t.missionChannelId === 'string') missionChannels.set(t.id, t.missionChannelId);
           if (!t.paneGroupId || l.get(t.id)) continue;
-          await l.register({
-            id: t.id,
-            taskWorkspaceId: t.paneGroupId,
-            ownerWorkspaceId: t.owner.verifiedWorkspaceId,
-            title: typeof t.title === 'string' ? t.title : t.id,
-          });
+          try {
+            await l.register({
+              id: t.id,
+              taskWorkspaceId: t.paneGroupId,
+              ownerWorkspaceId: t.owner.verifiedWorkspaceId,
+              title: typeof t.title === 'string' ? t.title : t.id,
+            });
+          } catch (err) {
+            console.warn(`[deck] ledger register for ${t.id} failed: ${String(err)}`);
+          }
         }
       }
     })().finally(() => {

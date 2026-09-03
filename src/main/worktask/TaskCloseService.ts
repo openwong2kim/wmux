@@ -24,6 +24,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 
 import type { TaskWorktreeManager } from './TaskWorktreeManager';
+import { noteWorkTaskClosed } from '../deck/taskLedgerHost';
 import { getExecEnv } from '../../shared/execEnv';
 
 const execFileAsync = promisify(execFile);
@@ -153,6 +154,9 @@ export class TaskCloseService {
         verifiedWorkspaceId,
       })) as { ok?: boolean; archivePending?: boolean; error?: { message?: string } };
       if (res && res.ok === true) {
+        // Lane F: the task ledger learns about the close now, not on the
+        // next reconcile pass (an open row would hold the brain's Stop gate).
+        await noteWorkTaskClosed(taskId);
         return { ok: true, archivePending: res.archivePending === true };
       }
       return { ok: false, error: res?.error?.message ?? 'task.mission.close failed' };

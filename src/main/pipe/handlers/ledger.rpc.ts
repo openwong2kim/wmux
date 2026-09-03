@@ -15,10 +15,10 @@
 import type { BrowserWindow } from 'electron';
 import type { RpcRouter } from '../RpcRouter';
 import type { RpcContext } from '../../../shared/rpc';
-import { isLedgerStatus, type LedgerActor, type LedgerGateResult } from '../../../shared/ledger';
+import { isLedgerStatus, type LedgerActor } from '../../../shared/ledger';
 import { resolvePtyOwnerWorkspace } from '../../workspace/ptyOwnership';
 import { getTaskLedger } from '../../deck/taskLedgerHost';
-import type { TaskLedger } from '../../../daemon/ledger/TaskLedger';
+import { LEDGER_SUMMARY_MAX_BYTES, truncateHead, type TaskLedger } from '../../../daemon/ledger/TaskLedger';
 
 type GetWindow = () => BrowserWindow | null;
 
@@ -37,17 +37,9 @@ function str(v: unknown): string {
   return typeof v === 'string' ? v.trim() : '';
 }
 
-function readGate(v: unknown): LedgerGateResult | undefined {
-  if (!v || typeof v !== 'object') return undefined;
-  const g = v as Record<string, unknown>;
-  const exitCode = g.exitCode === null ? null : typeof g.exitCode === 'number' ? g.exitCode : undefined;
-  if (exitCode === undefined) return undefined;
-  return {
-    exitCode,
-    tail: typeof g.tail === 'string' ? g.tail : '',
-    at: typeof g.at === 'number' ? g.at : Date.now(),
-    command: typeof g.command === 'string' ? g.command : '',
-  };
+/** Free text off the wire, clamped to the ledger's byte cap. */
+function text(v: unknown): string {
+  return truncateHead(str(v), LEDGER_SUMMARY_MAX_BYTES);
 }
 
 export function registerLedgerRpc(router: RpcRouter, getWindow: GetWindow, deps: LedgerRpcDeps = {}): void {
@@ -102,15 +94,21 @@ export function registerLedgerRpc(router: RpcRouter, getWindow: GetWindow, deps:
     if (typeof params.expectedRev !== 'number' || !Number.isInteger(params.expectedRev)) {
       return deny('INVALID_ARGUMENT', 'ledger.update: expectedRev (the rev you read from ledger_list) is required');
     }
+    // A gate result is the gate runner's write (system actor, TaskLedger.
+    // recordGate). No wire caller — worker or brain — may supply one: a
+    // caller-written "exitCode: 0" is exactly the self-certification the
+    // ledger exists to refuse.
+    if (params.gate !== undefined) {
+      return deny('INVALID_ARGUMENT', 'ledger.update: gate results are recorded by the gate runner, not by callers; omit "gate" (use force + reason to complete without one)');
+    }
     const res = await ledgerOf().update({
       id: taskId,
       status,
       actor,
       expectedRev: params.expectedRev,
-      ...(str(params.summary) ? { summary: str(params.summary) } : {}),
-      ...(readGate(params.gate) ? { gate: readGate(params.gate) } : {}),
+      ...(text(params.summary) ? { summary: text(params.summary) } : {}),
       ...(params.force === true ? { force: true } : {}),
-      ...(str(params.reason) ? { reason: str(params.reason) } : {}),
+      ...(text(params.reason) ? { reason: text(params.reason) } : {}),
     });
     if (!res.ok) {
       return { ...deny(res.error.toUpperCase(), `ledger.update: ${res.message}`), ...(res.entry ? { entry: res.entry } : {}) };
