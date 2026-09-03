@@ -83,14 +83,44 @@ describe('wmux channel — transport + identity', () => {
     });
   });
 
-  it('unread honors $WMUX_MEMBER_ID like post/ack (GLM review — consistent member filtering)', async () => {
+  // PARITY WITH MCP `channel_unread` (canonical). The tool takes ONLY an
+  // explicit member_id, so the CLI reading $WMUX_MEMBER_ID meant the two
+  // surfaces answered the same question from different daemon calls — a pane
+  // could be told "no unread" by one and shown rows by the other.
+  it('unread ignores $WMUX_MEMBER_ID — only an explicit --member narrows the set', async () => {
     process.env.WMUX_MEMBER_ID = 'codex';
     daemonRpc.mockResolvedValue(okEnvelope({ ok: true, entries: [] }));
     await handleChannel('unread', [], false);
     expect(daemonRpc).toHaveBeenCalledWith('a2a.channel.unread', {
+      senderPtyId: 'pty-self',
+    });
+
+    daemonRpc.mockClear();
+    await handleChannel('unread', ['--member', 'codex'], false);
+    expect(daemonRpc).toHaveBeenCalledWith('a2a.channel.unread', {
       memberId: 'codex',
       senderPtyId: 'pty-self',
     });
+  });
+
+  it('unread prints every row the daemon returned, caught-up ones included', async () => {
+    daemonRpc.mockResolvedValue(
+      okEnvelope({
+        ok: true,
+        entries: [
+          { channelId: 'ch-1', name: 'general', memberId: 'codex', lastReadSeq: 9, headSeq: 9, unread: 0, mentionUnread: 0, trimmedBeforeCursor: 0 },
+          { channelId: 'ch-2', name: 'build', memberId: 'codex', lastReadSeq: 2, headSeq: 5, unread: 3, mentionUnread: 1, trimmedBeforeCursor: 0 },
+        ],
+      }),
+    );
+    await handleChannel('unread', [], false);
+    const printed = logSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('\n');
+    // The zero-unread row is REPORTED, not hidden: an agent has to be able to
+    // reconcile this output against what channel_unread returns.
+    expect(printed).toContain('#general (ch-1)');
+    expect(printed).toContain('up to date');
+    expect(printed).toContain('#build (ch-2) member=codex: 3 unread (1 mention you)');
+    expect(printed).not.toContain('No unread channel messages.');
   });
 
   it('post sends sender WITHOUT workspaceId (daemon backfills from its own stamp)', async () => {

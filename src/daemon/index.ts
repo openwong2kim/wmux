@@ -5679,6 +5679,15 @@ async function main(): Promise<void> {
   channelWakeWorkerRef = new ChannelWakeWorker({
     memberWorkspaces: () => channelService.memberWorkspaces(),
     unreadFor: (ws) => channelService.unreadFor(ws),
+    // A nudge that never landed must not leave the message it announced sitting
+    // at 'pending' forever — the push half used to drop that outcome on the floor.
+    onNudgeOutcome: (outcome) =>
+      channelService.noteNudgeOutcome({
+        channelId: outcome.channelId,
+        workspaceId: outcome.workspaceId,
+        memberId: outcome.memberId,
+        ok: outcome.ok,
+      }),
     // R2: the registry supplies the member's last PTY coordinate even after
     // restart backfill marks it stale. listLiveSessions below is the daemon-
     // owned liveness authority: only attached/detached sessions enter the

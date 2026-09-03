@@ -2549,3 +2549,70 @@ describe('ChannelService.create — P5 reserved human workspace guard (ship revi
     expect(retry.ok).toBe(true);
   });
 });
+
+// ---------------------------------------------------------------------------
+// What the wake nudge says, and what a failed nudge records.
+// ---------------------------------------------------------------------------
+describe('ChannelService — wake nudge support', () => {
+  async function twoMemberChannel() {
+    const h = makeService();
+    const created = await h.svc.create({
+      name: 'general',
+      visibility: 'public',
+      createdBy: { workspaceId: 'ws-1', memberId: 'm-1', memberName: 'Alice' },
+      verifiedWorkspaceId: 'ws-1',
+    });
+    if (!created.ok) throw new Error('create failed');
+    await h.svc.join({
+      channelId: created.channel.id,
+      member: { workspaceId: 'ws-2', memberId: 'codex', memberName: 'Codex' },
+      verifiedWorkspaceId: 'ws-2',
+    });
+    return { ...h, channelId: created.channel.id };
+  }
+
+  it('unreadFor hands the wake worker the OLDEST owed message body', async () => {
+    const { svc, channelId } = await twoMemberChannel();
+    await svc.post({
+      channelId,
+      sender: { workspaceId: 'ws-1', memberId: 'm-1', memberName: 'Alice' },
+      text: 'first thing',
+      verifiedWorkspaceId: 'ws-1',
+    });
+    await svc.post({
+      channelId,
+      sender: { workspaceId: 'ws-1', memberId: 'm-1', memberName: 'Alice' },
+      text: 'second thing',
+      verifiedWorkspaceId: 'ws-1',
+    });
+
+    const row = svc.unreadFor('ws-2').find((e) => e.channelId === channelId);
+    expect(row?.unread).toBe(2);
+    // Oldest first — the nudge announces what the agent has not seen yet, not
+    // whatever happened to arrive last.
+    expect(row?.latestBody).toBe('first thing');
+  });
+
+  it('a failed nudge marks that recipient target_gone; a successful one is NOT a delivery', async () => {
+    const { svc, channelId } = await twoMemberChannel();
+    const posted = await svc.post({
+      channelId,
+      sender: { workspaceId: 'ws-1', memberId: 'm-1', memberName: 'Alice' },
+      text: 'anyone there?',
+      verifiedWorkspaceId: 'ws-1',
+    });
+    expect(posted.ok).toBe(true);
+
+    const statusFor = (ws: string): string | undefined => {
+      const msg = svc.getMessages(channelId, undefined, 'ws-1')[0];
+      return msg?.recipientSnapshot?.find((e) => e.workspaceId === ws)?.status;
+    };
+
+    // A nudge that landed is not a receipt — only an ack (read === received) is.
+    svc.noteNudgeOutcome({ channelId, workspaceId: 'ws-2', memberId: 'codex', ok: true });
+    expect(statusFor('ws-2')).toBe('pending');
+
+    svc.noteNudgeOutcome({ channelId, workspaceId: 'ws-2', memberId: 'codex', ok: false });
+    expect(statusFor('ws-2')).toBe('target_gone');
+  });
+});

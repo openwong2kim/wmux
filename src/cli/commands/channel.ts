@@ -35,7 +35,8 @@ wmux channel — durable agent messaging (Channels v2)
   unread mentions you will be re-nudged — ack is what makes it stop.
 
   wmux channel unread [--member <id>]
-      Your per-channel unread + mention counts. Cheap; call when nudged.
+      Your per-channel unread + mention counts, one line per member row —
+      the same set the channel_unread tool returns. Cheap; call when nudged.
   wmux channel read <channel> [--since <seq>] [--limit <n>]
       Print messages, oldest first, paging forward. Without --since it
       starts from YOUR unread cursor (when you have one member row here).
@@ -270,11 +271,13 @@ export async function handleChannel(sub: string | undefined, args: string[], jso
   const positionals = positionalsOf(args).concat(verbatim);
   switch (sub) {
     case 'unread': {
-      // Same identity ladder as post/ack (GLM review): explicit --member, then
-      // $WMUX_MEMBER_ID — so a multi-agent workspace that pins its member id in
-      // the env gets a filtered summary here too, not the whole workspace's rows.
-      // Absent both = every row (the daemon's default).
-      const memberId = parseFlag(args, '--member') ?? (process.env['WMUX_MEMBER_ID'] || undefined);
+      // PARITY WITH MCP `channel_unread` (canonical). The two surfaces answer
+      // the same question and used to disagree twice over: this command also
+      // took the member from $WMUX_MEMBER_ID (MCP takes only an explicit
+      // member_id), and it then PRINTED only the rows that owed something. So a
+      // pane could be told "no unread" by the CLI while the tool it was about
+      // to call reported rows, and vice versa. One request shape, one set.
+      const memberId = parseFlag(args, '--member');
       const result = await callChannel(
         'a2a.channel.unread' as RpcMethod,
         { ...(memberId !== undefined ? { memberId } : {}) },
@@ -295,15 +298,22 @@ export async function handleChannel(sub: string | undefined, args: string[], jso
         console.log(JSON.stringify(entries, null, 2));
         return;
       }
-      const owed = entries.filter((e) => e.unread > 0 || e.trimmedBeforeCursor > 0);
-      if (owed.length === 0) {
-        console.log('No unread channel messages.');
+      if (entries.length === 0) {
+        console.log('No channel member rows for this workspace.');
         return;
       }
-      for (const e of owed) {
+      // Every row the daemon returned, caught-up ones included — the same set
+      // channel_unread hands an agent. A row hidden here is a row the agent
+      // cannot reconcile against the tool's answer.
+      for (const e of entries) {
         const trimmed = e.trimmedBeforeCursor > 0 ? `  [WARNING: ${e.trimmedBeforeCursor} message(s) trimmed before you read them]` : '';
+        const head = `#${e.name} (${e.channelId}) member=${e.memberId}:`;
+        if (e.unread === 0 && e.trimmedBeforeCursor === 0) {
+          console.log(`${head} up to date (cursor ${e.lastReadSeq}, head ${e.headSeq})`);
+          continue;
+        }
         console.log(
-          `#${e.name} (${e.channelId}) member=${e.memberId}: ${e.unread} unread` +
+          `${head} ${e.unread} unread` +
             (e.mentionUnread > 0 ? ` (${e.mentionUnread} mention you)` : '') +
             ` — read: wmux channel read ${e.channelId} --since ${e.lastReadSeq + 1}${trimmed}`,
         );

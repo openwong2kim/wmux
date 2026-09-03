@@ -55,6 +55,27 @@ export interface WakeUnreadEntry {
   unread: number;
   mentionUnread: number;
   trimmedBeforeCursor: number;
+  /**
+   * The oldest unread message's body, supplied by ChannelService. The nudge
+   * carries its first line so the woken agent knows WHAT it is being woken
+   * for — a bare "2 unread, run wmux channel read …" makes every nudge look
+   * identical, and an agent mid-task cannot tell an urgent mention from
+   * routine chatter without spending a turn on the read. Optional: an older
+   * producer that does not supply it still gets the hint-only nudge.
+   */
+  latestBody?: string;
+}
+
+/** Outcome of one nudge attempt, reported back to the producer so a message's
+ *  delivery bookkeeping reflects what actually happened at the PTY. */
+export interface WakeNudgeOutcome {
+  workspaceId: string;
+  channelId: string;
+  memberId: string;
+  sessionId: string;
+  /** False when the write threw — the pane died between target selection and
+   *  the write, so nothing was delivered. */
+  ok: boolean;
 }
 
 export interface WakeSessionView {
@@ -98,6 +119,14 @@ export interface ChannelWakeWorkerDeps {
   /** Broadcast a daemon event (nudge exhaustion → human attention). */
   broadcast(event: Record<string, unknown>): void;
   log(level: 'debug' | 'info' | 'warn', message: string): void;
+  /**
+   * Report what happened at the PTY for one nudge. The push half used to be
+   * write-only: a nudge into a pane that died mid-race was logged and dropped,
+   * and the message it was announcing stayed `pending` forever — a receipt for
+   * a delivery nobody made. Wired to ChannelService, a failure marks that
+   * recipient `target_gone` instead. Optional (test / legacy compatible).
+   */
+  onNudgeOutcome?(outcome: WakeNudgeOutcome): void;
   now(): number;
   /** Test seam: ms between the text write and the Enter write. */
   enterDelayMs?: number;
@@ -154,6 +183,28 @@ const freshTrackerState = (): NudgeTrackerEntry => ({
 const sanitizeLine = (s: string): string =>
   // eslint-disable-next-line no-control-regex
   s.replace(/[\x00-\x1f\x7f]/g, ' ').slice(0, NUDGE_MAX_LEN);
+
+/** Longest body excerpt carried in a nudge. */
+export const BODY_PREVIEW_MAX_LEN = 200;
+
+/**
+ * The first line of a message body, safe to type into a TUI: control
+ * characters (including the newlines that would submit early) become spaces,
+ * runs of whitespace collapse, and the result is capped. Empty for an absent
+ * or blank body, so the caller can drop the segment entirely rather than
+ * appending a dangling separator.
+ */
+export function bodyPreview(body: string | undefined): string {
+  if (!body) return '';
+  const firstLine = body.split(/\r?\n/, 1)[0] ?? '';
+  const clean = firstLine
+    // eslint-disable-next-line no-control-regex
+    .replace(/[\x00-\x1f\x7f]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (clean.length <= BODY_PREVIEW_MAX_LEN) return clean;
+  return `${clean.slice(0, BODY_PREVIEW_MAX_LEN - 1)}…`;
+}
 
 export class ChannelWakeWorker {
   private readonly deps: ChannelWakeWorkerDeps;
@@ -316,7 +367,7 @@ export class ChannelWakeWorker {
 
         // A failed write must not burn the nudge budget (G5 spirit: never
         // spend nudges into a void) — retry on a later tick instead.
-        if (!this.inject(target.id, entry)) continue;
+        if (!this.inject(target.id, ws, entry)) continue;
 
         if (wantMention) {
           state.mentionNudges += 1;
@@ -335,16 +386,31 @@ export class ChannelWakeWorker {
    * target selection and the write — a PTY write to a destroyed stream
    * throws synchronously); the caller then keeps the nudge budget intact.
    */
-  private inject(sessionId: string, entry: WakeUnreadEntry): boolean {
+  private inject(sessionId: string, workspaceId: string, entry: WakeUnreadEntry): boolean {
     const mention = entry.mentionUnread > 0 ? ` (${entry.mentionUnread} mention you)` : '';
-    const line = sanitizeLine(
+    const hint = sanitizeLine(
       `[wmux] #${entry.name}: ${entry.unread} unread${mention} — run: wmux channel read ${entry.channelId} --since ${entry.lastReadSeq + 1}`,
     );
+    // The body's first line rides AFTER the hint. Every nudge used to read the
+    // same, so an agent mid-task had to spend a turn on the read just to learn
+    // whether it mattered.
+    const preview = bodyPreview(entry.latestBody);
+    const line = preview ? `${hint} — "${preview}"` : hint;
+    const report = (ok: boolean): void => {
+      this.deps.onNudgeOutcome?.({
+        workspaceId,
+        channelId: entry.channelId,
+        memberId: entry.memberId,
+        sessionId,
+        ok,
+      });
+    };
     this.deps.log('info', `[wake] nudging ${sessionId} for ${entry.channelId}#${entry.memberId} (${entry.unread} unread)`);
     try {
       this.deps.write(sessionId, line);
     } catch (err) {
       this.deps.log('warn', `[wake] nudge write to ${sessionId} failed (session died mid-race?): ${String(err)}`);
+      report(false);
       return false;
     }
     const t = setTimeout(() => {
@@ -352,9 +418,15 @@ export class ChannelWakeWorker {
       try {
         this.deps.write(sessionId, '\r');
       } catch {
-        // session died between the two writes — the pull path still owns
-        // correctness; drop silently.
+        // The session died between the two writes: the hint is stranded
+        // uncommitted in a pane nobody is reading. The pull path still owns
+        // correctness, but the attempt must not be recorded as a delivery.
+        report(false);
+        return;
       }
+      // Committed. This is the only point at which the nudge actually reached
+      // the agent, so it is the only point that may report success.
+      report(true);
     }, this.deps.enterDelayMs ?? ENTER_DELAY_MS);
     t.unref?.();
     this.pendingEnter.add(t);

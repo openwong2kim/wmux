@@ -3122,6 +3122,7 @@ export class ChannelService {
     unread: number;
     mentionUnread: number;
     trimmedBeforeCursor: number;
+    latestBody?: string;
   }> {
     const out: Array<{
       channelId: string;
@@ -3133,6 +3134,7 @@ export class ChannelService {
       unread: number;
       mentionUnread: number;
       trimmedBeforeCursor: number;
+      latestBody?: string;
     }> = [];
     for (const channel of this.state.channels) {
       if (channel.status === 'archived') continue;
@@ -3147,6 +3149,13 @@ export class ChannelService {
         const visibleFloor = row.historyFromSeq;
         let unread = 0;
         let mentionUnread = 0;
+        // The oldest owed message's text. The wake nudge carries its first line
+        // so a woken agent knows what it is being woken FOR; without it every
+        // nudge reads identically and the agent must spend a turn reading to
+        // find out. Prefer a MENTION when one is owed — that is the message the
+        // nudge budget is actually being spent on.
+        let firstBody: string | undefined;
+        let firstMentionBody: string | undefined;
         for (const m of msgs) {
           if (m.seq <= cursor || m.seq < visibleFloor) continue;
           // Self-authored messages are never owed (Codex review): a reply
@@ -3162,12 +3171,16 @@ export class ChannelService {
           // consensus). deliveryStatus/recipientSnapshot play no role here.
           if (m.systemKind) continue;
           unread += 1;
+          firstBody ??= m.text;
           const mentioned = (m.mentions ?? []).some(
             (men) =>
               men.workspaceId === verifiedWorkspaceId &&
               (men.memberId === undefined || men.memberId === row.memberId),
           );
-          if (mentioned) mentionUnread += 1;
+          if (mentioned) {
+            mentionUnread += 1;
+            firstMentionBody ??= m.text;
+          }
         }
         // Retained-log gap: messages between the cursor and the first retained
         // seq were trimmed before this member read them.
@@ -3185,10 +3198,55 @@ export class ChannelService {
           unread,
           mentionUnread,
           trimmedBeforeCursor,
+          ...(firstMentionBody ?? firstBody
+            ? { latestBody: firstMentionBody ?? firstBody }
+            : {}),
         });
       }
     }
     return out;
+  }
+
+  /**
+   * Record what happened at the PTY for one wake nudge (channelWakeWorker).
+   *
+   * The push half was write-only: a nudge into a pane that died mid-race was
+   * logged and dropped, and the message it announced stayed `pending` — a
+   * receipt for a delivery nobody made. A failed nudge now flips THAT
+   * recipient's frozen snapshot entry to `target_gone`, and the message's own
+   * status follows only when no recipient is left pending or delivered (the
+   * "at least one delivered" rule the ack path uses, read the other way).
+   *
+   * A SUCCESS is deliberately not a delivery: the hint reached the pane, which
+   * is not the same as the agent having received the message. Only the ack
+   * path (read === received) may write `delivered`. So success stamps the
+   * attempt time and nothing else — the exact false-receipt this method exists
+   * to stop reproducing.
+   */
+  noteNudgeOutcome(params: {
+    channelId: string;
+    workspaceId: string;
+    memberId: string;
+    ok: boolean;
+  }): void {
+    const msgs = this.state.messages[params.channelId] ?? [];
+    let changed = false;
+    for (const m of msgs) {
+      for (const entry of m.recipientSnapshot ?? []) {
+        if (entry.workspaceId !== params.workspaceId) continue;
+        if (entry.status !== 'pending') continue;
+        entry.lastAttemptAt = Date.now();
+        changed = true;
+        if (params.ok) continue;
+        entry.status = 'target_gone';
+        const anyLive = (m.recipientSnapshot ?? []).some((e) => e.status !== 'target_gone');
+        if (!anyLive && m.deliveryStatus === 'pending') m.deliveryStatus = 'target_gone';
+      }
+    }
+    // Bookkeeping only, so it rides the DEBOUNCED cache write: the wake loop
+    // ticks every 15s and must never be held up by a disk write, and the pull
+    // path (cursor + unread) remains the source of truth either way.
+    if (changed) this.scheduleCacheWrites();
   }
 
   // ── Internals ──────────────────────────────────────────────────────
