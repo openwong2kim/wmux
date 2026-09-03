@@ -33,6 +33,11 @@ vi.mock('../../playwright/snapshot', () => ({
 let smartCount: number | null = null;
 const smartCountCalls: Array<[string, string]> = [];
 
+const isolatedWaits: string[] = [];
+vi.mock('../../playwright/isolated-eval', () => ({
+  waitForIsolated: async (_page: unknown, _fn: unknown, arg: string) => { isolatedWaits.push(arg); },
+}));
+
 vi.mock('../../playwright/dom-intelligence', () => ({
   countSmartNamedPopulation: async (_page: unknown, role: string, name: string) => {
     smartCountCalls.push([role, name]);
@@ -46,11 +51,16 @@ import { refMapShapeHash, type TraceRecord, type TraceStep } from '../../../shar
 const clicks: string[] = [];
 const pressed: string[] = [];
 const goneTo: string[] = [];
+/** Every page-level wait the runner asked for, in order, interleaved with clicks. */
+const waits: string[] = [];
 
 const page = {
   url: () => 'https://example.com/app',
   goto: async (url: string) => { goneTo.push(url); },
   keyboard: { press: async (key: string) => { pressed.push(key); } },
+  waitForLoadState: async (state: string) => { waits.push(`load:${state}`); },
+  waitForURL: async (url: string) => { waits.push(`url:${url}`); },
+  waitForSelector: async (selector: string) => { waits.push(`selector:${selector}`); },
   locator: () => ({ count: async () => 0, elementHandle: async () => null }),
   evaluate: async () => undefined,
   mouse: {
@@ -104,6 +114,8 @@ beforeEach(() => {
   clicks.length = 0;
   pressed.length = 0;
   goneTo.length = 0;
+  waits.length = 0;
+  isolatedWaits.length = 0;
   resolved.clear();
   snapshotText = 'button "Sign in" [ref=1]';
   smartCount = null;
@@ -907,5 +919,42 @@ describe('replayTrace — flow control', () => {
     const result = await replayTrace(page, trace([refStep()]), undefined);
     expect(result.ok).toBe(false);
     expect(result.steps[0].detail).toContain('not visible');
+  });
+});
+
+describe('settling after a step (#1193)', () => {
+  it('waits for the page to go quiet between a click and the next step, not after the last', async () => {
+    const single = await replayTrace(page, trace([refStep()]), undefined);
+    expect(single.ok).toBe(true);
+    // Nothing follows the last step, so nothing is waited for.
+    expect(waits).toEqual([]);
+
+    const result = await replayTrace(page, trace([refStep(), refStep()]), undefined);
+    expect(result.ok).toBe(true);
+    // A click that starts a soft navigation must land before the next step's
+    // population is measured — once, between the two steps.
+    expect(waits).toEqual(['load:domcontentloaded', 'load:networkidle']);
+  });
+
+  it('replays a recorded browser_wait by its condition, text through the isolated poll', async () => {
+    const waitText: TraceStep = { tool: 'browser_wait', axis: { kind: 'none' }, args: { text: 'Closed', timeout: 5000 } };
+    const waitUrl: TraceStep = { tool: 'browser_wait', axis: { kind: 'none' }, args: { url: '**/pulls**' } };
+    const waitIdle: TraceStep = { tool: 'browser_wait', axis: { kind: 'none' }, args: {} };
+
+    const result = await replayTrace(page, trace([waitText, waitUrl, waitIdle]), undefined);
+
+    expect(result.ok).toBe(true);
+    expect(result.steps.map((s) => s.detail)).toEqual([
+      'waited for text "Closed"',
+      'waited for URL "**/pulls**"',
+      'waited for network idle',
+    ]);
+    expect(isolatedWaits).toEqual(['Closed']);
+    expect(waits).toContain('url:**/pulls**');
+  });
+
+  it('refuses a trace whose wait was on a stored script', () => {
+    const hole: TraceStep = { tool: 'browser_wait', axis: { kind: 'none' }, args: {}, unrecordable: 'stored-script' };
+    expect(replayBlockedReason(trace([hole]))).toContain('step 1 (stored-script)');
   });
 });

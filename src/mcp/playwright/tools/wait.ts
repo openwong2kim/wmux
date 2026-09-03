@@ -7,6 +7,7 @@ import { rpcEvaluator } from '../page-eval';
 import { waitForIsolated } from '../isolated-eval';
 import { allowScopedRpcFallback, type BrowserToolDeps } from '../browserScope';
 import { describeToolError } from '../toolError';
+import { recordAction } from '../../browser-replay/actionRing';
 import {
   defineWmuxTool,
   registerWmuxTools,
@@ -144,6 +145,23 @@ export function createWaitToolCatalog(deps: BrowserToolDeps) {
     profiles: ['full'],
     invoke: async ({ url, selector, text, fn, timeout, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
       const resolvedTimeout = timeout ?? 30000;
+      // A wait is part of the flow: a replay that skips it acts on the page
+      // before the thing the agent waited for has happened (#1193). Recorded
+      // on success only, like every other step. A `fn` wait is a hole — the
+      // stored script would be evaluated from an untrusted cache file.
+      const record = (page: Parameters<typeof recordAction>[1]['page']): void => {
+        const args: Record<string, string | number> = { timeout: resolvedTimeout };
+        if (url) args.url = url;
+        else if (selector) args.selector = selector;
+        else if (text) args.text = text;
+        recordAction(deps, {
+          scope,
+          tool: 'browser_wait',
+          page,
+          args,
+          ...(!url && !selector && !text && fn && { unrecordable: 'stored-script' as const }),
+        });
+      };
 
       try {
         const page = await engine.getPageForScope(scope).catch(allowScopedRpcFallback);
@@ -226,6 +244,7 @@ export function createWaitToolCatalog(deps: BrowserToolDeps) {
               // Otherwise transient (e.g. body not ready mid-navigation): keep polling.
             }
             if (ok) {
+              record(null);
               return {
                 content: [{ type: 'text' as const, text: warningPrefix + `Wait completed: ${label}` }],
               };
@@ -240,6 +259,7 @@ export function createWaitToolCatalog(deps: BrowserToolDeps) {
         // Priority: url > selector > text > fn > networkidle
         if (url) {
           await page.waitForURL(url, { timeout: resolvedTimeout });
+          record(page);
           return {
             content: [{ type: 'text' as const, text: `Wait completed: URL matched "${url}"` }],
           };
@@ -247,6 +267,7 @@ export function createWaitToolCatalog(deps: BrowserToolDeps) {
 
         if (selector) {
           await page.waitForSelector(selector, { timeout: resolvedTimeout });
+          record(page);
           return {
             content: [{ type: 'text' as const, text: `Wait completed: selector "${selector}" found` }],
           };
@@ -263,6 +284,7 @@ export function createWaitToolCatalog(deps: BrowserToolDeps) {
             text,
             resolvedTimeout,
           );
+          record(page);
           return {
             content: [{ type: 'text' as const, text: `Wait completed: text "${text}" found` }],
           };
@@ -279,6 +301,7 @@ export function createWaitToolCatalog(deps: BrowserToolDeps) {
           // (a DOM node) still satisfies the wait.
           const expression = isFunctionExpression(fn) ? `!!((${fn})())` : `!!(${fn})`;
           await waitForIsolated(page, expression, undefined, resolvedTimeout);
+          record(page);
           const warningPrefix = warnings.length > 0
             ? `⚠ Security warning: fn contains potentially dangerous patterns: ${warnings.join(', ')}.\n`
             : '';
@@ -289,6 +312,7 @@ export function createWaitToolCatalog(deps: BrowserToolDeps) {
 
         // Default: wait for network idle
         await page.waitForLoadState('networkidle', { timeout: resolvedTimeout });
+        record(page);
         return {
           content: [{ type: 'text' as const, text: `Wait completed: network idle` }],
         };

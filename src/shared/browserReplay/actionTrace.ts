@@ -38,6 +38,7 @@ export const REPLAYABLE_TOOLS = [
   'browser_select',
   'browser_scroll_into_view',
   'browser_scroll',
+  'browser_wait',
 ] as const;
 
 export type ReplayableTool = (typeof REPLAYABLE_TOOLS)[number];
@@ -153,7 +154,13 @@ export type UnrecordableReason =
    * the stored URL different from the one that worked, so the step is a hole
    * rather than a step that would replay a broken URL.
    */
-  | 'redacted-url';
+  | 'redacted-url'
+  /**
+   * A browser_wait whose condition was a JS predicate. The cache file is
+   * untrusted input by the time a replay reads it, so a stored script is never
+   * evaluated; the wait is listed as a hole rather than silently dropped.
+   */
+  | 'stored-script';
 
 export interface TraceStep {
   tool: ReplayableTool;
@@ -712,6 +719,7 @@ const UNRECORDABLE_REASONS: readonly UnrecordableReason[] = [
   'rpc-transport',
   'unresolved-axis',
   'redacted-url',
+  'stored-script',
 ];
 
 function sanitizeAxis(raw: unknown): StepAxis | null {

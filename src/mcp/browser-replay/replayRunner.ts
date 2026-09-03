@@ -1,5 +1,6 @@
 import type { ElementHandle, Page } from 'playwright-core';
 import { generateSnapshot, listRefEntries, resolveRef, StaleRefError } from '../playwright/snapshot';
+import { waitForIsolated } from '../playwright/isolated-eval';
 import { countSmartNamedPopulation } from '../playwright/dom-intelligence';
 import { describeToolError } from '../playwright/toolError';
 import { validateNavigationUrl } from '../../shared/types';
@@ -427,6 +428,30 @@ async function runStep(
     await page.goto(stripped.url, { waitUntil: 'domcontentloaded' });
     return { detail: `navigated to ${page.url()}` };
   }
+  if (step.tool === 'browser_wait') {
+    // The same priority order as the live tool. `fn` is never here: a wait on
+    // a stored script is recorded as a hole and blocks the run before this.
+    const timeout = typeof args.timeout === 'number' ? args.timeout : 30000;
+    if (typeof args.url === 'string' && args.url !== '') {
+      await page.waitForURL(args.url, { timeout });
+      return { detail: `waited for URL "${args.url}"` };
+    }
+    if (typeof args.selector === 'string' && args.selector !== '') {
+      await page.waitForSelector(args.selector, { timeout });
+      return { detail: `waited for selector "${args.selector}"` };
+    }
+    if (typeof args.text === 'string' && args.text !== '') {
+      await waitForIsolated(
+        page,
+        (t: string) => !!(document.body && document.body.innerText.includes(t)),
+        args.text,
+        timeout,
+      );
+      return { detail: `waited for text "${args.text}"` };
+    }
+    await page.waitForLoadState('networkidle', { timeout });
+    return { detail: 'waited for network idle' };
+  }
   if (step.tool === 'browser_press_key') {
     await page.keyboard.press(String(args.key));
     return { detail: `pressed ${String(args.key)}` };
@@ -492,6 +517,36 @@ async function runStep(
     default:
       return { error: `${step.tool} cannot be replayed by this version` };
   }
+}
+
+/**
+ * How long a replay lets the page catch up after a step before re-charging
+ * the ref map. Bounded: a page that never goes quiet (long polling) costs each
+ * step this much and nothing more.
+ */
+const SETTLE_TIMEOUT_MS = 2000;
+
+/**
+ * Let a navigation the step started land before the next step looks for its
+ * element.
+ *
+ * Re-snapshotting the instant a click resolves reads the document the click
+ * happened ON, not the one it led to: on a Turbo/SPA site the fetch and render
+ * come after the click, so the next step's role+name population is measured
+ * against the old page and reported as "no <element> on the page any more"
+ * while the element is plainly there a moment later (#1193, three of three
+ * runs on github.com). The recording never had this problem because a human
+ * or an agent looks at the page before acting; the runner acts blind, so it
+ * has to wait on its own.
+ *
+ * 'networkidle' rather than 'load': a same-document navigation fires no load
+ * event, and 500ms of network silence is the one signal both kinds share. A
+ * timeout is swallowed — a page that keeps polling still gets a re-snapshot,
+ * just a later one.
+ */
+async function settleAfterStep(page: Page): Promise<void> {
+  await page.waitForLoadState('domcontentloaded', { timeout: SETTLE_TIMEOUT_MS }).catch(() => undefined);
+  await page.waitForLoadState('networkidle', { timeout: SETTLE_TIMEOUT_MS }).catch(() => undefined);
 }
 
 /** A trace that cannot run at all, and why. Checked before any page work. */
@@ -605,6 +660,7 @@ export async function replayTrace(
     // A step that changed the page invalidates the ref map the remaining steps
     // resolve against, so re-charge it. Still internal, still never shown.
     if (i + 1 < trace.steps.length) {
+      await settleAfterStep(page);
       await generateSnapshot(page, { format: 'ai' }).catch(() => '');
       // The leading navigate has now landed, so this is the flow's own page —
       // the point the recorder's baseline was taken at.
