@@ -325,3 +325,53 @@ describe('a2a.task.cancel 델타: terminal no-op은 거짓 cancelled 이벤트�
     expect((cancelSends[0][2] as { daemonCommitted?: boolean }).daemonCommitted).toBe(true);
   });
 });
+
+// The brain owns no pane, so the renderer's reply-delivery guards suppressed
+// every brain→worker nudge as an unverifiable sender. Main is the only place
+// that knows the caller is a validated commander, so it must forward that
+// binding — and only ever its own, never one the caller typed.
+describe('a2a.task.send — commander binding is stamped, never trusted from the wire', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('forwards the validated commander workspace to the renderer', async () => {
+    sendToRendererMock.mockResolvedValueOnce({ ok: true });
+    const send = captureTaskSend(makeWorker());
+
+    await send(
+      { workspaceId: 'ws-brain', to: 'ws-brain', message: 'status?' },
+      { origin: 'local', commanderWorkspace: 'ws-brain' } as unknown as RpcContext,
+    );
+
+    expect(sendToRendererMock).toHaveBeenCalledWith(
+      expect.anything(),
+      'a2a.task.send',
+      expect.objectContaining({ commanderWorkspaceId: 'ws-brain' }),
+    );
+  });
+
+  it('drops a caller-supplied commanderWorkspaceId when there is no validated token', async () => {
+    sendToRendererMock.mockResolvedValueOnce({ ok: true });
+    const send = captureTaskSend(makeWorker());
+
+    await send(
+      { workspaceId: 'ws-a', to: 'ws-b', message: 'hi', commanderWorkspaceId: 'ws-victim' },
+      { origin: 'local' } as unknown as RpcContext,
+    );
+
+    const forwarded = sendToRendererMock.mock.calls[0]?.[2] as Record<string, unknown>;
+    expect(forwarded).not.toHaveProperty('commanderWorkspaceId');
+  });
+
+  it('a validated token overrides a forged claim rather than merging with it', async () => {
+    sendToRendererMock.mockResolvedValueOnce({ ok: true });
+    const send = captureTaskSend(makeWorker());
+
+    await send(
+      { workspaceId: 'ws-brain', to: 'ws-b', message: 'hi', commanderWorkspaceId: 'ws-victim' },
+      { origin: 'local', commanderWorkspace: 'ws-brain' } as unknown as RpcContext,
+    );
+
+    const forwarded = sendToRendererMock.mock.calls[0]?.[2] as Record<string, unknown>;
+    expect(forwarded.commanderWorkspaceId).toBe('ws-brain');
+  });
+});

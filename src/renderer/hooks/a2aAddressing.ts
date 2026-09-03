@@ -5,6 +5,7 @@
 
 import type { PaneLeaf } from '../../shared/types';
 import { getLeafPanes } from '../../shared/paneUtils';
+import { isBrainPtyId } from '../../shared/constants';
 
 export type PaneAddress = { ptyId: string; paneId: string; surfaceId: string };
 
@@ -218,9 +219,22 @@ export function resolvePaneRole(
  *  can act on it instead of believing the send reached the other party. */
 export type ReplySuppressReason =
   | 'pin_lost'            // pinned target pane no longer exists (fail closed, no active-pane fallback)
+  | 'target_is_brain'     // the pinned target IS an orchestrator brain — it has no pane to paste into
   | 'same_ws_no_anchor'   // same-ws task side has no pane anchor → active-pane fallback would risk the #239 self-paste loop
   | 'self_loop'           // pinned target resolves to the caller's own pty
   | 'unverified_sender';  // same-ws + no verified senderPtyId → cannot prove the route is not self
+
+/**
+ * What the SERVER knows about the caller, beyond its pane identity.
+ *
+ * `commanderWorkspaceId` is the workspace MAIN stamped onto the request from a
+ * VALIDATED commander per-spawn token (`confineWorkspaceId` in useRpcBridge) —
+ * never caller-supplied, so it cannot be forged into existence. Empty/absent
+ * for every ordinary caller, which is why every check below is `commander && …`.
+ */
+export interface ReplyCallerIdentity {
+  commanderWorkspaceId?: string;
+}
 
 export type ReplyDeliveryDecision =
   | { kind: 'deliver'; sameWs: boolean; explicitPtyId?: string }
@@ -238,6 +252,23 @@ export type ReplyDeliveryDecision =
  *
  * Precedence (first match wins) only affects the REPORTED reason; any single
  * true guard suppresses, exactly as the original conjunction did.
+ *
+ * The BRAIN exception (orchestrator track, 2026-09-04). Two of those guards
+ * are keyed on the caller having a pane: `same_ws_no_anchor` and
+ * `unverified_sender` both exist so a route that cannot be proven non-self is
+ * never pasted into the caller's own prompt. An orchestrator brain has no pane
+ * in the workspace tree at all — `isTerminalPtyInLeaves` rejects its pty, so
+ * `callerPtyId` arrives empty — which meant every brain→worker reply in its own
+ * workspace was suppressed as "unverified", and the brain was told its message
+ * was stored while the worker sat waiting. But a caller with no pane is exactly
+ * a caller a delivery cannot loop back into, and MAIN has already validated the
+ * commander binding it carries. So a commander-verified caller SATISFIES both
+ * guards rather than tripping them.
+ *
+ * `self_loop` is untouched: it compares concrete pty ids, so it still protects
+ * every pane caller, and a brain (empty callerPtyId) could never trip it
+ * anyway. The brain's own self-send is caught by `target_is_brain` instead —
+ * there is no pane behind a brain pty to write into.
  */
 export function decideReplyDelivery(
   sameWsTask: boolean,
@@ -245,13 +276,20 @@ export function decideReplyDelivery(
   pinnedAddressLost: boolean,
   explicitPtyId: string | undefined,
   callerPtyId: string,
+  caller: ReplyCallerIdentity = {},
 ): ReplyDeliveryDecision {
+  const commanderVerified = !!caller.commanderWorkspaceId;
   if (pinnedAddressLost) return { kind: 'suppress', reason: 'pin_lost' };
-  if (sameWsTask && !hasAnchor) return { kind: 'suppress', reason: 'same_ws_no_anchor' };
+  if (isBrainPtyId(explicitPtyId)) return { kind: 'suppress', reason: 'target_is_brain' };
+  if (sameWsTask && !hasAnchor && !commanderVerified) {
+    return { kind: 'suppress', reason: 'same_ws_no_anchor' };
+  }
   if (!!explicitPtyId && !!callerPtyId && explicitPtyId === callerPtyId) {
     return { kind: 'suppress', reason: 'self_loop' };
   }
-  if (sameWsTask && !callerPtyId) return { kind: 'suppress', reason: 'unverified_sender' };
+  if (sameWsTask && !callerPtyId && !commanderVerified) {
+    return { kind: 'suppress', reason: 'unverified_sender' };
+  }
   return { kind: 'deliver', sameWs: sameWsTask, ...(explicitPtyId ? { explicitPtyId } : {}) };
 }
 
@@ -262,6 +300,9 @@ export const REPLY_SUPPRESS_HINTS: Record<ReplySuppressReason, string> = {
   pin_lost:
     'The pinned target pane is gone. The reply is stored; the receiver can still poll ' +
     'a2a_task_query. To nudge a live pane, start a new task addressed with pane_id.',
+  target_is_brain:
+    'The pinned target is an orchestrator brain, which has no pane to write into. The reply ' +
+    'is stored; address a worker pane (pane_id / surface_id) if you meant to nudge one.',
   same_ws_no_anchor:
     'This same-workspace task has no pane anchor on the target side, so a nudge cannot be ' +
     'routed safely. The reply is stored; the receiver must poll a2a_task_query.',

@@ -256,6 +256,56 @@ describe('decideReplyDelivery', () => {
       expect(hint).toMatch(/a2a_task_query|pane_id/);
     }
   });
+
+  // The brain exception. An orchestrator brain has no pane in the tree, so its
+  // callerPtyId arrives empty and BOTH pane-keyed guards fired — every
+  // brain→worker reply in its own workspace was stored and never delivered.
+  describe('commander-verified caller (the brain)', () => {
+    const BRAIN = { commanderWorkspaceId: 'ws-brain' };
+
+    it('brain → sibling pane in its own workspace delivers', () => {
+      const d = decideReplyDelivery(true, true, false, 'pty-worker', '', BRAIN);
+      expect(d).toEqual({ kind: 'deliver', sameWs: true, explicitPtyId: 'pty-worker' });
+    });
+
+    it('brain → same-ws target with no anchor delivers (fallback cannot loop into a paneless caller)', () => {
+      const d = decideReplyDelivery(true, false, false, undefined, '', BRAIN);
+      expect(d).toEqual({ kind: 'deliver', sameWs: true });
+    });
+
+    it('brain → brain is refused: there is no pane behind a brain pty', () => {
+      const d = decideReplyDelivery(true, true, false, 'brain-ws-brain', '', BRAIN);
+      expect(d).toEqual({ kind: 'suppress', reason: 'target_is_brain' });
+    });
+
+    it('a brain target is refused even for an ordinary pane caller', () => {
+      const d = decideReplyDelivery(false, true, false, 'brain-ws-other', 'pty-A');
+      expect(d).toEqual({ kind: 'suppress', reason: 'target_is_brain' });
+    });
+
+    it('an unverified NON-brain caller is still suppressed exactly as before', () => {
+      // Same arguments as the unverified_sender case above, with an empty
+      // identity: no commander binding means nothing changes for it.
+      expect(decideReplyDelivery(true, true, false, 'pty-B', '', {})).toEqual({
+        kind: 'suppress',
+        reason: 'unverified_sender',
+      });
+      expect(decideReplyDelivery(true, false, false, undefined, 'pty-caller', {})).toEqual({
+        kind: 'suppress',
+        reason: 'same_ws_no_anchor',
+      });
+    });
+
+    it('self_loop still protects a pane caller, commander binding or not', () => {
+      const d = decideReplyDelivery(false, true, false, 'pty-A', 'pty-A', BRAIN);
+      expect(d).toEqual({ kind: 'suppress', reason: 'self_loop' });
+    });
+
+    it('a lost pin still fails closed for the brain', () => {
+      const d = decideReplyDelivery(true, true, true, undefined, '', BRAIN);
+      expect(d).toEqual({ kind: 'suppress', reason: 'pin_lost' });
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------

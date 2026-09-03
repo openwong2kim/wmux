@@ -407,7 +407,15 @@ export function registerA2aRpc(
   // 해석·승인 게이트 등 렌더러 UI 반응성 로직은 그대로). 워커 spawn **전에**
   // await — 이후 전이(working/completed)가 데몬 게이트에서 태스크를 찾도록.
   router.register('a2a.task.send', async (params, ctx) => {
-    const result = await sendToRenderer(getWindow, 'a2a.task.send', params);
+    // Forward the VALIDATED commander binding (RpcRouter set it from the
+    // per-spawn token; never read from the wire, so any caller-supplied value
+    // is dropped first). The renderer's reply-delivery guards need it: an
+    // orchestrator brain owns no pane, so without this every brain→worker nudge
+    // in its own workspace is suppressed as an unverifiable sender.
+    const sendParams: Record<string, unknown> = { ...params };
+    delete sendParams.commanderWorkspaceId;
+    if (ctx?.commanderWorkspace) sendParams.commanderWorkspaceId = ctx.commanderWorkspace;
+    const result = await sendToRenderer(getWindow, 'a2a.task.send', sendParams);
 
     // 데몬 정본 미러-생성(신규 태스크 브랜치에서만 — 렌더러가 task 스냅샷 동반).
     // 실패는 soft-degrade: 이후 전이가 'task not found'로 렌더러 폴백을 탄다.
