@@ -55,6 +55,15 @@ export function isReplayableTool(value: unknown): value is ReplayableTool {
 // the "the population changed, refuse rather than guess" rule — instead of
 // inventing a second, weaker one. A DOM restructure that leaves the button
 // still reading as `button "Sign in"` re-resolves; an XPath would not.
+//
+// The 4-tuple alone cannot see a swap that keeps the count: insert one
+// look-alike above the recorded element and remove one below, and N is
+// unchanged, so the index still resolves and the click lands on a stranger
+// (#1182). The axis therefore carries one more field, `context` — the
+// accessible name of the nearest named ancestor. It is a VERIFIER, never a
+// locator: nothing is ever found by it, it can only contradict what the index
+// found and stop the run. That keeps the refusal to key on position intact
+// while removing the case where position lies silently.
 
 /** An element addressed the way browser_snapshot addresses it. */
 export interface RefAxis {
@@ -65,6 +74,20 @@ export interface RefAxis {
   sameNameTotal: number;
   /** frameKeyOf(RefEntry.framePath). `''` = main frame. */
   frameKey: string;
+  /**
+   * The element's semantic neighbourhood at record time — `role "name"` of the
+   * nearest ancestor that both carries an accessible name and has a structural
+   * role (a landmark, a row, a list item, a dialog). Absent when the element
+   * sat under nothing named, and absent from every trace recorded before this
+   * field existed, which is what keeps the format additive.
+   *
+   * It is NOT a second way to FIND the element. It is only ever compared
+   * against the live page's own value for the element the index picked out, so
+   * a page that has been restructured under the recording stops instead of
+   * clicking a look-alike (#1182). Re-resolving BY it would be the positional
+   * brittleness this axis exists to avoid, one level up.
+   */
+  context?: string;
 }
 
 /** An element addressed by the CSS selector browser_smart_snapshot minted. */
@@ -148,6 +171,18 @@ export const MAX_TRACES_PER_WORKSPACE = 40;
 export const MAX_STEPS_PER_TRACE = 30;
 /** Bytes per single argument value. Longer values are truncation-marked. */
 export const MAX_ARG_BYTES = 512;
+/**
+ * Characters of `RefAxis.context` kept.
+ *
+ * Small on purpose: the context is stored on EVERY element step of every
+ * trace, so it is multiplied by MAX_STEPS_PER_TRACE x
+ * MAX_TRACES_PER_WORKSPACE before MAX_FILE_BYTES gets a say. 96 characters
+ * holds a real section or row label (`row "Alice Chen alice@example.com"`)
+ * and refuses to hold a paragraph. The truncation is applied by whoever
+ * MINTS the value, so the recorded and the live string are cut the same way
+ * and a long label still compares equal to itself.
+ */
+export const MAX_CONTEXT_CHARS = 96;
 /** Whole-file ceiling; over it the oldest workspaces are dropped. */
 export const MAX_FILE_BYTES = 512 * 1024;
 /** A trace unused for this long is forgotten on the next load. */
@@ -222,6 +257,8 @@ export interface RefEntryLike {
   sameNameIndex: number;
   sameNameTotal: number;
   frameKey: string;
+  /** See RefAxis.context. Absent on a snapshot that minted no ancestor label. */
+  context?: string;
 }
 
 
@@ -267,6 +304,7 @@ export function refEntryToAxis(entry: RefEntryLike | null | undefined): RefAxis 
   const total = Number.isInteger(entry.sameNameTotal) && entry.sameNameTotal > 0
     ? entry.sameNameTotal
     : 1;
+  const context = typeof entry.context === 'string' ? entry.context.slice(0, MAX_CONTEXT_CHARS) : '';
   return {
     kind: 'ref',
     role: entry.role,
@@ -274,6 +312,9 @@ export function refEntryToAxis(entry: RefEntryLike | null | undefined): RefAxis 
     sameNameIndex: index,
     sameNameTotal: total,
     frameKey: typeof entry.frameKey === 'string' ? entry.frameKey : '',
+    // Omitted rather than stored empty: an absent field and an empty one mean
+    // the same thing (no verdict available) and the absent one costs nothing.
+    ...(context.length > 0 && { context }),
   };
 }
 
@@ -520,6 +561,10 @@ function sanitizeAxis(raw: unknown): StepAxis | null {
     ? (a.sameNameTotal as number)
     : 1;
   if (sameNameIndex < 0 || sameNameIndex >= sameNameTotal) return null;
+  // A context that cannot be trusted is DROPPED, not fatal: without it the
+  // step falls back to the pre-#1182 population rules, which is the same
+  // contract every trace recorded before this field had.
+  const context = typeof a.context === 'string' ? a.context.slice(0, MAX_CONTEXT_CHARS) : '';
   return {
     kind: 'ref',
     role: a.role,
@@ -527,6 +572,7 @@ function sanitizeAxis(raw: unknown): StepAxis | null {
     sameNameIndex,
     sameNameTotal,
     frameKey: typeof a.frameKey === 'string' ? a.frameKey.slice(0, 256) : '',
+    ...(context.length > 0 && { context }),
   };
 }
 

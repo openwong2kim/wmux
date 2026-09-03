@@ -16,6 +16,7 @@ import {
   isValidTraceName,
   normalizeUrlKey,
   pruneTraces,
+  MAX_CONTEXT_CHARS,
   refEntryToAxis,
   refMapShapeHash,
   sanitizeTraceRecord,
@@ -169,6 +170,23 @@ describe('refEntryToAxis', () => {
   it('repairs a non-positive total instead of dropping the ref', () => {
     expect(refEntryToAxis({ role: 'button', name: '', sameNameIndex: 0, sameNameTotal: 0, frameKey: '' }))
       .toMatchObject({ sameNameTotal: 1 });
+  });
+
+  it('carries the ancestor context through, capped', () => {
+    const long = `region "${'x'.repeat(MAX_CONTEXT_CHARS)}"`;
+    expect(
+      refEntryToAxis({
+        role: 'button', name: 'Delete', sameNameIndex: 0, sameNameTotal: 1, frameKey: '',
+        context: long,
+      }),
+    ).toMatchObject({ context: long.slice(0, MAX_CONTEXT_CHARS) });
+  });
+
+  it('omits the context rather than storing an empty one', () => {
+    const axis = refEntryToAxis({
+      role: 'button', name: 'Delete', sameNameIndex: 0, sameNameTotal: 1, frameKey: '', context: '',
+    });
+    expect(axis).not.toHaveProperty('context');
   });
 });
 
@@ -335,6 +353,28 @@ describe('sanitizeTraceStep', () => {
     expect(out).not.toBeNull();
     expect(out?.unrecordable).toBe('unresolved-axis');
     expect(out?.axis).toEqual({ kind: 'none' });
+  });
+
+  it('keeps a stored context, capped, and drops a non-string one without failing the step', () => {
+    const kept = sanitizeTraceStep(step({
+      axis: {
+        kind: 'ref', role: 'button', name: 'Delete', sameNameIndex: 0, sameNameTotal: 1,
+        frameKey: '', context: 'row "Alice"',
+      },
+    }));
+    expect(kept?.axis).toMatchObject({ context: 'row "Alice"' });
+
+    // A hand-edited cache file: the axis is still usable without its verifier,
+    // so the step survives with the pre-#1182 contract instead of becoming a hole.
+    const stripped = sanitizeTraceStep({
+      ...step(),
+      axis: {
+        kind: 'ref', role: 'button', name: 'Delete', sameNameIndex: 0, sameNameTotal: 1,
+        frameKey: '', context: { evil: true },
+      },
+    });
+    expect(stripped?.unrecordable).toBeUndefined();
+    expect(stripped?.axis).not.toHaveProperty('context');
   });
 
   it('keeps a declared unrecordable reason', () => {
