@@ -6,6 +6,7 @@ import {
   REDACTED_PASSWORD,
   getPasswordFieldBackendIds,
 } from './redact';
+import { ancestorContext } from '../../shared/browserReplay/actionTrace';
 
 // ---------------------------------------------------------------------------
 // Shared interactive-element selector
@@ -138,6 +139,15 @@ export interface IndexedElement {
    */
   roleIndex: number;
   roleTotal: number;
+  /**
+   * `role "name"` of the nearest named structural ancestor at snapshot time —
+   * the same string the accessibility-lane snapshot mints (see
+   * ancestorContext). `''` when nothing above it is named. The replay runner
+   * uses it to stop a same-count swap of same-name elements (#1182); it is
+   * never used to LOCATE the element. Absent on the RPC lane, which records no
+   * ref axis to carry it.
+   */
+  context: string;
 }
 
 export interface SmartSnapshot {
@@ -544,6 +554,7 @@ function collectInteractiveElements(
   passwordBackendIds: Set<number>,
   identity: SmartRefIdentity,
   seen: Set<number>,
+  inheritedContext = '',
 ): void {
   const role = node.role?.value ?? 'none';
   const name = node.name?.value ?? '';
@@ -568,6 +579,9 @@ function collectInteractiveElements(
       role,
       name,
       locator: buildLocatorString(role, name),
+      // Where the element sits, not what it is: the same value the a11y lane
+      // stamps, so a flow recorded here replays against a snapshot taken there.
+      context: inheritedContext,
       // Filled in by finalizeSmartPopulations once the whole walk is known.
       sameNameIndex: 0,
       sameNameTotal: 0,
@@ -588,12 +602,17 @@ function collectInteractiveElements(
     elements.push(element);
   }
 
-  // Recurse into children
+  // Recurse into children. An ignored wrapper contributes no context of its
+  // own — ancestorContext returns the inherited value for it — so a named
+  // container survives an ignored generic between it and the control.
+  const childContext = ancestorContext(role, name, inheritedContext);
   if (node.childIds) {
     for (const childId of node.childIds) {
       const child = nodeMap.get(childId);
       if (child) {
-        collectInteractiveElements(nodeMap, child, elements, passwordBackendIds, identity, seen);
+        collectInteractiveElements(
+          nodeMap, child, elements, passwordBackendIds, identity, seen, childContext,
+        );
       }
     }
   }
@@ -794,6 +813,9 @@ export async function getSmartSnapshotViaEval(
     ...(e.value !== undefined && { value: e.value }),
     ...(e.description !== undefined && { description: e.description }),
     locator: `[data-wmux-ref="${e.ref}"]`,
+    // No named-ancestor pass on the RPC lane, and none is needed: this lane
+    // records no ref axis (smartRefAxisEntry returns null for its locator).
+    context: '',
     // The populations are unused on this lane: its locator is a CSS selector
     // naming one tagged element, so nothing counts a role or a name.
     sameNameIndex: 0,
@@ -993,6 +1015,7 @@ export function smartRefAxisEntry(ref: number): {
   sameNameIndex: number;
   sameNameTotal: number;
   frameKey: string;
+  context?: string;
 } | null {
   const element = getSmartElementByRef(ref);
   if (!element || element.locator.startsWith('[data-wmux-ref=')) return null;
@@ -1004,6 +1027,10 @@ export function smartRefAxisEntry(ref: number): {
     sameNameTotal: named ? element.sameNameTotal : element.roleTotal,
     // Always the main frame: this walk never leaves it (see SmartRefIdentity).
     frameKey: '',
+    // The nearest named ancestor, so a smartRef-recorded step gets the same
+    // #1182 verifier a snapshot-recorded one does. Omitted when empty, exactly
+    // as refEntryToAxis would drop it.
+    ...(element.context.length > 0 && { context: element.context }),
   };
 }
 

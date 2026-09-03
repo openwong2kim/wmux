@@ -53,6 +53,13 @@ name, and position among the same-named elements in the same frame — not by a
 DOM path. A page that was restructured, or whose refs were renumbered by a
 restart, still replays as long as the button still reads as the same button.
 
+A recording also notes the *neighbourhood* each element sat in: the accessible
+name of the nearest container that has one — `region "Express checkout"`,
+`row "Alice Chen"`. It is never used to find the element, only to check the
+one the position found. That is what catches a swap the count cannot see (a
+look-alike inserted above the recorded element and another removed below
+leaves the count unchanged, so position alone still "resolves").
+
 ## When a replay stops
 
 A step whose element is gone stops the run at that step and reports which
@@ -73,6 +80,26 @@ A change that leaves the count the *same* is not detected — one look-alike
 added above and one element removed below still measures N, the position still
 resolves, and the element it lands on is a different one. Telling those apart
 needs something the recording does not store.
+
+The neighbourhood check runs first and can override both, in both directions:
+
+- exactly one element on the page is under the recorded neighbourhood, and it
+  is where the recording put it → the step runs, even if the count changed
+  around it (a positive identification beats a count heuristic);
+- exactly one is under it but somewhere else in the population → the run
+  stops. The replay does not follow the element to its new position: doing so
+  would be resolving by position again, one level up;
+- none is under it while other elements do carry a neighbourhood → the run
+  stops. The section the recording named is gone, or was renamed. A renamed
+  section therefore stops a flow that would have worked — that is the intended
+  side to be wrong on for a step that might be a `Delete`, and the recovery is
+  the ordinary one (finish live, `save` under the same name).
+
+**What this still cannot see:** two elements that are genuinely identical —
+same role, same name, same container, differing only in their position. There
+the check abstains and the count rules decide, exactly as before. Telling
+those apart needs a positional or DOM-path axis, which is the brittleness this
+design refuses on purpose.
 
 ## Variables
 

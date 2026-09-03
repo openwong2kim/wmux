@@ -75,6 +75,75 @@ function shapeWarning(recorded: string, live: string): string | null {
   );
 }
 
+/** What the live page says about the element the axis points at. */
+interface LiveEntry {
+  ref: number;
+  sameNameIndex: number;
+  context?: string;
+}
+
+/**
+ * The context verifier (#1182).
+ *
+ * #1179 stops a replay when the same-name POPULATION changed size. It cannot
+ * see a swap that keeps the size — one look-alike inserted above the recorded
+ * element and one removed below leaves N alone, so the index still resolves
+ * and the click lands on a stranger while the step reports ok.
+ *
+ * The recorded `context` (the nearest named ancestor, minted by the snapshot
+ * walk) is the only extra evidence, and it is used as EVIDENCE ONLY — three
+ * verdicts, and the element is never located by it:
+ *
+ *   exactly one live element carries the recorded context
+ *     at the recorded index  → confirmed. Stronger than the count check, so it
+ *       also clears a population that merely changed size around it.
+ *     at a different index    → the recorded element is still on the page but
+ *       the population shifted under it. Stop; do NOT follow it to its new
+ *       index, which would be re-resolving by position with extra steps and
+ *       would act on the wrong element the moment the context is not unique
+ *       for the reason we think it is.
+ *
+ *   no live element carries it, but some live element carries SOMETHING → the
+ *     neighbourhood the recording named is gone. Stop.
+ *
+ *   no live element carries any context, or several carry the recorded one →
+ *     no verdict. The context cannot tell these elements apart (identical
+ *     siblings), or the page mints none, so the pre-#1182 population rules
+ *     decide and nothing regresses.
+ *
+ * The accepted cost of the second verdict: a section renamed between recording
+ * and replay stops a flow that would have worked. That is the designed failure
+ * mode — the run stops at the step, says why, and hands the page back live —
+ * and it is the right side to be wrong on for a step that may be a `Delete`.
+ */
+function contextVerdict(
+  axis: RefAxis,
+  population: readonly LiveEntry[],
+): { ref: string } | { error: string } | null {
+  if (!axis.context) return null;
+  const matches = population.filter((entry) => (entry.context ?? '') === axis.context);
+  if (matches.length === 1) {
+    const found = matches[0];
+    if (found.sameNameIndex === axis.sameNameIndex) return { ref: String(found.ref) };
+    return {
+      error:
+        `${describeAxis(axis)} was recorded under ${axis.context}, and the only element ` +
+        `with that context now sits at position ${found.sameNameIndex + 1}, not ` +
+        `${axis.sameNameIndex + 1}. The population shifted under this step, so replaying ` +
+        'it would act on whatever took its place',
+    };
+  }
+  if (matches.length === 0 && population.some((entry) => (entry.context ?? '').length > 0)) {
+    return {
+      error:
+        `${describeAxis(axis)} was recorded under ${axis.context}, and no element with that ` +
+        'role and name is under it any more — the element at the recorded position is a ' +
+        'different one, or its section was renamed',
+    };
+  }
+  return null;
+}
+
 /**
  * Find the live ref number for a stored axis.
  *
@@ -106,6 +175,10 @@ function shapeWarning(recorded: string, live: string): string | null {
  *
  * A missing element is always a refusal — that is the other case where
  * continuing would act on something else.
+ *
+ * All of that is the fallback. When the recorded axis carries a `context` and
+ * the live page carries one too, contextVerdict runs first and may settle the
+ * step outright — including the same-count swap this reasoning is blind to.
  */
 function matchRefAxis(page: Page, axis: RefAxis): { ref: string } | StepFailure {
   const population = listRefEntries(page).filter(
@@ -116,6 +189,19 @@ function matchRefAxis(page: Page, axis: RefAxis): { ref: string } | StepFailure 
   );
   if (population.length === 0) {
     return { error: `no ${describeAxis(axis)} on the page any more` };
+  }
+  // Before the positional reasoning, not after: when the context can identify
+  // the element it is better evidence than the index, in both directions.
+  const verdict = contextVerdict(axis, population);
+  if (verdict !== null) {
+    if ('error' in verdict) return verdict;
+    // A changed population size is what the count rules below stop on. A
+    // unique context match at the recorded position is better evidence than
+    // that count: it says which element this is, not merely how many look
+    // alike. So it clears the size change and the step runs. (The step-level
+    // warning channel that used to annotate this went away with #1179, whose
+    // stop replaced it; the verdict itself is the reasoning.)
+    return verdict;
   }
   // Before the index lookup, not after: a population that shrank past the
   // recorded index would otherwise report only "no element at that position"

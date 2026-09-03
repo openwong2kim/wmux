@@ -9,6 +9,7 @@ import { collectOcclusion, occlusionNote, type OcclusionInfo } from './occlusion
 import { collectPageFacts, formatPageFactsFooter } from './pageFacts';
 import { peekRecentPendingRequests } from './pageCapture';
 import { evaluateIsolated, isolatedProbeTarget } from './isolated-eval';
+import { ancestorContext } from '../../shared/browserReplay/actionTrace';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -507,6 +508,18 @@ export interface RefEntry {
   framePath: FrameHop[];
   /** frameKeyOf(framePath). `''` = main frame. */
   frameKey: string;
+  /**
+   * Where this element sits, said semantically: `role "name"` of the nearest
+   * ancestor that has both a structural role and an accessible name (see
+   * CONTEXT_ANCESTOR_ROLES). `''` when nothing above it is named.
+   *
+   * Not part of the ref's identity and not printed in any snapshot — it exists
+   * for the replay runner, which compares a recorded element's context against
+   * the live one's and stops rather than clicking a look-alike that inherited
+   * its position (#1182). Costs one string comparison per interactive node
+   * during a walk that is already visiting every node.
+   */
+  context: string;
 }
 
 /**
@@ -951,6 +964,7 @@ function serializeNode(
   currentDepth: number,
   indent: number,
   inheritedFrame: FrameCoord = MAIN_FRAME,
+  inheritedContext = '',
 ): string {
   if (currentDepth > ctx.maxDepth) return '';
 
@@ -958,6 +972,7 @@ function serializeNode(
   const pad = '  '.repeat(indent);
   const role = node.role;
   const name = node.name || '';
+  const childContext = ancestorContext(role, name, inheritedContext);
 
   // Build attribute string
   const attrs: string[] = [];
@@ -974,6 +989,9 @@ function serializeNode(
       sameNameTotal: 0,
       framePath: frame.path,
       frameKey: frame.key,
+      // The element's own label is already `name`; what is recorded here is
+      // where it SITS, so an element is never its own context.
+      context: inheritedContext,
     });
     attrs.push(`ref="${ref}"`);
   }
@@ -1040,7 +1058,7 @@ function serializeNode(
       // the agent cannot see is a ref it cannot have meant to use.
       const refMark = ctx.refs.length;
       const remainingBefore = ctx.frameBudgetRemaining;
-      const childStr = serializeNode(child, ctx, currentDepth + 1, indent + 1, frame);
+      const childStr = serializeNode(child, ctx, currentDepth + 1, indent + 1, frame, childContext);
       if (!childStr) continue;
       if (metered) {
         // A nested grafted frame inside this child has already charged its own

@@ -55,6 +55,15 @@ export function isReplayableTool(value: unknown): value is ReplayableTool {
 // the "the population changed, refuse rather than guess" rule — instead of
 // inventing a second, weaker one. A DOM restructure that leaves the button
 // still reading as `button "Sign in"` re-resolves; an XPath would not.
+//
+// The 4-tuple alone cannot see a swap that keeps the count: insert one
+// look-alike above the recorded element and remove one below, and N is
+// unchanged, so the index still resolves and the click lands on a stranger
+// (#1182). The axis therefore carries one more field, `context` — the
+// accessible name of the nearest named ancestor. It is a VERIFIER, never a
+// locator: nothing is ever found by it, it can only contradict what the index
+// found and stop the run. That keeps the refusal to key on position intact
+// while removing the case where position lies silently.
 
 /** An element addressed the way browser_snapshot addresses it. */
 export interface RefAxis {
@@ -65,6 +74,20 @@ export interface RefAxis {
   sameNameTotal: number;
   /** frameKeyOf(RefEntry.framePath). `''` = main frame. */
   frameKey: string;
+  /**
+   * The element's semantic neighbourhood at record time — `role "name"` of the
+   * nearest ancestor that both carries an accessible name and has a structural
+   * role (a landmark, a row, a list item, a dialog). Absent when the element
+   * sat under nothing named, and absent from every trace recorded before this
+   * field existed, which is what keeps the format additive.
+   *
+   * It is NOT a second way to FIND the element. It is only ever compared
+   * against the live page's own value for the element the index picked out, so
+   * a page that has been restructured under the recording stops instead of
+   * clicking a look-alike (#1182). Re-resolving BY it would be the positional
+   * brittleness this axis exists to avoid, one level up.
+   */
+  context?: string;
 }
 
 /** An element addressed by the CSS selector browser_smart_snapshot minted. */
@@ -148,6 +171,91 @@ export const MAX_TRACES_PER_WORKSPACE = 40;
 export const MAX_STEPS_PER_TRACE = 30;
 /** Bytes per single argument value. Longer values are truncation-marked. */
 export const MAX_ARG_BYTES = 512;
+/**
+ * Characters of `RefAxis.context` kept.
+ *
+ * Small on purpose: the context is stored on EVERY element step of every
+ * trace, so it is multiplied by MAX_STEPS_PER_TRACE x
+ * MAX_TRACES_PER_WORKSPACE before MAX_FILE_BYTES gets a say. 96 characters
+ * holds a real section or row label (`row "Alice Chen alice@example.com"`)
+ * and refuses to hold a paragraph. The truncation is applied by whoever
+ * MINTS the value, so the recorded and the live string are cut the same way
+ * and a long label still compares equal to itself.
+ */
+export const MAX_CONTEXT_CHARS = 96;
+
+// ── Ancestor context ─────────────────────────────────────────────────────────
+//
+// The `context` an element carries is `role "name"` of the nearest ancestor
+// that both has a structural role and is named. It is minted during the
+// accessibility walk (snapshot.ts) AND the smart-snapshot walk
+// (dom-intelligence.ts), and the two MUST produce the identical string: a flow
+// recorded on one lane is replayed by re-resolving against the other, and a
+// verifier that read `region "Checkout"` at record time but `Checkout` at
+// replay would stop every replay it was meant to pass. So the role set and the
+// formatting live here, in the one layer both lanes already depend on, rather
+// than as two copies that drift.
+
+/**
+ * Ancestor roles whose accessible name says WHERE an element sits.
+ *
+ * Landmarks, table rows, list items, cards, and dialogs — the containers a
+ * page names because a human needs to tell one copy of a repeated control from
+ * another ("Delete" in row "Alice Chen" versus row "Bob Lee"). A `generic` or
+ * an unnamed wrapper is deliberately absent: it would contribute a label that
+ * changes with the markup rather than with the meaning, which is the DOM-path
+ * brittleness the ref axis refuses.
+ */
+export const CONTEXT_ANCESTOR_ROLES: ReadonlySet<string> = new Set([
+  // landmarks
+  'region',
+  'form',
+  'search',
+  'navigation',
+  'main',
+  'banner',
+  'contentinfo',
+  'complementary',
+  // grouping
+  'article',
+  'group',
+  'figure',
+  'toolbar',
+  'menu',
+  'menubar',
+  'tabpanel',
+  'dialog',
+  'alertdialog',
+  // collections
+  'list',
+  'listitem',
+  'table',
+  'grid',
+  'treegrid',
+  'rowgroup',
+  'row',
+  'cell',
+  'gridcell',
+  'columnheader',
+  'rowheader',
+]);
+
+/**
+ * The context an element's CHILDREN inherit: this node when it is a named
+ * container, otherwise whatever it inherited itself. Nearest wins, so a row
+ * beats the table it sits in, and an element is never its own context (the walk
+ * passes the INHERITED value to the element and this value to its children).
+ *
+ * Truncation happens here, at the mint site, so the string a recording saves
+ * and the string a replay compares it against are cut by the same rule — a
+ * label clipped one way at record and another at replay would never match
+ * itself.
+ */
+export function ancestorContext(role: string, name: string, inherited: string): string {
+  if (name.length === 0 || !CONTEXT_ANCESTOR_ROLES.has(role)) return inherited;
+  const label = `${role} "${name}"`;
+  return label.length <= MAX_CONTEXT_CHARS ? label : `${label.slice(0, MAX_CONTEXT_CHARS - 1)}\u2026`;
+}
 /** Whole-file ceiling; over it the oldest workspaces are dropped. */
 export const MAX_FILE_BYTES = 512 * 1024;
 /** A trace unused for this long is forgotten on the next load. */
@@ -222,6 +330,8 @@ export interface RefEntryLike {
   sameNameIndex: number;
   sameNameTotal: number;
   frameKey: string;
+  /** See RefAxis.context. Absent on a snapshot that minted no ancestor label. */
+  context?: string;
 }
 
 
@@ -267,6 +377,7 @@ export function refEntryToAxis(entry: RefEntryLike | null | undefined): RefAxis 
   const total = Number.isInteger(entry.sameNameTotal) && entry.sameNameTotal > 0
     ? entry.sameNameTotal
     : 1;
+  const context = typeof entry.context === 'string' ? entry.context.slice(0, MAX_CONTEXT_CHARS) : '';
   return {
     kind: 'ref',
     role: entry.role,
@@ -274,6 +385,9 @@ export function refEntryToAxis(entry: RefEntryLike | null | undefined): RefAxis 
     sameNameIndex: index,
     sameNameTotal: total,
     frameKey: typeof entry.frameKey === 'string' ? entry.frameKey : '',
+    // Omitted rather than stored empty: an absent field and an empty one mean
+    // the same thing (no verdict available) and the absent one costs nothing.
+    ...(context.length > 0 && { context }),
   };
 }
 
@@ -520,6 +634,10 @@ function sanitizeAxis(raw: unknown): StepAxis | null {
     ? (a.sameNameTotal as number)
     : 1;
   if (sameNameIndex < 0 || sameNameIndex >= sameNameTotal) return null;
+  // A context that cannot be trusted is DROPPED, not fatal: without it the
+  // step falls back to the pre-#1182 population rules, which is the same
+  // contract every trace recorded before this field had.
+  const context = typeof a.context === 'string' ? a.context.slice(0, MAX_CONTEXT_CHARS) : '';
   return {
     kind: 'ref',
     role: a.role,
@@ -527,6 +645,7 @@ function sanitizeAxis(raw: unknown): StepAxis | null {
     sameNameIndex,
     sameNameTotal,
     frameKey: typeof a.frameKey === 'string' ? a.frameKey.slice(0, 256) : '',
+    ...(context.length > 0 && { context }),
   };
 }
 
