@@ -38,18 +38,23 @@
 import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import type { BrowserWindow } from 'electron';
 
 import type { RpcRouter } from '../RpcRouter';
 import type { RpcContext, RpcMethod } from '../../../shared/rpc';
 import { HUMAN_WORKSPACE_ID } from '../../../shared/channels';
 import { resolvePtyOwnerWorkspace } from '../../workspace/ptyOwnership';
-import { git as runGit } from '../../git/git';
+import { git as runGit, type GitResult } from '../../git/git';
+import { getExecEnv } from '../../../shared/execEnv';
 import { metaDirForWorktree } from '../../worktask/TaskWorktreeManager';
 import type { TaskCloseService } from '../../worktask/TaskCloseService';
 import type { TaskPrService } from '../../worktask/TaskPrService';
 import type { TaskAdoptService } from '../../worktask/TaskAdoptService';
 import type { TaskGateRunner } from '../../worktask/TaskGateRunner';
+
+const execFileAsync = promisify(execFile);
 
 type GetWindow = () => BrowserWindow | null;
 
@@ -61,6 +66,13 @@ export const WORKTASK_RPC_METHODS = [
   'task.adopt',
   'task.close',
   'task.pr',
+  // Read-only. These are RPCs rather than git run from inside the MCP broker
+  // for one reason: the ownership check. A tool that shelled out locally would
+  // first need the worktree path, and handing a caller a path to run git in is
+  // the whole authorization problem over again.
+  'task.git.status',
+  'task.git.log',
+  'task.gh.prView',
 ] as const;
 
 export type WorktaskRpcMethod = (typeof WORKTASK_RPC_METHODS)[number];
@@ -69,6 +81,18 @@ export type WorktaskRpcMethod = (typeof WORKTASK_RPC_METHODS)[number];
 export interface WorktaskRpcDaemonPort {
   rpc(method: string, params: Record<string, unknown>): Promise<unknown>;
 }
+
+/** Read-only process seam for the git/gh reads (injected in tests). */
+export type WorktaskExec = (cmd: 'git' | 'gh', args: string[], cwd: string) => Promise<GitResult>;
+
+/** `git log` is a listing, and an unbounded one costs the caller's context
+ *  window as much as the daemon's time. */
+export const TASK_GIT_LOG_MAX = 50;
+export const TASK_GIT_LOG_DEFAULT = 20;
+
+/** Field separator for the log format. A unit separator cannot occur in a
+ *  commit subject, so a crafted message cannot break the parse. */
+const LOG_SEP = '\u001f';
 
 export interface WorktaskRpcDeps {
   daemon: WorktaskRpcDaemonPort;
@@ -83,6 +107,8 @@ export interface WorktaskRpcDeps {
   systemWorkspaceId?: string;
   /** Injected for tests; defaults to fs.existsSync. */
   fileExists?: (p: string) => boolean;
+  /** Injected for tests; defaults to the shared argv-only git helper. */
+  exec?: WorktaskExec;
 }
 
 /** Projection task, minimal shape (task.mission.list). */
@@ -202,6 +228,74 @@ async function resolveRepoInfo(worktreePath: string): Promise<{ repoRoot: string
 }
 
 /**
+ * `git`/`gh` with the same contract as the shared git helper: argv only, cwd
+ * fixed, never throws — a non-zero exit is DATA, because "gh is not installed"
+ * and "there is no PR" are answers a caller acts on, not transport failures.
+ */
+async function runGitLike(cmd: 'git' | 'gh', args: string[], cwd: string): Promise<GitResult> {
+  if (cmd === 'git') return runGit(args, cwd);
+  try {
+    const { stdout, stderr } = await execFileAsync(process.platform === 'win32' ? 'gh.exe' : 'gh', args, {
+      cwd,
+      timeout: 20_000,
+      windowsHide: true,
+      maxBuffer: 4 * 1024 * 1024,
+      env: { ...getExecEnv(), GH_PROMPT_DISABLED: '1', GH_PAGER: 'cat', NO_COLOR: '1' },
+    });
+    return { stdout, stderr, code: 0 };
+  } catch (e) {
+    const err = e as { stdout?: string; stderr?: string; code?: number };
+    return { stdout: err.stdout ?? '', stderr: err.stderr ?? String(e), code: typeof err.code === 'number' ? err.code : 1 };
+  }
+}
+
+/** `git status --porcelain=v1 --branch` → structured. The first line is the
+ *  branch header; every other line is `XY <path>`. Renames carry ` -> `, and
+ *  the destination is the path that matters to a reader. */
+export function parseGitStatus(stdout: string): {
+  branch: string;
+  ahead: number;
+  behind: number;
+  clean: boolean;
+  files: { status: string; path: string }[];
+} {
+  const lines = stdout.split('\n').filter((l) => l.length > 0);
+  let branch = '';
+  let ahead = 0;
+  let behind = 0;
+  const files: { status: string; path: string }[] = [];
+  for (const line of lines) {
+    if (line.startsWith('## ')) {
+      const header = line.slice(3);
+      const nameEnd = header.indexOf(' [');
+      const name = nameEnd === -1 ? header : header.slice(0, nameEnd);
+      branch = name.split('...')[0]?.trim() ?? '';
+      const aheadMatch = /ahead (\d+)/.exec(header);
+      const behindMatch = /behind (\d+)/.exec(header);
+      ahead = aheadMatch ? Number(aheadMatch[1]) : 0;
+      behind = behindMatch ? Number(behindMatch[1]) : 0;
+      continue;
+    }
+    const status = line.slice(0, 2);
+    const rest = line.slice(3);
+    const arrow = rest.indexOf(' -> ');
+    files.push({ status, path: arrow === -1 ? rest : rest.slice(arrow + 4) });
+  }
+  return { branch, ahead, behind, clean: files.length === 0, files };
+}
+
+/** The `%H\x1f%an\x1f%aI\x1f%s` lines `task.git.log` asks for. */
+export function parseGitLog(stdout: string): { hash: string; author: string; date: string; subject: string }[] {
+  return stdout
+    .split('\n')
+    .filter((l) => l.length > 0)
+    .map((line) => {
+      const [hash = '', author = '', date = '', subject = ''] = line.split('\u001f');
+      return { hash, author, date, subject };
+    });
+}
+
+/**
  * Register the task-lifecycle pipe methods. `close`, `pr` and `gate` MUST be
  * the same service instances the renderer IPC handler uses — TaskWorktreeManager
  * keeps a per-repo mutex chain, and two instances would race for git's
@@ -214,6 +308,10 @@ async function resolveRepoInfo(worktreePath: string): Promise<{ repoRoot: string
 export function registerWorktaskRpc(router: RpcRouter, deps: WorktaskRpcDeps): void {
   const systemWorkspaceId = deps.systemWorkspaceId ?? 'ws-daemon';
   const fileExists = deps.fileExists ?? ((p: string) => fs.existsSync(p));
+  // `gh` rides the same argv-only helper as git — no shell, no interpolation.
+  // Only non-interactive read subcommands are used, so there is no prompt to
+  // disable.
+  const exec: WorktaskExec = deps.exec ?? ((cmd, args, cwd) => runGitLike(cmd, args, cwd));
   const register = (method: WorktaskRpcMethod, handler: Parameters<RpcRouter['register']>[1]): void =>
     router.register(method as unknown as RpcMethod, handler);
 
@@ -317,5 +415,88 @@ export function registerWorktaskRpc(router: RpcRouter, deps: WorktaskRpcDeps): v
       title: task.title,
       ...(body !== undefined ? { body } : {}),
     });
+  });
+
+  // ── task.git.status ──────────────────────────────────────────────────
+  // Read-only, and the reason the destructive methods above can be terse: a
+  // brain that can SEE a task's worktree state stops guessing at it from pane
+  // screens, and stops calling task.close to find out whether it was dirty.
+  register('task.git.status', async (params, ctx?: RpcContext) => {
+    const blocked = localOnly(ctx, 'task.git.status');
+    if (blocked) return blocked;
+    const owned = await resolveOwnedTask(deps, params, ctx);
+    if (!('task' in owned)) return deny(owned.code, owned.message);
+    const { task } = owned;
+    if (!task.worktreePath || !fileExists(task.worktreePath)) {
+      return deny('FAILED_PRECONDITION', `task '${task.id}' has no worktree on disk`);
+    }
+    const res = await exec('git', ['status', '--porcelain=v1', '--branch'], task.worktreePath);
+    if (res.code !== 0) {
+      return { ok: false as const, taskId: task.id, reason: 'git-failed' as const, error: res.stderr.trim() };
+    }
+    return { ok: true as const, taskId: task.id, worktreePath: task.worktreePath, ...parseGitStatus(res.stdout) };
+  });
+
+  // ── task.git.log ─────────────────────────────────────────────────────
+  register('task.git.log', async (params, ctx?: RpcContext) => {
+    const blocked = localOnly(ctx, 'task.git.log');
+    if (blocked) return blocked;
+    const owned = await resolveOwnedTask(deps, params, ctx);
+    if (!('task' in owned)) return deny(owned.code, owned.message);
+    const { task } = owned;
+    if (!task.worktreePath || !fileExists(task.worktreePath)) {
+      return deny('FAILED_PRECONDITION', `task '${task.id}' has no worktree on disk`);
+    }
+    const raw = params['limit'];
+    if (raw !== undefined && (typeof raw !== 'number' || !Number.isInteger(raw) || raw < 1)) {
+      return deny('INVALID_ARGUMENT', 'limit must be a positive integer');
+    }
+    // Clamped rather than rejected at the top end: a caller asking for 500
+    // commits wants "as many as I can have", and refusing the whole call helps
+    // nobody. The number that actually ran is reported back.
+    const limit = Math.min(typeof raw === 'number' ? raw : TASK_GIT_LOG_DEFAULT, TASK_GIT_LOG_MAX);
+    const res = await exec(
+      'git',
+      ['log', `-n`, String(limit), `--format=%H${LOG_SEP}%an${LOG_SEP}%aI${LOG_SEP}%s`],
+      task.worktreePath,
+    );
+    if (res.code !== 0) {
+      return { ok: false as const, taskId: task.id, reason: 'git-failed' as const, error: res.stderr.trim() };
+    }
+    return { ok: true as const, taskId: task.id, limit, commits: parseGitLog(res.stdout) };
+  });
+
+  // ── task.gh.prView ───────────────────────────────────────────────────
+  // Errors as DATA: `gh` missing, unauthenticated, or simply no PR for this
+  // branch are all things a caller acts on, and turning them into a transport
+  // error would make "there is no PR yet" indistinguishable from "the call
+  // broke".
+  register('task.gh.prView', async (params, ctx?: RpcContext) => {
+    const blocked = localOnly(ctx, 'task.gh.prView');
+    if (blocked) return blocked;
+    const owned = await resolveOwnedTask(deps, params, ctx);
+    if (!('task' in owned)) return deny(owned.code, owned.message);
+    const { task } = owned;
+    if (!task.worktreePath || !fileExists(task.worktreePath)) {
+      return deny('FAILED_PRECONDITION', `task '${task.id}' has no worktree on disk`);
+    }
+    const res = await exec(
+      'gh',
+      ['pr', 'view', '--json', 'number,title,state,url,isDraft,headRefName,mergeStateStatus'],
+      task.worktreePath,
+    );
+    if (res.code !== 0) {
+      return {
+        ok: false as const,
+        taskId: task.id,
+        reason: 'no-pr' as const,
+        error: res.stderr.trim() || 'gh could not report a pull request for this branch',
+      };
+    }
+    try {
+      return { ok: true as const, taskId: task.id, pr: JSON.parse(res.stdout) as unknown };
+    } catch {
+      return { ok: false as const, taskId: task.id, reason: 'gh-failed' as const, error: 'gh returned unparseable JSON' };
+    }
   });
 }

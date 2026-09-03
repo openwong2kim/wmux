@@ -14,7 +14,15 @@ vi.mock('../../../git/git', () => ({ git: vi.fn() }));
 
 import { resolvePtyOwnerWorkspace } from '../../../workspace/ptyOwnership';
 import { git } from '../../../git/git';
-import { registerWorktaskRpc, WORKTASK_RPC_METHODS, type WorktaskRpcDeps } from '../worktask.rpc';
+import {
+  parseGitLog,
+  parseGitStatus,
+  registerWorktaskRpc,
+  TASK_GIT_LOG_MAX,
+  WORKTASK_RPC_METHODS,
+  type WorktaskExec,
+  type WorktaskRpcDeps,
+} from '../worktask.rpc';
 import type { RpcContext } from '../../../../shared/rpc';
 import type { RpcRouter } from '../../RpcRouter';
 import type { TaskAdoptService } from '../../../worktask/TaskAdoptService';
@@ -36,6 +44,7 @@ type Handler = (params: Record<string, unknown>, ctx?: RpcContext) => Promise<Re
 
 interface Harness {
   call: (method: string, params: Record<string, unknown>, ctx?: RpcContext) => Promise<Record<string, unknown>>;
+  exec: ReturnType<typeof vi.fn>;
   closeTask: ReturnType<typeof vi.fn>;
   createPr: ReturnType<typeof vi.fn>;
   adopt: ReturnType<typeof vi.fn>;
@@ -44,7 +53,12 @@ interface Harness {
   missionListParams: () => Record<string, unknown> | undefined;
 }
 
-function harness(opts?: { tasks?: unknown[]; ownerWorkspaceId?: string | null; onDisk?: boolean }): Harness {
+function harness(opts?: {
+  tasks?: unknown[];
+  ownerWorkspaceId?: string | null;
+  onDisk?: boolean;
+  exec?: WorktaskExec;
+}): Harness {
   const handlers = new Map<string, Handler>();
   const router = { register: (m: string, h: Handler) => handlers.set(m, h) } as unknown as RpcRouter;
 
@@ -76,8 +90,11 @@ function harness(opts?: { tasks?: unknown[]; ownerWorkspaceId?: string | null; o
   const owner = opts?.ownerWorkspaceId === undefined ? CALLER_WS : opts.ownerWorkspaceId;
   vi.mocked(resolvePtyOwnerWorkspace).mockImplementation(async () => owner);
 
+  const exec = vi.fn(opts?.exec ?? (async () => ({ stdout: '', stderr: '', code: 0 })));
+
   const deps: WorktaskRpcDeps = {
     daemon,
+    exec: exec as unknown as WorktaskExec,
     getWindow: () => null,
     close: { closeTask } as unknown as TaskCloseService,
     pr: { createPr } as unknown as TaskPrService,
@@ -98,6 +115,7 @@ function harness(opts?: { tasks?: unknown[]; ownerWorkspaceId?: string | null; o
     adopt,
     gateRun,
     gateCancel,
+    exec,
     missionListParams: () => missionParams,
   };
 }
@@ -107,7 +125,7 @@ beforeEach(() => {
 });
 
 describe('registration', () => {
-  it('registers exactly the five contracted methods', () => {
+  it('registers exactly the contracted methods', () => {
     const handlers = new Map<string, Handler>();
     const router = { register: (m: string, h: Handler) => handlers.set(m, h) } as unknown as RpcRouter;
     registerWorktaskRpc(router, {
@@ -287,5 +305,102 @@ describe('task.pr', () => {
     const res = await h.call('task.pr', { taskId: TASK.id, senderPtyId: 'pty-1' });
     expect(res).toMatchObject({ ok: false, error: { code: 'FAILED_PRECONDITION' } });
     expect(h.createPr).not.toHaveBeenCalled();
+  });
+});
+
+
+describe('task.git.status', () => {
+  it('runs a fixed argv in the task worktree and returns structure, not text', async () => {
+    const h = harness({
+      exec: async () => ({ stdout: '## wtask/lane-one...origin/wtask/lane-one [ahead 2]\n M src/a.ts\n?? src/new.ts\n', stderr: '', code: 0 }),
+    });
+    const res = await h.call('task.git.status', { taskId: TASK.id, senderPtyId: 'pty-1' });
+    expect(h.exec).toHaveBeenCalledWith('git', ['status', '--porcelain=v1', '--branch'], TASK.worktreePath);
+    expect(res).toMatchObject({
+      ok: true,
+      branch: 'wtask/lane-one',
+      ahead: 2,
+      behind: 0,
+      clean: false,
+      files: [
+        { status: ' M', path: 'src/a.ts' },
+        { status: '??', path: 'src/new.ts' },
+      ],
+    });
+  });
+
+  it('reports a git failure as data', async () => {
+    const h = harness({ exec: async () => ({ stdout: '', stderr: 'not a git repository', code: 128 }) });
+    expect(await h.call('task.git.status', { taskId: TASK.id, senderPtyId: 'pty-1' })).toMatchObject({
+      ok: false,
+      reason: 'git-failed',
+    });
+  });
+});
+
+describe('task.git.log', () => {
+  it('clamps the limit instead of refusing, and reports what ran', async () => {
+    const h = harness({ exec: async () => ({ stdout: '', stderr: '', code: 0 }) });
+    const res = await h.call('task.git.log', { taskId: TASK.id, senderPtyId: 'pty-1', limit: 500 });
+    expect(res).toMatchObject({ ok: true, limit: TASK_GIT_LOG_MAX });
+    expect(h.exec.mock.calls[0]?.[1]).toContain(String(TASK_GIT_LOG_MAX));
+  });
+
+  it('rejects a limit that is not a positive integer', async () => {
+    const h = harness();
+    expect(await h.call('task.git.log', { taskId: TASK.id, senderPtyId: 'pty-1', limit: 0 })).toMatchObject({
+      ok: false,
+      error: { code: 'INVALID_ARGUMENT' },
+    });
+    expect(await h.call('task.git.log', { taskId: TASK.id, senderPtyId: 'pty-1', limit: 'all' })).toMatchObject({
+      ok: false,
+      error: { code: 'INVALID_ARGUMENT' },
+    });
+  });
+
+  it('parses the separator-delimited commit lines', async () => {
+    const line = ['abc', 'A Dev', '2026-09-04T00:00:00Z', 'fix: a subject with -- dashes'].join('\u001f');
+    const h = harness({ exec: async () => ({ stdout: `${line}\n`, stderr: '', code: 0 }) });
+    const res = await h.call('task.git.log', { taskId: TASK.id, senderPtyId: 'pty-1' });
+    expect((res as { commits: unknown[] }).commits).toEqual([
+      { hash: 'abc', author: 'A Dev', date: '2026-09-04T00:00:00Z', subject: 'fix: a subject with -- dashes' },
+    ]);
+  });
+});
+
+describe('task.gh.prView', () => {
+  it('returns the parsed PR json', async () => {
+    const h = harness({ exec: async () => ({ stdout: '{"number":7,"state":"OPEN"}', stderr: '', code: 0 }) });
+    const res = await h.call('task.gh.prView', { taskId: TASK.id, senderPtyId: 'pty-1' });
+    expect(h.exec.mock.calls[0]?.[0]).toBe('gh');
+    expect(res).toMatchObject({ ok: true, pr: { number: 7, state: 'OPEN' } });
+  });
+
+  it('reports "no PR" as data rather than as a failure', async () => {
+    const h = harness({ exec: async () => ({ stdout: '', stderr: 'no pull requests found', code: 1 }) });
+    expect(await h.call('task.gh.prView', { taskId: TASK.id, senderPtyId: 'pty-1' })).toMatchObject({
+      ok: false,
+      reason: 'no-pr',
+    });
+  });
+});
+
+describe('porcelain parsing', () => {
+  it('reads a rename as its destination path', () => {
+    const parsed = parseGitStatus('## main\nR  old.ts -> new.ts\n');
+    expect(parsed.files).toEqual([{ status: 'R ', path: 'new.ts' }]);
+  });
+
+  it('reports a branch with no upstream and no changes as clean', () => {
+    const parsed = parseGitStatus('## wtask/x\n');
+    expect(parsed).toMatchObject({ branch: 'wtask/x', ahead: 0, behind: 0, clean: true });
+  });
+
+  it('reads ahead and behind together', () => {
+    expect(parseGitStatus('## a...origin/a [ahead 1, behind 3]\n')).toMatchObject({ ahead: 1, behind: 3 });
+  });
+
+  it('ignores empty log output', () => {
+    expect(parseGitLog('')).toEqual([]);
   });
 });

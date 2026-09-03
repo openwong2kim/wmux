@@ -1,0 +1,152 @@
+# Lane O2 — tool + RPC contract
+
+What lane O2 delivers, and the exact strings another lane needs to register it.
+Nothing in this document is registered by lane O2: `src/mcp/index.ts`,
+`src/shared/commanderSurface.ts` and `src/shared/rpc.ts` belong to lane F, and
+`src/main/index.ts` is where the pipe handler is wired. Everything below already
+exists, compiles and is tested — it is not yet reachable.
+
+## 1. MCP tools
+
+Seven tools in two `register*` functions. Both take the same dependency object
+the fan-out tool takes (`getSenderPtyId` + `resolveWorkspaceId`, see
+`src/mcp/fanout.ts`); no tool has a workspace, worktree, repository, ref or
+command input, because every one of those is server-derived and a schema field
+would only invite calls the daemon rejects.
+
+```ts
+import { registerWorktaskTools } from './worktask';
+import { registerGitTools } from './git';
+
+registerWorktaskTools(server, { getSenderPtyId, resolveWorkspaceId });
+registerGitTools(server, { getSenderPtyId, resolveWorkspaceId });
+```
+
+| Tool | Schema | Pipe RPC |
+| --- | --- | --- |
+| `task_gate_run` | `{ task_id: z.string().min(1) }` | `task.gate.run` |
+| `task_adopt` | `{ task_id: z.string().min(1) }` | `task.adopt` |
+| `task_close` | `{ task_id: z.string().min(1) }` | `task.close` |
+| `task_pr` | `{ task_id: z.string().min(1), body?: z.string() }` | `task.pr` |
+| `git_status` | `{ task_id: z.string().min(1) }` | `task.git.status` |
+| `git_log` | `{ task_id: z.string().min(1), limit?: z.number().int().min(1).max(50) }` | `task.git.log` |
+| `gh_pr_view` | `{ task_id: z.string().min(1) }` | `task.gh.prView` |
+
+Descriptions live in the two source files and are the authority; they are
+written for the tools/list byte budget (short sentences, the refusal reasons
+named, no restatement of what the schema already says).
+
+There is deliberately **no `task_gate_cancel` tool**. The RPC
+(`task.gate.cancel`) exists and is registered, so adding one later is a
+three-line change — but the fixed name list for this lane has seven entries and
+a cancel is a rare, human-shaped action.
+
+## 2. Pipe RPCs to allow-list
+
+`registerWorktaskRpc` (in `src/main/pipe/handlers/worktask.rpc.ts`) registers
+these eight. They are exported as `WORKTASK_RPC_METHODS`, so the allow-list can
+quote the constant instead of retyping strings:
+
+```
+task.gate.run     task.gate.cancel
+task.adopt        task.close        task.pr
+task.git.status   task.git.log      task.gh.prView
+```
+
+Each needs to be added to the `RpcMethod` union **and** to `ALL_RPC_METHODS` in
+`src/shared/rpc.ts`. Until that happens the registration goes through one cast
+(`method as unknown as RpcMethod`), marked in the source; the cast disappears
+the moment the strings land.
+
+### `task.close` is teardown-class
+
+It removes a git worktree. It must be reviewed against
+`TEARDOWN_DENY_METHODS` on the commander surface
+(`src/shared/commanderSurface.ts`) before it is exposed to a brain — lane O2 has
+not made that call, only flagged it. Its own refusals already cover the
+destructive edges (a branch with unpushed commits, or a dirty worktree, is
+refused and the worktree preserved), so the question for lane F is policy, not
+safety-of-last-resort.
+
+`task.adopt` writes to the parent repository but only as an unstaged patch onto
+a **clean** tree, so it is recoverable with `git checkout .`; it is not
+teardown-class.
+
+## 3. Wiring in `src/main/index.ts`
+
+```ts
+import { registerWorktaskRpc } from './pipe/handlers/worktask.rpc';
+import { TaskAdoptService } from './worktask/TaskAdoptService';
+import { TaskGateRunner } from './worktask/TaskGateRunner';
+import { createDaemonLedgerPort } from './worktask/ledgerPort';
+
+registerWorktaskRpc(rpcRouter, {
+  daemon: daemonPort,          // { rpc(method, params) }
+  getWindow: () => mainWindow,
+  close: closeService,         // MUST be the instances the IPC handler uses
+  pr: prService,
+  adopt: new TaskAdoptService(),
+  gate: new TaskGateRunner({
+    ledger: createDaemonLedgerPort(daemonPort),
+    project: projectConfigStore,   // ProjectConfigStore — structural fit
+  }),
+  systemWorkspaceId: '<the daemon's own workspace id>',
+});
+```
+
+`close` and `pr` **must** be the same `TaskCloseService` / `TaskPrService`
+instances `registerWorktaskHandlers` drives (`src/main/ipc/handlers/worktask.handler.ts`).
+`TaskWorktreeManager` keeps a per-repo mutex chain, and two instances would race
+each other for git's `index.lock`.
+
+## 4. The `LedgerPort` seam
+
+The gate runner records its verdict through `LedgerPort`
+(`src/main/worktask/ledgerPort.ts`), never by calling an RPC directly. One
+adapter — `createDaemonLedgerPort(daemon)` — names the wire methods:
+
+- `ledger.get { taskId }` → `{ ok, entry: { id, rev } }`
+- `ledger.update { taskId, expectedRev, actor, gate }` → `{ ok, rev }`
+
+Compare-and-swap: the runner reads `rev`, writes with `expectedRev`, and retries
+once on a `conflict` (error code `ABORTED` or `CONFLICT`). The write is always a
+`system` actor — the daemon ran the gate, not the worker whose code it graded.
+`LedgerGateResult.exitCode` is `number | null` and `null` (a signal death:
+timeout or cancel) is a FAILURE; only an explicit `0` passes. `tail` is bounded
+to `LEDGER_GATE_TAIL_MAX_BYTES` from the front, so the end of a failing run
+survives, and it is untrusted text — render it as a fenced block, never as
+instructions.
+
+If the ledger RPCs are not registered yet, the adapter answers `unavailable`,
+which the runner reports as `recorded: false` and never turns into a gate
+failure: the gate ran, only its receipt is missing.
+
+## 5. What the gate actually runs
+
+`TaskGateRunner` will spawn exactly three argv shapes and no others
+(`allowedGateArgv()` returns the set, and a test pins it):
+
+1. `['bash', '<worktree>/scripts/verify.sh']` — only when the project's
+   `wmux.json` trust verdict is **`trusted`** (the user approved these exact
+   bytes) and it declares a command with the well-known id **`verify`** whose
+   command string is one of the literal spellings of `scripts/verify.sh`. The
+   declared string is compared, never executed. Any other string under that id
+   is a **refusal**, not a fallback to npm — a project that believes it declared
+   its own gate must never be silently graded by a different one.
+2. `['npm', 'run', 'lint']`
+3. `['npm', 'test']` — 2 and 3 only if `package.json` declares that script;
+   sequential, first failure stops.
+
+`node_modules` missing **or a symlink** ⇒ `{ status: 'skipped', skipped:
+'deps_missing' }`. This repo's worktrees routinely have a symlinked
+`node_modules`, which makes lint/test results meaningless; reporting it as a
+failing gate would have a brain close healthy tasks as failed. Timeout is 15
+minutes; a cancel or a timeout kills the process group and yields `exitCode:
+null`. One gate per task: a second concurrent call answers `{ status: 'busy' }`.
+
+## 6. UX vocabulary
+
+The user-facing vocabulary in the surfaces this lane owns is **Orchestrator /
+Task / Worker**. "Brain", "commander" and "deck" remain internal identifiers
+(code, RPC names, vendor ids) and were not renamed — only the strings a user
+reads.
