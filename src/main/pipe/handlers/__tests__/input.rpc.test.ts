@@ -3,9 +3,19 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { BrowserWindow } from 'electron';
 import { RpcRouter } from '../../RpcRouter';
-import { registerInputRpc, decideTerminalOmittedTarget, isSessionTerminatingInput } from '../input.rpc';
+import {
+  registerInputRpc,
+  decideTerminalOmittedTarget,
+  isSessionTerminatingInput,
+  awaitSubmitReceipt,
+  composerAdvanced,
+  isTurnStart,
+  rowFromBottom,
+  submitNeedle,
+  type SubmitProbe,
+  type RoleBindingResolver,
+} from '../input.rpc';
 import { noteGateVerdict, resetGateVerdicts } from '../../../deck/stopGateState';
-import type { RoleBindingResolver } from '../input.rpc';
 import type { PTYManager } from '../../../pty/PTYManager';
 import type { RoleBinding } from '../../../../shared/orchestratorRole';
 
@@ -762,5 +772,180 @@ describe('input.send refuses to end a gate-held pane (#733)', () => {
     const res = await send(router, 'exit', 'pty-held');
     expect(res.ok).toBe(true);
     expect(writeMock).toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Submit receipt (orchestrator track) — `submitted` was never a receipt.
+// ---------------------------------------------------------------------------
+// The handler used to write text, wait 20ms, write \r and report
+// `submitted:true`. Nothing verified the \r landed, so an orchestrator read a
+// prompt that was still sitting in the composer as "delivered". These tests pin
+// the two signals that DO prove the pane moved, and — the point of the whole
+// change — pin that raw byte activity does NOT.
+describe('input.send — submit receipt', () => {
+  // A fake PTY screen the test drives frame by frame. Frames are consumed in
+  // order; the last one repeats, so a test can say "moves at poll 3".
+  function fakeProbe(frames: string[], statuses: Array<string | null>): {
+    probe: SubmitProbe;
+    reads: number;
+  } {
+    const state = { reads: 0 };
+    const at = <T,>(arr: T[], i: number): T => arr[Math.min(i, arr.length - 1)]!;
+    return {
+      probe: {
+        readScreen: () => Promise.resolve(at(frames, state.reads)),
+        readAgentStatus: () => {
+          const s = at(statuses, state.reads);
+          state.reads++;
+          return Promise.resolve(s);
+        },
+      },
+      reads: state.reads,
+    };
+  }
+
+  const noSleep = (): Promise<void> => Promise.resolve();
+
+  // The composer holds the prompt at the bottom; the pane's footer sits below.
+  const COMPOSER = ['claude> ready', '', '│ > write me a haiku │', '  ? for shortcuts'].join('\n');
+  // After the submit Claude Code re-renders the prompt into the TRANSCRIPT and
+  // empties the composer — the text is STILL on screen, three rows higher.
+  const SUBMITTED = [
+    '> write me a haiku',
+    '  thinking...',
+    '',
+    '│ >                  │',
+    '  ? for shortcuts',
+  ].join('\n');
+
+  it('accepts on a turn start reported for the pty', async () => {
+    const { probe } = fakeProbe([COMPOSER], ['idle', 'running']);
+    const resend = vi.fn();
+    const receipt = await awaitSubmitReceipt(
+      probe,
+      submitNeedle('write me a haiku'),
+      { screen: COMPOSER, agentStatus: 'idle' },
+      resend,
+      { windowMs: 200, pollMs: 50, sleep: noSleep },
+    );
+    expect(receipt.accepted).toBe(true);
+    expect(receipt.signal).toBe('turn_start');
+    expect(receipt.agentStatusAfter).toBe('running');
+    expect(resend).not.toHaveBeenCalled();
+  });
+
+  it('accepts when the composer line clears even with no status signal', async () => {
+    const { probe } = fakeProbe([COMPOSER, SUBMITTED], [null]);
+    const receipt = await awaitSubmitReceipt(
+      probe,
+      submitNeedle('write me a haiku'),
+      { screen: COMPOSER, agentStatus: null },
+      vi.fn(),
+      { windowMs: 200, pollMs: 50, sleep: noSleep },
+    );
+    expect(receipt.accepted).toBe(true);
+    expect(receipt.signal).toBe('composer_cleared');
+  });
+
+  // THE regression this change exists for: bytes arrived (the TUI repainted its
+  // box and cursor) but nothing was committed. Byte activity is not a receipt.
+  it('does NOT accept on echo-only byte activity, and retries the Enter once', async () => {
+    const echo1 = ['claude> ready', '', '│ > write me a haiku│', '  ? for shortcuts'].join('\n');
+    const echo2 = ['claude> ready', '', '│ > write me a haiku ▌│', '  ? for shortcuts'].join('\n');
+    const { probe } = fakeProbe([echo1, echo2], ['idle']);
+    const resend = vi.fn();
+    const receipt = await awaitSubmitReceipt(
+      probe,
+      submitNeedle('write me a haiku'),
+      { screen: COMPOSER, agentStatus: 'idle' },
+      resend,
+      { windowMs: 100, pollMs: 50, sleep: noSleep },
+    );
+    expect(receipt.accepted).toBe(false);
+    expect(receipt.signal).toBe('none');
+    expect(resend).toHaveBeenCalledTimes(1);
+    // The caller gets the pane's own words back instead of a bare false.
+    expect(receipt.screenTail).toContain('write me a haiku');
+  });
+
+  it('accepts on the retry when the turn starts late', async () => {
+    // idle for the whole first window (4 polls at 50ms), running after.
+    const statuses = ['idle', 'idle', 'idle', 'idle', 'running'];
+    const { probe } = fakeProbe([COMPOSER], statuses);
+    const resend = vi.fn();
+    const receipt = await awaitSubmitReceipt(
+      probe,
+      submitNeedle('write me a haiku'),
+      { screen: COMPOSER, agentStatus: 'idle' },
+      resend,
+      { windowMs: 200, pollMs: 50, sleep: noSleep },
+    );
+    expect(receipt.accepted).toBe(true);
+    expect(receipt.retried).toBe(true);
+    expect(resend).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports unobservable instead of guessing when the pane cannot be read', async () => {
+    const { probe } = fakeProbe([''], [null]);
+    const resend = vi.fn();
+    const receipt = await awaitSubmitReceipt(probe, 'x', { screen: '', agentStatus: null }, resend, {
+      sleep: noSleep,
+    });
+    expect(receipt).toEqual({
+      accepted: false,
+      agentStatusAfter: null,
+      retried: false,
+      signal: 'unobservable',
+    });
+    expect(resend).not.toHaveBeenCalled();
+  });
+
+  it('rowFromBottom finds the LAST occurrence and measures from the bottom', () => {
+    expect(rowFromBottom(COMPOSER, submitNeedle('write me a haiku'))).toBe(1);
+    expect(rowFromBottom(SUBMITTED, submitNeedle('write me a haiku'))).toBe(4);
+    expect(rowFromBottom(COMPOSER, 'nowhere')).toBe(-1);
+  });
+
+  it('composerAdvanced refuses to guess when the text was never on the input line', () => {
+    // Not visible before → we have no idea where the composer is; not a receipt.
+    expect(composerAdvanced('unrelated', 'still unrelated', 'ghost')).toBe(false);
+  });
+
+  it('isTurnStart only fires on a move INTO a turn', () => {
+    expect(isTurnStart('idle', 'running')).toBe(true);
+    expect(isTurnStart('idle', 'awaiting_input')).toBe(true);
+    expect(isTurnStart('running', 'running')).toBe(false);
+    // decay, not a turn start
+    expect(isTurnStart('running', 'idle')).toBe(false);
+    expect(isTurnStart('idle', null)).toBe(false);
+  });
+
+  it('the RPC result carries accepted + agentStatusAfter, and submit:false is never accepted', async () => {
+    const pty = { get: vi.fn(() => ({ id: 'x' })), write: vi.fn() } as unknown as PTYManager;
+    const router = new RpcRouter();
+    registerInputRpc(router, pty, () => fakeWindow);
+    sendToRendererMock.mockImplementation((_w: unknown, method: string) => {
+      if (method === 'input.findOwnerWorkspace') return Promise.resolve({ workspaceId: 'ws-self' });
+      return Promise.resolve(null);
+    });
+
+    const noSubmit = await router.dispatch({
+      id: 'r1',
+      method: 'input.send',
+      params: { text: 'hello', ptyId: 'pty-a', workspaceId: 'ws-self' },
+    });
+    if (!noSubmit.ok) throw new Error(noSubmit.error);
+    expect(noSubmit.result).toMatchObject({ submitted: false, accepted: false, agentStatusAfter: null });
+
+    const submitted = await router.dispatch({
+      id: 'r2',
+      method: 'input.send',
+      params: { text: 'hello', ptyId: 'pty-a', workspaceId: 'ws-self', submit: true },
+    });
+    if (!submitted.ok) throw new Error(submitted.error);
+    // `submitted` says an Enter was written; `accepted` stays false because
+    // nothing observable confirmed it — the two are no longer the same claim.
+    expect(submitted.result).toMatchObject({ submitted: true, accepted: false });
   });
 });
