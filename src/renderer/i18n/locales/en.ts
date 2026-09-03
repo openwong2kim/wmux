@@ -46,13 +46,17 @@ export const en = {
   // Sidebar — workspace search
   'sidebar.searchPlaceholder': 'Search workspaces…',
 
-  // Sidebar — Missions (fan-out tasks)
-  'missions.open': 'open',
-  'missions.closed': 'closed',
-  'missions.openChannel': 'Open mission channel',
-  'missions.openChannelFor': 'Open mission channel for {title}',
-  'missions.title': 'Missions ({count})',
-  'missions.done': 'Done ({count})',
+  // Sidebar — Tasks (the isolated worktree tasks an orchestrator runs)
+  'missions.open': 'running',
+  'missions.closed': 'finished',
+  'missions.openChannel': 'Open task channel',
+  'missions.openChannelFor': 'Open task channel for {title}',
+  'missions.title': 'Tasks ({count})',
+  'missions.done': 'Finished ({count})',
+  // Shown instead of hiding the section outright: an empty list is the answer
+  // to "does this workspace have tasks", and a section that vanishes is not.
+  'missions.empty': 'No tasks yet',
+  'missions.doneSummary': 'last: {title}',
 
   // Sidebar — Company mode
   'company.deptRemoveHint': 'Right-click to remove',
@@ -701,11 +705,16 @@ export const en = {
   'settings.cursorUnderline': 'Underline',
   // Orchestrator (command deck brain) settings
   'settings.orchestrator': 'Orchestrator',
-  'settings.orchestratorBrain': 'Orchestrator brain',
+  'settings.orchestratorBrain': 'Orchestrator runtime',
   'settings.orchestratorBrainDesc':
-    'Which agent runtime drives the Command Deck. The terminal brain is the default — it drives your own claude binary on your subscription. Hermes (ACP) requires the Hermes Agent CLI installed and authenticated on this machine — run its own setup first. Applies from the next brain turn; each brain keeps its own conversation history.',
+    'Which agent runtime drives the orchestrator. The terminal runtime is the default — it drives your own claude binary on your subscription. Hermes (ACP) requires the Hermes Agent CLI installed and authenticated on this machine — run its own setup first. Applies from the next orchestrator turn; each runtime keeps its own conversation history.',
   'settings.orchestratorBrainClaude': 'Claude Code (SDK)',
   'settings.orchestratorBrainClaudePty': 'Claude Code (terminal, default) — subscription',
+  // Picking this one does not just change the runtime: the orchestrator panel
+  // becomes an embedded terminal instead of the chat surface, which is a
+  // visible change people have hit without warning.
+  'settings.orchestratorBrainClaudePtyNote':
+    'Runs the orchestrator as a terminal: the panel shows the Claude Code TUI instead of the chat view.',
   'settings.orchestratorBrainHermes': 'Hermes Agent (ACP) — experimental',
   'settings.orchestratorModel': 'Orchestrator model',
   'settings.orchestratorModelDesc':
@@ -1714,7 +1723,11 @@ export const en = {
   'fanout.summaryUnmaterialized': '{count} unmaterialized',
   'fanout.summaryDisconnected': '{count} channel-disconnected',
   'fanout.taskReady': 'Task "{title}" ready',
+  'fanout.tasksReady': '{count} tasks ready',
   'fanout.openDiff': 'Open diff',
+  'fanout.openFirstDiff': 'Open first diff',
+  'fanout.confirmEmpty':
+    'None of these {n} tasks has a prompt. They will open with a worktree and an idle agent pane, and you type into each one yourself. Start them anyway?',
 
   // ─── Diff panel: task-output review, hunk adoption, comments, PR/close ────
   'diff.taskNotFound': 'Task not found — worktree lost or corrupted',

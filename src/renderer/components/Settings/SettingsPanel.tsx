@@ -947,6 +947,18 @@ function OrchestratorSection() {
           label={t('settings.orchestratorBrain')}
         />
       </SettingRow>
+      {/* Picking the terminal runtime does not only swap the agent behind the
+          orchestrator: the panel itself becomes an embedded Claude Code TUI
+          instead of the chat surface. That is the change people actually
+          notice, and nothing said so before they picked it. */}
+      {deckBrainVendor === 'claude-pty' && (
+        <div
+          className="-mt-2 text-[11px] text-[var(--text-muted)]"
+          data-testid="orchestrator-claude-pty-note"
+        >
+          {t('settings.orchestratorBrainClaudePtyNote')}
+        </div>
+      )}
       <SettingRow id="model"
         label={t('settings.orchestratorModel')}
         description={t('settings.orchestratorModelDesc')}

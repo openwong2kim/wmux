@@ -1,0 +1,279 @@
+// ─── TaskAdoptService — all-or-nothing adopt, with git injected ──────────────
+//
+// The refusals are the point: adopting onto uncommitted work is not
+// recoverable, and a patch taken against the wrong base silently DELETES the
+// previous task's work rather than failing. Nothing here spawns git; what is
+// asserted is which commands run, with which arguments, in which directory.
+
+import { describe, it, expect, vi } from 'vitest';
+
+import { parsePorcelainZ, TaskAdoptService, type AdoptGit } from '../TaskAdoptService';
+
+const WT = '/wt/lane-one';
+const REPO = '/repo';
+const PARENT_HEAD = 'parenthead';
+const TASK_HEAD = 'taskhead';
+const BASE = 'mergebase';
+
+interface Call {
+  cwd: string;
+  args: string[];
+  env?: Record<string, string>;
+}
+
+/** A git that answers by subcommand. Every knob is a refusal path. */
+function fakeGit(opts: {
+  status?: string;
+  diff?: string;
+  mergeBaseCode?: number;
+  checkCode?: number;
+  applyCode?: number;
+  addCode?: number;
+  calls?: Call[];
+}): AdoptGit {
+  return async (args, cwd, env) => {
+    opts.calls?.push({ cwd, args, ...(env ? { env } : {}) });
+    const ok = (stdout: string) => ({ stdout, stderr: '', code: 0 });
+    const fail = (stderr: string, code = 1) => ({ stdout: '', stderr, code });
+    if (args[0] === 'rev-parse' && args.includes('--git-common-dir')) return ok(`${REPO}/.git\n`);
+    if (args[0] === 'rev-parse' && args.includes('--show-toplevel')) return ok(`${REPO}\n`);
+    if (args[0] === 'rev-parse' && args[1] === 'HEAD') return ok(cwd === REPO ? `${PARENT_HEAD}\n` : `${TASK_HEAD}\n`);
+    if (args[0] === 'merge-base') return opts.mergeBaseCode ? fail('no merge base') : ok(`${BASE}\n`);
+    if (args[0] === 'status') return ok(opts.status ?? '');
+    if (args[0] === 'read-tree') return ok('');
+    if (args[0] === 'add') return opts.addCode ? fail('add failed') : ok('');
+    if (args[0] === 'diff' && args.includes('--name-only')) return ok(opts.diff ? 'src/a.ts\0src/b.ts\0' : '');
+    if (args[0] === 'diff') return ok(opts.diff ?? '');
+    if (args[0] === 'apply' && args.includes('--check')) {
+      return opts.checkCode ? fail('patch does not apply') : ok('');
+    }
+    if (args[0] === 'apply') return opts.applyCode ? fail('patch failed mid-apply') : ok('');
+    if (args[0] === 'reset' || args[0] === 'checkout' || args[0] === 'clean') return ok('');
+    throw new Error(`unexpected git ${args.join(' ')}`);
+  };
+}
+
+function service(git: AdoptGit): { svc: TaskAdoptService; written: string[]; indexCleanups: number } {
+  const written: string[] = [];
+  const state = { indexCleanups: 0 };
+  const svc = new TaskAdoptService({
+    git,
+    writePatch: (p) => {
+      written.push(p);
+      return '/tmp/patch';
+    },
+    removePatch: vi.fn(),
+    makeTempIndex: () => ({
+      indexFile: '/tmp/idx/index',
+      cleanup: () => {
+        state.indexCleanups += 1;
+      },
+    }),
+  });
+  return {
+    svc,
+    written,
+    get indexCleanups() {
+      return state.indexCleanups;
+    },
+  };
+}
+
+describe('TaskAdoptService', () => {
+  it('applies the task diff into the derived parent repository', async () => {
+    const calls: Call[] = [];
+    const { svc, written } = service(fakeGit({ diff: 'diff --git a/src/a.ts\n', calls }));
+    const res = await svc.adopt({ taskId: 'wtask-1', worktreePath: WT });
+
+    expect(res).toMatchObject({ ok: true, targetRepo: REPO, files: ['src/a.ts', 'src/b.ts'], base: BASE });
+    expect(written).toEqual(['diff --git a/src/a.ts\n']);
+    const apply = calls.find((c) => c.args[0] === 'apply' && !c.args.includes('--check'));
+    expect(apply?.cwd).toBe(REPO);
+    expect(apply?.args).toContain('--3way');
+    // --3way needs the index for its merge, so what lands is STAGED. Nothing
+    // commits it — that is the line adopt does not cross.
+    expect(apply?.args).not.toContain('--cached');
+    expect(calls.some((c) => c.args[0] === 'commit')).toBe(false);
+  });
+
+  // The whole reason this service was reviewed: diffing against the parent's
+  // CURRENT head turns every commit the parent has and the task lacks into a
+  // deletion. Adopt task 1, commit, adopt task 2 → task 1's work disappears.
+  it('takes the patch against the MERGE BASE, never the parent HEAD', async () => {
+    const calls: Call[] = [];
+    const { svc } = service(fakeGit({ diff: 'patch', calls }));
+    await svc.adopt({ taskId: 'wtask-1', worktreePath: WT });
+
+    const mergeBase = calls.find((c) => c.args[0] === 'merge-base');
+    expect(mergeBase?.args).toEqual(['merge-base', PARENT_HEAD, TASK_HEAD]);
+    const diff = calls.find((c) => c.args[0] === 'diff' && c.args.includes('--binary'));
+    expect(diff?.cwd).toBe(WT);
+    expect(diff?.args).toContain(BASE);
+    expect(diff?.args).not.toContain(PARENT_HEAD);
+  });
+
+  it('refuses with needs_rebase when the two sides share no commit', async () => {
+    const { svc, written } = service(fakeGit({ diff: 'patch', mergeBaseCode: 1 }));
+    const res = await svc.adopt({ taskId: 'wtask-1', worktreePath: WT });
+    expect(res).toMatchObject({ ok: false, reason: 'needs_rebase' });
+    expect(written).toEqual([]);
+  });
+
+  it('builds the patch in a TEMPORARY index and always cleans it up', async () => {
+    const calls: Call[] = [];
+    const svc = service(fakeGit({ diff: 'patch', calls }));
+    await svc.svc.adopt({ taskId: 'wtask-1', worktreePath: WT });
+
+    // The add that makes new files visible must not touch the worker's index.
+    const add = calls.find((c) => c.args[0] === 'add');
+    expect(add?.env).toEqual({ GIT_INDEX_FILE: '/tmp/idx/index' });
+    expect(calls.find((c) => c.args[0] === 'read-tree')?.env).toEqual({ GIT_INDEX_FILE: '/tmp/idx/index' });
+    expect(calls.find((c) => c.args[0] === 'diff' && c.args.includes('--binary'))?.env).toEqual({
+      GIT_INDEX_FILE: '/tmp/idx/index',
+    });
+    // …and the apply runs against the target's REAL index.
+    expect(calls.find((c) => c.args[0] === 'apply')?.env).toBeUndefined();
+    expect(svc.indexCleanups).toBe(1);
+  });
+
+  it('checks the exit code of the intent-to-add instead of diffing a stale index', async () => {
+    const svc = service(fakeGit({ diff: 'patch', addCode: 1 }));
+    const res = await svc.svc.adopt({ taskId: 'wtask-1', worktreePath: WT });
+    expect(res).toMatchObject({ ok: false, reason: 'error' });
+    // The temp index is still cleaned up on the failure path.
+    expect(svc.indexCleanups).toBe(1);
+  });
+
+  it('validates with --check before writing anything, and reports a conflict', async () => {
+    const calls: Call[] = [];
+    const { svc } = service(fakeGit({ diff: 'patch', checkCode: 1, calls }));
+    const res = await svc.adopt({ taskId: 'wtask-1', worktreePath: WT });
+
+    expect(res).toMatchObject({ ok: false, reason: 'conflict', files: ['src/a.ts', 'src/b.ts'] });
+    // The real apply never ran, so nothing was written to the target.
+    expect(calls.filter((c) => c.args[0] === 'apply' && !c.args.includes('--check'))).toHaveLength(0);
+    expect(calls.filter((c) => c.args[0] === 'checkout')).toHaveLength(0);
+  });
+
+  it('restores the touched paths when the real apply fails after --check passed', async () => {
+    const calls: Call[] = [];
+    const { svc } = service(fakeGit({ diff: 'patch', applyCode: 1, calls }));
+    const res = await svc.adopt({ taskId: 'wtask-1', worktreePath: WT });
+
+    expect(res).toMatchObject({ ok: false, reason: 'conflict' });
+    // --3way can stop mid-way with markers on disk; the paths must go back.
+    const reset = calls.find((c) => c.args[0] === 'reset');
+    const checkout = calls.find((c) => c.args[0] === 'checkout');
+    const clean = calls.find((c) => c.args[0] === 'clean');
+    expect(reset?.args).toEqual(['reset', '-q', '--', 'src/a.ts', 'src/b.ts']);
+    expect(checkout?.args).toEqual(['checkout', '--', 'src/a.ts', 'src/b.ts']);
+    // A file the patch CREATED cannot be checked out — it has to be removed.
+    expect(clean?.args).toEqual(['clean', '-qfd', '--', 'src/a.ts', 'src/b.ts']);
+    expect(reset?.cwd).toBe(REPO);
+  });
+
+  it('refuses when the parent repository has uncommitted changes', async () => {
+    const { svc, written } = service(fakeGit({ status: ' M src/x.ts\0', diff: 'patch' }));
+    const res = await svc.adopt({ taskId: 'wtask-1', worktreePath: WT });
+    expect(res).toMatchObject({ ok: false, reason: 'dirty-target' });
+    expect(written).toEqual([]);
+  });
+
+  it('refuses when the task has produced nothing', async () => {
+    const { svc } = service(fakeGit({ diff: '' }));
+    expect(await svc.adopt({ taskId: 'wtask-1', worktreePath: WT })).toMatchObject({ ok: false, reason: 'empty' });
+  });
+
+  it('refuses a task that is the main checkout, not a worktree of it', async () => {
+    const git: AdoptGit = async (args) => {
+      if (args[0] === 'rev-parse' && args.includes('--git-common-dir')) return { stdout: `${WT}/.git\n`, stderr: '', code: 0 };
+      if (args[0] === 'rev-parse' && args.includes('--show-toplevel')) return { stdout: `${WT}\n`, stderr: '', code: 0 };
+      throw new Error(`unexpected git ${args.join(' ')}`);
+    };
+    const { svc } = service(git);
+    expect(await svc.adopt({ taskId: 'wtask-1', worktreePath: WT })).toMatchObject({
+      ok: false,
+      reason: 'not-a-task-worktree',
+    });
+  });
+
+  it('always removes the temp patch, including after a failed apply', async () => {
+    const removePatch = vi.fn();
+    const svc = new TaskAdoptService({
+      git: fakeGit({ diff: 'patch', applyCode: 1 }),
+      writePatch: () => '/tmp/patch',
+      removePatch,
+      makeTempIndex: () => ({ indexFile: '/tmp/idx/index', cleanup: vi.fn() }),
+    });
+    await svc.adopt({ taskId: 'wtask-1', worktreePath: WT });
+    expect(removePatch).toHaveBeenCalledWith('/tmp/patch');
+  });
+
+  // Two adopts landing at once would both see a clean tree, and the second
+  // would apply on top of the first's output — with no conflict to report.
+  it('serializes adopts against the same target repository', async () => {
+    const order: string[] = [];
+    let release: (() => void) | undefined;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    let first = true;
+    const inner = fakeGit({ diff: 'patch' });
+    const git: AdoptGit = async (args, cwd, env) => {
+      if (args[0] === 'status') {
+        const mine = first ? 'a' : 'b';
+        first = false;
+        order.push(`status:${mine}`);
+        if (mine === 'a') await gate;
+        order.push(`done:${mine}`);
+      }
+      return inner(args, cwd, env);
+    };
+    const { svc } = service(git);
+    const a = svc.adopt({ taskId: 'wtask-1', worktreePath: WT });
+    const b = svc.adopt({ taskId: 'wtask-2', worktreePath: WT });
+    await new Promise((r) => setTimeout(r, 0));
+    // The second adopt has not even reached its clean check yet.
+    expect(order).toEqual(['status:a']);
+    release?.();
+    await Promise.all([a, b]);
+    expect(order).toEqual(['status:a', 'done:a', 'status:b', 'done:b']);
+  });
+
+  it('keeps the lock usable after an adopt rejects', async () => {
+    let calls = 0;
+    const inner = fakeGit({ diff: 'patch' });
+    const git: AdoptGit = async (args, cwd, env) => {
+      if (args[0] === 'status' && calls++ === 0) throw new Error('boom');
+      return inner(args, cwd, env);
+    };
+    const { svc } = service(git);
+    await expect(svc.adopt({ taskId: 'wtask-1', worktreePath: WT })).rejects.toThrow('boom');
+    // A poisoned chain would leave every later adopt rejecting with 'boom'.
+    expect(await svc.adopt({ taskId: 'wtask-2', worktreePath: WT })).toMatchObject({ ok: true });
+  });
+});
+
+describe('parsePorcelainZ', () => {
+  it('reads NUL-framed records, so a path with a newline is one entry', () => {
+    expect(parsePorcelainZ(' M src/a\nb.ts\0?? src/c.ts\0')).toEqual([
+      { status: ' M', path: 'src/a\nb.ts' },
+      { status: '??', path: 'src/c.ts' },
+    ]);
+  });
+
+  it('consumes a rename origin record with the rename that owns it', () => {
+    expect(parsePorcelainZ('R  new.ts\0old.ts\0 M other.ts\0')).toEqual([
+      { status: 'R ', path: 'new.ts' },
+      { status: ' M', path: 'other.ts' },
+    ]);
+  });
+
+  it('reads a non-ASCII path verbatim (-z suppresses git quoting)', () => {
+    expect(parsePorcelainZ(' M src/é.ts\0')).toEqual([{ status: ' M', path: 'src/é.ts' }]);
+  });
+
+  it('is empty for a clean tree', () => {
+    expect(parsePorcelainZ('')).toEqual([]);
+  });
+});
