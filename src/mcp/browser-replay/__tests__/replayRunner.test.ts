@@ -51,14 +51,21 @@ import { refMapShapeHash, type TraceRecord, type TraceStep } from '../../../shar
 const clicks: string[] = [];
 const pressed: string[] = [];
 const goneTo: string[] = [];
-/** Every page-level wait the runner asked for, in order, interleaved with clicks. */
+/** Every page-level wait the runner asked for, in order. */
 const waits: string[] = [];
+const navListeners = new Set<(frame: unknown) => void>();
+/** Simulate the main frame navigating (a Turbo click, a pushState). */
+function fireNavigation(): void {
+  for (const fn of navListeners) fn({ parentFrame: () => null });
+}
 
 const page = {
   url: () => 'https://example.com/app',
   goto: async (url: string) => { goneTo.push(url); },
   keyboard: { press: async (key: string) => { pressed.push(key); } },
   waitForLoadState: async (state: string) => { waits.push(`load:${state}`); },
+  on: (_event: string, fn: (frame: unknown) => void) => { navListeners.add(fn); },
+  off: (_event: string, fn: (frame: unknown) => void) => { navListeners.delete(fn); },
   waitForURL: async (url: string) => { waits.push(`url:${url}`); },
   waitForSelector: async (selector: string) => { waits.push(`selector:${selector}`); },
   locator: () => ({ count: async () => 0, elementHandle: async () => null }),
@@ -116,6 +123,7 @@ beforeEach(() => {
   goneTo.length = 0;
   waits.length = 0;
   isolatedWaits.length = 0;
+  navListeners.clear();
   resolved.clear();
   snapshotText = 'button "Sign in" [ref=1]';
   smartCount = null;
@@ -923,17 +931,43 @@ describe('replayTrace — flow control', () => {
 });
 
 describe('settling after a step (#1193)', () => {
-  it('waits for the page to go quiet between a click and the next step, not after the last', async () => {
-    const single = await replayTrace(page, trace([refStep()]), undefined);
-    expect(single.ok).toBe(true);
-    // Nothing follows the last step, so nothing is waited for.
-    expect(waits).toEqual([]);
-
+  it('does not wait after a step that did not navigate', async () => {
     const result = await replayTrace(page, trace([refStep(), refStep()]), undefined);
     expect(result.ok).toBe(true);
-    // A click that starts a soft navigation must land before the next step's
-    // population is measured — once, between the two steps.
-    expect(waits).toEqual(['load:domcontentloaded', 'load:networkidle']);
+    expect(waits).toEqual([]);
+    expect(navListeners.size).toBe(0);
+  });
+
+  it('after a step that navigated, waits until two consecutive page shapes agree before the next step', async () => {
+    const mod = await import('../../playwright/snapshot');
+    const destination: FakeRefEntry[] = [
+      { role: 'link', name: 'Closed', sameNameIndex: 0, sameNameTotal: 1, frameKey: '', ref: 2 },
+    ];
+    // Snapshot 1 (pre-flight), then the click navigates; the page is still
+    // the OLD document on the next two reads and becomes the destination
+    // only afterwards — which is exactly the window #1193 fell into.
+    let reads = 0;
+    vi.spyOn(mod, 'generateSnapshot').mockImplementation(async () => {
+      reads++;
+      if (reads >= 4) refEntries = destination;
+      return '';
+    });
+    resolved.add('2');
+    const clickSignIn = refStep();
+    const clickClosed = refStep({
+      axis: { kind: 'ref', role: 'link', name: 'Closed', sameNameIndex: 0, sameNameTotal: 1, frameKey: '' },
+    });
+    const mockedResolve = vi.spyOn(mod, 'resolveRef').mockImplementation(async (_p, ref) => {
+      if (ref === '1') fireNavigation();
+      return resolved.has(ref) ? ({ click: async () => undefined } as never) : null;
+    });
+
+    const result = await replayTrace(page, trace([clickSignIn, clickClosed]), undefined);
+
+    expect(result.steps.map((s) => s.ok)).toEqual([true, true]);
+    expect(waits).toEqual(['load:domcontentloaded']);
+    expect(navListeners.size).toBe(0);
+    mockedResolve.mockRestore();
   });
 
   it('replays a recorded browser_wait by its condition, text through the isolated poll', async () => {
@@ -951,6 +985,16 @@ describe('settling after a step (#1193)', () => {
     ]);
     expect(isolatedWaits).toEqual(['Closed']);
     expect(waits).toContain('url:**/pulls**');
+  });
+
+  it('clamps a hostile wait timeout from the cache file instead of waiting for ever', async () => {
+    const forever: TraceStep = { tool: 'browser_wait', axis: { kind: 'none' }, args: { url: '**/x', timeout: 0 } };
+    const huge: TraceStep = { tool: 'browser_wait', axis: { kind: 'none' }, args: { url: '**/y', timeout: 1e9 } };
+    const timeouts: number[] = [];
+    const waitForURL = async (_url: string, opts: { timeout: number }) => { timeouts.push(opts.timeout); };
+    const result = await replayTrace({ ...(page as object), waitForURL } as never, trace([forever, huge]), undefined);
+    expect(result.ok).toBe(true);
+    expect(timeouts).toEqual([30000, 60000]);
   });
 
   it('refuses a trace whose wait was on a stored script', () => {

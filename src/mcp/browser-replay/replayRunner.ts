@@ -431,7 +431,9 @@ async function runStep(
   if (step.tool === 'browser_wait') {
     // The same priority order as the live tool. `fn` is never here: a wait on
     // a stored script is recorded as a hole and blocks the run before this.
-    const timeout = typeof args.timeout === 'number' ? args.timeout : 30000;
+    // The timeout comes from the cache file, so it is clamped: 0 means "for
+    // ever" to Playwright, and a hand-edited value must not hang a replay.
+    const timeout = clampWaitTimeout(args.timeout);
     if (typeof args.url === 'string' && args.url !== '') {
       await page.waitForURL(args.url, { timeout });
       return { detail: `waited for URL "${args.url}"` };
@@ -520,33 +522,87 @@ async function runStep(
 }
 
 /**
- * How long a replay lets the page catch up after a step before re-charging
- * the ref map. Bounded: a page that never goes quiet (long polling) costs each
- * step this much and nothing more.
+ * How long a replay lets the page catch up after a step that navigated
+ * before re-charging the ref map. Bounded: a page that never goes quiet
+ * (long polling, a perpetual spinner) costs each such step this much and
+ * nothing more.
  */
-const SETTLE_TIMEOUT_MS = 2000;
+const SETTLE_TIMEOUT_MS = 3000;
+/** Gap between two shape reads that have to agree before the page counts as settled. */
+const SETTLE_POLL_MS = 250;
+/** How long after a step a navigation is still attributed to that step. */
+const NAVIGATION_GRACE_MS = 300;
 
 /**
- * Let a navigation the step started land before the next step looks for its
- * element.
+ * Watch the main frame for a navigation the step is about to start. Returns
+ * a function that reports whether one happened, waiting up to a short grace
+ * period for a late one, and detaches the listener.
+ *
+ * `framenavigated` fires for same-document navigations too (pushState), which
+ * is the case that matters: a Turbo/SPA click changes the page without any
+ * load state ever resetting, so `waitForLoadState` resolves at once against
+ * the state the OLD document reached (#1193, three of three runs on
+ * github.com stopped at the step after the click). The navigation event is
+ * the one signal both hard and soft navigations share.
+ */
+function watchNavigation(page: Page): { didNavigate: () => Promise<boolean>; stop: () => void } {
+  let navigated = false;
+  const onNavigated = (frame: { parentFrame?: () => unknown }): void => {
+    // Only the main frame: an ad iframe navigating is not the page moving.
+    if (typeof frame.parentFrame !== 'function' || frame.parentFrame() === null) navigated = true;
+  };
+  const events = page as unknown as {
+    on?: (event: 'framenavigated', fn: typeof onNavigated) => void;
+    off?: (event: 'framenavigated', fn: typeof onNavigated) => void;
+  };
+  events.on?.('framenavigated', onNavigated);
+  const stop = (): void => { events.off?.('framenavigated', onNavigated); };
+  return {
+    didNavigate: async () => {
+      const deadline = Date.now() + NAVIGATION_GRACE_MS;
+      while (!navigated && Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 50));
+      }
+      stop();
+      return navigated;
+    },
+    stop,
+  };
+}
+
+/**
+ * After a step that navigated, wait until the page has stopped changing
+ * shape before the next step looks for its element.
  *
  * Re-snapshotting the instant a click resolves reads the document the click
- * happened ON, not the one it led to: on a Turbo/SPA site the fetch and render
- * come after the click, so the next step's role+name population is measured
- * against the old page and reported as "no <element> on the page any more"
- * while the element is plainly there a moment later (#1193, three of three
- * runs on github.com). The recording never had this problem because a human
- * or an agent looks at the page before acting; the runner acts blind, so it
- * has to wait on its own.
- *
- * 'networkidle' rather than 'load': a same-document navigation fires no load
- * event, and 500ms of network silence is the one signal both kinds share. A
- * timeout is swallowed — a page that keeps polling still gets a re-snapshot,
- * just a later one.
+ * happened ON, not the one it led to. The recording never had this problem
+ * because the agent looks at the page before acting; the runner acts blind,
+ * so it has to wait on its own. "Settled" is two consecutive ref-map shapes
+ * that agree, read a poll apart, after any load state a hard navigation
+ * resets — the same shape hash the recording is compared against. A timeout
+ * is swallowed: a page that keeps changing still gets its re-snapshot, just a
+ * later one, and the per-step element check remains the correctness test.
  */
-async function settleAfterStep(page: Page): Promise<void> {
+async function settleAfterNavigation(page: Page): Promise<void> {
   await page.waitForLoadState('domcontentloaded', { timeout: SETTLE_TIMEOUT_MS }).catch(() => undefined);
-  await page.waitForLoadState('networkidle', { timeout: SETTLE_TIMEOUT_MS }).catch(() => undefined);
+  const deadline = Date.now() + SETTLE_TIMEOUT_MS;
+  let previous = '';
+  while (Date.now() < deadline) {
+    await generateSnapshot(page, { format: 'ai' }).catch(() => '');
+    const shape = refMapShapeHash(listRefEntries(page));
+    if (shape !== '' && shape === previous) return;
+    previous = shape;
+    await new Promise((r) => setTimeout(r, SETTLE_POLL_MS));
+  }
+}
+
+const WAIT_TIMEOUT_DEFAULT_MS = 30000;
+const WAIT_TIMEOUT_MAX_MS = 60000;
+const WAIT_TIMEOUT_MIN_MS = 250;
+
+function clampWaitTimeout(raw: unknown): number {
+  if (typeof raw !== 'number' || !Number.isFinite(raw) || raw <= 0) return WAIT_TIMEOUT_DEFAULT_MS;
+  return Math.min(WAIT_TIMEOUT_MAX_MS, Math.max(WAIT_TIMEOUT_MIN_MS, raw));
 }
 
 /** A trace that cannot run at all, and why. Checked before any page work. */
@@ -559,7 +615,8 @@ export function replayBlockedReason(trace: TraceRecord): string | null {
       .join(', ');
     return (
       `the trace has unreplayable steps — ${holes}. Perform this flow live; ` +
-      'a password step is never stored and never can be.'
+      'a password step is never stored and never can be, and a wait on a JS ' +
+      'predicate is never replayed from the cache file.'
     );
   }
   return null;
@@ -638,12 +695,14 @@ export async function replayTrace(
     }
 
     let outcome: StepOutcome;
+    const navigation = watchNavigation(page);
     try {
       outcome = await runStep(page, step, substituted.args);
     } catch (error) {
       outcome = { error: describeToolError(error) };
     }
     if ('error' in outcome) {
+      navigation.stop();
       steps.push({ index, tool: step.tool, ok: false, detail: outcome.error });
       return {
         ok: false,
@@ -660,11 +719,13 @@ export async function replayTrace(
     // A step that changed the page invalidates the ref map the remaining steps
     // resolve against, so re-charge it. Still internal, still never shown.
     if (i + 1 < trace.steps.length) {
-      await settleAfterStep(page);
+      if (await navigation.didNavigate()) await settleAfterNavigation(page);
       await generateSnapshot(page, { format: 'ai' }).catch(() => '');
       // The leading navigate has now landed, so this is the flow's own page —
       // the point the recorder's baseline was taken at.
       if (i === 0 && startsWithNavigate) measureShape();
+    } else {
+      navigation.stop();
     }
   }
 
