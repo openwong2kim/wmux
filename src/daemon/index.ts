@@ -5680,14 +5680,21 @@ async function main(): Promise<void> {
     memberWorkspaces: () => channelService.memberWorkspaces(),
     unreadFor: (ws) => channelService.unreadFor(ws),
     // A nudge that never landed must not leave the message it announced sitting
-    // at 'pending' forever — the push half used to drop that outcome on the floor.
-    onNudgeOutcome: (outcome) =>
-      channelService.noteNudgeOutcome({
-        channelId: outcome.channelId,
-        workspaceId: outcome.workspaceId,
-        memberId: outcome.memberId,
-        ok: outcome.ok,
-      }),
+    // at 'pending' forever — the push half used to drop that outcome on the
+    // floor. Fire-and-forget by contract: the wake tick must not wait on a
+    // channel lock, and a failure here is bookkeeping, never delivery.
+    onNudgeOutcome: (outcome) => {
+      void channelService
+        .noteNudgeOutcome({
+          channelId: outcome.channelId,
+          workspaceId: outcome.workspaceId,
+          memberId: outcome.memberId,
+          fromSeqExclusive: outcome.fromSeqExclusive,
+          toSeqInclusive: outcome.toSeqInclusive,
+          ok: outcome.ok,
+        })
+        .catch(() => undefined);
+    },
     // R2: the registry supplies the member's last PTY coordinate even after
     // restart backfill marks it stale. listLiveSessions below is the daemon-
     // owned liveness authority: only attached/detached sessions enter the

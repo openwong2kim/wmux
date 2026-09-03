@@ -8,7 +8,8 @@ import {
   decideTerminalOmittedTarget,
   isSessionTerminatingInput,
   awaitSubmitReceipt,
-  composerAdvanced,
+  composerCleared,
+  needleInComposer,
   isTurnStart,
   rowFromBottom,
   submitNeedle,
@@ -475,14 +476,20 @@ describe('input.send — submit sends text and Enter as two separate writes', ()
     }
   });
 
-  it('submits only once when the text already ends in \\r', async () => {
+  // A trailing \r IS the submit, so it is stripped and the normal split write
+  // runs — exactly one Enter, and the receipt path still applies. Passing the
+  // fused chunk straight through was the shape that skipped the receipt.
+  it('splits a text that already ends in \\r rather than passing it through fused', async () => {
     const { router, writeMock } = setupWithWrite();
     await router.dispatch({
       id: '3',
       method: 'input.send',
       params: { text: 'already\r', ptyId: 'pty-a', workspaceId: 'ws-self', submit: true },
     });
-    expect(writeMock.mock.calls).toEqual([['pty-a', 'already\r']]);
+    expect(writeMock.mock.calls).toEqual([
+      ['pty-a', 'already'],
+      ['pty-a', '\r'],
+    ]);
   });
 
   it('writes a single chunk with no \\r when submit is not set', async () => {
@@ -784,50 +791,87 @@ describe('input.send refuses to end a gate-held pane (#733)', () => {
 // the two signals that DO prove the pane moved, and — the point of the whole
 // change — pin that raw byte activity does NOT.
 describe('input.send — submit receipt', () => {
-  // A fake PTY screen the test drives frame by frame. Frames are consumed in
-  // order; the last one repeats, so a test can say "moves at poll 3".
-  function fakeProbe(frames: string[], statuses: Array<string | null>): {
-    probe: SubmitProbe;
-    reads: number;
-  } {
-    const state = { reads: 0 };
-    const at = <T,>(arr: T[], i: number): T => arr[Math.min(i, arr.length - 1)]!;
+  const NEEDLE = submitNeedle('write me a haiku');
+
+  /** A clock the wait drives itself: every sleep advances it, so the wall-clock
+   *  budget is exercised deterministically and the suite stays instant. */
+  function fakeClock(startMs = 1_000) {
+    let t = startMs;
     return {
-      probe: {
-        readScreen: () => Promise.resolve(at(frames, state.reads)),
-        readAgentStatus: () => {
-          const s = at(statuses, state.reads);
-          state.reads++;
-          return Promise.resolve(s);
-        },
+      now: (): number => t,
+      sleep: (ms: number): Promise<void> => {
+        t += ms;
+        return Promise.resolve();
       },
-      reads: state.reads,
     };
   }
 
-  const noSleep = (): Promise<void> => Promise.resolve();
+  /**
+   * A fake PTY the test drives frame by frame. Frames are consumed in order and
+   * the last one repeats, so a test can say "moves at poll 3". Statuses carry
+   * the snapshot timestamp the real mirror supplies — `stale` marks a reading
+   * from BEFORE the Enter, which must never count.
+   */
+  function fakeProbe(
+    frames: string[],
+    statuses: Array<{ status: string; ts: number } | null>,
+  ): { probe: SubmitProbe; screenReads: () => number } {
+    const state = { polls: 0, screens: 0 };
+    const at = <T,>(arr: T[], i: number): T => arr[Math.min(i, arr.length - 1)]!;
+    return {
+      probe: {
+        readScreen: () => {
+          const frame = at(frames, state.screens);
+          state.screens++;
+          return Promise.resolve(frame);
+        },
+        readAgentStatus: () => {
+          const s = at(statuses, state.polls);
+          state.polls++;
+          return Promise.resolve(s);
+        },
+      },
+      screenReads: () => state.screens,
+    };
+  }
+
+  const ENTER_AT = 5_000;
+  /** A reading the mirror pushed AFTER our Enter — the only kind that counts. */
+  const fresh = (status: string) => ({ status, ts: ENTER_AT + 10 });
+  /** A reading from before the Enter: our own echo, byte-promoted (#935). */
+  const stale = (status: string) => ({ status, ts: ENTER_AT - 10 });
+
+  const waitOpts = (over: Record<string, unknown> = {}) => {
+    const clock = fakeClock(ENTER_AT);
+    return { windowMs: 200, pollMs: 50, enterAt: ENTER_AT, ...clock, ...over };
+  };
 
   // The composer holds the prompt at the bottom; the pane's footer sits below.
   const COMPOSER = ['claude> ready', '', '│ > write me a haiku │', '  ? for shortcuts'].join('\n');
   // After the submit Claude Code re-renders the prompt into the TRANSCRIPT and
-  // empties the composer — the text is STILL on screen, three rows higher.
+  // empties the composer. The text is STILL on screen — but well ABOVE the
+  // composer area, which is the only thing that counts as cleared.
   const SUBMITTED = [
     '> write me a haiku',
     '  thinking...',
+    '  · reading files',
+    '  · writing',
+    '',
+    '',
     '',
     '│ >                  │',
     '  ? for shortcuts',
   ].join('\n');
 
-  it('accepts on a turn start reported for the pty', async () => {
-    const { probe } = fakeProbe([COMPOSER], ['idle', 'running']);
+  it('accepts on a turn start reported AFTER the Enter', async () => {
+    const { probe } = fakeProbe([COMPOSER], [fresh('running')]);
     const resend = vi.fn();
     const receipt = await awaitSubmitReceipt(
       probe,
-      submitNeedle('write me a haiku'),
+      NEEDLE,
       { screen: COMPOSER, agentStatus: 'idle' },
       resend,
-      { windowMs: 200, pollMs: 50, sleep: noSleep },
+      waitOpts(),
     );
     expect(receipt.accepted).toBe(true);
     expect(receipt.signal).toBe('turn_start');
@@ -835,14 +879,42 @@ describe('input.send — submit receipt', () => {
     expect(resend).not.toHaveBeenCalled();
   });
 
-  it('accepts when the composer line clears even with no status signal', async () => {
-    const { probe } = fakeProbe([COMPOSER, SUBMITTED], [null]);
+  // #935 — agentStatus is byte-promoted, so the pane echoing our own text can
+  // flip it to running. A snapshot from before the \r must not sign for it.
+  it('ignores a running status whose snapshot predates the Enter', async () => {
+    const { probe } = fakeProbe([COMPOSER], [stale('running')]);
     const receipt = await awaitSubmitReceipt(
       probe,
-      submitNeedle('write me a haiku'),
+      NEEDLE,
+      { screen: COMPOSER, agentStatus: 'idle' },
+      vi.fn(),
+      waitOpts(),
+    );
+    expect(receipt.accepted).toBe(false);
+    expect(receipt.signal).toBe('none');
+  });
+
+  it('checks the status BEFORE the first screen poll (a hook-fast turn costs no IPC)', async () => {
+    const p = fakeProbe([COMPOSER], [fresh('running')]);
+    const receipt = await awaitSubmitReceipt(
+      p.probe,
+      NEEDLE,
+      { screen: COMPOSER, agentStatus: 'idle' },
+      vi.fn(),
+      waitOpts(),
+    );
+    expect(receipt.accepted).toBe(true);
+    expect(p.screenReads()).toBe(0);
+  });
+
+  it('accepts when the text LEAVES the composer area, with no status signal', async () => {
+    const { probe } = fakeProbe([SUBMITTED], [null]);
+    const receipt = await awaitSubmitReceipt(
+      probe,
+      NEEDLE,
       { screen: COMPOSER, agentStatus: null },
       vi.fn(),
-      { windowMs: 200, pollMs: 50, sleep: noSleep },
+      waitOpts(),
     );
     expect(receipt.accepted).toBe(true);
     expect(receipt.signal).toBe('composer_cleared');
@@ -853,14 +925,14 @@ describe('input.send — submit receipt', () => {
   it('does NOT accept on echo-only byte activity, and retries the Enter once', async () => {
     const echo1 = ['claude> ready', '', '│ > write me a haiku│', '  ? for shortcuts'].join('\n');
     const echo2 = ['claude> ready', '', '│ > write me a haiku ▌│', '  ? for shortcuts'].join('\n');
-    const { probe } = fakeProbe([echo1, echo2], ['idle']);
+    const { probe } = fakeProbe([echo1, echo2], [fresh('idle')]);
     const resend = vi.fn();
     const receipt = await awaitSubmitReceipt(
       probe,
-      submitNeedle('write me a haiku'),
+      NEEDLE,
       { screen: COMPOSER, agentStatus: 'idle' },
       resend,
-      { windowMs: 100, pollMs: 50, sleep: noSleep },
+      waitOpts({ windowMs: 100 }),
     );
     expect(receipt.accepted).toBe(false);
     expect(receipt.signal).toBe('none');
@@ -869,17 +941,38 @@ describe('input.send — submit receipt', () => {
     expect(receipt.screenTail).toContain('write me a haiku');
   });
 
+  // A soft newline pushed the text up one row and it is STILL uncommitted —
+  // the precise failure the receipt exists to catch, so "moved" is not enough.
+  it('does NOT accept when the needle merely moves up inside the composer', async () => {
+    const grown = [
+      'claude> ready',
+      '',
+      '│ > write me a haiku │',
+      '│                    │',
+      '  ? for shortcuts',
+    ].join('\n');
+    const { probe } = fakeProbe([grown], [fresh('idle')]);
+    const receipt = await awaitSubmitReceipt(
+      probe,
+      NEEDLE,
+      { screen: COMPOSER, agentStatus: 'idle' },
+      vi.fn(),
+      waitOpts({ windowMs: 100 }),
+    );
+    expect(receipt.accepted).toBe(false);
+  });
+
   it('accepts on the retry when the turn starts late', async () => {
-    // idle for the whole first window (4 polls at 50ms), running after.
-    const statuses = ['idle', 'idle', 'idle', 'idle', 'running'];
+    // Nothing for the whole first window, running only after the re-send.
+    const statuses = [null, null, null, null, null, fresh('running')];
     const { probe } = fakeProbe([COMPOSER], statuses);
     const resend = vi.fn();
     const receipt = await awaitSubmitReceipt(
       probe,
-      submitNeedle('write me a haiku'),
+      NEEDLE,
       { screen: COMPOSER, agentStatus: 'idle' },
       resend,
-      { windowMs: 200, pollMs: 50, sleep: noSleep },
+      waitOpts(),
     );
     expect(receipt.accepted).toBe(true);
     expect(receipt.retried).toBe(true);
@@ -889,9 +982,13 @@ describe('input.send — submit receipt', () => {
   it('reports unobservable instead of guessing when the pane cannot be read', async () => {
     const { probe } = fakeProbe([''], [null]);
     const resend = vi.fn();
-    const receipt = await awaitSubmitReceipt(probe, 'x', { screen: '', agentStatus: null }, resend, {
-      sleep: noSleep,
-    });
+    const receipt = await awaitSubmitReceipt(
+      probe,
+      'x',
+      { screen: '', agentStatus: null },
+      resend,
+      waitOpts(),
+    );
     expect(receipt).toEqual({
       accepted: false,
       agentStatusAfter: null,
@@ -901,51 +998,141 @@ describe('input.send — submit receipt', () => {
     expect(resend).not.toHaveBeenCalled();
   });
 
+  // A blind second Enter presses whatever the pane is showing — a confirmation
+  // dialog's default, say. If we never saw our text in the composer we have no
+  // idea what is down there, so we do not press again.
+  it('never re-sends the Enter when the needle was not in the composer', async () => {
+    const dialog = ['Overwrite existing file?', '  [Y] yes   [n] no'].join('\n');
+    const { probe } = fakeProbe([dialog], [fresh('idle')]);
+    const resend = vi.fn();
+    const receipt = await awaitSubmitReceipt(
+      probe,
+      NEEDLE,
+      { screen: dialog, agentStatus: 'idle' },
+      resend,
+      waitOpts({ windowMs: 100 }),
+    );
+    expect(resend).not.toHaveBeenCalled();
+    expect(receipt.retried).toBe(false);
+    expect(receipt.signal).toBe('unobservable');
+  });
+
+  it('a PTY that dies before the retry yields accepted:false, not a thrown RPC', async () => {
+    const { probe } = fakeProbe([COMPOSER], [fresh('idle')]);
+    const receipt = await awaitSubmitReceipt(
+      probe,
+      NEEDLE,
+      { screen: COMPOSER, agentStatus: 'idle' },
+      () => {
+        throw new Error('write EPIPE');
+      },
+      waitOpts({ windowMs: 100 }),
+    );
+    expect(receipt.accepted).toBe(false);
+    expect(receipt.retried).toBe(true);
+  });
+
+  it('stops at the total ceiling even when every window would allow more', async () => {
+    const { probe } = fakeProbe([COMPOSER], [fresh('idle')]);
+    const clock = fakeClock(ENTER_AT);
+    await awaitSubmitReceipt(probe, NEEDLE, { screen: COMPOSER, agentStatus: 'idle' }, vi.fn(), {
+      windowMs: 5_000,
+      pollMs: 50,
+      maxTotalMs: 200,
+      enterAt: ENTER_AT,
+      ...clock,
+    });
+    // The ceiling, not the window, decided when to stop.
+    expect(clock.now() - ENTER_AT).toBeLessThanOrEqual(250);
+  });
+
   it('rowFromBottom finds the LAST occurrence and measures from the bottom', () => {
-    expect(rowFromBottom(COMPOSER, submitNeedle('write me a haiku'))).toBe(1);
-    expect(rowFromBottom(SUBMITTED, submitNeedle('write me a haiku'))).toBe(4);
+    expect(rowFromBottom(COMPOSER, NEEDLE)).toBe(1);
+    expect(rowFromBottom(SUBMITTED, NEEDLE)).toBe(8);
     expect(rowFromBottom(COMPOSER, 'nowhere')).toBe(-1);
   });
 
-  it('composerAdvanced refuses to guess when the text was never on the input line', () => {
+  it('needleInComposer is the bottom region only', () => {
+    expect(needleInComposer(COMPOSER, NEEDLE)).toBe(true);
+    // On screen, but up in the transcript — not the input line.
+    expect(needleInComposer(SUBMITTED, NEEDLE)).toBe(false);
+    expect(needleInComposer(COMPOSER, 'nowhere')).toBe(false);
+  });
+
+  it('composerCleared refuses to guess when the text was never on the input line', () => {
     // Not visible before → we have no idea where the composer is; not a receipt.
-    expect(composerAdvanced('unrelated', 'still unrelated', 'ghost')).toBe(false);
+    expect(composerCleared('unrelated', 'still unrelated', 'ghost')).toBe(false);
   });
 
   it('isTurnStart only fires on a move INTO a turn', () => {
     expect(isTurnStart('idle', 'running')).toBe(true);
-    expect(isTurnStart('idle', 'awaiting_input')).toBe(true);
+    expect(isTurnStart('waiting', 'running')).toBe(true);
+    expect(isTurnStart(null, 'running')).toBe(true);
+    // A PREVIOUS turn ending inside our window, not ours beginning.
+    expect(isTurnStart('running', 'awaiting_input')).toBe(false);
+    expect(isTurnStart('idle', 'awaiting_input')).toBe(false);
     expect(isTurnStart('running', 'running')).toBe(false);
     // decay, not a turn start
     expect(isTurnStart('running', 'idle')).toBe(false);
     expect(isTurnStart('idle', null)).toBe(false);
   });
 
-  it('the RPC result carries accepted + agentStatusAfter, and submit:false is never accepted', async () => {
-    const pty = { get: vi.fn(() => ({ id: 'x' })), write: vi.fn() } as unknown as PTYManager;
-    const router = new RpcRouter();
-    registerInputRpc(router, pty, () => fakeWindow);
-    sendToRendererMock.mockImplementation((_w: unknown, method: string) => {
-      if (method === 'input.findOwnerWorkspace') return Promise.resolve({ workspaceId: 'ws-self' });
-      return Promise.resolve(null);
+  describe('the RPC result', () => {
+    function rpcSetup() {
+      const writeMock = vi.fn();
+      const pty = { get: vi.fn(() => ({ id: 'x' })), write: writeMock } as unknown as PTYManager;
+      const router = new RpcRouter();
+      registerInputRpc(router, pty, () => fakeWindow);
+      sendToRendererMock.mockImplementation((_w: unknown, method: string) => {
+        if (method === 'input.findOwnerWorkspace') return Promise.resolve({ workspaceId: 'ws-self' });
+        return Promise.resolve(null);
+      });
+      return { router, writeMock };
+    }
+
+    it('omits accepted entirely when no receipt was attempted (submit:false)', async () => {
+      const { router } = rpcSetup();
+      const res = await router.dispatch({
+        id: 'r1',
+        method: 'input.send',
+        params: { text: 'hello', ptyId: 'pty-a', workspaceId: 'ws-self' },
+      });
+      if (!res.ok) throw new Error(res.error);
+      // Absent, not false: "we did not look" is a different claim from "we
+      // looked and it did not land".
+      expect(res.result).toMatchObject({ submitted: false });
+      expect(res.result).not.toHaveProperty('accepted');
     });
 
-    const noSubmit = await router.dispatch({
-      id: 'r1',
-      method: 'input.send',
-      params: { text: 'hello', ptyId: 'pty-a', workspaceId: 'ws-self' },
+    it('carries accepted + the receipt signal when a submit was attempted', async () => {
+      const { router } = rpcSetup();
+      const res = await router.dispatch({
+        id: 'r2',
+        method: 'input.send',
+        params: { text: 'hello', ptyId: 'pty-a', workspaceId: 'ws-self', submit: true },
+      });
+      if (!res.ok) throw new Error(res.error);
+      // `submitted` says an Enter was written; `accepted` stays false because
+      // nothing observable confirmed it — the two are no longer the same claim.
+      expect(res.result).toMatchObject({ submitted: true, accepted: false });
     });
-    if (!noSubmit.ok) throw new Error(noSubmit.error);
-    expect(noSubmit.result).toMatchObject({ submitted: false, accepted: false, agentStatusAfter: null });
 
-    const submitted = await router.dispatch({
-      id: 'r2',
-      method: 'input.send',
-      params: { text: 'hello', ptyId: 'pty-a', workspaceId: 'ws-self', submit: true },
+    // The trailing-\r shape used to skip the split write AND the receipt, then
+    // report submitted:true with a hard accepted:false — the same false receipt
+    // in a different hat.
+    it('treats a trailing \\r as the submit: split write, and a receipt is attempted', async () => {
+      const { router, writeMock } = rpcSetup();
+      const res = await router.dispatch({
+        id: 'r3',
+        method: 'input.send',
+        params: { text: 'already\r', ptyId: 'pty-a', workspaceId: 'ws-self', submit: true },
+      });
+      if (!res.ok) throw new Error(res.error);
+      expect(writeMock.mock.calls).toEqual([
+        ['pty-a', 'already'],
+        ['pty-a', '\r'],
+      ]);
+      expect(res.result).toHaveProperty('receiptSignal');
     });
-    if (!submitted.ok) throw new Error(submitted.error);
-    // `submitted` says an Enter was written; `accepted` stays false because
-    // nothing observable confirmed it — the two are no longer the same claim.
-    expect(submitted.result).toMatchObject({ submitted: true, accepted: false });
   });
 });

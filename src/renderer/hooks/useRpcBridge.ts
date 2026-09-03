@@ -2266,10 +2266,14 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
             explicitPty,
             callerPtyId,
             {
-              // Stamped by MAIN from the validated commander token (a2a.rpc.ts);
-              // absent for every ordinary caller.
+              // Stamped by MAIN from the validated commander token (a2a.rpc.ts),
+              // which pins `workspaceId` to the same binding; absent for every
+              // ordinary caller. Both are passed because the relaxation applies
+              // only when they AGREE — a token bound to another workspace must
+              // not relax this one's guards.
               commanderWorkspaceId:
                 typeof params.commanderWorkspaceId === 'string' ? params.commanderWorkspaceId : '',
+              callerWorkspaceId: workspaceId,
             },
           );
           if (decision.kind === 'suppress') {

@@ -302,6 +302,18 @@ export async function handleChannel(sub: string | undefined, args: string[], jso
         console.log('No channel member rows for this workspace.');
         return;
       }
+      // Without --member the daemon returns EVERY member row this workspace
+      // holds, not just yours — say so, because a multi-agent workspace
+      // otherwise reads someone else's backlog as its own.
+      if (memberId === undefined) {
+        const members = new Set(entries.map((e) => e.memberId));
+        if (members.size > 1) {
+          console.log(
+            `Showing all ${members.size} member rows in this workspace (${[...members].join(', ')}) — ` +
+              'pass --member <id> for just one.',
+          );
+        }
+      }
       // Every row the daemon returned, caught-up ones included — the same set
       // channel_unread hands an agent. A row hidden here is a row the agent
       // cannot reconcile against the tool's answer.

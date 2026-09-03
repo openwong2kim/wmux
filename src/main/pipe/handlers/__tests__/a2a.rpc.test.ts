@@ -349,6 +349,36 @@ describe('a2a.task.send — commander binding is stamped, never trusted from the
     );
   });
 
+  // The relaxation is keyed on the binding naming the caller's OWN workspace,
+  // so a brain that could still name a different `workspaceId` on the wire
+  // would carry its privilege into someone else's.
+  it('pins workspaceId to the validated binding, overriding what the caller named', async () => {
+    sendToRendererMock.mockResolvedValueOnce({ ok: true });
+    const send = captureTaskSend(makeWorker());
+
+    await send(
+      { workspaceId: 'ws-victim', to: 'ws-victim', message: 'do this' },
+      { origin: 'local', commanderWorkspace: 'ws-brain' } as unknown as RpcContext,
+    );
+
+    const forwarded = sendToRendererMock.mock.calls[0]?.[2] as Record<string, unknown>;
+    expect(forwarded.workspaceId).toBe('ws-brain');
+    expect(forwarded.commanderWorkspaceId).toBe('ws-brain');
+  });
+
+  it('leaves workspaceId alone for an ordinary caller', async () => {
+    sendToRendererMock.mockResolvedValueOnce({ ok: true });
+    const send = captureTaskSend(makeWorker());
+
+    await send(
+      { workspaceId: 'ws-a', to: 'ws-b', message: 'hi' },
+      { origin: 'local' } as unknown as RpcContext,
+    );
+
+    const forwarded = sendToRendererMock.mock.calls[0]?.[2] as Record<string, unknown>;
+    expect(forwarded.workspaceId).toBe('ws-a');
+  });
+
   it('drops a caller-supplied commanderWorkspaceId when there is no validated token', async () => {
     sendToRendererMock.mockResolvedValueOnce({ ok: true });
     const send = captureTaskSend(makeWorker());

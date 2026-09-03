@@ -56,14 +56,14 @@ export interface WakeUnreadEntry {
   mentionUnread: number;
   trimmedBeforeCursor: number;
   /**
-   * The oldest unread message's body, supplied by ChannelService. The nudge
+   * The OLDEST owed message's body, supplied by ChannelService. The nudge
    * carries its first line so the woken agent knows WHAT it is being woken
    * for — a bare "2 unread, run wmux channel read …" makes every nudge look
    * identical, and an agent mid-task cannot tell an urgent mention from
    * routine chatter without spending a turn on the read. Optional: an older
    * producer that does not supply it still gets the hint-only nudge.
    */
-  latestBody?: string;
+  oldestUnreadBody?: string;
 }
 
 /** Outcome of one nudge attempt, reported back to the producer so a message's
@@ -73,6 +73,14 @@ export interface WakeNudgeOutcome {
   channelId: string;
   memberId: string;
   sessionId: string;
+  /**
+   * The seq range this nudge was announcing: the member's cursor at nudge time
+   * (exclusive) through the channel head (inclusive). Bookkeeping must not
+   * spill outside it — a nudge says nothing about messages the member had
+   * already read, or about ones posted after it went out.
+   */
+  fromSeqExclusive: number;
+  toSeqInclusive: number;
   /** False when the write threw — the pane died between target selection and
    *  the write, so nothing was delivered. */
   ok: boolean;
@@ -188,11 +196,18 @@ const sanitizeLine = (s: string): string =>
 export const BODY_PREVIEW_MAX_LEN = 200;
 
 /**
- * The first line of a message body, safe to type into a TUI: control
- * characters (including the newlines that would submit early) become spaces,
- * runs of whitespace collapse, and the result is capped. Empty for an absent
- * or blank body, so the caller can drop the segment entirely rather than
- * appending a dangling separator.
+ * The first line of a message body, safe to TYPE INTO A LIVE PANE and commit
+ * with an Enter.
+ *
+ * That last clause is the whole problem. This text is written by another
+ * workspace, and it is submitted, not merely displayed. Two escapes matter:
+ * `lastDetectedAgent` can be stale, so the pane may really be a shell, where
+ * `$(…)` and backticks EXECUTE; and a quote can close the agent's own framing.
+ * So the preview keeps letters and punctuation and drops the characters that
+ * change how the line is interpreted — control characters (the newlines that
+ * would submit early included), `$`, backtick, backslash, and both quote
+ * marks. Blank in, blank out, so the caller can drop the segment entirely
+ * instead of appending a dangling separator.
  */
 export function bodyPreview(body: string | undefined): string {
   if (!body) return '';
@@ -200,10 +215,34 @@ export function bodyPreview(body: string | undefined): string {
   const clean = firstLine
     // eslint-disable-next-line no-control-regex
     .replace(/[\x00-\x1f\x7f]/g, ' ')
+    // Shell/agent metacharacters. Dropped rather than escaped: an escape is
+    // only correct for the interpreter you assumed, and the point here is that
+    // we do not reliably know which one is on the other end.
+    .replace(/[$`\\"']/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
   if (clean.length <= BODY_PREVIEW_MAX_LEN) return clean;
   return `${clean.slice(0, BODY_PREVIEW_MAX_LEN - 1)}…`;
+}
+
+/**
+ * Agents whose pane is a TUI chat box, where a pasted line lands in a composer
+ * rather than a command interpreter. The body preview rides only into these:
+ * an unknown or absent agent means the pane may be a bare shell, and a bare
+ * shell would RUN the other workspace's text.
+ */
+const BODY_PREVIEW_AGENTS: ReadonlySet<string> = new Set([
+  'claude',
+  'codex',
+  'gemini',
+  'aider',
+  'opencode',
+  'copilot',
+]);
+
+/** Whether a nudge into this pane may carry the message body at all. */
+export function mayCarryBody(detectedAgent: string | undefined): boolean {
+  return !!detectedAgent && BODY_PREVIEW_AGENTS.has(detectedAgent);
 }
 
 export class ChannelWakeWorker {
@@ -367,7 +406,7 @@ export class ChannelWakeWorker {
 
         // A failed write must not burn the nudge budget (G5 spirit: never
         // spend nudges into a void) — retry on a later tick instead.
-        if (!this.inject(target.id, ws, entry)) continue;
+        if (!this.inject(target.id, ws, entry, target)) continue;
 
         if (wantMention) {
           state.mentionNudges += 1;
@@ -386,22 +425,30 @@ export class ChannelWakeWorker {
    * target selection and the write — a PTY write to a destroyed stream
    * throws synchronously); the caller then keeps the nudge budget intact.
    */
-  private inject(sessionId: string, workspaceId: string, entry: WakeUnreadEntry): boolean {
+  private inject(sessionId: string, workspaceId: string, entry: WakeUnreadEntry, target: WakeSessionView): boolean {
     const mention = entry.mentionUnread > 0 ? ` (${entry.mentionUnread} mention you)` : '';
-    const hint = sanitizeLine(
-      `[wmux] #${entry.name}: ${entry.unread} unread${mention} — run: wmux channel read ${entry.channelId} --since ${entry.lastReadSeq + 1}`,
-    );
+    const hint = `[wmux] #${entry.name}: ${entry.unread} unread${mention} — run: wmux channel read ${entry.channelId} --since ${entry.lastReadSeq + 1}`;
     // The body's first line rides AFTER the hint. Every nudge used to read the
     // same, so an agent mid-task had to spend a turn on the read just to learn
     // whether it mattered.
-    const preview = bodyPreview(entry.latestBody);
-    const line = preview ? `${hint} — "${preview}"` : hint;
+    //
+    // But ONLY into a pane we can name as an agent TUI. `lastDetectedAgent` can
+    // be stale — the agent exits and the shell stays — and this text comes from
+    // another workspace and is committed with an Enter, so a bare shell would
+    // run it. The hint is ours and always safe; the body is not.
+    const preview = mayCarryBody(target.lastDetectedAgent) ? bodyPreview(entry.oldestUnreadBody) : '';
+    // sanitize + cap the FINAL line, not its pieces: the cap has to bound what
+    // actually reaches the PTY, and concatenation is exactly where a bounded
+    // hint and a bounded preview stop being bounded.
+    const line = sanitizeLine(preview ? `${hint} — ${preview}` : hint);
     const report = (ok: boolean): void => {
       this.deps.onNudgeOutcome?.({
         workspaceId,
         channelId: entry.channelId,
         memberId: entry.memberId,
         sessionId,
+        fromSeqExclusive: entry.lastReadSeq,
+        toSeqInclusive: entry.headSeq,
         ok,
       });
     };

@@ -287,6 +287,14 @@ export interface ApprovalResolveParams {
    * sends '1', deny sends ESC.
    */
   choiceKey?: string;
+  /**
+   * Who is answering. Defaults to `'human'`, because every caller that exists
+   * today is a person tapping Approve on the phone or the web UI, and they are
+   * looking at the prompt they are answering. An AUTOMATED resolver must
+   * declare itself — that is what subjects it to the press scope
+   * (`decideApprovalPress`), which a human is deliberately not subject to.
+   */
+  resolver?: 'human' | 'automated';
 }
 
 /**

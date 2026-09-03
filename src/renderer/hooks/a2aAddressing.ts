@@ -234,6 +234,24 @@ export type ReplySuppressReason =
  */
 export interface ReplyCallerIdentity {
   commanderWorkspaceId?: string;
+  /** The workspace the request itself is acting as. A commander binding only
+   *  relaxes guards for ITS OWN workspace — see `decideReplyDelivery`. */
+  callerWorkspaceId?: string;
+}
+
+/**
+ * Is this caller a commander acting inside the workspace its token is bound to?
+ *
+ * The equality is the whole check. A token bound to workspace A says nothing
+ * about workspace B, so treating "a commander token exists" as "this caller is
+ * privileged here" would let one brain relax another workspace's guards. Main
+ * pins both fields from the validated binding, so they agree exactly when the
+ * commander is operating at home.
+ */
+export function isCommanderForWorkspace(caller: ReplyCallerIdentity): boolean {
+  return (
+    !!caller.commanderWorkspaceId && caller.commanderWorkspaceId === caller.callerWorkspaceId
+  );
 }
 
 export type ReplyDeliveryDecision =
@@ -253,22 +271,28 @@ export type ReplyDeliveryDecision =
  * Precedence (first match wins) only affects the REPORTED reason; any single
  * true guard suppresses, exactly as the original conjunction did.
  *
- * The BRAIN exception (orchestrator track, 2026-09-04). Two of those guards
- * are keyed on the caller having a pane: `same_ws_no_anchor` and
- * `unverified_sender` both exist so a route that cannot be proven non-self is
- * never pasted into the caller's own prompt. An orchestrator brain has no pane
- * in the workspace tree at all — `isTerminalPtyInLeaves` rejects its pty, so
- * `callerPtyId` arrives empty — which meant every brain→worker reply in its own
- * workspace was suppressed as "unverified", and the brain was told its message
- * was stored while the worker sat waiting. But a caller with no pane is exactly
- * a caller a delivery cannot loop back into, and MAIN has already validated the
- * commander binding it carries. So a commander-verified caller SATISFIES both
- * guards rather than tripping them.
+ * The BRAIN exception (orchestrator track, 2026-09-04). `unverified_sender`
+ * exists so a same-workspace route that cannot be proven non-self is never
+ * pasted into the caller's own prompt, and it identifies "provable" with "the
+ * caller owns a pane". An orchestrator brain owns none —
+ * `isTerminalPtyInLeaves` rejects its pty, so `callerPtyId` arrives empty —
+ * which meant every brain→worker reply inside its own workspace was suppressed
+ * as unverified, and the brain was told its message was stored while the worker
+ * sat waiting. A caller with no pane is precisely a caller a delivery cannot
+ * loop back into, and MAIN has already validated the commander binding it
+ * carries, so that ONE guard is satisfied rather than tripped.
  *
- * `self_loop` is untouched: it compares concrete pty ids, so it still protects
- * every pane caller, and a brain (empty callerPtyId) could never trip it
- * anyway. The brain's own self-send is caught by `target_is_brain` instead —
- * there is no pane behind a brain pty to write into.
+ * Exactly one guard, and only for the commander's OWN workspace:
+ *
+ *   - `same_ws_no_anchor` still suppresses, brain or not. With no pane anchor
+ *     the delivery helpers fall back to the target workspace's ACTIVE pane —
+ *     the #239 path — so relaxing it would hand an anchorless reply to
+ *     whichever pane happens to be focused. A brain that wants a worker nudged
+ *     addresses it (pane_id / surface_id), and then this guard never applies.
+ *   - `self_loop` compares concrete pty ids, so it still protects every pane
+ *     caller; a brain (empty callerPtyId) could never trip it anyway.
+ *   - the binding must name the CALLER'S OWN workspace (see
+ *     `isCommanderForWorkspace`) — a token bound to A must not relax B.
  */
 export function decideReplyDelivery(
   sameWsTask: boolean,
@@ -278,12 +302,14 @@ export function decideReplyDelivery(
   callerPtyId: string,
   caller: ReplyCallerIdentity = {},
 ): ReplyDeliveryDecision {
-  const commanderVerified = !!caller.commanderWorkspaceId;
+  const commanderVerified = isCommanderForWorkspace(caller);
   if (pinnedAddressLost) return { kind: 'suppress', reason: 'pin_lost' };
+  // Belt and braces. A brain pty cannot normally reach here — brains are not in
+  // the workspace pane tree, so `resolvePaneAddress` reports a lost pin long
+  // before this — but an anchor that ever did resolve to one would name a pane
+  // that does not exist, and that is not something to discover by writing to it.
   if (isBrainPtyId(explicitPtyId)) return { kind: 'suppress', reason: 'target_is_brain' };
-  if (sameWsTask && !hasAnchor && !commanderVerified) {
-    return { kind: 'suppress', reason: 'same_ws_no_anchor' };
-  }
+  if (sameWsTask && !hasAnchor) return { kind: 'suppress', reason: 'same_ws_no_anchor' };
   if (!!explicitPtyId && !!callerPtyId && explicitPtyId === callerPtyId) {
     return { kind: 'suppress', reason: 'self_loop' };
   }

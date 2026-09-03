@@ -1118,6 +1118,9 @@ describe('looksLikeChoiceOnScreen', () => {
 // human at the desktop can still answer it themselves.
 describe('decideApprovalPress — the four conditions', () => {
   const inScope = {
+    resolver: 'automated' as const,
+    decision: 'approve' as const,
+    scopeAvailable: true,
     isTaskWorkspace: true,
     autonomyMode: 'manual',
     origin: 'hook' as const,
@@ -1126,6 +1129,45 @@ describe('decideApprovalPress — the four conditions', () => {
 
   it('presses when all four hold', () => {
     expect(decideApprovalPress(inScope)).toEqual({ press: true });
+  });
+
+  // A person tapping Approve is LOOKING at the prompt. Gating them behind a
+  // workspace classification is not safety, it is a broken button.
+  it('never applies to a human, whatever the scope says', () => {
+    expect(
+      decideApprovalPress({ ...inScope, resolver: 'human', isTaskWorkspace: false }),
+    ).toEqual({ press: true });
+    expect(decideApprovalPress({ resolver: 'human' })).toEqual({ press: true });
+  });
+
+  // Denying cancels the tool call and hands the turn back — the safe direction.
+  // Refusing it would keep a pane blocked in the name of protecting it.
+  it('never blocks a deny, from any caller', () => {
+    expect(decideApprovalPress({ ...inScope, decision: 'deny', isTaskWorkspace: false })).toEqual({
+      press: true,
+    });
+    expect(decideApprovalPress({ resolver: 'automated', decision: 'deny' })).toEqual({
+      press: true,
+    });
+  });
+
+  // "Nobody wired the lookup" and "the workspace said no" are different
+  // problems, and only one of them is fixed by an integration commit.
+  it('names a missing scope source distinctly from a workspace that said no', () => {
+    expect(decideApprovalPress({ ...inScope, scopeAvailable: false })).toEqual({
+      press: false,
+      reason: 'scope-unavailable',
+    });
+  });
+
+  it('refuses an autonomy mode it does not recognise (a whitelist, not a blacklist)', () => {
+    // Matching only the literal 'off' meant a typo in the store, or a newer
+    // main writing a name we predate, read as permission.
+    expect(decideApprovalPress({ ...inScope, autonomyMode: 'supervised' })).toEqual({
+      press: false,
+      reason: 'unknown-autonomy-mode',
+    });
+    expect(decideApprovalPress({ ...inScope, autonomyMode: 'assist' })).toEqual({ press: true });
   });
 
   it('refuses a hand-opened pane (its workspace is not a task workspace)', () => {
@@ -1175,12 +1217,14 @@ describe('decideApprovalPress — the four conditions', () => {
 });
 
 describe('ApprovalRegistry — press scope is enforced at resolve', () => {
-  it('refuses an out-of-scope pane WITHOUT expiring the request', async () => {
+  const automatedApprove = { decision: 'approve' as const, resolvedBy: 'deck', resolver: 'automated' as const };
+
+  it('refuses an out-of-scope AUTOMATED press WITHOUT expiring the request', async () => {
     const h = makeRegistry({ pressScope: () => ({ isTaskWorkspace: false, autonomyMode: 'manual' }) });
     await awaitingInput(h.registry);
     await settle();
 
-    const res = await h.registry.resolve({ id: 'req-1', decision: 'approve', resolvedBy: 'web' });
+    const res = await h.registry.resolve({ id: 'req-1', ...automatedApprove });
     expect(res.ok).toBe(false);
     if (res.ok) throw new Error('expected a refusal');
     expect(res.reason).toBe('out-of-scope');
@@ -1189,15 +1233,60 @@ describe('ApprovalRegistry — press scope is enforced at resolve', () => {
     expect(h.registry.list().pending).toHaveLength(1);
   });
 
-  it('refuses when the scope facts are unavailable at all', async () => {
+  // The regression this round caught: with the scope source unwired, EVERY
+  // resolve was refused — including the person tapping Approve on their phone.
+  it('lets a human approve even with no scope source wired at all', async () => {
     const h = makeRegistry({ pressScope: undefined });
     await awaitingInput(h.registry);
     await settle();
 
     const res = await h.registry.resolve({ id: 'req-1', decision: 'approve', resolvedBy: 'web' });
+    expect(res.ok).toBe(true);
+    expect(h.writes).toHaveLength(1);
+  });
+
+  it('lets a human deny in a workspace an automated press could not touch', async () => {
+    const h = makeRegistry({ pressScope: () => ({ isTaskWorkspace: false, autonomyMode: 'off' }) });
+    await awaitingInput(h.registry);
+    await settle();
+
+    const res = await h.registry.resolve({ id: 'req-1', decision: 'deny', resolvedBy: 'web' });
+    expect(res.ok).toBe(true);
+    expect(h.writes).toHaveLength(1);
+  });
+
+  // A refused deny would leave the record alive to be re-tapped forever, which
+  // is how "safety" turns into a pane nobody can unblock.
+  it('lets an AUTOMATED deny through regardless of scope', async () => {
+    const h = makeRegistry({ pressScope: () => ({ isTaskWorkspace: false, autonomyMode: 'off' }) });
+    await awaitingInput(h.registry);
+    await settle();
+
+    const res = await h.registry.resolve({
+      id: 'req-1',
+      decision: 'deny',
+      resolvedBy: 'deck',
+      resolver: 'automated',
+    });
+    expect(res.ok).toBe(true);
+    expect(h.writes).toHaveLength(1);
+  });
+
+  it('refuses an automated press with no scope source, and says so in the log', async () => {
+    const logs: string[] = [];
+    const h = makeRegistry({
+      pressScope: undefined,
+      log: (_level, message) => logs.push(message),
+    });
+    await awaitingInput(h.registry);
+    await settle();
+
+    const res = await h.registry.resolve({ id: 'req-1', ...automatedApprove });
     expect(res.ok).toBe(false);
     if (res.ok) throw new Error('expected a refusal');
     expect(res.reason).toBe('out-of-scope');
     expect(h.writes).toHaveLength(0);
+    // The missing integration wiring must be visible, not look like policy.
+    expect(logs.join('\n')).toContain('pressScope');
   });
 });

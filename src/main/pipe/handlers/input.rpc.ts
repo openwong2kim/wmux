@@ -46,12 +46,23 @@ const delay = (ms: number): Promise<void> =>
 // cursor, so bytes flow whether or not anything was committed.
 //
 // Two signals are accepted, both of which require the pane to have MOVED:
-//   (a) turn start — the pane's agentStatus goes to running/awaiting_input,
-//       i.e. the agent detector / hook lane saw a turn begin for this pty.
-//   (b) composer cleared — the text we just typed is no longer sitting on the
-//       input line. Detected positionally (see `rowFromBottom`), because a TUI
-//       like Claude Code re-renders the submitted prompt into its transcript:
-//       the string is still on screen, just no longer at the bottom.
+//   (a) turn start — the pane's agentStatus goes to `running`, from a status
+//       that was not a turn, reported by a mirror snapshot taken AFTER our \r.
+//   (b) composer cleared — the text we just typed has LEFT the composer area
+//       at the bottom of the screen. Positional (see `rowFromBottom`), because
+//       a TUI like Claude Code re-renders the submitted prompt into its
+//       transcript: the string is still on screen, just no longer down there.
+//
+// Both are narrower than they look, and deliberately:
+//   - `running → awaiting_input` is NOT a turn start. It is what a PREVIOUS
+//     turn ending inside our window looks like.
+//   - agentStatus is byte-promoted (#935), so the pane's own echo of our text
+//     can flip it to running before anything was submitted. That is why the
+//     snapshot has to be newer than the \r, not merely different.
+//   - "the needle moved up one row" is NOT acceptance. That is precisely the
+//     soft-newline failure this whole change exists to catch (the composer
+//     grew a line and pushed our text up), and background output does it too.
+//     Only leaving the composer area counts.
 
 /** How long a submit waits for a receipt before retrying the Enter. */
 const SUBMIT_RECEIPT_WINDOW_MS = 400;
@@ -59,13 +70,41 @@ const SUBMIT_RECEIPT_WINDOW_MS = 400;
 /** Poll interval while waiting for a receipt. */
 const SUBMIT_RECEIPT_POLL_MS = 50;
 
+/**
+ * Hard ceiling on the whole receipt wait, retry included. An MCP client gives
+ * a tool call ~10s; a submit that spent most of that budget waiting would turn
+ * a working send into a client-side timeout, which is a worse answer than an
+ * honest `accepted:false`.
+ */
+const SUBMIT_RECEIPT_MAX_TOTAL_MS = 2_000;
+
+/** Per-poll viewport read budget. Short on purpose: a screen we cannot get
+ *  quickly is a poll we skip, not a submit we stall. */
+const SUBMIT_RECEIPT_READ_TIMEOUT_MS = 300;
+
+/** Viewport rows pulled per poll. The composer and its framing live in the
+ *  last handful of rows; the scrollback is irrelevant here. */
+const SUBMIT_RECEIPT_READ_LINES = 20;
+
 /** Screen lines handed back when no receipt arrived, so the caller can see
  *  what the pane is actually showing instead of guessing. */
 const SUBMIT_RECEIPT_TAIL_LINES = 10;
 
-/** Statuses that mean a turn has begun for this pane. A change to any other
- *  status (e.g. running → idle) is decay, not a receipt. */
-const TURN_START_STATUSES: ReadonlySet<string> = new Set(['running', 'awaiting_input']);
+/**
+ * How far up from the bottom the input line can be. A TUI frames its composer
+ * (border, hint row, mode line), so the typed text sits a few rows above the
+ * true bottom; anything further up is transcript, not composer.
+ */
+export const COMPOSER_AREA_ROWS = 6;
+
+/** Statuses that are NOT a turn — a move from one of these into `running` is a
+ *  turn starting. `running → awaiting_input` is the previous turn ending. */
+const NON_TURN_STATUSES: ReadonlySet<string> = new Set([
+  'idle',
+  'waiting',
+  'complete',
+  'error',
+]);
 
 /** Length of the trailing slice of the submitted text used to locate the
  *  composer line. Long enough to be unique in a viewport, short enough that a
@@ -100,26 +139,42 @@ export function rowFromBottom(screen: string, needle: string): number {
 }
 
 /**
- * True when the typed text left the input line between `before` and `after`.
+ * Was the typed text sitting in the composer area when we pressed Enter?
  *
- * Gone from the screen entirely, or moved further from the bottom, both mean
- * the composer committed it. Same row means it is still pending — which is
- * exactly what an echo-only repaint looks like, so echo alone never accepts.
- * A needle that was never visible before the Enter tells us nothing (the pane
- * may not render an input line at all), so we refuse to guess.
+ * Only then is the composer signal usable at all: a needle we never saw down
+ * there (empty text, a prompt so wrapped the tail is off-grid, a dialog over
+ * the pane) tells us nothing about what an Enter did, and a receipt built on
+ * "we could not see it" is a guess.
  */
-export function composerAdvanced(before: string, after: string, needle: string): boolean {
-  const beforeRow = rowFromBottom(before, needle);
-  if (beforeRow < 0) return false;
-  const afterRow = rowFromBottom(after, needle);
-  if (afterRow < 0) return true;
-  return afterRow > beforeRow;
+export function needleInComposer(screen: string, needle: string): boolean {
+  const row = rowFromBottom(screen, needle);
+  return row >= 0 && row < COMPOSER_AREA_ROWS;
 }
 
-/** True when the pane's agent status moved INTO a turn between the two reads. */
+/**
+ * True when the typed text LEFT the composer area between `before` and `after`.
+ *
+ * Not "moved up": a composer that grew a soft newline pushes the text up one
+ * row while still holding it uncommitted — the exact failure this change
+ * exists to catch — and background output shifts rows too. Gone from the
+ * bottom region (or off screen entirely) is the only thing a submit does.
+ */
+export function composerCleared(before: string, after: string, needle: string): boolean {
+  if (!needleInComposer(before, needle)) return false;
+  return !needleInComposer(after, needle);
+}
+
+/**
+ * True when the pane's agent status moved INTO a turn.
+ *
+ * Narrow on purpose. `running → awaiting_input` is a PREVIOUS turn ending
+ * inside our window, not ours beginning, so only `running` is an arrival, and
+ * only from a status that was not already a turn.
+ */
 export function isTurnStart(before: string | null, after: string | null): boolean {
-  if (!after || after === before) return false;
-  return TURN_START_STATUSES.has(after);
+  if (after !== 'running') return false;
+  if (before === null) return true;
+  return NON_TURN_STATUSES.has(before);
 }
 
 /** Last `count` non-empty-trailing lines of a screen capture. */
@@ -129,11 +184,19 @@ export function screenTail(screen: string, count = SUBMIT_RECEIPT_TAIL_LINES): s
   return lines.slice(-count).join('\n');
 }
 
+/** One agent-status observation: the value, and WHEN the snapshot carrying it
+ *  was taken. The timestamp is load-bearing — see `awaitSubmitReceipt`. */
+export interface AgentStatusReading {
+  status: string;
+  /** Epoch ms the snapshot was built (renderer push time). */
+  ts: number;
+}
+
 /** What `awaitSubmitReceipt` needs to observe a pane. Injected so the wait is
  *  testable against a fake PTY with no renderer and no mirror. */
 export interface SubmitProbe {
   readScreen: () => Promise<string>;
-  readAgentStatus: () => Promise<string | null>;
+  readAgentStatus: () => Promise<AgentStatusReading | null>;
 }
 
 export interface SubmitReceipt {
@@ -151,53 +214,102 @@ export interface SubmitReceipt {
 /**
  * Wait for one of the two receipts after an Enter, retrying the Enter once.
  *
- * Budget: `windowMs` for the first attempt, then the Enter is re-sent and we
- * wait 2× as long (a TUI that missed the first \r was busy, so give it more
- * room). Still nothing ⇒ `accepted: false` with the screen tail attached.
+ * Budget is WALL CLOCK, not poll count: each poll costs a viewport read whose
+ * latency varies with the pane, so counting iterations meant the real wait
+ * drifted with load. `windowMs` for the first attempt; if the needle was
+ * observably in the composer we re-send the Enter and watch 2× as long, all
+ * clamped by `maxTotalMs` so a submit can never eat an MCP client's timeout.
+ *
+ * Two things that look like over-caution and are not:
+ *
+ *   - A status reading is only evidence when its snapshot was taken AFTER the
+ *     \r. agentStatus is byte-promoted (#935), so the pane echoing our own
+ *     text flips it to `running` — a snapshot from before the Enter would let
+ *     our own keystrokes sign for their own delivery.
+ *   - We re-send the Enter ONLY when the needle was in the composer to begin
+ *     with. Otherwise the pane might be showing a confirmation dialog, and a
+ *     blind second Enter presses its default.
  */
 export async function awaitSubmitReceipt(
   probe: SubmitProbe,
   needle: string,
   before: { screen: string; agentStatus: string | null },
   resendEnter: () => void,
-  opts: { windowMs?: number; pollMs?: number; sleep?: (ms: number) => Promise<void> } = {},
+  opts: {
+    windowMs?: number;
+    pollMs?: number;
+    maxTotalMs?: number;
+    sleep?: (ms: number) => Promise<void>;
+    /** Epoch ms the \r was written. A status snapshot older than this is our
+     *  own echo, not a turn. */
+    enterAt?: number;
+    now?: () => number;
+  } = {},
 ): Promise<SubmitReceipt> {
   const windowMs = opts.windowMs ?? SUBMIT_RECEIPT_WINDOW_MS;
   const pollMs = opts.pollMs ?? SUBMIT_RECEIPT_POLL_MS;
+  const maxTotalMs = opts.maxTotalMs ?? SUBMIT_RECEIPT_MAX_TOTAL_MS;
   const sleep = opts.sleep ?? delay;
+  const now = opts.now ?? Date.now;
+  const enterAt = opts.enterAt ?? now();
 
-  // Neither signal is available: no viewport came back AND no status is known
-  // for this pty (no renderer, or a pane the mirror has never carried). Waiting
-  // 1.2s to learn nothing helps no one, and re-sending an Enter into a pane we
-  // cannot see is worse than not sending it — so say plainly that we could not
-  // observe rather than manufacturing a verdict.
-  if (before.screen === '' && before.agentStatus === null) {
+  const composerUsable = needleInComposer(before.screen, needle);
+  const statusUsable = before.agentStatus !== null || before.screen !== '';
+
+  // Nothing to watch: no viewport came back AND no status is known for this pty
+  // (no renderer, or a pane the mirror has never carried). Waiting to learn
+  // nothing helps no one, and a second Enter into a pane we cannot see is worse
+  // than no second Enter — so say plainly that we could not observe.
+  if (!composerUsable && !statusUsable) {
     return { accepted: false, agentStatusAfter: null, retried: false, signal: 'unobservable' };
   }
 
   let status = before.agentStatus;
   let screen = before.screen;
   let retried = false;
+  const hardDeadline = enterAt + maxTotalMs;
 
-  for (let attempt = 0; attempt < 2; attempt++) {
-    const budget = windowMs * (attempt === 0 ? 1 : 2);
-    for (let waited = 0; waited < budget; waited += pollMs) {
+  /** Read the status and decide; separated so it can run BEFORE the first
+   *  (expensive) screen read — a hook-fast turn start should not wait on IPC. */
+  const pollStatus = async (): Promise<boolean> => {
+    const reading = await probe.readAgentStatus();
+    if (!reading || reading.ts < enterAt) return false;
+    const started = isTurnStart(status, reading.status);
+    status = reading.status;
+    return started;
+  };
+
+  if (await pollStatus()) {
+    return { accepted: true, agentStatusAfter: status, retried, signal: 'turn_start' };
+  }
+
+  // One attempt when the composer is not observable — there is no second Enter
+  // to send, so a longer wait buys only latency.
+  const attempts = composerUsable ? 2 : 1;
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    const windowDeadline = Math.min(now() + windowMs * (attempt === 0 ? 1 : 2), hardDeadline);
+    while (now() < windowDeadline) {
       await sleep(pollMs);
-      screen = await probe.readScreen();
-      const next = await probe.readAgentStatus();
-      if (next !== null) {
-        if (isTurnStart(status, next)) {
-          return { accepted: true, agentStatusAfter: next, retried, signal: 'turn_start' };
-        }
-        status = next;
+      if (await pollStatus()) {
+        return { accepted: true, agentStatusAfter: status, retried, signal: 'turn_start' };
       }
-      if (composerAdvanced(before.screen, screen, needle)) {
-        return { accepted: true, agentStatusAfter: status, retried, signal: 'composer_cleared' };
+      if (composerUsable) {
+        screen = await probe.readScreen();
+        if (composerCleared(before.screen, screen, needle)) {
+          return { accepted: true, agentStatusAfter: status, retried, signal: 'composer_cleared' };
+        }
       }
     }
-    if (attempt === 0) {
+    if (attempt === 0 && attempts === 2 && now() < hardDeadline) {
       retried = true;
-      resendEnter();
+      try {
+        resendEnter();
+      } catch {
+        // The pane died between the first Enter and the retry. That is an
+        // unaccepted submit, not a failed RPC — the caller gets `false` and the
+        // screen tail, exactly as it would for a pane that ignored us.
+        break;
+      }
     }
   }
 
@@ -205,8 +317,8 @@ export async function awaitSubmitReceipt(
     accepted: false,
     agentStatusAfter: status,
     retried,
-    signal: 'none',
-    screenTail: screenTail(screen),
+    signal: composerUsable ? 'none' : 'unobservable',
+    ...(screen ? { screenTail: screenTail(screen) } : {}),
   };
 }
 
@@ -313,7 +425,14 @@ function makeSubmitProbe(
   return {
     readScreen: async (): Promise<string> => {
       try {
-        const result = await sendToRenderer(getWindow, 'input.readScreen', { ptyId });
+        const result = await sendToRenderer(getWindow, 'input.readScreen', {
+          ptyId,
+          // Bounded on both axes: the composer lives in the last handful of
+          // rows, and a viewport we cannot get in 300ms is a poll to skip, not
+          // a submit to stall.
+          tail_lines: SUBMIT_RECEIPT_READ_LINES,
+          timeoutMs: SUBMIT_RECEIPT_READ_TIMEOUT_MS,
+        });
         if (result !== null && typeof result === 'object') {
           const text = (result as Record<string, unknown>)['text'];
           if (typeof text === 'string') return text;
@@ -323,11 +442,14 @@ function makeSubmitProbe(
       }
       return '';
     },
-    readAgentStatus: (): Promise<string | null> => {
+    readAgentStatus: (): Promise<AgentStatusReading | null> => {
       if (!workspaceId) return Promise.resolve(null);
       const snapshot = getWorkspaceMirror().getFleetSnapshot(workspaceId);
       const pane = snapshot?.panes.find((p) => p.ptyId === ptyId);
-      return Promise.resolve(pane?.agentStatus ?? null);
+      if (!snapshot || !pane?.agentStatus) return Promise.resolve(null);
+      // The snapshot's own build time rides along: a status from BEFORE our \r
+      // cannot testify about it (byte promotion means our echo moves it).
+      return Promise.resolve({ status: pane.agentStatus, ts: snapshot.ts });
     },
   };
 }
@@ -488,28 +610,40 @@ export function registerInputRpc(
     // submit — the \r becomes a soft newline in the composer. A lone \r
     // arriving in its own read cycle is an unambiguous Enter keypress. This is
     // exactly why the two-step terminal_send + terminal_send_key('enter')
-    // workaround succeeded where submit:true did not. We skip the extra write
-    // when the text already ends in \r (avoids a stray empty submit).
-    const wantsSubmit = params['submit'] === true && !safeText.endsWith('\r');
+    // workaround succeeded where submit:true did not.
+    //
+    // A text that ALREADY ends in \r used to skip the split write and the
+    // receipt entirely, and then reported `submitted:true, accepted:false` —
+    // the very false receipt this handler exists to remove, wearing a
+    // different hat. The trailing \r IS the submit, so it is stripped and the
+    // normal path runs: one text write, one Enter, one receipt.
+    const submitRequested = params['submit'] === true;
+    const bodyText = submitRequested && safeText.endsWith('\r') ? safeText.slice(0, -1) : safeText;
     let receipt: SubmitReceipt | undefined;
-    if (wantsSubmit) {
+    if (submitRequested) {
       // Resolve the receipt workspace BEFORE the first write so its round-trip
       // never lands inside the text→Enter gap the delay above protects.
       const receiptWs =
         callerWs ?? (await resolvePtyOwnerWorkspace(getWindow, ptyId).catch(() => null)) ?? undefined;
       const probe = makeSubmitProbe(getWindow, ptyId, receiptWs);
 
-      writeChunk(safeText);
+      if (bodyText) writeChunk(bodyText);
       await delay(SUBMIT_ENTER_DELAY_MS);
       // Snapshot the pane while the text sits UNCOMMITTED on the input line —
       // this is the "before" the composer diff is measured against.
+      const beforeReading = await probe.readAgentStatus();
       const before = {
         screen: await probe.readScreen(),
-        agentStatus: await probe.readAgentStatus(),
+        agentStatus: beforeReading?.status ?? null,
       };
       writeChunk('\r');
-      receipt = await awaitSubmitReceipt(probe, submitNeedle(safeText), before, () =>
-        writeChunk('\r'),
+      const enterAt = Date.now();
+      receipt = await awaitSubmitReceipt(
+        probe,
+        submitNeedle(bodyText),
+        before,
+        () => writeChunk('\r'),
+        { enterAt },
       );
     } else {
       writeChunk(safeText);
@@ -520,11 +654,18 @@ export function registerInputRpc(
       ptyId,
       // `submitted` reports only that an Enter was WRITTEN. `accepted` is the
       // receipt: whether the pane was observed to move. A caller that needs to
-      // know the agent got the prompt must read `accepted`.
-      submitted: params['submit'] === true,
-      accepted: receipt?.accepted ?? false,
-      agentStatusAfter: receipt?.agentStatusAfter ?? null,
-      ...(receipt ? { receiptSignal: receipt.signal, enterRetried: receipt.retried } : {}),
+      // know the agent got the prompt must read `accepted` — and when no
+      // receipt was attempted at all (submit:false) the field is ABSENT rather
+      // than a hard false, which would read as "we looked and it did not land".
+      submitted: submitRequested,
+      ...(receipt
+        ? {
+            accepted: receipt.accepted,
+            agentStatusAfter: receipt.agentStatusAfter,
+            receiptSignal: receipt.signal,
+            enterRetried: receipt.retried,
+          }
+        : {}),
       ...(receipt?.screenTail ? { screenTail: receipt.screenTail } : {}),
       // D2 — surface enforcement on the payload (callRpc stringifies it into the
       // tool result, so the orchestrator sees which model was pinned). The pane

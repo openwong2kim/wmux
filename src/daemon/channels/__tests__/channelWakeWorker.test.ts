@@ -15,6 +15,7 @@ import {
   EXHAUSTED_REANNOUNCE_MS,
   BODY_PREVIEW_MAX_LEN,
   bodyPreview,
+  mayCarryBody,
   type WakeUnreadEntry,
   type WakeSessionView,
   type WakeNudgeOutcome,
@@ -670,7 +671,7 @@ describe('recordExternalNudge — membership validation (unbounded-growth guard)
 describe('ChannelWakeWorker — body preview + inject outcome', () => {
   it('carries the first line of the body after the existing hint', () => {
     const h = makeHarness();
-    h.setEntries([entry({ latestBody: 'deploy is red on main\nstack trace follows' })]);
+    h.setEntries([entry({ oldestUnreadBody: 'deploy is red on main\nstack trace follows' })]);
     h.setSessions([session({})]);
     h.worker.tickOnce();
 
@@ -688,7 +689,7 @@ describe('ChannelWakeWorker — body preview + inject outcome', () => {
     const h = makeHarness();
     // ChannelService picks WHICH body to hand over; this pins that the worker
     // renders it unmodified apart from the safety pass.
-    h.setEntries([entry({ mentionUnread: 1, latestBody: '@codex can you take this?' })]);
+    h.setEntries([entry({ mentionUnread: 1, oldestUnreadBody: '@codex can you take this?' })]);
     h.setSessions([session({})]);
     h.worker.tickOnce();
 
@@ -701,9 +702,66 @@ describe('ChannelWakeWorker — body preview + inject outcome', () => {
     h.setEntries([entry({})]);
     h.setSessions([session({})]);
     h.worker.tickOnce();
-    // No dangling separator / empty quotes.
-    expect(h.writes[0]!.data).not.toContain('""');
+    // No dangling separator.
     expect(h.writes[0]!.data.endsWith('--since 3')).toBe(true);
+  });
+
+  // The body is another workspace's text, TYPED into a live pane and committed
+  // with an Enter. `lastDetectedAgent` can be stale — the agent exits and the
+  // shell stays — and a shell would RUN it.
+  describe('the body is an injection surface', () => {
+    const HOSTILE = 'ship it $(rm -rf ~) `id` "quoted" \'also\' \\escaped';
+
+    it('drops shell metacharacters from the preview', () => {
+      const h = makeHarness();
+      h.setEntries([entry({ oldestUnreadBody: HOSTILE })]);
+      h.setSessions([session({ lastDetectedAgent: 'codex' })]);
+      h.worker.tickOnce();
+
+      const text = h.writes[0]!.data;
+      expect(text).toContain('ship it');
+      for (const ch of ['$', '`', '\\', '"', "'"]) {
+        expect(text).not.toContain(ch);
+      }
+    });
+
+    it('omits the body entirely when the pane is a bare shell', () => {
+      const h = makeHarness();
+      h.setEntries([entry({ oldestUnreadBody: 'deploy is red on main' })]);
+      // A pane with no detected agent is exactly the case where the text would
+      // be run rather than composed.
+      h.setSessions([
+        session({ id: 'pty-1', lastDetectedAgent: 'codex' }),
+        session({ id: 'pty-2', lastDetectedAgent: undefined }),
+      ]);
+      // Force the single-eligible-agent path onto the shell by removing the
+      // agent pane: an agent-less pane is never targeted at all...
+      h.setSessions([session({ lastDetectedAgent: 'zsh' })]);
+      h.worker.tickOnce();
+
+      expect(h.writes).toHaveLength(1);
+      expect(h.writes[0]!.data).not.toContain('deploy is red on main');
+      expect(h.writes[0]!.data).toContain('run: wmux channel read');
+    });
+
+    it('caps the FINAL assembled line, not the pieces', () => {
+      const h = makeHarness();
+      h.setEntries([entry({ oldestUnreadBody: 'x'.repeat(500) })]);
+      h.setSessions([session({})]);
+      h.worker.tickOnce();
+
+      // Concatenation is exactly where a bounded hint and a bounded preview
+      // stop being bounded.
+      expect(h.writes[0]!.data.length).toBeLessThanOrEqual(220);
+    });
+
+    it('mayCarryBody names agent TUIs only', () => {
+      expect(mayCarryBody('claude')).toBe(true);
+      expect(mayCarryBody('codex')).toBe(true);
+      expect(mayCarryBody('zsh')).toBe(false);
+      expect(mayCarryBody('')).toBe(false);
+      expect(mayCarryBody(undefined)).toBe(false);
+    });
   });
 
   it('reports success only after the Enter lands, never on the text write alone', () => {
@@ -716,7 +774,15 @@ describe('ChannelWakeWorker — body preview + inject outcome', () => {
     expect(h.outcomes).toEqual([]);
     flushEnter();
     expect(h.outcomes).toEqual([
-      { workspaceId: 'ws-b', channelId: 'ch-1', memberId: 'codex', sessionId: 'pty-1', ok: true },
+      {
+        workspaceId: 'ws-b',
+        channelId: 'ch-1',
+        memberId: 'codex',
+        sessionId: 'pty-1',
+        fromSeqExclusive: 2,
+        toSeqInclusive: 4,
+        ok: true,
+      },
     ]);
   });
 
@@ -728,7 +794,15 @@ describe('ChannelWakeWorker — body preview + inject outcome', () => {
     h.worker.tickOnce();
 
     expect(h.outcomes).toEqual([
-      { workspaceId: 'ws-b', channelId: 'ch-1', memberId: 'codex', sessionId: 'pty-1', ok: false },
+      {
+        workspaceId: 'ws-b',
+        channelId: 'ch-1',
+        memberId: 'codex',
+        sessionId: 'pty-1',
+        fromSeqExclusive: 2,
+        toSeqInclusive: 4,
+        ok: false,
+      },
     ]);
   });
 
@@ -742,7 +816,15 @@ describe('ChannelWakeWorker — body preview + inject outcome', () => {
     flushEnter();
 
     expect(h.outcomes).toEqual([
-      { workspaceId: 'ws-b', channelId: 'ch-1', memberId: 'codex', sessionId: 'pty-1', ok: false },
+      {
+        workspaceId: 'ws-b',
+        channelId: 'ch-1',
+        memberId: 'codex',
+        sessionId: 'pty-1',
+        fromSeqExclusive: 2,
+        toSeqInclusive: 4,
+        ok: false,
+      },
     ]);
   });
 

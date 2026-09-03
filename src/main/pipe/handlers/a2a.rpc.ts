@@ -412,9 +412,17 @@ export function registerA2aRpc(
     // is dropped first). The renderer's reply-delivery guards need it: an
     // orchestrator brain owns no pane, so without this every brain→worker nudge
     // in its own workspace is suppressed as an unverifiable sender.
+    //
+    // `workspaceId` is PINNED to the same binding, exactly as pane.rpc does for
+    // its confinement: the relaxation is keyed on the binding naming the
+    // caller's own workspace, so a brain that could still name a different
+    // `workspaceId` on the wire would carry its privilege into someone else's.
     const sendParams: Record<string, unknown> = { ...params };
     delete sendParams.commanderWorkspaceId;
-    if (ctx?.commanderWorkspace) sendParams.commanderWorkspaceId = ctx.commanderWorkspace;
+    if (ctx?.commanderWorkspace) {
+      sendParams.commanderWorkspaceId = ctx.commanderWorkspace;
+      sendParams.workspaceId = ctx.commanderWorkspace;
+    }
     const result = await sendToRenderer(getWindow, 'a2a.task.send', sendParams);
 
     // 데몬 정본 미러-생성(신규 태스크 브랜치에서만 — 렌더러가 task 스냅샷 동반).

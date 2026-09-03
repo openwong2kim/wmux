@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import type { PaneLeaf, Surface } from '../../../shared/types';
-import { resolvePaneAddress, activePaneTerminalPty, decideSameWsSend, decideReplyDelivery, countRoundTrips, maxSideMessages, REPLY_ROUND_CAP, REPLY_SUPPRESS_HINTS, isTerminalPtyInLeaves, resolveSelfPaneIdentity, resolveSenderPaneAddress, resolvePaneRole, type PaneAddress } from '../a2aAddressing';
+import { resolvePaneAddress, activePaneTerminalPty, decideSameWsSend, decideReplyDelivery, isCommanderForWorkspace, countRoundTrips, maxSideMessages, REPLY_ROUND_CAP, REPLY_SUPPRESS_HINTS, isTerminalPtyInLeaves, resolveSelfPaneIdentity, resolveSenderPaneAddress, resolvePaneRole, type PaneAddress } from '../a2aAddressing';
 
 function surface(id: string, ptyId: string, surfaceType: Surface['surfaceType'] = 'terminal'): Surface {
   return { id, ptyId, title: id, shell: '', cwd: '', surfaceType } as Surface;
@@ -261,16 +261,38 @@ describe('decideReplyDelivery', () => {
   // callerPtyId arrives empty and BOTH pane-keyed guards fired — every
   // brain→worker reply in its own workspace was stored and never delivered.
   describe('commander-verified caller (the brain)', () => {
-    const BRAIN = { commanderWorkspaceId: 'ws-brain' };
+    const BRAIN = { commanderWorkspaceId: 'ws-brain', callerWorkspaceId: 'ws-brain' };
 
     it('brain → sibling pane in its own workspace delivers', () => {
       const d = decideReplyDelivery(true, true, false, 'pty-worker', '', BRAIN);
       expect(d).toEqual({ kind: 'deliver', sameWs: true, explicitPtyId: 'pty-worker' });
     });
 
-    it('brain → same-ws target with no anchor delivers (fallback cannot loop into a paneless caller)', () => {
+    // The exemption is for `unverified_sender` ONLY. With no anchor the
+    // delivery helpers fall back to the target workspace's ACTIVE pane (#239),
+    // so relaxing this one would hand the reply to whichever pane is focused.
+    it('brain → same-ws target with NO anchor is still suppressed', () => {
       const d = decideReplyDelivery(true, false, false, undefined, '', BRAIN);
-      expect(d).toEqual({ kind: 'deliver', sameWs: true });
+      expect(d).toEqual({ kind: 'suppress', reason: 'same_ws_no_anchor' });
+    });
+
+    // A token bound to workspace A says nothing about workspace B.
+    it('a commander binding for ANOTHER workspace relaxes nothing', () => {
+      const d = decideReplyDelivery(true, true, false, 'pty-worker', '', {
+        commanderWorkspaceId: 'ws-other',
+        callerWorkspaceId: 'ws-brain',
+      });
+      expect(d).toEqual({ kind: 'suppress', reason: 'unverified_sender' });
+    });
+
+    it('isCommanderForWorkspace requires the binding to name the caller workspace', () => {
+      expect(isCommanderForWorkspace(BRAIN)).toBe(true);
+      expect(
+        isCommanderForWorkspace({ commanderWorkspaceId: 'ws-a', callerWorkspaceId: 'ws-b' }),
+      ).toBe(false);
+      // A binding with nothing to compare against is not a match either.
+      expect(isCommanderForWorkspace({ commanderWorkspaceId: 'ws-a' })).toBe(false);
+      expect(isCommanderForWorkspace({})).toBe(false);
     });
 
     it('brain → brain is refused: there is no pane behind a brain pty', () => {

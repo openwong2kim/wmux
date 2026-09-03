@@ -2910,7 +2910,11 @@ export class ChannelService {
         // would leave the siblings permanently 'pending', and a repeat ack would
         // keep re-finding the first, already-delivered row (Codex review).
         for (const entry of m.recipientSnapshot ?? []) {
-          if (entry.workspaceId === params.verifiedWorkspaceId && entry.status === 'pending') {
+          // Anything not already `delivered` — `target_gone` included. A failed
+          // wake nudge records one moment's dead pane; an ack is the receiver
+          // saying it read the thing. Leaving target_gone alone would let one
+          // dead pane pin a message as undelivered forever.
+          if (entry.workspaceId === params.verifiedWorkspaceId && entry.status !== 'delivered') {
             flips.push({
               entry,
               prevEntryStatus: entry.status,
@@ -2962,9 +2966,9 @@ export class ChannelService {
       if (flips.length > 0 || cursorFlips.length > 0) {
         if (this.eventLog) {
           // G1 append-then-apply: 수집(collect)은 위에서 읽기 전용으로 끝났고,
-          // 적용은 배리어 성공 후 적용기가 수행한다 — 적용기의 재수집(pending
-          // 전용 플립·advance-only 커서)은 뮤텍스 하에서 위 수집과 결정론적으로
-          // 동일하다. 실패 = 무적용(롤백 없음).
+          // 적용은 배리어 성공 후 적용기가 수행한다 — 적용기의 재수집(delivered가
+          // 아닌 행만 플립·advance-only 커서)은 뮤텍스 하에서 위 수집과 결정론적
+          // 으로 동일하다. 실패 = 무적용(롤백 없음).
           if (
             !(await this.commitAndApply(
               {
@@ -3122,7 +3126,7 @@ export class ChannelService {
     unread: number;
     mentionUnread: number;
     trimmedBeforeCursor: number;
-    latestBody?: string;
+    oldestUnreadBody?: string;
   }> {
     const out: Array<{
       channelId: string;
@@ -3134,7 +3138,7 @@ export class ChannelService {
       unread: number;
       mentionUnread: number;
       trimmedBeforeCursor: number;
-      latestBody?: string;
+      oldestUnreadBody?: string;
     }> = [];
     for (const channel of this.state.channels) {
       if (channel.status === 'archived') continue;
@@ -3199,7 +3203,7 @@ export class ChannelService {
           mentionUnread,
           trimmedBeforeCursor,
           ...(firstMentionBody ?? firstBody
-            ? { latestBody: firstMentionBody ?? firstBody }
+            ? { oldestUnreadBody: firstMentionBody ?? firstBody }
             : {}),
         });
       }
@@ -3212,41 +3216,76 @@ export class ChannelService {
    *
    * The push half was write-only: a nudge into a pane that died mid-race was
    * logged and dropped, and the message it announced stayed `pending` — a
-   * receipt for a delivery nobody made. A failed nudge now flips THAT
-   * recipient's frozen snapshot entry to `target_gone`, and the message's own
-   * status follows only when no recipient is left pending or delivered (the
-   * "at least one delivered" rule the ack path uses, read the other way).
+   * promise that something is still being delivered when nothing is. A FAILED
+   * nudge now flips that recipient's frozen snapshot entry to `target_gone`,
+   * and the message's own status follows only when no recipient is left alive
+   * (the ack path's "at least one delivered" rule, read the other way).
    *
-   * A SUCCESS is deliberately not a delivery: the hint reached the pane, which
-   * is not the same as the agent having received the message. Only the ack
-   * path (read === received) may write `delivered`. So success stamps the
-   * attempt time and nothing else — the exact false-receipt this method exists
-   * to stop reproducing.
+   * Scoped on both axes, because a nudge's evidence is narrow: it concerns ONE
+   * member row (a sibling member of the same workspace has its own pane and its
+   * own cursor) and only the seq range the nudge announced (the member had
+   * already read everything at or below its cursor; anything past the head was
+   * posted afterwards). Matching on workspace alone flipped every pending row
+   * in the channel, and since `ack` used to promote only `pending`, nothing
+   * ever recovered.
+   *
+   * A SUCCESS is deliberately NOT recorded. The hint reaching a pane is not the
+   * agent having received the message — only the ack path (read === received)
+   * may write `delivered` — so a success has nothing durable to say, and
+   * writing one would append to the event log on every wake tick.
+   *
+   * Runs under the channel lock and through the same commit/apply path as every
+   * other mutation, so a replay from the event log reconstructs it.
    */
-  noteNudgeOutcome(params: {
+  async noteNudgeOutcome(params: {
     channelId: string;
     workspaceId: string;
     memberId: string;
+    fromSeqExclusive: number;
+    toSeqInclusive: number;
     ok: boolean;
-  }): void {
-    const msgs = this.state.messages[params.channelId] ?? [];
-    let changed = false;
-    for (const m of msgs) {
-      for (const entry of m.recipientSnapshot ?? []) {
-        if (entry.workspaceId !== params.workspaceId) continue;
-        if (entry.status !== 'pending') continue;
-        entry.lastAttemptAt = Date.now();
-        changed = true;
-        if (params.ok) continue;
-        entry.status = 'target_gone';
-        const anyLive = (m.recipientSnapshot ?? []).some((e) => e.status !== 'target_gone');
-        if (!anyLive && m.deliveryStatus === 'pending') m.deliveryStatus = 'target_gone';
+  }): Promise<void> {
+    if (params.ok) return;
+    await this.withChannelLock(params.channelId, async () => {
+      const channel = this.state.channels.find((c) => c.id === params.channelId);
+      if (!channel) return;
+      const msgs = this.state.messages[params.channelId] ?? [];
+      const affects = msgs.some(
+        (m) =>
+          m.seq > params.fromSeqExclusive &&
+          m.seq <= params.toSeqInclusive &&
+          (m.recipientSnapshot ?? []).some(
+            (e) =>
+              e.workspaceId === params.workspaceId &&
+              e.memberId === params.memberId &&
+              e.status === 'pending',
+          ),
+      );
+      if (!affects) return;
+
+      const failedAt = this.now();
+      const event = {
+        kind: 'nudge-failed' as const,
+        channelId: params.channelId,
+        workspaceId: params.workspaceId,
+        memberId: params.memberId,
+        fromSeqExclusive: params.fromSeqExclusive,
+        toSeqInclusive: params.toSeqInclusive,
+        failedAt,
+      };
+      if (this.eventLog) {
+        await this.commitAndApply(event, {
+          verifiedWorkspaceId: params.workspaceId,
+          principalId: params.memberId,
+        });
+        return;
       }
-    }
-    // Bookkeeping only, so it rides the DEBOUNCED cache write: the wake loop
-    // ticks every 15s and must never be held up by a disk write, and the pull
-    // path (cursor + unread) remains the source of truth either way.
-    if (changed) this.scheduleCacheWrites();
+      // Legacy mode (no event log): apply in place, then persist. A persist
+      // failure is tolerated — this is bookkeeping, and the pull path (cursor +
+      // unread) remains the source of truth either way.
+      applyChannelEvent(this.state, event);
+      this.scheduleCacheWrites();
+    });
   }
 
   // ── Internals ──────────────────────────────────────────────────────
