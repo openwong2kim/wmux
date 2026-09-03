@@ -10,6 +10,7 @@ import { collectPageFacts, formatPageFactsFooter } from './pageFacts';
 import { peekRecentPendingRequests } from './pageCapture';
 import { evaluateIsolated, isolatedProbeTarget } from './isolated-eval';
 import { ancestorContext } from '../../shared/browserReplay/actionTrace';
+import { getOwnAttributeLabels } from './ownAttributes';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -520,6 +521,24 @@ export interface RefEntry {
    * during a walk that is already visiting every node.
    */
   context: string;
+  /**
+   * The element's OWN identifying attribute, as `attr=value` — `data-testid`,
+   * `id`, `name`, or `aria-label`, whichever comes first (ownAttributeLabel).
+   * `''` when it carries none of them.
+   *
+   * `context` abstains on two genuinely identical siblings, because they sit
+   * in the same place; this is what tells THOSE apart. Like `context` it is a
+   * verifier for the replay runner and nothing else: it is not part of the
+   * ref's identity and is never printed in a snapshot.
+   *
+   * MAIN FRAME ONLY. The attributes are joined to a11y nodes through
+   * `backendDOMNodeId`, and that id space belongs to a CDP target: an
+   * out-of-process frame numbers its own DOM from its own space, so a
+   * page-target map would hand a frame's element a main-document label. The
+   * smart lane never leaves the main frame either, which is what keeps the two
+   * lanes minting the identical string everywhere they overlap.
+   */
+  own: string;
 }
 
 /**
@@ -921,6 +940,12 @@ interface SerializeCtx {
   /** Null when nothing is covering the page, which is the normal case. */
   occlusion: OcclusionInfo | null;
   /**
+   * backendDOMNodeId → the element's own `attr=value` label, for the page
+   * target's document. Empty when the DOM pass could not run, or when the
+   * caller asked for 'aria' (which mints no refs to carry it).
+   */
+  ownLabels: Map<number, string>;
+  /**
    * Characters left for frame content — ONE pool for the whole snapshot,
    * drawn down by every grafted frame in it.
    *
@@ -992,6 +1017,13 @@ function serializeNode(
       // The element's own label is already `name`; what is recorded here is
       // where it SITS, so an element is never its own context.
       context: inheritedContext,
+      // Main frame only — see RefEntry.own for why the id space forbids the
+      // rest. An element outside it simply carries no label, which the
+      // verifier reads as "no verdict available", not as a mismatch.
+      own:
+        frame.key === MAIN_FRAME.key && node.backendDOMNodeId !== undefined
+          ? ctx.ownLabels.get(node.backendDOMNodeId) ?? ''
+          : '',
     });
     attrs.push(`ref="${ref}"`);
   }
@@ -1657,9 +1689,19 @@ async function occlusionFor(page: Page, fallback: CdpClient): Promise<OcclusionI
 interface SnapshotSource {
   tree: AXNode | null;
   occlusion: OcclusionInfo | null;
+  /** See SerializeCtx.ownLabels. Empty when `wantOwnLabels` was false. */
+  ownLabels: Map<number, string>;
 }
 
-async function getAccessibilityTree(page: Page): Promise<SnapshotSource> {
+/**
+ * @param wantOwnLabels adds ONE `DOM.getDocument` to the session, which is
+ *   only worth paying for on the 'ai' path — 'aria' mints no RefEntry to hang
+ *   the label on.
+ */
+async function getAccessibilityTree(
+  page: Page,
+  wantOwnLabels: boolean,
+): Promise<SnapshotSource> {
   // Sessions opened for out-of-process frames during the graft. Detached here
   // rather than inside the walk so one frame's cleanup cannot abort the rest.
   const extraSessions: CdpClient[] = [];
@@ -1668,6 +1710,10 @@ async function getAccessibilityTree(page: Page): Promise<SnapshotSource> {
       page,
       async (client) => ({
         tree: (await fetchAccessibilityTree(client, { page, extraSessions }))?.root ?? null,
+        // On the same session as the tree, so the DOM the attributes are read
+        // from is the DOM the a11y nodes were computed against. Its own
+        // failures are swallowed inside — a missing label abstains.
+        ownLabels: wantOwnLabels ? await getOwnAttributeLabels(client) : new Map(),
       // After the tree, never instead of it: a thrown occlusion probe must not
       // cost the caller its snapshot (collectOcclusion swallows its own
       // failures, and this ordering keeps the tree even if that ever changes).
@@ -1678,7 +1724,7 @@ async function getAccessibilityTree(page: Page): Promise<SnapshotSource> {
         // world, exactly as before, when there is no isolated world.
         occlusion: await occlusionFor(page, client),
       }),
-      { tree: null, occlusion: null },
+      { tree: null, occlusion: null, ownLabels: new Map() },
     );
   } finally {
     for (const extra of extraSessions) {
@@ -1714,7 +1760,7 @@ export async function generateSnapshot(
   // fallthroughs below — stamps the same generation onto the page.
   const identity = beginRefGeneration(page);
 
-  const { tree, occlusion } = await getAccessibilityTree(page);
+  const { tree, occlusion, ownLabels } = await getAccessibilityTree(page, format === 'ai');
 
   // A null tree (no CDP session / getFullAXTree threw / zero nodes) OR a root-only
   // tree (the a11y path collapsed — a background surface with no layout, or a page
@@ -1781,6 +1827,7 @@ export async function generateSnapshot(
     refs,
     identity,
     occlusion,
+    ownLabels,
     frameBudgetRemaining: Math.floor(maxLength * FRAME_BUDGET_SHARE),
   };
   let output = serializeTree(effectiveTree, ctx);
@@ -1870,29 +1917,36 @@ export async function generateScopedSnapshot(
   // was given whether it was reached through a selector or the whole page.
   const identity = beginRefGeneration(page);
 
-  const found = await withCdpSession<{ forest: AXNode[] | null; occlusion: OcclusionInfo | null }>(
+  const found = await withCdpSession<{
+    forest: AXNode[] | null;
+    occlusion: OcclusionInfo | null;
+    ownLabels: Map<number, string>;
+  }>(
     page,
     async (client) => {
       // Resolve the selector FIRST: a miss costs nothing and must reach the DOM
       // listing, which owns the user-facing "No element matches selector:" error.
       const backendId = await resolveSelectorBackendId(client, selector);
-      if (backendId === null) return { forest: null, occlusion: null };
+      if (backendId === null) return { forest: null, occlusion: null, ownLabels: new Map() };
 
       const built = await fetchAccessibilityTree(client);
-      if (!built || isRootOnly(built.root)) return { forest: null, occlusion: null };
+      if (!built || isRootOnly(built.root)) {
+        return { forest: null, occlusion: null, ownLabels: new Map() };
+      }
 
       return {
         forest: built.byBackendId.get(backendId) ?? null,
+        ownLabels: format === 'ai' ? await getOwnAttributeLabels(client) : new Map(),
         // Occlusion is a whole-page fact, so it is worth just as much inside a
         // scope — a selector aimed at the page behind an overlay is exactly the
         // case where the agent is about to click something inert.
         occlusion: await occlusionFor(page, client),
       };
     },
-    { forest: null, occlusion: null },
+    { forest: null, occlusion: null, ownLabels: new Map() },
   );
 
-  const { forest, occlusion } = found;
+  const { forest, occlusion, ownLabels } = found;
   if (!forest || forest.length === 0) return null;
 
   let scoped = forest;
@@ -1918,6 +1972,7 @@ export async function generateScopedSnapshot(
     refs,
     identity,
     occlusion,
+    ownLabels,
     frameBudgetRemaining: Math.floor(maxLength * FRAME_BUDGET_SHARE),
   };
   // Unlike the page-level tree, the matched element is content, not a container

@@ -46,8 +46,11 @@ describe('getSmartSnapshotViaEval', () => {
     expect(snap.content).toBe('hello');
     // The populations are inert on this lane — its locator is a CSS selector
     // naming one tagged element — but they are part of the shape. The RPC lane
-    // mints no ancestor context (it records no ref axis to carry one).
-    const inert = { context: '', sameNameIndex: 0, sameNameTotal: 1, roleIndex: 0, roleTotal: 1 };
+    // mints no ancestor context and no own-attribute label (it records no ref
+    // axis to carry either).
+    const inert = {
+      context: '', own: '', sameNameIndex: 0, sameNameTotal: 1, roleIndex: 0, roleTotal: 1,
+    };
     expect(snap.elements).toEqual([
       { ref: 1, role: 'button', name: 'OK', locator: '[data-wmux-ref="1"]', ...inert },
       {

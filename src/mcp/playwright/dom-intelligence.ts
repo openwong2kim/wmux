@@ -7,6 +7,7 @@ import {
   getPasswordFieldBackendIds,
 } from './redact';
 import { ancestorContext } from '../../shared/browserReplay/actionTrace';
+import { getOwnAttributeLabels } from './ownAttributes';
 
 // ---------------------------------------------------------------------------
 // Shared interactive-element selector
@@ -148,6 +149,16 @@ export interface IndexedElement {
    * ref axis to carry it.
    */
   context: string;
+  /**
+   * The element's own `attr=value` identifier — the same string, from the same
+   * `DOM.getDocument` pass and the same ownAttributeLabel rule, that the
+   * accessibility-lane snapshot stamps on its RefEntry. `''` when the element
+   * carries none of the four attributes, and on the RPC lane.
+   *
+   * It is what tells two genuinely identical siblings apart, which `context`
+   * cannot — they share a container. Verify-only: never used to LOCATE.
+   */
+  own: string;
 }
 
 export interface SmartSnapshot {
@@ -554,6 +565,7 @@ function collectInteractiveElements(
   passwordBackendIds: Set<number>,
   identity: SmartRefIdentity,
   seen: Set<number>,
+  ownLabels: Map<number, string>,
   inheritedContext = '',
 ): void {
   const role = node.role?.value ?? 'none';
@@ -582,6 +594,9 @@ function collectInteractiveElements(
       // Where the element sits, not what it is: the same value the a11y lane
       // stamps, so a flow recorded here replays against a snapshot taken there.
       context: inheritedContext,
+      // What it IS, for the case where where-it-sits cannot decide. Same
+      // source and same rule as the a11y lane, for the same cross-lane reason.
+      own: ownLabels.get(backendId) ?? '',
       // Filled in by finalizeSmartPopulations once the whole walk is known.
       sameNameIndex: 0,
       sameNameTotal: 0,
@@ -611,7 +626,7 @@ function collectInteractiveElements(
       const child = nodeMap.get(childId);
       if (child) {
         collectInteractiveElements(
-          nodeMap, child, elements, passwordBackendIds, identity, seen, childContext,
+          nodeMap, child, elements, passwordBackendIds, identity, seen, ownLabels, childContext,
         );
       }
     }
@@ -639,13 +654,22 @@ async function getInteractiveElements(page: Page): Promise<IndexedElement[]> {
       client as unknown as { send: (method: string, params?: unknown) => Promise<unknown> },
     );
 
+    // The element's own identifying attribute, over the same bridge and from
+    // the same shared helper snapshot.ts uses — a value read differently here
+    // would stop every replay that crosses lanes (see IndexedElement.own).
+    const ownLabels = await getOwnAttributeLabels(
+      client as unknown as { send: (method: string, params?: unknown) => Promise<unknown> },
+    );
+
     // Build a map for quick lookup by nodeId
     const nodeMap = new Map<string, CdpAXNode>();
     for (const n of nodes) nodeMap.set(n.nodeId, n);
 
     const elements: IndexedElement[] = [];
     const seen = new Set<number>();
-    collectInteractiveElements(nodeMap, nodes[0], elements, passwordBackendIds, identity, seen);
+    collectInteractiveElements(
+      nodeMap, nodes[0], elements, passwordBackendIds, identity, seen, ownLabels,
+    );
     capSmartRefIdentity(identity, seen);
     finalizeSmartPopulations(elements);
     return elements;
@@ -816,6 +840,8 @@ export async function getSmartSnapshotViaEval(
     // No named-ancestor pass on the RPC lane, and none is needed: this lane
     // records no ref axis (smartRefAxisEntry returns null for its locator).
     context: '',
+    // Same reason: nothing on this lane carries a ref axis to verify.
+    own: '',
     // The populations are unused on this lane: its locator is a CSS selector
     // naming one tagged element, so nothing counts a role or a name.
     sameNameIndex: 0,
@@ -1016,6 +1042,7 @@ export function smartRefAxisEntry(ref: number): {
   sameNameTotal: number;
   frameKey: string;
   context?: string;
+  own?: string;
 } | null {
   const element = getSmartElementByRef(ref);
   if (!element || element.locator.startsWith('[data-wmux-ref=')) return null;
@@ -1031,6 +1058,9 @@ export function smartRefAxisEntry(ref: number): {
     // #1182 verifier a snapshot-recorded one does. Omitted when empty, exactly
     // as refEntryToAxis would drop it.
     ...(element.context.length > 0 && { context: element.context }),
+    // The second verifier, for the identical siblings the context cannot
+    // separate. Same string the a11y lane would have stamped on this element.
+    ...(element.own.length > 0 && { own: element.own }),
   };
 }
 

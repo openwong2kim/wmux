@@ -95,11 +95,31 @@ The neighbourhood check runs first and can override both, in both directions:
   side to be wrong on for a step that might be a `Delete`, and the recovery is
   the ordinary one (finish live, `save` under the same name).
 
+Where the neighbourhood abstains — several elements share it, or the page
+names no containers at all — a second check takes over: the element's **own
+identifying attribute**. A recording stores one of `data-testid`, `id`,
+`name`, or `aria-label` (that order of preference), as `attr=value`, and the
+replay compares it the same three ways:
+
+- exactly one live element carries the recorded attribute, at the recorded
+  position → the step runs, count change or not;
+- exactly one carries it, somewhere else → the run stops, and again does not
+  follow the element to its new position;
+- none carries it while other elements carry attributes of their own → the run
+  stops.
+
+If no element in the population carries any such attribute, nothing is
+concluded from the absence and the count rules decide as before. Neither check
+ever LOCATES an element — both can only confirm or contradict what the
+position found.
+
 **What this still cannot see:** two elements that are genuinely identical —
-same role, same name, same container, differing only in their position. There
-the check abstains and the count rules decide, exactly as before. Telling
-those apart needs a positional or DOM-path axis, which is the brittleness this
-design refuses on purpose.
+same role, same name, same container, *and* no `data-testid`, `id`, `name`, or
+`aria-label` on either — differing only in their position. There both checks
+abstain and the count rules decide, exactly as before. Telling those apart
+needs a positional or DOM-path axis, which is the brittleness this design
+refuses on purpose. Giving the two elements distinct `data-testid`s in the
+page is the fix, and it is the one the page owner can actually make.
 
 ## Variables
 

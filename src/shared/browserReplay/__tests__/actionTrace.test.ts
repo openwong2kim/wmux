@@ -17,6 +17,8 @@ import {
   normalizeUrlKey,
   pruneTraces,
   MAX_CONTEXT_CHARS,
+  MAX_OWN_CHARS,
+  ownAttributeLabel,
   refEntryToAxis,
   refMapShapeHash,
   sanitizeTraceRecord,
@@ -187,6 +189,55 @@ describe('refEntryToAxis', () => {
       role: 'button', name: 'Delete', sameNameIndex: 0, sameNameTotal: 1, frameKey: '', context: '',
     });
     expect(axis).not.toHaveProperty('context');
+  });
+
+  it('carries the element\u2019s own attribute through, capped, and omits an empty one', () => {
+    const long = `data-testid=${'x'.repeat(MAX_OWN_CHARS)}`;
+    expect(
+      refEntryToAxis({
+        role: 'button', name: 'Submit', sameNameIndex: 0, sameNameTotal: 2, frameKey: '',
+        own: long,
+      }),
+    ).toMatchObject({ own: long.slice(0, MAX_OWN_CHARS) });
+
+    expect(
+      refEntryToAxis({
+        role: 'button', name: 'Submit', sameNameIndex: 0, sameNameTotal: 2, frameKey: '', own: '',
+      }),
+    ).not.toHaveProperty('own');
+  });
+
+  it('leaves an entry that carries neither verifier exactly as it was', () => {
+    // Additive: the fields cost a pre-#1182 recording nothing.
+    expect(
+      refEntryToAxis({ role: 'link', name: 'Docs', sameNameIndex: 0, sameNameTotal: 1, frameKey: '' }),
+    ).toEqual({ kind: 'ref', role: 'link', name: 'Docs', sameNameIndex: 0, sameNameTotal: 1, frameKey: '' });
+  });
+});
+
+describe('ownAttributeLabel', () => {
+  it('takes the first attribute in preference order, not the first present', () => {
+    const attrs: Record<string, string> = {
+      'aria-label': 'Submit the order',
+      id: 'submit-1',
+      'data-testid': 'submit-primary',
+    };
+    expect(ownAttributeLabel((a) => attrs[a])).toBe('data-testid=submit-primary');
+    delete attrs['data-testid'];
+    expect(ownAttributeLabel((a) => attrs[a])).toBe('id=submit-1');
+    delete attrs.id;
+    expect(ownAttributeLabel((a) => attrs[a])).toBe('aria-label=Submit the order');
+  });
+
+  it('says nothing when the element carries none of them', () => {
+    expect(ownAttributeLabel(() => undefined)).toBe('');
+    expect(ownAttributeLabel(() => '')).toBe('');
+  });
+
+  it('truncates at the mint site, so both lanes cut a long value identically', () => {
+    const label = ownAttributeLabel(() => 'y'.repeat(MAX_OWN_CHARS * 2));
+    expect(label.length).toBe(MAX_OWN_CHARS);
+    expect(label.endsWith('\u2026')).toBe(true);
   });
 });
 
@@ -375,6 +426,26 @@ describe('sanitizeTraceStep', () => {
     });
     expect(stripped?.unrecordable).toBeUndefined();
     expect(stripped?.axis).not.toHaveProperty('context');
+  });
+
+  it('keeps a stored own attribute, capped, and drops an untrusted one without failing the step', () => {
+    const kept = sanitizeTraceStep(step({
+      axis: {
+        kind: 'ref', role: 'button', name: 'Submit order', sameNameIndex: 0, sameNameTotal: 2,
+        frameKey: '', own: 'data-testid=submit-primary',
+      },
+    }));
+    expect(kept?.axis).toMatchObject({ own: 'data-testid=submit-primary' });
+
+    const stripped = sanitizeTraceStep({
+      ...step(),
+      axis: {
+        kind: 'ref', role: 'button', name: 'Submit order', sameNameIndex: 0, sameNameTotal: 2,
+        frameKey: '', own: { evil: true },
+      },
+    });
+    expect(stripped?.unrecordable).toBeUndefined();
+    expect(stripped?.axis).not.toHaveProperty('own');
   });
 
   it('keeps a declared unrecordable reason', () => {
