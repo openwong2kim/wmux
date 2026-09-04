@@ -91,6 +91,13 @@ const FANOUT_START_SHAPE = {
 };
 
 /** Register the fan-out tool on the given MCP server. */
+/** The accept's `warnings`, defensively: an unknown shape yields none. */
+function readWarnings(result: unknown): string[] {
+  const w = (result as { warnings?: unknown } | null | undefined)?.warnings;
+  if (!Array.isArray(w)) return [];
+  return w.filter((x): x is string => typeof x === 'string' && x.trim().length > 0);
+}
+
 export function registerFanOutTools(server: McpServer, deps: FanOutToolDeps): void {
   // Captured per registration, not a module global: the broker hosts many
   // servers in one process, and a global would stamp every connection's
@@ -106,7 +113,8 @@ export function registerFanOutTools(server: McpServer, deps: FanOutToolDeps): vo
       // themselves, which is the same answer.
       'Returns { status: "accepted" } immediately: spawning outlasts one RPC, so poll with the SAME idempotency_key, or watch each mission channel appear in your channel list. ' +
       'The user must approve first and that prompt is never auto-approved; unanswered, a poll reports { status: "denied", reason: "timeout" } rather than leaving you waiting. ' +
-      'Repository, owning workspace and agent command all come from your verified identity — fan-out runs in YOUR repository, the tasks are owned by you, and it is refused without that identity.',
+      'Repository, owning workspace and agent command all come from your verified identity — fan-out runs in YOUR repository, the tasks are owned by you, and it is refused without that identity. ' +
+      'An accept may carry `warnings` (also printed as a WARNING line): the fan-out ran, but something will stop its reports reaching you — act on it.',
     FANOUT_START_SHAPE,
     async ({ idempotency_key, titles, prompt, task_prompts, roles }) => {
       const params: Record<string, unknown> = {
@@ -147,8 +155,17 @@ export function registerFanOutTools(server: McpServer, deps: FanOutToolDeps): vo
         // "the user declined" from "the 30s prompt expired with nobody at the
         // keyboard" from "this key already ran and its result aged out" — which
         // is half of what the async contract exists to report.
+        // A warning is not a refusal — the fan-out IS running — but it names a
+        // condition that will break the loop it started (an unanswered decision
+        // on the owner workspace holds every worker report). A JSON key is
+        // skippable; a first line is not, so it is surfaced as its own content
+        // block ahead of the untouched envelope.
+        const warnings = readWarnings(result);
         return {
-          content: [{ type: 'text' as const, text: JSON.stringify(result ?? {}, null, 2) }],
+          content: [
+            ...warnings.map((w) => ({ type: 'text' as const, text: `WARNING: ${w}` })),
+            { type: 'text' as const, text: JSON.stringify(result ?? {}, null, 2) },
+          ],
           ...(result && result.ok === false ? { isError: true as const } : {}),
         };
       } catch (err) {

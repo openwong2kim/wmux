@@ -56,6 +56,7 @@ import {
   routeWorkerEventToOwner,
   peekOrphanBacklog,
   ackOrphanBacklog,
+  parkDelegatedEvents,
   createWorkTaskReconciler,
   readLedgerGateInput,
   installLedgerChannelEmitter,
@@ -1569,6 +1570,10 @@ export function registerDeckHandler(
     ackOrphanBacklog: (workspaceId, upToSeq) => {
       void ackOrphanBacklog(workspaceId, upToSeq).catch(() => undefined);
     },
+    // Finding 12: a pending decision blocks every wake, so the worker events it
+    // blocks go to the SAME durable backlog a brain-less owner's events go to —
+    // the buffer cannot hold them across a restart, and the decision can.
+    parkDelegated: (workspaceId, events) => parkDelegatedEvents(workspaceId, events),
     isBusy: (workspaceId) =>
       managers.get(workspaceId)?.manager.getStatus().status === 'busy',
     // Fail-closed autonomy caps (summarize on, dangerous caps off by default).
@@ -1594,6 +1599,12 @@ export function registerDeckHandler(
     // A PENDING decision gate blocks every wake for this workspace (even a
     // running loop) until the human resolves it. Read fresh at each flush.
     hasPendingDecision: (workspaceId) => hasPendingDecision(workspaceId),
+    // Which decision, for the block log's rate limiter — a new decision is a new
+    // fact and is announced at once rather than inside the old one's window.
+    getPendingDecisionId: (workspaceId) => {
+      const d = loadWorkspaceDecision(workspaceId);
+      return d && d.status === 'pending' ? d.id : null;
+    },
     // maxWakesPerMin: left to the coalescer's built-in default (6 accepted wakes
     // per 60s window) — the single unconditional rate ceiling. No store knob
     // yet, so nothing to thread here.
@@ -2483,6 +2494,12 @@ export function registerDeckHandler(
       // or a model that no-ops the answer and stops slips through a cap-out
       // suppression recorded before the decision was even raised.
       clearGateCapOut(workspaceId);
+      // Finding 12: the gate that was shut until this instant parked the worker
+      // events it blocked. Replay them BEFORE the resume turn so that turn (or
+      // its onIdle flush) is the one that carries them, and reset the auto-wake
+      // budget a long-pending decision may have burned through — a human just
+      // answered, which is what resets it everywhere else.
+      coalescer?.notifyDecisionResolved(workspaceId);
       // Un-blocked now (hasPendingDecision is false). Kick a resume turn; a busy
       // reject is fine — the resolution rides withLoopContext on the next turn
       // (event / schedule / human) and is consumed then. Fire-and-forget: the

@@ -5,6 +5,7 @@ import path from 'node:path';
 import { TaskLedger } from '../../../daemon/ledger/TaskLedger';
 import {
   routeWorkerEventToOwner,
+  parkDelegatedEvents,
   peekOrphanBacklog,
   ackOrphanBacklog,
   noteWorkTaskClosed,
@@ -203,5 +204,46 @@ describe('ledger → mission channel emitter (step 5)', () => {
       summary: 'need the "API key"',
     });
     expect(quoted).toBe('[ledger] wtask-9 working→input_required worker@ws-t worker: "need the ”API key”"');
+  });
+});
+
+// Wave 3, finding 12 — the events a PENDING DECISION blocks go to the same
+// durable backlog a brain-less owner's do. Durable is the whole point: the
+// decision that shut the gate is precisely the thing that survives a restart,
+// so an in-memory hold would lose exactly the events the operator came back for.
+describe('parkDelegatedEvents', () => {
+  const blocked = (seq: number): CoalescerInput =>
+    ev({ workspaceId: 'ws-parent', seq, task: { taskId: 'wtask-1', taskWorkspaceId: 'ws-task' } });
+
+  it('parks to disk: a FRESH ledger over the same dir replays the event', async () => {
+    parkDelegatedEvents('ws-parent', [blocked(7)]);
+    await ledger.flush();
+    const reopened = new TaskLedger({ dir });
+    const parked = reopened.peekOrphanedEvents('ws-parent');
+    expect(parked).toHaveLength(1);
+    expect(parked[0].seq).toBe(7);
+    expect((parked[0].payload as CoalescerInput).task?.taskId).toBe('wtask-1');
+  });
+
+  it('is readable through the same peek the brain-boot replay uses', async () => {
+    parkDelegatedEvents('ws-parent', [blocked(7), blocked(8)]);
+    await ledger.flush();
+    expect(peekOrphanBacklog('ws-parent').map((e) => e.seq)).toEqual([7, 8]);
+    await ackOrphanBacklog('ws-parent', 8);
+    expect(peekOrphanBacklog('ws-parent')).toHaveLength(0);
+  });
+
+  it('does not duplicate a seq already parked (a human send re-parks the replay)', async () => {
+    parkDelegatedEvents('ws-parent', [blocked(7)]);
+    await ledger.flush();
+    parkDelegatedEvents('ws-parent', [blocked(7), blocked(9)]);
+    await ledger.flush();
+    expect(peekOrphanBacklog('ws-parent').map((e) => e.seq)).toEqual([7, 9]);
+  });
+
+  it('never throws when the ledger is unusable', () => {
+    setTaskLedgerForTests(null);
+    fs.rmSync(dir, { recursive: true, force: true });
+    expect(() => parkDelegatedEvents('ws-parent', [blocked(7)])).not.toThrow();
   });
 });
