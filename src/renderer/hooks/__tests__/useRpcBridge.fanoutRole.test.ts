@@ -55,27 +55,73 @@ describe('useRpcBridge — fan-out task roles', () => {
     // inert twice over: no agent change AND no model flag. Panel review caught
     // exactly this.
     const block = fanoutSpawnBlock();
-    expect(block).toMatch(/applyRoleAgent\(initialCommand, roleBinding\)/);
+    expect(block).toMatch(/applyRoleAgent\(bareCommand, roleBinding\)/);
     // Match the CALLS, not the prose: the comment above the swap names
     // withRoleBinding first, so a plain indexOf compares against the comment.
-    expect(block.search(/applyRoleAgent\(/)).toBeLessThan(block.search(/withRoleBinding\(\n/));
+    expect(block.search(/applyRoleAgent\(/)).toBeLessThan(block.search(/withRoleBinding\(seeded/));
     // …and the swapped command is what gets launched, not the original.
-    expect(block).toMatch(/initialCommand: launchCommand/);
+    expect(block).toMatch(/initialCommand: swap\.command/);
     expect(src).toMatch(/import \{[^}]*applyRoleAgent[^}]*\} from '\.\.\/\.\.\/shared\/orchestratorRole'/);
   });
 
   it('returns the launched command so a re-fire replays the bound one', () => {
-    expect(fanoutSpawnBlock()).toMatch(/return \{ workspaceId: newWsId, ptyId, initialCommand: launchCommand \}/);
+    const block = fanoutSpawnBlock();
+    expect(block).toMatch(/return \{ workspaceId: newWsId, ptyId, initialCommand: launchCommand \}/);
+    // …and that variable is read off the options the PTY was actually created
+    // with, so the role rewrite, the marker decision and the workspace profile
+    // are all already in it.
+    expect(block).toMatch(/const launchCommand = createOptions\.initialCommand \?\? ''/);
+    expect(block).toMatch(/pty\.create\(createOptions\)/);
   });
 
   it('applies the binding to the launch command via withRoleBinding', () => {
     const block = fanoutSpawnBlock();
-    expect(block).toMatch(/withRoleBinding\(/);
     // Order matters: withDefaultShell must run FIRST so there is a command to
     // rewrite, and withWorkspaceProfile stays outermost so the profile's env
     // overlay is applied to whatever command survives the rewrite.
-    expect(block).toMatch(/withWorkspaceProfile\(\s*withRoleBinding\(\s*withDefaultShell\(/);
+    const at = (re: RegExp): number => {
+      const i = block.search(re);
+      expect(i).toBeGreaterThan(-1);
+      return i;
+    };
+    expect(at(/withDefaultShell\(/)).toBeLessThan(at(/withRoleBinding\(seeded/));
+    expect(at(/withRoleBinding\(seeded/)).toBeLessThan(at(/withWorkspaceProfile\(/));
     expect(src).toMatch(/import \{[^}]*withRoleBinding[^}]*\} from '\.\.\/utils\/ptyCreateOptions'/);
+  });
+
+  // ── F15: the model-env marker crosses this handler ─────────────────────────
+
+  it('takes the model-env marker OFF before the role rewrite and back on after', () => {
+    // Both role steps gate on the command's FIRST TOKEN. A marker in front of
+    // the launcher makes the stem unrecognisable, and the binding's agent AND
+    // its model are dropped without a word — the same stem-mismatch trap
+    // applyRoleAgent exists to work around.
+    const block = fanoutSpawnBlock();
+    const at = (re: RegExp): number => {
+      const i = block.search(re);
+      expect(i).toBeGreaterThan(-1);
+      return i;
+    };
+    expect(at(/const \{ marker, command: bareCommand \} = splitModelEnvMarker\(initialCommand\)/)).toBeLessThan(
+      at(/applyRoleAgent\(/),
+    );
+    expect(at(/withRoleBinding\(seeded/)).toBeLessThan(at(/reattachModelEnvMarker\(/));
+    expect(src).toMatch(/import \{[^}]*reattachModelEnvMarker[^}]*\} from '\.\.\/\.\.\/shared\/workerLaunch'/);
+  });
+
+  it('gives the marker decision the bound command AND the pane shell', () => {
+    // Those are the two things main could not see: whether the operator's role
+    // binding ended up naming a model, and whether this pane's shell can even
+    // run the marker (fish has no `unset`).
+    expect(fanoutSpawnBlock()).toMatch(
+      /reattachModelEnvMarker\(marker, bound\.initialCommand, seeded\.shell\)/,
+    );
+  });
+
+  it('says out loud when the neutralisation was dropped', () => {
+    // Losing it silently is how the operator's shell wins again with nobody
+    // noticing — the exact failure mode this whole fix exists for.
+    expect(fanoutSpawnBlock()).toMatch(/model-env marker dropped/);
   });
 
   it('stamps the role on the pane so it survives the first launch', () => {

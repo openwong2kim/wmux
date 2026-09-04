@@ -160,7 +160,55 @@ const CONFIRM_FOOTER = /enter to confirm/i;
  *
  * The apostrophe class covers the typographic `’` a TUI may render.
  */
-const MODEL_ERROR_HEADLINE = /issue with the selected model(?:\s*\(([^)\n]{1,80})\))?/i;
+const MODEL_ERROR_HEADLINE = /^there[''’]s an issue with the selected model(?:\s*\(([^)\n]{1,80})\))?/i;
+
+/** How far back from the bottom of the viewport the error may be. The port
+ *  reads a 40-line tail; the error is the LAST thing the pane printed, and the
+ *  lines above it are the worker's own transcript — including its prompt, which
+ *  for a task ABOUT this bug quotes the message verbatim. */
+const MODEL_ERROR_TAIL_LINES = 6;
+
+/** Box/bullet furniture Claude Code draws to the left of a line. Stripped so
+ *  the headline can still be ANCHORED to the start of the text. */
+const SCREEN_DECORATION = /^[│┃|⎿⏺●\s]{0,4}/;
+
+/** The prefix Claude Code puts on an echoed user message, and on the composer. */
+const ECHO_MARKER = /^[>❯›]/;
+
+/**
+ * Find the model error in the tail of a viewport, refusing to read the worker's
+ * own words as the agent's.
+ *
+ * Three guards, and all three were needed: the phrase is anchored to the start
+ * of a line (a sentence mentioning it mid-line is prose), only the last few
+ * lines are considered, and an echoed user message is skipped — including its
+ * CONTINUATION lines, which carry no `>` of their own and are distinguishable
+ * only by their indent. Without the last one, a worker whose prompt wrapped the
+ * phrase onto a second line reported itself broken.
+ */
+function detectModelError(screen: string): FirstRunPrompt | null {
+  const lines = screen.split('\n');
+  let inEcho = false;
+  for (const raw of lines.slice(Math.max(0, lines.length - MODEL_ERROR_TAIL_LINES))) {
+    if (raw.trim().length === 0) {
+      inEcho = false; // a blank line closes the echoed block.
+      continue;
+    }
+    const indented = /^\s{2,}/.test(raw);
+    const line = raw.replace(SCREEN_DECORATION, '');
+    if (ECHO_MARKER.test(line)) {
+      inEcho = true;
+      continue;
+    }
+    if (inEcho && indented) continue;
+    inEcho = false;
+    const m = MODEL_ERROR_HEADLINE.exec(line);
+    if (!m) continue;
+    const model = m[1]?.trim();
+    return { kind: 'model-error', headline: 'selected-model error', ...(model ? { model } : {}) };
+  }
+  return null;
+}
 
 /**
  * Is `screen` showing a first-run prompt?
@@ -176,15 +224,8 @@ const MODEL_ERROR_HEADLINE = /issue with the selected model(?:\s*\(([^)\n]{1,80}
  */
 export function detectFirstRunPrompt(screen: string): FirstRunPrompt | null {
   if (!screen) return null;
-  const modelError = MODEL_ERROR_HEADLINE.exec(screen);
-  if (modelError) {
-    const model = modelError[1]?.trim();
-    return {
-      kind: 'model-error',
-      headline: 'selected-model error',
-      ...(model ? { model } : {}),
-    };
-  }
+  const modelError = detectModelError(screen);
+  if (modelError) return modelError;
   const rows = screen.split('\n');
   const hasFooter = CONFIRM_FOOTER.test(screen);
   if (!hasFooter) return null;
@@ -214,6 +255,18 @@ export const FIRST_RUN_CLEAN_READS = 2;
 /** At most this many ESCs per worker. A screen that survives three dismissals
  *  is not the family this module knows about. */
 export const FIRST_RUN_MAX_ANSWERS = 3;
+
+/**
+ * F15 — how long after a CLEAN watch to look once more for the model error.
+ *
+ * The watch's clean-read exit fires at ~{@link FIRST_RUN_WATCH_MS}, which is
+ * about when Claude Code finishes painting its composer — and the model error
+ * only arrives after that, once the first turn has been sent and refused. So
+ * the clean exit is routinely too early for this one screen. The caller runs
+ * this re-read OFF the critical path (fan-out spawns are serial; nobody should
+ * pay a longer watch N times over), which is why it can afford to be generous.
+ */
+export const FIRST_RUN_MODEL_RECHECK_MS = 12_000;
 
 export interface FirstRunPort {
   /** Current viewport text of the pane. Fails soft — '' means "nothing read". */

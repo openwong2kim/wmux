@@ -12,10 +12,10 @@ import {
   FanOutService,
   buildInitialCommand,
   workerLaunchCommand,
-  stripLaunchEnvPrefix,
   firstRunStuckSummary,
   WORKER_DELIVERY_PREAMBLE,
 } from '../FanOutService';
+import { MODEL_ENV_MARKER, reattachModelEnvMarker, splitModelEnvMarker } from '../../../shared/workerLaunch';
 import type { FanOutDaemonPort, FanOutRendererPort } from '../FanOutService';
 import type { TaskWorktreePlan } from '../TaskWorktreeManager';
 import type { ProjectConfigState } from '../../../shared/wmuxProjectConfig';
@@ -203,25 +203,59 @@ describe('workerLaunchCommand (F15)', () => {
 
   it('neutralises a shell-exported ANTHROPIC_MODEL for a plain claude worker', () => {
     // The command is TYPED into the pane's interactive login shell, so ~/.zshrc
-    // has already re-exported ANTHROPIC_MODEL by then; only `env -u` on the line
+    // has already re-exported ANTHROPIC_MODEL by then; only a prefix on the line
     // itself runs late enough to win.
     const launch = workerLaunchCommand('claude', '/m/prompt.md', POSIX);
-    expect(launch.command).toBe("env -u ANTHROPIC_MODEL claude \"$(cat '/m/prompt.md')\"");
+    expect(launch.command).toBe(`${MODEL_ENV_MARKER}claude "$(cat '/m/prompt.md')"`);
     expect(launch.neutralisedModelEnv).toBe(true);
+  });
+
+  it('uses a same-shell form, so an aliased claude still resolves', () => {
+    // `env -u VAR claude` execs a BINARY: after `claude migrate-installer` many
+    // machines have only `alias claude=~/.claude/local/claude` and that form dies
+    // with "env: claude: No such file or directory".
+    const cmd = workerLaunchCommand('claude', undefined, POSIX).command;
+    expect(cmd.startsWith('env ')).toBe(false);
+    expect(cmd).toContain('unset ANTHROPIC_MODEL; ');
+    // The alias-carrying shell really does expand the word after the `;` — an
+    // `env -u` form would have looked for a BINARY that is not on PATH at all.
+    const script = ['shopt -s expand_aliases', "alias claude='printf ALIASED'", cmd].join('\n');
+    expect(execFileSync('bash', ['-c', script], { encoding: 'utf8' })).toBe('ALIASED');
+  });
+
+  it('stands down when a gateway is routing claude (ANTHROPIC_BASE_URL set)', () => {
+    // A gateway operator NEEDS their model name: unset it and claude asks the
+    // gateway for a default claude-* model it does not serve. The test is in the
+    // PANE's shell, not in main — main's process.env is not the environment that
+    // has the problem (Finder-launched wmux inherits none of it).
+    const cmd = workerLaunchCommand('claude', '/m/prompt.md', POSIX).command.replace(
+      /claude "\$\(cat[^)]*\)"$/,
+      'printf %s "${ANTHROPIC_MODEL-<unset>}"',
+    );
+    const withGateway = execFileSync('sh', ['-c', cmd], {
+      encoding: 'utf8',
+      env: { ...process.env, ANTHROPIC_BASE_URL: 'https://gw.example', ANTHROPIC_MODEL: 'glm-5.3' },
+    });
+    expect(withGateway).toBe('glm-5.3');
+    const withoutGateway = execFileSync('sh', ['-c', cmd], {
+      encoding: 'utf8',
+      env: { ...process.env, ANTHROPIC_BASE_URL: '', ANTHROPIC_MODEL: 'glm-5.3' },
+    });
+    expect(withoutGateway).toBe('<unset>');
   });
 
   it('leaves the quoting of the prompt path byte-identical', () => {
     const nasty = "/a b/it's $x`y.md";
     const launch = workerLaunchCommand('claude', nasty, POSIX);
     expect(launch.command.endsWith(buildInitialCommand('claude', nasty, 'darwin'))).toBe(true);
-    // …and the shell really hands the file body to argv, prefix included.
+    // …and the shell really hands the file body to argv, marker included.
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-launch-'));
     try {
       const promptFile = path.join(dir, "a b/it's $x`y.md");
       fs.mkdirSync(path.dirname(promptFile), { recursive: true });
       const body = 'do the thing "$(rm -rf /)" `boom`';
       fs.writeFileSync(promptFile, body, 'utf8');
-      const cmd = workerLaunchCommand("printf '%s'", promptFile, POSIX).command;
+      const cmd = MODEL_ENV_MARKER + buildInitialCommand("printf '%s'", promptFile, 'darwin');
       expect(execFileSync('sh', ['-c', cmd], { encoding: 'utf8' })).toBe(body);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
@@ -231,8 +265,8 @@ describe('workerLaunchCommand (F15)', () => {
   it('leaves a command that already chooses a model alone', () => {
     for (const cmd of ['claude --model opus', 'claude --model=opus', 'claude -m opus']) {
       const launch = workerLaunchCommand(cmd, '/m/prompt.md', POSIX);
-      expect(launch.command.startsWith('env ')).toBe(false);
       expect(launch.neutralisedModelEnv).toBe(false);
+      expect(splitModelEnvMarker(launch.command).marker).toBe('');
     }
   });
 
@@ -242,46 +276,59 @@ describe('workerLaunchCommand (F15)', () => {
     expect(launch.neutralisedModelEnv).toBe(false);
   });
 
-  it('leaves a ROLED task alone so the renderer can still read its launcher stem', () => {
-    // applyRoleAgent/applyRoleBinding both gate on the first token: an `env`
-    // prefix would silently drop the role's agent AND its model.
-    const launch = workerLaunchCommand('claude', '/m/prompt.md', { ...POSIX, role: 'Builder' });
-    expect(launch.command).toBe("claude \"$(cat '/m/prompt.md')\"");
-    expect(launch.neutralisedModelEnv).toBe(false);
+  it('does NOT stand down for a roled task — main cannot see the binding', () => {
+    // "has a role" is not "has a model": an unbound role, or one bound to an
+    // agent with no model, injects no --model at all. The renderer decides,
+    // where the binding actually resolves.
+    const launch = workerLaunchCommand('claude', '/m/prompt.md', POSIX);
+    expect(launch.neutralisedModelEnv).toBe(true);
   });
 
-  it('says so instead of emitting a POSIX-only prefix on win32', () => {
+  it('refuses anything but a single simple command, and says why', () => {
+    // A claude launch the marker would change the meaning of: `unset X; a && b`
+    // leaves `b` running with the variable unset in a way nobody wrote.
+    for (const cmd of ['claude && echo hi', 'claude | tee log', 'claude `hostname`']) {
+      const launch = workerLaunchCommand(cmd, '/m/prompt.md', POSIX);
+      expect(launch.neutralisedModelEnv).toBe(false);
+      expect(splitModelEnvMarker(launch.command).marker).toBe('');
+      expect(launch.note).toContain('simple command');
+    }
+    // …and a form whose first token is not the launcher at all never gets as
+    // far as that question: the stem is `a` / `FOO=1` / `claude;`, none of which
+    // is an agent wmux knows, so the command is left alone with nothing to say.
+    for (const cmd of ['a | claude', 'FOO=1 claude', 'claude; echo hi']) {
+      const launch = workerLaunchCommand(cmd, '/m/prompt.md', POSIX);
+      expect(launch.neutralisedModelEnv).toBe(false);
+      expect(splitModelEnvMarker(launch.command).marker).toBe('');
+    }
+  });
+
+  it('says so instead of emitting a POSIX-only marker on win32', () => {
     const launch = workerLaunchCommand('claude', 'C:\\m\\prompt.md', { platform: 'win32' });
-    expect(launch.command.startsWith('env ')).toBe(false);
     expect(launch.neutralisedModelEnv).toBe(false);
-    expect(launch.note).toContain('ANTHROPIC_MODEL');
+    expect(launch.note).toContain('win32');
   });
 
   it('still works for the "environment only" launch with no prompt file', () => {
-    expect(workerLaunchCommand('claude', undefined, POSIX).command).toBe('env -u ANTHROPIC_MODEL claude');
-  });
-});
-
-describe('stripLaunchEnvPrefix (F15)', () => {
-  it('recovers the agent from a command the launch prefixed', () => {
-    expect(stripLaunchEnvPrefix("env -u ANTHROPIC_MODEL claude \"$(cat '/m/p.md')\"")).toBe(
-      "claude \"$(cat '/m/p.md')\"",
-    );
-    expect(stripLaunchEnvPrefix('env -u A -u B claude')).toBe('claude');
-  });
-
-  it('leaves any other command — and any other use of env — untouched', () => {
-    expect(stripLaunchEnvPrefix('claude --model opus')).toBe('claude --model opus');
-    expect(stripLaunchEnvPrefix('env FOO=1 claude')).toBe('env FOO=1 claude');
+    expect(workerLaunchCommand('claude', undefined, POSIX).command).toBe(`${MODEL_ENV_MARKER}claude`);
   });
 });
 
 describe('firstRunStuckSummary (F15)', () => {
-  it('names the model and the fix for a model error', () => {
+  it('names the model and the shell profile when nothing was neutralised', () => {
     const s = firstRunStuckSummary({ headline: 'selected-model error', reason: 'model', model: 'glm-5.3' });
     expect(s).toContain('glm-5.3');
     expect(s).toContain('/model <model>');
-    expect(s).toContain('ANTHROPIC_MODEL');
+    expect(s).toContain('shell profile');
+  });
+
+  it('exonerates the shell profile when the launch already unset the variable', () => {
+    const s = firstRunStuckSummary(
+      { headline: 'selected-model error', reason: 'model', model: 'glm-5.3' },
+      { neutralisedModelEnv: true },
+    );
+    expect(s).toContain('ANTHROPIC_BASE_URL');
+    expect(s).not.toContain('shell profile');
   });
 
   it('still asks for a keypress on a menu the watch could not clear', () => {
@@ -572,7 +619,7 @@ describe('프리플라이트 거부 — 태스크 생성 0', () => {
     // 태스크 2(프롬프트 없음)는 prompt.md 없이 agentCmd만 그대로 발사된다
     // (F15의 ANTHROPIC_MODEL 중화 접두사만 앞에 붙는다 — POSIX에서).
     const barePane = renderer.spawned.find((s) => !s.initialCommand.includes('prompt.md'));
-    expect(stripLaunchEnvPrefix(barePane?.initialCommand ?? '')).toBe('claude');
+    expect(splitModelEnvMarker(barePane?.initialCommand ?? '').command).toBe('claude');
   });
 
   it('§7: 프롬프트 없는 태스크는 prompt.md를 아예 쓰지 않는다', async () => {
@@ -861,14 +908,24 @@ describe('per-task roles', () => {
     // would bring the task back on the default agent with nothing said.
     const daemon = makeDaemonFake();
     const renderer = makeRendererFake({
-      rewriteCommand: (p) => (p.role === 'Reviewer' ? p.initialCommand.replace(/^claude/, 'codex --model o3') : p.initialCommand),
+      // Mirrors the real renderer: the marker comes OFF before the role rewrite
+      // (both role steps gate on the first token) and goes back on only if the
+      // rewritten command still names no model of its own.
+      rewriteCommand: (p) => {
+        const { marker, command } = splitModelEnvMarker(p.initialCommand);
+        const rewritten = p.role === 'Reviewer' ? command.replace(/^claude/, 'codex --model o3') : command;
+        return reattachModelEnvMarker(marker, rewritten, undefined).command;
+      },
     });
     const worktrees = makeWorktreesFake();
     const svc = new FanOutService({ daemon: daemon.port, renderer: renderer.port, worktrees });
 
     const res = await svc.start(baseReq({ titles: ['Build it', 'Review it'], roles: ['Builder', 'Reviewer'] }));
 
-    expect(res.tasks[0].initialCommand?.startsWith('claude')).toBe(true);
+    // Builder's binding pins no model here, so the neutralisation is KEPT…
+    expect(res.tasks[0].initialCommand).toBe(`${MODEL_ENV_MARKER}${renderer.spawned[0].initialCommand.slice(MODEL_ENV_MARKER.length)}`);
+    expect(splitModelEnvMarker(res.tasks[0].initialCommand ?? '').command.startsWith('claude')).toBe(true);
+    // …and Reviewer's `--model o3` makes it redundant, so it comes off.
     expect(res.tasks[1].initialCommand?.startsWith('codex --model o3')).toBe(true);
     // …and the prompt file argument survived the rewrite either way.
     for (const t of res.tasks) expect(t.initialCommand).toMatch(/prompt\.md/);
@@ -948,7 +1005,7 @@ describe('fan-out worker first run (A-1)', () => {
     if (process.platform === 'win32') {
       expect(launched.startsWith('claude')).toBe(true);
     } else {
-      expect(launched.startsWith('env -u ANTHROPIC_MODEL claude ')).toBe(true);
+      expect(launched.startsWith(`${MODEL_ENV_MARKER}claude `)).toBe(true);
     }
   });
 
@@ -979,8 +1036,8 @@ describe('fan-out worker first run (A-1)', () => {
       });
 
       const res = await svc.start(baseReq({ idempotencyKey: 'fo-key-model', titles: ['Task A'] }));
-      // The watch ran even though the launch carries the `env -u` prefix — a
-      // stem read straight off the recorded command would have said `env`.
+      // The watch ran even though the launch carries the marker — a stem read
+      // straight off the recorded command would have said `[`.
       expect(res.tasks[0].firstRunStuck).toBe(true);
       expect(res.tasks[0].firstRunPrompt).toBe('selected-model error');
       // No blind press: this is not a menu, and wmux does not type at one.
@@ -990,6 +1047,51 @@ describe('fan-out worker first run (A-1)', () => {
       expect(row.status).toBe('input_required');
       expect(row.summary).toContain('glm-5.3');
       expect(row.summary).toContain('/model <model>');
+      // The launch DID neutralise the variable, so the summary must not send
+      // the operator back to their shell profile for a model it did not set.
+      expect(row.summary).toContain('ANTHROPIC_BASE_URL');
+    } finally {
+      setTaskLedgerForTests(null);
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('catches a model error that only lands AFTER the composer painted', async () => {
+    // The clean-read exit fires at ~6 s, about when the composer finishes
+    // painting — the error needs the first turn to be sent and refused first,
+    // so the watch would otherwise call this worker healthy and walk away.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-f15-late-'));
+    const ledger = new TaskLedger({ dir });
+    setTaskLedgerForTests(ledger);
+    try {
+      const composer = ['\u276f Try "write a test"', '\u23f5\u23f5 auto mode on'].join('\n');
+      const late = ['> do the thing', '', "There's an issue with the selected model (glm-5.3)"].join('\n');
+      let reads = 0;
+      const svc = new FanOutService({
+        daemon: makeDaemonFake().port,
+        renderer: makeRendererFake().port,
+        worktrees: makeWorktreesFake(),
+        firstRun: {
+          readScreen: async () => {
+            reads += 1;
+            return reads >= 3 ? late : composer;
+          },
+          sendKey: async () => { /* nothing to press on either screen */ },
+        },
+        firstRunOptions: { watchMs: 0, pollMs: 0, deadlineMs: 5, log: () => { /* silent */ } },
+        firstRunRecheckMs: 0,
+      });
+
+      const res = await svc.start(baseReq({ idempotencyKey: 'fo-key-late', titles: ['Task A'] }));
+      // The watch itself saw a healthy pane and did not hold the fan-out up.
+      expect(res.tasks[0].ok).toBe(true);
+      expect(res.tasks[0].firstRunStuck).toBeUndefined();
+      expect(ledger.list({ id: res.tasks[0].taskId as string })[0].status).toBe('working');
+
+      await svc.settleFirstRunRechecks();
+      const row = ledger.list({ id: res.tasks[0].taskId as string })[0];
+      expect(row.status).toBe('input_required');
+      expect(row.summary).toContain('glm-5.3');
     } finally {
       setTaskLedgerForTests(null);
       fs.rmSync(dir, { recursive: true, force: true });

@@ -120,6 +120,32 @@ describe('detectFirstRunPrompt', () => {
     expect(found?.kind).toBe('model-error');
     expect(found?.model).toBeUndefined();
   });
+
+  it('does NOT read the worker\'s own echoed prompt as the agent speaking', () => {
+    // A fan-out task ABOUT this bug quotes the message verbatim, and the pane
+    // echoes the prompt back — including the continuation lines, which carry no
+    // `>` of their own and are told apart only by their indent.
+    const echoed = [
+      '> Fix the fan-out worker launch: every worker answers',
+      "  There's an issue with the selected model (glm-5.3)",
+      '  and needs /model opus by hand.',
+      '',
+      '⏺ Reading src/main/worktask/FanOutService.ts',
+      '❯ ',
+    ].join('\n');
+    expect(detectFirstRunPrompt(echoed)).toBeNull();
+  });
+
+  it('does not match the phrase quoted mid-sentence', () => {
+    expect(
+      detectFirstRunPrompt('The pane said there\'s an issue with the selected model, so I retried.'),
+    ).toBeNull();
+  });
+
+  it('does not match an error scrolled out of the tail', () => {
+    const old = ["There's an issue with the selected model (glm-5.3)", ...Array(12).fill('working…')].join('\n');
+    expect(detectFirstRunPrompt(old)).toBeNull();
+  });
 });
 
 /** A scripted pane: each read returns the next screen, then the last one repeats. */

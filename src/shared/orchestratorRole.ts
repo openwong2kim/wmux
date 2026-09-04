@@ -342,6 +342,20 @@ function hasExplicitModelFlag(tokens: ReturnType<typeof tokenize>): boolean {
   return tokens.some((tkn) => isExplicitModelFlagToken(tkn.value));
 }
 
+/**
+ * D-4 as a public question about a whole command line: does this launch already
+ * choose its own model?
+ *
+ * The quote-aware tokenizer is the point — a fan-out launch ends in
+ * `"$(cat '<prompt path>')"`, one quoted argument, and a naive whitespace split
+ * would read a path's words as flags. Exported so the fan-out launch assembly
+ * (shared/workerLaunch) asks the same question this file already answers for
+ * the role rewrite, rather than growing a second, looser copy of it.
+ */
+export function commandChoosesModel(command: string): boolean {
+  return hasExplicitModelFlag(tokenize(command));
+}
+
 /** Sub-commands that may legitimately follow a launcher as a bare word.
  *  `codex resume --last` / `codex exec …` are launches, not prose. */
 const LAUNCH_SUBCOMMANDS: ReadonlySet<string> = new Set(['resume', 'exec', 'e']);
