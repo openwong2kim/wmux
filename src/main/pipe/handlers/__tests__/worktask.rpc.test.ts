@@ -258,8 +258,31 @@ describe('task.adopt', () => {
   it('adopts the whole task worktree', async () => {
     const h = harness();
     const res = await h.call('task.adopt', { taskId: TASK.id, senderPtyId: 'pty-1' });
-    expect(h.adopt).toHaveBeenCalledWith({ taskId: TASK.id, worktreePath: TASK.worktreePath });
+    expect(h.adopt).toHaveBeenCalledWith({
+      taskId: TASK.id,
+      worktreePath: TASK.worktreePath,
+      commit: false,
+      title: TASK.title,
+    });
     expect(res).toMatchObject({ ok: true, files: ['a.ts'] });
+  });
+
+  it('passes commit: true through, with the title from the SERVER projection row', async () => {
+    const h = harness();
+    await h.call('task.adopt', { taskId: TASK.id, senderPtyId: 'pty-1', commit: true, title: 'spoofed' });
+    expect(h.adopt).toHaveBeenCalledWith({
+      taskId: TASK.id,
+      worktreePath: TASK.worktreePath,
+      commit: true,
+      title: TASK.title,
+    });
+  });
+
+  it('refuses a non-boolean commit rather than silently staging', async () => {
+    const h = harness();
+    const res = await h.call('task.adopt', { taskId: TASK.id, senderPtyId: 'pty-1', commit: 'true' });
+    expect(res).toMatchObject({ ok: false, error: { code: 'INVALID_ARGUMENT' } });
+    expect(h.adopt).not.toHaveBeenCalled();
   });
 
   it('passes a dirty-target refusal straight through', async () => {

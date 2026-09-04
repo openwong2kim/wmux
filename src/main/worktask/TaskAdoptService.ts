@@ -22,10 +22,19 @@
 //   patch is validated with `--check` first, and if the real apply still fails
 //   the touched paths are restored (`checkout` + `reset`) before returning.
 //
-//   WHAT LANDS IS STAGED, NEVER COMMITTED. `git apply --3way` needs the index
-//   to do its merge, so the adopted changes arrive staged — `git diff --cached`
-//   in the parent is exactly what was taken. Nothing is committed and nothing
-//   is pushed; the human (or the brain, with a commit of its own) still decides.
+//   WHAT LANDS IS STAGED, NEVER COMMITTED — UNLESS THE CALLER ASKS. `git apply
+//   --3way` needs the index to do its merge, so the adopted changes arrive
+//   staged: `git diff --cached` in the parent is exactly what was taken.
+//   Nothing is pushed either way.
+//
+//   That default makes ONE adopt reviewable and makes the SECOND one
+//   impossible: the first adopt leaves the target dirty, and the dirty-target
+//   check (rightly) refuses everything after it. A brain adopting four tasks in
+//   a row therefore dead-ended on task two. `commit: true` closes the loop — the
+//   index already holds exactly the adopted patch, so the service commits it
+//   with a message naming the task and hands back the short sha. The
+//   dirty-target check is unchanged: a target dirtied by a HUMAN is still
+//   refused, because that is the state the check exists for.
 //
 //   THE TASK'S INDEX IS NOT TOUCHED. Untracked files only appear in a diff
 //   after `git add -N`, which would leave intent-to-add entries in the index of
@@ -88,6 +97,14 @@ export interface TaskAdoptServiceOptions {
 export interface AdoptTaskInput {
   taskId: string;
   worktreePath: string;
+  /** Commit what was applied instead of leaving it staged. Default false =
+   *  the behaviour this service shipped with. Needed to adopt several tasks in
+   *  sequence: without it the second adopt hits `dirty-target`. */
+  commit?: boolean;
+  /** The task's title, used in the commit subject. Falls back to the task id —
+   *  the caller (the RPC handler) reads it from the SERVER's own projection
+   *  row, so it is never caller-supplied text. */
+  title?: string;
 }
 
 export type AdoptFailureReason =
@@ -97,7 +114,25 @@ export type AdoptFailureReason =
   | 'empty'
   | 'needs_rebase'
   | 'conflict'
+  /** The patch applied and the commit did not (a hook refused it, no author
+   *  identity, an index lock). The applied paths were restored. */
+  | 'commit-failed'
   | 'error';
+
+/** Longest commit SUBJECT this service will build from a task title. Titles are
+ *  server-side projection rows, not prose, but a pasted paragraph should not
+ *  become a 4 KB subject line. */
+export const ADOPT_SUBJECT_MAX = 120;
+
+/** `adopt: <title> (<taskId>)`, first line only and bounded. Argv, never a
+ *  shell string, so the only thing being defended against here is a subject
+ *  nobody can read. */
+export function adoptCommitMessage(taskId: string, title?: string): string {
+  const firstLine = (title ?? '').split('\n')[0]?.trim() ?? '';
+  const name = firstLine.length > 0 ? firstLine : taskId;
+  const bounded = name.length > ADOPT_SUBJECT_MAX ? `${name.slice(0, ADOPT_SUBJECT_MAX - 1)}…` : name;
+  return `adopt: ${bounded} (${taskId})`;
+}
 
 export type AdoptTaskResult =
   | {
@@ -109,6 +144,9 @@ export type AdoptTaskResult =
       files: string[];
       /** The merge base the patch was taken against. */
       base: string;
+      /** Short sha of the commit, present only when `commit: true` was asked
+       *  for. Absent means the changes are staged and uncommitted. */
+      commit?: string;
     }
   | {
       ok: false;
@@ -195,7 +233,7 @@ export class TaskAdoptService {
   }
 
   async adopt(input: AdoptTaskInput): Promise<AdoptTaskResult> {
-    const { taskId, worktreePath } = input;
+    const { taskId, worktreePath, commit = false, title } = input;
 
     // ── The target, derived ──────────────────────────────────────────────
     const commonDir = await this.git(['rev-parse', '--path-format=absolute', '--git-common-dir'], worktreePath);
@@ -219,7 +257,9 @@ export class TaskAdoptService {
       };
     }
 
-    return this.withRepoLock(targetRepo, () => this.applyInto(taskId, worktreePath, targetRepo));
+    return this.withRepoLock(targetRepo, () =>
+      this.applyInto(taskId, worktreePath, targetRepo, commit, title),
+    );
   }
 
   /** Serialize on the target repo, and never let one adopt's failure poison the
@@ -239,7 +279,13 @@ export class TaskAdoptService {
     return run;
   }
 
-  private async applyInto(taskId: string, worktreePath: string, targetRepo: string): Promise<AdoptTaskResult> {
+  private async applyInto(
+    taskId: string,
+    worktreePath: string,
+    targetRepo: string,
+    commit: boolean,
+    title: string | undefined,
+  ): Promise<AdoptTaskResult> {
     // ── The target must be clean ─────────────────────────────────────────
     const status = await this.git(['status', '--porcelain=v1', '-z'], targetRepo);
     if (status.code !== 0) {
@@ -360,7 +406,38 @@ export class TaskAdoptService {
       this.removePatch(patchFile);
     }
 
-    return { ok: true, taskId, targetRepo, files, base };
+    if (!commit) return { ok: true, taskId, targetRepo, files, base };
+
+    // No pathspec: the target was verified CLEAN before the apply, so the index
+    // now holds the adopted patch and nothing else. A pathspec would commit the
+    // working tree's version of those paths instead of the `--3way` merge git
+    // just staged, which is a different (and wrong) thing to record.
+    const committed = await this.git(['commit', '-m', adoptCommitMessage(taskId, title)], targetRepo);
+    if (committed.code !== 0) {
+      // A hook refused it, there is no author identity, the index is locked.
+      // Whatever it was, leaving the patch staged is the one outcome the caller
+      // did not ask for — it is the state that blocks the NEXT adopt — so put
+      // the target back exactly as the apply-failure path does.
+      await this.restore(targetRepo, files);
+      return {
+        ok: false,
+        taskId,
+        reason: 'commit-failed',
+        error:
+          `the task's changes applied to ${targetRepo} but could not be committed, and the affected paths were restored: ` +
+          (committed.stderr.trim() || committed.stdout.trim()),
+        files,
+      };
+    }
+    const head = await this.git(['rev-parse', '--short', 'HEAD'], targetRepo);
+    return {
+      ok: true,
+      taskId,
+      targetRepo,
+      files,
+      base,
+      commit: head.code === 0 ? head.stdout.trim() : '',
+    };
   }
 
   /** Undo a half-applied patch: unstage anything `--3way` staged, then restore

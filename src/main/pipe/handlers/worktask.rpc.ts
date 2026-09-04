@@ -39,8 +39,9 @@
 // are the two effects here a human cannot undo by reading a result.
 //
 // Gate/adopt/read stay unprompted: a gate run is reversible by ignoring it,
-// adopt lands STAGED and never commits (`git reset --hard` undoes it), and the
-// git/gh views only read.
+// adopt lands in the LOCAL repository and never pushes (`git reset --hard`
+// undoes the staged default, `git reset --hard HEAD~1` the `commit: true`
+// form), and the git/gh views only read.
 //
 // `task.close` is deliberately NOT in COMMANDER_TEARDOWN_DENY. That set is an
 // unconditional refusal in RpcRouter, evaluated before any handler runs, so
@@ -582,7 +583,21 @@ export function registerWorktaskRpc(router: RpcRouter, deps: WorktaskRpcDeps): v
     if (!task.worktreePath || !fileExists(task.worktreePath)) {
       return deny('FAILED_PRECONDITION', `task '${task.id}' has no worktree on disk, so it has produced nothing to adopt`);
     }
-    return deps.adopt.adopt({ taskId: task.id, worktreePath: task.worktreePath });
+    // Opt-in, and rejected rather than coerced: a caller sending `"true"` and
+    // silently getting the staged default would discover it one adopt later,
+    // as a dirty-target refusal it cannot explain.
+    const rawCommit = params['commit'];
+    if (rawCommit !== undefined && typeof rawCommit !== 'boolean') {
+      return deny('INVALID_ARGUMENT', 'commit must be a boolean');
+    }
+    // The title comes from the SERVER's projection row, never from params — the
+    // commit subject names what the daemon believes this task is.
+    return deps.adopt.adopt({
+      taskId: task.id,
+      worktreePath: task.worktreePath,
+      commit: rawCommit === true,
+      title: task.title,
+    });
   });
 
   // ── task.close ───────────────────────────────────────────────────────

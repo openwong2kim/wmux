@@ -83,6 +83,17 @@ describe('the wire call', () => {
     expect(resolveCalls).toBe(1);
   });
 
+  it('passes an optional adopt commit flag and omits it otherwise', async () => {
+    await tools.get('task_adopt')?.({ task_id: 'wtask-1', commit: true });
+    expect(mockSendRpc).toHaveBeenLastCalledWith('task.adopt', {
+      taskId: 'wtask-1',
+      commit: true,
+      senderPtyId: 'pty-mine',
+    });
+    await tools.get('task_adopt')?.({ task_id: 'wtask-1' });
+    expect(mockSendRpc).toHaveBeenLastCalledWith('task.adopt', { taskId: 'wtask-1', senderPtyId: 'pty-mine' });
+  });
+
   it('passes an optional PR body and omits it otherwise', async () => {
     await tools.get('task_pr')?.({ task_id: 'wtask-1', body: 'why' });
     expect(mockSendRpc).toHaveBeenLastCalledWith('task.pr', {

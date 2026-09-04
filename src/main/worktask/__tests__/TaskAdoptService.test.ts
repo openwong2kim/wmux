@@ -7,7 +7,13 @@
 
 import { describe, it, expect, vi } from 'vitest';
 
-import { parsePorcelainZ, TaskAdoptService, type AdoptGit } from '../TaskAdoptService';
+import {
+  adoptCommitMessage,
+  ADOPT_SUBJECT_MAX,
+  parsePorcelainZ,
+  TaskAdoptService,
+  type AdoptGit,
+} from '../TaskAdoptService';
 
 const WT = '/wt/lane-one';
 const REPO = '/repo';
@@ -29,6 +35,7 @@ function fakeGit(opts: {
   checkCode?: number;
   applyCode?: number;
   addCode?: number;
+  commitCode?: number;
   calls?: Call[];
 }): AdoptGit {
   return async (args, cwd, env) => {
@@ -37,7 +44,9 @@ function fakeGit(opts: {
     const fail = (stderr: string, code = 1) => ({ stdout: '', stderr, code });
     if (args[0] === 'rev-parse' && args.includes('--git-common-dir')) return ok(`${REPO}/.git\n`);
     if (args[0] === 'rev-parse' && args.includes('--show-toplevel')) return ok(`${REPO}\n`);
+    if (args[0] === 'rev-parse' && args[1] === '--short') return ok('deadbee\n');
     if (args[0] === 'rev-parse' && args[1] === 'HEAD') return ok(cwd === REPO ? `${PARENT_HEAD}\n` : `${TASK_HEAD}\n`);
+    if (args[0] === 'commit') return opts.commitCode ? fail('pre-commit hook refused') : ok('');
     if (args[0] === 'merge-base') return opts.mergeBaseCode ? fail('no merge base') : ok(`${BASE}\n`);
     if (args[0] === 'status') return ok(opts.status ?? '');
     if (args[0] === 'read-tree') return ok('');
@@ -209,6 +218,47 @@ describe('TaskAdoptService', () => {
     expect(removePatch).toHaveBeenCalledWith('/tmp/patch');
   });
 
+  // ── commit: true — the sequential-adoption path ───────────────────────────
+  //
+  // Without it a brain adopting four tasks in a row dead-ends on task two: the
+  // first adopt leaves the target staged-dirty and the dirty-target check
+  // refuses everything after it.
+  it('commits what it applied and returns the short sha when commit: true', async () => {
+    const calls: Call[] = [];
+    const { svc } = service(fakeGit({ diff: 'patch', calls }));
+    const res = await svc.adopt({ taskId: 'wtask-1', worktreePath: WT, commit: true, title: 'lane one' });
+
+    expect(res).toMatchObject({ ok: true, targetRepo: REPO, commit: 'deadbee' });
+    const commit = calls.find((c) => c.args[0] === 'commit');
+    // No pathspec: the target was clean, so the index holds the adopted patch
+    // and nothing else. A pathspec would commit the working tree instead of the
+    // --3way merge git just staged.
+    expect(commit?.args).toEqual(['commit', '-m', 'adopt: lane one (wtask-1)']);
+    expect(commit?.cwd).toBe(REPO);
+  });
+
+  it('restores the applied paths and reports commit-failed when the commit is refused', async () => {
+    const calls: Call[] = [];
+    const { svc } = service(fakeGit({ diff: 'patch', commitCode: 1, calls }));
+    const res = await svc.adopt({ taskId: 'wtask-1', worktreePath: WT, commit: true, title: 'lane one' });
+
+    expect(res).toMatchObject({ ok: false, reason: 'commit-failed', files: ['src/a.ts', 'src/b.ts'] });
+    // Leaving the patch staged is the one outcome the caller did not ask for —
+    // it is exactly the state that blocks the next adopt.
+    expect(calls.find((c) => c.args[0] === 'reset')?.args).toEqual(['reset', '-q', '--', 'src/a.ts', 'src/b.ts']);
+    expect(calls.find((c) => c.args[0] === 'checkout')?.args).toEqual(['checkout', '--', 'src/a.ts', 'src/b.ts']);
+    expect(calls.find((c) => c.args[0] === 'clean')?.args).toEqual(['clean', '-qfd', '--', 'src/a.ts', 'src/b.ts']);
+  });
+
+  it('still leaves the changes staged when commit is omitted', async () => {
+    const calls: Call[] = [];
+    const { svc } = service(fakeGit({ diff: 'patch', calls }));
+    const res = await svc.adopt({ taskId: 'wtask-1', worktreePath: WT });
+    expect(res).toMatchObject({ ok: true });
+    expect(res).not.toHaveProperty('commit');
+    expect(calls.some((c) => c.args[0] === 'commit')).toBe(false);
+  });
+
   // Two adopts landing at once would both see a clean tree, and the second
   // would apply on top of the first's output — with no conflict to report.
   it('serializes adopts against the same target repository', async () => {
@@ -251,6 +301,21 @@ describe('TaskAdoptService', () => {
     await expect(svc.adopt({ taskId: 'wtask-1', worktreePath: WT })).rejects.toThrow('boom');
     // A poisoned chain would leave every later adopt rejecting with 'boom'.
     expect(await svc.adopt({ taskId: 'wtask-2', worktreePath: WT })).toMatchObject({ ok: true });
+  });
+});
+
+describe('adoptCommitMessage', () => {
+  it('names the task, and falls back to the id when there is no title', () => {
+    expect(adoptCommitMessage('wtask-1', 'lane one')).toBe('adopt: lane one (wtask-1)');
+    expect(adoptCommitMessage('wtask-1')).toBe('adopt: wtask-1 (wtask-1)');
+    expect(adoptCommitMessage('wtask-1', '   ')).toBe('adopt: wtask-1 (wtask-1)');
+  });
+
+  it('keeps the subject to one bounded line', () => {
+    expect(adoptCommitMessage('wtask-1', 'first\nsecond')).toBe('adopt: first (wtask-1)');
+    const long = adoptCommitMessage('wtask-1', 'x'.repeat(ADOPT_SUBJECT_MAX + 40));
+    expect(long.length).toBe(`adopt:  (wtask-1)`.length + ADOPT_SUBJECT_MAX);
+    expect(long.endsWith('… (wtask-1)')).toBe(true);
   });
 });
 
