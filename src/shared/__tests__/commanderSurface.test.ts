@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { readFileSync, readdirSync, statSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import {
   COMMANDER_TOOL_SURFACE,
@@ -74,18 +74,6 @@ const baseline = JSON.parse(
   readFileSync(path.join(__dirname, '..', '..', '..', 'scripts', 'mcp-protocol-baseline.json'), 'utf8'),
 ) as { profiles: Record<string, { toolNames: string[] }> };
 
-function walkSources(dir: string, out: string[] = []): string[] {
-  for (const name of readdirSync(dir)) {
-    const p = path.join(dir, name);
-    if (statSync(p).isDirectory()) {
-      if (name !== '__tests__') walkSources(p, out);
-    } else if (p.endsWith('.ts')) {
-      out.push(readFileSync(p, 'utf8'));
-    }
-  }
-  return out;
-}
-
 describe('commander-only lane invariants (COMMANDER_ONLY_TOOLS)', () => {
   it('is disjoint from the filtered commander surface, core and full — except the declared variants', () => {
     const full = new Set(baseline.profiles.full.toolNames);
@@ -132,8 +120,11 @@ describe('commander-only lane invariants (COMMANDER_ONLY_TOOLS)', () => {
     }
   });
 
-  it('reserved lane-O2 names are absent from every profile and from every src/mcp registration', () => {
-    const sources = walkSources(path.join(__dirname, '..', '..', 'mcp')).join('\n');
+  it('reserved lane-O2 names are absent from every profile and from the src/mcp/index.ts wiring', () => {
+    // The wiring point is index.ts. The implementations (src/mcp/worktask.ts,
+    // src/mcp/git.ts) may exist ahead of being wired — that is exactly the
+    // reserved state — so only the entry file is scanned.
+    const sources = readFileSync(path.join(__dirname, '..', '..', 'mcp', 'index.ts'), 'utf8');
     for (const name of COMMANDER_ONLY_RESERVED_TOOLS) {
       expect(COMMANDER_ONLY_TOOLS).not.toContain(name);
       expect(COMMANDER_TOOL_SURFACE).not.toContain(name);
