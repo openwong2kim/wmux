@@ -7,7 +7,7 @@ import {
   getPasswordFieldBackendIds,
 } from './redact';
 import { ancestorContext } from '../../shared/browserReplay/actionTrace';
-import { getOwnAttributeLabels } from './ownAttributes';
+import { getDomFacts } from './ownAttributes';
 
 // ---------------------------------------------------------------------------
 // Shared interactive-element selector
@@ -665,7 +665,7 @@ async function walkInteractiveElements(
     // The element's own identifying attribute, over the same bridge and from
     // the same shared helper snapshot.ts uses — a value read differently here
     // would stop every replay that crosses lanes (see IndexedElement.own).
-    const ownLabels = await getOwnAttributeLabels(
+    const { ownLabels } = await getDomFacts(
       client as unknown as { send: (method: string, params?: unknown) => Promise<unknown> },
     );
 
@@ -936,6 +936,25 @@ export async function getSmartSnapshotViaEval(
  */
 export function getSmartElementByRef(ref: number): IndexedElement | null {
   return getElementCache().find((element) => element.ref === ref) ?? null;
+}
+
+/**
+ * The same, but only when the smart snapshot was taken on `page`.
+ *
+ * For the ref-space hint in browser_type / browser_fill: "that number IS live
+ * in the other ref space" is only true of the page the smart snapshot was taken
+ * on. On any other page the record describes a different document, so the hint
+ * would name an element the caller cannot reach and send them to the wrong
+ * parameter. Same first check resolveSmartRefLocator makes, and for the same
+ * reason.
+ *
+ * `record.page === null` is the RPC-lane snapshot, which is page-agnostic by
+ * construction; there is nothing to disagree with, so it is allowed through.
+ */
+export function getSmartElementOnPage(ref: number, page: Page | null): IndexedElement | null {
+  const record = getSnapshotRecord();
+  if (record.page !== null && record.page !== page) return null;
+  return record.elements.find((element) => element.ref === ref) ?? null;
 }
 
 /**

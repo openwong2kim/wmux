@@ -31,32 +31,58 @@ interface CdpDomNode {
   contentDocument?: CdpDomNode;
 }
 
+/** What one DOM pass hands back to the two ref-minting lanes. */
+export interface DomFacts {
+  /** `backendDOMNodeId` → the element's own `attr=value` label. */
+  ownLabels: Map<number, string>;
+  /**
+   * `backendDOMNodeId` of every element that OWNS a `contenteditable` region.
+   *
+   * A rich-text field is a `<div contenteditable="true">`, which the a11y tree
+   * may report under any role at all — YouTube Studio's title and description
+   * never reached `browser_snapshot({filter:'interactive'})`, so an agent that
+   * asked for the actionable elements was told the page had none of the two it
+   * came for (dogfood 2026-09-04). The attribute is the unambiguous statement
+   * that the element takes typed text, so it is read here and joined back
+   * through the same id the labels use.
+   *
+   * The HOST only, never its descendants: `editable` in the a11y tree is
+   * inherited by every node inside the region, so trusting that would mint a
+   * ref for each paragraph of a long document.
+   */
+  editableRoots: Set<number>;
+}
+
+export function emptyDomFacts(): DomFacts {
+  return { ownLabels: new Map(), editableRoots: new Set() };
+}
+
 /**
- * `backendDOMNodeId` → the element's own `attr=value` label, for every element
- * in the document that has one.
+ * Read the DOM-side facts the accessibility tree cannot carry, in one pass.
  *
  * Best-effort in the same way getPasswordFieldBackendIds is: a detached target
  * or a missing DOM domain costs the verifier its extra signal and nothing
  * else, because `own` is verify-only — an absent label abstains rather than
- * stops.
+ * stops. An absent `editableRoots` likewise only returns the enumerator to the
+ * roles it always used.
  *
  * `pierce: true` so a control inside a web component's shadow root is covered.
  * Same-process iframes come back too; their nodes are numbered in this
  * target's id space, so joining them is sound. An OUT-OF-PROCESS frame is a
  * different target with a colliding id space, which is why the caller applies
- * this map to main-frame refs only.
+ * these maps to main-frame refs only.
  */
-export async function getOwnAttributeLabels(client: CdpSender): Promise<Map<number, string>> {
-  const labels = new Map<number, string>();
+export async function getDomFacts(client: CdpSender): Promise<DomFacts> {
+  const facts = emptyDomFacts();
   try {
     const doc = (await client.send('DOM.getDocument', { depth: -1, pierce: true })) as {
       root?: CdpDomNode;
     };
-    if (doc?.root) indexDocument(doc.root, labels);
+    if (doc?.root) indexDocument(doc.root, facts);
   } catch {
     /* no DOM domain / detached target — the verifier abstains */
   }
-  return labels;
+  return facts;
 }
 
 /**
@@ -64,18 +90,43 @@ export async function getOwnAttributeLabels(client: CdpSender): Promise<Map<numb
  * table) is exactly the page this runs on, and blowing the stack here would
  * cost the snapshot its whole result.
  */
-function indexDocument(root: CdpDomNode, labels: Map<number, string>): void {
+function indexDocument(root: CdpDomNode, facts: DomFacts): void {
   const stack: CdpDomNode[] = [root];
   while (stack.length > 0) {
     const node = stack.pop() as CdpDomNode;
     if (node.backendNodeId !== undefined && node.attributes && node.attributes.length > 0) {
       const label = labelFor(node.attributes);
-      if (label.length > 0) labels.set(node.backendNodeId, label);
+      if (label.length > 0) facts.ownLabels.set(node.backendNodeId, label);
+      if (isEditableHost(node.attributes)) facts.editableRoots.add(node.backendNodeId);
     }
     if (node.children) for (const child of node.children) stack.push(child);
     if (node.shadowRoots) for (const shadow of node.shadowRoots) stack.push(shadow);
     if (node.contentDocument) stack.push(node.contentDocument);
   }
+}
+
+/**
+ * The `contenteditable` values that make an element an editing host.
+ *
+ * The bare attribute (`<div contenteditable>`) means true, and so does
+ * `plaintext-only`. Everything else — `false`, `inherit`, and any typo — is
+ * NOT a host: `inherit` in particular resolves to the parent's state, so an
+ * element carrying it inside a non-editable ancestor takes no typed text at
+ * all, and minting a ref for it would advertise a field that is not there.
+ */
+const EDITABLE_HOST_VALUES = new Set(['', 'true', 'plaintext-only']);
+
+/**
+ * Does this element declare itself editable?
+ *
+ * Inheritance is NOT followed on purpose — see DomFacts.editableRoots.
+ */
+function isEditableHost(attributes: readonly string[]): boolean {
+  for (let i = 0; i + 1 < attributes.length; i += 2) {
+    if (attributes[i] !== 'contenteditable') continue;
+    return EDITABLE_HOST_VALUES.has(attributes[i + 1].trim().toLowerCase());
+  }
+  return false;
 }
 
 function labelFor(attributes: readonly string[]): string {

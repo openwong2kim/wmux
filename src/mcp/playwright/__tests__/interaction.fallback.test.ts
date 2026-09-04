@@ -68,12 +68,21 @@ describe('browser_fill RPC fallback workspace scope', () => {
     expect(calls[0][0]).toBe('browser.evaluate');
     expect(String(calls[0][1].expression)).toContain('isPasswordField');
     expect(calls[0][1]).toMatchObject({ workspaceId: 'ws-test', surfaceId: 'surface-1' });
-    expect(calls.slice(1)).toEqual([
-      ['browser.click.cdp', {
+    expect(calls[1]).toEqual([
+      'browser.click.cdp', {
         selector: '[data-wmux-ref="field-1"]',
         workspaceId: 'ws-test',
         surfaceId: 'surface-1',
-      }],
+      },
+    ]);
+    // Between the click and the typing: did the click actually take focus?
+    // `selectAll` and `Input.insertText` both act on the DOCUMENT's focused
+    // node, so a selector naming something unfocusable would have overwritten
+    // whichever field the page had focused instead.
+    expect(calls[2][0]).toBe('browser.evaluate');
+    expect(String(calls[2][1].expression)).toContain('activeElement');
+    expect(calls[2][1]).toMatchObject({ workspaceId: 'ws-test', surfaceId: 'surface-1' });
+    expect(calls.slice(3)).toEqual([
       ['browser.evaluate', {
         expression: "document.execCommand('selectAll')",
         workspaceId: 'ws-test',
@@ -87,5 +96,28 @@ describe('browser_fill RPC fallback workspace scope', () => {
     ]);
     expect(result.isError).toBeUndefined();
     expect(result.content[0].text).toBe('Filled 1/1 field(s).');
+  });
+
+  it('types nothing when the click did not take focus, instead of overwriting another field', async () => {
+    mockSendRpc.mockImplementation(async (method: string, params: Record<string, unknown>) => {
+      if (method !== 'browser.evaluate') return {};
+      const expression = String(params.expression ?? '');
+      if (expression.includes('isPasswordField')) return { value: 'no' };
+      if (expression.includes('activeElement')) return { value: 'wmux-caret:lost' };
+      return { value: '' };
+    });
+
+    const result = await fill({
+      fields: [{ ref: 'field-1', value: 'new value' }],
+      surfaceId: 'surface-1',
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('did not take focus');
+    // The two calls that act on the focused node are the ones that never ran.
+    const sent = mockSendRpc.mock.calls.map(([method, params]) =>
+      `${method}:${String((params as { expression?: string }).expression ?? '')}`);
+    expect(sent.some((c) => c.includes('selectAll'))).toBe(false);
+    expect(sent.some((c) => c.startsWith('browser.type.cdp'))).toBe(false);
   });
 });

@@ -477,10 +477,27 @@ async function runStep(
       if (args.double === true) await element.dblclick();
       else await element.click();
       return { detail: `clicked ${describeAxis(step.axis)}` };
-    case 'browser_type':
-      await element.fill(String(args.text ?? ''));
+    case 'browser_type': {
+      const typed = String(args.text ?? '');
+      // A step recorded with browser_type's `newline` mode split the text on
+      // keypresses; a replay that filled it whole would put the newline
+      // characters back into a field that drops them — the defect the mode
+      // exists to fix, reproduced by the replay of its own fix.
+      const newlineKey =
+        args.newline === 'enter' ? 'Enter' : args.newline === 'shift-enter' ? 'Shift+Enter' : null;
+      if (newlineKey === null) {
+        await element.fill(typed);
+      } else {
+        const segments = typed.split('\n');
+        await element.fill(segments[0]);
+        for (const segment of segments.slice(1)) {
+          await page.keyboard.press(newlineKey);
+          if (segment.length > 0) await page.keyboard.insertText(segment);
+        }
+      }
       if (args.submit === true) await page.keyboard.press('Enter');
       return { detail: `typed into ${describeAxis(step.axis)}` };
+    }
     case 'browser_fill':
       await element.fill(String(args.value ?? ''));
       return { detail: `filled ${describeAxis(step.axis)}` };

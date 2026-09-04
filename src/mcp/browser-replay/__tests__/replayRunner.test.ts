@@ -62,7 +62,13 @@ function fireNavigation(): void {
 const page = {
   url: () => 'https://example.com/app',
   goto: async (url: string) => { goneTo.push(url); },
-  keyboard: { press: async (key: string) => { pressed.push(key); } },
+  keyboard: {
+    press: async (key: string) => { pressed.push(key); },
+    // Recorded in the same list as the presses: a browser_type step with a
+    // `newline` mode is an ordered interleaving of the two, and the order is
+    // the thing under test.
+    insertText: async (text: string) => { pressed.push(`insert:${text}`); },
+  },
   waitForLoadState: async (state: string) => { waits.push(`load:${state}`); },
   on: (_event: string, fn: (frame: unknown) => void) => { navListeners.add(fn); },
   off: (_event: string, fn: (frame: unknown) => void) => { navListeners.delete(fn); },
@@ -903,6 +909,22 @@ describe('replayTrace — flow control', () => {
     const result = await replayTrace(page, trace([typing]), { email: 'a@b.c' });
     expect(result.ok).toBe(true);
     expect(clicks).toEqual(['field:fill=a@b.c']);
+  });
+
+  it('replays a newline-mode step as the same keypresses it was recorded from', async () => {
+    // Filling it whole would put the newline characters back into a field that
+    // drops them — the defect browser_type's `newline` exists to fix, reproduced
+    // by the replay of its own fix.
+    const mod = await import('../../playwright/snapshot');
+    vi.spyOn(mod, 'resolveRef').mockResolvedValue(element('caption'));
+    const typing = refStep({
+      tool: 'browser_type',
+      args: { text: 'one\ntwo', newline: 'enter' },
+    });
+    const result = await replayTrace(page, trace([typing]), undefined);
+    expect(result.ok).toBe(true);
+    expect(clicks).toEqual(['caption:fill=one']);
+    expect(pressed).toEqual(['Enter', 'insert:two']);
   });
 
   it('presses a key without needing an element', async () => {

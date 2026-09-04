@@ -178,6 +178,12 @@ describe('describeLiveConnectFailure: three failures, three remedies', () => {
       const msg = await describeLiveConnectFailure(reason, endpoint, async () => false);
       expect(msg).toContain('LIVE_CHROME_UNAVAILABLE');
       expect(msg).toContain('chrome://inspect');
+      // Naming the sidebar item, not a fragment: chrome://inspect opens its
+      // Devices tab whatever fragment it is handed, so the old
+      // `#remote-debugging` link left the user on the wrong page with no clue
+      // what to click (dogfood 2026-09-04).
+      expect(msg).toContain('"Remote debugging"');
+      expect(msg).not.toContain('#remote-debugging');
     }
   });
 
