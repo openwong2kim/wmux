@@ -1657,6 +1657,10 @@ export const en = {
   // Orchestrator wave 2 — the pinned task-ledger panel.
   'deck.ledgerOpenTasks': '{count} open tasks',
   'deck.approvalCountdown': 'Auto-reject in {seconds}s',
+  'deck.vendorTagClaudePty': 'terminal',
+  'deck.vendorTagClaude': 'sdk',
+  'deck.vendorTagHermes': 'acp',
+  'deck.vendorSwitched': 'now: {brain}',
   'settings.ledgerGate': 'Hold turns while tasks are open',
   'settings.ledgerGateDesc':
     "Keep the orchestrator's turn open while the task ledger still lists tasks it delegated, instead of guessing from pane activity.",

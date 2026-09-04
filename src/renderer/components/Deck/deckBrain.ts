@@ -9,7 +9,7 @@
 // the fleet-context builder are unit-testable with no store and no Electron.
 
 import type { BrainEvent } from '../../../main/deck/BrainAdapter';
-import type { Workspace } from '../../../shared/types';
+import type { BrainVendor, Workspace } from '../../../shared/types';
 import type { AgentSlug } from '../../../shared/events';
 import type { Channel } from '../../../shared/channels';
 import { getWorkspaceLeafPanes } from '../../../shared/paneUtils';
@@ -56,6 +56,17 @@ export interface DeckBrainMessage {
   /** Epoch ms when the message was created (turn open). Optional because
    *  messages from before this field existed carry none — render guards. */
   ts?: number;
+  /**
+   * Which brain produced this turn, stamped when the turn opened.
+   *
+   * The vendor is a live setting: switching it mid-session leaves one thread
+   * holding turns from two different brains, which do not share a transcript,
+   * a tool surface or a session id. A log that renders them identically claims
+   * a continuity that does not exist — "you told it that earlier" is false
+   * across the boundary. Optional: turns from before this field existed carry
+   * none, and an unstamped turn shows no tag rather than a guessed one.
+   */
+  vendor?: BrainVendor;
   /** Assistant only: the tool chips for this turn, in call order. */
   tools?: DeckToolChip[];
   /** Assistant only. */
@@ -114,6 +125,36 @@ export function selectReportRail(messages: DeckBrainMessage[]): DeckBrainMessage
       (m.status === 'done' || m.status === 'error') &&
       (m.text.trim().length > 0 || !!m.errorText),
   );
+}
+
+/** i18n key for a brain's short tag. Unknown vendors fall back to the raw
+ *  value rather than to a wrong label. */
+export function vendorTagKey(vendor: BrainVendor): string {
+  switch (vendor) {
+    case 'claude-pty':
+      return 'deck.vendorTagClaudePty';
+    case 'claude':
+      return 'deck.vendorTagClaude';
+    case 'hermes':
+      return 'deck.vendorTagHermes';
+    default:
+      return '';
+  }
+}
+
+/**
+ * True when `message` was produced by a different brain than the one before it
+ * — the point where the log must show a break rather than let two transcripts
+ * read as one conversation. An UNSTAMPED message is never a boundary: old
+ * turns carry no vendor, and drawing a break at "unknown" would split a log
+ * that never changed brains.
+ */
+export function isVendorBoundary(
+  previous: DeckBrainMessage | undefined,
+  message: DeckBrainMessage,
+): boolean {
+  if (!previous?.vendor || !message.vendor) return false;
+  return previous.vendor !== message.vendor;
 }
 
 /** Strip the `mcp__wmux__` (or any `mcp__x__`) prefix for a compact chip label. */

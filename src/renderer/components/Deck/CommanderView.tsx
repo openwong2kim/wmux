@@ -19,12 +19,18 @@
 // the fan-out orchestration (lazy-create #commander, invite-before-post the
 // mentioned workspaces, then post the pinned mentions).
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
 import { tokenAttrs } from '../../themes';
 import { FOCUS_RING } from '../focusRing';
-import { formatChatTime, selectReportRail, type DeckLimitNotice } from './deckBrain';
+import {
+  formatChatTime,
+  isVendorBoundary,
+  selectReportRail,
+  vendorTagKey,
+  type DeckLimitNotice,
+} from './deckBrain';
 import DeckFleet from './DeckFleet';
 import { getWorkspaceLeafPanes } from '../../../shared/paneUtils';
 import { generateId } from '../../../shared/types';
@@ -414,8 +420,13 @@ export function CommanderViewContent({
               onPendingChange={setDecisionPending}
               t={t}
             />
-            {railMessages.map((m) => (
-              <CommanderBrainItem key={m.id} message={m} onJumpToPane={onJumpToPane} t={t} />
+            {railMessages.map((m, i) => (
+              <Fragment key={m.id}>
+                {isVendorBoundary(railMessages[i - 1], m) && m.vendor && (
+                  <CommanderVendorBreak vendor={m.vendor} t={t} />
+                )}
+                <CommanderBrainItem message={m} onJumpToPane={onJumpToPane} t={t} />
+              </Fragment>
             ))}
           </div>
         </div>
@@ -530,8 +541,13 @@ export function CommanderViewContent({
         {/* Brain conversation — the normalized bubbles + tool chips. The
             `claude-pty` vendor never reaches here (it returns the TUI layout
             above); every other vendor renders its whole turn log. */}
-        {brainMessages.map((m) => (
-          <CommanderBrainItem key={m.id} message={m} onJumpToPane={onJumpToPane} t={t} />
+        {brainMessages.map((m, i) => (
+          <Fragment key={m.id}>
+            {isVendorBoundary(brainMessages[i - 1], m) && m.vendor && (
+              <CommanderVendorBreak vendor={m.vendor} t={t} />
+            )}
+            <CommanderBrainItem message={m} onJumpToPane={onJumpToPane} t={t} />
+          </Fragment>
         ))}
 
         {/* Fan-out threads — "dispatch + replies" groups (Phase 1). */}
@@ -626,6 +642,40 @@ export function CommanderViewContent({
  *  (streamed prose + the tool chips it fired). Tool chips that targeted a pane
  *  carry a jump button — every action in the chat is one click from its
  *  evidence (the litmus test). */
+/**
+ * The break between two brains' turns. Switching vendor mid-session leaves one
+ * thread holding turns from two brains that share no transcript and no session,
+ * so the log states the change rather than letting the bubbles run together.
+ */
+function CommanderVendorBreak({
+  vendor,
+  t,
+}: {
+  vendor: NonNullable<DeckBrainMessage['vendor']>;
+  t: (key: string) => string;
+}): React.ReactElement {
+  const key = vendorTagKey(vendor);
+  return (
+    <div
+      data-commander-vendor-break
+      data-vendor={vendor}
+      className="flex items-center gap-2 pt-1"
+    >
+      <span className="flex-1 h-px bg-[var(--border-soft)]" aria-hidden="true" />
+      <span
+        className="text-[9.5px] font-mono uppercase tracking-[0.08em] text-[var(--text-muted)]"
+        {...tokenAttrs('textMuted', 'text')}
+      >
+        {(t('deck.vendorSwitched') || 'now: {brain}').replace(
+          '{brain}',
+          (key && t(key)) || vendor,
+        )}
+      </span>
+      <span className="flex-1 h-px bg-[var(--border-soft)]" aria-hidden="true" />
+    </div>
+  );
+}
+
 function CommanderBrainItem({
   message,
   onJumpToPane,
@@ -682,6 +732,18 @@ function CommanderBrainItem({
         >
           {t('deck.commander') || 'Orchestrator'}
         </span>
+        {/* Which brain wrote this turn. Absent on turns from before the stamp
+            existed — an unstamped turn shows no tag rather than a guess. */}
+        {message.vendor && (
+          <span
+            data-commander-brain-vendor
+            data-vendor={message.vendor}
+            className="text-[9.5px] font-mono uppercase tracking-[0.08em] text-[var(--text-muted)]"
+            {...tokenAttrs('textMuted', 'text')}
+          >
+            {(vendorTagKey(message.vendor) && t(vendorTagKey(message.vendor))) || message.vendor}
+          </span>
+        )}
         {message.ts && (
           <span className="text-[9.5px] font-mono text-[var(--text-muted)]" {...tokenAttrs('textMuted', 'text')}>
             {formatChatTime(message.ts)}

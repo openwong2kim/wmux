@@ -7,6 +7,8 @@ import {
   buildWorkspaceContextSummary,
   selectReportRail,
   shortToolName,
+  isVendorBoundary,
+  vendorTagKey,
   type DeckBrainMessage,
 } from '../deckBrain';
 import { createLeafPane, createSurface, type Pane, type Workspace } from '../../../../shared/types';
@@ -282,5 +284,36 @@ describe('selectReportRail', () => {
       id: 'a2', role: 'assistant', text: '', status: 'error', errorText: 'auth failed',
     };
     expect(selectReportRail([user, empty, errored])).toEqual([errored]);
+  });
+});
+
+// Orchestrator wave 2 B-3 — the brain vendor is a live setting, so one thread
+// can hold turns from two brains that share no transcript and no session. The
+// log has to state the break instead of letting them read as one conversation.
+describe('vendor separation', () => {
+  const msg = (id: string, vendor?: DeckBrainMessage['vendor']): DeckBrainMessage => ({
+    id,
+    role: 'assistant',
+    text: 'x',
+    ...(vendor ? { vendor } : {}),
+  });
+
+  it('marks a boundary only where the stamped vendor actually changes', () => {
+    expect(isVendorBoundary(msg('a', 'claude'), msg('b', 'claude-pty'))).toBe(true);
+    expect(isVendorBoundary(msg('a', 'claude-pty'), msg('b', 'claude-pty'))).toBe(false);
+  });
+
+  it('never marks a boundary against an unstamped turn', () => {
+    // Turns from before the stamp existed carry no vendor; drawing a break at
+    // "unknown" would split a log that never changed brains.
+    expect(isVendorBoundary(undefined, msg('b', 'claude'))).toBe(false);
+    expect(isVendorBoundary(msg('a'), msg('b', 'claude'))).toBe(false);
+    expect(isVendorBoundary(msg('a', 'claude'), msg('b'))).toBe(false);
+  });
+
+  it('maps every vendor to its own tag key', () => {
+    const keys = (['claude', 'claude-pty', 'hermes'] as const).map(vendorTagKey);
+    expect(new Set(keys).size).toBe(3);
+    expect(keys.every((k) => k.startsWith('deck.vendorTag'))).toBe(true);
   });
 });

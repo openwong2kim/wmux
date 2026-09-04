@@ -1114,6 +1114,10 @@ export const ko = {
   'deck.wokenHide': '접기',
   'deck.ledgerOpenTasks': '진행 중 작업 {count}건',
   'deck.approvalCountdown': '{seconds}초 후 자동 거부',
+  'deck.vendorTagClaudePty': '터미널',
+  'deck.vendorTagClaude': 'sdk',
+  'deck.vendorTagHermes': 'acp',
+  'deck.vendorSwitched': '이후: {brain}',
   'settings.ledgerGate': '작업이 열려 있으면 턴 유지',
   'settings.ledgerGateDesc':
     'pane 활동으로 추측하는 대신, 오케스트레이터가 위임한 작업이 작업 원장에 남아 있는 동안 턴을 끝내지 않는다.',
