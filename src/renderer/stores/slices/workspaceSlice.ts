@@ -11,6 +11,7 @@ import { applyCustomCssVars, migrateThemeId, migrateCustomThemeColors } from '..
 import { resetInspectState } from './uiSlice';
 import { sanitizeFontFamily } from '../../utils/terminalFont';
 import { sanitizeTerminalCursorStyle } from '../../../shared/terminalCursor';
+import { sanitizeImagePasteMode } from '../../../shared/imagePaste';
 import { MULTIVIEW_ARRANGEMENTS } from '../../utils/multiviewGrid';
 import { publishWorkspaceMetadataChanged, publishA2aTask } from '../../events/publisher';
 import { retentionMigrationDone, markRetentionMigrationDone } from '../retentionMigration';
@@ -1000,6 +1001,9 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       }
       if (data.terminalCursorStyle !== undefined) {
         state.terminalCursorStyle = sanitizeTerminalCursorStyle(data.terminalCursorStyle);
+      }
+      if (data.imagePasteMode !== undefined) {
+        state.imagePasteMode = sanitizeImagePasteMode(data.imagePasteMode);
       }
       if (data.defaultShell) state.defaultShell = data.defaultShell;
       if (typeof data.deckBrainModel === 'string') state.deckBrainModel = data.deckBrainModel;

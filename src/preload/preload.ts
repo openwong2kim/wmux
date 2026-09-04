@@ -1453,7 +1453,9 @@ contextBridge.exposeInMainWorld('clipboardAPI', {
    */
   writeText: (text: string) => ipcRenderer.invoke(IPC.CLIPBOARD_WRITE, text) as Promise<void>,
   readText: () => ipcRenderer.invoke(IPC.CLIPBOARD_READ) as Promise<string>,
-  readImage: () => ipcRenderer.invoke(IPC.CLIPBOARD_READ_IMAGE) as Promise<string | null>,
+  /** `ptyId` lets main return the path as THAT pane's shell sees it (a WSL
+   *  pane needs /mnt/...). Omit it and the host path is returned verbatim. */
+  readImage: (ptyId?: string) => ipcRenderer.invoke(IPC.CLIPBOARD_READ_IMAGE, ptyId) as Promise<string | null>,
   hasImage: () => ipcRenderer.invoke(IPC.CLIPBOARD_HAS_IMAGE) as Promise<boolean>,
 });
 

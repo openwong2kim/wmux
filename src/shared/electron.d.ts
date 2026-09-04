@@ -280,7 +280,7 @@ declare global {
        */
       writeText: (text: string) => Promise<void>;
       readText: () => Promise<string>;
-      readImage: () => Promise<string | null>;
+      readImage: (ptyId?: string) => Promise<string | null>;
       hasImage: () => Promise<boolean>;
     };
   }

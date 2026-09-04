@@ -701,6 +701,8 @@ export interface SessionData {
   terminalFontFamily?: string;
   /** xterm.js cursorStyle. Absent = block (the historical default). */
   terminalCursorStyle?: 'block' | 'bar' | 'underline';
+  /** Image-only clipboard paste route. Absent = 'auto' (#1196). */
+  imagePasteMode?: 'auto' | 'native' | 'path';
   defaultShell?: string;
   /** Orchestrator (deck brain) model override — '' / absent = the
    *  subscription's default model. A claude model alias or full id. */

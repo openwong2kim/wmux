@@ -16,6 +16,7 @@ import { getAccountStore } from '../../account/accountStore';
 import { resolveEnvPolicy, type SpawnKind } from '../../../shared/spawnKind';
 import { withheldCredentialNames } from '../../../shared/envFilter';
 import { getShellUtf8Locale } from '../../pty/shellLocale';
+import { forgetPtyShell, recordPtyShell } from '../../pty/ptyShellRegistry';
 import { getWorkspaceMirror } from '../../workspace/WorkspaceMirror';
 import { scheduleInitialCommand } from './scheduleInitialCommand';
 import {
@@ -499,6 +500,11 @@ export function registerPTYHandlers(
       // Attach to the session (makes daemon start the SessionPipe server)
       await daemonClient.rpc('daemon.attachSession', { id: sessionId });
 
+      // Daemon sessions have no PTYInstance in this process, so the shell would
+      // otherwise be unknowable to main — record it for the clipboard handler's
+      // WSL path rewrite (#1196).
+      recordPtyShell(sessionId, shell);
+
       // Connect session data pipe
       await daemonClient.connectSessionPipe(sessionId);
 
@@ -872,6 +878,7 @@ export function registerPTYHandlers(
       await daemonClient.rpc('daemon.destroySession', { id });
       await daemonClient.disconnectSessionPipe(id);
       sessionDecoders.delete(id);
+      forgetPtyShell(id);
       // Drop the data forwarding listener for this session so a future
       // create or reconnect doesn't pile new listeners on top of dead ones.
       clearSessionDataListener(id);
@@ -1295,6 +1302,10 @@ export function registerPTYHandlers(
       // Prune this session's pid-map anchor now that the shell is gone, so the
       // map doesn't accrete dead entries the OS can recycle into ghosts.
       removePidMapByPtyId(payload.sessionId);
+      // Same reason for the shell registry: a session that dies without an
+      // explicit close would otherwise leave its entry behind for the life of
+      // the process (and a recycled id would inherit the dead pane's shell).
+      forgetPtyShell(payload.sessionId);
     };
     daemonClient.on('session:died', onDaemonSessionDied);
   }
