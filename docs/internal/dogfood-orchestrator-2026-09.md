@@ -121,3 +121,23 @@ Build under test: packaged local build of main `90a8c7ec` (= #1212 + #1214 + #12
 ## What this proves (wave 3, second run)
 
 Findings 7, 11 and 12 are closed on the packaged build: no per-task brain, the completion gate ignores human shells, and a pending decision neither hides nor loses delegated worker events. The owner-brain loop now runs unattended from fan-out to `deck_complete_work` once the operator's shell environment does not poison the workers (finding 15). Still not proven live: `approval_press`, the REFUSED adopt block, the ledger transition text, and the ≤ 5 s wake bound while the brain is idle.
+
+## Wave 3 — third run, finding 15 fixed (2026-09-05, 01:25–01:29)
+
+Build under test: packaged local build of main `f8df244d` (= second run + #1216). Same `-demo` instance; the operator's `~/.zshrc` still exports `ANTHROPIC_MODEL=glm-5.3` (left in place on purpose). No pending decision on the owner workspace. `fanout_start` × 2 (`w3c-task-a/b`), approval over CDP.
+
+| Check | Result | Evidence |
+|---|---|---|
+| Worker first turn runs on a valid model without a manual `/model` (F15) | pass | both workers finished their first turn in ~21 s (`done 1:26 AM` / `1:27 AM`); the 40-line tails contain no "issue with the selected model" |
+| Owner brain wake on a worker stop while the brain is idle (≤ 5 s) | **pass — 1.6 s** | first stop `daemon-91873b6a` confirmed 16:26:35.888Z → owner brain `brain-34a49ceb…` first turn 16:26:37.481Z with the autonomy + pane-events prompt |
+| No brain for a task workspace | pass | `deck-commander.json` unchanged for `ws-a6ac…`/`ws-64ce…` |
+| `approval_press` | not exercised | neither worker hit a permission prompt (the task is a one-file write in a fresh worktree) |
+| Launch marker visible in the pane | inconclusive | `read-screen` only returns the viewport; the launched line scrolled out. The behaviour above is the proof |
+
+## Findings (wave 3, third run)
+
+17. **A stop edge from the operator's own shell pane still wakes the brain.** At 16:28:07Z the owner brain got a `[pane-events] … pane=daemon-5dac0302(shell) kind=stop source=osc133` wake for the harness zsh pane. #1213 removed shell panes from the Stop gate, `deck_complete_work`, the heartbeat and the coalescer's snapshot attention set, but the EDGE path (`agent.lifecycle` from OSC 133 on a shell) is not filtered by `isAgentPane`. It costs one auto-wake of the budget per shell command and a brain turn that says "nothing to do". Fix shape: apply the same agent predicate at the coalescer's edge intake for `osc133`-sourced stops from panes with no agent evidence.
+
+## What this proves (wave 3, third run)
+
+Findings 7, 11, 12 and 15 are closed on the packaged build: workers start on wmux's model choice under a hostile shell profile, no per-task brain, and the owner brain wakes 1.6 s after an idle-state worker stop. The pass criteria from the wave 2 plan (unattended runs, wake ≤ 5 s, 0 stalled workers) are met for one run. Still not proven live: `approval_press` (needs a task that triggers a permission prompt) and the REFUSED adopt block.
