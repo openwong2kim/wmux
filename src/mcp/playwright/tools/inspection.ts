@@ -60,6 +60,10 @@ const BROWSER_SNAPSHOT_SHAPE = {
     .enum(['interactive'])
     .optional()
     .describe('Strips non-interactive nodes — much smaller output. Ignored by "aria".'),
+  q: z
+    .string()
+    .optional()
+    .describe('Keep only nodes matching this text (or /regex/), plus their ancestors.'),
   full: z.boolean().optional().describe('Force the complete tree instead of a diff.'),
   surfaceId: optionalSurfaceId,
 };
@@ -212,6 +216,15 @@ function windowFootnote(window: CaptureWindow | undefined, noun: string): string
   return `\n\n[collection started ${since}; ${noun} from before then are not included]`;
 }
 
+/**
+ * Said when `q` reaches a route that cannot honor it.
+ *
+ * The DOM listing is a flat rendering with no tree to prune, so the only two
+ * choices are this note or a full listing the caller reads as a filtered one.
+ */
+const DOM_LISTING_Q_NOTE =
+  '(note: q ignored — the a11y tree was unavailable, returning the unfiltered DOM interactive listing)';
+
 // --- Shared formatters: used by both the Playwright path and the RPC fallback
 // (#106) so console/network render identically regardless of transport. ---
 
@@ -296,7 +309,7 @@ export function registerInspectionTools(server: McpServer, deps: BrowserToolDeps
     'browser_snapshot',
     'Accessibility-tree snapshot of the page, with interactive elements annotated with ref numbers. A repeat snapshot of the same page returns a diff against the previous one when that is smaller — pass full:true for the complete tree. Line markers: "focused" on the focused node; while an overlay covers the page, a note names the layer, "overlay" marks it in the tree, and "clickable" marks the only controls still reachable behind it; an iframe line is a boundary — its contents are a separate document, not in this snapshot. Password field values read as "[redacted:password]" (the field is still listed and fillable); an empty field has no value at all, so a redacted one means it IS filled. "ai" drops the duplicate StaticText/InlineTextBox lines Chrome stacks under every piece of text; "aria" keeps them.',
     BROWSER_SNAPSHOT_SHAPE,
-    async ({ format, selector, filter, full, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
+    async ({ format, selector, filter, q, full, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
       try {
         let text: string;
         // Which route served a SCOPED snapshot. Part of the diff key: an a11y
@@ -317,6 +330,7 @@ export function registerInspectionTools(server: McpServer, deps: BrowserToolDeps
             ? await generateScopedSnapshot(page, selector, {
                 format: format ?? 'ai',
                 ...(filter && { filter }),
+                ...(q && { q }),
               }).catch(() => null)
             : null;
 
@@ -350,11 +364,15 @@ export function registerInspectionTools(server: McpServer, deps: BrowserToolDeps
             if (format === 'aria') {
               text = `(note: aria format unavailable for this selector — the a11y tree could not be scoped, returning the DOM interactive listing)\n${text}`;
             }
+            // The DOM listing has no tree to prune, so `q` cannot be honored
+            // here. Say so rather than return a full listing that looks filtered.
+            if (q) text = `${DOM_LISTING_Q_NOTE}\n${text}`;
           }
         } else if (page) {
           text = await generateSnapshot(page, {
             format: format ?? 'ai',
             ...(filter && { filter }),
+            ...(q && { q }),
           });
         } else {
           // Fallback: extract page structure via RPC evaluation. Tags interactive
@@ -370,6 +388,7 @@ export function registerInspectionTools(server: McpServer, deps: BrowserToolDeps
           if (format === 'aria') {
             text = `(note: aria format unavailable — no live page, returning the DOM interactive listing)\n${text}`;
           }
+          if (q) text = `${DOM_LISTING_Q_NOTE}\n${text}`;
         }
 
         // What this surface's refs are, for the RPC lane's fail-closed guard.
@@ -393,7 +412,11 @@ export function registerInspectionTools(server: McpServer, deps: BrowserToolDeps
           currentUrl = /^URL: (.+)$/m.exec(text)?.[1];
         }
         const key = snapshotSurfaceKey(scope.workspaceId, scope.surfaceId);
-        const attrs = `${format ?? 'ai'}|${selector ?? ''}|${filter ?? ''}${scopeRoute}`;
+        // `q` joins the diff key for the same reason the others are in it: a
+        // searched snapshot and a whole one are different renderings, and
+        // diffing one against the other would report the unmatched nodes as
+        // removals.
+        const attrs = `${format ?? 'ai'}|${selector ?? ''}|${filter ?? ''}|${q ?? ''}${scopeRoute}`;
         const baseline = full ? null : getSnapshotBaseline(key, attrs, currentUrl);
         const rendered = formatSnapshotResult(baseline?.text ?? null, text);
         setSnapshotBaseline(key, attrs, text, currentUrl);

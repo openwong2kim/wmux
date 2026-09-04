@@ -26,6 +26,8 @@ export interface SnapshotOptions {
   /** 'interactive' = strip non-interactive nodes up front ('ai' format only),
    *  not just on overflow — the measured-dominant agent usage. */
   filter?: 'interactive';
+  /** Keep only nodes matching this text, plus their ancestors. See queryMatcher. */
+  q?: string;
 }
 
 /**
@@ -36,6 +38,15 @@ export interface SnapshotOptions {
  * notes below already follow (#1082).
  */
 const ARIA_FILTER_NOTE = '(note: filter ignored for aria format — returning the full tree)';
+
+/**
+ * Said on every `q` result. A snapshot that silently dropped most of the page
+ * would read as a page that no longer has those elements, which is the reading
+ * that sends an agent off to fix an imaginary problem.
+ */
+function queryFilterNote(q: string): string {
+  return `(q=${JSON.stringify(q)}: matching nodes and their ancestors only)`;
+}
 
 /** CDP Accessibility.AXNode shape (subset of fields we use) */
 interface CdpAXNode {
@@ -1200,6 +1211,59 @@ function stripNonInteractive(node: AXNode, editableRoots: ReadonlySet<number>): 
   return { ...node, children: filtered };
 }
 
+/**
+ * Compile the `q` argument into a per-node predicate.
+ *
+ * A 250-option listbox costs about 4k tokens every time it is snapshotted, and
+ * an agent looking for one country in it pays that to read 249 lines it did not
+ * want (dogfood 2026-09-04). `q` is the cheap way to ask for the part it came
+ * for.
+ *
+ * `/pattern/flags` is read as a regular expression, anything else as a
+ * case-insensitive substring — the ordinary case must not require escaping, and
+ * a caller who wants an anchored or alternating match must not be denied one. A
+ * malformed regex falls back to the substring reading rather than failing the
+ * snapshot: the caller asked for a smaller tree, not for an error.
+ *
+ * Matched against role, name, value and description together, because which of
+ * those carries the words on screen is Chrome's decision, not the caller's.
+ */
+export function queryMatcher(q: string): (node: AXNode) => boolean {
+  const asRegex = /^\/(.+)\/([gimsuy]*)$/.exec(q);
+  if (asRegex) {
+    try {
+      const re = new RegExp(asRegex[1], asRegex[2].replace(/g/g, ''));
+      return (node) => re.test(searchableText(node));
+    } catch {
+      /* not a usable pattern — fall through to the substring reading */
+    }
+  }
+  const needle = q.toLowerCase();
+  return (node) => searchableText(node).toLowerCase().includes(needle);
+}
+
+function searchableText(node: AXNode): string {
+  return [node.role, node.name, node.value ?? '', node.description ?? ''].join(' ');
+}
+
+/**
+ * Keep the nodes `q` matched and every ancestor above them.
+ *
+ * The ancestors are not decoration: a ref is only usable when the caller can see
+ * which dialog, row or frame the element it names sits in, and dropping the
+ * chain would hand back numbers with no context. A matched node keeps its own
+ * subtree, which is what makes `q` on a container ("[role=dialog]"-shaped
+ * questions) return the container's contents.
+ */
+function pruneToQuery(node: AXNode, matches: (n: AXNode) => boolean): AXNode | null {
+  if (matches(node)) return node;
+  const kept = (node.children ?? [])
+    .map((child) => pruneToQuery(child, matches))
+    .filter((c): c is AXNode => c !== null);
+  if (kept.length === 0) return null;
+  return { ...node, children: kept };
+}
+
 // ---------------------------------------------------------------------------
 // CDP helpers
 // ---------------------------------------------------------------------------
@@ -1823,15 +1887,30 @@ export async function generateSnapshot(
     }
   }
 
+  // `q` runs FIRST, on the whole tree: it is the caller's question, and the
+  // interactive strip below — plus the overflow retry, which re-strips from
+  // this same tree — must not see nodes the question already excluded.
+  let searched = tree;
+  let queryNote = '';
+  if (options?.q) {
+    const pruned = pruneToQuery(tree, queryMatcher(options.q));
+    if (!pruned) {
+      setPageRefs(page, []);
+      return `(no nodes match q=${JSON.stringify(options.q)})`;
+    }
+    searched = pruned;
+    queryNote = queryFilterNote(options.q);
+  }
+
   // Opt-in interactive-only filter: same strip as the overflow retry below,
   // but unconditional — the agent asked for only actionable nodes. Zero
   // interactive nodes must NOT fall back to the full tree (review consensus:
   // the filter would silently invert into maximum output) — say so instead.
-  let effectiveTree = tree;
+  let effectiveTree = searched;
   let filterNote = '';
   if (options?.filter === 'interactive') {
     if (format === 'ai') {
-      const stripped = stripNonInteractive(tree, editableRoots);
+      const stripped = stripNonInteractive(searched, editableRoots);
       if (!stripped) {
         setPageRefs(page, []);
         return '(no interactive elements on this page)';
@@ -1882,7 +1961,7 @@ export async function generateSnapshot(
   // If the output exceeds the budget AND we are in 'ai' mode, strip
   // non-interactive nodes and regenerate.
   if (output.length > budget && format === 'ai') {
-    const trimmed = stripNonInteractive(tree, editableRoots);
+    const trimmed = stripNonInteractive(searched, editableRoots);
     if (trimmed) {
       refs.length = 0;
       // The pool is per rendering, not per call: the first pass spent it, and
@@ -1902,7 +1981,8 @@ export async function generateSnapshot(
   // Store the refMap for this page so resolveRef can use it without re-querying
   setPageRefs(page, refs);
 
-  return filterNote ? `${filterNote}\n${output}` : output;
+  const notes = [queryNote, filterNote].filter((n) => n.length > 0);
+  return notes.length > 0 ? `${notes.join('\n')}\n${output}` : output;
 }
 
 /**
@@ -1982,11 +2062,27 @@ export async function generateScopedSnapshot(
   const { forest, occlusion, ownLabels, editableRoots } = found;
   if (!forest || forest.length === 0) return null;
 
-  let scoped = forest;
+  // Same order as the page-level path: the caller's question narrows the tree
+  // before anything else reads it, including the overflow retry below.
+  let searched = forest;
+  let queryNote = '';
+  if (options?.q) {
+    const matches = queryMatcher(options.q);
+    searched = forest
+      .map((n) => pruneToQuery(n, matches))
+      .filter((n): n is AXNode => n !== null);
+    if (searched.length === 0) {
+      setPageRefs(page, [], selector);
+      return `(no nodes match q=${JSON.stringify(options.q)} in this subtree)`;
+    }
+    queryNote = queryFilterNote(options.q);
+  }
+
+  let scoped = searched;
   let filterNote = '';
   if (options?.filter === 'interactive') {
     if (format === 'ai') {
-      scoped = forest
+      scoped = searched
         .map((n) => stripNonInteractive(n, editableRoots))
         .filter((n): n is AXNode => n !== null);
       if (scoped.length === 0) {
@@ -2020,7 +2116,7 @@ export async function generateScopedSnapshot(
   const budget = Math.max(0, maxLength - note.length);
 
   if (output.length > budget && format === 'ai') {
-    const trimmed = forest
+    const trimmed = searched
       .map((n) => stripNonInteractive(n, editableRoots))
       .filter((n): n is AXNode => n !== null);
     if (trimmed.length > 0) {
@@ -2040,7 +2136,8 @@ export async function generateScopedSnapshot(
   // so resolveRef must count matches inside the same element.
   setPageRefs(page, refs, selector);
 
-  return filterNote ? `${filterNote}\n${output}` : output;
+  const notes = [queryNote, filterNote].filter((n) => n.length > 0);
+  return notes.length > 0 ? `${notes.join('\n')}\n${output}` : output;
 }
 
 export interface ResolveRefOptions {
