@@ -1,5 +1,5 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import type { ElementHandle } from 'playwright-core';
+import type { ElementHandle, Page } from 'playwright-core';
 import { z } from 'zod';
 import { PlaywrightEngine } from '../PlaywrightEngine';
 import { withAutomationLease } from '../automationLease';
@@ -9,7 +9,12 @@ import {
   isOutstandingFrameRef,
   resolveRef,
 } from '../snapshot';
-import { getLocatorByRef, resolveSmartRefLocator, smartRefAxisEntry } from '../dom-intelligence';
+import {
+  getLocatorByRef,
+  getSmartElementByRef,
+  resolveSmartRefLocator,
+  smartRefAxisEntry,
+} from '../dom-intelligence';
 import { typeHumanlike } from '../human-typing';
 import { evaluateIsolated } from '../isolated-eval';
 import {
@@ -67,7 +72,8 @@ const BROWSER_CLICK_SHAPE = {
 };
 
 const BROWSER_TYPE_SHAPE = {
-  ref: z.string().describe('Ref from browser_snapshot.'),
+  ref: z.string().optional().describe('Ref from browser_snapshot.'),
+  smartRef: z.number().optional().describe('Ref from browser_smart_snapshot.'),
   text: z.string(),
   submit: z
     .boolean()
@@ -84,11 +90,12 @@ const BROWSER_FILL_SHAPE = {
   fields: z
     .array(
       z.object({
-        ref: z.string(),
+        ref: z.string().optional(),
+        smartRef: z.number().optional(),
         value: z.string(),
       }),
     )
-    .describe('{ref, value} pairs to fill.'),
+    .describe('{ref (or smartRef), value} pairs to fill.'),
   surfaceId: optionalSurfaceId,
 };
 
@@ -140,11 +147,32 @@ const BROWSER_SCROLL_SHAPE = {
   surfaceId: optionalSurfaceId,
 };
 
-const REF_NOT_FOUND_HINT =
-  'Element with ref={ref} not found. Run browser_snapshot to get current refs.';
-
+/**
+ * What to say when a `ref` argument resolves to nothing.
+ *
+ * There are TWO ref spaces and both print bare numbers: browser_snapshot mints
+ * `ref="12"` and browser_smart_snapshot lists `[61] textbox "제목"`. A smart ref
+ * passed as `ref` used to come back as "Element with ref=61 not found. Run
+ * browser_snapshot to get current refs" — which names neither the mistake nor
+ * the fix, and sends the caller to re-snapshot a page that was fine (dogfood
+ * 2026-09-04, YouTube Studio). So the message says which space the argument was
+ * read in, and — when the number IS live in the other one — which parameter it
+ * belongs to instead.
+ */
 function refNotFound(ref: string): string {
-  return REF_NOT_FOUND_HINT.replace('{ref}', ref);
+  const smart = /^\d+$/.test(ref) ? getSmartElementByRef(Number(ref)) : null;
+  if (smart) {
+    return (
+      `ref=${ref} is not a browser_snapshot ref, but browser_smart_snapshot lists ${ref} as ` +
+      `${smart.role}${smart.name ? ` "${smart.name}"` : ''} — pass it as smartRef, which ` +
+      `browser_click, browser_type and browser_fill all accept.`
+    );
+  }
+  return (
+    `Element with ref=${ref} not found. This argument is read as a browser_snapshot ref; ` +
+    `a number from browser_smart_snapshot goes in smartRef instead. ` +
+    `Run browser_snapshot to get current refs.`
+  );
 }
 
 /**
@@ -387,6 +415,90 @@ async function rpcFill(ref: string, value: string, scope: BrowserTargetScope): P
   });
 }
 
+// ---------------------------------------------------------------------------
+// Addressing: one element, named three ways
+// ---------------------------------------------------------------------------
+
+/**
+ * How a caller names the element a typing tool should act on.
+ *
+ * browser_click has accepted both ref spaces since smart refs existed; the
+ * typing tools accepted only `ref`, so a smartRef read off browser_smart_snapshot
+ * came back as "not found" and there was no second thing to try (dogfood
+ * 2026-09-04). They now resolve exactly the way browser_click does.
+ */
+interface RefAddress {
+  ref?: string;
+  smartRef?: number;
+}
+
+/**
+ * The slice of ElementHandle / Locator the typing tools use.
+ *
+ * A ref resolves to an ElementHandle and a smartRef to a Locator; both carry
+ * these three methods with the same meaning, so one code path serves both.
+ */
+interface TypeTarget {
+  click(): Promise<void>;
+  fill(value: string): Promise<void>;
+  evaluate(fn: (node: Element) => boolean): Promise<boolean>;
+}
+
+/** Reject an address that names no element, or two. */
+function requireOneTarget(addr: RefAddress, tool: string): void {
+  const given = [addr.ref !== undefined, addr.smartRef !== undefined].filter(Boolean).length;
+  if (given === 0) {
+    throw new Error(
+      `${tool} needs ref (from browser_snapshot) or smartRef (from browser_smart_snapshot).`,
+    );
+  }
+  if (given > 1) {
+    throw new Error(`${tool} takes ref or smartRef, not both — they name one element two ways.`);
+  }
+}
+
+/** Resolve an address on the Playwright lane. Throws with the reason it failed. */
+async function resolveTypeTarget(page: Page, addr: RefAddress): Promise<TypeTarget> {
+  if (addr.smartRef !== undefined) {
+    // Throws StaleSmartRefError rather than typing into a substitute — the same
+    // guarantee browser_click({smartRef}) gives.
+    return (await resolveSmartRefLocator(page, addr.smartRef)) as unknown as TypeTarget;
+  }
+  const el = await resolveRef(page, addr.ref as string);
+  if (!el) throw new Error(refNotFound(addr.ref as string));
+  return el as unknown as TypeTarget;
+}
+
+/** The ref the RPC lane resolves an address through (its only addressing mode). */
+function rpcRefFor(addr: RefAddress): string {
+  return addr.ref ?? String(addr.smartRef);
+}
+
+/** How an address reads back in a tool result. */
+function describeAddress(addr: RefAddress): string {
+  return addr.ref !== undefined ? `ref=${addr.ref}` : `smartRef=${addr.smartRef}`;
+}
+
+/**
+ * How a step addressed this way is recorded, mirroring browser_click.
+ *
+ * A smartRef's stored "locator" is getByRole SOURCE TEXT on the CDP lane, which
+ * `page.locator()` cannot parse — so it is recorded on the ref axis instead, and
+ * only the RPC lane's real CSS selector is recorded as a selector.
+ */
+function targetForRecord(
+  addr: RefAddress,
+): { ref: string } | { refEntry: NonNullable<ReturnType<typeof smartRefAxisEntry>> } | { selector: string } | Record<string, never> {
+  if (addr.ref !== undefined) return { ref: addr.ref };
+  if (addr.smartRef !== undefined) {
+    const entry = smartRefAxisEntry(addr.smartRef);
+    if (entry) return { refEntry: entry };
+    const css = getLocatorByRef(addr.smartRef);
+    if (css) return { selector: css };
+  }
+  return {};
+}
+
 /**
  * Is the element behind `ref` a password field?
  *
@@ -400,7 +512,7 @@ async function rpcFill(ref: string, value: string, scope: BrowserTargetScope): P
  * agent itself just sent is the pre-existing behaviour, whereas a failed lookup
  * must not turn into a failed browser_type.
  */
-async function isPasswordElement(el: ElementHandle): Promise<boolean> {
+async function isPasswordElement(el: TypeTarget | ElementHandle): Promise<boolean> {
   try {
     // Main world, deliberately: the predicate is scoped to an ElementHandle,
     // and a handle belongs to the world it was resolved in — there is no way
@@ -749,10 +861,12 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
   // -----------------------------------------------------------------------
   server.tool(
     'browser_type',
-    'Type text into an element by ref, replacing any existing value. Typing into a password field echoes "[redacted:password]" back — the text still went in.',
+    'Type text into an element by ref or smartRef, replacing any existing value. Typing into a password field echoes "[redacted:password]" back — the text still went in.',
     BROWSER_TYPE_SHAPE,
-    async ({ ref, text, submit, humanlike, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
+    async ({ ref, smartRef, text, submit, humanlike, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
       try {
+        const addr: RefAddress = { ...(ref !== undefined && { ref }), ...(smartRef !== undefined && { smartRef }) };
+        requireOneTarget(addr, 'browser_type');
         const page = await engine.getPageForScope(scope).catch(allowScopedRpcFallback);
 
         // Decided BEFORE typing: the field is addressable now, and a submit can
@@ -760,8 +874,7 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
         let isPassword: boolean;
 
         if (page) {
-          const el = await resolveRef(page, ref);
-          if (!el) throw new Error(refNotFound(ref));
+          const el = await resolveTypeTarget(page, addr);
           isPassword = await isPasswordElement(el);
           if (humanlike) {
             await el.click();
@@ -772,8 +885,9 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
           if (submit) await page.keyboard.press('Enter');
         } else {
           // RPC fallback
-          isPassword = await rpcIsPasswordElement(ref, scope);
-          await rpcFill(ref, text, scope);
+          const rpcRef = rpcRefFor(addr);
+          isPassword = await rpcIsPasswordElement(rpcRef, scope);
+          await rpcFill(rpcRef, text, scope);
           if (submit) await rpcPressKey('Enter', scope);
         }
 
@@ -792,7 +906,7 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
           scope,
           tool: 'browser_type',
           page,
-          ref,
+          ...targetForRecord(addr),
           args: isPassword ? {} : { text, ...(submit && { submit: true }) },
           ...(isPassword && { unrecordable: 'password' as const }),
         });
@@ -801,7 +915,7 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
           content: [
             {
               type: 'text' as const,
-              text: `Typed "${echoed}" into element ref=${ref}${submit ? ' and submitted' : ''}`,
+              text: `Typed "${echoed}" into element ${describeAddress(addr)}${submit ? ' and submitted' : ''}`,
             },
           ],
         };
@@ -820,7 +934,7 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
   // -----------------------------------------------------------------------
   server.tool(
     'browser_fill',
-    'Fill multiple form fields at once, each by ref.',
+    'Fill multiple form fields at once, each by ref or smartRef.',
     BROWSER_FILL_SHAPE,
     async ({ fields, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
       try {
@@ -838,15 +952,20 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
 
         for (let i = 0; i < fields.length; i++) {
           const field = fields[i];
+          const addr: RefAddress = {
+            ...(field.ref !== undefined && { ref: field.ref }),
+            ...(field.smartRef !== undefined && { smartRef: field.smartRef }),
+          };
           try {
+            requireOneTarget(addr, 'browser_fill');
             if (page) {
-              const el = await resolveRef(page, field.ref);
-              if (!el) { errors.push(refNotFound(field.ref)); continue; }
+              const el = await resolveTypeTarget(page, addr);
               isPassword[i] = await isPasswordElement(el);
               await el.fill(field.value);
             } else {
-              isPassword[i] = await rpcIsPasswordElement(field.ref, scope);
-              await rpcFill(field.ref, field.value, scope);
+              const rpcRef = rpcRefFor(addr);
+              isPassword[i] = await rpcIsPasswordElement(rpcRef, scope);
+              await rpcFill(rpcRef, field.value, scope);
             }
             filled++;
           } catch (err) {
@@ -863,7 +982,10 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
               scope,
               tool: 'browser_fill',
               page,
-              ref: fields[i].ref,
+              ...targetForRecord({
+                ...(fields[i].ref !== undefined && { ref: fields[i].ref }),
+                ...(fields[i].smartRef !== undefined && { smartRef: fields[i].smartRef }),
+              }),
               args: credential ? {} : { value: fields[i].value },
               ...(credential && { unrecordable: 'password' as const }),
             });
