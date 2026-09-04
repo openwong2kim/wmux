@@ -84,20 +84,42 @@ const PR_REFUSAL: RefusalCopy = {
   fallback: 'read `reason` and `error` below, fix that, then call task_pr again',
 };
 
+/** Next steps for the refusals the RPC GATE makes, before any service runs.
+ *  These arrive as `{ ok: false, error: { code, message } }` with NO `reason`
+ *  (see the deny() helper in worktask.rpc.ts), so a header keyed only on
+ *  `reason` printed "REFUSED (unknown): …" over the one thing the caller needed
+ *  — that a human declined the approval, or that the task is not yours. */
+const GATE_NEXT: Record<string, string> = {
+  NOT_AUTHORIZED:
+    'the approval was declined or expired, or the task is not yours — re-read your tasks with ledger_list and ask the operator before retrying',
+  FAILED_PRECONDITION:
+    'the task is not in a state this call can act on (often: no worktree on disk) — check it with ledger_list / git_status first',
+  PERMISSION_DENIED: 'this surface may not make that call; the operator has to do it',
+  INVALID_ARGUMENT: 'the arguments were rejected; re-read the tool schema and send a valid task id',
+  UNAVAILABLE: 'wmux could not reach the service; retry once, then tell the operator',
+};
+
 /** `REFUSED (<reason>): <error>` + the next step, or null when the envelope is
- *  not a refusal. Defensive about shape: the reason/error are read off an
- *  arbitrary object, because a malformed envelope must still surface AS a
- *  refusal rather than throw. */
+ *  not a refusal. Defensive about shape: reason, error and error.code/.message
+ *  are read off an arbitrary object, because a malformed envelope must still
+ *  surface AS a refusal rather than throw. */
 function refusalHeader(result: unknown, copy: RefusalCopy): string | null {
   const r = result as { ok?: unknown; reason?: unknown; error?: unknown } | null | undefined;
   if (!r || typeof r !== 'object' || r.ok !== false) return null;
-  const reason = typeof r.reason === 'string' && r.reason ? r.reason : 'unknown';
+  const errObj =
+    r.error && typeof r.error === 'object' ? (r.error as { code?: unknown; message?: unknown }) : null;
+  const code = typeof errObj?.code === 'string' && errObj.code ? errObj.code : null;
+  // The service's own `reason`, else the gate's error code — never "unknown"
+  // while either is on the wire.
+  const reason = typeof r.reason === 'string' && r.reason ? r.reason : (code ?? 'unknown');
   const error =
     typeof r.error === 'string' && r.error.trim()
       ? r.error.trim()
-      : 'the server refused the call (no message)';
-  const next = copy.next[reason] ?? copy.fallback;
-  return `REFUSED (${reason}): ${error}\n${copy.nothing} Next step: ${next}\n`;
+      : typeof errObj?.message === 'string' && errObj.message.trim()
+        ? errObj.message.trim()
+        : 'the server refused the call (no message)';
+  const next = copy.next[reason] ?? GATE_NEXT[reason] ?? copy.fallback;
+  return `REFUSED (${reason}): ${error}\n${copy.nothing} Next step: ${next}`;
 }
 
 /**
@@ -105,8 +127,9 @@ function refusalHeader(result: unknown, copy: RefusalCopy): string | null {
  * ptyId, send, hand the envelope back whole. The envelope is never collapsed to
  * a message — `reason` fields ('dirty', 'unpushed', 'busy', 'deps_missing') are
  * how an unattended caller tells "refused, fix this" from "failed" — but when
- * `refusal` copy is supplied, a refusal is PREFIXED with a plain-language
- * verdict so it cannot be read as a success. The JSON still follows it whole.
+ * `refusal` copy is supplied, a refusal is PRECEDED by its own content block
+ * carrying a plain-language verdict, so it cannot be read as a success. The
+ * JSON block itself is untouched and stays the LAST block.
  */
 async function callTask(
   method: string,
@@ -127,9 +150,13 @@ async function callTask(
   try {
     const result = (await sendRpc(method as unknown as RpcMethod, wire)) as { ok?: boolean } | undefined;
     const header = refusal ? refusalHeader(result, refusal) : null;
+    // The header is its OWN content block, ahead of the envelope. Prefixing the
+    // JSON text made content[0].text unparseable for every caller that reads it
+    // as JSON — the verdict has to be unmissable, not the envelope unusable.
     return {
       content: [
-        { type: 'text' as const, text: `${header ?? ''}${JSON.stringify(result ?? {}, null, 2)}` },
+        ...(header ? [{ type: 'text' as const, text: header }] : []),
+        { type: 'text' as const, text: JSON.stringify(result ?? {}, null, 2) },
       ],
       ...(result && result.ok === false ? { isError: true as const } : {}),
     };
