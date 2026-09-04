@@ -130,6 +130,16 @@ export interface LedgerListFilter {
   openOnly?: boolean;
 }
 
+/** The transitions `actor` may actually make from `entry`'s current status, as
+ *  a display string. Empty for a terminal status (nothing is reachable) and for
+ *  an actor the authorization rule bars from every reachable one. */
+function describeLegalMoves(entry: LedgerEntry, actor: LedgerActor): string {
+  const reachable = LEDGER_TRANSITIONS[entry.status as LedgerStatus] ?? [];
+  if (reachable.length === 0) return 'none — terminal';
+  const mine = reachable.filter((to) => canActorSet(actor, entry, to));
+  return mine.length > 0 ? mine.join(', ') : `none — ${actor.kind} may set none of ${reachable.join(', ')}`;
+}
+
 export const OPEN_LEDGER_STATUSES: readonly LedgerStatus[] = [
   'working',
   'input_required',
@@ -359,13 +369,15 @@ export class TaskLedger {
       return {
         ok: false,
         error: 'illegal_transition',
-        // Name the legal moves. A bare "working → completed is not allowed" told
-        // the brain it was wrong and nothing about what to do instead, and the
-        // move it wanted (`review_requested`) is the WORKER's — not something it
-        // could reach at all (dogfood finding 14).
+        // Name the legal moves — and only the ones THIS actor may make, or the
+        // message advertises a transition the authorization check would refuse
+        // one line later. A bare "working → completed is not allowed" told the
+        // caller it was wrong and nothing about what to do instead (finding 14).
+        // `?? []` because the status is replayed from disk: an unknown/legacy
+        // one reaches here (canTransition already refused it) and must not throw.
         message:
           `${entry.status} → ${next} is not an allowed transition ` +
-          `(allowed from ${entry.status}: ${LEDGER_TRANSITIONS[entry.status].join(', ') || 'none — terminal'})`,
+          `(allowed from ${entry.status} for ${input.actor.kind}: ${describeLegalMoves(entry, input.actor)})`,
         entry,
       };
     }

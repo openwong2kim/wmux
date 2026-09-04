@@ -243,7 +243,23 @@ describe('TaskLedger — transition matrix', () => {
     expect(res).toMatchObject({ ok: false, error: 'illegal_transition' });
     if (res.ok) throw new Error('unreachable');
     expect(res.message).toContain('working → completed is not an allowed transition');
-    expect(res.message).toContain('allowed from working: input_required, review_requested, failed, cancelled');
+    expect(res.message).toContain('allowed from working for brain: input_required, review_requested, failed, cancelled');
+  });
+
+  // The list must not advertise a move the authorization check refuses one line
+  // later: a worker may not cancel its own task, so `cancelled` is not offered
+  // even though the transition table reaches it.
+  it('the legal moves are filtered to what the CALLING actor may set', async () => {
+    const a = open();
+    await seed(a);
+    await driveTo(a, 'wtask-1', 'failed');
+    const cur = a.get('wtask-1')!;
+    const res = await a.update({ id: 'wtask-1', status: 'review_requested', actor: WORKER, expectedRev: cur.rev });
+    expect(res).toMatchObject({ ok: false, error: 'illegal_transition' });
+    if (res.ok) throw new Error('unreachable');
+    // The table says failed → working | cancelled; a worker may only do the first.
+    expect(res.message).toContain('allowed from failed for worker: working');
+    expect(res.message).not.toContain('cancelled');
   });
 
   it('a terminal status says so instead of listing nothing', async () => {
@@ -254,7 +270,7 @@ describe('TaskLedger — transition matrix', () => {
     const res = await a.update({ id: 'wtask-1', status: 'working', actor: SYSTEM, expectedRev: cur.rev });
     expect(res.ok).toBe(false);
     if (res.ok) throw new Error('unreachable');
-    expect(res.message).toContain('allowed from cancelled: none — terminal');
+    expect(res.message).toContain('allowed from cancelled for system: none — terminal');
   });
 
   it('refuses an unknown status and a stale rev', async () => {

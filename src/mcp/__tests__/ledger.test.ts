@@ -115,11 +115,13 @@ describe('ledger_list (commander-only)', () => {
 describe('the transition contract is in the tool text', () => {
   it('the brain variant states the table and names force as its only exit', () => {
     const desc = collectBrain().descs.get('ledger_update') ?? '';
-    expect(desc).toContain('worker: working → review_requested | input_required');
-    expect(desc).toContain('brain: review_requested → completed');
-    expect(desc).toContain('system: gate records');
-    expect(desc).toContain("review_requested, which is the WORKER's move");
-    expect(desc).toContain('force: { reason } is the ONLY brain-side exit');
+    expect(desc).toContain('working → review_requested | input_required | failed | cancelled');
+    expect(desc).toContain('review_requested → completed');
+    expect(desc).toContain('completed is therefore reachable ONLY from review_requested');
+    // Honest about the escape hatch the ledger actually allows: an owner MAY
+    // set review_requested itself. Saying "that is the worker's" hid it.
+    expect(desc).toContain('you may set it yourself when the worker cannot');
+    expect(desc).toContain('force: { reason }, the only exit without one');
   });
 
   // The WORKER variant is deliberately left alone: it rides the `full` profile,
