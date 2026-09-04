@@ -161,9 +161,10 @@ export default function Sidebar() {
           }
         }}
       >
-        {/* 사이클 C — fan-out 미션 섹션. 미션이 없으면(일반 워크스페이스) 아무
-            것도 렌더하지 않아 공간을 차지하지 않는다(MissionsSection이 null 반환).
-            worktree 배지(⊕)와 공존 — 배지는 저수준 사실, 이 섹션은 상위 개념. */}
+        {/* 사이클 C — fan-out 미션 섹션. It always renders its collapsible header
+            (with a zero count and, when expanded, an empty line) — it does not
+            return null. Coexists with the worktree badge (⊕): the badge is the
+            low-level fact, this section is the higher-level concept. */}
         <MissionsSection />
         {/* A1/A2: 각 항목에 id + 안정 콜백만 내린다. 콜백은 모두 id 인자를 받는
             스토어 액션/useCallback 핸들러라 렌더마다 새로 만들어지지 않아

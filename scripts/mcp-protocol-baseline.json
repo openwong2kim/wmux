@@ -154,7 +154,7 @@
     },
     "commander": {
       "maxListBytes": 60000,
-      "wireResultSha256": "93d7ccefee4849988de46713463a93a1d6803de488fdebb8e0d26d55ce4a5535",
+      "wireResultSha256": "d225f1c1507ce29b7f40e4801cf7d0a3d5de73ef8ce4a8fae21845b20bb33c91",
       "instructionSha256": "5a97f851c892326eba7cbcf46292f6925834d5794172461d1ced997d90ac1deb",
       "toolNames": [
         "terminal_read",
@@ -199,7 +199,15 @@
         "pane_stash",
         "pane_unstash",
         "ledger_list",
-        "ledger_update"
+        "ledger_update",
+        "task_gate_run",
+        "task_gate_cancel",
+        "task_adopt",
+        "task_close",
+        "task_pr",
+        "git_status",
+        "git_log",
+        "gh_pr_view"
       ]
     }
   }

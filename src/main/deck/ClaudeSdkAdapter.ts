@@ -303,6 +303,19 @@ export const DEFAULT_ALLOWED_TOOLS: string[] = [
   // brain's OWN tasks, and `completed` is refused server-side without a
   // system-recorded passing gate or a logged force+reason.
   WMUX('ledger_update'),
+  // Commander-only: the task lifecycle. Auto-allowed for the same reason
+  // fanout_start is — every one of them is scoped server-side to a task the
+  // brain's own workspace owns, and the two destructive ones (task_close,
+  // task_pr) raise their own human approval prompt in the handler, which
+  // `allowedTools` cannot and does not shortcut.
+  WMUX('task_gate_run'),
+  WMUX('task_gate_cancel'),
+  WMUX('task_adopt'),
+  WMUX('task_close'),
+  WMUX('task_pr'),
+  WMUX('git_status'),
+  WMUX('git_log'),
+  WMUX('gh_pr_view'),
 ];
 
 // Built-in CLI tools the orchestrator must NEVER hold. `allowedTools` only

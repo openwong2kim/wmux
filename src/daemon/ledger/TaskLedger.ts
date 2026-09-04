@@ -435,13 +435,31 @@ export class TaskLedger {
   /** The gate runner's write: attach a gate result to an entry. SYSTEM only —
    *  this is the one provenance `completed` trusts. Bumps the rev (a brain
    *  holding an older rev re-reads and sees the result). No status change,
-   *  no transition event. */
-  recordGate(id: string, gate: LedgerGateResult, actor: LedgerActor = SYSTEM_ACTOR()): Promise<LedgerUpdateResult> {
+   *  no transition event.
+   *
+   *  `expectedRev` is the same compare-and-swap `update()` enforces, and it
+   *  belongs INSIDE this serialized section for the same reason: a caller that
+   *  read the rev, compared it, and then awaited this call was comparing across
+   *  an await, and any write that landed in between was silently overwritten. */
+  recordGate(
+    id: string,
+    gate: LedgerGateResult,
+    actor: LedgerActor = SYSTEM_ACTOR(),
+    expectedRev?: number,
+  ): Promise<LedgerUpdateResult> {
     return this.serialize(async () => {
       const entry = this.entries.get(id);
       if (!entry) return { ok: false, error: 'not_found', message: `no ledger entry for task ${id}` };
       if (actor.kind !== 'system') {
         return { ok: false, error: 'not_authorized', message: 'only the gate runner (system) may record a gate result', entry };
+      }
+      if (expectedRev !== undefined && expectedRev !== entry.rev) {
+        return {
+          ok: false,
+          error: 'stale_rev',
+          message: `expectedRev ${expectedRev} but the entry is at rev ${entry.rev} — re-read and retry`,
+          entry,
+        };
       }
       const updated: LedgerEntry = {
         ...entry,

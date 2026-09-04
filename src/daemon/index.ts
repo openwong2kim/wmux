@@ -94,6 +94,8 @@ import {
   type PushPresenceSuppressionConfig,
 } from './push/presence';
 import { ApprovalRegistry } from './approvals/ApprovalRegistry';
+import { WorkspaceFactStore, type WorkspaceFactRowInput } from './approvals/workspaceFacts';
+import { parseApprovalResolveRequest } from './approvals/resolveRequest';
 import { GateBroker } from './approvals/GateBroker';
 import { coerceGate } from './approvals/gateConfig';
 import { DeviceStore, type DeviceBatchRevocationCause } from './web/DeviceStore';
@@ -200,6 +202,14 @@ function revokeAllWebDevices(
 // both webTerminalServer construction paths need it available.
 let approvalRegistry: ApprovalRegistry | null = null;
 
+// The press-scope fact table main pushes down (see approvals/workspaceFacts.ts).
+// Module-scoped for the same reason the registry is: the RPC handler writes it,
+// the registry reads it through a closure, and the client-close sweep drops it.
+const workspaceFacts = new WorkspaceFactStore();
+/** The pipe client whose push the current table came from, so the table can be
+ *  dropped when that client disconnects rather than outliving its publisher. */
+let workspaceFactsPublisher: string | null = null;
+
 // #783 — the gate broker holds bridge RPC responses open until a phone answers.
 // Module-scoped for the same reason as the registry: the RPC handler creates
 // waiters, the web route resolves them, and shutdown/session-died cancels them.
@@ -256,6 +266,10 @@ function createApprovalRegistry(sessionManager: DaemonSessionManager): ApprovalR
     notifyGateDropped: (gateId) => {
       gateBroker?.cancel(gateId, 'record-expired');
     },
+    // The workspace-shaped half of the press scope. `null` until main has
+    // pushed a table at all, which is what makes a missing integration report
+    // as `scope-unavailable` instead of looking like a policy refusal.
+    pressScope: (workspaceId) => workspaceFacts.get(workspaceId),
     log: (level, message) => log(level, message),
   });
 }
@@ -3110,46 +3124,65 @@ function registerRpcHandlers(
   pipeServer.onRpc('daemon.approvals.list', async () =>
     approvalRegistry?.list() ?? { pending: [], recentlyResolved: [] });
 
-  pipeServer.onRpc('daemon.approvals.resolve', async (params) => {
-    const p = params as unknown as {
-      id?: unknown;
-      decision?: unknown;
-      resolvedBy?: unknown;
-      choiceKey?: unknown;
-    };
-    const id = typeof p.id === 'string' ? p.id : '';
-    // Anything that is not exactly one of the two decisions is refused rather
-    // than defaulted: guessing between "approve" and "deny" on a pipe client's
-    // typo is not a recoverable mistake.
-    const decision: ApprovalDecision | null =
-      p.decision === 'approve' || p.decision === 'deny' ? p.decision : null;
-    if (!id || !decision) {
-      return { ok: false, reason: 'not-found' };
-    }
-    // Bounded and stripped by the registry (sanitizeResolvedBy) — this field is
-    // persisted, logged, and echoed back to a racing client, so an authenticated
-    // pipe client must not be able to send an unbounded or control-character
-    // string through it.
-    const resolvedBy = typeof p.resolvedBy === 'string' ? p.resolvedBy : '';
-    // Presence-sensitive for the same reason as the HTTP route: never turn a
-    // malformed choice into a legacy first-option press, and never let a deny
-    // request smuggle an affirmative choice digit.
-    const hasChoiceKey = p.choiceKey !== undefined;
-    if (hasChoiceKey && (
-      decision !== 'approve'
-      || typeof p.choiceKey !== 'string'
-      || !/^\d{1,2}$/.test(p.choiceKey)
-    )) {
-      return { ok: false, reason: 'invalid-choice-key' };
-    }
-    const choiceKey = hasChoiceKey ? p.choiceKey as string : undefined;
-    if (!approvalRegistry) return { ok: false, reason: 'not-found' };
-    return approvalRegistry.resolve({
-      id,
-      decision,
-      resolvedBy,
-      ...(choiceKey !== undefined ? { choiceKey } : {}),
+  pipeServer.onRpc('daemon.approvals.resolve', async (params, ctx) => {
+    // Parsing AND the resolver derivation live in approvals/resolveRequest.ts:
+    // `resolver: 'human'` switches the whole press scope off, so it is derived
+    // from this client's first-party classification — a fact the daemon
+    // assigns — and never read from the caller's own params.
+    const request = parseApprovalResolveRequest(params as Record<string, unknown>, {
+      isFirstParty: pipeServer.isFirstParty(ctx.clientId),
     });
+    if ('ok' in request) return request;
+    if (!approvalRegistry) return { ok: false, reason: 'not-found' };
+    return approvalRegistry.resolve(request);
+  });
+
+  // ── Main → daemon workspace facts (approval press scope) ─────────────────
+  // The two facts `decideApprovalPress` needs about a pane's workspace — is it
+  // a WorkTask task workspace, and what is its deck autonomy mode — live in
+  // main. Main pushes the whole table here on every change; until it does, the
+  // store answers "not established" and an automated press is refused as
+  // `scope-unavailable`. See approvals/workspaceFacts.ts.
+  pipeServer.onRpc('daemon.workspaceFacts.set', async (params, ctx) => {
+    // FIRST-PARTY ONLY, and this one is load-bearing rather than hygienic: a
+    // client that could write this table would be choosing which panes an
+    // automated approval may be pressed into — it could mark its own workspace
+    // a delegated task workspace with press on. Same classification the
+    // transcript RPCs use.
+    if (!firstPartyOnly(ctx.clientId, 'daemon.workspaceFacts.set')) {
+      return { ok: false, error: 'daemon.workspaceFacts.set is first-party only' };
+    }
+    const payload = params as { facts?: unknown; seq?: unknown };
+    if (!Array.isArray(payload?.facts)) {
+      return { ok: false, error: 'daemon.workspaceFacts.set requires a facts array' };
+    }
+    if (typeof payload.seq !== 'number' || !Number.isFinite(payload.seq)) {
+      return { ok: false, error: 'daemon.workspaceFacts.set requires a numeric seq' };
+    }
+    // One publisher at a time, first-writer-wins while it lives. Last-writer
+    // -wins would let a second first-party client take the slot and then, on
+    // ITS disconnect, drop a table the real main is still maintaining.
+    if (workspaceFactsPublisher !== null && workspaceFactsPublisher !== ctx.clientId) {
+      log(
+        'warn',
+        `[approvals] refused a workspace fact push from ${ctx.clientId}: ` +
+          `${workspaceFactsPublisher} is already the publisher`,
+      );
+      return { ok: false, error: 'another client is already publishing the workspace fact table' };
+    }
+    const result = workspaceFacts.replace(
+      payload.facts as WorkspaceFactRowInput[],
+      payload.seq,
+    );
+    if (!result.ok) {
+      // A push that lost a race. Not an error the caller must handle — the
+      // newer table it raced is already in place.
+      return { ok: true, applied: false, reason: result.reason, seq: result.seq };
+    }
+    // Remembered so the table is dropped when its publisher goes away: a row
+    // main is no longer maintaining must not keep authorizing presses.
+    workspaceFactsPublisher = ctx.clientId;
+    return { ok: true, applied: true, accepted: result.accepted, seq: result.seq };
   });
 
   const readDaemonAgentState = (id: string): {
@@ -5316,6 +5349,14 @@ async function main(): Promise<void> {
   pipeServer.onClientClose((clientId) => {
     desktopPresence.forget(clientId);
     deferredPush.onPresenceChanged();
+    // The press-scope table belongs to the main process that published it. Once
+    // that client is gone nobody is maintaining it, so it stops being evidence
+    // — an automated press falls back to `scope-unavailable` rather than being
+    // authorized by a row that may already be wrong.
+    if (workspaceFactsPublisher !== null && workspaceFactsPublisher === clientId) {
+      workspaceFacts.clear();
+      workspaceFactsPublisher = null;
+    }
   });
   // Channels (a2a-channels U3). Channels live in their own file
   // (`channels.json`, see ChannelStateWriter doc) so a channel-loss event

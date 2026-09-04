@@ -79,7 +79,15 @@ import { registerFanOutHandler } from './ipc/handlers/fanout.handler';
 import { createFanOutService } from './worktask/createFanOutService';
 import { registerFanOutRpc } from './pipe/handlers/fanout.rpc';
 import { registerLedgerRpc } from './pipe/handlers/ledger.rpc';
-import { registerWorktaskHandlers } from './ipc/handlers/worktask.handler';
+import { registerWorktaskHandlers, type WorktaskServices } from './ipc/handlers/worktask.handler';
+import { registerWorktaskRpc } from './pipe/handlers/worktask.rpc';
+import { TaskAdoptService } from './worktask/TaskAdoptService';
+import { TaskGateRunner } from './worktask/TaskGateRunner';
+import { createHostedLedgerPort } from './worktask/ledgerPort';
+import { getProjectConfigStore } from './project/ProjectConfigStore';
+import { createWorkspaceFactsPublisher, invalidateAutonomyCache } from './workspace/workspaceFactsFeed';
+import { getTaskLedger } from './deck/taskLedgerHost';
+import { onAutonomyWritten } from './deck/deckAutonomyStore';
 import { registerDeckHandler } from './ipc/handlers/deck.handler';
 import { registerWorkspaceMirrorHandler } from './ipc/handlers/workspaceMirror.handler';
 import { getWorkspaceMirror } from './workspace/WorkspaceMirror';
@@ -863,7 +871,59 @@ registerLedgerRpc(rpcRouter, () => mainWindow);
 // J3 태스크 수명주기 — close(remove→close 순서)·1클릭 PR(gh 4중 게이트)·정리 스캔
 // (디스크 정본)·미발사 재발사(prompt.md 읽기). 물질화 필드는 데몬 projection에서
 // 역참조하므로 렌더러는 taskId만 싣는다(단일 정본). 파이프 미노출(renderer-trusted).
-registerWorktaskHandlers(() => daemonClient);
+// Integration lane: the SAME close/pr instances also serve the pipe surface
+// below. TaskWorktreeManager keeps a per-repo mutex chain, so a second set of
+// instances would race the renderer's for git's index.lock.
+// Task lifecycle on the pipe (pipe/handlers/worktask.rpc.ts) — the half of
+// fan-out that FINISHES a task: run its gate, adopt its diff, open its PR,
+// close it, and read its git/gh state. Reached from the commander-only MCP
+// tools; local-origin only and owner-scoped in the handler. Registered from
+// inside the callback because that is where the shared instances exist; the
+// callback runs synchronously, before registerWorktaskHandlers returns.
+registerWorktaskHandlers(() => daemonClient, (services: WorktaskServices) => {
+  registerWorktaskRpc(rpcRouter, {
+    daemon: {
+      rpc: async (method: string, params: Record<string, unknown>): Promise<unknown> => {
+        if (!daemonClient) throw new Error('Daemon not connected');
+        return daemonClient.rpc(method as RpcMethod, params);
+      },
+    },
+    getWindow: () => mainWindow,
+    close: services.close,
+    pr: services.pr,
+    adopt: new TaskAdoptService(),
+    gate: new TaskGateRunner({
+      // In-process: the TaskLedger is hosted in main, and `recordGate` is a
+      // system-actor write no wire caller may make (see ledgerPort.ts).
+      ledger: createHostedLedgerPort(),
+      project: { getState: (cwd: string) => getProjectConfigStore().getState(cwd) },
+    }),
+  });
+});
+// ── Press-scope fact feed (main → daemon) ───────────────────────────────────
+// The daemon decides whether an AUTOMATED approval press may land in a pane,
+// and the two facts that decision needs — is this a WorkTask task workspace,
+// what is its deck autonomy mode — are main's. Push the whole table whenever
+// either can have changed: a ledger transition (a task opened, finished or was
+// cancelled) and an autonomy write. Until the first push lands the daemon
+// answers `scope-unavailable` and refuses, which is the safe direction.
+// See workspace/workspaceFactsFeed.ts.
+const workspaceFactsPublisher = createWorkspaceFactsPublisher({
+  push: async (facts, seq) => {
+    if (!daemonClient) throw new Error('Daemon not connected');
+    return daemonClient.rpc('daemon.workspaceFacts.set', { facts, seq });
+  },
+});
+getTaskLedger().onTransition(() => {
+  workspaceFactsPublisher.schedule();
+});
+onAutonomyWritten(() => {
+  // The store this feed reads was just rewritten, so the cached copy is stale
+  // before the debounce fires — invalidate first, then schedule.
+  invalidateAutonomyCache();
+  workspaceFactsPublisher.schedule();
+});
+
 // Command Deck Phase 2 — the Commander brain. Renderer-only surface (same
 // process-boundary trust basis as channelLocal/fanout, pipe-unreachable): the
 // Agent-SDK orchestrator session runs in MAIN and drives the fleet via the wmux
@@ -1418,6 +1478,16 @@ app.on('ready', async () => {
         .catch(() => {
           // Old daemon: no identify, therefore no presence, therefore pushes.
         });
+      // A fresh daemon has an EMPTY press-scope table (it is per-connection —
+      // the daemon drops it when its publisher disconnects), so seed it here.
+      // Without this, every automated approval press refuses as
+      // `scope-unavailable` until the next task transition happens to occur.
+      // Goes through the same publisher so the connect-time seed shares the
+      // sequence counter with every later push and cannot be overtaken by one.
+      // The autonomy file may have been edited by a previous run of this
+      // process, so read it fresh.
+      invalidateAutonomyCache();
+      void workspaceFactsPublisher.publishNow();
       // Handler swap to daemon-routed mode. The microsecond window where
       // pty/* handlers are torn down and re-registered is the same
       // surface the original code used; the swap is logged for the

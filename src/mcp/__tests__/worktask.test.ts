@@ -42,7 +42,7 @@ registerWorktaskTools(server as never, {
   },
 });
 
-const NAMES = ['task_gate_run', 'task_adopt', 'task_close', 'task_pr'] as const;
+const NAMES = ['task_gate_run', 'task_gate_cancel', 'task_adopt', 'task_close', 'task_pr'] as const;
 
 beforeEach(() => {
   mockSendRpc.mockReset();
@@ -51,7 +51,7 @@ beforeEach(() => {
 });
 
 describe('tool surface', () => {
-  it('registers the four contracted names and nothing else', () => {
+  it('registers the contracted names and nothing else', () => {
     expect([...tools.keys()].sort()).toEqual([...NAMES].sort());
   });
 
@@ -69,6 +69,7 @@ describe('tool surface', () => {
 describe('the wire call', () => {
   it.each([
     ['task_gate_run', 'task.gate.run'],
+    ['task_gate_cancel', 'task.gate.cancel'],
     ['task_adopt', 'task.adopt'],
     ['task_close', 'task.close'],
     ['task_pr', 'task.pr'],

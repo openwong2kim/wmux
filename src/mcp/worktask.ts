@@ -83,6 +83,15 @@ export function registerWorktaskTools(server: McpServer, deps: WorktaskToolDeps)
   );
 
   server.tool(
+    'task_gate_cancel',
+    'Stop a gate run that is still going, so the task is not held by a hung test suite until the 15-minute timeout. ' +
+      'Returns { cancelled: false } when no gate was running — racing a gate that just finished is not an error. ' +
+      'A cancelled run counts as a FAILURE (exitCode null), not a pass.',
+    { task_id: TASK_ID },
+    async ({ task_id }) => callTask('task.gate.cancel', { taskId: task_id }, deps),
+  );
+
+  server.tool(
     'task_adopt',
     'Take ALL of a task\'s changes into the parent repository — the task-level version of the diff view\'s hunk picker (picking individual hunks stays in the GUI). ' +
       'The target repository is derived from the task\'s own worktree and must be clean: a dirty target is refused ({ reason: "dirty-target" }) rather than mixing two authors\' edits together. ' +

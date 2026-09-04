@@ -3,6 +3,7 @@ import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '../../stores';
 import { selectWorkspaceIdName } from '../../stores/selectors/workspaceProjections';
 import { resolveExecuteApproval } from '../../utils/executeApproval';
+import { beginApprovalCountdown } from '../../utils/executeApprovalGate';
 import { renderSentence } from '../../i18n/renderSentence';
 import { useT } from '../../hooks/useT';
 
@@ -23,6 +24,14 @@ export default function ExecuteApprovalDialog() {
   const a2aAutoApproveExecute = useStore((s) => s.a2aAutoApproveExecute);
   const setA2aAutoApproveExecute = useStore((s) => s.setA2aAutoApproveExecute);
   const [now, setNow] = useState(() => Date.now());
+
+  // The auto-deny countdown belongs to the prompt that is ON SCREEN. Prompts
+  // queued behind this one have not started theirs, so a busy queue can no
+  // longer expire an approval nobody was shown.
+  const shownApprovalId = approval?.approvalId;
+  useEffect(() => {
+    if (shownApprovalId) beginApprovalCountdown(shownApprovalId);
+  }, [shownApprovalId]);
 
   useEffect(() => {
     if (!approval) return;
@@ -45,8 +54,15 @@ export default function ExecuteApprovalDialog() {
   // instead of letting the user wave through a misdescribed spawn. It also
   // hides the auto-approve checkbox, which does not apply to fan-out.
   const fanout = approval.fanout;
-  const remainingMs = Math.max(0, approval.expiresAt - now);
-  const remainingSec = Math.ceil(remainingMs / 1000);
+  // A task-lifecycle action (task.close / task.pr) from the pipe/MCP surface.
+  // Neither spawns anything, so both the A2A and the fan-out copy would name an
+  // action the user is not being asked about — this branch states the effect
+  // main computed, plus the task, branch and worktree it will act on.
+  const task = approval.task;
+  // expiresAt is 0 until the countdown starts (this render starts it), so the
+  // first paint would otherwise flash "auto-deny in 0s".
+  const remainingMs = approval.expiresAt > 0 ? Math.max(0, approval.expiresAt - now) : null;
+  const remainingSec = remainingMs === null ? null : Math.ceil(remainingMs / 1000);
 
   return (
     <div
@@ -72,11 +88,21 @@ export default function ExecuteApprovalDialog() {
             className="text-sm font-semibold font-mono"
             style={{ color: 'var(--text-main)' }}
           >
-            {fanout ? t('approval.fanoutTitle') : t('approval.executeTitle')}
+            {task
+              ? task.action === 'pr'
+                ? t('approval.taskPrTitle')
+                : t('approval.taskCloseTitle')
+              : fanout
+                ? t('approval.fanoutTitle')
+                : t('approval.executeTitle')}
           </p>
         </div>
         <p className="text-xs" style={{ color: 'var(--text-sub)' }}>
-          {fanout ? (
+          {task ? (
+            renderSentence(t('approval.taskSentence'), {
+              effect: <span style={{ color: 'var(--accent-red)' }}>{task.effect}</span>,
+            })
+          ) : fanout ? (
             renderSentence(t('approval.fanoutSentence'), {
               tasks: (
                 <span style={{ color: 'var(--accent-red)' }}>
@@ -101,7 +127,25 @@ export default function ExecuteApprovalDialog() {
           className="text-xs font-mono flex flex-col gap-1 p-3 rounded-md"
           style={{ backgroundColor: 'var(--bg-mantle)', color: 'var(--text-sub2)' }}
         >
-          {fanout ? (
+          {task ? (
+            <>
+              <div><span style={{ color: 'var(--text-subtle)' }}>{t('approval.caller')}</span> {senderName}</div>
+              <div><span style={{ color: 'var(--text-subtle)' }}>{t('approval.task')}</span> {task.taskId}</div>
+              {task.branch ? (
+                <div>
+                  <span style={{ color: 'var(--text-subtle)' }}>{t('approval.branch')}</span> {task.branch}
+                  {/* The COMMIT, not just the name: the worker owning this
+                      worktree is still running, so a branch name alone does not
+                      identify what a push would send. main refuses if this
+                      moves before the answer lands. */}
+                  {task.branchTip ? ` @ ${task.branchTip}` : ''}
+                </div>
+              ) : null}
+              {task.worktreePath ? (
+                <div><span style={{ color: 'var(--text-subtle)' }}>{t('approval.worktree')}</span> {task.worktreePath}</div>
+              ) : null}
+            </>
+          ) : fanout ? (
             <>
               <div><span style={{ color: 'var(--text-subtle)' }}>{t('approval.caller')}</span> {senderName}</div>
               <div><span style={{ color: 'var(--text-subtle)' }}>{t('approval.repo')}</span> {fanout.repoPath}</div>
@@ -134,9 +178,9 @@ export default function ExecuteApprovalDialog() {
           {approval.messagePreview || t('approval.emptyMessage')}
         </div>
         <div className="flex items-center justify-between">
-          {fanout ? (
-            // No auto-approve affordance on a fan-out: the toggle is scoped to
-            // A2A background execution and fan-out deliberately does not ride
+          {fanout || task ? (
+            // No auto-approve affordance on a fan-out or a task action: the
+            // toggle is scoped to A2A background execution and neither rides
             // it, so offering it here would promise something it does not do.
             <span className="text-[10px] font-mono" style={{ color: 'var(--text-subtle)' }}>
               {t('approval.fanoutAutoApproveHint')}
@@ -154,7 +198,7 @@ export default function ExecuteApprovalDialog() {
         </div>
         <div className="flex items-center justify-between">
           <span className="text-[10px] font-mono" style={{ color: 'var(--text-subtle)' }}>
-            {t('approval.autoDeny', { sec: remainingSec })}
+            {remainingSec === null ? '' : t('approval.autoDeny', { sec: remainingSec })}
           </span>
           <div className="flex gap-2">
             <button

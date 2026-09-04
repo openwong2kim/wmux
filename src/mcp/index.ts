@@ -29,6 +29,8 @@ import { registerExtractionTools } from './playwright/tools/extraction';
 import { registerChannelTools } from './channels';
 import { registerFanOutTools } from './fanout';
 import { registerLedgerUpdateTool, registerLedgerListTool, registerLedgerBrainUpdateTool } from './ledger';
+import { registerWorktaskTools } from './worktask';
+import { registerGitTools } from './git';
 import { registerPaneLifecycleTools } from './paneLifecycle';
 import { registerReplTools } from './repl/tools';
 import { getWmuxMcpServerInstructions, resolveMcpServerVersion } from './serverMetadata';
@@ -1608,10 +1610,10 @@ registerReplTools(server, MCP_CATALOG_OPTIONS);
 // be in COMMANDER_ONLY_TOOLS (shared/commanderSurface.ts) — the invariant
 // tests and the probe read that list; a name outside it is a bug.
 //
-// Reserved, NOT yet wired (lane O2 — task_gate_run, task_adopt, task_close,
-// task_pr, git_status, git_log, gh_pr_view): register them here, through
-// registerCommanderOnly, and move each name from COMMANDER_ONLY_RESERVED_TOOLS
-// to COMMANDER_ONLY_TOOLS in the same commit.
+// A future tool arrives the same way the task tools below did: park its name in
+// COMMANDER_ONLY_RESERVED_TOOLS while it is being built, then register it here
+// through registerCommanderOnly and move the name into COMMANDER_ONLY_TOOLS in
+// the same commit.
 if (COMMANDER_MODE) {
   const commanderOnly = new Set(COMMANDER_ONLY_TOOLS);
   const registerCommanderOnly: typeof server.tool = ((name: string, ...rest: unknown[]) => {
@@ -1625,6 +1627,21 @@ if (COMMANDER_MODE) {
   // filtered out above (not in COMMANDER_TOOL_SURFACE), so this is the only
   // ledger_update a commander sees.
   registerLedgerBrainUpdateTool(registerCommanderOnly);
+  // Task lifecycle + the read-only git/gh views. Same walk-hit-only provenance
+  // as fan-out and the ledger tools: main derives the caller's workspace from
+  // this ptyId (or, for a brain, from its validated commander token) and scopes
+  // every call to the tasks that workspace owns. They take the SERVER object
+  // rather than the register function, so they get a shim whose only method is
+  // the gated `tool` — a name outside COMMANDER_ONLY_TOOLS still throws.
+  const commanderToolHost = { tool: registerCommanderOnly } as unknown as typeof server;
+  registerWorktaskTools(commanderToolHost, {
+    getSenderPtyId: () => MY_PTY_ID,
+    resolveWorkspaceId: requireWorkspaceId,
+  });
+  registerGitTools(commanderToolHost, {
+    getSenderPtyId: () => MY_PTY_ID,
+    resolveWorkspaceId: requireWorkspaceId,
+  });
 }
 
 // Hook the MCP initialize handshake so wmux substrate learns the declared

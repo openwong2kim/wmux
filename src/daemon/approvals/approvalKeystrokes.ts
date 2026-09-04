@@ -180,8 +180,11 @@ function escapeDigit(d: string): string {
 //   1. the target pane's workspace is a WorkTask TASK workspace. A pane the
 //      human opened by hand, and the PARENT workspace a fan-out was launched
 //      from, are both refused: neither was delegated to an agent;
-//   2. that workspace has autonomy enabled (mode ≠ 'off'). Autonomy off means
-//      the human answers their own prompts;
+//   2. that workspace's EFFECTIVE approvalPress capability is on. Not the mode:
+//      main composes the stored capability as `modeCeiling AND loop tier`
+//      (deck.handler applyTierCaps), so a `danger` workspace running a `report`
+//      loop has press OFF while its mode still reads 'danger'. Reading the mode
+//      here would press in a workspace whose own UI says it may not;
 //   3. the pending approval came from a HOOK. The screen-regex detector is a
 //      suspicion — it fires on a numbered list in a diff — and this surface
 //      writes bytes;
@@ -219,8 +222,16 @@ export interface ApprovalPressFacts {
   scopeAvailable?: boolean;
   /** The target pane's workspace is a WorkTask task workspace. */
   isTaskWorkspace?: boolean;
-  /** The target workspace's deck autonomy mode ('off' | 'manual' | …). */
+  /** The target workspace's deck autonomy mode ('off' | 'assist' | 'danger').
+   *  Reported for the refusal message and for the mode-level floor; the
+   *  capability below is what actually authorizes. */
   autonomyMode?: string;
+  /**
+   * The workspace's EFFECTIVE `approvalPress` capability, as main stores it —
+   * the mode ceiling already narrowed by any running loop's tier. This is the
+   * authorization; `autonomyMode` is context. Undefined = not established.
+   */
+  approvalPress?: boolean;
   /** Which signal created the pending approval. */
   origin?: ApprovalPromptOrigin;
   /** A re-read taken now still shows an answerable prompt. */
@@ -237,6 +248,8 @@ export type ApprovalPressRefusal =
   | 'autonomy-unknown'
   | 'autonomy-off'
   | 'unknown-autonomy-mode'
+  | 'press-capability-unknown'
+  | 'press-capability-off'
   | 'origin-unknown'
   | 'detector-only'
   | 'prompt-gone';
@@ -250,8 +263,13 @@ export type ApprovalPressDecision =
  * blacklisted: matching only the literal 'off' meant a mode this daemon has
  * never heard of — a typo in the store, a newer main writing a name we predate
  * — read as permission. An unrecognised setting is not consent.
+ *
+ * These are the REAL modes main writes (`AgentMode` in deck/deckAutonomyStore:
+ * 'off' | 'assist' | 'danger'). An earlier list carried 'manual', which no
+ * store has ever produced — a whitelist entry that can never match is not
+ * dangerous, but it made the vocabulary look like something it is not.
  */
-const AUTONOMY_ON_MODES: ReadonlySet<string> = new Set(['manual', 'assist', 'danger']);
+const AUTONOMY_ON_MODES: ReadonlySet<string> = new Set(['assist', 'danger']);
 
 /**
  * May an approval be pressed into this pane? Pure — the caller gathers the
@@ -272,6 +290,12 @@ export function decideApprovalPress(facts: ApprovalPressFacts): ApprovalPressDec
   if (!AUTONOMY_ON_MODES.has(facts.autonomyMode)) {
     return { press: false, reason: 'unknown-autonomy-mode' };
   }
+  // The capability, not the mode, is what the operator's own UI shows as
+  // "approval-press". A running `report` loop narrows it to false inside a
+  // 'danger' workspace, and pressing there would contradict the readout the
+  // brain itself is given (CommanderEventCoalescer's autonomy line).
+  if (facts.approvalPress === undefined) return { press: false, reason: 'press-capability-unknown' };
+  if (!facts.approvalPress) return { press: false, reason: 'press-capability-off' };
   if (facts.origin === undefined) return { press: false, reason: 'origin-unknown' };
   if (facts.origin !== 'hook') return { press: false, reason: 'detector-only' };
   if (facts.stillOnScreen !== true) return { press: false, reason: 'prompt-gone' };

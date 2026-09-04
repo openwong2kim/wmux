@@ -80,7 +80,7 @@ function makeRegistry(overrides: Partial<ApprovalRegistryDeps> = {}): Harness {
     // default here is the IN-scope answer (a delegated task workspace with
     // autonomy on) so each test below exercises its own subject; the scope
     // itself is pinned by its own describe block.
-    pressScope: () => ({ isTaskWorkspace: true, autonomyMode: 'manual' }),
+    pressScope: () => ({ isTaskWorkspace: true, autonomyMode: 'assist', approvalPress: true }),
     now: () => clock++,
     newId: () => `req-${ids.next++}`,
     ...overrides,
@@ -1122,13 +1122,41 @@ describe('decideApprovalPress — the four conditions', () => {
     decision: 'approve' as const,
     scopeAvailable: true,
     isTaskWorkspace: true,
-    autonomyMode: 'manual',
+    // A REAL mode. The earlier fixture said 'manual', which no store has ever
+    // written — the whitelist happened to carry it too, so the pair agreed with
+    // each other and with nothing else.
+    autonomyMode: 'assist',
+    approvalPress: true,
     origin: 'hook' as const,
     stillOnScreen: true,
   };
 
   it('presses when all four hold', () => {
     expect(decideApprovalPress(inScope)).toEqual({ press: true });
+  });
+
+  // The capability, not the mode, is the authorization: main narrows it to
+  // false for a `report` loop inside a 'danger' workspace, and the brain's own
+  // autonomy readout says approval-press=off there.
+  it('refuses when the effective approvalPress capability is off, whatever the mode says', () => {
+    expect(decideApprovalPress({ ...inScope, autonomyMode: 'danger', approvalPress: false })).toEqual({
+      press: false,
+      reason: 'press-capability-off',
+    });
+  });
+
+  it('refuses when the capability was never established', () => {
+    expect(decideApprovalPress({ ...inScope, approvalPress: undefined })).toEqual({
+      press: false,
+      reason: 'press-capability-unknown',
+    });
+  });
+
+  it('does not recognise a mode no store writes', () => {
+    expect(decideApprovalPress({ ...inScope, autonomyMode: 'manual' })).toEqual({
+      press: false,
+      reason: 'unknown-autonomy-mode',
+    });
   });
 
   // A person tapping Approve is LOOKING at the prompt. Gating them behind a
@@ -1220,7 +1248,7 @@ describe('ApprovalRegistry — press scope is enforced at resolve', () => {
   const automatedApprove = { decision: 'approve' as const, resolvedBy: 'deck', resolver: 'automated' as const };
 
   it('refuses an out-of-scope AUTOMATED press WITHOUT expiring the request', async () => {
-    const h = makeRegistry({ pressScope: () => ({ isTaskWorkspace: false, autonomyMode: 'manual' }) });
+    const h = makeRegistry({ pressScope: () => ({ isTaskWorkspace: false, autonomyMode: 'assist', approvalPress: true }) });
     await awaitingInput(h.registry);
     await settle();
 
@@ -1246,7 +1274,7 @@ describe('ApprovalRegistry — press scope is enforced at resolve', () => {
   });
 
   it('lets a human deny in a workspace an automated press could not touch', async () => {
-    const h = makeRegistry({ pressScope: () => ({ isTaskWorkspace: false, autonomyMode: 'off' }) });
+    const h = makeRegistry({ pressScope: () => ({ isTaskWorkspace: false, autonomyMode: 'off', approvalPress: false }) });
     await awaitingInput(h.registry);
     await settle();
 
@@ -1258,7 +1286,7 @@ describe('ApprovalRegistry — press scope is enforced at resolve', () => {
   // A refused deny would leave the record alive to be re-tapped forever, which
   // is how "safety" turns into a pane nobody can unblock.
   it('lets an AUTOMATED deny through regardless of scope', async () => {
-    const h = makeRegistry({ pressScope: () => ({ isTaskWorkspace: false, autonomyMode: 'off' }) });
+    const h = makeRegistry({ pressScope: () => ({ isTaskWorkspace: false, autonomyMode: 'off', approvalPress: false }) });
     await awaitingInput(h.registry);
     await settle();
 
@@ -1288,5 +1316,58 @@ describe('ApprovalRegistry — press scope is enforced at resolve', () => {
     expect(h.writes).toHaveLength(0);
     // The missing integration wiring must be visible, not look like policy.
     expect(logs.join('\n')).toContain('pressScope');
+  });
+
+  // Wired, but main has never pushed its table (the daemon started before the
+  // GUI, or the GUI is closed). That is the same absence of evidence as no feed
+  // at all, and it must NOT read as an empty answer about the workspace.
+  it('treats an unpublished fact table as no scope source, not as "not a task workspace"', async () => {
+    const logs: string[] = [];
+    const h = makeRegistry({ pressScope: () => null, log: (_level, message) => logs.push(message) });
+    await awaitingInput(h.registry);
+    await settle();
+
+    const res = await h.registry.resolve({ id: 'req-1', ...automatedApprove });
+    expect(res.ok).toBe(false);
+    if (res.ok) throw new Error('expected a refusal');
+    expect(res.reason).toBe('out-of-scope');
+    expect(h.writes).toHaveLength(0);
+    // …and it names the RIGHT missing thing: the feed is wired, main has just
+    // not published. Sending an operator to check the wiring for that is how a
+    // one-line fix becomes an afternoon.
+    expect(logs.join('\n')).toContain('has not published');
+    expect(logs.join('\n')).not.toContain('is not wired');
+  });
+
+  // A record with no workspace at all (a hook envelope that carried none) is a
+  // third cause, and it is in the payload, not in the integration.
+  it('names the record, not the wiring, when the request has no workspaceId', async () => {
+    const logs: string[] = [];
+    const h = makeRegistry({ log: (_level, message) => logs.push(message) });
+    await h.registry.noteHookAwaitingInput({ sessionId: 'pty-a', agent: 'claude' });
+    await settle();
+
+    const res = await h.registry.resolve({ id: 'req-1', ...automatedApprove });
+    expect(res.ok).toBe(false);
+    if (res.ok) throw new Error('expected a refusal');
+    expect(res.reason).toBe('out-of-scope');
+    expect(logs.join('\n')).toContain('carries no workspaceId');
+    expect(logs.join('\n')).not.toContain('is not wired');
+  });
+
+  // A workspace main DID answer about, and declined to classify. Different
+  // reason, same refusal — and the log must not blame the wiring.
+  it('refuses a workspace absent from a published table without blaming the wiring', async () => {
+    const logs: string[] = [];
+    const h = makeRegistry({ pressScope: () => ({}), log: (_level, message) => logs.push(message) });
+    await awaitingInput(h.registry);
+    await settle();
+
+    const res = await h.registry.resolve({ id: 'req-1', ...automatedApprove });
+    expect(res.ok).toBe(false);
+    if (res.ok) throw new Error('expected a refusal');
+    expect(res.reason).toBe('out-of-scope');
+    expect(logs.join('\n')).toContain('workspace-unknown');
+    expect(logs.join('\n')).not.toContain('scope source');
   });
 });

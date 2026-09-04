@@ -20,6 +20,9 @@ import {
   registerWorktaskRpc,
   TASK_GIT_LOG_MAX,
   WORKTASK_RPC_METHODS,
+  TASK_APPROVALS_MAX_PENDING_PER_WORKSPACE,
+  type TaskApprovalOutcome,
+  type TaskApprovalPort,
   type WorktaskExec,
   type WorktaskRpcDeps,
 } from '../worktask.rpc';
@@ -50,6 +53,7 @@ interface Harness {
   adopt: ReturnType<typeof vi.fn>;
   gateRun: ReturnType<typeof vi.fn>;
   gateCancel: ReturnType<typeof vi.fn>;
+  requestApproval: ReturnType<typeof vi.fn>;
   missionListParams: () => Record<string, unknown> | undefined;
 }
 
@@ -60,6 +64,11 @@ function harness(opts?: {
   exec?: WorktaskExec;
   /** 'throw' = transport failure, 'not-ok' = the daemon refusing. */
   missionList?: 'throw' | 'not-ok';
+  /** How the human answers the close/pr prompt. Defaults to approved so the
+   *  refusal tests below still see the gates they are about. */
+  approval?: TaskApprovalOutcome;
+  /** Full control of the prompt (dedupe / cap tests hold it open). */
+  requestApproval?: TaskApprovalPort;
 }): Harness {
   const handlers = new Map<string, Handler>();
   const router = { register: (m: string, h: Handler) => handlers.set(m, h) } as unknown as RpcRouter;
@@ -95,10 +104,14 @@ function harness(opts?: {
   vi.mocked(resolvePtyOwnerWorkspace).mockImplementation(async () => owner);
 
   const exec = vi.fn(opts?.exec ?? (async () => ({ stdout: '', stderr: '', code: 0 })));
+  const requestApproval = vi.fn(
+    opts?.requestApproval ?? (async () => opts?.approval ?? ('approved' as TaskApprovalOutcome)),
+  );
 
   const deps: WorktaskRpcDeps = {
     daemon,
     exec: exec as unknown as WorktaskExec,
+    requestApproval,
     getWindow: () => null,
     close: { closeTask } as unknown as TaskCloseService,
     pr: { createPr } as unknown as TaskPrService,
@@ -120,6 +133,7 @@ function harness(opts?: {
     gateRun,
     gateCancel,
     exec,
+    requestApproval,
     missionListParams: () => missionParams,
   };
 }
@@ -477,5 +491,144 @@ describe.each(WORKTASK_RPC_METHODS)('%s — daemon reachability', (method) => {
     const h = harness({ missionList: 'not-ok' });
     const res = await h.call(method, { taskId: TASK.id, senderPtyId: 'pty-1' });
     expect(res).toMatchObject({ ok: false, error: { code: 'UNAVAILABLE' } });
+  });
+});
+
+// ── Human approval on the two irreversible methods ─────────────────────────
+// A commander brain's own tools are auto-allowed by the SDK adapter, so for the
+// caller these methods exist for there is no upstream permission prompt to be
+// the second of. Removing a worktree and pushing a branch to a remote are the
+// two effects here that no returned result can take back.
+describe('task.close / task.pr approval gate', () => {
+  const COMMANDER: RpcContext = { origin: 'local', commanderWorkspace: CALLER_WS };
+
+  it('refuses task.close when the user declines, and never reaches the service', async () => {
+    const h = harness({ approval: 'declined' });
+    const res = await h.call('task.close', { taskId: TASK.id }, COMMANDER);
+    expect(res).toMatchObject({ ok: false, error: { code: 'NOT_AUTHORIZED' } });
+    expect(String((res as { error: { message: string } }).error.message)).toContain('the user denied it');
+    expect(h.closeTask).not.toHaveBeenCalled();
+  });
+
+  it('refuses task.pr when nobody answers, and says so was the timer', async () => {
+    const h = harness({ approval: 'timeout' });
+    const res = await h.call('task.pr', { taskId: TASK.id }, COMMANDER);
+    expect(res).toMatchObject({ ok: false, error: { code: 'NOT_AUTHORIZED' } });
+    expect(String((res as { error: { message: string } }).error.message)).toContain('expired');
+    expect(h.createPr).not.toHaveBeenCalled();
+  });
+
+  it('refuses when the prompt could not be shown at all (fail closed)', async () => {
+    const h = harness({ approval: 'unavailable' });
+    expect(await h.call('task.close', { taskId: TASK.id }, COMMANDER)).toMatchObject({
+      ok: false,
+      error: { code: 'NOT_AUTHORIZED' },
+    });
+    expect(h.closeTask).not.toHaveBeenCalled();
+  });
+
+  it('proceeds once approved, and asks about the SERVER\'s own projection row', async () => {
+    const h = harness();
+    expect(await h.call('task.close', { taskId: TASK.id }, COMMANDER)).toMatchObject({ ok: true });
+    expect(h.closeTask).toHaveBeenCalled();
+    expect(h.requestApproval).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: 'close',
+        taskId: TASK.id,
+        title: TASK.title,
+        branch: TASK.branch,
+        worktreePath: TASK.worktreePath,
+        workspaceId: CALLER_WS,
+      }),
+    );
+  });
+
+  it('leaves the reversible and read-only methods unprompted', async () => {
+    for (const method of ['task.gate.run', 'task.adopt', 'task.git.status', 'task.git.log', 'task.gh.prView']) {
+      const h = harness({ approval: 'declined' });
+      await h.call(method, { taskId: TASK.id }, COMMANDER);
+      expect(h.requestApproval, `${method} raised a prompt`).not.toHaveBeenCalled();
+    }
+  });
+});
+
+// ── The prompt is about a COMMIT, not a branch name ────────────────────────
+// The worker owning this worktree is still running while the dialog is up.
+describe('task.pr branch-tip binding', () => {
+  const COMMANDER: RpcContext = { origin: 'local', commanderWorkspace: CALLER_WS };
+
+  function tipHarness(tips: string[]) {
+    let n = 0;
+    return harness({
+      exec: (async (_cmd, args) => {
+        if (args[0] === 'rev-parse') {
+          const tip = tips[Math.min(n, tips.length - 1)] ?? '';
+          n += 1;
+          return { stdout: `${tip}\n`, stderr: '', code: 0 };
+        }
+        return { stdout: '', stderr: '', code: 0 };
+      }) as WorktaskExec,
+    });
+  }
+
+  it('shows the tip it captured and pushes when it has not moved', async () => {
+    const h = tipHarness(['abc1234', 'abc1234']);
+    expect(await h.call('task.pr', { taskId: TASK.id }, COMMANDER)).toMatchObject({ ok: true });
+    expect(h.requestApproval).toHaveBeenCalledWith(expect.objectContaining({ branchTip: 'abc1234' }));
+    expect(h.createPr).toHaveBeenCalled();
+  });
+
+  it('refuses when the branch moved while the approval was on screen', async () => {
+    const h = tipHarness(['abc1234', 'def5678']);
+    const res = await h.call('task.pr', { taskId: TASK.id }, COMMANDER);
+    expect(res).toMatchObject({ ok: false, error: { code: 'ABORTED' } });
+    expect(String((res as { error: { message: string } }).error.message)).toContain('abc1234');
+    expect(h.createPr).not.toHaveBeenCalled();
+  });
+});
+
+// ── One question, asked once; and a bounded queue ──────────────────────────
+describe('task approval dedupe and cap', () => {
+  const COMMANDER: RpcContext = { origin: 'local', commanderWorkspace: CALLER_WS };
+
+  it('reuses one pending prompt for an identical retried request', async () => {
+    // A holder, not a bare `let`: TS does not track assignments made inside a
+    // callback and would narrow the variable to `never`.
+    const answer: { resolve: ((outcome: TaskApprovalOutcome) => void) | null } = { resolve: null };
+    const requestApproval = vi.fn(
+      () => new Promise<TaskApprovalOutcome>((resolve) => { answer.resolve = resolve; }),
+    );
+    const h = harness({ requestApproval });
+
+    const a = h.call('task.close', { taskId: TASK.id }, COMMANDER);
+    const b = h.call('task.close', { taskId: TASK.id }, COMMANDER);
+    await new Promise((r) => setTimeout(r, 0));
+    // One dialog, not two: it is literally the same question.
+    expect(requestApproval).toHaveBeenCalledTimes(1);
+
+    answer.resolve?.('approved');
+    expect(await a).toMatchObject({ ok: true });
+    expect(await b).toMatchObject({ ok: true });
+  });
+
+  it('refuses past the per-workspace cap instead of stacking dialogs', async () => {
+    const requestApproval = vi.fn(() => new Promise<TaskApprovalOutcome>(() => undefined));
+    const tasks = Array.from({ length: TASK_APPROVALS_MAX_PENDING_PER_WORKSPACE + 1 }, (_, i) => ({
+      ...TASK,
+      id: `wtask-${i}`,
+    }));
+    const h = harness({ tasks, requestApproval });
+
+    for (let i = 0; i < TASK_APPROVALS_MAX_PENDING_PER_WORKSPACE; i++) {
+      void h.call('task.close', { taskId: `wtask-${i}` }, COMMANDER);
+    }
+    await new Promise((r) => setTimeout(r, 0));
+    const overflow = await h.call(
+      'task.close',
+      { taskId: `wtask-${TASK_APPROVALS_MAX_PENDING_PER_WORKSPACE}` },
+      COMMANDER,
+    );
+    expect(overflow).toMatchObject({ ok: false, error: { code: 'RESOURCE_EXHAUSTED' } });
+    expect(requestApproval).toHaveBeenCalledTimes(TASK_APPROVALS_MAX_PENDING_PER_WORKSPACE);
   });
 });

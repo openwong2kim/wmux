@@ -64,6 +64,12 @@ const KNOWN_CAPABILITIES = new Set<string>([
   // rewriting task status, and a ledger grant must not open channel posts.
   'ledger.read',
   'ledger.write',
+  // Task lifecycle (task.gate.* / task.adopt / task.close / task.pr and the
+  // read-only git/gh views). Its own pair rather than a ride on ledger.*: the
+  // ledger records what happened to a task, these RUN a gate, write to a
+  // repository and remove a worktree, and one approval must not cover both.
+  'task.read',
+  'task.write',
   // Plugin host UI contribution points (B-1). Enforced at contribution
   // registration time — the host refuses to mount the iframe/widget when
   // the capability is missing or the plugin isn't trusted; per-RPC
