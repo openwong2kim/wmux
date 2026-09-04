@@ -27,13 +27,6 @@ export interface AutoRejectedEntry {
   at: number;
 }
 
-/** The deadline the list is tracking for one row. */
-export interface TrackedDeadline {
-  key: string;
-  label: string;
-  deadlineAt: number;
-}
-
 /**
  * The auto-reject deadline for an inbox row, or `undefined` when it has none.
  * A2A execute approvals expire on their own clock; an MCP prompt only has one
@@ -55,31 +48,44 @@ export function remainingSeconds(deadlineAt: number, now: number): number {
 }
 
 /**
- * Fold the rows that have LEFT the inbox into the auto-rejected log.
+ * How far past its deadline a row may leave the inbox and still count as an
+ * auto-rejection.
  *
- * A row counts as auto-rejected when it is gone and its deadline had already
- * passed; a row that left before its deadline was answered by a human and is
- * not logged. Newest first, capped, and idempotent on key — re-running with the
- * same inputs cannot double-log an entry.
+ * "Gone and past its deadline" alone is not proof: a background tab's timers
+ * are throttled and a suspended machine wakes with a clock minutes ahead, so a
+ * row a HUMAN answered late would be logged as expired. An auto-reject removes
+ * the row at its deadline, so a removal that lands well after it is somebody
+ * else's doing.
  */
-export function reduceAutoRejected(args: {
-  previous: readonly AutoRejectedEntry[];
-  /** Deadlines observed on the previous render. */
-  tracked: readonly TrackedDeadline[];
-  /** Keys still present in the inbox. */
-  presentKeys: ReadonlySet<string>;
-  now: number;
-}): AutoRejectedEntry[] {
-  const { previous, tracked, presentKeys, now } = args;
-  const already = new Set(previous.map((e) => e.key));
-  const expired: AutoRejectedEntry[] = [];
-  for (const row of tracked) {
-    if (presentKeys.has(row.key) || already.has(row.key)) continue;
-    if (row.deadlineAt > now) continue; // answered before the deadline
-    expired.push({ key: row.key, label: row.label, at: row.deadlineAt });
-  }
-  if (expired.length === 0) return previous as AutoRejectedEntry[];
-  return [...expired.reverse(), ...previous].slice(0, AUTO_REJECT_LOG_CAP);
+export const AUTO_REJECT_GRACE_MS = 5_000;
+
+/**
+ * Did this row leave the inbox because its deadline fired?
+ *
+ * `removedAt` is the instant the row actually left the store, not a render
+ * tick — the classification is made at the removal point (the slice), so a
+ * deadline that fires while the Fleet tab is closed is still recorded.
+ */
+export function isAutoRejection(args: {
+  deadlineAt?: number;
+  removedAt: number;
+}): boolean {
+  const { deadlineAt, removedAt } = args;
+  if (typeof deadlineAt !== 'number' || !Number.isFinite(deadlineAt)) return false;
+  const late = removedAt - deadlineAt;
+  return late >= 0 && late <= AUTO_REJECT_GRACE_MS;
+}
+
+/**
+ * Prepend one expired row to the log: newest first, capped, and idempotent on
+ * key so a repeated removal cannot double-log.
+ */
+export function appendAutoRejected(
+  previous: readonly AutoRejectedEntry[],
+  entry: AutoRejectedEntry,
+): AutoRejectedEntry[] {
+  if (previous.some((e) => e.key === entry.key)) return previous as AutoRejectedEntry[];
+  return [entry, ...previous].slice(0, AUTO_REJECT_LOG_CAP);
 }
 
 /** A short, source-appropriate label for the log line. */

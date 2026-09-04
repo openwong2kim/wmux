@@ -1,10 +1,12 @@
 import { describe, it, expect } from 'vitest';
 import type { InboxItem } from '../../../stores/selectors/approvalInbox';
 import {
+  AUTO_REJECT_GRACE_MS,
   AUTO_REJECT_LOG_CAP,
+  appendAutoRejected,
   deadlineForItem,
   inboxItemLabel,
-  reduceAutoRejected,
+  isAutoRejection,
   remainingSeconds,
   type AutoRejectedEntry,
 } from '../approvalCountdown';
@@ -53,49 +55,47 @@ describe('remainingSeconds', () => {
   });
 });
 
-describe('reduceAutoRejected', () => {
-  const tracked = [{ key: 'a2a:ap-1', label: 'task-1', deadlineAt: T0 }];
-
-  it('logs a row that vanished after its deadline passed', () => {
-    const out = reduceAutoRejected({
-      previous: [],
-      tracked,
-      presentKeys: new Set<string>(),
-      now: T0 + 1,
-    });
-    expect(out).toEqual([{ key: 'a2a:ap-1', label: 'task-1', at: T0 }]);
+// Review fix: "gone and past its deadline" alone mislabelled a row a human
+// answered after a throttled timer or a machine sleep.
+describe('isAutoRejection', () => {
+  it('logs a row removed at, or just after, its deadline', () => {
+    expect(isAutoRejection({ deadlineAt: T0, removedAt: T0 })).toBe(true);
+    expect(isAutoRejection({ deadlineAt: T0, removedAt: T0 + AUTO_REJECT_GRACE_MS })).toBe(true);
   });
 
   it('does NOT log a row a human answered before the deadline', () => {
-    expect(
-      reduceAutoRejected({ previous: [], tracked, presentKeys: new Set<string>(), now: T0 - 1_000 }),
-    ).toEqual([]);
+    expect(isAutoRejection({ deadlineAt: T0, removedAt: T0 - 1 })).toBe(false);
   });
 
-  it('keeps a still-present row out of the log and is idempotent on key', () => {
-    expect(
-      reduceAutoRejected({ previous: [], tracked, presentKeys: new Set(['a2a:ap-1']), now: T0 + 1 }),
-    ).toEqual([]);
-    const once = reduceAutoRejected({ previous: [], tracked, presentKeys: new Set<string>(), now: T0 + 1 });
-    const twice = reduceAutoRejected({ previous: once, tracked, presentKeys: new Set<string>(), now: T0 + 1 });
-    expect(twice).toBe(once);
+  it('does NOT log a row removed long after the deadline — a throttled timer, not an expiry', () => {
+    expect(isAutoRejection({ deadlineAt: T0, removedAt: T0 + AUTO_REJECT_GRACE_MS + 1 })).toBe(false);
+    expect(isAutoRejection({ deadlineAt: T0, removedAt: T0 + 600_000 })).toBe(false);
   });
 
-  it('keeps the newest entries and caps the log', () => {
-    const many = Array.from({ length: AUTO_REJECT_LOG_CAP + 3 }, (_, i) => ({
-      key: `mcp:p-${i}`,
-      label: `plugin-${i}`,
-      deadlineAt: T0 + i,
-    }));
-    const previous: AutoRejectedEntry[] = [];
-    const out = reduceAutoRejected({
-      previous,
-      tracked: many,
-      presentKeys: new Set<string>(),
-      now: T0 + 1_000,
-    });
-    expect(out).toHaveLength(AUTO_REJECT_LOG_CAP);
-    expect(out[0].key).toBe(`mcp:p-${many.length - 1}`);
+  it('says nothing about a row that never had a deadline', () => {
+    expect(isAutoRejection({ removedAt: T0 })).toBe(false);
+    expect(isAutoRejection({ deadlineAt: Number.NaN, removedAt: T0 })).toBe(false);
+  });
+});
+
+describe('appendAutoRejected', () => {
+  const entry: AutoRejectedEntry = { key: 'a2a:ap-1', label: 'task-1', at: T0 };
+
+  it('prepends newest-first and is idempotent on key', () => {
+    const once = appendAutoRejected([], entry);
+    expect(once).toEqual([entry]);
+    expect(appendAutoRejected(once, entry)).toBe(once);
+    const second: AutoRejectedEntry = { key: 'mcp:p-1', label: 'plugin', at: T0 + 1 };
+    expect(appendAutoRejected(once, second)[0]).toEqual(second);
+  });
+
+  it('caps the log', () => {
+    let log: AutoRejectedEntry[] = [];
+    for (let i = 0; i < AUTO_REJECT_LOG_CAP + 3; i++) {
+      log = appendAutoRejected(log, { key: `mcp:p-${i}`, label: `plugin-${i}`, at: T0 + i });
+    }
+    expect(log).toHaveLength(AUTO_REJECT_LOG_CAP);
+    expect(log[0].key).toBe(`mcp:p-${AUTO_REJECT_LOG_CAP + 2}`);
   });
 });
 

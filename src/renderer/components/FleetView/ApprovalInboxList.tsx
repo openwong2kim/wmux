@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '../../stores';
 import { selectWorkspaceIdName } from '../../stores/selectors/workspaceProjections';
@@ -6,14 +6,7 @@ import { useT } from '../../hooks/useT';
 import { groupCapabilities } from '../Approval/PermissionApprovalDialog';
 import type { RiskClassCopy } from '../../../main/mcp/methodCapabilityMap';
 import type { InboxItem } from '../../stores/selectors/approvalInbox';
-import {
-  deadlineForItem,
-  inboxItemLabel,
-  reduceAutoRejected,
-  remainingSeconds,
-  type AutoRejectedEntry,
-  type TrackedDeadline,
-} from './approvalCountdown';
+import { deadlineForItem, remainingSeconds } from './approvalCountdown';
 
 // gpui button recipes (theme-safe). Approve = primary warm CTA; deny = danger
 // tinted. The row still carries the critical/attention border + countdown, so
@@ -85,32 +78,19 @@ export default function ApprovalInboxList({ items, focusedIdx, onResolve }: Appr
     return () => clearInterval(tick);
   }, [hasDeadline]);
 
-  // C-3: an expired row leaves the inbox exactly like an approved one, so the
-  // list keeps its own short log of the ones the deadline killed. `tracked` is
-  // what the previous render saw; a row that is gone with its deadline already
-  // past was auto-rejected, one that left earlier was answered by a human.
-  const tracked = useRef<TrackedDeadline[]>([]);
-  const [autoRejected, setAutoRejected] = useState<AutoRejectedEntry[]>([]);
-  useEffect(() => {
-    const presentKeys = new Set(items.map((it) => it.key));
-    const at = Date.now();
-    setAutoRejected((previous) =>
-      reduceAutoRejected({ previous, tracked: tracked.current, presentKeys, now: at }),
-    );
-    const next: TrackedDeadline[] = [];
-    for (const item of items) {
-      const deadlineAt = deadlineForItem(item, mcpDeadlineAt);
-      if (deadlineAt !== undefined) {
-        next.push({ key: item.key, label: inboxItemLabel(item), deadlineAt });
-      }
-    }
-    tracked.current = next;
-  }, [items, mcpDeadlineAt]);
+  // C-3 (review fix): the log is the STORE's, written at the removal point.
+  // Inferring it here from "row vanished, deadline past" mislabelled rows a
+  // human answered after a throttled timer, and recorded nothing at all while
+  // this tab was closed — which is precisely when you need it.
+  const autoRejected = useStore((s) => s.approvalAutoRejected);
 
   if (items.length === 0 && autoRejected.length === 0) return null;
 
   return (
     <div className="flex flex-col gap-2">
+      {/* An empty listbox is a control with nothing to choose — announced, and
+          unusable. When there are no rows the log below stands alone. */}
+      {items.length > 0 && (
       <div role="listbox" aria-label={t('fleet.tab.approvals')} className="flex flex-col gap-2">
       {items.map((item, idx) => {
         const focused = idx === focusedIdx;
@@ -288,14 +268,15 @@ export default function ApprovalInboxList({ items, focusedIdx, onResolve }: Appr
         );
       })}
       </div>
+      )}
       {autoRejected.length > 0 && (
-        <div
+        <ul
           data-approval-auto-rejected-log
           className="flex flex-col gap-0.5 px-1"
           aria-label={t('fleet.approvals.autoRejectedLog')}
         >
           {autoRejected.map((entry) => (
-            <div
+            <li
               key={entry.key}
               data-approval-auto-rejected
               className="text-[10px] font-mono truncate"
@@ -303,9 +284,9 @@ export default function ApprovalInboxList({ items, focusedIdx, onResolve }: Appr
               title={entry.label}
             >
               {t('fleet.approvals.autoRejected', { name: entry.label })}
-            </div>
+            </li>
           ))}
-        </div>
+        </ul>
       )}
     </div>
   );
