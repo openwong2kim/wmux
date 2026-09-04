@@ -1,5 +1,125 @@
 ## [Unreleased]
 
+## [3.51.0] — 2026-09-04
+
+### Added
+
+- Task ledger: a status log keyed by WorkTask id (`~/.wmux/task-ledger.jsonl`, WMUX_DATA_SUFFIX-scoped) recording `working → input_required / review_requested → completed / failed / cancelled` with compare-and-swap revisions, actor authorization and a gate-pass requirement for `completed`.
+
+- MCP: `ledger_update` (every profile) lets a fan-out worker record `review_requested` / `input_required` on its own task; `ledger_list` is a commander-only tool (registered only under `--commander`, never in the full or core profile) that shows the brain the tasks it owns. Fan-out prompts now tell workers to report through the ledger instead of a chat "done".
+
+- Orchestrator: `deck.ledgerGate` (default off, `~/.wmux/deck-ledger-gate.json`) makes the brain's Stop gate hold a turn while the ledger lists open tasks it owns, with the existing consecutive-block cap and hysteresis; while on, `deck_ask_decision` shows the human the open-task list.
+
+- Every ledger transition is posted to the task's mission channel as `[ledger] <task> <from>→<to> <by> <summary>`.
+
+- **An orchestrator can now finish the tasks it starts.** Fanning out could open
+  N isolated tasks, and then nothing: running a task's completion gate, taking
+  its changes back into the parent repository, opening its pull request and
+  closing it were all reachable only from the desktop UI, so a supervising agent
+  could do nothing but ask you to click four times per task. It can now do all
+  four itself, and read a task's git status, recent commits and PR state as data
+  instead of guessing from a terminal screen. It can also stop a gate that is
+  still running, rather than waiting out a hung test suite for fifteen minutes.
+
+- **Closing a task or opening its PR asks you first.** Those two are the ones
+  nothing can take back — one removes a git worktree, the other pushes a branch
+  to your remote — so each raises the same approval prompt a fan-out does, naming
+  the task, its branch and the exact commit it points at, and auto-denying if
+  nobody answers. If the worker pushes another commit while the prompt is up,
+  the pull request is refused rather than sending something you did not see.
+  Running a gate and adopting a task's changes do not prompt: a gate run is
+  reversible by ignoring it, and adopted changes land staged and uncommitted.
+
+- Tasks can now be finished from an agent, not only from the GUI: `task_gate_run`
+  runs a task's completion gate (its trusted verify script, or npm lint + test)
+  inside the task's own worktree and reports a structured verdict; `task_adopt`
+  takes all of a task's changes into the parent repository as a staged,
+  uncommitted patch; `task_close` and `task_pr` close a task or open its pull
+  request. Each refuses with a named reason — a dirty worktree, unpushed
+  commits, missing dependencies, a task branch that needs rebasing — instead of
+  failing silently, and an adopt that will not apply cleanly leaves the parent
+  repository untouched.
+
+- `git_status`, `git_log` and `gh_pr_view` read a task's worktree as data, so a
+  supervising agent no longer has to infer what a task produced from a terminal
+  screen.
+
+### Changed
+
+- The sidebar's task list stays visible when it is empty, indents each task under
+  the workspace that started it, and summarises finished tasks in one line
+  instead of a list.
+
+- Multi Task asks for confirmation before launching tasks with no prompt at all,
+  and reports the launch in a single notification rather than one per task.
+
+- Settings names what the `claude-pty` orchestrator option changes: it switches
+  the Deck to a terminal interface.
+
+### Fixed
+
+- `browser_replay` now lets a step's navigation land before looking for the next element. A click that started a Turbo/SPA navigation used to have the next step measured against the old page and stopped with "no … on the page any more" while the element was there a moment later (#1193).
+
+- `browser_wait` is recorded as a replay step (url, selector, text, network idle) and counts toward the ring and per-flow step limits like any other action. A wait on a JS predicate is not recorded: a replay never evaluates a script from the cache file.
+
+- Orchestrator: a brain that fanned out work now learns when its workers stop or wait for input — worker lifecycle events are copied to the owning workspace tagged with the task, bypass the owner's `none` wake policy, and are parked as a backlog when the owner has no brain yet.
+
+- **An approval prompt waiting behind another no longer expires unseen.** Each
+  prompt's 30-second countdown started when it was created, so a second one
+  queued behind the first could auto-deny having never been on screen — a
+  refusal nobody made. The clock now starts when the prompt is actually shown.
+
+- **An agent with autonomy on can answer its own workers' prompts again.** The
+  check that keeps automated approval presses inside delegated task panes had no
+  way to learn which panes those were, so it refused every one of them. It is now
+  told, and a refusal says whether it was policy or missing wiring. Presses into
+  a pane you opened yourself are still refused, and a person answering from the
+  phone or the web was never subject to any of this.
+
+- `terminal_send({ submit: true })` now reports whether the prompt was actually
+  committed. The result carries `accepted` — true only when the pane was
+  observed to move (its turn started, or the input line cleared) — plus
+  `agentStatusAfter`, and the pane's last screen lines when it did not. The
+  Enter is re-sent once before giving up. Previously `submitted: true` meant
+  only "a carriage return was written", so an orchestrator reported progress on
+  panes whose prompt was still sitting uncommitted in the composer.
+
+- An orchestrator brain can finally reach the agents in its own workspace. A
+  brain owns no pane, so every same-workspace A2A reply it sent to an ADDRESSED
+  pane was suppressed as an "unverified sender" and merely stored — the brain
+  was told the message landed while the worker sat waiting. A caller carrying
+  the daemon-validated commander binding, for the workspace that binding names,
+  now satisfies that one guard. An anchorless reply is still suppressed (it
+  would fall back to whichever pane happens to be focused), and the self-loop
+  protection for pane callers is unchanged.
+
+- An automated approval press is now scoped to panes that were actually
+  delegated: the target's workspace must be a task workspace with autonomy on,
+  the prompt must have come from a hook rather than the screen-regex detector,
+  and a re-read must still show it. A fact the daemon cannot establish counts
+  as a refusal, and a refusal leaves the request live for a human to answer.
+  People are not subject to any of this — approving or denying from the phone
+  or the web works exactly as before — and a DENY is always allowed, from any
+  caller, because refusing one would keep a pane blocked in the name of safety.
+
+- A channel wake nudge now carries the first line of the message it is waking
+  you for, so an agent no longer has to spend a turn reading just to find out
+  whether the nudge mattered. It rides only into panes wmux can name as an
+  agent TUI, with shell metacharacters stripped: the text comes from another
+  workspace and is committed with an Enter, so a pane that is really a shell
+  would run it. A nudge that never landed (the pane died mid-race) marks that
+  member's own rows, over the message range it announced, `target_gone` instead
+  of leaving them looking pending forever — and a later ack promotes them back
+  to `delivered`. A nudge that DID land is still not a delivery receipt.
+
+- `wmux channel unread` and the `channel_unread` tool now answer from the same
+  daemon call and report the same set. The CLI no longer takes the member from
+  `$WMUX_MEMBER_ID` (only an explicit `--member`, matching the tool) and no
+  longer hides caught-up rows, so the two surfaces can no longer contradict
+  each other about what you owe. Each row names its member, and a workspace
+  holding several says so, since without `--member` the rows shown are the
+  whole workspace's and not only yours.
+
 ## [3.50.1] — 2026-09-03
 
 ### Changed
