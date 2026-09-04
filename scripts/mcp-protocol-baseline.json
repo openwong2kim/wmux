@@ -154,7 +154,7 @@
     },
     "commander": {
       "maxListBytes": 60000,
-      "wireResultSha256": "d225f1c1507ce29b7f40e4801cf7d0a3d5de73ef8ce4a8fae21845b20bb33c91",
+      "wireResultSha256": "d329e1c1116ea563220136184885b4b80fbdd5f30bb5257ee4332490b6029c9c",
       "instructionSha256": "5a97f851c892326eba7cbcf46292f6925834d5794172461d1ced997d90ac1deb",
       "toolNames": [
         "terminal_read",
@@ -207,7 +207,8 @@
         "task_pr",
         "git_status",
         "git_log",
-        "gh_pr_view"
+        "gh_pr_view",
+        "approval_press"
       ]
     }
   }

@@ -109,6 +109,20 @@ export interface ApprovalRequest {
   risk?: 'critical';
   /** Epoch ms. */
   createdAt: number;
+  /**
+   * Epoch ms this request stops being answerable on its own.
+   *
+   * Present on `awaiting_permission` records only: a gate holds a real timer
+   * (GateBroker self-defers at DEFAULT_GATE_DEADLINE_MS and the tool falls back
+   * to the agent's own local prompt), so there is a genuine deadline to render.
+   * An `awaiting_input` record has no timer — it lives until the turn ends —
+   * and must not grow a fake countdown.
+   *
+   * Additive and advisory: a surface without it renders no countdown, and no
+   * decision anywhere is made from it. The daemon's own expiry is driven by the
+   * broker's timer, not by this number.
+   */
+  deadlineAt?: number;
   state: ApprovalState;
   /**
    * #783 — the tool that triggered the gate. Present only on

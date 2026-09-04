@@ -316,6 +316,13 @@ export const DEFAULT_ALLOWED_TOOLS: string[] = [
   WMUX('git_status'),
   WMUX('git_log'),
   WMUX('gh_pr_view'),
+  // Commander-only: answering a worker's approval prompt. Auto-allowed because
+  // the decision that matters is not this one — the daemon's press scope
+  // (decideApprovalPress) refuses any press into a pane that is not a delegated
+  // task workspace with the operator's approvalPress capability on. Making the
+  // brain ask permission to call it would only add a prompt in front of a gate
+  // that is already there, on the one path that exists to keep workers moving.
+  WMUX('approval_press'),
 ];
 
 // Built-in CLI tools the orchestrator must NEVER hold. `allowedTools` only

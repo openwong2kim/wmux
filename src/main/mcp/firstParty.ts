@@ -311,6 +311,8 @@ export const FIRST_PARTY_METHODS: ReadonlySet<RpcMethod> = new Set<RpcMethod>([
   'task.git.status',
   'task.git.log',
   'task.gh.prView',
+  // Approval press — the commander-only approval_press tool.
+  'approval.press',
   // `company.a2a.*` used to be granted here for the six company_a2a_* tools.
   // Those tools are gone, so the grants went with them (least privilege — a
   // reserved wmux.internal method must not stay reachable by a clientName

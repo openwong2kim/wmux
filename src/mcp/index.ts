@@ -1642,6 +1642,44 @@ if (COMMANDER_MODE) {
     getSenderPtyId: () => MY_PTY_ID,
     resolveWorkspaceId: requireWorkspaceId,
   });
+
+  // === approval_press — answer a worker's approval prompt ===
+  //
+  // The replacement for typing `1` into a worker's pane. Typing a digit is not
+  // an approval: nothing checks the prompt is still on screen, nothing records
+  // a decision, and the same digit a second later lands in the composer of an
+  // agent that has moved on. This resolves the daemon's approval RECORD, which
+  // presses the keystroke that record specifies — never text from this call.
+  registerCommanderOnly(
+    'approval_press',
+    "Answer a fan-out worker's approval prompt. Give the worker's ptyId (or an approvalId from an approval event) and the daemon resolves its pending approval record: it re-reads the pane, presses the option the record specifies, and writes the decision to history. Use this instead of terminal_send — a typed digit is not an approval and is refused on a pane that has one pending. A refusal comes back with a reason: press-capability-off / autonomy-off mean the operator has not granted unattended presses for that worker (raise it with deck_ask_decision), prompt-gone means read the pane again.",
+    {
+      ptyId: z
+        .string()
+        .optional()
+        .describe("The worker pane holding the prompt (from pane_list / the approval event). Either this or approvalId."),
+      approvalId: z
+        .string()
+        .optional()
+        .describe('The approval record id, when you have one. Takes precedence over ptyId.'),
+      decision: z
+        .enum(['approve', 'deny'])
+        .optional()
+        .describe('approve (default) presses the affirmative option; deny cancels the tool call and hands the turn back.'),
+      choiceKey: z
+        .string()
+        .optional()
+        .describe('For a multi-option question: the option digit ("1", "2", …) to select, on an approve.'),
+    },
+    async ({ ptyId, approvalId, decision, choiceKey }) => {
+      const params: Record<string, unknown> = {};
+      if (ptyId) params.ptyId = ptyId;
+      if (approvalId) params.approvalId = approvalId;
+      if (decision) params.decision = decision;
+      if (choiceKey) params.choiceKey = choiceKey;
+      return callRpc('approval.press', params);
+    },
+  );
 }
 
 // Hook the MCP initialize handshake so wmux substrate learns the declared

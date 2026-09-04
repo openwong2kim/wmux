@@ -44,6 +44,7 @@
 
 import crypto from 'node:crypto';
 import { hasCriticalRisk } from '../../shared/criticalPatterns';
+import { DEFAULT_GATE_DEADLINE_MS } from './GateBroker';
 import {
   decideApprovalPress,
   keystrokesForAgent,
@@ -340,6 +341,9 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
         superseded.resolvedAt = this.now();
         events.push({ type: 'supersede', request: copyRequest(superseded) });
       }
+      // One clock read for both fields: a deadline computed from a SECOND read
+      // is a deadline measured from a moment that is not this record's birth.
+      const createdAt = this.now();
       const created: ApprovalRequest = {
         id: snapshot.id,
         sessionId: snapshot.sessionId,
@@ -348,7 +352,11 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
         kind: 'awaiting_permission',
         toolName: snapshot.toolName,
         ...(snapshot.toolInputSummary ? { toolInputSummary: snapshot.toolInputSummary } : {}),
-        createdAt: this.now(),
+        createdAt,
+        // The gate's real deadline: the broker self-defers at this point and
+        // the tool falls back to the agent's own local prompt, so a surface can
+        // honestly count down to it. See ApprovalRequest.deadlineAt.
+        deadlineAt: createdAt + DEFAULT_GATE_DEADLINE_MS,
         state: 'pending',
       };
       this.requests.push(created);

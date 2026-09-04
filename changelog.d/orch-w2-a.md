@@ -1,3 +1,18 @@
+### Added
+
+- `approval_press` — an orchestrator brain can now answer a fan-out worker's
+  approval prompt properly, instead of typing the digit `1` at whatever happens
+  to be on that worker's screen. The press resolves the approval record, so the
+  prompt is confirmed to still be there, the operator's autonomy policy decides
+  whether it may land, and the decision is written to the approval history. On a
+  pane wmux holds an approval record for, a brain's `terminal_send` /
+  `terminal_send_key` is refused and points at the tool; if the press is refused
+  by policy, that refusal lifts the block again so the brain is never left with
+  no move at all. Your own typing is unaffected.
+
+- Approvals raised by a permission gate now carry `deadlineAt`, the moment the
+  gate stops waiting, so a surface can show an honest countdown.
+
 ### Fixed
 
 - Fan-out workers no longer freeze on Claude Code's first-run screens. A `claude`

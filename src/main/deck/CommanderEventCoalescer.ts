@@ -1161,9 +1161,24 @@ function renderEventLine(
     verdict = stopVerdict(autonomy, e.lastMessage);
   } else {
     // agent.awaiting_input
-    verdict = awaitingVerdict(e.source, autonomy);
+    verdict = awaitingVerdict(e.source, autonomy, {
+      ptyId: e.ptyId,
+      ...(e.task ? { taskId: sanitizeSnippet(e.task.taskId) } : {}),
+    });
   }
   return `  seq=${pad(String(e.seq), 6)} ${pad(subjectLabel, 22)} kind=${pad(kindLabel, 14)} source=${pad(e.source, 8)} ${verdict}`;
+}
+
+/**
+ * The literal call that answers this prompt. Spelled out with the pane's own id
+ * because the brain reading this line has to produce the call, and "press it
+ * with approval_press" left it to guess the arguments — the guess it used to
+ * make was `terminal_send("1")`, which is what this replaces.
+ */
+function pressCall(target?: { ptyId: string }): string {
+  return target?.ptyId
+    ? `approval_press({ ptyId: "${target.ptyId}", decision: "approve" })`
+    : 'approval_press({ ptyId, decision: "approve" })';
 }
 
 /**
@@ -1172,14 +1187,37 @@ function renderEventLine(
  * detector — and snapshot state, which is never hook-fresh) must be VERIFIED on
  * screen before pressing (owner decision 2026-07-17). Shared by the edge line
  * and the level-snapshot line so both enforce ONE policy.
+ *
+ * Wave 2: the press names `approval_press`, not a keystroke. Typing at an
+ * approval prompt is refused for a commander while wmux holds a record for it,
+ * so a verdict that told the brain to send keys was describing a move the
+ * substrate no longer allows. `target` carries the pane and — for a delegated
+ * fan-out worker — its task id, so the line states WHICH task is stopped and
+ * what ends the brain's turn afterwards.
  */
-function awaitingVerdict(source: BufferedEvent['source'], autonomy: WorkspaceAutonomy): string {
+function awaitingVerdict(
+  source: BufferedEvent['source'],
+  autonomy: WorkspaceAutonomy,
+  target?: { ptyId: string; taskId?: string },
+): string {
   if (!autonomy.approvalPress) return '(NOTIFY ONLY, do NOT approve)';
-  if (source === 'hook') return '(hook-verified — you MAY press the approval per policy)';
+  // The next-step contract: after the press the worker runs on its own and its
+  // own event wakes you, so the turn ends here rather than looping on the pane.
+  const then = target?.taskId
+    ? ` Then END YOUR TURN — task ${target.taskId} runs on and its next event wakes you.`
+    : '';
+  if (source === 'hook') {
+    return (
+      `(status=awaiting_input, hook-verified — you MAY press the approval per policy: ` +
+      `${pressCall(target)}.${then})`
+    );
+  }
   return (
-    '(regex-detected — VERIFY THEN PRESS: terminal_read this pane first; ' +
-    'if a real approval prompt is on screen, you MAY press it with ' +
-    'terminal_send_key; if not, notify only)'
+    '(status=awaiting_input, regex-detected — VERIFY THEN PRESS: terminal_read this pane first; ' +
+    `if a real approval prompt is on screen, you MAY press it with ${pressCall(target)}; ` +
+    'if not, notify only. A press answered `detector-only` means wmux holds no hook record for ' +
+    "this prompt — that refusal lifts the pane's typing block, so answer it by hand then." +
+    `${then})`
   );
 }
 
@@ -1198,9 +1236,12 @@ function stopVerdict(autonomy: WorkspaceAutonomy, lastMessage?: AgentLastMessage
   if (lastMessage?.endsWithQuestion) {
     return autonomy.continueInstruction
       ? `(BLOCKED ON A QUESTION — the pane${said} and is waiting for an answer, NOT working. `
-        + 'Answer it with terminal_send({text, submit:true}) — terminal_send_key(enter) will '
-        + 'NOT submit a question the pane merely printed — or escalate it to the human with '
-        + 'deck_ask_decision. Do not report this pane as running.)'
+        + 'If wmux recorded the prompt (a hook-reported approval), answer it with '
+        + 'approval_press({ptyId, decision}) — typing at a recorded prompt is refused. '
+        + 'Otherwise the pane merely PRINTED the question and has no record: answer with '
+        + 'terminal_send({text, submit:true}) — terminal_send_key(enter) will NOT submit a '
+        + 'printed question — or escalate it to the human with deck_ask_decision. '
+        + 'Do not report this pane as running.)'
       : `(BLOCKED ON A QUESTION — the pane${said} and is waiting for an answer, NOT working. `
         + 'Relay the question to the human — summarize only — do not send anything to this pane.)';
   }
@@ -1291,7 +1332,7 @@ function renderSnapshotLine(
   const paneLabel = `pane=${pane.ptyId}(${pane.agentName ?? 'shell'})`;
   let verdict: string;
   if (pane.agentStatus === 'awaiting_input' || pane.agentStatus === 'waiting') {
-    verdict = awaitingVerdict('detector', autonomy);
+    verdict = awaitingVerdict('detector', autonomy, { ptyId: pane.ptyId });
   } else if (pane.agentStatus === 'complete' || pane.agentStatus === 'error') {
     verdict = stopVerdict(autonomy, undefined);
   } else {

@@ -143,6 +143,11 @@ export const COMMANDER_ONLY_TOOLS: readonly string[] = [
   'git_status',
   'git_log',
   'gh_pr_view',
+  // Answer a worker's approval prompt through the approval registry. Brain-only
+  // for the same reason the task tools are: a pane agent answers its own
+  // prompts by being the pane, and the press scope only ever authorizes a press
+  // into a DELEGATED task workspace — which is a thing only an orchestrator has.
+  'approval_press',
 ];
 
 /** Names in COMMANDER_ONLY_TOOLS that ALSO exist in full/core under a
@@ -245,6 +250,9 @@ export const COMMANDER_RPC_METHODS: ReadonlySet<string> = new Set<string>([
   'task.git.status',
   'task.git.log',
   'task.gh.prView',
+  // approval_press. Not a teardown and not raw terminal IO: it resolves a
+  // RECORD, and the daemon decides whether the bytes may land.
+  'approval.press',
 ]);
 
 /** Teardown-EFFECT methods a validated commander is refused server-side

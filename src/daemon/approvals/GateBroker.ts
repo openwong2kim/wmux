@@ -67,7 +67,7 @@ export interface GateBrokerDeps {
  * dangling waiter). The bridge serialises its own shorter budget and sends it
  * in the envelope, so this is the cap, not always the value used.
  */
-const DEFAULT_GATE_DEADLINE_MS = 120_000;
+export const DEFAULT_GATE_DEADLINE_MS = 120_000;
 
 /**
  * Leave room in the pipe server's connection budget for the control plane. A
