@@ -95,6 +95,32 @@ describe('deckSlice', () => {
       expect(b.messages[1]).toMatchObject({ text: 'on it', status: 'done' });
     });
 
+    // The event carries the vendor that ACTUALLY served the turn. Reading the
+    // store's live global instead stamped a turn the old brain produced with
+    // the vendor the operator had just switched to — a false label, and a
+    // false "the brain changed here" break in the log.
+    it('stamps a main-originated turn with the vendor ON THE EVENT, not the live global', () => {
+      useStore.setState({ deckBrainVendor: 'hermes' });
+      const st = useStore.getState();
+      st.applyDeckBrainEvent(WS_A, {
+        type: 'turn-start',
+        prompt: 'scheduled sweep',
+        vendor: 'claude',
+      });
+      const a = threadOf(WS_A);
+      expect(a.messages[0]).toMatchObject({ role: 'user', vendor: 'claude' });
+      expect(a.messages[1]).toMatchObject({ role: 'assistant', vendor: 'claude' });
+    });
+
+    it('leaves a turn unstamped when the event names no vendor', () => {
+      useStore.setState({ deckBrainVendor: 'hermes' });
+      const st = useStore.getState();
+      st.applyDeckBrainEvent(WS_B, { type: 'turn-start', prompt: 'legacy turn' });
+      const b = threadOf(WS_B);
+      expect(b.messages[0].vendor).toBeUndefined();
+      expect(b.messages[1].vendor).toBeUndefined();
+    });
+
     it('streams events into the open turn and returns to idle on turn-end', () => {
       const st = useStore.getState();
       st.startDeckBrainTurn(WS_A, 'go');

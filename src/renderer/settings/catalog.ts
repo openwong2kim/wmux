@@ -97,6 +97,7 @@ export const SETTINGS_CATALOG: SettingsCatalogEntry[] = [
   { id: 'brain', tab: 'agents', labelKey: 'settings.orchestratorBrain', descKey: 'settings.orchestratorBrainDesc', synonyms: 'orchestrator brain hermes claude acp' },
   { id: 'model', tab: 'agents', labelKey: 'settings.orchestratorModel', descKey: 'settings.orchestratorModelDesc', synonyms: 'model opus sonnet haiku' },
   { id: 'autowake', tab: 'agents', labelKey: 'settings.autoWake', descKey: 'settings.autoWakeDesc', synonyms: 'autowake wake event push tokens' },
+  { id: 'ledgergate', tab: 'agents', labelKey: 'settings.ledgerGate', descKey: 'settings.ledgerGateDesc', synonyms: 'ledger gate stop task orchestrator delegated experimental' },
   { id: 'roles', tab: 'agents', labelKey: 'settings.roleBindings', descKey: 'settings.roleBindingsDesc', synonyms: 'role reviewer tester planner model bind' },
   { id: 'a2a', tab: 'agents', labelKey: 'settings.a2aAutoApproveExecute', descKey: 'settings.a2aAutoApproveExecuteDesc', synonyms: 'a2a execute approve' },
   { id: 'mcp', tab: 'agents', labelKey: 'settings.mcpServers', synonyms: 'mcp plugin tools broker register' },

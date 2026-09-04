@@ -25,7 +25,7 @@ import {
   applyBrainEvent,
   type DeckBrainMessage,
 } from '../../components/Deck/deckBrain';
-import { generateId } from '../../../shared/types';
+import { generateId, type BrainVendor } from '../../../shared/types';
 
 /** Which dock tab is showing. `commander` is the default (the LLM-less
  *  command composer); `channels` is the classic channel list + conversation.
@@ -100,13 +100,24 @@ function threadOf(state: StoreState, workspaceId: string): DeckBrainThread {
   return fresh;
 }
 
-function openTurn(thread: DeckBrainThread, text: string): void {
-  thread.messages.push({ id: generateId('dbu'), role: 'user', text, ts: Date.now() });
+// The brain vendor is a live setting, so a thread can hold turns from two
+// different brains — which share no transcript, no tool surface and no session.
+// Stamping the vendor at turn-open is what lets the log show the break instead
+// of implying a continuity that does not exist.
+//
+// `vendor` is OPTIONAL and never inferred here: a main-originated turn carries
+// the vendor that actually served it on the event, and reading the store's live
+// global instead would stamp a turn the OLD brain produced with the vendor the
+// operator has just switched to — a false label AND a false boundary. Absent
+// vendor ⇒ no stamp, which the log renders as no tag rather than a guess.
+function openTurn(thread: DeckBrainThread, text: string, vendor?: BrainVendor): void {
+  thread.messages.push({ id: generateId('dbu'), role: 'user', text, ts: Date.now(), vendor });
   thread.messages.push({
     id: generateId('dba'),
     role: 'assistant',
     text: '',
     ts: Date.now(),
+    vendor,
     tools: [],
     status: 'streaming',
   });
@@ -137,7 +148,7 @@ export const createDeckSlice: StateCreator<
 
   startDeckBrainTurn: (workspaceId, text) =>
     set((state: StoreState) => {
-      openTurn(threadOf(state, workspaceId), text);
+      openTurn(threadOf(state, workspaceId), text, state.deckBrainVendor);
     }),
 
   applyDeckBrainEvent: (workspaceId, event) =>
@@ -148,7 +159,7 @@ export const createDeckSlice: StateCreator<
       // scheduled run renders as visibly as a typed one (in ITS workspace's
       // thread, which may be a background one).
       if (event.type === 'turn-start') {
-        openTurn(thread, event.prompt);
+        openTurn(thread, event.prompt, event.vendor);
         return;
       }
       thread.messages = applyBrainEvent(thread.messages, event);

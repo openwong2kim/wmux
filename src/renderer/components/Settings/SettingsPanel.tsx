@@ -880,6 +880,27 @@ function OrchestratorSection() {
       .then((r) => setAutoWake(r.enabled))
       .catch(() => setAutoWake(!enabled));
   };
+  // `deck.ledgerGate` — persisted in MAIN (deck-ledger-gate.json), the same
+  // file the Stop gate reads, so the toggle and the gate can never disagree and
+  // the choice survives a restart. Default OFF; same optimistic-toggle-with-
+  // echo shape as auto-wake, except the default rendering is off, so a failed
+  // read leaves the switch showing the behaviour actually in force.
+  const [ledgerGate, setLedgerGate] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    window.electronAPI.deck?.ledgerGate
+      ?.get()
+      .then((r) => { if (!cancelled) setLedgerGate(r.enabled); })
+      .catch(() => undefined); // keep the default-off rendering
+    return () => { cancelled = true; };
+  }, []);
+  const onLedgerGateChange = (enabled: boolean) => {
+    setLedgerGate(enabled);
+    window.electronAPI.deck?.ledgerGate
+      ?.set(enabled)
+      .then((r) => setLedgerGate(r.enabled))
+      .catch(() => setLedgerGate(!enabled));
+  };
   // D1 briefing toggles — persisted in MAIN (deck-briefing.json). Read on mount;
   // optimistic toggle with echo reconciliation (mirrors auto-wake).
   const [briefingEnabled, setBriefingEnabled] = useState(true);
@@ -1001,6 +1022,28 @@ function OrchestratorSection() {
           onChange={onAutoWakeChange}
           label={t('settings.autoWake')}
         />
+      </SettingRow>
+      {/* Experimental on purpose: this replaces the shipped Stop gate's
+          snapshot inference with the task ledger, and the ledger has not run a
+          full dogfood yet (orchestrator track, 2026-09). */}
+      <SettingRow id="ledgergate"
+        label={t('settings.ledgerGate')}
+        description={t('settings.ledgerGateDesc')}
+      >
+        <div className="flex items-center gap-2">
+          <span
+            className="text-[9px] px-1 py-0.5 rounded"
+            style={{ backgroundColor: 'var(--bg-surface)', color: 'var(--text-muted)' }}
+            title={t('settings.ledgerGateDesc')}
+          >
+            {t('settings.mcpExperimental')}
+          </span>
+          <Toggle
+            checked={ledgerGate}
+            onChange={onLedgerGateChange}
+            label={t('settings.ledgerGate')}
+          />
+        </div>
       </SettingRow>
       <SettingRow
         label={t('settings.briefing')}

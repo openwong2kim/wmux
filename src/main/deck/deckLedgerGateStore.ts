@@ -64,6 +64,19 @@ export function loadLedgerGateEnabled(dir?: string): boolean {
 /** Persist the switch. Returns the value now in force. */
 export async function setLedgerGateEnabled(enabled: boolean, dir?: string): Promise<boolean> {
   const next = enabled === true;
-  await atomicWriteJSON(getDeckLedgerGatePath(dir), { enabled: next });
+  const p = getDeckLedgerGatePath(dir);
+  await atomicWriteJSON(p, { enabled: next });
+  // Publish the write into the mtime cache instead of leaving the reader to
+  // notice it. mtime resolution is coarse (15 ms on Windows), so two toggles
+  // inside one tick produce the SAME mtime and the second read would serve the
+  // first value — the switch and the Stop gate reading the same file would
+  // then disagree about what is in force. Seeding it with the value we just
+  // wrote makes that impossible; a failed stat drops the entry so the next
+  // read re-parses from disk.
+  try {
+    cache.set(p, { mtimeMs: fs.statSync(p).mtimeMs, value: next });
+  } catch {
+    cache.delete(p);
+  }
   return next;
 }
