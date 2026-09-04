@@ -80,6 +80,13 @@ export function resolveImagePasteStrategy({
   return agentSupportsNativeImagePaste(agentSlug) ? 'native' : 'path';
 }
 
+/** Windows-side WSL tooling that is not a shell — a /mnt path there is wrong. */
+const WSL_NON_SHELLS = new Set(['wslconfig', 'wslg', 'wslservice']);
+
+/** `wsl.exe` plus the per-distro launchers the Store installs (`ubuntu2404.exe`). */
+const WSL_LAUNCHER_RE =
+  /^(?:wsl|ubuntu|debian|kali|opensuse|sles|oracle|fedora|alpine|archlinux)[a-z0-9._-]*$/;
+
 /**
  * True when this pane's shell enters WSL.
  *
@@ -97,13 +104,6 @@ export function isWslShell(shellPath: string | null | undefined): boolean {
   if (WSL_LAUNCHER_RE.test(stem)) return true;
   return stem === 'bash' && /\/windows\/system32\/bash$/.test(posix.replace(/\.exe$/, ''));
 }
-
-/** Windows-side WSL tooling that is not a shell — a /mnt path there is wrong. */
-const WSL_NON_SHELLS = new Set(['wslconfig', 'wslg', 'wslservice']);
-
-/** `wsl.exe` plus the per-distro launchers the Store installs (`ubuntu2404.exe`). */
-const WSL_LAUNCHER_RE =
-  /^(?:wsl|ubuntu|debian|kali|opensuse|sles|oracle|fedora|alpine|archlinux)[a-z0-9._-]*$/;
 
 /**
  * Translate a Windows path into the WSL mount that sees the same file
