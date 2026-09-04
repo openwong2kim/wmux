@@ -46,6 +46,18 @@ describe('inheritTaskAutonomy (A-2 precondition)', () => {
     expect(loadDeckAutonomy(dir)['ws-task']).toBeUndefined();
   });
 
+  // `setWorkspaceMode` REFUSES an id that fails its pattern by RETURNING the
+  // product default, not by throwing — so the try/catch caught nothing and the
+  // fan-out was told the inheritance landed while nothing had been written.
+  it('reports written:false when the store refused the write', async () => {
+    await setWorkspaceMode('ws-owner', 'danger', dir);
+
+    const res = await inheritTaskAutonomy('ws-owner', 'ws task/../escape', dir);
+
+    expect(res).toEqual({ mode: 'off', written: false });
+    expect(loadDeckAutonomy(dir)['ws task/../escape']).toBeUndefined();
+  });
+
   it('is what makes the pushed fact table authorize a press at all', async () => {
     // The end the precondition exists for: `decideApprovalPress` reads this row.
     await setWorkspaceMode('ws-owner', 'danger', dir);

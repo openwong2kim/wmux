@@ -60,6 +60,20 @@ export async function inheritTaskAutonomy(
   if (ownerMode === DEFAULT_MODE) return { mode: DEFAULT_MODE, written: false };
   try {
     const entry = await setWorkspaceMode(taskWorkspaceId, ownerMode, dir);
+    // `setWorkspaceMode` REFUSES rather than throws: a workspace id that fails
+    // its pattern, or a mode it does not recognise, comes back as the product
+    // default with nothing written. Reporting that as `written: true` claimed
+    // the inheritance landed while `decideApprovalPress` was about to refuse
+    // every press into the worker — a fan-out that looks configured and is not
+    // is worse than one that says it failed.
+    if (entry.mode !== ownerMode) {
+      console.warn(
+        `[fanout] autonomy inheritance refused for task workspace ${taskWorkspaceId}: ` +
+          `asked for '${ownerMode}', the store answered '${entry.mode}' — ` +
+          'the worker keeps the default (no press).',
+      );
+      return { mode: entry.mode, written: false };
+    }
     return { mode: entry.mode, written: true };
   } catch (err) {
     console.warn(
