@@ -8,11 +8,20 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { execFileSync } from 'node:child_process';
-import { FanOutService, buildInitialCommand, WORKER_DELIVERY_PREAMBLE } from '../FanOutService';
+import {
+  FanOutService,
+  buildInitialCommand,
+  workerLaunchCommand,
+  stripLaunchEnvPrefix,
+  firstRunStuckSummary,
+  WORKER_DELIVERY_PREAMBLE,
+} from '../FanOutService';
 import type { FanOutDaemonPort, FanOutRendererPort } from '../FanOutService';
 import type { TaskWorktreePlan } from '../TaskWorktreeManager';
 import type { ProjectConfigState } from '../../../shared/wmuxProjectConfig';
 import { clearFanoutPortReservationsForTest } from '../fanoutEnvironment';
+import { TaskLedger } from '../../../daemon/ledger/TaskLedger';
+import { setTaskLedgerForTests } from '../../deck/taskLedgerHost';
 
 let metaRoot: string;
 beforeEach(() => {
@@ -184,6 +193,101 @@ describe('buildInitialCommand (§4 D4)', () => {
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+// ── F15: the worker's model is wmux's decision, not the login shell's ─────────
+
+describe('workerLaunchCommand (F15)', () => {
+  const POSIX = { platform: 'darwin' as NodeJS.Platform };
+
+  it('neutralises a shell-exported ANTHROPIC_MODEL for a plain claude worker', () => {
+    // The command is TYPED into the pane's interactive login shell, so ~/.zshrc
+    // has already re-exported ANTHROPIC_MODEL by then; only `env -u` on the line
+    // itself runs late enough to win.
+    const launch = workerLaunchCommand('claude', '/m/prompt.md', POSIX);
+    expect(launch.command).toBe("env -u ANTHROPIC_MODEL claude \"$(cat '/m/prompt.md')\"");
+    expect(launch.neutralisedModelEnv).toBe(true);
+  });
+
+  it('leaves the quoting of the prompt path byte-identical', () => {
+    const nasty = "/a b/it's $x`y.md";
+    const launch = workerLaunchCommand('claude', nasty, POSIX);
+    expect(launch.command.endsWith(buildInitialCommand('claude', nasty, 'darwin'))).toBe(true);
+    // …and the shell really hands the file body to argv, prefix included.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-launch-'));
+    try {
+      const promptFile = path.join(dir, "a b/it's $x`y.md");
+      fs.mkdirSync(path.dirname(promptFile), { recursive: true });
+      const body = 'do the thing "$(rm -rf /)" `boom`';
+      fs.writeFileSync(promptFile, body, 'utf8');
+      const cmd = workerLaunchCommand("printf '%s'", promptFile, POSIX).command;
+      expect(execFileSync('sh', ['-c', cmd], { encoding: 'utf8' })).toBe(body);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('leaves a command that already chooses a model alone', () => {
+    for (const cmd of ['claude --model opus', 'claude --model=opus', 'claude -m opus']) {
+      const launch = workerLaunchCommand(cmd, '/m/prompt.md', POSIX);
+      expect(launch.command.startsWith('env ')).toBe(false);
+      expect(launch.neutralisedModelEnv).toBe(false);
+    }
+  });
+
+  it('leaves a non-claude launcher alone — no other agent reads the variable', () => {
+    const launch = workerLaunchCommand('codex', '/m/prompt.md', POSIX);
+    expect(launch.command).toBe("codex \"$(cat '/m/prompt.md')\"");
+    expect(launch.neutralisedModelEnv).toBe(false);
+  });
+
+  it('leaves a ROLED task alone so the renderer can still read its launcher stem', () => {
+    // applyRoleAgent/applyRoleBinding both gate on the first token: an `env`
+    // prefix would silently drop the role's agent AND its model.
+    const launch = workerLaunchCommand('claude', '/m/prompt.md', { ...POSIX, role: 'Builder' });
+    expect(launch.command).toBe("claude \"$(cat '/m/prompt.md')\"");
+    expect(launch.neutralisedModelEnv).toBe(false);
+  });
+
+  it('says so instead of emitting a POSIX-only prefix on win32', () => {
+    const launch = workerLaunchCommand('claude', 'C:\\m\\prompt.md', { platform: 'win32' });
+    expect(launch.command.startsWith('env ')).toBe(false);
+    expect(launch.neutralisedModelEnv).toBe(false);
+    expect(launch.note).toContain('ANTHROPIC_MODEL');
+  });
+
+  it('still works for the "environment only" launch with no prompt file', () => {
+    expect(workerLaunchCommand('claude', undefined, POSIX).command).toBe('env -u ANTHROPIC_MODEL claude');
+  });
+});
+
+describe('stripLaunchEnvPrefix (F15)', () => {
+  it('recovers the agent from a command the launch prefixed', () => {
+    expect(stripLaunchEnvPrefix("env -u ANTHROPIC_MODEL claude \"$(cat '/m/p.md')\"")).toBe(
+      "claude \"$(cat '/m/p.md')\"",
+    );
+    expect(stripLaunchEnvPrefix('env -u A -u B claude')).toBe('claude');
+  });
+
+  it('leaves any other command — and any other use of env — untouched', () => {
+    expect(stripLaunchEnvPrefix('claude --model opus')).toBe('claude --model opus');
+    expect(stripLaunchEnvPrefix('env FOO=1 claude')).toBe('env FOO=1 claude');
+  });
+});
+
+describe('firstRunStuckSummary (F15)', () => {
+  it('names the model and the fix for a model error', () => {
+    const s = firstRunStuckSummary({ headline: 'selected-model error', reason: 'model', model: 'glm-5.3' });
+    expect(s).toContain('glm-5.3');
+    expect(s).toContain('/model <model>');
+    expect(s).toContain('ANTHROPIC_MODEL');
+  });
+
+  it('still asks for a keypress on a menu the watch could not clear', () => {
+    expect(firstRunStuckSummary({ headline: 'fullscreen renderer upsell', reason: 'unanswered' })).toContain(
+      'keypress',
+    );
   });
 });
 
@@ -465,9 +569,10 @@ describe('프리플라이트 거부 — 태스크 생성 0', () => {
     const res = await svc.start(baseReq({ prompt: '', taskPrompts: ['only A has one', ''] }));
     expect(res.ok).toBe(true);
     expect(daemon.calls.filter((c) => c.method === 'task.mission.start')).toHaveLength(2);
-    // 태스크 2(프롬프트 없음)는 prompt.md 없이 agentCmd만 그대로 발사된다.
+    // 태스크 2(프롬프트 없음)는 prompt.md 없이 agentCmd만 그대로 발사된다
+    // (F15의 ANTHROPIC_MODEL 중화 접두사만 앞에 붙는다 — POSIX에서).
     const barePane = renderer.spawned.find((s) => !s.initialCommand.includes('prompt.md'));
-    expect(barePane?.initialCommand).toBe('claude');
+    expect(stripLaunchEnvPrefix(barePane?.initialCommand ?? '')).toBe('claude');
   });
 
   it('§7: 프롬프트 없는 태스크는 prompt.md를 아예 쓰지 않는다', async () => {
@@ -823,5 +928,71 @@ describe('fan-out worker first run (A-1)', () => {
     expect(res.tasks[0].firstRunPrompt).toBe('fullscreen renderer upsell');
     // It DID try the dismissal the screen advertises before giving up.
     expect(keys).toEqual(['\x1b', '\x1b', '\x1b']);
+  });
+
+  // ── F15 ────────────────────────────────────────────────────────────────────
+
+  it('records the neutralised command it actually launched', async () => {
+    const daemon = makeDaemonFake();
+    const renderer = makeRendererFake();
+    const svc = new FanOutService({
+      daemon: daemon.port,
+      renderer: renderer.port,
+      worktrees: makeWorktreesFake(),
+    });
+
+    const res = await svc.start(baseReq({ idempotencyKey: 'fo-key-f15', titles: ['Task A'] }));
+    const launched = renderer.spawned[0].initialCommand;
+    // What main recorded for F2 re-fire is what the renderer was told to launch.
+    expect(res.tasks[0].initialCommand).toBe(launched);
+    if (process.platform === 'win32') {
+      expect(launched.startsWith('claude')).toBe(true);
+    } else {
+      expect(launched.startsWith('env -u ANTHROPIC_MODEL claude ')).toBe(true);
+    }
+  });
+
+  it('moves a worker whose first turn died on its model to input_required', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-f15-ledger-'));
+    const ledger = new TaskLedger({ dir });
+    setTaskLedgerForTests(ledger);
+    try {
+      const screen = [
+        '> do the thing',
+        '',
+        "There's an issue with the selected model (glm-5.3)",
+        '',
+      ].join('\n');
+      const keys: string[] = [];
+      const daemon = makeDaemonFake();
+      const renderer = makeRendererFake();
+      const svc = new FanOutService({
+        daemon: daemon.port,
+        renderer: renderer.port,
+        worktrees: makeWorktreesFake(),
+        firstRun: {
+          readScreen: async () => screen,
+          sendKey: async (_p, seq) => {
+            keys.push(seq);
+          },
+        },
+      });
+
+      const res = await svc.start(baseReq({ idempotencyKey: 'fo-key-model', titles: ['Task A'] }));
+      // The watch ran even though the launch carries the `env -u` prefix — a
+      // stem read straight off the recorded command would have said `env`.
+      expect(res.tasks[0].firstRunStuck).toBe(true);
+      expect(res.tasks[0].firstRunPrompt).toBe('selected-model error');
+      // No blind press: this is not a menu, and wmux does not type at one.
+      expect(keys).toEqual([]);
+
+      const row = ledger.list({ id: res.tasks[0].taskId as string })[0];
+      expect(row.status).toBe('input_required');
+      expect(row.summary).toContain('glm-5.3');
+      expect(row.summary).toContain('/model <model>');
+    } finally {
+      setTaskLedgerForTests(null);
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

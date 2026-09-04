@@ -51,6 +51,7 @@ import {
   clearFirstRunPrompts,
   firstRunEnvForAgent,
   launcherStem,
+  SUPPORTED_STEMS,
   type FirstRunPort,
 } from './agentFirstRun';
 
@@ -583,7 +584,13 @@ export class FanOutService {
     // ③ 렌더러 spawn — 전용 워크스페이스 + 에이전트 페인. cwd=worktreePath,
     //    initialCommand=`{agentCmd} "$(cat '{promptPath}')"`(경로 쿼팅) — 프롬프트가
     //    없으면 인자 없이 agentCmd만(사람이 페인에서 직접 입력). 실제 workspaceId 회수.
-    const initialCommand = buildInitialCommand(ctx.agentCmd, promptPath);
+    // F15 — and the launch neutralises a shell-exported ANTHROPIC_MODEL, which
+    // no spawn env can (the rc files run after it). See workerLaunchCommand.
+    const launch = workerLaunchCommand(ctx.agentCmd, promptPath, {
+      ...(ctx.role ? { role: ctx.role } : {}),
+    });
+    if (launch.note) console.warn(`[fanout] ${launch.note}`);
+    const initialCommand = launch.command;
     base.initialCommand = initialCommand; // F2 재발사 재료(맨 셸 오배선 방지).
     const wsName = `wtask: ${ctx.title.slice(0, 32)}`;
     // A-1 — first-run env for the PANE only (not for the setup hook, which is a
@@ -698,7 +705,8 @@ export class FanOutService {
    * Mutates `base` with what was seen. A screen that is still there moves the
    * task's ledger row to `input_required`, because that is the state the brain
    * reads: an idle worker and a worker frozen on an onboarding menu are
-   * indistinguishable from the outside, and `working` would be a lie.
+   * indistinguishable from the outside, and `working` would be a lie. F15 puts
+   * a first turn that died on its model in the same bucket, for the same reason.
    */
   private async watchFirstRun(base: FanOutTaskResult, ownerWorkspaceId: string): Promise<void> {
     const port = this.firstRun;
@@ -706,7 +714,7 @@ export class FanOutService {
     if (!port || !ptyId) return;
     // The command the renderer ACTUALLY launched (a role binding may have
     // swapped the agent). Only claude has these screens.
-    if (launcherStem(base.initialCommand ?? '') !== 'claude') return;
+    if (launcherStem(stripLaunchEnvPrefix(base.initialCommand ?? '')) !== 'claude') return;
 
     let outcome: Awaited<ReturnType<typeof clearFirstRunPrompts>>;
     try {
@@ -729,7 +737,7 @@ export class FanOutService {
         status: 'input_required',
         actor: { kind: 'system', workspaceId: ownerWorkspaceId },
         expectedRev: entry.rev,
-        summary: `worker is waiting on Claude Code's ${outcome.headline}; it needs a keypress in the pane`,
+        summary: firstRunStuckSummary(outcome),
       });
     } catch {
       // best-effort — the result already carries firstRunStuck.
@@ -788,9 +796,13 @@ function describeErr(err: unknown): string {
  * 빈 인자 처리(무시/에러/빈 프롬프트 전송)가 달라 불확정적이므로, "인자 없음"을 명시적으로
  * 만들어 에이전트가 평소 인터랙티브 기동과 동일하게 뜨도록 한다.
  */
-export function buildInitialCommand(agentCmd: string, promptPath?: string): string {
+export function buildInitialCommand(
+  agentCmd: string,
+  promptPath?: string,
+  platform: NodeJS.Platform = process.platform,
+): string {
   if (promptPath === undefined) return agentCmd;
-  if (process.platform === 'win32') {
+  if (platform === 'win32') {
     // PowerShell 단일따옴표 리터럴: 내부 `'`는 `''`로 이스케이프. -LiteralPath로
     // glob·경로 특수문자 해석까지 봉쇄.
     const escaped = promptPath.replace(/'/g, "''");
@@ -799,4 +811,122 @@ export function buildInitialCommand(agentCmd: string, promptPath?: string): stri
   // POSIX 단일따옴표 리터럴: 내부 `'`는 `'\''`(닫고-이스케이프-열기)로 처리.
   const escaped = promptPath.replace(/'/g, "'\\''");
   return `${agentCmd} "$(cat '${escaped}')"`;
+}
+
+// ─── F15 — the worker's model is wmux's decision, not the shell's ────────────
+
+/**
+ * The env var Claude Code reads to pick its model.
+ *
+ * NOT scrubbed anywhere else, and deliberately so. `ANTHROPIC_BASE_URL` and
+ * `ANTHROPIC_AUTH_TOKEN` stay exactly as the operator's environment sets them:
+ * routing every pane's claude through a proxy or a gateway is a legitimate,
+ * whole-machine choice, and a fan-out worker that silently bypassed it would be
+ * talking to a different endpoint than every other pane the operator opened.
+ * Model SELECTION is the one part of that environment wmux owns for a worker,
+ * because wmux is the one that decided to launch this agent at all.
+ */
+export const CLAUDE_MODEL_ENV = 'ANTHROPIC_MODEL';
+
+export interface WorkerLaunchOptions {
+  /** The orchestrator role bound to this task (absent = unroled). */
+  role?: string;
+  /** Platform override — tests only; defaults to the real platform. */
+  platform?: NodeJS.Platform;
+}
+
+export interface WorkerLaunch {
+  /** The command to fire into the worker pane. */
+  command: string;
+  /** Was the shell's `ANTHROPIC_MODEL` neutralised for this launch? */
+  neutralisedModelEnv: boolean;
+  /** Why it was not, when that is worth saying out loud. */
+  note?: string;
+}
+
+/** Does `agentCmd` already choose a model itself? Split on whitespace is exact
+ *  here: `agentCmd` is the launcher line ONLY — the quoted prompt argument is
+ *  appended afterwards by {@link buildInitialCommand} — so no token of this
+ *  string is ever prose. */
+function carriesModelFlag(agentCmd: string): boolean {
+  return agentCmd
+    .trim()
+    .split(/\s+/)
+    .some((t) => t === '--model' || t === '-m' || t.startsWith('--model=') || t.startsWith('-m='));
+}
+
+/**
+ * The command a fan-out worker is actually launched with.
+ *
+ * Why the neutralisation is on the COMMAND LINE and not in the spawn env: the
+ * pane's process is the operator's INTERACTIVE LOGIN SHELL, and this command is
+ * typed into it after it boots (see scheduleInitialCommand). By then the shell
+ * has already sourced `~/.zshrc`, so anything that file exports has overwritten
+ * whatever `resolveSpawnEnv` withheld. Three dogfood runs died exactly there:
+ * every worker's first turn came back "There's an issue with the selected model
+ * (glm-5.3)" and had to be recovered by hand with `/model opus`. `env -u` runs
+ * inside that shell, after the rc files, which is the only place late enough to
+ * win.
+ *
+ * It is only applied when wmux has no model of its own for this worker:
+ *  - a non-`claude` launcher is left alone (`SUPPORTED_STEMS`) — no other agent
+ *    reads this variable;
+ *  - an `agentCmd` that already carries `--model` has been given one explicitly,
+ *    and a CLI flag beats the environment anyway;
+ *  - a ROLED task is left alone because the renderer resolves the operator's
+ *    role binding (agent + model) against this exact string: `applyRoleAgent`
+ *    and `applyRoleBinding` both gate on the launcher stem, and an `env` prefix
+ *    would make the stem unrecognisable, silently dropping the binding's agent
+ *    AND its model. A bound role is wmux deciding the model, which is the case
+ *    this function exists to defer to.
+ *  - win32 is skipped with a note: `env -u` is POSIX, and the pane's shell there
+ *    is PowerShell (see the Windows branch of buildInitialCommand).
+ */
+export function workerLaunchCommand(
+  agentCmd: string,
+  promptPath: string | undefined,
+  opts: WorkerLaunchOptions = {},
+): WorkerLaunch {
+  const platform = opts.platform ?? process.platform;
+  const command = buildInitialCommand(agentCmd, promptPath, platform);
+  if (!SUPPORTED_STEMS.has(launcherStem(agentCmd))) return { command, neutralisedModelEnv: false };
+  if (carriesModelFlag(agentCmd)) return { command, neutralisedModelEnv: false };
+  if (opts.role) return { command, neutralisedModelEnv: false };
+  if (platform === 'win32') {
+    return {
+      command,
+      neutralisedModelEnv: false,
+      note: `${CLAUDE_MODEL_ENV} is not neutralised on win32; bind a role with a model, or unset it in the shell profile.`,
+    };
+  }
+  return { command: `env -u ${CLAUDE_MODEL_ENV} ${command}`, neutralisedModelEnv: true };
+}
+
+/** `env -u FOO -u BAR claude …` → `claude …`.
+ *
+ *  The recorded `initialCommand` is the line that was really launched (F2 needs
+ *  to replay it verbatim), so every reader that wants the AGENT out of it —
+ *  `launcherStem`, and anything that follows — has to see past the prefix this
+ *  module may have added. Only the exact `env -u NAME` shape is stripped; an
+ *  `env` used for anything else is left alone. */
+export function stripLaunchEnvPrefix(command: string): string {
+  const m = /^env(?:\s+-u\s+[A-Za-z_][A-Za-z0-9_]*)+\s+/.exec(command.trim());
+  return m ? command.trim().slice(m[0].length) : command;
+}
+
+/** The `input_required` summary for a worker the first-run watch gave up on.
+ *  Split out so the two families read differently: a menu needs a keypress, a
+ *  model error needs a different model. */
+export function firstRunStuckSummary(outcome: {
+  headline: string;
+  reason: 'trust' | 'unanswered' | 'send-failed' | 'model';
+  model?: string;
+}): string {
+  if (outcome.reason === 'model') {
+    return (
+      `worker's first turn failed on its model${outcome.model ? ` (${outcome.model})` : ''}; ` +
+      `run /model <model> in the pane, or stop the shell profile from exporting ${CLAUDE_MODEL_ENV}`
+    );
+  }
+  return `worker is waiting on Claude Code's ${outcome.headline}; it needs a keypress in the pane`;
 }
