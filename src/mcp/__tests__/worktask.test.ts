@@ -106,12 +106,18 @@ describe('the wire call', () => {
   });
 });
 
+/** The envelope still follows the refusal header verbatim — parse it back. */
+function envelope(text: string): Record<string, unknown> {
+  const at = text.indexOf('{');
+  return JSON.parse(at === -1 ? '{}' : text.slice(at)) as Record<string, unknown>;
+}
+
 describe('the answer', () => {
   it('keeps the refusal envelope whole and flags it as an error', async () => {
     mockSendRpc.mockResolvedValue({ ok: false, taskId: 'wtask-1', reason: 'unpushed', aheadCount: 2 });
     const res = await tools.get('task_close')?.({ task_id: 'wtask-1' });
     expect(res?.isError).toBe(true);
-    const parsed = JSON.parse(res?.content[0]?.text ?? '{}') as Record<string, unknown>;
+    const parsed = envelope(res?.content[0]?.text ?? '{}');
     expect(parsed['reason']).toBe('unpushed');
     expect(parsed['aheadCount']).toBe(2);
   });
@@ -129,5 +135,54 @@ describe('the answer', () => {
     const res = await tools.get('task_adopt')?.({ task_id: 'wtask-1' });
     expect(res?.isError).toBe(true);
     expect(res?.content[0]?.text).toContain('wmux is not running');
+  });
+});
+
+// Wave 3, finding 13 — the brain reported "adopt finished (ff51d7e)" after two
+// refusals. The envelope was right; a JSON blob is just skimmable past. A
+// refusal now LEADS with the verdict.
+describe('a refusal cannot be read as a success', () => {
+  it('a refused adopt starts with REFUSED, is isError, and names the next step', async () => {
+    mockSendRpc.mockResolvedValue({ ok: false, taskId: 'wtask-1', reason: 'dirty-target', error: 'target has uncommitted changes' });
+    const res = await tools.get('task_adopt')?.({ task_id: 'wtask-1' });
+    expect(res?.isError).toBe(true);
+    const text = res?.content[0]?.text ?? '';
+    expect(text.startsWith('REFUSED (dirty-target): target has uncommitted changes')).toBe(true);
+    expect(text).toContain('Nothing was adopted. Next step: commit or stash');
+    expect(envelope(text)['reason']).toBe('dirty-target');
+  });
+
+  it('spells out the commit-failed recovery (the applied paths were restored)', async () => {
+    mockSendRpc.mockResolvedValue({ ok: false, reason: 'commit-failed', error: 'hook refused', files: ['a.ts'] });
+    const text = (await tools.get('task_adopt')?.({ task_id: 'wtask-1' }))?.content[0]?.text ?? '';
+    expect(text.startsWith('REFUSED (commit-failed): hook refused')).toBe(true);
+    expect(text).toContain('the applied paths were restored; inspect the target with git_status and retry');
+  });
+
+  it('falls back to a generic next step for a reason it does not know', async () => {
+    mockSendRpc.mockResolvedValue({ ok: false, reason: 'no-repo' });
+    const text = (await tools.get('task_adopt')?.({ task_id: 'wtask-1' }))?.content[0]?.text ?? '';
+    expect(text.startsWith('REFUSED (no-repo): the server refused the call (no message)')).toBe(true);
+    expect(text).toContain('then call task_adopt again');
+  });
+
+  it('close and pr share the shape with their own wording', async () => {
+    mockSendRpc.mockResolvedValue({ ok: false, reason: 'unpushed', error: '2 commits ahead' });
+    const closed = (await tools.get('task_close')?.({ task_id: 'wtask-1' }))?.content[0]?.text ?? '';
+    expect(closed.startsWith('REFUSED (unpushed): 2 commits ahead')).toBe(true);
+    expect(closed).toContain('Nothing was closed; the worktree is intact.');
+
+    mockSendRpc.mockResolvedValue({ ok: false, reason: 'gh-missing', error: 'gh not found' });
+    const pr = (await tools.get('task_pr')?.({ task_id: 'wtask-1' }))?.content[0]?.text ?? '';
+    expect(pr.startsWith('REFUSED (gh-missing): gh not found')).toBe(true);
+    expect(pr).toContain('No pull request was opened.');
+  });
+
+  it('leaves a SUCCESS untouched — no header, plain JSON', async () => {
+    mockSendRpc.mockResolvedValue({ ok: true, commit: 'ff51d7e' });
+    const res = await tools.get('task_adopt')?.({ task_id: 'wtask-1' });
+    expect(res?.isError).toBeUndefined();
+    expect(res?.content[0]?.text.startsWith('{')).toBe(true);
+    expect(res?.content[0]?.text).not.toContain('REFUSED');
   });
 });

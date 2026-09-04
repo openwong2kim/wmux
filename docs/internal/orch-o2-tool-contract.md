@@ -32,6 +32,25 @@ registerGitTools(server, { getSenderPtyId, resolveWorkspaceId });
 | `git_log` | `{ task_id?: z.string().min(1), limit?: z.number().int().min(1).max(50) }` | `task.git.log` |
 | `gh_pr_view` | `{ task_id: z.string().min(1) }` | `task.gh.prView` |
 
+A refusal from `task_adopt`, `task_close` or `task_pr` is PREFIXED with a
+plain-language verdict before the envelope (wave 3, finding 13 — a brain read
+two `ok: false` adopts and reported "adopt finished (ff51d7e)"):
+
+```
+REFUSED (dirty-target): <the server's error>
+Nothing was adopted. Next step: commit or stash the target's changes, …
+
+{ "ok": false, "reason": "dirty-target", … }
+```
+
+`isError: true` is set as before and the JSON still follows whole, so a caller
+that parses the envelope is unaffected — the header is for the caller that
+skims. The next-step text is keyed on the server's own `reason` (`dirty-target`,
+`commit-failed`, `conflict`, `needs_rebase`, `empty` for adopt; `unpushed`,
+`dirty` for close; `gh-missing`, `gh-unauth`, `dirty`, `no-origin` for pr) with
+a generic "read `reason` and `error`, fix that, retry" fallback. The gate tools
+are unchanged: a failing gate is a successful CALL, not a refusal.
+
 `task_adopt`'s `commit` defaults to `false` — the staged, uncommitted result this
 lane shipped with. `commit: true` commits the index the `--3way` apply filled
 with the subject `adopt: <title> (<task id>)`, taking the title from the

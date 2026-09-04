@@ -34,15 +34,85 @@ const TASK_ID = z
   .describe('The task id (wtask-…) from fanout_start or your mission list. Must be a task your workspace owns.');
 
 /**
+ * A refusal is easy to misread as a success (dogfood finding 13: both
+ * `task_adopt` calls answered `ok: false` and the brain's summary still said
+ * "adopt finished (ff51d7e)"). The envelope was correct; the SHAPE was not —
+ * a JSON blob whose second key is `ok: false` reads, to a model skimming for a
+ * sha, like a result. So a refused call leads with a sentence that cannot be
+ * skimmed past, and only then the envelope.
+ *
+ * `nothing` states what did NOT happen; `next` maps the server's own `reason`
+ * to the one concrete move that clears it.
+ */
+interface RefusalCopy {
+  nothing: string;
+  next: Record<string, string>;
+  fallback: string;
+}
+
+const ADOPT_REFUSAL: RefusalCopy = {
+  nothing: 'Nothing was adopted.',
+  next: {
+    'dirty-target':
+      "commit or stash the target's changes, or adopt with commit:true only after the target is clean",
+    'commit-failed':
+      'the applied paths were restored; inspect the target with git_status and retry',
+    conflict: 'the parent was left untouched; rebase the task branch on the parent, then adopt again',
+    needs_rebase: 'the two share no commit; rebase the task branch onto the parent, then adopt again',
+    empty: 'the task produced no changes; read its mission channel before closing it',
+  },
+  fallback: 'read `reason` and `error` below, fix that, then call task_adopt again',
+};
+
+const CLOSE_REFUSAL: RefusalCopy = {
+  nothing: 'Nothing was closed; the worktree is intact.',
+  next: {
+    unpushed: 'the branch has commits nobody has pushed; harvest with task_pr or task_adopt first',
+    dirty: 'the worktree has uncommitted changes; harvest them with task_adopt first',
+  },
+  fallback: 'read `reason` and `error` below, fix that, then call task_close again',
+};
+
+const PR_REFUSAL: RefusalCopy = {
+  nothing: 'No pull request was opened.',
+  next: {
+    'gh-missing': 'the GitHub CLI is not installed on this machine; this is a human step',
+    'gh-unauth': 'the GitHub CLI is not authenticated; this is a human step',
+    dirty: "the worktree has uncommitted changes — they would not be in the PR; have the worker commit them",
+    'no-origin': 'the repository has no origin remote; this is a human step',
+  },
+  fallback: 'read `reason` and `error` below, fix that, then call task_pr again',
+};
+
+/** `REFUSED (<reason>): <error>` + the next step, or null when the envelope is
+ *  not a refusal. Defensive about shape: the reason/error are read off an
+ *  arbitrary object, because a malformed envelope must still surface AS a
+ *  refusal rather than throw. */
+function refusalHeader(result: unknown, copy: RefusalCopy): string | null {
+  const r = result as { ok?: unknown; reason?: unknown; error?: unknown } | null | undefined;
+  if (!r || typeof r !== 'object' || r.ok !== false) return null;
+  const reason = typeof r.reason === 'string' && r.reason ? r.reason : 'unknown';
+  const error =
+    typeof r.error === 'string' && r.error.trim()
+      ? r.error.trim()
+      : 'the server refused the call (no message)';
+  const next = copy.next[reason] ?? copy.fallback;
+  return `REFUSED (${reason}): ${error}\n${copy.nothing} Next step: ${next}\n`;
+}
+
+/**
  * One call shape for all four tools: resolve identity, attach the verified
  * ptyId, send, hand the envelope back whole. The envelope is never collapsed to
  * a message — `reason` fields ('dirty', 'unpushed', 'busy', 'deps_missing') are
- * how an unattended caller tells "refused, fix this" from "failed".
+ * how an unattended caller tells "refused, fix this" from "failed" — but when
+ * `refusal` copy is supplied, a refusal is PREFIXED with a plain-language
+ * verdict so it cannot be read as a success. The JSON still follows it whole.
  */
 async function callTask(
   method: string,
   params: Record<string, unknown>,
   deps: WorktaskToolDeps,
+  refusal?: RefusalCopy,
 ): Promise<{ content: { type: 'text'; text: string }[]; isError?: true }> {
   if (deps.resolveWorkspaceId) {
     try {
@@ -56,8 +126,11 @@ async function callTask(
   if (pty) wire['senderPtyId'] = pty;
   try {
     const result = (await sendRpc(method as unknown as RpcMethod, wire)) as { ok?: boolean } | undefined;
+    const header = refusal ? refusalHeader(result, refusal) : null;
     return {
-      content: [{ type: 'text' as const, text: JSON.stringify(result ?? {}, null, 2) }],
+      content: [
+        { type: 'text' as const, text: `${header ?? ''}${JSON.stringify(result ?? {}, null, 2)}` },
+      ],
       ...(result && result.ok === false ? { isError: true as const } : {}),
     };
   } catch (err) {
@@ -109,7 +182,7 @@ export function registerWorktaskTools(server: McpServer, deps: WorktaskToolDeps)
         ),
     },
     async ({ task_id, commit }) =>
-      callTask('task.adopt', { taskId: task_id, ...(commit !== undefined ? { commit } : {}) }, deps),
+      callTask('task.adopt', { taskId: task_id, ...(commit !== undefined ? { commit } : {}) }, deps, ADOPT_REFUSAL),
   );
 
   server.tool(
@@ -117,7 +190,7 @@ export function registerWorktaskTools(server: McpServer, deps: WorktaskToolDeps)
     'Close a task and remove its git worktree. Destructive and deliberately picky: it refuses ({ reason: "unpushed" }) while the branch has commits nobody has pushed, and refuses ({ reason: "dirty" }, preserving the worktree) while there are uncommitted changes — so a close never silently destroys work. ' +
       'Harvest first (task_adopt, or task_pr), then close. Only tasks your own workspace owns can be closed.',
     { task_id: TASK_ID },
-    async ({ task_id }) => callTask('task.close', { taskId: task_id }, deps),
+    async ({ task_id }) => callTask('task.close', { taskId: task_id }, deps, CLOSE_REFUSAL),
   );
 
   server.tool(
@@ -132,6 +205,6 @@ export function registerWorktaskTools(server: McpServer, deps: WorktaskToolDeps)
         .describe('PR body. Omit for a one-line default naming the task.'),
     },
     async ({ task_id, body }) =>
-      callTask('task.pr', { taskId: task_id, ...(body !== undefined ? { body } : {}) }, deps),
+      callTask('task.pr', { taskId: task_id, ...(body !== undefined ? { body } : {}) }, deps, PR_REFUSAL),
   );
 }
