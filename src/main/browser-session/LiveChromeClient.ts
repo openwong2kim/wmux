@@ -48,10 +48,17 @@ const LIVE_CONNECT_NOTICE_MS = 5_000;
  *  refused almost instantly, so this only bounds a black-holed port. */
 const LIVE_TCP_PROBE_TIMEOUT_MS = 500;
 
+/**
+ * The `#remote-debugging` fragment does NOT open that page: chrome://inspect
+ * lands on its Devices tab whatever fragment it is given, and the switch lives
+ * behind a sidebar item the user has to click (dogfood 2026-09-04 — the user
+ * followed the link, saw a list of devices, and had no reason to look further).
+ * So name the item instead of trusting the URL to arrive at it.
+ */
 const ENABLE_HINT =
   'LIVE_CHROME_UNAVAILABLE: could not find your Chrome’s remote-debugging endpoint. ' +
-  'Make sure Chrome is running and remote debugging is enabled at chrome://inspect/#remote-debugging ' +
-  '(Chrome 144+), then retry.';
+  'Make sure Chrome is running, then open chrome://inspect and click "Remote debugging" in the ' +
+  'left sidebar (Chrome 144+) to enable it, and retry.';
 
 /**
  * Listening, but the handshake was never accepted — Chrome is almost certainly

@@ -46,8 +46,8 @@ reach for when you want per-workspace accounts.
 with the tabs and logins you already have. There is no way to scope it to one
 tab or one profile: the agent gets the browser.
 
-Three separate consents gate it — you enable remote debugging once at
-`chrome://inspect/#remote-debugging` (Chrome 144+), you confirm the binding in
+Three separate consents gate it — you enable remote debugging once from the
+**Remote debugging** item in the `chrome://inspect` sidebar (Chrome 144+), you confirm the binding in
 wmux, and Chrome itself asks on every connection — because the grant is that
 large. Use it when you genuinely want an agent working inside your own session,
 and prefer option 2 when you do not.
@@ -156,7 +156,10 @@ genuinely is the user's, and the user genuinely allowed the connection.
 
 Enabling it, once:
 
-1. Tick **Remote debugging** at `chrome://inspect/#remote-debugging` (Chrome 144+).
+1. Open `chrome://inspect` and click **Remote debugging** in the left sidebar
+   (Chrome 144+), then tick the setting. The `#remote-debugging` fragment does
+   not select that item — the page opens on **Devices** whatever fragment it is
+   given.
 2. **Restart Chrome.** The setting persists in the profile
    (`Local State` → `devtools.remote_debugging.user-enabled`), but the running
    instance does not open the endpoint — the port stayed closed for the ~17 s
