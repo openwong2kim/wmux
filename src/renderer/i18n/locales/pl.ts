@@ -1653,6 +1653,7 @@ export const pl = {
   'deck.wokenShow': 'Szczegóły',
   'deck.wokenHide': 'Ukryj',
   'deck.ledgerOpenTasks': 'Otwarte zadania: {count}',
+  'deck.ledgerUnavailable': 'Rejestr niedostępny',
   'deck.approvalCountdown': 'Automatyczne odrzucenie za {seconds} s',
   'deck.vendorTagClaudePty': 'terminal',
   'deck.vendorTagClaude': 'sdk',

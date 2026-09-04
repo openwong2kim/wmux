@@ -83,15 +83,26 @@ export function DeckLedgerPanel({
       ?.ledger;
   const [rows, setRows] = useState<DeckLedgerRow[]>([]);
   const [openCount, setOpenCount] = useState(0);
+  const [unavailable, setUnavailable] = useState(false);
   const reportRef = useRef(onOpenCountChange);
   reportRef.current = onOpenCountChange;
+  // Request sequence. Reads are fired by four things (mount, the fallback
+  // timer, main's ping and a workspace change) and IPC replies are not ordered,
+  // so without this an older workspace's slow reply can land after a newer
+  // one's and render another deck's tasks into this one. Only the latest
+  // request may write state; the effect cleanup bumps the counter, which
+  // invalidates every read still in flight for the workspace being left.
+  const reqSeq = useRef(0);
 
   const refresh = useCallback(async () => {
     if (!resolvedApi || !workspaceId) return;
+    const seq = ++reqSeq.current;
     try {
       const summary = await resolvedApi.summary(workspaceId);
+      if (reqSeq.current !== seq) return;
       setRows(summary.rows);
       setOpenCount(summary.openCount);
+      setUnavailable(summary.error === true);
       reportRef.current?.(summary.openCount);
     } catch {
       /* main gone — leave the stale view rather than blanking the panel */
@@ -107,12 +118,17 @@ export function DeckLedgerPanel({
       if (!workspaceId || envelope.workspaceId === workspaceId) void refresh();
     });
     return () => {
+      // Invalidate every read still in flight for the workspace being left.
+      reqSeq.current += 1;
       clearInterval(timer);
       off?.();
     };
   }, [refresh, resolvedApi, workspaceId]);
 
-  if (!resolvedApi || openCount === 0) return null;
+  // "Nothing is delegated" collapses; "I cannot read the ledger" must NOT —
+  // that is the state in which the Stop gate may be holding the brain's turn on
+  // a ledger neither of us can see, and a collapsed panel would call it idle.
+  if (!resolvedApi || (openCount === 0 && !unavailable)) return null;
 
   return (
     <div
@@ -122,13 +138,29 @@ export function DeckLedgerPanel({
       {...tokenAttrs('bgSurface', 'border')}
     >
       <div className="flex items-baseline px-1 pb-1">
-        <span
-          data-deck-ledger-count
-          className="text-[10px] font-semibold uppercase tracking-[0.09em] text-[var(--text-muted)]"
-          {...tokenAttrs('textMuted', 'text')}
-        >
-          {(t('deck.ledgerOpenTasks') || '{count} open tasks').replace('{count}', String(openCount))}
-        </span>
+        {unavailable ? (
+          // Stated, not coloured: this is an absence of information, not an
+          // alarm, and the amber/red vocabulary is reserved for a worker that
+          // actually needs somebody (DESIGN.md status-dot grammar).
+          <span
+            data-deck-ledger-unavailable
+            className="text-[10px] font-semibold uppercase tracking-[0.09em] text-[var(--text-muted)]"
+            {...tokenAttrs('textMuted', 'text')}
+          >
+            {t('deck.ledgerUnavailable') || 'Ledger unavailable'}
+          </span>
+        ) : (
+          <span
+            data-deck-ledger-count
+            className="text-[10px] font-semibold uppercase tracking-[0.09em] text-[var(--text-muted)]"
+            {...tokenAttrs('textMuted', 'text')}
+          >
+            {(t('deck.ledgerOpenTasks') || '{count} open tasks').replace(
+              '{count}',
+              String(openCount),
+            )}
+          </span>
+        )}
       </div>
       {/* Scrolls past a handful of rows — the panel is pinned chrome, so it
           must not grow until it owns the deck. */}

@@ -8,15 +8,22 @@
 // render-ready rows out — so the panel's contract is unit-testable without
 // Electron, a daemon or a ledger on disk.
 //
-// `lastLine` is the summary text the ACTOR wrote (a worker, usually). It is
-// UNTRUSTED: sanitized (control chars out, whitespace collapsed) and truncated
-// here, and rendered as text by the panel, never as markup or instructions.
+// `lastLine` and `title` are both text the ACTOR wrote (a worker, usually).
+// They are UNTRUSTED: sanitized (control, bidi and format characters out,
+// whitespace collapsed) and truncated here, and rendered as text by the panel,
+// never as markup or instructions.
 
 import type { LedgerEntry, LedgerStatus } from '../../shared/ledger';
 import type { AgentStatus } from '../../shared/types';
+import type { FleetSnapshot } from '../../shared/workspaceMirror';
 
 /** Hard cap on the rendered `lastLine`. The panel gives it one row. */
 export const LEDGER_ROW_LINE_MAX = 160;
+
+/** Hard cap on the rendered `title`. Shorter than the line cap: the title
+ *  shares its row with four other cells and the panel truncates it visually
+ *  anyway — this cap bounds what crosses the IPC, it does not lay anything out. */
+export const LEDGER_ROW_TITLE_MAX = 80;
 
 /** Rows are capped so a runaway fan-out cannot make the pinned panel eat the
  *  Deck. The count in the header stays honest (`openCount` is not capped). */
@@ -46,29 +53,78 @@ export interface DeckLedgerSummary {
   rows: DeckLedgerRow[];
   /** Main's clock when the summary was built. */
   ts: number;
+  /**
+   * True when the ledger could not be READ at all. Deliberately distinct from
+   * an empty summary: "nothing is delegated" and "I cannot tell you what is
+   * delegated" are opposite facts, and collapsing the second into the first
+   * hides a broken ledger behind a panel that looks idle — while the Stop gate
+   * reading that same ledger may be holding the brain's turn open on it.
+   */
+  error?: true;
 }
 
 export const EMPTY_LEDGER_SUMMARY: DeckLedgerSummary = { openCount: 0, rows: [], ts: 0 };
 
-/** Collapse whitespace, drop control characters, truncate. */
-export function sanitizeLedgerLine(raw: string | undefined): string | null {
+/** What the panel gets when the ledger read threw. */
+export const UNAVAILABLE_LEDGER_SUMMARY: DeckLedgerSummary = {
+  openCount: 0,
+  rows: [],
+  ts: 0,
+  error: true,
+};
+
+// Bidi controls and invisible format characters survive a C0 scrub — they are
+// printable code points — yet they reorder or hide the text around them once in
+// the DOM. Without this a worker could make its own row read as another task's.
+// eslint-disable-next-line no-misleading-character-class
+const BIDI_AND_FORMAT = /[\u200B-\u200F\u202A-\u202E\u2060-\u2064\u2066-\u206F\uFEFF]/g;
+
+/** Truncate by CODE POINT, never by UTF-16 unit: slicing units can split a
+ *  surrogate pair and leave a lone half, which renders as U+FFFD. */
+function truncateCodePoints(text: string, max: number): string {
+  const points = Array.from(text);
+  if (points.length <= max) return text;
+  return `${points.slice(0, max - 1).join('')}…`;
+}
+
+/** Collapse whitespace, drop control + bidi characters, truncate. */
+export function sanitizeLedgerLine(
+  raw: string | undefined,
+  max: number = LEDGER_ROW_LINE_MAX,
+): string | null {
   if (typeof raw !== 'string') return null;
-  // eslint-disable-next-line no-control-regex
-  const flat = raw.replace(/[\u0000-\u001F\u007F]+/g, ' ').replace(/\s+/g, ' ').trim();
+  const flat = raw
+    // eslint-disable-next-line no-control-regex
+    .replace(/[\u0000-\u001F\u007F]+/g, ' ')
+    .replace(BIDI_AND_FORMAT, '')
+    .replace(/\s+/g, ' ')
+    .trim();
   if (!flat) return null;
-  return flat.length > LEDGER_ROW_LINE_MAX ? `${flat.slice(0, LEDGER_ROW_LINE_MAX - 1)}\u2026` : flat;
+  return truncateCodePoints(flat, max);
+}
+
+/** The row's title, through the same scrub as `lastLine`. A ledger title is
+ *  written by whoever created the task (a worker, over the pipe), so it is
+ *  exactly as untrusted as the summary line. */
+export function sanitizeLedgerTitle(raw: string | undefined): string | null {
+  return sanitizeLedgerLine(raw, LEDGER_ROW_TITLE_MAX);
 }
 
 /**
  * The one status a row shows for its worker. A pane waiting on a human beats a
  * running one: the panel exists to surface the task that needs somebody, and a
  * fan-out workspace routinely holds several panes.
+ *
+ * `waiting` sits BELOW `running` — it means "turn ended, ready for the next
+ * instruction" (src/shared/types.ts), so one finished pane of a many-pane
+ * workspace must not shout down the panes that are still working. Only
+ * `awaiting_input` (blocked mid-turn) and `error` outrank live work.
  */
 const WORKER_STATUS_PRIORITY: readonly AgentStatus[] = [
   'awaiting_input',
   'error',
-  'waiting',
   'running',
+  'waiting',
   'complete',
   'idle',
 ];
@@ -79,6 +135,23 @@ export function pickWorkerStatus(panes: readonly { agentStatus: AgentStatus }[])
     if (panes.some((p) => p.agentStatus === candidate)) return candidate;
   }
   return panes[0].agentStatus;
+}
+
+/**
+ * The panes of a mirror snapshot, or null when the snapshot is too old to
+ * describe anything. The same freshness rule the Stop gate applies
+ * (stopGate.ts): a workspace that was closed or detached stops pushing, so its
+ * last snapshot would otherwise show a dead worker as `running` forever. A
+ * derived signal that stopped arriving proves nothing — null means unknown, and
+ * the row renders no worker status at all.
+ */
+export function freshSnapshotPanes(
+  snapshot: FleetSnapshot | null | undefined,
+  now: number,
+  maxAgeMs: number,
+): readonly { agentStatus: AgentStatus }[] | null {
+  if (!snapshot) return null;
+  return now - snapshot.ts <= maxAgeMs ? snapshot.panes : null;
 }
 
 export interface DeckLedgerSummaryInput {
@@ -98,7 +171,9 @@ export function buildDeckLedgerSummary(input: DeckLedgerSummaryInput): DeckLedge
   const sorted = [...input.entries].sort((a, b) => b.updatedAt - a.updatedAt);
   const rows: DeckLedgerRow[] = sorted.slice(0, LEDGER_SUMMARY_ROW_CAP).map((e) => ({
     id: e.id,
-    title: e.title,
+    // A title scrubbed to nothing falls back to the id: the row must stay
+    // identifiable, and the id is the one field the panel already trusts.
+    title: sanitizeLedgerTitle(e.title) ?? e.id,
     status: e.status,
     taskWorkspaceId: e.taskWorkspaceId,
     workerStatus: pickWorkerStatus(input.panesFor(e.taskWorkspaceId) ?? []),
@@ -107,4 +182,45 @@ export function buildDeckLedgerSummary(input: DeckLedgerSummaryInput): DeckLedge
     ageMs: Math.max(0, now - e.updatedAt),
   }));
   return { openCount: sorted.length, rows, ts: now };
+}
+
+/** Trailing-edge coalesce window for the ledger push. */
+export const LEDGER_PUSH_DEBOUNCE_MS = 250;
+
+export interface LedgerPushCoalescer {
+  /** Schedule a push for this owner; repeats inside the window collapse. */
+  notify: (ownerWorkspaceId: string) => void;
+  /** Drop every pending timer (handler teardown). */
+  dispose: () => void;
+}
+
+/**
+ * One push per owner per window instead of one per transition. A fan-out lands
+ * a burst of transitions in a few ms and each one made the panel re-read the
+ * whole ledger; the trailing edge is what the panel actually needs, because the
+ * read it fires is a projection of the FINAL state either way.
+ */
+export function createLedgerPushCoalescer(
+  emit: (ownerWorkspaceId: string) => void,
+  delayMs: number = LEDGER_PUSH_DEBOUNCE_MS,
+): LedgerPushCoalescer {
+  const timers = new Map<string, ReturnType<typeof setTimeout>>();
+  return {
+    notify: (ownerWorkspaceId: string) => {
+      if (!ownerWorkspaceId) return;
+      const pending = timers.get(ownerWorkspaceId);
+      if (pending) clearTimeout(pending);
+      timers.set(
+        ownerWorkspaceId,
+        setTimeout(() => {
+          timers.delete(ownerWorkspaceId);
+          emit(ownerWorkspaceId);
+        }, delayMs),
+      );
+    },
+    dispose: () => {
+      for (const timer of timers.values()) clearTimeout(timer);
+      timers.clear();
+    },
+  };
 }

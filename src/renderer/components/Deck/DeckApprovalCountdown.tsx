@@ -34,6 +34,29 @@ export interface ApprovalDeadlineRecord {
    * to this surface themselves.
    */
   expiresAt?: number;
+  /** Who raised the request, and where it would run. Either side matching the
+   *  deck's workspace makes the prompt this header's business. */
+  senderWorkspaceId?: string;
+  receiverWorkspaceId?: string;
+}
+
+/**
+ * The pending prompts THIS deck should count down. The approval queue is
+ * app-wide, so without this the header of workspace A reports the deadline of a
+ * prompt raised by (and answerable in) workspace B — a countdown the operator
+ * cannot act on here, attached to a brain it does not describe.
+ *
+ * With no workspace to scope to, nothing is filtered: an unscoped caller wants
+ * the whole queue, which is what it got before this existed.
+ */
+export function approvalsForWorkspace(
+  records: readonly ApprovalDeadlineRecord[],
+  workspaceId: string | undefined,
+): readonly ApprovalDeadlineRecord[] {
+  if (!workspaceId) return records;
+  return records.filter(
+    (r) => r.receiverWorkspaceId === workspaceId || r.senderWorkspaceId === workspaceId,
+  );
 }
 
 /** The soonest auto-reject among the pending records, or null when none has a
@@ -56,11 +79,15 @@ export function soonestApprovalDeadline(
 export function DeckApprovalCountdown({
   t: tProp,
   records,
+  workspaceId,
   now: nowProp,
 }: {
   t?: (key: string) => string;
   /** Test seam — defaults to the store's pending execute approvals. */
   records?: readonly ApprovalDeadlineRecord[];
+  /** The deck's workspace. Scopes the queue to prompts this header describes;
+   *  omitted ⇒ the whole queue (see approvalsForWorkspace). */
+  workspaceId?: string;
   /** Test seam for the tick clock. */
   now?: () => number;
 }): React.ReactElement | null {
@@ -69,17 +96,23 @@ export function DeckApprovalCountdown({
   const order = useStore((s) => s.pendingExecuteApprovalOrder);
   const resolved =
     records ?? order.map((id) => pending[id]).filter((r): r is NonNullable<typeof r> => !!r);
-  const deadlineAt = soonestApprovalDeadline(resolved);
+  const deadlineAt = soonestApprovalDeadline(approvalsForWorkspace(resolved, workspaceId));
   const clock = nowProp ?? Date.now;
   const [now, setNow] = useState(() => clock());
 
-  // One 1 s tick, and only while a deadline exists — the deck re-renders on
-  // every streamed token as it is, and a permanent timer here would add a
-  // second render loop to a surface that is idle most of the time.
+  // One 1 s tick, and only while a deadline exists AND has not passed — the
+  // deck re-renders on every streamed token as it is, and a timer that keeps
+  // running past the deadline would add a second render loop to a surface that
+  // has nothing left to say.
   useEffect(() => {
     if (deadlineAt === null) return;
     setNow(clock());
-    const timer = setInterval(() => setNow(clock()), 1_000);
+    if (clock() >= deadlineAt) return;
+    const timer = setInterval(() => {
+      const tick = clock();
+      setNow(tick);
+      if (tick >= deadlineAt) clearInterval(timer);
+    }, 1_000);
     return () => clearInterval(timer);
     // `clock` is deliberately NOT a dependency: it is a test seam, stable in
     // the app, and re-running on it would restart the interval on every render
@@ -87,7 +120,11 @@ export function DeckApprovalCountdown({
   }, [deadlineAt]);
 
   if (deadlineAt === null) return null;
-  const remainingMs = Math.max(0, deadlineAt - now);
+  const remainingMs = deadlineAt - now;
+  // The deadline passed: the auto-reject has fired (or is firing) and the
+  // record is on its way out of the queue. "Auto-reject in 0s" parked forever
+  // is the badge outliving the thing it describes.
+  if (remainingMs <= 0) return null;
   const seconds = Math.ceil(remainingMs / 1000);
   const urgent = remainingMs <= APPROVAL_URGENT_MS;
 

@@ -1656,6 +1656,7 @@ export const en = {
   'deck.wokenHide': 'Hide',
   // Orchestrator wave 2 — the pinned task-ledger panel.
   'deck.ledgerOpenTasks': '{count} open tasks',
+  'deck.ledgerUnavailable': 'Ledger unavailable',
   'deck.approvalCountdown': 'Auto-reject in {seconds}s',
   'deck.vendorTagClaudePty': 'terminal',
   'deck.vendorTagClaude': 'sdk',

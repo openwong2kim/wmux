@@ -267,7 +267,7 @@ export function CommanderViewContent({
         )}
         {/* How long a displayed approval has before it auto-rejects. Renders
             nothing until a pending record carries a deadline. */}
-        <DeckApprovalCountdown t={t} />
+        <DeckApprovalCountdown t={t} workspaceId={activeWorkspaceId} />
         {extra}
 
         {/* Reboot-recovery re-entry (post-reboot only) — the canned one-click

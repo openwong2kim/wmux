@@ -41,6 +41,13 @@ const summary = (rows: DeckLedgerRow[]): DeckLedgerSummary => ({
   ts: 1,
 });
 
+/** A promise plus the handle to settle it later — for the ordering tests. */
+function deferred<T>(): { promise: Promise<T>; resolve: (v: T) => void } {
+  let resolve!: (v: T) => void;
+  const promise = new Promise<T>((r) => { resolve = r; });
+  return { promise, resolve };
+}
+
 async function mount(api: DeckLedgerApi, props: Record<string, unknown> = {}): Promise<void> {
   await act(async () => {
     root.render(createElement(DeckLedgerPanel, { api, workspaceId: 'ws-owner', ...props }));
@@ -92,6 +99,49 @@ describe('DeckLedgerPanel', () => {
       onOpenCountChange: (n: number) => seen.push(n),
     });
     expect(seen).toEqual([1]);
+  });
+
+  // "Nothing is delegated" and "I cannot read the ledger" are opposite facts.
+  // Collapsing the second into the first calls the deck idle at the exact
+  // moment the Stop gate may be holding its turn on a ledger it cannot read.
+  it('states that the ledger is unavailable instead of collapsing', async () => {
+    await mount({ summary: async () => ({ openCount: 0, rows: [], ts: 1, error: true as const }) });
+    expect(container.querySelector('[data-deck-ledger-panel]')).not.toBeNull();
+    expect(container.querySelector('[data-deck-ledger-unavailable]')).not.toBeNull();
+    expect(container.querySelector('[data-deck-ledger-count]')).toBeNull();
+    expect(container.querySelectorAll('[data-deck-ledger-row]')).toHaveLength(0);
+  });
+
+  // Four things fire this read (mount, the fallback timer, main's ping, a
+  // workspace change) and IPC replies are not ordered. Without a sequence
+  // guard a slow reply for the workspace just left renders another deck's
+  // tasks into this one.
+  it('ignores a reply that a newer request has already superseded', async () => {
+    const first = deferred<DeckLedgerSummary>();
+    const second = deferred<DeckLedgerSummary>();
+    const calls: string[] = [];
+    const api: DeckLedgerApi = {
+      summary: async (ws: string) => {
+        calls.push(ws);
+        return calls.length === 1 ? first.promise : second.promise;
+      },
+    };
+    await mount(api, { workspaceId: 'ws-old' });
+    // Switch decks: the effect cleanup invalidates the read still in flight.
+    await act(async () => {
+      root.render(createElement(DeckLedgerPanel, { api, workspaceId: 'ws-new' }));
+    });
+    expect(calls).toEqual(['ws-old', 'ws-new']);
+    // The OLD workspace's reply lands last, and must write nothing.
+    await act(async () => {
+      second.resolve(summary([row({ id: 'new', title: 'new deck task' })]));
+      first.resolve(summary([row({ id: 'old', title: 'old deck task' })]));
+    });
+    const titles = Array.from(
+      container.querySelectorAll('[data-deck-ledger-title]'),
+      (el) => el.textContent,
+    );
+    expect(titles).toEqual(['new deck task']);
   });
 
   it("re-reads on main's ping for this workspace and ignores another's", async () => {

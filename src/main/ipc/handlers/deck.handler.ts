@@ -31,7 +31,7 @@ import {
   resolveBrainBridgePath,
   type DaemonClientLike,
 } from '../../deck/ClaudePtyBrainAdapter';
-import { evaluateStopGate } from '../../deck/stopGate';
+import { evaluateStopGate, DEFAULT_MAX_SNAPSHOT_AGE_MS } from '../../deck/stopGate';
 import {
   noteGateVerdict,
   clearGateVerdict,
@@ -76,7 +76,10 @@ import { loadAutoWakeEnabled, setAutoWakeEnabled } from '../../deck/deckAutoWake
 import { loadLedgerGateEnabled, setLedgerGateEnabled } from '../../deck/deckLedgerGateStore';
 import {
   buildDeckLedgerSummary,
+  createLedgerPushCoalescer,
+  freshSnapshotPanes,
   EMPTY_LEDGER_SUMMARY,
+  UNAVAILABLE_LEDGER_SUMMARY,
   type DeckLedgerSummary,
 } from '../../deck/deckLedgerSummary';
 import {
@@ -1320,7 +1323,10 @@ export function registerDeckHandler(
       } else {
         prompted = withLoopContext(workspaceId, prompt);
       }
-      emit(workspaceId, { type: 'turn-start', prompt });
+      // The vendor of the manager that is about to send — resolved here, not
+      // read from the renderer's live global, so a vendor switch racing this
+      // event cannot relabel a turn the old brain produced.
+      emit(workspaceId, { type: 'turn-start', prompt, vendor: vendorForWorkspace(workspaceId) });
       // Every caller of runTurnForWorkspace is an ambient driver (heartbeat,
       // loop, scheduler, decision resume, startup reconcile) — never a human at
       // the composer. Marking the origin lets the terminal brain re-check for a
@@ -1502,11 +1508,18 @@ export function registerDeckHandler(
   // emitter rides, teed to the renderer as a bare "your ledger moved" ping.
   // The panel then re-reads DECK_LEDGER_SUMMARY, so main keeps exactly one
   // projection of the ledger and the push cannot drift from it.
-  const disposeLedgerPush = getTaskLedger().onTransition((t) => {
+  // Coalesced per owner on a trailing edge: a fan-out lands a burst of
+  // transitions in a few ms, and each one made the panel re-read the whole
+  // ledger. The read is a projection of the FINAL state either way, so the
+  // trailing push is the only one that carried information.
+  const ledgerPushCoalescer = createLedgerPushCoalescer((ownerWorkspaceId) => {
     const win = getWindow();
     if (win && !win.isDestroyed()) {
-      win.webContents.send(IPC.DECK_LEDGER_PUSH, { workspaceId: t.entry.ownerWorkspaceId });
+      win.webContents.send(IPC.DECK_LEDGER_PUSH, { workspaceId: ownerWorkspaceId });
     }
+  });
+  const disposeLedgerPush = getTaskLedger().onTransition((t) => {
+    ledgerPushCoalescer.notify(t.entry.ownerWorkspaceId);
   });
   coalescer = new CommanderEventCoalescer({
     runTurn: (workspaceId, prompt) => runTurnForWorkspace(prompt, workspaceId),
@@ -2226,9 +2239,12 @@ export function registerDeckHandler(
   // ── Deck status panel: the open task ledger for one owner ─────────────────
   // A projection, never a write. `panesFor` joins the workspace mirror's
   // per-pane agent status onto each task's own workspace, so the panel shows
-  // "what the worker is doing" without a second round trip. Never throws: a
-  // ledger that cannot be read yields the empty summary and the panel
-  // collapses, which is the same thing it does with zero tasks.
+  // "what the worker is doing" without a second round trip — through the SAME
+  // snapshot freshness rule the Stop gate applies, because a closed or detached
+  // task workspace stops pushing and its last snapshot would otherwise show a
+  // dead worker as `running` forever. Never throws: a ledger that cannot be read
+  // yields the UNAVAILABLE summary, which the panel renders as "ledger
+  // unavailable" — the opposite claim from "nothing is delegated".
   ipcMain.removeHandler(IPC.DECK_LEDGER_SUMMARY);
   ipcMain.handle(
     IPC.DECK_LEDGER_SUMMARY,
@@ -2242,13 +2258,19 @@ export function registerDeckHandler(
       const workspaceId = readWorkspaceId(req);
       if (!workspaceId) return EMPTY_LEDGER_SUMMARY;
       try {
+        const now = Date.now();
         return buildDeckLedgerSummary({
           entries: getTaskLedger().list({ ownerWorkspaceId: workspaceId, openOnly: true }),
           panesFor: (taskWorkspaceId) =>
-            getWorkspaceMirror().getFleetSnapshot(taskWorkspaceId)?.panes ?? null,
+            freshSnapshotPanes(
+              getWorkspaceMirror().getFleetSnapshot(taskWorkspaceId),
+              now,
+              DEFAULT_MAX_SNAPSHOT_AGE_MS,
+            ),
+          now: () => now,
         });
       } catch {
-        return EMPTY_LEDGER_SUMMARY;
+        return UNAVAILABLE_LEDGER_SUMMARY;
       }
     }),
   );
@@ -2644,6 +2666,7 @@ export function registerDeckHandler(
     coalescer?.dispose();
     disposeLedgerEmitter();
     disposeLedgerPush();
+    ledgerPushCoalescer.dispose();
     globalTurnGate.dispose();
     scheduler.stop();
     heartbeat.stop();

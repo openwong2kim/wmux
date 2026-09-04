@@ -26,6 +26,8 @@
 // the normalization can be unit-tested against a fake AsyncIterable with no
 // live model and no SDK subprocess.
 
+import type { BrainVendor } from '../../shared/types';
+
 /** Token / cost accounting for a completed turn (best-effort — a fake or an
  *  older CLI may omit fields). Surfaced for a future usage meter; the deck does
  *  not depend on any field being present. */
@@ -61,7 +63,15 @@ export type BrainEvent =
   // its own composer send would, so a scheduled run is as visible as a typed
   // one. Adapters never emit this — deck.handler's scheduler does, right
   // before manager.send.
-  | { type: 'turn-start'; prompt: string }
+  //
+  // `vendor` is the brain that is ACTUALLY about to serve this turn (the live
+  // manager's runtime vendor, not the selected setting). It rides the event
+  // because the renderer's copy of the vendor is a live global: by the time
+  // this event is applied the operator may have switched, and stamping the
+  // turn with the new vendor would both mislabel it and draw a brain boundary
+  // where none exists. Optional so an emitter that cannot name the vendor
+  // leaves the turn unstamped rather than guessing.
+  | { type: 'turn-start'; prompt: string; vendor?: BrainVendor }
   | { type: 'text-delta'; text: string }
   | {
       type: 'tool-start';

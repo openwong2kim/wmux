@@ -1113,6 +1113,7 @@ export const ko = {
   'deck.wokenShow': '자세히',
   'deck.wokenHide': '접기',
   'deck.ledgerOpenTasks': '진행 중 작업 {count}건',
+  'deck.ledgerUnavailable': '작업 원장을 읽을 수 없음',
   'deck.approvalCountdown': '{seconds}초 후 자동 거부',
   'deck.vendorTagClaudePty': '터미널',
   'deck.vendorTagClaude': 'sdk',
