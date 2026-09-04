@@ -41,6 +41,10 @@ describe('the awaiting_input verdict', () => {
     // The next-step contract: press, then stop — the worker's own event wakes
     // the brain again, so it must not sit on the pane burning the turn.
     expect(prompt).toContain('END YOUR TURN — task wtask-7 runs on');
+    // Wave 3, finding 14: the same contract names WHICH ledger transition is
+    // the brain's, because it kept trying to make the worker's one.
+    expect(prompt).toContain('completed is reachable only from review_requested');
+    expect(prompt).toContain('the worker normally reports that');
     // And the move it replaces is gone from this verdict.
     expect(prompt).not.toContain('press it with terminal_send_key');
   });

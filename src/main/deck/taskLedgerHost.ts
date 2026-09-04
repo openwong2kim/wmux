@@ -116,6 +116,35 @@ export function peekOrphanBacklog(workspaceId: string, instance?: TaskLedger): C
   return out;
 }
 
+/**
+ * Park worker events a PENDING DECISION blocked (finding 12). Same store and
+ * same shape as the brain-less-owner park above, so one replay path drains
+ * both — but deduplicated against what is already parked: a human send between
+ * the park and the resolve replays the backlog into the coalescer, which parks
+ * whatever the still-shut gate blocks again, and an un-deduplicated re-park
+ * would deliver the same stop twice. Never throws.
+ */
+export function parkDelegatedEvents(
+  workspaceId: string,
+  events: readonly CoalescerInput[],
+  instance?: TaskLedger,
+): void {
+  const l = instance ?? getTaskLedger();
+  let parked: Set<number>;
+  try {
+    parked = new Set(l.peekOrphanedEvents(workspaceId).map((o) => o.seq));
+  } catch {
+    return;
+  }
+  for (const ev of events) {
+    if (parked.has(ev.seq)) continue;
+    parked.add(ev.seq);
+    l.recordOrphanedEvent({ ownerWorkspaceId: workspaceId, seq: ev.seq, payload: ev }).catch((err) =>
+      console.warn(`[deck] could not park a blocked worker event for ${workspaceId}: ${String(err)}`),
+    );
+  }
+}
+
 /** Acknowledge parked events at or below `upToSeq` — they reached the brain. */
 export function ackOrphanBacklog(workspaceId: string, upToSeq: number, instance?: TaskLedger): Promise<void> {
   const l = instance ?? getTaskLedger();

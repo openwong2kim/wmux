@@ -286,3 +286,33 @@ describe('fanout_start: result envelope', () => {
     expect(res.content[0].text).toContain('RPC timeout');
   });
 });
+
+// Wave 3, finding 12 — a fan-out from a workspace with an unanswered decision
+// runs fine and reports to nobody. The accept carries `warnings`; a JSON key is
+// skippable, so it also leads the content as its own WARNING block.
+describe('fanout_start: accept warnings', () => {
+  it('leads with a WARNING block and keeps the envelope as the last block, parseable', async () => {
+    mockSendRpc.mockResolvedValue({
+      ok: true,
+      status: 'accepted',
+      taskCount: 1,
+      warnings: ['owner workspace ws-1 has a pending decision dec-9; worker events will not wake the brain until it is answered'],
+    });
+    const res = await fanoutStart({ idempotency_key: 'kw1', titles: ['t'] });
+    expect(res.isError).toBeUndefined();
+    expect(res.content).toHaveLength(2);
+    expect(res.content[0].text.startsWith('WARNING: owner workspace ws-1 has a pending decision dec-9')).toBe(true);
+    expect(JSON.parse(res.content[res.content.length - 1].text)).toMatchObject({ status: 'accepted' });
+  });
+
+  it('adds no block when there are no warnings, or when the field is malformed', async () => {
+    mockSendRpc.mockResolvedValue({ ok: true, status: 'accepted' });
+    expect((await fanoutStart({ idempotency_key: 'kw2', titles: ['t'] })).content).toHaveLength(1);
+
+    mockSendRpc.mockResolvedValue({ ok: true, status: 'accepted', warnings: 'nope' });
+    expect((await fanoutStart({ idempotency_key: 'kw3', titles: ['t'] })).content).toHaveLength(1);
+
+    mockSendRpc.mockResolvedValue({ ok: true, status: 'accepted', warnings: ['', '  ', 7] });
+    expect((await fanoutStart({ idempotency_key: 'kw4', titles: ['t'] })).content).toHaveLength(1);
+  });
+});

@@ -32,6 +32,34 @@ registerGitTools(server, { getSenderPtyId, resolveWorkspaceId });
 | `git_log` | `{ task_id?: z.string().min(1), limit?: z.number().int().min(1).max(50) }` | `task.git.log` |
 | `gh_pr_view` | `{ task_id: z.string().min(1) }` | `task.gh.prView` |
 
+A refusal from `task_adopt`, `task_close` or `task_pr` answers with **two
+content blocks** (wave 3, finding 13 — a brain read two `ok: false` adopts and
+reported "adopt finished (ff51d7e)"):
+
+```
+content[0]  REFUSED (dirty-target): <the server's error>
+            Nothing was adopted. Next step: commit or stash the target's changes, …
+content[1]  { "ok": false, "reason": "dirty-target", … }
+```
+
+The verdict is its OWN block, never a prefix on the JSON: the envelope block
+must stay parseable, and a caller reading `content[0].text` as JSON would break
+on a prefix. **The envelope is always the LAST block** — read it from the end,
+not from index 0. A success answers with the single JSON block, exactly as
+before, and `isError: true` is set on a refusal as before.
+
+The next-step text is keyed on the server's own `reason` (`dirty-target`,
+`commit-failed`, `conflict`, `needs_rebase`, `empty` for adopt; `unpushed`,
+`dirty` for close; `gh-missing`, `gh-unauth`, `dirty`, `no-origin` for pr).
+A refusal from the RPC **gate** (origin, identity, ownership, materialization)
+has no `reason` at all — it is `{ ok: false, error: { code, message } }` — so
+the header falls back to `error.code` for the reason and `error.message` for the
+text, with next steps for `NOT_AUTHORIZED` / `FAILED_PRECONDITION` /
+`PERMISSION_DENIED` / `INVALID_ARGUMENT` / `UNAVAILABLE`; anything else gets
+"read `reason` and `error`, fix that, retry". The gate TOOLS
+(`task_gate_run` / `task_gate_cancel`) are unchanged and carry no header: a
+failing gate is a successful CALL, not a refusal.
+
 `task_adopt`'s `commit` defaults to `false` — the staged, uncommitted result this
 lane shipped with. `commit: true` commits the index the `--3way` apply filled
 with the subject `adopt: <title> (<task id>)`, taking the title from the

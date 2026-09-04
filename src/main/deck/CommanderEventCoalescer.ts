@@ -201,6 +201,14 @@ interface WsState {
    *  no wake was actually attempted on. Bounded: pruned each flush to only ptyIds
    *  still `complete` in the latest snapshot, so it can't outgrow the live fleet. */
   snapshotSurfacedComplete: Set<string>;
+  /** Our clock at the last pending-decision block we logged for this
+   *  workspace, and the decision it was about. Rate-limits that line to one per
+   *  PENDING_DECISION_LOG_MS so a chatty fleet cannot spam the log while one
+   *  decision sits unanswered — but a DIFFERENT decision id logs immediately
+   *  (it is a new fact, not a repeat), and an accepted flush clears both so the
+   *  next block is announced fresh. */
+  pendingDecisionLoggedAt: number;
+  pendingDecisionLoggedId: string | null;
 }
 
 /** A running loop's wake-relevant slice (read fresh at every flush). */
@@ -270,6 +278,23 @@ export interface CoalescerDeps {
   peekOrphanBacklog?: (workspaceId: string) => CoalescerInput[];
   /** Lane F: the parked events at or below `upToSeq` reached the brain. */
   ackOrphanBacklog?: (workspaceId: string, upToSeq: number) => void;
+  /** DURABLY park delegated (task-tagged) events a pending decision blocked,
+   *  through the ledger's orphan backlog — the same store `routeWorkerEventToOwner`
+   *  parks into when an owner has no brain. The in-memory buffer cannot hold
+   *  them: its (ptyId, kind) slot is overwritten by the next same-kind event,
+   *  `notifyHumanSend` clears it, and an app restart loses it — while the
+   *  decision that blocked them is exactly the thing that survives a restart.
+   *  Absent = the events are consumed as before (fail-open, never wedge). */
+  parkDelegated?: (workspaceId: string, events: CoalescerInput[]) => void;
+  /** The id of the workspace's pending decision, for the block log's rate
+   *  limiter: a NEW decision is a new fact and logs immediately instead of
+   *  waiting out the previous one's window. Absent/throwing = no id. */
+  getPendingDecisionId?: (workspaceId: string) => string | null;
+  /** One-line diagnostics sink (default `console.warn`). Used by the pending
+   *  decision gate, which is otherwise a silent kill switch: a wake it blocks
+   *  left no trace anywhere, so "the brain never woke" was indistinguishable
+   *  from "no event ever fired". */
+  log?: (line: string) => void;
 }
 
 const DEFAULT_DEBOUNCE_MS = 1_500;
@@ -284,6 +309,10 @@ const DEFAULT_MAX_WAKES_PER_MIN = 6;
 const RATE_WINDOW_MS = 60_000;
 /** Cap the rendered lines so a fleet-wide storm can't blow the turn context. */
 const MAX_FLUSH_LINES = 20;
+/** Rate limit for the pending-decision block line, per workspace. */
+const PENDING_DECISION_LOG_MS = 60_000;
+/** Task ids named in that line before it is elided (keeps one line one line). */
+const PENDING_DECISION_LOG_MAX_IDS = 5;
 
 export class CommanderEventCoalescer {
   private readonly deps: CoalescerDeps;
@@ -391,8 +420,27 @@ export class CommanderEventCoalescer {
     this.reconcileSurfacedComplete(st, snapshot);
     // Decision gate: a pending decision blocks EVERY wake, snapshot included.
     // Drop the snapshot (the next heartbeat re-reads it); leave buffered edges
-    // untouched for the normal edge path to govern.
-    if (this.safeHasPendingDecision(workspaceId)) return;
+    // untouched for the normal edge path to govern. Logged (rate-limited) for
+    // the same reason the edge path logs: silence here read as "nothing fired".
+    if (this.safeHasPendingDecision(workspaceId)) {
+      // Cheap checks first: the heartbeat calls this every interval for the
+      // whole life of the decision, so neither collectBuffer nor the log fires
+      // unless the rate window is actually open AND something was really held.
+      if (this.pendingDecisionLogDue(st, workspaceId).due) {
+        const edges = this.collectBuffer(st);
+        const blockedPanes = snapshot.panes.some((p) => isAttentionStatus(p.agentStatus));
+        if (edges.length > 0 || blockedPanes) {
+          this.logPendingDecisionBlock(
+            st,
+            workspaceId,
+            edges.length,
+            edges.filter((e) => e.task !== undefined),
+            { snapshot: true },
+          );
+        }
+      }
+      return;
+    }
     const loopHint = this.safeGetLoop(workspaceId);
     const loopRunning = loopHint?.running === true;
     const workActive = this.safeHasActiveWork(workspaceId);
@@ -492,6 +540,10 @@ export class CommanderEventCoalescer {
         if (r.ok) {
           st.autoWakesUsed += 1;
           this.recordWake(st, this.nowFn());
+          // A wake got through, so the next block is a fresh fact — announce it
+          // rather than swallowing it inside the previous window.
+          st.pendingDecisionLoggedAt = -Infinity;
+          st.pendingDecisionLoggedId = null;
           if (snapshotMaxSeq > st.watermark) st.watermark = snapshotMaxSeq;
           this.pruneBuffer(st, snapshotMaxSeq);
           st.phase = st.buffer.size > 0 ? 'buffering' : 'idle';
@@ -546,6 +598,26 @@ export class CommanderEventCoalescer {
    *  events so the first wake carries them; budgets are untouched. */
   notifyBrainBooted(workspaceId: string): void {
     if (this.disposed) return;
+    this.replayOrphanBacklog(workspaceId);
+  }
+
+  /** A human ANSWERED this workspace's pending decision (DECK_DECISION_RESOLVE).
+   *  Three things follow, and none of them happen anywhere else:
+   *
+   *   - the answer is a human turn, so the consecutive auto-wake budget resets
+   *     (a long-pending decision otherwise let heartbeat re-reviews burn all 5
+   *     and the resume turn arrived budget-blocked);
+   *   - the block log's rate window closes, so the NEXT block is announced;
+   *   - the worker events parked while the gate was shut replay through the
+   *     ordinary push path, exactly as a booting brain's backlog does, so the
+   *     resume turn carries them. Nothing leaves the backlog until a wake
+   *     actually delivered it (ackOrphanBacklog). */
+  notifyDecisionResolved(workspaceId: string): void {
+    if (this.disposed) return;
+    const st = this.ensureState(workspaceId);
+    st.autoWakesUsed = 0;
+    st.pendingDecisionLoggedAt = -Infinity;
+    st.pendingDecisionLoggedId = null;
     this.replayOrphanBacklog(workspaceId);
   }
 
@@ -635,6 +707,8 @@ export class CommanderEventCoalescer {
         autoWakesUsed: 0,
         wakeTimestamps: [],
         snapshotSurfacedComplete: new Set(),
+        pendingDecisionLoggedAt: -Infinity,
+        pendingDecisionLoggedId: null,
       };
       this.states.set(workspaceId, st);
     }
@@ -839,6 +913,64 @@ export class CommanderEventCoalescer {
     st.phase = 'idle';
   }
 
+  /** Hand the delegated events to the durable backlog. Never throws: a park
+   *  that fails costs this one replay, it must not wedge the flush. */
+  private safeParkDelegated(workspaceId: string, events: readonly BufferedEvent[]): void {
+    if (!this.deps.parkDelegated) return;
+    try {
+      this.deps.parkDelegated(
+        workspaceId,
+        events.map((e) => ({ ...e, workspaceId })),
+      );
+    } catch {
+      // best-effort — the events are consumed either way, as they were before
+    }
+  }
+
+  /** The pending decision's id, never-throw. */
+  private safePendingDecisionId(workspaceId: string): string | null {
+    try {
+      return this.deps.getPendingDecisionId?.(workspaceId) ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  /** Is the block line due for this workspace? A DIFFERENT decision id is a new
+   *  fact and logs at once; the same one waits out PENDING_DECISION_LOG_MS. */
+  private pendingDecisionLogDue(st: WsState, workspaceId: string): { due: boolean; id: string | null } {
+    const id = this.safePendingDecisionId(workspaceId);
+    if (id !== null && id !== st.pendingDecisionLoggedId) return { due: true, id };
+    return { due: this.nowFn() - st.pendingDecisionLoggedAt >= PENDING_DECISION_LOG_MS, id };
+  }
+
+  /** ONE line per blocked flush naming the workspace, the decision, how many
+   *  events the gate blocked and which of them were delegated work. Rate-limited
+   *  per workspace and per decision id; never throws. */
+  private logPendingDecisionBlock(
+    st: WsState,
+    workspaceId: string,
+    total: number,
+    delegated: readonly BufferedEvent[],
+    opts: { snapshot?: boolean } = {},
+  ): void {
+    const { due, id } = this.pendingDecisionLogDue(st, workspaceId);
+    if (!due) return;
+    st.pendingDecisionLoggedAt = this.nowFn();
+    st.pendingDecisionLoggedId = id;
+    const ids = [...new Set(delegated.map((e) => e.task?.taskId ?? '?'))];
+    const shown = ids.slice(0, PENDING_DECISION_LOG_MAX_IDS).join(', ');
+    const more = ids.length > PENDING_DECISION_LOG_MAX_IDS ? `, +${ids.length - PENDING_DECISION_LOG_MAX_IDS} more` : '';
+    const tail = delegated.length > 0 ? ` (${delegated.length} delegated parked for replay: ${shown}${more})` : ' (0 delegated)';
+    const what = opts.snapshot ? 'snapshot wake' : 'wake';
+    const line = `[deck] ${what} for ${workspaceId} dropped: pending decision${id ? ` ${id}` : ''}; ${total} events${tail}`;
+    try {
+      (this.deps.log ?? ((l: string) => console.warn(l)))(line);
+    } catch {
+      // diagnostics must never break a flush
+    }
+  }
+
   private attemptFlush(workspaceId: string, st: WsState): void {
     if (this.disposed) return;
     this.clearDebounce(st);
@@ -850,9 +982,23 @@ export class CommanderEventCoalescer {
     // Decision gate: a PENDING decision blocks EVERY wake — even a running loop
     // (unlike the auto-wake switch and mode policy below, which a running loop
     // overrides). The brain raised a decision and must not proceed until a human
-    // answers. Consume (drop) the buffered events: resolving the decision
-    // explicitly kicks a resume turn, so there is nothing to replay here.
+    // answers. Ambient events are consumed (dropped): resolving the decision
+    // explicitly kicks a resume turn, so there is nothing to replay for them.
+    //
+    // DELEGATED events are the exception (dogfood finding 12). A worker's stop
+    // routed to its owner is the owner's own result, not ambient noise, and a
+    // decision left over from a previous app session silently ate every one of
+    // them for twenty minutes. So: PARK the task-tagged events durably in the
+    // ledger's orphan backlog — the same place a brain-less owner's events go —
+    // and let the resume turn the resolve kicks replay them. Parking, not
+    // holding in the buffer: the buffer keeps ONE event per (pane, kind), is
+    // cleared by a human send, and dies with the process, while the decision
+    // that blocked the wake is precisely what outlives a restart. Either way
+    // the watermark advances normally and the block is logged.
     if (this.safeHasPendingDecision(workspaceId)) {
+      const delegated = events.filter((e) => e.task !== undefined);
+      this.logPendingDecisionBlock(st, workspaceId, events.length, delegated);
+      if (delegated.length > 0) this.safeParkDelegated(workspaceId, delegated);
       this.consume(st, events);
       return;
     }
@@ -959,6 +1105,10 @@ export class CommanderEventCoalescer {
         if (r.ok) {
           st.autoWakesUsed += 1;
           this.recordWake(st, this.nowFn());
+          // A wake got through, so the next block is a fresh fact — announce it
+          // rather than swallowing it inside the previous window.
+          st.pendingDecisionLoggedAt = -Infinity;
+          st.pendingDecisionLoggedId = null;
           if (snapshotMaxSeq > st.watermark) st.watermark = snapshotMaxSeq;
           this.pruneBuffer(st, snapshotMaxSeq);
           this.ackReplayed(workspaceId, flushEvents);
@@ -1203,8 +1353,15 @@ function awaitingVerdict(
   if (!autonomy.approvalPress) return '(NOTIFY ONLY, do NOT approve)';
   // The next-step contract: after the press the worker runs on its own and its
   // own event wakes you, so the turn ends here rather than looping on the pane.
+  // The ledger half of the same contract (dogfood finding 14): the brain kept
+  // trying to move a task straight to `completed`, which the transition table
+  // refuses — completed is reachable only from review_requested. Say so on the
+  // line that already tells it to end the turn, in the same words the tool
+  // description and the ledger's refusal use.
   const then = target?.taskId
-    ? ` Then END YOUR TURN — task ${target.taskId} runs on and its next event wakes you.`
+    ? ` Then END YOUR TURN — task ${target.taskId} runs on and its next event wakes you.` +
+      ' Ledger: completed is reachable only from review_requested — the worker normally reports that,' +
+      ' set it yourself only if it cannot; then task_gate_run, then ledger_update completed.'
     : '';
   if (source === 'hook') {
     return (

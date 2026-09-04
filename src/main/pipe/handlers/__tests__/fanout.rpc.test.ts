@@ -28,9 +28,11 @@ import { CHANNEL_TOPIC_MAX, HUMAN_WORKSPACE_ID } from '../../../../shared/channe
 
 vi.mock('../_bridge', () => ({ sendToRenderer: vi.fn() }));
 vi.mock('../../../git/git', () => ({ git: vi.fn() }));
+vi.mock('../../../deck/deckDecisionStore', () => ({ loadWorkspaceDecision: vi.fn(() => null) }));
 
 import { sendToRenderer } from '../_bridge';
 import { git } from '../../../git/git';
+import { loadWorkspaceDecision } from '../../../deck/deckDecisionStore';
 import { registerFanOutRpc, FANOUT_WIRE_AGENT_CMD, FANOUT_IDEMPOTENCY_KEY_MAX_BYTES } from '../fanout.rpc';
 import type { FanOutRequest, FanOutResult, FanOutService, FanOutStatus } from '../../../worktask/FanOutService';
 import type { RpcRouter } from '../../RpcRouter';
@@ -1083,5 +1085,54 @@ describe('FanOutService is constructed exactly once in main', () => {
     expect(src).toMatch(/const fanOutService = createFanOutService\(/);
     expect(src).toMatch(/registerFanOutRpc\(rpcRouter, fanOutService,/);
     expect(src).toMatch(/registerFanOutHandler\(fanOutService\)/);
+  });
+});
+
+// ── the accept's warnings ─────────────────────────────────────────────────
+//
+// Wave 3, finding 12: the owner workspace carried an unanswered decision from a
+// previous app session, which blocks EVERY wake. The fan-out was accepted, the
+// workers ran and finished, and nothing ever reached the brain. The accept is
+// the one moment the caller is reading a reply, so it says so there.
+describe('the accepted reply warns about a pending decision on the owner', () => {
+  it('carries the warning naming the workspace and the decision id', async () => {
+    vi.mocked(loadWorkspaceDecision).mockReturnValue({
+      id: 'dec-9',
+      question: 'resume?',
+      options: [],
+      context: '',
+      status: 'pending',
+      raisedAt: 0,
+    });
+    const h = setup();
+    const res = await h.call(goodParams());
+    expect(res).toMatchObject({ ok: true, status: 'accepted' });
+    const warnings = res['warnings'] as string[];
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain(`owner workspace ${CALLER_WS} has a pending decision dec-9`);
+    expect(warnings[0]).toContain('worker events will not wake the brain until it is answered');
+  });
+
+  it('omits the field entirely when there is no pending decision', async () => {
+    vi.mocked(loadWorkspaceDecision).mockReturnValue(null);
+    const h = setup();
+    expect(await h.call(goodParams())).not.toHaveProperty('warnings');
+  });
+
+  it('a resolved decision is not a warning, and a torn store is not an error', async () => {
+    vi.mocked(loadWorkspaceDecision).mockReturnValue({
+      id: 'dec-1',
+      question: 'q',
+      options: [],
+      context: '',
+      status: 'resolved',
+      raisedAt: 0,
+    });
+    expect(await setup().call(goodParams())).not.toHaveProperty('warnings');
+
+    vi.mocked(loadWorkspaceDecision).mockImplementation(() => {
+      throw new Error('torn store');
+    });
+    expect(await setup().call(goodParams())).toMatchObject({ ok: true, status: 'accepted' });
   });
 });

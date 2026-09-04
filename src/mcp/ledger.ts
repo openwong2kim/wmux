@@ -101,7 +101,7 @@ export function registerLedgerUpdateTool(server: McpServer, deps: LedgerToolDeps
 export function registerLedgerBrainUpdateTool(register: McpServer['tool']): void {
   register(
     'ledger_update',
-    'Move one of YOUR tasks in the task ledger. Mark completed only after review_requested AND a passing gate recorded by the gate runner (task_gate_run) — the server refuses otherwise; force + reason is the logged exception. Bounce a review back with input_required, or close a task as failed / cancelled. Carry the rev you read.',
+    'Move one of YOUR tasks in the task ledger. Transitions: working → review_requested | input_required | failed | cancelled; review_requested → completed | working | input_required | failed | cancelled; completed and cancelled are terminal. completed is therefore reachable ONLY from review_requested. The worker normally reports review_requested when its own gate passed; you may set it yourself when the worker cannot (no ledger tool, or it stalled). Then completed needs a passing gate the gate runner recorded (task_gate_run) — or force: { reason }, the only exit without one, logged on the entry. Bounce a review back with input_required, or close a task as failed / cancelled. Carry the rev you read.',
     LEDGER_BRAIN_UPDATE_SHAPE,
     async ({ task_id, status, expected_rev, summary, force, reason }) => {
       const params: Record<string, unknown> = { taskId: task_id, status, expectedRev: expected_rev };
