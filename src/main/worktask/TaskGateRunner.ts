@@ -56,6 +56,24 @@
 // `deps_missing` and `gate_unavailable` stay unrecorded — there a gate existed
 // and the environment stopped it, which is exactly the case a human should see.
 //
+// ── WHO GETS TO SAY THERE IS NO GATE ────────────────────────────────────────
+//
+// Not the task worktree. That tree is what the WORKER has been editing, so
+// deciding "no gate exists" from its own package.json would let a worker delete
+// its `lint` and `test` scripts and be handed a system-signed passing verdict
+// for it — a forged pass, in the one record `completed` trusts. So the waiver
+// needs the PARENT repository's agreement: when the parent root declares npm
+// lint/test scripts and the worktree does not, the worktree dropped them, and
+// that is a FAILING gate (`exitCode: 1`, `command: 'none'`, a tail that names
+// the missing scripts), never a waiver. Only when the parent declares no gate
+// either is `no_gate_command` recorded. The verify-script branch was already
+// parent-anchored: `wmux.json` is read at `projectRoot`, and a project that
+// declares `verify` while the worktree lacks the file is refused, not waived.
+//
+// A package.json that EXISTS but cannot be read or parsed is a third thing
+// again: neither "no gate" nor "a gate that failed", but a gate whose existence
+// is unknown. That answers `gate_unavailable` (unrecorded) rather than guessing.
+//
 // Ledger writes go through LedgerPort (see ledgerPort.ts) as a `system` actor —
 // the daemon ran the gate, not the worker whose code it graded — and a ledger
 // that is unreachable does not fail the gate: the run happened, only its receipt
@@ -86,6 +104,12 @@ export const GATE_PROJECT_COMMAND_ID = 'verify';
 /** Path, relative to the worktree root, of the only project-declared gate this
  *  runner will execute. */
 export const GATE_VERIFY_SCRIPT = 'scripts/verify.sh';
+
+/** The package.json scripts that make up the fallback gate, in run order. A
+ *  worktree declaring neither has no npm gate — but a PARENT repository
+ *  declaring either has a gate its worktree does not get to waive by deleting
+ *  the script. */
+export const GATE_NPM_SCRIPTS = ['lint', 'test'] as const;
 
 /** The spellings of GATE_VERIFY_SCRIPT a wmux.json may use for its `verify`
  *  command. Compared literally; anything else is refused. */
@@ -161,8 +185,10 @@ export interface TaskGateRunnerOptions {
   spawn?: GateSpawn;
   timeoutMs?: number;
   now?: () => number;
-  /** Injected for tests; defaults to reading `<worktree>/package.json`. */
-  readPackageScripts?: (worktreePath: string) => Record<string, string>;
+  /** Injected for tests; defaults to reading `<root>/package.json`. `null` means
+   *  the file is there and could not be read or parsed — see
+   *  defaultReadPackageScripts. An absent package.json is `{}`. */
+  readPackageScripts?: (root: string) => Record<string, string> | null;
   /** Injected for tests; defaults to an lstat of `<worktree>/node_modules`. */
   depsState?: (worktreePath: string) => 'ok' | 'missing' | 'symlink';
   /** Injected for tests; defaults to fs.existsSync. */
@@ -292,18 +318,35 @@ function defaultDepsState(worktreePath: string): 'ok' | 'missing' | 'symlink' {
   }
 }
 
-function defaultReadPackageScripts(worktreePath: string): Record<string, string> {
+/**
+ * `<root>/package.json`'s scripts, or `null` when the file is there and this
+ * process cannot make sense of it.
+ *
+ * The distinction is the whole point: one `catch {} → {}` used to fold three
+ * unrelated facts together. "There is no package.json" is a legitimate no-gate
+ * (a repository that is not a Node project). "There is one and it is
+ * unreadable" (EACCES, EISDIR, an I/O error) or "there is one and it is not
+ * JSON" is NOT evidence that no gate exists — treating it as such waives the
+ * gate for a corrupt tree, and the waiver writes a passing system record.
+ */
+function defaultReadPackageScripts(root: string): Record<string, string> | null {
+  let raw: string;
   try {
-    const raw = fs.readFileSync(path.join(worktreePath, 'package.json'), 'utf8');
-    const parsed = JSON.parse(raw) as { scripts?: Record<string, unknown> };
-    const out: Record<string, string> = {};
-    for (const [k, v] of Object.entries(parsed.scripts ?? {})) {
-      if (typeof v === 'string') out[k] = v;
-    }
-    return out;
-  } catch {
-    return {};
+    raw = fs.readFileSync(path.join(root, 'package.json'), 'utf8');
+  } catch (e) {
+    return (e as NodeJS.ErrnoException).code === 'ENOENT' ? {} : null;
   }
+  let parsed: { scripts?: Record<string, unknown> } | null;
+  try {
+    parsed = JSON.parse(raw) as { scripts?: Record<string, unknown> } | null;
+  } catch {
+    return null;
+  }
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(parsed?.scripts ?? {})) {
+    if (typeof v === 'string') out[k] = v;
+  }
+  return out;
 }
 
 // ── The runner ───────────────────────────────────────────────────────────────
@@ -318,7 +361,7 @@ export class TaskGateRunner {
   private readonly spawn: GateSpawn;
   private readonly timeoutMs: number;
   private readonly now: () => number;
-  private readonly readPackageScripts: (worktreePath: string) => Record<string, string>;
+  private readonly readPackageScripts: (root: string) => Record<string, string> | null;
   private readonly depsState: (worktreePath: string) => 'ok' | 'missing' | 'symlink';
   private readonly fileExists: (p: string) => boolean;
   /** One gate per task — the second concurrent call is `busy`, not a second
@@ -364,7 +407,7 @@ export class TaskGateRunner {
   async resolveSteps(
     worktreePath: string,
     configRoot: string = worktreePath,
-  ): Promise<{ steps: GateStep[] } | { refused: string }> {
+  ): Promise<{ steps: GateStep[] } | { refused: string } | { unavailable: string }> {
     // The verdict is read at the PARENT root (that is where the user approved a
     // wmux.json); the script runs in the worktree.
     const declared = await this.declaredVerifyCommand(configRoot);
@@ -387,6 +430,11 @@ export class TaskGateRunner {
     }
 
     const scripts = this.readPackageScripts(worktreePath);
+    if (scripts === null) {
+      return {
+        unavailable: `the package.json in ${worktreePath} could not be read or parsed, so whether this project has a gate is unknown`,
+      };
+    }
     const steps: GateStep[] = [];
     if (typeof scripts['lint'] === 'string') steps.push(step([npmBin(), 'run', 'lint']));
     if (typeof scripts['test'] === 'string') steps.push(step([npmBin(), 'test']));
@@ -437,6 +485,19 @@ export class TaskGateRunner {
     };
 
     try {
+      // WHICH steps first, THEN whether the environment can run them. The other
+      // order asked `node_modules` about a repository that may not be a Node
+      // project at all: a task in a Go or Rust checkout has no node_modules, so
+      // every gate answered `deps_missing` — unrecorded — and the task could
+      // never reach `completed`. That is the exact blockage the no-gate record
+      // exists to remove, reintroduced one step earlier.
+      const resolved = await this.resolveSteps(worktreePath, input.projectRoot ?? worktreePath);
+      if ('refused' in resolved) return { ok: false, status: 'refused', taskId, error: resolved.refused };
+      if ('unavailable' in resolved) {
+        return { ok: true, status: 'skipped', taskId, skipped: 'gate_unavailable', detail: resolved.unavailable };
+      }
+      if (resolved.steps.length === 0) return this.noGateVerdict(input);
+
       const deps = this.depsState(worktreePath);
       if (deps !== 'ok') {
         return {
@@ -449,26 +510,6 @@ export class TaskGateRunner {
               ? 'node_modules is missing in the task worktree — run npm ci there, then re-run the gate'
               : 'node_modules in the task worktree is a symlink, which makes lint/test results meaningless — run a real npm ci there',
         };
-      }
-
-      const resolved = await this.resolveSteps(worktreePath, input.projectRoot ?? worktreePath);
-      if ('refused' in resolved) return { ok: false, status: 'refused', taskId, error: resolved.refused };
-      if (resolved.steps.length === 0) {
-        const detail =
-          'this project declares no verify script and no npm lint/test scripts, so there is no gate to run';
-        // Recorded, unlike the other two skips: nothing failed here, and an
-        // unrecorded skip left `completed` unreachable without `force` for every
-        // repository that declares no gate. The verdict says what it is —
-        // `command: 'none'` and `skipped: 'no_gate_command'` — so nobody reads
-        // it as a suite that passed.
-        const recorded = await this.record(taskId, input.systemWorkspaceId, {
-          exitCode: 0,
-          tail: detail,
-          at: this.now(),
-          command: 'none',
-          skipped: 'no_gate_command',
-        });
-        return { ok: true, status: 'skipped', taskId, skipped: 'no_gate_command', detail, recorded };
       }
 
       let output = '';
@@ -550,6 +591,61 @@ export class TaskGateRunner {
     } finally {
       release();
     }
+  }
+
+  /**
+   * The worktree resolved to zero steps. That is either a project with no gate
+   * — recorded as a passing system verdict, because otherwise `completed` is
+   * unreachable — or a worktree that DROPPED the gate its parent declares,
+   * which is a failure and must never be recorded as a pass.
+   *
+   * The parent root is the daemon's own derivation of the repository the task
+   * was fanned out from (`git rev-parse --show-toplevel` of the worktree's
+   * git-common-dir), not anything the worker can write. When it is absent or is
+   * the worktree itself, there is no second opinion to ask and the worktree
+   * answers alone — that is the task-runs-in-the-main-checkout case, where the
+   * two trees are the same tree.
+   */
+  private async noGateVerdict(input: GateRunInput): Promise<GateRunResult> {
+    const { taskId, worktreePath } = input;
+    const parentRoot = input.projectRoot ?? worktreePath;
+    if (path.resolve(parentRoot) !== path.resolve(worktreePath)) {
+      const parentScripts = this.readPackageScripts(parentRoot);
+      if (parentScripts === null) {
+        return {
+          ok: true,
+          status: 'skipped',
+          taskId,
+          skipped: 'gate_unavailable',
+          detail: `the package.json in ${parentRoot} could not be read or parsed, so whether this project has a gate is unknown`,
+        };
+      }
+      const declared = GATE_NPM_SCRIPTS.filter((s) => typeof parentScripts[s] === 'string');
+      if (declared.length > 0) {
+        const detail =
+          `the parent repository declares npm ${declared.join(' and ')} ` +
+          `${declared.length > 1 ? 'scripts' : 'script'}, and the task worktree's package.json declares neither — ` +
+          'the gate is missing from the tree it was supposed to grade, which is a failed gate and not a waiver';
+        const result: LedgerGateResult = { exitCode: 1, tail: detail, at: this.now(), command: 'none' };
+        const recorded = await this.record(taskId, input.systemWorkspaceId, result);
+        return { ok: true, status: 'completed', taskId, result, recorded };
+      }
+    }
+    const detail =
+      'this project declares no verify script and no npm lint/test scripts, so there is no gate to run';
+    // Recorded, unlike the other two skips: nothing failed here, and an
+    // unrecorded skip left `completed` unreachable without `force` for every
+    // repository that declares no gate. The verdict says what it is —
+    // `command: 'none'` and `skipped: 'no_gate_command'` — so nobody reads it as
+    // a suite that passed.
+    const recorded = await this.record(taskId, input.systemWorkspaceId, {
+      exitCode: 0,
+      tail: detail,
+      at: this.now(),
+      command: 'none',
+      skipped: 'no_gate_command',
+    });
+    return { ok: true, status: 'skipped', taskId, skipped: 'no_gate_command', detail, recorded };
   }
 
   /** Compare-and-swap write of the verdict. A ledger that is missing or
