@@ -922,9 +922,16 @@ describe('per-task roles', () => {
 
     const res = await svc.start(baseReq({ titles: ['Build it', 'Review it'], roles: ['Builder', 'Reviewer'] }));
 
-    // Builder's binding pins no model here, so the neutralisation is KEPT…
-    expect(res.tasks[0].initialCommand).toBe(`${MODEL_ENV_MARKER}${renderer.spawned[0].initialCommand.slice(MODEL_ENV_MARKER.length)}`);
-    expect(splitModelEnvMarker(res.tasks[0].initialCommand ?? '').command.startsWith('claude')).toBe(true);
+    // Builder's binding pins no model here, so the neutralisation is KEPT —
+    // except on win32, where main attaches no marker at all (it is POSIX, and
+    // the pane's shell there is PowerShell), so the recorded line is the bare
+    // Get-Content form the renderer stub echoed back.
+    const builderLaunched = renderer.spawned[0].initialCommand;
+    expect(res.tasks[0].initialCommand).toBe(builderLaunched);
+    expect(splitModelEnvMarker(builderLaunched).marker).toBe(
+      process.platform === 'win32' ? '' : MODEL_ENV_MARKER,
+    );
+    expect(splitModelEnvMarker(builderLaunched).command.startsWith('claude')).toBe(true);
     // …and Reviewer's `--model o3` makes it redundant, so it comes off.
     expect(res.tasks[1].initialCommand?.startsWith('codex --model o3')).toBe(true);
     // …and the prompt file argument survived the rewrite either way.
