@@ -25,12 +25,32 @@ registerGitTools(server, { getSenderPtyId, resolveWorkspaceId });
 | Tool | Schema | Pipe RPC |
 | --- | --- | --- |
 | `task_gate_run` | `{ task_id: z.string().min(1) }` | `task.gate.run` |
-| `task_adopt` | `{ task_id: z.string().min(1) }` | `task.adopt` |
+| `task_adopt` | `{ task_id: z.string().min(1), commit?: z.boolean() }` | `task.adopt` |
 | `task_close` | `{ task_id: z.string().min(1) }` | `task.close` |
 | `task_pr` | `{ task_id: z.string().min(1), body?: z.string() }` | `task.pr` |
-| `git_status` | `{ task_id: z.string().min(1) }` | `task.git.status` |
-| `git_log` | `{ task_id: z.string().min(1), limit?: z.number().int().min(1).max(50) }` | `task.git.log` |
+| `git_status` | `{ task_id?: z.string().min(1) }` | `task.git.status` |
+| `git_log` | `{ task_id?: z.string().min(1), limit?: z.number().int().min(1).max(50) }` | `task.git.log` |
 | `gh_pr_view` | `{ task_id: z.string().min(1) }` | `task.gh.prView` |
+
+`task_adopt`'s `commit` defaults to `false` — the staged, uncommitted result this
+lane shipped with. `commit: true` commits the index the `--3way` apply filled
+(no pathspec: the target was verified clean, so the index holds the adopted
+patch and nothing else) with the subject `adopt: <title> (<task id>)`, taking the
+title from the server's projection row, and answers `{ commit: '<short sha>' }`.
+A commit that is refused — a hook, no author identity, a locked index — restores
+the applied paths exactly as the apply-failure path does and answers
+`reason: 'commit-failed'`. Sequential adoption needs it: the staged default
+leaves the target dirty, and the next adopt is then refused `dirty-target`.
+
+`git_status` and `git_log` take `task_id` **optionally**. Omitted, the repository
+is the CALLER'S OWN: main derives it from the calling terminal's cwd (the
+fan-out gate's derivation — the surface whose ptyId is the verified
+`senderPtyId`, or, for a commander caller with no pty of its own, its
+workspace's active pane), takes the git toplevel of it, and runs the same
+read-only argv there. The result carries `repoRoot` instead of `taskId`. There
+is still no path argument, and a `task_id` that is given is still ownership
+checked. `gh_pr_view` stays task-only — a pull request belongs to a task's
+branch.
 
 Descriptions live in the two source files and are the authority; they are
 written for the tools/list byte budget (short sentences, the refusal reasons
@@ -68,9 +88,11 @@ destructive edges (a branch with unpushed commits, or a dirty worktree, is
 refused and the worktree preserved), so the question for lane F is policy, not
 safety-of-last-resort.
 
-`task.adopt` writes to the parent repository, but only onto a **clean** tree and
-only as a staged, uncommitted patch (`--3way` needs the index for its merge), so
-it is recoverable with `git reset --hard`; it is not teardown-class. Its patch is taken against `merge-base(parent HEAD, task HEAD)`
+`task.adopt` writes to the parent repository, but only onto a **clean** tree, and
+only locally: staged and uncommitted by default (`--3way` needs the index for its
+merge), or as one local commit with `commit: true`. Recoverable with
+`git reset --hard` (or `git reset --hard HEAD~1`), never pushed; it is not
+teardown-class. Its patch is taken against `merge-base(parent HEAD, task HEAD)`
 rather than the parent's HEAD — diffing against HEAD turns every commit the
 parent has and the task lacks into a *reversal*, so adopting a second task
 would silently delete the first one's work. No shared commit ⇒
@@ -154,7 +176,14 @@ conclude the gate was rejected.
 `node_modules`, which makes lint/test results meaningless; reporting it as a
 failing gate would have a brain close healthy tasks as failed. A command that
 could not be started at all (ENOENT/EACCES) is `skipped: 'gate_unavailable'`,
-also not a failure. Timeout is 15 minutes and cannot be disabled (a
+also not a failure. A project that declares neither a verify script nor npm
+lint/test scripts is `skipped: 'no_gate_command'` — and that one skip is
+**recorded**, as a system gate with `exitCode: 0`, `command: 'none'`,
+`skipped: 'no_gate_command'` and the detail text as its tail. It has to be: the
+ledger refuses `completed` without a system-recorded pass, so a repository with
+no gate could otherwise never be closed except with `force`. The other two skips
+stay unrecorded, because there a gate existed and the environment stopped it.
+Timeout is 15 minutes and cannot be disabled (a
 non-positive value is clamped to the default); a cancel or a timeout kills the
 process group and yields `exitCode: null`. One gate per task: the slot is
 claimed synchronously, so a second concurrent call answers `{ status: 'busy' }`

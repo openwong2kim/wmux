@@ -10,6 +10,13 @@
 // has already checked the caller owns, and runs a fixed argv there. `git_log`'s
 // limit is a number, clamped server-side.
 //
+// `git_status` and `git_log` also answer with NO task id, and then the
+// repository is the CALLER'S OWN — main derives it from the calling terminal's
+// working directory, so there is still no path argument. A brain that had just
+// adopted several tasks into its parent checkout could not read that checkout:
+// every read wanted a task id, and the parent repository is not a task.
+// `gh_pr_view` stays task-only; a pull request belongs to a task's branch.
+//
 // Failures come back as DATA, not as thrown errors: "there is no PR for this
 // branch" and "gh is not installed" are answers a caller acts on.
 
@@ -36,6 +43,15 @@ const TASK_ID = z
   .string()
   .min(1)
   .describe('The task id (wtask-…) whose worktree to read. Must be a task your workspace owns.');
+
+/** The same id, optional: omitting it reads the caller's own repository. */
+const TASK_ID_OPTIONAL = z
+  .string()
+  .min(1)
+  .optional()
+  .describe(
+    'A task id (wtask-…) your workspace owns, to read that task\'s worktree. Omit it to read YOUR OWN repository — the one your terminal is in, which is where task_adopt lands.',
+  );
 
 async function callGit(
   method: string,
@@ -70,18 +86,20 @@ async function callGit(
 export function registerGitTools(server: McpServer, deps: GitToolDeps): void {
   server.tool(
     'git_status',
-    'Working-tree state of a task\'s worktree, as data: { branch, ahead, behind, clean, files: [{ status, path }] }. ' +
-      'Use it before task_close (which refuses on a dirty or unpushed branch) and instead of reading a terminal screen to guess whether a worker has finished.',
-    { task_id: TASK_ID },
-    async ({ task_id }) => callGit('task.git.status', { taskId: task_id }, deps),
+    'Working-tree state as data: { branch, ahead, behind, clean, files: [{ status, path }] }. ' +
+      'With task_id, a task\'s worktree — use it before task_close (which refuses on a dirty or unpushed branch) and instead of reading a terminal screen to guess whether a worker has finished. ' +
+      'Without task_id, your own repository (the result names it in repoRoot), which is how you check what task_adopt just staged or committed.',
+    { task_id: TASK_ID_OPTIONAL },
+    async ({ task_id }) =>
+      callGit('task.git.status', { ...(task_id !== undefined ? { taskId: task_id } : {}) }, deps),
   );
 
   server.tool(
     'git_log',
-    `Recent commits in a task's worktree: [{ hash, author, date, subject }], newest first. ` +
+    `Recent commits as [{ hash, author, date, subject }], newest first — a task's worktree with task_id, your own repository without it. ` +
       `limit defaults to ${TASK_GIT_LOG_DEFAULT} and is clamped to ${TASK_GIT_LOG_MAX}; the limit that actually ran comes back in the result.`,
     {
-      task_id: TASK_ID,
+      task_id: TASK_ID_OPTIONAL,
       limit: z
         .number()
         .int()
@@ -91,7 +109,11 @@ export function registerGitTools(server: McpServer, deps: GitToolDeps): void {
         .describe(`How many commits (default ${TASK_GIT_LOG_DEFAULT}, max ${TASK_GIT_LOG_MAX}).`),
     },
     async ({ task_id, limit }) =>
-      callGit('task.git.log', { taskId: task_id, ...(limit !== undefined ? { limit } : {}) }, deps),
+      callGit(
+        'task.git.log',
+        { ...(task_id !== undefined ? { taskId: task_id } : {}), ...(limit !== undefined ? { limit } : {}) },
+        deps,
+      ),
   );
 
   server.tool(

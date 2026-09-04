@@ -35,6 +35,10 @@ import type { TaskPrService } from '../../../worktask/TaskPrService';
 
 const LOCAL: RpcContext = { origin: 'local' };
 const CALLER_WS = 'ws-caller';
+/** Where the calling terminal is, and therefore the repository the read methods
+ *  answer for when no task is named. */
+const CALLER_CWD = '/repo/main/src';
+const CALLER_REPO = '/repo/main';
 const TASK = {
   id: 'wtask-1',
   title: 'lane one',
@@ -54,6 +58,7 @@ interface Harness {
   gateRun: ReturnType<typeof vi.fn>;
   gateCancel: ReturnType<typeof vi.fn>;
   requestApproval: ReturnType<typeof vi.fn>;
+  callerCwd: ReturnType<typeof vi.fn>;
   missionListParams: () => Record<string, unknown> | undefined;
 }
 
@@ -69,6 +74,8 @@ function harness(opts?: {
   approval?: TaskApprovalOutcome;
   /** Full control of the prompt (dedupe / cap tests hold it open). */
   requestApproval?: TaskApprovalPort;
+  /** The calling terminal's cwd, for the reads that name no task. */
+  callerCwd?: (workspaceId: string, senderPtyId: string) => Promise<string>;
 }): Harness {
   const handlers = new Map<string, Handler>();
   const router = { register: (m: string, h: Handler) => handlers.set(m, h) } as unknown as RpcRouter;
@@ -103,15 +110,24 @@ function harness(opts?: {
   const owner = opts?.ownerWorkspaceId === undefined ? CALLER_WS : opts.ownerWorkspaceId;
   vi.mocked(resolvePtyOwnerWorkspace).mockImplementation(async () => owner);
 
-  const exec = vi.fn(opts?.exec ?? (async () => ({ stdout: '', stderr: '', code: 0 })));
+  const exec = vi.fn(
+    opts?.exec ??
+      (async (_cmd: 'git' | 'gh', args: string[]) =>
+        args[0] === 'rev-parse' && args.includes('--show-toplevel')
+          ? { stdout: `${CALLER_REPO}\n`, stderr: '', code: 0 }
+          : { stdout: '', stderr: '', code: 0 }),
+  );
   const requestApproval = vi.fn(
     opts?.requestApproval ?? (async () => opts?.approval ?? ('approved' as TaskApprovalOutcome)),
   );
+
+  const callerCwd = vi.fn(opts?.callerCwd ?? (async () => CALLER_CWD));
 
   const deps: WorktaskRpcDeps = {
     daemon,
     exec: exec as unknown as WorktaskExec,
     requestApproval,
+    callerCwd,
     getWindow: () => null,
     close: { closeTask } as unknown as TaskCloseService,
     pr: { createPr } as unknown as TaskPrService,
@@ -134,9 +150,13 @@ function harness(opts?: {
     gateCancel,
     exec,
     requestApproval,
+    callerCwd,
     missionListParams: () => missionParams,
   };
 }
+
+/** The two reads that also answer for the caller's own repository. */
+const CALLER_REPO_METHODS = ['task.git.status', 'task.git.log'] as const;
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -178,10 +198,14 @@ describe.each(WORKTASK_RPC_METHODS)('%s — shared gates', (method) => {
     expect(res).toMatchObject({ ok: false, error: { code: 'NOT_AUTHORIZED' } });
   });
 
-  it('requires a taskId', async () => {
+  it('requires a taskId, unless it is one of the two caller-repo reads', async () => {
     const h = harness();
     const res = await h.call(method, { senderPtyId: 'pty-1' });
-    expect(res).toMatchObject({ ok: false, error: { code: 'INVALID_ARGUMENT' } });
+    if ((CALLER_REPO_METHODS as readonly string[]).includes(method)) {
+      expect(res).toMatchObject({ ok: true, repoRoot: CALLER_REPO });
+    } else {
+      expect(res).toMatchObject({ ok: false, error: { code: 'INVALID_ARGUMENT' } });
+    }
   });
 
   it('reports an unknown task and a foreign task identically (owner-scoped list)', async () => {
@@ -414,6 +438,82 @@ describe('task.git.log', () => {
     expect((res as { commits: unknown[] }).commits).toEqual([
       { hash: 'abc', author: 'A Dev', date: '2026-09-04T00:00:00Z', subject: 'fix: a subject with -- dashes' },
     ]);
+  });
+});
+
+// ── No taskId: the CALLER'S OWN repository ─────────────────────────────────
+// A brain that had just adopted four tasks into its parent checkout could not
+// read that checkout — every read wanted a task id, and the parent repository
+// is not a task.
+describe('task.git.status / task.git.log without a taskId', () => {
+  const COMMANDER: RpcContext = { origin: 'local', commanderWorkspace: CALLER_WS };
+
+  it('reads the repository the calling terminal is in, and names it', async () => {
+    const h = harness();
+    const res = await h.call('task.git.status', { senderPtyId: 'pty-1' });
+    expect(h.callerCwd).toHaveBeenCalledWith(CALLER_WS, 'pty-1');
+    // The cwd is normalised to the git TOPLEVEL, so a subdirectory answers for
+    // the whole repository.
+    expect(h.exec).toHaveBeenCalledWith('git', ['rev-parse', '--show-toplevel'], CALLER_CWD);
+    expect(h.exec).toHaveBeenCalledWith('git', ['status', '--porcelain=v1', '--branch', '-z'], CALLER_REPO);
+    expect(res).toMatchObject({ ok: true, repoRoot: CALLER_REPO });
+    expect(res).not.toHaveProperty('taskId');
+  });
+
+  it('never asks the daemon for a task list it does not need', async () => {
+    const h = harness();
+    await h.call('task.git.log', { senderPtyId: 'pty-1' });
+    expect(h.missionListParams()).toBeUndefined();
+    expect(h.exec).toHaveBeenCalledWith('git', expect.arrayContaining(['log']), CALLER_REPO);
+  });
+
+  it('borrows the workspace active pane for a commander caller, which has no pty', async () => {
+    const h = harness();
+    expect(await h.call('task.git.status', {}, COMMANDER)).toMatchObject({ ok: true, repoRoot: CALLER_REPO });
+    expect(h.callerCwd).toHaveBeenCalledWith(CALLER_WS, '');
+  });
+
+  it('still refuses a task the caller does not own — omitting the id is the only way out', async () => {
+    const h = harness({ tasks: [] });
+    expect(await h.call('task.git.status', { taskId: TASK.id, senderPtyId: 'pty-1' })).toMatchObject({
+      ok: false,
+      error: { code: 'NOT_FOUND' },
+    });
+  });
+
+  it('still refuses a caller-stated verifiedWorkspaceId with no taskId to hide behind', async () => {
+    const h = harness();
+    expect(
+      await h.call('task.git.status', { senderPtyId: 'pty-1', verifiedWorkspaceId: 'ws-other' }),
+    ).toMatchObject({ ok: false, error: { code: 'INVALID_ARGUMENT' } });
+    expect(h.callerCwd).not.toHaveBeenCalled();
+  });
+
+  it('refuses when the calling terminal reports no directory', async () => {
+    const h = harness({ callerCwd: async () => '' });
+    expect(await h.call('task.git.status', { senderPtyId: 'pty-1' })).toMatchObject({
+      ok: false,
+      error: { code: 'FAILED_PRECONDITION' },
+    });
+  });
+
+  it('refuses a cwd that is not inside a git repository', async () => {
+    const h = harness({ exec: async () => ({ stdout: '', stderr: 'not a git repository', code: 128 }) });
+    expect(await h.call('task.git.log', { senderPtyId: 'pty-1' })).toMatchObject({
+      ok: false,
+      error: { code: 'FAILED_PRECONDITION' },
+    });
+  });
+
+  it('refuses a cwd that looks like a flag or carries control characters', async () => {
+    for (const bad of ['--upload-pack=evil', '/repo\u0007/x']) {
+      const h = harness({ callerCwd: async () => bad });
+      expect(await h.call('task.git.status', { senderPtyId: 'pty-1' })).toMatchObject({
+        ok: false,
+        error: { code: 'FAILED_PRECONDITION' },
+      });
+      expect(h.exec).not.toHaveBeenCalled();
+    }
   });
 });
 

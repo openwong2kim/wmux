@@ -75,6 +75,24 @@ describe('the wire call', () => {
     expect(mockSendRpc).toHaveBeenCalledWith(method, { taskId: 'wtask-1', senderPtyId: 'pty-mine' });
   });
 
+  it('omits taskId when no task is named, so main reads the caller\'s own repository', async () => {
+    await tools.get('git_status')?.({});
+    expect(mockSendRpc).toHaveBeenLastCalledWith('task.git.status', { senderPtyId: 'pty-mine' });
+    await tools.get('git_log')?.({ limit: 5 });
+    expect(mockSendRpc).toHaveBeenLastCalledWith('task.git.log', { limit: 5, senderPtyId: 'pty-mine' });
+  });
+
+  it('keeps task_id required on gh_pr_view — a PR belongs to a task branch', () => {
+    const prTask = (shapes.get('gh_pr_view') ?? {})['task_id'] as z.ZodTypeAny;
+    expect(prTask.safeParse(undefined).success).toBe(false);
+    for (const name of ['git_status', 'git_log']) {
+      const optional = (shapes.get(name) ?? {})['task_id'] as z.ZodTypeAny;
+      expect(optional.safeParse(undefined).success).toBe(true);
+      // Still a real id when given: '' would be a task nobody owns.
+      expect(optional.safeParse('').success).toBe(false);
+    }
+  });
+
   it('omits limit entirely when the caller does not give one', async () => {
     await tools.get('git_log')?.({ task_id: 'wtask-1' });
     expect(mockSendRpc).toHaveBeenCalledWith('task.git.log', { taskId: 'wtask-1', senderPtyId: 'pty-mine' });
