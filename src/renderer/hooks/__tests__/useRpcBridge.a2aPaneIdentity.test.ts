@@ -122,13 +122,17 @@ describe('useRpcBridge — pane-level A2A identity wiring', () => {
     // S-C2: the same-ws reply is no longer blanket-suppressed — it pins to the
     // SYMMETRIC from/to anchor and suppresses ONLY per the four guards, which
     // now live in decideReplyDelivery (a2aAddressing.ts, unit-tested there):
-    // pin_lost / same_ws_no_anchor / self_loop / unverified_sender. The reply
-    // branch must route through that single decision point AND surface its
-    // outcome in the response (delivery.reason + hint) instead of skipping
-    // silently — the silent skip is what the 2026-08-13 dogfood hit.
+    // pin_lost / target_is_brain / same_ws_no_anchor / self_loop /
+    // unverified_sender. The reply branch must route through that single
+    // decision point AND surface its outcome in the response (delivery.reason
+    // + hint) instead of skipping silently — the silent skip is what the
+    // 2026-08-13 dogfood hit.
     expect(block).toMatch(/const sameWsTask = task\.metadata\.from\.workspaceId === task\.metadata\.to\.workspaceId/);
     expect(block).toMatch(/const pinAnchor = replyingToReceiver \? task\.metadata\.to : task\.metadata\.from/);
-    expect(block).toMatch(/decideReplyDelivery\(sameWsTask, hasAnchor, pinnedAddressLost, explicitPty, callerPtyId\)/);
+    expect(block).toMatch(/decideReplyDelivery\(\s*sameWsTask,\s*hasAnchor,\s*pinnedAddressLost,\s*explicitPty,\s*callerPtyId,/);
+    // ...and it must hand the decision the commander binding MAIN stamped, or a
+    // brain (which owns no pane) stays suppressed as an unverifiable sender.
+    expect(block).toMatch(/commanderWorkspaceId:\s*\n?\s*typeof params\.commanderWorkspaceId === 'string'/);
     expect(block).toMatch(/REPLY_SUPPRESS_HINTS\[decision\.reason\]/);
     // a suppressed reply still emits the task pointer onto the bus (the ONLY
     // remaining signal to the receiver when the nudge is withheld)

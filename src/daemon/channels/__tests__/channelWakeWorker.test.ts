@@ -13,8 +13,12 @@ import {
   WAKE_QUIET_MS,
   WAKE_TICK_MS,
   EXHAUSTED_REANNOUNCE_MS,
+  BODY_PREVIEW_MAX_LEN,
+  bodyPreview,
+  mayCarryBody,
   type WakeUnreadEntry,
   type WakeSessionView,
+  type WakeNudgeOutcome,
 } from '../channelWakeWorker';
 import {
   PrincipalService,
@@ -53,6 +57,7 @@ interface Harness {
   worker: ChannelWakeWorker;
   writes: Array<{ sessionId: string; data: string }>;
   broadcasts: Array<Record<string, unknown>>;
+  outcomes: WakeNudgeOutcome[];
   logs: string[];
   setEntries(e: WakeUnreadEntry[]): void;
   setSessions(s: WakeSessionView[]): void;
@@ -70,6 +75,7 @@ function makeHarness(
   let writeError: Error | null = null;
   const writes: Array<{ sessionId: string; data: string }> = [];
   const broadcasts: Array<Record<string, unknown>> = [];
+  const outcomes: WakeNudgeOutcome[] = [];
   const logs: string[] = [];
   const worker = new ChannelWakeWorker({
     memberWorkspaces: () => ['ws-b'],
@@ -81,6 +87,7 @@ function makeHarness(
       writes.push({ sessionId, data });
     },
     broadcast: (event) => broadcasts.push(event),
+    onNudgeOutcome: (outcome) => outcomes.push(outcome),
     log: (_level, message) => logs.push(message),
     now: () => nowMs,
     enterDelayMs: 1,
@@ -89,6 +96,7 @@ function makeHarness(
     worker,
     writes,
     broadcasts,
+    outcomes,
     logs,
     setEntries: (e) => (entries = e),
     setSessions: (s) => (sessions = s),
@@ -649,5 +657,186 @@ describe('recordExternalNudge — membership validation (unbounded-growth guard)
     h.setNow(1_000_000);
     h.worker.tickOnce();
     expect(h.writes).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The nudge says WHAT you are being woken for, and reports whether it landed.
+// ---------------------------------------------------------------------------
+// Every nudge used to read identically ("2 unread — run: wmux channel read …"),
+// so an agent mid-task had to spend a turn on the read just to learn whether it
+// mattered. And the push half was write-only: a nudge into a pane that died
+// mid-race was logged and dropped while the message it announced stayed
+// 'pending' — a receipt for a delivery nobody made.
+describe('ChannelWakeWorker — body preview + inject outcome', () => {
+  it('carries the first line of the body after the existing hint', () => {
+    const h = makeHarness();
+    h.setEntries([entry({ oldestUnreadBody: 'deploy is red on main\nstack trace follows' })]);
+    h.setSessions([session({})]);
+    h.worker.tickOnce();
+
+    const text = h.writes[0]!.data;
+    // The hint is unchanged and still comes first.
+    expect(text).toContain('run: wmux channel read ch-1 --since 3');
+    expect(text).toContain('deploy is red on main');
+    // Only the FIRST line — a multi-line body must never turn into several
+    // submits in the target's composer.
+    expect(text).not.toContain('stack trace');
+    expect(text).not.toContain('\n');
+  });
+
+  it('renders the body it is given for a mention', () => {
+    const h = makeHarness();
+    // ChannelService picks WHICH body to hand over; this pins that the worker
+    // renders it unmodified apart from the safety pass.
+    h.setEntries([entry({ mentionUnread: 1, oldestUnreadBody: '@codex can you take this?' })]);
+    h.setSessions([session({})]);
+    h.worker.tickOnce();
+
+    expect(h.writes[0]!.data).toContain('@codex can you take this?');
+    expect(h.writes[0]!.data).toContain('(1 mention you)');
+  });
+
+  it('falls back to the hint alone when no body is supplied', () => {
+    const h = makeHarness();
+    h.setEntries([entry({})]);
+    h.setSessions([session({})]);
+    h.worker.tickOnce();
+    // No dangling separator.
+    expect(h.writes[0]!.data.endsWith('--since 3')).toBe(true);
+  });
+
+  // The body is another workspace's text, TYPED into a live pane and committed
+  // with an Enter. `lastDetectedAgent` can be stale — the agent exits and the
+  // shell stays — and a shell would RUN it.
+  describe('the body is an injection surface', () => {
+    const HOSTILE = 'ship it $(rm -rf ~) `id` "quoted" \'also\' \\escaped';
+
+    it('drops shell metacharacters from the preview', () => {
+      const h = makeHarness();
+      h.setEntries([entry({ oldestUnreadBody: HOSTILE })]);
+      h.setSessions([session({ lastDetectedAgent: 'codex' })]);
+      h.worker.tickOnce();
+
+      const text = h.writes[0]!.data;
+      expect(text).toContain('ship it');
+      for (const ch of ['$', '`', '\\', '"', "'"]) {
+        expect(text).not.toContain(ch);
+      }
+    });
+
+    it('omits the body entirely when the pane is a bare shell', () => {
+      const h = makeHarness();
+      h.setEntries([entry({ oldestUnreadBody: 'deploy is red on main' })]);
+      // A pane with no detected agent is exactly the case where the text would
+      // be run rather than composed.
+      h.setSessions([
+        session({ id: 'pty-1', lastDetectedAgent: 'codex' }),
+        session({ id: 'pty-2', lastDetectedAgent: undefined }),
+      ]);
+      // Force the single-eligible-agent path onto the shell by removing the
+      // agent pane: an agent-less pane is never targeted at all...
+      h.setSessions([session({ lastDetectedAgent: 'zsh' })]);
+      h.worker.tickOnce();
+
+      expect(h.writes).toHaveLength(1);
+      expect(h.writes[0]!.data).not.toContain('deploy is red on main');
+      expect(h.writes[0]!.data).toContain('run: wmux channel read');
+    });
+
+    it('caps the FINAL assembled line, not the pieces', () => {
+      const h = makeHarness();
+      h.setEntries([entry({ oldestUnreadBody: 'x'.repeat(500) })]);
+      h.setSessions([session({})]);
+      h.worker.tickOnce();
+
+      // Concatenation is exactly where a bounded hint and a bounded preview
+      // stop being bounded.
+      expect(h.writes[0]!.data.length).toBeLessThanOrEqual(220);
+    });
+
+    it('mayCarryBody names agent TUIs only', () => {
+      expect(mayCarryBody('claude')).toBe(true);
+      expect(mayCarryBody('codex')).toBe(true);
+      expect(mayCarryBody('zsh')).toBe(false);
+      expect(mayCarryBody('')).toBe(false);
+      expect(mayCarryBody(undefined)).toBe(false);
+    });
+  });
+
+  it('reports success only after the Enter lands, never on the text write alone', () => {
+    const h = makeHarness();
+    h.setEntries([entry({})]);
+    h.setSessions([session({})]);
+    h.worker.tickOnce();
+
+    // Text is out but the nudge is still sitting uncommitted — not a delivery.
+    expect(h.outcomes).toEqual([]);
+    flushEnter();
+    expect(h.outcomes).toEqual([
+      {
+        workspaceId: 'ws-b',
+        channelId: 'ch-1',
+        memberId: 'codex',
+        sessionId: 'pty-1',
+        fromSeqExclusive: 2,
+        toSeqInclusive: 4,
+        ok: true,
+      },
+    ]);
+  });
+
+  it('reports failure when the pane dies before the text write', () => {
+    const h = makeHarness();
+    h.setEntries([entry({})]);
+    h.setSessions([session({})]);
+    h.setWriteError(new Error('write EPIPE'));
+    h.worker.tickOnce();
+
+    expect(h.outcomes).toEqual([
+      {
+        workspaceId: 'ws-b',
+        channelId: 'ch-1',
+        memberId: 'codex',
+        sessionId: 'pty-1',
+        fromSeqExclusive: 2,
+        toSeqInclusive: 4,
+        ok: false,
+      },
+    ]);
+  });
+
+  it('reports failure when the pane dies between the text and the Enter', () => {
+    const h = makeHarness();
+    h.setEntries([entry({})]);
+    h.setSessions([session({})]);
+    h.worker.tickOnce();
+    // The hint landed; the pane dies before the commit.
+    h.setWriteError(new Error('write EPIPE'));
+    flushEnter();
+
+    expect(h.outcomes).toEqual([
+      {
+        workspaceId: 'ws-b',
+        channelId: 'ch-1',
+        memberId: 'codex',
+        sessionId: 'pty-1',
+        fromSeqExclusive: 2,
+        toSeqInclusive: 4,
+        ok: false,
+      },
+    ]);
+  });
+
+  it('bodyPreview strips control characters and caps the length', () => {
+    expect(bodyPreview('abc')).toBe('a b c');
+    expect(bodyPreview(undefined)).toBe('');
+    expect(bodyPreview('   ')).toBe('');
+    // Only the first line — the rest would submit as separate lines.
+    expect(bodyPreview('first\r\nsecond')).toBe('first');
+    const long = 'x'.repeat(BODY_PREVIEW_MAX_LEN + 50);
+    const out = bodyPreview(long);
+    expect(out.length).toBe(BODY_PREVIEW_MAX_LEN);
+    expect(out.endsWith('…')).toBe(true);
   });
 });

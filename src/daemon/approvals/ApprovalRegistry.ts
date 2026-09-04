@@ -44,7 +44,13 @@
 
 import crypto from 'node:crypto';
 import { hasCriticalRisk } from '../../shared/criticalPatterns';
-import { keystrokesForAgent, looksLikeApprovalPrompt, looksLikeChoiceOnScreen } from './approvalKeystrokes';
+import {
+  decideApprovalPress,
+  keystrokesForAgent,
+  looksLikeApprovalPrompt,
+  looksLikeChoiceOnScreen,
+  type ApprovalPressFacts,
+} from './approvalKeystrokes';
 import {
   formatScreenTail,
   loadApprovalState,
@@ -97,6 +103,14 @@ export interface ApprovalRegistryDeps {
    * delivery it did not make.
    */
   writeToSession: (sessionId: string, data: string) => boolean;
+  /**
+   * The workspace-shaped half of the press scope (see `decideApprovalPress`):
+   * is this workspace a WorkTask task workspace, and what is its deck autonomy
+   * mode. Both facts live in the MAIN process, so the daemon can only be told
+   * them. Absent, or answering `{}`, means "not established" — and unknown is a
+   * refusal, so a press never happens on an assumption.
+   */
+  pressScope?: (workspaceId: string) => Pick<ApprovalPressFacts, 'isTaskWorkspace' | 'autonomyMode'>;
   log?: (level: 'info' | 'warn' | 'error', message: string) => void;
   /** Injected for test determinism. */
   now?: () => number;
@@ -491,6 +505,62 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
       }
 
       const rows = await this.safeReadScreen(record.sessionId);
+
+      // ── Press scope ───────────────────────────────────────────────────────
+      // "Can these bytes be pressed" and "may this pane be pressed at all" are
+      // different questions. `decideApprovalPress` answers the second — for an
+      // AUTOMATED approve only.
+      //
+      // A human answering from the phone or the web is looking at the prompt;
+      // gating them behind a workspace classification would just be a broken
+      // button, and a refused DENY (from anyone) would keep a pane blocked in
+      // the name of safety. Both bypass, inside the decision, so the reasoning
+      // lives in one place. `resolver` therefore defaults to 'human': every
+      // caller that exists today is a person tapping, and an automated presser
+      // has to say so — at which point it faces the full check.
+      //
+      // For that automated caller the check FAILS CLOSED: a pane whose
+      // workspace we cannot classify, or whose autonomy setting we cannot read,
+      // is refused rather than assumed delegated. Those facts live in main;
+      // `pressScope` is the seam that supplies them, and its ABSENCE reports
+      // `scope-unavailable` — distinct from a workspace that answered "no", so
+      // the missing integration wiring is visible instead of looking like
+      // policy.
+      const scopeAvailable = !!this.deps.pressScope && !!record.workspaceId;
+      const scope =
+        this.deps.pressScope && record.workspaceId
+          ? this.deps.pressScope(record.workspaceId)
+          : {};
+      const pressDecision = decideApprovalPress({
+        resolver: params.resolver ?? 'human',
+        decision: params.decision,
+        scopeAvailable,
+        ...scope,
+        // Only hook-sourced requests are ever created (see the header), so the
+        // record's own existence is the origin evidence.
+        origin: 'hook',
+        stillOnScreen: !!rows && rows.length > 0 && looksLikeApprovalPrompt(rows),
+      });
+      if (!pressDecision.press && pressDecision.reason !== 'prompt-gone') {
+        // NOT an expiry: the request is live and a human at the desktop can
+        // still answer it. We simply may not press on their behalf.
+        this.deps.log?.(
+          pressDecision.reason === 'scope-unavailable' ? 'warn' : 'info',
+          pressDecision.reason === 'scope-unavailable'
+            ? `[approvals] refused ${record.id} on ${record.sessionId}: automated press has no ` +
+              'workspace scope source (ApprovalRegistryDeps.pressScope is not wired) — ' +
+              'a human can still answer this request'
+            : `[approvals] refused ${record.id} on ${record.sessionId}: out of press scope (${pressDecision.reason})`,
+        );
+        return {
+          result: {
+            ok: false,
+            reason: 'out-of-scope',
+            request: copyRequest(record),
+          } as ApprovalResolveResult,
+        };
+      }
+
       if (!rows || rows.length === 0 || !looksLikeApprovalPrompt(rows)) {
         // Refusal expires the request: whatever the pane is showing now, it is
         // not the prompt this record was minted for, so leaving it pending would

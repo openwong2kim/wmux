@@ -158,3 +158,122 @@ function escapeDigit(d: string): string {
   // Digits are regex-safe, but be explicit for safety.
   return d.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
+
+// ---------------------------------------------------------------------------
+// Press scope (orchestrator track, 2026-09-04)
+// ---------------------------------------------------------------------------
+//
+// The checks above answer "can these bytes be pressed". This one answers the
+// prior question: "may this pane be pressed AT ALL". They are different, and
+// conflating them is how an AUTOMATED approve reaches a pane a human opened
+// for themselves — a keystroke into a session nobody delegated.
+//
+// WHAT THIS DOES NOT GOVERN, and must not:
+//   - a HUMAN answering from the phone or the web UI. They are looking at the
+//     prompt; a scope check that refuses them is just a broken button, and a
+//     refused deny would leave the record alive to be re-tapped forever.
+//   - a DENY, from any caller. Denying is the safe direction: it cancels the
+//     tool call and hands the turn back. Refusing a deny keeps a pane blocked
+//     to protect it from being unblocked.
+//
+// Four conditions, all required (for an automated APPROVE):
+//   1. the target pane's workspace is a WorkTask TASK workspace. A pane the
+//      human opened by hand, and the PARENT workspace a fan-out was launched
+//      from, are both refused: neither was delegated to an agent;
+//   2. that workspace has autonomy enabled (mode ≠ 'off'). Autonomy off means
+//      the human answers their own prompts;
+//   3. the pending approval came from a HOOK. The screen-regex detector is a
+//      suspicion — it fires on a numbered list in a diff — and this surface
+//      writes bytes;
+//   4. a re-read taken NOW still shows the prompt (looksLikeApprovalPrompt).
+//      Everything upstream is a fact about when the hook fired, which is not
+//      a fact about the screen a press is about to land on.
+//
+// UNKNOWN IS A REFUSAL. Each fact is optional in the input because the daemon
+// cannot see all of them yet (task-workspace membership and autonomy mode live
+// in the main process), and a fact we cannot establish must never be assumed
+// favourable: the cost of a wrong refusal is a human walking to the desktop,
+// the cost of a wrong press is a keystroke in someone else's terminal.
+
+/** Where the pending approval came from. */
+export type ApprovalPromptOrigin = 'hook' | 'detector';
+
+/**
+ * The facts a press decision needs. Every field is optional and `undefined`
+ * means "not established" — never "fine". See the fail-closed note above.
+ */
+export interface ApprovalPressFacts {
+  /**
+   * Who is answering. A human at the phone or the web UI is looking at the
+   * prompt and is not subject to any of this; only an automated resolver is.
+   */
+  resolver?: ApprovalResolverKind;
+  /** approve or deny. A deny is always permitted — see the header. */
+  decision?: 'approve' | 'deny';
+  /**
+   * Whether the workspace-shaped facts could be looked up at all. False means
+   * the lookup itself is missing (main never wired it), which is a different
+   * problem from a workspace that answered "no" — and it must be visible, not
+   * silently indistinguishable.
+   */
+  scopeAvailable?: boolean;
+  /** The target pane's workspace is a WorkTask task workspace. */
+  isTaskWorkspace?: boolean;
+  /** The target workspace's deck autonomy mode ('off' | 'manual' | …). */
+  autonomyMode?: string;
+  /** Which signal created the pending approval. */
+  origin?: ApprovalPromptOrigin;
+  /** A re-read taken now still shows an answerable prompt. */
+  stillOnScreen?: boolean;
+}
+
+/** Who is answering the prompt. */
+export type ApprovalResolverKind = 'human' | 'automated';
+
+export type ApprovalPressRefusal =
+  | 'scope-unavailable'
+  | 'workspace-unknown'
+  | 'not-a-task-workspace'
+  | 'autonomy-unknown'
+  | 'autonomy-off'
+  | 'unknown-autonomy-mode'
+  | 'origin-unknown'
+  | 'detector-only'
+  | 'prompt-gone';
+
+export type ApprovalPressDecision =
+  | { press: true }
+  | { press: false; reason: ApprovalPressRefusal };
+
+/**
+ * Deck autonomy modes that mean "an agent may act here". Whitelisted, not
+ * blacklisted: matching only the literal 'off' meant a mode this daemon has
+ * never heard of — a typo in the store, a newer main writing a name we predate
+ * — read as permission. An unrecognised setting is not consent.
+ */
+const AUTONOMY_ON_MODES: ReadonlySet<string> = new Set(['manual', 'assist', 'danger']);
+
+/**
+ * May an approval be pressed into this pane? Pure — the caller gathers the
+ * facts, this decides. Order is narrowest-blame-first so the reported reason
+ * names the condition an operator can actually act on.
+ */
+export function decideApprovalPress(facts: ApprovalPressFacts): ApprovalPressDecision {
+  // A human is looking at the prompt they are answering. Nothing below applies.
+  if (facts.resolver === 'human') return { press: true };
+  // Denying is the safe direction — it cancels the tool call and gives the turn
+  // back. A refused deny would keep a pane blocked in the name of safety.
+  if (facts.decision === 'deny') return { press: true };
+  if (facts.scopeAvailable === false) return { press: false, reason: 'scope-unavailable' };
+  if (facts.isTaskWorkspace === undefined) return { press: false, reason: 'workspace-unknown' };
+  if (!facts.isTaskWorkspace) return { press: false, reason: 'not-a-task-workspace' };
+  if (facts.autonomyMode === undefined) return { press: false, reason: 'autonomy-unknown' };
+  if (facts.autonomyMode === 'off') return { press: false, reason: 'autonomy-off' };
+  if (!AUTONOMY_ON_MODES.has(facts.autonomyMode)) {
+    return { press: false, reason: 'unknown-autonomy-mode' };
+  }
+  if (facts.origin === undefined) return { press: false, reason: 'origin-unknown' };
+  if (facts.origin !== 'hook') return { press: false, reason: 'detector-only' };
+  if (facts.stillOnScreen !== true) return { press: false, reason: 'prompt-gone' };
+  return { press: true };
+}

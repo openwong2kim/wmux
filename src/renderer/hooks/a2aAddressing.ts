@@ -5,6 +5,7 @@
 
 import type { PaneLeaf } from '../../shared/types';
 import { getLeafPanes } from '../../shared/paneUtils';
+import { isBrainPtyId } from '../../shared/constants';
 
 export type PaneAddress = { ptyId: string; paneId: string; surfaceId: string };
 
@@ -218,9 +219,40 @@ export function resolvePaneRole(
  *  can act on it instead of believing the send reached the other party. */
 export type ReplySuppressReason =
   | 'pin_lost'            // pinned target pane no longer exists (fail closed, no active-pane fallback)
+  | 'target_is_brain'     // the pinned target IS an orchestrator brain — it has no pane to paste into
   | 'same_ws_no_anchor'   // same-ws task side has no pane anchor → active-pane fallback would risk the #239 self-paste loop
   | 'self_loop'           // pinned target resolves to the caller's own pty
   | 'unverified_sender';  // same-ws + no verified senderPtyId → cannot prove the route is not self
+
+/**
+ * What the SERVER knows about the caller, beyond its pane identity.
+ *
+ * `commanderWorkspaceId` is the workspace MAIN stamped onto the request from a
+ * VALIDATED commander per-spawn token (`confineWorkspaceId` in useRpcBridge) —
+ * never caller-supplied, so it cannot be forged into existence. Empty/absent
+ * for every ordinary caller, which is why every check below is `commander && …`.
+ */
+export interface ReplyCallerIdentity {
+  commanderWorkspaceId?: string;
+  /** The workspace the request itself is acting as. A commander binding only
+   *  relaxes guards for ITS OWN workspace — see `decideReplyDelivery`. */
+  callerWorkspaceId?: string;
+}
+
+/**
+ * Is this caller a commander acting inside the workspace its token is bound to?
+ *
+ * The equality is the whole check. A token bound to workspace A says nothing
+ * about workspace B, so treating "a commander token exists" as "this caller is
+ * privileged here" would let one brain relax another workspace's guards. Main
+ * pins both fields from the validated binding, so they agree exactly when the
+ * commander is operating at home.
+ */
+export function isCommanderForWorkspace(caller: ReplyCallerIdentity): boolean {
+  return (
+    !!caller.commanderWorkspaceId && caller.commanderWorkspaceId === caller.callerWorkspaceId
+  );
+}
 
 export type ReplyDeliveryDecision =
   | { kind: 'deliver'; sameWs: boolean; explicitPtyId?: string }
@@ -238,6 +270,29 @@ export type ReplyDeliveryDecision =
  *
  * Precedence (first match wins) only affects the REPORTED reason; any single
  * true guard suppresses, exactly as the original conjunction did.
+ *
+ * The BRAIN exception (orchestrator track, 2026-09-04). `unverified_sender`
+ * exists so a same-workspace route that cannot be proven non-self is never
+ * pasted into the caller's own prompt, and it identifies "provable" with "the
+ * caller owns a pane". An orchestrator brain owns none —
+ * `isTerminalPtyInLeaves` rejects its pty, so `callerPtyId` arrives empty —
+ * which meant every brain→worker reply inside its own workspace was suppressed
+ * as unverified, and the brain was told its message was stored while the worker
+ * sat waiting. A caller with no pane is precisely a caller a delivery cannot
+ * loop back into, and MAIN has already validated the commander binding it
+ * carries, so that ONE guard is satisfied rather than tripped.
+ *
+ * Exactly one guard, and only for the commander's OWN workspace:
+ *
+ *   - `same_ws_no_anchor` still suppresses, brain or not. With no pane anchor
+ *     the delivery helpers fall back to the target workspace's ACTIVE pane —
+ *     the #239 path — so relaxing it would hand an anchorless reply to
+ *     whichever pane happens to be focused. A brain that wants a worker nudged
+ *     addresses it (pane_id / surface_id), and then this guard never applies.
+ *   - `self_loop` compares concrete pty ids, so it still protects every pane
+ *     caller; a brain (empty callerPtyId) could never trip it anyway.
+ *   - the binding must name the CALLER'S OWN workspace (see
+ *     `isCommanderForWorkspace`) — a token bound to A must not relax B.
  */
 export function decideReplyDelivery(
   sameWsTask: boolean,
@@ -245,13 +300,22 @@ export function decideReplyDelivery(
   pinnedAddressLost: boolean,
   explicitPtyId: string | undefined,
   callerPtyId: string,
+  caller: ReplyCallerIdentity = {},
 ): ReplyDeliveryDecision {
+  const commanderVerified = isCommanderForWorkspace(caller);
   if (pinnedAddressLost) return { kind: 'suppress', reason: 'pin_lost' };
+  // Belt and braces. A brain pty cannot normally reach here — brains are not in
+  // the workspace pane tree, so `resolvePaneAddress` reports a lost pin long
+  // before this — but an anchor that ever did resolve to one would name a pane
+  // that does not exist, and that is not something to discover by writing to it.
+  if (isBrainPtyId(explicitPtyId)) return { kind: 'suppress', reason: 'target_is_brain' };
   if (sameWsTask && !hasAnchor) return { kind: 'suppress', reason: 'same_ws_no_anchor' };
   if (!!explicitPtyId && !!callerPtyId && explicitPtyId === callerPtyId) {
     return { kind: 'suppress', reason: 'self_loop' };
   }
-  if (sameWsTask && !callerPtyId) return { kind: 'suppress', reason: 'unverified_sender' };
+  if (sameWsTask && !callerPtyId && !commanderVerified) {
+    return { kind: 'suppress', reason: 'unverified_sender' };
+  }
   return { kind: 'deliver', sameWs: sameWsTask, ...(explicitPtyId ? { explicitPtyId } : {}) };
 }
 
@@ -262,6 +326,9 @@ export const REPLY_SUPPRESS_HINTS: Record<ReplySuppressReason, string> = {
   pin_lost:
     'The pinned target pane is gone. The reply is stored; the receiver can still poll ' +
     'a2a_task_query. To nudge a live pane, start a new task addressed with pane_id.',
+  target_is_brain:
+    'The pinned target is an orchestrator brain, which has no pane to write into. The reply ' +
+    'is stored; address a worker pane (pane_id / surface_id) if you meant to nudge one.',
   same_ws_no_anchor:
     'This same-workspace task has no pane anchor on the target side, so a nudge cannot be ' +
     'routed safely. The reply is stored; the receiver must poll a2a_task_query.',

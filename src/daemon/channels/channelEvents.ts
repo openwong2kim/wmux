@@ -133,6 +133,35 @@ export type ChannelEventPayload =
     }
   | {
       /**
+       * A wake nudge failed to reach its pane (channelWakeWorker). Recorded so
+       * the messages it was announcing stop looking `pending` forever — a
+       * pending row is a promise that something is still being delivered, and
+       * after the pane died nothing is.
+       *
+       * Scoped on BOTH axes on purpose. One member's dead pane says nothing
+       * about a sibling member in the same workspace, and a nudge says nothing
+       * about messages outside the range it announced — the member had already
+       * read everything at or below its cursor, and anything past the head was
+       * posted after the nudge went out.
+       *
+       * Only FAILURES are recorded. A nudge that landed is not a delivery (the
+       * hint reaching a pane is not the agent having read the message), so a
+       * success has nothing durable to say and recording one would append to
+       * the log on every wake tick.
+       */
+      kind: 'nudge-failed';
+      channelId: string;
+      workspaceId: string;
+      memberId: string;
+      /** The member's cursor when the nudge went out — exclusive lower bound. */
+      fromSeqExclusive: number;
+      /** The channel head when the nudge went out — inclusive upper bound. */
+      toSeqInclusive: number;
+      /** 라이브의 now() — lastAttemptAt 스탬프의 결정론 재현용. */
+      failedAt: number;
+    }
+  | {
+      /**
        * operator-join (설계 §2.1.1) — 오퍼레이터(사람) 좌석 push + 서버-발행 시스템
        * 메시지 append를 **하나의 envelope**로 묶는다. 두 효과를 한 커밋에 실어
        * 원자성을 보장한다: append-only 로그에서는 좌석만 커밋되고 메시지가 실패하는
@@ -331,11 +360,14 @@ export function applyChannelEvent(state: ChannelState, payload: unknown): void {
     case 'ack': {
       const ch = state.channels.find((c) => c.id === p.channelId);
       if (!ch) return;
-      // 수신확인 플립 — pending → delivered만 건드리므로 재적용 no-op(멱등).
+      // 수신확인 플립 — delivered로만 단조 전진하므로 재적용 no-op(멱등).
+      // `target_gone`도 승격 대상이다: 실패한 nudge는 그 시점의 배달 시도에 대한
+      // 기록일 뿐이고, ack는 수신자가 실제로 읽었다는 더 강한 증거다. 승격하지
+      // 않으면 한 번 죽은 pane이 그 메시지를 영구히 미배달로 못박는다.
       for (const m of state.messages[p.channelId] ?? []) {
         if (m.seq > p.uptoSeq) continue;
         for (const entry of m.recipientSnapshot ?? []) {
-          if (entry.workspaceId === p.workspaceId && entry.status === 'pending') {
+          if (entry.workspaceId === p.workspaceId && entry.status !== 'delivered') {
             entry.status = 'delivered';
             entry.lastAttemptAt = p.ackedAt;
             if (m.deliveryStatus !== 'delivered') m.deliveryStatus = 'delivered';
@@ -350,6 +382,29 @@ export function applyChannelEvent(state: ChannelState, payload: unknown): void {
           const current = typeof row.lastReadSeq === 'number' ? row.lastReadSeq : -1;
           if (cursorTarget > current) row.lastReadSeq = cursorTarget;
         }
+      }
+      return;
+    }
+    case 'nudge-failed': {
+      const ch = state.channels.find((c) => c.id === p.channelId);
+      if (!ch) return;
+      // pending → target_gone만 건드린다: 이미 delivered면 ack가 더 강한 증거이고,
+      // 이미 target_gone이면 재적용 no-op(멱등).
+      for (const m of state.messages[p.channelId] ?? []) {
+        if (m.seq <= p.fromSeqExclusive || m.seq > p.toSeqInclusive) continue;
+        let touched = false;
+        for (const entry of m.recipientSnapshot ?? []) {
+          if (entry.workspaceId !== p.workspaceId || entry.memberId !== p.memberId) continue;
+          if (entry.status !== 'pending') continue;
+          entry.status = 'target_gone';
+          entry.lastAttemptAt = p.failedAt;
+          touched = true;
+        }
+        if (!touched) continue;
+        // 메시지 자체는 살아 있는 수신자가 하나도 없을 때만 따라 내려간다
+        // (ack의 "적어도 하나 delivered" 규칙을 뒤집어 읽은 것).
+        const anyLive = (m.recipientSnapshot ?? []).some((e) => e.status !== 'target_gone');
+        if (!anyLive && m.deliveryStatus === 'pending') m.deliveryStatus = 'target_gone';
       }
       return;
     }

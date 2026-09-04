@@ -1066,7 +1066,7 @@ server.tool(
 
 server.tool(
   'terminal_send',
-  'Send text to a terminal. By default it is written as-is with no Enter, so a shell command or TUI chat prompt sits on the input line uncommitted — pass `submit: true` to commit it. Omit ptyId for the active terminal. To message OTHER workspaces use a2a_task_send or a2a_broadcast instead.',
+  'Send text to a terminal. By default it is written as-is with no Enter, so a shell command or TUI chat prompt sits on the input line uncommitted — pass `submit: true` to commit it. `ok` means the bytes were WRITTEN, never that anything was submitted: with `submit`, read `accepted` — true only when the pane was observed to move (its turn started, or the input line cleared). `accepted:false` (with `agentStatusAfter` and the pane\'s last screen lines) means the prompt is probably still sitting uncommitted; do not report progress on it. Omit ptyId for the active terminal. To message OTHER workspaces use a2a_task_send or a2a_broadcast instead.',
   TERMINAL_SEND_SHAPE,
   async ({ text, ptyId, submit }) => {
     const route = await resolveTerminalRouteBound(ptyId);
@@ -1088,7 +1088,7 @@ server.tool(
 
 server.tool(
   'terminal_send_key',
-  'Send a named key to a terminal. Omit ptyId for the active terminal. NOT A SUBMIT MECHANISM: `key:"enter"` presses Enter on whatever the input box holds, which is usually NOTHING — a question an agent PRINTED is rendered text, not pending input, so Enter submits nothing and the pane stays blocked. ok means the key was delivered, never that anything was submitted or that the agent resumed. To answer a waiting agent, send the answer with terminal_send({ text, submit: true }) and confirm the pane moved (agentStatus, or a fresh terminal_read) before reporting progress. Reserve this tool for real key presses: ctrl+c, escape, arrow keys, and y/N prompts the agent genuinely rendered.',
+  'Send a named key to a terminal. Omit ptyId for the active terminal. NOT A SUBMIT MECHANISM: `key:"enter"` presses Enter on whatever the input box holds, which is usually NOTHING — a question an agent PRINTED is rendered text, not pending input, so Enter submits nothing and the pane stays blocked. ok means the key was delivered, never that anything was submitted or that the agent resumed. To answer a waiting agent, send the answer with terminal_send({ text, submit: true }) and check its `accepted` field — that is the only receipt that the pane moved. Reserve this tool for real key presses: ctrl+c, escape, arrow keys, and y/N prompts the agent genuinely rendered.',
   TERMINAL_SEND_KEY_SHAPE,
   async ({ key, ptyId }) => {
     const route = await resolveTerminalRouteBound(ptyId);
@@ -1112,7 +1112,8 @@ server.tool(
         'Enter was delivered. This does NOT confirm anything was submitted: if the pane was '
         + 'showing a question the agent printed (rather than text typed into its input box), '
         + 'nothing happened and it is still waiting. Verify with terminal_read or pane_list '
-        + 'before reporting progress; to answer an agent, use terminal_send({text, submit:true}).',
+        + 'before reporting progress; to answer an agent, use terminal_send({text, submit:true}) '
+        + 'and read its `accepted` field.',
       );
     }
     return result;

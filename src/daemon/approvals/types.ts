@@ -168,7 +168,12 @@ export type ApprovalResolveFailure =
   | 'expired'
   | 'unsupported-agent'
   | 'prompt-gone'
-  | 'invalid-choice-key';
+  | 'invalid-choice-key'
+  // The pane is outside the press scope (`decideApprovalPress`): not a
+  // delegated task workspace, autonomy off, or a fact the daemon could not
+  // establish — unknown is a refusal. NOT an expiry: the request stays live and
+  // a human at the desktop can still answer it themselves.
+  | 'out-of-scope';
 
 export type ApprovalResolveResult =
   | {
@@ -282,6 +287,14 @@ export interface ApprovalResolveParams {
    * sends '1', deny sends ESC.
    */
   choiceKey?: string;
+  /**
+   * Who is answering. Defaults to `'human'`, because every caller that exists
+   * today is a person tapping Approve on the phone or the web UI, and they are
+   * looking at the prompt they are answering. An AUTOMATED resolver must
+   * declare itself — that is what subjects it to the press scope
+   * (`decideApprovalPress`), which a human is deliberately not subject to.
+   */
+  resolver?: 'human' | 'automated';
 }
 
 /**

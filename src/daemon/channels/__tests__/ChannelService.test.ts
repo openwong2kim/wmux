@@ -2549,3 +2549,159 @@ describe('ChannelService.create — P5 reserved human workspace guard (ship revi
     expect(retry.ok).toBe(true);
   });
 });
+
+// ---------------------------------------------------------------------------
+// What the wake nudge says, and what a failed nudge records.
+// ---------------------------------------------------------------------------
+describe('ChannelService — wake nudge support', () => {
+  async function twoMemberChannel() {
+    const h = makeService();
+    const created = await h.svc.create({
+      name: 'general',
+      visibility: 'public',
+      createdBy: { workspaceId: 'ws-1', memberId: 'm-1', memberName: 'Alice' },
+      verifiedWorkspaceId: 'ws-1',
+    });
+    if (!created.ok) throw new Error('create failed');
+    await h.svc.join({
+      channelId: created.channel.id,
+      member: { workspaceId: 'ws-2', memberId: 'codex', memberName: 'Codex' },
+      verifiedWorkspaceId: 'ws-2',
+    });
+    return { ...h, channelId: created.channel.id };
+  }
+
+  it('unreadFor hands the wake worker the OLDEST owed message body', async () => {
+    const { svc, channelId } = await twoMemberChannel();
+    await svc.post({
+      channelId,
+      sender: { workspaceId: 'ws-1', memberId: 'm-1', memberName: 'Alice' },
+      text: 'first thing',
+      verifiedWorkspaceId: 'ws-1',
+    });
+    await svc.post({
+      channelId,
+      sender: { workspaceId: 'ws-1', memberId: 'm-1', memberName: 'Alice' },
+      text: 'second thing',
+      verifiedWorkspaceId: 'ws-1',
+    });
+
+    const row = svc.unreadFor('ws-2').find((e) => e.channelId === channelId);
+    expect(row?.unread).toBe(2);
+    // Oldest first — the nudge announces what the agent has not seen yet, not
+    // whatever happened to arrive last.
+    expect(row?.oldestUnreadBody).toBe('first thing');
+  });
+
+  describe('noteNudgeOutcome', () => {
+    /** Two agents from ws-2 in one channel, plus N posts from ws-1. */
+    async function twoAgentsAnd(posts: string[]) {
+      const h = makeService();
+      const created = await h.svc.create({
+        name: 'general',
+        visibility: 'public',
+        createdBy: { workspaceId: 'ws-1', memberId: 'm-1', memberName: 'Alice' },
+        verifiedWorkspaceId: 'ws-1',
+      });
+      if (!created.ok) throw new Error('create failed');
+      const channelId = created.channel.id;
+      for (const member of ['codex', 'claude']) {
+        await h.svc.join({
+          channelId,
+          member: { workspaceId: 'ws-2', memberId: member, memberName: member },
+          verifiedWorkspaceId: 'ws-2',
+        });
+      }
+      for (const text of posts) {
+        await h.svc.post({
+          channelId,
+          sender: { workspaceId: 'ws-1', memberId: 'm-1', memberName: 'Alice' },
+          text,
+          verifiedWorkspaceId: 'ws-1',
+        });
+      }
+      const statusOf = (seq: number, member: string): string | undefined => {
+        const msg = h.svc.getMessages(channelId, undefined, 'ws-1').find((m) => m.seq === seq);
+        return msg?.recipientSnapshot?.find(
+          (e) => e.workspaceId === 'ws-2' && e.memberId === member,
+        )?.status;
+      };
+      const seqs = h.svc
+        .getMessages(channelId, undefined, 'ws-1')
+        .map((m) => m.seq)
+        .sort((a, b) => a - b);
+      return { ...h, channelId, statusOf, seqs };
+    }
+
+    it('a landed nudge records nothing — it is not a delivery', async () => {
+      const { svc, channelId, statusOf, seqs } = await twoAgentsAnd(['anyone there?']);
+      await svc.noteNudgeOutcome({
+        channelId,
+        workspaceId: 'ws-2',
+        memberId: 'codex',
+        fromSeqExclusive: seqs[0]! - 1,
+        toSeqInclusive: seqs[0]!,
+        ok: true,
+      });
+      expect(statusOf(seqs[0]!, 'codex')).toBe('pending');
+    });
+
+    it('a failed nudge touches ONLY that member row', async () => {
+      const { svc, channelId, statusOf, seqs } = await twoAgentsAnd(['anyone there?']);
+      await svc.noteNudgeOutcome({
+        channelId,
+        workspaceId: 'ws-2',
+        memberId: 'codex',
+        fromSeqExclusive: seqs[0]! - 1,
+        toSeqInclusive: seqs[0]!,
+        ok: false,
+      });
+      expect(statusOf(seqs[0]!, 'codex')).toBe('target_gone');
+      // A sibling agent in the same workspace has its own pane and its own
+      // cursor — one dead pane says nothing about it.
+      expect(statusOf(seqs[0]!, 'claude')).toBe('pending');
+    });
+
+    it('a failed nudge touches ONLY the seq range it announced', async () => {
+      const { svc, channelId, statusOf, seqs } = await twoAgentsAnd(['old', 'announced', 'later']);
+      const [alreadyRead, announced, postedAfter] = seqs;
+      await svc.noteNudgeOutcome({
+        channelId,
+        workspaceId: 'ws-2',
+        memberId: 'codex',
+        fromSeqExclusive: alreadyRead!,
+        toSeqInclusive: announced!,
+        ok: false,
+      });
+      // Below the cursor: the member had already read it.
+      expect(statusOf(alreadyRead!, 'codex')).toBe('pending');
+      expect(statusOf(announced!, 'codex')).toBe('target_gone');
+      // Past the head: posted after the nudge went out.
+      expect(statusOf(postedAfter!, 'codex')).toBe('pending');
+    });
+
+    it('an ack recovers a row a failed nudge marked target_gone', async () => {
+      const { svc, channelId, statusOf, seqs } = await twoAgentsAnd(['anyone there?']);
+      await svc.noteNudgeOutcome({
+        channelId,
+        workspaceId: 'ws-2',
+        memberId: 'codex',
+        fromSeqExclusive: seqs[0]! - 1,
+        toSeqInclusive: seqs[0]!,
+        ok: false,
+      });
+      expect(statusOf(seqs[0]!, 'codex')).toBe('target_gone');
+
+      // The agent came back and read it. A dead pane at one moment must not
+      // pin the message as undelivered forever.
+      const acked = await svc.ack({
+        channelId,
+        verifiedWorkspaceId: 'ws-2',
+        uptoSeq: seqs[0]!,
+        memberId: 'codex',
+      });
+      expect(acked.ok).toBe(true);
+      expect(statusOf(seqs[0]!, 'codex')).toBe('delivered');
+    });
+  });
+});

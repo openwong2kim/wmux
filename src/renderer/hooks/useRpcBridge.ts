@@ -2253,11 +2253,29 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
             if ('error' in addr) pinnedAddressLost = true;
             else explicitPty = addr.ptyId;
           }
-          // Four suppression guards, extracted to decideReplyDelivery (pure,
-          // unit-tested) — semantics unchanged, but the reason is now a VALUE
-          // that reaches the sender instead of a silent skip. See the extracted
-          // function for why each guard exists (same-ws self-paste safety).
-          const decision = decideReplyDelivery(sameWsTask, hasAnchor, pinnedAddressLost, explicitPty, callerPtyId);
+          // Suppression guards, extracted to decideReplyDelivery (pure,
+          // unit-tested) — the reason is a VALUE that reaches the sender
+          // instead of a silent skip. See the extracted function for why each
+          // guard exists (same-ws self-paste safety), and why a caller carrying
+          // MAIN's validated commander binding satisfies the two pane-keyed
+          // ones instead of tripping them.
+          const decision = decideReplyDelivery(
+            sameWsTask,
+            hasAnchor,
+            pinnedAddressLost,
+            explicitPty,
+            callerPtyId,
+            {
+              // Stamped by MAIN from the validated commander token (a2a.rpc.ts),
+              // which pins `workspaceId` to the same binding; absent for every
+              // ordinary caller. Both are passed because the relaxation applies
+              // only when they AGREE — a token bound to another workspace must
+              // not relax this one's guards.
+              commanderWorkspaceId:
+                typeof params.commanderWorkspaceId === 'string' ? params.commanderWorkspaceId : '',
+              callerWorkspaceId: workspaceId,
+            },
+          );
           if (decision.kind === 'suppress') {
             delivery = {
               stored: true,

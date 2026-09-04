@@ -55,6 +55,35 @@ export interface WakeUnreadEntry {
   unread: number;
   mentionUnread: number;
   trimmedBeforeCursor: number;
+  /**
+   * The OLDEST owed message's body, supplied by ChannelService. The nudge
+   * carries its first line so the woken agent knows WHAT it is being woken
+   * for — a bare "2 unread, run wmux channel read …" makes every nudge look
+   * identical, and an agent mid-task cannot tell an urgent mention from
+   * routine chatter without spending a turn on the read. Optional: an older
+   * producer that does not supply it still gets the hint-only nudge.
+   */
+  oldestUnreadBody?: string;
+}
+
+/** Outcome of one nudge attempt, reported back to the producer so a message's
+ *  delivery bookkeeping reflects what actually happened at the PTY. */
+export interface WakeNudgeOutcome {
+  workspaceId: string;
+  channelId: string;
+  memberId: string;
+  sessionId: string;
+  /**
+   * The seq range this nudge was announcing: the member's cursor at nudge time
+   * (exclusive) through the channel head (inclusive). Bookkeeping must not
+   * spill outside it — a nudge says nothing about messages the member had
+   * already read, or about ones posted after it went out.
+   */
+  fromSeqExclusive: number;
+  toSeqInclusive: number;
+  /** False when the write threw — the pane died between target selection and
+   *  the write, so nothing was delivered. */
+  ok: boolean;
 }
 
 export interface WakeSessionView {
@@ -98,6 +127,14 @@ export interface ChannelWakeWorkerDeps {
   /** Broadcast a daemon event (nudge exhaustion → human attention). */
   broadcast(event: Record<string, unknown>): void;
   log(level: 'debug' | 'info' | 'warn', message: string): void;
+  /**
+   * Report what happened at the PTY for one nudge. The push half used to be
+   * write-only: a nudge into a pane that died mid-race was logged and dropped,
+   * and the message it was announcing stayed `pending` forever — a receipt for
+   * a delivery nobody made. Wired to ChannelService, a failure marks that
+   * recipient `target_gone` instead. Optional (test / legacy compatible).
+   */
+  onNudgeOutcome?(outcome: WakeNudgeOutcome): void;
   now(): number;
   /** Test seam: ms between the text write and the Enter write. */
   enterDelayMs?: number;
@@ -154,6 +191,59 @@ const freshTrackerState = (): NudgeTrackerEntry => ({
 const sanitizeLine = (s: string): string =>
   // eslint-disable-next-line no-control-regex
   s.replace(/[\x00-\x1f\x7f]/g, ' ').slice(0, NUDGE_MAX_LEN);
+
+/** Longest body excerpt carried in a nudge. */
+export const BODY_PREVIEW_MAX_LEN = 200;
+
+/**
+ * The first line of a message body, safe to TYPE INTO A LIVE PANE and commit
+ * with an Enter.
+ *
+ * That last clause is the whole problem. This text is written by another
+ * workspace, and it is submitted, not merely displayed. Two escapes matter:
+ * `lastDetectedAgent` can be stale, so the pane may really be a shell, where
+ * `$(…)` and backticks EXECUTE; and a quote can close the agent's own framing.
+ * So the preview keeps letters and punctuation and drops the characters that
+ * change how the line is interpreted — control characters (the newlines that
+ * would submit early included), `$`, backtick, backslash, and both quote
+ * marks. Blank in, blank out, so the caller can drop the segment entirely
+ * instead of appending a dangling separator.
+ */
+export function bodyPreview(body: string | undefined): string {
+  if (!body) return '';
+  const firstLine = body.split(/\r?\n/, 1)[0] ?? '';
+  const clean = firstLine
+    // eslint-disable-next-line no-control-regex
+    .replace(/[\x00-\x1f\x7f]/g, ' ')
+    // Shell/agent metacharacters. Dropped rather than escaped: an escape is
+    // only correct for the interpreter you assumed, and the point here is that
+    // we do not reliably know which one is on the other end.
+    .replace(/[$`\\"']/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (clean.length <= BODY_PREVIEW_MAX_LEN) return clean;
+  return `${clean.slice(0, BODY_PREVIEW_MAX_LEN - 1)}…`;
+}
+
+/**
+ * Agents whose pane is a TUI chat box, where a pasted line lands in a composer
+ * rather than a command interpreter. The body preview rides only into these:
+ * an unknown or absent agent means the pane may be a bare shell, and a bare
+ * shell would RUN the other workspace's text.
+ */
+const BODY_PREVIEW_AGENTS: ReadonlySet<string> = new Set([
+  'claude',
+  'codex',
+  'gemini',
+  'aider',
+  'opencode',
+  'copilot',
+]);
+
+/** Whether a nudge into this pane may carry the message body at all. */
+export function mayCarryBody(detectedAgent: string | undefined): boolean {
+  return !!detectedAgent && BODY_PREVIEW_AGENTS.has(detectedAgent);
+}
 
 export class ChannelWakeWorker {
   private readonly deps: ChannelWakeWorkerDeps;
@@ -316,7 +406,7 @@ export class ChannelWakeWorker {
 
         // A failed write must not burn the nudge budget (G5 spirit: never
         // spend nudges into a void) — retry on a later tick instead.
-        if (!this.inject(target.id, entry)) continue;
+        if (!this.inject(target.id, ws, entry, target)) continue;
 
         if (wantMention) {
           state.mentionNudges += 1;
@@ -335,16 +425,39 @@ export class ChannelWakeWorker {
    * target selection and the write — a PTY write to a destroyed stream
    * throws synchronously); the caller then keeps the nudge budget intact.
    */
-  private inject(sessionId: string, entry: WakeUnreadEntry): boolean {
+  private inject(sessionId: string, workspaceId: string, entry: WakeUnreadEntry, target: WakeSessionView): boolean {
     const mention = entry.mentionUnread > 0 ? ` (${entry.mentionUnread} mention you)` : '';
-    const line = sanitizeLine(
-      `[wmux] #${entry.name}: ${entry.unread} unread${mention} — run: wmux channel read ${entry.channelId} --since ${entry.lastReadSeq + 1}`,
-    );
+    const hint = `[wmux] #${entry.name}: ${entry.unread} unread${mention} — run: wmux channel read ${entry.channelId} --since ${entry.lastReadSeq + 1}`;
+    // The body's first line rides AFTER the hint. Every nudge used to read the
+    // same, so an agent mid-task had to spend a turn on the read just to learn
+    // whether it mattered.
+    //
+    // But ONLY into a pane we can name as an agent TUI. `lastDetectedAgent` can
+    // be stale — the agent exits and the shell stays — and this text comes from
+    // another workspace and is committed with an Enter, so a bare shell would
+    // run it. The hint is ours and always safe; the body is not.
+    const preview = mayCarryBody(target.lastDetectedAgent) ? bodyPreview(entry.oldestUnreadBody) : '';
+    // sanitize + cap the FINAL line, not its pieces: the cap has to bound what
+    // actually reaches the PTY, and concatenation is exactly where a bounded
+    // hint and a bounded preview stop being bounded.
+    const line = sanitizeLine(preview ? `${hint} — ${preview}` : hint);
+    const report = (ok: boolean): void => {
+      this.deps.onNudgeOutcome?.({
+        workspaceId,
+        channelId: entry.channelId,
+        memberId: entry.memberId,
+        sessionId,
+        fromSeqExclusive: entry.lastReadSeq,
+        toSeqInclusive: entry.headSeq,
+        ok,
+      });
+    };
     this.deps.log('info', `[wake] nudging ${sessionId} for ${entry.channelId}#${entry.memberId} (${entry.unread} unread)`);
     try {
       this.deps.write(sessionId, line);
     } catch (err) {
       this.deps.log('warn', `[wake] nudge write to ${sessionId} failed (session died mid-race?): ${String(err)}`);
+      report(false);
       return false;
     }
     const t = setTimeout(() => {
@@ -352,9 +465,15 @@ export class ChannelWakeWorker {
       try {
         this.deps.write(sessionId, '\r');
       } catch {
-        // session died between the two writes — the pull path still owns
-        // correctness; drop silently.
+        // The session died between the two writes: the hint is stranded
+        // uncommitted in a pane nobody is reading. The pull path still owns
+        // correctness, but the attempt must not be recorded as a delivery.
+        report(false);
+        return;
       }
+      // Committed. This is the only point at which the nudge actually reached
+      // the agent, so it is the only point that may report success.
+      report(true);
     }, this.deps.enterDelayMs ?? ENTER_DELAY_MS);
     t.unref?.();
     this.pendingEnter.add(t);
