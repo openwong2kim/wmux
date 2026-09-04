@@ -30,28 +30,45 @@ interface Call {
 /** A git that answers by subcommand. Every knob is a refusal path. */
 function fakeGit(opts: {
   status?: string;
+  /** The SECOND status read — the one taken immediately before the commit, to
+   *  see whether anything outside the adopted set appeared in the meantime.
+   *  Defaults to `status`. */
+  statusBeforeCommit?: string;
+  /** What `diff --name-only` reports, NUL-framed. Defaults to two paths. */
+  names?: string;
   diff?: string;
   mergeBaseCode?: number;
   checkCode?: number;
   applyCode?: number;
   addCode?: number;
   commitCode?: number;
+  statusCode?: number;
+  shortCode?: number;
   calls?: Call[];
 }): AdoptGit {
+  let statusReads = 0;
   return async (args, cwd, env) => {
     opts.calls?.push({ cwd, args, ...(env ? { env } : {}) });
     const ok = (stdout: string) => ({ stdout, stderr: '', code: 0 });
     const fail = (stderr: string, code = 1) => ({ stdout: '', stderr, code });
     if (args[0] === 'rev-parse' && args.includes('--git-common-dir')) return ok(`${REPO}/.git\n`);
     if (args[0] === 'rev-parse' && args.includes('--show-toplevel')) return ok(`${REPO}\n`);
-    if (args[0] === 'rev-parse' && args[1] === '--short') return ok('deadbee\n');
+    if (args[0] === 'rev-parse' && args[1] === '--short') {
+      return opts.shortCode ? fail('fatal: bad revision', opts.shortCode) : ok('deadbee\n');
+    }
     if (args[0] === 'rev-parse' && args[1] === 'HEAD') return ok(cwd === REPO ? `${PARENT_HEAD}\n` : `${TASK_HEAD}\n`);
     if (args[0] === 'commit') return opts.commitCode ? fail('pre-commit hook refused') : ok('');
     if (args[0] === 'merge-base') return opts.mergeBaseCode ? fail('no merge base') : ok(`${BASE}\n`);
-    if (args[0] === 'status') return ok(opts.status ?? '');
+    if (args[0] === 'status') {
+      statusReads += 1;
+      if (opts.statusCode && statusReads > 1) return fail('status failed', opts.statusCode);
+      return ok(statusReads === 1 ? (opts.status ?? '') : (opts.statusBeforeCommit ?? opts.status ?? ''));
+    }
     if (args[0] === 'read-tree') return ok('');
     if (args[0] === 'add') return opts.addCode ? fail('add failed') : ok('');
-    if (args[0] === 'diff' && args.includes('--name-only')) return ok(opts.diff ? 'src/a.ts\0src/b.ts\0' : '');
+    if (args[0] === 'diff' && args.includes('--name-only')) {
+      return ok(opts.diff ? (opts.names ?? 'src/a.ts\0src/b.ts\0') : '');
+    }
     if (args[0] === 'diff') return ok(opts.diff ?? '');
     if (args[0] === 'apply' && args.includes('--check')) {
       return opts.checkCode ? fail('patch does not apply') : ok('');
@@ -174,10 +191,11 @@ describe('TaskAdoptService', () => {
     const reset = calls.find((c) => c.args[0] === 'reset');
     const checkout = calls.find((c) => c.args[0] === 'checkout');
     const clean = calls.find((c) => c.args[0] === 'clean');
-    expect(reset?.args).toEqual(['reset', '-q', '--', 'src/a.ts', 'src/b.ts']);
-    expect(checkout?.args).toEqual(['checkout', '--', 'src/a.ts', 'src/b.ts']);
+    // `:(literal)` on every path — see the restore-globbing test below.
+    expect(reset?.args).toEqual(['reset', '-q', '--', ':(literal)src/a.ts', ':(literal)src/b.ts']);
+    expect(checkout?.args).toEqual(['checkout', '--', ':(literal)src/a.ts', ':(literal)src/b.ts']);
     // A file the patch CREATED cannot be checked out — it has to be removed.
-    expect(clean?.args).toEqual(['clean', '-qfd', '--', 'src/a.ts', 'src/b.ts']);
+    expect(clean?.args).toEqual(['clean', '-qfd', '--', ':(literal)src/a.ts', ':(literal)src/b.ts']);
     expect(reset?.cwd).toBe(REPO);
   });
 
@@ -245,9 +263,15 @@ describe('TaskAdoptService', () => {
     expect(res).toMatchObject({ ok: false, reason: 'commit-failed', files: ['src/a.ts', 'src/b.ts'] });
     // Leaving the patch staged is the one outcome the caller did not ask for —
     // it is exactly the state that blocks the next adopt.
-    expect(calls.find((c) => c.args[0] === 'reset')?.args).toEqual(['reset', '-q', '--', 'src/a.ts', 'src/b.ts']);
-    expect(calls.find((c) => c.args[0] === 'checkout')?.args).toEqual(['checkout', '--', 'src/a.ts', 'src/b.ts']);
-    expect(calls.find((c) => c.args[0] === 'clean')?.args).toEqual(['clean', '-qfd', '--', 'src/a.ts', 'src/b.ts']);
+    expect(calls.find((c) => c.args[0] === 'reset')?.args).toEqual([
+      'reset', '-q', '--', ':(literal)src/a.ts', ':(literal)src/b.ts',
+    ]);
+    expect(calls.find((c) => c.args[0] === 'checkout')?.args).toEqual([
+      'checkout', '--', ':(literal)src/a.ts', ':(literal)src/b.ts',
+    ]);
+    expect(calls.find((c) => c.args[0] === 'clean')?.args).toEqual([
+      'clean', '-qfd', '--', ':(literal)src/a.ts', ':(literal)src/b.ts',
+    ]);
   });
 
   it('still leaves the changes staged when commit is omitted', async () => {
@@ -257,6 +281,71 @@ describe('TaskAdoptService', () => {
     expect(res).toMatchObject({ ok: true });
     expect(res).not.toHaveProperty('commit');
     expect(calls.some((c) => c.args[0] === 'commit')).toBe(false);
+  });
+
+  // ── The commit takes the whole index, so the index is re-checked ─────────
+  //
+  // The clean check and the commit are a dozen git calls apart. A human staging
+  // a file in that window would have their work committed under a message that
+  // says it is one task's adoption — and nobody would look, because the adopt
+  // reported ok.
+  it('refuses to commit when a path outside the adopted set was staged after the clean check', async () => {
+    const calls: Call[] = [];
+    const { svc } = service(
+      fakeGit({ diff: 'patch', statusBeforeCommit: 'M  src/a.ts\0A  NOTES.md\0', calls }),
+    );
+    const res = await svc.adopt({ taskId: 'wtask-1', worktreePath: WT, commit: true, title: 'lane one' });
+
+    expect(res).toMatchObject({ ok: false, reason: 'commit-failed' });
+    if (res.ok) throw new Error('unreachable');
+    expect(res.error).toContain('NOTES.md');
+    expect(calls.some((c) => c.args[0] === 'commit')).toBe(false);
+    // The human's file is not in the restore either — only the adopted paths.
+    const reset = calls.find((c) => c.args[0] === 'reset');
+    expect(reset?.args).toEqual(['reset', '-q', '--', ':(literal)src/a.ts', ':(literal)src/b.ts']);
+  });
+
+  it('commits when the only staged paths are the adopted ones', async () => {
+    const calls: Call[] = [];
+    const { svc } = service(fakeGit({ diff: 'patch', statusBeforeCommit: 'M  src/a.ts\0A  src/b.ts\0', calls }));
+    const res = await svc.adopt({ taskId: 'wtask-1', worktreePath: WT, commit: true, title: 'lane one' });
+    expect(res).toMatchObject({ ok: true, commit: 'deadbee' });
+    expect(calls.filter((c) => c.args[0] === 'status')).toHaveLength(2);
+  });
+
+  it('treats a failed re-read as a refusal rather than committing blind', async () => {
+    const calls: Call[] = [];
+    const { svc } = service(fakeGit({ diff: 'patch', statusCode: 128, calls }));
+    const res = await svc.adopt({ taskId: 'wtask-1', worktreePath: WT, commit: true });
+    expect(res).toMatchObject({ ok: false, reason: 'commit-failed' });
+    expect(calls.some((c) => c.args[0] === 'commit')).toBe(false);
+  });
+
+  // ── Restore is pathspec-shaped, so paths must be marked literal ───────────
+  it('never lets a path with glob characters widen the restore', async () => {
+    const calls: Call[] = [];
+    const { svc } = service(fakeGit({ diff: 'patch', names: 'src/a*.ts\0', commitCode: 1, calls }));
+    await svc.adopt({ taskId: 'wtask-1', worktreePath: WT, commit: true });
+    // Without `:(literal)` this would reset, check out and CLEAN every path
+    // matching `src/a*.ts` — a wider blast radius than the patch had.
+    expect(calls.find((c) => c.args[0] === 'clean')?.args).toEqual([
+      'clean',
+      '-qfd',
+      '--',
+      ':(literal)src/a*.ts',
+    ]);
+  });
+
+  // ── A commit that happened must never be reported as one that did not ────
+  it('omits commit and warns when the sha cannot be read back', async () => {
+    const { svc } = service(fakeGit({ diff: 'patch', shortCode: 1 }));
+    const res = await svc.adopt({ taskId: 'wtask-1', worktreePath: WT, commit: true });
+    expect(res).toMatchObject({ ok: true });
+    // '' read as "nothing was committed" to every caller that checks
+    // truthiness — the opposite of what happened.
+    expect(res).not.toHaveProperty('commit');
+    if (!res.ok) throw new Error('unreachable');
+    expect(res.warning).toContain('would not name it');
   });
 
   // Two adopts landing at once would both see a clean tree, and the second
@@ -315,7 +404,27 @@ describe('adoptCommitMessage', () => {
     expect(adoptCommitMessage('wtask-1', 'first\nsecond')).toBe('adopt: first (wtask-1)');
     const long = adoptCommitMessage('wtask-1', 'x'.repeat(ADOPT_SUBJECT_MAX + 40));
     expect(long.length).toBe(`adopt:  (wtask-1)`.length + ADOPT_SUBJECT_MAX);
-    expect(long.endsWith('… (wtask-1)')).toBe(true);
+    expect(long.endsWith('\u2026 (wtask-1)')).toBe(true);
+  });
+
+  // The projection row is the daemon's, but an LLM wrote the text in it when
+  // the task was fanned out — so the title is untrusted text arriving by a
+  // trusted route.
+  it('strips control characters an LLM-written title may carry', () => {
+    expect(adoptCommitMessage('wtask-1', 'lane\u001b[31mone\r')).toBe('adopt: lane [31mone (wtask-1)');
+    expect(adoptCommitMessage('wtask-1', 'a\tb')).toBe('adopt: a b (wtask-1)');
+    expect(adoptCommitMessage('wtask-1', '\u0000\u0007')).toBe('adopt: wtask-1 (wtask-1)');
+  });
+
+  it('bounds by code point, so a cut never leaves half a surrogate pair', () => {
+    // Each emoji is TWO UTF-16 units: a length-based slice at ADOPT_SUBJECT_MAX
+    // would land inside one and emit a lone surrogate.
+    const subject = adoptCommitMessage('wtask-1', '\u{1f642}'.repeat(ADOPT_SUBJECT_MAX + 10));
+    const title = subject.slice('adopt: '.length, -' (wtask-1)'.length);
+    expect(Array.from(title)).toHaveLength(ADOPT_SUBJECT_MAX);
+    expect(title.endsWith('\u2026')).toBe(true);
+    // No lone surrogate survives once the well-formed pairs are removed.
+    expect(/[\uD800-\uDFFF]/.test(title.replace(/[\uD800-\uDBFF][\uDC00-\uDFFF]/g, ''))).toBe(false);
   });
 });
 

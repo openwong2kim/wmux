@@ -34,7 +34,11 @@
 //   index already holds exactly the adopted patch, so the service commits it
 //   with a message naming the task and hands back the short sha. The
 //   dirty-target check is unchanged: a target dirtied by a HUMAN is still
-//   refused, because that is the state the check exists for.
+//   refused, because that is the state the check exists for — and because a
+//   pathspec-free commit takes the whole index, that check is REPEATED in the
+//   instant before committing. Anything outside the adopted paths that appeared
+//   in between (a human staging a file, the GUI's own apply path) is a refusal,
+//   not a passenger in someone else's commit.
 //
 //   THE TASK'S INDEX IS NOT TOUCHED. Untracked files only appear in a diff
 //   after `git add -N`, which would leave intent-to-add entries in the index of
@@ -119,18 +123,31 @@ export type AdoptFailureReason =
   | 'commit-failed'
   | 'error';
 
-/** Longest commit SUBJECT this service will build from a task title. Titles are
- *  server-side projection rows, not prose, but a pasted paragraph should not
- *  become a 4 KB subject line. */
+/** Longest commit SUBJECT this service will build from a task title, in CODE
+ *  POINTS. A title is a line from a fan-out prompt, not prose, but a pasted
+ *  paragraph should not become a 4 KB subject line. */
 export const ADOPT_SUBJECT_MAX = 120;
 
-/** `adopt: <title> (<taskId>)`, first line only and bounded. Argv, never a
- *  shell string, so the only thing being defended against here is a subject
- *  nobody can read. */
+/**
+ * `adopt: <title> (<taskId>)`, first line only and bounded.
+ *
+ * The title reaches this function from the daemon's own projection row, but the
+ * row's text was written by the BRAIN — an LLM authored it when the task was
+ * fanned out — so it is untrusted text that happens to arrive by a trusted
+ * route. It never becomes a shell string (git is argv-only here), so what is
+ * being defended against is a subject nobody can read: control characters and
+ * escape sequences are replaced, and the bound is applied per code point so a
+ * cut never lands between the halves of a surrogate pair and leaves a lone
+ * surrogate in the commit message.
+ */
 export function adoptCommitMessage(taskId: string, title?: string): string {
-  const firstLine = (title ?? '').split('\n')[0]?.trim() ?? '';
-  const name = firstLine.length > 0 ? firstLine : taskId;
-  const bounded = name.length > ADOPT_SUBJECT_MAX ? `${name.slice(0, ADOPT_SUBJECT_MAX - 1)}…` : name;
+  const firstLine = (title ?? '').split('\n')[0] ?? '';
+  // eslint-disable-next-line no-control-regex
+  const clean = firstLine.replace(/[\x00-\x1f\x7f]/g, ' ').trim();
+  const name = clean.length > 0 ? clean : taskId;
+  const points = Array.from(name);
+  const bounded =
+    points.length > ADOPT_SUBJECT_MAX ? `${points.slice(0, ADOPT_SUBJECT_MAX - 1).join('')}…` : name;
   return `adopt: ${bounded} (${taskId})`;
 }
 
@@ -145,8 +162,14 @@ export type AdoptTaskResult =
       /** The merge base the patch was taken against. */
       base: string;
       /** Short sha of the commit, present only when `commit: true` was asked
-       *  for. Absent means the changes are staged and uncommitted. */
+       *  for AND the sha could be read back. Absent means the changes are
+       *  staged and uncommitted — or, with `warning` set, committed but
+       *  unnamed. Never an empty string: '' read as "no commit" to every caller
+       *  that checks truthiness, which is the opposite of what happened. */
       commit?: string;
+      /** Set when something non-fatal could not be established — currently only
+       *  "the commit was made and `git rev-parse` would not name it". */
+      warning?: string;
     }
   | {
       ok: false;
@@ -408,10 +431,52 @@ export class TaskAdoptService {
 
     if (!commit) return { ok: true, taskId, targetRepo, files, base };
 
-    // No pathspec: the target was verified CLEAN before the apply, so the index
-    // now holds the adopted patch and nothing else. A pathspec would commit the
-    // working tree's version of those paths instead of the `--3way` merge git
-    // just staged, which is a different (and wrong) thing to record.
+    // ── Nothing but the adopted patch may be in this commit ──────────────
+    // `git commit` with no pathspec commits the WHOLE index, and the clean
+    // check that justifies that ran several git invocations ago. A human (or
+    // the GUI's own apply path, or a second wmux) staging a file in that window
+    // would have their work swept into a commit whose message says it is one
+    // task's adoption. So the tree is re-read HERE, immediately before the
+    // commit, and anything outside the adopted set is a refusal.
+    //
+    // The pathspec alternative was rejected: `git commit -- <paths>` (and its
+    // `-o` spelling) commits the WORKING TREE's version of those paths, not the
+    // index `--3way` just filled, which is a different and wrong thing to
+    // record. Verifying the index is what makes the pathspec-free commit exact.
+    const before = await this.git(['status', '--porcelain=v1', '-z'], targetRepo);
+    if (before.code !== 0) {
+      await this.restore(targetRepo, files);
+      return {
+        ok: false,
+        taskId,
+        reason: 'commit-failed',
+        error:
+          `the task's changes applied to ${targetRepo} but its state could not be re-read before committing, ` +
+          `so nothing was committed and the affected paths were restored: ${before.stderr.trim()}`,
+        files,
+      };
+    }
+    const adopted = new Set(files);
+    const stray = parsePorcelainZ(before.stdout)
+      .map((e) => e.path)
+      .filter((p) => !adopted.has(p));
+    if (stray.length > 0) {
+      await this.restore(targetRepo, files);
+      return {
+        ok: false,
+        taskId,
+        reason: 'commit-failed',
+        error:
+          `${targetRepo} changed while this task was being adopted — ${stray.slice(0, 5).join(', ')}` +
+          `${stray.length > 5 ? ` and ${stray.length - 5} more` : ''} ` +
+          'are not part of this task, and committing would have swept them into it. The adopted paths were ' +
+          'restored; commit or stash the other changes and adopt again.',
+        files,
+      };
+    }
+
+    // No pathspec, now that the index has been verified to hold the adopted
+    // patch and nothing else.
     const committed = await this.git(['commit', '-m', adoptCommitMessage(taskId, title)], targetRepo);
     if (committed.code !== 0) {
       // A hook refused it, there is no author identity, the index is locked.
@@ -430,13 +495,20 @@ export class TaskAdoptService {
       };
     }
     const head = await this.git(['rev-parse', '--short', 'HEAD'], targetRepo);
+    const sha = head.code === 0 ? head.stdout.trim() : '';
     return {
       ok: true,
       taskId,
       targetRepo,
       files,
       base,
-      commit: head.code === 0 ? head.stdout.trim() : '',
+      // The commit happened; only its name is missing. Reporting `commit: ''`
+      // told every caller that checks truthiness the opposite — that nothing
+      // was committed — and the next adopt would then be refused dirty-target
+      // for a reason the caller had been told did not exist.
+      ...(sha
+        ? { commit: sha }
+        : { warning: `the commit was made in ${targetRepo} but git would not name it: ${head.stderr.trim()}` }),
     };
   }
 
@@ -445,9 +517,15 @@ export class TaskAdoptService {
    *  the repository is never touched. */
   private async restore(targetRepo: string, files: string[]): Promise<void> {
     if (files.length === 0) return;
-    await this.git(['reset', '-q', '--', ...files], targetRepo);
-    await this.git(['checkout', '--', ...files], targetRepo);
+    // These are PATHSPECS, not filenames: git reads `*`, `?`, `[…]` and a
+    // leading `:` as pattern syntax, so restoring a file genuinely named
+    // `a*.ts` would reset, check out and CLEAN every path that glob matches —
+    // a wider blast radius than the patch had, in the error path. `:(literal)`
+    // says the rest is exactly one path.
+    const specs = files.map((f) => `:(literal)${f}`);
+    await this.git(['reset', '-q', '--', ...specs], targetRepo);
+    await this.git(['checkout', '--', ...specs], targetRepo);
     // A file the patch CREATED has nothing to check out; remove the leftovers.
-    await this.git(['clean', '-qfd', '--', ...files], targetRepo);
+    await this.git(['clean', '-qfd', '--', ...specs], targetRepo);
   }
 }
