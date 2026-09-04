@@ -85,7 +85,7 @@ import { TaskAdoptService } from './worktask/TaskAdoptService';
 import { TaskGateRunner } from './worktask/TaskGateRunner';
 import { createHostedLedgerPort } from './worktask/ledgerPort';
 import { getProjectConfigStore } from './project/ProjectConfigStore';
-import { publishWorkspaceFacts } from './workspace/workspaceFactsFeed';
+import { createWorkspaceFactsPublisher, invalidateAutonomyCache } from './workspace/workspaceFactsFeed';
 import { getTaskLedger } from './deck/taskLedgerHost';
 import { onAutonomyWritten } from './deck/deckAutonomyStore';
 import { registerDeckHandler } from './ipc/handlers/deck.handler';
@@ -908,18 +908,20 @@ registerWorktaskHandlers(() => daemonClient, (services: WorktaskServices) => {
 // cancelled) and an autonomy write. Until the first push lands the daemon
 // answers `scope-unavailable` and refuses, which is the safe direction.
 // See workspace/workspaceFactsFeed.ts.
-const pushWorkspaceFacts = (): Promise<void> =>
-  publishWorkspaceFacts({
-    push: async (facts) => {
-      if (!daemonClient) throw new Error('Daemon not connected');
-      return daemonClient.rpc('daemon.workspaceFacts.set', { facts });
-    },
-  });
+const workspaceFactsPublisher = createWorkspaceFactsPublisher({
+  push: async (facts, seq) => {
+    if (!daemonClient) throw new Error('Daemon not connected');
+    return daemonClient.rpc('daemon.workspaceFacts.set', { facts, seq });
+  },
+});
 getTaskLedger().onTransition(() => {
-  void pushWorkspaceFacts();
+  workspaceFactsPublisher.schedule();
 });
 onAutonomyWritten(() => {
-  void pushWorkspaceFacts();
+  // The store this feed reads was just rewritten, so the cached copy is stale
+  // before the debounce fires — invalidate first, then schedule.
+  invalidateAutonomyCache();
+  workspaceFactsPublisher.schedule();
 });
 
 // Command Deck Phase 2 — the Commander brain. Renderer-only surface (same
@@ -1480,9 +1482,12 @@ app.on('ready', async () => {
       // the daemon drops it when its publisher disconnects), so seed it here.
       // Without this, every automated approval press refuses as
       // `scope-unavailable` until the next task transition happens to occur.
-      void publishWorkspaceFacts({
-        push: async (facts) => client.rpc('daemon.workspaceFacts.set', { facts }),
-      });
+      // Goes through the same publisher so the connect-time seed shares the
+      // sequence counter with every later push and cannot be overtaken by one.
+      // The autonomy file may have been edited by a previous run of this
+      // process, so read it fresh.
+      invalidateAutonomyCache();
+      void workspaceFactsPublisher.publishNow();
       // Handler swap to daemon-routed mode. The microsecond window where
       // pty/* handlers are torn down and re-registered is the same
       // surface the original code used; the swap is logged for the

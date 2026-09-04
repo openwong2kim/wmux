@@ -141,6 +141,7 @@ describe('commander-only lane invariants (COMMANDER_ONLY_TOOLS)', () => {
     const sources = walkSources(path.join(__dirname, '..', '..', 'mcp')).join('\n');
     for (const name of [
       'task_gate_run',
+      'task_gate_cancel',
       'task_adopt',
       'task_close',
       'task_pr',
@@ -162,6 +163,7 @@ describe('commander-only lane invariants (COMMANDER_ONLY_TOOLS)', () => {
   it('every task tool has its RPC in the commander lane', () => {
     for (const method of [
       'task.gate.run',
+      'task.gate.cancel',
       'task.adopt',
       'task.close',
       'task.pr',

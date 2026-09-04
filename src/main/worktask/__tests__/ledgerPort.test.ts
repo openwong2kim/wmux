@@ -68,6 +68,17 @@ describe('createHostedLedgerPort', () => {
       // The loser must not have overwritten the winner's verdict.
       expect(ledger.get('wtask-2')?.gate).toMatchObject({ exitCode: 1 });
 
+      // And the check is INSIDE the ledger's serialized section, not in the
+      // port: a write that lands between a caller's read and its write must
+      // still lose. Two writes computed from the same rev, issued together.
+      const [first, second] = await Promise.all([
+        ledger.recordGate('wtask-2', gate(0), { kind: 'system', workspaceId: 'ws-daemon' }, 2),
+        ledger.recordGate('wtask-2', gate(7), { kind: 'system', workspaceId: 'ws-daemon' }, 2),
+      ]);
+      expect([first.ok, second.ok].sort()).toEqual([false, true]);
+      const loser = first.ok ? second : first;
+      expect(loser).toMatchObject({ ok: false, error: 'stale_rev' });
+
       expect(await port.read('nope')).toBeNull();
       expect(
         await port.writeGate({

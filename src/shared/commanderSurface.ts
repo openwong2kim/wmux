@@ -131,6 +131,12 @@ export const COMMANDER_ONLY_TOOLS: readonly string[] = [
   // brain-only for the same reason the ledger tools are — a pane agent has no
   // task of its own to gate, adopt, close or open a PR for.
   'task_gate_run',
+  // The cancel beside the run. Not "rare enough to skip": the gate holds a
+  // one-per-task slot for up to 15 minutes, so without this a brain that
+  // started a gate on a hung test suite can only wait it out — and the RPC was
+  // already registered and already granted, which is a capability reachable by
+  // nothing, the worst of both.
+  'task_gate_cancel',
   'task_adopt',
   'task_close',
   'task_pr',

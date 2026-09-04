@@ -47,7 +47,10 @@ export interface PendingExecuteApproval {
   receiverWorkspaceId: string;
   messagePreview: string;
   cwd: string | null;
-  /** Epoch ms when the prompt auto-denies. */
+  /** Epoch ms when the prompt auto-denies, or 0 while it is still QUEUED
+   *  behind another prompt. The countdown starts when the dialog actually
+   *  shows this one (`beginApprovalCountdown`) — stamping it at enqueue meant a
+   *  prompt could auto-deny before anybody had a chance to see it. */
   expiresAt: number;
   /**
    * Present when the prompt is a fan-out request from the pipe/MCP surface
@@ -65,7 +68,18 @@ export interface PendingExecuteApproval {
    * reason: nothing is spawned here, so the execute wording would name an
    * action the user is not being asked about.
    */
-  task?: { taskId: string; title: string; branch: string; worktreePath: string; action: string; effect: string };
+  task?: {
+    taskId: string;
+    title: string;
+    branch: string;
+    worktreePath: string;
+    action: string;
+    effect: string;
+    /** The branch tip main captured when it raised this prompt. Shown so the
+     *  user approves a COMMIT, not a branch name — main refuses the push if the
+     *  tip moved while the dialog was up. */
+    branchTip?: string;
+  };
 }
 
 export interface A2aSlice {
@@ -127,6 +141,9 @@ export interface A2aSlice {
   setAgentSkills: (workspaceId: string, skills: AgentSkill[]) => void;
   getAgentSkills: (workspaceId: string) => AgentSkill[] | null;
   enqueueExecuteApproval: (approval: PendingExecuteApproval) => void;
+  /** Stamp the deadline of a prompt whose countdown just started (it reached
+   *  the front of the queue and is on screen). No-op for an unknown id. */
+  setExecuteApprovalExpiry: (approvalId: string, expiresAt: number) => void;
   removeExecuteApproval: (approvalId: string) => void;
   setA2aAutoApproveExecute: (enabled: boolean) => void;
 
@@ -159,6 +176,15 @@ export const createA2aSlice: StateCreator<StoreState, [['zustand/immer', never]]
     if (!existing) state.pendingExecuteApprovalOrder.push(approval.approvalId);
     const firstId = state.pendingExecuteApprovalOrder[0];
     state.pendingExecuteApproval = firstId ? state.pendingExecuteApprovals[firstId] ?? null : null;
+  }),
+
+  setExecuteApprovalExpiry: (approvalId, expiresAt) => set((state: StoreState) => {
+    const row = state.pendingExecuteApprovals[approvalId];
+    if (!row) return;
+    row.expiresAt = expiresAt;
+    if (state.pendingExecuteApproval?.approvalId === approvalId) {
+      state.pendingExecuteApproval = row;
+    }
   }),
 
   removeExecuteApproval: (approvalId) => set((state: StoreState) => {

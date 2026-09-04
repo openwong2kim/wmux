@@ -127,11 +127,25 @@ export interface TaskApprovalRequest {
   action: TaskApprovalAction;
   /** One sentence naming what will happen if the user approves. */
   effect: string;
+  /** The branch tip the user is being shown, for `task.pr`. Short hash, or ''
+   *  when it could not be read. Displayed, and re-checked after the answer. */
+  branchTip?: string;
 }
 
 /** How an approval ended, for the refusal message. `unavailable` is a bridge
  *  that could not be reached at all — fail closed, but say which. */
 export type TaskApprovalOutcome = 'approved' | 'declined' | 'timeout' | 'unavailable';
+
+/** An RPC that ran out of time is a TIMEOUT, not an unreachable window. The
+ *  bridge rejects with this text (see pipe/handlers/_bridge.ts), and folding it
+ *  into `unavailable` told operators to go looking for a dead window when what
+ *  actually happened is that nobody answered. */
+const RPC_TIMEOUT_RE = /\btimed?\s*-?\s*out\b|\btimeout\b/i;
+
+/** Distinct task-approval prompts one workspace may have waiting at once. The
+ *  operator answers a single shared queue, so an unbounded producer here is a
+ *  denial of service against the fan-out gate next to it. */
+export const TASK_APPROVALS_MAX_PENDING_PER_WORKSPACE = 3;
 
 /** Raise the prompt; anything that is not an explicit approval is a refusal. */
 export type TaskApprovalPort = (request: TaskApprovalRequest) => Promise<TaskApprovalOutcome>;
@@ -154,8 +168,13 @@ function rendererApprovalPort(getWindow: GetWindow): TaskApprovalPort {
       verdict = (await sendToRenderer(getWindow, 'task.requestApproval', { ...request }, {
         timeoutMs: TASK_APPROVAL_TIMEOUT_MS,
       })) as { approved?: unknown; outcome?: unknown } | null;
-    } catch {
-      return 'unavailable';
+    } catch (err) {
+      // Two different failures wear one rejection here: no window to ask
+      // (unavailable) and a window that never answered (timeout). They send an
+      // operator to different places, so they are reported apart.
+      return RPC_TIMEOUT_RE.test(err instanceof Error ? err.message : String(err))
+        ? 'timeout'
+        : 'unavailable';
     }
     if (!verdict) return 'unavailable';
     if (verdict.approved === true) return 'approved';
@@ -406,6 +425,19 @@ export function parseGitStatus(stdout: string): {
   return { branch, ahead, behind, clean: files.length === 0, files };
 }
 
+/**
+ * The worktree's current HEAD, short. `''` when git could not answer — which
+ * the caller treats as "unknown", and an unknown tip that stays unknown is
+ * still equal to itself, so a repo git cannot read at all does not become an
+ * unexplainable refusal. (It fails the other way — a repo that starts
+ * unreadable and becomes readable refuses once, which is the safe direction.)
+ */
+async function branchTip(exec: WorktaskExec, worktreePath: string | undefined): Promise<string> {
+  if (!worktreePath) return '';
+  const res = await exec('git', ['rev-parse', '--short', 'HEAD'], worktreePath);
+  return res.code === 0 ? res.stdout.trim() : '';
+}
+
 /** The `%H\x1f%an\x1f%aI\x1f%s` lines `task.git.log` asks for. */
 export function parseGitLog(stdout: string): { hash: string; author: string; date: string; subject: string }[] {
   return stdout
@@ -435,6 +467,22 @@ export function registerWorktaskRpc(router: RpcRouter, deps: WorktaskRpcDeps): v
   const register = (method: WorktaskRpcMethod, handler: Parameters<RpcRouter['register']>[1]): void =>
     router.register(method, handler);
 
+  // ── Pending-prompt bookkeeping ──────────────────────────────────────────
+  //
+  // A brain that retries in a loop would otherwise stack one dialog per call:
+  // the same question, N times, and every one of them competing with the
+  // fan-out gate for the operator's single approval queue. Two rules:
+  //
+  //   DEDUPE — an identical (workspace, task, action) already on screen is the
+  //     SAME question, so the retry joins that prompt instead of raising a
+  //     second one. One answer settles every caller waiting on it, which is
+  //     also the honest semantics: the user was asked once.
+  //   CAP — a per-workspace ceiling on distinct pending prompts, so a caller
+  //     cycling task ids cannot fill the queue and starve a fan-out approval.
+  //     Over the cap the call is refused immediately rather than queued.
+  const inFlightApprovals = new Map<string, Promise<TaskApprovalOutcome>>();
+  const pendingPerWorkspace = new Map<string, number>();
+
   /**
    * Ask the human, and turn anything short of an explicit approval into the
    * wire refusal. The summary is built from the SERVER's own projection row —
@@ -446,16 +494,38 @@ export function registerWorktaskRpc(router: RpcRouter, deps: WorktaskRpcDeps): v
     workspaceId: string,
     task: ProjectionTask,
     effect: string,
+    extra: { branchTip?: string } = {},
   ): Promise<{ ok: false; error: { code: string; message: string } } | null> => {
-    const outcome = await requestApproval({
-      workspaceId,
-      taskId: task.id,
-      title: task.title,
-      branch: task.branch ?? '',
-      worktreePath: task.worktreePath ?? '',
-      action,
-      effect,
-    });
+    const key = `${workspaceId} ${task.id} ${action}`;
+    let pending = inFlightApprovals.get(key);
+    if (!pending) {
+      const open = pendingPerWorkspace.get(workspaceId) ?? 0;
+      if (open >= TASK_APPROVALS_MAX_PENDING_PER_WORKSPACE) {
+        return deny(
+          'RESOURCE_EXHAUSTED',
+          `your workspace already has ${open} task approvals waiting for an answer ` +
+            `(cap ${TASK_APPROVALS_MAX_PENDING_PER_WORKSPACE}) — answer or let those expire before asking for more`,
+        );
+      }
+      pendingPerWorkspace.set(workspaceId, open + 1);
+      pending = requestApproval({
+        workspaceId,
+        taskId: task.id,
+        title: task.title,
+        branch: task.branch ?? '',
+        worktreePath: task.worktreePath ?? '',
+        action,
+        effect,
+        ...(extra.branchTip !== undefined ? { branchTip: extra.branchTip } : {}),
+      }).finally(() => {
+        inFlightApprovals.delete(key);
+        const left = (pendingPerWorkspace.get(workspaceId) ?? 1) - 1;
+        if (left > 0) pendingPerWorkspace.set(workspaceId, left);
+        else pendingPerWorkspace.delete(workspaceId);
+      });
+      inFlightApprovals.set(key, pending);
+    }
+    const outcome = await pending;
     if (outcome === 'approved') return null;
     return deny('NOT_AUTHORIZED', `task.${action} needs a human approval and ${APPROVAL_DENY_MESSAGE[outcome]}`);
   };
@@ -572,13 +642,30 @@ export function registerWorktaskRpc(router: RpcRouter, deps: WorktaskRpcDeps): v
     }
     // A push leaves the machine: once the branch is on the remote, no result
     // this call returns can take it back.
+    //
+    // The prompt is not instantaneous — up to 45 s — and the worker owning this
+    // worktree is still running. Approving "push wtask/lane-one" and then
+    // pushing whatever that branch points at half a minute later is approving a
+    // name, not a change. So the tip is captured NOW, shown in the dialog, and
+    // required to still be the tip afterwards; a moved branch is refused rather
+    // than pushed, and the caller can ask again against what it can now see.
+    const tipBefore = await branchTip(exec, task.worktreePath);
     const refused = await approve(
       'pr',
       workspaceId,
       task,
       `push the branch ${task.branch} to its remote and open a pull request for it`,
+      { branchTip: tipBefore },
     );
     if (refused) return refused;
+    const tipAfter = await branchTip(exec, task.worktreePath);
+    if (tipBefore !== tipAfter) {
+      return deny(
+        'ABORTED',
+        `the branch moved while the approval was on screen (${tipBefore || 'unknown'} → ${tipAfter || 'unknown'}), ` +
+          'so what was approved is not what would be pushed — read the new state and ask again',
+      );
+    }
     const body = typeof params['body'] === 'string' ? params['body'] : undefined;
     return deps.pr.createPr({
       taskId: task.id,

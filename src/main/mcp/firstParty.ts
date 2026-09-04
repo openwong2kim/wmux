@@ -300,11 +300,9 @@ export const FIRST_PARTY_METHODS: ReadonlySet<RpcMethod> = new Set<RpcMethod>([
   // authz) and ledger_list (commander-only tool, also in the commander lane).
   'ledger.list',
   'ledger.update',
-  // Task lifecycle — the seven commander-only tools (task_gate_run, task_adopt,
-  // task_close, task_pr, git_status, git_log, gh_pr_view). `task.gate.cancel`
-  // is granted too even though no tool calls it today: it is the only way to
-  // stop a gate the bundled server started, and a remedy the caller cannot
-  // invoke is not a remedy.
+  // Task lifecycle — the eight commander-only tools (task_gate_run,
+  // task_gate_cancel, task_adopt, task_close, task_pr, git_status, git_log,
+  // gh_pr_view).
   'task.gate.run',
   'task.gate.cancel',
   'task.adopt',

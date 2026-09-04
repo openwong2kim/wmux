@@ -26,28 +26,75 @@ import type { ApprovalPressFacts } from './approvalKeystrokes';
 
 /** One workspace's row. Deliberately the exact slice `decideApprovalPress`
  *  consumes — anything wider would invite the daemon to reason about main's
- *  state instead of forwarding it. */
-export type WorkspaceFacts = Pick<ApprovalPressFacts, 'isTaskWorkspace' | 'autonomyMode'>;
+ *  state instead of forwarding it. `approvalPress` is main's EFFECTIVE
+ *  capability (mode ceiling already narrowed by a running loop's tier), which
+ *  is what authorizes; the mode rides along for the refusal reason. */
+export type WorkspaceFacts = Pick<
+  ApprovalPressFacts,
+  'isTaskWorkspace' | 'autonomyMode' | 'approvalPress'
+>;
+
+/** One row as it arrives on the wire. */
+export interface WorkspaceFactRowInput {
+  workspaceId: string;
+  isTaskWorkspace: boolean;
+  autonomyMode: string;
+  approvalPress: boolean;
+}
 
 /** Upper bound on a pushed table. Main sends one row per live workspace, so a
  *  number this size can only be reached by a bug or a hostile client; the
  *  excess is dropped rather than retained. */
 export const WORKSPACE_FACTS_MAX_ROWS = 2_000;
 
+/** Rejected because a newer table is already held. Not an error: two pushes
+ *  raced and the older one lost, which is exactly what `seq` is for. */
+export interface WorkspaceFactsStale {
+  ok: false;
+  reason: 'stale';
+  seq: number;
+}
+
+export interface WorkspaceFactsAccepted {
+  ok: true;
+  accepted: number;
+  seq: number;
+}
+
 export class WorkspaceFactStore {
   private facts: Map<string, WorkspaceFacts> | null = null;
+  /** The `seq` of the table currently held. -1 = nothing published yet. */
+  private seq = -1;
 
-  /** Replace the table. Returns how many rows were accepted. */
-  replace(rows: readonly { workspaceId: string; isTaskWorkspace: boolean; autonomyMode: string }[]): number {
+  /**
+   * Replace the table, unless `seq` is not newer than the one held.
+   *
+   * ORDERING IS NOT FREE. The pipe carries one request per line and main sends
+   * these fire-and-forget, so two publishes started close together can be
+   * serviced out of order — and the loser would leave a CLOSED task's workspace
+   * still marked `isTaskWorkspace: true`, which is the exact row that
+   * authorizes a press. A monotonic counter from the publisher makes the
+   * late-arriving older table a no-op rather than a silent regression.
+   */
+  replace(rows: readonly WorkspaceFactRowInput[], seq: number): WorkspaceFactsAccepted | WorkspaceFactsStale {
+    if (!Number.isFinite(seq) || seq <= this.seq) {
+      return { ok: false, reason: 'stale', seq: this.seq };
+    }
     const next = new Map<string, WorkspaceFacts>();
     for (const row of rows) {
       if (next.size >= WORKSPACE_FACTS_MAX_ROWS) break;
       if (!row || typeof row.workspaceId !== 'string' || row.workspaceId.length === 0) continue;
       if (typeof row.isTaskWorkspace !== 'boolean' || typeof row.autonomyMode !== 'string') continue;
-      next.set(row.workspaceId, { isTaskWorkspace: row.isTaskWorkspace, autonomyMode: row.autonomyMode });
+      if (typeof row.approvalPress !== 'boolean') continue;
+      next.set(row.workspaceId, {
+        isTaskWorkspace: row.isTaskWorkspace,
+        autonomyMode: row.autonomyMode,
+        approvalPress: row.approvalPress,
+      });
     }
     this.facts = next;
-    return next.size;
+    this.seq = seq;
+    return { ok: true, accepted: next.size, seq };
   }
 
   /**
@@ -67,9 +114,16 @@ export class WorkspaceFactStore {
     return this.facts !== null;
   }
 
-  /** Forget everything — main disconnected, so its table is no longer current
-   *  and a press must not be authorized by a stale row. */
+  /**
+   * Forget everything — main disconnected, so its table is no longer current
+   * and a press must not be authorized by a stale row.
+   *
+   * The sequence resets too: the next publisher is a NEW main process counting
+   * from its own start, and holding the dead one's high-water mark would make
+   * every table it sends look stale.
+   */
   clear(): void {
     this.facts = null;
+    this.seq = -1;
   }
 }

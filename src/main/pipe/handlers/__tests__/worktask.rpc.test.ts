@@ -20,7 +20,9 @@ import {
   registerWorktaskRpc,
   TASK_GIT_LOG_MAX,
   WORKTASK_RPC_METHODS,
+  TASK_APPROVALS_MAX_PENDING_PER_WORKSPACE,
   type TaskApprovalOutcome,
+  type TaskApprovalPort,
   type WorktaskExec,
   type WorktaskRpcDeps,
 } from '../worktask.rpc';
@@ -65,6 +67,8 @@ function harness(opts?: {
   /** How the human answers the close/pr prompt. Defaults to approved so the
    *  refusal tests below still see the gates they are about. */
   approval?: TaskApprovalOutcome;
+  /** Full control of the prompt (dedupe / cap tests hold it open). */
+  requestApproval?: TaskApprovalPort;
 }): Harness {
   const handlers = new Map<string, Handler>();
   const router = { register: (m: string, h: Handler) => handlers.set(m, h) } as unknown as RpcRouter;
@@ -100,7 +104,9 @@ function harness(opts?: {
   vi.mocked(resolvePtyOwnerWorkspace).mockImplementation(async () => owner);
 
   const exec = vi.fn(opts?.exec ?? (async () => ({ stdout: '', stderr: '', code: 0 })));
-  const requestApproval = vi.fn(async () => opts?.approval ?? ('approved' as TaskApprovalOutcome));
+  const requestApproval = vi.fn(
+    opts?.requestApproval ?? (async () => opts?.approval ?? ('approved' as TaskApprovalOutcome)),
+  );
 
   const deps: WorktaskRpcDeps = {
     daemon,
@@ -543,5 +549,86 @@ describe('task.close / task.pr approval gate', () => {
       await h.call(method, { taskId: TASK.id }, COMMANDER);
       expect(h.requestApproval, `${method} raised a prompt`).not.toHaveBeenCalled();
     }
+  });
+});
+
+// ── The prompt is about a COMMIT, not a branch name ────────────────────────
+// The worker owning this worktree is still running while the dialog is up.
+describe('task.pr branch-tip binding', () => {
+  const COMMANDER: RpcContext = { origin: 'local', commanderWorkspace: CALLER_WS };
+
+  function tipHarness(tips: string[]) {
+    let n = 0;
+    return harness({
+      exec: (async (_cmd, args) => {
+        if (args[0] === 'rev-parse') {
+          const tip = tips[Math.min(n, tips.length - 1)] ?? '';
+          n += 1;
+          return { stdout: `${tip}\n`, stderr: '', code: 0 };
+        }
+        return { stdout: '', stderr: '', code: 0 };
+      }) as WorktaskExec,
+    });
+  }
+
+  it('shows the tip it captured and pushes when it has not moved', async () => {
+    const h = tipHarness(['abc1234', 'abc1234']);
+    expect(await h.call('task.pr', { taskId: TASK.id }, COMMANDER)).toMatchObject({ ok: true });
+    expect(h.requestApproval).toHaveBeenCalledWith(expect.objectContaining({ branchTip: 'abc1234' }));
+    expect(h.createPr).toHaveBeenCalled();
+  });
+
+  it('refuses when the branch moved while the approval was on screen', async () => {
+    const h = tipHarness(['abc1234', 'def5678']);
+    const res = await h.call('task.pr', { taskId: TASK.id }, COMMANDER);
+    expect(res).toMatchObject({ ok: false, error: { code: 'ABORTED' } });
+    expect(String((res as { error: { message: string } }).error.message)).toContain('abc1234');
+    expect(h.createPr).not.toHaveBeenCalled();
+  });
+});
+
+// ── One question, asked once; and a bounded queue ──────────────────────────
+describe('task approval dedupe and cap', () => {
+  const COMMANDER: RpcContext = { origin: 'local', commanderWorkspace: CALLER_WS };
+
+  it('reuses one pending prompt for an identical retried request', async () => {
+    // A holder, not a bare `let`: TS does not track assignments made inside a
+    // callback and would narrow the variable to `never`.
+    const answer: { resolve: ((outcome: TaskApprovalOutcome) => void) | null } = { resolve: null };
+    const requestApproval = vi.fn(
+      () => new Promise<TaskApprovalOutcome>((resolve) => { answer.resolve = resolve; }),
+    );
+    const h = harness({ requestApproval });
+
+    const a = h.call('task.close', { taskId: TASK.id }, COMMANDER);
+    const b = h.call('task.close', { taskId: TASK.id }, COMMANDER);
+    await new Promise((r) => setTimeout(r, 0));
+    // One dialog, not two: it is literally the same question.
+    expect(requestApproval).toHaveBeenCalledTimes(1);
+
+    answer.resolve?.('approved');
+    expect(await a).toMatchObject({ ok: true });
+    expect(await b).toMatchObject({ ok: true });
+  });
+
+  it('refuses past the per-workspace cap instead of stacking dialogs', async () => {
+    const requestApproval = vi.fn(() => new Promise<TaskApprovalOutcome>(() => undefined));
+    const tasks = Array.from({ length: TASK_APPROVALS_MAX_PENDING_PER_WORKSPACE + 1 }, (_, i) => ({
+      ...TASK,
+      id: `wtask-${i}`,
+    }));
+    const h = harness({ tasks, requestApproval });
+
+    for (let i = 0; i < TASK_APPROVALS_MAX_PENDING_PER_WORKSPACE; i++) {
+      void h.call('task.close', { taskId: `wtask-${i}` }, COMMANDER);
+    }
+    await new Promise((r) => setTimeout(r, 0));
+    const overflow = await h.call(
+      'task.close',
+      { taskId: `wtask-${TASK_APPROVALS_MAX_PENDING_PER_WORKSPACE}` },
+      COMMANDER,
+    );
+    expect(overflow).toMatchObject({ ok: false, error: { code: 'RESOURCE_EXHAUSTED' } });
+    expect(requestApproval).toHaveBeenCalledTimes(TASK_APPROVALS_MAX_PENDING_PER_WORKSPACE);
   });
 });

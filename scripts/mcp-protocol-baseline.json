@@ -154,7 +154,7 @@
     },
     "commander": {
       "maxListBytes": 60000,
-      "wireResultSha256": "2d54f3b337d8c200269b2a70bec1475f189920ef8d62a4ab49d5c9b18ac3b82c",
+      "wireResultSha256": "d225f1c1507ce29b7f40e4801cf7d0a3d5de73ef8ce4a8fae21845b20bb33c91",
       "instructionSha256": "5a97f851c892326eba7cbcf46292f6925834d5794172461d1ced997d90ac1deb",
       "toolNames": [
         "terminal_read",
@@ -201,6 +201,7 @@
         "ledger_list",
         "ledger_update",
         "task_gate_run",
+        "task_gate_cancel",
         "task_adopt",
         "task_close",
         "task_pr",

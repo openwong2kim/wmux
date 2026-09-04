@@ -79,28 +79,24 @@ export function createHostedLedgerPort(getLedger: () => TaskLedger = getTaskLedg
       } catch (err) {
         return { ok: false, reason: 'unavailable', error: err instanceof Error ? err.message : String(err) };
       }
-      // `recordGate` bumps the rev itself and has no expectedRev parameter, so
-      // the compare-and-swap the runner asked for happens here: a row that has
-      // moved on since the snapshot is a `conflict`, and the runner re-reads
-      // and retries once. Checked immediately before the call, inside the same
-      // synchronous tick, so nothing can slip between the read and the write.
+      // The compare-and-swap is handed DOWN, not done here. Reading the rev and
+      // comparing it in this function would straddle the `await` below, and any
+      // write that landed inside that window would be overwritten by a verdict
+      // computed from a revision that no longer exists. `recordGate` checks it
+      // inside the ledger's own serialized section, where nothing can interleave.
       try {
-        const current = ledger.get(write.taskId);
-        if (!current) {
-          return { ok: false, reason: 'not_found', error: `no ledger entry for task ${write.taskId}` };
-        }
-        if (current.rev !== write.expectedRev) {
-          return {
-            ok: false,
-            reason: 'conflict',
-            error: `expectedRev ${write.expectedRev} but the entry is at rev ${current.rev} — re-read and retry`,
-          };
-        }
-        const res = await ledger.recordGate(write.taskId, write.gate, write.actor);
+        const res = await ledger.recordGate(write.taskId, write.gate, write.actor, write.expectedRev);
         if (res.ok) return { ok: true, rev: res.entry.rev };
         return {
           ok: false,
-          reason: res.error === 'not_found' ? 'not_found' : res.error === 'persist_failed' ? 'unavailable' : 'refused',
+          reason:
+            res.error === 'not_found'
+              ? 'not_found'
+              : res.error === 'stale_rev'
+                ? 'conflict'
+                : res.error === 'persist_failed'
+                  ? 'unavailable'
+                  : 'refused',
           error: res.message,
         };
       } catch (err) {

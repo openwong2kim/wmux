@@ -309,6 +309,7 @@ export const DEFAULT_ALLOWED_TOOLS: string[] = [
   // task_pr) raise their own human approval prompt in the handler, which
   // `allowedTools` cannot and does not shortcut.
   WMUX('task_gate_run'),
+  WMUX('task_gate_cancel'),
   WMUX('task_adopt'),
   WMUX('task_close'),
   WMUX('task_pr'),

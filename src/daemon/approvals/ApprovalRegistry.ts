@@ -533,9 +533,20 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
       // `scope-unavailable` — distinct from a workspace that answered "no", so
       // the missing integration wiring is visible instead of looking like
       // policy.
+      // Three distinct ways to have no scope, and an operator fixes each one
+      // differently: no feed wired at all, a feed that has never published, and
+      // a RECORD with no workspace to ask about (a hook envelope that carried
+      // none). Collapsing them sent people to look at the integration wiring
+      // for a problem in the hook payload.
+      type NoScopeCause = 'unwired' | 'unpublished' | 'record-has-no-workspace';
+      const noScopeCause: NoScopeCause | null = !this.deps.pressScope
+        ? 'unwired'
+        : !record.workspaceId
+          ? 'record-has-no-workspace'
+          : null;
       const published =
-        this.deps.pressScope && record.workspaceId
-          ? this.deps.pressScope(record.workspaceId)
+        noScopeCause === null && this.deps.pressScope
+          ? this.deps.pressScope(record.workspaceId as string)
           : null;
       // Wired AND answering. A wired feed that has never been published is as
       // unavailable as no feed at all — see the ApprovalRegistryDeps note.
@@ -554,11 +565,17 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
       if (!pressDecision.press && pressDecision.reason !== 'prompt-gone') {
         // NOT an expiry: the request is live and a human at the desktop can
         // still answer it. We simply may not press on their behalf.
+        const SCOPE_CAUSE_DETAIL: Record<NoScopeCause, string> = {
+          unwired: 'ApprovalRegistryDeps.pressScope is not wired',
+          unpublished: 'the main process has not published its workspace fact table yet',
+          'record-has-no-workspace': 'this request carries no workspaceId, so there is nothing to classify',
+        };
+        const cause = noScopeCause ?? (scopeAvailable ? null : 'unpublished');
         this.deps.log?.(
           pressDecision.reason === 'scope-unavailable' ? 'warn' : 'info',
           pressDecision.reason === 'scope-unavailable'
             ? `[approvals] refused ${record.id} on ${record.sessionId}: automated press has no ` +
-              'workspace scope source (ApprovalRegistryDeps.pressScope is not wired) — ' +
+              `workspace scope source (${SCOPE_CAUSE_DETAIL[cause ?? 'unwired']}) — ` +
               'a human can still answer this request'
             : `[approvals] refused ${record.id} on ${record.sessionId}: out of press scope (${pressDecision.reason})`,
         );
