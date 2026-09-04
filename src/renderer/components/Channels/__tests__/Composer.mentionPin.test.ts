@@ -29,8 +29,20 @@ function twoPaneWorkspace() {
   return { ws, leafA, leafB };
 }
 
-function member(workspaceId: string, memberId: string, memberName?: string): ChannelMember {
-  return { workspaceId, memberId, joinedAt: 0, historyFromSeq: 0, ...(memberName ? { memberName } : {}) };
+function member(
+  workspaceId: string,
+  memberId: string,
+  memberName?: string,
+  principalId?: string,
+): ChannelMember {
+  return {
+    workspaceId,
+    memberId,
+    joinedAt: 0,
+    historyFromSeq: 0,
+    ...(memberName ? { memberName } : {}),
+    ...(principalId ? { principalId } : {}),
+  };
 }
 
 describe('buildMentionCandidates — roster members (C-1)', () => {
@@ -70,6 +82,41 @@ describe('buildMentionCandidates — roster members (C-1)', () => {
     expect(candidates[0].memberId).toBe('w9-1(claude)');
   });
 
+  // Review fix: the member row records the pane it IS. "Most recently active"
+  // sent @backend to whichever sibling typed last.
+  it("prefers the member's OWN pane from principalId over the most recently active one", () => {
+    const { ws, leafA } = twoPaneWorkspace();
+    const candidates = buildMentionCandidates({
+      workspaces: [ws],
+      surfaceAgent: { ptyA: CLAUDE, ptyB: CLAUDE },
+      paneLabel: {},
+      memberWorkspaceIds: new Set(['ws-1']),
+      selfWorkspaceId: null,
+      members: [member('ws-1', 'backend', undefined, `pane:ws-1/${leafA.id}`)],
+      // ptyB is far more recent — the old rule would have pinned it.
+      surfaceActivityAt: { ptyA: 1_000, ptyB: 9_000 },
+    });
+    const roster = candidates.find((c) => c.insertToken === 'backend')!;
+    expect(roster.paneId).toBe(leafA.id);
+    expect(roster.ptyId).toBe('ptyA');
+    expect(roster.pinnedPaneName).toBe('w1-1(claude)');
+  });
+
+  it('falls back to recent activity when the principal pane is gone', () => {
+    const { ws, leafB } = twoPaneWorkspace();
+    const candidates = buildMentionCandidates({
+      workspaces: [ws],
+      surfaceAgent: { ptyA: CLAUDE, ptyB: CLAUDE },
+      paneLabel: {},
+      memberWorkspaceIds: new Set(['ws-1']),
+      selfWorkspaceId: null,
+      members: [member('ws-1', 'backend', undefined, 'pane:ws-1/pane-that-closed')],
+      surfaceActivityAt: { ptyA: 1_000, ptyB: 9_000 },
+    });
+    const roster = candidates.find((c) => c.insertToken === 'backend')!;
+    expect(roster.paneId).toBe(leafB.id);
+  });
+
   it('never duplicates a token a pane candidate already owns, and skips a name with a space', () => {
     const { ws } = twoPaneWorkspace();
     const candidates = buildMentionCandidates({
@@ -95,6 +142,37 @@ describe('pickMostRecentlyActivePane', () => {
       { workspaceId: 'w', paneId: 'p2', ptyId: 't2', insertToken: 'b', displayName: 'b' },
     ];
     expect(pickMostRecentlyActivePane(cands, {})!.paneId).toBe('p1');
+  });
+});
+
+// Review fix: (workspaceId, paneId) folded two badge-only seats of one
+// workspace onto a single key, and the second mention vanished with no warning.
+describe('badge-only mention dedup', () => {
+  const candidates: MentionCandidate[] = [
+    { workspaceId: 'ws-1', memberId: 'm-1', insertToken: 'alice', displayName: 'alice' },
+    { workspaceId: 'ws-1', memberId: 'm-2', insertToken: 'bob', displayName: 'bob' },
+  ];
+
+  it('keeps both badge-only members of the same workspace', () => {
+    const { mentions } = promoteTypedMentions('@alice @bob ship it', candidates, []);
+    expect(mentions.map((m) => m.memberId)).toEqual(['m-1', 'm-2']);
+  });
+
+  it('still collapses two tokens that resolve to the SAME pane — one pane, one nudge', () => {
+    const pinned: MentionCandidate[] = [
+      { workspaceId: 'ws-1', paneId: 'p1', ptyId: 't1', insertToken: 'w1-1(claude)', displayName: 'w1-1(claude)' },
+      { workspaceId: 'ws-1', paneId: 'p1', ptyId: 't1', memberId: 'm-1', insertToken: 'alice', displayName: 'alice' },
+    ];
+    const { mentions } = promoteTypedMentions('@w1-1(claude) @alice', pinned, []);
+    expect(mentions).toHaveLength(1);
+  });
+
+  it('describes both badge-only mentions instead of one', () => {
+    const { mentions } = promoteTypedMentions('@alice @bob', candidates, []);
+    expect(describeMentionTargets(mentions, candidates)).toEqual([
+      { name: 'alice', badgeOnly: true },
+      { name: 'bob', badgeOnly: true },
+    ]);
   });
 });
 

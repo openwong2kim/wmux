@@ -16,6 +16,7 @@
 
 import {
   memo,
+  useEffect,
   useState,
   useRef,
   useCallback,
@@ -33,6 +34,7 @@ import { useT } from '../../hooks/useT';
 import { tokenAttrs } from '../../themes';
 import { FOCUS_RING } from '../focusRing';
 import { computePaneAutoName, paneDisplayName } from '../../utils/paneNaming';
+import { parsePanePrincipalId } from '../../../shared/principals';
 
 // ─── Synthesized message row for the optimistic local insert ───────────
 
@@ -170,10 +172,22 @@ export function buildMentionCandidates(args: {
     // name with a space can never be typed back as a token.
     if (!token || /\s/.test(token) || paneTokens.has(token)) continue;
     if (!memberWorkspaceIds.has(member.workspaceId)) continue;
-    const pin = pickMostRecentlyActivePane(
-      paneCandidates.filter((c) => c.workspaceId === member.workspaceId),
-      activity,
-    );
+    // Review fix: the member row already RECORDS its pane
+    // (`principalId` = `pane:<ws>/<paneId>`). Pinning "the workspace's most
+    // recently active agent pane" instead sent @builder to whichever sibling
+    // happened to have typed last — a different agent, in a workspace that runs
+    // several. Activity is the FALLBACK, for a row whose own pane is gone.
+    const ownPane = member.principalId ? parsePanePrincipalId(member.principalId) : null;
+    const pin =
+      (ownPane
+        ? paneCandidates.find(
+            (c) => c.workspaceId === ownPane.workspaceId && c.paneId === ownPane.paneId,
+          )
+        : undefined) ??
+      pickMostRecentlyActivePane(
+        paneCandidates.filter((c) => c.workspaceId === member.workspaceId),
+        activity,
+      );
     out.push({
       workspaceId: member.workspaceId,
       memberId: member.memberId,
@@ -260,8 +274,15 @@ function candidateMention(c: MentionCandidate): ChannelMention {
 
 /** Dedup identity for a mention row: a pane is addressed by (workspaceId,
  *  paneId) — the same key `applyMention` dedups on. */
-function mentionKey(m: { workspaceId: string; paneId?: string }): string {
-  return `${m.workspaceId}\u0000${m.paneId ?? ''}`;
+function mentionKey(m: { workspaceId: string; paneId?: string; memberId?: string }): string {
+  // A PINNED mention is identified by the pane it wakes: two tokens that resolve
+  // to the same pane must collapse, or the pane is nudged twice for one post.
+  // A BADGE-ONLY mention has no pane, so the member row it addresses is its
+  // identity — keying it on the workspace alone silently dropped every
+  // badge-only member after the first in a workspace with several seats.
+  return m.paneId
+    ? `pane\u0000${m.workspaceId}\u0000${m.paneId}`
+    : `member\u0000${m.workspaceId}\u0000${m.memberId ?? ''}`;
 }
 
 /** True when `idx` sits at a token boundary: end-of-string, or a char that
@@ -372,6 +393,11 @@ export function promoteTypedMentions(
 
 // ─── Mention target hint (C-1) ──────────────────────────────────────────
 
+/** How long the draft must sit still before the "will reach …" hint is
+ *  recomputed. Long enough to skip the per-keystroke rescan, short enough that
+ *  the line is there by the time the eye reaches it. */
+export const MENTION_HINT_DEBOUNCE_MS = 200;
+
 /** One line of the composer's "who will this reach" hint. */
 export interface MentionTargetHint {
   /** The @token as it appears in the body. */
@@ -394,7 +420,16 @@ export function describeMentionTargets(
   candidates: readonly MentionCandidate[],
 ): MentionTargetHint[] {
   const byKey = new Map<string, MentionCandidate>();
-  for (const c of candidates) byKey.set(mentionKey({ workspaceId: c.workspaceId, paneId: c.paneId }), c);
+  for (const c of candidates) {
+    byKey.set(
+      mentionKey({
+        workspaceId: c.workspaceId,
+        ...(c.paneId ? { paneId: c.paneId } : {}),
+        ...(c.memberId ? { memberId: c.memberId } : {}),
+      }),
+      c,
+    );
+  }
   return mentions.map((m) => {
     const c = byKey.get(mentionKey(m));
     const paneName = m.paneId ? c?.pinnedPaneName ?? c?.displayName ?? m.name : undefined;
@@ -476,9 +511,19 @@ export function ComposerContent({
   // C-1 — live "will reach …" hint for the draft's mentions. Promotion is the
   // same pure scan the submit path runs, so the hint can never disagree with
   // what actually ships.
+  //
+  // Review fix: the scan walks the whole draft against every candidate, and it
+  // ran on EVERY keystroke. It is debounced to a typing pause — the hint is
+  // advisory, and a stale line for a fifth of a second costs nothing.
+  const [settledText, setSettledText] = useState(text);
+  useEffect(() => {
+    if (settledText === text) return;
+    const timer = setTimeout(() => setSettledText(text), MENTION_HINT_DEBOUNCE_MS);
+    return () => clearTimeout(timer);
+  }, [text, settledText]);
   const targetHints = useMemo(
-    () => describeMentionTargets(promoteTypedMentions(text, candidates, picked).mentions, candidates),
-    [text, candidates, picked],
+    () => describeMentionTargets(promoteTypedMentions(settledText, candidates, picked).mentions, candidates),
+    [settledText, candidates, picked],
   );
 
   const dropdownOpen = token !== null && matches.length > 0 && !inFlight && !disabled;
@@ -746,10 +791,12 @@ export function ComposerContent({
           </svg>
         </button>
       </div>
+      {/* Review fix: no aria-live here. This is a running summary of what the
+          user is still typing, not an event — announcing every revision talks
+          over the composition it describes. It is read where it sits. */}
       {targetHints.length > 0 && (
         <div
           data-channel-mention-hint
-          role="status"
           className="flex flex-col gap-0.5 text-[9px] font-mono text-[var(--text-muted)]"
           {...tokenAttrs('textMuted', 'text')}
         >
