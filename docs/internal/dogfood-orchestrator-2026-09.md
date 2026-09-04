@@ -96,3 +96,28 @@ Build under test: packaged local build of main `2125041e` + `fix/task-workspace-
 ## What this proves / does not prove (wave 3)
 
 Proves the fix: no brain spawns for a task workspace, and the owner brain wakes, reads its ledger, and uses the wave 2 task/git tools once the pending decision is cleared. Does not prove `approval_press`, the no-gate `completed` path, or a clean `task_adopt commit:true` — each was blocked by one of findings 8, 11, 12 rather than by its own code. Pass criteria (5 unattended runs, wake ≤ 5 s) still not attempted.
+
+## Wave 3 — second run, findings 11–14 fixed (2026-09-04, 23:31–23:40)
+
+Build under test: packaged local build of main `90a8c7ec` (= #1212 + #1214 + #1213). Same `-demo` instance and owner workspace, which still carried the brain's own pending decision from the first run (the shell-pane question). Fresh `fanout_start` × 2 (`w3b-task-a/b`) was sent **while that decision was still pending**, on purpose, then the decision was answered over CDP.
+
+| Check | Result | Evidence |
+|---|---|---|
+| `fanout_start` warns about the pending decision (F12) | pass | reply started with `WARNING: owner workspace … has a pending decision 3056a333…; worker events will not wake the brain until it is answered` and carried the same text in `warnings[]` |
+| Dropped wakes are logged and delegated events parked (F12) | pass | app log: `[deck] wake for <owner> dropped: pending decision 3056a333…; 4 events (4 delegated parked for replay: wtask-…)`; ledger gained `orphaned_event` rows and an `orphans_drained` |
+| Parked events replay on the resume turn (F12) | pass | answering the decision spawned `brain-3e74c566…`; its first prompt was a `[pane-events]` block carrying the four parked `worker-task=…` stops, followed later by the two new workers' stops |
+| No brain for a task workspace (#1212) | pass | `deck-commander.json` unchanged for `ws-16d5…`/`ws-b71c…` |
+| `deck_complete_work` ignores the operator's shell pane (F11) | pass | the same harness pane (`daemon-5dac0302`) that refused the first run was live again; the call answered `ok: true` and the work record closed |
+| Owner brain wake on a worker stop | pass, late | first new-worker stop 14:34:57Z → wake delivered 14:36:17Z, because the brain was still inside its resume turn; the wake fired on the next idle, not ≤ 5 s |
+| `approval_press` | not exercised | neither worker hit a permission prompt this run |
+| Refused `task_adopt` reads REFUSED (F13) | not exercised live | the brain did not adopt this run (unit tests cover the block shape); it still repeated the phantom `ff51d7e` commit from its earlier summary, which is memory, not a tool result |
+| Ledger transition contract (F14) | not exercised live | no `ledger_update` call this run; the description and error text are unit-tested |
+
+## Findings (wave 3, second run)
+
+15. **Worker first turn still dies on the operator's shell `ANTHROPIC_MODEL`** (third time): both workers answered "issue with the selected model (glm-5.3)" and needed `/model opus` + a re-instruction by hand. The fan-out launch should scrub `ANTHROPIC_MODEL` / `ANTHROPIC_*` from the worker pane's environment the same way the packaged app's launcher scrubs its own, or pass the role binding's model explicitly.
+16. **The brain carries a false fact across turns.** "commit ff51d7e" (never created; both adopts were refused) reappeared in this run's `deck_complete_work` summary. F13's REFUSED block prevents the misread at the tool boundary; a claim already in the transcript is out of reach of that fix.
+
+## What this proves (wave 3, second run)
+
+Findings 7, 11 and 12 are closed on the packaged build: no per-task brain, the completion gate ignores human shells, and a pending decision neither hides nor loses delegated worker events. The owner-brain loop now runs unattended from fan-out to `deck_complete_work` once the operator's shell environment does not poison the workers (finding 15). Still not proven live: `approval_press`, the REFUSED adopt block, the ledger transition text, and the ≤ 5 s wake bound while the brain is idle.
