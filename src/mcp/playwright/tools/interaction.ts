@@ -74,6 +74,10 @@ const BROWSER_CLICK_SHAPE = {
 const BROWSER_TYPE_SHAPE = {
   ref: z.string().optional().describe('Ref from browser_snapshot.'),
   smartRef: z.number().optional().describe('Ref from browser_smart_snapshot.'),
+  selector: z
+    .string()
+    .optional()
+    .describe('CSS selector, for an element no snapshot gave a ref (e.g. a contenteditable div).'),
   text: z.string(),
   submit: z
     .boolean()
@@ -400,9 +404,17 @@ async function rpcClick(
   return res?.dispatch === 'touch' ? 'touch' : 'mouse';
 }
 
-async function rpcFill(ref: string, value: string, scope: BrowserTargetScope): Promise<void> {
+/**
+ * Fill the first element matching a CSS selector, over the RPC transport.
+ *
+ * Takes a selector rather than a ref because the ref lane is only ONE of the
+ * ways a caller can now name an element: `browser_type({selector})` hands its
+ * own selector straight through (rpcSelectorFor), and a ref is rendered as the
+ * `data-wmux-ref` tag the snapshot wrote.
+ */
+async function rpcFill(selector: string, value: string, scope: BrowserTargetScope): Promise<void> {
   // Click on the element first to focus it
-  await rpcClick(ref, scope);
+  await sendScopedBrowserRpc('browser.click.cdp', scope, { selector });
   // Small delay for focus
   await new Promise(r => setTimeout(r, 100));
   // Select all existing text
@@ -430,7 +442,26 @@ async function rpcFill(ref: string, value: string, scope: BrowserTargetScope): P
 interface RefAddress {
   ref?: string;
   smartRef?: number;
+  /**
+   * A CSS selector, for an element NEITHER snapshot handed out a number for.
+   *
+   * YouTube Studio's title and description are `contenteditable` divs; before
+   * the snapshot enumerator learned to count those, an agent that could see
+   * them on screen had no way to name them at all (dogfood 2026-09-04). A
+   * selector is the escape hatch that does not depend on an enumerator noticing
+   * the element first.
+   */
+  selector?: string;
 }
+
+/** The parameters a tool accepts as an address, in the order it lists them. */
+type AddressMode = 'ref' | 'smartRef' | 'selector';
+
+const ADDRESS_MODE_HELP: Record<AddressMode, string> = {
+  ref: 'ref (from browser_snapshot)',
+  smartRef: 'smartRef (from browser_smart_snapshot)',
+  selector: 'selector (a CSS selector)',
+};
 
 /**
  * The slice of ElementHandle / Locator the typing tools use.
@@ -444,16 +475,19 @@ interface TypeTarget {
   evaluate(fn: (node: Element) => boolean): Promise<boolean>;
 }
 
-/** Reject an address that names no element, or two. */
-function requireOneTarget(addr: RefAddress, tool: string): void {
-  const given = [addr.ref !== undefined, addr.smartRef !== undefined].filter(Boolean).length;
-  if (given === 0) {
+/** Reject an address that names no element, or more than one. */
+function requireOneTarget(addr: RefAddress, tool: string, accepts: readonly AddressMode[]): void {
+  const given = accepts.filter((mode) => addr[mode] !== undefined);
+  if (given.length === 0) {
+    const help = accepts.map((mode) => ADDRESS_MODE_HELP[mode]);
     throw new Error(
-      `${tool} needs ref (from browser_snapshot) or smartRef (from browser_smart_snapshot).`,
+      `${tool} needs ${help.slice(0, -1).join(', ')} or ${help[help.length - 1]}.`,
     );
   }
-  if (given > 1) {
-    throw new Error(`${tool} takes ref or smartRef, not both — they name one element two ways.`);
+  if (given.length > 1) {
+    throw new Error(
+      `${tool} takes ${given.join(' or ')}, not both — they name one element more than one way.`,
+    );
   }
 }
 
@@ -464,19 +498,36 @@ async function resolveTypeTarget(page: Page, addr: RefAddress): Promise<TypeTarg
     // guarantee browser_click({smartRef}) gives.
     return (await resolveSmartRefLocator(page, addr.smartRef)) as unknown as TypeTarget;
   }
+  if (addr.selector !== undefined) {
+    // Counted before typing: a selector that matches nothing would otherwise
+    // spend Playwright's full auto-wait and come back as a timeout, which reads
+    // like a hung page rather than a selector the caller can fix.
+    const matches = await page.locator(addr.selector).count();
+    if (matches === 0) throw new Error(`No element matches selector: ${addr.selector}`);
+    return page.locator(addr.selector).first() as unknown as TypeTarget;
+  }
   const el = await resolveRef(page, addr.ref as string);
   if (!el) throw new Error(refNotFound(addr.ref as string));
   return el as unknown as TypeTarget;
 }
 
-/** The ref the RPC lane resolves an address through (its only addressing mode). */
-function rpcRefFor(addr: RefAddress): string {
-  return addr.ref ?? String(addr.smartRef);
+/**
+ * The CSS selector the RPC lane resolves an address through.
+ *
+ * Its only addressing mode is a selector, so a ref becomes the `data-wmux-ref`
+ * tag the snapshot wrote and a caller's own selector is passed through.
+ */
+function rpcSelectorFor(addr: RefAddress, scope: BrowserTargetScope): string {
+  if (addr.selector !== undefined) return addr.selector;
+  const safeRef = sanitizeRef(addr.ref ?? String(addr.smartRef), scope);
+  return `[data-wmux-ref="${safeRef}"]`;
 }
 
 /** How an address reads back in a tool result. */
 function describeAddress(addr: RefAddress): string {
-  return addr.ref !== undefined ? `ref=${addr.ref}` : `smartRef=${addr.smartRef}`;
+  if (addr.ref !== undefined) return `ref=${addr.ref}`;
+  if (addr.smartRef !== undefined) return `smartRef=${addr.smartRef}`;
+  return `selector=${addr.selector}`;
 }
 
 /**
@@ -490,6 +541,7 @@ function targetForRecord(
   addr: RefAddress,
 ): { ref: string } | { refEntry: NonNullable<ReturnType<typeof smartRefAxisEntry>> } | { selector: string } | Record<string, never> {
   if (addr.ref !== undefined) return { ref: addr.ref };
+  if (addr.selector !== undefined) return { selector: addr.selector };
   if (addr.smartRef !== undefined) {
     const entry = smartRefAxisEntry(addr.smartRef);
     if (entry) return { refEntry: entry };
@@ -525,13 +577,31 @@ async function isPasswordElement(el: TypeTarget | ElementHandle): Promise<boolea
   }
 }
 
-/** Same question over the RPC transport, resolved through the data-wmux-ref tag. */
-async function rpcIsPasswordElement(ref: string, scope: BrowserTargetScope): Promise<boolean> {
+/**
+ * A CSS selector as a single-quoted JS string literal.
+ *
+ * The refs this used to carry were `[a-zA-Z0-9_-]+` by sanitizeRef, so quoting
+ * them was a non-question. A caller's own selector reaches the probe now
+ * (browser_type's `selector`), and an apostrophe in one — `[title='x']` — would
+ * otherwise close the literal it sits in.
+ */
+function jsStringLiteral(value: string): string {
+  const escaped = value
+    .replace(/\\/g, '\\\\')
+    .replace(/'/g, "\\'")
+    .replace(/\n/g, '\\n')
+    .replace(/\r/g, '\\r')
+    .replace(/\u2028/g, '\\u2028')
+    .replace(/\u2029/g, '\\u2029');
+  return `'${escaped}'`;
+}
+
+/** Same question over the RPC transport, resolved through a CSS selector. */
+async function rpcIsPasswordElement(selector: string, scope: BrowserTargetScope): Promise<boolean> {
   try {
-    const safeRef = sanitizeRef(ref, scope);
     const val = await rpcEval(`(() => {
       const isPasswordField = ${PASSWORD_FIELD_PREDICATE_JS};
-      return isPasswordField(document.querySelector('[data-wmux-ref="${safeRef}"]')) ? 'yes' : 'no';
+      return isPasswordField(document.querySelector(${jsStringLiteral(selector)})) ? 'yes' : 'no';
     })()`, scope);
     return val === 'yes';
   } catch {
@@ -861,12 +931,16 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
   // -----------------------------------------------------------------------
   server.tool(
     'browser_type',
-    'Type text into an element by ref or smartRef, replacing any existing value. Typing into a password field echoes "[redacted:password]" back — the text still went in.',
+    'Type text into an element by ref, smartRef or CSS selector, replacing any existing value. Typing into a password field echoes "[redacted:password]" back — the text still went in.',
     BROWSER_TYPE_SHAPE,
-    async ({ ref, smartRef, text, submit, humanlike, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
+    async ({ ref, smartRef, selector, text, submit, humanlike, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
       try {
-        const addr: RefAddress = { ...(ref !== undefined && { ref }), ...(smartRef !== undefined && { smartRef }) };
-        requireOneTarget(addr, 'browser_type');
+        const addr: RefAddress = {
+          ...(ref !== undefined && { ref }),
+          ...(smartRef !== undefined && { smartRef }),
+          ...(selector !== undefined && { selector }),
+        };
+        requireOneTarget(addr, 'browser_type', ['ref', 'smartRef', 'selector']);
         const page = await engine.getPageForScope(scope).catch(allowScopedRpcFallback);
 
         // Decided BEFORE typing: the field is addressable now, and a submit can
@@ -885,9 +959,9 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
           if (submit) await page.keyboard.press('Enter');
         } else {
           // RPC fallback
-          const rpcRef = rpcRefFor(addr);
-          isPassword = await rpcIsPasswordElement(rpcRef, scope);
-          await rpcFill(rpcRef, text, scope);
+          const rpcSelector = rpcSelectorFor(addr, scope);
+          isPassword = await rpcIsPasswordElement(rpcSelector, scope);
+          await rpcFill(rpcSelector, text, scope);
           if (submit) await rpcPressKey('Enter', scope);
         }
 
@@ -957,15 +1031,15 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
             ...(field.smartRef !== undefined && { smartRef: field.smartRef }),
           };
           try {
-            requireOneTarget(addr, 'browser_fill');
+            requireOneTarget(addr, 'browser_fill', ['ref', 'smartRef']);
             if (page) {
               const el = await resolveTypeTarget(page, addr);
               isPassword[i] = await isPasswordElement(el);
               await el.fill(field.value);
             } else {
-              const rpcRef = rpcRefFor(addr);
-              isPassword[i] = await rpcIsPasswordElement(rpcRef, scope);
-              await rpcFill(rpcRef, field.value, scope);
+              const rpcSelector = rpcSelectorFor(addr, scope);
+              isPassword[i] = await rpcIsPasswordElement(rpcSelector, scope);
+              await rpcFill(rpcSelector, field.value, scope);
             }
             filled++;
           } catch (err) {

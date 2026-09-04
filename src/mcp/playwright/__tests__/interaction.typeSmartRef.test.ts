@@ -106,8 +106,18 @@ function makePage(nodes: CdpNode[], url = 'https://example.test/a') {
       }),
     }),
     // No data-wmux-ref tags on this page: a browser_snapshot ref resolves to
-    // nothing, which is exactly the state a smartRef-only session is in.
-    locator: () => ({ count: async () => 0, first: () => ({ elementHandle: async () => null }) }),
+    // nothing, which is exactly the state a smartRef-only session is in. A
+    // caller's own CSS selector is answered from `cssMatches` instead.
+    cssMatches: new Set<string>(),
+    locator: (sel?: string) => ({
+      count: async () => (sel !== undefined && page.cssMatches.has(sel) ? 1 : 0),
+      first: () => ({
+        elementHandle: async () => null,
+        click: async () => undefined,
+        fill: async (value: string) => { filled.push(`${sel}=${value}`); },
+        evaluate: async () => false,
+      }),
+    }),
     keyboard: { press: async () => undefined, insertText: async () => undefined },
     mouse: { move: async () => undefined },
     viewportSize: () => ({ width: 1280, height: 720 }),
@@ -180,6 +190,41 @@ describe('browser_type / browser_fill accept smartRefs', () => {
     expect(result.content[0].text).toContain('browser_smart_snapshot');
     expect(result.content[0].text).toContain('smartRef');
     expect(result.content[0].text).toContain('textbox "제목"');
+    expect(page.filled).toEqual([]);
+  });
+
+  // A `contenteditable` field that no snapshot handed a number for still has to
+  // be typeable — that is the whole reason browser_type takes a selector.
+  it('types into a CSS selector when neither snapshot gave the element a ref', async () => {
+    const page = makePage(tree([{ backendId: 50, role: 'button', name: 'Next' }]));
+    page.cssMatches.add('#title-textbox');
+    getPage.mockResolvedValue(page);
+
+    const result = await tool('browser_type')({
+      selector: '#title-textbox',
+      text: 'My video',
+      surfaceId: 'surf-1',
+    });
+
+    expect(result.isError).toBeUndefined();
+    expect(page.filled).toEqual(['#title-textbox=My video']);
+    expect(result.content[0].text).toContain('selector=#title-textbox');
+    // Recorded on the css axis, which replay can run as-is.
+    expect(ring.all()[0].step.axis).toMatchObject({ kind: 'css' });
+  });
+
+  it('says a selector matched nothing instead of spending the auto-wait on it', async () => {
+    const page = makePage(tree([{ backendId: 51, role: 'button', name: 'Next' }]));
+    getPage.mockResolvedValue(page);
+
+    const result = await tool('browser_type')({
+      selector: '#missing',
+      text: 'x',
+      surfaceId: 'surf-1',
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('No element matches selector: #missing');
     expect(page.filled).toEqual([]);
   });
 

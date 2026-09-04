@@ -10,7 +10,7 @@ import { collectPageFacts, formatPageFactsFooter } from './pageFacts';
 import { peekRecentPendingRequests } from './pageCapture';
 import { evaluateIsolated, isolatedProbeTarget } from './isolated-eval';
 import { ancestorContext } from '../../shared/browserReplay/actionTrace';
-import { getOwnAttributeLabels } from './ownAttributes';
+import { emptyDomFacts, getDomFacts } from './ownAttributes';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -920,8 +920,18 @@ export function markDomRefsActive(page: Page): void {
 }
 
 
-function isInteractive(role: string): boolean {
-  return INTERACTIVE_ROLES.has(role);
+/**
+ * Does this node take input?
+ *
+ * Role first, and then the DOM's own word for it: a `contenteditable` host is
+ * a text field whatever role the a11y tree gives it, and the roles alone left
+ * YouTube Studio's title and description out of every interactive snapshot
+ * (dogfood 2026-09-04). `editableRoots` holds the HOSTS only, so a long
+ * document does not mint a ref per paragraph.
+ */
+function isInteractive(node: AXNode, editableRoots: ReadonlySet<number>): boolean {
+  if (INTERACTIVE_ROLES.has(node.role)) return true;
+  return node.backendDOMNodeId !== undefined && editableRoots.has(node.backendDOMNodeId);
 }
 
 /**
@@ -945,6 +955,8 @@ interface SerializeCtx {
    * caller asked for 'aria' (which mints no refs to carry it).
    */
   ownLabels: Map<number, string>;
+  /** See DomFacts.editableRoots. Empty on the 'aria' path, which mints no refs. */
+  editableRoots: ReadonlySet<number>;
   /**
    * Characters left for frame content — ONE pool for the whole snapshot,
    * drawn down by every grafted frame in it.
@@ -1002,7 +1014,7 @@ function serializeNode(
   // Build attribute string
   const attrs: string[] = [];
 
-  if (ctx.format === 'ai' && isInteractive(role)) {
+  if (ctx.format === 'ai' && isInteractive(node, ctx.editableRoots)) {
     const ref = assignRef(ctx.identity, frame.key, node.backendDOMNodeId);
     ctx.refs.push({
       role,
@@ -1156,8 +1168,8 @@ function serializeTree(root: AXNode, ctx: SerializeCtx): string {
   return serializeForest(root.children ?? [root], ctx);
 }
 
-function stripNonInteractive(node: AXNode): AXNode | null {
-  if (isInteractive(node.role)) return node;
+function stripNonInteractive(node: AXNode, editableRoots: ReadonlySet<number>): AXNode | null {
+  if (isInteractive(node, editableRoots)) return node;
   // An iframe ALWAYS survives the interactive filter. It is not interactive, so
   // it would otherwise vanish — and its disappearance is exactly the wrong
   // signal in both directions. For a frame that was never read, the controls
@@ -1169,7 +1181,7 @@ function stripNonInteractive(node: AXNode): AXNode | null {
   // ran.
   if (IFRAME_ROLES.has(node.role)) {
     const inside = (node.children ?? [])
-      .map(stripNonInteractive)
+      .map((child) => stripNonInteractive(child, editableRoots))
       .filter((c): c is AXNode => c !== null);
     if (inside.length > 0) return { ...node, children: inside };
     // Childless here means "nothing interactive in it", which frameBoundaryNote
@@ -1180,7 +1192,7 @@ function stripNonInteractive(node: AXNode): AXNode | null {
   if (!node.children) return null;
 
   const filtered = node.children
-    .map(stripNonInteractive)
+    .map((child) => stripNonInteractive(child, editableRoots))
     .filter((c): c is AXNode => c !== null);
 
   if (filtered.length === 0) return null;
@@ -1689,18 +1701,19 @@ async function occlusionFor(page: Page, fallback: CdpClient): Promise<OcclusionI
 interface SnapshotSource {
   tree: AXNode | null;
   occlusion: OcclusionInfo | null;
-  /** See SerializeCtx.ownLabels. Empty when `wantOwnLabels` was false. */
+  /** See SerializeCtx.ownLabels / editableRoots. Empty when `wantDomFacts` was false. */
   ownLabels: Map<number, string>;
+  editableRoots: Set<number>;
 }
 
 /**
- * @param wantOwnLabels adds ONE `DOM.getDocument` to the session, which is
+ * @param wantDomFacts adds ONE `DOM.getDocument` to the session, which is
  *   only worth paying for on the 'ai' path — 'aria' mints no RefEntry to hang
- *   the label on.
+ *   the label on and marks nothing interactive.
  */
 async function getAccessibilityTree(
   page: Page,
-  wantOwnLabels: boolean,
+  wantDomFacts: boolean,
 ): Promise<SnapshotSource> {
   // Sessions opened for out-of-process frames during the graft. Detached here
   // rather than inside the walk so one frame's cleanup cannot abort the rest.
@@ -1708,23 +1721,29 @@ async function getAccessibilityTree(
   try {
     return await withCdpSession<SnapshotSource>(
       page,
-      async (client) => ({
-        tree: (await fetchAccessibilityTree(client, { page, extraSessions }))?.root ?? null,
+      async (client) => {
+        const tree = (await fetchAccessibilityTree(client, { page, extraSessions }))?.root ?? null;
         // On the same session as the tree, so the DOM the attributes are read
         // from is the DOM the a11y nodes were computed against. Its own
         // failures are swallowed inside — a missing label abstains.
-        ownLabels: wantOwnLabels ? await getOwnAttributeLabels(client) : new Map(),
-      // After the tree, never instead of it: a thrown occlusion probe must not
-      // cost the caller its snapshot (collectOcclusion swallows its own
-      // failures, and this ordering keeps the tree even if that ever changes).
-        // The probe runs on the module's CACHED per-page session, not on this
-        // short-lived one: Chromium caches an isolated world per (session,
-        // frame, name), so minting one per snapshot would pile them up in the
-        // renderer of a long-lived SPA. Falls back to this session, main
-        // world, exactly as before, when there is no isolated world.
-        occlusion: await occlusionFor(page, client),
-      }),
-      { tree: null, occlusion: null, ownLabels: new Map() },
+        const domFacts = wantDomFacts ? await getDomFacts(client) : emptyDomFacts();
+        return {
+          tree,
+          ownLabels: domFacts.ownLabels,
+          editableRoots: domFacts.editableRoots,
+          // After the tree, never instead of it: a thrown occlusion probe must
+          // not cost the caller its snapshot (collectOcclusion swallows its own
+          // failures, and this ordering keeps the tree even if that ever
+          // changes).
+          // The probe runs on the module's CACHED per-page session, not on this
+          // short-lived one: Chromium caches an isolated world per (session,
+          // frame, name), so minting one per snapshot would pile them up in the
+          // renderer of a long-lived SPA. Falls back to this session, main
+          // world, exactly as before, when there is no isolated world.
+          occlusion: await occlusionFor(page, client),
+        };
+      },
+      { tree: null, occlusion: null, ...emptyDomFacts() },
     );
   } finally {
     for (const extra of extraSessions) {
@@ -1760,7 +1779,10 @@ export async function generateSnapshot(
   // fallthroughs below — stamps the same generation onto the page.
   const identity = beginRefGeneration(page);
 
-  const { tree, occlusion, ownLabels } = await getAccessibilityTree(page, format === 'ai');
+  const { tree, occlusion, ownLabels, editableRoots } = await getAccessibilityTree(
+    page,
+    format === 'ai',
+  );
 
   // A null tree (no CDP session / getFullAXTree threw / zero nodes) OR a root-only
   // tree (the a11y path collapsed — a background surface with no layout, or a page
@@ -1809,7 +1831,7 @@ export async function generateSnapshot(
   let filterNote = '';
   if (options?.filter === 'interactive') {
     if (format === 'ai') {
-      const stripped = stripNonInteractive(tree);
+      const stripped = stripNonInteractive(tree, editableRoots);
       if (!stripped) {
         setPageRefs(page, []);
         return '(no interactive elements on this page)';
@@ -1828,6 +1850,7 @@ export async function generateSnapshot(
     identity,
     occlusion,
     ownLabels,
+    editableRoots,
     frameBudgetRemaining: Math.floor(maxLength * FRAME_BUDGET_SHARE),
   };
   let output = serializeTree(effectiveTree, ctx);
@@ -1859,7 +1882,7 @@ export async function generateSnapshot(
   // If the output exceeds the budget AND we are in 'ai' mode, strip
   // non-interactive nodes and regenerate.
   if (output.length > budget && format === 'ai') {
-    const trimmed = stripNonInteractive(tree);
+    const trimmed = stripNonInteractive(tree, editableRoots);
     if (trimmed) {
       refs.length = 0;
       // The pool is per rendering, not per call: the first pass spent it, and
@@ -1921,32 +1944,42 @@ export async function generateScopedSnapshot(
     forest: AXNode[] | null;
     occlusion: OcclusionInfo | null;
     ownLabels: Map<number, string>;
+    editableRoots: Set<number>;
   }>(
     page,
     async (client) => {
       // Resolve the selector FIRST: a miss costs nothing and must reach the DOM
       // listing, which owns the user-facing "No element matches selector:" error.
       const backendId = await resolveSelectorBackendId(client, selector);
-      if (backendId === null) return { forest: null, occlusion: null, ownLabels: new Map() };
+      if (backendId === null) {
+        return { forest: null, occlusion: null, ...emptyDomFacts() };
+      }
 
       const built = await fetchAccessibilityTree(client);
       if (!built || isRootOnly(built.root)) {
-        return { forest: null, occlusion: null, ownLabels: new Map() };
+        return { forest: null, occlusion: null, ...emptyDomFacts() };
       }
+
+      // Same DOM facts the page-level path reads, and for the same reason: a
+      // `selector: "[role=dialog]"` over YouTube Studio's upload dialog listed
+      // one button and neither contenteditable field, because the scope keeps
+      // whatever the interactive test lets through (dogfood 2026-09-04).
+      const domFacts = format === 'ai' ? await getDomFacts(client) : emptyDomFacts();
 
       return {
         forest: built.byBackendId.get(backendId) ?? null,
-        ownLabels: format === 'ai' ? await getOwnAttributeLabels(client) : new Map(),
+        ownLabels: domFacts.ownLabels,
+        editableRoots: domFacts.editableRoots,
         // Occlusion is a whole-page fact, so it is worth just as much inside a
         // scope — a selector aimed at the page behind an overlay is exactly the
         // case where the agent is about to click something inert.
         occlusion: await occlusionFor(page, client),
       };
     },
-    { forest: null, occlusion: null, ownLabels: new Map() },
+    { forest: null, occlusion: null, ...emptyDomFacts() },
   );
 
-  const { forest, occlusion, ownLabels } = found;
+  const { forest, occlusion, ownLabels, editableRoots } = found;
   if (!forest || forest.length === 0) return null;
 
   let scoped = forest;
@@ -1954,7 +1987,7 @@ export async function generateScopedSnapshot(
   if (options?.filter === 'interactive') {
     if (format === 'ai') {
       scoped = forest
-        .map(stripNonInteractive)
+        .map((n) => stripNonInteractive(n, editableRoots))
         .filter((n): n is AXNode => n !== null);
       if (scoped.length === 0) {
         setPageRefs(page, [], selector);
@@ -1973,6 +2006,7 @@ export async function generateScopedSnapshot(
     identity,
     occlusion,
     ownLabels,
+    editableRoots,
     frameBudgetRemaining: Math.floor(maxLength * FRAME_BUDGET_SHARE),
   };
   // Unlike the page-level tree, the matched element is content, not a container
@@ -1987,7 +2021,7 @@ export async function generateScopedSnapshot(
 
   if (output.length > budget && format === 'ai') {
     const trimmed = forest
-      .map(stripNonInteractive)
+      .map((n) => stripNonInteractive(n, editableRoots))
       .filter((n): n is AXNode => n !== null);
     if (trimmed.length > 0) {
       refs.length = 0;

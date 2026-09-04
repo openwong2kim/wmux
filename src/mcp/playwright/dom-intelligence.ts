@@ -7,7 +7,7 @@ import {
   getPasswordFieldBackendIds,
 } from './redact';
 import { ancestorContext } from '../../shared/browserReplay/actionTrace';
-import { getOwnAttributeLabels } from './ownAttributes';
+import { getDomFacts } from './ownAttributes';
 
 // ---------------------------------------------------------------------------
 // Shared interactive-element selector
@@ -665,7 +665,7 @@ async function walkInteractiveElements(
     // The element's own identifying attribute, over the same bridge and from
     // the same shared helper snapshot.ts uses — a value read differently here
     // would stop every replay that crosses lanes (see IndexedElement.own).
-    const ownLabels = await getOwnAttributeLabels(
+    const { ownLabels } = await getDomFacts(
       client as unknown as { send: (method: string, params?: unknown) => Promise<unknown> },
     );
 
