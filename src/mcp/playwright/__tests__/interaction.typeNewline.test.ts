@@ -56,6 +56,11 @@ function makePage() {
   const log: string[] = [];
   const page = {
     log,
+    /**
+     * What the caret probe answers, one entry per question, `true` once these
+     * run out. A field that submits on the first Enter answers `false`.
+     */
+    caretAnswers: [] as boolean[],
     url: () => 'https://example.test/compose',
     title: async () => 'Compose',
     innerText: async () => 'body text',
@@ -73,7 +78,12 @@ function makePage() {
         elementHandle: async () => null,
         click: async () => { log.push('click'); },
         fill: async (value: string) => { log.push(`fill(${sel}):${value}`); },
-        evaluate: async () => false,
+        // Two questions arrive on this one method: the password probe (is this
+        // node a credential field) and the caret probe (is it still focused).
+        // They are told apart by the predicate's own source, so the fake can
+        // answer each honestly.
+        evaluate: async (fn: (node: Element) => unknown) =>
+          String(fn).includes('activeElement') ? page.caretAnswers.shift() ?? true : false,
       }),
     }),
     keyboard: {
@@ -163,6 +173,54 @@ describe('browser_type newline mode', () => {
     await type({ selector: '#caption', text: 'one\ntwo', newline: 'enter', surfaceId: 'surf-1' });
 
     expect(ring.all()[0].step.args).toMatchObject({ text: 'one\ntwo', newline: 'enter' });
+  });
+
+  // A composer that SUBMITS on Enter is the common case the mode exists for.
+  // The remaining lines would then be typed into whatever the new page focuses,
+  // and the old receipt reported all eight as delivered.
+  it('stops when the first Enter took the field away, and says how far it got', async () => {
+    const page = makePage();
+    page.caretAnswers = [false];
+    getPage.mockResolvedValue(page);
+
+    const result = await type({
+      selector: '#caption',
+      text: 'one\ntwo\nthree',
+      newline: 'enter',
+      surfaceId: 'surf-1',
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('Typed 1 of 3 lines');
+    // Nothing after the press: the lines that would have gone to another field.
+    expect(page.log).toEqual(['fill(#caption):one', 'press:Enter']);
+    // A partial type is not a step any replay could reproduce.
+    expect(ring.all()).toEqual([]);
+  });
+
+  it('stops on the RPC transport too, at the same place', async () => {
+    getPage.mockResolvedValue(null);
+    let caretAsked = 0;
+    mockSendRpc.mockImplementation(async (method: string, params: Record<string, unknown>) => {
+      if (method !== 'browser.evaluate') return {};
+      const expression = String(params.expression ?? '');
+      if (expression.includes('isPasswordField')) return { value: 'no' };
+      if (expression.includes('activeElement')) {
+        // Held for the fill's own focus check, lost after the first Enter.
+        caretAsked++;
+        return { value: caretAsked === 1 ? 'wmux-caret:held' : 'wmux-caret:lost' };
+      }
+      return { value: '' };
+    });
+
+    const result = await type({ ref: '4', text: 'one\ntwo\nthree', newline: 'enter', surfaceId: 'surf-1' });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('Typed 1 of 3 lines');
+    const typed = mockSendRpc.mock.calls
+      .filter(([method]) => method === 'browser.type.cdp')
+      .map(([, params]) => (params as { text: string }).text);
+    expect(typed).toEqual(['one']);
   });
 
   it('splits the same way over the RPC transport', async () => {

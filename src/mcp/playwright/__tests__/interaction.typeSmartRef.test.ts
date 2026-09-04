@@ -108,9 +108,9 @@ function makePage(nodes: CdpNode[], url = 'https://example.test/a') {
     // No data-wmux-ref tags on this page: a browser_snapshot ref resolves to
     // nothing, which is exactly the state a smartRef-only session is in. A
     // caller's own CSS selector is answered from `cssMatches` instead.
-    cssMatches: new Set<string>(),
+    cssMatches: new Map<string, number>(),
     locator: (sel?: string) => ({
-      count: async () => (sel !== undefined && page.cssMatches.has(sel) ? 1 : 0),
+      count: async () => (sel === undefined ? 0 : page.cssMatches.get(sel) ?? 0),
       first: () => ({
         elementHandle: async () => null,
         click: async () => undefined,
@@ -197,7 +197,7 @@ describe('browser_type / browser_fill accept smartRefs', () => {
   // be typeable — that is the whole reason browser_type takes a selector.
   it('types into a CSS selector when neither snapshot gave the element a ref', async () => {
     const page = makePage(tree([{ backendId: 50, role: 'button', name: 'Next' }]));
-    page.cssMatches.add('#title-textbox');
+    page.cssMatches.set('#title-textbox', 1);
     getPage.mockResolvedValue(page);
 
     const result = await tool('browser_type')({
@@ -226,6 +226,89 @@ describe('browser_type / browser_fill accept smartRefs', () => {
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toContain('No element matches selector: #missing');
     expect(page.filled).toEqual([]);
+  });
+
+  // A selector matching several elements used to type into `.first()` and
+  // record a css-axis step — which the replay runner refuses whenever the count
+  // is not 1. Live success, guaranteed replay failure.
+  it('refuses a selector that matches more than one element, naming the count', async () => {
+    const page = makePage(tree([{ backendId: 60, role: 'button', name: 'Next' }]));
+    page.cssMatches.set('.field', 3);
+    getPage.mockResolvedValue(page);
+
+    const result = await tool('browser_type')({ selector: '.field', text: 'x', surfaceId: 'surf-1' });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('matches 3 elements');
+    expect(page.filled).toEqual([]);
+    expect(ring.all()).toEqual([]);
+  });
+
+  it('refuses the same on the RPC transport, which counts through querySelectorAll', async () => {
+    getPage.mockResolvedValue(null);
+    mockSendRpc.mockImplementation(async (method: string, params: Record<string, unknown>) =>
+      method === 'browser.evaluate' && String(params.expression ?? '').includes('querySelectorAll')
+        ? { value: '2' }
+        : { value: '' },
+    );
+
+    const result = await tool('browser_type')({ selector: '.field', text: 'x', surfaceId: 'surf-1' });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('matches 2 elements');
+    expect(mockSendRpc.mock.calls.some(([m]) => m === 'browser.type.cdp')).toBe(false);
+  });
+
+  // `selector` is CSS on all three lanes: the RPC lane resolves it with
+  // querySelector and a recorded step carries it on the css axis. Playwright's
+  // own locator() would accept these and nothing else would.
+  it('refuses a Playwright engine selector, which only one lane could ever run', async () => {
+    const page = makePage(tree([{ backendId: 61, role: 'button', name: 'Save' }]));
+    getPage.mockResolvedValue(page);
+
+    for (const selector of ['text=Save', '//div[@id="x"]', '#a >> #b']) {
+      const result = await tool('browser_type')({ selector, text: 'x', surfaceId: 'surf-1' });
+      expect(result.isError).toBe(true);
+      expect(result.content[0].text).toContain('must be a CSS selector');
+    }
+    expect(page.filled).toEqual([]);
+  });
+
+  // The smart-snapshot record lives on the connection, not on the page, so
+  // without a page check the hint pointed at an element from another tab.
+  it('does not name the other ref space when the smart snapshot was taken elsewhere', async () => {
+    const other = makePage(tree([{ backendId: 30, role: 'textbox', name: '제목' }]));
+    getPage.mockResolvedValue(other);
+    await getSmartSnapshot(other as never);
+
+    const current = makePage(tree([{ backendId: 70, role: 'button', name: 'Next' }]));
+    getPage.mockResolvedValue(current);
+
+    const result = await tool('browser_fill')({
+      fields: [{ ref: '1', value: 'x' }],
+      surfaceId: 'surf-1',
+    });
+
+    expect(result.isError).toBe(true);
+    // The generic advice stays; the specific "smartRef 1 IS this element" claim
+    // must not, because it names an element on a page this call cannot reach.
+    expect(result.content[0].text).toContain('Run browser_snapshot to get current refs');
+    expect(result.content[0].text).not.toContain('제목');
+  });
+
+  // `data-wmux-ref` tags are written by browser_snapshot; browser_smart_snapshot
+  // numbers its own, differently-keyed space and tags nothing. Rendering
+  // smartRef=1 as `[data-wmux-ref="1"]` names either nothing or an unrelated
+  // element that an earlier browser_snapshot happened to number 1.
+  it('refuses a smartRef on the RPC transport instead of guessing a tag selector', async () => {
+    getPage.mockResolvedValue(null);
+
+    const result = await tool('browser_type')({ smartRef: 1, text: 'x', surfaceId: 'surf-1' });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('cannot be used on this transport');
+    expect(mockSendRpc.mock.calls.some(([m]) => m === 'browser.type.cdp')).toBe(false);
+    expect(ring.all()).toEqual([]);
   });
 
   it('refuses an address that names no element, and one that names two', async () => {

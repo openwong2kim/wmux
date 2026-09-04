@@ -1,5 +1,5 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import type { ElementHandle, Page } from 'playwright-core';
+import type { Page } from 'playwright-core';
 import { z } from 'zod';
 import { PlaywrightEngine } from '../PlaywrightEngine';
 import { withAutomationLease } from '../automationLease';
@@ -11,7 +11,7 @@ import {
 } from '../snapshot';
 import {
   getLocatorByRef,
-  getSmartElementByRef,
+  getSmartElementOnPage,
   resolveSmartRefLocator,
   smartRefAxisEntry,
 } from '../dom-intelligence';
@@ -77,7 +77,7 @@ const BROWSER_TYPE_SHAPE = {
   selector: z
     .string()
     .optional()
-    .describe('CSS selector, for an element no snapshot gave a ref (e.g. a contenteditable div).'),
+    .describe('CSS only (no text=/xpath=), matching exactly one element no snapshot gave a ref.'),
   text: z.string(),
   newline: z
     .enum(['literal', 'enter', 'shift-enter'])
@@ -166,9 +166,14 @@ const BROWSER_SCROLL_SHAPE = {
  * 2026-09-04, YouTube Studio). So the message says which space the argument was
  * read in, and — when the number IS live in the other one — which parameter it
  * belongs to instead.
+ *
+ * `page` scopes that second half. The smart-snapshot record is per connection,
+ * not per page, so without it a stale record from another tab would name an
+ * element this page does not have and point the caller at a parameter that
+ * cannot work either.
  */
-function refNotFound(ref: string): string {
-  const smart = /^\d+$/.test(ref) ? getSmartElementByRef(Number(ref)) : null;
+function refNotFound(ref: string, page: Page | null): string {
+  const smart = /^\d+$/.test(ref) ? getSmartElementOnPage(Number(ref), page) : null;
   if (smart) {
     return (
       `ref=${ref} is not a browser_snapshot ref, but browser_smart_snapshot lists ${ref} as ` +
@@ -421,6 +426,19 @@ async function rpcFill(selector: string, value: string, scope: BrowserTargetScop
   await sendScopedBrowserRpc('browser.click.cdp', scope, { selector });
   // Small delay for focus
   await new Promise(r => setTimeout(r, 100));
+  // Both steps below act on whatever the DOCUMENT has focused, not on the
+  // selector: `selectAll` works on the current selection and `Input.insertText`
+  // on the focused node. A selector naming something unfocusable — a wrapper
+  // `<div>`, a `<label>`, a disabled control — therefore left the click doing
+  // nothing and overwrote whichever field the page had focused instead. Now
+  // that a caller can pass its own selector, that has to be checked. `unknown`
+  // (a transport that cannot answer) proceeds, exactly as it always did.
+  if ((await rpcCaretState(selector, scope)) === 'lost') {
+    throw new Error(
+      `The element matching "${selector}" did not take focus, so typing would have gone into ` +
+        'whatever else the page has focused. Nothing was typed. Name a focusable field.',
+    );
+  }
   // Select all existing text
   await sendScopedBrowserRpc('browser.evaluate', scope, {
     expression: `document.execCommand('selectAll')`,
@@ -476,7 +494,7 @@ const ADDRESS_MODE_HELP: Record<AddressMode, string> = {
 interface TypeTarget {
   click(): Promise<void>;
   fill(value: string): Promise<void>;
-  evaluate(fn: (node: Element) => boolean): Promise<boolean>;
+  evaluate<R>(fn: (node: Element) => R): Promise<R>;
 }
 
 /** Reject an address that names no element, or more than one. */
@@ -495,6 +513,46 @@ function requireOneTarget(addr: RefAddress, tool: string, accepts: readonly Addr
   }
 }
 
+/**
+ * Refuse a `selector` that is not plain CSS.
+ *
+ * The RPC lane resolves it with `document.querySelector`, and a recorded step
+ * carries it on the `css` axis, which the replay runner also resolves as CSS.
+ * Playwright's own `locator()` would happily accept `text=Save`, `//div` and
+ * `a >> b` — so without this the same argument means one thing live on the
+ * Chrome lane and nothing at all on the other two, which is a tool that works
+ * until the day it is replayed.
+ */
+function requireCssSelector(selector: string): void {
+  const bad = (why: string): never => {
+    throw new Error(`selector must be a CSS selector — ${why}. Got: ${selector}`);
+  };
+  const trimmed = selector.trim();
+  if (selector.includes('>>')) bad('">>" chains Playwright engines, which CSS has no equivalent for');
+  if (trimmed.startsWith('//') || trimmed.startsWith('..')) bad('this is an XPath expression');
+  const engine = /^([a-zA-Z_][a-zA-Z0-9_-]*)\s*=/.exec(trimmed);
+  if (engine) bad(`"${engine[1]}=" names a Playwright engine`);
+}
+
+/**
+ * How many elements a selector matches, refusing anything but exactly one.
+ *
+ * Typing into `.first()` of several matches SUCCEEDS live and then fails on
+ * every replay: the step is recorded on the css axis, and the replay runner
+ * refuses a css axis whose count is not 1. The tool would be reporting a
+ * result the flow cannot reproduce — so it refuses here instead, by the same
+ * uniqueness rule a ref carries.
+ */
+function requireSingleMatch(selector: string, count: number): void {
+  if (count === 0) throw new Error(`No element matches selector: ${selector}`);
+  if (count > 1) {
+    throw new Error(
+      `selector "${selector}" matches ${count} elements — it must match exactly one. ` +
+        'Narrow it, or use a ref from browser_snapshot.',
+    );
+  }
+}
+
 /** Resolve an address on the Playwright lane. Throws with the reason it failed. */
 async function resolveTypeTarget(page: Page, addr: RefAddress): Promise<TypeTarget> {
   if (addr.smartRef !== undefined) {
@@ -503,15 +561,16 @@ async function resolveTypeTarget(page: Page, addr: RefAddress): Promise<TypeTarg
     return (await resolveSmartRefLocator(page, addr.smartRef)) as unknown as TypeTarget;
   }
   if (addr.selector !== undefined) {
+    requireCssSelector(addr.selector);
     // Counted before typing: a selector that matches nothing would otherwise
     // spend Playwright's full auto-wait and come back as a timeout, which reads
-    // like a hung page rather than a selector the caller can fix.
-    const matches = await page.locator(addr.selector).count();
-    if (matches === 0) throw new Error(`No element matches selector: ${addr.selector}`);
+    // like a hung page rather than a selector the caller can fix — and one that
+    // matches several must not be silently narrowed to the first.
+    requireSingleMatch(addr.selector, await page.locator(addr.selector).count());
     return page.locator(addr.selector).first() as unknown as TypeTarget;
   }
   const el = await resolveRef(page, addr.ref as string);
-  if (!el) throw new Error(refNotFound(addr.ref as string));
+  if (!el) throw new Error(refNotFound(addr.ref as string, page));
   return el as unknown as TypeTarget;
 }
 
@@ -520,11 +579,40 @@ async function resolveTypeTarget(page: Page, addr: RefAddress): Promise<TypeTarg
  *
  * Its only addressing mode is a selector, so a ref becomes the `data-wmux-ref`
  * tag the snapshot wrote and a caller's own selector is passed through.
+ *
+ * A smartRef gets NO rendering, deliberately. `data-wmux-ref` tags are written
+ * by browser_snapshot; browser_smart_snapshot keeps its own, differently
+ * numbered ref space and tags nothing. Rendering smartRef=61 as
+ * `[data-wmux-ref="61"]` therefore names either nothing at all or — worse, when
+ * a browser_snapshot ran earlier — whatever unrelated element that snapshot
+ * happened to number 61. An error naming the limit is the only honest answer
+ * this lane has.
  */
 function rpcSelectorFor(addr: RefAddress, scope: BrowserTargetScope): string {
-  if (addr.selector !== undefined) return addr.selector;
-  const safeRef = sanitizeRef(addr.ref ?? String(addr.smartRef), scope);
-  return `[data-wmux-ref="${safeRef}"]`;
+  if (addr.selector !== undefined) {
+    requireCssSelector(addr.selector);
+    return addr.selector;
+  }
+  if (addr.ref === undefined) {
+    throw new Error(
+      `smartRef=${addr.smartRef} cannot be used on this transport: browser_smart_snapshot refs ` +
+        'are not tagged into the page, and this surface has no live Chrome page to resolve them ' +
+        'against. Use a ref from browser_snapshot, or a CSS selector.',
+    );
+  }
+  return `[data-wmux-ref="${sanitizeRef(addr.ref, scope)}"]`;
+}
+
+/** How many elements a selector matches on the RPC lane. */
+async function rpcMatchCount(selector: string, scope: BrowserTargetScope): Promise<number> {
+  const value = await rpcEval(
+    `String(document.querySelectorAll(${jsStringLiteral(selector)}).length)`,
+    scope,
+  );
+  const count = Number(value);
+  // A transport that cannot answer must not block the action — the ambiguity
+  // guard is worth having, but not at the price of a fill that no longer runs.
+  return Number.isFinite(count) ? count : 1;
 }
 
 /**
@@ -549,6 +637,54 @@ function newlineKeyFor(mode: 'literal' | 'enter' | 'shift-enter' | undefined): s
 }
 
 /**
+ * What a between-lines keypress left behind.
+ *
+ * `lost` is the one answer that stops the typing: the field the caller named is
+ * gone from the document, or no longer holds the caret. Anything else — an
+ * `unknown` from a transport or a test double that cannot answer the question —
+ * lets the run continue, because a probe that cannot report is not evidence of
+ * a problem.
+ */
+type CaretState = 'held' | 'lost' | 'unknown';
+
+/**
+ * Is the element still attached, and still holding the caret?
+ *
+ * Asked between the segments of a multi-line type. The first Enter into a
+ * search box or a chat composer SUBMITS: the field empties, the page navigates,
+ * and every remaining line is then inserted into whatever the new page happens
+ * to focus — reported back as a successful eight-line type (review, lane D).
+ * `contains` as well as identity, because a rich-text host keeps the caret in
+ * one of its descendant nodes.
+ */
+async function caretStillOnTarget(el: TypeTarget): Promise<CaretState> {
+  try {
+    const held = await el.evaluate((node: Element) => {
+      if (!node.isConnected) return false;
+      const active = node.ownerDocument?.activeElement ?? null;
+      return active !== null && (active === node || node.contains(active));
+    });
+    // A double that answers something other than a boolean has not answered.
+    if (typeof held !== 'boolean') return 'unknown';
+    return held ? 'held' : 'lost';
+  } catch {
+    // A detached handle throws — which IS the answer, but so is a navigation
+    // that tore down the execution context mid-question. Both mean the element
+    // this was typing into is not there any more.
+    return 'lost';
+  }
+}
+
+/** Thrown when a multi-line type stopped early, carrying how far it got. */
+function partialLinesError(done: number, total: number, key: string): Error {
+  return new Error(
+    `Typed ${done} of ${total} lines, then stopped: the field lost focus after the ${key} ` +
+      '(a submit or a navigation is the usual cause). The remaining lines were NOT typed — ' +
+      'they would have gone into whatever the page focused next.',
+  );
+}
+
+/**
  * Type `text` into an already-resolved element on the Playwright lane.
  *
  * The FIRST segment replaces the field's value — the contract browser_type has
@@ -563,7 +699,12 @@ async function typeIntoTarget(
 ): Promise<string[]> {
   const segments = opts.newlineKey === null ? [text] : text.split('\n');
   for (let i = 0; i < segments.length; i++) {
-    if (i > 0) await page.keyboard.press(opts.newlineKey as string);
+    if (i > 0) {
+      await page.keyboard.press(opts.newlineKey as string);
+      if ((await caretStillOnTarget(el)) === 'lost') {
+        throw partialLinesError(i, segments.length, opts.newlineKey as string);
+      }
+    }
     const segment = segments[i];
     if (i === 0) {
       if (opts.humanlike) {
@@ -591,12 +732,47 @@ async function rpcTypeInto(
 ): Promise<string[]> {
   const segments = newlineKey === null ? [text] : text.split('\n');
   await rpcFill(selector, segments[0], scope);
-  for (const segment of segments.slice(1)) {
+  for (let i = 1; i < segments.length; i++) {
     await rpcPressKey(newlineKey as string, scope);
-    if (segment.length === 0) continue;
-    await sendScopedBrowserRpc('browser.type.cdp', scope, { text: segment });
+    // Same guarantee the Playwright lane gives: a key that submitted the form
+    // must not be followed by lines typed into the next page's focused field.
+    if ((await rpcCaretState(selector, scope)) === 'lost') {
+      throw partialLinesError(i, segments.length, newlineKey as string);
+    }
+    if (segments[i].length === 0) continue;
+    await sendScopedBrowserRpc('browser.type.cdp', scope, { text: segments[i] });
   }
   return segments;
+}
+
+/**
+ * Sentinels the caret probe answers with.
+ *
+ * Distinct strings, not 'yes'/'no': every RPC evaluate on this lane returns a
+ * bare string, and a probe that shared its vocabulary with the password probe
+ * would read another question's answer as its own.
+ */
+const CARET_HELD = 'wmux-caret:held';
+const CARET_LOST = 'wmux-caret:lost';
+
+/**
+ * Does the selector's element still hold the caret, over the RPC transport?
+ *
+ * Anything but the `lost` sentinel is treated as `unknown` — see CaretState.
+ */
+async function rpcCaretState(selector: string, scope: BrowserTargetScope): Promise<CaretState> {
+  try {
+    const value = await rpcEval(`(() => {
+      const el = document.querySelector(${jsStringLiteral(selector)});
+      if (!el) return '${CARET_LOST}';
+      const active = document.activeElement;
+      return active && (active === el || el.contains(active)) ? '${CARET_HELD}' : '${CARET_LOST}';
+    })()`, scope);
+    if (value === CARET_LOST) return 'lost';
+    return value === CARET_HELD ? 'held' : 'unknown';
+  } catch {
+    return 'unknown';
+  }
 }
 
 /** How an address reads back in a tool result. */
@@ -640,7 +816,7 @@ function targetForRecord(
  * agent itself just sent is the pre-existing behaviour, whereas a failed lookup
  * must not turn into a failed browser_type.
  */
-async function isPasswordElement(el: TypeTarget | ElementHandle): Promise<boolean> {
+async function isPasswordElement(el: TypeTarget): Promise<boolean> {
   try {
     // Main world, deliberately: the predicate is scoped to an ElementHandle,
     // and a handle belongs to the world it was resolved in — there is no way
@@ -960,7 +1136,7 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
             if (!ref) throw new Error('Either ref or smartRef must be provided.');
 
             const el = await resolveRef(page, ref);
-            if (!el) throw new Error(refNotFound(ref));
+            if (!el) throw new Error(refNotFound(ref, page));
             const dispatch = await clickWithApproach(
               page as unknown as ApproachPage,
               el,
@@ -1033,6 +1209,12 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
         } else {
           // RPC fallback
           const rpcSelector = rpcSelectorFor(addr, scope);
+          // A caller's own selector is counted here for the same reason it is
+          // on the Playwright lane: `.first()` semantics that replay refuses.
+          // A data-wmux-ref tag is unique by construction, so it is not asked.
+          if (addr.selector !== undefined) {
+            requireSingleMatch(rpcSelector, await rpcMatchCount(rpcSelector, scope));
+          }
           isPassword = await rpcIsPasswordElement(rpcSelector, scope);
           segments = await rpcTypeInto(rpcSelector, text, scope, newlineKey);
           if (submit) await rpcPressKey('Enter', scope);
@@ -1212,7 +1394,7 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
 
         if (page) {
           const el = await resolveRef(page, ref);
-          if (!el) throw new Error(refNotFound(ref));
+          if (!el) throw new Error(refNotFound(ref, page));
           if (hasTouchEmulation(page)) touchNote = TOUCH_HOVER_NOTE;
           await el.hover();
         } else {
@@ -1258,9 +1440,9 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
 
         if (page) {
           const sourceEl = await resolveRef(page, sourceRef);
-          if (!sourceEl) throw new Error(refNotFound(sourceRef));
+          if (!sourceEl) throw new Error(refNotFound(sourceRef, page));
           const targetEl = await resolveRef(page, targetRef);
-          if (!targetEl) throw new Error(refNotFound(targetRef));
+          if (!targetEl) throw new Error(refNotFound(targetRef, page));
 
           const sourceBox = await sourceEl.boundingBox();
           const targetBox = await targetEl.boundingBox();
@@ -1339,7 +1521,7 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
 
         if (page) {
           const el = await resolveRef(page, ref);
-          if (!el) throw new Error(refNotFound(ref));
+          if (!el) throw new Error(refNotFound(ref, page));
           await el.selectOption(values);
         } else {
           // Deliberately still a DOM assignment, unlike hover and drag above.
@@ -1358,7 +1540,7 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
             el.dispatchEvent(new Event('change', { bubbles: true }));
             return 'ok';
           })()`, scope);
-          if (val === 'not_found') throw new Error(refNotFound(ref));
+          if (val === 'not_found') throw new Error(refNotFound(ref, page));
         }
 
         recordAction(deps, {
@@ -1395,7 +1577,7 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
 
         if (page) {
           const el = await resolveRef(page, ref);
-          if (!el) throw new Error(refNotFound(ref));
+          if (!el) throw new Error(refNotFound(ref, page));
           await el.scrollIntoViewIfNeeded();
         } else {
           const safeRef = sanitizeRef(ref, scope);
@@ -1405,7 +1587,7 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
             el.scrollIntoView({ block: 'center', behavior: 'smooth' });
             return 'ok';
           })()`, scope);
-          if (val === 'not_found') throw new Error(refNotFound(ref));
+          if (val === 'not_found') throw new Error(refNotFound(ref, page));
         }
 
         recordAction(deps, { scope, tool: 'browser_scroll_into_view', page, ref });
@@ -1440,7 +1622,7 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
         if (page) {
           if (ref) {
             const el = await resolveRef(page, ref);
-            if (!el) throw new Error(refNotFound(ref));
+            if (!el) throw new Error(refNotFound(ref, page));
             // Main world, deliberately: element-scoped, and an ElementHandle
             // cannot be adopted into an isolated context (see isolated-eval.ts).
             await el.evaluate(

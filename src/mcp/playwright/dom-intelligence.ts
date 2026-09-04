@@ -939,6 +939,25 @@ export function getSmartElementByRef(ref: number): IndexedElement | null {
 }
 
 /**
+ * The same, but only when the smart snapshot was taken on `page`.
+ *
+ * For the ref-space hint in browser_type / browser_fill: "that number IS live
+ * in the other ref space" is only true of the page the smart snapshot was taken
+ * on. On any other page the record describes a different document, so the hint
+ * would name an element the caller cannot reach and send them to the wrong
+ * parameter. Same first check resolveSmartRefLocator makes, and for the same
+ * reason.
+ *
+ * `record.page === null` is the RPC-lane snapshot, which is page-agnostic by
+ * construction; there is nothing to disagree with, so it is allowed through.
+ */
+export function getSmartElementOnPage(ref: number, page: Page | null): IndexedElement | null {
+  const record = getSnapshotRecord();
+  if (record.page !== null && record.page !== page) return null;
+  return record.elements.find((element) => element.ref === ref) ?? null;
+}
+
+/**
  * Look up a Playwright locator string by the ref number assigned during the
  * most recent smart snapshot.
  *
