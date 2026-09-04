@@ -91,7 +91,7 @@ describe('stopGateState (#733)', () => {
     });
     expect(verdict.block).toBe(true);
 
-    noteGateVerdict(WS, verdict.block ? verdict.outstandingPtyIds : null);
+    noteGateVerdict(WS, verdict.protectedPtyIds);
     expect(isGateHeldOn(WS, 'pty-running')).toBe(true);
     expect(isGateHeldOn(WS, 'pty-waiting')).toBe(true);
     expect(isGateHeldOn(WS, 'pty-idle')).toBe(false);
@@ -112,8 +112,28 @@ describe('stopGateState (#733)', () => {
     // The refusal is about the work record, not about any pane.
     expect(verdict.block && verdict.outstandingPtyIds).toEqual([]);
 
-    noteGateVerdict(WS, verdict.block ? verdict.outstandingPtyIds : null);
+    noteGateVerdict(WS, verdict.protectedPtyIds);
     expect(isGateHeldOn(WS, 'pty-running')).toBe(false);
+  });
+
+  // Finding 11 + #733 together: a busy SHELL no longer blocks the gate, but it
+  // is exactly the pane #733 watched a brain kill. The caller records
+  // `protectedPtyIds`, so an allowed Stop still leaves the shell protected.
+  it('protects a busy shell the gate no longer blocks on', () => {
+    const withShell = {
+      ts: NOW,
+      panes: [
+        { ptyId: 'pty-shell', agentStatus: 'running', isAgent: false },
+        { ptyId: 'pty-idle', agentStatus: 'idle' },
+      ],
+    } as unknown as FleetSnapshot;
+    const verdict = evaluateStopGate({ snapshot: withShell, consecutiveBlocks: 0, now: NOW });
+    // Nothing to work on → the turn may end …
+    expect(verdict.block).toBe(false);
+    noteGateVerdict(WS, verdict.protectedPtyIds);
+    // … and the human's shell is still not the brain's to close.
+    expect(isGateHeldOn(WS, 'pty-shell')).toBe(true);
+    expect(isGateHeldOn(WS, 'pty-idle')).toBe(false);
   });
 
   it('protects nothing when there is no snapshot at all', () => {

@@ -38,7 +38,7 @@ import {
   loadActiveDeckWork,
 } from '../../deck/deckWorkStore';
 import { getWorkspaceMirror } from '../../workspace/WorkspaceMirror';
-import { isOutstandingWorkerPane } from '../../deck/stopGate';
+import { DEFAULT_MAX_SNAPSHOT_AGE_MS, isOutstandingWorkerPane } from '../../deck/stopGate';
 
 /** Minimum characters a self-resolve resolution must carry. The re-examine
  *  prompt demands the brain CITE the binding rule/basis that settles the
@@ -139,7 +139,7 @@ export function registerDeckRpc(router: RpcRouter, getWindow: GetWindow): void {
     // rather than restated: the two used to carry separate copies of the same
     // rule and only this one counted the operator's own shell as a worker.
     const snapshot = getWorkspaceMirror().getFleetSnapshot(ws);
-    if (snapshot && Date.now() - snapshot.ts <= 30_000) {
+    if (snapshot && Date.now() - snapshot.ts <= DEFAULT_MAX_SNAPSHOT_AGE_MS) {
       const outstanding = snapshot.panes.filter(isOutstandingWorkerPane);
       if (outstanding.length > 0) {
         return {
