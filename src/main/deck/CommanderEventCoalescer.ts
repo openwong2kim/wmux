@@ -201,6 +201,11 @@ interface WsState {
    *  no wake was actually attempted on. Bounded: pruned each flush to only ptyIds
    *  still `complete` in the latest snapshot, so it can't outgrow the live fleet. */
   snapshotSurfacedComplete: Set<string>;
+  /** Our clock at the last pending-decision block we logged for this
+   *  workspace. Rate-limits that line to one per PENDING_DECISION_LOG_MS so a
+   *  chatty fleet (or a held backlog re-examined on every idle) cannot spam
+   *  the log while one decision sits unanswered. */
+  pendingDecisionLoggedAt: number;
 }
 
 /** A running loop's wake-relevant slice (read fresh at every flush). */
@@ -270,6 +275,11 @@ export interface CoalescerDeps {
   peekOrphanBacklog?: (workspaceId: string) => CoalescerInput[];
   /** Lane F: the parked events at or below `upToSeq` reached the brain. */
   ackOrphanBacklog?: (workspaceId: string, upToSeq: number) => void;
+  /** One-line diagnostics sink (default `console.warn`). Used by the pending
+   *  decision gate, which is otherwise a silent kill switch: a wake it blocks
+   *  left no trace anywhere, so "the brain never woke" was indistinguishable
+   *  from "no event ever fired". */
+  log?: (line: string) => void;
 }
 
 const DEFAULT_DEBOUNCE_MS = 1_500;
@@ -284,6 +294,10 @@ const DEFAULT_MAX_WAKES_PER_MIN = 6;
 const RATE_WINDOW_MS = 60_000;
 /** Cap the rendered lines so a fleet-wide storm can't blow the turn context. */
 const MAX_FLUSH_LINES = 20;
+/** Rate limit for the pending-decision block line, per workspace. */
+const PENDING_DECISION_LOG_MS = 60_000;
+/** Task ids named in that line before it is elided (keeps one line one line). */
+const PENDING_DECISION_LOG_MAX_IDS = 5;
 
 export class CommanderEventCoalescer {
   private readonly deps: CoalescerDeps;
@@ -391,8 +405,19 @@ export class CommanderEventCoalescer {
     this.reconcileSurfacedComplete(st, snapshot);
     // Decision gate: a pending decision blocks EVERY wake, snapshot included.
     // Drop the snapshot (the next heartbeat re-reads it); leave buffered edges
-    // untouched for the normal edge path to govern.
-    if (this.safeHasPendingDecision(workspaceId)) return;
+    // untouched for the normal edge path to govern. Logged (rate-limited) for
+    // the same reason the edge path logs: silence here read as "nothing fired".
+    if (this.safeHasPendingDecision(workspaceId)) {
+      const edges = this.collectBuffer(st);
+      this.logPendingDecisionBlock(
+        st,
+        workspaceId,
+        edges.length,
+        edges.filter((e) => e.task !== undefined),
+        { snapshot: true },
+      );
+      return;
+    }
     const loopHint = this.safeGetLoop(workspaceId);
     const loopRunning = loopHint?.running === true;
     const workActive = this.safeHasActiveWork(workspaceId);
@@ -635,6 +660,7 @@ export class CommanderEventCoalescer {
         autoWakesUsed: 0,
         wakeTimestamps: [],
         snapshotSurfacedComplete: new Set(),
+        pendingDecisionLoggedAt: -Infinity,
       };
       this.states.set(workspaceId, st);
     }
@@ -839,6 +865,45 @@ export class CommanderEventCoalescer {
     st.phase = 'idle';
   }
 
+  /** Remove exactly these events from the buffer WITHOUT touching the
+   *  watermark. `consume` cannot be used when part of the buffer is being
+   *  retained: its watermark jump would prune the retained events too, and a
+   *  later replay of them would be dropped as already-flushed. */
+  private dropFromBuffer(st: WsState, events: readonly BufferedEvent[]): void {
+    for (const e of events) {
+      const byKind = st.buffer.get(e.ptyId);
+      if (!byKind) continue;
+      if (byKind.get(e.kind)?.seq === e.seq) byKind.delete(e.kind);
+      if (byKind.size === 0) st.buffer.delete(e.ptyId);
+    }
+  }
+
+  /** ONE line per blocked flush naming the workspace, how many events the
+   *  decision gate blocked and which of them were delegated work. Rate-limited
+   *  per workspace (PENDING_DECISION_LOG_MS); never throws. */
+  private logPendingDecisionBlock(
+    st: WsState,
+    workspaceId: string,
+    total: number,
+    delegated: readonly BufferedEvent[],
+    opts: { snapshot?: boolean } = {},
+  ): void {
+    const now = this.nowFn();
+    if (now - st.pendingDecisionLoggedAt < PENDING_DECISION_LOG_MS) return;
+    st.pendingDecisionLoggedAt = now;
+    const ids = [...new Set(delegated.map((e) => e.task?.taskId ?? '?'))];
+    const shown = ids.slice(0, PENDING_DECISION_LOG_MAX_IDS).join(', ');
+    const more = ids.length > PENDING_DECISION_LOG_MAX_IDS ? `, +${ids.length - PENDING_DECISION_LOG_MAX_IDS} more` : '';
+    const tail = delegated.length > 0 ? ` (${delegated.length} delegated held for replay: ${shown}${more})` : ' (0 delegated)';
+    const what = opts.snapshot ? 'snapshot wake' : 'wake';
+    const line = `[deck] ${what} for ${workspaceId} dropped: pending decision; ${total} events${tail}`;
+    try {
+      (this.deps.log ?? ((l: string) => console.warn(l)))(line);
+    } catch {
+      // diagnostics must never break a flush
+    }
+  }
+
   private attemptFlush(workspaceId: string, st: WsState): void {
     if (this.disposed) return;
     this.clearDebounce(st);
@@ -850,10 +915,27 @@ export class CommanderEventCoalescer {
     // Decision gate: a PENDING decision blocks EVERY wake — even a running loop
     // (unlike the auto-wake switch and mode policy below, which a running loop
     // overrides). The brain raised a decision and must not proceed until a human
-    // answers. Consume (drop) the buffered events: resolving the decision
-    // explicitly kicks a resume turn, so there is nothing to replay here.
+    // answers. Ambient events are consumed (dropped): resolving the decision
+    // explicitly kicks a resume turn, so there is nothing to replay for them.
+    //
+    // DELEGATED events are the exception (dogfood finding 12). A worker's stop
+    // routed to its owner is the owner's own result, not ambient noise, and a
+    // decision left over from a previous app session silently ate every one of
+    // them for twenty minutes. So: keep the task-tagged events BUFFERED (do not
+    // advance the watermark past them) and let the resume turn's onIdle flush
+    // them the moment the decision is answered. Either way the block is logged.
     if (this.safeHasPendingDecision(workspaceId)) {
-      this.consume(st, events);
+      const delegated = events.filter((e) => e.task !== undefined);
+      this.logPendingDecisionBlock(st, workspaceId, events.length, delegated);
+      if (delegated.length === 0) {
+        this.consume(st, events);
+        return;
+      }
+      this.dropFromBuffer(
+        st,
+        events.filter((e) => e.task === undefined),
+      );
+      st.phase = 'buffering';
       return;
     }
     // Global auto-wake switch: OFF suppresses AMBIENT wakes. The buffered
@@ -1203,8 +1285,14 @@ function awaitingVerdict(
   if (!autonomy.approvalPress) return '(NOTIFY ONLY, do NOT approve)';
   // The next-step contract: after the press the worker runs on its own and its
   // own event wakes you, so the turn ends here rather than looping on the pane.
+  // The ledger half of the same contract (dogfood finding 14): the brain kept
+  // trying to move a task straight to `completed`, which the transition table
+  // refuses — `review_requested` is the WORKER's move, and the brain's own is
+  // the hop after it. Say so on the line that already tells it to end the turn.
   const then = target?.taskId
-    ? ` Then END YOUR TURN — task ${target.taskId} runs on and its next event wakes you.`
+    ? ` Then END YOUR TURN — task ${target.taskId} runs on and its next event wakes you.` +
+      ' Your ledger move is review_requested → completed (after task_gate_run, or force with a reason);' +
+      ' review_requested is the worker\'s.'
     : '';
   if (source === 'hook') {
     return (
