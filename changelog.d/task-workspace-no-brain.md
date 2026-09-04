@@ -1,0 +1,3 @@
+### Fixed
+
+- **A fan-out task workspace no longer spawns an orchestrator brain of its own.** Since the task workspace started inheriting its owner's Deck mode (so the owner's brain may press its approvals), that mode also made it brain-eligible: every worker got a brain that consumed the worker's own stop events before the owner ever saw them, one extra Claude session per worker, held open by the Stop gate. Task workspaces are now brain-less for as long as their task is open — the composer and every ambient driver answer `task_workspace` — and a worker's stop reaches only the owner, tagged with its task.

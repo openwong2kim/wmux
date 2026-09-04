@@ -8,7 +8,12 @@
 // Stores are mocked in-memory: the handler's CONTRACT with them is under test;
 // the stores' file behavior is covered by their own suites.
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { TaskLedger } from '../../../../daemon/ledger/TaskLedger';
+import { setTaskLedgerForTests } from '../../../deck/taskLedgerHost';
 
 const captured = new Map<string, (...args: unknown[]) => unknown>();
 
@@ -1077,6 +1082,91 @@ describe("regression — yesterday's frozen fork now composes a resolve-first tu
     decisions.set('ws-1', FROZEN_DECISION);
     const res = await invoke(IPC.DECK_SEND, { workspaceId: 'ws-1', text: 'x' });
     expect(res).toEqual({ ok: false, code: 'mode_off' });
+    expect(adapters).toHaveLength(0);
+  });
+});
+
+describe('fan-out task workspaces never run a brain of their own (wave 2 dogfood finding 7)', () => {
+  // A task workspace inherits its owner's mode so the OWNER's brain may press
+  // its approvals. That mode alone made it brain-eligible: every worker got a
+  // brain that swallowed its own stop events before the owner saw them.
+  let ledgerDir: string;
+  let ledger: TaskLedger;
+  beforeEach(async () => {
+    ledgerDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-deck-task-ws-'));
+    ledger = new TaskLedger({ dir: ledgerDir });
+    setTaskLedgerForTests(ledger);
+    await ledger.register({ id: 'wtask-1', taskWorkspaceId: 'ws-task', ownerWorkspaceId: 'ws-1', title: 'lane' });
+    mockMode = 'danger';
+    // The outer beforeEach registered the handler against the previous ledger
+    // instance (its transition listener is bound at registration); re-register
+    // so the handler observes THIS ledger.
+    cleanup?.();
+    captured.clear();
+    adapters = [];
+    cleanup = registerDeckHandler(() => fakeWindow, {
+      createAdapter: (opts) => {
+        const a = new FakeAdapter(opts.workspaceId);
+        adapters.push(a);
+        return a;
+      },
+    });
+  });
+  afterEach(() => {
+    setTaskLedgerForTests(null);
+    fs.rmSync(ledgerDir, { recursive: true, force: true });
+  });
+
+  it("a worker's stop wakes the OWNER's brain, tagged with the task — and spawns nothing on the task workspace", { timeout: 10_000 }, async () => {
+    eventBus.emit({
+      type: 'agent.lifecycle',
+      workspaceId: 'ws-task',
+      ptyId: 'p-worker',
+      kind: 'agent.stop',
+      source: 'hook',
+      agent: 'claude',
+      decision: 'emit',
+    });
+    // The edge path debounces 1.5 s before it flushes; wait past it.
+    await new Promise((r) => setTimeout(r, 1_700));
+    expect(adapters.some((a) => a.workspaceId === 'ws-task')).toBe(false);
+    const owner = adapters.find((a) => a.workspaceId === 'ws-1');
+    expect(owner).toBeDefined();
+    const wake = owner!.sentTexts.find((t) => t.includes('[pane-events]'));
+    expect(wake).toBeDefined();
+    expect(wake).toContain('p-worker');
+    expect(wake).toContain('wtask-1');
+  });
+
+  it('the ambient turn path and the composer both refuse a task workspace, whatever its mode', async () => {
+    expect(await invoke(IPC.DECK_WAKE, { workspaceId: 'ws-task' })).toEqual({ ok: false, code: 'task_workspace' });
+    expect(await invoke(IPC.DECK_SEND, { workspaceId: 'ws-task', text: 'hello' })).toEqual({ ok: false, code: 'task_workspace' });
+    expect(adapters).toHaveLength(0);
+  });
+
+  it('a finished task hands its workspace back: the refusal lifts, and the inherited autonomy is cleared', async () => {
+    capWrites.length = 0;
+    await ledger.update({ id: 'wtask-1', status: 'cancelled', actor: { kind: 'system', workspaceId: 'daemon' }, expectedRev: 1 });
+    await new Promise((r) => setTimeout(r, 10));
+    const res = await invoke(IPC.DECK_WAKE, { workspaceId: 'ws-task' });
+    expect(res).not.toEqual({ ok: false, code: 'task_workspace' });
+    expect(capWrites).toContainEqual({ ws: 'ws-task', patch: { mode: 'off' } });
+  });
+
+  it("an owner that is itself a task workspace (nested fan-out) has no brain: the event is parked, not pushed", async () => {
+    // ws-1 owns wtask-1 (ws-task); make ws-1 itself a task of ws-root.
+    await ledger.register({ id: 'wtask-0', taskWorkspaceId: 'ws-1', ownerWorkspaceId: 'ws-root', title: 'outer' });
+    eventBus.emit({
+      type: 'agent.lifecycle',
+      workspaceId: 'ws-task',
+      ptyId: 'p-worker',
+      kind: 'agent.stop',
+      source: 'hook',
+      agent: 'claude',
+      decision: 'emit',
+    });
+    await new Promise((r) => setTimeout(r, 10));
+    expect(ledger.peekOrphanedEvents('ws-1').length).toBe(1);
     expect(adapters).toHaveLength(0);
   });
 });
