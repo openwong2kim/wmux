@@ -138,7 +138,12 @@ describe('commander-only lane invariants (COMMANDER_ONLY_TOOLS)', () => {
   // tools made that trip, and the assertion that used to pin them absent is
   // what would otherwise have gone quiet.
   it('the lane-O2 task tools are wired: listed commander-only, registered in src/mcp, and in the commander profile', () => {
-    const sources = walkSources(path.join(__dirname, '..', '..', 'mcp')).join('\n');
+    // Registered = the entry file wires the module that defines the tool; the
+    // definitions live in worktask.ts / git.ts, so scan exactly those three.
+    const mcpDir = path.join(__dirname, '..', '..', 'mcp');
+    const sources = ['index.ts', 'worktask.ts', 'git.ts']
+      .map((f) => readFileSync(path.join(mcpDir, f), 'utf8'))
+      .join('\n');
     for (const name of [
       'task_gate_run',
       'task_gate_cancel',
