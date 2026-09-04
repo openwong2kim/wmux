@@ -79,6 +79,10 @@ const BROWSER_TYPE_SHAPE = {
     .optional()
     .describe('CSS selector, for an element no snapshot gave a ref (e.g. a contenteditable div).'),
   text: z.string(),
+  newline: z
+    .enum(['literal', 'enter', 'shift-enter'])
+    .optional()
+    .describe('How a \\n is sent: literal (default) or a real keypress between the lines.'),
   submit: z
     .boolean()
     .optional()
@@ -523,6 +527,78 @@ function rpcSelectorFor(addr: RefAddress, scope: BrowserTargetScope): string {
   return `[data-wmux-ref="${safeRef}"]`;
 }
 
+/**
+ * The key that ends a line, or null to leave `\n` in the inserted text.
+ *
+ * `Input.insertText` — what both lanes type with, because it is the only thing
+ * that survives CJK IME composition and React's controlled inputs — puts the
+ * newline character into the field verbatim. A single-line input drops it, and
+ * a rich-text editor that listens for the keydown never sees one either, so
+ * Instagram's caption came out as one paragraph and the user pressed Enter
+ * eight times by hand (dogfood 2026-09-04). Splitting on `\n` and pressing a
+ * real key between the pieces is what the editor is actually listening for.
+ *
+ * Default stays `literal`: a `\n` in a search box has meant a literal newline
+ * since the tool existed, and a caller passing multi-line text to a one-line
+ * field must not suddenly submit it.
+ */
+function newlineKeyFor(mode: 'literal' | 'enter' | 'shift-enter' | undefined): string | null {
+  if (mode === 'enter') return 'Enter';
+  if (mode === 'shift-enter') return 'Shift+Enter';
+  return null;
+}
+
+/**
+ * Type `text` into an already-resolved element on the Playwright lane.
+ *
+ * The FIRST segment replaces the field's value — the contract browser_type has
+ * always had — and every later one is inserted after its key, at the caret the
+ * key left behind.
+ */
+async function typeIntoTarget(
+  page: Page,
+  el: TypeTarget,
+  text: string,
+  opts: { humanlike?: boolean; newlineKey: string | null },
+): Promise<string[]> {
+  const segments = opts.newlineKey === null ? [text] : text.split('\n');
+  for (let i = 0; i < segments.length; i++) {
+    if (i > 0) await page.keyboard.press(opts.newlineKey as string);
+    const segment = segments[i];
+    if (i === 0) {
+      if (opts.humanlike) {
+        await el.click();
+        await typeHumanlike(page, '', segment);
+      } else {
+        await el.fill(segment);
+      }
+      continue;
+    }
+    // An empty segment is a blank line: the keypress above already made it.
+    if (segment.length === 0) continue;
+    if (opts.humanlike) await typeHumanlike(page, '', segment);
+    else await page.keyboard.insertText(segment);
+  }
+  return segments;
+}
+
+/** The same, over the RPC transport, where the caret is the page's own. */
+async function rpcTypeInto(
+  selector: string,
+  text: string,
+  scope: BrowserTargetScope,
+  newlineKey: string | null,
+): Promise<string[]> {
+  const segments = newlineKey === null ? [text] : text.split('\n');
+  await rpcFill(selector, segments[0], scope);
+  for (const segment of segments.slice(1)) {
+    await rpcPressKey(newlineKey as string, scope);
+    if (segment.length === 0) continue;
+    await sendScopedBrowserRpc('browser.type.cdp', scope, { text: segment });
+  }
+  return segments;
+}
+
 /** How an address reads back in a tool result. */
 function describeAddress(addr: RefAddress): string {
   if (addr.ref !== undefined) return `ref=${addr.ref}`;
@@ -933,7 +1009,7 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
     'browser_type',
     'Type text into an element by ref, smartRef or CSS selector, replacing any existing value. Typing into a password field echoes "[redacted:password]" back — the text still went in.',
     BROWSER_TYPE_SHAPE,
-    async ({ ref, smartRef, selector, text, submit, humanlike, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
+    async ({ ref, smartRef, selector, text, newline, submit, humanlike, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
       try {
         const addr: RefAddress = {
           ...(ref !== undefined && { ref }),
@@ -941,27 +1017,24 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
           ...(selector !== undefined && { selector }),
         };
         requireOneTarget(addr, 'browser_type', ['ref', 'smartRef', 'selector']);
+        const newlineKey = newlineKeyFor(newline);
         const page = await engine.getPageForScope(scope).catch(allowScopedRpcFallback);
 
         // Decided BEFORE typing: the field is addressable now, and a submit can
         // navigate the page out from under a later lookup.
         let isPassword: boolean;
+        let segments: string[];
 
         if (page) {
           const el = await resolveTypeTarget(page, addr);
           isPassword = await isPasswordElement(el);
-          if (humanlike) {
-            await el.click();
-            await typeHumanlike(page, '', text);
-          } else {
-            await el.fill(text);
-          }
+          segments = await typeIntoTarget(page, el, text, { humanlike, newlineKey });
           if (submit) await page.keyboard.press('Enter');
         } else {
           // RPC fallback
           const rpcSelector = rpcSelectorFor(addr, scope);
           isPassword = await rpcIsPasswordElement(rpcSelector, scope);
-          await rpcFill(rpcSelector, text, scope);
+          segments = await rpcTypeInto(rpcSelector, text, scope, newlineKey);
           if (submit) await rpcPressKey('Enter', scope);
         }
 
@@ -969,6 +1042,12 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
         // field — except when the field is a credential, where the echo would
         // only re-enter the value into the transcript and the logs.
         const echoed = isPassword ? REDACTED_PASSWORD : text;
+        // How many keypresses the newline mode spent, so a caller can tell a
+        // field that swallowed them from one that never got them.
+        const lineNote =
+          newlineKey && segments.length > 1
+            ? ` as ${segments.length} lines (${newlineKey} between them)`
+            : '';
 
         // A password step is recorded as a HOLE, never as a step carrying its
         // own value: the text does not enter the ring, so it cannot reach the
@@ -981,7 +1060,9 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
           tool: 'browser_type',
           page,
           ...targetForRecord(addr),
-          args: isPassword ? {} : { text, ...(submit && { submit: true }) },
+          args: isPassword
+            ? {}
+            : { text, ...(newline && { newline }), ...(submit && { submit: true }) },
           ...(isPassword && { unrecordable: 'password' as const }),
         });
 
@@ -989,7 +1070,7 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
           content: [
             {
               type: 'text' as const,
-              text: `Typed "${echoed}" into element ${describeAddress(addr)}${submit ? ' and submitted' : ''}`,
+              text: `Typed "${echoed}" into element ${describeAddress(addr)}${lineNote}${submit ? ' and submitted' : ''}`,
             },
           ],
         };
