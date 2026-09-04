@@ -242,6 +242,15 @@ describe('TaskLedger — transition matrix', () => {
     expect(await a.update({ id: 'nope', status: 'failed', actor: SYSTEM, expectedRev: 1 })).toMatchObject({ ok: false, error: 'not_found' });
   });
 
+  it('a no-gate system record keeps its skipped label in the persisted entry, and a plain record carries none', async () => {
+    const a = open();
+    await seed(a);
+    await a.recordGate('wtask-1', { ...PASS, command: 'none', skipped: 'no_gate_command' });
+    expect(a.get('wtask-1')!.gate).toMatchObject({ exitCode: 0, command: 'none', skipped: 'no_gate_command', recordedBy: 'system' });
+    await a.recordGate('wtask-1', PASS);
+    expect(a.get('wtask-1')!.gate).not.toHaveProperty('skipped');
+  });
+
   it('completed needs a SYSTEM-recorded passing gate unless forced with a reason, and only a brain may set it', async () => {
     const a = open();
     await seed(a);

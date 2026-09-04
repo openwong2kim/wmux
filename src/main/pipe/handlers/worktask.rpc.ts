@@ -39,8 +39,9 @@
 // are the two effects here a human cannot undo by reading a result.
 //
 // Gate/adopt/read stay unprompted: a gate run is reversible by ignoring it,
-// adopt lands STAGED and never commits (`git reset --hard` undoes it), and the
-// git/gh views only read.
+// adopt lands in the LOCAL repository and never pushes (`git reset --hard`
+// undoes the staged default, `git reset --hard HEAD~1` the `commit: true`
+// form), and the git/gh views only read.
 //
 // `task.close` is deliberately NOT in COMMANDER_TEARDOWN_DENY. That set is an
 // unconditional refusal in RpcRouter, evaluated before any handler runs, so
@@ -84,6 +85,14 @@ export const WORKTASK_RPC_METHODS = [
   // for one reason: the ownership check. A tool that shelled out locally would
   // first need the worktree path, and handing a caller a path to run git in is
   // the whole authorization problem over again.
+  //
+  // `task.git.status` / `task.git.log` also answer with NO taskId, and then the
+  // repository is the CALLER'S OWN — derived from its surface's cwd, never
+  // named. A brain that had just adopted four tasks into its parent checkout
+  // could not read that checkout: every read wanted a task id, and the parent
+  // repository is not a task. The derivation is the fan-out gate's (surface cwd
+  // → git toplevel), so the answer is about the same directory the caller could
+  // have typed `git status` in, and no argument chooses it.
   'task.git.status',
   'task.git.log',
   'task.gh.prView',
@@ -199,6 +208,9 @@ export interface WorktaskRpcDeps {
   exec?: WorktaskExec;
   /** Injected for tests; defaults to the renderer approval queue. */
   requestApproval?: TaskApprovalPort;
+  /** Injected for tests; the caller's OWN working directory, for the reads that
+   *  name no task. Defaults to the renderer surface lookup below. */
+  callerCwd?: (workspaceId: string, senderPtyId: string) => Promise<string>;
 }
 
 /** Projection task, minimal shape (task.mission.list). */
@@ -360,6 +372,94 @@ async function resolveRepoInfo(worktreePath: string): Promise<{ repoRoot: string
 }
 
 /**
+ * The caller's own working directory, for the reads that name no task.
+ *
+ * Same chain as the fan-out gate's R3: the surface whose ptyId is the
+ * senderPtyId we just verified, and that surface's live cwd. NOT
+ * `workspace.list` → `metadata.cwd`, which tracks whichever surface last
+ * changed directory and would let a sibling pane choose what the caller reads.
+ *
+ * A commander brain is a subprocess with no pane ancestry and therefore no
+ * senderPtyId, so it borrows its workspace's ACTIVE pane and then goes through
+ * the identical derivation — the same borrow the fan-out gate makes, and bounded
+ * the same way: `ctx.commanderWorkspace` names exactly one workspace, so the
+ * worst a brain can do is `pane_focus` its way to another repository ITS OWN
+ * workspace already has a pane in. These two calls only read, and only what
+ * that pane's own shell could print.
+ */
+function rendererCallerCwd(getWindow: GetWindow): (workspaceId: string, senderPtyId: string) => Promise<string> {
+  return async (workspaceId: string, senderPtyId: string): Promise<string> => {
+    let ptyId = senderPtyId;
+    if (!ptyId) {
+      let list: unknown;
+      try {
+        list = await sendToRenderer(getWindow, 'workspace.list', {});
+      } catch {
+        return '';
+      }
+      if (!Array.isArray(list)) return '';
+      for (const entry of list) {
+        if (!entry || typeof entry !== 'object') continue;
+        const row = entry as Record<string, unknown>;
+        if (row['id'] !== workspaceId) continue;
+        ptyId = typeof row['activePtyId'] === 'string' ? row['activePtyId'].trim() : '';
+        break;
+      }
+      if (!ptyId) return '';
+    }
+    let surfaces: unknown;
+    try {
+      surfaces = await sendToRenderer(getWindow, 'surface.list', { workspaceId });
+    } catch {
+      return '';
+    }
+    if (!Array.isArray(surfaces)) return '';
+    for (const entry of surfaces) {
+      if (!entry || typeof entry !== 'object') continue;
+      const row = entry as Record<string, unknown>;
+      if (row['ptyId'] !== ptyId) continue;
+      return typeof row['cwd'] === 'string' ? row['cwd'].trim() : '';
+    }
+    return '';
+  };
+}
+
+/** Keep control characters and flag-looking strings out of a child process's
+ *  cwd. Belt and braces: the value never becomes an argv element, and the
+ *  toplevel lookup below is what actually decides which repository answers.
+ *
+ *  ABSOLUTE ONLY. `path.resolve` on a relative value silently anchors it to the
+ *  DAEMON's own working directory — a repository that has nothing to do with
+ *  the calling pane — so a surface reporting `src` (or `.`, or '..') would have
+ *  answered for whatever tree the daemon happens to be started in. A cwd is
+ *  absolute or it is unusable; `resolve` then only folds `.`/`..` away. */
+export function normalizeCallerCwd(raw: string): string | null {
+  const trimmed = raw.trim();
+  if (trimmed.length === 0) return null;
+  if (trimmed.startsWith('-')) return null;
+  // eslint-disable-next-line no-control-regex
+  if (/[\x00-\x1f\x7f]/.test(trimmed)) return null;
+  if (!path.isAbsolute(trimmed)) return null;
+  return path.resolve(trimmed);
+}
+
+/** The git toplevel of `dir`, realpath'd, or ''. Same rule as the fan-out
+ *  gate's repoRootOf: `--show-toplevel` so any subdirectory normalises to the
+ *  same answer, and realpath so a symlinked path cannot alias a different
+ *  repository (or make two names for one repo look like two repos). */
+async function callerRepoRoot(exec: WorktaskExec, dir: string): Promise<string> {
+  const res = await exec('git', ['rev-parse', '--show-toplevel'], dir);
+  if (res.code !== 0) return '';
+  const top = res.stdout.trim();
+  if (top.length === 0) return '';
+  try {
+    return fs.realpathSync(top);
+  } catch {
+    return top;
+  }
+}
+
+/**
  * `git`/`gh` with the same contract as the shared git helper: argv only, cwd
  * fixed, never throws — a non-zero exit is DATA, because "gh is not installed"
  * and "there is no PR" are answers a caller acts on, not transport failures.
@@ -464,6 +564,7 @@ export function registerWorktaskRpc(router: RpcRouter, deps: WorktaskRpcDeps): v
   // disable.
   const exec: WorktaskExec = deps.exec ?? ((cmd, args, cwd) => runGitLike(cmd, args, cwd));
   const requestApproval: TaskApprovalPort = deps.requestApproval ?? rendererApprovalPort(deps.getWindow);
+  const callerCwd = deps.callerCwd ?? rendererCallerCwd(deps.getWindow);
   const register = (method: WorktaskRpcMethod, handler: Parameters<RpcRouter['register']>[1]): void =>
     router.register(method, handler);
 
@@ -530,6 +631,66 @@ export function registerWorktaskRpc(router: RpcRouter, deps: WorktaskRpcDeps): v
     return deny('NOT_AUTHORIZED', `task.${action} needs a human approval and ${APPROVAL_DENY_MESSAGE[outcome]}`);
   };
 
+  /**
+   * WHERE a read runs: the named task's worktree, or — when no task is named —
+   * the caller's own repository. Never a path the caller supplies; `taskId` is
+   * still checked for ownership and the repository is still derived.
+   */
+  const resolveReadCwd = async (
+    params: Record<string, unknown>,
+    ctx: RpcContext | undefined,
+  ): Promise<{ taskId?: string; repoRoot?: string; cwd: string } | { code: string; message: string }> => {
+    // PRESENT-BUT-EMPTY IS NOT OMITTED. `z.string().min(1)` lets ' ' through,
+    // and a `taskId` that trims to nothing used to fall silently into the
+    // caller-repo branch: the caller asked about a task and was answered about
+    // a different repository, with `ok: true`. Naming the field at all means
+    // naming a task; omit it entirely to read your own repository.
+    const rawTaskId = params['taskId'];
+    if (rawTaskId !== undefined) {
+      if (typeof rawTaskId !== 'string' || rawTaskId.trim().length === 0) {
+        return {
+          code: 'INVALID_ARGUMENT',
+          message:
+            'taskId must be a non-empty task id — omit the field entirely to read your own repository instead',
+        };
+      }
+      const owned = await resolveOwnedTask(deps, params, ctx);
+      if (!('task' in owned)) return owned;
+      const { task } = owned;
+      if (!task.worktreePath || !fileExists(task.worktreePath)) {
+        return { code: 'FAILED_PRECONDITION', message: `task '${task.id}' has no worktree on disk` };
+      }
+      return { taskId: task.id, cwd: task.worktreePath };
+    }
+    const caller = await resolveCaller(deps.getWindow, params, ctx);
+    if (!('workspaceId' in caller)) return caller;
+    // A commander caller has no pty of its own; the derivation borrows its
+    // workspace's active pane (see rendererCallerCwd).
+    const senderPtyId = ctx?.commanderWorkspace
+      ? ''
+      : typeof params['senderPtyId'] === 'string'
+        ? params['senderPtyId'].trim()
+        : '';
+    const raw = await callerCwd(caller.workspaceId, senderPtyId);
+    const resolved = raw ? normalizeCallerCwd(raw) : null;
+    if (!resolved) {
+      return {
+        code: 'FAILED_PRECONDITION',
+        message:
+          "no taskId was given and the calling terminal's working directory could not be determined — " +
+          'name a task, or call from a pane whose cwd is a git repository',
+      };
+    }
+    const repoRoot = await callerRepoRoot(exec, resolved);
+    if (!repoRoot) {
+      return {
+        code: 'FAILED_PRECONDITION',
+        message: `the calling terminal's directory is not inside a git repository: ${resolved}`,
+      };
+    }
+    return { repoRoot, cwd: repoRoot };
+  };
+
   const localOnly = (ctx: RpcContext | undefined, method: string): { ok: false; error: { code: string; message: string } } | null =>
     ctx?.origin === 'local'
       ? null
@@ -582,7 +743,21 @@ export function registerWorktaskRpc(router: RpcRouter, deps: WorktaskRpcDeps): v
     if (!task.worktreePath || !fileExists(task.worktreePath)) {
       return deny('FAILED_PRECONDITION', `task '${task.id}' has no worktree on disk, so it has produced nothing to adopt`);
     }
-    return deps.adopt.adopt({ taskId: task.id, worktreePath: task.worktreePath });
+    // Opt-in, and rejected rather than coerced: a caller sending `"true"` and
+    // silently getting the staged default would discover it one adopt later,
+    // as a dirty-target refusal it cannot explain.
+    const rawCommit = params['commit'];
+    if (rawCommit !== undefined && typeof rawCommit !== 'boolean') {
+      return deny('INVALID_ARGUMENT', 'commit must be a boolean');
+    }
+    // The title comes from the SERVER's projection row, never from params — the
+    // commit subject names what the daemon believes this task is.
+    return deps.adopt.adopt({
+      taskId: task.id,
+      worktreePath: task.worktreePath,
+      commit: rawCommit === true,
+      title: task.title,
+    });
   });
 
   // ── task.close ───────────────────────────────────────────────────────
@@ -684,33 +859,32 @@ export function registerWorktaskRpc(router: RpcRouter, deps: WorktaskRpcDeps): v
   register('task.git.status', async (params, ctx?: RpcContext) => {
     const blocked = localOnly(ctx, 'task.git.status');
     if (blocked) return blocked;
-    const owned = await resolveOwnedTask(deps, params, ctx);
-    if (!('task' in owned)) return deny(owned.code, owned.message);
-    const { task } = owned;
-    if (!task.worktreePath || !fileExists(task.worktreePath)) {
-      return deny('FAILED_PRECONDITION', `task '${task.id}' has no worktree on disk`);
-    }
-    const res = await exec('git', ['status', '--porcelain=v1', '--branch', '-z'], task.worktreePath);
+    const target = await resolveReadCwd(params, ctx);
+    if ('code' in target) return deny(target.code, target.message);
+    const res = await exec('git', ['status', '--porcelain=v1', '--branch', '-z'], target.cwd);
+    // `target` says WHICH repository answered, in one field that is always
+    // present — a caller mixing task reads and own-repo reads should not have
+    // to infer it from which of two optional keys came back, and an omitted
+    // task id must never be readable as "this is the task".
+    const where = target.taskId !== undefined
+      ? { target: 'task' as const, taskId: target.taskId, worktreePath: target.cwd }
+      : { target: 'caller-repo' as const, repoRoot: target.cwd };
     if (res.code !== 0) {
-      return { ok: false as const, taskId: task.id, reason: 'git-failed' as const, error: res.stderr.trim() };
+      return { ok: false as const, ...where, reason: 'git-failed' as const, error: res.stderr.trim() };
     }
-    return { ok: true as const, taskId: task.id, worktreePath: task.worktreePath, ...parseGitStatus(res.stdout) };
+    return { ok: true as const, ...where, ...parseGitStatus(res.stdout) };
   });
 
   // ── task.git.log ─────────────────────────────────────────────────────
   register('task.git.log', async (params, ctx?: RpcContext) => {
     const blocked = localOnly(ctx, 'task.git.log');
     if (blocked) return blocked;
-    const owned = await resolveOwnedTask(deps, params, ctx);
-    if (!('task' in owned)) return deny(owned.code, owned.message);
-    const { task } = owned;
-    if (!task.worktreePath || !fileExists(task.worktreePath)) {
-      return deny('FAILED_PRECONDITION', `task '${task.id}' has no worktree on disk`);
-    }
     const raw = params['limit'];
     if (raw !== undefined && (typeof raw !== 'number' || !Number.isInteger(raw) || raw < 1)) {
       return deny('INVALID_ARGUMENT', 'limit must be a positive integer');
     }
+    const target = await resolveReadCwd(params, ctx);
+    if ('code' in target) return deny(target.code, target.message);
     // Clamped rather than rejected at the top end: a caller asking for 500
     // commits wants "as many as I can have", and refusing the whole call helps
     // nobody. The number that actually ran is reported back.
@@ -718,12 +892,17 @@ export function registerWorktaskRpc(router: RpcRouter, deps: WorktaskRpcDeps): v
     const res = await exec(
       'git',
       ['log', `-n`, String(limit), `--format=%H${LOG_SEP}%an${LOG_SEP}%aI${LOG_SEP}%s`],
-      task.worktreePath,
+      target.cwd,
     );
+    // Always present, so an omitted task id cannot be mistaken for a task read.
+    const where =
+      target.taskId !== undefined
+        ? { target: 'task' as const, taskId: target.taskId }
+        : { target: 'caller-repo' as const, repoRoot: target.cwd };
     if (res.code !== 0) {
-      return { ok: false as const, taskId: task.id, reason: 'git-failed' as const, error: res.stderr.trim() };
+      return { ok: false as const, ...where, reason: 'git-failed' as const, error: res.stderr.trim() };
     }
-    return { ok: true as const, taskId: task.id, limit, commits: parseGitLog(res.stdout) };
+    return { ok: true as const, ...where, limit, commits: parseGitLog(res.stdout) };
   });
 
   // ── task.gh.prView ───────────────────────────────────────────────────

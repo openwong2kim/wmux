@@ -60,6 +60,14 @@ export interface LedgerGateResult {
    *  (the gate runner); `completed` trusts ONLY such a gate. Absent on a
    *  result that did not come through the writer's own recordGate path. */
   recordedBy?: LedgerActorKind;
+  /** Set by the gate runner when this result is a RECORDED SKIP rather than a
+   *  run: the project declares no verify script and no npm lint/test scripts,
+   *  so there was nothing to execute. A project that declares no gate has
+   *  nothing to fail — `completed` is allowed (the exitCode is 0) and the
+   *  ledger says why, in `command: 'none'` and in the tail. The other two skips
+   *  (`deps_missing`, `gate_unavailable`) are NOT recorded at all: there a gate
+   *  existed and the environment stopped it, which is a human's problem. */
+  skipped?: 'no_gate_command';
 }
 
 export interface LedgerEntry {

@@ -5,6 +5,8 @@
 // npm's behaviour.
 
 import { describe, it, expect, vi } from 'vitest';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
 import * as path from 'node:path';
 
 import {
@@ -18,7 +20,8 @@ import {
   type GateSpawn,
 } from '../TaskGateRunner';
 import { LEDGER_GATE_TAIL_MAX_BYTES } from '../../../shared/ledger';
-import type { LedgerPort, LedgerGateWrite } from '../ledgerPort';
+import { TaskLedger } from '../../../daemon/ledger/TaskLedger';
+import { createHostedLedgerPort, type LedgerPort, type LedgerGateWrite } from '../ledgerPort';
 
 const WT = '/tmp/wt-task-1';
 /** The parent repository — the path a wmux.json trust record is keyed by. */
@@ -177,26 +180,176 @@ describe('TaskGateRunner', () => {
 
   it('skips with deps_missing rather than failing when node_modules is absent or symlinked', async () => {
     for (const state of ['missing', 'symlink'] as const) {
+      const ledger = fakeLedger();
       const runner = new TaskGateRunner({
-        ledger: fakeLedger(),
+        ledger,
         spawn: fakeSpawn({ code: 1 }),
         readPackageScripts: () => npmProject,
         depsState: () => state,
       });
       const res = await runner.run({ taskId: 'wtask-1', worktreePath: WT, systemWorkspaceId: 'ws-daemon' });
       expect(res).toMatchObject({ ok: true, status: 'skipped', skipped: 'deps_missing' });
+      // A gate existed and the environment stopped it: nothing is recorded, so
+      // `completed` still needs a human's force and the reason stays visible.
+      expect(ledger.writes).toHaveLength(0);
     }
   });
 
-  it('skips when the project declares no gate at all', async () => {
+  it('skips when the project declares no gate at all, and records a passing system gate', async () => {
+    const ledger = fakeLedger();
     const runner = new TaskGateRunner({
-      ledger: fakeLedger(),
+      ledger,
+      spawn: fakeSpawn({ code: 0 }),
+      readPackageScripts: () => ({}),
+      depsState: () => 'ok',
+      now: () => 4242,
+    });
+    const res = await runner.run({ taskId: 'wtask-1', worktreePath: WT, systemWorkspaceId: 'ws-daemon' });
+    expect(res).toMatchObject({ ok: true, status: 'skipped', skipped: 'no_gate_command', recorded: true });
+    // A project that declares no gate has nothing to fail — without this the
+    // ledger refuses `completed` forever (gate_required) for such a repository.
+    expect(ledger.writes).toHaveLength(1);
+    expect(ledger.writes[0]?.actor).toEqual({ kind: 'system', workspaceId: 'ws-daemon' });
+    expect(ledger.writes[0]?.gate).toMatchObject({
+      exitCode: 0,
+      command: 'none',
+      skipped: 'no_gate_command',
+      at: 4242,
+    });
+    expect(ledger.writes[0]?.gate.tail).toContain('no verify script');
+  });
+
+  // ── The waiver is the parent's to give, not the worktree's ───────────────
+  //
+  // The worktree is the tree the WORKER edits. Reading "no gate exists" out of
+  // it alone let a worker delete its own lint/test scripts and be handed a
+  // system-signed passing verdict — a forged pass in the one record `completed`
+  // trusts.
+  it('records a FAILING gate when the worktree dropped the npm scripts its parent declares', async () => {
+    const ledger = fakeLedger();
+    const runner = new TaskGateRunner({
+      ledger,
+      spawn: fakeSpawn({ code: 0 }),
+      // The worktree's package.json says there is nothing to run; the parent's
+      // says otherwise.
+      readPackageScripts: (root) => (root === REPO ? npmProject : {}),
+      depsState: () => 'ok',
+      now: () => 77,
+    });
+    const res = await runner.run({
+      taskId: 'wtask-1',
+      worktreePath: WT,
+      systemWorkspaceId: 'ws-daemon',
+      projectRoot: REPO,
+    });
+
+    expect(res).toMatchObject({ ok: true, status: 'completed', recorded: true });
+    if (res.status !== 'completed') throw new Error('unreachable');
+    expect(res.result.exitCode).toBe(1);
+    expect(res.result.tail).toContain('lint and test');
+    // Recorded as a failure and NOT as a waiver: no `skipped` label, and a
+    // non-zero exit, so the ledger still refuses `completed`.
+    expect(ledger.writes).toHaveLength(1);
+    expect(ledger.writes[0]?.gate.exitCode).toBe(1);
+    expect(ledger.writes[0]?.gate).not.toHaveProperty('skipped');
+  });
+
+  it('waives only when the PARENT declares no gate either', async () => {
+    const ledger = fakeLedger();
+    const runner = new TaskGateRunner({
+      ledger,
+      spawn: fakeSpawn({ code: 0 }),
+      readPackageScripts: () => ({}),
+      depsState: () => 'ok',
+    });
+    const res = await runner.run({
+      taskId: 'wtask-1',
+      worktreePath: WT,
+      systemWorkspaceId: 'ws-daemon',
+      projectRoot: REPO,
+    });
+    expect(res).toMatchObject({ status: 'skipped', skipped: 'no_gate_command', recorded: true });
+    expect(ledger.writes[0]?.gate).toMatchObject({ exitCode: 0, skipped: 'no_gate_command' });
+  });
+
+  // ── Unreadable is not the same fact as absent ────────────────────────────
+  it('answers gate_unavailable, and records nothing, when a package.json cannot be read', async () => {
+    for (const unreadable of [WT, REPO]) {
+      const ledger = fakeLedger();
+      const runner = new TaskGateRunner({
+        ledger,
+        spawn: fakeSpawn({ code: 0 }),
+        // null = the file is there and could not be read or parsed.
+        readPackageScripts: (root) => (root === unreadable ? null : {}),
+        depsState: () => 'ok',
+      });
+      const res = await runner.run({
+        taskId: 'wtask-1',
+        worktreePath: WT,
+        systemWorkspaceId: 'ws-daemon',
+        projectRoot: REPO,
+      });
+      expect(res).toMatchObject({ ok: true, status: 'skipped', skipped: 'gate_unavailable' });
+      if (res.status !== 'skipped') throw new Error('unreachable');
+      expect(res.detail).toContain('could not be read');
+      // Never a waiver: a corrupt tree must not buy a passing system record.
+      expect(ledger.writes).toHaveLength(0);
+    }
+  });
+
+  // ── A repository that is not a Node project at all ───────────────────────
+  //
+  // depsState used to be asked FIRST, so a Go/Rust checkout — no package.json,
+  // and therefore no node_modules — answered `deps_missing`, which records
+  // nothing, and the task could never reach `completed`. That is exactly the
+  // blockage the no-gate record exists to remove.
+  it('records the no-gate verdict for a non-Node repository instead of deps_missing', async () => {
+    const ledger = fakeLedger();
+    const runner = new TaskGateRunner({
+      ledger,
+      spawn: fakeSpawn({ code: 0 }),
+      readPackageScripts: () => ({}),
+      depsState: () => 'missing',
+    });
+    const res = await runner.run({ taskId: 'wtask-1', worktreePath: WT, systemWorkspaceId: 'ws-daemon' });
+    expect(res).toMatchObject({ status: 'skipped', skipped: 'no_gate_command', recorded: true });
+    expect(ledger.writes).toHaveLength(1);
+  });
+
+  // The default reader is what production uses; the three cases it must not
+  // conflate are only observable through it.
+  it('reads a real package.json: absent is a waiver, corrupt is gate_unavailable', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-gate-pkg-'));
+    try {
+      const make = (ledger: LedgerPort): TaskGateRunner =>
+        new TaskGateRunner({ ledger, spawn: fakeSpawn({ code: 0 }), depsState: () => 'ok' });
+
+      const absent = fakeLedger();
+      expect(
+        await make(absent).run({ taskId: 'wtask-1', worktreePath: dir, systemWorkspaceId: 'ws-daemon' }),
+      ).toMatchObject({ status: 'skipped', skipped: 'no_gate_command', recorded: true });
+
+      fs.writeFileSync(path.join(dir, 'package.json'), '{ "scripts": { "test": ');
+      const corrupt = fakeLedger();
+      expect(
+        await make(corrupt).run({ taskId: 'wtask-1', worktreePath: dir, systemWorkspaceId: 'ws-daemon' }),
+      ).toMatchObject({ status: 'skipped', skipped: 'gate_unavailable' });
+      expect(corrupt.writes).toHaveLength(0);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('reports recorded: false when the no-gate verdict cannot reach the ledger', async () => {
+    const runner = new TaskGateRunner({
+      // No entry for this task — the gate ran (well, ran nothing) either way.
+      ledger: { read: async () => null, writeGate: async () => ({ ok: true, rev: 1 }) },
       spawn: fakeSpawn({ code: 0 }),
       readPackageScripts: () => ({}),
       depsState: () => 'ok',
     });
     const res = await runner.run({ taskId: 'wtask-1', worktreePath: WT, systemWorkspaceId: 'ws-daemon' });
-    expect(res).toMatchObject({ ok: true, status: 'skipped', skipped: 'no_gate_command' });
+    expect(res).toMatchObject({ status: 'skipped', skipped: 'no_gate_command', recorded: false });
   });
 
   it('answers a second concurrent run with busy', async () => {
@@ -408,6 +561,53 @@ describe('TaskGateRunner', () => {
     if (res.status !== 'completed') throw new Error('unreachable');
     expect(res.result.exitCode).toBe(0);
     expect(res.recorded).toBe(false);
+  });
+});
+
+// The point of E-1 is not the shape of the write, it is that `completed`
+// becomes reachable. Only the REAL ledger can prove that, so this wires the
+// runner to one through the production adapter and asks it.
+describe('TaskGateRunner + the real ledger', () => {
+  it('lets a project with no gate reach completed without force', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-gate-nogate-'));
+    try {
+      const ledger = new TaskLedger({ dir });
+      await ledger.register({
+        id: 'wtask-1',
+        taskWorkspaceId: 'ws-task',
+        ownerWorkspaceId: 'ws-owner',
+        title: 'lane',
+      });
+      const runner = new TaskGateRunner({
+        ledger: createHostedLedgerPort(() => ledger),
+        spawn: fakeSpawn({ code: 0 }),
+        readPackageScripts: () => ({}),
+        depsState: () => 'ok',
+      });
+      const res = await runner.run({ taskId: 'wtask-1', worktreePath: WT, systemWorkspaceId: 'ws-daemon' });
+      expect(res).toMatchObject({ status: 'skipped', skipped: 'no_gate_command', recorded: true });
+
+      const brain = { kind: 'brain', workspaceId: 'ws-owner' } as const;
+      const review = await ledger.update({
+        id: 'wtask-1',
+        status: 'review_requested',
+        actor: brain,
+        expectedRev: ledger.get('wtask-1')?.rev ?? -1,
+      });
+      expect(review.ok).toBe(true);
+      const done = await ledger.update({
+        id: 'wtask-1',
+        status: 'completed',
+        actor: brain,
+        expectedRev: ledger.get('wtask-1')?.rev ?? -1,
+      });
+      // Before E-1 this was `gate_required`: nothing was ever recorded, so a
+      // repository without lint/test scripts could only be closed with `force`.
+      expect(done).toMatchObject({ ok: true });
+      expect(ledger.get('wtask-1')?.gate).toMatchObject({ exitCode: 0, command: 'none', recordedBy: 'system' });
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

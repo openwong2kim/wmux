@@ -97,9 +97,19 @@ export function registerWorktaskTools(server: McpServer, deps: WorktaskToolDeps)
       'The target repository is derived from the task\'s own worktree and must be clean: a dirty target is refused ({ reason: "dirty-target" }) rather than mixing two authors\' edits together. ' +
       'The patch is taken against the merge base the two share (never the parent\'s HEAD, which would turn the parent\'s own newer commits into deletions) and covers committed and uncommitted work alike; no shared commit answers { reason: "needs_rebase" }. ' +
       'It is validated before anything is written, and a patch that will not apply answers { reason: "conflict", files } with the parent left untouched. ' +
-      'What lands is STAGED and never committed — review it (git diff --cached) and commit it yourself.',
-    { task_id: TASK_ID },
-    async ({ task_id }) => callTask('task.adopt', { taskId: task_id }, deps),
+      'By default what lands is STAGED and never committed — review it (git diff --cached) and commit it yourself. ' +
+      'Adopting several tasks in sequence needs commit: true, otherwise the second adopt is refused dirty-target by the first one\'s staged changes. Nothing is ever pushed.',
+    {
+      task_id: TASK_ID,
+      commit: z
+        .boolean()
+        .optional()
+        .describe(
+          'Commit what was adopted (message: "adopt: <title> (<task id>)") and return { commit } — the short sha. Default false leaves it staged.',
+        ),
+    },
+    async ({ task_id, commit }) =>
+      callTask('task.adopt', { taskId: task_id, ...(commit !== undefined ? { commit } : {}) }, deps),
   );
 
   server.tool(
