@@ -16,6 +16,7 @@ import {
   WORKER_DELIVERY_PREAMBLE,
 } from '../FanOutService';
 import { MODEL_ENV_MARKER, reattachModelEnvMarker, splitModelEnvMarker } from '../../../shared/workerLaunch';
+import { FIRST_RUN_CLEAN_READS } from '../agentFirstRun';
 import type { FanOutDaemonPort, FanOutRendererPort } from '../FanOutService';
 import type { TaskWorktreePlan } from '../TaskWorktreeManager';
 import type { ProjectConfigState } from '../../../shared/wmuxProjectConfig';
@@ -1084,23 +1085,48 @@ describe('fan-out worker first run (A-1)', () => {
         renderer: makeRendererFake().port,
         worktrees: makeWorktreesFake(),
         firstRun: {
+          // The composer for as long as the watch is looking, the error after \u2014
+          // keyed on the clean-read budget rather than a magic number, because
+          // that budget is exactly how many reads the watch below will take.
           readScreen: async () => {
             reads += 1;
-            return reads >= 3 ? late : composer;
+            return reads > FIRST_RUN_CLEAN_READS ? late : composer;
           },
           sendKey: async () => { /* nothing to press on either screen */ },
         },
-        firstRunOptions: { watchMs: 0, pollMs: 0, deadlineMs: 5, log: () => { /* silent */ } },
+        // A FAKE clock and a no-op sleep, not a short real deadline. With the
+        // real one, Windows' ~15 ms timer granularity makes the first
+        // `setTimeout(0)` overshoot a 5 ms deadline, so the watch exits after a
+        // single read and the re-check gets the composer instead of the error.
+        firstRunOptions: {
+          watchMs: 0,
+          pollMs: 0,
+          deadlineMs: 50,
+          sleep: async () => { /* the fake clock is what advances time here */ },
+          now: ((): (() => number) => {
+            let t = 0;
+            return () => (t += 10);
+          })(),
+          log: () => { /* silent */ },
+        },
         firstRunRecheckMs: 0,
       });
 
       const res = await svc.start(baseReq({ idempotencyKey: 'fo-key-late', titles: ['Task A'] }));
-      // The watch itself saw a healthy pane and did not hold the fan-out up.
+      // The WATCH itself saw a healthy pane: `firstRunStuck` is the one signal
+      // only the watch sets, so it stays a fact about the watch no matter when
+      // the detached re-check happens to run. The ledger row is deliberately not
+      // asserted here — with a 0 ms re-check the row may already have moved, and
+      // a test that raced on that would be green or red by machine speed.
       expect(res.tasks[0].ok).toBe(true);
       expect(res.tasks[0].firstRunStuck).toBeUndefined();
-      expect(ledger.list({ id: res.tasks[0].taskId as string })[0].status).toBe('working');
 
       await svc.settleFirstRunRechecks();
+      // Pin the read budget: the whole point is that the error was found by a
+      // read the WATCH never took. FIRST_RUN_CLEAN_READS during the watch, one
+      // after it — a watch that quit early would land here with 2 and still
+      // have gone green on the status assertion below.
+      expect(reads).toBe(FIRST_RUN_CLEAN_READS + 1);
       const row = ledger.list({ id: res.tasks[0].taskId as string })[0];
       expect(row.status).toBe('input_required');
       expect(row.summary).toContain('glm-5.3');
