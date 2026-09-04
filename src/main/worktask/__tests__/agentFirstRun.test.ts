@@ -45,6 +45,17 @@ const ASK_USER_QUESTION_SCREEN = [
 
 const READY_SCREEN = ['❯ Try "write a test for <filepath>"', '⏵⏵ auto mode on · ← for agents'].join('\n');
 
+/** F15 — the first turn's model rejection, verbatim from the wave 3 dogfood
+ *  (the operator's ~/.zshrc exported ANTHROPIC_MODEL=glm-5.3). No menu, no
+ *  footer, nothing to press: only reportable. */
+const MODEL_ERROR_SCREEN = [
+  '> implement the lane',
+  '',
+  "There's an issue with the selected model (glm-5.3)",
+  '',
+  '❯ ',
+].join('\n');
+
 describe('launcherStem', () => {
   it('reduces a launch command to its agent stem', () => {
     expect(launcherStem('claude')).toBe('claude');
@@ -94,6 +105,46 @@ describe('detectFirstRunPrompt', () => {
   it('does not match a working pane or an empty read', () => {
     expect(detectFirstRunPrompt(READY_SCREEN)).toBeNull();
     expect(detectFirstRunPrompt('')).toBeNull();
+  });
+
+  // F15 — the screen three dogfood runs actually died on.
+  it('recognises the selected-model error and names the model', () => {
+    const found = detectFirstRunPrompt(MODEL_ERROR_SCREEN);
+    expect(found?.kind).toBe('model-error');
+    expect(found?.headline).toBe('selected-model error');
+    expect(found?.model).toBe('glm-5.3');
+  });
+
+  it('recognises the message with no model in parentheses', () => {
+    const found = detectFirstRunPrompt("There's an issue with the selected model");
+    expect(found?.kind).toBe('model-error');
+    expect(found?.model).toBeUndefined();
+  });
+
+  it('does NOT read the worker\'s own echoed prompt as the agent speaking', () => {
+    // A fan-out task ABOUT this bug quotes the message verbatim, and the pane
+    // echoes the prompt back — including the continuation lines, which carry no
+    // `>` of their own and are told apart only by their indent.
+    const echoed = [
+      '> Fix the fan-out worker launch: every worker answers',
+      "  There's an issue with the selected model (glm-5.3)",
+      '  and needs /model opus by hand.',
+      '',
+      '⏺ Reading src/main/worktask/FanOutService.ts',
+      '❯ ',
+    ].join('\n');
+    expect(detectFirstRunPrompt(echoed)).toBeNull();
+  });
+
+  it('does not match the phrase quoted mid-sentence', () => {
+    expect(
+      detectFirstRunPrompt('The pane said there\'s an issue with the selected model, so I retried.'),
+    ).toBeNull();
+  });
+
+  it('does not match an error scrolled out of the tail', () => {
+    const old = ["There's an issue with the selected model (glm-5.3)", ...Array(12).fill('working…')].join('\n');
+    expect(detectFirstRunPrompt(old)).toBeNull();
   });
 });
 
@@ -145,6 +196,13 @@ describe('clearFirstRunPrompts', () => {
     const port = scriptedPort([TRUST_SCREEN]);
     const outcome = await clearFirstRunPrompts('pty-1', port, { ...fastOptions, now: undefined });
     expect(outcome).toMatchObject({ status: 'stuck', reason: 'trust' });
+    expect(port.keys).toEqual([]);
+  });
+
+  it('reports the selected-model error without pressing anything (F15)', async () => {
+    const port = scriptedPort([MODEL_ERROR_SCREEN]);
+    const outcome = await clearFirstRunPrompts('pty-1', port, { ...fastOptions, now: undefined });
+    expect(outcome).toMatchObject({ status: 'stuck', reason: 'model', model: 'glm-5.3' });
     expect(port.keys).toEqual([]);
   });
 

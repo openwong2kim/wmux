@@ -11,6 +11,7 @@ import { generateId } from '../../shared/types';
 import { getLeafPanes, getWorkspaceLeafPanes, getWorkspacePtyIds } from '../../shared/paneUtils';
 import { findStashedEntry, paneStashedError, stashedPaneLiveness } from '../../shared/paneStash';
 import { applyRoleAgent, bindingEnforcesModel, normalizeRoleBinding, sanitizeOrchRole } from '../../shared/orchestratorRole';
+import { reattachModelEnvMarker, splitModelEnvMarker } from '../../shared/workerLaunch';
 import { handleCompanyRpc } from '../../company/renderer/rpcHandlers';
 import { formatA2aMessage, formatA2aBroadcast, sanitizeA2aName } from '../utils/a2aFormat';
 import type { A2aPriority } from '../utils/a2aFormat';
@@ -828,14 +829,23 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
     // assembled `<agent> "$(cat …)"` itself and a Reviewer→codex binding exists
     // precisely so review tasks run on codex. Without the swap first, the stem
     // mismatch made the whole binding inert: no agent change AND no model flag.
-    const swap = applyRoleAgent(initialCommand, roleBinding);
+    // F15 — main prefixed the line with the model-env marker (shared/workerLaunch)
+    // so a worker cannot inherit the operator's shell-exported ANTHROPIC_MODEL.
+    // It has to come OFF before the role rewrite: both steps below gate on the
+    // command's first token, and a marker in front of the launcher makes the stem
+    // unrecognisable — the binding's agent AND its model would be dropped without
+    // a word. It goes back on afterwards, and only if the rewritten command still
+    // names no model of its own, which is the decision main could not make (it
+    // cannot see the bindings — an unbound role, or one bound to an agent with no
+    // model, injects nothing).
+    const { marker, command: bareCommand } = splitModelEnvMarker(initialCommand);
+    const swap = applyRoleAgent(bareCommand, roleBinding);
     if (swap.note) {
       // A refusal (unknown agent, or flags that would not survive the swap) is
       // fail-soft — the task still launches, so the reason must be visible
       // somewhere rather than silently discarded.
       console.warn('[wmux:role-binding] fan-out agent not swapped', { role, note: swap.note });
     }
-    const launchCommand = swap.command;
 
     store.addWorkspace(name);
     const afterAdd = useStore.getState();
@@ -846,28 +856,44 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
     const newWsId = newWs.id;
     const paneId = newWs.activePaneId;
 
+    // Unnested so the FINAL command is readable: withDefaultShell first (there
+    // has to be a command to rewrite), then the role binding, then the marker
+    // goes back on, and withWorkspaceProfile stays outermost so the profile's
+    // env overlay lands on whatever command survived.
+    const seeded = withDefaultShell(
+      {
+        workspaceId: newWsId,
+        cwd: cwd || undefined,
+        ...(swap.command ? { initialCommand: swap.command } : {}),
+        ...(Object.keys(taskEnv).length > 0 ? { env: taskEnv } : {}),
+      },
+      useStore.getState().defaultShell,
+    );
+    const bound = withRoleBinding(seeded, roleBinding, role);
+    // `bound.initialCommand` stays undefined for the "environment only" launch,
+    // and it has to: withWorkspaceProfile fills a MISSING command from the
+    // profile's defaultPaneCommand, and an empty string is not missing.
+    const remarked = bound.initialCommand
+      ? reattachModelEnvMarker(marker, bound.initialCommand, seeded.shell)
+      : { command: bound.initialCommand, dropped: undefined };
+    if (remarked.dropped) {
+      // Losing the neutralisation silently is how the operator's shell wins
+      // again with nobody noticing, so name the reason it came off.
+      console.warn('[wmux:worker-launch] model-env marker dropped', { role, reason: remarked.dropped });
+    }
+    const createOptions = withWorkspaceProfile(
+      remarked.command === bound.initialCommand ? bound : { ...bound, initialCommand: remarked.command },
+      // profile.startupCwd = worktreePath 힌트(§1 — 초기 편의). split 상속에
+      // 밀리는 tolerant 힌트라 방어가 아니라 편의로만 계상한다.
+      { ...newWs.profile, startupCwd: cwd || newWs.profile?.startupCwd },
+    );
+    // The line that will really be typed into the pane — after the role rewrite,
+    // after the marker decision, and after the profile has had its say.
+    const launchCommand = createOptions.initialCommand ?? '';
+
     let ptyId: string;
     try {
-      const created = await window.electronAPI.pty.create(
-        withWorkspaceProfile(
-          withRoleBinding(
-            withDefaultShell(
-              {
-                workspaceId: newWsId,
-                cwd: cwd || undefined,
-                ...(launchCommand ? { initialCommand: launchCommand } : {}),
-                ...(Object.keys(taskEnv).length > 0 ? { env: taskEnv } : {}),
-              },
-              useStore.getState().defaultShell,
-            ),
-            roleBinding,
-            role,
-          ),
-          // profile.startupCwd = worktreePath 힌트(§1 — 초기 편의). split 상속에
-          // 밀리는 tolerant 힌트라 방어가 아니라 편의로만 계상한다.
-          { ...newWs.profile, startupCwd: cwd || newWs.profile?.startupCwd },
-        ),
-      );
+      const created = await window.electronAPI.pty.create(createOptions);
       ptyId = created.id;
     } catch (err) {
       const rollback = useStore.getState();
@@ -908,6 +934,8 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
     // main stores this as the re-fire material, and a re-fire that replayed the
     // pre-binding string would quietly drop the role's agent and model — the
     // task would come back on the default (expensive) one with nothing said.
+    // It carries the model-env marker exactly as launched, so main can tell
+    // whether the neutralisation survived when it reports a stuck worker.
     return { workspaceId: newWsId, ptyId, initialCommand: launchCommand };
   }
 

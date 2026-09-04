@@ -71,7 +71,7 @@ export const CLAUDE_SANDBOXED_ENV = 'CLAUDE_CODE_SANDBOXED';
 
 /** Launcher stems this module acts on. Every other agent is left ALONE — a
  *  codex/gemini/opencode pane has neither these screens nor this env. */
-const SUPPORTED_STEMS: ReadonlySet<string> = new Set(['claude']);
+export const SUPPORTED_STEMS: ReadonlySet<string> = new Set(['claude']);
 
 /** Is the first-run handling enabled at all? */
 export function firstRunEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
@@ -112,13 +112,19 @@ export function firstRunEnvForAgent(
  *                    means a worker only reaches it when the operator opted out.
  *   - `interstitial` a one-shot onboarding/upsell menu. Answered with ESC, the
  *                    dismissal the screen itself advertises.
+ *   - `model-error`  the first turn came back "There's an issue with the
+ *                    selected model (…)". Not a menu and not answerable by a
+ *                    keystroke — reported, so the row stops claiming `working`.
  */
-export type FirstRunPromptKind = 'trust' | 'interstitial';
+export type FirstRunPromptKind = 'trust' | 'interstitial' | 'model-error';
 
 export interface FirstRunPrompt {
   kind: FirstRunPromptKind;
   /** The headline that matched — logged, so a stuck worker names its screen. */
   headline: string;
+  /** `model-error` only: the model the agent named, when the screen printed it
+   *  in parentheses. Absent when the message carried no name. */
+  model?: string;
 }
 
 /** ESC. The only byte this module ever writes into a worker pane. */
@@ -140,6 +146,71 @@ const INTERSTITIAL_HEADLINES: readonly { re: RegExp; label: string }[] = [
 const CONFIRM_FOOTER = /enter to confirm/i;
 
 /**
+ * The first turn's model rejection, e.g.
+ * `There's an issue with the selected model (glm-5.3)`.
+ *
+ * Not a menu: no options, no confirm footer, nothing to press. It is here
+ * because from the outside it is indistinguishable from an idle worker — the
+ * exact confusion the rest of this module exists to remove — and it was the
+ * failure mode of every fan-out worker in three dogfood runs (the operator's
+ * `~/.zshrc` exported `ANTHROPIC_MODEL`, and the pane's login shell re-exports
+ * it after wmux has set the spawn env). The launch now neutralises that (see
+ * `workerLaunchCommand` in FanOutService), so this detector is the backstop for
+ * every other way a worker can end up on a model it cannot use.
+ *
+ * The apostrophe class covers the typographic `’` a TUI may render.
+ */
+const MODEL_ERROR_HEADLINE = /^there[''’]s an issue with the selected model(?:\s*\(([^)\n]{1,80})\))?/i;
+
+/** How far back from the bottom of the viewport the error may be. The port
+ *  reads a 40-line tail; the error is the LAST thing the pane printed, and the
+ *  lines above it are the worker's own transcript — including its prompt, which
+ *  for a task ABOUT this bug quotes the message verbatim. */
+const MODEL_ERROR_TAIL_LINES = 6;
+
+/** Box/bullet furniture Claude Code draws to the left of a line. Stripped so
+ *  the headline can still be ANCHORED to the start of the text. */
+const SCREEN_DECORATION = /^[│┃|⎿⏺●\s]{0,4}/;
+
+/** The prefix Claude Code puts on an echoed user message, and on the composer. */
+const ECHO_MARKER = /^[>❯›]/;
+
+/**
+ * Find the model error in the tail of a viewport, refusing to read the worker's
+ * own words as the agent's.
+ *
+ * Three guards, and all three were needed: the phrase is anchored to the start
+ * of a line (a sentence mentioning it mid-line is prose), only the last few
+ * lines are considered, and an echoed user message is skipped — including its
+ * CONTINUATION lines, which carry no `>` of their own and are distinguishable
+ * only by their indent. Without the last one, a worker whose prompt wrapped the
+ * phrase onto a second line reported itself broken.
+ */
+function detectModelError(screen: string): FirstRunPrompt | null {
+  const lines = screen.split('\n');
+  let inEcho = false;
+  for (const raw of lines.slice(Math.max(0, lines.length - MODEL_ERROR_TAIL_LINES))) {
+    if (raw.trim().length === 0) {
+      inEcho = false; // a blank line closes the echoed block.
+      continue;
+    }
+    const indented = /^\s{2,}/.test(raw);
+    const line = raw.replace(SCREEN_DECORATION, '');
+    if (ECHO_MARKER.test(line)) {
+      inEcho = true;
+      continue;
+    }
+    if (inEcho && indented) continue;
+    inEcho = false;
+    const m = MODEL_ERROR_HEADLINE.exec(line);
+    if (!m) continue;
+    const model = m[1]?.trim();
+    return { kind: 'model-error', headline: 'selected-model error', ...(model ? { model } : {}) };
+  }
+  return null;
+}
+
+/**
  * Is `screen` showing a first-run prompt?
  *
  * Three conditions for an interstitial, all required: a known headline, the
@@ -147,9 +218,14 @@ const CONFIRM_FOOTER = /enter to confirm/i;
  * approval pre-write check uses). The trust dialog is matched on its headline
  * plus the footer — its options are `No, exit` / `Yes, I trust this folder`,
  * and it is reported rather than answered anyway.
+ *
+ * The model error is checked FIRST and outside the footer gate: it is an error
+ * line, not a menu, so it renders none of the menu furniture.
  */
 export function detectFirstRunPrompt(screen: string): FirstRunPrompt | null {
   if (!screen) return null;
+  const modelError = detectModelError(screen);
+  if (modelError) return modelError;
   const rows = screen.split('\n');
   const hasFooter = CONFIRM_FOOTER.test(screen);
   if (!hasFooter) return null;
@@ -180,6 +256,18 @@ export const FIRST_RUN_CLEAN_READS = 2;
  *  is not the family this module knows about. */
 export const FIRST_RUN_MAX_ANSWERS = 3;
 
+/**
+ * F15 — how long after a CLEAN watch to look once more for the model error.
+ *
+ * The watch's clean-read exit fires at ~{@link FIRST_RUN_WATCH_MS}, which is
+ * about when Claude Code finishes painting its composer — and the model error
+ * only arrives after that, once the first turn has been sent and refused. So
+ * the clean exit is routinely too early for this one screen. The caller runs
+ * this re-read OFF the critical path (fan-out spawns are serial; nobody should
+ * pay a longer watch N times over), which is why it can afford to be generous.
+ */
+export const FIRST_RUN_MODEL_RECHECK_MS = 12_000;
+
 export interface FirstRunPort {
   /** Current viewport text of the pane. Fails soft — '' means "nothing read". */
   readScreen: (ptyId: string) => Promise<string>;
@@ -193,7 +281,13 @@ export type FirstRunOutcome =
   /** One was seen and dismissed; the pane is free. */
   | { status: 'answered'; headline: string }
   /** Still on screen at the deadline, or a screen we refuse to answer. */
-  | { status: 'stuck'; headline: string; reason: 'trust' | 'unanswered' | 'send-failed' };
+  | {
+      status: 'stuck';
+      headline: string;
+      reason: 'trust' | 'unanswered' | 'send-failed' | 'model';
+      /** `model` only — the model the agent named, when it printed one. */
+      model?: string;
+    };
 
 export interface FirstRunWatchOptions {
   watchMs?: number;
@@ -253,6 +347,24 @@ export async function clearFirstRunPrompts(
           `${CLAUDE_SANDBOXED_ENV}, or accept the folder once by hand.`,
       );
       return { status: 'stuck', headline: prompt.headline, reason: 'trust' };
+    }
+
+    if (prompt?.kind === 'model-error') {
+      // Same no-blind-press rule as the trust dialog, for the same reason: wmux
+      // reports what it sees rather than typing at a screen it did not author.
+      // Returning immediately is deliberate — the error is terminal for that
+      // turn, so waiting out the deadline only delays the report.
+      log(
+        `pane ${ptyId} came back with a selected-model error` +
+          `${prompt.model ? ` (${prompt.model})` : ''}; wmux does not pick a model for you. ` +
+          `Run /model <model> in the pane, or stop the shell rc from exporting one.`,
+      );
+      return {
+        status: 'stuck',
+        headline: prompt.headline,
+        reason: 'model',
+        ...(prompt.model ? { model: prompt.model } : {}),
+      };
     }
 
     if (prompt) {

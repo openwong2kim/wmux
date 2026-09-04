@@ -47,11 +47,23 @@ import {
   type FanoutSetupSkipReason,
 } from './fanoutEnvironment';
 import { inheritTaskAutonomy } from './taskAutonomy';
+import { commandChoosesModel } from '../../shared/orchestratorRole';
+import {
+  MODEL_ENV_MARKER,
+  WORKER_GATEWAY_ENV,
+  WORKER_MODEL_ENV,
+  isSimpleLaunchCommand,
+  splitModelEnvMarker,
+} from '../../shared/workerLaunch';
 import {
   clearFirstRunPrompts,
+  detectFirstRunPrompt,
+  FIRST_RUN_MODEL_RECHECK_MS,
   firstRunEnvForAgent,
   launcherStem,
+  SUPPORTED_STEMS,
   type FirstRunPort,
+  type FirstRunWatchOptions,
 } from './agentFirstRun';
 
 /**
@@ -231,6 +243,11 @@ export interface FanOutServiceOptions {
   /** A-2 — autonomy inheritance for the task workspace. Injected in tests;
    *  defaults to the deck-autonomy store. */
   autonomy?: (ownerWorkspaceId: string, taskWorkspaceId: string) => Promise<unknown>;
+  /** A-1 — watch tuning. Tests shorten it; production takes the defaults. */
+  firstRunOptions?: FirstRunWatchOptions;
+  /** F15 — how long after a clean watch to look once more for the model error.
+   *  Negative disables the re-check entirely. */
+  firstRunRecheckMs?: number;
 }
 
 /**
@@ -255,6 +272,12 @@ export class FanOutService {
   private readonly firstRun?: FirstRunPort;
   /** A-2 — autonomy inheritance (absent = the real deck-autonomy store). */
   private readonly autonomy?: (owner: string, task: string) => Promise<unknown>;
+  /** A-1 — first-run watch tuning (absent = the module defaults). */
+  private readonly firstRunOptions?: FirstRunWatchOptions;
+  /** F15 — delay before the single late model re-read. */
+  private readonly firstRunRecheckMs: number;
+  /** F15 — deferred re-checks still in flight (tests await them). */
+  private pendingRechecks: Promise<void>[] = [];
 
   /** §2 G1 멱등: 키 → 완료 결과 LRU. 동일 키 재호출은 직전 결과 반환. */
   private readonly results = new Map<string, FanOutResult>();
@@ -268,6 +291,8 @@ export class FanOutService {
     this.project = opts.project;
     this.firstRun = opts.firstRun;
     this.autonomy = opts.autonomy;
+    this.firstRunOptions = opts.firstRunOptions;
+    this.firstRunRecheckMs = opts.firstRunRecheckMs ?? FIRST_RUN_MODEL_RECHECK_MS;
   }
 
   /**
@@ -583,7 +608,11 @@ export class FanOutService {
     // ③ 렌더러 spawn — 전용 워크스페이스 + 에이전트 페인. cwd=worktreePath,
     //    initialCommand=`{agentCmd} "$(cat '{promptPath}')"`(경로 쿼팅) — 프롬프트가
     //    없으면 인자 없이 agentCmd만(사람이 페인에서 직접 입력). 실제 workspaceId 회수.
-    const initialCommand = buildInitialCommand(ctx.agentCmd, promptPath);
+    // F15 — and the launch neutralises a shell-exported ANTHROPIC_MODEL, which
+    // no spawn env can (the rc files run after it). See workerLaunchCommand.
+    const launch = workerLaunchCommand(ctx.agentCmd, promptPath);
+    if (launch.note) console.warn(`[fanout] ${launch.note}`);
+    const initialCommand = launch.command;
     base.initialCommand = initialCommand; // F2 재발사 재료(맨 셸 오배선 방지).
     const wsName = `wtask: ${ctx.title.slice(0, 32)}`;
     // A-1 — first-run env for the PANE only (not for the setup hook, which is a
@@ -698,38 +727,106 @@ export class FanOutService {
    * Mutates `base` with what was seen. A screen that is still there moves the
    * task's ledger row to `input_required`, because that is the state the brain
    * reads: an idle worker and a worker frozen on an onboarding menu are
-   * indistinguishable from the outside, and `working` would be a lie.
+   * indistinguishable from the outside, and `working` would be a lie. F15 puts
+   * a first turn that died on its model in the same bucket, for the same reason.
    */
   private async watchFirstRun(base: FanOutTaskResult, ownerWorkspaceId: string): Promise<void> {
     const port = this.firstRun;
     const ptyId = base.ptyId;
     if (!port || !ptyId) return;
     // The command the renderer ACTUALLY launched (a role binding may have
-    // swapped the agent). Only claude has these screens.
-    if (launcherStem(base.initialCommand ?? '') !== 'claude') return;
+    // swapped the agent). Only claude has these screens. The marker is split
+    // off with the SAME shared constant that attaches it, so the two cannot
+    // drift into a stem this check does not recognise.
+    const { marker, command: launched } = splitModelEnvMarker(base.initialCommand ?? '');
+    if (launcherStem(launched) !== 'claude') return;
+    const neutralisedModelEnv = marker.length > 0;
 
     let outcome: Awaited<ReturnType<typeof clearFirstRunPrompts>>;
     try {
-      outcome = await clearFirstRunPrompts(ptyId, port);
+      outcome = await clearFirstRunPrompts(ptyId, port, this.firstRunOptions ?? {});
     } catch (err) {
       console.warn(`[fanout:first-run] watch failed for pane ${ptyId}: ${String(err)}`);
       return;
     }
-    if (outcome.status === 'clear') return;
+    if (outcome.status === 'clear') {
+      // The model error is the one screen that arrives AFTER the composer, so
+      // the clean-read exit above routinely runs before it: claude has to boot,
+      // paint, send the first turn and be refused. Look once more, later — and
+      // do it off the critical path, because spawnOne is serial and the fan-out
+      // must not pay that wait N times over.
+      this.scheduleModelRecheck(base, ownerWorkspaceId, ptyId, port, neutralisedModelEnv);
+      return;
+    }
     base.firstRunPrompt = outcome.headline;
     if (outcome.status !== 'stuck') return;
     base.firstRunStuck = true;
-    if (!base.taskId) return;
+    await this.markFirstRunStuck(base.taskId, ownerWorkspaceId, outcome, neutralisedModelEnv);
+  }
+
+  /**
+   * F15 — one late re-read for the selected-model error, off the critical path.
+   *
+   * Fire-and-forget on purpose: the task result is already on its way back to
+   * the caller, and the only thing this can still fix is the ledger row that
+   * would otherwise claim `working` beside a dead first turn. Tests await it
+   * through {@link settleFirstRunRechecks}.
+   */
+  private scheduleModelRecheck(
+    base: FanOutTaskResult,
+    ownerWorkspaceId: string,
+    ptyId: string,
+    port: FirstRunPort,
+    neutralisedModelEnv: boolean,
+  ): void {
+    const delay = this.firstRunRecheckMs;
+    if (delay < 0) return;
+    const run = async (): Promise<void> => {
+      if (delay > 0) await new Promise((resolve) => setTimeout(resolve, delay));
+      let screen = '';
+      try {
+        screen = await port.readScreen(ptyId);
+      } catch {
+        return; // an unreadable viewport is no evidence.
+      }
+      const prompt = detectFirstRunPrompt(screen);
+      if (prompt?.kind !== 'model-error') return;
+      await this.markFirstRunStuck(
+        base.taskId,
+        ownerWorkspaceId,
+        { headline: prompt.headline, reason: 'model', ...(prompt.model ? { model: prompt.model } : {}) },
+        neutralisedModelEnv,
+      );
+    };
+    this.pendingRechecks.push(run().catch(() => { /* best-effort — see above */ }));
+  }
+
+  /** Tests only: settle the deferred model re-checks this run scheduled. */
+  async settleFirstRunRechecks(): Promise<void> {
+    const pending = this.pendingRechecks;
+    this.pendingRechecks = [];
+    await Promise.all(pending);
+  }
+
+  /** Move a task's ledger row to `input_required` with the reason. Best-effort:
+   *  the reconciler mirrors the row on the next look either way. */
+  private async markFirstRunStuck(
+    taskId: string | undefined,
+    ownerWorkspaceId: string,
+    outcome: { headline: string; reason: 'trust' | 'unanswered' | 'send-failed' | 'model'; model?: string },
+    neutralisedModelEnv: boolean,
+  ): Promise<void> {
+    if (!taskId) return;
     try {
       const ledger = getTaskLedger();
-      const entry = ledger.list({ id: base.taskId })[0];
+      const entry = ledger.list({ id: taskId })[0];
       if (!entry) return;
       await ledger.update({
-        id: base.taskId,
+        id: taskId,
         status: 'input_required',
         actor: { kind: 'system', workspaceId: ownerWorkspaceId },
         expectedRev: entry.rev,
-        summary: `worker is waiting on Claude Code's ${outcome.headline}; it needs a keypress in the pane`,
+        summary: firstRunStuckSummary(outcome, { neutralisedModelEnv }),
       });
     } catch {
       // best-effort — the result already carries firstRunStuck.
@@ -788,9 +885,13 @@ function describeErr(err: unknown): string {
  * 빈 인자 처리(무시/에러/빈 프롬프트 전송)가 달라 불확정적이므로, "인자 없음"을 명시적으로
  * 만들어 에이전트가 평소 인터랙티브 기동과 동일하게 뜨도록 한다.
  */
-export function buildInitialCommand(agentCmd: string, promptPath?: string): string {
+export function buildInitialCommand(
+  agentCmd: string,
+  promptPath?: string,
+  platform: NodeJS.Platform = process.platform,
+): string {
   if (promptPath === undefined) return agentCmd;
-  if (process.platform === 'win32') {
+  if (platform === 'win32') {
     // PowerShell 단일따옴표 리터럴: 내부 `'`는 `''`로 이스케이프. -LiteralPath로
     // glob·경로 특수문자 해석까지 봉쇄.
     const escaped = promptPath.replace(/'/g, "''");
@@ -799,4 +900,96 @@ export function buildInitialCommand(agentCmd: string, promptPath?: string): stri
   // POSIX 단일따옴표 리터럴: 내부 `'`는 `'\''`(닫고-이스케이프-열기)로 처리.
   const escaped = promptPath.replace(/'/g, "'\\''");
   return `${agentCmd} "$(cat '${escaped}')"`;
+}
+
+// ─── F15 — the worker's model is wmux's decision, not the shell's ────────────
+
+export interface WorkerLaunchOptions {
+  /** Platform override — tests only; defaults to the real platform. */
+  platform?: NodeJS.Platform;
+}
+
+export interface WorkerLaunch {
+  /** The command to fire into the worker pane. */
+  command: string;
+  /** Does the command carry the model-env marker? */
+  neutralisedModelEnv: boolean;
+  /** Why it does not, when that is worth saying out loud. */
+  note?: string;
+}
+
+/**
+ * The command a fan-out worker is launched with.
+ *
+ * The marker itself, and the reasons it is spelled the way it is, live in
+ * shared/workerLaunch — the renderer handles the same string. This function
+ * decides only whether THIS launch is eligible for it, and every gate reads the
+ * ORIGINAL `agentCmd` rather than the assembled line, so the prompt argument's
+ * contents can never influence the decision:
+ *
+ *  - a non-`claude` launcher is left alone (`SUPPORTED_STEMS`) — no other agent
+ *    reads the variable;
+ *  - an `agentCmd` that already names a model was given one explicitly, and a
+ *    CLI flag beats the environment anyway;
+ *  - anything but a single simple command is left alone with a note (see
+ *    {@link isSimpleLaunchCommand});
+ *  - win32 is left alone with a note: the marker is POSIX and the pane's shell
+ *    there is PowerShell (see the Windows branch of buildInitialCommand).
+ *
+ * A ROLE is deliberately NOT a gate here. Main cannot see the operator's role
+ * bindings (they are renderer state), so "has a role" is not "has a model" — an
+ * unbound role, or one bound to an agent with no model, would leave the worker
+ * exactly as exposed as before. The renderer decides that instead, where the
+ * binding actually resolves: it splits the marker off before the role rewrite
+ * and re-attaches it only if the rewritten command still names no model.
+ */
+export function workerLaunchCommand(
+  agentCmd: string,
+  promptPath: string | undefined,
+  opts: WorkerLaunchOptions = {},
+): WorkerLaunch {
+  const platform = opts.platform ?? process.platform;
+  const command = buildInitialCommand(agentCmd, promptPath, platform);
+  if (!SUPPORTED_STEMS.has(launcherStem(agentCmd))) return { command, neutralisedModelEnv: false };
+  if (commandChoosesModel(agentCmd)) return { command, neutralisedModelEnv: false };
+  if (!isSimpleLaunchCommand(agentCmd)) {
+    return {
+      command,
+      neutralisedModelEnv: false,
+      note: `agentCmd is not a single simple command, so ${WORKER_MODEL_ENV} is left as the shell sets it: ${agentCmd}`,
+    };
+  }
+  if (platform === 'win32') {
+    return {
+      command,
+      neutralisedModelEnv: false,
+      note: `${WORKER_MODEL_ENV} is not neutralised on win32 (the marker is POSIX); bind a role with a model, or unset it in the shell profile.`,
+    };
+  }
+  return { command: MODEL_ENV_MARKER + command, neutralisedModelEnv: true };
+}
+
+/** The `input_required` summary for a worker the first-run watch gave up on.
+ *  Split out so the cases read differently: a menu needs a keypress, and a model
+ *  error points somewhere else depending on whether the launch had already
+ *  neutralised the shell's variable — if it had, the shell profile is exonerated
+ *  and the gateway or the role binding is what named that model. */
+export function firstRunStuckSummary(
+  outcome: {
+    headline: string;
+    reason: 'trust' | 'unanswered' | 'send-failed' | 'model';
+    model?: string;
+  },
+  opts: { neutralisedModelEnv?: boolean } = {},
+): string {
+  if (outcome.reason === 'model') {
+    const fix = opts.neutralisedModelEnv
+      ? `this launch already unset ${WORKER_MODEL_ENV}, so the model came from ${WORKER_GATEWAY_ENV}'s gateway or from the role's model binding`
+      : `stop the shell profile from exporting ${WORKER_MODEL_ENV}`;
+    return (
+      `worker's first turn failed on its model${outcome.model ? ` (${outcome.model})` : ''}; ` +
+      `run /model <model> in the pane — ${fix}`
+    );
+  }
+  return `worker is waiting on Claude Code's ${outcome.headline}; it needs a keypress in the pane`;
 }
