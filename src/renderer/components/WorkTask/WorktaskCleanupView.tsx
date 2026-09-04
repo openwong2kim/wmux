@@ -10,6 +10,8 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
+import { findLeafPanes, activePaneTerminalPty } from '../../hooks/a2aAddressing';
+import { formatBracketedPastePayload } from '../../utils/ptyMessageDelivery';
 import type { WorktaskScanEntryWire, WorktaskScanCategoryWire } from '../../../shared/workTask';
 
 const CATEGORY_LABEL_KEY: Record<WorktaskScanCategoryWire, string> = {
@@ -26,6 +28,43 @@ const CATEGORY_COLOR: Record<WorktaskScanCategoryWire, string> = {
   'orphan-dir': 'var(--text-muted)',
 };
 
+// ─── C-4: the prepared commit line ──────────────────────────────────────
+//
+// A close that fails on a dirty worktree leaves the user with nothing to do
+// from here. "Commit & close" writes a ready-to-run line into the task's own
+// pane — it does NOT run it: what gets committed is the user's call, and an
+// agent's uncommitted work is not something a cleanup dialog should decide.
+//
+// The line lists the changed paths EXPLICITLY. `git add -A` in a worktree an
+// agent is still working in stages whatever else happens to be lying there;
+// naming the paths keeps the commit to what the scan actually saw.
+
+/** Above this many changed paths the prepared line stops being something a
+ *  human can read in a prompt — the view offers "open worktree" instead. */
+export const PREPARED_COMMIT_PATH_CAP = 40;
+
+/** POSIX single-quote escaping: everything inside '…' is literal, and a literal
+ *  quote is written by closing, escaping, and reopening. */
+export function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+/**
+ * Build the line the pane is pre-filled with. Paths are deduped and sorted so
+ * the same dirty worktree always produces the same line; the title becomes the
+ * `wip:` subject. Returns `null` when there is nothing to commit, or when there
+ * are more paths than a prepared line should carry.
+ */
+export function buildPreparedCommitLine(
+  paths: readonly string[],
+  title: string,
+): string | null {
+  const unique = [...new Set(paths.filter((p) => p.trim().length > 0))].sort();
+  if (unique.length === 0 || unique.length > PREPARED_COMMIT_PATH_CAP) return null;
+  const subject = `wip: ${title.trim() || 'task'}`.replace(/\s+/g, ' ');
+  return `git add -- ${unique.map(shellQuote).join(' ')} && git commit -m ${shellQuote(subject)}`;
+}
+
 export default function WorktaskCleanupView() {
   const t = useT();
   const visible = useStore((s) => s.worktaskCleanupVisible);
@@ -39,6 +78,11 @@ export default function WorktaskCleanupView() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busyTaskId, setBusyTaskId] = useState<string | null>(null);
+  // C-4: taskIds whose close failed on a worktree that still holds work. The
+  // row keeps the two things the user can actually do about it (prepare a
+  // commit in the task's own pane, or open the worktree) instead of a toast
+  // that scrolls away with no next step.
+  const [closeFailed, setCloseFailed] = useState<Record<string, true>>({});
 
   const runScan = useCallback(async () => {
     const api = window.electronAPI.workTask;
@@ -88,12 +132,19 @@ export default function WorktaskCleanupView() {
         const res = await api.close(taskId, closeAs);
         if (res.ok) {
           pushToast({ level: 'info', message: t('worktask.cleanup.closed') });
+          setCloseFailed((prev) => {
+            const { [taskId]: _done, ...rest } = prev;
+            return rest;
+          });
         } else if (res.reason === 'dirty') {
           pushToast({ level: 'warn', message: t('worktask.cleanup.preserved') });
+          setCloseFailed((prev) => ({ ...prev, [taskId]: true }));
         } else if (res.reason === 'unpushed') {
           pushToast({ level: 'warn', message: t('worktask.cleanup.unpushed', { count: res.aheadCount ?? '' }) });
+          setCloseFailed((prev) => ({ ...prev, [taskId]: true }));
         } else {
           pushToast({ level: 'error', message: t('worktask.cleanup.closeFailed', { error: res.error ?? '' }) });
+          setCloseFailed((prev) => ({ ...prev, [taskId]: true }));
         }
       } catch (e) {
         pushToast({ level: 'error', message: t('worktask.cleanup.closeFailed', { error: e instanceof Error ? e.message : String(e) }) });
@@ -103,6 +154,60 @@ export default function WorktaskCleanupView() {
       }
     },
     [activeWorkspaceId, pushToast, runScan, t],
+  );
+
+  // C-4 "Open worktree" — reveal the directory the close refused to remove.
+  const handleOpenWorktree = useCallback(
+    (worktreePath: string) => {
+      void window.electronAPI.shell?.openPath(worktreePath);
+    },
+    [],
+  );
+
+  // C-4 "Commit & close" — type a ready-to-run commit line into the task's own
+  // pane and stop. Nothing is executed and nothing is submitted: the user reads
+  // the paths, edits the message if they want, and presses Enter themselves.
+  const handleCommitAndClose = useCallback(
+    async (entry: WorktaskScanEntryWire) => {
+      const worktreePath = entry.worktreePath;
+      if (!worktreePath || !entry.taskId) return;
+      const st = useStore.getState();
+      // The task's own workspace is the one keyed by paneGroupId in the mission
+      // cache; without it there is no pane to prepare the line in.
+      const paneGroupId = Object.entries(st.missionByPaneGroup).find(
+        ([, mission]) => mission.id === entry.taskId,
+      )?.[0];
+      const ws = paneGroupId ? st.workspaces.find((w) => w.id === paneGroupId) : undefined;
+      const ptyId = ws
+        ? activePaneTerminalPty(findLeafPanes(ws.rootPane), ws.activePaneId)
+        : null;
+      if (!ws || !ptyId) {
+        pushToast({ level: 'warn', message: t('worktask.cleanup.noPaneForCommit') });
+        return;
+      }
+      const diff = await window.electronAPI.diff.read(worktreePath, '', 'workspace');
+      if (!diff.ok) {
+        pushToast({ level: 'error', message: t('worktask.cleanup.closeFailed', { error: diff.error }) });
+        return;
+      }
+      const paths = [
+        ...diff.numstat.map((n) => n.path),
+        ...diff.files.map((f) => f.path),
+        ...diff.truncated,
+        ...diff.unsupported,
+      ];
+      const line = buildPreparedCommitLine(paths, entry.title ?? entry.taskId);
+      if (!line) {
+        pushToast({ level: 'warn', message: t('worktask.cleanup.commitLineUnavailable') });
+        return;
+      }
+      st.setActiveWorkspace(ws.id);
+      // Bracketed paste, no trailing CR: the line lands at the prompt unrun.
+      window.electronAPI.pty.write(ptyId, formatBracketedPastePayload(line));
+      setVisible(false);
+      pushToast({ level: 'info', message: t('worktask.cleanup.commitLinePrepared') });
+    },
+    [pushToast, setVisible, t],
   );
 
   if (!visible) return null;
@@ -174,6 +279,28 @@ export default function WorktaskCleanupView() {
                   {e.closedAt && (
                     <div className="text-[10px] text-[var(--text-muted)]">
                       {t('worktask.cleanup.closedAt')}: {new Date(e.closedAt).toLocaleString()}
+                    </div>
+                  )}
+                  {e.taskId && closeFailed[e.taskId] && (
+                    <div className="mt-1 flex flex-wrap items-center gap-2" data-cleanup-close-failed>
+                      {e.worktreePath && (
+                        <button
+                          className="px-2 py-0.5 rounded text-[10px] bg-[var(--bg-mantle)] text-[var(--text-sub)] hover:text-[var(--text-main)] border border-[var(--bg-mantle)]"
+                          onClick={() => void handleCommitAndClose(e)}
+                          data-cleanup-commit-close
+                        >
+                          {t('worktask.cleanup.commitAndClose')}
+                        </button>
+                      )}
+                      {e.worktreePath && (
+                        <button
+                          className="px-2 py-0.5 rounded text-[10px] bg-[var(--bg-mantle)] text-[var(--text-sub)] hover:text-[var(--text-main)] border border-[var(--bg-mantle)]"
+                          onClick={() => handleOpenWorktree(e.worktreePath!)}
+                          data-cleanup-open-worktree
+                        >
+                          {t('worktask.cleanup.openWorktree')}
+                        </button>
+                      )}
                     </div>
                   )}
                 </div>

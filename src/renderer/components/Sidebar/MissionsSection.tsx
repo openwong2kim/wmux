@@ -264,9 +264,10 @@ function MissionsSection(): React.ReactElement {
           </div>
           {done.length > 0 && (
             <div data-missions-done-group>
+              <div className="flex items-center">
               <button
                 type="button"
-                className={`w-full flex items-center gap-1 px-4 py-0.5 text-[9px] font-mono uppercase tracking-widest text-[var(--text-muted)] hover:text-[var(--text-subtle)] transition-colors ${FOCUS_RING}`}
+                className={`min-w-0 flex-1 flex items-center gap-1 px-4 py-0.5 text-[9px] font-mono uppercase tracking-widest text-[var(--text-muted)] hover:text-[var(--text-subtle)] transition-colors ${FOCUS_RING}`}
                 onClick={() => setDoneExpanded((v) => !v)}
                 aria-expanded={doneExpanded}
                 data-missions-done-toggle
@@ -284,6 +285,20 @@ function MissionsSection(): React.ReactElement {
                   {t('missions.doneSummary', { title: done[0]?.title ?? '' })}
                 </span>
               </button>
+              {/* C-4: finished tasks are where cleanup starts. The worktree scan
+                  had no entry point outside the command palette, so a task whose
+                  close failed was invisible from the section that lists it. */}
+              <button
+                type="button"
+                className={`shrink-0 pr-4 pl-1 py-0.5 text-[9px] font-mono uppercase tracking-widest text-[var(--text-subtle)] hover:text-[var(--accent-blue)] transition-colors ${FOCUS_RING}`}
+                onClick={() => useStore.getState().setWorktaskCleanupVisible(true)}
+                title={t('missions.cleanUpTooltip')}
+                aria-label={t('missions.cleanUpTooltip')}
+                data-missions-cleanup
+              >
+                {t('missions.cleanUp')}
+              </button>
+              </div>
               {doneExpanded && (
                 <div className="space-y-0.5 opacity-60">
                   {done.map((task) => (

@@ -13,3 +13,8 @@
 - Fleet's approval inbox shows the auto-reject countdown on every approval that
   has a deadline, and keeps a short "auto-rejected" log of the ones that expired
   while you were away instead of letting them vanish like an answered prompt.
+- The Missions section's finished-tasks row now opens the task cleanup scan, and
+  a close that fails on a worktree still holding work offers two next steps on
+  the row itself: "Commit & close", which types a ready-to-run `git add -- <the
+  changed paths> && git commit -m "wip: <task>"` into the task's own pane
+  without running it, and "Open worktree".

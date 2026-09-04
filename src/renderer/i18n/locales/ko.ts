@@ -1204,6 +1204,8 @@ export const ko = {
   'missions.done': '완료 ({count})',
   'missions.empty': '아직 태스크 없음',
   'missions.doneSummary': '최근: {title}',
+  'missions.cleanUp': '정리',
+  'missions.cleanUpTooltip': '태스크 worktree를 스캔해 남은 것을 정리합니다',
   'fanout.taskReady': '태스크 "{title}" 준비됨',
   'fanout.tasksReady': '태스크 {count}개 준비됨',
   'fanout.openDiff': 'diff 열기',
@@ -1261,6 +1263,11 @@ export const ko = {
   'worktask.cleanup.preserved': '미커밋 산출물 보존 — diff에서 커밋/PR 또는 폐기 후 다시 닫으세요.',
   'worktask.cleanup.unpushed': 'push되지 않은 커밋 {count}개 — PR/push 후 다시 닫으세요.',
   'worktask.cleanup.closeFailed': 'close 실패: {error}',
+  'worktask.cleanup.commitAndClose': '커밋하고 닫기',
+  'worktask.cleanup.openWorktree': 'worktree 열기',
+  'worktask.cleanup.commitLinePrepared': '커밋 명령을 태스크 페인에 입력했습니다 — 확인 후 Enter로 실행하세요.',
+  'worktask.cleanup.commitLineUnavailable': '준비할 커밋 명령이 없습니다: 변경이 없거나 파일이 너무 많습니다. worktree를 직접 여세요.',
+  'worktask.cleanup.noPaneForCommit': '이 태스크에는 커밋을 준비할 살아 있는 페인이 없습니다. worktree를 직접 여세요.',
 
   // ─── Workspace item: task worktree boundary warning ──────────────────────
   'workspace.cwdDeparted': '페인 cwd가 태스크 worktree 경계 밖으로 이탈: {cwd}',

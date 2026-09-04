@@ -55,6 +55,8 @@ export const pl = {
   'missions.done': 'Ukończone ({count})',
   'missions.empty': 'Brak zadań',
   'missions.doneSummary': 'ostatnie: {title}',
+  'missions.cleanUp': 'Posprzątaj',
+  'missions.cleanUpTooltip': 'Przeskanuj worktree zadań i zamknij to, co zostało',
 
   // Sidebar — Company mode
   'company.deptRemoveHint': 'Kliknij prawym przyciskiem, aby usunąć',
@@ -1794,6 +1796,11 @@ export const pl = {
   'worktask.cleanup.preserved': 'Zachowano niezatwierdzone artefakty — wykonaj commit/PR z diff lub odrzuć, a następnie zamknij ponownie.',
   'worktask.cleanup.unpushed': 'Masz {count} niewypchniętych commitów — PR/push, a następnie zamknij ponownie.',
   'worktask.cleanup.closeFailed': 'close nie powiódł się: {error}',
+  'worktask.cleanup.commitAndClose': 'Zatwierdź i zamknij',
+  'worktask.cleanup.openWorktree': 'Otwórz worktree',
+  'worktask.cleanup.commitLinePrepared': 'Polecenie commita wpisane w panel zadania — sprawdź je i naciśnij Enter, aby je uruchomić.',
+  'worktask.cleanup.commitLineUnavailable': 'Brak gotowego polecenia commita: nic się nie zmieniło albo zmienionych plików jest za dużo. Otwórz worktree.',
+  'worktask.cleanup.noPaneForCommit': 'To zadanie nie ma aktywnego panelu, w którym można przygotować commit. Otwórz worktree.',
 
   // ─── Workspace item: task worktree boundary warning ──────────────────────
   'workspace.cwdDeparted': 'cwd panelu opuścił granicę worktree zadania: {cwd}',
