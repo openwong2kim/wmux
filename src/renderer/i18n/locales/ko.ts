@@ -1113,6 +1113,9 @@ export const ko = {
   'deck.wokenShow': '자세히',
   'deck.wokenHide': '접기',
   'deck.ledgerOpenTasks': '진행 중 작업 {count}건',
+  'settings.ledgerGate': '작업이 열려 있으면 턴 유지',
+  'settings.ledgerGateDesc':
+    'pane 활동으로 추측하는 대신, 오케스트레이터가 위임한 작업이 작업 원장에 남아 있는 동안 턴을 끝내지 않는다.',
   // operator-join (설계 §3) — 접힘 기본 발견 섹션 + join 확인 다이얼로그. 이 접힘이
   // 의도 게이트다: 펼치기 전에는 비공개 채널명이 화면에 존재하지 않는다.
   'channels.operatorSection': '모든 채널',

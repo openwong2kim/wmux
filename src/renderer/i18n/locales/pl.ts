@@ -1653,6 +1653,9 @@ export const pl = {
   'deck.wokenShow': 'Szczegóły',
   'deck.wokenHide': 'Ukryj',
   'deck.ledgerOpenTasks': 'Otwarte zadania: {count}',
+  'settings.ledgerGate': 'Utrzymuj turę, dopóki zadania są otwarte',
+  'settings.ledgerGateDesc':
+    'Nie kończ tury orkiestratora, dopóki rejestr zadań wymienia zadania, które zlecił, zamiast zgadywać na podstawie aktywności paneli.',
   // operator-join (design §3) — collapsed-by-default discovery section + the
   // join-confirm dialog. The collapse IS the intent gate: private channel names
   // do not exist on screen until the section is expanded.

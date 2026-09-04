@@ -1656,6 +1656,9 @@ export const en = {
   'deck.wokenHide': 'Hide',
   // Orchestrator wave 2 — the pinned task-ledger panel.
   'deck.ledgerOpenTasks': '{count} open tasks',
+  'settings.ledgerGate': 'Hold turns while tasks are open',
+  'settings.ledgerGateDesc':
+    "Keep the orchestrator's turn open while the task ledger still lists tasks it delegated, instead of guessing from pane activity.",
   // operator-join (design §3) — collapsed-by-default discovery section + the
   // join-confirm dialog. The collapse IS the intent gate: private channel names
   // do not exist on screen until the section is expanded.
