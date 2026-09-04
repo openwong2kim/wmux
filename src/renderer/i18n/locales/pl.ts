@@ -1653,6 +1653,7 @@ export const pl = {
   'deck.wokenShow': 'Szczegóły',
   'deck.wokenHide': 'Ukryj',
   'deck.ledgerOpenTasks': 'Otwarte zadania: {count}',
+  'deck.approvalCountdown': 'Automatyczne odrzucenie za {seconds} s',
   'settings.ledgerGate': 'Utrzymuj turę, dopóki zadania są otwarte',
   'settings.ledgerGateDesc':
     'Nie kończ tury orkiestratora, dopóki rejestr zadań wymienia zadania, które zlecił, zamiast zgadywać na podstawie aktywności paneli.',

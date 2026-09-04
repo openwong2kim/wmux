@@ -68,6 +68,7 @@ import { DeckSchedulesPanel } from './DeckSchedulesPanel';
 import { NewSessionChipContainer } from './NewSessionChip';
 import { DeckLoopPanel } from './DeckLoopPanel';
 import { DeckLedgerPanel } from './DeckLedgerPanel';
+import { DeckApprovalCountdown } from './DeckApprovalCountdown';
 import { DeckDecisionCard } from './DeckDecisionCard';
 import BrainTerminalEmbed from './BrainTerminalEmbed';
 import { DeckBriefingCard } from './DeckBriefingCard';
@@ -258,6 +259,9 @@ export function CommanderViewContent({
         {activeWorkspaceId && (
           <NewSessionChipContainer t={t} workspaceId={activeWorkspaceId} busy={brainBusy} />
         )}
+        {/* How long a displayed approval has before it auto-rejects. Renders
+            nothing until a pending record carries a deadline. */}
+        <DeckApprovalCountdown t={t} />
         {extra}
 
         {/* Reboot-recovery re-entry (post-reboot only) — the canned one-click
