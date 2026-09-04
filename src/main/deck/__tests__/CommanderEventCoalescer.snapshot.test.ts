@@ -206,6 +206,28 @@ describe('flushSnapshot — gate stack + accounting', () => {
     expect(h.c.getWakeBudgetRemaining('ws-1')).toBe(99); // one auto-wake spent
   });
 
+  // Finding 11: a shell pane is not the brain's to act on, and the Stop gate
+  // ignores it — waking on one would spend a turn the gate then refuses to
+  // justify. Both paths filter on the same isAgent flag.
+  it('drops a snapshot whose only attention pane is a human shell', async () => {
+    const h = mk();
+    h.c.flushSnapshot('ws-1', snap([pane({ ptyId: 'sh', agentName: null, agentStatus: 'awaiting_input', isAgent: false })]));
+    await settle();
+    expect(h.prompts).toHaveLength(0);
+  });
+
+  it('still wakes for an agent pane sharing the snapshot with a shell', async () => {
+    const h = mk();
+    h.c.flushSnapshot('ws-1', snap([
+      pane({ ptyId: 'sh', agentName: null, agentStatus: 'awaiting_input', isAgent: false }),
+      pane({ ptyId: 'ptyA', agentStatus: 'awaiting_input', isAgent: true }),
+    ]));
+    await settle();
+    expect(h.prompts).toHaveLength(1);
+    expect(h.prompts[0].prompt).toContain('pane=ptyA');
+    expect(h.prompts[0].prompt).not.toContain('pane=sh');
+  });
+
   it('drops when there are no attention panes and no buffered edges', async () => {
     const h = mk();
     h.c.flushSnapshot('ws-1', snap([pane({ agentStatus: 'running' }), pane({ agentStatus: 'idle' })]));

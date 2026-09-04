@@ -34,6 +34,24 @@ describe('useWorkspaceMirrorPush — push policy wiring', () => {
     expect(src).toMatch(/surfaceAgentStatus\s*!==\s*prev\.surfaceAgentStatus/);
   });
 
+  it('keys the churn debounce on every map the isAgent flag is derived from', () => {
+    // An agent-vs-shell flip decides whether the deck's Stop / completion gates
+    // count the pane at all. Missing keys here left that flip waiting for the
+    // 30s periodic refresh, so a Stop could be judged on the stale answer.
+    for (const key of [
+      'surfaceAgent',
+      'surfacePendingQuestion',
+      'resumeBindingByPtyId',
+      'resumeHintByPtyId',
+      'agentAliveByPtyId',
+      'commandRunningByPtyId',
+    ]) {
+      // Exact identifier match: `surfaceAgent` must not be satisfied by the
+      // `surfaceAgentStatus` line that sits right above it.
+      expect(src).toMatch(new RegExp(`s\\.${key} !== prev\\.${key}(?![A-Za-z])`));
+    }
+  });
+
   it('does NOT key the churn debounce on the ~2s agent clock', () => {
     // agentClockMs ticks every ~2s while agents run; keying the debounce on it
     // re-pushed the full payload every 2s all session. The periodic refresh

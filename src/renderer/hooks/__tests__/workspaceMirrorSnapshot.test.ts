@@ -9,6 +9,7 @@ import {
 } from '../workspaceMirrorSnapshot';
 import type { Workspace, Pane, Surface, AgentStatus } from '../../../shared/types';
 import type { FleetSelectorState } from '../../stores/selectors/fleet';
+import type { FleetSnapshotState } from '../workspaceMirrorSnapshot';
 
 // ─── Fixtures (mirror fleet.test.ts) ─────────────────────────────────────────
 
@@ -181,7 +182,9 @@ describe('buildFleetSnapshots — single-surface byte-identical pin', () => {
           agentStatus: 'waiting',
           isActivePane: false,
           cwd: 'C:\\repo\\sb',
-          isAgent: false, // no surfaceAgent entry → not a detected agent
+          // A retained attention status is agent evidence in its own right:
+          // only an agent lifecycle broadcast produces one.
+          isAgent: true,
         },
       ],
     });
@@ -198,28 +201,73 @@ describe('buildFleetSnapshots — isAgent (shell vs agent)', () => {
       leaf('p-agent', [surface('s-agent', 'pty-agent')]),
       leaf('p-shell', [surface('s-shell', 'pty-shell')]),
       leaf('p-ask', [surface('s-ask', 'pty-ask')]),
+      leaf('p-role', [surface('s-role', 'pty-role')]),
+      leaf('p-resume', [surface('s-resume', 'pty-resume')]),
+      leaf('p-new', [surface('s-new', 'pty-new')]),
     ]),
     'p-shell', // the human's shell is the ACTIVE pane, the agent is background
   );
 
-  it('marks detected agents and pending-question panes, not plain shells', () => {
-    const st: FleetSelectorState = {
+  function mixedState(): FleetSnapshotState {
+    return {
       workspaces: [ws],
       surfaceAgentStatus: { 'pty-agent': 'awaiting_input' },
       surfaceActivity: {},
       surfaceAgent: { 'pty-agent': { name: 'Claude Code', status: 'awaiting_input' } },
-      // Both the shell and the agent look busy off byte activity alone.
-      surfaceActivityAt: { 'pty-shell': 1_000, 'pty-agent': 1_000 },
+      // Every pane looks busy off byte activity alone — the status can't tell
+      // an agent from a shell, which is the whole point of the flag.
+      surfaceActivityAt: {
+        'pty-shell': 1_000, 'pty-agent': 1_000, 'pty-role': 1_000,
+        'pty-resume': 1_000, 'pty-new': 1_000,
+      },
       agentClockMs: 1_000,
       // #1168 — a transcript-derived question is agent evidence of its own.
       surfacePendingQuestion: { 'pty-ask': 'Proceed?' },
+      // A fan-out lane is an agent by construction (paneRole is pane-keyed).
+      paneRole: { 'p-role': 'builder' },
+      // The daemon knows an agent SESSION here even though nothing re-detected
+      // it — the daemon-restart case that must never read as a shell.
+      resumeBindingByPtyId: { 'pty-resume': { agent: 'claude', cwd: '/repo' } as never },
+      // OSC 133: an interactive shell owns this pty and nothing ever attributed
+      // an agent to it.
+      commandRunningByPtyId: { 'pty-shell': true },
     };
-    const [fleet] = buildFleetSnapshots(st, 1);
+  }
+
+  it('marks every kind of agent evidence, and only a proven shell as false', () => {
+    const [fleet] = buildFleetSnapshots(mixedState(), 1);
     const by = Object.fromEntries(fleet.panes.map((p) => [p.ptyId, p]));
     expect(by['pty-agent']).toMatchObject({ agentName: null, isAgent: true });
     expect(by['pty-ask']).toMatchObject({ isAgent: true });
-    // Running (bytes) but no agent identity → a shell, and the gates must say so.
+    expect(by['pty-role']).toMatchObject({ isAgent: true });
+    expect(by['pty-resume']).toMatchObject({ isAgent: true });
     expect(by['pty-shell']).toMatchObject({ agentStatus: 'running', isAgent: false });
+  });
+
+  // The detection window: a pane wmux knows nothing about yet must be UNKNOWN,
+  // never "shell" — the gates read undefined as "assume agent", so a freshly
+  // spawned worker is held even before its detector matches.
+  it('omits isAgent entirely for a pane with no evidence either way', () => {
+    const [fleet] = buildFleetSnapshots(mixedState(), 1);
+    const fresh = fleet.panes.find((p) => p.ptyId === 'pty-new');
+    expect(fresh?.agentStatus).toBe('running');
+    expect(fresh && 'isAgent' in fresh).toBe(false);
+  });
+
+  it('counts a nameless surfaceAgent entry as an agent', () => {
+    const st = mixedState();
+    st.surfaceAgent = { ...st.surfaceAgent, 'pty-new': { name: '', status: 'running' } };
+    const [fleet] = buildFleetSnapshots(st, 1);
+    expect(fleet.panes.find((p) => p.ptyId === 'pty-new')).toMatchObject({ isAgent: true });
+  });
+
+  it('never stamps isAgent on a row with no pty', () => {
+    const empty = workspace('ws-e', 'empty', leaf('p-e', [surface('s-e', '')]), 'p-e');
+    const [fleet] = buildFleetSnapshots(
+      { workspaces: [empty], surfaceAgentStatus: {}, surfaceActivity: {} },
+      1,
+    );
+    expect(fleet.panes[0] && 'isAgent' in fleet.panes[0]).toBe(false);
   });
 });
 
@@ -252,7 +300,7 @@ describe('buildFleetSnapshots — surface-accurate multi-surface panes', () => {
       agentStatus: 'awaiting_input',
       isActivePane: false, // not the active SURFACE
       cwd: 'C:\\repo\\s2a-first',
-      isAgent: false, // this fixture stamps no identity for the background tab
+      isAgent: true, // awaiting_input is agent evidence, even with no name
     });
     // The active surface still gets its own row, carrying the non-attention
     // (base) status — NOT the background tab's awaiting_input.
