@@ -457,7 +457,8 @@ describe('task.git.status / task.git.log without a taskId', () => {
     expect(h.callerCwd).toHaveBeenCalledWith(CALLER_WS, 'pty-1');
     // The cwd is normalised to the git TOPLEVEL, so a subdirectory answers for
     // the whole repository.
-    expect(h.exec).toHaveBeenCalledWith('git', ['rev-parse', '--show-toplevel'], CALLER_CWD);
+    // path.resolve rewrites the POSIX fixture on win32 (D:\repo\...), so compare against it.
+    expect(h.exec).toHaveBeenCalledWith('git', ['rev-parse', '--show-toplevel'], path.resolve(CALLER_CWD));
     expect(h.exec).toHaveBeenCalledWith('git', ['status', '--porcelain=v1', '--branch', '-z'], CALLER_REPO);
     expect(res).toMatchObject({ ok: true, target: 'caller-repo', repoRoot: CALLER_REPO });
     expect(res).not.toHaveProperty('taskId');
