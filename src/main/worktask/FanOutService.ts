@@ -46,6 +46,7 @@ import {
   runFanoutSetup,
   type FanoutSetupSkipReason,
 } from './fanoutEnvironment';
+import { inheritTaskAutonomy } from './taskAutonomy';
 import {
   clearFirstRunPrompts,
   firstRunEnvForAgent,
@@ -227,6 +228,9 @@ export interface FanOutServiceOptions {
   /** A-1 — pane viewport + keystroke port for the first-run watch. Omitted →
    *  the env still goes in, but nothing watches the screen. */
   firstRun?: FirstRunPort;
+  /** A-2 — autonomy inheritance for the task workspace. Injected in tests;
+   *  defaults to the deck-autonomy store. */
+  autonomy?: (ownerWorkspaceId: string, taskWorkspaceId: string) => Promise<unknown>;
 }
 
 /**
@@ -249,6 +253,8 @@ export class FanOutService {
   private readonly project?: FanOutProjectPort;
   /** A-1 — pane viewport + keystroke port (absent = no first-run watch). */
   private readonly firstRun?: FirstRunPort;
+  /** A-2 — autonomy inheritance (absent = the real deck-autonomy store). */
+  private readonly autonomy?: (owner: string, task: string) => Promise<unknown>;
 
   /** §2 G1 멱등: 키 → 완료 결과 LRU. 동일 키 재호출은 직전 결과 반환. */
   private readonly results = new Map<string, FanOutResult>();
@@ -261,6 +267,7 @@ export class FanOutService {
     this.worktrees = opts.worktrees ?? new TaskWorktreeManager();
     this.project = opts.project;
     this.firstRun = opts.firstRun;
+    this.autonomy = opts.autonomy;
   }
 
   /**
@@ -630,6 +637,12 @@ export class FanOutService {
     } catch (err) {
       return { ...base, unmaterialized: true, error: `task.update threw: ${(err as Error).message}` };
     }
+    // A-2 precondition: the task workspace inherits the owner's autonomy, or
+    // `decideApprovalPress` refuses every press into this worker with
+    // `press-capability-off` (a workspace with no entry has no capabilities).
+    // Best-effort and never fatal — see taskAutonomy.ts for the policy.
+    await this.inheritAutonomy(ctx.verifiedWorkspaceId, workspaceId);
+
     // Lane F: the materialized task enters the ledger as `working` right here,
     // so the owner's brain, the Stop gate and the workers read one state from
     // the first second. Best-effort: a ledger write failure never fails the
@@ -666,6 +679,17 @@ export class FanOutService {
     await this.watchFirstRun(base, ctx.verifiedWorkspaceId);
 
     return { ...base, ok: true, channelDisconnected };
+  }
+
+  /** A-2 — hand the task workspace its owner's autonomy (see taskAutonomy.ts).
+   *  Injectable so the fan-out tests do not need a deck-autonomy file. */
+  private async inheritAutonomy(ownerWorkspaceId: string, taskWorkspaceId: string): Promise<void> {
+    try {
+      await (this.autonomy ?? inheritTaskAutonomy)(ownerWorkspaceId, taskWorkspaceId);
+    } catch {
+      // best-effort — a task whose workspace has no autonomy simply cannot be
+      // pressed into, which is the safe direction.
+    }
   }
 
   /**
