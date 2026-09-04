@@ -491,6 +491,11 @@ export const METHOD_CAPABILITY: Record<RpcMethod, RequiredCapability> = {
   'task.git.log':     { capability: 'task.read',  riskClass: 'a2a' },
   'task.gh.prView':   { capability: 'task.read',  riskClass: 'a2a' },
 
+  // Answering a worker's approval prompt. `task.write` because what it acts on
+  // is a delegated task pane, and the daemon's press scope refuses anything
+  // else; the bytes written are the approval record's own, never the caller's.
+  'approval.press':   { capability: 'task.write', riskClass: 'a2a' },
+
   // --- Company subsystem (substrate-internal team/orchestration). All
   //     internal for v3.0; can be re-classified once spec covers a2a teams.
   'company.create':         { capability: 'wmux.internal' },

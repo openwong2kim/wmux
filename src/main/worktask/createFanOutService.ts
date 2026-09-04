@@ -26,6 +26,13 @@ type GetWindow = () => BrowserWindow | null;
 /** 스폰은 몇 초 걸릴 수 있으니 렌더러 spawn 타임아웃을 넉넉히(PTY 생성 포함). */
 const SPAWN_TIMEOUT_MS = 30000;
 
+/** A-1 — a first-run screen is a whole boxed dialog; a short tail would cut its
+ *  headline off and the detector would never match. */
+const FIRST_RUN_READ_LINES = 40;
+
+/** A viewport we cannot get quickly is a poll we skip, not a spawn we stall. */
+const FIRST_RUN_READ_TIMEOUT_MS = 1_000;
+
 export function createFanOutService(
   getDaemonClient: () => DaemonClient | null,
   getWindow: GetWindow,
@@ -62,6 +69,28 @@ export function createFanOutService(
     // the trust decision the user already made for this repo.
     project: {
       getState: (cwd: string) => getProjectConfigStore().getState(cwd),
+    },
+    // A-1 — viewport + keystroke for the first-run watch. The viewport is the
+    // renderer's (the same read every other main-side screen check uses); the
+    // keystroke goes through the daemon, which owns the session. With no daemon
+    // there is no way to press, and the watch reports `stuck` rather than
+    // pretending it dismissed anything.
+    firstRun: {
+      readScreen: async (ptyId: string): Promise<string> => {
+        const res = (await sendToRenderer(
+          getWindow,
+          'input.readScreen',
+          { ptyId, tail_lines: FIRST_RUN_READ_LINES, timeoutMs: FIRST_RUN_READ_TIMEOUT_MS },
+          { timeoutMs: FIRST_RUN_READ_TIMEOUT_MS },
+        )) as { text?: unknown } | null;
+        const text = res && typeof res === 'object' ? res.text : undefined;
+        return typeof text === 'string' ? text : '';
+      },
+      sendKey: async (ptyId: string, sequence: string): Promise<void> => {
+        const dc = getDaemonClient();
+        if (!dc?.isConnected) throw new Error('daemon not connected');
+        dc.writeToSession(ptyId, sequence);
+      },
     },
   });
 }

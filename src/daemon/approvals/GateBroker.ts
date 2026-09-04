@@ -52,6 +52,15 @@ export interface GateBrokerDeps {
    */
   expireRecord?: (gateId: string, reason: string) => void;
   /**
+   * Report the deadline this broker JUST ARMED for a gate, so the approval
+   * record can carry an honest countdown (`ApprovalRequest.deadlineAt`). Only
+   * the broker knows it: the timer starts after the record was created and
+   * runs for min(the bridge's own remaining budget, the cap). Called once,
+   * synchronously, at the moment the timer is set — never for a gate that
+   * deferred without arming one.
+   */
+  noteDeadline?: (gateId: string, deadlineAt: number) => void;
+  /**
    * Cap on gates blocking at once. Each one holds a control-plane socket for
    * its whole deadline, and the pipe server accepts a bounded number of
    * connections — without a cap, enough simultaneous gates starve the CLI, MCP
@@ -67,7 +76,7 @@ export interface GateBrokerDeps {
  * dangling waiter). The bridge serialises its own shorter budget and sends it
  * in the envelope, so this is the cap, not always the value used.
  */
-const DEFAULT_GATE_DEADLINE_MS = 120_000;
+export const DEFAULT_GATE_DEADLINE_MS = 120_000;
 
 /**
  * Leave room in the pipe server's connection budget for the control plane. A
@@ -112,6 +121,10 @@ export class GateBroker {
     const existing = this.waiters.get(gateId);
     if (existing) this.cancel(gateId, 'superseded-by-duplicate-gate');
     const ms = Math.max(1_000, Math.min(deadlineMs ?? this.deadlineMs, this.deadlineMs));
+    // The real number, reported from where it is decided. Anything computed
+    // elsewhere — createdAt + the cap, say — counts down to a moment nothing
+    // happens at, because the timer starts here and may be shorter than the cap.
+    this.deps.noteDeadline?.(gateId, this.now() + ms);
     return new Promise<GateVerdict>((resolve) => {
       const timer = setTimeout(() => {
         // Self-defer before the harness wall. A defer tells Claude Code to use

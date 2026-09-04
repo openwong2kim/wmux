@@ -7,6 +7,10 @@
 // that satisfies exactly this — the same shape the daemon injects the real
 // registry through.
 
+// Type-only, and the one import this module has: `approvalKeystrokes` is
+// itself dependency-free, so the narrow-interface property above survives.
+import type { ApprovalPressRefusal } from './approvalKeystrokes';
+
 /** What the resolver asked for. Approve = affirmative, deny = reject. */
 export type ApprovalDecision = 'approve' | 'deny';
 
@@ -109,6 +113,27 @@ export interface ApprovalRequest {
   risk?: 'critical';
   /** Epoch ms. */
   createdAt: number;
+  /**
+   * Epoch ms this request stops being answerable on its own.
+   *
+   * Present on `awaiting_permission` records only: a gate holds a real timer
+   * (the GateBroker self-defers and the tool falls back to the agent's own
+   * local prompt), so there is a genuine deadline to render. An
+   * `awaiting_input` record has no timer — it lives until the turn ends — and
+   * must not grow a fake countdown.
+   *
+   * REPORTED BY THE BROKER, never computed here. The broker's timer is armed
+   * after the record is created and for `min(the bridge's own remaining budget,
+   * the cap)`, so `createdAt + cap` is a different number from the moment the
+   * tool actually gives up. It calls back through `noteGateDeadline` when the
+   * timer is armed, which is why this is absent for the first instant of a
+   * record's life and stays absent on a gate that was deferred immediately.
+   *
+   * Additive and advisory: a surface without it renders no countdown, and no
+   * decision anywhere is made from it. The daemon's own expiry is driven by the
+   * broker's timer, not by this number.
+   */
+  deadlineAt?: number;
   state: ApprovalState;
   /**
    * #783 — the tool that triggered the gate. Present only on
@@ -199,6 +224,19 @@ export type ApprovalResolveResult =
   | {
       ok: false;
       reason: ApprovalResolveFailure;
+      /**
+       * Present ONLY with `reason: 'out-of-scope'` — the concrete condition
+       * `decideApprovalPress` refused on (`press-capability-off`,
+       * `autonomy-off`, `not-a-task-workspace`, …).
+       *
+       * `reason` is the closed wire vocabulary the web layer maps to status
+       * codes, and 'out-of-scope' is deliberately one bucket there. But a
+       * caller that has to DO something about the refusal — the orchestrator's
+       * `approval.press` relay, which turns it into a hint and decides whether
+       * to re-open the typed path — cannot act on a bucket. Additive: a caller
+       * that ignores this field behaves exactly as before.
+       */
+      pressRefusal?: ApprovalPressRefusal;
       /** Present on 'already-resolved' — the 409 UX names who got there first. */
       resolvedBy?: string;
       /** Absent only for 'not-found'. */

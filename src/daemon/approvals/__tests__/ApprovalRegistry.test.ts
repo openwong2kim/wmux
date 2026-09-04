@@ -1261,6 +1261,42 @@ describe('ApprovalRegistry — press scope is enforced at resolve', () => {
     expect(h.registry.list().pending).toHaveLength(1);
   });
 
+  // The relay in main (`approval.press`) turns a refusal into a hint for the
+  // brain and decides whether the operator's own policy said no. 'out-of-scope'
+  // is one bucket for eight conditions, so without this field every one of
+  // those decisions was made on a reason string that never arrives.
+  it('names the CONCRETE press condition alongside the bucketed wire reason', async () => {
+    const h = makeRegistry({
+      pressScope: () => ({ isTaskWorkspace: true, autonomyMode: 'assist', approvalPress: false }),
+    });
+    await awaitingInput(h.registry);
+    await settle();
+
+    const res = await h.registry.resolve({ id: 'req-1', ...automatedApprove });
+    if (res.ok) throw new Error('expected a refusal');
+    expect(res.reason).toBe('out-of-scope');
+    expect(res.pressRefusal).toBe('press-capability-off');
+  });
+
+  it('distinguishes a workspace that said no from one it could not classify', async () => {
+    const h = makeRegistry({
+      pressScope: () => ({ isTaskWorkspace: false, autonomyMode: 'danger', approvalPress: true }),
+    });
+    await awaitingInput(h.registry);
+    await settle();
+
+    const res = await h.registry.resolve({ id: 'req-1', ...automatedApprove });
+    if (res.ok) throw new Error('expected a refusal');
+    expect(res.pressRefusal).toBe('not-a-task-workspace');
+
+    const unwired = makeRegistry({ pressScope: () => null });
+    await awaitingInput(unwired.registry);
+    await settle();
+    const res2 = await unwired.registry.resolve({ id: 'req-1', ...automatedApprove });
+    if (res2.ok) throw new Error('expected a refusal');
+    expect(res2.pressRefusal).toBe('scope-unavailable');
+  });
+
   // The regression this round caught: with the scope source unwired, EVERY
   // resolve was refused — including the person tapping Approve on their phone.
   it('lets a human approve even with no scope source wired at all', async () => {

@@ -349,6 +349,11 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
         toolName: snapshot.toolName,
         ...(snapshot.toolInputSummary ? { toolInputSummary: snapshot.toolInputSummary } : {}),
         createdAt: this.now(),
+        // No `deadlineAt` here on purpose. The record is created BEFORE the
+        // broker arms its timer, and that timer runs for min(the bridge's own
+        // remaining budget, the cap) — so a deadline invented here would be a
+        // countdown to a moment nothing happens at. The broker reports the real
+        // one through `noteGateDeadline`.
         state: 'pending',
       };
       this.requests.push(created);
@@ -398,6 +403,28 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
    */
   expireById(id: string, reason: ApprovalExpiryReason): Promise<void> {
     return this.mutate(() => this.expirePendingWhere((r) => r.id === id, reason));
+  }
+
+  /**
+   * Stamp the deadline the GateBroker ACTUALLY armed onto a gate record, so a
+   * surface can count down to the moment the tool really gives up rather than
+   * to an invented one (see `ApprovalRequest.deadlineAt`).
+   *
+   * Goes through `mutate` for ORDERING, not for durability: `noteGateAwaiting`
+   * queues the record's creation on the same chain, so a deadline reported in
+   * the very next statement would otherwise land before the record exists. It
+   * returns no events on purpose — this is an advisory annotation on a record
+   * whose creation was already persisted, and the broker's timer does not
+   * survive a restart either, so a re-write to disk would buy nothing.
+   *
+   * A no-op for an unknown or already-settled id.
+   */
+  noteGateDeadline(id: string, deadlineAt: number): Promise<void> {
+    return this.mutate(() => {
+      const record = this.requests.find((r) => r.id === id && r.state === 'pending');
+      if (record) record.deadlineAt = deadlineAt;
+      return [];
+    });
   }
 
   // ── Resolution ───────────────────────────────────────────────────────────
@@ -583,6 +610,13 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
           result: {
             ok: false,
             reason: 'out-of-scope',
+            // The condition that actually refused. 'out-of-scope' is one
+            // bucket in the closed wire vocabulary the web layer maps to
+            // status codes; a relay that has to turn the refusal into a hint —
+            // or decide whether the operator's policy said no, as opposed to
+            // the daemon not knowing — cannot act on a bucket. See
+            // ApprovalResolveResult.pressRefusal.
+            pressRefusal: pressDecision.reason,
             request: copyRequest(record),
           } as ApprovalResolveResult,
         };

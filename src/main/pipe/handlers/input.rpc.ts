@@ -1,11 +1,17 @@
 import type { BrowserWindow } from 'electron';
 import type { RpcRouter } from '../RpcRouter';
+import type { RpcContext } from '../../../shared/rpc';
 import type { PTYManager } from '../../pty/PTYManager';
 import type { DaemonClient } from '../../DaemonClient';
 import { sendToRenderer } from './_bridge';
 import { sanitizePtyText } from '../../../shared/types';
 import { applyRoleBinding, type RoleBinding } from '../../../shared/orchestratorRole';
 import { isGateHeldOn } from '../../deck/stopGateState';
+import {
+  approvalBlockMessage,
+  pendingApprovalOnPane,
+  pressBlockLift,
+} from './approvals.rpc';
 import {
   assertWorkspaceOwnsPty,
   resolvePtyOwnerWorkspace,
@@ -500,6 +506,54 @@ function assertNotKillingAGateHeldPane(
   );
 }
 
+/**
+ * Refuse to TYPE at a pane that is waiting on an approval (orchestrator wave 2).
+ *
+ * A brain answering a worker used to send the literal text `1`. That is not an
+ * approval: nothing checks the prompt is still on screen, nothing records a
+ * decision, no press scope is consulted, and the same digit a moment later lands
+ * in the composer of an agent that has moved on. `approval_press` is the answer,
+ * so this closes the door the tool replaces — and closes it to ANY text or key,
+ * not only digits, because "2" and Down/Enter misfire the same way.
+ *
+ * Narrow on purpose. It engages ONLY for a commander (`ctx.commanderWorkspace`):
+ * the human operator types at their own panes, and a pane agent answering its
+ * own prompt IS the pane. And it engages only when a RECORD exists — wmux holds
+ * one only for a prompt a hook reported, so a worker without wmux hooks is
+ * unaffected and keeps its typed path.
+ *
+ * The lift is the deadlock guard: once a press on this pane has been refused by
+ * policy, typing is the only path left and the block gets out of the way. See
+ * `approvals.rpc.ts`.
+ */
+/**
+ * Keys the block does NOT cover: the two ways to make an agent stop.
+ *
+ * The block exists to stop a brain ANSWERING a prompt by keystroke, and neither
+ * of these answers one — they abandon what the pane is doing. Blocking them cost
+ * the operator's own escalation path: a worker running away inside a gated tool
+ * call holds an approval record for the whole gate deadline, and for that whole
+ * window the brain could neither press (policy said no) nor interrupt. "You may
+ * not answer this prompt" must not become "you may not stop this agent".
+ *
+ * Everything else stays blocked, digits and Enter and the arrows included: those
+ * SELECT an option, which is the misfire `approval_press` exists to replace.
+ */
+const APPROVAL_BLOCK_EXEMPT_KEYS: ReadonlySet<string> = new Set(['ctrl+c', 'escape']);
+
+async function assertNotTypingAtAnApproval(
+  getDaemonClient: (() => DaemonClient | null) | undefined,
+  ctx: RpcContext | undefined,
+  ptyId: string,
+  op: string,
+): Promise<void> {
+  if (!ctx?.commanderWorkspace) return;
+  if (pressBlockLift(ptyId)) return;
+  const record = await pendingApprovalOnPane(getDaemonClient, ptyId);
+  if (!record) return;
+  throw new Error(approvalBlockMessage(op, ptyId, record));
+}
+
 export function registerInputRpc(
   router: RpcRouter,
   ptyManager: PTYManager,
@@ -512,7 +566,7 @@ export function registerInputRpc(
    * params: { text: string, ptyId?: string }
    * If ptyId is omitted the renderer is queried for the active surface's ptyId.
    */
-  router.register('input.send', async (params) => {
+  router.register('input.send', async (params, ctx?: RpcContext) => {
     if (typeof params['text'] !== 'string') {
       throw new Error('input.send: missing required param "text"');
     }
@@ -541,6 +595,8 @@ export function registerInputRpc(
     await assertWorkspaceOwnsPty(getWindow, ptyId, callerWs, 'input.send');
 
     assertNotKillingAGateHeldPane(callerWs, ptyId, text, 'input.send');
+
+    await assertNotTypingAtAnApproval(getDaemonClient, ctx, ptyId, 'input.send');
 
     let safeText = params['raw'] === true ? text : sanitizePtyText(text);
 
@@ -681,7 +737,7 @@ export function registerInputRpc(
    * Supported keys: enter, tab, ctrl+c, ctrl+d, ctrl+z, ctrl+l,
    *                 escape, up, down, right, left
    */
-  router.register('input.sendKey', async (params) => {
+  router.register('input.sendKey', async (params, ctx?: RpcContext) => {
     if (typeof params['key'] !== 'string') {
       throw new Error('input.sendKey: missing required param "key"');
     }
@@ -713,6 +769,13 @@ export function registerInputRpc(
 
     // Ctrl+D arrives here as its escape sequence, so the same guard applies.
     assertNotKillingAGateHeldPane(callerWs, ptyId, sequence, 'input.sendKey');
+
+    // Down/Enter picks an option just as surely as typing "2" does — but ctrl+c
+    // and escape do not pick anything, they stop the agent, and the block must
+    // not take away the way to stop a runaway worker.
+    if (!APPROVAL_BLOCK_EXEMPT_KEYS.has(key)) {
+      await assertNotTypingAtAnApproval(getDaemonClient, ctx, ptyId, 'input.sendKey');
+    }
 
     const instance = ptyManager.get(ptyId);
     if (instance) {

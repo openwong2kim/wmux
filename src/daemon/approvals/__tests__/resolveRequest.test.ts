@@ -20,13 +20,16 @@ describe('parseApprovalResolveRequest — who is answering', () => {
     });
   });
 
-  it('calls the first-party client human, and ignores its claim too', () => {
+  it('calls the first-party client human unless it says otherwise', () => {
     expect(parseApprovalResolveRequest({ ...APPROVE }, { isFirstParty: true })).toMatchObject({
       resolver: 'human',
     });
+    // The downgrade lane (orchestrator wave 2): main relays a brain's press and
+    // declares it automated. See the block at the end of this file — a claim can
+    // only ever give privilege up.
     expect(
       parseApprovalResolveRequest({ ...APPROVE, resolver: 'automated' }, { isFirstParty: true }),
-    ).toMatchObject({ resolver: 'human' });
+    ).toMatchObject({ resolver: 'automated' });
   });
 });
 
@@ -68,5 +71,27 @@ describe('parseApprovalResolveRequest — shape', () => {
     expect(parseApprovalResolveRequest({ ...APPROVE, resolvedBy: 42 }, { isFirstParty: true })).toMatchObject({
       resolvedBy: '',
     });
+  });
+});
+
+describe('the automated downgrade (orchestrator wave 2)', () => {
+  it('lets a first-party client give up the human short-circuit', () => {
+    // main relays a BRAIN's press. It is first-party, so without this the press
+    // would be classified 'human' and skip decideApprovalPress entirely.
+    expect(
+      parseApprovalResolveRequest({ ...APPROVE, resolver: 'automated' }, { isFirstParty: true }),
+    ).toMatchObject({ resolver: 'automated' });
+    // …and main's own desktop UI, which says nothing, stays human.
+    expect(parseApprovalResolveRequest(APPROVE, { isFirstParty: true })).toMatchObject({
+      resolver: 'human',
+    });
+  });
+
+  it('is a downgrade only — nothing can declare itself human', () => {
+    for (const claim of ['human', 'HUMAN', true, 1]) {
+      expect(
+        parseApprovalResolveRequest({ ...APPROVE, resolver: claim }, { isFirstParty: false }),
+      ).toMatchObject({ resolver: 'automated' });
+    }
   });
 });

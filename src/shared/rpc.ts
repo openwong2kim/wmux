@@ -536,7 +536,11 @@ export type RpcMethod =
   | 'task.pr'
   | 'task.git.status'
   | 'task.git.log'
-  | 'task.gh.prView';
+  | 'task.gh.prView'
+  // Approval press (pipe/handlers/approvals.rpc.ts) — the brain answers a
+  // worker's prompt through the approval registry instead of typing a digit.
+  // Authorization is the daemon's press scope (decideApprovalPress).
+  | 'approval.press';
 
 // All available methods as array (for system.capabilities)
 export const ALL_RPC_METHODS = [
@@ -715,6 +719,7 @@ export const ALL_RPC_METHODS = [
   'task.git.status',
   'task.git.log',
   'task.gh.prView',
+  'approval.press',
 ] as const satisfies readonly RpcMethod[];
 
 // === RPC Parameter Types ===

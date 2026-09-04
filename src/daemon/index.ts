@@ -5232,6 +5232,11 @@ async function main(): Promise<void> {
     expireRecord: (gateId) => {
       void approvalRegistry?.expireById(gateId, 'gate-timed-out');
     },
+    // The broker owns the clock, so it reports the deadline instead of the
+    // registry guessing one from createdAt (orchestrator wave 2 review).
+    noteDeadline: (gateId, deadlineAt) => {
+      void approvalRegistry?.noteGateDeadline(gateId, deadlineAt);
+    },
   });
 
   // Push. Inert unless a relay is configured, which is the normal state until

@@ -21,6 +21,21 @@
 //
 // The default is `automated`, so a client that has not identified is scoped
 // rather than trusted, and a new caller cannot opt out by forgetting a field.
+//
+// ── The one thing a caller MAY say about itself (orchestrator wave 2) ───────
+//
+// A first-party client can ask to be treated as AUTOMATED (`resolver:
+// 'automated'` in params). That is a DOWNGRADE and only a downgrade: it can
+// never turn an automated client into a human one, so it grants nothing — it
+// gives up the human short-circuit and submits to `decideApprovalPress`.
+//
+// It exists because main is first-party for good reasons (it hosts the desktop
+// approval UI, where a person really is looking at the prompt) AND is the
+// process that relays a BRAIN's press (`approval.press`). Without this, the
+// brain's press would inherit main's 'human' classification and skip the entire
+// press scope — the scope would govern nothing at all, since no other caller
+// class reaches this RPC. Main declares `automated` on the brain's behalf, and
+// its own desktop UI keeps saying nothing and stays human.
 
 import type { ApprovalDecision, ApprovalResolveParams } from './types';
 
@@ -56,14 +71,17 @@ export function parseApprovalResolveRequest(
     return { ok: false, reason: 'invalid-choice-key' };
   }
 
+  // Derived, never declared UPWARD. A first-party caller may declare itself
+  // automated (a downgrade — see the header); nothing can declare itself human.
+  const declaredAutomated = params['resolver'] === 'automated';
+
   return {
     id,
     decision,
     // Bounded and stripped by the registry (sanitizeResolvedBy) — this field is
     // persisted, logged, and echoed back to a racing client.
     resolvedBy: typeof params['resolvedBy'] === 'string' ? params['resolvedBy'] : '',
-    // Derived, never declared. See the header.
-    resolver: ctx.isFirstParty ? 'human' : 'automated',
+    resolver: ctx.isFirstParty && !declaredAutomated ? 'human' : 'automated',
     ...(hasChoiceKey ? { choiceKey: rawChoice as string } : {}),
   };
 }
