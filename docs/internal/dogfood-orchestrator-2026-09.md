@@ -69,3 +69,30 @@ Proves A-1 (no first-run stall) and A-2's inheritance write, B-1's panel, and th
 ## Merged PRs (wave 2)
 
 #1206 (lane A), #1204 (lane B), #1205 (lane C), #1207 (lane E), #1208 (lane D), after one review round (Claude + GLM) with fixes pushed to each branch; #1203 reverted the unshipped 3.51.0 release commit.
+
+## Wave 3 — re-run on the task-workspace fix (2026-09-04, 18:07–18:20)
+
+Build under test: packaged local build of main `2125041e` + `fix/task-workspace-no-brain` (PR #1212, first commit). Same `-demo` instance and owner workspace, fresh `fanout_start` × 2 (`w3-task-a/b`), approval clicked over CDP on the demo's own port (checked with `lsof`).
+
+| Check | Result | Evidence |
+|---|---|---|
+| No brain for a task workspace (finding 7 fix) | pass | `deck-commander.json` gained no session for `ws-86df…`/`ws-90ad…`; no new `brain-*` pty for 5 min after spawn (the wave 2 run had one within 1 s) |
+| Worker first-run screens (A-1) | pass | both workers on the composer immediately |
+| Owner brain wake on a worker stop | **blocked by design, then pass** | the owner workspace carried a **pending decision** from the previous session ("A request from before this wmux session is still on the books. Resume it, or drop it?") — a pending decision consumes every wake, so nothing woke the owner in the wave 2 run either. Answering it (Drop it) spawned the owner brain `brain-751330e3…` within seconds |
+| Brain reads the wave 2 tool contracts | pass | 23 tool calls in one session: `task_adopt` ×2 with `commit: true` (it quoted the "sequential adopts need commit: true" description), `git_status` ×2, `ledger_update`, `deck_complete_work` ×2, `deck_ask_decision`, `terminal_read`/`terminal_send` on its workers |
+| E-2 `task_adopt commit:true` | tools honest, brain not | first adopt → `dirty-target` (the wave 1 repo had uncommitted changes), second → `commit-failed` with the affected paths restored. The brain then reported "adopt finished (ff51d7e, target clean)" — no such commit exists anywhere; its `git_status` of the (fresh) caller repo was clean for an unrelated reason |
+| E-3 `git_status` without `task_id` | pass | `target: "caller-repo"`, `repoRoot` = the owner pane's repository |
+| E-1 no-gate completion | not reached | `ledger_update completed` → `ILLEGAL_TRANSITION working → completed` (the brain skipped `review_requested`, which only the worker can set — and the demo workers still have no `ledger_update`, finding 8) |
+| `deck_complete_work` | **false refusal** (finding 11) | `workers_outstanding` naming `daemon-5dac0302` — the operator's idle **shell** pane in the owner workspace (`agent: null`, `status: running`), i.e. the pane the dogfood harness was typed into. The brain raised a decision about it and stopped |
+| `approval_press` | not exercised | worker a hit a Claude Code permission prompt ("Create DOGFOOD.md and stage it — proceed?") while the owner brain was mid-turn (4 min, held by the active-work gate); the buffered `awaiting_input` was then swallowed by the brain's own new pending decision |
+
+## Findings (wave 3)
+
+11. **The stop gate counts an agent-less shell pane as an outstanding worker.** `deck_complete_work` refused with `workers_outstanding` for `daemon-5dac0302`, a plain zsh pane (`agent: null`) whose `status` read `running` because a command had been typed into it. A shell is not a worker; the completion gate (and the Stop gate's snapshot inference) should only count panes with an agent, or the owner's open ledger tasks.
+12. **A pending decision is a silent kill switch for the whole delegation loop.** The parked-work prompt from the previous session was raised automatically at boot and sat unanswered; every worker stop routed to the owner was consumed while it was pending, with nothing in the ledger or the app log saying why. The wave 2 run's "owner never woke" had this as a second cause on top of finding 7. At minimum the coalescer should log the consumed wake with the decision id, and the fan-out reply should warn when the owner workspace has a pending decision.
+13. **The brain reported an adopt the tools had refused.** Both `task_adopt` calls answered `ok: false` (`dirty-target`, `commit-failed`) and the brain's summary still said "adopt finished (ff51d7e)". The tool results were correct; this is the coalescer/verdict text problem the wave 2 lane A work targeted, now visible on the adopt path.
+14. **`ledger_update` from the brain straight to `completed` is refused** (`ILLEGAL_TRANSITION working → completed`). Correct by the ledger rules, but the brain has no way past it when the worker lacks the ledger tool (finding 8): the brain-side contract text should say `review_requested` is the worker's, and name `force` with a reason as the only brain-side exit.
+
+## What this proves / does not prove (wave 3)
+
+Proves the fix: no brain spawns for a task workspace, and the owner brain wakes, reads its ledger, and uses the wave 2 task/git tools once the pending decision is cleared. Does not prove `approval_press`, the no-gate `completed` path, or a clean `task_adopt commit:true` — each was blocked by one of findings 8, 11, 12 rather than by its own code. Pass criteria (5 unattended runs, wake ≤ 5 s) still not attempted.
