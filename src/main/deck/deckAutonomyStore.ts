@@ -270,6 +270,7 @@ export async function setWorkspaceAutonomy(
   };
   all[workspaceId] = next;
   await atomicWriteJSON(getDeckAutonomyPath(dir), all);
+  emitAutonomyWritten();
   return next;
 }
 
@@ -300,10 +301,42 @@ export async function setWorkspaceMode(
   };
   all[workspaceId] = next;
   await atomicWriteJSON(getDeckAutonomyPath(dir), all);
+  emitAutonomyWritten();
   return next;
 }
 
 /** Resolve just the mode (fail-closed to the product default). */
 export function loadWorkspaceMode(workspaceId: string, dir?: string): AgentMode {
   return loadWorkspaceAutonomy(workspaceId, dir).mode;
+}
+
+// ── Change notification ─────────────────────────────────────────────────────
+//
+// The daemon needs to know a workspace's autonomy mode to decide whether an
+// AUTOMATED approval press may land in it, and it cannot read this file (it is
+// main's store, and a daemon→main fetch would hang with the GUI closed). So
+// main pushes, and this is how the push learns a write happened. Deliberately
+// a bare "something changed" signal rather than a diff: the subscriber sends
+// the whole table anyway (workspaceFactsFeed.ts), so a payload here would only
+// be a second thing to keep correct.
+
+const writeListeners = new Set<() => void>();
+
+/** Subscribe to "a workspace's autonomy was written". Returns the unsubscribe. */
+export function onAutonomyWritten(listener: () => void): () => void {
+  writeListeners.add(listener);
+  return () => {
+    writeListeners.delete(listener);
+  };
+}
+
+function emitAutonomyWritten(): void {
+  for (const listener of writeListeners) {
+    try {
+      listener();
+    } catch (err) {
+      // A broken subscriber must never fail the write that already landed.
+      console.warn(`[deck] autonomy write listener threw: ${String(err)}`);
+    }
+  }
 }

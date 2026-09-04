@@ -419,6 +419,11 @@ export type RpcMethod =
   | 'daemon.superviseRearm'
   | 'daemon.superviseStop'
   | 'daemon.setResumeBinding'
+  // Main → daemon workspace fact feed (approval press scope). The daemon owns
+  // the approval registry but cannot see whether a workspace is a WorkTask
+  // task workspace or what its deck autonomy mode is — both live in main. Main
+  // pushes the whole table on every change; the daemon holds the last one.
+  | 'daemon.workspaceFacts.set'
   | 'daemon.inbox.poll'
   | 'lanlink.status'
   | 'lanlink.configure'
@@ -624,6 +629,7 @@ export const ALL_RPC_METHODS = [
   'daemon.superviseRearm',
   'daemon.superviseStop',
   'daemon.setResumeBinding',
+  'daemon.workspaceFacts.set',
   'daemon.inbox.poll',
   'lanlink.status',
   'lanlink.configure',

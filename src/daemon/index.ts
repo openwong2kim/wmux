@@ -94,6 +94,7 @@ import {
   type PushPresenceSuppressionConfig,
 } from './push/presence';
 import { ApprovalRegistry } from './approvals/ApprovalRegistry';
+import { WorkspaceFactStore } from './approvals/workspaceFacts';
 import { GateBroker } from './approvals/GateBroker';
 import { coerceGate } from './approvals/gateConfig';
 import { DeviceStore, type DeviceBatchRevocationCause } from './web/DeviceStore';
@@ -200,6 +201,14 @@ function revokeAllWebDevices(
 // both webTerminalServer construction paths need it available.
 let approvalRegistry: ApprovalRegistry | null = null;
 
+// The press-scope fact table main pushes down (see approvals/workspaceFacts.ts).
+// Module-scoped for the same reason the registry is: the RPC handler writes it,
+// the registry reads it through a closure, and the client-close sweep drops it.
+const workspaceFacts = new WorkspaceFactStore();
+/** The pipe client whose push the current table came from, so the table can be
+ *  dropped when that client disconnects rather than outliving its publisher. */
+let workspaceFactsPublisher: string | null = null;
+
 // #783 — the gate broker holds bridge RPC responses open until a phone answers.
 // Module-scoped for the same reason as the registry: the RPC handler creates
 // waiters, the web route resolves them, and shutdown/session-died cancels them.
@@ -256,6 +265,10 @@ function createApprovalRegistry(sessionManager: DaemonSessionManager): ApprovalR
     notifyGateDropped: (gateId) => {
       gateBroker?.cancel(gateId, 'record-expired');
     },
+    // The workspace-shaped half of the press scope. `null` until main has
+    // pushed a table at all, which is what makes a missing integration report
+    // as `scope-unavailable` instead of looking like a policy refusal.
+    pressScope: (workspaceId) => workspaceFacts.get(workspaceId),
     log: (level, message) => log(level, message),
   });
 }
@@ -3116,6 +3129,7 @@ function registerRpcHandlers(
       decision?: unknown;
       resolvedBy?: unknown;
       choiceKey?: unknown;
+      resolver?: unknown;
     };
     const id = typeof p.id === 'string' ? p.id : '';
     // Anything that is not exactly one of the two decisions is refused rather
@@ -3131,6 +3145,12 @@ function registerRpcHandlers(
     // pipe client must not be able to send an unbounded or control-character
     // string through it.
     const resolvedBy = typeof p.resolvedBy === 'string' ? p.resolvedBy : '';
+    // Who is answering. Defaults to 'human' — every caller that exists today is
+    // a person tapping — and only the exact string 'automated' opts into the
+    // press scope. A typo therefore lands on the STRICTER side for the pane
+    // (a human press is unscoped), which is why the resolver has to declare
+    // itself rather than the daemon guessing from the client.
+    const resolver = p.resolver === 'automated' ? ('automated' as const) : ('human' as const);
     // Presence-sensitive for the same reason as the HTTP route: never turn a
     // malformed choice into a legacy first-option press, and never let a deny
     // request smuggle an affirmative choice digit.
@@ -3148,8 +3168,29 @@ function registerRpcHandlers(
       id,
       decision,
       resolvedBy,
+      resolver,
       ...(choiceKey !== undefined ? { choiceKey } : {}),
     });
+  });
+
+  // ── Main → daemon workspace facts (approval press scope) ─────────────────
+  // The two facts `decideApprovalPress` needs about a pane's workspace — is it
+  // a WorkTask task workspace, and what is its deck autonomy mode — live in
+  // main. Main pushes the whole table here on every change; until it does, the
+  // store answers "not established" and an automated press is refused as
+  // `scope-unavailable`. See approvals/workspaceFacts.ts.
+  pipeServer.onRpc('daemon.workspaceFacts.set', async (params, ctx) => {
+    const rows = (params as { facts?: unknown })?.facts;
+    if (!Array.isArray(rows)) {
+      return { ok: false, error: 'daemon.workspaceFacts.set requires a facts array' };
+    }
+    const accepted = workspaceFacts.replace(
+      rows as { workspaceId: string; isTaskWorkspace: boolean; autonomyMode: string }[],
+    );
+    // Remembered so the table is dropped when its publisher goes away: a row
+    // main is no longer maintaining must not keep authorizing presses.
+    workspaceFactsPublisher = ctx.clientId;
+    return { ok: true, accepted };
   });
 
   const readDaemonAgentState = (id: string): {
@@ -5316,6 +5357,14 @@ async function main(): Promise<void> {
   pipeServer.onClientClose((clientId) => {
     desktopPresence.forget(clientId);
     deferredPush.onPresenceChanged();
+    // The press-scope table belongs to the main process that published it. Once
+    // that client is gone nobody is maintaining it, so it stops being evidence
+    // — an automated press falls back to `scope-unavailable` rather than being
+    // authorized by a row that may already be wrong.
+    if (workspaceFactsPublisher !== null && workspaceFactsPublisher === clientId) {
+      workspaceFacts.clear();
+      workspaceFactsPublisher = null;
+    }
   });
   // Channels (a2a-channels U3). Channels live in their own file
   // (`channels.json`, see ChannelStateWriter doc) so a channel-loss event

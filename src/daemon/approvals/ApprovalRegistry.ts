@@ -107,10 +107,17 @@ export interface ApprovalRegistryDeps {
    * The workspace-shaped half of the press scope (see `decideApprovalPress`):
    * is this workspace a WorkTask task workspace, and what is its deck autonomy
    * mode. Both facts live in the MAIN process, so the daemon can only be told
-   * them. Absent, or answering `{}`, means "not established" — and unknown is a
-   * refusal, so a press never happens on an assumption.
+   * them (see approvals/workspaceFacts.ts).
+   *
+   * Three answers, and they are NOT the same refusal. `undefined` (the dep is
+   * absent) and `null` (wired, but main has never published) both mean the
+   * source of truth is unreachable — reported as `scope-unavailable`, which is
+   * the one that says "the integration is missing", not "policy said no". An
+   * OBJECT is an answer from main, and `{}` inside it is main declining to
+   * classify this workspace, which refuses as `workspace-unknown`. Every branch
+   * refuses; what differs is what an operator is told to go and fix.
    */
-  pressScope?: (workspaceId: string) => Pick<ApprovalPressFacts, 'isTaskWorkspace' | 'autonomyMode'>;
+  pressScope?: (workspaceId: string) => Pick<ApprovalPressFacts, 'isTaskWorkspace' | 'autonomyMode'> | null;
   log?: (level: 'info' | 'warn' | 'error', message: string) => void;
   /** Injected for test determinism. */
   now?: () => number;
@@ -526,11 +533,14 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
       // `scope-unavailable` — distinct from a workspace that answered "no", so
       // the missing integration wiring is visible instead of looking like
       // policy.
-      const scopeAvailable = !!this.deps.pressScope && !!record.workspaceId;
-      const scope =
+      const published =
         this.deps.pressScope && record.workspaceId
           ? this.deps.pressScope(record.workspaceId)
-          : {};
+          : null;
+      // Wired AND answering. A wired feed that has never been published is as
+      // unavailable as no feed at all — see the ApprovalRegistryDeps note.
+      const scopeAvailable = published !== null;
+      const scope = published ?? {};
       const pressDecision = decideApprovalPress({
         resolver: params.resolver ?? 'human',
         decision: params.decision,

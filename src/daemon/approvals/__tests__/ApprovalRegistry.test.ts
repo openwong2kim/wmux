@@ -1289,4 +1289,37 @@ describe('ApprovalRegistry — press scope is enforced at resolve', () => {
     // The missing integration wiring must be visible, not look like policy.
     expect(logs.join('\n')).toContain('pressScope');
   });
+
+  // Wired, but main has never pushed its table (the daemon started before the
+  // GUI, or the GUI is closed). That is the same absence of evidence as no feed
+  // at all, and it must NOT read as an empty answer about the workspace.
+  it('treats an unpublished fact table as no scope source, not as "not a task workspace"', async () => {
+    const logs: string[] = [];
+    const h = makeRegistry({ pressScope: () => null, log: (_level, message) => logs.push(message) });
+    await awaitingInput(h.registry);
+    await settle();
+
+    const res = await h.registry.resolve({ id: 'req-1', ...automatedApprove });
+    expect(res.ok).toBe(false);
+    if (res.ok) throw new Error('expected a refusal');
+    expect(res.reason).toBe('out-of-scope');
+    expect(h.writes).toHaveLength(0);
+    expect(logs.join('\n')).toContain('pressScope');
+  });
+
+  // A workspace main DID answer about, and declined to classify. Different
+  // reason, same refusal — and the log must not blame the wiring.
+  it('refuses a workspace absent from a published table without blaming the wiring', async () => {
+    const logs: string[] = [];
+    const h = makeRegistry({ pressScope: () => ({}), log: (_level, message) => logs.push(message) });
+    await awaitingInput(h.registry);
+    await settle();
+
+    const res = await h.registry.resolve({ id: 'req-1', ...automatedApprove });
+    expect(res.ok).toBe(false);
+    if (res.ok) throw new Error('expected a refusal');
+    expect(res.reason).toBe('out-of-scope');
+    expect(logs.join('\n')).toContain('workspace-unknown');
+    expect(logs.join('\n')).not.toContain('pressScope');
+  });
 });

@@ -85,6 +85,9 @@ import { TaskAdoptService } from './worktask/TaskAdoptService';
 import { TaskGateRunner } from './worktask/TaskGateRunner';
 import { createHostedLedgerPort } from './worktask/ledgerPort';
 import { getProjectConfigStore } from './project/ProjectConfigStore';
+import { publishWorkspaceFacts } from './workspace/workspaceFactsFeed';
+import { getTaskLedger } from './deck/taskLedgerHost';
+import { onAutonomyWritten } from './deck/deckAutonomyStore';
 import { registerDeckHandler } from './ipc/handlers/deck.handler';
 import { registerWorkspaceMirrorHandler } from './ipc/handlers/workspaceMirror.handler';
 import { getWorkspaceMirror } from './workspace/WorkspaceMirror';
@@ -897,6 +900,28 @@ registerWorktaskHandlers(() => daemonClient, (services: WorktaskServices) => {
     }),
   });
 });
+// ── Press-scope fact feed (main → daemon) ───────────────────────────────────
+// The daemon decides whether an AUTOMATED approval press may land in a pane,
+// and the two facts that decision needs — is this a WorkTask task workspace,
+// what is its deck autonomy mode — are main's. Push the whole table whenever
+// either can have changed: a ledger transition (a task opened, finished or was
+// cancelled) and an autonomy write. Until the first push lands the daemon
+// answers `scope-unavailable` and refuses, which is the safe direction.
+// See workspace/workspaceFactsFeed.ts.
+const pushWorkspaceFacts = (): Promise<void> =>
+  publishWorkspaceFacts({
+    push: async (facts) => {
+      if (!daemonClient) throw new Error('Daemon not connected');
+      return daemonClient.rpc('daemon.workspaceFacts.set', { facts });
+    },
+  });
+getTaskLedger().onTransition(() => {
+  void pushWorkspaceFacts();
+});
+onAutonomyWritten(() => {
+  void pushWorkspaceFacts();
+});
+
 // Command Deck Phase 2 — the Commander brain. Renderer-only surface (same
 // process-boundary trust basis as channelLocal/fanout, pipe-unreachable): the
 // Agent-SDK orchestrator session runs in MAIN and drives the fleet via the wmux
@@ -1451,6 +1476,13 @@ app.on('ready', async () => {
         .catch(() => {
           // Old daemon: no identify, therefore no presence, therefore pushes.
         });
+      // A fresh daemon has an EMPTY press-scope table (it is per-connection —
+      // the daemon drops it when its publisher disconnects), so seed it here.
+      // Without this, every automated approval press refuses as
+      // `scope-unavailable` until the next task transition happens to occur.
+      void publishWorkspaceFacts({
+        push: async (facts) => client.rpc('daemon.workspaceFacts.set', { facts }),
+      });
       // Handler swap to daemon-routed mode. The microsecond window where
       // pty/* handlers are torn down and re-registered is the same
       // surface the original code used; the swap is logged for the
