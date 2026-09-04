@@ -239,6 +239,22 @@ export const IPC = {
   //   running loop still wakes. Same renderer-only trust boundary.
   DECK_AUTOWAKE_GET: 'deck:autowake:get',
   DECK_AUTOWAKE_SET: 'deck:autowake:set',
+  //   DECK_LEDGER_GATE_* — the `deck.ledgerGate` switch (Settings toggle).
+  //   ON holds a brain's Stop open while the task ledger still lists open
+  //   tasks it owns; OFF keeps the shipped snapshot-inferred gate. Backed by
+  //   deck-ledger-gate.json (main/deck/deckLedgerGateStore.ts). Same
+  //   renderer-only trust boundary.
+  DECK_LEDGER_GATE_GET: 'deck:ledger-gate:get',
+  DECK_LEDGER_GATE_SET: 'deck:ledger-gate:set',
+  //   DECK_LEDGER_SUMMARY — the Deck status panel's read: the open task
+  //   ledger rows one workspace's brain owns, joined with the workspace
+  //   mirror's per-worker agent status. Read-only projection.
+  DECK_LEDGER_SUMMARY: 'deck:ledger:summary',
+  //   DECK_LEDGER_PUSH — one-way "the ledger moved" notification carrying the
+  //   owner workspace, so the panel re-reads on a transition instead of only
+  //   on its fallback timer. Carries no ledger content: the summary read is
+  //   the single projection, and a push with a payload would be a second one.
+  DECK_LEDGER_PUSH: 'deck:ledger:push',
   //   DECK_MODE_* — the per-workspace agent mode (off/assist/auto).
   //   Mode is the single user-facing autonomy knob; the raw caps
   //   are derived from it. `set` with mode='off' also tears down running loops

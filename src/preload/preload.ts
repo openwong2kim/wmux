@@ -593,6 +593,31 @@ const electronAPI = {
       set: (enabled: boolean) =>
         ipcRenderer.invoke(IPC.DECK_AUTOWAKE_SET, { enabled }) as Promise<{ enabled: boolean }>,
     },
+    // `deck.ledgerGate` — the experimental Stop gate that reads the task
+    // ledger instead of inferring open work from pane snapshots. Backed by the
+    // same file the gate reads, so the toggle survives a restart.
+    ledgerGate: {
+      get: () =>
+        ipcRenderer.invoke(IPC.DECK_LEDGER_GATE_GET) as Promise<{ enabled: boolean }>,
+      set: (enabled: boolean) =>
+        ipcRenderer.invoke(IPC.DECK_LEDGER_GATE_SET, { enabled }) as Promise<{ enabled: boolean }>,
+    },
+    // The Deck status panel's ledger read + its "re-read now" ping. The push
+    // carries only the owner workspace: `summary` is the single projection.
+    ledger: {
+      summary: (workspaceId: string) =>
+        ipcRenderer.invoke(IPC.DECK_LEDGER_SUMMARY, { workspaceId }) as Promise<
+          import('../main/deck/deckLedgerSummary').DeckLedgerSummary
+        >,
+      onChanged: (callback: (envelope: { workspaceId: string }) => void) => {
+        const listener = (
+          _e: Electron.IpcRendererEvent,
+          envelope: { workspaceId: string },
+        ) => callback(envelope);
+        ipcRenderer.on(IPC.DECK_LEDGER_PUSH, listener);
+        return () => { ipcRenderer.removeListener(IPC.DECK_LEDGER_PUSH, listener); };
+      },
+    },
     // Per-workspace agent mode — off/assist/auto. The single
     // autonomy knob; 'off' also tears down running loops + schedules.
     mode: {

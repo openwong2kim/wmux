@@ -59,6 +59,7 @@ import {
   createWorkTaskReconciler,
   readLedgerGateInput,
   installLedgerChannelEmitter,
+  getTaskLedger,
 } from '../../deck/taskLedgerHost';
 import { createGlobalTurnGate, type GlobalTurnGate } from '../../deck/globalTurnGate';
 import { loadDeckHeartbeat } from '../../deck/deckHeartbeatStore';
@@ -72,6 +73,12 @@ import {
   type AgentMode,
 } from '../../deck/deckAutonomyStore';
 import { loadAutoWakeEnabled, setAutoWakeEnabled } from '../../deck/deckAutoWakeStore';
+import { loadLedgerGateEnabled, setLedgerGateEnabled } from '../../deck/deckLedgerGateStore';
+import {
+  buildDeckLedgerSummary,
+  EMPTY_LEDGER_SUMMARY,
+  type DeckLedgerSummary,
+} from '../../deck/deckLedgerSummary';
 import {
   loadWorkspaceLoopState,
   renderLoopStateBlock,
@@ -1491,6 +1498,16 @@ export function registerDeckHandler(
       });
     },
   });
+  // Deck status panel refresh: the same transition stream the mission-channel
+  // emitter rides, teed to the renderer as a bare "your ledger moved" ping.
+  // The panel then re-reads DECK_LEDGER_SUMMARY, so main keeps exactly one
+  // projection of the ledger and the push cannot drift from it.
+  const disposeLedgerPush = getTaskLedger().onTransition((t) => {
+    const win = getWindow();
+    if (win && !win.isDestroyed()) {
+      win.webContents.send(IPC.DECK_LEDGER_PUSH, { workspaceId: t.entry.ownerWorkspaceId });
+    }
+  });
   coalescer = new CommanderEventCoalescer({
     runTurn: (workspaceId, prompt) => runTurnForWorkspace(prompt, workspaceId),
     // Lane F: worker events parked while this workspace had no brain —
@@ -2179,6 +2196,63 @@ export function registerDeckHandler(
     }),
   );
 
+  // ── `deck.ledgerGate` switch (Settings toggle) ────────────────────────────
+  // Reads and writes the same deck-ledger-gate.json the Stop gate consults
+  // (readLedgerGateInput above), so the toggle and the gate can never disagree
+  // and the state survives a restart without a second copy.
+  ipcMain.removeHandler(IPC.DECK_LEDGER_GATE_GET);
+  ipcMain.handle(
+    IPC.DECK_LEDGER_GATE_GET,
+    wrapHandler(IPC.DECK_LEDGER_GATE_GET, async (): Promise<{ enabled: boolean }> => {
+      return { enabled: loadLedgerGateEnabled() };
+    }),
+  );
+
+  ipcMain.removeHandler(IPC.DECK_LEDGER_GATE_SET);
+  ipcMain.handle(
+    IPC.DECK_LEDGER_GATE_SET,
+    wrapHandler(IPC.DECK_LEDGER_GATE_SET, async (
+      _event: Electron.IpcMainInvokeEvent,
+      raw: unknown,
+    ): Promise<{ enabled: boolean }> => {
+      const req = (raw && typeof raw === 'object' && !Array.isArray(raw))
+        ? (raw as Record<string, unknown>)
+        : {};
+      const enabled = await setLedgerGateEnabled(req.enabled === true);
+      return { enabled };
+    }),
+  );
+
+  // ── Deck status panel: the open task ledger for one owner ─────────────────
+  // A projection, never a write. `panesFor` joins the workspace mirror's
+  // per-pane agent status onto each task's own workspace, so the panel shows
+  // "what the worker is doing" without a second round trip. Never throws: a
+  // ledger that cannot be read yields the empty summary and the panel
+  // collapses, which is the same thing it does with zero tasks.
+  ipcMain.removeHandler(IPC.DECK_LEDGER_SUMMARY);
+  ipcMain.handle(
+    IPC.DECK_LEDGER_SUMMARY,
+    wrapHandler(IPC.DECK_LEDGER_SUMMARY, async (
+      _event: Electron.IpcMainInvokeEvent,
+      raw: unknown,
+    ): Promise<DeckLedgerSummary> => {
+      const req = (raw && typeof raw === 'object' && !Array.isArray(raw))
+        ? (raw as Record<string, unknown>)
+        : {};
+      const workspaceId = readWorkspaceId(req);
+      if (!workspaceId) return EMPTY_LEDGER_SUMMARY;
+      try {
+        return buildDeckLedgerSummary({
+          entries: getTaskLedger().list({ ownerWorkspaceId: workspaceId, openOnly: true }),
+          panesFor: (taskWorkspaceId) =>
+            getWorkspaceMirror().getFleetSnapshot(taskWorkspaceId)?.panes ?? null,
+        });
+      } catch {
+        return EMPTY_LEDGER_SUMMARY;
+      }
+    }),
+  );
+
   // ── Per-workspace agent mode (off/assist/danger) ───────────────────────────
   // The wire accepts only the CURRENT names. A stale renderer sending 'auto'
   // is rejected rather than silently mapped: LEGACY_MODE_MAP migrates values
@@ -2569,6 +2643,7 @@ export function registerDeckHandler(
     offBus();
     coalescer?.dispose();
     disposeLedgerEmitter();
+    disposeLedgerPush();
     globalTurnGate.dispose();
     scheduler.stop();
     heartbeat.stop();
@@ -2594,6 +2669,9 @@ export function registerDeckHandler(
     ipcMain.removeHandler(IPC.DECK_BRAIN_PTY_LIST);
     ipcMain.removeHandler(IPC.DECK_AUTOWAKE_GET);
     ipcMain.removeHandler(IPC.DECK_AUTOWAKE_SET);
+    ipcMain.removeHandler(IPC.DECK_LEDGER_GATE_GET);
+    ipcMain.removeHandler(IPC.DECK_LEDGER_GATE_SET);
+    ipcMain.removeHandler(IPC.DECK_LEDGER_SUMMARY);
     ipcMain.removeHandler(IPC.DECK_MODE_GET);
     ipcMain.removeHandler(IPC.DECK_MODE_SET);
     ipcMain.removeHandler(IPC.DECK_DECISION_GET);
