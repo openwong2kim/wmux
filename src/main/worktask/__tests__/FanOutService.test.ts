@@ -649,7 +649,10 @@ describe('T2 per-repo fan-out environment (ports + setup hook)', () => {
     expect(res.ok).toBe(true);
     expect(res.portRangeInvalid).toBe(true);
     expect(res.tasks.every((t) => t.port === undefined)).toBe(true);
-    expect(renderer.spawned.every((s) => s.env === undefined)).toBe(true);
+    // No port reaches the pane. The pane env is not EMPTY — a claude worker
+    // always carries the A-1 first-run flag — so the assertion is about the
+    // port key, not about the env being absent.
+    expect(renderer.spawned.every((s) => s.env?.WMUX_TASK_PORT === undefined)).toBe(true);
   });
 
   it('fails ONLY the task whose setup hook failed, and gives it no port', async () => {
@@ -764,5 +767,61 @@ describe('per-task roles', () => {
     expect(res.tasks[1].initialCommand?.startsWith('codex --model o3')).toBe(true);
     // …and the prompt file argument survived the rewrite either way.
     for (const t of res.tasks) expect(t.initialCommand).toMatch(/prompt\.md/);
+  });
+});
+
+// ── A-1: worker first run ────────────────────────────────────────────────────
+
+describe('fan-out worker first run (A-1)', () => {
+  it('hands a claude worker the sandboxed flag, and no other agent', async () => {
+    const daemon = makeDaemonFake();
+    const renderer = makeRendererFake();
+    const svc = new FanOutService({
+      daemon: daemon.port,
+      renderer: renderer.port,
+      worktrees: makeWorktreesFake(),
+    });
+
+    await svc.start(baseReq());
+    expect(renderer.spawned.every((s) => s.env?.CLAUDE_CODE_SANDBOXED === '1')).toBe(true);
+
+    const other = makeRendererFake();
+    const svc2 = new FanOutService({
+      daemon: makeDaemonFake().port,
+      renderer: other.port,
+      worktrees: makeWorktreesFake(),
+    });
+    await svc2.start(baseReq({ idempotencyKey: 'fo-key-codex', agentCmd: 'codex' }));
+    expect(other.spawned.every((s) => s.env?.CLAUDE_CODE_SANDBOXED === undefined)).toBe(true);
+  });
+
+  it('reports a worker still stuck on a first-run screen instead of calling it working', async () => {
+    const upsell = [
+      'Try the new fullscreen renderer?',
+      '❯ 1. Yes, try it',
+      '  2. Not now',
+      'Enter to confirm · Esc to cancel',
+    ].join('\n');
+    const keys: string[] = [];
+    const daemon = makeDaemonFake();
+    const renderer = makeRendererFake();
+    const svc = new FanOutService({
+      daemon: daemon.port,
+      renderer: renderer.port,
+      worktrees: makeWorktreesFake(),
+      firstRun: {
+        // A pane that never clears, so the watch exhausts its dismissals.
+        readScreen: async () => upsell,
+        sendKey: async (_ptyId, sequence) => {
+          keys.push(sequence);
+        },
+      },
+    });
+
+    const res = await svc.start(baseReq({ idempotencyKey: 'fo-key-stuck', titles: ['Task A'] }));
+    expect(res.tasks[0].firstRunStuck).toBe(true);
+    expect(res.tasks[0].firstRunPrompt).toBe('fullscreen renderer upsell');
+    // It DID try the dismissal the screen advertises before giving up.
+    expect(keys).toEqual(['\x1b', '\x1b', '\x1b']);
   });
 });

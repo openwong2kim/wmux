@@ -46,6 +46,12 @@ import {
   runFanoutSetup,
   type FanoutSetupSkipReason,
 } from './fanoutEnvironment';
+import {
+  clearFirstRunPrompts,
+  firstRunEnvForAgent,
+  launcherStem,
+  type FirstRunPort,
+} from './agentFirstRun';
 
 /**
  * A3 (delegation contract, worker side) — appended to every fan-out prompt.md.
@@ -189,6 +195,12 @@ export interface FanOutTaskResult {
   /** T2 — the worktree setup hook failed; the agent was NOT started (a task
    *  whose dependencies never installed would burn a turn discovering that). */
   setupFailed?: boolean;
+  /** A-1 — a first-run screen was seen in this worker's pane. Carries the
+   *  headline so a report names what the worker is looking at. */
+  firstRunPrompt?: string;
+  /** A-1 — the first-run screen is STILL on the worker's pane: it needs a human
+   *  keypress, and the task's ledger row was moved to `input_required`. */
+  firstRunStuck?: boolean;
 }
 
 export interface FanOutResult {
@@ -212,6 +224,9 @@ export interface FanOutServiceOptions {
   worktrees?: TaskWorktreeManager;
   /** T2 — trust-gated `wmux.json` reader. Omitted → no ports, no setup hook. */
   project?: FanOutProjectPort;
+  /** A-1 — pane viewport + keystroke port for the first-run watch. Omitted →
+   *  the env still goes in, but nothing watches the screen. */
+  firstRun?: FirstRunPort;
 }
 
 /**
@@ -232,6 +247,8 @@ export class FanOutService {
   private readonly worktrees: TaskWorktreeManager;
   /** T2 — per-project wmux.json reader (absent = feature off). */
   private readonly project?: FanOutProjectPort;
+  /** A-1 — pane viewport + keystroke port (absent = no first-run watch). */
+  private readonly firstRun?: FirstRunPort;
 
   /** §2 G1 멱등: 키 → 완료 결과 LRU. 동일 키 재호출은 직전 결과 반환. */
   private readonly results = new Map<string, FanOutResult>();
@@ -243,6 +260,7 @@ export class FanOutService {
     this.renderer = opts.renderer;
     this.worktrees = opts.worktrees ?? new TaskWorktreeManager();
     this.project = opts.project;
+    this.firstRun = opts.firstRun;
   }
 
   /**
@@ -561,13 +579,18 @@ export class FanOutService {
     const initialCommand = buildInitialCommand(ctx.agentCmd, promptPath);
     base.initialCommand = initialCommand; // F2 재발사 재료(맨 셸 오배선 방지).
     const wsName = `wtask: ${ctx.title.slice(0, 32)}`;
+    // A-1 — first-run env for the PANE only (not for the setup hook, which is a
+    // shell line, not an agent). Keyed on the command main is sending: a role
+    // binding may still swap the launcher in the renderer, which is why the
+    // post-spawn watch below keys on the command that was actually launched.
+    const paneEnv = { ...taskEnv, ...firstRunEnvForAgent(ctx.agentCmd) };
     let workspaceId: string;
     try {
       const spawned = await this.renderer.spawnWorkspace({
         name: wsName,
         cwd: plan.worktreePath,
         initialCommand,
-        ...(Object.keys(taskEnv).length > 0 ? { env: taskEnv } : {}),
+        ...(Object.keys(paneEnv).length > 0 ? { env: paneEnv } : {}),
         ...(ctx.role ? { role: ctx.role } : {}),
       });
       if ('error' in spawned) {
@@ -636,7 +659,57 @@ export class FanOutService {
       channelDisconnected = true;
     }
 
+    // A-1 — the worker is up; make sure it is not sitting on a first-run screen.
+    // Last, and never fatal: the task exists, its ledger row exists, and the
+    // channel is wired, so the worst case here is a task reported as needing a
+    // human keypress instead of one that silently never starts.
+    await this.watchFirstRun(base, ctx.verifiedWorkspaceId);
+
     return { ...base, ok: true, channelDisconnected };
+  }
+
+  /**
+   * A-1 — clear (or report) Claude Code's first-run screens on a fresh worker.
+   *
+   * Mutates `base` with what was seen. A screen that is still there moves the
+   * task's ledger row to `input_required`, because that is the state the brain
+   * reads: an idle worker and a worker frozen on an onboarding menu are
+   * indistinguishable from the outside, and `working` would be a lie.
+   */
+  private async watchFirstRun(base: FanOutTaskResult, ownerWorkspaceId: string): Promise<void> {
+    const port = this.firstRun;
+    const ptyId = base.ptyId;
+    if (!port || !ptyId) return;
+    // The command the renderer ACTUALLY launched (a role binding may have
+    // swapped the agent). Only claude has these screens.
+    if (launcherStem(base.initialCommand ?? '') !== 'claude') return;
+
+    let outcome: Awaited<ReturnType<typeof clearFirstRunPrompts>>;
+    try {
+      outcome = await clearFirstRunPrompts(ptyId, port);
+    } catch (err) {
+      console.warn(`[fanout:first-run] watch failed for pane ${ptyId}: ${String(err)}`);
+      return;
+    }
+    if (outcome.status === 'clear') return;
+    base.firstRunPrompt = outcome.headline;
+    if (outcome.status !== 'stuck') return;
+    base.firstRunStuck = true;
+    if (!base.taskId) return;
+    try {
+      const ledger = getTaskLedger();
+      const entry = ledger.list({ id: base.taskId })[0];
+      if (!entry) return;
+      await ledger.update({
+        id: base.taskId,
+        status: 'input_required',
+        actor: { kind: 'system', workspaceId: ownerWorkspaceId },
+        expectedRev: entry.rev,
+        summary: `worker is waiting on Claude Code's ${outcome.headline}; it needs a keypress in the pane`,
+      });
+    } catch {
+      // best-effort — the result already carries firstRunStuck.
+    }
   }
 
   /**
