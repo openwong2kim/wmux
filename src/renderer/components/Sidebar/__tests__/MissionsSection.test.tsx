@@ -35,6 +35,15 @@ describe('MissionsSection', () => {
     expect(html).toContain('data-missions-section');
   });
 
+  // Review fix: cleanup used to live inside the finished-tasks group, so the
+  // one state where it matters most — nothing finished, but orphaned worktrees
+  // on disk — could not reach it.
+  it('offers the cleanup entry with zero missions', () => {
+    const html = renderToStaticMarkup(createElement(MissionsSection));
+    expect(html).toContain('data-missions-cleanup');
+    expect(html).not.toContain('data-missions-done-group');
+  });
+
   describe('flattenMissions (순수)', () => {
     it('빈 맵은 빈 배열', () => {
       expect(flattenMissions({})).toEqual([]);

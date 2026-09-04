@@ -40,6 +40,24 @@ export function panePrincipalId(workspaceId: string, paneId: string): string {
   return `pane:${workspaceId}/${paneId}`;
 }
 
+/**
+ * Inverse of {@link panePrincipalId}. Returns `null` for anything that is not a
+ * pane principal (`human:me`, `ext:*`, or a malformed id) — callers that need
+ * the coordinate must handle "this row does not name a pane".
+ *
+ * Split at the LAST `/` so a workspace id containing one still yields the pane
+ * id, which is the segment the format actually pins.
+ */
+export function parsePanePrincipalId(
+  principalId: string,
+): { workspaceId: string; paneId: string } | null {
+  if (!principalId.startsWith('pane:')) return null;
+  const body = principalId.slice('pane:'.length);
+  const sep = body.lastIndexOf('/');
+  if (sep <= 0 || sep === body.length - 1) return null;
+  return { workspaceId: body.slice(0, sep), paneId: body.slice(sep + 1) };
+}
+
 export interface PrincipalRecord {
   /** 'human:me' | `pane:${workspaceId}/${paneId}` | `ext:${name}`(R4) */
   id: string;

@@ -57,6 +57,9 @@ export const en = {
   // to "does this workspace have tasks", and a section that vanishes is not.
   'missions.empty': 'No tasks yet',
   'missions.doneSummary': 'last: {title}',
+  // C-4 — entry point to the worktree cleanup scan from the finished tasks.
+  'missions.cleanUp': 'Clean up',
+  'missions.cleanUpTooltip': 'Scan task worktrees and close what is left over',
 
   // Sidebar — Company mode
   'company.deptRemoveHint': 'Right-click to remove',
@@ -443,6 +446,9 @@ export const en = {
   'fleet.approvals.plugin': 'plugin',
   'fleet.approvals.enterApprove': 'approve',
   'fleet.approvals.delDeny': 'deny',
+  // C-3 — what happened to the approvals nobody answered.
+  'fleet.approvals.autoRejected': 'auto-rejected: {name}',
+  'fleet.approvals.autoRejectedLog': 'Recently auto-rejected approvals',
 
   // Project config (X5 wmux.json)
   'project.dialogTitle': 'Project configuration (wmux.json)',
@@ -1684,6 +1690,21 @@ export const en = {
   // Viewpoint-neutral on purpose: the marker fans out to every member's view,
   // so a second-person "You joined" would be wrong for non-operator viewers.
   'channels.systemOperatorJoin': 'Operator joined this channel',
+  // C-1 — composer mention targeting. A mention only reaches an idle agent when
+  // it carries a pane pin; the badge-only line says when it does not.
+  'channels.mentionWillReach': 'will reach {pane}',
+  'channels.mentionBadgeOnly': '@{name} has no live pane — badge only, nobody is woken',
+  // C-2 — per-message delivery outcome on your OWN posts. `unconfirmed` is an
+  // aged pending: the post is out, no recipient outcome ever came back.
+  'channels.deliveryPending': '… sending',
+  'channels.deliveryDelivered': '✓ delivered',
+  'channels.deliveryTargetGone': '✗ target gone',
+  'channels.deliveryNudgeExhausted': '! no answer — nudges exhausted',
+  'channels.deliveryUnconfirmed': '? delivery unconfirmed',
+  // C-5 — the two user-visible channel strings that were still hard-coded.
+  'channels.postNoIdentity': 'No channel or workspace identity',
+  'channels.mentionLoopSuspected':
+    'Possible agent mention loop — auto-nudges for a pane are rate-capped; queued mentions stay pullable via a2a_task_query.',
   // J4 — diff comment fired to the mission channel. {count} = number of task
   // agents @-mentioned (0 when every agent has left the channel).
   'diff.commentFired': 'Comment posted to the mission channel — pinged {count} agent(s)',
@@ -1798,6 +1819,14 @@ export const en = {
   'worktask.cleanup.preserved': 'Uncommitted artifacts preserved — commit/PR from the diff or discard, then close again.',
   'worktask.cleanup.unpushed': 'You have {count} unpushed commit(s) — PR/push, then close again.',
   'worktask.cleanup.closeFailed': 'close failed: {error}',
+  // C-4 — what to do about a close that failed on a worktree holding work.
+  'worktask.cleanup.commitAndClose': 'Commit & close',
+  'worktask.cleanup.openWorktree': 'Open worktree',
+  'worktask.cleanup.commitLinePrepared': 'Commit line typed into the task pane — review it and press Enter to run it.',
+  'worktask.cleanup.commitLineUnavailable': 'No prepared commit line: nothing changed, or too many changed files to list. Open the worktree instead.',
+  'worktask.cleanup.noPaneForCommit': 'This task has no live pane to prepare the commit in. Open the worktree instead.',
+  'worktask.cleanup.commitNeedsShell': "The task's pane is running an agent, not a shell — a git line typed there becomes a chat message. Open the worktree instead.",
+  'worktask.cleanup.openWorktreeFailed': "Couldn't open the worktree: {error}",
 
   // ─── Workspace item: task worktree boundary warning ──────────────────────
   'workspace.cwdDeparted': 'Pane cwd departed outside the task worktree boundary: {cwd}',

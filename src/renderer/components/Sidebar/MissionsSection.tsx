@@ -225,21 +225,39 @@ function MissionsSection(): React.ReactElement {
 
   return (
     <div className="mb-1" data-missions-section>
-      <button
-        type="button"
-        className={`w-full flex items-center gap-1 px-4 pt-1 pb-1 text-[9px] font-mono font-semibold tracking-widest text-[var(--text-muted)] uppercase hover:text-[var(--text-subtle)] transition-colors ${FOCUS_RING}`}
-        onClick={() => setExpanded((v) => !v)}
-        aria-expanded={expanded}
-        data-missions-toggle
-      >
-        <span
-          className={`transition-transform ${expanded ? 'rotate-90' : ''}`}
-          aria-hidden="true"
+      <div className="flex items-center">
+        <button
+          type="button"
+          className={`min-w-0 flex-1 flex items-center gap-1 px-4 pt-1 pb-1 text-[9px] font-mono font-semibold tracking-widest text-[var(--text-muted)] uppercase hover:text-[var(--text-subtle)] transition-colors ${FOCUS_RING}`}
+          onClick={() => setExpanded((v) => !v)}
+          aria-expanded={expanded}
+          data-missions-toggle
         >
-          <IconChevron size={9} />
-        </span>
-        <span>{t('missions.title', { count: missions.length })}</span>
-      </button>
+          <span
+            className={`transition-transform ${expanded ? 'rotate-90' : ''}`}
+            aria-hidden="true"
+          >
+            <IconChevron size={9} />
+          </span>
+          <span>{t('missions.title', { count: missions.length })}</span>
+        </button>
+        {/* C-4: the worktree scan has no entry point outside the command
+            palette. Review fix — it sits on the SECTION header, not inside the
+            finished-tasks group: the orphaned directories and unmaterialized
+            tasks it finds are exactly what you have when the list shows
+            nothing finished at all. */}
+        {expanded && (
+          <button
+            type="button"
+            className={`shrink-0 pr-4 pl-1 pt-1 pb-1 text-[9px] font-mono uppercase tracking-widest text-[var(--text-subtle)] hover:text-[var(--accent-blue)] transition-colors ${FOCUS_RING}`}
+            onClick={() => useStore.getState().setWorktaskCleanupVisible(true)}
+            aria-label={t('missions.cleanUpTooltip')}
+            data-missions-cleanup
+          >
+            {t('missions.cleanUp')}
+          </button>
+        )}
+      </div>
       {expanded && missions.length === 0 && (
         <div className="px-4 py-1 text-[10px] font-mono text-[var(--text-muted)]" data-missions-empty>
           {t('missions.empty')}

@@ -16,6 +16,7 @@
 
 import {
   memo,
+  useEffect,
   useState,
   useRef,
   useCallback,
@@ -33,6 +34,7 @@ import { useT } from '../../hooks/useT';
 import { tokenAttrs } from '../../themes';
 import { FOCUS_RING } from '../focusRing';
 import { computePaneAutoName, paneDisplayName } from '../../utils/paneNaming';
+import { parsePanePrincipalId } from '../../../shared/principals';
 
 // ─── Synthesized message row for the optimistic local insert ───────────
 
@@ -80,14 +82,23 @@ export function synthesizeChannelMessage(params: {
  *  two same-agent panes in one workspace. */
 export interface MentionCandidate {
   workspaceId: string;
-  paneId: string;
-  ptyId: string;
+  /** Absent on a badge-only candidate: a roster member whose workspace has no
+   *  live agent pane, so there is nothing to pin and nobody to wake. */
+  paneId?: string;
+  ptyId?: string;
+  /** Roster row this candidate addresses. Set on member candidates only; pane
+   *  candidates address a pane, which the daemon resolves on its own. */
+  memberId?: string;
   /** Stable, UNIQUE @-token inserted into the body and matched on submit — the
    *  pane's auto name (e.g. "w1-2(claude)"). Routing still uses paneId. */
   insertToken: string;
   /** Human-facing label shown in the dropdown: pane rename when set, else the
    *  auto name. May collide (harmless — paneId routes). */
   displayName: string;
+  /** Display name of the pane this candidate pins, when the pin is not the
+   *  candidate itself (a member candidate resolved to its most recently active
+   *  agent pane). Drives the composer's "will reach …" hint. */
+  pinnedPaneName?: string;
 }
 
 /**
@@ -105,6 +116,13 @@ export function buildMentionCandidates(args: {
   paneLabel: Record<string, string>;
   memberWorkspaceIds: ReadonlySet<string>;
   selfWorkspaceId: string | null;
+  /** Channel roster. Members whose own token is not already a pane candidate get
+   *  one badge-only-or-pinned candidate each (C-1) — without them a member with
+   *  no live agent pane could not be @-mentioned at all. */
+  members?: readonly ChannelMember[];
+  /** ptyId → last activity epoch ms (`surfaceActivityAt`). Picks WHICH agent pane
+   *  a member candidate pins when its workspace runs several. */
+  surfaceActivityAt?: Record<string, number | undefined>;
 }): MentionCandidate[] {
   const { workspaces, surfaceAgent, paneLabel, memberWorkspaceIds } = args;
   const out: MentionCandidate[] = [];
@@ -139,7 +157,72 @@ export function buildMentionCandidates(args: {
       });
     }
   }
+  // C-1 — one candidate per ROSTER MEMBER whose own name is not already a pane
+  // token. A mention only wakes an idle agent when it carries a pane pin, so a
+  // member candidate resolves to that workspace's most recently active agent
+  // pane; a member with no live agent pane stays badge-only (no paneId) and the
+  // composer says so instead of pretending the ping will land.
+  const paneTokens = new Set(out.map((c) => c.insertToken));
+  const paneCandidates = out.slice();
+  const activity = args.surfaceActivityAt ?? {};
+  for (const member of args.members ?? []) {
+    if (member.workspaceId === HUMAN_WORKSPACE_ID) continue; // the human seat runs no agent
+    const token = member.memberName ?? member.memberId;
+    // The submit-time scan matches a single whitespace-free run, so a roster
+    // name with a space can never be typed back as a token.
+    if (!token || /\s/.test(token) || paneTokens.has(token)) continue;
+    if (!memberWorkspaceIds.has(member.workspaceId)) continue;
+    // Review fix: the member row already RECORDS its pane
+    // (`principalId` = `pane:<ws>/<paneId>`). Pinning "the workspace's most
+    // recently active agent pane" instead sent @builder to whichever sibling
+    // happened to have typed last — a different agent, in a workspace that runs
+    // several. Activity is the FALLBACK, for a row whose own pane is gone.
+    const ownPane = member.principalId ? parsePanePrincipalId(member.principalId) : null;
+    const pin =
+      (ownPane
+        ? paneCandidates.find(
+            (c) => c.workspaceId === ownPane.workspaceId && c.paneId === ownPane.paneId,
+          )
+        : undefined) ??
+      pickMostRecentlyActivePane(
+        paneCandidates.filter((c) => c.workspaceId === member.workspaceId),
+        activity,
+      );
+    out.push({
+      workspaceId: member.workspaceId,
+      memberId: member.memberId,
+      insertToken: token,
+      displayName: token,
+      ...(pin ? { paneId: pin.paneId, ptyId: pin.ptyId, pinnedPaneName: pin.displayName } : {}),
+    });
+    paneTokens.add(token);
+  }
   return out;
+}
+
+/**
+ * C-1 (rev 2) — when a mentioned member's workspace runs SEVERAL live agent
+ * panes, pin the most recently active one; `surfaceActivityAt` is the renderer's
+ * per-pty activity clock. Ties (and a workspace with no activity samples at all)
+ * fall back to the first candidate, which is the pane tree's own order — stable,
+ * so the same member always resolves to the same pane until activity moves.
+ * Returns `undefined` when the workspace has no live agent pane (badge-only).
+ */
+export function pickMostRecentlyActivePane(
+  candidates: readonly MentionCandidate[],
+  surfaceActivityAt: Record<string, number | undefined>,
+): MentionCandidate | undefined {
+  let best: MentionCandidate | undefined;
+  let bestAt = -1;
+  for (const c of candidates) {
+    if (!c.paneId || !c.ptyId) continue;
+    const at = surfaceActivityAt[c.ptyId] ?? 0;
+    if (best === undefined || at > bestAt) {
+      best = c;
+      bestAt = at;
+    }
+  }
+  return best;
 }
 
 /**
@@ -177,13 +260,29 @@ export function detectMentionToken(
  *  `applyMention` pushes into `picked`, so an auto-promoted (never-clicked)
  *  token and a dropdown-selected one are indistinguishable downstream. */
 function candidateMention(c: MentionCandidate): ChannelMention {
-  return { workspaceId: c.workspaceId, paneId: c.paneId, ptyId: c.ptyId, name: c.insertToken };
+  return {
+    workspaceId: c.workspaceId,
+    // A badge-only member candidate carries no pane pin: the mention lands at
+    // workspace level, which is exactly what the daemon does with a pin it
+    // cannot prove. Omit the keys rather than sending `undefined`.
+    ...(c.paneId ? { paneId: c.paneId } : {}),
+    ...(c.ptyId ? { ptyId: c.ptyId } : {}),
+    ...(c.memberId ? { memberId: c.memberId } : {}),
+    name: c.insertToken,
+  };
 }
 
 /** Dedup identity for a mention row: a pane is addressed by (workspaceId,
  *  paneId) — the same key `applyMention` dedups on. */
-function mentionKey(m: { workspaceId: string; paneId?: string }): string {
-  return `${m.workspaceId}\u0000${m.paneId ?? ''}`;
+function mentionKey(m: { workspaceId: string; paneId?: string; memberId?: string }): string {
+  // A PINNED mention is identified by the pane it wakes: two tokens that resolve
+  // to the same pane must collapse, or the pane is nudged twice for one post.
+  // A BADGE-ONLY mention has no pane, so the member row it addresses is its
+  // identity — keying it on the workspace alone silently dropped every
+  // badge-only member after the first in a workspace with several seats.
+  return m.paneId
+    ? `pane\u0000${m.workspaceId}\u0000${m.paneId}`
+    : `member\u0000${m.workspaceId}\u0000${m.memberId ?? ''}`;
 }
 
 /** True when `idx` sits at a token boundary: end-of-string, or a char that
@@ -292,6 +391,56 @@ export function promoteTypedMentions(
   return { mentions, unmatched };
 }
 
+// ─── Mention target hint (C-1) ──────────────────────────────────────────
+
+/** How long the draft must sit still before the "will reach …" hint is
+ *  recomputed. Long enough to skip the per-keystroke rescan, short enough that
+ *  the line is there by the time the eye reaches it. */
+export const MENTION_HINT_DEBOUNCE_MS = 200;
+
+/** One line of the composer's "who will this reach" hint. */
+export interface MentionTargetHint {
+  /** The @token as it appears in the body. */
+  name: string;
+  /** Display name of the pane the mention pins, when it pins one. */
+  paneName?: string;
+  /** True when the mention carries no pane pin: it shows as a badge in the
+   *  recipient's channel list and wakes nobody. */
+  badgeOnly: boolean;
+}
+
+/**
+ * C-1 — describe where the draft's mentions would actually land. A mention with
+ * a pane pin reaches that pane (the only shape that reaches an IDLE agent); one
+ * without is badge-only. Pure + exported: the packaged Electron UI can't be
+ * driven by automation, so the invariant is tested here.
+ */
+export function describeMentionTargets(
+  mentions: readonly ChannelMention[],
+  candidates: readonly MentionCandidate[],
+): MentionTargetHint[] {
+  const byKey = new Map<string, MentionCandidate>();
+  for (const c of candidates) {
+    byKey.set(
+      mentionKey({
+        workspaceId: c.workspaceId,
+        ...(c.paneId ? { paneId: c.paneId } : {}),
+        ...(c.memberId ? { memberId: c.memberId } : {}),
+      }),
+      c,
+    );
+  }
+  return mentions.map((m) => {
+    const c = byKey.get(mentionKey(m));
+    const paneName = m.paneId ? c?.pinnedPaneName ?? c?.displayName ?? m.name : undefined;
+    return {
+      name: m.name,
+      ...(paneName ? { paneName } : {}),
+      badgeOnly: !m.paneId,
+    };
+  });
+}
+
 // ─── Pure view (props-driven) ───────────────────────────────────────────
 
 const EMPTY_CANDIDATES: MentionCandidate[] = [];
@@ -358,6 +507,24 @@ export function ComposerContent({
       (c) => c.displayName.toLowerCase().includes(q) || c.insertToken.toLowerCase().includes(q),
     );
   }, [token, candidates]);
+
+  // C-1 — live "will reach …" hint for the draft's mentions. Promotion is the
+  // same pure scan the submit path runs, so the hint can never disagree with
+  // what actually ships.
+  //
+  // Review fix: the scan walks the whole draft against every candidate, and it
+  // ran on EVERY keystroke. It is debounced to a typing pause — the hint is
+  // advisory, and a stale line for a fifth of a second costs nothing.
+  const [settledText, setSettledText] = useState(text);
+  useEffect(() => {
+    if (settledText === text) return;
+    const timer = setTimeout(() => setSettledText(text), MENTION_HINT_DEBOUNCE_MS);
+    return () => clearTimeout(timer);
+  }, [text, settledText]);
+  const targetHints = useMemo(
+    () => describeMentionTargets(promoteTypedMentions(settledText, candidates, picked).mentions, candidates),
+    [settledText, candidates, picked],
+  );
 
   const dropdownOpen = token !== null && matches.length > 0 && !inFlight && !disabled;
   // Open-intent but nothing matches (typing `@zzz`, or a channel with no live
@@ -624,6 +791,30 @@ export function ComposerContent({
           </svg>
         </button>
       </div>
+      {/* Review fix: no aria-live here. This is a running summary of what the
+          user is still typing, not an event — announcing every revision talks
+          over the composition it describes. It is read where it sits. */}
+      {targetHints.length > 0 && (
+        <div
+          data-channel-mention-hint
+          className="flex flex-col gap-0.5 text-[9px] font-mono text-[var(--text-muted)]"
+          {...tokenAttrs('textMuted', 'text')}
+        >
+          {targetHints.map((h) => (
+            <span
+              key={h.name}
+              data-channel-mention-hint-row
+              data-badge-only={h.badgeOnly ? 'true' : undefined}
+              className={h.badgeOnly ? 'text-[var(--accent-yellow)]' : undefined}
+            >
+              {h.badgeOnly
+                ? (t('channels.mentionBadgeOnly') || '@{name} has no live pane — badge only, nobody is woken')
+                    .replace('{name}', h.name)
+                : (t('channels.mentionWillReach') || 'will reach {pane}').replace('{pane}', h.paneName ?? h.name)}
+            </span>
+          ))}
+        </div>
+      )}
     </form>
   );
 }
@@ -668,6 +859,15 @@ function ComposerImpl({ channelId, onError }: ComposerProps): React.ReactElement
       paneLabel,
       memberWorkspaceIds: new Set(members.map((m) => m.workspaceId)),
       selfWorkspaceId,
+      // C-1: roster rows become candidates too (pinned to the workspace's most
+      // recently active agent pane, or badge-only when it has none). The activity
+      // clock is READ, not subscribed to: it is stamped on every tool event of
+      // every pane, so a subscription would re-render the always-mounted composer
+      // continuously (the A2 memo barrier below exists for exactly this). Re-read
+      // whenever the roster or the pane tree changes, which is often enough — a
+      // slightly older pin is still a live agent pane in the right workspace.
+      members,
+      surfaceActivityAt: useStore.getState().surfaceActivityAt,
     }),
     [members, workspaces, surfaceAgent, paneLabel, selfWorkspaceId],
   );
@@ -677,7 +877,13 @@ function ComposerImpl({ channelId, onError }: ComposerProps): React.ReactElement
       // A channel created by another client requires a join first — that is
       // the daemon's membership rule (NOT_A_MEMBER), not a company gate.
       if (!channel || !selfWorkspaceId) {
-        return { ok: false, errorCode: 'UNKNOWN', errorMessage: 'No channel or workspace identity' };
+        // C-5: this is the one post-failure string the composer rendered in
+        // hard-coded English; it lands in the inline error row like every other.
+        return {
+          ok: false,
+          errorCode: 'UNKNOWN',
+          errorMessage: t('channels.postNoIdentity') || 'No channel or workspace identity',
+        };
       }
       // R11 idempotency: `clientMsgId` is the per-post idempotency
       // key. The daemon returns the original `seq` on a repeat hit

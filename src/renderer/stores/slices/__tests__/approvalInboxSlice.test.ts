@@ -79,3 +79,54 @@ describe('approvalInboxSlice', () => {
     expect(beforeOrder).toEqual(['p1']); // sanity: original ref unchanged after first remove
   });
 });
+
+// C-3 (review fix) — the auto-rejected log lives in the STORE, so a deadline
+// that fires while the Approvals tab is closed is still recorded, and a row a
+// human answered after a throttled timer is not mislabelled as expired.
+describe('approvalInboxSlice — auto-rejected log', () => {
+  const T0 = 1_700_000_000_000;
+
+  it('starts empty', () => {
+    expect(createTestStore().getState().approvalAutoRejected).toEqual([]);
+  });
+
+  it('logs a prompt removed at its deadline, whether or not anything is rendering', () => {
+    const store = createTestStore();
+    store.getState().addMcpPrompt({ ...makePrompt('p1'), deadlineAt: T0 } as ApprovalPromptInfo);
+    store.getState().noteApprovalRemoved({
+      key: 'mcp:p1',
+      label: 'test-plugin',
+      deadlineAt: T0,
+      removedAt: T0 + 100,
+    });
+    expect(store.getState().approvalAutoRejected).toEqual([
+      { key: 'mcp:p1', label: 'test-plugin', at: T0 },
+    ]);
+  });
+
+  it('does not log a prompt a human answered before its deadline', () => {
+    const store = createTestStore();
+    store.getState().noteApprovalRemoved({
+      key: 'mcp:p1',
+      label: 'test-plugin',
+      deadlineAt: T0,
+      removedAt: T0 - 1_000,
+    });
+    expect(store.getState().approvalAutoRejected).toEqual([]);
+  });
+
+  it('does not log a prompt that never carried a deadline', () => {
+    const store = createTestStore();
+    store.getState().addMcpPrompt(makePrompt('p1'));
+    store.getState().removeMcpPrompt('p1');
+    expect(store.getState().approvalAutoRejected).toEqual([]);
+  });
+
+  it('removeMcpPrompt classifies the departing prompt itself', () => {
+    const store = createTestStore();
+    const now = Date.now();
+    store.getState().addMcpPrompt({ ...makePrompt('p1'), deadlineAt: now } as ApprovalPromptInfo);
+    store.getState().removeMcpPrompt('p1');
+    expect(store.getState().approvalAutoRejected.map((e) => e.key)).toEqual(['mcp:p1']);
+  });
+});

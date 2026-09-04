@@ -25,7 +25,6 @@ import {
   ChannelViewContent,
   isMessageVisibleToViewer,
   sortMessagesBySeq,
-  viewerDeliveryStatus,
   renderMessageText,
   renderMessageBody,
   SCROLLBACK_PAGE,
@@ -229,34 +228,9 @@ describe('sortMessagesBySeq', () => {
   });
 });
 
-describe('viewerDeliveryStatus', () => {
-  it('returns undefined when viewerMemberId is null', () => {
-    const m = makeMessage('ch-1', 1, { deliveryStatus: 'delivered' });
-    expect(viewerDeliveryStatus(m, null)).toBeUndefined();
-  });
-
-  it("returns undefined when the message is not the viewer's", () => {
-    const m = makeMessage('ch-1', 1, { memberId: 'm-2', deliveryStatus: 'delivered' });
-    expect(viewerDeliveryStatus(m, 'm-1')).toBeUndefined();
-  });
-
-  it("returns the message's deliveryStatus when there is no snapshot", () => {
-    const m = makeMessage('ch-1', 1, { memberId: 'm-1', deliveryStatus: 'delivered' });
-    expect(viewerDeliveryStatus(m, 'm-1')).toBe('delivered');
-  });
-
-  it("returns the viewer's snapshot entry when present", () => {
-    const m = makeMessage('ch-1', 1, {
-      memberId: 'm-1',
-      deliveryStatus: 'delivered',
-      recipientSnapshot: [
-        { memberId: 'm-1', workspaceId: 'ws-1', status: 'pending' },
-        { memberId: 'm-2', workspaceId: 'ws-2', status: 'delivered' },
-      ],
-    });
-    expect(viewerDeliveryStatus(m, 'm-1')).toBe('pending');
-  });
-});
+// `viewerDeliveryStatus` is gone (C-2): it read the SENDER's own row out of
+// the recipient snapshot, a row that is never there. Its replacement,
+// ownMessageDeliveryState, is covered by deliveryStatus.test.ts.
 
 // ─── ChannelViewContent (renderToStaticMarkup) ──────────────────────────
 
@@ -268,6 +242,7 @@ function renderView(args: {
   onLeave?: () => void;
   onArchive?: () => void;
   composerSlot?: React.ReactNode;
+  paneNameFor?: (workspaceId: string, memberId: string) => string | undefined;
 } = {}): string {
   return renderToStaticMarkup(
     createElement(ChannelViewContent, {
@@ -278,6 +253,7 @@ function renderView(args: {
       onLeave: args.onLeave,
       onArchive: args.onArchive,
       composerSlot: args.composerSlot ?? <div data-fake-composer />,
+      ...(args.paneNameFor ? { paneNameFor: args.paneNameFor } : {}),
     }),
   );
 }
@@ -291,6 +267,31 @@ beforeEach(() => {
     s.channelMessages = {};
     s.activeChannelId = null;
     s.channelUnread = {};
+  });
+});
+
+describe('ChannelViewContent — agent identity chip (C-5)', () => {
+  const opaque = makeMessage('ch-1', 1, {
+    memberId: 'pty-9f31c2ab',
+    memberName: 'Claude Code',
+  });
+
+  it('names the sender pane instead of its opaque memberId when the roster resolves it', () => {
+    const html = renderView({
+      viewer: makeMember({ memberId: 'm-1' }),
+      messages: [opaque],
+      paneNameFor: (workspaceId, memberId) =>
+        workspaceId === 'ws-1' && memberId === 'pty-9f31c2ab' ? 'w1-1(claude)' : undefined,
+    });
+    expect(html).toContain('w1-1(claude)');
+    // The raw id survives only as the hover title, never as the visible chip.
+    expect(html).toContain('title="pty-9f31c2ab"');
+    expect(html).not.toContain('>pty-9f31c2ab<');
+  });
+
+  it('falls back to the stored memberId when no pane resolves', () => {
+    const html = renderView({ viewer: makeMember({ memberId: 'm-1' }), messages: [opaque] });
+    expect(html).toContain('>pty-9f31c2ab<');
   });
 });
 

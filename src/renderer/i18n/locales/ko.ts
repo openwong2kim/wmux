@@ -175,6 +175,8 @@ export const ko = {
   'fleet.approvals.plugin': '플러그인',
   'fleet.approvals.enterApprove': '승인',
   'fleet.approvals.delDeny': '거부',
+  'fleet.approvals.autoRejected': '자동 거부됨: {name}',
+  'fleet.approvals.autoRejectedLog': '최근 자동 거부된 승인',
 
   // Project config (X5 wmux.json)
   'project.dialogTitle': '프로젝트 설정 (wmux.json)',
@@ -1139,6 +1141,16 @@ export const ko = {
   // 서버-발행 operator-join 시스템 메시지의 표시 문자열. 모든 멤버 뷰에
   // 동일하게 렌더되므로 2인칭이 아닌 시점 중립 문구를 쓴다.
   'channels.systemOperatorJoin': '오퍼레이터가 이 채널에 참여했습니다',
+  'channels.mentionWillReach': '{pane}에 전달됩니다',
+  'channels.mentionBadgeOnly': '@{name}에는 살아 있는 페인이 없습니다 — 배지만 표시되고 아무도 깨우지 않습니다',
+  'channels.deliveryPending': '… 보내는 중',
+  'channels.deliveryDelivered': '✓ 전달됨',
+  'channels.deliveryTargetGone': '✗ 대상 없음',
+  'channels.deliveryNudgeExhausted': '! 응답 없음 — 알림 예산 소진',
+  'channels.deliveryUnconfirmed': '? 전달 미확인',
+  'channels.postNoIdentity': '채널 또는 워크스페이스 신원이 없습니다',
+  'channels.mentionLoopSuspected':
+    '에이전트 멘션 루프가 의심됩니다 — 페인당 자동 알림에는 상한이 있습니다. 대기 중인 멘션은 a2a_task_query로 계속 가져올 수 있습니다.',
   // J4 — diff 코멘트를 미션 채널에 발사. {count} = @멘션된 태스크 에이전트 수
   // (에이전트가 전원 채널을 떠났으면 0).
   'diff.commentFired': '코멘트를 미션 채널에 발사했습니다 — {count}개 에이전트 호출',
@@ -1205,6 +1217,8 @@ export const ko = {
   'missions.done': '완료 ({count})',
   'missions.empty': '아직 태스크 없음',
   'missions.doneSummary': '최근: {title}',
+  'missions.cleanUp': '정리',
+  'missions.cleanUpTooltip': '태스크 worktree를 스캔해 남은 것을 정리합니다',
   'fanout.taskReady': '태스크 "{title}" 준비됨',
   'fanout.tasksReady': '태스크 {count}개 준비됨',
   'fanout.openDiff': 'diff 열기',
@@ -1262,6 +1276,13 @@ export const ko = {
   'worktask.cleanup.preserved': '미커밋 산출물 보존 — diff에서 커밋/PR 또는 폐기 후 다시 닫으세요.',
   'worktask.cleanup.unpushed': 'push되지 않은 커밋 {count}개 — PR/push 후 다시 닫으세요.',
   'worktask.cleanup.closeFailed': 'close 실패: {error}',
+  'worktask.cleanup.commitAndClose': '커밋하고 닫기',
+  'worktask.cleanup.openWorktree': 'worktree 열기',
+  'worktask.cleanup.commitLinePrepared': '커밋 명령을 태스크 페인에 입력했습니다 — 확인 후 Enter로 실행하세요.',
+  'worktask.cleanup.commitLineUnavailable': '준비할 커밋 명령이 없습니다: 변경이 없거나 파일이 너무 많습니다. worktree를 직접 여세요.',
+  'worktask.cleanup.noPaneForCommit': '이 태스크에는 커밋을 준비할 살아 있는 페인이 없습니다. worktree를 직접 여세요.',
+  'worktask.cleanup.commitNeedsShell': '이 태스크의 페인은 셸이 아니라 에이전트 TUI입니다 — git 줄을 넣으면 채팅 메시지가 됩니다. worktree를 직접 여세요.',
+  'worktask.cleanup.openWorktreeFailed': 'worktree를 열지 못했습니다: {error}',
 
   // ─── Workspace item: task worktree boundary warning ──────────────────────
   'workspace.cwdDeparted': '페인 cwd가 태스크 worktree 경계 밖으로 이탈: {cwd}',

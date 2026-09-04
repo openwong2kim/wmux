@@ -5,6 +5,7 @@ import { generateId, validateTransition, TERMINAL_STATES, VALID_TRANSITIONS } fr
 import { validateCompletionEvidence, normalizeCompletionEvidenceWire } from '../../../shared/completionEvidence';
 import type { PaneAddress } from '../../hooks/a2aAddressing';
 import { isChannelMentionTask } from '../../hooks/channelMentionFlush';
+import { recordApprovalRemoval } from './approvalInboxSlice';
 
 const GC_MAX_AGE_MS = 30 * 60 * 1000; // 30 minutes
 const GC_MAX_TASKS = 500;
@@ -188,6 +189,18 @@ export const createA2aSlice: StateCreator<StoreState, [['zustand/immer', never]]
   }),
 
   removeExecuteApproval: (approvalId) => set((state: StoreState) => {
+    // C-3 (review fix): an approval that leaves AT its deadline was auto-denied
+    // — indistinguishable, on screen, from one a human answered. Classify here,
+    // at the removal point, so it is recorded even with the Fleet tab closed.
+    const leaving = state.pendingExecuteApprovals[approvalId];
+    if (leaving) {
+      recordApprovalRemoval(state, {
+        key: `a2a:${approvalId}`,
+        label: leaving.taskId,
+        deadlineAt: leaving.expiresAt,
+        removedAt: Date.now(),
+      });
+    }
     delete state.pendingExecuteApprovals[approvalId];
     state.pendingExecuteApprovalOrder = state.pendingExecuteApprovalOrder.filter((id) => id !== approvalId);
     const firstId = state.pendingExecuteApprovalOrder[0];

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '../../stores';
 import { selectWorkspaceIdName } from '../../stores/selectors/workspaceProjections';
@@ -6,6 +6,7 @@ import { useT } from '../../hooks/useT';
 import { groupCapabilities } from '../Approval/PermissionApprovalDialog';
 import type { RiskClassCopy } from '../../../main/mcp/methodCapabilityMap';
 import type { InboxItem } from '../../stores/selectors/approvalInbox';
+import { deadlineForItem, remainingSeconds } from './approvalCountdown';
 
 // gpui button recipes (theme-safe). Approve = primary warm CTA; deny = danger
 // tinted. The row still carries the critical/attention border + countdown, so
@@ -56,21 +57,41 @@ export default function ApprovalInboxList({ items, focusedIdx, onResolve }: Appr
   const setA2aAutoApproveExecute = useStore((s) => s.setA2aAutoApproveExecute);
   const wsName = (id: string) => workspaces.find((w) => w.id === id)?.name ?? id;
 
-  // Live countdown tick for any A2A row, mirroring ExecuteApprovalDialog's
-  // now-tick. Gated on the inbox actually containing an A2A row so an inbox of
-  // only MCP prompts never spins a 250ms interval.
-  const hasA2a = items.some((it) => it.source === 'a2a');
+  // C-3: an MCP prompt gets a countdown once the approval record carries a
+  // deadline. Read structurally off the store record so the badge appears the
+  // moment the field lands and renders nothing until then.
+  const mcpPrompts = useStore((s) => s.mcpPrompts);
+  const mcpDeadlineAt = useMemo(
+    () => (promptId: string) =>
+      (mcpPrompts[promptId] as { deadlineAt?: number } | undefined)?.deadlineAt,
+    [mcpPrompts],
+  );
+
+  // Live countdown tick for any row that HAS a deadline (A2A always, an MCP
+  // prompt once stamped), mirroring ExecuteApprovalDialog's now-tick. Gated so
+  // an inbox of deadline-less prompts never spins a 250ms interval.
+  const hasDeadline = items.some((it) => deadlineForItem(it, mcpDeadlineAt) !== undefined);
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
-    if (!hasA2a) return;
+    if (!hasDeadline) return;
     const tick = setInterval(() => setNow(Date.now()), 250);
     return () => clearInterval(tick);
-  }, [hasA2a]);
+  }, [hasDeadline]);
 
-  if (items.length === 0) return null;
+  // C-3 (review fix): the log is the STORE's, written at the removal point.
+  // Inferring it here from "row vanished, deadline past" mislabelled rows a
+  // human answered after a throttled timer, and recorded nothing at all while
+  // this tab was closed — which is precisely when you need it.
+  const autoRejected = useStore((s) => s.approvalAutoRejected);
+
+  if (items.length === 0 && autoRejected.length === 0) return null;
 
   return (
-    <div role="listbox" aria-label={t('fleet.tab.approvals')} className="flex flex-col gap-2">
+    <div className="flex flex-col gap-2">
+      {/* An empty listbox is a control with nothing to choose — announced, and
+          unusable. When there are no rows the log below stands alone. */}
+      {items.length > 0 && (
+      <div role="listbox" aria-label={t('fleet.tab.approvals')} className="flex flex-col gap-2">
       {items.map((item, idx) => {
         const focused = idx === focusedIdx;
         const optionProps = {
@@ -191,6 +212,21 @@ export default function ApprovalInboxList({ items, focusedIdx, onResolve }: Appr
                 {item.clientName}
               </span>
               <div className="flex-1" />
+              {/* C-3: only rendered once the approval record carries a deadline —
+                  a countdown with no auto-reject behind it would be a lie. */}
+              {(() => {
+                const deadlineAt = mcpDeadlineAt(item.promptId);
+                if (deadlineAt === undefined) return null;
+                return (
+                  <span
+                    data-approval-countdown
+                    className="text-[10px] font-mono"
+                    style={{ color: 'var(--text-subtle)' }}
+                  >
+                    {t('fleet.approvals.autoDenyIn', { seconds: remainingSeconds(deadlineAt, now) })}
+                  </span>
+                );
+              })()}
               {item.isCritical && (
                 <span
                   className="text-[10px] font-semibold px-1.5 py-0.5 rounded"
@@ -231,6 +267,27 @@ export default function ApprovalInboxList({ items, focusedIdx, onResolve }: Appr
           </div>
         );
       })}
+      </div>
+      )}
+      {autoRejected.length > 0 && (
+        <ul
+          data-approval-auto-rejected-log
+          className="flex flex-col gap-0.5 px-1"
+          aria-label={t('fleet.approvals.autoRejectedLog')}
+        >
+          {autoRejected.map((entry) => (
+            <li
+              key={entry.key}
+              data-approval-auto-rejected
+              className="text-[10px] font-mono truncate"
+              style={{ color: 'var(--text-subtle)' }}
+              title={entry.label}
+            >
+              {t('fleet.approvals.autoRejected', { name: entry.label })}
+            </li>
+          ))}
+        </ul>
+      )}
     </div>
   );
 }

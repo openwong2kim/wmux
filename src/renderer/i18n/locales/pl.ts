@@ -55,6 +55,8 @@ export const pl = {
   'missions.done': 'Ukończone ({count})',
   'missions.empty': 'Brak zadań',
   'missions.doneSummary': 'ostatnie: {title}',
+  'missions.cleanUp': 'Posprzątaj',
+  'missions.cleanUpTooltip': 'Przeskanuj worktree zadań i zamknij to, co zostało',
 
   // Sidebar — Company mode
   'company.deptRemoveHint': 'Kliknij prawym przyciskiem, aby usunąć',
@@ -444,6 +446,8 @@ export const pl = {
   'fleet.approvals.plugin': 'wtyczka',
   'fleet.approvals.enterApprove': 'zatwierdź',
   'fleet.approvals.delDeny': 'odrzuć',
+  'fleet.approvals.autoRejected': 'auto-odrzucone: {name}',
+  'fleet.approvals.autoRejectedLog': 'Ostatnio auto-odrzucone zatwierdzenia',
 
   // Project config (X5 wmux.json)
   'project.dialogTitle': 'Konfiguracja projektu (wmux.json)',
@@ -1681,6 +1685,16 @@ export const pl = {
   // Viewpoint-neutral on purpose: the marker fans out to every member's view,
   // so a second-person "You joined" would be wrong for non-operator viewers.
   'channels.systemOperatorJoin': 'Operator dołączył do tego kanału',
+  'channels.mentionWillReach': 'dotrze do {pane}',
+  'channels.mentionBadgeOnly': '@{name} nie ma aktywnego panelu — tylko odznaka, nikt nie zostanie obudzony',
+  'channels.deliveryPending': '… wysyłanie',
+  'channels.deliveryDelivered': '✓ dostarczono',
+  'channels.deliveryTargetGone': '✗ odbiorca zniknął',
+  'channels.deliveryNudgeExhausted': '! brak odpowiedzi — wyczerpano przypomnienia',
+  'channels.deliveryUnconfirmed': '? dostarczenie niepotwierdzone',
+  'channels.postNoIdentity': 'Brak tożsamości kanału lub przestrzeni roboczej',
+  'channels.mentionLoopSuspected':
+    'Możliwa pętla wzmianek agenta — automatyczne przypomnienia dla panelu mają limit; oczekujące wzmianki nadal można pobrać przez a2a_task_query.',
   // J4 — diff comment fired to the mission channel. {count} = number of task
   // agents @-mentioned (0 when every agent has left the channel).
   'diff.commentFired': 'Komentarz wysłany na kanał misji — powiadomiono {count} agentów',
@@ -1795,6 +1809,13 @@ export const pl = {
   'worktask.cleanup.preserved': 'Zachowano niezatwierdzone artefakty — wykonaj commit/PR z diff lub odrzuć, a następnie zamknij ponownie.',
   'worktask.cleanup.unpushed': 'Masz {count} niewypchniętych commitów — PR/push, a następnie zamknij ponownie.',
   'worktask.cleanup.closeFailed': 'close nie powiódł się: {error}',
+  'worktask.cleanup.commitAndClose': 'Zatwierdź i zamknij',
+  'worktask.cleanup.openWorktree': 'Otwórz worktree',
+  'worktask.cleanup.commitLinePrepared': 'Polecenie commita wpisane w panel zadania — sprawdź je i naciśnij Enter, aby je uruchomić.',
+  'worktask.cleanup.commitLineUnavailable': 'Brak gotowego polecenia commita: nic się nie zmieniło albo zmienionych plików jest za dużo. Otwórz worktree.',
+  'worktask.cleanup.noPaneForCommit': 'To zadanie nie ma aktywnego panelu, w którym można przygotować commit. Otwórz worktree.',
+  'worktask.cleanup.commitNeedsShell': 'Panel tego zadania uruchamia agenta, nie powłokę — wpisana tam komenda git stanie się wiadomością czatu. Otwórz worktree.',
+  'worktask.cleanup.openWorktreeFailed': 'Nie udało się otworzyć worktree: {error}',
 
   // ─── Workspace item: task worktree boundary warning ──────────────────────
   'workspace.cwdDeparted': 'cwd panelu opuścił granicę worktree zadania: {cwd}',

@@ -176,6 +176,18 @@ export interface ChannelsSlice {
    *  workspace — a strict subset of `channelUnread`, surfaced as a stronger
    *  dock badge. Cleared with unread by `markChannelRead` / `setActiveChannel`. */
   channelMentions: Record<string, number>;
+  /**
+   * C-2 — channelId → memberId → epoch ms of the last `channel.nudgeExhausted`
+   * for that member. The wake worker fires it when a mention episode burns its
+   * re-nudge budget: the bytes were written, nobody acted, and a human has to
+   * look. It is the one delivery outcome `recipientSnapshot` cannot express, so
+   * the sender's message row reads it to stop claiming "delivered".
+   *
+   * Cleared when that member finally posts in the channel (the episode is over
+   * by demonstration, not by inference).
+   */
+  channelNudgeExhausted: Record<string, Record<string, number>>;
+  markChannelNudgeExhausted: (channelId: string, memberId: string, at: number) => void;
   /** Ship review C1 — true when the attached daemon reported a channels epoch
    *  older than this renderer requires (a long-lived pre-P5 daemon survived the
    *  app upgrade). Drives the "restart wmux" banner in ChannelsPanel; set from
@@ -376,6 +388,46 @@ export interface ChannelsSlice {
   hydrateChannelMessages: (channelId: string, messages: ChannelMessage[]) => void;
 }
 
+/**
+ * Review fix (C-2) — expire the exhausted-nudge flags a roster refresh settles.
+ *
+ * An entry is a claim that ONE member never answered. It survives only while
+ * that stays true, so it is dropped when the member's read cursor advances (it
+ * caught up), when the member leaves the roster, or when the channel leaves the
+ * catalog. Compares the INCOMING roster against the one still in state, so it
+ * must run before `state.channelMembers` is overwritten.
+ */
+function clearSettledNudgeExhausted(
+  state: StoreState,
+  incoming: Record<string, ChannelMember[]>,
+  liveChannelIds: ReadonlySet<string>,
+): void {
+  for (const channelId of Object.keys(state.channelNudgeExhausted)) {
+    if (!liveChannelIds.has(channelId)) {
+      delete state.channelNudgeExhausted[channelId];
+      continue;
+    }
+    const entry = state.channelNudgeExhausted[channelId];
+    const before = new Map(
+      (state.channelMembers[channelId] ?? []).map((m) => [m.memberId, m.lastReadSeq]),
+    );
+    const live = new Set((incoming[channelId] ?? []).map((m) => m.memberId));
+    for (const memberId of Object.keys(entry)) {
+      if (!live.has(memberId)) {
+        delete entry[memberId];
+        continue;
+      }
+      const row = (incoming[channelId] ?? []).find((m) => m.memberId === memberId);
+      const prev = before.get(memberId);
+      const nextSeq = row?.lastReadSeq;
+      if (typeof nextSeq === 'number' && (typeof prev !== 'number' || nextSeq > prev)) {
+        delete entry[memberId];
+      }
+    }
+    if (Object.keys(entry).length === 0) delete state.channelNudgeExhausted[channelId];
+  }
+}
+
 export const createChannelsSlice: StateCreator<
   StoreState,
   [['zustand/immer', never]],
@@ -388,7 +440,14 @@ export const createChannelsSlice: StateCreator<
   activeChannelId: null,
   channelUnread: {},
   channelMentions: {},
+  channelNudgeExhausted: {},
   channelsDaemonStale: false,
+
+  markChannelNudgeExhausted: (channelId, memberId, at) =>
+    set((state: StoreState) => {
+      const forChannel = state.channelNudgeExhausted[channelId] ?? {};
+      state.channelNudgeExhausted[channelId] = { ...forChannel, [memberId]: at };
+    }),
 
   setChannelsDaemonStale: (stale) =>
     set((state: StoreState) => {
@@ -432,6 +491,13 @@ export const createChannelsSlice: StateCreator<
           state.channelMessages[ch.id] = [];
         }
       }
+      // Review fix (C-2): an exhausted-nudge flag is a claim that a member
+      // never answered. It must expire the moment that member demonstrably
+      // caught up — its read cursor advanced — or a single burnt nudge episode
+      // marks the sender's rows "no answer" for the life of the channel.
+      // `setChannels` is the authoritative roster refresh, so it is where the
+      // previous cursor and the new one can be compared.
+      clearSettledNudgeExhausted(state, members, liveIds);
       state.channels = next;
       state.channelMembers = members;
       // A19: drop caches for channels no longer in the catalog (archived out of
@@ -548,6 +614,8 @@ export const createChannelsSlice: StateCreator<
       state.channelMembers[channelId] = list.filter(
         (m) => !(m.memberId === memberId && m.workspaceId === workspaceId),
       );
+      // We are out of the room: there is no sender-side row left to annotate.
+      delete state.channelNudgeExhausted[channelId];
     });
     return { ok: true, value: {} as Record<string, never> };
   },
@@ -561,6 +629,10 @@ export const createChannelsSlice: StateCreator<
       state.channelMembers[channelId] = list.filter(
         (m) => !(m.workspaceId === targetWorkspaceId && m.memberId === targetMemberId),
       );
+      // The member is gone — a "no answer" claim about it is now unfalsifiable.
+      if (state.channelNudgeExhausted[channelId]) {
+        delete state.channelNudgeExhausted[channelId][targetMemberId];
+      }
     });
     return { ok: true, value: {} as Record<string, never> };
   },
@@ -571,6 +643,9 @@ export const createChannelsSlice: StateCreator<
       // Overwrite the catalog row — the daemon is authoritative; the
       // optimistic update is best-effort until the next refresh.
       state.channels[channelId] = archivedChannel;
+      // Nobody will be nudged in an archived channel, so a pending "no answer"
+      // claim about it can never be resolved. Drop it with the channel.
+      delete state.channelNudgeExhausted[channelId];
     });
     return { ok: true, value: archivedChannel };
   },
@@ -588,6 +663,13 @@ export const createChannelsSlice: StateCreator<
       // catching us up to the authoritative payload.
       const idx = list.findIndex((m) => m.seq === message.seq);
       const isNew = idx === -1;
+      // C-2: the member answered, so its exhausted-nudge episode is over. Cleared
+      // on demonstration (a post from that member), never on a timer — a stale
+      // "no answer" badge is exactly the false receipt this row exists to kill.
+      if (state.channelNudgeExhausted[channelId]?.[message.memberId] !== undefined) {
+        const { [message.memberId]: _cleared, ...rest } = state.channelNudgeExhausted[channelId];
+        state.channelNudgeExhausted[channelId] = rest;
+      }
       if (isNew) {
         // A19: cap the per-channel render mirror so a busy channel can't grow the
         // store unbounded (older rows stay durable in the daemon).
@@ -691,6 +773,14 @@ export const createChannelsSlice: StateCreator<
                 : target.memberId === undefined || m.memberId === target.memberId)
             ),
         );
+        // A purged member cannot answer and cannot be nudged again: keeping its
+        // exhausted flag would freeze "no answer" on the sender's rows forever.
+        const exhausted = state.channelNudgeExhausted[chId];
+        if (!exhausted) continue;
+        const live = new Set(state.channelMembers[chId].map((m) => m.memberId));
+        for (const memberId of Object.keys(exhausted)) {
+          if (!live.has(memberId)) delete exhausted[memberId];
+        }
       }
     });
     const bridge = get().channelsRpc();
@@ -1220,6 +1310,7 @@ export const createChannelsSlice: StateCreator<
       delete state.channelMessages[channelId];
       delete state.channelUnread[channelId];
       delete state.channelMentions[channelId];
+      delete state.channelNudgeExhausted[channelId];
       if (state.activeChannelId === channelId) state.activeChannelId = null;
     });
     return { ok: true, value: {} as Record<string, never> };

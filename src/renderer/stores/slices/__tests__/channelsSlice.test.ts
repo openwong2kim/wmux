@@ -1466,3 +1466,88 @@ describe('channelsSlice — trash / restore / destroy', () => {
     }
   });
 });
+
+// ─── C-2: exhausted nudge episodes ──────────────────────────────────────
+
+describe('channelsSlice — channelNudgeExhausted (C-2)', () => {
+  it('records an exhausted episode per (channel, member)', () => {
+    const store = createTestStore();
+    store.getState().markChannelNudgeExhausted('ch-1', 'w9-1(claude)', 1_700_000_000_999);
+    expect(store.getState().channelNudgeExhausted['ch-1']).toEqual({
+      'w9-1(claude)': 1_700_000_000_999,
+    });
+  });
+
+  it('clears the episode when that member finally posts, and leaves other members alone', () => {
+    const store = createTestStore();
+    store.getState().markChannelNudgeExhausted('ch-1', 'm-1', 1);
+    store.getState().markChannelNudgeExhausted('ch-1', 'm-2', 2);
+    store.getState().appendMessageFromEvent(makeMessage('ch-1', 1, { memberId: 'm-1' }));
+    expect(store.getState().channelNudgeExhausted['ch-1']).toEqual({ 'm-2': 2 });
+  });
+
+  // Review fix: an agent that acked must not read "no answer" forever.
+  it('clears the episode when the member read cursor advances on a roster refresh', () => {
+    const store = createTestStore();
+    store
+      .getState()
+      .setChannels([makeChannel({ id: 'ch-1' })], {
+        'ch-1': [
+          makeMember({ memberId: 'm-1', lastReadSeq: 3 }),
+          makeMember({ memberId: 'm-2', lastReadSeq: 3 }),
+        ],
+      });
+    store.getState().markChannelNudgeExhausted('ch-1', 'm-1', 1);
+    store.getState().markChannelNudgeExhausted('ch-1', 'm-2', 2);
+
+    store
+      .getState()
+      .setChannels([makeChannel({ id: 'ch-1' })], {
+        'ch-1': [
+          makeMember({ memberId: 'm-1', lastReadSeq: 7 }),
+          makeMember({ memberId: 'm-2', lastReadSeq: 3 }),
+        ],
+      });
+
+    // m-1 caught up; m-2's cursor never moved, so its episode stands.
+    expect(store.getState().channelNudgeExhausted['ch-1']).toEqual({ 'm-2': 2 });
+  });
+
+  it('drops episodes for a member that left the roster and for a channel that left the catalog', () => {
+    const store = createTestStore();
+    store
+      .getState()
+      .setChannels([makeChannel({ id: 'ch-1' }), makeChannel({ id: 'ch-2' })], {
+        'ch-1': [makeMember({ memberId: 'm-1' }), makeMember({ memberId: 'm-2' })],
+        'ch-2': [makeMember({ memberId: 'm-3' })],
+      });
+    store.getState().markChannelNudgeExhausted('ch-1', 'm-1', 1);
+    store.getState().markChannelNudgeExhausted('ch-1', 'm-2', 2);
+    store.getState().markChannelNudgeExhausted('ch-2', 'm-3', 3);
+
+    store
+      .getState()
+      .setChannels([makeChannel({ id: 'ch-1' })], {
+        'ch-1': [makeMember({ memberId: 'm-2' })],
+      });
+
+    expect(store.getState().channelNudgeExhausted['ch-1']).toEqual({ 'm-2': 2 });
+    expect(store.getState().channelNudgeExhausted['ch-2']).toBeUndefined();
+  });
+
+  it('drops the channel entry on archive and on leave, and the member entry on kick', () => {
+    const store = createTestStore();
+    store.getState().markChannelNudgeExhausted('ch-1', 'm-1', 1);
+    store.getState().archiveChannelOptimistic('ch-1', makeChannel({ id: 'ch-1', status: 'archived' }));
+    expect(store.getState().channelNudgeExhausted['ch-1']).toBeUndefined();
+
+    store.getState().markChannelNudgeExhausted('ch-2', 'm-1', 1);
+    store.getState().leaveChannelOptimistic('ch-2', 'm-1', 'ws-1');
+    expect(store.getState().channelNudgeExhausted['ch-2']).toBeUndefined();
+
+    store.getState().markChannelNudgeExhausted('ch-3', 'm-1', 1);
+    store.getState().markChannelNudgeExhausted('ch-3', 'm-2', 2);
+    store.getState().kickChannelOptimistic('ch-3', 'm-1', 'ws-1');
+    expect(store.getState().channelNudgeExhausted['ch-3']).toEqual({ 'm-2': 2 });
+  });
+});

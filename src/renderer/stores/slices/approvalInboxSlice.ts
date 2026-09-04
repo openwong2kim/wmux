@@ -5,6 +5,11 @@ import type { StoreState } from '../index';
 // rides the permissionPrompt.onOpen IPC channel, so there is no main/renderer
 // runtime coupling — `import type` is erased at compile time.
 import type { ApprovalPromptInfo } from '../../../main/mcp/ApprovalQueue';
+import {
+  appendAutoRejected,
+  isAutoRejection,
+  type AutoRejectedEntry,
+} from '../../components/FleetView/approvalCountdown';
 
 // ─── S-C2 Approval Inbox — renderer-aggregated MCP permission prompts ─────────
 //
@@ -26,6 +31,40 @@ export interface ApprovalInboxSlice {
   addMcpPrompt: (info: ApprovalPromptInfo) => void;
   /** Idempotent: removes from both maps; no-op when the id is unknown. */
   removeMcpPrompt: (promptId: string) => void;
+
+  /**
+   * C-3 (review fix) — the approvals nobody answered, newest first and capped.
+   *
+   * It lives HERE, not in the Fleet list, for one reason: a deadline fires
+   * whether or not anyone is looking at the Approvals tab. A component-local log
+   * was empty exactly when it mattered — "what happened while I was away".
+   * Entries are written at the REMOVAL point, where the row's own deadline and
+   * the true removal instant are both in hand.
+   */
+  approvalAutoRejected: AutoRejectedEntry[];
+  /** Classify one departing approval and log it if the deadline killed it. */
+  noteApprovalRemoved: (entry: {
+    key: string;
+    label: string;
+    deadlineAt?: number;
+    removedAt: number;
+  }) => void;
+}
+
+/** Shared by both removal points (MCP prompt here, A2A execute approval in
+ *  a2aSlice) so one rule decides what counts as an auto-rejection. */
+export function recordApprovalRemoval(
+  state: { approvalAutoRejected: AutoRejectedEntry[] },
+  entry: { key: string; label: string; deadlineAt?: number; removedAt: number },
+): void {
+  if (!isAutoRejection({ ...(entry.deadlineAt !== undefined ? { deadlineAt: entry.deadlineAt } : {}), removedAt: entry.removedAt })) {
+    return;
+  }
+  state.approvalAutoRejected = appendAutoRejected(state.approvalAutoRejected, {
+    key: entry.key,
+    label: entry.label,
+    at: entry.deadlineAt as number,
+  });
 }
 
 export const createApprovalInboxSlice: StateCreator<
@@ -36,6 +75,11 @@ export const createApprovalInboxSlice: StateCreator<
 > = (set) => ({
   mcpPrompts: {},
   mcpPromptOrder: [],
+  approvalAutoRejected: [],
+
+  noteApprovalRemoved: (entry) => set((state: StoreState) => {
+    recordApprovalRemoval(state, entry);
+  }),
 
   addMcpPrompt: (info) => set((state: StoreState) => {
     const isNew = !(info.promptId in state.mcpPrompts);
@@ -49,6 +93,19 @@ export const createApprovalInboxSlice: StateCreator<
   }),
 
   removeMcpPrompt: (promptId) => set((state: StoreState) => {
+    // Classify BEFORE the record goes: its deadline is the only evidence of
+    // why it left. `deadlineAt` is read structurally — it is stamped by the
+    // daemon and absent on a prompt that never got one, which simply means
+    // "not an auto-rejection".
+    const info = state.mcpPrompts[promptId] as (ApprovalPromptInfo & { deadlineAt?: number }) | undefined;
+    if (info) {
+      recordApprovalRemoval(state, {
+        key: `mcp:${promptId}`,
+        label: info.clientName,
+        ...(typeof info.deadlineAt === 'number' ? { deadlineAt: info.deadlineAt } : {}),
+        removedAt: Date.now(),
+      });
+    }
     if (!(promptId in state.mcpPrompts)) {
       // Still filter the order list defensively, but the common no-op path is
       // an unknown id (e.g. a duplicate PERMISSION_PROMPT_CLOSED push after an
