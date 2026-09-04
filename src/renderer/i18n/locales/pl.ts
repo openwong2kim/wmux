@@ -1671,6 +1671,8 @@ export const pl = {
   // Viewpoint-neutral on purpose: the marker fans out to every member's view,
   // so a second-person "You joined" would be wrong for non-operator viewers.
   'channels.systemOperatorJoin': 'Operator dołączył do tego kanału',
+  'channels.mentionWillReach': 'dotrze do {pane}',
+  'channels.mentionBadgeOnly': '@{name} nie ma aktywnego panelu — tylko odznaka, nikt nie zostanie obudzony',
   // J4 — diff comment fired to the mission channel. {count} = number of task
   // agents @-mentioned (0 when every agent has left the channel).
   'diff.commentFired': 'Komentarz wysłany na kanał misji — powiadomiono {count} agentów',

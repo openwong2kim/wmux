@@ -368,6 +368,10 @@ export function ChannelMembersControl({ channel }: { channel: Channel }): React.
     memberWorkspaceIds: new Set(workspaces.map((w) => w.id)),
     selfWorkspaceId,
   })
+    // Pane candidates only. The roster-member candidates (C-1) exist so a member
+    // with no live agent pane can still be @-mentioned; they carry no paneId and
+    // are by definition already members, so they are never join candidates.
+    .filter((c): c is typeof c & { paneId: string } => !!c.paneId)
     .map((c) => ({
       workspaceId: c.workspaceId,
       paneId: c.paneId,

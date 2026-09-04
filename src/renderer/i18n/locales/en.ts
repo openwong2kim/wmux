@@ -1673,6 +1673,10 @@ export const en = {
   // Viewpoint-neutral on purpose: the marker fans out to every member's view,
   // so a second-person "You joined" would be wrong for non-operator viewers.
   'channels.systemOperatorJoin': 'Operator joined this channel',
+  // C-1 — composer mention targeting. A mention only reaches an idle agent when
+  // it carries a pane pin; the badge-only line says when it does not.
+  'channels.mentionWillReach': 'will reach {pane}',
+  'channels.mentionBadgeOnly': '@{name} has no live pane — badge only, nobody is woken',
   // J4 — diff comment fired to the mission channel. {count} = number of task
   // agents @-mentioned (0 when every agent has left the channel).
   'diff.commentFired': 'Comment posted to the mission channel — pinged {count} agent(s)',
