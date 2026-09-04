@@ -672,7 +672,20 @@ export function registerDeckHandler(
    * courtesy, not the enforcement: schedules, loops, the heartbeat and the pipe
    * RPC all start turns without going anywhere near it.
    */
-  const refuseWhenModeOff = (workspaceId: string): { ok: false; code: 'mode_off' } | null => {
+  /** True while `workspaceId` is the task workspace of an OPEN fan-out task.
+   *  A finished task's workspace is an ordinary workspace again. Never throws:
+   *  an unreadable ledger answers false, which is the pre-wave-2 behaviour. */
+  const isTaskWorkspace = (workspaceId: string): boolean => {
+    try {
+      return getTaskLedger().findOpenByTaskWorkspace(workspaceId) !== null;
+    } catch {
+      return false;
+    }
+  };
+
+  const refuseWhenModeOff = (
+    workspaceId: string,
+  ): { ok: false; code: 'mode_off' | 'task_workspace' } | null => {
     let mode: AgentMode;
     try {
       mode = loadWorkspaceMode(workspaceId);
@@ -681,7 +694,16 @@ export function registerDeckHandler(
       // the loader; this catch only covers a throw it cannot itself absorb.
       return { ok: false, code: 'mode_off' };
     }
-    return mode === 'off' ? { ok: false, code: 'mode_off' } : null;
+    if (mode === 'off') return { ok: false, code: 'mode_off' };
+    // A fan-out task workspace never runs a brain of its own, whatever its
+    // mode says. It inherits the owner's mode so the OWNER's brain may press
+    // its approvals (taskAutonomy.ts) — but that same mode made it
+    // brain-eligible here, and the wave 2 dogfood showed the result: one
+    // brain per worker, each consuming its own worker's stop events before
+    // the owner ever saw them (dogfood-orchestrator-2026-09.md, finding 7).
+    // The owner's brain is the only one that drives a task workspace.
+    if (isTaskWorkspace(workspaceId)) return { ok: false, code: 'task_workspace' };
+    return null;
   };
 
   const ensureManager = (
@@ -1688,11 +1710,13 @@ export function registerDeckHandler(
       // prompt can say whether the pane is blocked on a question.
       ...(ev.lastMessage ? { lastMessage: ev.lastMessage } : {}),
     };
-    coalescer?.push(lifecycleInput);
-    // Lane F: a fan-out task workspace has no brain of its own, so ALSO copy
-    // the event to the owning (parent) workspace's coalescer, tagged with the
+    // Lane F: a fan-out task workspace has no brain of its own, so the event
+    // goes ONLY to the owning (parent) workspace's coalescer, tagged with the
     // task. The parent's 'none' wake policy lets tagged events through; an
     // owner with no brain gets it parked in the ledger as an orphan backlog.
+    // Pushing it to the task workspace's own coalescer as well spawned a brain
+    // there once the task inherited the owner's mode (wave 2 finding 7).
+    if (!isTaskWorkspace(ev.workspaceId)) coalescer?.push(lifecycleInput);
     routeWorkerEventToOwner(lifecycleInput, {
       hasBrain: (owner) => managers.has(owner) || loadWorkspaceMode(owner) !== 'off',
       push: (copy) => coalescer?.push(copy),
@@ -1734,7 +1758,9 @@ export function registerDeckHandler(
     const entries = getWorkspaceMirror().getEntries();
     if (entries) {
       for (const e of entries) {
-        if (WORKSPACE_ID_RE.test(e.id) && loadWorkspaceMode(e.id) !== 'off') ids.add(e.id);
+        if (WORKSPACE_ID_RE.test(e.id) && loadWorkspaceMode(e.id) !== 'off' && !isTaskWorkspace(e.id)) {
+          ids.add(e.id);
+        }
       }
     }
     return [...ids];
