@@ -14,6 +14,7 @@
 // Plan ref: U8, R21, R22.
 
 import { useEffect, useMemo, useCallback, useState, Fragment } from 'react';
+import { useShallow } from 'zustand/react/shallow';
 import type {
   Channel,
   ChannelMessage,
@@ -32,6 +33,7 @@ import { Composer } from './Composer';
 import { ChannelMembersControl } from './ChannelMembers';
 import {
   ownMessageDeliveryState,
+  needsDeliveryAgingClock,
   DELIVERY_LABEL_KEY,
   DELIVERY_LABEL_FALLBACK,
 } from './deliveryStatus';
@@ -260,10 +262,11 @@ export interface ChannelViewContentProps {
   /** Header control for the members roster (count + join/leave popover).
    *  Slotted so the pure view stays store-free for the test harness. */
   membersSlot?: React.ReactNode;
-  /** C-2 — memberIds in THIS channel whose nudge episode ran out of budget
-   *  (`channel.nudgeExhausted`). Their sender-side rows read "no answer"
-   *  instead of a delivered receipt nobody acted on. */
-  nudgeExhaustedMemberIds?: ReadonlySet<string>;
+  /** C-2 — memberId → epoch ms of that member's last exhausted nudge episode in
+   *  THIS channel (`channel.nudgeExhausted`). Rows posted at or before that
+   *  instant read "no answer" instead of a delivered receipt nobody acted on;
+   *  later ones are untouched — the worker never tried to deliver them. */
+  nudgeExhaustedAtByMember?: Readonly<Record<string, number>>;
   /** C-2 — clock injection for the delivery-aging rule (tests pass a fixed
    *  value; production lets the view tick it). */
   now?: number;
@@ -285,7 +288,7 @@ export function ChannelViewContent({
   workspaceName = () => undefined,
   composerSlot,
   membersSlot,
-  nudgeExhaustedMemberIds,
+  nudgeExhaustedAtByMember,
   now: nowProp,
   paneNameFor,
   t: tProp,
@@ -295,12 +298,25 @@ export function ChannelViewContent({
   // stops claiming to be in flight. Nothing else repaints the transcript on a
   // timer, so the view keeps its own coarse clock — 10 s, only while the caller
   // has not pinned one (tests pass `now` and get no interval at all).
+  //
+  // Review fix: the aging rule is the ONLY thing that clock feeds, so it runs
+  // only while the viewer has an unresolved post of their own. A settled
+  // transcript repainted every 10 s for nothing.
+  const hasAgingCandidate = useMemo(
+    () =>
+      needsDeliveryAgingClock({
+        messages,
+        viewerMemberId: viewer?.memberId ?? null,
+        ...(nudgeExhaustedAtByMember ? { exhaustedAtByMember: nudgeExhaustedAtByMember } : {}),
+      }),
+    [messages, viewer, nudgeExhaustedAtByMember],
+  );
   const [clock, setClock] = useState(() => Date.now());
   useEffect(() => {
-    if (nowProp !== undefined) return;
+    if (nowProp !== undefined || !hasAgingCandidate) return;
     const timer = setInterval(() => setClock(Date.now()), 10_000);
     return () => clearInterval(timer);
-  }, [nowProp]);
+  }, [nowProp, hasAgingCandidate]);
   const now = nowProp ?? clock;
   // Two-click confirm for the one-way archive: first click arms (button turns
   // red + shows a check), second commits; blur cancels.
@@ -552,7 +568,9 @@ export function ChannelViewContent({
               message: m,
               viewerMemberId: viewer?.memberId ?? null,
               now,
-              ...(nudgeExhaustedMemberIds ? { exhaustedMemberIds: nudgeExhaustedMemberIds } : {}),
+              ...(nudgeExhaustedAtByMember
+                ? { exhaustedAtByMember: nudgeExhaustedAtByMember }
+                : {}),
             });
             const mentionsMe =
               !!viewer && !!m.mentions?.some((mn) => mn.workspaceId === viewer.workspaceId);
@@ -684,14 +702,28 @@ export function ChannelView(): React.ReactElement | null {
   );
   // C-2: subscribe to a STRING projection of this channel's exhausted-nudge
   // members (same reason as workspaceNamesKey below — a fresh object per render
-  // would repaint the whole transcript on every unrelated store write).
-  const nudgeExhaustedKey = useStore((s) =>
-    activeChannelId ? Object.keys(s.channelNudgeExhausted[activeChannelId] ?? {}).sort().join('\u0001') : '',
-  );
-  const nudgeExhaustedMemberIds = useMemo(
-    () => new Set(nudgeExhaustedKey ? nudgeExhaustedKey.split('\u0001') : []),
-    [nudgeExhaustedKey],
-  );
+  // would repaint the whole transcript on every unrelated store write). The
+  // projection carries each episode's TIMESTAMP: the label applies only to the
+  // messages that were already posted when the wake worker gave up.
+  const nudgeExhaustedKey = useStore((s) => {
+    const byMember = activeChannelId ? s.channelNudgeExhausted[activeChannelId] : undefined;
+    if (!byMember) return '';
+    return Object.keys(byMember)
+      .sort()
+      .map((memberId) => `${memberId}\u0000${byMember[memberId]}`)
+      .join('\u0001');
+  });
+  const nudgeExhaustedAtByMember = useMemo(() => {
+    const out: Record<string, number> = {};
+    if (!nudgeExhaustedKey) return out;
+    for (const pair of nudgeExhaustedKey.split('\u0001')) {
+      const sep = pair.indexOf('\u0000');
+      if (sep <= 0) continue;
+      const at = Number(pair.slice(sep + 1));
+      if (Number.isFinite(at)) out[pair.slice(0, sep)] = at;
+    }
+    return out;
+  }, [nudgeExhaustedKey]);
   // Identity audit 1a: workspace display names for the sender identity chips
   // (human posts read "Me · <workspace>"). Subscribe to a STRING projection of
   // (id, name) pairs, not the workspaces array itself — the array reference
@@ -716,9 +748,20 @@ export function ChannelView(): React.ReactElement | null {
   // churns on every terminal title/cwd write, and depending on it directly would
   // repaint the whole transcript while agents are active. The key changes only
   // when a pane is renamed, added, removed, or its detected agent changes.
-  const paneNamesProjection = useStore((s) =>
-    paneNamesKey({ workspaces: s.workspaces, surfaceAgent: s.surfaceAgent, paneLabel: s.paneLabel }),
+  //
+  // Review fix: the WALK is not in the selector. A selector runs on every store
+  // write — terminal output included — so building the key there re-visited
+  // every workspace, pane and surface thousands of times a second. Subscribing
+  // shallowly to the three sources keeps the per-write work at three reference
+  // comparisons and moves the walk into a memo keyed on them.
+  const paneNameSources = useStore(
+    useShallow((s) => ({
+      workspaces: s.workspaces,
+      surfaceAgent: s.surfaceAgent,
+      paneLabel: s.paneLabel,
+    })),
   );
+  const paneNamesProjection = useMemo(() => paneNamesKey(paneNameSources), [paneNameSources]);
   const paneNameFor = useMemo(() => {
     const names = parsePaneNamesKey(paneNamesProjection);
     return (workspaceId: string, memberId: string) =>
@@ -933,7 +976,7 @@ export function ChannelView(): React.ReactElement | null {
         onLoadEarlier={handleLoadEarlier}
         workspaceName={workspaceName}
         t={t}
-        nudgeExhaustedMemberIds={nudgeExhaustedMemberIds}
+        nudgeExhaustedAtByMember={nudgeExhaustedAtByMember}
         paneNameFor={paneNameFor}
         membersSlot={<ChannelMembersControl channel={channel} />}
         composerSlot={

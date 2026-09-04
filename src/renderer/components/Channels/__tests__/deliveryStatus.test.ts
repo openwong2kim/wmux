@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import type { ChannelMessage } from '../../../../shared/channels';
 import {
   ownMessageDeliveryState,
+  needsDeliveryAgingClock,
   DELIVERY_UNCONFIRMED_AFTER_MS,
   DELIVERY_LABEL_KEY,
   DELIVERY_LABEL_FALLBACK,
@@ -60,9 +61,41 @@ describe('ownMessageDeliveryState (C-2)', () => {
         message: m,
         viewerMemberId: 'me',
         now: T0,
-        exhaustedMemberIds: new Set(['a']),
+        exhaustedAtByMember: { a: T0 },
       }),
     ).toBe('nudge_exhausted');
+  });
+
+  // Review fix: the flag is a timestamped episode, not a member blacklist.
+  it('does NOT brand a message posted after the episode as "no answer"', () => {
+    const snapshot = [{ memberId: 'a' as const, workspaceId: 'ws-a', status: 'delivered' as const }];
+    const before = message({ seq: 1, postedAt: T0 - 1_000, recipientSnapshot: snapshot });
+    const at = message({ seq: 2, postedAt: T0, recipientSnapshot: snapshot });
+    const after = message({ seq: 3, postedAt: T0 + 1, recipientSnapshot: snapshot });
+    const exhaustedAtByMember = { a: T0 };
+    expect(
+      ownMessageDeliveryState({ message: before, viewerMemberId: 'me', now: T0 + 5_000, exhaustedAtByMember }),
+    ).toBe('nudge_exhausted');
+    expect(
+      ownMessageDeliveryState({ message: at, viewerMemberId: 'me', now: T0 + 5_000, exhaustedAtByMember }),
+    ).toBe('nudge_exhausted');
+    expect(
+      ownMessageDeliveryState({ message: after, viewerMemberId: 'me', now: T0 + 5_000, exhaustedAtByMember }),
+    ).toBe('delivered');
+  });
+
+  it('ignores an episode belonging to a member who is not a recipient of this message', () => {
+    const m = message({
+      recipientSnapshot: [{ memberId: 'a', workspaceId: 'ws-a', status: 'delivered' }],
+    });
+    expect(
+      ownMessageDeliveryState({
+        message: m,
+        viewerMemberId: 'me',
+        now: T0,
+        exhaustedAtByMember: { b: T0 },
+      }),
+    ).toBe('delivered');
   });
 
   it('stops the eternal "… sending": an aged pending becomes unconfirmed', () => {
@@ -100,5 +133,31 @@ describe('ownMessageDeliveryState (C-2)', () => {
       expect(DELIVERY_LABEL_KEY[state]).toMatch(/^channels\./);
       expect(DELIVERY_LABEL_FALLBACK[state].length).toBeGreaterThan(0);
     }
+  });
+});
+// Review fix: the 10 s repaint runs only while something can actually change.
+describe('needsDeliveryAgingClock', () => {
+  const settled = message({
+    seq: 1,
+    recipientSnapshot: [{ memberId: 'a', workspaceId: 'ws-a', status: 'delivered' }],
+  });
+  const pending = message({
+    seq: 2,
+    recipientSnapshot: [{ memberId: 'a', workspaceId: 'ws-a', status: 'pending' }],
+  });
+
+  it('is false for a settled transcript and for a viewerless view', () => {
+    expect(needsDeliveryAgingClock({ messages: [settled], viewerMemberId: 'me' })).toBe(false);
+    expect(needsDeliveryAgingClock({ messages: [pending], viewerMemberId: null })).toBe(false);
+    expect(
+      needsDeliveryAgingClock({
+        messages: [message({ memberId: 'other', recipientSnapshot: [] })],
+        viewerMemberId: 'me',
+      }),
+    ).toBe(false);
+  });
+
+  it('is true while one of my own rows is still pending', () => {
+    expect(needsDeliveryAgingClock({ messages: [settled, pending], viewerMemberId: 'me' })).toBe(true);
   });
 });

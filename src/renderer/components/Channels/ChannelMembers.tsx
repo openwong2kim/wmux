@@ -24,7 +24,7 @@
 // MCP channel_post member_id; the human UI identity is the single reserved seat
 // (HUMAN_MEMBER_ID on HUMAN_WORKSPACE_ID).
 
-import { useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import type { Channel, ChannelMember } from '../../../shared/channels';
 import { HUMAN_WORKSPACE_ID, HUMAN_MEMBER_ID } from '../../../shared/channels';
 import { panePrincipalId } from '../../../shared/principals';
@@ -206,9 +206,10 @@ export function ChannelMembersView({
                       // C-5: the dot IS the status for this row — a screen
                       // reader that skips it (aria-hidden) never learns whether
                       // the agent pane is alive. Labelled, not decorative.
+                      // One name, not two: an element carrying both aria-label
+                      // and an identical title is announced twice.
                       role="img"
                       aria-label={liveness === 'live' ? (t('channels.memberLiveTitle') || 'Agent pane is live') : (t('channels.memberStaleTitle') || 'Agent pane is gone or restarting')}
-                      title={liveness === 'live' ? (t('channels.memberLiveTitle') || 'Agent pane is live') : (t('channels.memberStaleTitle') || 'Agent pane is gone or restarting')}
                       className="flex-shrink-0 w-1.5 h-1.5 rounded-full"
                       style={{ backgroundColor: liveness === 'live' ? 'var(--accent-green)' : 'var(--text-subtle)' }}
                     />
@@ -427,9 +428,17 @@ export function ChannelMembersControl({ channel }: { channel: Channel }): React.
   // tokens and the pane title bar (rename ?? auto name), so one pane reads the
   // same everywhere instead of surfacing an opaque spawn-stamped memberId in
   // the roster.
-  const paneNames = buildPaneNamesByPrincipal({ workspaces, surfaceAgent, paneLabel });
-  const paneDisplayNameFor = (m: ChannelMember): string | undefined =>
-    paneNameForMember(m, paneNames);
+  // Review fix: the walk visits every workspace, pane and surface, so it is
+  // memoised on its three sources instead of re-running on every render of an
+  // always-mounted popover host.
+  const paneNames = useMemo(
+    () => buildPaneNamesByPrincipal({ workspaces, surfaceAgent, paneLabel }),
+    [workspaces, surfaceAgent, paneLabel],
+  );
+  const paneDisplayNameFor = useCallback(
+    (m: ChannelMember): string | undefined => paneNameForMember(m, paneNames),
+    [paneNames],
+  );
 
   // Show the picker only when the self ws can actually act on the channel: a
   // public channel anyone can self-join, but a private channel can only be

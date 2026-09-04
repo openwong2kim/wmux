@@ -47,8 +47,15 @@ export function ownMessageDeliveryState(args: {
   viewerMemberId: string | null;
   /** Epoch ms — injected so the aging rule is testable. */
   now: number;
-  /** memberIds whose nudge episode in THIS channel ran out of budget. */
-  exhaustedMemberIds?: ReadonlySet<string>;
+  /**
+   * memberId → epoch ms of that member's last exhausted nudge episode in THIS
+   * channel. A TIMESTAMP, not a membership set: an episode says "as of `at`,
+   * this member had not answered", which is a claim about the messages that
+   * were already posted when it fired. A set marked every row the sender ever
+   * wrote in the channel — including ones posted MINUTES LATER, whose delivery
+   * the worker never even attempted — as "no answer".
+   */
+  exhaustedAtByMember?: Readonly<Record<string, number>>;
 }): DeliveryLabelState | undefined {
   const { message, viewerMemberId, now } = args;
   if (!viewerMemberId) return undefined;
@@ -69,11 +76,50 @@ export function ownMessageDeliveryState(args: {
     return message.deliveryStatus === 'pending' ? aged('pending') : message.deliveryStatus;
   }
 
-  const exhausted = args.exhaustedMemberIds;
-  if (exhausted && snapshot.some((row) => exhausted.has(row.memberId))) return 'nudge_exhausted';
+  // Only a message that was ALREADY POSTED when the episode ran out of budget
+  // can be the one nobody answered. The flag's other exit is the store's
+  // (`markChannelNudgeExhausted` is cleared when the member posts or its read
+  // cursor advances), so a member that came back does not read "no answer"
+  // forever.
+  const exhaustedAt = args.exhaustedAtByMember;
+  if (
+    exhaustedAt &&
+    snapshot.some((row) => {
+      const at = exhaustedAt[row.memberId];
+      return typeof at === 'number' && message.postedAt <= at;
+    })
+  ) {
+    return 'nudge_exhausted';
+  }
   if (snapshot.some((row) => row.status === 'delivered')) return 'delivered';
   if (snapshot.every((row) => row.status === 'target_gone')) return 'target_gone';
   return aged('pending');
+}
+
+/**
+ * True when at least one of the viewer's own rows is still `pending` on its own
+ * merits — the only state the passage of time can change (into `unconfirmed`).
+ *
+ * The transcript's aging clock is gated on this: a settled channel used to
+ * repaint every 10 s to re-derive labels that could not move.
+ */
+export function needsDeliveryAgingClock(args: {
+  messages: readonly ChannelMessage[];
+  viewerMemberId: string | null;
+  exhaustedAtByMember?: Readonly<Record<string, number>>;
+}): boolean {
+  const { messages, viewerMemberId } = args;
+  if (!viewerMemberId) return false;
+  return messages.some(
+    (message) =>
+      ownMessageDeliveryState({
+        message,
+        viewerMemberId,
+        // The message's own postedAt — asks "is this row pending BEFORE aging?"
+        now: message.postedAt,
+        ...(args.exhaustedAtByMember ? { exhaustedAtByMember: args.exhaustedAtByMember } : {}),
+      }) === 'pending',
+  );
 }
 
 /** i18n key per state. Kept next to the states so a new state cannot ship
