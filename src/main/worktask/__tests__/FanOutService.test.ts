@@ -1054,9 +1054,14 @@ describe('fan-out worker first run (A-1)', () => {
       expect(row.status).toBe('input_required');
       expect(row.summary).toContain('glm-5.3');
       expect(row.summary).toContain('/model <model>');
-      // The launch DID neutralise the variable, so the summary must not send
-      // the operator back to their shell profile for a model it did not set.
-      expect(row.summary).toContain('ANTHROPIC_BASE_URL');
+      // On POSIX the launch DID neutralise the variable, so the summary must
+      // not send the operator back to their shell profile for a model it did
+      // not set. win32 attaches no marker, so there the profile IS the cause.
+      if (process.platform === 'win32') {
+        expect(row.summary).toContain('ANTHROPIC_MODEL');
+      } else {
+        expect(row.summary).toContain('ANTHROPIC_BASE_URL');
+      }
     } finally {
       setTaskLedgerForTests(null);
       fs.rmSync(dir, { recursive: true, force: true });
