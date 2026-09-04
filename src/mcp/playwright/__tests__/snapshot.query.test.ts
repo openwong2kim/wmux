@@ -70,6 +70,58 @@ describe('generateSnapshot q', () => {
     expect(out).toContain('no nodes match');
   });
 
+  // ONE compiled regex is tested against every node, so a flag that carries
+  // `lastIndex` between calls makes a match on one node move the start position
+  // for the next. `g` was already dropped; `y` (sticky) was not, and it both
+  // keeps the index AND anchors there.
+  it('drops a sticky flag, which used to make matches skip the node after each hit', async () => {
+    const out = await generateSnapshot(makePage(TREE) as never, { format: 'ai', q: '/option/y' });
+
+    expect(out).toContain('option "Germany"');
+    // The one that used to vanish: tested from the index Germany's match left.
+    expect(out).toContain('option "Republic of Korea"');
+    expect(out).toContain('option "United States"');
+  });
+
+  // The pattern is caller text compiled into this process's regex engine.
+  it('refuses a pattern that can backtrack forever, and says it read it literally', async () => {
+    const out = await generateSnapshot(makePage(TREE) as never, { format: 'ai', q: '/(a+)+b/' });
+
+    expect(out).toContain('q read as literal text');
+    expect(out).toContain('backtrack forever');
+  });
+
+  it('refuses an over-long pattern the same way', async () => {
+    const out = await generateSnapshot(makePage(TREE) as never, {
+      format: 'ai',
+      q: `/${'a'.repeat(201)}/`,
+    });
+
+    expect(out).toContain('q read as literal text');
+    expect(out).toContain('longer than 200 characters');
+  });
+
+  // RootWebArea's name is the page title, so matching the root returned the
+  // ENTIRE tree with the "matching nodes and their ancestors only" note still
+  // attached — a whole-page snapshot presented as the answer to a question.
+  it('does not match the root, whose name is only the page title', async () => {
+    const out = await generateSnapshot(makePage(TREE) as never, { format: 'ai', q: 'Settings' });
+
+    expect(out).toBe('(no nodes match q="Settings")');
+  });
+
+  it('says q was ignored when the a11y tree collapsed to the DOM listing', async () => {
+    // Root-only tree: the DOM listing is the only rendering left, and it is
+    // flat — there is no tree to prune, so `q` cannot be honored on it.
+    const page = makePage([{ nodeId: '1', role: role('RootWebArea'), name: name('Settings') }]);
+    page.evaluate = vi.fn(async () => '[1] button "OK"') as never;
+
+    const out = await generateSnapshot(page as never, { format: 'ai', q: 'korea' });
+
+    expect(out).toContain('q ignored');
+    expect(out).toContain('button "OK"');
+  });
+
   it('says so when nothing matches, instead of returning the whole page', async () => {
     const out = await generateSnapshot(makePage(TREE) as never, { format: 'ai', q: 'Andorra' });
     expect(out).toBe('(no nodes match q="Andorra")');

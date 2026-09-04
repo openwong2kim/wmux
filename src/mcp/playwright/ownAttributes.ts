@@ -106,17 +106,25 @@ function indexDocument(root: CdpDomNode, facts: DomFacts): void {
 }
 
 /**
- * Does this element declare itself editable?
+ * The `contenteditable` values that make an element an editing host.
  *
  * The bare attribute (`<div contenteditable>`) means true, and so does
- * `plaintext-only`; only an explicit `false` opts out. Inheritance is NOT
- * followed on purpose — see DomFacts.editableRoots.
+ * `plaintext-only`. Everything else — `false`, `inherit`, and any typo — is
+ * NOT a host: `inherit` in particular resolves to the parent's state, so an
+ * element carrying it inside a non-editable ancestor takes no typed text at
+ * all, and minting a ref for it would advertise a field that is not there.
+ */
+const EDITABLE_HOST_VALUES = new Set(['', 'true', 'plaintext-only']);
+
+/**
+ * Does this element declare itself editable?
+ *
+ * Inheritance is NOT followed on purpose — see DomFacts.editableRoots.
  */
 function isEditableHost(attributes: readonly string[]): boolean {
   for (let i = 0; i + 1 < attributes.length; i += 2) {
     if (attributes[i] !== 'contenteditable') continue;
-    const value = attributes[i + 1].trim().toLowerCase();
-    return value !== 'false';
+    return EDITABLE_HOST_VALUES.has(attributes[i + 1].trim().toLowerCase());
   }
   return false;
 }

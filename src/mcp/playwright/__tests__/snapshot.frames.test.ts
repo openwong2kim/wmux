@@ -125,6 +125,12 @@ function makeHarness(
   passwordBackendIds: number[] = [],
   /** What page.evaluate() answers the pageFacts collector with, if anything. */
   pageFacts?: Record<string, unknown>,
+  /**
+   * DOM nodes the MAIN target's `DOM.getDocument` reports, for the
+   * contenteditable pass. Only the main session serves them, which is the
+   * point of the cross-frame case below.
+   */
+  mainDomChildren: { backendNodeId: number; attributes: string[] }[] = [],
 ): Harness {
   const counts = new Map<string, number>();
   const handles: string[] = [];
@@ -190,7 +196,9 @@ function makeHarness(
       if (params?.frameId && target.sameProcess === false) throw new Error('oopif');
       return { nodes: target.ax };
     }
-    if (method === 'DOM.getDocument') return { root: { nodeId: docNodeId(main.frameId) } };
+    if (method === 'DOM.getDocument') {
+      return { root: { nodeId: docNodeId(main.frameId), children: mainDomChildren } };
+    }
     if (method === 'DOM.performSearch') {
       return { searchId: 'pw', resultCount: passwordBackendIds.length };
     }
@@ -550,6 +558,44 @@ describe('a cross-origin frame is read over its own session', () => {
     const out = await generateSnapshot(h.page, { format: 'ai' });
     expect(out).toContain('button "Accept" ref="0"');
     expect(await resolveRef(h.page, '0')).toBe('oop|button Accept#0');
+  });
+});
+
+// The contenteditable pass reads ONE target's DOM, so its backendNodeIds are
+// the main frame's. An out-of-process frame is a different target with its own
+// id space, where the same number is an unrelated element — joining there mints
+// a phantom text field in whichever frame's numbering happens to collide.
+describe('editable hosts stop at the main frame, where their ids mean something', () => {
+  it('does not mint a ref for a cross-origin node whose id collides with an editable host', async () => {
+    const oopif = doc({
+      frameId: 'oop',
+      url: 'https://other-origin.test/ad',
+      // Same backendNodeId as the host page's contenteditable div, in a
+      // different target's id space.
+      ax: tree([{ backendId: 90, role: 'paragraph', name: 'Advertisement copy' }]),
+      sameProcess: false,
+    });
+    const h = makeHarness(
+      doc({
+        frameId: 'main',
+        ax: tree([
+          { backendId: 90, role: 'generic', name: 'Caption' },
+          { backendId: 80, role: 'Iframe', name: 'ad' },
+        ]),
+        iframes: [hostedFrame(80, oopif)],
+      }),
+      [],
+      undefined,
+      [{ backendNodeId: 90, attributes: ['contenteditable', 'true'] }],
+    );
+
+    const out = await generateSnapshot(h.page, { format: 'ai', filter: 'interactive' });
+
+    // The real editing host, in the frame the DOM pass actually read.
+    expect(out).toContain('generic "Caption" ref=');
+    // The collision, which is just prose in someone else's document.
+    expect(out).not.toMatch(/paragraph[^\n]*ref=/);
+    expect(out).not.toContain('Advertisement copy');
   });
 });
 

@@ -48,6 +48,16 @@ function queryFilterNote(q: string): string {
   return `(q=${JSON.stringify(q)}: matching nodes and their ancestors only)`;
 }
 
+/**
+ * Said when `q` reaches a route that cannot honor it.
+ *
+ * The DOM listing is a flat rendering with no tree to prune, so the only two
+ * choices are this note or a full listing the caller reads as a filtered one.
+ * Shared with inspection.ts, which reaches the same listing by two more routes.
+ */
+export const DOM_LISTING_Q_NOTE =
+  '(note: q ignored — the a11y tree was unavailable, returning the unfiltered DOM interactive listing)';
+
 /** CDP Accessibility.AXNode shape (subset of fields we use) */
 interface CdpAXNode {
   nodeId: string;
@@ -939,10 +949,29 @@ export function markDomRefsActive(page: Page): void {
  * YouTube Studio's title and description out of every interactive snapshot
  * (dogfood 2026-09-04). `editableRoots` holds the HOSTS only, so a long
  * document does not mint a ref per paragraph.
+ *
+ * The caller passes NO_EDITABLE_ROOTS for anything outside the main frame —
+ * see editableRootsFor.
  */
 function isInteractive(node: AXNode, editableRoots: ReadonlySet<number>): boolean {
   if (INTERACTIVE_ROLES.has(node.role)) return true;
   return node.backendDOMNodeId !== undefined && editableRoots.has(node.backendDOMNodeId);
+}
+
+/** Stand-in for a frame the DOM facts say nothing about. */
+const NO_EDITABLE_ROOTS: ReadonlySet<number> = new Set<number>();
+
+/**
+ * The editable-host ids that may be joined against nodes in `frame`.
+ *
+ * `getDomFacts` reads ONE target's DOM, so its `backendDOMNodeId`s live in the
+ * main frame's id space. An out-of-process frame is a different target with a
+ * colliding space, where id 41 is some unrelated element — joining there would
+ * mint a phantom textbox ref in the frame whose numbers happened to collide.
+ * Same rule, and the same reason, as RefEntry.own.
+ */
+function editableRootsFor(frame: FrameCoord, roots: ReadonlySet<number>): ReadonlySet<number> {
+  return frame.key === MAIN_FRAME.key ? roots : NO_EDITABLE_ROOTS;
 }
 
 /**
@@ -1025,7 +1054,7 @@ function serializeNode(
   // Build attribute string
   const attrs: string[] = [];
 
-  if (ctx.format === 'ai' && isInteractive(node, ctx.editableRoots)) {
+  if (ctx.format === 'ai' && isInteractive(node, editableRootsFor(frame, ctx.editableRoots))) {
     const ref = assignRef(ctx.identity, frame.key, node.backendDOMNodeId);
     ctx.refs.push({
       role,
@@ -1179,8 +1208,16 @@ function serializeTree(root: AXNode, ctx: SerializeCtx): string {
   return serializeForest(root.children ?? [root], ctx);
 }
 
-function stripNonInteractive(node: AXNode, editableRoots: ReadonlySet<number>): AXNode | null {
-  if (isInteractive(node, editableRoots)) return node;
+function stripNonInteractive(
+  node: AXNode,
+  editableRoots: ReadonlySet<number>,
+  inheritedFrame: FrameCoord = MAIN_FRAME,
+): AXNode | null {
+  // Same frame gate serializeNode applies, and for the same reason: this walk
+  // crosses grafted out-of-process frames, whose ids collide with the main
+  // frame's (editableRootsFor).
+  const frame = frameOf(node, inheritedFrame);
+  if (isInteractive(node, editableRootsFor(frame, editableRoots))) return node;
   // An iframe ALWAYS survives the interactive filter. It is not interactive, so
   // it would otherwise vanish — and its disappearance is exactly the wrong
   // signal in both directions. For a frame that was never read, the controls
@@ -1192,7 +1229,7 @@ function stripNonInteractive(node: AXNode, editableRoots: ReadonlySet<number>): 
   // ran.
   if (IFRAME_ROLES.has(node.role)) {
     const inside = (node.children ?? [])
-      .map((child) => stripNonInteractive(child, editableRoots))
+      .map((child) => stripNonInteractive(child, editableRoots, frame))
       .filter((c): c is AXNode => c !== null);
     if (inside.length > 0) return { ...node, children: inside };
     // Childless here means "nothing interactive in it", which frameBoundaryNote
@@ -1203,7 +1240,7 @@ function stripNonInteractive(node: AXNode, editableRoots: ReadonlySet<number>): 
   if (!node.children) return null;
 
   const filtered = node.children
-    .map((child) => stripNonInteractive(child, editableRoots))
+    .map((child) => stripNonInteractive(child, editableRoots, frame))
     .filter((c): c is AXNode => c !== null);
 
   if (filtered.length === 0) return null;
@@ -1222,24 +1259,108 @@ function stripNonInteractive(node: AXNode, editableRoots: ReadonlySet<number>): 
  * `/pattern/flags` is read as a regular expression, anything else as a
  * case-insensitive substring — the ordinary case must not require escaping, and
  * a caller who wants an anchored or alternating match must not be denied one. A
- * malformed regex falls back to the substring reading rather than failing the
- * snapshot: the caller asked for a smaller tree, not for an error.
+ * pattern this refuses to compile falls back to the substring reading rather
+ * than failing the snapshot: the caller asked for a smaller tree, not for an
+ * error. The fallback is never silent — see QueryPlan.note.
  *
  * Matched against role, name, value and description together, because which of
  * those carries the words on screen is Chrome's decision, not the caller's.
  */
-export function queryMatcher(q: string): (node: AXNode) => boolean {
+export interface QueryPlan {
+  matches: (node: AXNode) => boolean;
+  /**
+   * Non-empty when the `/…/` reading was refused and the literal one used
+   * instead. A caller who wrote an anchored pattern and silently got substring
+   * semantics would read the smaller tree as the answer to the question it
+   * asked, which is the one outcome worse than an error.
+   */
+  note: string;
+}
+
+/**
+ * Longest regex source `q` will compile.
+ *
+ * The pattern is caller text compiled into this process's regex engine, so it
+ * is an untrusted program: the cap plus the nested-quantifier refusal below
+ * keep a snapshot from being turned into an unbounded CPU burn.
+ */
+const MAX_Q_REGEX_SOURCE = 200;
+
+export function queryMatcher(q: string): QueryPlan {
   const asRegex = /^\/(.+)\/([gimsuy]*)$/.exec(q);
+  let refused = '';
   if (asRegex) {
-    try {
-      const re = new RegExp(asRegex[1], asRegex[2].replace(/g/g, ''));
-      return (node) => re.test(searchableText(node));
-    } catch {
-      /* not a usable pattern — fall through to the substring reading */
+    const source = asRegex[1];
+    if (source.length > MAX_Q_REGEX_SOURCE) {
+      refused = `the pattern is longer than ${MAX_Q_REGEX_SOURCE} characters`;
+    } else if (hasNestedQuantifier(source)) {
+      refused = 'the pattern quantifies an already-quantified group, which can backtrack forever';
+    } else {
+      try {
+        // `g` AND `y` are dropped. Both keep `lastIndex` across calls, and this
+        // ONE compiled regex is tested against every node in the tree — with
+        // either flag on, a match on one node moves the start position for the
+        // next one, so nodes further down are silently skipped. `y` also
+        // anchors at that position, which is not what `/x/y` asks for here.
+        const re = new RegExp(source, asRegex[2].replace(/[gy]/g, ''));
+        return {
+          // Belt and braces: no flag left can set lastIndex, but a regex reused
+          // across a whole tree must not depend on that staying true.
+          matches: (node) => {
+            re.lastIndex = 0;
+            return re.test(searchableText(node));
+          },
+          note: '',
+        };
+      } catch {
+        refused = 'the pattern does not compile';
+      }
     }
   }
   const needle = q.toLowerCase();
-  return (node) => searchableText(node).toLowerCase().includes(needle);
+  return {
+    matches: (node) => searchableText(node).toLowerCase().includes(needle),
+    note: refused ? `(note: q read as literal text — ${refused})` : '',
+  };
+}
+
+/**
+ * Is a quantifier applied to a group that already contains one?
+ *
+ * `(a+)+` and friends are the shape whose backtracking is exponential in the
+ * length of the subject. Deliberately conservative — a false positive costs
+ * the caller the regex reading and says so, while a false negative costs the
+ * snapshot process an unbounded loop it cannot be interrupted out of.
+ */
+function hasNestedQuantifier(source: string): boolean {
+  const groupStarts: number[] = [];
+  for (let i = 0; i < source.length; i++) {
+    const c = source[i];
+    if (c === '\\') {
+      i++;
+      continue;
+    }
+    if (c === '[') {
+      // A character class holds no groups and no quantifiers of its own.
+      while (i < source.length && source[i] !== ']') {
+        if (source[i] === '\\') i++;
+        i++;
+      }
+      continue;
+    }
+    if (c === '(') {
+      groupStarts.push(i);
+      continue;
+    }
+    if (c === ')') {
+      const start = groupStarts.pop();
+      if (start === undefined) continue;
+      const after = source[i + 1];
+      if (after !== '*' && after !== '+' && after !== '{') continue;
+      if (/(?:^|[^\\])[*+{]/.test(source.slice(start + 1, i))) return true;
+    }
+  }
+  return false;
 }
 
 function searchableText(node: AXNode): string {
@@ -1257,6 +1378,23 @@ function searchableText(node: AXNode): string {
  */
 function pruneToQuery(node: AXNode, matches: (n: AXNode) => boolean): AXNode | null {
   if (matches(node)) return node;
+  return pruneChildrenToQuery(node, matches);
+}
+
+/**
+ * The same, but the node itself is never a match — only what is under it.
+ *
+ * How the PAGE-level tree is pruned. Its root is the RootWebArea, whose name is
+ * the page title, so a `q` that happens to appear in the title matched the root
+ * and returned the entire tree — with the "matching nodes and their ancestors
+ * only" note still attached, which reads as "this IS the filtered result".
+ * Nothing about the title says anything about which nodes answer the question.
+ *
+ * The scoped path keeps the plain `pruneToQuery`: there the root is the element
+ * the caller selected, which is content, and a `q` naming it asking for its
+ * contents is the documented reading.
+ */
+function pruneChildrenToQuery(node: AXNode, matches: (n: AXNode) => boolean): AXNode | null {
   const kept = (node.children ?? [])
     .map((child) => pruneToQuery(child, matches))
     .filter((c): c is AXNode => c !== null);
@@ -1873,6 +2011,11 @@ export async function generateSnapshot(
       if (format === 'aria') {
         domSnapshot = `(note: aria format unavailable — the a11y tree collapsed, returning the DOM interactive listing)\n${domSnapshot}`;
       }
+      // The listing is flat, with no tree to prune, so `q` cannot be honored on
+      // this route either. Said here for the same reason inspection.ts says it
+      // on its own two DOM-listing branches: a full listing returned to a
+      // caller who asked a question reads as the answer to that question.
+      if (options?.q) domSnapshot = `${DOM_LISTING_Q_NOTE}\n${domSnapshot}`;
       // Leave the refMap empty so resolveRef falls through to the data-wmux-ref
       // locator the DOM expression just tagged.
       setPageRefs(page, []);
@@ -1893,13 +2036,17 @@ export async function generateSnapshot(
   let searched = tree;
   let queryNote = '';
   if (options?.q) {
-    const pruned = pruneToQuery(tree, queryMatcher(options.q));
+    const plan = queryMatcher(options.q);
+    // Children only: the root is the RootWebArea, whose name is the page title
+    // — see pruneChildrenToQuery.
+    const pruned = pruneChildrenToQuery(tree, plan.matches);
     if (!pruned) {
       setPageRefs(page, []);
-      return `(no nodes match q=${JSON.stringify(options.q)})`;
+      const miss = `(no nodes match q=${JSON.stringify(options.q)})`;
+      return plan.note ? `${plan.note}\n${miss}` : miss;
     }
     searched = pruned;
-    queryNote = queryFilterNote(options.q);
+    queryNote = [plan.note, queryFilterNote(options.q)].filter((n) => n.length > 0).join('\n');
   }
 
   // Opt-in interactive-only filter: same strip as the overflow retry below,
@@ -2067,15 +2214,16 @@ export async function generateScopedSnapshot(
   let searched = forest;
   let queryNote = '';
   if (options?.q) {
-    const matches = queryMatcher(options.q);
+    const plan = queryMatcher(options.q);
     searched = forest
-      .map((n) => pruneToQuery(n, matches))
+      .map((n) => pruneToQuery(n, plan.matches))
       .filter((n): n is AXNode => n !== null);
     if (searched.length === 0) {
       setPageRefs(page, [], selector);
-      return `(no nodes match q=${JSON.stringify(options.q)} in this subtree)`;
+      const miss = `(no nodes match q=${JSON.stringify(options.q)} in this subtree)`;
+      return plan.note ? `${plan.note}\n${miss}` : miss;
     }
-    queryNote = queryFilterNote(options.q);
+    queryNote = [plan.note, queryFilterNote(options.q)].filter((n) => n.length > 0).join('\n');
   }
 
   let scoped = searched;

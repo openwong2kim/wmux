@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { PlaywrightEngine } from '../PlaywrightEngine';
 import { withAutomationLease } from '../automationLease';
 import {
+  DOM_LISTING_Q_NOTE,
   generateScopedSnapshot,
   generateSnapshot,
   browserScopeKey,
@@ -216,15 +217,6 @@ function windowFootnote(window: CaptureWindow | undefined, noun: string): string
   return `\n\n[collection started ${since}; ${noun} from before then are not included]`;
 }
 
-/**
- * Said when `q` reaches a route that cannot honor it.
- *
- * The DOM listing is a flat rendering with no tree to prune, so the only two
- * choices are this note or a full listing the caller reads as a filtered one.
- */
-const DOM_LISTING_Q_NOTE =
-  '(note: q ignored — the a11y tree was unavailable, returning the unfiltered DOM interactive listing)';
-
 // --- Shared formatters: used by both the Playwright path and the RPC fallback
 // (#106) so console/network render identically regardless of transport. ---
 
@@ -416,7 +408,14 @@ export function registerInspectionTools(server: McpServer, deps: BrowserToolDeps
         // searched snapshot and a whole one are different renderings, and
         // diffing one against the other would report the unmatched nodes as
         // removals.
-        const attrs = `${format ?? 'ai'}|${selector ?? ''}|${filter ?? ''}|${q ?? ''}${scopeRoute}`;
+        //
+        // JSON, not a `|` join: `selector` and `q` are caller text that may
+        // contain the separator itself, so the parts run together —
+        // `{selector:"a", q:"b||c"}` and `{selector:"a||b", q:"c"}` both spell
+        // `a||b||c`. Two different renderings then share one baseline, which is
+        // exactly the false "(no changes since previous snapshot)" this key
+        // exists to prevent.
+        const attrs = JSON.stringify([format ?? 'ai', selector ?? '', filter ?? '', q ?? '', scopeRoute]);
         const baseline = full ? null : getSnapshotBaseline(key, attrs, currentUrl);
         const rendered = formatSnapshotResult(baseline?.text ?? null, text);
         setSnapshotBaseline(key, attrs, text, currentUrl);

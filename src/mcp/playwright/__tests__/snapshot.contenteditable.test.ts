@@ -40,7 +40,7 @@ function ax(id: number, r: string, n: string, children: number[] = []): CdpAX {
 // filter does not know, each wrapping a paragraph of its own text.
 const UPLOAD_DIALOG: CdpAX[] = [
   ax(1, 'RootWebArea', 'Upload', [2]),
-  ax(2, 'dialog', 'Upload details', [3, 5, 7, 9]),
+  ax(2, 'dialog', 'Upload details', [3, 5, 7, 9, 10]),
   ax(3, 'generic', '제목', [4]),
   ax(4, 'paragraph', 'My video'),
   ax(5, 'generic', '설명', [6]),
@@ -48,6 +48,8 @@ const UPLOAD_DIALOG: CdpAX[] = [
   ax(7, 'generic', 'Read-only note', [8]),
   ax(8, 'paragraph', 'Not editable'),
   ax(9, 'button', 'Next'),
+  ax(10, 'generic', 'Inherited note', [11]),
+  ax(11, 'paragraph', 'Also not editable'),
 ];
 
 const UPLOAD_DOM: CdpDom[] = [
@@ -55,6 +57,7 @@ const UPLOAD_DOM: CdpDom[] = [
   { backendNodeId: 5, attributes: ['id', 'description-textbox', 'contenteditable', ''] },
   { backendNodeId: 7, attributes: ['id', 'note', 'contenteditable', 'false'] },
   { backendNodeId: 9, attributes: ['id', 'next-button'] },
+  { backendNodeId: 10, attributes: ['id', 'inherited', 'contenteditable', 'inherit'] },
 ];
 
 // selector → backendNodeId, as DOM.querySelector would answer it.
@@ -121,13 +124,25 @@ describe('contenteditable hosts are interactive', () => {
     expect((out.match(/ref="/g) ?? []).length).toBe(3);
   });
 
-  it('leaves contenteditable="false" out — only an explicit false opts out', async () => {
+  it('leaves contenteditable="false" out', async () => {
     const out = await generateSnapshot(makePage(UPLOAD_DIALOG, UPLOAD_DOM), {
       format: 'ai',
       filter: 'interactive',
     });
 
     expect(out).not.toContain('Read-only note');
+  });
+
+  // `inherit` resolves to the PARENT's state, and this one sits inside a
+  // non-editable dialog — so it takes no typed text at all. Treating any
+  // non-"false" value as a host advertised a field that is not there.
+  it('leaves contenteditable="inherit" out — only true, bare and plaintext-only are hosts', async () => {
+    const out = await generateSnapshot(makePage(UPLOAD_DIALOG, UPLOAD_DOM), {
+      format: 'ai',
+      filter: 'interactive',
+    });
+
+    expect(out).not.toContain('Inherited note');
   });
 
   it('keeps them inside a scoped snapshot too, which used to list the button alone', async () => {
