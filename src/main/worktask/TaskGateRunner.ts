@@ -46,6 +46,16 @@
 // facts and a brain that cannot tell them apart will close a healthy task as
 // failed.
 //
+// NO GATE IS NOT A FAILED GATE. A project that declares neither a verify script
+// nor npm lint/test scripts has nothing to fail, but the ledger refuses
+// `completed` without a system-recorded pass — so such a repository could never
+// reach `completed` except by `force`, which is how a live brain got stuck. The
+// `no_gate_command` skip therefore RECORDS a system gate (`exitCode: 0`,
+// `command: 'none'`, `skipped: 'no_gate_command'`, the detail text as its tail):
+// the verdict is honest about having run nothing, and `completed` is reachable.
+// `deps_missing` and `gate_unavailable` stay unrecorded — there a gate existed
+// and the environment stopped it, which is exactly the case a human should see.
+//
 // Ledger writes go through LedgerPort (see ledgerPort.ts) as a `system` actor —
 // the daemon ran the gate, not the worker whose code it graded — and a ledger
 // that is unreachable does not fail the gate: the run happened, only its receipt
@@ -166,8 +176,18 @@ export type GateSkipReason = 'deps_missing' | 'no_gate_command' | 'gate_unavaila
 export type GateRunResult =
   /** The gate ran to a verdict. `result.exitCode === 0` is the only pass. */
   | { ok: true; status: 'completed'; taskId: string; result: LedgerGateResult; recorded: boolean }
-  /** Nothing ran, and that is not a failure. */
-  | { ok: true; status: 'skipped'; taskId: string; skipped: GateSkipReason; detail: string }
+  /** Nothing ran, and that is not a failure. `recorded` is present only for
+   *  `no_gate_command`, the one skip that still writes a verdict (a passing
+   *  system gate, so a project without a gate can reach `completed`); its
+   *  absence on the other two says the ledger was deliberately left untouched. */
+  | {
+      ok: true;
+      status: 'skipped';
+      taskId: string;
+      skipped: GateSkipReason;
+      detail: string;
+      recorded?: boolean;
+    }
   /** A gate for this task is already running. */
   | { ok: false; status: 'busy'; taskId: string }
   /** The project declared a gate this runner will not execute. */
@@ -434,13 +454,21 @@ export class TaskGateRunner {
       const resolved = await this.resolveSteps(worktreePath, input.projectRoot ?? worktreePath);
       if ('refused' in resolved) return { ok: false, status: 'refused', taskId, error: resolved.refused };
       if (resolved.steps.length === 0) {
-        return {
-          ok: true,
-          status: 'skipped',
-          taskId,
+        const detail =
+          'this project declares no verify script and no npm lint/test scripts, so there is no gate to run';
+        // Recorded, unlike the other two skips: nothing failed here, and an
+        // unrecorded skip left `completed` unreachable without `force` for every
+        // repository that declares no gate. The verdict says what it is —
+        // `command: 'none'` and `skipped: 'no_gate_command'` — so nobody reads
+        // it as a suite that passed.
+        const recorded = await this.record(taskId, input.systemWorkspaceId, {
+          exitCode: 0,
+          tail: detail,
+          at: this.now(),
+          command: 'none',
           skipped: 'no_gate_command',
-          detail: 'this project declares no verify script and no npm lint/test scripts, so there is no gate to run',
-        };
+        });
+        return { ok: true, status: 'skipped', taskId, skipped: 'no_gate_command', detail, recorded };
       }
 
       let output = '';
