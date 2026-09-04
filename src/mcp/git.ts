@@ -50,7 +50,7 @@ const TASK_ID_OPTIONAL = z
   .min(1)
   .optional()
   .describe(
-    'A task id (wtask-…) your workspace owns, to read that task\'s worktree. Omit it to read YOUR OWN repository — the one your terminal is in, which is where task_adopt lands.',
+    'A task id (wtask-…) your workspace owns, to read that task\'s worktree. Omit the field entirely to read YOUR OWN repository instead — the one your terminal is in, which is where task_adopt lands. An empty or blank value is refused, not treated as omitted.',
   );
 
 async function callGit(
@@ -88,7 +88,8 @@ export function registerGitTools(server: McpServer, deps: GitToolDeps): void {
     'git_status',
     'Working-tree state as data: { branch, ahead, behind, clean, files: [{ status, path }] }. ' +
       'With task_id, a task\'s worktree — use it before task_close (which refuses on a dirty or unpushed branch) and instead of reading a terminal screen to guess whether a worker has finished. ' +
-      'Without task_id, your own repository (the result names it in repoRoot), which is how you check what task_adopt just staged or committed.',
+      'Without task_id, YOUR OWN repository — not the task\'s — which is how you check what task_adopt just staged or committed. ' +
+      'Every result says which one answered: target: "task" (with taskId) or "caller-repo" (with repoRoot).',
     { task_id: TASK_ID_OPTIONAL },
     async ({ task_id }) =>
       callGit('task.git.status', { ...(task_id !== undefined ? { taskId: task_id } : {}) }, deps),
@@ -96,7 +97,8 @@ export function registerGitTools(server: McpServer, deps: GitToolDeps): void {
 
   server.tool(
     'git_log',
-    `Recent commits as [{ hash, author, date, subject }], newest first — a task's worktree with task_id, your own repository without it. ` +
+    `Recent commits as [{ hash, author, date, subject }], newest first — a task's worktree with task_id, YOUR OWN repository (not the task's) without it. ` +
+      `The result says which answered in target: "task" | "caller-repo". ` +
       `limit defaults to ${TASK_GIT_LOG_DEFAULT} and is clamped to ${TASK_GIT_LOG_MAX}; the limit that actually ran comes back in the result.`,
     {
       task_id: TASK_ID_OPTIONAL,

@@ -426,14 +426,37 @@ function rendererCallerCwd(getWindow: GetWindow): (workspaceId: string, senderPt
 
 /** Keep control characters and flag-looking strings out of a child process's
  *  cwd. Belt and braces: the value never becomes an argv element, and the
- *  toplevel lookup below is what actually decides which repository answers. */
+ *  toplevel lookup below is what actually decides which repository answers.
+ *
+ *  ABSOLUTE ONLY. `path.resolve` on a relative value silently anchors it to the
+ *  DAEMON's own working directory — a repository that has nothing to do with
+ *  the calling pane — so a surface reporting `src` (or `.`, or '..') would have
+ *  answered for whatever tree the daemon happens to be started in. A cwd is
+ *  absolute or it is unusable; `resolve` then only folds `.`/`..` away. */
 export function normalizeCallerCwd(raw: string): string | null {
   const trimmed = raw.trim();
   if (trimmed.length === 0) return null;
   if (trimmed.startsWith('-')) return null;
   // eslint-disable-next-line no-control-regex
   if (/[\x00-\x1f\x7f]/.test(trimmed)) return null;
+  if (!path.isAbsolute(trimmed)) return null;
   return path.resolve(trimmed);
+}
+
+/** The git toplevel of `dir`, realpath'd, or ''. Same rule as the fan-out
+ *  gate's repoRootOf: `--show-toplevel` so any subdirectory normalises to the
+ *  same answer, and realpath so a symlinked path cannot alias a different
+ *  repository (or make two names for one repo look like two repos). */
+async function callerRepoRoot(exec: WorktaskExec, dir: string): Promise<string> {
+  const res = await exec('git', ['rev-parse', '--show-toplevel'], dir);
+  if (res.code !== 0) return '';
+  const top = res.stdout.trim();
+  if (top.length === 0) return '';
+  try {
+    return fs.realpathSync(top);
+  } catch {
+    return top;
+  }
 }
 
 /**
@@ -617,7 +640,20 @@ export function registerWorktaskRpc(router: RpcRouter, deps: WorktaskRpcDeps): v
     params: Record<string, unknown>,
     ctx: RpcContext | undefined,
   ): Promise<{ taskId?: string; repoRoot?: string; cwd: string } | { code: string; message: string }> => {
-    if (typeof params['taskId'] === 'string' && params['taskId'].trim().length > 0) {
+    // PRESENT-BUT-EMPTY IS NOT OMITTED. `z.string().min(1)` lets ' ' through,
+    // and a `taskId` that trims to nothing used to fall silently into the
+    // caller-repo branch: the caller asked about a task and was answered about
+    // a different repository, with `ok: true`. Naming the field at all means
+    // naming a task; omit it entirely to read your own repository.
+    const rawTaskId = params['taskId'];
+    if (rawTaskId !== undefined) {
+      if (typeof rawTaskId !== 'string' || rawTaskId.trim().length === 0) {
+        return {
+          code: 'INVALID_ARGUMENT',
+          message:
+            'taskId must be a non-empty task id — omit the field entirely to read your own repository instead',
+        };
+      }
       const owned = await resolveOwnedTask(deps, params, ctx);
       if (!('task' in owned)) return owned;
       const { task } = owned;
@@ -645,8 +681,7 @@ export function registerWorktaskRpc(router: RpcRouter, deps: WorktaskRpcDeps): v
           'name a task, or call from a pane whose cwd is a git repository',
       };
     }
-    const top = await exec('git', ['rev-parse', '--show-toplevel'], resolved);
-    const repoRoot = top.code === 0 ? top.stdout.trim() : '';
+    const repoRoot = await callerRepoRoot(exec, resolved);
     if (!repoRoot) {
       return {
         code: 'FAILED_PRECONDITION',
@@ -827,11 +862,13 @@ export function registerWorktaskRpc(router: RpcRouter, deps: WorktaskRpcDeps): v
     const target = await resolveReadCwd(params, ctx);
     if ('code' in target) return deny(target.code, target.message);
     const res = await exec('git', ['status', '--porcelain=v1', '--branch', '-z'], target.cwd);
-    // `taskId` / `repoRoot` say WHICH repository answered, so a caller mixing
-    // task reads and parent-repo reads never has to guess.
+    // `target` says WHICH repository answered, in one field that is always
+    // present — a caller mixing task reads and own-repo reads should not have
+    // to infer it from which of two optional keys came back, and an omitted
+    // task id must never be readable as "this is the task".
     const where = target.taskId !== undefined
-      ? { taskId: target.taskId, worktreePath: target.cwd }
-      : { repoRoot: target.cwd };
+      ? { target: 'task' as const, taskId: target.taskId, worktreePath: target.cwd }
+      : { target: 'caller-repo' as const, repoRoot: target.cwd };
     if (res.code !== 0) {
       return { ok: false as const, ...where, reason: 'git-failed' as const, error: res.stderr.trim() };
     }
@@ -857,7 +894,11 @@ export function registerWorktaskRpc(router: RpcRouter, deps: WorktaskRpcDeps): v
       ['log', `-n`, String(limit), `--format=%H${LOG_SEP}%an${LOG_SEP}%aI${LOG_SEP}%s`],
       target.cwd,
     );
-    const where = target.taskId !== undefined ? { taskId: target.taskId } : { repoRoot: target.cwd };
+    // Always present, so an omitted task id cannot be mistaken for a task read.
+    const where =
+      target.taskId !== undefined
+        ? { target: 'task' as const, taskId: target.taskId }
+        : { target: 'caller-repo' as const, repoRoot: target.cwd };
     if (res.code !== 0) {
       return { ok: false as const, ...where, reason: 'git-failed' as const, error: res.stderr.trim() };
     }

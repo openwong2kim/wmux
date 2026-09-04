@@ -34,23 +34,43 @@ registerGitTools(server, { getSenderPtyId, resolveWorkspaceId });
 
 `task_adopt`'s `commit` defaults to `false` — the staged, uncommitted result this
 lane shipped with. `commit: true` commits the index the `--3way` apply filled
-(no pathspec: the target was verified clean, so the index holds the adopted
-patch and nothing else) with the subject `adopt: <title> (<task id>)`, taking the
-title from the server's projection row, and answers `{ commit: '<short sha>' }`.
-A commit that is refused — a hook, no author identity, a locked index — restores
-the applied paths exactly as the apply-failure path does and answers
-`reason: 'commit-failed'`. Sequential adoption needs it: the staged default
-leaves the target dirty, and the next adopt is then refused `dirty-target`.
+with the subject `adopt: <title> (<task id>)`, taking the title from the
+server's projection row (an LLM wrote that text, so control characters are
+stripped and the subject is bounded by code point), and answers
+`{ commit: '<short sha>' }` — or, if `rev-parse` will not name the commit,
+`{ warning }` with no `commit` key, never `commit: ''`.
+
+The commit takes **no pathspec** — `git commit -- <paths>` would record the
+working tree rather than the index `--3way` just filled — so the porcelain
+status is re-read in the instant before it and anything outside the adopted
+paths is `reason: 'commit-failed'` with the adopted paths restored. The clean
+check that justifies a pathspec-free commit is a dozen git calls earlier;
+without the re-read, a file a human staged in that window was swept into a
+commit whose message names someone else's task. Any commit refusal — a hook, no
+author identity, a locked index — restores the applied paths exactly as the
+apply-failure path does; the restore addresses them as `:(literal)` pathspecs,
+so a file named `a*.ts` restores itself and not everything it globs.
+Sequential adoption needs `commit: true`: the staged default leaves the target
+dirty, and the next adopt is then refused `dirty-target`.
 
 `git_status` and `git_log` take `task_id` **optionally**. Omitted, the repository
 is the CALLER'S OWN: main derives it from the calling terminal's cwd (the
 fan-out gate's derivation — the surface whose ptyId is the verified
 `senderPtyId`, or, for a commander caller with no pty of its own, its
-workspace's active pane), takes the git toplevel of it, and runs the same
-read-only argv there. The result carries `repoRoot` instead of `taskId`. There
-is still no path argument, and a `task_id` that is given is still ownership
-checked. `gh_pr_view` stays task-only — a pull request belongs to a task's
-branch.
+workspace's active pane), takes the git toplevel of it, **realpath'd** (two
+names for one repository must not read as two), and runs the same read-only
+argv there. A cwd that is not absolute is refused — `path.resolve` would
+otherwise anchor a relative one to the DAEMON's own working directory.
+
+Every result names which repository answered in `target`: `'task'` (with
+`taskId`, and `worktreePath` on `git_status`) or `'caller-repo'` (with
+`repoRoot`). It is always present, so an omitted `task_id` can never be read as
+a task's answer. `task_id` present-but-blank is `INVALID_ARGUMENT`, not an
+omission: `z.string().min(1)` accepts `' '`, and trimming it into the
+caller-repo branch answered a question about a task with another repository's
+state. There is still no path argument, and a `task_id` that is given is still
+ownership checked. `gh_pr_view` stays task-only — a pull request belongs to a
+task's branch.
 
 Descriptions live in the two source files and are the authority; they are
 written for the tools/list byte budget (short sentences, the refusal reasons
@@ -183,6 +203,23 @@ lint/test scripts is `skipped: 'no_gate_command'` — and that one skip is
 ledger refuses `completed` without a system-recorded pass, so a repository with
 no gate could otherwise never be closed except with `force`. The other two skips
 stay unrecorded, because there a gate existed and the environment stopped it.
+
+That waiver is the PARENT repository's to give, never the worktree's. The
+worktree is the tree the worker edits, so deciding "no gate exists" from its own
+package.json would let a worker delete its `lint`/`test` scripts and be handed a
+system-signed pass for it. When `projectRoot` declares either script and the
+worktree declares neither, the verdict is a FAILING gate (`exitCode: 1`,
+`command: 'none'`, a tail naming the missing scripts), recorded — not a waiver.
+The verify branch was already parent-anchored: `wmux.json` is read at
+`projectRoot`, and a project declaring `verify` whose worktree lacks the file is
+refused. A package.json that exists and cannot be read or parsed is neither
+answer — it is `gate_unavailable`, unrecorded.
+
+Step resolution runs BEFORE the `node_modules` check, and `deps_missing` is only
+possible once there are steps to run: asking about `node_modules` first made
+every gate in a non-Node checkout (no package.json, therefore no node_modules)
+answer `deps_missing`, which records nothing — the exact blockage the no-gate
+record exists to remove.
 Timeout is 15 minutes and cannot be disabled (a
 non-positive value is clamped to the default); a cancel or a timeout kills the
 process group and yields `exitCode: null`. One gate per task: the slot is

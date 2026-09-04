@@ -8,6 +8,9 @@
 // ordering, gh gates) is pinned in their own tests.
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
 
 vi.mock('../../../workspace/ptyOwnership', () => ({ resolvePtyOwnerWorkspace: vi.fn() }));
 vi.mock('../../../git/git', () => ({ git: vi.fn() }));
@@ -202,7 +205,7 @@ describe.each(WORKTASK_RPC_METHODS)('%s — shared gates', (method) => {
     const h = harness();
     const res = await h.call(method, { senderPtyId: 'pty-1' });
     if ((CALLER_REPO_METHODS as readonly string[]).includes(method)) {
-      expect(res).toMatchObject({ ok: true, repoRoot: CALLER_REPO });
+      expect(res).toMatchObject({ ok: true, target: 'caller-repo', repoRoot: CALLER_REPO });
     } else {
       expect(res).toMatchObject({ ok: false, error: { code: 'INVALID_ARGUMENT' } });
     }
@@ -456,7 +459,7 @@ describe('task.git.status / task.git.log without a taskId', () => {
     // the whole repository.
     expect(h.exec).toHaveBeenCalledWith('git', ['rev-parse', '--show-toplevel'], CALLER_CWD);
     expect(h.exec).toHaveBeenCalledWith('git', ['status', '--porcelain=v1', '--branch', '-z'], CALLER_REPO);
-    expect(res).toMatchObject({ ok: true, repoRoot: CALLER_REPO });
+    expect(res).toMatchObject({ ok: true, target: 'caller-repo', repoRoot: CALLER_REPO });
     expect(res).not.toHaveProperty('taskId');
   });
 
@@ -469,7 +472,11 @@ describe('task.git.status / task.git.log without a taskId', () => {
 
   it('borrows the workspace active pane for a commander caller, which has no pty', async () => {
     const h = harness();
-    expect(await h.call('task.git.status', {}, COMMANDER)).toMatchObject({ ok: true, repoRoot: CALLER_REPO });
+    expect(await h.call('task.git.status', {}, COMMANDER)).toMatchObject({
+      ok: true,
+      target: 'caller-repo',
+      repoRoot: CALLER_REPO,
+    });
     expect(h.callerCwd).toHaveBeenCalledWith(CALLER_WS, '');
   });
 
@@ -505,8 +512,10 @@ describe('task.git.status / task.git.log without a taskId', () => {
     });
   });
 
-  it('refuses a cwd that looks like a flag or carries control characters', async () => {
-    for (const bad of ['--upload-pack=evil', '/repo\u0007/x']) {
+  it('refuses a cwd that looks like a flag, carries control characters, or is relative', async () => {
+    // A RELATIVE cwd used to be resolved against the DAEMON's own working
+    // directory — a repository that has nothing to do with the calling pane.
+    for (const bad of ['--upload-pack=evil', '/repo\u0007/x', 'src', '.', '../elsewhere']) {
       const h = harness({ callerCwd: async () => bad });
       expect(await h.call('task.git.status', { senderPtyId: 'pty-1' })).toMatchObject({
         ok: false,
@@ -514,6 +523,66 @@ describe('task.git.status / task.git.log without a taskId', () => {
       });
       expect(h.exec).not.toHaveBeenCalled();
     }
+  });
+
+  // Same rule as the fan-out gate's repoRootOf: two names for one repository
+  // must not read as two repositories.
+  it('realpaths the toplevel, so a symlinked checkout cannot alias another repo', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-rpc-repo-'));
+    const real = path.join(dir, 'real');
+    const link = path.join(dir, 'link');
+    fs.mkdirSync(real);
+    fs.symlinkSync(real, link);
+    try {
+      const h = harness({
+        callerCwd: async () => link,
+        exec: async (_cmd, args) =>
+          args.includes('--show-toplevel')
+            ? { stdout: `${link}\n`, stderr: '', code: 0 }
+            : { stdout: '', stderr: '', code: 0 },
+      });
+      expect(await h.call('task.git.status', { senderPtyId: 'pty-1' })).toMatchObject({
+        ok: true,
+        target: 'caller-repo',
+        repoRoot: fs.realpathSync(real),
+      });
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  // `z.string().min(1)` lets ' ' through. Trimming it to '' and falling into
+  // the caller-repo branch answered a question about a TASK with a different
+  // repository's state, under ok: true.
+  it('refuses a taskId that is present but blank rather than reading the caller repo', async () => {
+    for (const blank of ['', '   ', '\t']) {
+      const h = harness();
+      expect(await h.call('task.git.status', { taskId: blank, senderPtyId: 'pty-1' })).toMatchObject({
+        ok: false,
+        error: { code: 'INVALID_ARGUMENT' },
+      });
+      expect(h.callerCwd).not.toHaveBeenCalled();
+    }
+    const h = harness();
+    expect(await h.call('task.git.log', { taskId: 42, senderPtyId: 'pty-1' })).toMatchObject({
+      ok: false,
+      error: { code: 'INVALID_ARGUMENT' },
+    });
+    expect(h.callerCwd).not.toHaveBeenCalled();
+  });
+
+  it('names the target on a task read too, so the two can never be confused', async () => {
+    const h = harness();
+    expect(await h.call('task.git.status', { taskId: TASK.id, senderPtyId: 'pty-1' })).toMatchObject({
+      ok: true,
+      target: 'task',
+      taskId: TASK.id,
+    });
+    expect(await h.call('task.git.log', { taskId: TASK.id, senderPtyId: 'pty-1' })).toMatchObject({
+      ok: true,
+      target: 'task',
+      taskId: TASK.id,
+    });
   });
 });
 
