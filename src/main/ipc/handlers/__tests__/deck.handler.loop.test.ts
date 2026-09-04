@@ -1098,6 +1098,19 @@ describe('fan-out task workspaces never run a brain of their own (wave 2 dogfood
     setTaskLedgerForTests(ledger);
     await ledger.register({ id: 'wtask-1', taskWorkspaceId: 'ws-task', ownerWorkspaceId: 'ws-1', title: 'lane' });
     mockMode = 'danger';
+    // The outer beforeEach registered the handler against the previous ledger
+    // instance (its transition listener is bound at registration); re-register
+    // so the handler observes THIS ledger.
+    cleanup?.();
+    captured.clear();
+    adapters = [];
+    cleanup = registerDeckHandler(() => fakeWindow, {
+      createAdapter: (opts) => {
+        const a = new FakeAdapter(opts.workspaceId);
+        adapters.push(a);
+        return a;
+      },
+    });
   });
   afterEach(() => {
     setTaskLedgerForTests(null);
@@ -1131,9 +1144,29 @@ describe('fan-out task workspaces never run a brain of their own (wave 2 dogfood
     expect(adapters).toHaveLength(0);
   });
 
-  it('a finished task hands its workspace back: the refusal lifts once the entry is closed', async () => {
+  it('a finished task hands its workspace back: the refusal lifts, and the inherited autonomy is cleared', async () => {
+    capWrites.length = 0;
     await ledger.update({ id: 'wtask-1', status: 'cancelled', actor: { kind: 'system', workspaceId: 'daemon' }, expectedRev: 1 });
+    await new Promise((r) => setTimeout(r, 10));
     const res = await invoke(IPC.DECK_WAKE, { workspaceId: 'ws-task' });
     expect(res).not.toEqual({ ok: false, code: 'task_workspace' });
+    expect(capWrites).toContainEqual({ ws: 'ws-task', patch: { mode: 'off' } });
+  });
+
+  it("an owner that is itself a task workspace (nested fan-out) has no brain: the event is parked, not pushed", async () => {
+    // ws-1 owns wtask-1 (ws-task); make ws-1 itself a task of ws-root.
+    await ledger.register({ id: 'wtask-0', taskWorkspaceId: 'ws-1', ownerWorkspaceId: 'ws-root', title: 'outer' });
+    eventBus.emit({
+      type: 'agent.lifecycle',
+      workspaceId: 'ws-task',
+      ptyId: 'p-worker',
+      kind: 'agent.stop',
+      source: 'hook',
+      agent: 'claude',
+      decision: 'emit',
+    });
+    await new Promise((r) => setTimeout(r, 10));
+    expect(ledger.peekOrphanedEvents('ws-1').length).toBe(1);
+    expect(adapters).toHaveLength(0);
   });
 });
