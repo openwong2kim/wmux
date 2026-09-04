@@ -1165,8 +1165,8 @@ describe('fan-out task workspaces never run a brain of their own (wave 2 dogfood
       agent: 'claude',
       decision: 'emit',
     });
-    await new Promise((r) => setTimeout(r, 10));
-    expect(ledger.peekOrphanedEvents('ws-1').length).toBe(1);
+    // The park is an async ledger append; poll instead of a fixed delay.
+    await vi.waitFor(() => expect(ledger.peekOrphanedEvents('ws-1').length).toBe(1));
     expect(adapters).toHaveLength(0);
   });
 });

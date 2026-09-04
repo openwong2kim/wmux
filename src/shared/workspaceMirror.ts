@@ -51,6 +51,20 @@ export interface FleetSnapshotPane {
   agentStatus: AgentStatus;
   cwd?: string;
   isActivePane: boolean;
+  /**
+   * TRUE when this PTY has an independently DETECTED agent identity
+   * (`surfaceAgent[ptyId].name`, the #850 guard), false for a plain shell or
+   * tool pane. It exists because `agentName` cannot answer this question: that
+   * field follows the active-pane fidelity rule above, so a background worker
+   * agent also reports `null` and "no name" can never mean "no agent".
+   *
+   * The gates read it through `isAgentPane` (main/deck/stopGate.ts). Optional
+   * on the wire: an OLD renderer under a packaged update omits it, and
+   * `undefined` means "unknown", which the gates treat as an agent — the
+   * behaviour shipped before this field existed. Only an explicit `false` says
+   * "this is a shell".
+   */
+  isAgent?: boolean;
 }
 
 /** Per-workspace agent-status snapshot. `ts` is the renderer push timestamp. */

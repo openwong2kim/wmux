@@ -1,0 +1,4 @@
+### Fixed
+- The orchestrator's Stop gate and `deck_complete_work` no longer treat a plain shell pane as an outstanding worker. Typing a command into your own terminal made that pane report `running`, which refused the brain's completion with `workers_outstanding` and held its turn open on a pane only you could clear. Both gates now count a pane only when wmux has evidence it holds an agent, and their refusal text says "agent panes". A pane wmux is still unsure about keeps holding the turn, so a worker is never released by mistake.
+- The auto-wake heartbeat no longer wakes the orchestrator about a pane it is not allowed to act on: a shell that is waiting or finished is skipped, exactly as the Stop gate skips it.
+- Your shells keep their kill protection. A busy shell no longer blocks the brain's turn, but the brain still cannot end that session with `exit` or Ctrl+D — the two rules are now tracked separately.

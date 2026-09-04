@@ -158,6 +158,43 @@ describe('deck.completeWork — local workers', () => {
     expect(await complete()).toMatchObject({ ok: true });
   });
 
+  // Finding 11 (dogfood 2026-09): the operator's own zsh promotes to `running`
+  // off byte activity alone, and the gate counted it as a worker — refusing a
+  // completion nobody could ever clear (the shell belongs to the human).
+  it('does not count a running SHELL pane as an outstanding worker', async () => {
+    snapshotRef.current = {
+      workspaceId: WS,
+      ts: Date.now(),
+      panes: [pane({ ptyId: 'daemon-5dac0302', agentName: null, agentStatus: 'running', isAgent: false })],
+    };
+    expect(await complete()).toMatchObject({ ok: true });
+  });
+
+  it('still refuses for a running AGENT pane, and names only it', async () => {
+    snapshotRef.current = {
+      workspaceId: WS,
+      ts: Date.now(),
+      panes: [
+        pane({ ptyId: 'daemon-5dac0302', agentName: null, agentStatus: 'running', isAgent: false }),
+        pane({ ptyId: 'worker-1', agentStatus: 'running', isAgent: true }),
+      ],
+    };
+    const res = await complete();
+    expect(res).toMatchObject({ ok: false, error: 'workers_outstanding' });
+    expect(res['panes']).toEqual([{ ptyId: 'worker-1', agent: 'Claude Code', status: 'running' }]);
+  });
+
+  // An older renderer omits `isAgent` entirely; unknown identity must keep the
+  // shipped behaviour (hold) rather than silently disarm the gate.
+  it('treats a pane with no isAgent field as an agent', async () => {
+    snapshotRef.current = {
+      workspaceId: WS,
+      ts: Date.now(),
+      panes: [pane({ agentStatus: 'running' })],
+    };
+    expect(await complete()).toMatchObject({ ok: false, error: 'workers_outstanding' });
+  });
+
   it('does NOT wedge on a stale snapshot — it cannot prove work outstanding', async () => {
     snapshotRef.current = {
       workspaceId: WS,

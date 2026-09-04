@@ -58,6 +58,7 @@ import type { AgentLastMessage } from '../../shared/events';
 // No runtime dependency on the mirror — the caller (WP4 heartbeat) hands us a
 // plain FleetSnapshot and we render it, exactly as buildEventPrompt renders edges.
 import type { FleetSnapshot, FleetSnapshotPane } from '../../shared/workspaceMirror';
+import { isAgentPane } from './stopGate';
 
 /** The kinds we wake on:
  *   - agent.stop / agent.awaiting_input — pane lifecycle (decision 7 —
@@ -467,8 +468,12 @@ export class CommanderEventCoalescer {
     // A `complete` pane already surfaced by an earlier heartbeat is dropped here:
     // it was folded into a review once (recovering any dropped stop edge); it is
     // not re-reviewed every interval while it sits finished (issue #561).
+    // `isAgentPane` first (finding 11): a shell the human is driving is never
+    // something to wake the brain about, and the Stop gate would ignore it
+    // anyway — the two paths must not disagree about what counts as a worker.
     const attention = snapshot.panes.filter(
       (p) =>
+        isAgentPane(p) &&
         isAttentionStatus(p.agentStatus) &&
         !(p.agentStatus === 'complete' && st.snapshotSurfacedComplete.has(p.ptyId)),
     );

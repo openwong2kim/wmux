@@ -20,6 +20,7 @@ import type { WorkspaceAutonomy } from './deckAutonomyStore';
 import type { WorkspaceDecision } from './deckDecisionStore';
 import { isDecisionStale } from './deckDecisionStore';
 import type { FleetSnapshot, FleetSnapshotPane } from '../../shared/workspaceMirror';
+import { isAgentPane } from './stopGate';
 
 export interface DeckHeartbeatDeps {
   /** The workspaces to review each tick: those with a live commander manager OR
@@ -143,7 +144,10 @@ export class DeckHeartbeat {
     // Need a snapshot with at least one attention pane, else there is nothing to
     // review. (An empty/quiescent fleet is the common no-op — cheap to reject.)
     const snapshot = this.safe(() => this.deps.getFleetSnapshot(workspaceId), null);
-    if (!snapshot || !snapshot.panes.some((p) => isAttentionStatus(p.agentStatus))) return;
+    // Agent panes only, the same rule the Stop gate applies (finding 11):
+    // waking the brain about a pane the gate then ignores spends a turn on
+    // the human's own shell.
+    if (!snapshot || !snapshot.panes.some((p) => isAgentPane(p) && isAttentionStatus(p.agentStatus))) return;
     // Hand it to the coalescer — it re-runs decision/mode/rate/busy/budget and
     // wakes only if worthy. Never-throw: a flush error must not abort the pass.
     this.safe(() => {

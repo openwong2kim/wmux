@@ -100,6 +100,34 @@ describe('DeckHeartbeat — tick fire conditions', () => {
     expect(flush).not.toHaveBeenCalled();
   });
 
+  // Finding 11: the Stop gate ignores a shell pane, so waking the brain about
+  // one spends a turn on something it is not allowed to act on. Both paths read
+  // the same isAgent flag.
+  it('skips a fleet whose only attention pane is a human shell', () => {
+    const shellOnly: FleetSnapshot = {
+      workspaceId: 'ws-1',
+      ts: 0,
+      panes: [{ ptyId: 'sh', agentName: null, agentStatus: 'awaiting_input', isActivePane: true, isAgent: false }],
+    };
+    const { deps, flush } = makeDeps({ getFleetSnapshot: () => shellOnly });
+    new DeckHeartbeat(deps).tick();
+    expect(flush).not.toHaveBeenCalled();
+  });
+
+  it('still fires when an agent pane needs attention beside a busy shell', () => {
+    const mixed: FleetSnapshot = {
+      workspaceId: 'ws-1',
+      ts: 0,
+      panes: [
+        { ptyId: 'sh', agentName: null, agentStatus: 'awaiting_input', isActivePane: true, isAgent: false },
+        { ptyId: 'p1', agentName: 'claude', agentStatus: 'awaiting_input', isActivePane: false, isAgent: true },
+      ],
+    };
+    const { deps, flush } = makeDeps({ getFleetSnapshot: () => mixed });
+    new DeckHeartbeat(deps).tick();
+    expect(flush).toHaveBeenCalledTimes(1);
+  });
+
   it('skips when there is no snapshot at all (mirror never populated)', () => {
     const { deps, flush } = makeDeps({ getFleetSnapshot: () => null });
     new DeckHeartbeat(deps).tick();

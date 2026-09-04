@@ -98,6 +98,17 @@ export function useWorkspaceMirrorPush(): void {
         s.surfaceActivityAt !== prev.surfaceActivityAt ||
         s.paneLabel !== prev.paneLabel ||
         s.supervisionByPtyId !== prev.supervisionByPtyId ||
+        // Agent-vs-shell identity (`isAgent`). Every map the snapshot reads for
+        // it has to be here: an identity flip changes whether the deck's gates
+        // count the pane at all, and without these keys that flip waited for
+        // the 30s periodic refresh — long enough for a Stop to be judged on the
+        // wrong answer.
+        s.surfaceAgent !== prev.surfaceAgent ||
+        s.surfacePendingQuestion !== prev.surfacePendingQuestion ||
+        s.resumeBindingByPtyId !== prev.resumeBindingByPtyId ||
+        s.resumeHintByPtyId !== prev.resumeHintByPtyId ||
+        s.agentAliveByPtyId !== prev.agentAliveByPtyId ||
+        s.commandRunningByPtyId !== prev.commandRunningByPtyId ||
         // Role→model bindings ride the mirror (D2 resolver fast path) — a
         // binding edit must reach main within the debounce window, not wait
         // for the 30s periodic refresh.

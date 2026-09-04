@@ -90,6 +90,30 @@ describe('parseWorkspaceMirrorPayload — defensive renderer-trust validation', 
     expect(pane?.isActivePane).toBe(false); // only strict true counts
     expect(pane?.cwd).toBeUndefined();
   });
+
+  // The deck gates read `isAgent === false` as "this is the human's shell, do
+  // not hold the turn for it", so a missing or garbled field must stay
+  // undefined ("unknown") rather than be coerced into that release.
+  it('carries a real isAgent boolean and leaves anything else undefined', () => {
+    const parsed = parseWorkspaceMirrorPayload({
+      ts: 1,
+      entries: [{ id: 'ws-1', name: 'a' }],
+      fleets: [
+        {
+          workspaceId: 'ws-1',
+          ts: 1,
+          panes: [
+            { ptyId: 'pty-1', agentName: 'A', agentStatus: 'running', isActivePane: true, isAgent: true },
+            { ptyId: 'pty-2', agentName: null, agentStatus: 'running', isActivePane: false, isAgent: false },
+            { ptyId: 'pty-3', agentName: null, agentStatus: 'running', isActivePane: false, isAgent: 'no' },
+            { ptyId: 'pty-4', agentName: null, agentStatus: 'running', isActivePane: false },
+          ],
+        },
+      ],
+    });
+    const panes = parsed?.fleets[0].panes ?? [];
+    expect(panes.map((p) => p.isAgent)).toEqual([true, false, undefined, undefined]);
+  });
 });
 
 describe('parseWorkspaceMirrorPayload — roleBindings passthrough (3-way review: Codex)', () => {

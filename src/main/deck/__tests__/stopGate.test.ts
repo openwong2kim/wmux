@@ -75,6 +75,95 @@ describe('evaluateStopGate', () => {
     expect(verdict.reason).not.toContain('worker-c');
   });
 
+  // ── Finding 11 (dogfood 2026-09): a shell is not a worker ──────────────────
+  // The operator's own zsh promotes to `running` off byte activity alone. It
+  // held the turn open (and refused deck_complete_work) for a pane the brain
+  // could never resolve, because it belongs to the human.
+  describe('shell panes', () => {
+    const shell = pane({
+      ptyId: 'daemon-5dac0302',
+      agentName: null,
+      agentStatus: 'running',
+      isAgent: false,
+    });
+
+    it('does not block on a running shell pane', () => {
+      expect(evaluateStopGate({ snapshot: snapshot([shell]), consecutiveBlocks: 0 }).block).toBe(false);
+    });
+
+    it('does not block on a shell pane awaiting input', () => {
+      const waiting = pane({ ptyId: 'sh-2', agentName: null, agentStatus: 'awaiting_input', isAgent: false });
+      expect(evaluateStopGate({ snapshot: snapshot([waiting]), consecutiveBlocks: 0 }).block).toBe(false);
+    });
+
+    it('still blocks on a running AGENT pane beside the shell, naming only the agent', () => {
+      const verdict = evaluateStopGate({
+        snapshot: snapshot([shell, pane({ ptyId: 'pane-w', agentName: 'worker-a', agentStatus: 'running', isAgent: true })]),
+        consecutiveBlocks: 0,
+      });
+      if (!verdict.block) throw new Error('expected a block');
+      expect(verdict.outstandingPtyIds).toEqual(['pane-w']);
+      expect(verdict.reason).toContain('worker-a (running)');
+      expect(verdict.reason).toContain('1 agent pane');
+      // The refusal — and the fingerprint the hysteresis keys on — must not
+      // mention the human's shell at all.
+      expect(verdict.reason).not.toContain('daemon-5dac0302');
+      expect(verdict.fingerprint).not.toContain('daemon-5dac0302');
+    });
+
+    it('treats a pane with no isAgent field as an agent (older renderer push)', () => {
+      const unknown = pane({ ptyId: 'legacy-1', agentName: null, agentStatus: 'running' });
+      expect(evaluateStopGate({ snapshot: snapshot([unknown]), consecutiveBlocks: 0 }).block).toBe(true);
+    });
+
+    // #733: releasing a shell from BLOCKING must not release it from kill
+    // protection. `protectedPtyIds` is the wider set the caller records, so the
+    // pane the gate stopped naming is still one input.rpc refuses `exit` for.
+    it('still protects a released shell from being killed', () => {
+      const verdict = evaluateStopGate({ snapshot: snapshot([shell]), consecutiveBlocks: 0 });
+      expect(verdict.block).toBe(false);
+      expect(verdict.protectedPtyIds).toEqual(['daemon-5dac0302']);
+    });
+
+    it('protects agents and shells alike while blocking on the agent only', () => {
+      const verdict = evaluateStopGate({
+        snapshot: snapshot([shell, pane({ ptyId: 'pane-w', agentStatus: 'running', isAgent: true })]),
+        consecutiveBlocks: 0,
+      });
+      if (!verdict.block) throw new Error('expected a block');
+      expect(verdict.outstandingPtyIds).toEqual(['pane-w']);
+      expect(verdict.protectedPtyIds).toEqual(['daemon-5dac0302', 'pane-w']);
+    });
+
+    it('protects nothing when the snapshot is stale — the same fail-open as the block', () => {
+      const now = 1_000_000;
+      const stale: FleetSnapshot = {
+        workspaceId: 'ws-1',
+        ts: now - DEFAULT_MAX_SNAPSHOT_AGE_MS - 1,
+        panes: [shell],
+      };
+      expect(evaluateStopGate({ snapshot: stale, consecutiveBlocks: 0, now }).protectedPtyIds).toEqual([]);
+    });
+
+    // The active-work branch names no pane, and the brain can see the shell on
+    // its own — so the refusal has to say the shell is not its business, or it
+    // raises a decision about it (the dogfood failure).
+    it('tells the brain the busy shells are human-owned when active work holds the turn', () => {
+      const verdict = evaluateStopGate({
+        snapshot: snapshot([shell]),
+        activeWork: { id: 'work-1' },
+        consecutiveBlocks: 0,
+      });
+      if (!verdict.block) throw new Error('expected a block');
+      expect(verdict.reason).toContain('daemon-5dac0302');
+      expect(verdict.reason).toMatch(/human's own shell, not yours/);
+      expect(verdict.reason).toMatch(/not a blocker/);
+      // It is still an active-work hold, not a pane hold.
+      expect(verdict.outstandingPtyIds).toEqual([]);
+      expect(verdict.protectedPtyIds).toEqual(['daemon-5dac0302']);
+    });
+  });
+
   it('allows on a STALE snapshot — a renderer that stopped pushing must not wedge the brain', () => {
     const now = 1_000_000;
     const busy: FleetSnapshot = {
@@ -146,7 +235,9 @@ describe('a pending decision releases the gate (rule 4)', () => {
       pendingDecision: true,
       consecutiveBlocks: 99,
     });
-    expect(verdict).toEqual({ block: false });
+    // The busy pane is still reported for kill protection (#733) — only the
+    // BLOCK is released here.
+    expect(verdict).toEqual({ block: false, protectedPtyIds: ['pane-1'] });
   });
 
   it('an explicit false keeps the gate armed', () => {
@@ -192,7 +283,7 @@ describe('cap-out hysteresis (rule 5)', () => {
       snapshot: snapshot([pane({ agentStatus: 'idle' })]),
       consecutiveBlocks: 3,
     });
-    expect(verdict).toEqual({ block: false });
+    expect(verdict).toEqual({ block: false, protectedPtyIds: [] });
   });
 
   it('stays quiet while the suppressed fingerprint matches the current state', () => {
@@ -208,7 +299,7 @@ describe('cap-out hysteresis (rule 5)', () => {
       consecutiveBlocks: 0,
       suppressedFingerprint: capped.cappedOutFingerprint,
     });
-    expect(next).toEqual({ block: false });
+    expect(next).toEqual({ block: false, protectedPtyIds: ['pty-a'] });
   });
 
   it('re-arms when the outstanding pane set changes', () => {
@@ -243,7 +334,7 @@ describe('cap-out hysteresis (rule 5)', () => {
       consecutiveBlocks: 0,
       suppressedFingerprint: capped.cappedOutFingerprint,
     });
-    expect(reordered).toEqual({ block: false });
+    expect(reordered).toEqual({ block: false, protectedPtyIds: ['b', 'a'] });
   });
 });
 

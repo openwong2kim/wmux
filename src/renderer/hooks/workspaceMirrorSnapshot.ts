@@ -21,8 +21,8 @@ import type { StoreState } from '../stores';
 import { selectFleetPanes, type FleetPane, type FleetSelectorState } from '../stores/selectors/fleet';
 
 /**
- * The snapshot builder's input: the fleet selector state plus the two role
- * maps the D2 binding resolution reads. Both are optional so states built for
+ * The push builder's input: everything the fleet snapshot reads (below) plus
+ * the role→model bindings the D2 resolution needs. Optional so states built for
  * fleet-only tests keep compiling — an absent map simply yields an empty
  * roleBindings payload (still COMPLETE: no roles bound means no bindings).
  *
@@ -31,9 +31,23 @@ import { selectFleetPanes, type FleetPane, type FleetSelectorState } from '../st
  * always-empty bindings map that main would trust as "nothing bound"
  * (3-way review: Claude+GLM).
  */
-export type MirrorSnapshotState = FleetSelectorState & {
-  paneRole?: StoreState['paneRole'];
+export type MirrorSnapshotState = FleetSnapshotState & {
   orchestratorRoleBindings?: StoreState['orchestratorRoleBindings'];
+};
+
+/**
+ * What `buildFleetSnapshots` reads: the fleet selector's state plus every map
+ * that can testify a PTY belongs to an agent rather than to the human. All
+ * optional so fleet-only fixtures keep compiling — a missing map is simply one
+ * fewer piece of evidence, and the answer degrades to `undefined` (unknown),
+ * never to a false "this is a shell".
+ */
+export type FleetSnapshotState = FleetSelectorState & {
+  paneRole?: StoreState['paneRole'];
+  resumeBindingByPtyId?: StoreState['resumeBindingByPtyId'];
+  resumeHintByPtyId?: StoreState['resumeHintByPtyId'];
+  agentAliveByPtyId?: StoreState['agentAliveByPtyId'];
+  commandRunningByPtyId?: StoreState['commandRunningByPtyId'];
 };
 
 /**
@@ -135,7 +149,7 @@ export function buildWorkspaceListEntries(workspaces: Workspace[]): WorkspaceLis
  * which is exactly the base status the active surface must carry when a
  * background surface holds the attention.
  */
-export function buildFleetSnapshots(state: FleetSelectorState, ts: number): FleetSnapshot[] {
+export function buildFleetSnapshots(state: FleetSnapshotState, ts: number): FleetSnapshot[] {
   // Pane-level derived row per leaf (active-surface ptyId, agentName, cwd,
   // isActivePane) — the canonical selector, keyed by paneId.
   const derivedByPane = new Map<string, FleetPane>();
@@ -151,6 +165,44 @@ export function buildFleetSnapshots(state: FleetSelectorState, ts: number): Flee
   for (const p of selectFleetPanes({ ...state, surfaceAgentStatus: {}, surfacePendingQuestion: {} })) {
     baseByPane.set(p.paneId, p.agentStatus);
   }
+
+  // Is this PTY an agent, as opposed to the human's own shell? Per-PTY, so
+  // unlike `agentName` (active-pane only) it answers for background workers
+  // too — the deck's gates read it to tell a delegated agent from a zsh the
+  // operator typed into.
+  //
+  // THREE-STATE on purpose. `false` disarms both gates for the pane, so it is
+  // only ever returned for a pane positively known to be a shell; a pane we
+  // simply have not learned about yet (the detection window) answers
+  // `undefined`, and the gates read that as "assume agent" — the behaviour
+  // they shipped with. Evidence, most to least direct:
+  //   - `surfaceAgent` has an entry (the #850 detector identity). Membership,
+  //     not `.name`: a status-only broadcast can create a nameless entry, and
+  //     a nameless agent is still an agent.
+  //   - a retained attention status (awaiting_input / waiting / complete /
+  //     error). These come only from agent lifecycle broadcasts — a shell
+  //     never produces one.
+  //   - a transcript-derived pending question (#1168).
+  //   - a resume binding or hint: the daemon knows an agent SESSION for this
+  //     pty. This is what survives a daemon restart or an uncatalogued agent
+  //     whose detector never re-matched.
+  //   - process truth (`agentAliveByPtyId === true`, AgentProcessTracker).
+  //   - a bound orchestrator role on the pane (fan-out lanes are agents by
+  //     construction).
+  // The one negative: OSC 133 prompt state exists for this pty, i.e. the
+  // daemon has watched an interactive SHELL own it and print prompts, and
+  // nothing above ever attributed an agent to it.
+  const agentIdentity = (ptyId: string, paneId: string): boolean | undefined => {
+    if (!ptyId) return undefined;
+    if (state.surfaceAgent && ptyId in state.surfaceAgent) return true;
+    if (state.surfaceAgentStatus[ptyId] !== undefined) return true;
+    if (state.surfacePendingQuestion?.[ptyId]?.trim()) return true;
+    if (state.resumeBindingByPtyId?.[ptyId] || state.resumeHintByPtyId?.[ptyId]) return true;
+    if (state.agentAliveByPtyId?.[ptyId] === true) return true;
+    if (state.paneRole?.[paneId]) return true;
+    if (state.commandRunningByPtyId?.[ptyId] !== undefined) return false;
+    return undefined;
+  };
 
   const byWs = new Map<string, FleetSnapshot>();
   for (const ws of state.workspaces) {
@@ -195,6 +247,9 @@ export function buildFleetSnapshots(state: FleetSelectorState, ts: number): Flee
           agentStatus: att,
           isActivePane: derived.isActivePane && isActiveSurface,
         };
+        // Omitted, never `false`, when the identity is unknown — see agentIdentity.
+        const surfaceIsAgent = agentIdentity(s.ptyId, leaf.id);
+        if (surfaceIsAgent !== undefined) row.isAgent = surfaceIsAgent;
         if (s.cwd !== undefined) row.cwd = s.cwd;
         snap.panes.push(row);
         emitted.add(s.ptyId);
@@ -208,6 +263,8 @@ export function buildFleetSnapshots(state: FleetSelectorState, ts: number): Flee
           agentStatus: baseByPane.get(leaf.id) ?? 'idle',
           isActivePane: derived.isActivePane,
         };
+        const paneIsAgent = agentIdentity(activePtyId, leaf.id);
+        if (paneIsAgent !== undefined) out.isAgent = paneIsAgent;
         if (derived.cwd !== undefined) out.cwd = derived.cwd;
         snap.panes.push(out);
       }

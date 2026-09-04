@@ -100,6 +100,10 @@ function parsePane(raw: unknown): FleetSnapshotPane | null {
     isActivePane: raw.isActivePane === true,
   };
   if (typeof raw.cwd === 'string') pane.cwd = raw.cwd;
+  // Only a real boolean travels: an absent/garbled field must stay `undefined`
+  // ("unknown"), never be coerced to `false` — that is the value the gates read
+  // as "this is a shell, do not hold the turn for it".
+  if (typeof raw.isAgent === 'boolean') pane.isAgent = raw.isAgent;
   return pane;
 }
 

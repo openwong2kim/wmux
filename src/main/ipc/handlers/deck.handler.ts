@@ -368,16 +368,14 @@ export function registerDeckHandler(
               if (!verdict.block && verdict.ledgerReleased) {
                 console.warn(`[deck] ledger_gate_released workspace=${workspaceId} after ${consecutiveBlocks} consecutive blocks`);
               }
-              // Record which panes are holding the gate so input.rpc can refuse
-              // session-terminating input aimed at them (#733). The list comes
-              // off the verdict, never off the snapshot: an active-work hold on
-              // a stale snapshot blocks without naming a pane, and re-reading
-              // that snapshot here would protect panes the model was never told
-              // about. Cleared as soon as the gate lets a turn end.
-              noteGateVerdict(
-                workspaceId,
-                verdict.block ? verdict.outstandingPtyIds : null,
-              );
+              // Record which panes input.rpc must refuse session-terminating
+              // input for (#733). This is `protectedPtyIds`, NOT the blocking
+              // set: a busy shell no longer holds the gate (finding 11), but it
+              // is precisely the pane #733 watched a brain kill, so protection
+              // has to outlive the block. The list still comes off the verdict,
+              // never off the snapshot — re-reading it here would protect panes
+              // the verdict never considered.
+              noteGateVerdict(workspaceId, verdict.protectedPtyIds);
               if (verdict.block) {
                 lastBlockedFingerprints.set(workspaceId, verdict.fingerprint);
               } else if (

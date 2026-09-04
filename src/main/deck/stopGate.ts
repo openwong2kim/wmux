@@ -105,14 +105,17 @@ export type StopGateVerdict =
       /** Lane F: this allow ended a run of LEDGER-held refusals at the cap —
        *  the caller logs `ledger_gate_released`. */
       ledgerReleased?: true;
+      /** See the block branch — carried on an allow too, because a released
+       *  shell still has to be protected from being killed. */
+      protectedPtyIds: string[];
     }
   /**
    * `outstandingPtyIds` is the set of panes this refusal is actually about, and
    * it is EMPTY for a block that names none — an active-work hold with a
-   * missing or stale snapshot. `input.rpc` protects exactly this set (#733), so
-   * it has to travel with the verdict rather than be re-derived by the caller:
-   * a caller re-reading a stale snapshot would protect panes the model was
-   * never told about, which is the drift this field exists to make impossible.
+   * missing or stale snapshot. It has to travel with the verdict rather than be
+   * re-derived by the caller: a caller re-reading a stale snapshot would name
+   * panes the model was never told about, which is the drift this field exists
+   * to make impossible.
    */
   | {
       block: true;
@@ -123,12 +126,73 @@ export type StopGateVerdict =
        *  refused — never a state that appeared for the first time on the
        *  capping Stop (e.g. a worker dispatched mid-refusal-run). */
       fingerprint: string;
+      /**
+       * The #733 KILL-PROTECTION set: every busy pane of a fresh snapshot,
+       * agent or shell. Deliberately wider than `outstandingPtyIds`, and on
+       * BOTH verdicts, because the two questions are different:
+       *   - "who is the brain still waiting on?" → only agents can be work;
+       *   - "whose session must the brain not end?" → the human's shell most
+       *     of all. #733 was a live user shell killed with exit/Ctrl+D, so
+       *     releasing a shell from BLOCKING must not also release it from
+       *     protection. `deck.handler` feeds this to `noteGateVerdict` and
+       *     `input.rpc` refuses session-terminating input aimed at it.
+       * Empty when the snapshot is missing or stale — the same rule 1/2
+       * fail-open as everything else derived from it.
+       */
+      protectedPtyIds: string[];
     };
 
 /** Pane statuses that mean "this pane still needs the orchestrator". The same
  *  attention set CommanderEventCoalescer treats as non-quiescent. */
 function isOutstanding(status: FleetSnapshotPane['agentStatus']): boolean {
   return status === 'running' || status === 'awaiting_input';
+}
+
+/**
+ * Is this mirror row an AGENT pane — something the orchestrator can actually
+ * drive — rather than the human's own shell?
+ *
+ * `agentName` cannot answer it: the mirror only carries a name for the active
+ * pane's active surface, so every background worker reports `null` too. The
+ * per-pty `isAgent` flag (surfaceAgent identity, #850) is the one signal that
+ * separates them.
+ *
+ * `undefined` is UNKNOWN, not "shell": a snapshot pushed by a renderer that
+ * predates the field must keep the behaviour it shipped with (every
+ * running/awaiting_input pane holds the turn) rather than silently disarm both
+ * gates. Only an explicit `false` releases a pane.
+ */
+export function isAgentPane(pane: FleetSnapshotPane): boolean {
+  return pane.isAgent !== false;
+}
+
+/**
+ * The ONE rule both gates share (finding 11): a pane holds the turn open only
+ * when it is an agent pane AND its status still needs the orchestrator. A plain
+ * zsh the operator typed a command into promotes to `running` off byte activity
+ * alone, and counting it made `deck_complete_work` refuse work that was done.
+ * Exported so `deck.completeWork` and `evaluateStopGate` cannot drift apart.
+ */
+export function isOutstandingWorkerPane(pane: FleetSnapshotPane): boolean {
+  return isAgentPane(pane) && isOutstanding(pane.agentStatus);
+}
+
+/**
+ * The one sentence about panes this gate deliberately ignores.
+ *
+ * An active-work hold names no pane, so a brain that could SEE busy panes on
+ * its own (pane_list, the heartbeat) had nothing in the refusal to reconcile
+ * them with — in the dogfood it raised a decision about the operator's shell.
+ * Naming them as human-owned closes that gap: the refusal now says both what
+ * is holding it and what is not.
+ */
+function describeReleasedShells(shells: readonly FleetSnapshotPane[]): string {
+  if (shells.length === 0) return '';
+  const noun = shells.length === 1 ? 'pane is' : 'panes are';
+  return (
+    `Ignore ${shells.map((p) => p.ptyId).join(', ')} — ${shells.length === 1 ? 'that' : 'those'} ` +
+    `${noun} the human's own shell, not yours: not work, not a blocker, and not something to ask about. `
+  );
 }
 
 /** Short human label for one blocking pane, used in the reason string. */
@@ -226,23 +290,37 @@ export function evaluateStopGate(input: {
   maxSnapshotAgeMs?: number;
 }): StopGateVerdict {
   const { snapshot, activeWork } = input;
-  // Rule 4 first: a pending decision is the one legitimate "waiting on a
-  // human" state, and it is checked before anything else because every other
-  // input describes work the brain could still drive — this one says it must
-  // not. The decision block already orders the brain to stop acting; refusing
-  // the Stop on top of that leaves it nothing to do but repeat itself.
-  if (input.pendingDecision) return { block: false };
 
   // Rules 1+2 folded into one read: a null or stale snapshot contributes no
-  // outstanding panes (a derived signal cannot prove absence), while a fresh
-  // one contributes its running/awaiting_input set. Computed up front because
-  // the fingerprint needs the same set the block branches use.
+  // busy panes (a derived signal cannot prove absence), while a fresh one
+  // contributes every running/awaiting_input pane it holds. That BUSY set is
+  // then split two ways, because the gate asks two different questions of it:
+  //   - `outstanding` (agents only) is the work — a shell the human is using
+  //     is not a worker, however busy it looks (finding 11);
+  //   - `busy` (agents AND shells) is the #733 kill-protection set, which must
+  //     stay wide: the shell this fix releases from blocking is exactly the
+  //     kind of pane #733 watched a brain kill.
+  // Computed before the rule-4 exit so even a decision-released Stop still
+  // reports what must not be killed.
   const now = input.now ?? Date.now();
   const maxAge = input.maxSnapshotAgeMs ?? DEFAULT_MAX_SNAPSHOT_AGE_MS;
-  const outstanding =
+  const busy =
     snapshot && now - snapshot.ts <= maxAge
       ? snapshot.panes.filter((p) => isOutstanding(p.agentStatus))
       : [];
+  const protectedPtyIds = busy.map((p) => p.ptyId);
+  const outstanding = busy.filter(isAgentPane);
+  // The busy panes this gate deliberately does NOT hold on: the human's own
+  // shells. Named in the refusal (below) so the brain stops raising decisions
+  // about panes that were never its business.
+  const releasedShells = busy.filter((p) => !isAgentPane(p));
+
+  // Rule 4: a pending decision is the one legitimate "waiting on a human"
+  // state, and it wins over every other input because they all describe work
+  // the brain could still drive — this one says it must not. The decision
+  // block already orders the brain to stop acting; refusing the Stop on top of
+  // that leaves it nothing to do but repeat itself.
+  if (input.pendingDecision) return { block: false, protectedPtyIds };
 
   // Lane F — the ledger path (`deck.ledgerGate`). Open tasks owned by this
   // brain hold the turn exactly like outstanding panes do, through the SAME
@@ -255,14 +333,16 @@ export function evaluateStopGate(input: {
 
   // Nothing held — no active work, no outstanding panes, no open tasks. The
   // common allow.
-  if (!activeWork && outstanding.length === 0 && openTasks.length === 0) return { block: false };
+  if (!activeWork && outstanding.length === 0 && openTasks.length === 0) {
+    return { block: false, protectedPtyIds };
+  }
 
   // Rule 5: the gate already capped out on exactly this state. Stay quiet
   // until the state changes; the caller's TTL and the next human turn bound
   // how long "quiet" can last.
   const fingerprint = gateFingerprint(activeWork ?? null, outstanding, openTasks);
   if (input.suppressedFingerprint != null && input.suppressedFingerprint === fingerprint) {
-    return { block: false };
+    return { block: false, protectedPtyIds };
   }
 
   // Rule 3: the refusal-run cap. The fingerprint travels with this allow so
@@ -273,6 +353,7 @@ export function evaluateStopGate(input: {
   if (input.consecutiveBlocks >= max) {
     return {
       block: false,
+      protectedPtyIds,
       cappedOutFingerprint: fingerprint,
       ...(openTasks.length > 0 ? { ledgerReleased: true as const } : {}),
     };
@@ -285,11 +366,12 @@ export function evaluateStopGate(input: {
     return {
       block: true,
       outstandingPtyIds: outstanding.map((p) => p.ptyId),
+      protectedPtyIds,
       fingerprint,
       reason:
         `${describeLedgerHold(openTasks)}` +
         (outstanding.length > 0
-          ? `Panes still needing you: ${outstanding.map(describePane).join(', ')}. `
+          ? `Agent panes still needing you: ${outstanding.map(describePane).join(', ')}. `
           : '') +
         `${NO_KILL_SENTENCE} ${NO_REPEAT_SENTENCE}`,
     };
@@ -319,11 +401,12 @@ export function evaluateStopGate(input: {
     return finalizeReason
       ? {
           block: true,
-          reason: `${finalizeReason} ${NO_KILL_SENTENCE} ${NO_REPEAT_SENTENCE}`,
+          reason: `${finalizeReason} ${describeReleasedShells(releasedShells)}${NO_KILL_SENTENCE} ${NO_REPEAT_SENTENCE}`,
           outstandingPtyIds: [],
+          protectedPtyIds,
           fingerprint,
         }
-      : { block: false };
+      : { block: false, protectedPtyIds };
   }
 
   // This string is the ONLY thing the model reads about the refusal, so it
@@ -341,9 +424,10 @@ export function evaluateStopGate(input: {
   return {
     block: true,
     outstandingPtyIds: outstanding.map((p) => p.ptyId),
+    protectedPtyIds,
     fingerprint,
     reason:
-      `Do not end this turn yet: ${outstanding.length} worker ${noun} still need you — ${list}. ` +
+      `Do not end this turn yet: ${outstanding.length} agent ${noun} still need you — ${list}. ` +
       'Check each one (read its screen, answer what it is waiting on, or delegate the next step). ' +
       `${NO_KILL_SENTENCE} ` +
       (finalizeReason ?? 'If there is genuinely nothing left for you to do, say so and stop again.') +
