@@ -188,6 +188,8 @@ function boundGate(gate: LedgerGateResult): LedgerGateResult {
     at: typeof gate.at === 'number' ? gate.at : Date.now(),
     command: truncateHead(typeof gate.command === 'string' ? gate.command : '', LEDGER_GATE_COMMAND_MAX_BYTES),
     recordedBy: 'system',
+    // Carry the no-gate label through so the persisted entry says why exitCode is 0.
+    ...(gate.skipped === 'no_gate_command' ? { skipped: 'no_gate_command' as const } : {}),
   };
 }
 
