@@ -1116,6 +1116,9 @@ export function registerPTYHandlers(
         // the historical RingBuffer replay can't be dropped — see that comment.)
 
         console.log(`[lifecycle] pty.reconnect id=${id} result=ok pid=${session.pid ?? '?'}`);
+        // The daemon already told us this session's shell — record it, or a
+        // pane recovered across an app restart loses its WSL path rewrite.
+        recordPtyShell(session.id, session.cmd);
         return { success: true, id: session.id, shell: session.cmd };
       } catch (err) {
         // RCA A1 — RPC threw (timeout, ECONNRESET, handler swap mid-call).

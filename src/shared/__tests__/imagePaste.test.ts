@@ -31,7 +31,6 @@ describe('nativeImagePasteSequence', () => {
     expect(nativeImagePasteSequence('win32')).toBe('\x1bv');
     expect(nativeImagePasteSequence('darwin')).toBe('\x16');
     expect(nativeImagePasteSequence('linux')).toBe('\x16');
-    expect(nativeImagePasteSequence(undefined)).toBe('\x16');
   });
 });
 

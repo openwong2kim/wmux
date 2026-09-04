@@ -83,18 +83,27 @@ export function resolveImagePasteStrategy({
 /**
  * True when this pane's shell enters WSL.
  *
- * `wsl.exe` is the launcher wmux itself offers. `System32\bash.exe` is the
- * legacy WSL entry point a user can still type by hand — matched by its
+ * `wsl.exe` is the launcher wmux itself offers; the Store also installs
+ * per-distro launchers (`ubuntu2404.exe`, `debian.exe`). `System32\bash.exe` is
+ * the legacy entry point a user can still type by hand — matched by its
  * System32 location, which is what separates it from Git Bash's
  * `Git\bin\bash.exe` (a Windows-side shell that must NOT get a /mnt path).
  */
 export function isWslShell(shellPath: string | null | undefined): boolean {
   if (typeof shellPath !== 'string' || !shellPath) return false;
   const posix = shellPath.replace(/\\/g, '/').toLowerCase();
-  const base = posix.split('/').pop() ?? '';
-  if (base.includes('wsl')) return true;
-  return base === 'bash.exe' && /\/windows\/system32\/bash\.exe$/.test(posix);
+  const stem = (posix.split('/').pop() ?? '').replace(/\.exe$/, '');
+  if (WSL_NON_SHELLS.has(stem)) return false;
+  if (WSL_LAUNCHER_RE.test(stem)) return true;
+  return stem === 'bash' && /\/windows\/system32\/bash$/.test(posix.replace(/\.exe$/, ''));
 }
+
+/** Windows-side WSL tooling that is not a shell — a /mnt path there is wrong. */
+const WSL_NON_SHELLS = new Set(['wslconfig', 'wslg', 'wslservice']);
+
+/** `wsl.exe` plus the per-distro launchers the Store installs (`ubuntu2404.exe`). */
+const WSL_LAUNCHER_RE =
+  /^(?:wsl|ubuntu|debian|kali|opensuse|sles|oracle|fedora|alpine|archlinux)[a-z0-9._-]*$/;
 
 /**
  * Translate a Windows path into the WSL mount that sees the same file
@@ -103,6 +112,10 @@ export function isWslShell(shellPath: string | null | undefined): boolean {
  * Returns null for anything that is not a drive-letter absolute path — UNC
  * shares, relative paths, and paths that are already POSIX all keep their
  * original form rather than getting a bogus /mnt prefix.
+ *
+ * Assumes the default automount root. A wsl.conf that moves `automount.root`
+ * makes this path wrong, and the pane cannot tell us — that setup should use
+ * the 'native' or 'path' mode explicitly.
  */
 export function toWslPath(windowsPath: string): string | null {
   const m = /^([A-Za-z]):[\\/](.*)$/.exec(windowsPath);

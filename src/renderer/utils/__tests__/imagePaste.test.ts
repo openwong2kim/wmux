@@ -107,4 +107,29 @@ describe('pasteClipboardImage', () => {
     ).resolves.toBe(false);
     expect(write).not.toHaveBeenCalled();
   });
+
+  it('does not send the native key on an empty clipboard', async () => {
+    stubClipboard({ hasImage: false });
+    useStore.getState().setSurfaceAgent(PTY, 'Claude Code', 'running', 'claude');
+    const write = vi.fn();
+
+    // A keystroke on an empty clipboard would leave the agent in a state the
+    // user never asked for.
+    await expect(
+      pasteClipboardImage({ ptyId: PTY, write, bracketedPasteMode: false }),
+    ).resolves.toBe(false);
+    expect(write).not.toHaveBeenCalled();
+  });
+
+  it('path route still pastes when hasImage disagrees with readImage', async () => {
+    // The keyboard paste sites never gated on hasImage; a clipboard the format
+    // list does not call an image but readImage can decode must keep working.
+    const readImage = stubClipboard({ hasImage: false, imagePath: '/tmp/x.png' });
+    const write = vi.fn();
+
+    await pasteClipboardImage({ ptyId: PTY, write, bracketedPasteMode: false });
+
+    expect(readImage).toHaveBeenCalledWith(PTY);
+    expect(write).toHaveBeenCalledWith('/tmp/x.png');
+  });
 });

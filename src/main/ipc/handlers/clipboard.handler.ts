@@ -255,7 +255,9 @@ export function registerClipboardHandlers(): void {
     // rewrite for a PowerShell pane would be worse than no rewrite at all.
     return imagePathForPane(filePath, {
       platform: process.platform,
-      shellPath: getPtyShell(ptyId),
+      // Renderer-supplied; anything but a non-empty string is treated as "no
+      // pane", which just means no rewrite.
+      shellPath: getPtyShell(typeof ptyId === 'string' && ptyId ? ptyId : undefined),
     });
   }));
 

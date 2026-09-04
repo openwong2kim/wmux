@@ -30,7 +30,6 @@ export async function pasteClipboardImage(opts: {
   bracketedPasteMode: boolean;
 }): Promise<boolean> {
   const { ptyId, write, bracketedPasteMode } = opts;
-  if (!(await window.clipboardAPI.hasImage?.())) return false;
 
   const state = useStore.getState();
   // Known limit of the auto route: a pane's detected agent slug is retained
@@ -48,10 +47,19 @@ export async function pasteClipboardImage(opts: {
   // wrong one is a silent no-op — fall through to the path route instead.
   const platform = window.electronAPI?.platform;
   if (strategy === 'native' && platform) {
+    // The one place an emptiness check is required: the key is a keystroke, so
+    // sending it with nothing on the clipboard would put the agent (or a shell)
+    // into a state the user never asked for.
+    if (!(await window.clipboardAPI.hasImage?.())) return false;
     write(nativeImagePasteSequence(platform));
     return true;
   }
 
+  // Path route: probe readImage directly rather than gating on hasImage. The
+  // two answers can disagree (hasImage reads the format list, readImage reads
+  // the bitmap), and the keyboard paste sites historically called readImage
+  // with no gate — adding one here would drop images those clipboards used to
+  // paste.
   if (!window.clipboardAPI.readImage) return false;
   const imagePath = await window.clipboardAPI.readImage(ptyId);
   if (!imagePath) return false;
