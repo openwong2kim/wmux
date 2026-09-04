@@ -43,6 +43,7 @@ import {
   LEDGER_GATE_TAIL_MAX_BYTES,
   LEDGER_SCHEMA_VERSION,
   LEDGER_TERMINAL_RETENTION_MS,
+  LEDGER_TRANSITIONS,
   canActorSet,
   canTransition,
   isLedgerStatus,
@@ -358,7 +359,13 @@ export class TaskLedger {
       return {
         ok: false,
         error: 'illegal_transition',
-        message: `${entry.status} → ${next} is not an allowed transition`,
+        // Name the legal moves. A bare "working → completed is not allowed" told
+        // the brain it was wrong and nothing about what to do instead, and the
+        // move it wanted (`review_requested`) is the WORKER's — not something it
+        // could reach at all (dogfood finding 14).
+        message:
+          `${entry.status} → ${next} is not an allowed transition ` +
+          `(allowed from ${entry.status}: ${LEDGER_TRANSITIONS[entry.status].join(', ') || 'none — terminal'})`,
         entry,
       };
     }

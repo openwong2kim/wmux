@@ -234,6 +234,29 @@ describe('TaskLedger — transition matrix', () => {
     }
   }
 
+  // Wave 3, finding 14: the brain tried working → completed and was told only
+  // that it was wrong. The message now names the moves it CAN make from here.
+  it('an illegal transition names the legal moves from the current status', async () => {
+    const a = open();
+    await seed(a);
+    const res = await a.update({ id: 'wtask-1', status: 'completed', actor: BRAIN, expectedRev: 1 });
+    expect(res).toMatchObject({ ok: false, error: 'illegal_transition' });
+    if (res.ok) throw new Error('unreachable');
+    expect(res.message).toContain('working → completed is not an allowed transition');
+    expect(res.message).toContain('allowed from working: input_required, review_requested, failed, cancelled');
+  });
+
+  it('a terminal status says so instead of listing nothing', async () => {
+    const a = open();
+    await seed(a);
+    await driveTo(a, 'wtask-1', 'cancelled');
+    const cur = a.get('wtask-1')!;
+    const res = await a.update({ id: 'wtask-1', status: 'working', actor: SYSTEM, expectedRev: cur.rev });
+    expect(res.ok).toBe(false);
+    if (res.ok) throw new Error('unreachable');
+    expect(res.message).toContain('allowed from cancelled: none — terminal');
+  });
+
   it('refuses an unknown status and a stale rev', async () => {
     const a = open();
     await seed(a);

@@ -20,26 +20,30 @@ const mockSendRpc = sendRpc as unknown as ReturnType<typeof vi.fn>;
 
 type ToolHandler = (args: Record<string, unknown>) => Promise<{ content: { type: 'text'; text: string }[]; isError?: boolean }>;
 
-function collect(): { tools: Map<string, ToolHandler>; shapes: Map<string, Record<string, unknown>> } {
+function collect(): { tools: Map<string, ToolHandler>; shapes: Map<string, Record<string, unknown>>; descs: Map<string, string> } {
   const tools = new Map<string, ToolHandler>();
   const shapes = new Map<string, Record<string, unknown>>();
-  const tool = (name: string, _d: string, schema: Record<string, unknown>, handler: ToolHandler) => {
+  const descs = new Map<string, string>();
+  const tool = (name: string, d: string, schema: Record<string, unknown>, handler: ToolHandler) => {
     tools.set(name, handler);
     shapes.set(name, schema);
+    descs.set(name, d);
   };
   registerLedgerUpdateTool({ tool } as never, { getSenderPtyId: () => 'pty-mine', resolveWorkspaceId: async () => 'ws-mine' });
   registerLedgerListTool(tool as never);
-  return { tools, shapes };
+  return { tools, shapes, descs };
 }
 
-function collectBrain(): { tools: Map<string, ToolHandler>; shapes: Map<string, Record<string, unknown>> } {
+function collectBrain(): { tools: Map<string, ToolHandler>; shapes: Map<string, Record<string, unknown>>; descs: Map<string, string> } {
   const tools = new Map<string, ToolHandler>();
   const shapes = new Map<string, Record<string, unknown>>();
-  registerLedgerBrainUpdateTool(((name: string, _d: string, schema: Record<string, unknown>, handler: ToolHandler) => {
+  const descs = new Map<string, string>();
+  registerLedgerBrainUpdateTool(((name: string, d: string, schema: Record<string, unknown>, handler: ToolHandler) => {
     tools.set(name, handler);
     shapes.set(name, schema);
+    descs.set(name, d);
   }) as never);
-  return { tools, shapes };
+  return { tools, shapes, descs };
 }
 
 beforeEach(() => mockSendRpc.mockReset());
@@ -103,5 +107,27 @@ describe('ledger_list (commander-only)', () => {
     expect(COMMANDER_ONLY_TOOLS).toContain('ledger_list');
     expect(CORE_TOOL_SURFACE).not.toContain('ledger_list');
     expect(COMMANDER_RPC_METHODS.has('ledger.list')).toBe(true);
+  });
+});
+
+// Wave 3, finding 14 — the brain tried working → completed, was refused, and
+// had nothing in the contract text telling it whose move review_requested is.
+describe('the transition contract is in the tool text', () => {
+  it('the brain variant states the table and names force as its only exit', () => {
+    const desc = collectBrain().descs.get('ledger_update') ?? '';
+    expect(desc).toContain('worker: working → review_requested | input_required');
+    expect(desc).toContain('brain: review_requested → completed');
+    expect(desc).toContain('system: gate records');
+    expect(desc).toContain("review_requested, which is the WORKER's move");
+    expect(desc).toContain('force: { reason } is the ONLY brain-side exit');
+  });
+
+  // The WORKER variant is deliberately left alone: it rides the `full` profile,
+  // whose tools/list budget is the tight one, and it already says the two things
+  // a worker needs — review_requested is its move, completed is the brain's.
+  it('the worker variant keeps its own short contract', () => {
+    const desc = collect().descs.get('ledger_update') ?? '';
+    expect(desc).toContain('the brain marks completed');
+    expect(desc).not.toContain('system: gate records');
   });
 });
