@@ -35,6 +35,7 @@ import { FOCUS_RING } from '../focusRing';
 import { IconX, IconUsers } from '../icons';
 import { findLeafPanes } from '../../hooks/a2aAddressing';
 import { rosterMemberLabel } from '../../channels/authorDisplay';
+import { buildPaneNamesByPrincipal, paneNameForMember } from '../../channels/paneMemberNames';
 import { buildMentionCandidates } from './Composer';
 
 export interface JoinableWorkspace {
@@ -83,6 +84,10 @@ export interface ChannelMembersViewProps {
   /** R2 — liveness of an agent row (live when the pane is alive and an agent is detected).
    *  Rows without a principalId (legacy/external MCP memberId) → undefined → no badge. */
   agentLiveness?: (m: ChannelMember) => 'live' | 'stale' | undefined;
+  /** C-5 — the pane's own display name (rename ?? auto name) for a member row
+   *  whose principal still resolves to a live pane. Preferred over the stored
+   *  memberId, which for an MCP-joined pane is an opaque spawn-stamped id. */
+  paneDisplayNameFor?: (m: ChannelMember) => string | undefined;
   onLeave: (memberId: string, workspaceId: string) => void;
   /** Eject ANOTHER member (humans-only). Shown on NON-self rows only when
    *  provided (a resolvable human identity + non-archived channel). Absent →
@@ -105,6 +110,7 @@ export function ChannelMembersView({
   onJoin,
   onJoinPane = () => {},
   agentLiveness,
+  paneDisplayNameFor,
   onLeave,
   onKick,
   t: tProp,
@@ -180,7 +186,12 @@ export function ChannelMembersView({
               // workspace name (rosterMemberLabel).
               const wsLabel = workspaceLabel(m.workspaceId);
               const label = rosterMemberLabel(m, selfWorkspaceId, selfMemberId, wsLabel);
-              const primary = label.primary || (t('channels.me') || 'Me');
+              // C-5: a pane the viewer can see is named the way the rest of the
+              // app names it — its rename, else its auto name. The stored
+              // memberId is only the fallback for a row whose pane is gone or
+              // that never had one.
+              const paneName = isHuman ? undefined : paneDisplayNameFor?.(m);
+              const primary = paneName || label.primary || (t('channels.me') || 'Me');
               return (
                 <div
                   key={`${m.workspaceId}:${m.memberId}`}
@@ -192,7 +203,11 @@ export function ChannelMembersView({
                   {liveness && (
                     <span
                       data-channel-member-liveness
-                      aria-hidden="true"
+                      // C-5: the dot IS the status for this row — a screen
+                      // reader that skips it (aria-hidden) never learns whether
+                      // the agent pane is alive. Labelled, not decorative.
+                      role="img"
+                      aria-label={liveness === 'live' ? (t('channels.memberLiveTitle') || 'Agent pane is live') : (t('channels.memberStaleTitle') || 'Agent pane is gone or restarting')}
                       title={liveness === 'live' ? (t('channels.memberLiveTitle') || 'Agent pane is live') : (t('channels.memberStaleTitle') || 'Agent pane is gone or restarting')}
                       className="flex-shrink-0 w-1.5 h-1.5 rounded-full"
                       style={{ backgroundColor: liveness === 'live' ? 'var(--accent-green)' : 'var(--text-subtle)' }}
@@ -407,6 +422,15 @@ export function ChannelMembersControl({ channel }: { channel: Channel }): React.
     return 'stale';
   };
 
+  // C-5 — the pane display name behind a member row, when its principal still
+  // resolves to a live pane in this renderer. Same naming scheme as the mention
+  // tokens and the pane title bar (rename ?? auto name), so one pane reads the
+  // same everywhere instead of surfacing an opaque spawn-stamped memberId in
+  // the roster.
+  const paneNames = buildPaneNamesByPrincipal({ workspaces, surfaceAgent, paneLabel });
+  const paneDisplayNameFor = (m: ChannelMember): string | undefined =>
+    paneNameForMember(m, paneNames);
+
   // Show the picker only when the self ws can actually act on the channel: a
   // public channel anyone can self-join, but a private channel can only be
   // invited into by a current member (the daemon gates invite on the inviter
@@ -532,6 +556,7 @@ export function ChannelMembersControl({ channel }: { channel: Channel }): React.
       onJoin={handleJoin}
       onJoinPane={handleJoinPane}
       agentLiveness={agentLiveness}
+      paneDisplayNameFor={paneDisplayNameFor}
       onLeave={handleLeave}
       onKick={canKick ? handleKick : undefined}
       t={t}

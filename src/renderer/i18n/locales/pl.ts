@@ -1682,6 +1682,9 @@ export const pl = {
   'channels.deliveryTargetGone': '✗ odbiorca zniknął',
   'channels.deliveryNudgeExhausted': '! brak odpowiedzi — wyczerpano przypomnienia',
   'channels.deliveryUnconfirmed': '? dostarczenie niepotwierdzone',
+  'channels.postNoIdentity': 'Brak tożsamości kanału lub przestrzeni roboczej',
+  'channels.mentionLoopSuspected':
+    'Możliwa pętla wzmianek agenta — automatyczne przypomnienia dla panelu mają limit; oczekujące wzmianki nadal można pobrać przez a2a_task_query.',
   // J4 — diff comment fired to the mission channel. {count} = number of task
   // agents @-mentioned (0 when every agent has left the channel).
   'diff.commentFired': 'Komentarz wysłany na kanał misji — powiadomiono {count} agentów',

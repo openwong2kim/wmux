@@ -35,6 +35,7 @@ import {
   DELIVERY_LABEL_KEY,
   DELIVERY_LABEL_FALLBACK,
 } from './deliveryStatus';
+import { paneNameForAuthor, paneNamesKey, parsePaneNamesKey } from '../../channels/paneMemberNames';
 
 // Stable empty references for the store selectors below. A selector that
 // returns `s.channelMessages[id] ?? []` would mint a FRESH `[]` on every
@@ -266,6 +267,10 @@ export interface ChannelViewContentProps {
   /** C-2 — clock injection for the delivery-aging rule (tests pass a fixed
    *  value; production lets the view tick it). */
   now?: number;
+  /** C-5 — the pane display name behind an agent sender, when the roster still
+   *  resolves its principal to a live pane. Absent → the identity chip keeps
+   *  showing the stored memberId. */
+  paneNameFor?: (workspaceId: string, memberId: string) => string | undefined;
 }
 
 /** The presentational surface — all data comes via props, no store reads. */
@@ -282,6 +287,7 @@ export function ChannelViewContent({
   membersSlot,
   nudgeExhaustedMemberIds,
   now: nowProp,
+  paneNameFor,
   t: tProp,
 }: ChannelViewContentProps): React.ReactElement {
   const t = tProp ?? ((key: string) => key);
@@ -551,6 +557,15 @@ export function ChannelViewContent({
             const mentionsMe =
               !!viewer && !!m.mentions?.some((mn) => mn.workspaceId === viewer.workspaceId);
             const author = formatChannelAuthor(m, workspaceName);
+            // C-5: an agent's identity chip names its PANE the way the rest of
+            // the app names it. A pane that joined over MCP/CLI carries an
+            // opaque spawn-stamped memberId, which the chip used to print raw;
+            // the roster's principal resolves it back to "w26-1(claude)". The
+            // chip is dropped when the primary label already says it.
+            const paneName =
+              author.kind === 'agent' ? paneNameFor?.(m.workspaceId, m.memberId) : undefined;
+            const identityChip =
+              paneName && !author.primary.includes(paneName) ? paneName : author.chip;
             return (
               <div
                 key={`${channel.id}:${m.seq}`}
@@ -592,14 +607,14 @@ export function ChannelViewContent({
                           for every agent collapsing into "Claude Code". */}
                     {author.kind === 'human' ? (t('channels.me') || 'Me') : author.primary}
                   </span>
-                  {author.chip && (
+                  {identityChip && (
                     <span
                       data-channel-author-chip
                       className="text-[10px] font-mono text-[var(--text-sub)]"
                       title={author.kind === 'human' ? m.workspaceId : m.memberId}
                       {...tokenAttrs('textSub', 'text')}
                     >
-                      {author.chip}
+                      {identityChip}
                     </span>
                   )}
                   <span
@@ -696,6 +711,19 @@ export function ChannelView(): React.ReactElement | null {
     }
     return (id: string) => names.get(id);
   }, [workspaceNamesKey]);
+  // C-5: pane display names for the agent identity chips, subscribed as the
+  // same kind of STRING projection as the workspace names above — the pane tree
+  // churns on every terminal title/cwd write, and depending on it directly would
+  // repaint the whole transcript while agents are active. The key changes only
+  // when a pane is renamed, added, removed, or its detected agent changes.
+  const paneNamesProjection = useStore((s) =>
+    paneNamesKey({ workspaces: s.workspaces, surfaceAgent: s.surfaceAgent, paneLabel: s.paneLabel }),
+  );
+  const paneNameFor = useMemo(() => {
+    const names = parsePaneNamesKey(paneNamesProjection);
+    return (workspaceId: string, memberId: string) =>
+      paneNameForAuthor({ members, names, workspaceId, memberId });
+  }, [paneNamesProjection, members]);
   const setActiveChannel = useStore((s) => s.setActiveChannel);
   const pushToast = useStore((s) => s.pushToast);
   const archiveChannelDaemon = useStore((s) => s.archiveChannelDaemon);
@@ -906,6 +934,7 @@ export function ChannelView(): React.ReactElement | null {
         workspaceName={workspaceName}
         t={t}
         nudgeExhaustedMemberIds={nudgeExhaustedMemberIds}
+        paneNameFor={paneNameFor}
         membersSlot={<ChannelMembersControl channel={channel} />}
         composerSlot={
           channel.status === 'archived' ? (

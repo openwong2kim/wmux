@@ -830,7 +830,13 @@ function ComposerImpl({ channelId, onError }: ComposerProps): React.ReactElement
       // A channel created by another client requires a join first — that is
       // the daemon's membership rule (NOT_A_MEMBER), not a company gate.
       if (!channel || !selfWorkspaceId) {
-        return { ok: false, errorCode: 'UNKNOWN', errorMessage: 'No channel or workspace identity' };
+        // C-5: this is the one post-failure string the composer rendered in
+        // hard-coded English; it lands in the inline error row like every other.
+        return {
+          ok: false,
+          errorCode: 'UNKNOWN',
+          errorMessage: t('channels.postNoIdentity') || 'No channel or workspace identity',
+        };
       }
       // R11 idempotency: `clientMsgId` is the per-post idempotency
       // key. The daemon returns the original `seq` on a repeat hit

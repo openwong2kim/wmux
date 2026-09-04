@@ -53,6 +53,7 @@
 
 import { useEffect } from 'react';
 import { useStore } from '../stores';
+import { t } from '../i18n';
 import { loadChannelHistory, hydrateChannelsCatalog } from './useChannelsHydration';
 import { routeChannelMentionToInbox } from './channelMentionInbox';
 import {
@@ -347,7 +348,10 @@ export function useChannelsEventSubscription(): void {
           if (limited && shouldWarnLoopSuspect(ptyId, Date.now())) {
             useStore.getState().pushToast({
               level: 'info',
+              // C-5: localized like every other user-visible channel string; the
+              // English text stays as the fallback for an untranslated locale.
               message:
+                t('channels.mentionLoopSuspected') ||
                 'Possible agent mention loop — auto-nudges for a pane are rate-capped; queued mentions stay pullable via a2a_task_query.',
             });
           }

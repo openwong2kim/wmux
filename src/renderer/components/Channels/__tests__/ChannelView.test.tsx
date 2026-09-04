@@ -242,6 +242,7 @@ function renderView(args: {
   onLeave?: () => void;
   onArchive?: () => void;
   composerSlot?: React.ReactNode;
+  paneNameFor?: (workspaceId: string, memberId: string) => string | undefined;
 } = {}): string {
   return renderToStaticMarkup(
     createElement(ChannelViewContent, {
@@ -252,6 +253,7 @@ function renderView(args: {
       onLeave: args.onLeave,
       onArchive: args.onArchive,
       composerSlot: args.composerSlot ?? <div data-fake-composer />,
+      ...(args.paneNameFor ? { paneNameFor: args.paneNameFor } : {}),
     }),
   );
 }
@@ -265,6 +267,31 @@ beforeEach(() => {
     s.channelMessages = {};
     s.activeChannelId = null;
     s.channelUnread = {};
+  });
+});
+
+describe('ChannelViewContent — agent identity chip (C-5)', () => {
+  const opaque = makeMessage('ch-1', 1, {
+    memberId: 'pty-9f31c2ab',
+    memberName: 'Claude Code',
+  });
+
+  it('names the sender pane instead of its opaque memberId when the roster resolves it', () => {
+    const html = renderView({
+      viewer: makeMember({ memberId: 'm-1' }),
+      messages: [opaque],
+      paneNameFor: (workspaceId, memberId) =>
+        workspaceId === 'ws-1' && memberId === 'pty-9f31c2ab' ? 'w1-1(claude)' : undefined,
+    });
+    expect(html).toContain('w1-1(claude)');
+    // The raw id survives only as the hover title, never as the visible chip.
+    expect(html).toContain('title="pty-9f31c2ab"');
+    expect(html).not.toContain('>pty-9f31c2ab<');
+  });
+
+  it('falls back to the stored memberId when no pane resolves', () => {
+    const html = renderView({ viewer: makeMember({ memberId: 'm-1' }), messages: [opaque] });
+    expect(html).toContain('>pty-9f31c2ab<');
   });
 });
 

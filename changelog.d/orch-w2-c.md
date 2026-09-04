@@ -18,3 +18,17 @@
   the row itself: "Commit & close", which types a ready-to-run `git add -- <the
   changed paths> && git commit -m "wip: <task>"` into the task's own pane
   without running it, and "Open worktree".
+
+### Changed
+
+- A pane that joined a channel over MCP or the CLI is now named the way the rest
+  of wmux names it — its rename, else `w<workspace>-<pane>(<agent>)` — in the
+  members roster and on the transcript's sender chip, instead of the opaque
+  spawn-stamped member id it used to print.
+
+### Fixed
+
+- The channel composer's "no channel or workspace identity" post failure and the
+  agent mention-loop warning are translated (en/ko/pl) instead of always English.
+- The members roster's agent liveness dot carries an accessible label, so a
+  screen reader reports whether an agent's pane is live or gone.

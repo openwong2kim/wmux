@@ -1690,6 +1690,10 @@ export const en = {
   'channels.deliveryTargetGone': '✗ target gone',
   'channels.deliveryNudgeExhausted': '! no answer — nudges exhausted',
   'channels.deliveryUnconfirmed': '? delivery unconfirmed',
+  // C-5 — the two user-visible channel strings that were still hard-coded.
+  'channels.postNoIdentity': 'No channel or workspace identity',
+  'channels.mentionLoopSuspected':
+    'Possible agent mention loop — auto-nudges for a pane are rate-capped; queued mentions stay pullable via a2a_task_query.',
   // J4 — diff comment fired to the mission channel. {count} = number of task
   // agents @-mentioned (0 when every agent has left the channel).
   'diff.commentFired': 'Comment posted to the mission channel — pinged {count} agent(s)',

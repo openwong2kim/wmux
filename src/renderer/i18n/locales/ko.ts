@@ -1138,6 +1138,9 @@ export const ko = {
   'channels.deliveryTargetGone': '✗ 대상 없음',
   'channels.deliveryNudgeExhausted': '! 응답 없음 — 알림 예산 소진',
   'channels.deliveryUnconfirmed': '? 전달 미확인',
+  'channels.postNoIdentity': '채널 또는 워크스페이스 신원이 없습니다',
+  'channels.mentionLoopSuspected':
+    '에이전트 멘션 루프가 의심됩니다 — 페인당 자동 알림에는 상한이 있습니다. 대기 중인 멘션은 a2a_task_query로 계속 가져올 수 있습니다.',
   // J4 — diff 코멘트를 미션 채널에 발사. {count} = @멘션된 태스크 에이전트 수
   // (에이전트가 전원 채널을 떠났으면 0).
   'diff.commentFired': '코멘트를 미션 채널에 발사했습니다 — {count}개 에이전트 호출',
