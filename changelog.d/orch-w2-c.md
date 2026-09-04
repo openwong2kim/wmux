@@ -10,3 +10,6 @@
   nudges exhausted" when the wake worker gave up on a mentioned agent. A post
   that never gets an outcome now reads "delivery unconfirmed" instead of
   claiming to still be sending forever.
+- Fleet's approval inbox shows the auto-reject countdown on every approval that
+  has a deadline, and keeps a short "auto-rejected" log of the ones that expired
+  while you were away instead of letting them vanish like an answered prompt.

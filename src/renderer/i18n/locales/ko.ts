@@ -175,6 +175,8 @@ export const ko = {
   'fleet.approvals.plugin': '플러그인',
   'fleet.approvals.enterApprove': '승인',
   'fleet.approvals.delDeny': '거부',
+  'fleet.approvals.autoRejected': '자동 거부됨: {name}',
+  'fleet.approvals.autoRejectedLog': '최근 자동 거부된 승인',
 
   // Project config (X5 wmux.json)
   'project.dialogTitle': '프로젝트 설정 (wmux.json)',

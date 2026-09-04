@@ -444,6 +444,8 @@ export const pl = {
   'fleet.approvals.plugin': 'wtyczka',
   'fleet.approvals.enterApprove': 'zatwierdź',
   'fleet.approvals.delDeny': 'odrzuć',
+  'fleet.approvals.autoRejected': 'auto-odrzucone: {name}',
+  'fleet.approvals.autoRejectedLog': 'Ostatnio auto-odrzucone zatwierdzenia',
 
   // Project config (X5 wmux.json)
   'project.dialogTitle': 'Konfiguracja projektu (wmux.json)',

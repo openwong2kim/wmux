@@ -443,6 +443,9 @@ export const en = {
   'fleet.approvals.plugin': 'plugin',
   'fleet.approvals.enterApprove': 'approve',
   'fleet.approvals.delDeny': 'deny',
+  // C-3 — what happened to the approvals nobody answered.
+  'fleet.approvals.autoRejected': 'auto-rejected: {name}',
+  'fleet.approvals.autoRejectedLog': 'Recently auto-rejected approvals',
 
   // Project config (X5 wmux.json)
   'project.dialogTitle': 'Project configuration (wmux.json)',
