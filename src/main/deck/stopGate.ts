@@ -131,6 +131,35 @@ function isOutstanding(status: FleetSnapshotPane['agentStatus']): boolean {
   return status === 'running' || status === 'awaiting_input';
 }
 
+/**
+ * Is this mirror row an AGENT pane — something the orchestrator can actually
+ * drive — rather than the human's own shell?
+ *
+ * `agentName` cannot answer it: the mirror only carries a name for the active
+ * pane's active surface, so every background worker reports `null` too. The
+ * per-pty `isAgent` flag (surfaceAgent identity, #850) is the one signal that
+ * separates them.
+ *
+ * `undefined` is UNKNOWN, not "shell": a snapshot pushed by a renderer that
+ * predates the field must keep the behaviour it shipped with (every
+ * running/awaiting_input pane holds the turn) rather than silently disarm both
+ * gates. Only an explicit `false` releases a pane.
+ */
+export function isAgentPane(pane: FleetSnapshotPane): boolean {
+  return pane.isAgent !== false;
+}
+
+/**
+ * The ONE rule both gates share (finding 11): a pane holds the turn open only
+ * when it is an agent pane AND its status still needs the orchestrator. A plain
+ * zsh the operator typed a command into promotes to `running` off byte activity
+ * alone, and counting it made `deck_complete_work` refuse work that was done.
+ * Exported so `deck.completeWork` and `evaluateStopGate` cannot drift apart.
+ */
+export function isOutstandingWorkerPane(pane: FleetSnapshotPane): boolean {
+  return isAgentPane(pane) && isOutstanding(pane.agentStatus);
+}
+
 /** Short human label for one blocking pane, used in the reason string. */
 function describePane(pane: FleetSnapshotPane): string {
   const name = pane.agentName && pane.agentName.length > 0 ? pane.agentName : pane.ptyId;
@@ -235,13 +264,14 @@ export function evaluateStopGate(input: {
 
   // Rules 1+2 folded into one read: a null or stale snapshot contributes no
   // outstanding panes (a derived signal cannot prove absence), while a fresh
-  // one contributes its running/awaiting_input set. Computed up front because
-  // the fingerprint needs the same set the block branches use.
+  // one contributes its running/awaiting_input AGENT set — a shell the human
+  // is using is not a worker, however busy it looks (finding 11). Computed up
+  // front because the fingerprint needs the same set the block branches use.
   const now = input.now ?? Date.now();
   const maxAge = input.maxSnapshotAgeMs ?? DEFAULT_MAX_SNAPSHOT_AGE_MS;
   const outstanding =
     snapshot && now - snapshot.ts <= maxAge
-      ? snapshot.panes.filter((p) => isOutstanding(p.agentStatus))
+      ? snapshot.panes.filter(isOutstandingWorkerPane)
       : [];
 
   // Lane F — the ledger path (`deck.ledgerGate`). Open tasks owned by this
@@ -289,7 +319,7 @@ export function evaluateStopGate(input: {
       reason:
         `${describeLedgerHold(openTasks)}` +
         (outstanding.length > 0
-          ? `Panes still needing you: ${outstanding.map(describePane).join(', ')}. `
+          ? `Agent panes still needing you: ${outstanding.map(describePane).join(', ')}. `
           : '') +
         `${NO_KILL_SENTENCE} ${NO_REPEAT_SENTENCE}`,
     };
@@ -343,7 +373,7 @@ export function evaluateStopGate(input: {
     outstandingPtyIds: outstanding.map((p) => p.ptyId),
     fingerprint,
     reason:
-      `Do not end this turn yet: ${outstanding.length} worker ${noun} still need you — ${list}. ` +
+      `Do not end this turn yet: ${outstanding.length} agent ${noun} still need you — ${list}. ` +
       'Check each one (read its screen, answer what it is waiting on, or delegate the next step). ' +
       `${NO_KILL_SENTENCE} ` +
       (finalizeReason ?? 'If there is genuinely nothing left for you to do, say so and stop again.') +

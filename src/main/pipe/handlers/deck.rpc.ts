@@ -38,6 +38,7 @@ import {
   loadActiveDeckWork,
 } from '../../deck/deckWorkStore';
 import { getWorkspaceMirror } from '../../workspace/WorkspaceMirror';
+import { isOutstandingWorkerPane } from '../../deck/stopGate';
 
 /** Minimum characters a self-resolve resolution must carry. The re-examine
  *  prompt demands the brain CITE the binding rule/basis that settles the
@@ -133,11 +134,13 @@ export function registerDeckRpc(router: RpcRouter, getWindow: GetWindow): void {
     // Brain PTYs are excluded from the mirror upstream, so only worker panes can
     // block. A stale/missing renderer snapshot cannot prove work outstanding and
     // therefore does not wedge finalization; A2A has a durable query below.
+    //
+    // The predicate is the Stop gate's (`isOutstandingWorkerPane`), imported
+    // rather than restated: the two used to carry separate copies of the same
+    // rule and only this one counted the operator's own shell as a worker.
     const snapshot = getWorkspaceMirror().getFleetSnapshot(ws);
     if (snapshot && Date.now() - snapshot.ts <= 30_000) {
-      const outstanding = snapshot.panes.filter(
-        (pane) => pane.agentStatus === 'running' || pane.agentStatus === 'awaiting_input',
-      );
+      const outstanding = snapshot.panes.filter(isOutstandingWorkerPane);
       if (outstanding.length > 0) {
         return {
           ok: false,

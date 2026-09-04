@@ -1,0 +1,2 @@
+### Fixed
+- The orchestrator's Stop gate and `deck_complete_work` no longer treat a plain shell pane as an outstanding worker. Typing a command into your own terminal made that pane report `running`, which refused the brain's completion with `workers_outstanding` and held its turn open on a pane only you could clear. Both gates now count a pane only when it has a detected agent, and their refusal text says "agent panes".

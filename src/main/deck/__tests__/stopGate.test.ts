@@ -75,6 +75,48 @@ describe('evaluateStopGate', () => {
     expect(verdict.reason).not.toContain('worker-c');
   });
 
+  // ── Finding 11 (dogfood 2026-09): a shell is not a worker ──────────────────
+  // The operator's own zsh promotes to `running` off byte activity alone. It
+  // held the turn open (and refused deck_complete_work) for a pane the brain
+  // could never resolve, because it belongs to the human.
+  describe('shell panes', () => {
+    const shell = pane({
+      ptyId: 'daemon-5dac0302',
+      agentName: null,
+      agentStatus: 'running',
+      isAgent: false,
+    });
+
+    it('does not block on a running shell pane', () => {
+      expect(evaluateStopGate({ snapshot: snapshot([shell]), consecutiveBlocks: 0 }).block).toBe(false);
+    });
+
+    it('does not block on a shell pane awaiting input', () => {
+      const waiting = pane({ ptyId: 'sh-2', agentName: null, agentStatus: 'awaiting_input', isAgent: false });
+      expect(evaluateStopGate({ snapshot: snapshot([waiting]), consecutiveBlocks: 0 }).block).toBe(false);
+    });
+
+    it('still blocks on a running AGENT pane beside the shell, naming only the agent', () => {
+      const verdict = evaluateStopGate({
+        snapshot: snapshot([shell, pane({ ptyId: 'pane-w', agentName: 'worker-a', agentStatus: 'running', isAgent: true })]),
+        consecutiveBlocks: 0,
+      });
+      if (!verdict.block) throw new Error('expected a block');
+      expect(verdict.outstandingPtyIds).toEqual(['pane-w']);
+      expect(verdict.reason).toContain('worker-a (running)');
+      expect(verdict.reason).toContain('1 agent pane');
+      // The refusal — and the fingerprint the hysteresis keys on — must not
+      // mention the human's shell at all.
+      expect(verdict.reason).not.toContain('daemon-5dac0302');
+      expect(verdict.fingerprint).not.toContain('daemon-5dac0302');
+    });
+
+    it('treats a pane with no isAgent field as an agent (older renderer push)', () => {
+      const unknown = pane({ ptyId: 'legacy-1', agentName: null, agentStatus: 'running' });
+      expect(evaluateStopGate({ snapshot: snapshot([unknown]), consecutiveBlocks: 0 }).block).toBe(true);
+    });
+  });
+
   it('allows on a STALE snapshot — a renderer that stopped pushing must not wedge the brain', () => {
     const now = 1_000_000;
     const busy: FleetSnapshot = {

@@ -152,6 +152,15 @@ export function buildFleetSnapshots(state: FleetSelectorState, ts: number): Flee
     baseByPane.set(p.paneId, p.agentStatus);
   }
 
+  // Is this PTY an agent, as opposed to the human's shell? Per-PTY, so unlike
+  // `agentName` (active-pane only) it answers for background workers too — the
+  // deck's gates read it to tell a delegated agent from a zsh the operator
+  // typed into. `surfaceAgent` is the detected identity (#850); a
+  // transcript-derived pending question (#1168) is read out of an agent's own
+  // transcript, so it proves the same thing before the detector stamps a name.
+  const isAgentPty = (ptyId: string): boolean =>
+    !!state.surfaceAgent?.[ptyId]?.name || !!state.surfacePendingQuestion?.[ptyId]?.trim();
+
   const byWs = new Map<string, FleetSnapshot>();
   for (const ws of state.workspaces) {
     // Workspace-OWNED, not visible-only (#977): selectFleetPanes already walks
@@ -194,6 +203,7 @@ export function buildFleetSnapshots(state: FleetSelectorState, ts: number): Flee
           agentName: derived.isActivePane && isActiveSurface ? (derived.agentName ?? null) : null,
           agentStatus: att,
           isActivePane: derived.isActivePane && isActiveSurface,
+          isAgent: isAgentPty(s.ptyId),
         };
         if (s.cwd !== undefined) row.cwd = s.cwd;
         snap.panes.push(row);
@@ -207,6 +217,7 @@ export function buildFleetSnapshots(state: FleetSelectorState, ts: number): Flee
           agentName: derived.agentName ?? null,
           agentStatus: baseByPane.get(leaf.id) ?? 'idle',
           isActivePane: derived.isActivePane,
+          isAgent: !!activePtyId && isAgentPty(activePtyId),
         };
         if (derived.cwd !== undefined) out.cwd = derived.cwd;
         snap.panes.push(out);

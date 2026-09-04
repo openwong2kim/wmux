@@ -172,6 +172,7 @@ describe('buildFleetSnapshots — single-surface byte-identical pin', () => {
           agentStatus: 'running',
           isActivePane: true,
           cwd: 'C:\\repo\\sa',
+          isAgent: true, // detected agent identity for this pty
         },
         // background pane, retained attention → its own status; agentName null.
         {
@@ -180,9 +181,45 @@ describe('buildFleetSnapshots — single-surface byte-identical pin', () => {
           agentStatus: 'waiting',
           isActivePane: false,
           cwd: 'C:\\repo\\sb',
+          isAgent: false, // no surfaceAgent entry → not a detected agent
         },
       ],
     });
+  });
+});
+
+describe('buildFleetSnapshots — isAgent (shell vs agent)', () => {
+  // The deck's Stop / completion gates cannot read `agentName` for this: it is
+  // exposed for the ACTIVE pane only, so a background worker and the operator's
+  // own shell both report null. `isAgent` is the per-pty answer.
+  const ws = workspace(
+    'ws-m', 'mixed',
+    branch('b', [
+      leaf('p-agent', [surface('s-agent', 'pty-agent')]),
+      leaf('p-shell', [surface('s-shell', 'pty-shell')]),
+      leaf('p-ask', [surface('s-ask', 'pty-ask')]),
+    ]),
+    'p-shell', // the human's shell is the ACTIVE pane, the agent is background
+  );
+
+  it('marks detected agents and pending-question panes, not plain shells', () => {
+    const st: FleetSelectorState = {
+      workspaces: [ws],
+      surfaceAgentStatus: { 'pty-agent': 'awaiting_input' },
+      surfaceActivity: {},
+      surfaceAgent: { 'pty-agent': { name: 'Claude Code', status: 'awaiting_input' } },
+      // Both the shell and the agent look busy off byte activity alone.
+      surfaceActivityAt: { 'pty-shell': 1_000, 'pty-agent': 1_000 },
+      agentClockMs: 1_000,
+      // #1168 — a transcript-derived question is agent evidence of its own.
+      surfacePendingQuestion: { 'pty-ask': 'Proceed?' },
+    };
+    const [fleet] = buildFleetSnapshots(st, 1);
+    const by = Object.fromEntries(fleet.panes.map((p) => [p.ptyId, p]));
+    expect(by['pty-agent']).toMatchObject({ agentName: null, isAgent: true });
+    expect(by['pty-ask']).toMatchObject({ isAgent: true });
+    // Running (bytes) but no agent identity → a shell, and the gates must say so.
+    expect(by['pty-shell']).toMatchObject({ agentStatus: 'running', isAgent: false });
   });
 });
 
@@ -215,6 +252,7 @@ describe('buildFleetSnapshots — surface-accurate multi-surface panes', () => {
       agentStatus: 'awaiting_input',
       isActivePane: false, // not the active SURFACE
       cwd: 'C:\\repo\\s2a-first',
+      isAgent: false, // this fixture stamps no identity for the background tab
     });
     // The active surface still gets its own row, carrying the non-attention
     // (base) status — NOT the background tab's awaiting_input.
