@@ -45,7 +45,20 @@ interface ProjectionTask {
   detachedAt?: number;
 }
 
-export function registerWorktaskHandlers(getDaemonClient: () => DaemonClient | null): () => void {
+/** The service instances this registration built. Handed to `onServices` so the
+ *  pipe surface (pipe/handlers/worktask.rpc.ts) drives the SAME ones: both
+ *  TaskCloseService and TaskPrService go through TaskWorktreeManager's per-repo
+ *  mutex chain, and two instances would race each other for git's index.lock. */
+export interface WorktaskServices {
+  close: TaskCloseService;
+  pr: TaskPrService;
+}
+
+export function registerWorktaskHandlers(
+  getDaemonClient: () => DaemonClient | null,
+  /** Called SYNCHRONOUSLY with the instances, before this function returns. */
+  onServices?: (services: WorktaskServices) => void,
+): () => void {
   const daemonPort = {
     rpc: async (method: string, params: Record<string, unknown>): Promise<unknown> => {
       const dc = getDaemonClient();
@@ -61,6 +74,7 @@ export function registerWorktaskHandlers(getDaemonClient: () => DaemonClient | n
   const closeService = new TaskCloseService({ daemon: daemonPort, worktrees });
   const prService = new TaskPrService({ daemon: daemonPort, cache: prStatusCache });
   const scanService = new WorktaskScanService();
+  onServices?.({ close: closeService, pr: prService });
 
   // ── task:close ──────────────────────────────────────────────────────
   ipcMain.removeHandler(IPC.TASK_CLOSE);

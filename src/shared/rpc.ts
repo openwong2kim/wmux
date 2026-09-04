@@ -519,7 +519,19 @@ export type RpcMethod =
   // src/shared/ledger.ts. Reads are scoped to the caller's own rows (owner or
   // task workspace); updates are authorized by the ledger's canActorSet.
   | 'ledger.list'
-  | 'ledger.update';
+  | 'ledger.update'
+  // Task lifecycle on the pipe (pipe/handlers/worktask.rpc.ts) — the half of
+  // fan-out that finishes a task. Local-origin only, owner-scoped against
+  // `task.mission.list`, and `task.close` / `task.pr` additionally raise a
+  // human approval prompt (see commanderSurface.ts).
+  | 'task.gate.run'
+  | 'task.gate.cancel'
+  | 'task.adopt'
+  | 'task.close'
+  | 'task.pr'
+  | 'task.git.status'
+  | 'task.git.log'
+  | 'task.gh.prView';
 
 // All available methods as array (for system.capabilities)
 export const ALL_RPC_METHODS = [
@@ -689,6 +701,14 @@ export const ALL_RPC_METHODS = [
   'task.fanout.start',
   'ledger.list',
   'ledger.update',
+  'task.gate.run',
+  'task.gate.cancel',
+  'task.adopt',
+  'task.close',
+  'task.pr',
+  'task.git.status',
+  'task.git.log',
+  'task.gh.prView',
 ] as const satisfies readonly RpcMethod[];
 
 // === RPC Parameter Types ===

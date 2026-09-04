@@ -125,6 +125,18 @@ export const COMMANDER_ONLY_TOOLS: readonly string[] = [
   // out of the commander profile; this one carries the brain's statuses
   // (completed / failed / cancelled) and the force+reason override.
   'ledger_update',
+  // Task lifecycle (orchestrator track, lane O2 — src/mcp/worktask.ts and
+  // src/mcp/git.ts). `fanout_start` could open N tasks and nothing could
+  // finish one; these are the other half of that loop, and they are
+  // brain-only for the same reason the ledger tools are — a pane agent has no
+  // task of its own to gate, adopt, close or open a PR for.
+  'task_gate_run',
+  'task_adopt',
+  'task_close',
+  'task_pr',
+  'git_status',
+  'git_log',
+  'gh_pr_view',
 ];
 
 /** Names in COMMANDER_ONLY_TOOLS that ALSO exist in full/core under a
@@ -134,20 +146,17 @@ export const COMMANDER_ONLY_TOOLS: readonly string[] = [
  *  COMMANDER_ONLY_TOOLS must be absent from full and core. */
 export const COMMANDER_VARIANT_TOOLS: readonly string[] = ['ledger_update'];
 
-/** Commander-only names RESERVED for the gate/adopt/close/PR and git read
- *  tools (orchestrator track, lane O2). Listed so the registration point in
- *  src/mcp/index.ts and the invariant tests agree on the names before the
- *  tools exist: a test asserts each stays ABSENT from every profile until it
- *  is wired, then moves it into COMMANDER_ONLY_TOOLS. */
-export const COMMANDER_ONLY_RESERVED_TOOLS: readonly string[] = [
-  'task_gate_run',
-  'task_adopt',
-  'task_close',
-  'task_pr',
-  'git_status',
-  'git_log',
-  'gh_pr_view',
-];
+/** Commander-only names RESERVED for a tool that does not exist yet. The list
+ *  is the staging area COMMANDER_ONLY_TOOLS names arrive through: a test
+ *  asserts every entry stays ABSENT from every profile and from every
+ *  src/mcp registration until it is wired, at which point it moves into
+ *  COMMANDER_ONLY_TOOLS in the same commit.
+ *
+ *  Empty since the lane-O2 task tools landed (task_gate_run, task_adopt,
+ *  task_close, task_pr, git_status, git_log, gh_pr_view — now in
+ *  COMMANDER_ONLY_TOOLS above). Kept rather than deleted: it is the mechanism,
+ *  not the batch. */
+export const COMMANDER_ONLY_RESERVED_TOOLS: readonly string[] = [];
 
 /** Pipe RPC methods the commander tool surface actually invokes — the
  *  PermissionEnforcer allow lane for a VALIDATED commander token. Least
@@ -216,6 +225,20 @@ export const COMMANDER_RPC_METHODS: ReadonlySet<string> = new Set<string>([
   // the brain's own rows — authz is the ledger's canActorSet)
   'ledger.list',
   'ledger.update',
+  // Task lifecycle (the commander-only task_* / git_* / gh_pr_view tools).
+  // Create-and-finish, not teardown-of-human-state: what these remove is a
+  // worktree the orchestrator itself asked for, which is the same class as
+  // channel_mission_close. `task.close` and `task.pr` are additionally
+  // approval-gated — see COMMANDER_TEARDOWN_DENY below for why they are
+  // prompted rather than denied.
+  'task.gate.run',
+  'task.gate.cancel',
+  'task.adopt',
+  'task.close',
+  'task.pr',
+  'task.git.status',
+  'task.git.log',
+  'task.gh.prView',
 ]);
 
 /** Teardown-EFFECT methods a validated commander is refused server-side

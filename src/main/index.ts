@@ -79,7 +79,12 @@ import { registerFanOutHandler } from './ipc/handlers/fanout.handler';
 import { createFanOutService } from './worktask/createFanOutService';
 import { registerFanOutRpc } from './pipe/handlers/fanout.rpc';
 import { registerLedgerRpc } from './pipe/handlers/ledger.rpc';
-import { registerWorktaskHandlers } from './ipc/handlers/worktask.handler';
+import { registerWorktaskHandlers, type WorktaskServices } from './ipc/handlers/worktask.handler';
+import { registerWorktaskRpc } from './pipe/handlers/worktask.rpc';
+import { TaskAdoptService } from './worktask/TaskAdoptService';
+import { TaskGateRunner } from './worktask/TaskGateRunner';
+import { createHostedLedgerPort } from './worktask/ledgerPort';
+import { getProjectConfigStore } from './project/ProjectConfigStore';
 import { registerDeckHandler } from './ipc/handlers/deck.handler';
 import { registerWorkspaceMirrorHandler } from './ipc/handlers/workspaceMirror.handler';
 import { getWorkspaceMirror } from './workspace/WorkspaceMirror';
@@ -863,7 +868,35 @@ registerLedgerRpc(rpcRouter, () => mainWindow);
 // J3 태스크 수명주기 — close(remove→close 순서)·1클릭 PR(gh 4중 게이트)·정리 스캔
 // (디스크 정본)·미발사 재발사(prompt.md 읽기). 물질화 필드는 데몬 projection에서
 // 역참조하므로 렌더러는 taskId만 싣는다(단일 정본). 파이프 미노출(renderer-trusted).
-registerWorktaskHandlers(() => daemonClient);
+// Integration lane: the SAME close/pr instances also serve the pipe surface
+// below. TaskWorktreeManager keeps a per-repo mutex chain, so a second set of
+// instances would race the renderer's for git's index.lock.
+// Task lifecycle on the pipe (pipe/handlers/worktask.rpc.ts) — the half of
+// fan-out that FINISHES a task: run its gate, adopt its diff, open its PR,
+// close it, and read its git/gh state. Reached from the commander-only MCP
+// tools; local-origin only and owner-scoped in the handler. Registered from
+// inside the callback because that is where the shared instances exist; the
+// callback runs synchronously, before registerWorktaskHandlers returns.
+registerWorktaskHandlers(() => daemonClient, (services: WorktaskServices) => {
+  registerWorktaskRpc(rpcRouter, {
+    daemon: {
+      rpc: async (method: string, params: Record<string, unknown>): Promise<unknown> => {
+        if (!daemonClient) throw new Error('Daemon not connected');
+        return daemonClient.rpc(method as RpcMethod, params);
+      },
+    },
+    getWindow: () => mainWindow,
+    close: services.close,
+    pr: services.pr,
+    adopt: new TaskAdoptService(),
+    gate: new TaskGateRunner({
+      // In-process: the TaskLedger is hosted in main, and `recordGate` is a
+      // system-actor write no wire caller may make (see ledgerPort.ts).
+      ledger: createHostedLedgerPort(),
+      project: { getState: (cwd: string) => getProjectConfigStore().getState(cwd) },
+    }),
+  });
+});
 // Command Deck Phase 2 — the Commander brain. Renderer-only surface (same
 // process-boundary trust basis as channelLocal/fanout, pipe-unreachable): the
 // Agent-SDK orchestrator session runs in MAIN and drives the fleet via the wmux

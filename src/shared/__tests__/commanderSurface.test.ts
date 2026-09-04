@@ -120,7 +120,7 @@ describe('commander-only lane invariants (COMMANDER_ONLY_TOOLS)', () => {
     }
   });
 
-  it('reserved lane-O2 names are absent from every profile and from the src/mcp/index.ts wiring', () => {
+  it('a RESERVED name is absent from every profile and from the src/mcp/index.ts wiring', () => {
     // The wiring point is index.ts. The implementations (src/mcp/worktask.ts,
     // src/mcp/git.ts) may exist ahead of being wired — that is exactly the
     // reserved state — so only the entry file is scanned.
@@ -130,6 +130,46 @@ describe('commander-only lane invariants (COMMANDER_ONLY_TOOLS)', () => {
       expect(COMMANDER_TOOL_SURFACE).not.toContain(name);
       for (const profile of Object.values(baseline.profiles)) expect(profile.toolNames).not.toContain(name);
       expect(sources.includes(`'${name}'`), `${name} is registered in src/mcp before being wired`).toBe(false);
+    }
+  });
+
+  // The other half of the reserved contract: once a name moves out of
+  // COMMANDER_ONLY_RESERVED_TOOLS it must actually BE wired. The lane-O2 task
+  // tools made that trip, and the assertion that used to pin them absent is
+  // what would otherwise have gone quiet.
+  it('the lane-O2 task tools are wired: listed commander-only, registered in src/mcp, and in the commander profile', () => {
+    const sources = walkSources(path.join(__dirname, '..', '..', 'mcp')).join('\n');
+    for (const name of [
+      'task_gate_run',
+      'task_adopt',
+      'task_close',
+      'task_pr',
+      'git_status',
+      'git_log',
+      'gh_pr_view',
+    ]) {
+      expect(COMMANDER_ONLY_RESERVED_TOOLS).not.toContain(name);
+      expect(COMMANDER_ONLY_TOOLS).toContain(name);
+      expect(sources.includes(`'${name}'`), `${name} is not registered in src/mcp`).toBe(true);
+      expect(baseline.profiles.commander.toolNames).toContain(name);
+      // Commander-only means commander-only: a pane agent has no task of its
+      // own to gate, adopt, close or PR.
+      expect(baseline.profiles.full.toolNames).not.toContain(name);
+      expect(baseline.profiles.core.toolNames).not.toContain(name);
+    }
+  });
+
+  it('every task tool has its RPC in the commander lane', () => {
+    for (const method of [
+      'task.gate.run',
+      'task.adopt',
+      'task.close',
+      'task.pr',
+      'task.git.status',
+      'task.git.log',
+      'task.gh.prView',
+    ]) {
+      expect(COMMANDER_RPC_METHODS.has(method), `${method} missing from the commander lane`).toBe(true);
     }
   });
 

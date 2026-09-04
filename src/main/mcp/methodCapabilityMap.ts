@@ -471,6 +471,23 @@ export const METHOD_CAPABILITY: Record<RpcMethod, RequiredCapability> = {
   'ledger.list':   { capability: 'ledger.read',  riskClass: 'a2a' },
   'ledger.update': { capability: 'ledger.write', riskClass: 'a2a' },
 
+  // --- Task lifecycle (pipe/handlers/worktask.rpc.ts) ---
+  // The reads answer "what did this task produce"; the writes run the task's
+  // own gate script, patch the parent repository, push a branch or remove a
+  // worktree. A separate capability pair from ledger.* because the ledger only
+  // RECORDS those outcomes. Ownership (the task must be in the caller's
+  // `task.mission.list`), local-origin and the human approval on close/pr are
+  // enforced in the handler — the capability only decides whether a plugin may
+  // reach the surface at all.
+  'task.gate.run':    { capability: 'task.write', riskClass: 'a2a' },
+  'task.gate.cancel': { capability: 'task.write', riskClass: 'a2a' },
+  'task.adopt':       { capability: 'task.write', riskClass: 'a2a' },
+  'task.close':       { capability: 'task.write', riskClass: 'a2a' },
+  'task.pr':          { capability: 'task.write', riskClass: 'a2a' },
+  'task.git.status':  { capability: 'task.read',  riskClass: 'a2a' },
+  'task.git.log':     { capability: 'task.read',  riskClass: 'a2a' },
+  'task.gh.prView':   { capability: 'task.read',  riskClass: 'a2a' },
+
   // --- Company subsystem (substrate-internal team/orchestration). All
   //     internal for v3.0; can be re-classified once spec covers a2a teams.
   'company.create':         { capability: 'wmux.internal' },
@@ -558,6 +575,10 @@ export const CAPABILITY_RISK_CLASS: Record<string, RiskClass> = {
   // dialog wording is the a2a one; the capability ids stay distinct.
   'ledger.read':  'a2a',
   'ledger.write': 'a2a',
+  // Task lifecycle — orchestration state again, so the dialog wording is the
+  // a2a one; the capability ids stay distinct from ledger.*.
+  'task.read':  'a2a',
+  'task.write': 'a2a',
   // Plugin host UI contribution points (B-1) — enforced at mount time by
   // the renderer host, not per-RPC; classed here so the approval dialog
   // renders real copy instead of fallback text.
@@ -638,6 +659,10 @@ export const CAPABILITY_EFFECT: Record<string, 'read' | 'write'> = {
   // Task ledger: list observes, update changes task status.
   'ledger.read':  'read',
   'ledger.write': 'write',
+  // Task lifecycle: the git/gh views observe, everything else runs a gate,
+  // patches a repository, pushes a branch or removes a worktree.
+  'task.read':  'read',
+  'task.write': 'write',
   // Plugin host UI contribution points — enforced at mount time, never a
   // per-RPC gate, so the classification is nominal. Listed so the
   // completeness test covers the whole vocabulary.

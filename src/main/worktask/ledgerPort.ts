@@ -1,19 +1,30 @@
 // ─── LedgerPort — the one seam between the gate runner and the task ledger ───
 //
-// The gate runner records its verdict in the task ledger (src/shared/ledger.ts),
-// and the ledger's writer is the DAEMON: `ledger.update` over the pipe. That RPC
-// ships on a different lane, in parallel with this file, so the runner never
-// calls it directly — it calls this interface, and exactly one adapter
-// (`createDaemonLedgerPort`) knows the method name and the parameter shape.
-// Pointing the adapter at the real RPC is a one-file change; every test in this
-// directory injects a fake instead of a daemon.
+// The gate runner records its verdict in the task ledger (src/shared/ledger.ts)
+// and never touches the store directly — it calls this interface, and exactly
+// one adapter knows where the ledger actually lives. Every test in this
+// directory injects a fake instead.
+//
+// WHERE IT LIVES, and why the adapter is not an RPC (integration lane): the
+// TaskLedger instance is HOSTED IN MAIN (`deck/taskLedgerHost.ts`), the same
+// process as the gate runner, so `createHostedLedgerPort` calls it in-process.
+// Going out over `ledger.update` would not work even as a round trip: that
+// handler REFUSES a `gate` field from any wire caller by design ("gate results
+// are recorded by the gate runner, not by callers"), because a caller-written
+// `exitCode: 0` is exactly the self-certification the ledger exists to prevent.
+// The privileged write is `TaskLedger.recordGate`, which only a `system` actor
+// may perform — and this adapter is the only thing that performs it.
 //
 // Compare-and-swap, not last-write-wins: `LedgerEntry.rev` is monotonic and the
 // writer refuses a stale `expectedRev`, so a caller must READ before it writes.
 // That is why `read` exists here at all — a port with only `update` would force
-// every caller to invent a revision.
+// every caller to invent a revision. `recordGate` bumps the rev itself and does
+// not take an `expectedRev`, so the check the runner does against the snapshot
+// it read is this adapter's job (below).
 
 import type { LedgerActor, LedgerGateResult } from '../../shared/ledger';
+import type { TaskLedger } from '../../daemon/ledger/TaskLedger';
+import { getTaskLedger } from '../deck/taskLedgerHost';
 
 /** The snapshot a writer needs before it may write: the revision it read. */
 export interface LedgerSnapshot {
@@ -43,48 +54,55 @@ export interface LedgerPort {
   writeGate(write: LedgerGateWrite): Promise<LedgerWriteResult>;
 }
 
-/** Daemon RPC minimum surface (same shape as CloseDaemonPort — injectable). */
-export interface LedgerDaemonPort {
-  rpc(method: string, params: Record<string, unknown>): Promise<unknown>;
-}
-
 /**
- * The one adapter that names the wire method. Lane F owns `ledger.get` /
- * `ledger.update`; until they are registered this returns `unavailable`, which
- * the gate runner already treats as "ran, unrecorded" rather than a failure.
+ * The one adapter, bound to the main-hosted TaskLedger.
+ *
+ * `getLedger` is injected only by tests; production passes nothing and gets the
+ * hosted instance. A throw from the store — an unreadable ledger file, a host
+ * that has not booted — becomes `unavailable`, which the gate runner already
+ * treats as "the gate ran, its receipt is missing" rather than as a failure.
  */
-export function createDaemonLedgerPort(daemon: LedgerDaemonPort): LedgerPort {
+export function createHostedLedgerPort(getLedger: () => TaskLedger = getTaskLedger): LedgerPort {
   return {
     async read(taskId: string): Promise<LedgerSnapshot | null> {
       try {
-        const res = (await daemon.rpc('ledger.get', { taskId })) as
-          | { ok?: boolean; entry?: { id?: unknown; rev?: unknown } }
-          | undefined;
-        const entry = res?.ok === true ? res.entry : undefined;
-        if (!entry || typeof entry.id !== 'string' || typeof entry.rev !== 'number') return null;
-        return { id: entry.id, rev: entry.rev };
+        const entry = getLedger().get(taskId);
+        return entry ? { id: entry.id, rev: entry.rev } : null;
       } catch {
         return null;
       }
     },
     async writeGate(write: LedgerGateWrite): Promise<LedgerWriteResult> {
+      let ledger: TaskLedger;
       try {
-        const res = (await daemon.rpc('ledger.update', {
-          taskId: write.taskId,
-          expectedRev: write.expectedRev,
-          actor: write.actor,
-          gate: write.gate,
-        })) as { ok?: boolean; rev?: unknown; error?: { code?: unknown; message?: unknown } } | undefined;
-        if (res?.ok === true && typeof res.rev === 'number') return { ok: true, rev: res.rev };
-        const code = typeof res?.error?.code === 'string' ? res.error.code : '';
-        const message = typeof res?.error?.message === 'string' ? res.error.message : 'ledger.update failed';
-        const reason =
-          code === 'ABORTED' || code === 'CONFLICT'
-            ? ('conflict' as const)
-            : code === 'NOT_FOUND'
-              ? ('not_found' as const)
-              : ('refused' as const);
-        return { ok: false, reason, error: message };
+        ledger = getLedger();
+      } catch (err) {
+        return { ok: false, reason: 'unavailable', error: err instanceof Error ? err.message : String(err) };
+      }
+      // `recordGate` bumps the rev itself and has no expectedRev parameter, so
+      // the compare-and-swap the runner asked for happens here: a row that has
+      // moved on since the snapshot is a `conflict`, and the runner re-reads
+      // and retries once. Checked immediately before the call, inside the same
+      // synchronous tick, so nothing can slip between the read and the write.
+      try {
+        const current = ledger.get(write.taskId);
+        if (!current) {
+          return { ok: false, reason: 'not_found', error: `no ledger entry for task ${write.taskId}` };
+        }
+        if (current.rev !== write.expectedRev) {
+          return {
+            ok: false,
+            reason: 'conflict',
+            error: `expectedRev ${write.expectedRev} but the entry is at rev ${current.rev} — re-read and retry`,
+          };
+        }
+        const res = await ledger.recordGate(write.taskId, write.gate, write.actor);
+        if (res.ok) return { ok: true, rev: res.entry.rev };
+        return {
+          ok: false,
+          reason: res.error === 'not_found' ? 'not_found' : res.error === 'persist_failed' ? 'unavailable' : 'refused',
+          error: res.message,
+        };
       } catch (err) {
         return { ok: false, reason: 'unavailable', error: err instanceof Error ? err.message : String(err) };
       }

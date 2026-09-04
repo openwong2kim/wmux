@@ -300,6 +300,19 @@ export const FIRST_PARTY_METHODS: ReadonlySet<RpcMethod> = new Set<RpcMethod>([
   // authz) and ledger_list (commander-only tool, also in the commander lane).
   'ledger.list',
   'ledger.update',
+  // Task lifecycle — the seven commander-only tools (task_gate_run, task_adopt,
+  // task_close, task_pr, git_status, git_log, gh_pr_view). `task.gate.cancel`
+  // is granted too even though no tool calls it today: it is the only way to
+  // stop a gate the bundled server started, and a remedy the caller cannot
+  // invoke is not a remedy.
+  'task.gate.run',
+  'task.gate.cancel',
+  'task.adopt',
+  'task.close',
+  'task.pr',
+  'task.git.status',
+  'task.git.log',
+  'task.gh.prView',
   // `company.a2a.*` used to be granted here for the six company_a2a_* tools.
   // Those tools are gone, so the grants went with them (least privilege — a
   // reserved wmux.internal method must not stay reachable by a clientName
