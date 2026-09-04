@@ -1,17 +1,23 @@
 ### Added
 
-- `approval_press` — an orchestrator brain can now answer a fan-out worker's
-  approval prompt properly, instead of typing the digit `1` at whatever happens
-  to be on that worker's screen. The press resolves the approval record, so the
-  prompt is confirmed to still be there, the operator's autonomy policy decides
-  whether it may land, and the decision is written to the approval history. On a
-  pane wmux holds an approval record for, a brain's `terminal_send` /
-  `terminal_send_key` is refused and points at the tool; if the press is refused
-  by policy, that refusal lifts the block again so the brain is never left with
-  no move at all. Your own typing is unaffected.
+- `approval_press` — an orchestrator brain can now answer an approval prompt on
+  a fan-out worker **it delegated**, instead of typing the digit `1` at whatever
+  happens to be on that worker's screen. The press resolves the approval record,
+  so the prompt is confirmed to still be there, the operator's autonomy policy
+  decides whether it may land, and the decision is written to the approval
+  history. `decision` must be given explicitly — there is no default, and an
+  unnamed decision is never taken as an approval. A pane holding more than one
+  pending approval is refused as ambiguous rather than guessed at, and the tool
+  hands back the ids to choose from. On a pane wmux holds an approval record
+  for, a brain's `terminal_send` / `terminal_send_key` is refused and points at
+  the tool — except `ctrl+c` and `escape`, which still go through so a runaway
+  worker can always be interrupted. If the press is refused because the operator
+  has autonomy or approval-press off for that worker, the block lifts so the
+  brain is never left with no move at all. Your own typing is unaffected.
 
 - Approvals raised by a permission gate now carry `deadlineAt`, the moment the
-  gate stops waiting, so a surface can show an honest countdown.
+  gate really stops waiting — reported by the gate broker that holds the timer,
+  so a surface can show an honest countdown.
 
 ### Fixed
 

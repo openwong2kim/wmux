@@ -526,6 +526,21 @@ function assertNotKillingAGateHeldPane(
  * policy, typing is the only path left and the block gets out of the way. See
  * `approvals.rpc.ts`.
  */
+/**
+ * Keys the block does NOT cover: the two ways to make an agent stop.
+ *
+ * The block exists to stop a brain ANSWERING a prompt by keystroke, and neither
+ * of these answers one — they abandon what the pane is doing. Blocking them cost
+ * the operator's own escalation path: a worker running away inside a gated tool
+ * call holds an approval record for the whole gate deadline, and for that whole
+ * window the brain could neither press (policy said no) nor interrupt. "You may
+ * not answer this prompt" must not become "you may not stop this agent".
+ *
+ * Everything else stays blocked, digits and Enter and the arrows included: those
+ * SELECT an option, which is the misfire `approval_press` exists to replace.
+ */
+const APPROVAL_BLOCK_EXEMPT_KEYS: ReadonlySet<string> = new Set(['ctrl+c', 'escape']);
+
 async function assertNotTypingAtAnApproval(
   getDaemonClient: (() => DaemonClient | null) | undefined,
   ctx: RpcContext | undefined,
@@ -755,8 +770,12 @@ export function registerInputRpc(
     // Ctrl+D arrives here as its escape sequence, so the same guard applies.
     assertNotKillingAGateHeldPane(callerWs, ptyId, sequence, 'input.sendKey');
 
-    // Down/Enter picks an option just as surely as typing "2" does.
-    await assertNotTypingAtAnApproval(getDaemonClient, ctx, ptyId, 'input.sendKey');
+    // Down/Enter picks an option just as surely as typing "2" does — but ctrl+c
+    // and escape do not pick anything, they stop the agent, and the block must
+    // not take away the way to stop a runaway worker.
+    if (!APPROVAL_BLOCK_EXEMPT_KEYS.has(key)) {
+      await assertNotTypingAtAnApproval(getDaemonClient, ctx, ptyId, 'input.sendKey');
+    }
 
     const instance = ptyManager.get(ptyId);
     if (instance) {

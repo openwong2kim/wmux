@@ -1652,7 +1652,7 @@ if (COMMANDER_MODE) {
   // presses the keystroke that record specifies — never text from this call.
   registerCommanderOnly(
     'approval_press',
-    "Answer a fan-out worker's approval prompt. Give the worker's ptyId (or an approvalId from an approval event) and the daemon resolves its pending approval record: it re-reads the pane, presses the option the record specifies, and writes the decision to history. Use this instead of terminal_send — a typed digit is not an approval and is refused on a pane that has one pending. A refusal comes back with a reason: press-capability-off / autonomy-off mean the operator has not granted unattended presses for that worker (raise it with deck_ask_decision), prompt-gone means read the pane again.",
+    "Answer an approval prompt on a fan-out worker YOU delegated. Give the worker's ptyId (or an approvalId from an approval event) plus an explicit decision, and the daemon resolves its pending approval record: it re-reads the pane, presses the option the record specifies, and writes the decision to history. Use this instead of terminal_send — a typed digit is not an approval and is refused on a pane that has one pending. Refusal reasons: not-your-task (the pane is not one of your delegated task workspaces), ambiguous (that pane holds several pending approvals — name the approvalId from the list it returns), press-capability-off / autonomy-off (the operator has not granted unattended presses for that worker — raise it with deck_ask_decision), prompt-gone (read the pane again).",
     {
       ptyId: z
         .string()
@@ -1661,11 +1661,10 @@ if (COMMANDER_MODE) {
       approvalId: z
         .string()
         .optional()
-        .describe('The approval record id, when you have one. Takes precedence over ptyId.'),
+        .describe('The approval record id, when you have one. Takes precedence over ptyId, and is required when a pane holds more than one pending approval.'),
       decision: z
         .enum(['approve', 'deny'])
-        .optional()
-        .describe('approve (default) presses the affirmative option; deny cancels the tool call and hands the turn back.'),
+        .describe('REQUIRED — there is no default. approve presses the affirmative option; deny cancels the tool call and hands the turn back. An omitted decision is refused, never taken as an approval.'),
       choiceKey: z
         .string()
         .optional()
