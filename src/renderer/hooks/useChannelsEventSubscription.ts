@@ -164,7 +164,12 @@ export function planChannelMessageDelivery(
 interface EventsPollBridge {
   (params: {
     cursor: number;
-    types: readonly ('channel.message' | 'agent.lifecycle' | 'channel.catalog')[];
+    types: readonly (
+      | 'channel.message'
+      | 'agent.lifecycle'
+      | 'channel.catalog'
+      | 'channel.nudgeExhausted'
+    )[];
     max?: number;
     workspaceId: string;
     /** FIX-MULTI-WS: union scope — every LOCAL workspace id, so background
@@ -436,7 +441,7 @@ export function useChannelsEventSubscription(): void {
       inFlight = true;
       bridge({
         cursor,
-        types: ['channel.message', 'agent.lifecycle', 'channel.catalog'],
+        types: ['channel.message', 'agent.lifecycle', 'channel.catalog', 'channel.nudgeExhausted'],
         max: EVENT_POLL_MAX,
         workspaceId,
         // FIX-MULTI-WS + P5: union scope — every local workspace PLUS the
@@ -668,6 +673,17 @@ export function useChannelsEventSubscription(): void {
                 ce.recipientWorkspaceIds.includes(workspaceId)
               ) {
                 sawCatalog = true;
+              }
+            } else if (event.type === 'channel.nudgeExhausted') {
+              // C-2: the wake worker gave up on a (channel, member) mention
+              // episode. The daemon scopes this event to the AFFECTED member's
+              // workspace, which is local here (both the sender and the worker
+              // pane live in this app), so the sender's message row can finally
+              // say "no answer" instead of a delivered receipt on a pane that
+              // never acted. Payload is flat (channelId, workspaceId, memberId).
+              const ne = event as unknown as { channelId?: unknown; memberId?: unknown };
+              if (typeof ne.channelId === 'string' && typeof ne.memberId === 'string') {
+                useStore.getState().markChannelNudgeExhausted(ne.channelId, ne.memberId, event.ts);
               }
             }
           }

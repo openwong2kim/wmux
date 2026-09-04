@@ -25,7 +25,6 @@ import {
   ChannelViewContent,
   isMessageVisibleToViewer,
   sortMessagesBySeq,
-  viewerDeliveryStatus,
   renderMessageText,
   renderMessageBody,
   SCROLLBACK_PAGE,
@@ -229,34 +228,9 @@ describe('sortMessagesBySeq', () => {
   });
 });
 
-describe('viewerDeliveryStatus', () => {
-  it('returns undefined when viewerMemberId is null', () => {
-    const m = makeMessage('ch-1', 1, { deliveryStatus: 'delivered' });
-    expect(viewerDeliveryStatus(m, null)).toBeUndefined();
-  });
-
-  it("returns undefined when the message is not the viewer's", () => {
-    const m = makeMessage('ch-1', 1, { memberId: 'm-2', deliveryStatus: 'delivered' });
-    expect(viewerDeliveryStatus(m, 'm-1')).toBeUndefined();
-  });
-
-  it("returns the message's deliveryStatus when there is no snapshot", () => {
-    const m = makeMessage('ch-1', 1, { memberId: 'm-1', deliveryStatus: 'delivered' });
-    expect(viewerDeliveryStatus(m, 'm-1')).toBe('delivered');
-  });
-
-  it("returns the viewer's snapshot entry when present", () => {
-    const m = makeMessage('ch-1', 1, {
-      memberId: 'm-1',
-      deliveryStatus: 'delivered',
-      recipientSnapshot: [
-        { memberId: 'm-1', workspaceId: 'ws-1', status: 'pending' },
-        { memberId: 'm-2', workspaceId: 'ws-2', status: 'delivered' },
-      ],
-    });
-    expect(viewerDeliveryStatus(m, 'm-1')).toBe('pending');
-  });
-});
+// `viewerDeliveryStatus` is gone (C-2): it read the SENDER's own row out of
+// the recipient snapshot, a row that is never there. Its replacement,
+// ownMessageDeliveryState, is covered by deliveryStatus.test.ts.
 
 // ─── ChannelViewContent (renderToStaticMarkup) ──────────────────────────
 

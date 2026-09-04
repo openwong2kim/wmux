@@ -1673,6 +1673,11 @@ export const pl = {
   'channels.systemOperatorJoin': 'Operator dołączył do tego kanału',
   'channels.mentionWillReach': 'dotrze do {pane}',
   'channels.mentionBadgeOnly': '@{name} nie ma aktywnego panelu — tylko odznaka, nikt nie zostanie obudzony',
+  'channels.deliveryPending': '… wysyłanie',
+  'channels.deliveryDelivered': '✓ dostarczono',
+  'channels.deliveryTargetGone': '✗ odbiorca zniknął',
+  'channels.deliveryNudgeExhausted': '! brak odpowiedzi — wyczerpano przypomnienia',
+  'channels.deliveryUnconfirmed': '? dostarczenie niepotwierdzone',
   // J4 — diff comment fired to the mission channel. {count} = number of task
   // agents @-mentioned (0 when every agent has left the channel).
   'diff.commentFired': 'Komentarz wysłany na kanał misji — powiadomiono {count} agentów',

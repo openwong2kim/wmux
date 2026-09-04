@@ -1131,6 +1131,11 @@ export const ko = {
   'channels.systemOperatorJoin': '오퍼레이터가 이 채널에 참여했습니다',
   'channels.mentionWillReach': '{pane}에 전달됩니다',
   'channels.mentionBadgeOnly': '@{name}에는 살아 있는 페인이 없습니다 — 배지만 표시되고 아무도 깨우지 않습니다',
+  'channels.deliveryPending': '… 보내는 중',
+  'channels.deliveryDelivered': '✓ 전달됨',
+  'channels.deliveryTargetGone': '✗ 대상 없음',
+  'channels.deliveryNudgeExhausted': '! 응답 없음 — 알림 예산 소진',
+  'channels.deliveryUnconfirmed': '? 전달 미확인',
   // J4 — diff 코멘트를 미션 채널에 발사. {count} = @멘션된 태스크 에이전트 수
   // (에이전트가 전원 채널을 떠났으면 0).
   'diff.commentFired': '코멘트를 미션 채널에 발사했습니다 — {count}개 에이전트 호출',

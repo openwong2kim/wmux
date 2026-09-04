@@ -176,6 +176,18 @@ export interface ChannelsSlice {
    *  workspace — a strict subset of `channelUnread`, surfaced as a stronger
    *  dock badge. Cleared with unread by `markChannelRead` / `setActiveChannel`. */
   channelMentions: Record<string, number>;
+  /**
+   * C-2 — channelId → memberId → epoch ms of the last `channel.nudgeExhausted`
+   * for that member. The wake worker fires it when a mention episode burns its
+   * re-nudge budget: the bytes were written, nobody acted, and a human has to
+   * look. It is the one delivery outcome `recipientSnapshot` cannot express, so
+   * the sender's message row reads it to stop claiming "delivered".
+   *
+   * Cleared when that member finally posts in the channel (the episode is over
+   * by demonstration, not by inference).
+   */
+  channelNudgeExhausted: Record<string, Record<string, number>>;
+  markChannelNudgeExhausted: (channelId: string, memberId: string, at: number) => void;
   /** Ship review C1 — true when the attached daemon reported a channels epoch
    *  older than this renderer requires (a long-lived pre-P5 daemon survived the
    *  app upgrade). Drives the "restart wmux" banner in ChannelsPanel; set from
@@ -388,7 +400,14 @@ export const createChannelsSlice: StateCreator<
   activeChannelId: null,
   channelUnread: {},
   channelMentions: {},
+  channelNudgeExhausted: {},
   channelsDaemonStale: false,
+
+  markChannelNudgeExhausted: (channelId, memberId, at) =>
+    set((state: StoreState) => {
+      const forChannel = state.channelNudgeExhausted[channelId] ?? {};
+      state.channelNudgeExhausted[channelId] = { ...forChannel, [memberId]: at };
+    }),
 
   setChannelsDaemonStale: (stale) =>
     set((state: StoreState) => {
@@ -588,6 +607,13 @@ export const createChannelsSlice: StateCreator<
       // catching us up to the authoritative payload.
       const idx = list.findIndex((m) => m.seq === message.seq);
       const isNew = idx === -1;
+      // C-2: the member answered, so its exhausted-nudge episode is over. Cleared
+      // on demonstration (a post from that member), never on a timer — a stale
+      // "no answer" badge is exactly the false receipt this row exists to kill.
+      if (state.channelNudgeExhausted[channelId]?.[message.memberId] !== undefined) {
+        const { [message.memberId]: _cleared, ...rest } = state.channelNudgeExhausted[channelId];
+        state.channelNudgeExhausted[channelId] = rest;
+      }
       if (isNew) {
         // A19: cap the per-channel render mirror so a busy channel can't grow the
         // store unbounded (older rows stay durable in the daemon).

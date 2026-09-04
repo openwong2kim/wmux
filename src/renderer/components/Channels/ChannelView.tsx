@@ -30,6 +30,11 @@ import { formatChannelAuthor } from '../../channels/authorDisplay';
 import { HUMAN_WORKSPACE_ID, HUMAN_MEMBER_ID } from '../../../shared/channels';
 import { Composer } from './Composer';
 import { ChannelMembersControl } from './ChannelMembers';
+import {
+  ownMessageDeliveryState,
+  DELIVERY_LABEL_KEY,
+  DELIVERY_LABEL_FALLBACK,
+} from './deliveryStatus';
 
 // Stable empty references for the store selectors below. A selector that
 // returns `s.channelMessages[id] ?? []` would mint a FRESH `[]` on every
@@ -70,24 +75,6 @@ export function sortMessagesBySeq(
   messages: ChannelMessage[],
 ): ChannelMessage[] {
   return messages.slice().sort((a, b) => a.seq - b.seq);
-}
-
-/** Pick the viewer's own entry out of the per-recipient snapshot. The
- *  plan's R22 says the message row should show a per-recipient delivery
- *  status indicator "for the current viewer's entry". Returns
- *  `undefined` when the snapshot is missing (pre-U2 messages) or
- *  the viewer isn't in the snapshot (e.g. a member who was removed
- *  between post and view). */
-export function viewerDeliveryStatus(
-  message: ChannelMessage,
-  viewerMemberId: string | null,
-): ChannelMessage['deliveryStatus'] | undefined {
-  if (!viewerMemberId) return undefined;
-  if (message.memberId !== viewerMemberId) return undefined;
-  const snap = message.recipientSnapshot;
-  if (!snap) return message.deliveryStatus;
-  const me = snap.find((s) => s.memberId === viewerMemberId);
-  return me?.status;
 }
 
 /** Render message text with its @mention tokens highlighted. Splits on the
@@ -272,6 +259,13 @@ export interface ChannelViewContentProps {
   /** Header control for the members roster (count + join/leave popover).
    *  Slotted so the pure view stays store-free for the test harness. */
   membersSlot?: React.ReactNode;
+  /** C-2 — memberIds in THIS channel whose nudge episode ran out of budget
+   *  (`channel.nudgeExhausted`). Their sender-side rows read "no answer"
+   *  instead of a delivered receipt nobody acted on. */
+  nudgeExhaustedMemberIds?: ReadonlySet<string>;
+  /** C-2 — clock injection for the delivery-aging rule (tests pass a fixed
+   *  value; production lets the view tick it). */
+  now?: number;
 }
 
 /** The presentational surface — all data comes via props, no store reads. */
@@ -286,9 +280,22 @@ export function ChannelViewContent({
   workspaceName = () => undefined,
   composerSlot,
   membersSlot,
+  nudgeExhaustedMemberIds,
+  now: nowProp,
   t: tProp,
 }: ChannelViewContentProps): React.ReactElement {
   const t = tProp ?? ((key: string) => key);
+  // C-2 delivery aging: a `pending` older than DELIVERY_UNCONFIRMED_AFTER_MS
+  // stops claiming to be in flight. Nothing else repaints the transcript on a
+  // timer, so the view keeps its own coarse clock — 10 s, only while the caller
+  // has not pinned one (tests pass `now` and get no interval at all).
+  const [clock, setClock] = useState(() => Date.now());
+  useEffect(() => {
+    if (nowProp !== undefined) return;
+    const timer = setInterval(() => setClock(Date.now()), 10_000);
+    return () => clearInterval(timer);
+  }, [nowProp]);
+  const now = nowProp ?? clock;
   // Two-click confirm for the one-way archive: first click arms (button turns
   // red + shows a check), second commits; blur cancels.
   const [archiveArmed, setArchiveArmed] = useState(false);
@@ -535,7 +542,12 @@ export function ChannelViewContent({
                 </div>
               );
             }
-            const myStatus = viewerDeliveryStatus(m, viewer?.memberId ?? null);
+            const myStatus = ownMessageDeliveryState({
+              message: m,
+              viewerMemberId: viewer?.memberId ?? null,
+              now,
+              ...(nudgeExhaustedMemberIds ? { exhaustedMemberIds: nudgeExhaustedMemberIds } : {}),
+            });
             const mentionsMe =
               !!viewer && !!m.mentions?.some((mn) => mn.workspaceId === viewer.workspaceId);
             const author = formatChannelAuthor(m, workspaceName);
@@ -607,12 +619,16 @@ export function ChannelViewContent({
                 </div>
                 {myStatus && (
                   <div
-                    className="text-[9px] font-mono text-[var(--text-muted)] self-end"
+                    className={`text-[9px] font-mono self-end ${
+                      myStatus === 'nudge_exhausted'
+                        ? 'text-[var(--accent-yellow)]'
+                        : 'text-[var(--text-muted)]'
+                    }`}
                     data-channel-message-delivery
                     data-delivery-status={myStatus}
-                    {...tokenAttrs('textMuted', 'text')}
+                    {...tokenAttrs(myStatus === 'nudge_exhausted' ? 'warning' : 'textMuted', 'text')}
                   >
-                    {myStatus === 'delivered' ? '✓ delivered' : myStatus === 'pending' ? '… sending' : '✗ target gone'}
+                    {t(DELIVERY_LABEL_KEY[myStatus]) || DELIVERY_LABEL_FALLBACK[myStatus]}
                   </div>
                 )}
               </div>
@@ -650,6 +666,16 @@ export function ChannelView(): React.ReactElement | null {
   );
   const members = useStore((s) =>
     activeChannelId ? s.channelMembers[activeChannelId] ?? EMPTY_MEMBERS : EMPTY_MEMBERS,
+  );
+  // C-2: subscribe to a STRING projection of this channel's exhausted-nudge
+  // members (same reason as workspaceNamesKey below — a fresh object per render
+  // would repaint the whole transcript on every unrelated store write).
+  const nudgeExhaustedKey = useStore((s) =>
+    activeChannelId ? Object.keys(s.channelNudgeExhausted[activeChannelId] ?? {}).sort().join('\u0001') : '',
+  );
+  const nudgeExhaustedMemberIds = useMemo(
+    () => new Set(nudgeExhaustedKey ? nudgeExhaustedKey.split('\u0001') : []),
+    [nudgeExhaustedKey],
   );
   // Identity audit 1a: workspace display names for the sender identity chips
   // (human posts read "Me · <workspace>"). Subscribe to a STRING projection of
@@ -879,6 +905,7 @@ export function ChannelView(): React.ReactElement | null {
         onLoadEarlier={handleLoadEarlier}
         workspaceName={workspaceName}
         t={t}
+        nudgeExhaustedMemberIds={nudgeExhaustedMemberIds}
         membersSlot={<ChannelMembersControl channel={channel} />}
         composerSlot={
           channel.status === 'archived' ? (

@@ -1466,3 +1466,23 @@ describe('channelsSlice — trash / restore / destroy', () => {
     }
   });
 });
+
+// ─── C-2: exhausted nudge episodes ──────────────────────────────────────
+
+describe('channelsSlice — channelNudgeExhausted (C-2)', () => {
+  it('records an exhausted episode per (channel, member)', () => {
+    const store = createTestStore();
+    store.getState().markChannelNudgeExhausted('ch-1', 'w9-1(claude)', 1_700_000_000_999);
+    expect(store.getState().channelNudgeExhausted['ch-1']).toEqual({
+      'w9-1(claude)': 1_700_000_000_999,
+    });
+  });
+
+  it('clears the episode when that member finally posts, and leaves other members alone', () => {
+    const store = createTestStore();
+    store.getState().markChannelNudgeExhausted('ch-1', 'm-1', 1);
+    store.getState().markChannelNudgeExhausted('ch-1', 'm-2', 2);
+    store.getState().appendMessageFromEvent(makeMessage('ch-1', 1, { memberId: 'm-1' }));
+    expect(store.getState().channelNudgeExhausted['ch-1']).toEqual({ 'm-2': 2 });
+  });
+});

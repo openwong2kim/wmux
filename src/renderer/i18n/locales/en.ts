@@ -1677,6 +1677,13 @@ export const en = {
   // it carries a pane pin; the badge-only line says when it does not.
   'channels.mentionWillReach': 'will reach {pane}',
   'channels.mentionBadgeOnly': '@{name} has no live pane — badge only, nobody is woken',
+  // C-2 — per-message delivery outcome on your OWN posts. `unconfirmed` is an
+  // aged pending: the post is out, no recipient outcome ever came back.
+  'channels.deliveryPending': '… sending',
+  'channels.deliveryDelivered': '✓ delivered',
+  'channels.deliveryTargetGone': '✗ target gone',
+  'channels.deliveryNudgeExhausted': '! no answer — nudges exhausted',
+  'channels.deliveryUnconfirmed': '? delivery unconfirmed',
   // J4 — diff comment fired to the mission channel. {count} = number of task
   // agents @-mentioned (0 when every agent has left the channel).
   'diff.commentFired': 'Comment posted to the mission channel — pinged {count} agent(s)',
