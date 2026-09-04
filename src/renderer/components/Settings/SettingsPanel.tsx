@@ -2159,6 +2159,37 @@ const IMAGE_PASTE_MODE_LABELS: ReadonlyArray<{ mode: ImagePasteMode; labelKey: s
   { mode: 'path', labelKey: 'settings.imagePastePath' },
 ];
 
+/** Exported for tests — the same seam ChromePresetActionsView uses. */
+export function ImagePasteModeView({
+  value,
+  onChange,
+  t,
+}: {
+  value: ImagePasteMode;
+  onChange: (mode: ImagePasteMode) => void;
+  t: (key: string) => string;
+}) {
+  return (
+    <div className="flex rounded-lg overflow-hidden" style={{ border: '1px solid var(--bg-overlay)' }}>
+      {IMAGE_PASTE_MODE_LABELS.map(({ mode, labelKey }) => (
+        <button
+          key={mode}
+          data-image-paste-mode={mode}
+          onClick={() => onChange(mode)}
+          aria-pressed={value === mode}
+          className="px-3 py-1 text-xs font-mono transition-colors"
+          style={{
+            backgroundColor: value === mode ? 'var(--accent-blue)' : 'var(--bg-surface)',
+            color: value === mode ? 'var(--bg-base)' : 'var(--text-subtle)',
+          }}
+        >
+          {t(labelKey)}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 function TabTerminal() {
   const t = useT();
   const defaultShell = useStore((s) => s.defaultShell);
@@ -2307,22 +2338,7 @@ function TabTerminal() {
           />
         </SettingRow>
         <SettingRow id="imagepaste" label={t('settings.imagePaste')} description={t('settings.imagePasteDesc')}>
-          <div className="flex rounded-lg overflow-hidden" style={{ border: '1px solid var(--bg-overlay)' }}>
-            {IMAGE_PASTE_MODE_LABELS.map(({ mode, labelKey }) => (
-              <button
-                key={mode}
-                onClick={() => setImagePasteMode(mode)}
-                aria-pressed={imagePasteMode === mode}
-                className="px-3 py-1 text-xs font-mono transition-colors"
-                style={{
-                  backgroundColor: imagePasteMode === mode ? 'var(--accent-blue)' : 'var(--bg-surface)',
-                  color: imagePasteMode === mode ? 'var(--bg-base)' : 'var(--text-subtle)',
-                }}
-              >
-                {t(labelKey)}
-              </button>
-            ))}
-          </div>
+          <ImagePasteModeView value={imagePasteMode} onChange={setImagePasteMode} t={t} />
         </SettingRow>
       </div>
     </div>
