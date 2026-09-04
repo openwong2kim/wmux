@@ -1652,6 +1652,7 @@ export const pl = {
   'deck.wokenByEvents': 'Wybudzona przez zdarzenia agenta',
   'deck.wokenShow': 'Szczegóły',
   'deck.wokenHide': 'Ukryj',
+  'deck.ledgerOpenTasks': 'Otwarte zadania: {count}',
   // operator-join (design §3) — collapsed-by-default discovery section + the
   // join-confirm dialog. The collapse IS the intent gate: private channel names
   // do not exist on screen until the section is expanded.

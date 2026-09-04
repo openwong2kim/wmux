@@ -67,6 +67,7 @@ import { renderBrainMarkdown } from './BrainMarkdown';
 import { DeckSchedulesPanel } from './DeckSchedulesPanel';
 import { NewSessionChipContainer } from './NewSessionChip';
 import { DeckLoopPanel } from './DeckLoopPanel';
+import { DeckLedgerPanel } from './DeckLedgerPanel';
 import { DeckDecisionCard } from './DeckDecisionCard';
 import BrainTerminalEmbed from './BrainTerminalEmbed';
 import { DeckBriefingCard } from './DeckBriefingCard';
@@ -187,6 +188,17 @@ export function CommanderViewContent({
   // `brainPtyId` hydrates a frame after mount and can go null again mid-session
   // — the state must survive the layout swap.
   const [railCollapsed, setRailCollapsed] = useState(true);
+  // Delegated work makes the rail worth opening: the ledger panel says a task
+  // is outstanding, and the rail is where its turn reports land. Once only —
+  // after that the collapse is the operator's to own again, so a later
+  // transition never re-opens a rail they just closed.
+  const railOpenedForTasks = useRef(false);
+  const onLedgerOpenCount = useCallback((openCount: number) => {
+    if (openCount > 0 && !railOpenedForTasks.current) {
+      railOpenedForTasks.current = true;
+      setRailCollapsed(false);
+    }
+  }, []);
   const [decisionPending, setDecisionPending] = useState(false);
   const isEmpty = !brainPtyId && threads.length === 0 && brainMessages.length === 0;
   // The pty layout's durable turn reports (pure selector — the store keeps the
@@ -290,6 +302,13 @@ export function CommanderViewContent({
         className="flex flex-col flex-1 min-h-0 bg-[var(--bg-mantle)]"
         {...tokenAttrs('bgMantle', 'bg')}
       >
+        {/* Delegated tasks, pinned above everything: the ledger is the one
+            state the brain, the workers and the Stop gate share. */}
+        <DeckLedgerPanel
+          t={t}
+          workspaceId={activeWorkspaceId}
+          onOpenCountChange={onLedgerOpenCount}
+        />
         {/* One control row: the Fleet roster and the automation controls. */}
         {fleetSlot}
         {renderControlBar(
@@ -409,6 +428,12 @@ export function CommanderViewContent({
       className="flex flex-col flex-1 min-h-0 bg-[var(--bg-mantle)]"
       {...tokenAttrs('bgMantle', 'bg')}
     >
+      {/* Delegated tasks, pinned above the roster (see the pty layout above). */}
+      <DeckLedgerPanel
+        t={t}
+        workspaceId={activeWorkspaceId}
+        onOpenCountChange={onLedgerOpenCount}
+      />
       {/* P2① — Fleet roster pinned above the thread (does not scroll with it). */}
       {fleetSlot}
       {/* Message list — the brain conversation (Phase 2) plus the Phase 1

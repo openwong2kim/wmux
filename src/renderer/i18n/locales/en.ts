@@ -1654,6 +1654,8 @@ export const en = {
   'deck.wokenByEvents': 'Woken by agent events',
   'deck.wokenShow': 'Details',
   'deck.wokenHide': 'Hide',
+  // Orchestrator wave 2 — the pinned task-ledger panel.
+  'deck.ledgerOpenTasks': '{count} open tasks',
   // operator-join (design §3) — collapsed-by-default discovery section + the
   // join-confirm dialog. The collapse IS the intent gate: private channel names
   // do not exist on screen until the section is expanded.
