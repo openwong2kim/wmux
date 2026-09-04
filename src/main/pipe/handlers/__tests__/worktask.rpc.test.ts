@@ -20,6 +20,7 @@ import {
   registerWorktaskRpc,
   TASK_GIT_LOG_MAX,
   WORKTASK_RPC_METHODS,
+  type TaskApprovalOutcome,
   type WorktaskExec,
   type WorktaskRpcDeps,
 } from '../worktask.rpc';
@@ -50,6 +51,7 @@ interface Harness {
   adopt: ReturnType<typeof vi.fn>;
   gateRun: ReturnType<typeof vi.fn>;
   gateCancel: ReturnType<typeof vi.fn>;
+  requestApproval: ReturnType<typeof vi.fn>;
   missionListParams: () => Record<string, unknown> | undefined;
 }
 
@@ -60,6 +62,9 @@ function harness(opts?: {
   exec?: WorktaskExec;
   /** 'throw' = transport failure, 'not-ok' = the daemon refusing. */
   missionList?: 'throw' | 'not-ok';
+  /** How the human answers the close/pr prompt. Defaults to approved so the
+   *  refusal tests below still see the gates they are about. */
+  approval?: TaskApprovalOutcome;
 }): Harness {
   const handlers = new Map<string, Handler>();
   const router = { register: (m: string, h: Handler) => handlers.set(m, h) } as unknown as RpcRouter;
@@ -95,10 +100,12 @@ function harness(opts?: {
   vi.mocked(resolvePtyOwnerWorkspace).mockImplementation(async () => owner);
 
   const exec = vi.fn(opts?.exec ?? (async () => ({ stdout: '', stderr: '', code: 0 })));
+  const requestApproval = vi.fn(async () => opts?.approval ?? ('approved' as TaskApprovalOutcome));
 
   const deps: WorktaskRpcDeps = {
     daemon,
     exec: exec as unknown as WorktaskExec,
+    requestApproval,
     getWindow: () => null,
     close: { closeTask } as unknown as TaskCloseService,
     pr: { createPr } as unknown as TaskPrService,
@@ -120,6 +127,7 @@ function harness(opts?: {
     gateRun,
     gateCancel,
     exec,
+    requestApproval,
     missionListParams: () => missionParams,
   };
 }
@@ -477,5 +485,63 @@ describe.each(WORKTASK_RPC_METHODS)('%s — daemon reachability', (method) => {
     const h = harness({ missionList: 'not-ok' });
     const res = await h.call(method, { taskId: TASK.id, senderPtyId: 'pty-1' });
     expect(res).toMatchObject({ ok: false, error: { code: 'UNAVAILABLE' } });
+  });
+});
+
+// ── Human approval on the two irreversible methods ─────────────────────────
+// A commander brain's own tools are auto-allowed by the SDK adapter, so for the
+// caller these methods exist for there is no upstream permission prompt to be
+// the second of. Removing a worktree and pushing a branch to a remote are the
+// two effects here that no returned result can take back.
+describe('task.close / task.pr approval gate', () => {
+  const COMMANDER: RpcContext = { origin: 'local', commanderWorkspace: CALLER_WS };
+
+  it('refuses task.close when the user declines, and never reaches the service', async () => {
+    const h = harness({ approval: 'declined' });
+    const res = await h.call('task.close', { taskId: TASK.id }, COMMANDER);
+    expect(res).toMatchObject({ ok: false, error: { code: 'NOT_AUTHORIZED' } });
+    expect(String((res as { error: { message: string } }).error.message)).toContain('the user denied it');
+    expect(h.closeTask).not.toHaveBeenCalled();
+  });
+
+  it('refuses task.pr when nobody answers, and says so was the timer', async () => {
+    const h = harness({ approval: 'timeout' });
+    const res = await h.call('task.pr', { taskId: TASK.id }, COMMANDER);
+    expect(res).toMatchObject({ ok: false, error: { code: 'NOT_AUTHORIZED' } });
+    expect(String((res as { error: { message: string } }).error.message)).toContain('expired');
+    expect(h.createPr).not.toHaveBeenCalled();
+  });
+
+  it('refuses when the prompt could not be shown at all (fail closed)', async () => {
+    const h = harness({ approval: 'unavailable' });
+    expect(await h.call('task.close', { taskId: TASK.id }, COMMANDER)).toMatchObject({
+      ok: false,
+      error: { code: 'NOT_AUTHORIZED' },
+    });
+    expect(h.closeTask).not.toHaveBeenCalled();
+  });
+
+  it('proceeds once approved, and asks about the SERVER\'s own projection row', async () => {
+    const h = harness();
+    expect(await h.call('task.close', { taskId: TASK.id }, COMMANDER)).toMatchObject({ ok: true });
+    expect(h.closeTask).toHaveBeenCalled();
+    expect(h.requestApproval).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: 'close',
+        taskId: TASK.id,
+        title: TASK.title,
+        branch: TASK.branch,
+        worktreePath: TASK.worktreePath,
+        workspaceId: CALLER_WS,
+      }),
+    );
+  });
+
+  it('leaves the reversible and read-only methods unprompted', async () => {
+    for (const method of ['task.gate.run', 'task.adopt', 'task.git.status', 'task.git.log', 'task.gh.prView']) {
+      const h = harness({ approval: 'declined' });
+      await h.call(method, { taskId: TASK.id }, COMMANDER);
+      expect(h.requestApproval, `${method} raised a prompt`).not.toHaveBeenCalled();
+    }
   });
 });

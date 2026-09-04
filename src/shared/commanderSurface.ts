@@ -246,7 +246,17 @@ export const COMMANDER_RPC_METHODS: ReadonlySet<string> = new Set<string>([
  *  this guards a future Layer-1 regression). Inventory is by effect, not
  *  name: browser.close cascades into closePane when it closes a pane's last
  *  surface (useRpcBridge), so it belongs here even though browser_* tools
- *  are outside the surface entirely. */
+ *  are outside the surface entirely.
+ *
+ *  `task.close` is deliberately ABSENT, and the omission is the policy call
+ *  lane O2 flagged rather than an oversight. This set is an UNCONDITIONAL
+ *  refusal in RpcRouter, evaluated before any handler runs — so listing
+ *  task.close would mean a brain can open N tasks and close none of them,
+ *  which is the half-loop the task tools exist to finish. What it removes is
+ *  also a worktree the orchestrator itself asked for, not human terminal
+ *  state, which is why it is not the same class as pane.close. The control is
+ *  a human approval prompt raised inside the handler instead (with task.pr,
+ *  the other irreversible one) — see pipe/handlers/worktask.rpc.ts. */
 export const COMMANDER_TEARDOWN_DENY: ReadonlySet<string> = new Set<string>([
   'pane.close',
   'surface.close',

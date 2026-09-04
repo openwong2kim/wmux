@@ -28,12 +28,25 @@
 //      that never materialized is refused with that reason rather than a
 //      confusing git error.
 //
-// Approval: none is raised here. These methods are reached from MCP tools, and
-// an MCP tool call passes through the existing PreToolUse permission gate
-// (GateBroker) before it ever becomes an RPC — so adding a second prompt would
-// ask the user twice for one action. `task.close` is teardown-class and must be
-// listed in TEARDOWN_DENY_METHODS on the commander surface; see
-// docs/internal/orch-o2-tool-contract.md.
+// Approval (integration lane, superseding the "none is raised here" this file
+// shipped with): `task.close` and `task.pr` DO raise a human prompt, through
+// the same renderer gate fan-out uses. The reasoning that said one prompt was
+// enough assumed every caller is an MCP tool behind a PreToolUse permission
+// gate — but the caller these methods exist for is an orchestrator brain whose
+// commander surface auto-allows its own tools (ClaudeSdkAdapter's
+// DEFAULT_ALLOWED_TOOLS), so for that caller there was no first prompt to be
+// the second of. Removing a worktree and pushing a branch to someone's GitHub
+// are the two effects here a human cannot undo by reading a result.
+//
+// Gate/adopt/read stay unprompted: a gate run is reversible by ignoring it,
+// adopt lands STAGED and never commits (`git reset --hard` undoes it), and the
+// git/gh views only read.
+//
+// `task.close` is deliberately NOT in COMMANDER_TEARDOWN_DENY. That set is an
+// unconditional refusal in RpcRouter, evaluated before any handler runs, so
+// listing it would mean a brain can open tasks and never close them — the
+// exact half-loop this file exists to finish. The prompt is the control
+// instead; see the note on COMMANDER_TEARDOWN_DENY in commanderSurface.ts.
 
 import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
@@ -43,8 +56,9 @@ import { promisify } from 'node:util';
 import type { BrowserWindow } from 'electron';
 
 import type { RpcRouter } from '../RpcRouter';
-import type { RpcContext, RpcMethod } from '../../../shared/rpc';
+import type { RpcContext } from '../../../shared/rpc';
 import { HUMAN_WORKSPACE_ID } from '../../../shared/channels';
+import { sendToRenderer } from './_bridge';
 import { resolvePtyOwnerWorkspace } from '../../workspace/ptyOwnership';
 import { git as runGit, type GitResult } from '../../git/git';
 import { getExecEnv } from '../../../shared/execEnv';
@@ -94,6 +108,61 @@ export const TASK_GIT_LOG_DEFAULT = 20;
  *  commit subject, so a crafted message cannot break the parse. */
 const LOG_SEP = '\u001f';
 
+/** How long the detached approval hop may hang before the call is answered as
+ *  denied. Matches the fan-out gate; the renderer dialog auto-denies sooner
+ *  (30 s), so this only bounds a bridge that never answers at all. */
+export const TASK_APPROVAL_TIMEOUT_MS = 45_000;
+
+/** The destructive half of this surface — the two methods that raise a prompt.
+ *  `action` is what the dialog names, so it uses the user-facing vocabulary
+ *  (Orchestrator / Task / Worker), not the RPC name. */
+export type TaskApprovalAction = 'close' | 'pr';
+
+export interface TaskApprovalRequest {
+  workspaceId: string;
+  taskId: string;
+  title: string;
+  branch: string;
+  worktreePath: string;
+  action: TaskApprovalAction;
+  /** One sentence naming what will happen if the user approves. */
+  effect: string;
+}
+
+/** How an approval ended, for the refusal message. `unavailable` is a bridge
+ *  that could not be reached at all — fail closed, but say which. */
+export type TaskApprovalOutcome = 'approved' | 'declined' | 'timeout' | 'unavailable';
+
+/** Raise the prompt; anything that is not an explicit approval is a refusal. */
+export type TaskApprovalPort = (request: TaskApprovalRequest) => Promise<TaskApprovalOutcome>;
+
+const APPROVAL_DENY_MESSAGE: Record<Exclude<TaskApprovalOutcome, 'approved'>, string> = {
+  declined: 'the user denied it',
+  timeout: 'the approval prompt expired with no answer (no one was at the keyboard)',
+  unavailable: 'the approval prompt could not be shown (the wmux window is unavailable)',
+};
+
+/**
+ * The default port: the renderer's shared approval queue, the same one the
+ * fan-out gate goes through, so one dialog and one timer serve both. Never
+ * throws — a bridge failure is `unavailable`, which refuses.
+ */
+function rendererApprovalPort(getWindow: GetWindow): TaskApprovalPort {
+  return async (request: TaskApprovalRequest): Promise<TaskApprovalOutcome> => {
+    let verdict: { approved?: unknown; outcome?: unknown } | null = null;
+    try {
+      verdict = (await sendToRenderer(getWindow, 'task.requestApproval', { ...request }, {
+        timeoutMs: TASK_APPROVAL_TIMEOUT_MS,
+      })) as { approved?: unknown; outcome?: unknown } | null;
+    } catch {
+      return 'unavailable';
+    }
+    if (!verdict) return 'unavailable';
+    if (verdict.approved === true) return 'approved';
+    return verdict.outcome === 'timeout' ? 'timeout' : 'declined';
+  };
+}
+
 export interface WorktaskRpcDeps {
   daemon: WorktaskRpcDaemonPort;
   getWindow: GetWindow;
@@ -109,6 +178,8 @@ export interface WorktaskRpcDeps {
   fileExists?: (p: string) => boolean;
   /** Injected for tests; defaults to the shared argv-only git helper. */
   exec?: WorktaskExec;
+  /** Injected for tests; defaults to the renderer approval queue. */
+  requestApproval?: TaskApprovalPort;
 }
 
 /** Projection task, minimal shape (task.mission.list). */
@@ -352,9 +423,6 @@ export function parseGitLog(stdout: string): { hash: string; author: string; dat
  * keeps a per-repo mutex chain, and two instances would race for git's
  * index.lock.
  *
- * The methods are not yet in the `RpcMethod` union (lane F owns
- * src/shared/rpc.ts); the cast below is the seam, and it disappears the moment
- * the five strings are added there.
  */
 export function registerWorktaskRpc(router: RpcRouter, deps: WorktaskRpcDeps): void {
   const systemWorkspaceId = deps.systemWorkspaceId ?? 'ws-daemon';
@@ -363,8 +431,34 @@ export function registerWorktaskRpc(router: RpcRouter, deps: WorktaskRpcDeps): v
   // Only non-interactive read subcommands are used, so there is no prompt to
   // disable.
   const exec: WorktaskExec = deps.exec ?? ((cmd, args, cwd) => runGitLike(cmd, args, cwd));
+  const requestApproval: TaskApprovalPort = deps.requestApproval ?? rendererApprovalPort(deps.getWindow);
   const register = (method: WorktaskRpcMethod, handler: Parameters<RpcRouter['register']>[1]): void =>
-    router.register(method as unknown as RpcMethod, handler);
+    router.register(method, handler);
+
+  /**
+   * Ask the human, and turn anything short of an explicit approval into the
+   * wire refusal. The summary is built from the SERVER's own projection row —
+   * title, branch, worktree — so what the dialog shows is what the handler is
+   * about to act on, never a caller-supplied description of it.
+   */
+  const approve = async (
+    action: TaskApprovalAction,
+    workspaceId: string,
+    task: ProjectionTask,
+    effect: string,
+  ): Promise<{ ok: false; error: { code: string; message: string } } | null> => {
+    const outcome = await requestApproval({
+      workspaceId,
+      taskId: task.id,
+      title: task.title,
+      branch: task.branch ?? '',
+      worktreePath: task.worktreePath ?? '',
+      action,
+      effect,
+    });
+    if (outcome === 'approved') return null;
+    return deny('NOT_AUTHORIZED', `task.${action} needs a human approval and ${APPROVAL_DENY_MESSAGE[outcome]}`);
+  };
 
   const localOnly = (ctx: RpcContext | undefined, method: string): { ok: false; error: { code: string; message: string } } | null =>
     ctx?.origin === 'local'
@@ -433,6 +527,19 @@ export function registerWorktaskRpc(router: RpcRouter, deps: WorktaskRpcDeps): v
     if (!('task' in owned)) return deny(owned.code, owned.message);
     const { task, workspaceId } = owned;
 
+    // Asked BEFORE the ordering contract starts, so a denial leaves the task
+    // exactly as it was — TaskCloseService's first step is the unpushed check,
+    // and after that the worktree removal is under way.
+    const refused = await approve(
+      'close',
+      workspaceId,
+      task,
+      task.worktreePath
+        ? `remove the worktree at ${task.worktreePath} and close the task (refused if the branch is dirty or has unpushed commits)`
+        : 'close the task (it has no worktree on disk)',
+    );
+    if (refused) return refused;
+
     if (!task.worktreePath || !fileExists(task.worktreePath)) {
       // Nothing on disk to remove — close-only, exactly as the IPC path
       // reconciles an unmaterialized or already-deleted task.
@@ -463,6 +570,15 @@ export function registerWorktaskRpc(router: RpcRouter, deps: WorktaskRpcDeps): v
         `task '${task.id}' has no worktree and branch yet, so there is no branch to open a PR from`,
       );
     }
+    // A push leaves the machine: once the branch is on the remote, no result
+    // this call returns can take it back.
+    const refused = await approve(
+      'pr',
+      workspaceId,
+      task,
+      `push the branch ${task.branch} to its remote and open a pull request for it`,
+    );
+    if (refused) return refused;
     const body = typeof params['body'] === 'string' ? params['body'] : undefined;
     return deps.pr.createPr({
       taskId: task.id,

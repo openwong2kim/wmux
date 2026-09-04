@@ -168,6 +168,14 @@ export const en = {
   'approval.fanoutSentence': 'An agent wants to fan out {tasks} — each creates a git worktree + branch and spawns an autonomous agent CLI in a new workspace.',
   'approval.fanoutTasks': '{count} isolated task',
   'approval.fanoutTasksPlural': '{count} isolated tasks',
+  // Task lifecycle (task.close / task.pr over the pipe). `effect` is the one
+  // sentence main computed from its own projection row, so the dialog names
+  // the exact worktree or branch the handler is about to act on.
+  'approval.taskCloseTitle': 'Task close requested',
+  'approval.taskPrTitle': 'Pull request requested',
+  'approval.taskSentence': 'An orchestrator wants to {effect}.',
+  'approval.branch': 'branch:',
+  'approval.worktree': 'worktree:',
   'approval.sameWsWorkspace': 'this workspace',
   'approval.sameWsSentence': 'An agent in {workspace} wants to spawn another autonomous Claude CLI with {mode} in the same workspace.',
   'approval.remoteSentence': 'A remote A2A caller wants to spawn a Claude CLI with {mode} in this workspace.',

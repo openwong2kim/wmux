@@ -14,7 +14,7 @@ import { applyRoleAgent, bindingEnforcesModel, normalizeRoleBinding, sanitizeOrc
 import { handleCompanyRpc } from '../../company/renderer/rpcHandlers';
 import { formatA2aMessage, formatA2aBroadcast, sanitizeA2aName } from '../utils/a2aFormat';
 import type { A2aPriority } from '../utils/a2aFormat';
-import { requestExecuteApproval, requestFanOutApproval } from '../utils/executeApprovalGate';
+import { requestExecuteApproval, requestFanOutApproval, requestTaskApproval } from '../utils/executeApprovalGate';
 import { openUrlInBrowserPane } from '../utils/browserPaneActions';
 import {
   closeBrowserTabInWorkspace,
@@ -772,6 +772,24 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
       repoPath,
       taskCount,
       messagePreview: previewWithRoles,
+    });
+    return { approved: verdict.approved, outcome: verdict.outcome };
+  }
+
+  if (method === 'task.requestApproval') {
+    // The two destructive task-lifecycle methods (task.close removes a git
+    // worktree, task.pr pushes a branch to a remote). Same queue, dialog and
+    // timer as the fan-out gate, and the same refusal to ride
+    // a2aAutoApproveExecute. Every field is main's own projection row, so what
+    // the dialog shows is what the handler will act on.
+    const verdict = await requestTaskApproval({
+      workspaceId: typeof params.workspaceId === 'string' ? params.workspaceId : '',
+      taskId: typeof params.taskId === 'string' ? params.taskId : '',
+      title: typeof params.title === 'string' ? params.title : '',
+      branch: typeof params.branch === 'string' ? params.branch : '',
+      worktreePath: typeof params.worktreePath === 'string' ? params.worktreePath : '',
+      action: typeof params.action === 'string' ? params.action : '',
+      effect: typeof params.effect === 'string' ? params.effect : '',
     });
     return { approved: verdict.approved, outcome: verdict.outcome };
   }

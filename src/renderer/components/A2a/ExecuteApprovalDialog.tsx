@@ -45,6 +45,11 @@ export default function ExecuteApprovalDialog() {
   // instead of letting the user wave through a misdescribed spawn. It also
   // hides the auto-approve checkbox, which does not apply to fan-out.
   const fanout = approval.fanout;
+  // A task-lifecycle action (task.close / task.pr) from the pipe/MCP surface.
+  // Neither spawns anything, so both the A2A and the fan-out copy would name an
+  // action the user is not being asked about — this branch states the effect
+  // main computed, plus the task, branch and worktree it will act on.
+  const task = approval.task;
   const remainingMs = Math.max(0, approval.expiresAt - now);
   const remainingSec = Math.ceil(remainingMs / 1000);
 
@@ -72,11 +77,21 @@ export default function ExecuteApprovalDialog() {
             className="text-sm font-semibold font-mono"
             style={{ color: 'var(--text-main)' }}
           >
-            {fanout ? t('approval.fanoutTitle') : t('approval.executeTitle')}
+            {task
+              ? task.action === 'pr'
+                ? t('approval.taskPrTitle')
+                : t('approval.taskCloseTitle')
+              : fanout
+                ? t('approval.fanoutTitle')
+                : t('approval.executeTitle')}
           </p>
         </div>
         <p className="text-xs" style={{ color: 'var(--text-sub)' }}>
-          {fanout ? (
+          {task ? (
+            renderSentence(t('approval.taskSentence'), {
+              effect: <span style={{ color: 'var(--accent-red)' }}>{task.effect}</span>,
+            })
+          ) : fanout ? (
             renderSentence(t('approval.fanoutSentence'), {
               tasks: (
                 <span style={{ color: 'var(--accent-red)' }}>
@@ -101,7 +116,18 @@ export default function ExecuteApprovalDialog() {
           className="text-xs font-mono flex flex-col gap-1 p-3 rounded-md"
           style={{ backgroundColor: 'var(--bg-mantle)', color: 'var(--text-sub2)' }}
         >
-          {fanout ? (
+          {task ? (
+            <>
+              <div><span style={{ color: 'var(--text-subtle)' }}>{t('approval.caller')}</span> {senderName}</div>
+              <div><span style={{ color: 'var(--text-subtle)' }}>{t('approval.task')}</span> {task.taskId}</div>
+              {task.branch ? (
+                <div><span style={{ color: 'var(--text-subtle)' }}>{t('approval.branch')}</span> {task.branch}</div>
+              ) : null}
+              {task.worktreePath ? (
+                <div><span style={{ color: 'var(--text-subtle)' }}>{t('approval.worktree')}</span> {task.worktreePath}</div>
+              ) : null}
+            </>
+          ) : fanout ? (
             <>
               <div><span style={{ color: 'var(--text-subtle)' }}>{t('approval.caller')}</span> {senderName}</div>
               <div><span style={{ color: 'var(--text-subtle)' }}>{t('approval.repo')}</span> {fanout.repoPath}</div>
@@ -134,9 +160,9 @@ export default function ExecuteApprovalDialog() {
           {approval.messagePreview || t('approval.emptyMessage')}
         </div>
         <div className="flex items-center justify-between">
-          {fanout ? (
-            // No auto-approve affordance on a fan-out: the toggle is scoped to
-            // A2A background execution and fan-out deliberately does not ride
+          {fanout || task ? (
+            // No auto-approve affordance on a fan-out or a task action: the
+            // toggle is scoped to A2A background execution and neither rides
             // it, so offering it here would promise something it does not do.
             <span className="text-[10px] font-mono" style={{ color: 'var(--text-subtle)' }}>
               {t('approval.fanoutAutoApproveHint')}

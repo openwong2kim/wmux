@@ -29,6 +29,10 @@ interface ApprovalInput {
   /** Set by the fan-out path so the dialog describes what actually happens
    *  (N new worktree workspaces, not one spawn in this workspace). */
   fanout?: { taskCount: number; repoPath: string };
+  /** Set by the task-lifecycle path (task.close / task.pr), for the same
+   *  reason `fanout` exists: neither spawns anything, so the execute copy
+   *  would describe an action the user is not being asked about. */
+  task?: { taskId: string; title: string; branch: string; worktreePath: string; action: string; effect: string };
 }
 
 /**
@@ -74,6 +78,7 @@ function enqueueApproval(
       cwd: input.cwd,
       expiresAt,
       ...(input.fanout ? { fanout: input.fanout } : {}),
+      ...(input.task ? { task: input.task } : {}),
     });
   });
 }
@@ -113,6 +118,44 @@ export function requestFanOutApproval(input: {
       messagePreview: input.messagePreview,
       cwd: input.repoPath || null,
       fanout: { taskCount: input.taskCount, repoPath: input.repoPath },
+    },
+    false,
+  );
+}
+
+/**
+ * Gate for the two destructive task-lifecycle methods (task.close, task.pr).
+ *
+ * Never auto-approved, for the same reason fan-out is not: `a2aAutoApproveExecute`
+ * is consent to background execution, and neither removing a worktree nor
+ * pushing a branch to a remote is that. The outcome (not a bare boolean) goes
+ * back over the wire so an unattended orchestrator learns it was refused, and
+ * whether by a person or by the timer.
+ */
+export function requestTaskApproval(input: {
+  workspaceId: string;
+  taskId: string;
+  title: string;
+  branch: string;
+  worktreePath: string;
+  action: string;
+  effect: string;
+}): Promise<{ approved: boolean; outcome: ApprovalOutcome }> {
+  return enqueueApproval(
+    {
+      taskId: input.taskId,
+      senderWorkspaceId: input.workspaceId,
+      receiverWorkspaceId: input.workspaceId,
+      messagePreview: input.title,
+      cwd: input.worktreePath || null,
+      task: {
+        taskId: input.taskId,
+        title: input.title,
+        branch: input.branch,
+        worktreePath: input.worktreePath,
+        action: input.action,
+        effect: input.effect,
+      },
     },
     false,
   );

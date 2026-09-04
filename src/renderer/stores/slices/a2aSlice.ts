@@ -58,6 +58,14 @@ export interface PendingExecuteApproval {
    * workspaces.
    */
   fanout?: { taskCount: number; repoPath: string };
+  /**
+   * Present when the prompt is a task-lifecycle action from the pipe/MCP
+   * surface (task.close / task.pr). Same queue, same timer, same
+   * never-auto-approved rule as fan-out — and its own copy for the same
+   * reason: nothing is spawned here, so the execute wording would name an
+   * action the user is not being asked about.
+   */
+  task?: { taskId: string; title: string; branch: string; worktreePath: string; action: string; effect: string };
 }
 
 export interface A2aSlice {
