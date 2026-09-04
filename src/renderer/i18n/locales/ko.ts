@@ -1271,6 +1271,8 @@ export const ko = {
   'worktask.cleanup.commitLinePrepared': '커밋 명령을 태스크 페인에 입력했습니다 — 확인 후 Enter로 실행하세요.',
   'worktask.cleanup.commitLineUnavailable': '준비할 커밋 명령이 없습니다: 변경이 없거나 파일이 너무 많습니다. worktree를 직접 여세요.',
   'worktask.cleanup.noPaneForCommit': '이 태스크에는 커밋을 준비할 살아 있는 페인이 없습니다. worktree를 직접 여세요.',
+  'worktask.cleanup.commitNeedsShell': '이 태스크의 페인은 셸이 아니라 에이전트 TUI입니다 — git 줄을 넣으면 채팅 메시지가 됩니다. worktree를 직접 여세요.',
+  'worktask.cleanup.openWorktreeFailed': 'worktree를 열지 못했습니다: {error}',
 
   // ─── Workspace item: task worktree boundary warning ──────────────────────
   'workspace.cwdDeparted': '페인 cwd가 태스크 worktree 경계 밖으로 이탈: {cwd}',

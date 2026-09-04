@@ -1814,6 +1814,8 @@ export const en = {
   'worktask.cleanup.commitLinePrepared': 'Commit line typed into the task pane — review it and press Enter to run it.',
   'worktask.cleanup.commitLineUnavailable': 'No prepared commit line: nothing changed, or too many changed files to list. Open the worktree instead.',
   'worktask.cleanup.noPaneForCommit': 'This task has no live pane to prepare the commit in. Open the worktree instead.',
+  'worktask.cleanup.commitNeedsShell': "The task's pane is running an agent, not a shell — a git line typed there becomes a chat message. Open the worktree instead.",
+  'worktask.cleanup.openWorktreeFailed': "Couldn't open the worktree: {error}",
 
   // ─── Workspace item: task worktree boundary warning ──────────────────────
   'workspace.cwdDeparted': 'Pane cwd departed outside the task worktree boundary: {cwd}',

@@ -14,6 +14,10 @@ import { findLeafPanes, activePaneTerminalPty } from '../../hooks/a2aAddressing'
 import { formatBracketedPastePayload } from '../../utils/ptyMessageDelivery';
 import type { WorktaskScanEntryWire, WorktaskScanCategoryWire } from '../../../shared/workTask';
 
+/** Why the last close attempt for a task failed — drives which next steps the
+ *  row offers. 'dirty' is the only one a commit line can answer. */
+type WorktaskCloseFailure = 'dirty' | 'unpushed' | 'error';
+
 const CATEGORY_LABEL_KEY: Record<WorktaskScanCategoryWire, string> = {
   'unmaterialized-open': 'worktask.cleanup.cat.unmaterialized',
   'disk-missing': 'worktask.cleanup.cat.diskMissing',
@@ -38,6 +42,19 @@ const CATEGORY_COLOR: Record<WorktaskScanCategoryWire, string> = {
 // The line lists the changed paths EXPLICITLY. `git add -A` in a worktree an
 // agent is still working in stages whatever else happens to be lying there;
 // naming the paths keeps the commit to what the scan actually saw.
+//
+// Review fixes:
+//  - every git verb is `git -C <worktree>`. The line is typed into a shell
+//    whose cwd nobody controls; a bare `git add` in a shell that had cd'd
+//    elsewhere would commit into the SHARED main checkout.
+//  - the paths come from the status scan (`snapshot.targetDirtyFiles`), which
+//    is `git status --porcelain -z` with `core.quotepath=false`: untracked
+//    files included, renames as the new path, no shell-quoted escapes. The
+//    numstat/`truncated`/`unsupported` lists are display artifacts — numstat
+//    prints a rename as `old => new`, which is not an argv.
+//  - the whole feature is POSIX-shell only. `shellQuote` is POSIX quoting and
+//    PowerShell/cmd read `'…'` differently, so on win32 the row offers "Open
+//    worktree" and nothing else rather than a line that quotes wrong.
 
 /** Above this many changed paths the prepared line stops being something a
  *  human can read in a prompt — the view offers "open worktree" instead. */
@@ -49,20 +66,51 @@ export function shellQuote(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
+/** The prepared line is POSIX-shell syntax (`'…'` quoting, `&&`). cmd.exe and
+ *  PowerShell both mis-read it, so the feature is simply absent on win32. */
+export function preparedCommitSupported(platform: string): boolean {
+  return platform !== 'win32';
+}
+
 /**
  * Build the line the pane is pre-filled with. Paths are deduped and sorted so
  * the same dirty worktree always produces the same line; the title becomes the
- * `wip:` subject. Returns `null` when there is nothing to commit, or when there
- * are more paths than a prepared line should carry.
+ * `wip:` subject. Every git invocation is pinned to `worktreePath` with `-C`.
+ * Returns `null` when there is nothing to commit, when there are more paths
+ * than a prepared line should carry, or when there is no worktree to pin to.
  */
-export function buildPreparedCommitLine(
-  paths: readonly string[],
-  title: string,
-): string | null {
-  const unique = [...new Set(paths.filter((p) => p.trim().length > 0))].sort();
+export function buildPreparedCommitLine(args: {
+  worktreePath: string;
+  paths: readonly string[];
+  title: string;
+}): string | null {
+  const worktreePath = args.worktreePath.trim();
+  if (!worktreePath) return null;
+  const unique = [...new Set(args.paths.filter((p) => p.trim().length > 0))].sort();
   if (unique.length === 0 || unique.length > PREPARED_COMMIT_PATH_CAP) return null;
-  const subject = `wip: ${title.trim() || 'task'}`.replace(/\s+/g, ' ');
-  return `git add -- ${unique.map(shellQuote).join(' ')} && git commit -m ${shellQuote(subject)}`;
+  const subject = `wip: ${args.title.trim() || 'task'}`.replace(/\s+/g, ' ');
+  const at = `git -C ${shellQuote(worktreePath)}`;
+  return `${at} add -- ${unique.map(shellQuote).join(' ')} && ${at} commit -m ${shellQuote(subject)}`;
+}
+
+/** Why a task pane cannot take a prepared commit line. */
+export type CommitTargetRefusal = 'no-pane' | 'agent-pane';
+
+/**
+ * Resolve the pty the line may be typed into.
+ *
+ * The pane a task runs in is normally the AGENT's TUI. Typing a git line there
+ * does not reach a shell at all — it becomes a chat message, or worse, the
+ * answer to whatever approval prompt the agent is sitting on. So the line is
+ * only ever typed into a pty with no detected agent behind it.
+ */
+export function resolveCommitTargetPty(args: {
+  ptyId: string | null;
+  surfaceAgent: Record<string, { name: string } | undefined>;
+}): { ok: true; ptyId: string } | { ok: false; reason: CommitTargetRefusal } {
+  if (!args.ptyId) return { ok: false, reason: 'no-pane' };
+  if (args.surfaceAgent[args.ptyId]?.name) return { ok: false, reason: 'agent-pane' };
+  return { ok: true, ptyId: args.ptyId };
 }
 
 export default function WorktaskCleanupView() {
@@ -78,11 +126,11 @@ export default function WorktaskCleanupView() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busyTaskId, setBusyTaskId] = useState<string | null>(null);
-  // C-4: taskIds whose close failed on a worktree that still holds work. The
-  // row keeps the two things the user can actually do about it (prepare a
-  // commit in the task's own pane, or open the worktree) instead of a toast
-  // that scrolls away with no next step.
-  const [closeFailed, setCloseFailed] = useState<Record<string, true>>({});
+  // C-4: taskIds whose close failed, keyed by WHY. The row keeps the actions
+  // that actually apply to that reason instead of a toast that scrolls away
+  // with no next step — a commit line answers 'dirty', but an unpushed branch
+  // needs a push, and committing again would only add to what is unpushed.
+  const [closeFailed, setCloseFailed] = useState<Record<string, WorktaskCloseFailure>>({});
 
   const runScan = useCallback(async () => {
     const api = window.electronAPI.workTask;
@@ -138,13 +186,13 @@ export default function WorktaskCleanupView() {
           });
         } else if (res.reason === 'dirty') {
           pushToast({ level: 'warn', message: t('worktask.cleanup.preserved') });
-          setCloseFailed((prev) => ({ ...prev, [taskId]: true }));
+          setCloseFailed((prev) => ({ ...prev, [taskId]: 'dirty' }));
         } else if (res.reason === 'unpushed') {
           pushToast({ level: 'warn', message: t('worktask.cleanup.unpushed', { count: res.aheadCount ?? '' }) });
-          setCloseFailed((prev) => ({ ...prev, [taskId]: true }));
+          setCloseFailed((prev) => ({ ...prev, [taskId]: 'unpushed' }));
         } else {
           pushToast({ level: 'error', message: t('worktask.cleanup.closeFailed', { error: res.error ?? '' }) });
-          setCloseFailed((prev) => ({ ...prev, [taskId]: true }));
+          setCloseFailed((prev) => ({ ...prev, [taskId]: 'error' }));
         }
       } catch (e) {
         pushToast({ level: 'error', message: t('worktask.cleanup.closeFailed', { error: e instanceof Error ? e.message : String(e) }) });
@@ -157,11 +205,19 @@ export default function WorktaskCleanupView() {
   );
 
   // C-4 "Open worktree" — reveal the directory the close refused to remove.
+  // openPath resolves { ok, error }: a silent failure here leaves the user
+  // staring at a button that did nothing.
   const handleOpenWorktree = useCallback(
-    (worktreePath: string) => {
-      void window.electronAPI.shell?.openPath(worktreePath);
+    async (worktreePath: string) => {
+      const res = await window.electronAPI.shell.openPath(worktreePath);
+      if (!res.ok) {
+        pushToast({
+          level: 'error',
+          message: t('worktask.cleanup.openWorktreeFailed', { error: res.error ?? '' }),
+        });
+      }
     },
-    [],
+    [pushToast, t],
   );
 
   // C-4 "Commit & close" — type a ready-to-run commit line into the task's own
@@ -178,25 +234,34 @@ export default function WorktaskCleanupView() {
         ([, mission]) => mission.id === entry.taskId,
       )?.[0];
       const ws = paneGroupId ? st.workspaces.find((w) => w.id === paneGroupId) : undefined;
-      const ptyId = ws
-        ? activePaneTerminalPty(findLeafPanes(ws.rootPane), ws.activePaneId)
-        : null;
-      if (!ws || !ptyId) {
-        pushToast({ level: 'warn', message: t('worktask.cleanup.noPaneForCommit') });
+      const target = resolveCommitTargetPty({
+        ptyId: ws ? activePaneTerminalPty(findLeafPanes(ws.rootPane), ws.activePaneId) : null,
+        surfaceAgent: st.surfaceAgent,
+      });
+      if (!ws || !target.ok) {
+        pushToast({
+          level: 'warn',
+          message:
+            ws && !target.ok && target.reason === 'agent-pane'
+              ? t('worktask.cleanup.commitNeedsShell')
+              : t('worktask.cleanup.noPaneForCommit'),
+        });
         return;
       }
+      const ptyId = target.ptyId;
       const diff = await window.electronAPI.diff.read(worktreePath, '', 'workspace');
       if (!diff.ok) {
         pushToast({ level: 'error', message: t('worktask.cleanup.closeFailed', { error: diff.error }) });
         return;
       }
-      const paths = [
-        ...diff.numstat.map((n) => n.path),
-        ...diff.files.map((f) => f.path),
-        ...diff.truncated,
-        ...diff.unsupported,
-      ];
-      const line = buildPreparedCommitLine(paths, entry.title ?? entry.taskId);
+      // The status scan, not the rendered diff: it carries untracked files and
+      // prints one unambiguous path per entry (rename → new path), where a
+      // numstat line prints a rename as `old => new` and would become argv.
+      const line = buildPreparedCommitLine({
+        worktreePath,
+        paths: diff.snapshot.targetDirtyFiles,
+        title: entry.title ?? entry.taskId,
+      });
       if (!line) {
         pushToast({ level: 'warn', message: t('worktask.cleanup.commitLineUnavailable') });
         return;
@@ -209,6 +274,9 @@ export default function WorktaskCleanupView() {
     },
     [pushToast, setVisible, t],
   );
+
+  // POSIX-shell quoting only (see preparedCommitSupported).
+  const canPrepareCommit = preparedCommitSupported(window.electronAPI.platform);
 
   if (!visible) return null;
 
@@ -283,7 +351,10 @@ export default function WorktaskCleanupView() {
                   )}
                   {e.taskId && closeFailed[e.taskId] && (
                     <div className="mt-1 flex flex-wrap items-center gap-2" data-cleanup-close-failed>
-                      {e.worktreePath && (
+                      {/* Only a worktree that still holds UNCOMMITTED work has a
+                          commit line to prepare — an unpushed branch needs a
+                          push, and a commit would only add to it. */}
+                      {e.worktreePath && closeFailed[e.taskId] === 'dirty' && canPrepareCommit && (
                         <button
                           className="px-2 py-0.5 rounded text-[10px] bg-[var(--bg-mantle)] text-[var(--text-sub)] hover:text-[var(--text-main)] border border-[var(--bg-mantle)]"
                           onClick={() => void handleCommitAndClose(e)}
@@ -295,7 +366,7 @@ export default function WorktaskCleanupView() {
                       {e.worktreePath && (
                         <button
                           className="px-2 py-0.5 rounded text-[10px] bg-[var(--bg-mantle)] text-[var(--text-sub)] hover:text-[var(--text-main)] border border-[var(--bg-mantle)]"
-                          onClick={() => handleOpenWorktree(e.worktreePath!)}
+                          onClick={() => void handleOpenWorktree(e.worktreePath!)}
                           data-cleanup-open-worktree
                         >
                           {t('worktask.cleanup.openWorktree')}

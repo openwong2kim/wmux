@@ -1804,6 +1804,8 @@ export const pl = {
   'worktask.cleanup.commitLinePrepared': 'Polecenie commita wpisane w panel zadania — sprawdź je i naciśnij Enter, aby je uruchomić.',
   'worktask.cleanup.commitLineUnavailable': 'Brak gotowego polecenia commita: nic się nie zmieniło albo zmienionych plików jest za dużo. Otwórz worktree.',
   'worktask.cleanup.noPaneForCommit': 'To zadanie nie ma aktywnego panelu, w którym można przygotować commit. Otwórz worktree.',
+  'worktask.cleanup.commitNeedsShell': 'Panel tego zadania uruchamia agenta, nie powłokę — wpisana tam komenda git stanie się wiadomością czatu. Otwórz worktree.',
+  'worktask.cleanup.openWorktreeFailed': 'Nie udało się otworzyć worktree: {error}',
 
   // ─── Workspace item: task worktree boundary warning ──────────────────────
   'workspace.cwdDeparted': 'cwd panelu opuścił granicę worktree zadania: {cwd}',
