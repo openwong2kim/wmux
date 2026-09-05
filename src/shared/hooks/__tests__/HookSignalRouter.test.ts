@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { HookSignalRouter, DEFAULT_DEDUP_WINDOW_MS, HOOK_AUTHORITY_TTL_MS } from '../HookSignalRouter';
 import { SignalLatencyMeter } from '../SignalLatencyMeter';
 import type { AgentSignal } from '../signal-types';
@@ -239,6 +239,83 @@ describe('HookSignalRouter', () => {
     it('is scoped to the pane', () => {
       router.noteHookTurnStart('p1', 1000);
       expect(router.governsRunningState('p2', 1100)).toBe(false);
+    });
+
+    it('expires on its own timer and settles the pane once', () => {
+      // The F2 case: a pane whose agent process the tracker never attributed
+      // (arm failure / backoff / no slug) has NO death edge, and the byte
+      // heuristic is muted in both directions — so without this the pane would
+      // report 'running' to pane_list for the rest of the process's life.
+      vi.useFakeTimers();
+      try {
+        const settled: string[] = [];
+        router = new HookSignalRouter({ latencyMeter: meter, authorityTtlMs: 5_000 });
+        router.setTurnExpiryListener((ptyId) => settled.push(ptyId));
+        router.noteHookTurnStart('p1', 1000);
+        vi.advanceTimersByTime(4_999);
+        expect(settled).toEqual([]);
+        expect(router.governsRunningState('p1', 1000)).toBe(true);
+        vi.advanceTimersByTime(1);
+        expect(settled).toEqual(['p1']);
+        // The latch is released BEFORE the listener runs, so the settle
+        // broadcast is not vetoed by the gate it exists to escape.
+        expect(router.governsRunningState('p1', 1000)).toBe(false);
+        // Once only.
+        vi.advanceTimersByTime(60_000);
+        expect(settled).toEqual(['p1']);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('a live bridge re-arms the deadline, so a long turn never trips it', () => {
+      vi.useFakeTimers();
+      try {
+        const settled: string[] = [];
+        router = new HookSignalRouter({ latencyMeter: meter, authorityTtlMs: 5_000 });
+        router.setTurnExpiryListener((ptyId) => settled.push(ptyId));
+        router.noteHookTurnStart('p1', 1000);
+        vi.advanceTimersByTime(4_000);
+        router.touchAuthority('p1', 'claude', 5_000); // a tool call mid-turn
+        vi.advanceTimersByTime(4_000);
+        expect(settled).toEqual([]);
+        vi.advanceTimersByTime(1_000);
+        expect(settled).toEqual(['p1']);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('a signal on a pane with no open turn does not arm an expiry', () => {
+      vi.useFakeTimers();
+      try {
+        const settled: string[] = [];
+        router = new HookSignalRouter({ latencyMeter: meter, authorityTtlMs: 5_000 });
+        router.setTurnExpiryListener((ptyId) => settled.push(ptyId));
+        router.touchAuthority('p1', 'claude', 1000);
+        vi.advanceTimersByTime(60_000);
+        // Nothing claimed this pane's dot, so nothing may broadcast idle over it.
+        expect(settled).toEqual([]);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('the turn end and pane disposal both cancel the expiry', () => {
+      vi.useFakeTimers();
+      try {
+        const settled: string[] = [];
+        router = new HookSignalRouter({ latencyMeter: meter, authorityTtlMs: 5_000 });
+        router.setTurnExpiryListener((ptyId) => settled.push(ptyId));
+        router.noteHookTurnStart('p1', 1000);
+        router.releaseHookTurnStart('p1');
+        router.noteHookTurnStart('p2', 1000);
+        router.dropPty('p2');
+        vi.advanceTimersByTime(60_000);
+        expect(settled).toEqual([]);
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it('releaseHookTurnStart hands the dot back without touching the ledger', () => {

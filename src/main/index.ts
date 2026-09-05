@@ -753,6 +753,16 @@ function attachWindowRecovery(win: BrowserWindow): void {
 // once detector-side wiring lands (see plan Phase 1.5).
 const signalLatencyMeter = new SignalLatencyMeter();
 hookSignalRouter = new HookSignalRouter({ latencyMeter: signalLatencyMeter });
+// The turn latch's backstop. While it is held the byte heuristic writes nothing
+// for that pane, so a turn whose end hook never arrives AND whose agent process
+// the daemon could not attribute (tracker arm failure, backoff, no slug) would
+// keep the pane lit — and `pane_list` / `surface_list` / `a2a_discover` would
+// keep reporting it as running. The router releases such a latch 30 minutes
+// after the pane's last hook signal; this settles the dot on the same
+// METADATA_UPDATE funnel the process-death edge uses.
+hookSignalRouter.setTurnExpiryListener((ptyId) => {
+  broadcastMetadataUpdate(mainWindow, { ptyId, agentStatus: 'idle' });
+});
 
 // Local-mode verdict gate — the same CompletionAlarm the daemon's HookIngest
 // runs, mirroring its rules onto the daemon-UNREACHABLE fallback path
