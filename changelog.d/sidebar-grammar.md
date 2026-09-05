@@ -1,0 +1,5 @@
+### Changed
+
+- **The sidebar puts the workspace name first.** The name is now Inter at the body size and gets the full width of its row; the project gear, the shortcut hint and the agent count fade in when you point at a row, and stay up on the active one. Before, all four fought over 240px and the name — 11px mono, the same weight as the metadata beside it — usually lost.
+- **Amber in the sidebar now means only "an agent is running".** A git dirty count is written as a muted `·N` instead of an amber `●N`; on a working tree with 41 uncommitted files it used to be the loudest thing on the row while never meaning "look here". Clean green, ahead blue and behind red are unchanged.
+- **An agent waiting on you tints its row and says so.** A workspace whose agent is blocked gets a faint red wash and a "Needs you" label, in place of the pause glyph that used to sit at the row's edge without saying what it was paused on. Red is also spent on errors, so an errored agent now draws a ✕ instead of a round dot — the shape, not the hue, tells the two apart.
