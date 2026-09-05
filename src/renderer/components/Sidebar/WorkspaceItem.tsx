@@ -824,10 +824,15 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
                   // dialog it opens has a keyboard path already (⌘K → the
                   // project config command), so the badge is not the only way
                   // in. Left for a pass that can restructure the name line.
+                  //
+                  // Only a TRUSTED badge waits for the pointer. The other two
+                  // states are unresolved verdicts the user has to act on —
+                  // "needs review" and "denied" are warnings, and a warning
+                  // nobody sees until they hover the row is not one.
                   <button
                     type="button"
                     data-workspace-action="project-badge"
-                    className={`text-[10px] leading-none flex-shrink-0 font-mono cursor-pointer hover:underline ${restHiddenNameLine}`}
+                    className={`text-[10px] leading-none flex-shrink-0 font-mono cursor-pointer hover:underline ${projectState.trust === 'trusted' ? restHiddenNameLine : ''}`}
                     style={{
                       color: projectState.trust === 'trusted'
                         ? 'var(--accent-blue)'
