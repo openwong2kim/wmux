@@ -18,6 +18,7 @@
 
 import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
+import { HIT_TARGET_24 } from '../hitArea';
 import { sumUnread } from '../Channels/ChannelsPanel';
 
 /**
@@ -68,7 +69,10 @@ export default function DeckToggle() {
     <button
       type="button"
       onClick={() => setChannelDockVisible(!visible)}
-      className="relative flex items-center justify-center w-5 h-5 rounded-[4px] text-[var(--text-muted)] hover:text-[var(--text-main)] transition-colors"
+      // 20x20 was under the 24px pointer floor (WCAG 2.2 SC 2.5.8) — and this
+      // is the ONLY way back to a collapsed deck, so it is the last control in
+      // the app that should be hard to hit. The glyph keeps its 13px size.
+      className={`relative ${HIT_TARGET_24} rounded-[4px] text-[var(--text-muted)] hover:text-[var(--text-main)] transition-colors`}
       title={accessibleName}
       aria-label={accessibleName}
       aria-expanded={visible}

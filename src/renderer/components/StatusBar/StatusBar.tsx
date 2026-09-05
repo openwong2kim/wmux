@@ -7,6 +7,7 @@ import type { Notification, Workspace } from '../../../shared/types';
 import { StatusClockUsage, StatusClockTime } from './StatusClock';
 import { selectActiveWorkspaceSummary } from '../../stores/selectors/workspaceProjections';
 import { tokenAttrs } from '../../themes';
+import { HIT_TARGET_24_TIGHT } from '../hitArea';
 import { IconGear } from '../icons';
 import { selectFleetPanes, sortFleetPanes, countNeedsAttention } from '../../stores/selectors/fleet';
 import PluginStatusBarWidgets from '../../plugins/PluginStatusBarWidgets';
@@ -222,7 +223,10 @@ export default function StatusBar() {
             type="button"
             data-statusbar-needs
             onClick={jumpToUrgent}
-            className="flex items-center gap-1.5 font-semibold text-[var(--accent-red)] hover:opacity-80 transition-opacity"
+            // min-h only: the chip is text, so it is already wide enough — it
+            // was the 13px line-height that put it under the pointer floor, and
+            // the 36px titlebar absorbs the extra height with no layout change.
+            className="flex items-center gap-1.5 min-h-[24px] font-semibold text-[var(--accent-red)] hover:opacity-80 transition-opacity"
             title={t('strip.needsYouTooltip') || 'Jump to the pane that needs you'}
             {...tokenAttrs('danger', 'text')}
           >
@@ -238,8 +242,13 @@ export default function StatusBar() {
         {/* A5: 메모리 + 시각(시계 커서 의존) — 분리된 소형 컴포넌트. */}
         <StatusClockTime />
         <button
+          type="button"
+          data-statusbar-settings
           onClick={toggleSettingsPanel}
-          className="text-[var(--text-muted)] hover:text-[var(--text-main)] transition-colors ml-1"
+          // The gear drew a 13px icon with no box at all. HIT_TARGET_24_TIGHT
+          // gives it the 24px floor and refunds the width, so the right cluster
+          // does not slide (it replaces the old `ml-1` — see hitArea.ts).
+          className={`${HIT_TARGET_24_TIGHT} text-[var(--text-muted)] hover:text-[var(--text-main)] transition-colors`}
           title={t('statusBar.settingsTooltip')}
           data-onboarding-target="settings-button"
         >

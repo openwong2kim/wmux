@@ -9,6 +9,7 @@ import type { TranslationKey } from '../../i18n/locales/en';
 import { AGENT_STATUS_ICON } from './agentStatusIcon';
 import { IconCopy, IconX, IconGear, IconPlay, IconPause, IconChevron, IconBell, IconFolder, IconTerminal, IconExternalLink } from '../icons';
 import { tokenAttrs } from '../../themes';
+import { HIT_TARGET_24_TIGHT } from '../hitArea';
 import { buildWorkspaceMarkdown } from '../../utils/sessionInfoMarkdown';
 import { collectTerminalSurfaces, collectWorkspaceTerminalSurfaces } from '../../utils/paneTraversal';
 import { openUrlInBrowserPane } from '../../utils/browserPaneActions';
@@ -746,7 +747,8 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
                   // review/actions dialog for THIS workspace.
                   <button
                     type="button"
-                    className="text-[10px] leading-none flex-shrink-0 font-mono cursor-pointer hover:underline"
+                    data-workspace-action="project-badge"
+                    className={`${HIT_TARGET_24_TIGHT} text-[10px] leading-none flex-shrink-0 font-mono cursor-pointer hover:underline`}
                     style={{
                       color: projectState.trust === 'trusted'
                         ? 'var(--accent-blue)'
@@ -825,9 +827,13 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
           {index < 9 ? `^${index + 1}` : ''}
         </span>
 
-        {/* Folder icon — reveals this workspace's cwd in the OS file manager. */}
+        {/* Folder icon — reveals this workspace's cwd in the OS file manager.
+            These three hover actions drew an 11px glyph in a 13px box; they now
+            carry a real 24px target whose extra width is refunded by the -m in
+            HIT_TARGET_24_TIGHT, so the 240px row keeps its name column. */}
         <button
-          className="opacity-0 group-hover:opacity-100 text-[var(--text-subtle)] hover:text-[var(--accent-blue)] text-[10px] font-mono flex-shrink-0 mt-0.5 transition-opacity duration-150"
+          data-workspace-action="explorer"
+          className={`${HIT_TARGET_24_TIGHT} opacity-0 group-hover:opacity-100 text-[var(--text-subtle)] hover:text-[var(--accent-blue)] text-[10px] font-mono flex-shrink-0 transition-opacity duration-150`}
           onClick={(e) => { e.stopPropagation(); handleOpenExplorer(); }}
           title={t('workspace.openInExplorer', { app: fileManagerName(t) })}
           aria-label={t('workspace.openInExplorer', { app: fileManagerName(t) })}
@@ -837,7 +843,8 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
 
         {/* Copy session info button */}
         <button
-          className="opacity-0 group-hover:opacity-100 text-[var(--text-subtle)] hover:text-[var(--accent-blue)] text-[10px] font-mono flex-shrink-0 mt-0.5 transition-opacity duration-150"
+          data-workspace-action="copy-info"
+          className={`${HIT_TARGET_24_TIGHT} opacity-0 group-hover:opacity-100 text-[var(--text-subtle)] hover:text-[var(--accent-blue)] text-[10px] font-mono flex-shrink-0 transition-opacity duration-150`}
           onClick={(e) => { e.stopPropagation(); onCopyInfo(workspaceId); }}
           title={t('workspace.copyInfo')}
           aria-label={t('workspace.copyInfo')}
@@ -847,7 +854,8 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
 
         {/* Close button — asks for confirmation first (anti-misclick). */}
         <button
-          className="opacity-0 group-hover:opacity-100 text-[var(--text-subtle)] hover:text-[var(--accent-red)] text-[10px] font-mono flex-shrink-0 mt-0.5 transition-opacity"
+          data-workspace-action="close"
+          className={`${HIT_TARGET_24_TIGHT} opacity-0 group-hover:opacity-100 text-[var(--text-subtle)] hover:text-[var(--accent-red)] text-[10px] font-mono flex-shrink-0 transition-opacity`}
           onClick={(e) => { e.stopPropagation(); setMenuPos(null); setCloseConfirmPos({ x: e.clientX, y: e.clientY }); }}
           title={t('workspace.close')}
           aria-label={t('workspace.close')}

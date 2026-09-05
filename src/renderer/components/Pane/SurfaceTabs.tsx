@@ -12,6 +12,7 @@ import { computePaneAutoName, paneDisplayName } from '../../utils/paneNaming';
 import { findPane } from '../../../shared/paneUtils';
 import PaneDragGrip from './PaneDragGrip';
 import { FOCUS_RING } from '../focusRing';
+import { HIT_TARGET_24_TIGHT } from '../hitArea';
 import { IconSplitRight, IconSplitDown, IconBrowser, IconExternalLink, IconEyeOff, IconPencil } from '../icons';
 import { displayPath } from '../../utils/displayPath';
 import { workspaceColorHex } from '../../../shared/workspaceColors';
@@ -704,9 +705,12 @@ export default function SurfaceTabs({
               {s.title || t('surface.terminal')}
             </span>
           )}
-          {/* X close button — always visible, not just on hover */}
+          {/* X close button — always visible, not just on hover. The glyph is
+              ~7px; HIT_TARGET_24_TIGHT gives it a real 24px box that costs the
+              tab one pixel of width (see hitArea.ts). */}
           <button
-            className="text-[var(--text-subtle)] hover:text-[var(--accent-red)] transition-colors ml-1 leading-none"
+            data-surface-tab-close
+            className={`${HIT_TARGET_24_TIGHT} text-[var(--text-subtle)] hover:text-[var(--accent-red)] transition-colors leading-none`}
             onClick={(e) => { e.stopPropagation(); onClose(s.id); }}
             title={t('surface.closeTab')}
             {...tokenAttrs('danger', 'accent')}

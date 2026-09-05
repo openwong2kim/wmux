@@ -9,6 +9,7 @@ import { focusNotificationTarget, focusPaneByPtyId } from '../../hooks/useNotifi
 import { useT } from '../../hooks/useT';
 import { IconEye, IconEyeOff, IconChevron } from '../icons';
 import { FOCUS_RING } from '../focusRing';
+import { HIT_TARGET_24_TIGHT } from '../hitArea';
 import { timeAgo } from '../../utils/timeAgo';
 import { AGENT_STATUS_ICON } from './agentStatusIcon';
 
@@ -180,7 +181,11 @@ function WorkspaceRosterSummary({
       // behind that already-proven guard instead of leaving the mousedown
       // preventDefault below as the single line of defence.
       data-workspace-agent-roster
-      className={`mt-0.5 flex flex-shrink-0 items-center gap-0.5 rounded px-0.5 text-[10px] font-mono tabular-nums text-[var(--text-muted)] transition-colors hover:text-[var(--text-sub)] ${FOCUS_RING}`}
+      // The chevron is 8px and the count 10px type: the control measured ~20x14.
+      // HIT_TARGET_24_TIGHT gives it a 24px box and pays the growth back with a
+      // negative margin, so the row's own height and the name column beside it
+      // are unchanged (the `mt-0.5` it replaces would have fought the -m).
+      className={`${HIT_TARGET_24_TIGHT} flex-shrink-0 gap-0.5 rounded px-0.5 text-[10px] font-mono tabular-nums text-[var(--text-muted)] transition-colors hover:text-[var(--text-sub)] ${FOCUS_RING}`}
       aria-expanded={open}
       aria-controls={rosterListId(workspaceId)}
       aria-label={ariaLabel}
