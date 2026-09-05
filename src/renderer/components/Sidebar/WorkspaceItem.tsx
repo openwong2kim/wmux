@@ -246,6 +246,31 @@ const IDLE_SHOW_AFTER_MS = 60_000;
 /** Re-render cadence for the idle label; minute granularity needs no more. */
 const IDLE_TICK_MS = 30_000;
 
+/**
+ * Rest-state chrome: invisible AND weightless.
+ *
+ * `opacity-0` alone still spends the item's width, and in a 240px sidebar that
+ * width comes straight out of the workspace name — a "Needs you" row truncated
+ * a readable name to "sa…" while the chrome nobody could see sat beside it.
+ * `max-w-0` + `overflow-hidden` collapse the box at rest; hover and
+ * focus-within hand back the width AND the overflow the 24px hit recipes need
+ * for their margin refunds. `pointer-events` follow visibility so an invisible
+ * control never takes a click meant for the row underneath.
+ */
+const REST_HIDDEN =
+  'opacity-0 pointer-events-none max-w-0 overflow-hidden transition-opacity duration-150'
+  + ' group-hover:opacity-100 group-hover:pointer-events-auto group-hover:max-w-none group-hover:overflow-visible'
+  + ' group-focus-within:opacity-100 group-focus-within:pointer-events-auto group-focus-within:max-w-none group-focus-within:overflow-visible';
+
+/**
+ * A collapsed flex item still contributes its parent's `gap`, so the width the
+ * box gave back would be spent again on nothing. These cancel the gap that
+ * precedes the item — `-ml-2` for the row (`gap-2`), `-ml-1` for the name line
+ * (`gap-1`) — and return it the moment the item is shown.
+ */
+const REST_HIDDEN_GAP_ROW = '-ml-2 group-hover:ml-0 group-focus-within:ml-0';
+const REST_HIDDEN_GAP_NAME_LINE = '-ml-1 group-hover:ml-0 group-focus-within:ml-0';
+
 function shortenPath(path: string, maxLen = 25): string {
   if (!path || path.length <= maxLen) return path;
   const parts = path.replace(/\\/g, '/').split('/');
@@ -296,11 +321,11 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
   // badge, the agent count and the shortcut hint are chrome you only look for
   // once you are already pointing at the row, and at 240px they were spending
   // the name's width to sit there. The ACTIVE row keeps them — it is the one
-  // row you are working in. `pointer-events` follows visibility so an
-  // invisible control never takes a click meant for the row underneath.
-  const restHidden = isActive
-    ? ''
-    : 'opacity-0 pointer-events-none transition-opacity duration-150 group-hover:opacity-100 group-hover:pointer-events-auto group-focus-within:opacity-100 group-focus-within:pointer-events-auto';
+  // row you are working in. See REST_HIDDEN for why hiding is not enough on its
+  // own: at rest the chrome must also give its WIDTH back to the name.
+  const restHidden = isActive ? '' : `${REST_HIDDEN} ${REST_HIDDEN_GAP_ROW}`;
+  /** The same, for chrome that sits inside the `gap-1` name line. */
+  const restHiddenNameLine = isActive ? '' : `${REST_HIDDEN} ${REST_HIDDEN_GAP_NAME_LINE}`;
   // #997 — the roster's expanded state. It lives here, not in the roster,
   // because the control that toggles it now sits on THIS row while the list it
   // reveals is rendered below; the two would otherwise need to agree across a
@@ -786,7 +811,7 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
                   <button
                     type="button"
                     data-workspace-action="project-badge"
-                    className={`text-[10px] leading-none flex-shrink-0 font-mono cursor-pointer hover:underline ${restHidden}`}
+                    className={`text-[10px] leading-none flex-shrink-0 font-mono cursor-pointer hover:underline ${restHiddenNameLine}`}
                     style={{
                       color: projectState.trust === 'trusted'
                         ? 'var(--accent-blue)'
@@ -881,10 +906,18 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
             ~23px row, so at rest they extend a fraction past the row's edge,
             and an invisible control must not take a click meant for the row
             under it. `focus-within` reveals the cluster for the keyboard, which
-            could previously focus a button it could not see. */}
+            could previously focus a button it could not see.
+
+            `max-w-0 overflow-hidden` collapses the cluster at rest for the same
+            reason the rest of the chrome collapses (REST_HIDDEN): three 24px
+            boxes held ~72px of the name's column to show nothing. The overflow
+            comes back on reveal — the members' `-mx-1.5` refunds live outside
+            the cluster's content box, and a clipped refund is a smaller target.
+            No negative left margin here: hitArea.ts forbids one on a cluster
+            (chromeHitArea.test.ts asserts it), so this one item keeps its gap. */}
         <div
           data-workspace-actions
-          className={`${HIT_TARGET_24_CLUSTER} flex-shrink-0 opacity-0 pointer-events-none transition-opacity duration-150 group-hover:opacity-100 group-hover:pointer-events-auto focus-within:opacity-100 focus-within:pointer-events-auto`}
+          className={`${HIT_TARGET_24_CLUSTER} flex-shrink-0 opacity-0 pointer-events-none max-w-0 overflow-hidden transition-opacity duration-150 group-hover:opacity-100 group-hover:pointer-events-auto group-hover:max-w-none group-hover:overflow-visible focus-within:opacity-100 focus-within:pointer-events-auto focus-within:max-w-none focus-within:overflow-visible`}
         >
           {/* Folder icon — reveals this workspace's cwd in the OS file manager. */}
           <button
