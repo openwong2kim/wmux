@@ -810,9 +810,12 @@ export function removeHooks(paths: SetupHooksPaths): RemoveOutcome {
 /** Feature-oriented status entry: what the user cares about ("does the approval
  *  card work?"), not which hook event name is registered. */
 export interface HookFeatureStatus {
-  /** 'ok' when the hook(s) backing this feature are installed, 'off' otherwise. */
-  state: 'ok' | 'off';
-  /** Human-readable explanation; includes the fix command when state is 'off'. */
+  /** 'ok' when the hook(s) backing this feature are installed, 'off' when they
+   *  are not, 'stale' when an installed marketplace plugin OWNS them but is too
+   *  old to register them — the feature is off, and `wmux setup-hooks` is the
+   *  wrong fix for it (the plugin path deliberately removes wmux's own hooks). */
+  state: 'ok' | 'off' | 'stale';
+  /** Human-readable explanation; includes the fix command when not 'ok'. */
   detail: string;
 }
 
@@ -858,16 +861,18 @@ export interface StatusOutcome {
 }
 
 /**
- * Best-effort detection of the `wmux-claude-integration` marketplace plugin.
- * Claude Code stores installed plugins under `~/.claude/plugins/`. We only need
- * a heuristic for the double-signal warning, so a directory-name match is enough.
+ * Locate the installed `wmux-claude-integration` marketplace plugin's directory.
+ * Claude Code stores installed plugins under `~/.claude/plugins/`, but the shape
+ * below that (marketplace name, cache layout) is Claude Code's business and has
+ * changed before — so this walks for the directory NAME rather than assuming a
+ * path. Returns null when nothing matches.
  */
-function detectPluginInstalled(settingsPath: string): boolean {
+function findInstalledPluginDir(settingsPath: string): string | null {
   // settingsPath is `<claudeDir>/settings.json`; the plugins live next to it.
   const claudeDir = path.dirname(settingsPath);
   const pluginsDir = path.join(claudeDir, 'plugins');
   try {
-    if (!fs.existsSync(pluginsDir)) return false;
+    if (!fs.existsSync(pluginsDir)) return null;
     const stack = [pluginsDir];
     let depth = 0;
     while (stack.length > 0 && depth < 5000) {
@@ -881,14 +886,62 @@ function detectPluginInstalled(settingsPath: string): boolean {
       }
       for (const e of entries) {
         if (!e.isDirectory()) continue;
-        if (e.name === 'wmux-claude-integration') return true;
+        if (e.name === WMUX_PLUGIN_MARKER) return path.join(cur, e.name);
         stack.push(path.join(cur, e.name));
       }
     }
   } catch {
-    return false;
+    return null;
   }
-  return false;
+  return null;
+}
+
+/**
+ * Best-effort detection of the `wmux-claude-integration` marketplace plugin.
+ * We only need a heuristic for the double-signal warning, so a directory-name
+ * match is enough.
+ */
+function detectPluginInstalled(settingsPath: string): boolean {
+  return findInstalledPluginDir(settingsPath) !== null;
+}
+
+/** The version string in the installed plugin's manifest, or null when the
+ *  plugin, its manifest, or the field is missing/unreadable. */
+function readInstalledPluginVersion(settingsPath: string): string | null {
+  const dir = findInstalledPluginDir(settingsPath);
+  if (!dir) return null;
+  for (const rel of [path.join('.claude-plugin', 'plugin.json'), 'plugin.json']) {
+    try {
+      const parsed = JSON.parse(fs.readFileSync(path.join(dir, rel), 'utf8'), safeReviver) as unknown;
+      const version = (parsed as { version?: unknown } | null)?.version;
+      if (typeof version === 'string' && version.trim()) return version.trim();
+    } catch {
+      // absent / unreadable / malformed — try the next location.
+    }
+  }
+  return null;
+}
+
+/**
+ * The plugin release that first registered `UserPromptSubmit` (turn start) and
+ * `StopFailure` (an API-error turn end). An older installed plugin still OWNS
+ * those hooks — `installHooks` removes wmux's own copies when a plugin is
+ * present — so the doctor must not report the rows it cannot deliver as `ok`.
+ */
+const PLUGIN_TURN_HOOKS_SINCE = '0.4.0';
+
+/** Numeric-segment compare, tolerant of suffixes ("0.4.0-beta.1" ≥ "0.4.0"). */
+function versionAtLeast(version: string, minimum: string): boolean {
+  const parse = (v: string): number[] =>
+    v.split('.').map((seg) => Number.parseInt(seg, 10)).map((n) => (Number.isFinite(n) ? n : 0));
+  const a = parse(version);
+  const b = parse(minimum);
+  for (let i = 0; i < Math.max(a.length, b.length); i++) {
+    const x = a[i] ?? 0;
+    const y = b[i] ?? 0;
+    if (x !== y) return x > y;
+  }
+  return true;
 }
 
 export function statusHooks(paths: SetupHooksPaths): StatusOutcome {
@@ -954,16 +1007,28 @@ export function statusHooks(paths: SetupHooksPaths): StatusOutcome {
       ? { state: 'ok', detail: okDetail }
       : { state: 'off', detail: offDetail };
   };
+  // An installed plugin OWNS the hooks it registers — `installHooks` removes
+  // wmux's own settings.json copies when it detects one — so a plugin too old to
+  // register the turn hooks turns those features silently OFF, and `wmux
+  // setup-hooks` is the wrong fix for it. Read the manifest and say so instead.
+  // An unreadable version stays `ok`: the plugin layout is Claude Code's to
+  // change, and reporting every install as stale because our path guess missed
+  // would be worse than the bug.
+  const pluginVersion = pluginActive ? readInstalledPluginVersion(paths.settingsPath) : null;
+  const pluginTurnHooks =
+    pluginVersion === null || versionAtLeast(pluginVersion, PLUGIN_TURN_HOOKS_SINCE);
+  const staleDetail = (hooks: string): string =>
+    `plugin ${pluginVersion ?? '?'} is older than ${PLUGIN_TURN_HOOKS_SINCE} and registers no ${hooks}`
+    + ' — run `/plugin update` in Claude Code';
   const pluginFeatures = {
     conversationRead: pluginActive,
     approvalCard: pluginActive,
-    // Plugin >= 0.4.0 registers UserPromptSubmit. An older installed plugin is
-    // indistinguishable here (the manifest scan reads no version), which is the
-    // same best-effort contract every other plugin-managed row already has —
-    // `/plugin update` is the fix, and the detail line says which hook is meant.
-    turnStart: pluginActive,
-    turnEnd: pluginActive,
+    turnStart: pluginActive && pluginTurnHooks,
+    turnEnd: pluginActive && pluginTurnHooks,
   };
+  /** A row an INSTALLED-but-old plugin owns and cannot deliver. */
+  const staleRow = (hooks: string): HookFeatureStatus | null =>
+    pluginActive && !pluginTurnHooks ? { state: 'stale', detail: staleDetail(hooks) } : null;
   const features = {
     conversationRead: featureStatus(
       pluginFeatures.conversationRead,
@@ -982,7 +1047,7 @@ export function statusHooks(paths: SetupHooksPaths): StatusOutcome {
     // Turn START — the hook that makes the pane's `running` state precise
     // instead of a byte-rate guess. Without it the pane still works, it just
     // falls back to the activity heuristic (amber only after enough output).
-    turnStart: featureStatus(
+    turnStart: staleRow('UserPromptSubmit') ?? featureStatus(
       pluginFeatures.turnStart,
       has('UserPromptSubmit'),
       'UserPromptSubmit → pane turns running the moment a prompt is submitted',
@@ -993,7 +1058,7 @@ export function statusHooks(paths: SetupHooksPaths): StatusOutcome {
     // Stop but not StopFailure is missing turn ends — exactly what this row is
     // for. Splitting it out would let the row read `ok` while API-error turns
     // still left the pane amber.
-    turnEnd: featureStatus(
+    turnEnd: staleRow('StopFailure') ?? featureStatus(
       pluginFeatures.turnEnd,
       has('Stop') && has('StopFailure') && has('SubagentStop'),
       'Stop + StopFailure + SubagentStop → turn-end nudge',
@@ -1140,7 +1205,7 @@ function printStatus(outcome: StatusOutcome, jsonMode: boolean): void {
     ['permission gate', outcome.features.permissionGate],
   ];
   for (const [label, f] of featureRows) {
-    const tag = f.state === 'ok' ? 'OK ' : 'OFF';
+    const tag = f.state === 'ok' ? 'OK ' : f.state === 'stale' ? 'STALE' : 'OFF';
     console.log(`${label.padEnd(18)} ${tag}  ${f.detail}`);
   }
 

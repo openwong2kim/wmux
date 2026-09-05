@@ -38,6 +38,27 @@ function writePluginManifest(raw: string): void {
   fs.writeFileSync(manifestPath, raw, 'utf8');
 }
 
+/**
+ * Lay down a fake INSTALLED plugin directory, the way Claude Code's marketplace
+ * cache does. `version: null` writes the directory with no manifest — the shape
+ * the doctor must fail OPEN on, because the layout below `plugins/` is Claude
+ * Code's to change and a missed path guess must not report every install stale.
+ */
+function writePluginDir(version: string | null): void {
+  const dir = path.join(
+    path.dirname(settingsPath), 'plugins', 'cache', 'wmux-marketplace',
+    'wmux-claude-integration', '.claude-plugin',
+  );
+  fs.mkdirSync(dir, { recursive: true });
+  if (version !== null) {
+    fs.writeFileSync(
+      path.join(dir, 'plugin.json'),
+      JSON.stringify({ name: 'wmux-claude-integration', version }),
+      'utf8',
+    );
+  }
+}
+
 /** Build a wmux-owned hook group without invoking the installer. */
 function wmuxHookGroup(event: string, matcher?: string): {
   matcher?: string;
@@ -656,6 +677,49 @@ describe('statusHooks', () => {
     // The plugin's hooks.json ships the wide permission-gate hook too (#783).
     expect(s.features.permissionGate.state).toBe('ok');
     expect(s.features.permissionGate.detail).toContain('plugin-managed');
+  });
+
+  it('reports the turn rows STALE for a plugin older than the turn hooks', () => {
+    // The plugin OWNS these hooks — installHooks removes wmux's own copies when
+    // it detects one — so an old plugin turns the feature silently off and
+    // `wmux setup-hooks` is the wrong fix. The row has to say `/plugin update`.
+    writePluginManifest(
+      JSON.stringify({ 'wmux-claude-integration@wmux-marketplace': { version: '0.3.0' } }),
+    );
+    writePluginDir('0.3.0');
+
+    const s = statusHooks(paths());
+    expect(s.features.turnStart.state).toBe('stale');
+    expect(s.features.turnStart.detail).toContain('0.3.0');
+    expect(s.features.turnStart.detail).toContain('/plugin update');
+    expect(s.features.turnEnd.state).toBe('stale');
+    expect(s.features.turnEnd.detail).toContain('/plugin update');
+    // Everything the old plugin DOES register is untouched.
+    expect(s.features.conversationRead.state).toBe('ok');
+    expect(s.features.approvalCard.state).toBe('ok');
+  });
+
+  it('reports the turn rows OK once the plugin is new enough', () => {
+    writePluginManifest(
+      JSON.stringify({ 'wmux-claude-integration@wmux-marketplace': { version: '0.4.0' } }),
+    );
+    writePluginDir('0.4.0');
+
+    const s = statusHooks(paths());
+    expect(s.features.turnStart.state).toBe('ok');
+    expect(s.features.turnStart.detail).toContain('plugin-managed');
+    expect(s.features.turnEnd.state).toBe('ok');
+  });
+
+  it('fails open when the installed plugin carries no readable version', () => {
+    writePluginManifest(
+      JSON.stringify({ 'wmux-claude-integration@wmux-marketplace': { version: '9.9.9' } }),
+    );
+    writePluginDir(null);
+
+    const s = statusHooks(paths());
+    expect(s.features.turnStart.state).toBe('ok');
+    expect(s.features.turnEnd.state).toBe('ok');
   });
 
   it('does not count an explicitly disabled plugin without manual hooks', () => {
