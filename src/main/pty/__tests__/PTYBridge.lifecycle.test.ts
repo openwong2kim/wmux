@@ -48,7 +48,8 @@ vi.mock('../../notification/rendererNotificationReadiness', () => ({
 
 import { PTYBridge } from '../PTYBridge';
 import type { PTYManager, PTYInstance } from '../PTYManager';
-import type { HookSignalRouter } from '../../hooks/HookSignalRouter';
+import { HookSignalRouter } from '../../hooks/HookSignalRouter';
+import type { SignalLatencyMeter } from '../../../shared/hooks/SignalLatencyMeter';
 import { eventBus } from '../../events/EventBus';
 import { markResize, clearPty as clearSuppression, RESIZE_REDRAW_GUARD_MS } from '../../notification/idleSuppression';
 
@@ -253,6 +254,53 @@ describe('PTYBridge — agent.lifecycle EventBus tee (detector source)', () => {
       expect.anything(),
       expect.objectContaining({ ptyId: 'pty-1', agentName: 'Claude Code', agentSlug: 'claude' }),
     );
+  });
+
+  it('a fresh Claude session sitting at its prompt is not "needs you" (live finding, Claude Code 2.1.236)', () => {
+    // The real router, not the stub: the bug lived in the predicate. Right
+    // after `claude` starts, the bridge has sent SessionStart and nothing
+    // else, and the footer it paints ("bypass permissions on") is the same
+    // chrome the detector reads as "Ready for input" — so the sidebar showed
+    // the red dot and the titlebar said "1 need you" before the operator had
+    // typed a single character. Since #1224 the hook owns turn start too, so
+    // 'waiting' is withheld from the first bridge signal on.
+    const router = new HookSignalRouter({
+      latencyMeter: { recordSignal: vi.fn() } as unknown as SignalLatencyMeter,
+    });
+    router.touchAuthority('pty-1', 'claude', Date.now(), true, 'agent.session_start');
+    const { proc } = makeBridge({ workspaceId: 'ws-a', hookRouter: router });
+
+    proc.emitData('Claude Code\n');
+    proc.emitData('  bypass permissions on\n');
+    proc.emitData('  shift+tab to cycle\n');
+    flush();
+
+    const statusCalls = mocks.broadcastMetadataUpdate.mock.calls.filter(
+      (c) => (c[1] as { agentStatus?: string }).agentStatus === 'waiting',
+    );
+    expect(statusCalls).toHaveLength(0);
+  });
+
+  it('a fresh governed session still reports a real approval prompt — awaiting_input has no hook', () => {
+    const router = new HookSignalRouter({
+      latencyMeter: { recordSignal: vi.fn() } as unknown as SignalLatencyMeter,
+    });
+    router.touchAuthority('pty-1', 'claude', Date.now(), true, 'agent.session_start');
+    const { proc } = makeBridge({ workspaceId: 'ws-a', hookRouter: router });
+
+    proc.emitData('Claude Code\n');
+    proc.emitData('  bypass permissions on\n'); // #850: compound gate needs prompt evidence
+    proc.emitData('Do you want to proceed?\n');
+    flush();
+
+    expect(mocks.broadcastMetadataUpdate).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ ptyId: 'pty-1', agentStatus: 'awaiting_input' }),
+    );
+    const approvals = mocks.sendNotification.mock.calls.filter(
+      ([, , payload]) => payload?.category === 'approval',
+    );
+    expect(approvals.length).toBeGreaterThan(0);
   });
 
   it('#935: an UNGOVERNED pane keeps the detector status — no hook bridge means the detector is still the backstop', () => {

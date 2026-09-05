@@ -505,6 +505,10 @@ export class PTYBridge {
         // 'waiting' onto a working pane's roster row and into "N need you".
         // Identity (name/slug) still rides every event — only the lifecycle
         // status is withheld.
+        // Live finding (Claude Code 2.1.236): that footer is up before the
+        // session has done anything, so a `claude` that had just started and
+        // was sitting at its prompt read as "1 need you". `waiting` is now
+        // withheld from the first bridge signal on, SessionStart included.
         const withholdStatus = hookRouter?.governsDetectorStatus(ptyId, slug, status) === true;
         broadcastMetadataUpdate(win, {
           ptyId,

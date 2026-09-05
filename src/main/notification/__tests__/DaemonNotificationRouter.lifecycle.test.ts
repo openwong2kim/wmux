@@ -12,7 +12,8 @@
 // the workspace.list resolution path; this file focuses on dispatch shape.
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import type { DaemonClient } from '../../DaemonClient';
-import type { HookSignalRouter } from '../../hooks/HookSignalRouter';
+import { HookSignalRouter } from '../../hooks/HookSignalRouter';
+import type { SignalLatencyMeter } from '../../../shared/hooks/SignalLatencyMeter';
 import { eventBus } from '../../events/EventBus';
 
 vi.mock('electron', () => ({ BrowserWindow: class {} }));
@@ -301,6 +302,61 @@ describe('DaemonNotificationRouter — detector lifecycle tee (awaiting_input)',
         (c) => (c[1] as { agentStatus?: string }).agentStatus === 'waiting',
       );
       expect(statusCalls).toHaveLength(0);
+    } finally {
+      nr.stop();
+    }
+  });
+
+  it('daemon twin: a fresh Claude session at its prompt is not "needs you" (live finding, Claude Code 2.1.236)', async () => {
+    // The real router, so the predicate itself is under test: the bridge has
+    // sent SessionStart and nothing else, and the detector is reading the
+    // footer that Claude paints before any turn exists. That was the red dot
+    // + "1 need you" on a session the operator had not yet spoken to.
+    const hookRouter = new HookSignalRouter({
+      latencyMeter: { recordSignal: vi.fn() } as unknown as SignalLatencyMeter,
+    });
+    hookRouter.touchAuthority('pty-a', 'claude', Date.now(), true, 'agent.session_start');
+    const { router: nr, captured } = makeRouter({ hookRouter });
+    try {
+      broadcastMetadataUpdateMock.mockClear();
+      captured.agent!({
+        sessionId: 'pty-a',
+        event: { agent: 'Claude Code', status: 'waiting', message: 'Ready for input' },
+      });
+      await flushMicrotasks();
+
+      const statusCalls = broadcastMetadataUpdateMock.mock.calls.filter(
+        (c) => (c[1] as { agentStatus?: string }).agentStatus === 'waiting',
+      );
+      expect(statusCalls).toHaveLength(0);
+      // Identity still rides the withheld broadcast.
+      expect(broadcastMetadataUpdateMock).toHaveBeenCalledWith(
+        null,
+        expect.objectContaining({ ptyId: 'pty-a', agentName: 'Claude Code', agentSlug: 'claude' }),
+      );
+    } finally {
+      nr.stop();
+    }
+  });
+
+  it('daemon twin: a fresh governed session still shows a real approval prompt', async () => {
+    const hookRouter = new HookSignalRouter({
+      latencyMeter: { recordSignal: vi.fn() } as unknown as SignalLatencyMeter,
+    });
+    hookRouter.touchAuthority('pty-a', 'claude', Date.now(), true, 'agent.session_start');
+    const { router: nr, captured } = makeRouter({ hookRouter });
+    try {
+      broadcastMetadataUpdateMock.mockClear();
+      captured.agent!({
+        sessionId: 'pty-a',
+        event: { agent: 'Claude Code', status: 'awaiting_input', message: 'Approval requested' },
+      });
+      await flushMicrotasks();
+
+      expect(broadcastMetadataUpdateMock).toHaveBeenCalledWith(
+        null,
+        expect.objectContaining({ ptyId: 'pty-a', agentStatus: 'awaiting_input' }),
+      );
     } finally {
       nr.stop();
     }

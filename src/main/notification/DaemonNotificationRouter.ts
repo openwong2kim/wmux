@@ -787,6 +787,13 @@ export class DaemonNotificationRouter {
         //   otherwise   → the pre-M1 fallback, where main's own authority is
         //                 the only thing that knows.
         //
+        // Live finding (Claude Code 2.1.236): the footer is up before the
+        // session has done anything, so a freshly started `claude` sitting at
+        // its prompt read as "1 need you". `governsDetectorStatus` now
+        // withholds `waiting` from the first bridge signal on (SessionStart
+        // included) — and because HookIngest stamps 'veto' through that same
+        // predicate, the arbitrated arm below inherits the fix unchanged.
+        //
         // `awaiting_input` is excluded on BOTH arms. The daemon already
         // refuses to stamp 'veto' on it (HookIngest), but that guarantee lives
         // in another process: an older daemon paired with this main would
