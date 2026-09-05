@@ -797,8 +797,17 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
     // that turn is already tracked by `turnStop`.
     if (signal.kind === 'agent.user_prompt_submit') {
       if (this.turnStop === null) {
+        // Fold a repeat into the turn already open. Two UserPromptSubmits with
+        // no Stop between them is a real sequence — the human interrupts with
+        // ESC and re-submits, and an interrupt fires no Stop — and it is ONE
+        // foreign turn, not two. Announcing it twice opened a second work row
+        // for the same turn. The stamp still refreshes: the turn is live again,
+        // so `busy`'s stale-release deadline must measure from the latest
+        // submission, not the abandoned one.
+        const alreadyOpen = this.foreignTurnOpen;
         this.foreignTurnOpen = true;
         this.foreignTurnOpenedAt = Date.now();
+        if (alreadyOpen) return;
         const prompt =
           typeof signal.payload['prompt'] === 'string'
             ? signal.payload['prompt'].trim()

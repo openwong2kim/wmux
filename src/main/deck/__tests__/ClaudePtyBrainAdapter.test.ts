@@ -1117,6 +1117,45 @@ describe('a foreign turn that could get stuck open', () => {
   });
 });
 
+describe('the foreign-turn-START notification', () => {
+  it('announces one turn per submission, and folds a repeat with no Stop between', async () => {
+    // Two UserPromptSubmits with no Stop between them is a real sequence: the
+    // human interrupts with ESC (which fires no Stop) and re-submits. It is
+    // ONE foreign turn — a second announcement opened a second work row for
+    // the same turn.
+    //
+    // It is ALSO the shape a duplicate hook delivery would take, which is why
+    // the fold is asserted rather than assumed. The brain launches with
+    // `--setting-sources project`, so the operator's own settings hooks do not
+    // load for its pty and today only one bridge fires; this test is what
+    // keeps that from being load-bearing.
+    const host = makeHost();
+    const onForeignTurnStart = vi.fn();
+    const adapter = makeAdapter(host, { onForeignTurnStart });
+    const turn = collect(adapter.send('hi'));
+    await vi.waitFor(() => expect(host.writes.length).toBeGreaterThan(0));
+    const ptyId = host.created[0].id;
+    deliverBrainPtyHookSignal(signal('agent.stop', ptyId, { agentSessionId: 'sess-1' }));
+    await turn;
+    // Our OWN turn's UserPromptSubmit is not foreign — turnStop owned it.
+    expect(onForeignTurnStart).not.toHaveBeenCalled();
+
+    deliverBrainPtyHookSignal(signal('agent.user_prompt_submit', ptyId, { payload: { prompt: 'do it' } }));
+    deliverBrainPtyHookSignal(signal('agent.user_prompt_submit', ptyId, { payload: { prompt: 'no, do it this way' } }));
+    expect(onForeignTurnStart).toHaveBeenCalledTimes(1);
+    expect(onForeignTurnStart).toHaveBeenCalledWith('do it');
+    // Still exactly one open turn, closed by exactly one Stop.
+    expect(adapter.busy).toBe(true);
+    deliverBrainPtyHookSignal(signal('agent.stop', ptyId, { agentSessionId: 'sess-2' }));
+    expect(adapter.busy).toBe(false);
+
+    // A submission AFTER the turn closed is a new turn and announces again.
+    deliverBrainPtyHookSignal(signal('agent.user_prompt_submit', ptyId, { payload: { prompt: 'next' } }));
+    expect(onForeignTurnStart).toHaveBeenCalledTimes(2);
+    adapter.dispose();
+  });
+});
+
 describe('the foreign-turn-end notification', () => {
   it('fires once when the human`s Stop closes their turn, and not for our own turns', async () => {
     const host = makeHost();
