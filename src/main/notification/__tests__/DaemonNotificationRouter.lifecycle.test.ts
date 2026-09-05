@@ -203,11 +203,13 @@ describe('DaemonNotificationRouter — detector lifecycle tee (awaiting_input)',
     }
   });
 
-  it('hook-authority veto: governed (ptyId, slug) suppresses notification, ledger write and tee', async () => {
+  it('hook-authority veto: governed (ptyId, slug) suppresses notification and ledger write, but still traces the event', async () => {
     // Daemon-mode twin of the PTYBridge veto test. While the pane's hook
-    // bridge is fresh for the same agent, the detector must not dispatch,
-    // must not write the dedup ledger (that would kill the real Stop hook),
-    // and must not tee a lifecycle event (the hook emits the canonical one).
+    // bridge is fresh for the same agent, the detector must not dispatch and
+    // must not write the dedup ledger (that would kill the real Stop hook).
+    // The tee still fires as 'internal': daemon mode is the production path,
+    // so silencing it left a pane whose bridge died after SessionStart with no
+    // turn boundary reaching any observer for the 30-minute authority TTL.
     const hookRouter = {
       recordDetector: vi.fn(),
       recordHook: vi.fn(),
@@ -230,7 +232,9 @@ describe('DaemonNotificationRouter — detector lifecycle tee (awaiting_input)',
 
       expect(vi.mocked(hookRouter.isGovernedFor)).toHaveBeenCalledWith('pty-a', 'claude');
       expect(hookRouter.recordDetector).not.toHaveBeenCalled();
-      expect(pollLifecycle()).toHaveLength(0);
+      expect(pollLifecycle()).toMatchObject([
+        { kind: 'agent.stop', source: 'detector', agent: 'claude', decision: 'internal' },
+      ]);
     } finally {
       nr.stop();
     }
@@ -272,6 +276,12 @@ describe('DaemonNotificationRouter — detector lifecycle tee (awaiting_input)',
         agentName: 'Claude Code',
         agentSlug: 'claude',
       });
+      // The status is withheld; the event is traced. This is the arm the
+      // packaged build takes, so it is the one where a dead bridge used to
+      // cost every external observer the turn boundary.
+      expect(pollLifecycle()).toMatchObject([
+        { kind: 'agent.stop', source: 'detector', decision: 'internal' },
+      ]);
     } finally {
       nr.stop();
     }
@@ -547,7 +557,7 @@ describe('DaemonNotificationRouter — M1 daemon-arbitrated events (source field
     }
   });
 
-  it('#935 decision:"veto" withholds the lifecycle status too — no dot, no toast, no tee', async () => {
+  it('#935 decision:"veto" withholds the lifecycle status too — no dot, no toast, trace only', async () => {
     // The daemon applied the hook-authority rule main used to apply locally.
     // It used to leave the status dot live, which put the detector's reading
     // of Claude's always-visible bypass footer onto the roster row and into
@@ -580,17 +590,21 @@ describe('DaemonNotificationRouter — M1 daemon-arbitrated events (source field
       );
       expect(statusCalls).toHaveLength(0);
       expect(dispatchNotificationMock).not.toHaveBeenCalled();
-      expect(pollLifecycle()).toHaveLength(0);
+      // The event still reaches external observers as a trace — see the
+      // 'internal' decision contract. No toast, no ledger, no wake.
+      expect(pollLifecycle()).toMatchObject([{ kind: 'agent.stop', decision: 'internal' }]);
       expect(hookRouter.recordDetector).not.toHaveBeenCalled();
     } finally {
       nr.stop();
     }
   });
 
-  it('decision:"internal" is treated exactly like veto — dot only, no toast, no tee', async () => {
+  it('decision:"internal" is treated exactly like veto — dot only, no toast, trace only', async () => {
     // The daemon's CompletionAlarm rejected the candidate as NOT a real turn
     // end (subagent stop, leftover background work, turn-gate miss, already
-    // announced, or a rebutted window). Main must not fan anything out.
+    // announced, or a rebutted window). Main must not fan anything out — but
+    // the trace still rides the EventBus, exactly as local mode's own alarm
+    // rejections do in PTYBridge.
     const hookRouter = stubHookRouter('emit');
     const { router: nr, captured } = makeRouter({ hookRouter });
     try {
@@ -611,7 +625,7 @@ describe('DaemonNotificationRouter — M1 daemon-arbitrated events (source field
 
       expect(broadcastMetadataUpdateMock).toHaveBeenCalled(); // dot stays live
       expect(dispatchNotificationMock).not.toHaveBeenCalled();
-      expect(pollLifecycle()).toHaveLength(0);
+      expect(pollLifecycle()).toMatchObject([{ kind: 'agent.stop', decision: 'internal' }]);
       expect(hookRouter.recordDetector).not.toHaveBeenCalled();
     } finally {
       nr.stop();
@@ -682,7 +696,7 @@ describe('DaemonNotificationRouter — M1 daemon-arbitrated events (source field
 
       expect(vi.mocked(hookRouter.isGovernedFor)).toHaveBeenCalledWith('pty-a', 'claude');
       expect(hookRouter.recordDetector).not.toHaveBeenCalled(); // vetoed
-      expect(pollLifecycle()).toHaveLength(0);
+      expect(pollLifecycle()).toMatchObject([{ kind: 'agent.stop', decision: 'internal' }]);
     } finally {
       nr.stop();
     }

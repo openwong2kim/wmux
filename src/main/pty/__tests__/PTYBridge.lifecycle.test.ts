@@ -208,12 +208,18 @@ describe('PTYBridge — agent.lifecycle EventBus tee (detector source)', () => {
     expect(pollLifecycle().length).toBeGreaterThanOrEqual(1);
   });
 
-  it('hook-authority veto: governed (ptyId, slug) suppresses detector notification, ledger write and tee', () => {
+  it('hook-authority veto: governed (ptyId, slug) suppresses the notification and the ledger write, but still traces the event', () => {
     // While the pane's hook bridge is fresh for the SAME agent, the
     // detector's footer heuristics must go fully silent on the
     // notification path: no sendNotification, no recordDetector (a ledger
     // write here would make the REAL Stop hook land as 'dedup' → silent
-    // completion), no lifecycle tee (the hook path emits the canonical one).
+    // completion).
+    //
+    // The EventBus tee is NOT silenced: a pane whose bridge died after
+    // SessionStart otherwise emitted no turn boundary at all to any external
+    // observer for the 30-minute authority TTL. It rides as 'internal' — the
+    // published "trace only, nothing fired" decision — so a consumer filtering
+    // on 'emit' (and the deck brain, which drops 'internal') is unaffected.
     const router = stubHookRouter('emit', { governed: true });
     const { proc } = makeBridge({ workspaceId: 'ws-a', hookRouter: router });
 
@@ -224,7 +230,14 @@ describe('PTYBridge — agent.lifecycle EventBus tee (detector source)', () => {
 
     expect(mocks.sendNotification).not.toHaveBeenCalled();
     expect(router.recordDetector).not.toHaveBeenCalled();
-    expect(pollLifecycle()).toHaveLength(0);
+    const events = pollLifecycle();
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      kind: 'agent.stop',
+      source: 'detector',
+      agent: 'claude',
+      decision: 'internal',
+    });
   });
 
   it('#935 REGRESSION: a governed pane never gets a detector "waiting" onto agentStatus — Claude\'s bypass footer is on screen the WHOLE turn', () => {
@@ -279,6 +292,9 @@ describe('PTYBridge — agent.lifecycle EventBus tee (detector source)', () => {
       (c) => (c[1] as { agentStatus?: string }).agentStatus === 'waiting',
     );
     expect(statusCalls).toHaveLength(0);
+    // The status is withheld; the EVENT is not. Withholding both is what left
+    // a dead-bridge pane invisible to events_poll for the authority TTL.
+    expect(pollLifecycle()).toMatchObject([{ kind: 'agent.stop', decision: 'internal' }]);
   });
 
   it('a fresh governed session still reports a real approval prompt — awaiting_input has no hook', () => {

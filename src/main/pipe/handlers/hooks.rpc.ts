@@ -421,6 +421,21 @@ const HOOK_FLOOD_LOG_INTERVAL_MS = 30_000;
 export const ACTIVITY_THROTTLE_MS = 3_000;
 
 /**
+ * How often a VETOED detector turn-end may leave an 'internal' trace on the
+ * EventBus, per (ptyId, kind). Shared by both veto sites — PTYBridge's local
+ * path and DaemonNotificationRouter's daemon path — so the trace rate cannot
+ * depend on which one serves the pane.
+ *
+ * The veto writes no ledger entry, so nothing else collapses these: Claude's
+ * status footer is on screen for the whole turn and the detector re-reads it
+ * every active cycle, which over the 30-minute authority TTL is enough to crowd
+ * the 1024-event ring on its own. One trace a minute answers the only question
+ * the trace exists for — "did anything think this pane's turn ended?" — and
+ * bounds a governed pane to ≤30 of them per authority window.
+ */
+export const VETO_TRACE_THROTTLE_MS = 60_000;
+
+/**
  * Register `hooks.signal` on the router. Must be called once at boot
  * (main/index.ts) after both the PipeServer and HookSignalRouter exist.
  *
