@@ -19,6 +19,7 @@ export const ko = {
   'sidebar.screenOffTooltip': '내장 화면만 끕니다 (외장 모니터는 유지)',
   'sidebar.screenOffAccessibility': 'wmux에 손쉬운 사용 권한을 허용해 주세요 (시스템 설정 → 개인정보 보호 및 보안 → 손쉬운 사용).',
   'sidebar.screenOffFailed': '내장 화면 전환에 실패했습니다.',
+  'sidebar.browseFolderDesc': '디스크의 아무 폴더나 선택',
 
   // Workspace
   'workspace.agentRunning': '실행 중',

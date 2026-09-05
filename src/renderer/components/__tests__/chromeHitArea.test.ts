@@ -8,18 +8,38 @@
 // This is a SOURCE scan, not a layout measurement, and deliberately so: the
 // renderer tests run under jsdom, which resolves no stylesheet and reports
 // every getBoundingClientRect() as 0x0 — it cannot tell a 24px button from a
-// 7px one. What it CAN prove is the contract: every control the audit flagged
-// declares the shared hit-area recipe, and no chrome button re-introduces a
-// sub-24 fixed size. When the recipe changes, it changes in one file.
+// 7px one. What it CAN prove is the contract, and the contract is where the
+// first cut of this work went wrong: a symmetric `-m-1.5` on every control made
+// each box 12px wider than the space it reserved, so it reached over its
+// neighbour and — the later sibling winning the pointer — the workspace row's
+// destructive close button owned the right 4px of the copy button beside it.
+//
+// So the scan discovers adopters by grepping the whole renderer for the recipe
+// names rather than reading a list someone has to remember to update, and then
+// holds them to the rules in hitArea.ts:
+//   1. no adopter re-introduces a sub-24 fixed size;
+//   2. no adopter carries a vertical or negative-left margin of its own — that
+//      belongs to the recipe, and a `mt-0.5` fighting a `-my-1.5` resolves on
+//      whichever Tailwind emits last;
+//   3. the clustered recipe is only used inside a cluster, whose gap is exactly
+//      what the members' side refunds give back, so their boxes tile.
 
 import { describe, it, expect } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
-import { HIT_TARGET_24, HIT_TARGET_24_TIGHT } from '../hitArea';
+import {
+  HIT_TARGET_24,
+  HIT_TARGET_24_ROW,
+  HIT_TARGET_24_CLUSTER,
+  HIT_TARGET_24_IN_CLUSTER,
+  CLUSTER_SIDE_REFUND_PX,
+  CLUSTER_GAP_PX,
+} from '../hitArea';
 
+const RENDERER = join(__dirname, '..', '..');
 const COMPONENTS = join(__dirname, '..');
 
-/** Every control the audit measured under 24px that this lane owns. */
+/** Every control the audit measured under 24px that this lane raised. */
 const REQUIRED: { file: string; markers: string[] }[] = [
   { file: 'Pane/SurfaceTabs.tsx', markers: ['data-surface-tab-close'] },
   { file: 'Sidebar/Sidebar.tsx', markers: ['data-sidebar-collapse'] },
@@ -29,7 +49,6 @@ const REQUIRED: { file: string; markers: string[] }[] = [
       'data-workspace-action="explorer"',
       'data-workspace-action="copy-info"',
       'data-workspace-action="close"',
-      'data-workspace-action="project-badge"',
     ],
   },
   { file: 'Sidebar/WorkspaceAgentRoster.tsx', markers: ['data-workspace-agent-roster'] },
@@ -49,17 +68,24 @@ const SIZE_EXEMPT = /workspaceColorLabelKey|workspace\.colorNone/;
 
 const read = (file: string): string => readFileSync(join(COMPONENTS, file), 'utf8');
 
-/**
- * The opening `<button …>` tag that carries `marker`. Walks forward from the
- * nearest `<button` before the marker to the first top-level `>` so a `>` inside
- * a `{…}` expression (an arrow function, a comparison) does not end the tag
- * early.
- */
-function buttonTagFor(source: string, marker: string): string {
-  const at = source.indexOf(marker);
-  expect(at, `marker not found: ${marker}`).toBeGreaterThan(-1);
-  const open = source.lastIndexOf('<button', at);
-  expect(open, `no <button before ${marker}`).toBeGreaterThan(-1);
+/** Every .tsx under src/renderer — the adopter search space. */
+function rendererSources(): string[] {
+  const out: string[] = [];
+  (function walk(dir: string) {
+    for (const entry of readdirSync(dir)) {
+      const p = join(dir, entry);
+      if (statSync(p).isDirectory()) walk(p);
+      else if (p.endsWith('.tsx')) out.push(p);
+    }
+  })(RENDERER);
+  return out;
+}
+
+/** The opening `<...>` tag containing `at`, brace-aware so a `>` inside a
+ *  `{…}` expression does not end it early. */
+function tagAround(source: string, at: number, name: string): string {
+  const open = source.lastIndexOf(`<${name}`, at);
+  expect(open, `no <${name} before offset ${at}`).toBeGreaterThan(-1);
   let depth = 0;
   for (let i = open; i < source.length; i++) {
     const c = source[i];
@@ -67,7 +93,38 @@ function buttonTagFor(source: string, marker: string): string {
     else if (c === '}') depth--;
     else if (c === '>' && depth === 0) return source.slice(open, i + 1);
   }
-  throw new Error(`unterminated <button> tag for ${marker}`);
+  throw new Error(`unterminated <${name}> tag`);
+}
+
+function buttonTagFor(source: string, marker: string): string {
+  const at = source.indexOf(marker);
+  expect(at, `marker not found: ${marker}`).toBeGreaterThan(-1);
+  return tagAround(source, at, 'button');
+}
+
+/** Every JSX tag in the renderer that adopts one of the 24px recipes. */
+function adopterTags(): { file: string; recipe: string; tag: string }[] {
+  const out: { file: string; recipe: string; tag: string }[] = [];
+  for (const path of rendererSources()) {
+    const source = readFileSync(path, 'utf8');
+    for (const m of source.matchAll(/HIT_TARGET_24(?:_ROW|_CLUSTER|_IN_CLUSTER)?\b/g)) {
+      const at = m.index ?? 0;
+      // Skip the import statement and the module that defines them.
+      if (path.endsWith('hitArea.ts')) continue;
+      const lineStart = source.lastIndexOf('\n', at) + 1;
+      if (/^\s*import\b/.test(source.slice(lineStart, at))) continue;
+      const open = source.lastIndexOf('<', at);
+      if (open === -1) continue;
+      const nameMatch = /^<([A-Za-z][\w.]*)/.exec(source.slice(open));
+      if (!nameMatch) continue;
+      out.push({
+        file: path.slice(RENDERER.length + 1),
+        recipe: m[0],
+        tag: tagAround(source, at, nameMatch[1]),
+      });
+    }
+  }
+  return out;
 }
 
 describe('chrome hit areas — the 24px pointer floor', () => {
@@ -77,7 +134,9 @@ describe('chrome hit areas — the 24px pointer floor', () => {
       const source = read(file);
       for (const marker of markers) {
         const tag = buttonTagFor(source, marker);
-        if (!/HIT_TARGET_24(_TIGHT)?\b/.test(tag)) missing.push(`${file} ${marker}`);
+        if (!/HIT_TARGET_24\b|HIT_TARGET_24_(ROW|IN_CLUSTER)\b/.test(tag)) {
+          missing.push(`${file} ${marker}`);
+        }
       }
     }
     expect(missing).toEqual([]);
@@ -88,50 +147,79 @@ describe('chrome hit areas — the 24px pointer floor', () => {
     for (const { file } of REQUIRED) {
       const source = read(file);
       for (const m of source.matchAll(/<button\b/g)) {
-        let depth = 0;
-        let tag = '';
-        const start = m.index ?? 0;
-        for (let i = start; i < source.length; i++) {
-          const c = source[i];
-          if (c === '{') depth++;
-          else if (c === '}') depth--;
-          if (c === '>' && depth === 0) {
-            tag = source.slice(start, i + 1);
-            break;
-          }
-        }
-        // `w-5 h-5` / `w-4 h-4` / `w-3 h-3` are 20 / 16 / 12px squares.
+        const tag = tagAround(source, m.index ?? 0, 'button');
         if (SIZE_EXEMPT.test(tag)) continue;
+        // `w-5 h-5` / `w-4 h-4` / `w-3 h-3` are 20 / 16 / 12px squares.
         if (/\bw-[1-5]\s+h-[1-5]\b/.test(tag)) offenders.push(`${file}: ${tag.slice(0, 80)}`);
       }
     }
     expect(offenders).toEqual([]);
   });
 
-  it('keeps both recipes at a real 24px box', () => {
-    for (const recipe of [HIT_TARGET_24, HIT_TARGET_24_TIGHT]) {
+  it('keeps every recipe at a real 24px box', () => {
+    for (const recipe of [
+      HIT_TARGET_24,
+      HIT_TARGET_24_ROW,
+      HIT_TARGET_24_IN_CLUSTER,
+    ]) {
       expect(recipe).toContain('min-w-[24px]');
       expect(recipe).toContain('min-h-[24px]');
     }
-    // The tight variant refunds the growth so a dense row keeps its footprint.
-    expect(HIT_TARGET_24_TIGHT).toContain('-m-1.5');
-    expect(HIT_TARGET_24).not.toContain('-m-1.5');
   });
 
-  it('leaves no margin utility on a tight control that would fight the -m', () => {
-    // `-m-1.5` and `mt-0.5` have the same specificity: whichever Tailwind emits
-    // last wins, which is not something a call site should be betting on.
-    const clashes: string[] = [];
-    for (const { file, markers } of REQUIRED) {
-      const source = read(file);
-      for (const marker of markers) {
-        const tag = buttonTagFor(source, marker);
-        if (!tag.includes('HIT_TARGET_24_TIGHT')) continue;
-        if (/\s-?m[trblxy]?-[0-9]/.test(tag.replace('-m-1.5', ''))) {
-          clashes.push(`${file} ${marker}`);
-        }
+  it('refunds width in exactly one recipe, and only against a matching gap', () => {
+    // The whole point of the review round: a horizontal refund makes the box
+    // wider than the space it reserves. Only the clustered member may do it,
+    // and only because its cluster hands the width straight back.
+    expect(HIT_TARGET_24).not.toMatch(/-m[xlr]?-/);
+    expect(HIT_TARGET_24_ROW).not.toMatch(/-m[xlr]-/);
+    expect(HIT_TARGET_24_ROW).toContain('-my-1.5');
+    expect(HIT_TARGET_24_IN_CLUSTER).toContain('-mx-1.5');
+    expect(HIT_TARGET_24_CLUSTER).toContain('gap-3');
+    // gap-3 = 12px, -mx-1.5 = 6px a side. Two neighbours give back 12px between
+    // them, so consecutive boxes meet edge to edge and never overlap.
+    expect(CLUSTER_GAP_PX).toBe(CLUSTER_SIDE_REFUND_PX * 2);
+    expect(HIT_TARGET_24_CLUSTER).toContain(`gap-${CLUSTER_GAP_PX / 4}`);
+    expect(HIT_TARGET_24_IN_CLUSTER).toContain(`-mx-${CLUSTER_SIDE_REFUND_PX / 4}`);
+  });
+
+  it('centres the taller box on the text of an items-start row', () => {
+    // A 24px box pinned to the top of an items-start row floats its glyph above
+    // the caption line it belongs to. Both row recipes carry the alignment so a
+    // call site cannot forget it (and cannot reach for `mt-*` to fake it).
+    expect(HIT_TARGET_24_ROW).toContain('self-center');
+    expect(HIT_TARGET_24_CLUSTER).toContain('self-center');
+    expect(HIT_TARGET_24_CLUSTER).toContain('items-center');
+  });
+
+  it('lets no adopter anywhere in the renderer carry its own vertical or left margin', () => {
+    // Discovered by grep, not by a list: an adopter added in another file next
+    // month is held to the same rule.
+    const tags = adopterTags();
+    expect(tags.length).toBeGreaterThan(5);
+    const offenders: string[] = [];
+    for (const { file, recipe, tag } of tags) {
+      // Strip the recipe references themselves — their margins are the recipe's.
+      const own = tag.replace(/HIT_TARGET_24(?:_ROW|_CLUSTER|_IN_CLUSTER)?/g, '');
+      // Banned: any vertical margin, any negative left margin, any all-sides or
+      // horizontal shorthand. Allowed: `-mr-*` (the tab close refunds into its
+      // own cell padding, where nothing interactive lives) and plain positive
+      // side margins.
+      const bad = own.match(/(?<![\w-])-?m(?:[tby]|[xy]|)-\d|(?<![\w-])-ml-\d|(?<![\w-])-mx-\d/g);
+      if (bad) offenders.push(`${file} (${recipe}): ${bad.join(' ')}`);
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  it('uses the clustered recipe only inside a cluster', () => {
+    const orphans: string[] = [];
+    for (const path of rendererSources()) {
+      const source = readFileSync(path, 'utf8');
+      if (!/HIT_TARGET_24_IN_CLUSTER/.test(source.replace(/^\s*import.*$/gm, ''))) continue;
+      if (!source.includes('HIT_TARGET_24_CLUSTER')) {
+        orphans.push(path.slice(RENDERER.length + 1));
       }
     }
-    expect(clashes).toEqual([]);
+    expect(orphans).toEqual([]);
   });
 });

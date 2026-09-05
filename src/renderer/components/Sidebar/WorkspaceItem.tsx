@@ -9,7 +9,7 @@ import type { TranslationKey } from '../../i18n/locales/en';
 import { AGENT_STATUS_ICON } from './agentStatusIcon';
 import { IconCopy, IconX, IconGear, IconPlay, IconPause, IconChevron, IconBell, IconFolder, IconTerminal, IconExternalLink } from '../icons';
 import { tokenAttrs } from '../../themes';
-import { HIT_TARGET_24_TIGHT } from '../hitArea';
+import { HIT_TARGET_24_CLUSTER, HIT_TARGET_24_IN_CLUSTER } from '../hitArea';
 import { buildWorkspaceMarkdown } from '../../utils/sessionInfoMarkdown';
 import { collectTerminalSurfaces, collectWorkspaceTerminalSurfaces } from '../../utils/paneTraversal';
 import { openUrlInBrowserPane } from '../../utils/browserPaneActions';
@@ -745,10 +745,17 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
                   // blue=trusted (actions available), yellow=needs review
                   // (untrusted/stale/invalid), grey=denied. Click opens the
                   // review/actions dialog for THIS workspace.
+                  // Deliberately NOT raised to 24px: this badge sits INSIDE the
+                  // name line, where a 24px box costs 15px of the column #997
+                  // fought to keep, and the horizontal refund that would have
+                  // paid for it is exactly the overlap this pass removed. The
+                  // dialog it opens has a keyboard path already (⌘K → the
+                  // project config command), so the badge is not the only way
+                  // in. Left for a pass that can restructure the name line.
                   <button
                     type="button"
                     data-workspace-action="project-badge"
-                    className={`${HIT_TARGET_24_TIGHT} text-[10px] leading-none flex-shrink-0 font-mono cursor-pointer hover:underline`}
+                    className="text-[10px] leading-none flex-shrink-0 font-mono cursor-pointer hover:underline"
                     style={{
                       color: projectState.trust === 'trusted'
                         ? 'var(--accent-blue)'
@@ -827,41 +834,60 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
           {index < 9 ? `^${index + 1}` : ''}
         </span>
 
-        {/* Folder icon — reveals this workspace's cwd in the OS file manager.
-            These three hover actions drew an 11px glyph in a 13px box; they now
-            carry a real 24px target whose extra width is refunded by the -m in
-            HIT_TARGET_24_TIGHT, so the 240px row keeps its name column. */}
-        <button
-          data-workspace-action="explorer"
-          className={`${HIT_TARGET_24_TIGHT} opacity-0 group-hover:opacity-100 text-[var(--text-subtle)] hover:text-[var(--accent-blue)] text-[10px] font-mono flex-shrink-0 transition-opacity duration-150`}
-          onClick={(e) => { e.stopPropagation(); handleOpenExplorer(); }}
-          title={t('workspace.openInExplorer', { app: fileManagerName(t) })}
-          aria-label={t('workspace.openInExplorer', { app: fileManagerName(t) })}
-        >
-          <IconFolder size={11} />
-        </button>
+        {/* Hover actions. Each drew an 11px glyph in a 13px box; each is now a
+            real 24x24 target. They sit in a cluster because three 24px boxes do
+            not fit in the 57px this row used to give them: the cluster's gap-3
+            is exactly what the members' side refunds give back, so consecutive
+            boxes TILE instead of overlapping (see hitArea.ts). That matters
+            most for the last one — with a symmetric refund and no matching gap,
+            close would have owned the right 4px of Copy, and the later sibling
+            wins the pointer.
 
-        {/* Copy session info button */}
-        <button
-          data-workspace-action="copy-info"
-          className={`${HIT_TARGET_24_TIGHT} opacity-0 group-hover:opacity-100 text-[var(--text-subtle)] hover:text-[var(--accent-blue)] text-[10px] font-mono flex-shrink-0 transition-opacity duration-150`}
-          onClick={(e) => { e.stopPropagation(); onCopyInfo(workspaceId); }}
-          title={t('workspace.copyInfo')}
-          aria-label={t('workspace.copyInfo')}
+            `pointer-events` follow visibility: the boxes are 24px tall in a
+            ~23px row, so at rest they extend a fraction past the row's edge,
+            and an invisible control must not take a click meant for the row
+            under it. `focus-within` reveals the cluster for the keyboard, which
+            could previously focus a button it could not see. */}
+        <div
+          data-workspace-actions
+          className={`${HIT_TARGET_24_CLUSTER} flex-shrink-0 opacity-0 pointer-events-none transition-opacity duration-150 group-hover:opacity-100 group-hover:pointer-events-auto focus-within:opacity-100 focus-within:pointer-events-auto`}
         >
-          <IconCopy size={11} />
-        </button>
+          {/* Folder icon — reveals this workspace's cwd in the OS file manager. */}
+          <button
+            data-workspace-action="explorer"
+            className={`${HIT_TARGET_24_IN_CLUSTER} text-[var(--text-subtle)] hover:text-[var(--accent-blue)] text-[10px] font-mono`}
+            onClick={(e) => { e.stopPropagation(); handleOpenExplorer(); }}
+            title={t('workspace.openInExplorer', { app: fileManagerName(t) })}
+            aria-label={t('workspace.openInExplorer', { app: fileManagerName(t) })}
+          >
+            <IconFolder size={11} />
+          </button>
 
-        {/* Close button — asks for confirmation first (anti-misclick). */}
-        <button
-          data-workspace-action="close"
-          className={`${HIT_TARGET_24_TIGHT} opacity-0 group-hover:opacity-100 text-[var(--text-subtle)] hover:text-[var(--accent-red)] text-[10px] font-mono flex-shrink-0 transition-opacity`}
-          onClick={(e) => { e.stopPropagation(); setMenuPos(null); setCloseConfirmPos({ x: e.clientX, y: e.clientY }); }}
-          title={t('workspace.close')}
-          aria-label={t('workspace.close')}
-        >
-          <IconX size={11} />
-        </button>
+          {/* Copy session info button */}
+          <button
+            data-workspace-action="copy-info"
+            className={`${HIT_TARGET_24_IN_CLUSTER} text-[var(--text-subtle)] hover:text-[var(--accent-blue)] text-[10px] font-mono`}
+            onClick={(e) => { e.stopPropagation(); onCopyInfo(workspaceId); }}
+            title={t('workspace.copyInfo')}
+            aria-label={t('workspace.copyInfo')}
+          >
+            <IconCopy size={11} />
+          </button>
+
+          {/* Close button — asks for confirmation first (anti-misclick). Last in
+              the cluster, at the sidebar's edge: a pointer overshooting the row
+              to the right leaves the cluster entirely instead of landing on the
+              one control here that kills a workspace. */}
+          <button
+            data-workspace-action="close"
+            className={`${HIT_TARGET_24_IN_CLUSTER} text-[var(--text-subtle)] hover:text-[var(--accent-red)] text-[10px] font-mono`}
+            onClick={(e) => { e.stopPropagation(); setMenuPos(null); setCloseConfirmPos({ x: e.clientX, y: e.clientY }); }}
+            title={t('workspace.close')}
+            aria-label={t('workspace.close')}
+          >
+            <IconX size={11} />
+          </button>
+        </div>
         </div>
         {/* Mounted only when expanded: a collapsed list would subscribe to the
             whole roster projection to render nothing. */}

@@ -17,6 +17,7 @@ export const zh = {
   'sidebar.expandTooltip': '展开侧边栏 (Ctrl+B)',
   'sidebar.unreadCount': '{count} 条未读',
   'sidebar.browseFolder': '浏览文件夹…',
+  'sidebar.browseFolderDesc': '选择磁盘上的任意文件夹',
   'sidebar.emptyWorkspace': '空',
   'sidebar.blankSinglePane': '空白单面板',
 
@@ -189,6 +190,7 @@ export const zh = {
   'surface.remoteTooltip': '远程终端 — {path}',
   'surface.remoteTerminal': '远程终端',
   'surface.closeTab': '关闭标签',
+  'surface.closeTabNamed': '关闭 {name}',
 
   // Search
   'search.placeholder': '搜索...',

@@ -25,6 +25,7 @@ export const en = {
   'sidebar.screenOffAccessibility': 'Grant Accessibility permission to wmux (System Settings → Privacy & Security → Accessibility).',
   'sidebar.screenOffFailed': 'Could not toggle the built-in display.',
   'sidebar.browseFolder': 'Browse Folder…',
+  'sidebar.browseFolderDesc': 'Choose any folder on disk',
   'sidebar.emptyWorkspace': 'Empty',
   'sidebar.blankSinglePane': 'Blank single pane',
 

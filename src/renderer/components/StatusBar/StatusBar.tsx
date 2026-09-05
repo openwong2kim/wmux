@@ -7,7 +7,7 @@ import type { Notification, Workspace } from '../../../shared/types';
 import { StatusClockUsage, StatusClockTime } from './StatusClock';
 import { selectActiveWorkspaceSummary } from '../../stores/selectors/workspaceProjections';
 import { tokenAttrs } from '../../themes';
-import { HIT_TARGET_24_TIGHT } from '../hitArea';
+import { HIT_TARGET_24 } from '../hitArea';
 import { IconGear } from '../icons';
 import { selectFleetPanes, sortFleetPanes, countNeedsAttention } from '../../stores/selectors/fleet';
 import PluginStatusBarWidgets from '../../plugins/PluginStatusBarWidgets';
@@ -245,10 +245,12 @@ export default function StatusBar() {
           type="button"
           data-statusbar-settings
           onClick={toggleSettingsPanel}
-          // The gear drew a 13px icon with no box at all. HIT_TARGET_24_TIGHT
-          // gives it the 24px floor and refunds the width, so the right cluster
-          // does not slide (it replaces the old `ml-1` — see hitArea.ts).
-          className={`${HIT_TARGET_24_TIGHT} text-[var(--text-muted)] hover:text-[var(--text-main)] transition-colors`}
+          // The gear drew a 13px icon with no box at all. Plain HIT_TARGET_24,
+          // no refund: this strip is 36px tall and right-aligned with room to
+          // spare, and a side refund here would eat half of the cluster's gap-3
+          // rhythm and reach into the clock beside it. It replaces the old
+          // `ml-1`, which the 24px box now provides on its own.
+          className={`${HIT_TARGET_24} text-[var(--text-muted)] hover:text-[var(--text-main)] transition-colors`}
           title={t('statusBar.settingsTooltip')}
           // `title` is not an accessible name here: the button's only child is
           // an inline <svg> with no <title>, so a screen reader announced it as

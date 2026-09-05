@@ -72,21 +72,27 @@ export default function DeckToggle() {
       // 20x20 was under the 24px pointer floor (WCAG 2.2 SC 2.5.8) — and this
       // is the ONLY way back to a collapsed deck, so it is the last control in
       // the app that should be hard to hit. The glyph keeps its 13px size.
-      className={`relative ${HIT_TARGET_24} rounded-[4px] text-[var(--text-muted)] hover:text-[var(--text-main)] transition-colors`}
+      className={`${HIT_TARGET_24} rounded-[4px] text-[var(--text-muted)] hover:text-[var(--text-main)] transition-colors`}
       title={accessibleName}
       aria-label={accessibleName}
       aria-expanded={visible}
       data-deck-toggle
       data-deck-signal={signal ? 'true' : 'false'}
     >
-      <span aria-hidden="true" className="text-[13px] leading-none">{glyph}</span>
-      {signal && (
-        <span
-          aria-hidden="true"
-          className="absolute -top-px -right-px w-[6px] h-[6px] rounded-full bg-[var(--accent-red)]"
-          data-deck-toggle-dot
-        />
-      )}
+      {/* The dot is anchored to the GLYPH, not to the button. The button's box
+          grew to 24px for the pointer's sake; the dot marks the arrow, and left
+          on the button it would have drifted ~5px out and up to a corner with
+          nothing under it. */}
+      <span aria-hidden="true" className="relative text-[13px] leading-none">
+        {glyph}
+        {signal && (
+          <span
+            aria-hidden="true"
+            className="absolute -top-px -right-[3px] w-[6px] h-[6px] rounded-full bg-[var(--accent-red)]"
+            data-deck-toggle-dot
+          />
+        )}
+      </span>
     </button>
   );
 }

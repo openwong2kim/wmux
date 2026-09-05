@@ -9,7 +9,7 @@ import { focusNotificationTarget, focusPaneByPtyId } from '../../hooks/useNotifi
 import { useT } from '../../hooks/useT';
 import { IconEye, IconEyeOff, IconChevron } from '../icons';
 import { FOCUS_RING } from '../focusRing';
-import { HIT_TARGET_24_TIGHT } from '../hitArea';
+import { HIT_TARGET_24_ROW } from '../hitArea';
 import { timeAgo } from '../../utils/timeAgo';
 import { AGENT_STATUS_ICON } from './agentStatusIcon';
 
@@ -182,10 +182,13 @@ function WorkspaceRosterSummary({
       // preventDefault below as the single line of defence.
       data-workspace-agent-roster
       // The chevron is 8px and the count 10px type: the control measured ~20x14.
-      // HIT_TARGET_24_TIGHT gives it a 24px box and pays the growth back with a
-      // negative margin, so the row's own height and the name column beside it
-      // are unchanged (the `mt-0.5` it replaces would have fought the -m).
-      className={`${HIT_TARGET_24_TIGHT} flex-shrink-0 gap-0.5 rounded px-0.5 text-[10px] font-mono tabular-nums text-[var(--text-muted)] transition-colors hover:text-[var(--text-sub)] ${FOCUS_RING}`}
+      // HIT_TARGET_24_ROW gives it a 24px box, refunds only the HEIGHT (so the
+      // row keeps its own) and pays the ~4px of width in full — the name column
+      // sits directly to its left, and a horizontal refund would put this box
+      // over the end of the workspace name. `self-center` rides in the recipe:
+      // the row is items-start, so a 24px box pinned to the top would float the
+      // chevron above the caption line it belongs to.
+      className={`${HIT_TARGET_24_ROW} flex-shrink-0 gap-0.5 rounded px-0.5 text-[10px] font-mono tabular-nums text-[var(--text-muted)] transition-colors hover:text-[var(--text-sub)] ${FOCUS_RING}`}
       aria-expanded={open}
       aria-controls={rosterListId(workspaceId)}
       aria-label={ariaLabel}

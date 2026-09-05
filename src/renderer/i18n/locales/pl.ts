@@ -25,6 +25,7 @@ export const pl = {
   'sidebar.screenOffAccessibility': 'Nadaj wmuxowi uprawnienie Ułatwienia dostępu (Ustawienia systemowe → Prywatność i bezpieczeństwo → Ułatwienia dostępu).',
   'sidebar.screenOffFailed': 'Nie udało się przełączyć wbudowanego ekranu.',
   'sidebar.browseFolder': 'Przeglądaj folder…',
+  'sidebar.browseFolderDesc': 'Wybierz dowolny folder na dysku',
   'sidebar.emptyWorkspace': 'Pusty',
   'sidebar.blankSinglePane': 'Pusty pojedynczy panel',
 
