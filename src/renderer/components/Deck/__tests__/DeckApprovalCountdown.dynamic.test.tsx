@@ -187,3 +187,72 @@ describe('DeckApprovalCountdown vs the Fleet approval inbox', () => {
     useStore.setState({ fleetViewVisible: false, fleetActiveTab: 'fleet' });
   });
 });
+
+// Suppression is scoped: an inbox that is open but listing nothing for THIS
+// deck has taken nothing over, and stepping aside for it would leave the
+// operator with no countdown anywhere.
+describe('DeckApprovalCountdown suppression scope', () => {
+  const record = {
+    approvalId: 'a1',
+    taskId: 't1',
+    messagePreview: '',
+    expiresAt: 31_000,
+    senderWorkspaceId: 'ws-a',
+    receiverWorkspaceId: 'ws-a',
+    cwd: null,
+  };
+
+  async function render(workspaceId: string): Promise<void> {
+    await act(async () => {
+      root.render(
+        createElement(DeckApprovalCountdown, {
+          records: [{ deadlineAt: 31_000, senderWorkspaceId: workspaceId, receiverWorkspaceId: workspaceId }],
+          workspaceId,
+          now: () => 1_000,
+        }),
+      );
+    });
+  }
+
+  afterEach(() => {
+    useStore.setState({
+      fleetViewVisible: false,
+      fleetActiveTab: 'fleet',
+      pendingExecuteApprovals: {},
+      pendingExecuteApprovalOrder: [],
+    });
+  });
+
+  it('steps aside when the open inbox lists a row for this workspace', async () => {
+    useStore.setState({
+      fleetViewVisible: true,
+      fleetActiveTab: 'approvals',
+      pendingExecuteApprovals: { a1: record },
+      pendingExecuteApprovalOrder: ['a1'],
+    });
+    await render('ws-a');
+    expect(container.querySelector('[data-deck-approval-countdown]')).toBeNull();
+  });
+
+  it('keeps the badge when the open inbox is listing somebody else', async () => {
+    useStore.setState({
+      fleetViewVisible: true,
+      fleetActiveTab: 'approvals',
+      pendingExecuteApprovals: { a1: record },
+      pendingExecuteApprovalOrder: ['a1'],
+    });
+    await render('ws-b');
+    expect(container.querySelector('[data-deck-approval-countdown]')).not.toBeNull();
+  });
+
+  it('keeps the badge when the open inbox holds only MCP prompts (no deck owns one)', async () => {
+    useStore.setState({
+      fleetViewVisible: true,
+      fleetActiveTab: 'approvals',
+      pendingExecuteApprovals: {},
+      pendingExecuteApprovalOrder: [],
+    });
+    await render('ws-a');
+    expect(container.querySelector('[data-deck-approval-countdown]')).not.toBeNull();
+  });
+});

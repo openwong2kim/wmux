@@ -79,21 +79,43 @@ export function StatusClockUsage({ isCompanyMode }: { isCompanyMode: boolean }) 
 export const MEMORY_CHIP_MIN_BYTES = 1.5 * 1024 * 1024 * 1024;
 
 /** …or this much of the footprint the window started with. */
-export const MEMORY_CHIP_GROWTH_FACTOR = 2;
+export const MEMORY_CHIP_GROWTH_FACTOR = 1.5;
+
+/**
+ * Once shown, the chip holds until the footprint drops below this fraction of
+ * the level that showed it. Without the band a footprint sitting ON the
+ * threshold flickers the chip in and out every poll — the titlebar equivalent
+ * of a blinking light, and worse than either state.
+ */
+export const MEMORY_CHIP_HYSTERESIS = 0.9;
+
+/** Poll cadence: rare while the chip is hidden, live while it is on screen. */
+export const MEMORY_POLL_HIDDEN_MS = 30_000;
+export const MEMORY_POLL_SHOWN_MS = 5_000;
+
+/**
+ * The footprint at which the chip appears: the absolute floor, or the growth
+ * rule, whichever this window reaches first. `baselineBytes` is the first
+ * reading it took (null before one has landed, so only the floor can fire).
+ */
+export function memoryChipLevel(baselineBytes: number | null): number {
+  if (baselineBytes === null || baselineBytes <= 0) return MEMORY_CHIP_MIN_BYTES;
+  return Math.min(MEMORY_CHIP_MIN_BYTES, baselineBytes * MEMORY_CHIP_GROWTH_FACTOR);
+}
 
 /**
  * Pure — the whole rule for whether the chip is worth a titlebar slot.
- * `baselineBytes` is the first reading this window took (null before one has
- * landed, in which case only the absolute floor can fire).
+ * `wasShown` carries the hysteresis: showing takes the full level, staying
+ * shown only takes MEMORY_CHIP_HYSTERESIS of it.
  */
-export function shouldShowMemoryChip(bytes: number, baselineBytes: number | null): boolean {
+export function shouldShowMemoryChip(
+  bytes: number,
+  baselineBytes: number | null,
+  wasShown = false,
+): boolean {
   if (!Number.isFinite(bytes) || bytes <= 0) return false;
-  if (bytes >= MEMORY_CHIP_MIN_BYTES) return true;
-  return (
-    baselineBytes !== null &&
-    baselineBytes > 0 &&
-    bytes > baselineBytes * MEMORY_CHIP_GROWTH_FACTOR
-  );
+  const level = memoryChipLevel(baselineBytes);
+  return bytes >= (wasShown ? level * MEMORY_CHIP_HYSTERESIS : level);
 }
 
 /** Unchanged chip text — the styling and format the strip already had. */
@@ -106,9 +128,15 @@ export function StatusClockTime() {
   const clockVisible = useStore((s) => s.titlebarClockVisible);
   const [time, setTime] = useState(() => new Date());
   const [memBytes, setMemBytes] = useState<number | null>(null);
-  // The footprint this window started with. A ref, not state: it is read to
-  // decide the chip, never to trigger a render of its own.
+  // Whether the chip is on screen. State, because it also picks the poll
+  // cadence — there is no reason to ask main for a number every 5 s while
+  // nothing is rendering it.
+  const [memShown, setMemShown] = useState(false);
+  // The footprint this window started with, and the last decision — refs
+  // because the poll reads them, it does not render them.
   const memBaseline = useRef<number | null>(null);
+  const memShownRef = useRef(false);
+  memShownRef.current = memShown;
 
   // Update clock every second — only while the clock is actually shown. An
   // interval driving a hidden node is the dead gauge's running cost.
@@ -131,19 +159,21 @@ export function StatusClockTime() {
         if (cancelled || typeof bytes !== 'number' || bytes <= 0) return;
         if (memBaseline.current === null) memBaseline.current = bytes;
         setMemBytes(bytes);
+        setMemShown(shouldShowMemoryChip(bytes, memBaseline.current, memShownRef.current));
       }).catch(() => { /* main not ready / handler swapped — keep last value */ });
     };
     update();
-    const timer = setInterval(update, 5000);
+    const timer = setInterval(update, memShown ? MEMORY_POLL_SHOWN_MS : MEMORY_POLL_HIDDEN_MS);
     return () => { cancelled = true; clearInterval(timer); };
-  }, []);
+  }, [memShown]);
 
   const timeStr = time.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
-  const showMemory = memBytes !== null && shouldShowMemoryChip(memBytes, memBaseline.current);
 
   return (
     <>
-      {showMemory && <span data-statusbar-memory>{formatMemoryChip(memBytes)}</span>}
+      {memShown && memBytes !== null && (
+        <span data-statusbar-memory>{formatMemoryChip(memBytes)}</span>
+      )}
       {clockVisible && <span data-statusbar-clock>{timeStr}</span>}
     </>
   );

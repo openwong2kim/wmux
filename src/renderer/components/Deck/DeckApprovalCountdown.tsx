@@ -18,13 +18,20 @@
 //
 // Renditions (DESIGN.md attention grammar: one event, at most TWO). The dialog
 // is one. This badge is the second — UNLESS the Fleet cockpit's Approvals tab
-// is open, which draws its own per-row countdown and is then the surface that
-// owns the prompt. In that state the badge steps aside rather than making the
-// same deadline the third thing on screen counting the same seconds down.
+// is open AND listing a row for THIS deck's workspace, which draws its own
+// countdown on that row and is then the surface that owns the prompt. In that
+// state the badge steps aside rather than making the same deadline the third
+// thing on screen counting the same seconds down. An inbox that is open but
+// listing somebody else's prompts (or only MCP prompts, which belong to no
+// deck) has taken nothing over, and the badge stays.
 
 import { useEffect, useState } from 'react';
+import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '../../stores';
-import { selectInboxOwnsApprovals } from '../../stores/selectors/approvalInbox';
+import {
+  selectInboxOwnsApprovals,
+  selectInboxWorkspaceIds,
+} from '../../stores/selectors/approvalInbox';
 import { tokenAttrs } from '../../themes';
 
 /** Below this the badge switches to the attention rendition. */
@@ -106,8 +113,16 @@ export function DeckApprovalCountdown({
   const order = useStore((s) => s.pendingExecuteApprovalOrder);
   const fleetViewVisible = useStore((s) => s.fleetViewVisible);
   const fleetActiveTab = useStore((s) => s.fleetActiveTab);
+  // A string array, shallow-compared: the inbox's own item objects are rebuilt
+  // on every read, so subscribing to them would re-render this badge on every
+  // store touch.
+  const listedWorkspaceIds = useStore(useShallow(selectInboxWorkspaceIds));
   const inboxOwns =
-    inboxOwnsApprovalsProp ?? selectInboxOwnsApprovals({ fleetViewVisible, fleetActiveTab });
+    inboxOwnsApprovalsProp ??
+    selectInboxOwnsApprovals(
+      { fleetViewVisible, fleetActiveTab },
+      { workspaceId, listedWorkspaceIds },
+    );
   const resolved =
     records ?? order.map((id) => pending[id]).filter((r): r is NonNullable<typeof r> => !!r);
   const deadlineAt = soonestApprovalDeadline(approvalsForWorkspace(resolved, workspaceId));
