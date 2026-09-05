@@ -7,7 +7,7 @@ import { createWorkspaceRosterCountsSelector } from '../../stores/selectors/work
 import { useT } from '../../hooks/useT';
 import type { TranslationKey } from '../../i18n/locales/en';
 import { AGENT_STATUS_ICON } from './agentStatusIcon';
-import { IconCopy, IconX, IconGear, IconPlay, IconPause, IconChevron, IconBell, IconFolder, IconTerminal, IconExternalLink } from '../icons';
+import { IconCopy, IconX, IconGear, IconChevron, IconBell, IconFolder, IconTerminal, IconExternalLink } from '../icons';
 import { tokenAttrs } from '../../themes';
 import { HIT_TARGET_24_CLUSTER, HIT_TARGET_24_IN_CLUSTER } from '../hitArea';
 import { buildWorkspaceMarkdown } from '../../utils/sessionInfoMarkdown';
@@ -287,6 +287,10 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
   // `metadata.agentStatus` directly only ever saw the active pane and never
   // self-healed. Scalar return → Object.is subscription re-renders only on change.
   const agentStatus = useStore((s) => selectWorkspaceAgentStatus(s, workspaceId));
+  // An agent that is blocked on the user is the one row state the design
+  // system lets us paint (DESIGN.md: the only permitted wash is the danger
+  // needs-input row). Two renditions and no more — the wash and the label.
+  const needsYou = agentStatus === 'waiting' || agentStatus === 'awaiting_input';
   // #997 — the roster's expanded state. It lives here, not in the roster,
   // because the control that toggles it now sits on THIS row while the list it
   // reveals is rendered below; the two would otherwise need to agree across a
@@ -678,7 +682,7 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
       <div
         draggable
         {...tokenAttrs('bgSurface', 'bg')}
-        className={`group sidebar-row px-3 py-1 cursor-pointer rounded-md select-none ${
+        className={`group sidebar-row px-3 py-1 cursor-pointer rounded-md select-none ${needsYou ? 'sidebar-row-needs' : ''} ${
           isActive
             ? 'sidebar-row-active text-[var(--text-main)]'
             : 'text-[var(--text-subtle)] hover:bg-[rgba(var(--bg-surface-rgb),0.5)] hover:text-[var(--text-sub)]'
@@ -835,16 +839,14 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
           />
         )}
 
-        {/* Agent status mark (play/pause), right-aligned. */}
-        {(() => {
-          const st = AGENT_STATUS_ICON[agentStatus];
-          if (!st?.mark) return null;
-          return (
-            <span className={`flex-shrink-0 mt-1 ${st.className}`} title={t(st.labelKey)}>
-              {st.mark === 'play' ? <IconPlay size={9} /> : <IconPause size={9} />}
-            </span>
-          );
-        })()}
+        {/* The blocked-agent label, right-aligned. It replaces the play/pause
+            mark this row used to carry: "running" is already the amber dot, and
+            a paused glyph never said what it was paused ON. Words do. */}
+        {needsYou && (
+          <span className="font-sans text-[10px] font-semibold text-[var(--accent-red)] flex-shrink-0 mt-0.5">
+            {t('workspace.needsYou')}
+          </span>
+        )}
 
         {/* Shortcut hint */}
         <span className="text-[10px] font-mono text-[var(--text-muted)] flex-shrink-0 mt-0.5">

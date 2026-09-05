@@ -808,6 +808,17 @@ select option {
     0 1px 3px color-mix(in srgb, var(--bg-base) 60%, transparent);
 }
 
+/* DESIGN.md, no-area-washes rule: "the only permitted wash is the danger
+ * needs-input row" — this is that row, and nothing else in the sidebar may
+ * fill an area. The :hover pair keeps the row's own hover-background utility
+ * (equal specificity, earlier in the cascade) from repainting the wash away.
+ * Declared after .sidebar-row-active so an active row that also needs you
+ * shows the danger wash rather than the neutral selection gradient. */
+.sidebar-row-needs,
+.sidebar-row-needs:hover {
+  background: color-mix(in srgb, var(--accent-red) 9%, transparent);
+}
+
 /* Status dots. Color comes from the inline background (set per status in
  * the component); these classes add the glow channel. */
 /* 성능(2026-07-17): box-shadow 반경을 애니메이션하면 매 프레임 스타일
