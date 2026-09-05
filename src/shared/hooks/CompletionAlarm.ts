@@ -303,10 +303,11 @@ export class CompletionAlarm {
 
 /**
  * Normalize a hook-bridge signal into a cue. Total: every AgentSignalKind
- * maps to something. `agent.user_prompt_submit` maps to working as
- * future-proofing — hooks.json does not register UserPromptSubmit today, so
- * prompt-arrival rebuttal rides on byte activity (session:active / PTY
- * writes) instead.
+ * maps to something. `agent.user_prompt_submit` is WORKING evidence — the turn
+ * has just begun — and now that both install paths register UserPromptSubmit
+ * it is the earliest and most precise such cue a governed pane produces. Byte
+ * activity (session:active / PTY writes) remains the backstop for panes with
+ * no bridge.
  */
 export function normalizeHookCue(signal: AgentSignal): AlarmCue {
   switch (signal.kind) {

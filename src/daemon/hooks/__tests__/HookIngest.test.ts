@@ -230,6 +230,49 @@ describe('HookIngest', () => {
     });
   });
 
+  describe('user_prompt_submit broadcast (turn start — hook-driven running)', () => {
+    it('broadcasts running immediately, stamped with its own hookKind', () => {
+      const res = ingest.handle(makeSignal({
+        ptyId: 'pty-a',
+        kind: 'agent.user_prompt_submit',
+        payload: { prompt: 'do the thing' },
+      }));
+      expect(res).toEqual({ ok: true });
+      // No byte threshold, no throttle window: one hook, one broadcast.
+      expect(fixture.emitted).toHaveLength(1);
+      const { sessionId, data } = fixture.emitted[0];
+      expect(sessionId).toBe('pty-a');
+      expect(data.status).toBe('running');
+      expect(data.agent).toBe('Claude Code');
+      expect(data.source).toBe('hook');
+      // The stamp is what lets main tell this apart from an activity ping and
+      // light the status dot rather than write a Fleet activity line.
+      expect(data.hookKind).toBe('agent.user_prompt_submit');
+      expect(data.decision).toBe('activity');
+    });
+
+    it('keeps the turn start out of the dedup ledger', () => {
+      ingest.handle(makeSignal({ ptyId: 'pty-a', kind: 'agent.user_prompt_submit' }));
+      // A ledger entry here would make this turn's own end land as 'dedup' —
+      // a silent completion on every turn.
+      expect(ingest.router.recordDetector('claude', 'agent.stop', 'pty-a', 10_000)).toBe('emit');
+    });
+
+    it('arms the turn gate so this turn’s stop can announce', () => {
+      // The alarm drops a stop on a pane it never saw work. Before the turn
+      // start was classified it fell through to the non-emit drop, and a
+      // hook-only turn (no tool calls) had no working evidence at all.
+      ingest.handle(makeSignal({ ptyId: 'pty-a', kind: 'agent.user_prompt_submit' }));
+      fixture.advance(100);
+      ingest.handle(makeSignal({ ptyId: 'pty-a', kind: 'agent.stop' }));
+      vi.advanceTimersByTime(DEFAULT_ALARM_WINDOW_MS);
+      expect(fixture.emitted.map((e) => [e.data.hookKind, e.data.decision])).toEqual([
+        ['agent.user_prompt_submit', 'activity'],
+        ['agent.stop', 'emit'],
+      ]);
+    });
+  });
+
   describe('input_answered (#770 — locally-answered AskUserQuestion expires the phone card)', () => {
     it('expires the pending request with reason answered-locally and never broadcasts', () => {
       // PC answers an AskUserQuestion directly: the bridge promotes the

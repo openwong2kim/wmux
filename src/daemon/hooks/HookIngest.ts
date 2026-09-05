@@ -429,19 +429,28 @@ function isEmitKind(kind: AgentSignalKind): kind is 'agent.stop' | 'agent.subage
  * from them locally and can't anymore once the bridge talks to the daemon
  * directly — activity feeds the Fleet "running: <tool>" line, session_start
  * CLEARS the previous session's stale activity/pendingQuestion labels when a
- * pane is reused. They share `decision:'activity'`; consumers tell them apart
- * by `hookKind`.
+ * pane is reused, and user_prompt_submit turns the pane's status dot on at the
+ * exact moment the turn starts. They share `decision:'activity'`; consumers
+ * tell them apart by `hookKind`.
  */
 function isMetadataKind(kind: AgentSignalKind): kind is
-  'agent.activity' | 'agent.session_start' | 'agent.tool_started' | 'agent.awaiting_permission' {
+  'agent.activity' | 'agent.session_start' | 'agent.tool_started'
+  | 'agent.awaiting_permission' | 'agent.user_prompt_submit' {
   // #783 — agent.tool_started (non-gated tool passed the gate hook, liveness)
   // and agent.awaiting_permission (gated tool blocked, pane STATE) are metadata-
   // only: they ride the same agent.event family tagged decision:'activity', and
   // never touch the dedup ledger (they are not turn boundaries).
+  //
+  // agent.user_prompt_submit is the TURN START, and it is metadata by exactly
+  // the same rule: pane state, no toast, no ledger. Before it was classified
+  // here it fell through to the `!isEmitKind` drop below, so the one signal
+  // that knows precisely when a turn begins produced no status at all and the
+  // pane had to wait for the byte-rate heuristic to guess.
   return kind === 'agent.activity'
     || kind === 'agent.session_start'
     || kind === 'agent.tool_started'
-    || kind === 'agent.awaiting_permission';
+    || kind === 'agent.awaiting_permission'
+    || kind === 'agent.user_prompt_submit';
 }
 
 /**

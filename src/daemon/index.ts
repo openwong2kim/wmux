@@ -4559,7 +4559,9 @@ function wireEvents(
     // rebuts an open completion window and arms the turn gate. The detected
     // agent name is the primary key; a pane with no live detection falls back
     // to the persisted lastDetectedAgent so an ungoverned agent pane still
-    // gets text-only-turn rebuttals (hooks.json has no UserPromptSubmit).
+    // gets text-only-turn rebuttals. A GOVERNED pane no longer needs this feed
+    // for that: hooks.json and `wmux setup-hooks` both register
+    // UserPromptSubmit, whose cue arms the gate at the exact turn start.
     // EXCEPT a resize repaint: a refit burst right after pty:resize is not
     // work, and letting it rebut would silently kill a real completion
     // alarm (the same class of false-negative the resize-redraw guard in

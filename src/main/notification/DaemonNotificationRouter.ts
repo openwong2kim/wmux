@@ -675,8 +675,9 @@ export class DaemonNotificationRouter {
         // broadcast per tool call — that flood is exactly what
         // ACTIVITY_THROTTLE_MS exists to prevent.
         //
-        // Two kinds land here and they are NOT interchangeable, so dispatch on
-        // the kind rather than letting the activity summarizer stand in for both.
+        // Several kinds land here and they are NOT interchangeable, so dispatch
+        // on the kind rather than letting the activity summarizer stand in for
+        // all of them.
         if (arbitratedSource(ev) && arbitratedDecision(ev) === 'activity') {
           // hookKind is the daemon's own label; the envelope's kind is the
           // fallback for an event that ships one but not the other.
@@ -700,6 +701,24 @@ export class DaemonNotificationRouter {
               ptyId: payload.sessionId,
               activity: '',
               pendingQuestion: '',
+            });
+          } else if (metadataKind === 'agent.user_prompt_submit') {
+            // The TURN START, and the whole point of the hook: the pane goes
+            // 'running' the instant a prompt is submitted, instead of once the
+            // byte-rate heuristic has seen enough output to guess. Like the
+            // session_start clear above and unlike the activity line below, it
+            // is NEVER throttled — UserPromptSubmit fires once per turn, so it
+            // can never contribute to the flood the throttle guards against,
+            // and a dropped one would leave the pane looking idle for a whole
+            // turn. It also does not stamp the throttle window.
+            const promptSlug = agentDisplayToSlug(ev.agent);
+            broadcastMetadataUpdate(win, {
+              ptyId: payload.sessionId,
+              agentStatus: 'running',
+              // Same rule as the daemon-mode running broadcast in `onActive`:
+              // an empty name is omitted rather than written, because a blank
+              // overwrite erases a legitimate label the renderer already has.
+              ...(ev.agent ? { agentName: ev.agent, agentSlug: promptSlug ?? null } : {}),
             });
           } else if (ev.signal && this.activityThrottle.allow(payload.sessionId)) {
             // agent.activity, or a kind this build does not know yet: the

@@ -703,6 +703,23 @@ export function registerHooksRpc(
       // attention window. These kinds return here, so this is their only feed
       // site on the local path.
       alarm?.observe(ptyId, signal.agent, normalizeHookCue(signal));
+      // Turn START. The daemon-unreachable twin of HookIngest's metadata-kind
+      // broadcast: a prompt submitted means this pane is working RIGHT NOW, so
+      // the status dot lights immediately instead of waiting for the byte-rate
+      // heuristic to accumulate enough output to guess. Unthrottled — the hook
+      // fires once per turn — and confined to the status funnel: still no
+      // toast, no ledger write, no lifecycle tee, exactly like every other
+      // non-emit kind that returns here.
+      if (signal.kind === 'agent.user_prompt_submit') {
+        const win = getWindow();
+        if (win) {
+          broadcastMetadataUpdate(win, {
+            ptyId,
+            agentStatus: 'running',
+            agentSlug: signal.agent,
+          });
+        }
+      }
       return { ok: true };
     }
 

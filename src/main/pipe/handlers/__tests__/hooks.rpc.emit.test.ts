@@ -661,3 +661,59 @@ describe('hooks.signal — agent.lifecycle event tee', () => {
     expect(call).not.toHaveProperty('activity');
   });
 });
+
+/**
+ * Turn START on the daemon-UNREACHABLE fallback path. The daemon owns hook
+ * ingest in production (HookIngest broadcasts the same 'running'), but this
+ * local path has to agree — a bridge that reaches main while the daemon is
+ * down must still light the pane.
+ */
+describe('hooks.signal — agent.user_prompt_submit turns the pane running', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    eventBus.reset();
+    sendToRendererMock.mockResolvedValue(workspaces());
+  });
+
+  it('broadcasts running for the resolved pane, with no toast and no ledger write', async () => {
+    const stub = stubHookRouter();
+    const router = new RpcRouter();
+    registerHooksRpc(router, () => fakeWindow(), stub.router);
+
+    const res = await router.dispatch({
+      id: 'ups-1',
+      method: 'hooks.signal',
+      params: signal({ kind: 'agent.user_prompt_submit' }) as unknown as Record<string, unknown>,
+    });
+
+    expect(res.ok).toBe(true);
+    expect(broadcastMetadataUpdateMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ ptyId: 'pty-1', agentStatus: 'running', agentSlug: 'claude' }),
+    );
+    // Not a turn boundary: no toast, no dedup ledger entry, no lifecycle tee.
+    expect(sendNotificationMock).not.toHaveBeenCalled();
+    expect(stub.recordHookCalls).toHaveLength(0);
+    expect(pollLifecycle()).toHaveLength(0);
+  });
+
+  it('marks the pane hook-governed, so the byte heuristic can stand down', async () => {
+    const stub = stubHookRouter();
+    const router = new RpcRouter();
+    registerHooksRpc(router, () => fakeWindow(), stub.router);
+
+    await router.dispatch({
+      id: 'ups-2',
+      method: 'hooks.signal',
+      params: signal({ kind: 'agent.user_prompt_submit' }) as unknown as Record<string, unknown>,
+    });
+
+    expect(stub.router.touchAuthority).toHaveBeenCalledWith(
+      'pty-1',
+      'claude',
+      expect.any(Number),
+      expect.any(Boolean),
+      'agent.user_prompt_submit',
+    );
+  });
+});
