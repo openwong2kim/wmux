@@ -20,6 +20,17 @@
   process died. wmux now registers `StopFailure` too, and reports the failed
   turn as its own notification rather than as "Task finished".
 
+- **A pane settles the moment its shell is back at its prompt.** wmux reads
+  your shell's integration markers, and a shell that has drawn its prompt again
+  cannot have an agent working in it — so the agent you exited, or one that
+  died on a network error with no turn end at all, stops sitting there lit.
+  This is the settle that does not need wmux to identify the process that died,
+  which is why it fires where the others cannot. `StopFailure` is registered on
+  both install paths, but Claude Code does not always emit it — a turn that
+  fails on "API Error: Connection refused" after its last retry ends with no
+  hook — and panes whose shell emits no markers are unaffected: they keep the
+  settle paths they already had. A finished turn keeps its result either way.
+
 ### Fixed
 
 - **A pane whose agent died without a Stop now settles to idle.** An agent
@@ -30,6 +41,11 @@
   30 minutes after its last hook signal. A turn that has already *finished*
   keeps its result: an agent exiting after its turn ended no longer wipes the
   "finished" or "needs you" state you had not read yet.
+
+- **The sidebar roster no longer contradicts the dot above it.** A workspace
+  row could show a running agent while its own roster row called the same pane
+  "Idle": the row aged the turn out after two quiet minutes, which is exactly
+  what a long, silent turn looks like. Both now read the same open turn.
 
 - **A pane that changes agents no longer inherits the previous one's status.**
   Starting `codex` in a pane where `claude` had exited mid-turn left the new
