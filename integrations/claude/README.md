@@ -2,8 +2,8 @@
 
 A Claude Code plugin that turns wmux's heuristic agent detector into a
 deterministic notification source. When installed, every `UserPromptSubmit`,
-`Stop`, `SubagentStop`, `SessionStart`, and (optionally) `PostToolUse` event from
-Claude Code is delivered to wmux via its native auth-protected named pipe,
+`Stop`, `StopFailure`, `SubagentStop`, `SessionStart`, and (optionally)
+`PostToolUse` event from Claude Code is delivered to wmux via its native auth-protected named pipe,
 deduplicated against the legacy regex detector, and fanned out to wmux's
 toast / sound / ring / taskbar-flash channels with sub-200ms latency.
 
@@ -86,8 +86,8 @@ Both things the wide hook does need a web surface to be worth anything:
   and is a no-op with no server running.
 
 So a terminal-only operator pays the spawn for neither. `--signals-only`
-installs the turn-boundary signals (`UserPromptSubmit` / `Stop` / `SubagentStop` /
-`SessionStart`)
+installs the turn-boundary signals (`UserPromptSubmit` / `Stop` / `StopFailure` /
+`SubagentStop` / `SessionStart`)
 and the `AskUserQuestion` approval pair, and nothing else — no wmux hook then
 runs per tool call. Remote approvals stop working until `--with-gate` puts the
 gate back, and `wmux web --allow-input` says so on startup rather than leaving
@@ -142,7 +142,7 @@ sendNotification → renderer → toast / sound / ring / taskbar flash
 ## Files
 
 - `.claude-plugin/plugin.json` — plugin manifest
-- `hooks/hooks.json` — hook registrations (7 entries)
+- `hooks/hooks.json` — hook registrations (8 entries)
 - `bin/wmux-bridge.mjs` — bridge executor (self-contained Node script)
 - `marketplace.json` — marketplace listing
 - `README.md` — this file

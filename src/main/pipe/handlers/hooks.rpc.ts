@@ -1352,6 +1352,11 @@ function titleFor(signal: AgentSignal): string {
       return `${display}: Permission answered`;
     case 'agent.tool_started':
       return `${display}: Running a tool`;
+    // A turn end, but never a completion — the wording has to say so, because
+    // "Task finished" on a turn the API killed is the exact lie this kind
+    // exists to stop telling.
+    case 'agent.stop_failure':
+      return `${display}: Turn failed (API error)`;
   }
 }
 
@@ -1371,7 +1376,10 @@ function categoryFor(signal: AgentSignal): NotificationCategory {
     // rides the same mute category as an approval.
     case 'agent.awaiting_permission':
       return 'approval';
+    // `agent.stop_failure` below is a turn END, not a blocked tool call: it
+    // rides the turn category the operator already mutes Stop with.
     case 'agent.stop':
+    case 'agent.stop_failure':
     case 'agent.activity':
     case 'agent.session_start':
     case 'agent.input_answered':
@@ -1407,6 +1415,8 @@ function bodyFor(signal: AgentSignal): string {
       return 'Tool permission resolved';
     case 'agent.tool_started':
       return 'Tool call started';
+    case 'agent.stop_failure':
+      return 'The turn ended on an API error';
   }
 }
 

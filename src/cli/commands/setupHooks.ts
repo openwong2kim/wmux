@@ -60,8 +60,13 @@ GLOBAL FLAGS
  *  with the 2026-07-13 decision that removed the matcher:'' PostToolUse hook:
  *  that removal was about a ~110 ms node bridge PER TOOL CALL, and
  *  UserPromptSubmit fires exactly ONCE per turn — the same cost class as Stop,
- *  which has always been installed. */
-const HOOK_EVENTS = ['Stop', 'SubagentStop', 'SessionStart', 'UserPromptSubmit'] as const;
+ *  which has always been installed.
+ *
+ *  `StopFailure` is the other half of that turn: Claude Code fires it INSTEAD
+ *  of `Stop` when the turn ends on an API error, so a pane the turn-start hook
+ *  lit had no turn-end signal at all on that path and kept its amber dot until
+ *  the agent process died. Same once-per-turn cost class. */
+const HOOK_EVENTS = ['Stop', 'StopFailure', 'SubagentStop', 'SessionStart', 'UserPromptSubmit'] as const;
 
 /**
  * AskUserQuestion-scoped hook pair that drives the in-app approval card:
@@ -983,11 +988,16 @@ export function statusHooks(paths: SetupHooksPaths): StatusOutcome {
       'UserPromptSubmit → pane turns running the moment a prompt is submitted',
       `UserPromptSubmit missing → run \`${FIX}\``,
     ),
+    // StopFailure joins the row rather than getting one of its own: it is the
+    // same turn end reported over a different hook, and an install that has
+    // Stop but not StopFailure is missing turn ends — exactly what this row is
+    // for. Splitting it out would let the row read `ok` while API-error turns
+    // still left the pane amber.
     turnEnd: featureStatus(
       pluginFeatures.turnEnd,
-      has('Stop') && has('SubagentStop'),
-      'Stop + SubagentStop → turn-end nudge',
-      `Stop/SubagentStop missing → run \`${FIX}\``,
+      has('Stop') && has('StopFailure') && has('SubagentStop'),
+      'Stop + StopFailure + SubagentStop → turn-end nudge',
+      `Stop/StopFailure/SubagentStop missing → run \`${FIX}\``,
     ),
     // #783 — the gate ships with its own wide PreToolUse hook, so this is a
     // real install state now, not a placeholder. It arms only while an

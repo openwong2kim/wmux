@@ -88,6 +88,10 @@ const HOOK_TO_KIND = {
   // ordinary pane goes 'running' the moment a prompt is submitted instead of
   // after the byte-rate heuristic has seen enough output.
   UserPromptSubmit: 'agent.user_prompt_submit',
+  // Turn END on an API error. Claude Code fires this INSTEAD of Stop when the
+  // turn dies that way, so without it a hook-governed pane keeps the amber dot
+  // its UserPromptSubmit lit until the agent process exits.
+  StopFailure: 'agent.stop_failure',
 };
 
 // Determine the signal kind for a PostToolUse hook. AskUserQuestion completing

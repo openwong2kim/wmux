@@ -79,7 +79,7 @@ describe('installHooks', () => {
     expect(outcome.ok).toBe(true);
     expect(outcome.error).toBeNull();
     expect(outcome.events.sort()).toEqual(
-      ['PostToolUse', 'PreToolUse', 'PreToolUse', 'SessionStart', 'Stop', 'SubagentStop', 'UserPromptSubmit'],
+      ['PostToolUse', 'PreToolUse', 'PreToolUse', 'SessionStart', 'Stop', 'StopFailure', 'SubagentStop', 'UserPromptSubmit'],
     );
     expect(fs.existsSync(bridgeDest)).toBe(true);
     expect(fs.readFileSync(bridgeDest, 'utf8')).toBe('BRIDGE_CONTENT_V1\n');
@@ -88,7 +88,7 @@ describe('installHooks', () => {
     const hooks = s.hooks as Record<string, unknown[]>;
     // Event KEYS (PreToolUse carries two groups: the gate + AskUserQuestion).
     expect(Object.keys(hooks).sort()).toEqual(
-      ['PostToolUse', 'PreToolUse', 'SessionStart', 'Stop', 'SubagentStop', 'UserPromptSubmit'],
+      ['PostToolUse', 'PreToolUse', 'SessionStart', 'Stop', 'StopFailure', 'SubagentStop', 'UserPromptSubmit'],
     );
     // Each entry references the stable dest path, NOT the source/install dir.
     const stop = hooks.Stop[0] as { hooks: { command: string }[] };
@@ -154,7 +154,7 @@ describe('installHooks', () => {
     installHooks(paths());
 
     const hooks = readSettings().hooks as Record<string, unknown[]>;
-    for (const event of ['Stop', 'SubagentStop', 'SessionStart', 'UserPromptSubmit', 'PreToolUse', 'PostToolUse']) {
+    for (const event of ['Stop', 'StopFailure', 'SubagentStop', 'SessionStart', 'UserPromptSubmit', 'PreToolUse', 'PostToolUse']) {
       const wmuxGroups = (hooks[event] as { hooks: { command: string }[] }[]).filter((g) =>
         g.hooks.some((h) => h.command.includes('wmux-bridge.mjs')),
       );
@@ -249,7 +249,7 @@ describe('installHooks — plugin-aware', () => {
     const outcome = installHooks(paths());
     expect(outcome.ok).toBe(true);
     expect(outcome.pluginDetected).toBe(true);
-    expect(outcome.removedForPlugin).toBe(7);
+    expect(outcome.removedForPlugin).toBe(8);
     expect(outcome.events).toEqual([]);
 
     // No wmux command remains; both foreign hooks are preserved.
@@ -269,10 +269,10 @@ describe('installHooks — plugin-aware', () => {
     const outcome = installHooks(paths());
     expect(outcome.ok).toBe(true);
     expect(outcome.pluginDetected).toBe(false);
-    expect(outcome.events.sort()).toEqual(['PostToolUse', 'PreToolUse', 'PreToolUse', 'SessionStart', 'Stop', 'SubagentStop', 'UserPromptSubmit']);
+    expect(outcome.events.sort()).toEqual(['PostToolUse', 'PreToolUse', 'PreToolUse', 'SessionStart', 'Stop', 'StopFailure', 'SubagentStop', 'UserPromptSubmit']);
     const hooks = readSettings().hooks as Record<string, unknown[]>;
     expect(Object.keys(hooks).sort()).toEqual(
-      ['PostToolUse', 'PreToolUse', 'SessionStart', 'Stop', 'SubagentStop', 'UserPromptSubmit'],
+      ['PostToolUse', 'PreToolUse', 'SessionStart', 'Stop', 'StopFailure', 'SubagentStop', 'UserPromptSubmit'],
     );
   });
 
@@ -281,7 +281,7 @@ describe('installHooks — plugin-aware', () => {
     const outcome = installHooks(paths());
     expect(outcome.ok).toBe(true);
     expect(outcome.pluginDetected).toBe(false);
-    expect(outcome.events.sort()).toEqual(['PostToolUse', 'PreToolUse', 'PreToolUse', 'SessionStart', 'Stop', 'SubagentStop', 'UserPromptSubmit']);
+    expect(outcome.events.sort()).toEqual(['PostToolUse', 'PreToolUse', 'PreToolUse', 'SessionStart', 'Stop', 'StopFailure', 'SubagentStop', 'UserPromptSubmit']);
     expect(allHookCommands().some((c) => c.includes('wmux-bridge.mjs'))).toBe(true);
   });
 
@@ -310,7 +310,7 @@ describe('installHooks — plugin-aware', () => {
     const outcome = installHooks(paths());
     expect(outcome.ok).toBe(true);
     expect(outcome.pluginDetected).toBe(false);
-    expect(outcome.events.sort()).toEqual(['PostToolUse', 'PreToolUse', 'PreToolUse', 'SessionStart', 'Stop', 'SubagentStop', 'UserPromptSubmit']);
+    expect(outcome.events.sort()).toEqual(['PostToolUse', 'PreToolUse', 'PreToolUse', 'SessionStart', 'Stop', 'StopFailure', 'SubagentStop', 'UserPromptSubmit']);
     expect(allHookCommands().some((c) => c.includes('wmux-bridge.mjs'))).toBe(true);
     // The user's enabledPlugins map is preserved untouched.
     expect((readSettings().enabledPlugins as Record<string, unknown>)[
@@ -354,7 +354,7 @@ describe('removeHooks', () => {
 
     const outcome = removeHooks(paths());
     expect(outcome.ok).toBe(true);
-    expect(outcome.removed).toBe(7);
+    expect(outcome.removed).toBe(8);
 
     const s = readSettings();
     expect(s.model).toBe('opus');
@@ -474,7 +474,7 @@ describe('statusHooks', () => {
     // installedEvents is a deduped event list, so PreToolUse appears once even
     // though it carries two wmux groups.
     expect(s.installedEvents.sort()).toEqual(
-      ['PostToolUse', 'PreToolUse', 'SessionStart', 'Stop', 'SubagentStop', 'UserPromptSubmit'],
+      ['PostToolUse', 'PreToolUse', 'SessionStart', 'Stop', 'StopFailure', 'SubagentStop', 'UserPromptSubmit'],
     );
     expect(s.bridgeExists).toBe(true);
     expect(s.bridgeStale).toBe(false);
@@ -500,6 +500,29 @@ describe('statusHooks', () => {
     expect(s.features.turnStart.detail).toContain('wmux setup-hooks');
     // The other features are unaffected — this is one hook, not a broken install.
     expect(s.features.turnEnd.state).toBe('ok');
+  });
+
+  // A turn that dies on an API error fires StopFailure and no Stop. An install
+  // that carries Stop but not StopFailure therefore has a whole class of turn
+  // end with no signal, and the doctor must say so on the turn-end row rather
+  // than report it green.
+  it('reports the turn-end signal as off when StopFailure is absent', () => {
+    installHooks(paths());
+    const settings = readSettings();
+    delete (settings.hooks as Record<string, unknown>)['StopFailure'];
+    fs.writeFileSync(settingsPath, JSON.stringify(settings), 'utf8');
+    const s = statusHooks(paths());
+    expect(s.features.turnEnd.state).toBe('off');
+    expect(s.features.turnEnd.detail).toContain('StopFailure');
+    // One missing hook, not a broken install.
+    expect(s.features.turnStart.state).toBe('ok');
+  });
+
+  it('names StopFailure on the turn-end row once it is installed', () => {
+    installHooks(paths());
+    const s = statusHooks(paths());
+    expect(s.features.turnEnd.state).toBe('ok');
+    expect(s.features.turnEnd.detail).toContain('StopFailure');
   });
 
   it('flags a stale bridge when the copy differs from source', () => {
@@ -603,6 +626,7 @@ describe('statusHooks', () => {
         hooks: {
           SessionStart: [wmuxHookGroup('SessionStart')],
           Stop: [wmuxHookGroup('Stop', 'ignored-by-Claude-Code')],
+          StopFailure: [wmuxHookGroup('StopFailure')],
           SubagentStop: [wmuxHookGroup('SubagentStop', '*')],
         },
       }),
@@ -991,6 +1015,12 @@ describe('bundled hooks.json ↔ setup-hooks parity', () => {
 
   it('registers UserPromptSubmit at matcher:"" in the plugin manifest', () => {
     const groups = bundledEvents()['UserPromptSubmit'];
+    expect(groups).toBeDefined();
+    expect(groups.some((g) => g.matcher === '')).toBe(true);
+  });
+
+  it('registers StopFailure at matcher:"" in the plugin manifest', () => {
+    const groups = bundledEvents()['StopFailure'];
     expect(groups).toBeDefined();
     expect(groups.some((g) => g.matcher === '')).toBe(true);
   });
