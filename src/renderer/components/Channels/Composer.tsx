@@ -738,7 +738,7 @@ export function ComposerContent({
                 <span className="text-[var(--accent-blue)]" aria-hidden="true">@</span>
                 <span className="truncate">{c.displayName}</span>
                 {c.displayName !== c.insertToken && (
-                  <span className="ml-auto pl-2 text-[9px] opacity-60 truncate">{c.insertToken}</span>
+                  <span className="ml-auto pl-2 text-[10px] opacity-60 truncate">{c.insertToken}</span>
                 )}
               </button>
             ))}
@@ -797,7 +797,7 @@ export function ComposerContent({
       {targetHints.length > 0 && (
         <div
           data-channel-mention-hint
-          className="flex flex-col gap-0.5 text-[9px] font-mono text-[var(--text-muted)]"
+          className="flex flex-col gap-0.5 text-[10px] font-mono text-[var(--text-muted)]"
           {...tokenAttrs('textMuted', 'text')}
         >
           {targetHints.map((h) => (

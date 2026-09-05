@@ -144,7 +144,7 @@ export function ChannelMembersView({
           style={{ border: '1px solid var(--border-soft)' }}
           {...tokenAttrs('bgSurface', 'bg')}
         >
-          <div className="px-3 py-1 text-[9px] font-mono uppercase tracking-widest text-[var(--text-muted)]" {...tokenAttrs('textMuted', 'text')}>
+          <div className="px-3 py-1 text-[10px] font-mono uppercase tracking-widest text-[var(--text-muted)]" {...tokenAttrs('textMuted', 'text')}>
             {t('channels.members') || 'Members'} ({members.length})
           </div>
 
@@ -153,7 +153,7 @@ export function ChannelMembersView({
                 member workspace can read + post; the roster lists agents only
                 for attribution. */}
           <div
-            className="px-3 pb-1 text-[9px] font-mono leading-snug text-[var(--text-muted)]"
+            className="px-3 pb-1 text-[10px] font-mono leading-snug text-[var(--text-muted)]"
             data-channel-members-note
             {...tokenAttrs('textMuted', 'text')}
           >
@@ -223,7 +223,7 @@ export function ChannelMembersView({
                   {behind > 0 && (
                     <span
                       data-channel-member-behind
-                      className="flex-shrink-0 text-[9px] text-[var(--text-muted)]"
+                      className="flex-shrink-0 text-[10px] text-[var(--text-muted)]"
                       title={t('channels.memberBehindTitle') || 'Unread messages this member has not consumed (durable cursor)'}
                       {...tokenAttrs('textMuted', 'text')}
                     >
@@ -268,7 +268,7 @@ export function ChannelMembersView({
                     live agent panes one at a time and add them as first-class
                     members. Adding a workspace (the human subscription row) stays
                     the existing section below. */}
-              <div className="px-3 py-1 text-[9px] font-mono uppercase tracking-widest text-[var(--text-muted)]" {...tokenAttrs('textMuted', 'text')}>
+              <div className="px-3 py-1 text-[10px] font-mono uppercase tracking-widest text-[var(--text-muted)]" {...tokenAttrs('textMuted', 'text')}>
                 {t('channels.addAgentPane') || 'Add an agent pane'}
               </div>
               {joinablePanes.length === 0 ? (
@@ -297,7 +297,7 @@ export function ChannelMembersView({
                     passes [] because the human is one seat and agents join as
                     panes. Section removal proper rides the P6 roster rework. */}
               {joinableWorkspaces.length > 0 && (
-                <div className="px-3 py-1 text-[9px] font-mono uppercase tracking-widest text-[var(--text-muted)]" {...tokenAttrs('textMuted', 'text')}>
+                <div className="px-3 py-1 text-[10px] font-mono uppercase tracking-widest text-[var(--text-muted)]" {...tokenAttrs('textMuted', 'text')}>
                   {t('channels.addMember') || 'Add a workspace'}
                 </div>
               )}

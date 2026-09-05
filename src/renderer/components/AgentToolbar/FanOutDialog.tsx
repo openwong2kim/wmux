@@ -358,7 +358,7 @@ export default function FanOutDialog({ onClose, workspaceId, align = 'left' }: F
               </select>
             </div>
             <div
-              className="mb-1 truncate text-[9px] text-[var(--text-muted)] font-mono"
+              className="mb-1 truncate text-[10px] text-[var(--text-muted)] font-mono"
               title={`wtask/${previewSlug(titles[k] ?? '')}`}
               data-testid={`fanout-slug-${k}`}
             >

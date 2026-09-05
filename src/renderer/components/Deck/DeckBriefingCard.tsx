@@ -521,14 +521,14 @@ export function DeckBriefingCard({
           {t('deck.briefing.eyebrow') || 'Briefing'}
         </span>
         <span
-          className="text-[12.5px] text-[var(--text-main)] leading-relaxed truncate flex-1 min-w-0"
+          className="text-[13px] text-[var(--text-main)] leading-relaxed truncate flex-1 min-w-0"
           {...tokenAttrs('textMain', 'text')}
         >
           {briefingHeadline(briefing, t)}
         </span>
         <span
           aria-hidden="true"
-          className="text-[9px] font-mono opacity-70 text-[var(--text-muted)] shrink-0 group-hover:text-[var(--accent-blue)] transition-colors"
+          className="text-[10px] font-mono opacity-70 text-[var(--text-muted)] shrink-0 group-hover:text-[var(--accent-blue)] transition-colors"
         >
           {expanded ? '▴' : '▾'}
         </span>

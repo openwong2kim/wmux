@@ -194,7 +194,7 @@ export default function StatusBar() {
         )}
         {/* Company 모드 배지 */}
         {isCompanyMode && (
-          <span className="text-[8px] font-mono px-1.5 py-px bg-[var(--bg-surface)] text-[var(--accent-blue)] rounded">
+          <span className="text-[10px] font-mono px-1.5 py-px bg-[var(--bg-surface)] text-[var(--accent-blue)] rounded">
             {t('statusBar.company')}
           </span>
         )}

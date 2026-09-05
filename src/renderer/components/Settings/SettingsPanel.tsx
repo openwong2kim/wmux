@@ -184,7 +184,7 @@ export function ContrastBadge({
       data-testid={`contrast-badge-${report.token}`}
       data-contrast-state={severe ? 'severe' : 'warn'}
       className="shrink-0 inline-flex items-center gap-1 rounded px-1 font-mono tabular-nums"
-      style={{ backgroundColor: s.bg, color: s.fg, border: `1px solid ${s.border}`, height: 16, fontSize: 9, lineHeight: '14px' }}
+      style={{ backgroundColor: s.bg, color: s.fg, border: `1px solid ${s.border}`, height: 16, fontSize: 10, lineHeight: '14px' }}
     >
       <span aria-hidden="true" style={{ width: 10, height: 10, display: 'inline-flex' }}><IconX /></span>
       <span aria-hidden="true">{ratio}:1</span>
@@ -1032,7 +1032,7 @@ function OrchestratorSection() {
       >
         <div className="flex items-center gap-2">
           <span
-            className="text-[9px] px-1 py-0.5 rounded"
+            className="text-[10px] px-1 py-0.5 rounded"
             style={{ backgroundColor: 'var(--bg-surface)', color: 'var(--text-muted)' }}
             title={t('settings.ledgerGateDesc')}
           >
@@ -1196,7 +1196,7 @@ function McpStatusSection() {
         <span className="text-[11px] font-semibold text-[color:var(--text-sub)]">{target.displayName}</span>
         {!target.verified && (
           <span
-            className="text-[9px] px-1 py-0.5 rounded"
+            className="text-[10px] px-1 py-0.5 rounded"
             style={{ backgroundColor: 'var(--bg-surface)', color: 'var(--text-muted)' }}
             title={t('settings.mcpExperimentalTitle')}
           >
@@ -3770,7 +3770,7 @@ function TabAppearance() {
         >
           <div className="flex items-center gap-2">
             <span
-              className="text-[9px] px-1 py-0.5 rounded"
+              className="text-[10px] px-1 py-0.5 rounded"
               style={{ backgroundColor: 'var(--bg-surface)', color: 'var(--text-muted)' }}
               title={t('settings.paneNewTerminalButtonDesc')}
             >
@@ -4477,7 +4477,7 @@ function TabShortcuts() {
 
               {/* Conflict warning */}
               {BUILTIN_KEYS.has(kb.key) && (
-                <span className="text-[9px] text-[color:var(--accent-yellow)] shrink-0" title={t('settings.kb.conflict')}>!</span>
+                <span className="text-[10px] text-[color:var(--accent-yellow)] shrink-0" title={t('settings.kb.conflict')}>!</span>
               )}
 
               {/* Label */}

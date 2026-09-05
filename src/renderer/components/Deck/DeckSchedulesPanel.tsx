@@ -164,7 +164,7 @@ export function DeckSchedulesPanel({
                   key={s.id}
                   data-deck-schedule-row
                   data-schedule-id={s.id}
-                  className="flex items-center gap-2 text-[12.5px]"
+                  className="flex items-center gap-2 text-[13px]"
                 >
                   <span
                     aria-hidden="true"
@@ -183,7 +183,7 @@ export function DeckSchedulesPanel({
                   {s.workspaceId ? (
                     <span
                       data-deck-schedule-workspace
-                      className="text-[10.5px] px-1.5 py-0.5 rounded shrink-0 text-[var(--text-sub)] bg-[rgba(var(--bg-surface-rgb),0.8)] max-w-[110px] truncate"
+                      className="text-[11px] px-1.5 py-0.5 rounded shrink-0 text-[var(--text-sub)] bg-[rgba(var(--bg-surface-rgb),0.8)] max-w-[110px] truncate"
                       title={workspaceName?.(s.workspaceId) ?? s.workspaceId}
                       {...tokenAttrs('textSub', 'text')}
                     >
@@ -192,7 +192,7 @@ export function DeckSchedulesPanel({
                   ) : (
                     <span
                       data-deck-schedule-needs-workspace
-                      className="text-[10.5px] px-1.5 py-0.5 rounded shrink-0 text-[var(--accent-yellow)]"
+                      className="text-[11px] px-1.5 py-0.5 rounded shrink-0 text-[var(--accent-yellow)]"
                       {...tokenAttrs('warning', 'text')}
                     >
                       {t('deck.scheduleNeedsWorkspace') || 'needs workspace'}
@@ -219,7 +219,7 @@ export function DeckSchedulesPanel({
                         .update({ id: s.id, enabled: !s.enabled, ...adopt })
                         .then(() => refresh());
                     }}
-                    className={`px-1.5 py-0.5 rounded-md text-[11.5px] text-[var(--text-sub)] hover:opacity-80 ${FOCUS_RING}`}
+                    className={`px-1.5 py-0.5 rounded-md text-[11px] text-[var(--text-sub)] hover:opacity-80 ${FOCUS_RING}`}
                     {...tokenAttrs('textSub', 'text')}
                   >
                     {s.enabled
@@ -234,7 +234,7 @@ export function DeckSchedulesPanel({
                     onClick={() => {
                       void resolvedApi.remove(s.id).then(() => refresh());
                     }}
-                    className={`px-1.5 py-0.5 rounded-md text-[11.5px] border transition-colors bg-[color-mix(in_srgb,var(--accent-red)_15%,transparent)] border-[color-mix(in_srgb,var(--accent-red)_32%,transparent)] text-[color-mix(in_srgb,var(--accent-red)_70%,var(--text-main))] hover:bg-[color-mix(in_srgb,var(--accent-red)_22%,transparent)] ${FOCUS_RING}`}
+                    className={`px-1.5 py-0.5 rounded-md text-[11px] border transition-colors bg-[color-mix(in_srgb,var(--accent-red)_15%,transparent)] border-[color-mix(in_srgb,var(--accent-red)_32%,transparent)] text-[color-mix(in_srgb,var(--accent-red)_70%,var(--text-main))] hover:bg-[color-mix(in_srgb,var(--accent-red)_22%,transparent)] ${FOCUS_RING}`}
                     {...tokenAttrs('danger', 'text')}
                   >
                     {t('deck.scheduleDelete') || 'Delete'}
@@ -252,7 +252,7 @@ export function DeckSchedulesPanel({
               value={prompt}
               onChange={(e) => setPrompt(e.target.value)}
               placeholder={t('deck.schedulePromptPlaceholder') || 'What should the orchestrator do?'}
-              className="w-full text-[12.5px] rounded-md px-2.5 py-1.5 bg-[var(--bg-base)] text-[var(--text-main)] border focus:outline-none"
+              className="w-full text-[13px] rounded-md px-2.5 py-1.5 bg-[var(--bg-base)] text-[var(--text-main)] border focus:outline-none"
               style={{ borderColor: 'var(--border-soft)' }}
             />
             {/* The native datetime-local control is wide and refuses to shrink
@@ -292,7 +292,7 @@ export function DeckSchedulesPanel({
               </button>
             </div>
             {error && (
-              <div role="alert" data-deck-schedule-error className="text-[11.5px] text-[var(--accent-red)]" {...tokenAttrs('danger', 'text')}>
+              <div role="alert" data-deck-schedule-error className="text-[11px] text-[var(--accent-red)]" {...tokenAttrs('danger', 'text')}>
                 {error}
               </div>
             )}

@@ -169,7 +169,7 @@ export function PrSection({ repoPath }: { repoPath: string | null }): React.Reac
           {t('git.pullRequests') || 'Pull Requests'}
         </span>
         {state.kind === 'ready' && (
-          <span className="text-[10.5px] text-[var(--text-muted)]" {...tokenAttrs('textMuted', 'text')}>
+          <span className="text-[11px] text-[var(--text-muted)]" {...tokenAttrs('textMuted', 'text')}>
             ({state.prs.length >= 100 ? '100+' : state.prs.length})
           </span>
         )}
@@ -227,7 +227,7 @@ export function PrSection({ repoPath }: { repoPath: string | null }): React.Reac
               <span className={`text-[10px] shrink-0 ${checksClass(pr.checks)}`} title={pr.checks ?? ''} aria-hidden="true">
                 ●
               </span>
-              <span className="text-[10.5px] text-[var(--text-muted)] font-mono shrink-0" {...tokenAttrs('textMuted', 'text')}>
+              <span className="text-[11px] text-[var(--text-muted)] font-mono shrink-0" {...tokenAttrs('textMuted', 'text')}>
                 #{pr.number}
               </span>
               <span className="flex-1 min-w-0 truncate text-[var(--text-main)]" title={pr.title} {...tokenAttrs('textMain', 'text')}>

@@ -166,9 +166,9 @@ export function DeckLoopModal({
     onClose();
   };
 
-  const labelCls = 'text-[10.5px] font-semibold uppercase tracking-wide text-[var(--text-muted)]';
+  const labelCls = 'text-[10px] font-semibold uppercase tracking-wide text-[var(--text-muted)]';
   const inputCls =
-    'w-full text-[12.5px] rounded-[4px] px-2.5 py-1.5 bg-[var(--bg-base)] text-[var(--text-main)] border focus:outline-none';
+    'w-full text-[13px] rounded-[4px] px-2.5 py-1.5 bg-[var(--bg-base)] text-[var(--text-main)] border focus:outline-none';
 
   return (
     <div
@@ -231,7 +231,7 @@ export function DeckLoopModal({
             return (
               <div key={idx} className="relative">
                 <div className="flex items-center gap-1.5">
-                  <span className="w-4 text-right text-[10.5px] font-mono text-[var(--text-muted)]" {...tokenAttrs('textMuted', 'text')}>
+                  <span className="w-4 text-right text-[11px] font-mono text-[var(--text-muted)]" {...tokenAttrs('textMuted', 'text')}>
                     {idx + 1}.
                   </span>
                   <input
@@ -245,7 +245,7 @@ export function DeckLoopModal({
                     onFocus={() => setSuggestFor(idx)}
                     onBlur={() => window.setTimeout(() => setSuggestFor((v) => (v === idx ? -1 : v)), 150)}
                     placeholder={t('deck.loopStepPlaceholder') || 'e.g. run /qa, or: fix whatever the tests report'}
-                    className={`${inputCls} text-[11.5px] font-mono`}
+                    className={`${inputCls} text-[11px] font-mono`}
                     style={{ borderColor: 'var(--border-soft)' }}
                   />
                   <button
@@ -318,7 +318,7 @@ export function DeckLoopModal({
             onChange={(e) => setDoneWhen(e.target.value)}
             rows={3}
             placeholder={t('deck.loopDoneWhenPlaceholder') || 'One item per line — you tick these off; the loop is done when all pass.'}
-            className={`${inputCls} text-[11.5px] font-mono resize-y`}
+            className={`${inputCls} text-[11px] font-mono resize-y`}
             style={{ borderColor: 'var(--border-soft)' }}
           />
         </div>
@@ -436,7 +436,7 @@ export function DeckLoopModal({
         })()}
 
         {error && (
-          <div role="alert" data-deck-loop-error className="text-[11.5px] text-[var(--accent-red)]" {...tokenAttrs('danger', 'text')}>
+          <div role="alert" data-deck-loop-error className="text-[11px] text-[var(--accent-red)]" {...tokenAttrs('danger', 'text')}>
             {error}
           </div>
         )}

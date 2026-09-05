@@ -331,7 +331,7 @@ export default function WorktaskCleanupView() {
                 className="flex items-start gap-2 px-2 py-2 border-b border-[var(--bg-mantle)]"
               >
                 <span
-                  className="text-[9px] font-semibold px-1.5 py-0.5 rounded mt-0.5 shrink-0"
+                  className="text-[10px] font-semibold px-1.5 py-0.5 rounded mt-0.5 shrink-0"
                   style={{ color: CATEGORY_COLOR[e.category], border: `1px solid ${CATEGORY_COLOR[e.category]}` }}
                 >
                   {t(CATEGORY_LABEL_KEY[e.category])}

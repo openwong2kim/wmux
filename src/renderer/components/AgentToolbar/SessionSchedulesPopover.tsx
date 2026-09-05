@@ -293,7 +293,7 @@ export default function SessionSchedulesPopover({
                       ref={index === 0 ? firstManageRef : undefined}
                       type="button"
                       data-session-schedule-toggle
-                      className="px-1 py-0.5 text-[10.5px] text-[var(--text-sub)] hover:text-[var(--text-main)]"
+                      className="px-1 py-0.5 text-[11px] text-[var(--text-sub)] hover:text-[var(--text-main)]"
                       aria-label={`${schedule.enabled ? t('sessionSchedule.pause') : t('sessionSchedule.resume')} — ${formatWhen(schedule.nextRunAt)}`}
                       onClick={() => void setEnabled(schedule)}
                     >
@@ -306,7 +306,7 @@ export default function SessionSchedulesPopover({
                       : undefined}
                     type="button"
                     data-session-schedule-delete
-                    className="px-1 py-0.5 text-[10.5px] text-[var(--text-muted)] hover:text-[var(--accent-red)]"
+                    className="px-1 py-0.5 text-[11px] text-[var(--text-muted)] hover:text-[var(--accent-red)]"
                     aria-label={`${t('sessionSchedule.delete')} — ${formatWhen(schedule.nextRunAt)}`}
                     onClick={() => void remove(schedule)}
                   >

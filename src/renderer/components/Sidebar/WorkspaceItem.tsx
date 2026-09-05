@@ -135,7 +135,7 @@ function WorkspaceContextLine({ metadata, onPortClick }: {
         </div>
       )}
       {hasContext && (
-        <div className="flex items-center gap-1.5 mt-0.5 text-[9px] font-mono text-[var(--text-muted)] min-w-0">
+        <div className="flex items-center gap-1.5 mt-0.5 text-[10px] font-mono text-[var(--text-muted)] min-w-0">
           {ports.length > 0 && (
             <span className="flex items-center gap-1 flex-shrink-0">
               {ports.slice(0, 3).map((p) => (
@@ -161,7 +161,7 @@ function WorkspaceContextLine({ metadata, onPortClick }: {
       )}
       {note && (
         <div
-          className="mt-0.5 flex items-center gap-1 text-[9px] text-[var(--text-muted)] truncate"
+          className="mt-0.5 flex items-center gap-1 text-[10px] text-[var(--text-muted)] truncate"
           title={`${t('workspace.lastNotification')}: ${note.title ? `${note.title} — ` : ''}${note.body}`}
         >
           <span className="shrink-0 opacity-70"><IconBell size={9} /></span>
@@ -733,7 +733,7 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
                 </span>
                 {hasProfile && (
                   <span
-                    className="text-[8px] leading-none flex-shrink-0 text-[var(--accent-blue)]"
+                    className="text-[10px] leading-none flex-shrink-0 text-[var(--accent-blue)]"
                     title={t('workspaceProfile.title')}
                   >
                     <IconGear size={9} />
@@ -746,7 +746,7 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
                   // review/actions dialog for THIS workspace.
                   <button
                     type="button"
-                    className="text-[8px] leading-none flex-shrink-0 font-mono cursor-pointer hover:underline"
+                    className="text-[10px] leading-none flex-shrink-0 font-mono cursor-pointer hover:underline"
                     style={{
                       color: projectState.trust === 'trusted'
                         ? 'var(--accent-blue)'
@@ -765,13 +765,13 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
                   </button>
                 )}
                 {unreadCount > 0 && (
-                  <span className="bg-[var(--bg-surface)] text-[var(--text-sub)] ring-1 ring-[var(--border-soft)] text-[9px] font-bold min-w-[16px] h-4 flex items-center justify-center rounded-full px-1 flex-shrink-0">
+                  <span className="bg-[var(--bg-surface)] text-[var(--text-sub)] ring-1 ring-[var(--border-soft)] text-[10px] font-bold min-w-[16px] h-4 flex items-center justify-center rounded-full px-1 flex-shrink-0">
                     {unreadCount}
                   </span>
                 )}
                 {departedCwd && (
                   <span
-                    className="text-[9px] text-[var(--accent-yellow,#f9e2af)] flex-shrink-0"
+                    className="text-[10px] text-[var(--accent-yellow,#f9e2af)] flex-shrink-0"
                     title={t('workspace.cwdDeparted', { cwd: departedCwd })}
                   >
                     ⚠ {t('workspace.departed')}
@@ -785,7 +785,7 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
                     minutes stay one hover away on the row's own tooltip. */}
                 {idleLabel && !hasRoster && (
                   <span
-                    className="text-[9px] font-mono text-[var(--text-muted)] flex-shrink-0"
+                    className="text-[10px] font-mono text-[var(--text-muted)] flex-shrink-0"
                     title={t('workspace.idleTooltip', { time: idleLabel })}
                   >
                     · {idleLabel}
@@ -821,7 +821,7 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
         })()}
 
         {/* Shortcut hint */}
-        <span className="text-[8px] font-mono text-[var(--text-muted)] flex-shrink-0 mt-0.5">
+        <span className="text-[10px] font-mono text-[var(--text-muted)] flex-shrink-0 mt-0.5">
           {index < 9 ? `^${index + 1}` : ''}
         </span>
 

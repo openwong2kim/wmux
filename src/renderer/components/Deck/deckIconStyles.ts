@@ -31,7 +31,7 @@ export function deckIconTone(active: boolean, signal: boolean): string {
  * label gone there is no inline room left for it.
  */
 export const DECK_ICON_BADGE =
-  'absolute top-0.5 right-0.5 inline-flex items-center justify-center min-w-[14px] h-[14px] px-[3px] rounded-full text-[9px] font-semibold tabular-nums leading-none bg-[var(--accent)] text-[var(--bg-base)]';
+  'absolute top-0.5 right-0.5 inline-flex items-center justify-center min-w-[14px] h-[14px] px-[3px] rounded-full text-[10px] font-semibold tabular-nums leading-none bg-[var(--accent)] text-[var(--bg-base)]';
 
 /** Counts sit on a 36px cell — clamp so a big number can't overflow it. */
 export function formatDeckCount(count: number): string | null {

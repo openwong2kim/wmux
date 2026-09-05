@@ -851,10 +851,10 @@ export default function DiffPanel({ source, isActive, surfaceId, verifiedWorkspa
                       </span>
                     )}
                     {f && !f.hunkSelectable && (
-                      <span className="ml-1 text-[9px] text-[var(--text-muted)]">[{f.kind}·{t('diff.nonAdoptable')}]</span>
+                      <span className="ml-1 text-[10px] text-[var(--text-muted)]">[{f.kind}·{t('diff.nonAdoptable')}]</span>
                     )}
                     {(isTrunc || isUnsupported || !f) && (
-                      <span className="ml-1 text-[9px] text-[var(--text-muted)]">[{t('diff.displayOnlyTag')}]</span>
+                      <span className="ml-1 text-[10px] text-[var(--text-muted)]">[{t('diff.displayOnlyTag')}]</span>
                     )}
                   </button>
                 );
@@ -894,12 +894,12 @@ export default function DiffPanel({ source, isActive, surfaceId, verifiedWorkspa
                         )}
                         <span className="font-mono text-[var(--text-sub)] truncate">{hunk.header}</span>
                         {failed && (
-                          <span className="text-[9px] text-[var(--accent-red,#f87171)]">{t('diff.nonAdoptable')}</span>
+                          <span className="text-[10px] text-[var(--accent-red,#f87171)]">{t('diff.nonAdoptable')}</span>
                         )}
                         <div className="flex-1" />
                         {/* diff→오케스트레이터 질문 — 양 모드 공통(hunk 컨텍스트 동봉). */}
                         <button
-                          className="text-[9px] text-[var(--text-muted)] hover:text-[var(--text-main)]"
+                          className="text-[10px] text-[var(--text-muted)] hover:text-[var(--text-main)]"
                           onClick={() => {
                             setAskText('');
                             setAskTarget((prev) => (prev === key ? null : key));
@@ -911,7 +911,7 @@ export default function DiffPanel({ source, isActive, surfaceId, verifiedWorkspa
                         </button>
                         {!meta?.channelArchived && meta?.missionChannelId && (
                           <button
-                            className="text-[9px] text-[var(--text-muted)] hover:text-[var(--text-main)]"
+                            className="text-[10px] text-[var(--text-muted)] hover:text-[var(--text-main)]"
                             onClick={() => {
                               setCommentText('');
                               setCommentTarget((prev) => (prev === key ? null : key));
@@ -923,7 +923,7 @@ export default function DiffPanel({ source, isActive, surfaceId, verifiedWorkspa
                           </button>
                         )}
                         {meta?.channelArchived && (
-                          <span className="text-[9px] text-[var(--text-muted)]" title={t('diff.channelArchived')}>
+                          <span className="text-[10px] text-[var(--text-muted)]" title={t('diff.channelArchived')}>
                             {t('diff.commentDisabled')}
                           </span>
                         )}
