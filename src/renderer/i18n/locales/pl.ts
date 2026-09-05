@@ -47,14 +47,8 @@ export const pl = {
   'sidebar.searchPlaceholder': 'Szukaj obszarów roboczych…',
 
   // Sidebar — Missions (fan-out tasks)
-  'missions.open': 'w toku',
-  'missions.closed': 'ukończone',
   'missions.openChannel': 'Otwórz kanał zadania',
   'missions.openChannelFor': 'Otwórz kanał zadania dla {title}',
-  'missions.title': 'Zadania ({count})',
-  'missions.done': 'Ukończone ({count})',
-  'missions.empty': 'Brak zadań',
-  'missions.doneSummary': 'ostatnie: {title}',
   'missions.cleanUp': 'Posprzątaj',
   'missions.cleanUpTooltip': 'Przeskanuj worktree zadań i zamknij to, co zostało',
   'taskStatus.running': 'W toku',

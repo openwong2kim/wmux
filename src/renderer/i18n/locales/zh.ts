@@ -39,12 +39,8 @@ export const zh = {
   'sidebar.searchPlaceholder': '搜索工作区…',
 
   // Sidebar — Missions (fan-out tasks)
-  'missions.open': '进行中',
-  'missions.closed': '已关闭',
   'missions.openChannel': '打开任务频道',
   'missions.openChannelFor': '为「{title}」打开任务频道',
-  'missions.title': '任务（{count}）',
-  'missions.done': '已完成（{count}）',
 
   // Sidebar — Company mode
   'company.deptRemoveHint': '右键移除',

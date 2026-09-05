@@ -47,17 +47,11 @@ export const en = {
   'sidebar.searchPlaceholder': 'Search workspaces…',
 
   // Sidebar — Tasks (the isolated worktree tasks an orchestrator runs)
-  'missions.open': 'running',
-  'missions.closed': 'finished',
   'missions.openChannel': 'Open task channel',
   'missions.openChannelFor': 'Open task channel for {title}',
-  'missions.title': 'Tasks ({count})',
-  'missions.done': 'Finished ({count})',
-  // Shown instead of hiding the section outright: an empty list is the answer
-  // to "does this workspace have tasks", and a section that vanishes is not.
-  'missions.empty': 'No tasks yet',
-  'missions.doneSummary': 'last: {title}',
-  // C-4 — entry point to the worktree cleanup scan from the finished tasks.
+  // C-4 — entry point to the worktree cleanup scan; it rides the sidebar's
+  // one-line task summary. With no tasks at all the line is gone and the
+  // command palette is the way in.
   'missions.cleanUp': 'Clean up',
   'missions.cleanUpTooltip': 'Scan task worktrees and close what is left over',
   // One status-dot vocabulary, shared by every surface that draws a task dot
