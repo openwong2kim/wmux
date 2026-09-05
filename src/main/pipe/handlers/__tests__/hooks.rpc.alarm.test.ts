@@ -315,19 +315,35 @@ describe('hooks.signal — local verdict gate (CompletionAlarm)', () => {
     }
   });
 
-  it('keeps a failed turn out of the lifecycle tee and the usage probe', async () => {
+  it('tees a failed turn under its OWN lifecycle kind, and skips the usage probe', async () => {
     const r = rig();
     await primeWorking(r);
 
     await r.dispatch({ kind: 'agent.stop_failure' });
     vi.advanceTimersByTime(DEFAULT_ALARM_WINDOW_MS);
 
-    // `AgentLifecycleEvent.kind` speaks only of stop / subagent_stop /
-    // awaiting_input; emitting 'agent.stop' here would tell an orchestrator the
-    // turn finished normally.
-    expect(pollLifecycle()).toHaveLength(0);
-    // And no turn-end usage probe: the API call is what failed.
+    // An orchestrator waiting on this pane must be woken — but never with
+    // 'agent.stop', which would report the dead turn as a normal completion.
+    const events = pollLifecycle();
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ kind: 'agent.stop_failure', decision: 'emit' });
+    // No turn-end usage probe: the API call is what failed.
     expect(r.onClaudeTurnEnd).not.toHaveBeenCalled();
+  });
+
+  it('tees a DEDUPED failure too — the turn died whichever source spoke first', async () => {
+    const r = rig();
+    await primeWorking(r);
+    r.recordHook.mockReturnValue('dedup');
+
+    await r.dispatch({ kind: 'agent.stop_failure' });
+    vi.advanceTimersByTime(DEFAULT_ALARM_WINDOW_MS);
+
+    const events = pollLifecycle();
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ kind: 'agent.stop_failure', decision: 'dedup' });
+    // Only the toast is gated on 'emit'.
+    expect(sendNotificationMock).not.toHaveBeenCalled();
   });
 
   it('closes the turn gate, so a stop behind the failure raises no completion', async () => {

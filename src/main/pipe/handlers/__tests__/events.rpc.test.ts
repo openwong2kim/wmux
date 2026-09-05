@@ -1149,6 +1149,15 @@ describe('events.rpc — events.poll blocking', () => {
     expect(events.map((e) => e.kind ?? e.type)).toEqual(['agent.awaiting_input', 'pane.created']);
   });
 
+  it('accepts agent.stop_failure as a kind — a turn that died is still a match', async () => {
+    eventBus.emit(lifecycle('pty-1', 'agent.stop'));
+    eventBus.emit(lifecycle('pty-1', 'agent.stop_failure'));
+
+    const router = setupRouter();
+    const events = await pollEvents(router, { kinds: ['agent.stop_failure'] });
+    expect(events.map((e) => e.kind)).toEqual(['agent.stop_failure']);
+  });
+
   it('drops events that carry no ptyId when a pane is named', async () => {
     eventBus.emit({ type: 'pane.created', workspaceId: 'ws-1', paneId: 'p1' });
     eventBus.emit(lifecycle('pty-1', 'agent.stop'));

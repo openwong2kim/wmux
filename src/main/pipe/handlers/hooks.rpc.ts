@@ -702,17 +702,33 @@ export function registerHooksRpc(
     //     status came from the boundary broadcast above ('error', never
     //     'complete'), so this closure is the notification and nothing else.
     //
-    //     Deliberately NOT folded into `isEmitKind`: that constant also gates
-    //     the `agent.lifecycle` tee, whose `kind` is a PUBLISHED payload union
-    //     (AgentLifecycleEvent) covering stop / subagent_stop / awaiting_input
-    //     only. A failed turn mapped onto 'agent.stop' there would tell an
-    //     orchestrator the turn finished normally; widening that union is a
-    //     separate change with its own consumers to answer for.
+    //     Deliberately NOT folded into `isEmitKind`: that constant gates the
+    //     fan-out shape below, which a failed turn does not share (no
+    //     awaiting-input dot, no usage probe). The `agent.lifecycle` tee it
+    //     also gates is reproduced HERE instead, carrying the failure's own
+    //     published kind — an orchestrator waiting on this pane learns the turn
+    //     died rather than sitting on the stop gate until it times out.
     if (signal.kind === 'agent.stop_failure') {
       const fanOutFailure = (): void => {
         // 'dedup' means the detector already spoke for this turn — same rule
         // the stop fan-out applies, so a failed turn cannot double-toast.
-        if (hookRouter.recordHook(signal, ptyId) === 'dedup') return;
+        const decision = hookRouter.recordHook(signal, ptyId);
+        // Tee to EventBus for external observers, on the confirmed-fan-out
+        // rule: BOTH 'emit' and 'dedup' publish (the turn died either way);
+        // only the toast below is gated on 'emit'.
+        const failureWorkspaceId = findWorkspaceIdForPty(ptyId, workspaces);
+        if (failureWorkspaceId) {
+          eventBus.emit({
+            type: 'agent.lifecycle',
+            workspaceId: failureWorkspaceId,
+            ptyId,
+            kind: signal.kind,
+            source: 'hook',
+            agent: signal.agent,
+            decision,
+          });
+        }
+        if (decision === 'dedup') return;
         dispatchNotification(
           getWindow(),
           ptyId,

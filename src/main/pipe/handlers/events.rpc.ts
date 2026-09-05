@@ -288,7 +288,9 @@ export function registerEventsRpc(
       ? params['ptyId']
       : undefined;
     // Narrow `agent.lifecycle` by its `kind` (agent.stop / agent.subagent_stop /
-    // agent.awaiting_input). Applies ONLY to that type — every other type passes
+    // agent.awaiting_input / agent.stop_failure). The filter is a plain string
+    // Set, so a new kind needs no enum here — only this list stays honest.
+    // Applies ONLY to that type — every other type passes
     // through untouched, so `kinds` never silently empties a mixed poll.
     // An EMPTY array normalizes to "no filter", matching how `types` behaves on
     // this same call (EventBus treats an empty type list as unfiltered). Left as
