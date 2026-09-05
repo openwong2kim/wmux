@@ -56,14 +56,29 @@
   font-display: swap;
 }
 
-/* Inter — variable weight 400..600, the UI/prose typeface DESIGN.md specifies
- * (Copyright (c) 2016 The Inter Project Authors). Latin + Latin Extended
- * subsets only; anything outside them (Hangul, CJK) falls through to the
- * system UI face via the --font-ui stack. */
+/* Inter — the UI/prose typeface DESIGN.md specifies (Copyright (c) 2016 The
+ * Inter Project Authors). Latin + Latin Extended subsets; anything outside them
+ * (Hangul, CJK, and the ▾ ▴ ● ✓ ✕ glyphs the chrome draws) falls through to the
+ * system UI face via the --font-ui stack, which is the intended behaviour.
+ *
+ * The declared axis is the file's FULL 100..900, not the 400..600 DESIGN.md
+ * names. A variable font is clamped to the range its @font-face advertises and
+ * Chromium will not synthesise past it, so declaring 400..600 would have
+ * silently flattened every `font-bold` (28 sites) and `fontWeight: 700` (2) to
+ * 600 — taking DESIGN.md's own "Orchestrator = main 700 vs You = muted 600"
+ * speaker hierarchy with it. These are the same bytes Google serves for
+ * `wght@100..900`; only the declaration was narrow.
+ *
+ * The three combining marks that Google duplicates across both subsets
+ * (U+0304 macron, U+0308 diaeresis, U+0329 vertical line below) are dropped
+ * from latin-ext and kept in latin. When two faces of one family both cover a
+ * codepoint the LATER @font-face wins, so leaving them in latin-ext meant a
+ * single stray combining accent pulled the 85 KB latin-ext file even though the
+ * already-loaded latin file has the glyph. */
 @font-face {
   font-family: 'Inter';
   src: url('../assets/fonts/Inter-latin.woff2') format('woff2');
-  font-weight: 400 600;
+  font-weight: 100 900;
   font-style: normal;
   font-display: swap;
   unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA,
@@ -73,11 +88,11 @@
 @font-face {
   font-family: 'Inter';
   src: url('../assets/fonts/Inter-latin-ext.woff2') format('woff2');
-  font-weight: 400 600;
+  font-weight: 100 900;
   font-style: normal;
   font-display: swap;
   unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7,
-    U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF,
+    U+02DD-02FF, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF,
     U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
 }
 
