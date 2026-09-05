@@ -56,6 +56,40 @@
   font-display: swap;
 }
 
+/* Inter — variable weight 400..600, the UI/prose typeface DESIGN.md specifies
+ * (Copyright (c) 2016 The Inter Project Authors). Latin + Latin Extended
+ * subsets only; anything outside them (Hangul, CJK) falls through to the
+ * system UI face via the --font-ui stack. */
+@font-face {
+  font-family: 'Inter';
+  src: url('../assets/fonts/Inter-latin.woff2') format('woff2');
+  font-weight: 400 600;
+  font-style: normal;
+  font-display: swap;
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA,
+    U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193,
+    U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: 'Inter';
+  src: url('../assets/fonts/Inter-latin-ext.woff2') format('woff2');
+  font-weight: 400 600;
+  font-style: normal;
+  font-display: swap;
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7,
+    U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF,
+    U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+
+/* ─── UI Type Stack (theme-independent) ──────────────────────────────────────
+ * DESIGN.md Typography: UI/prose is Inter 400/500/600. Inter is bundled above,
+ * so the stack leads with it and keeps the system faces as the fallback for
+ * scripts Inter does not cover. Terminal/mono stacks are separate and owned by
+ * utils/terminalFont.ts + the @font-face families above. */
+:root {
+  --font-ui: Inter, system-ui, -apple-system, 'Segoe UI', sans-serif;
+}
+
 /* ─── Theme CSS Variables ────────────────────────────────────────────────── */
 
 /* Amber — the redesign default (designs/design-system-20260711). Warm
@@ -373,8 +407,9 @@ html, body, #root {
   overflow: hidden;
   background-color: var(--bg-base);
   color: var(--text-main);
-  /* Inter는 번들되지 않아 제거 — system-ui 우선(mac=SF, win=Segoe UI 자동). */
-  font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
+  /* Inter is bundled again (owner re-approved 2026-09-05): the UI face is the
+     one DESIGN.md names, with system-ui behind it for non-Latin scripts. */
+  font-family: var(--font-ui);
 }
 
 /* 네이티브 버튼 외형 제거: macOS에서 <button>이 Aqua 그라데이션·베벨·그림자를

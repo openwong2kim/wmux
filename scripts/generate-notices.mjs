@@ -279,6 +279,7 @@ for (const p of packages) {
 // notices across every regeneration. Keep in sync with the @font-face block.
 const FONTS_DIR = join(ROOT, 'src/renderer/assets/fonts');
 const BUNDLED_FONTS = [
+  { name: 'Inter', file: 'LICENSE-Inter.txt', repo: 'https://github.com/rsms/inter' },
   { name: 'Cascadia Code', file: 'LICENSE-CascadiaCode.txt', repo: 'https://github.com/microsoft/cascadia-code' },
   { name: 'JetBrains Mono', file: 'LICENSE-JetBrainsMono.txt', repo: 'https://github.com/JetBrains/JetBrainsMono' },
   { name: 'Fira Code', file: 'LICENSE-FiraCode.txt', repo: 'https://github.com/tonsky/FiraCode' },
