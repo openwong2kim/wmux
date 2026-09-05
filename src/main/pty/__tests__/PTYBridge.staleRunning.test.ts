@@ -82,9 +82,15 @@ function makeMockProcess(): MockProcess {
 /**
  * @param hookRouter When set, the pane behaves as hook-governed: the
  * detector's own end-of-turn status is withheld from the broadcast, matching
- * a live Claude Code session under hooks.
+ * a live Claude Code session under hooks. `governsRunningState` is separate
+ * and defaults to false — a bridge can be alive without ever reporting a turn
+ * start, and only that evidence mutes the byte-rate heuristic.
  */
-function makeBridge(hookRouter?: Pick<HookSignalRouter, 'governsDetectorStatus'>) {
+type StubHookRouter = Partial<
+  Pick<HookSignalRouter, 'governsDetectorStatus' | 'governsRunningState'>
+>;
+
+function makeBridge(hookRouter?: StubHookRouter) {
   const proc = makeMockProcess();
   const instance: PTYInstance = {
     id: 'p1',
@@ -97,10 +103,13 @@ function makeBridge(hookRouter?: Pick<HookSignalRouter, 'governsDetectorStatus'>
     onDispose: vi.fn(),
   } as unknown as PTYManager;
   const win = { isDestroyed: () => false, webContents: { send: vi.fn() } };
+  const router = hookRouter
+    ? ({ governsRunningState: () => false, ...hookRouter } as unknown as HookSignalRouter)
+    : undefined;
   const bridge = new PTYBridge(
     manager,
     () => win as never,
-    hookRouter ? (() => hookRouter as HookSignalRouter) : undefined,
+    router ? (() => router) : undefined,
   );
   bridge.setupDataForwarding('p1');
   return { bridge, proc };
@@ -228,5 +237,67 @@ describe('PTYBridge stale "running" after turn end (#935 direction 3)', () => {
     // after every governed turn. With the funnel, the shared tracker reflects
     // the hook's broadcast and the deferral holds.
     expect(idleWasBroadcast()).toBe(false);
+  });
+});
+
+/**
+ * Hook-driven `running`: once a pane's bridge reports the turn START, the
+ * byte-rate heuristic is strictly worse than what the pane already shows, so
+ * it must stop writing the status in BOTH directions — no promotion on an
+ * output burst, no clear on silence.
+ */
+describe('PTYBridge — the byte heuristic stands down on a hook-governed pane', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    broadcastMetadataUpdateMock.mockClear();
+    mocks.lastBroadcastAgentStatus.clear();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('does not promote the pane to running on an output burst', () => {
+    const { proc } = makeBridge({ governsRunningState: () => true });
+
+    // The hook already put the pane at 'complete' (its Stop landed); a trailing
+    // redraw burst is exactly what used to clobber that with 'running'.
+    broadcastMetadataUpdateMock({ isDestroyed: () => false }, { ptyId: 'p1', agentStatus: 'complete' });
+    broadcastMetadataUpdateMock.mockClear();
+
+    proc.emitData('x'.repeat(3000));
+    flushMicroBatch();
+
+    const statusCalls = broadcastMetadataUpdateMock.mock.calls.filter(
+      (c) => (c[1] as { agentStatus?: string }).agentStatus !== undefined,
+    );
+    expect(statusCalls).toHaveLength(0);
+  });
+
+  it('does not clear the pane to idle on byte silence', () => {
+    const { proc } = makeBridge({ governsRunningState: () => true });
+
+    // A burst gives ActivityMonitor an active→idle transition to fire later;
+    // the pane is mid-turn and simply goes quiet (reasoning, a long tool call).
+    proc.emitData('x'.repeat(3000));
+    flushMicroBatch();
+    broadcastMetadataUpdateMock.mockClear();
+
+    vi.advanceTimersByTime(5_100);
+
+    expect(idleWasBroadcast()).toBe(false);
+  });
+
+  it('leaves an UNGOVERNED pane on the heuristic, unchanged', () => {
+    // The same two moves on a pane with no turn-start evidence: the heuristic
+    // is still the only status source it has.
+    const { proc } = makeBridge({ governsRunningState: () => false });
+
+    proc.emitData('x'.repeat(3000));
+    flushMicroBatch();
+    expect(lastStatus()).toBe('running');
+
+    broadcastMetadataUpdateMock.mockClear();
+    vi.advanceTimersByTime(5_100);
+    expect(idleWasBroadcast()).toBe(true);
   });
 });

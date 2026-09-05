@@ -98,14 +98,20 @@ function makeBridge(opts: { workspaceId?: string; hookRouter?: HookSignalRouter 
 
 function stubHookRouter(
   decision: 'emit' | 'dedup',
-  opts: { governed?: boolean } = {},
+  opts: { governed?: boolean; runningGoverned?: boolean } = {},
 ): HookSignalRouter {
   const governed = opts.governed ?? false;
   return {
     recordDetector: vi.fn().mockReturnValue(decision),
     recordHook: vi.fn().mockReturnValue('emit'),
     touchAuthority: vi.fn(),
+    noteHookTurnStart: vi.fn(),
     isGovernedFor: vi.fn().mockReturnValue(governed),
+    // Independent of `governed`: a bridge can be alive on a pane and still
+    // never report a turn start (an older plugin, an integration that only
+    // wires turn ends), and only the turn-start evidence mutes the byte-rate
+    // heuristic. See HookSignalRouter.governsRunningState.
+    governsRunningState: vi.fn().mockReturnValue(opts.runningGoverned ?? false),
     // Mirrors the real predicate: only the two statuses the Stop hook speaks
     // for, and only on a governed pane. Stubbing it as a flat `governed`
     // would wrongly withhold 'awaiting_input' too.

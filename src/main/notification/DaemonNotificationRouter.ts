@@ -712,6 +712,12 @@ export class DaemonNotificationRouter {
             // and a dropped one would leave the pane looking idle for a whole
             // turn. It also does not stamp the throttle window.
             const promptSlug = agentDisplayToSlug(ev.agent);
+            // From here the hook owns this pane's running dot — onActive stops
+            // promoting it on output bursts and onIdle stops clearing it on
+            // silence. Recorded on main's router even though a daemon-served
+            // pane never touches its authority map: this latch is a separate,
+            // narrower claim. See HookSignalRouter.governsRunningState.
+            this.getHookRouter?.()?.noteHookTurnStart(payload.sessionId, this.now());
             broadcastMetadataUpdate(win, {
               ptyId: payload.sessionId,
               agentStatus: 'running',
@@ -979,6 +985,11 @@ export class DaemonNotificationRouter {
 
     const onActive = (payload: { sessionId: string; agentName?: string }) => {
       try {
+        // Daemon-mode twin of the PTYBridge.onActive gate: a pane whose bridge
+        // reports turn starts has a better answer than this burst does, and an
+        // unconditional 'running' here is what overwrote a correct
+        // 'complete'/'awaiting_input' on every mid-turn redraw.
+        if (this.getHookRouter?.()?.governsRunningState(payload.sessionId, this.now())) return;
         // daemon이 active 이벤트에 gate로 확정한 agentName을 실어 보낸다(있으면).
         // 이게 있어야 idle prompt 패턴이 안 잡히는 에이전트(Claude Code v2.1.x:
         // 입력대기 hint가 "❯"만 남음)도 running 상태에서 agentName이 채워진다.
@@ -1001,6 +1012,11 @@ export class DaemonNotificationRouter {
 
     const onIdle = (payload: { sessionId: string }) => {
       const now = Date.now();
+      // Daemon-mode twin of the PTYBridge.onActiveToIdle gate: byte silence on
+      // a hook-governed pane is not a turn end (quiet reasoning, a long tool
+      // call), so the clear would only make the dot flicker. The hook's Stop
+      // settles it; the process-death edge covers an agent that never sent one.
+      if (this.getHookRouter?.()?.governsRunningState(payload.sessionId, now)) return;
       const lastAgentAt = this.lastAgentEventAt.get(payload.sessionId) ?? 0;
       // #935 direction 3: the suppression window defers to a recent precise
       // status ONLY while that status is still what is actually showing.

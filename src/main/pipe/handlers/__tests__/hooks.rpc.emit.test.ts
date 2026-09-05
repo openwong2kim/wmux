@@ -70,6 +70,7 @@ function stubHookRouter(): StubRouter {
     },
     recordDetector: vi.fn(),
     touchAuthority: vi.fn(),
+    noteHookTurnStart: vi.fn(),
     isGovernedFor: vi.fn().mockReturnValue(false),
     governsDetectorStatus: vi.fn().mockReturnValue(false),
     getLatencyMeter: () => ({
@@ -715,5 +716,7 @@ describe('hooks.signal — agent.user_prompt_submit turns the pane running', () 
       expect.any(Boolean),
       'agent.user_prompt_submit',
     );
+    // …and claims the running dot, so PTYBridge's byte heuristic stands down.
+    expect(stub.router.noteHookTurnStart).toHaveBeenCalledWith('pty-1', expect.any(Number));
   });
 });

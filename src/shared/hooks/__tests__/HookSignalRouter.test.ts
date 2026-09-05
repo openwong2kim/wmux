@@ -204,6 +204,44 @@ describe('HookSignalRouter', () => {
     });
   });
 
+  describe('turn-start latch (who writes the running dot)', () => {
+    it('an untouched pane keeps the byte heuristic', () => {
+      expect(router.governsRunningState('p1', 1000)).toBe(false);
+    });
+
+    it('is NOT implied by authority — a bridge can be alive and never report a turn start', () => {
+      // The exact case an older plugin (< 0.4.0) or a turn-end-only
+      // integration produces. Muting the heuristic here would leave the pane
+      // with no running source at all.
+      router.touchAuthority('p1', 'claude', 1000);
+      expect(router.isGovernedFor('p1', 'claude', 2000)).toBe(true);
+      expect(router.governsRunningState('p1', 2000)).toBe(false);
+    });
+
+    it('a reported turn start claims the dot for the hook', () => {
+      router.noteHookTurnStart('p1', 1000);
+      expect(router.governsRunningState('p1', 2000)).toBe(true);
+    });
+
+    it('expires on the authority TTL, so a dead bridge hands the pane back', () => {
+      router = new HookSignalRouter({ latencyMeter: meter, authorityTtlMs: 5_000 });
+      router.noteHookTurnStart('p1', 1000);
+      expect(router.governsRunningState('p1', 5_999)).toBe(true);
+      expect(router.governsRunningState('p1', 6_000)).toBe(false);
+    });
+
+    it('dropPty releases it immediately, so a reused id does not inherit it', () => {
+      router.noteHookTurnStart('p1', 1000);
+      router.dropPty('p1');
+      expect(router.governsRunningState('p1', 1100)).toBe(false);
+    });
+
+    it('is scoped to the pane', () => {
+      router.noteHookTurnStart('p1', 1000);
+      expect(router.governsRunningState('p2', 1100)).toBe(false);
+    });
+  });
+
   describe('hook authority (detector veto)', () => {
     it('untouched pane is not governed', () => {
       expect(router.isGovernedFor('p1', 'claude', 1000)).toBe(false);

@@ -59,6 +59,22 @@ interface Captured {
   active?: (payload: { sessionId: string; agentName?: string }) => void;
 }
 
+/**
+ * A HookSignalRouter stub whose only interesting answer is whether the hook
+ * owns this pane's running dot. `noteHookTurnStart` is recorded so the replay
+ * branch's own write can be asserted.
+ */
+function stubHookRouter(runningGoverned: boolean): HookSignalRouter {
+  return {
+    noteHookTurnStart: vi.fn(),
+    governsRunningState: vi.fn().mockReturnValue(runningGoverned),
+    isGovernedFor: vi.fn().mockReturnValue(false),
+    governsDetectorStatus: vi.fn().mockReturnValue(false),
+    recordDetector: vi.fn().mockReturnValue('emit'),
+    dropPty: vi.fn(),
+  } as unknown as HookSignalRouter;
+}
+
 function makeRouter(hookRouter?: HookSignalRouter) {
   const captured: Captured = {};
   const fakeDaemon = {
@@ -148,6 +164,48 @@ describe('DaemonNotificationRouter — turn start lights the pane', () => {
     const patch = broadcastMetadataUpdateMock.mock.calls.at(-1)?.[1] as Record<string, unknown>;
     expect(patch.activity).toBe('');
     expect(patch.pendingQuestion).toBe('');
+    router.stop();
+  });
+});
+
+describe('DaemonNotificationRouter — the byte heuristic stands down on a hook-governed pane', () => {
+  beforeEach(() => {
+    broadcastMetadataUpdateMock.mockClear();
+    metadataHandlerMocks.lastBroadcastAgentStatus.delete(PTY);
+  });
+
+  it('claims the running dot for the hook when the turn start lands', () => {
+    const hookRouter = stubHookRouter(false);
+    const { router, captured } = makeRouter(hookRouter);
+    captured.agent?.(metadataEvent('agent.user_prompt_submit'));
+    expect(hookRouter.noteHookTurnStart).toHaveBeenCalledWith(PTY, expect.any(Number));
+    router.stop();
+  });
+
+  it('does not promote the pane to running on an output burst', () => {
+    const { router, captured } = makeRouter(stubHookRouter(true));
+    captured.agent?.(metadataEvent('agent.stop'));
+    broadcastMetadataUpdateMock.mockClear();
+    captured.active?.({ sessionId: PTY, agentName: 'Claude Code' });
+    expect(broadcastMetadataUpdateMock).not.toHaveBeenCalled();
+    router.stop();
+  });
+
+  it('does not clear the pane to idle on byte silence', () => {
+    const { router, captured } = makeRouter(stubHookRouter(true));
+    captured.active?.({ sessionId: PTY, agentName: 'Claude Code' });
+    broadcastMetadataUpdateMock.mockClear();
+    captured.idle?.({ sessionId: PTY });
+    expect(broadcastMetadataUpdateMock).not.toHaveBeenCalled();
+    router.stop();
+  });
+
+  it('leaves an UNGOVERNED pane on the heuristic, unchanged', () => {
+    const { router, captured } = makeRouter(stubHookRouter(false));
+    captured.active?.({ sessionId: PTY, agentName: 'Claude Code' });
+    expect(lastStatus()).toBe('running');
+    captured.idle?.({ sessionId: PTY });
+    expect(lastStatus()).toBe('idle');
     router.stop();
   });
 });

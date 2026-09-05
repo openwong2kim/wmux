@@ -93,6 +93,13 @@ export class PTYBridge {
     // forever even though output stopped.
     this.activityMonitor.onActiveToIdle((ptyId) => {
       const now = Date.now();
+      // Hook-governed pane: byte silence says nothing about whether the turn
+      // ended. Quiet reasoning, a long web search, a slow bash — all of them
+      // cross IDLE_DELAY_MS while the agent is very much working, and clearing
+      // there is what made a hook-driven pane flicker to idle mid-turn. The
+      // hook's own Stop settles it instead; a pane whose agent died without one
+      // is settled by the process-death edge, which releases this claim first.
+      if (this.getHookRouter?.()?.governsRunningState(ptyId, now)) return;
       const lastAgentAt = this.lastAgentEventAt.get(ptyId) ?? 0;
       // #935 direction 3: defer to a recent precise status ONLY while that
       // status is still what is actually showing. `onActive` broadcasts
@@ -638,14 +645,23 @@ export class PTYBridge {
         if (activeAlarm && activeSlug && !recentlyResized(ptyId, RESIZE_REDRAW_GUARD_MS)) {
           activeAlarm.observe(ptyId, activeSlug, { class: 'working' });
         }
-        broadcastMetadataUpdate(this.getWindow(), {
-          ptyId,
-          agentStatus: 'running',
-          agentName: lastAgent,
-          // P2: slug alongside the periodic 'running' name ('' when no agent is
-          // detected yet → agentDisplayToSlug returns undefined → null).
-          agentSlug: agentDisplayToSlug(lastAgent) ?? null,
-        });
+        // Hook-governed pane: its bridge reports the turn START, so the
+        // heuristic's guess is strictly worse than what the pane already
+        // shows. Skipping the broadcast is the point — a redraw burst mid-turn
+        // used to overwrite a correct 'complete'/'awaiting_input' with
+        // 'running'. Everything else in this handler still runs: the alarm's
+        // working cue above (byte activity is still real evidence for the
+        // completion gate) and the detector's emission-dedup reset below.
+        if (!this.getHookRouter?.()?.governsRunningState(ptyId)) {
+          broadcastMetadataUpdate(this.getWindow(), {
+            ptyId,
+            agentStatus: 'running',
+            agentName: lastAgent,
+            // P2: slug alongside the periodic 'running' name ('' when no agent is
+            // detected yet → agentDisplayToSlug returns undefined → null).
+            agentSlug: agentDisplayToSlug(lastAgent) ?? null,
+          });
+        }
         // #935 direction 3: recorded at the broadcastMetadataUpdate funnel.
         // Resize-redraw guard: a workspace switch / split / zoom refits xterm,
         // fires pty:resize, and TUI agents answer with a multi-KB full redraw —

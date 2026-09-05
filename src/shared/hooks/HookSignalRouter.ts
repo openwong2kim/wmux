@@ -128,6 +128,10 @@ export class HookSignalRouter {
     string,
     { agent: string; lastSignalAt: number; exact: boolean; lifecycleOwned: boolean }
   >();
+  /** ptyId → when this pane's bridge last reported a TURN START. Separate from
+   *  `authority` on purpose: it answers "has the hook proven it can light this
+   *  pane's running dot", not "is a bridge alive". See governsRunningState. */
+  private readonly turnStart = new Map<string, number>();
 
   constructor(deps: { latencyMeter: SignalLatencyMeter; dedupWindowMs?: number; authorityTtlMs?: number }) {
     this.latencyMeter = deps.latencyMeter;
@@ -210,6 +214,44 @@ export class HookSignalRouter {
     const entry = this.authority.get(ptyId);
     if (!entry || entry.agent !== slug) return false;
     return now - entry.lastSignalAt < this.authorityTtlMs;
+  }
+
+  /**
+   * Record that this pane's bridge reported a TURN START
+   * (`agent.user_prompt_submit`). Called from both ingest paths' prompt-submit
+   * branch — main's `hooks.signal` fallback and, in daemon mode, the
+   * `session:agent` replay in DaemonNotificationRouter, because main's own
+   * authority map is deliberately never touched for a daemon-served pane (the
+   * daemon's arbitration stamp stands in for it there).
+   */
+  noteHookTurnStart(ptyId: string, now: number = Date.now()): void {
+    if (!ptyId) return;
+    this.turnStart.set(ptyId, now);
+  }
+
+  /**
+   * True when this pane's `running` state is the HOOK's to write, so the
+   * byte-rate heuristic must stop writing it — neither promoting the pane on an
+   * output burst nor clearing it on silence.
+   *
+   * The question is deliberately NOT `isGovernedFor`. A bridge can be alive on
+   * a pane and still never report a turn start: an older plugin (< 0.4.0), an
+   * install that predates `UserPromptSubmit` in setup-hooks, or an agent whose
+   * integration only wires turn ENDS. Suppressing the heuristic there would
+   * leave those panes with no `running` source at all — grey for the whole
+   * turn. So authority is not the gate; EVIDENCE is: only a pane that has
+   * actually delivered a turn start has proven the hook can light it.
+   *
+   * Rides the same 30-minute TTL as the notification veto, and for the same
+   * reason (a single turn can run 20+ minutes with no bridge traffic on a
+   * turn-boundary-only install, so a short window would just restore the bug).
+   * The accepted cost is symmetric too: a bridge that dies mid-session leaves
+   * the pane's dot on whatever the hook last wrote until the TTL lapses.
+   * `dropPty` releases it immediately on pane death or reuse.
+   */
+  governsRunningState(ptyId: string, now: number = Date.now()): boolean {
+    const at = this.turnStart.get(ptyId);
+    return at !== undefined && now - at < this.authorityTtlMs;
   }
 
   /**
@@ -384,6 +426,10 @@ export class HookSignalRouter {
     // Authority rides the same lifecycle: a disposed PTY must return to
     // detector-backstop behavior immediately if the id is ever reused.
     this.authority.delete(ptyId);
+    // Same rule for the turn-start latch: a reused id must not inherit the
+    // dead pane's "the hook owns my running dot" claim, which would leave the
+    // new pane's heuristic muted with no bridge to replace it.
+    this.turnStart.delete(ptyId);
     const needle = `:${ptyId}:`;
     let removed = 0;
     for (const k of this.ledger.keys()) {

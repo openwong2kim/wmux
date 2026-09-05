@@ -711,6 +711,10 @@ export function registerHooksRpc(
       // toast, no ledger write, no lifecycle tee, exactly like every other
       // non-emit kind that returns here.
       if (signal.kind === 'agent.user_prompt_submit') {
+        // From here the hook owns this pane's running dot: the byte-rate
+        // heuristic must stop promoting it on output and stop clearing it on
+        // silence. See HookSignalRouter.governsRunningState.
+        hookRouter.noteHookTurnStart(ptyId, Date.now());
         const win = getWindow();
         if (win) {
           broadcastMetadataUpdate(win, {
