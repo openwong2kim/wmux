@@ -291,6 +291,16 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
   // system lets us paint (DESIGN.md: the only permitted wash is the danger
   // needs-input row). Two renditions and no more — the wash and the label.
   const needsYou = agentStatus === 'waiting' || agentStatus === 'awaiting_input';
+  // Name first. At rest the row shows the workspace name and the signals that
+  // change on their own (status dot, unread, idle, "needs you"); the project
+  // badge, the agent count and the shortcut hint are chrome you only look for
+  // once you are already pointing at the row, and at 240px they were spending
+  // the name's width to sit there. The ACTIVE row keeps them — it is the one
+  // row you are working in. `pointer-events` follows visibility so an
+  // invisible control never takes a click meant for the row underneath.
+  const restHidden = isActive
+    ? ''
+    : 'opacity-0 pointer-events-none transition-opacity duration-150 group-hover:opacity-100 group-hover:pointer-events-auto group-focus-within:opacity-100 group-focus-within:pointer-events-auto';
   // #997 — the roster's expanded state. It lives here, not in the roster,
   // because the control that toggles it now sits on THIS row while the list it
   // reveals is rendered below; the two would otherwise need to agree across a
@@ -748,7 +758,7 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
                     idle minutes too, which is where they go when the roster
                     chip takes their place on the row (#997). */}
                 <span
-                  className="text-caption font-mono truncate"
+                  className={`font-sans text-[13px] truncate ${unreadCount > 0 ? 'font-semibold' : 'font-medium'} ${idleLabel && !hasRoster ? 'text-[var(--text-sub)]' : ''}`}
                   title={idleLabel ? `${workspace.name} · ${t('workspace.idleTooltip', { time: idleLabel })}` : workspace.name}
                 >
                   {workspace.name}
@@ -776,7 +786,7 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
                   <button
                     type="button"
                     data-workspace-action="project-badge"
-                    className="text-[10px] leading-none flex-shrink-0 font-mono cursor-pointer hover:underline"
+                    className={`text-[10px] leading-none flex-shrink-0 font-mono cursor-pointer hover:underline ${restHidden}`}
                     style={{
                       color: projectState.trust === 'trusted'
                         ? 'var(--accent-blue)'
@@ -830,13 +840,18 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
         {/* #997 — roster disclosure + agent count. Lives on this row, not on
             a line of its own: see WorkspaceRosterSummary's own comment. */}
         {!editing && (
-          <WorkspaceRosterSummaryMemo
-            workspaceId={workspaceId}
-            agentCount={rosterCounts.agentCount}
-            stashedCount={rosterCounts.stashedCount}
-            open={rosterOpen}
-            onToggle={toggleRoster}
-          />
+          // The wrapper carries the rest-state fade so the summary's own
+          // internals stay untouched; it takes over the flex-item traits
+          // (self-center, no shrink) the button had as a direct child.
+          <span className={`inline-flex self-center flex-shrink-0 ${restHidden}`}>
+            <WorkspaceRosterSummaryMemo
+              workspaceId={workspaceId}
+              agentCount={rosterCounts.agentCount}
+              stashedCount={rosterCounts.stashedCount}
+              open={rosterOpen}
+              onToggle={toggleRoster}
+            />
+          </span>
         )}
 
         {/* The blocked-agent label, right-aligned. It replaces the play/pause
@@ -849,7 +864,7 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
         )}
 
         {/* Shortcut hint */}
-        <span className="text-[10px] font-mono text-[var(--text-muted)] flex-shrink-0 mt-0.5">
+        <span className={`text-[10px] font-mono text-[var(--text-muted)] flex-shrink-0 mt-0.5 ${restHidden}`}>
           {index < 9 ? `^${index + 1}` : ''}
         </span>
 
