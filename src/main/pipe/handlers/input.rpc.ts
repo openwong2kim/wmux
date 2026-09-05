@@ -560,6 +560,14 @@ export function registerInputRpc(
   getWindow: GetWindow,
   getDaemonClient?: () => DaemonClient | null,
   resolveRoleBinding?: RoleBindingResolver,
+  /**
+   * The interrupt edge for RPC-issued input (MCP `terminal_send` /
+   * `terminal_send_key`, the CLI): an orchestrator stopping a worker with
+   * Ctrl+C / ESC ESC gets no Stop hook, and `claude` stays the foreground
+   * command so OSC 133 cannot see it — main's PTYBridge settles the pane from
+   * the bytes instead. Optional: tests and any wiring without a bridge skip it.
+   */
+  noteInterruptInput?: (ptyId: string, data: string) => void,
 ): void {
   /**
    * input.send — writes text to a PTY session.
@@ -645,6 +653,7 @@ export function registerInputRpc(
     // Route one chunk to the local PTYManager, else the daemon. Shared by the
     // text write and the trailing-\r submit so both hit the same session.
     const writeChunk = (data: string): void => {
+      noteInterruptInput?.(ptyId, data);
       const instance = ptyManager.get(ptyId);
       if (instance) {
         ptyManager.write(ptyId, data);
@@ -777,6 +786,7 @@ export function registerInputRpc(
       await assertNotTypingAtAnApproval(getDaemonClient, ctx, ptyId, 'input.sendKey');
     }
 
+    noteInterruptInput?.(ptyId, sequence);
     const instance = ptyManager.get(ptyId);
     if (instance) {
       ptyManager.write(ptyId, sequence);

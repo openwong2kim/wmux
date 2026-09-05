@@ -31,6 +31,14 @@
   hook — and panes whose shell emits no markers are unaffected: they keep the
   settle paths they already had. A finished turn keeps its result either way.
 
+- **Interrupting an agent settles its pane right away.** Ctrl+C — or a double
+  ESC — stops the turn, but Claude Code sends no turn-end hook for it and the
+  agent is still the pane's foreground command, so nothing else could see it.
+  wmux now reads the interrupt from the keystroke itself, on every path that
+  types into a pane (the terminal, `terminal_send`, the CLI), and the dot drops
+  to idle instead of staying amber. A Ctrl+C in a plain shell still changes
+  nothing.
+
 ### Fixed
 
 - **A pane whose agent died without a Stop now settles to idle.** An agent

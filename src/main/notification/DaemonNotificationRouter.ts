@@ -9,6 +9,7 @@ import {
   getLastBroadcastAgentStatus,
   clearLastBroadcastAgentStatus,
 } from '../ipc/handlers/metadata.handler';
+import { settleHookTurnToIdle } from './turnSettle';
 import { eventBus } from '../events/EventBus';
 import {
   findWorkspaceIdForPty,
@@ -42,23 +43,9 @@ const AT_PROMPT_MARKERS: ReadonlySet<string> = new Set([
   'prompt_end',
 ]);
 
-/**
- * The statuses a settle edge must never overwrite (the F5 rule, shared by the
- * process-death edge below and the OSC 133 back-at-prompt edge): they are
- * RESULTS the operator has not read yet, and neither the agent exiting nor its
- * shell returning to a prompt un-finishes the turn that reported them.
- */
-const UNREAD_RESULT_STATUSES: ReadonlySet<AgentStatus> = new Set<AgentStatus>([
-  'complete',
-  'awaiting_input',
-  'waiting',
-  'error',
-]);
-
-function holdsUnreadResult(ptyId: string): boolean {
-  const last = getLastBroadcastAgentStatus(ptyId);
-  return last !== undefined && UNREAD_RESULT_STATUSES.has(last);
-}
+// The F5 rule (which statuses a settle edge must never overwrite) and the
+// settle itself live in turnSettle.ts, shared with the interrupt edge in
+// PTYBridge so the two cannot drift apart.
 
 interface AgentEventPayload {
   agent: string;
@@ -1001,16 +988,12 @@ export class DaemonNotificationRouter {
      * is proof the turn is over either way.
      */
     const settleAtShellPrompt = (ptyId: string) => {
-      const router = this.getHookRouter?.() ?? null;
-      if (!router?.governsRunningState(ptyId, this.now())) return;
-      router.releaseHookTurnStart(ptyId);
-      // The F5 guard: a turn that already reported a result is not un-finished
-      // by its shell coming back.
-      if (holdsUnreadResult(ptyId)) return;
-      broadcastMetadataUpdate(this.getWindow(), {
+      settleHookTurnToIdle(
         ptyId,
-        agentStatus: 'idle',
-      });
+        this.getHookRouter?.() ?? null,
+        this.getWindow(),
+        this.now(),
+      );
     };
 
     // OSC 133 D markers from daemon mode. Mirror of PTYBridge.OscParser

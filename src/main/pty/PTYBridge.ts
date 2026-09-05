@@ -17,6 +17,8 @@ import {
   clearLastBroadcastAgentStatus,
 } from '../ipc/handlers/metadata.handler';
 import { dispatchNotification } from '../notification/dispatchNotification';
+import { settleHookTurnToIdle } from '../notification/turnSettle';
+import { InterruptKeystrokeDetector } from '../../shared/hooks/interruptKeystroke';
 import { recentlyResized, RESIZE_REDRAW_GUARD_MS, clearPty as clearSuppression } from '../notification/idleSuppression';
 import { eventBus } from '../events/EventBus';
 import type { HookSignalRouter } from '../hooks/HookSignalRouter';
@@ -49,6 +51,8 @@ export class PTYBridge {
   // ActivityMonitor idle fallback notification when the agent already
   // emitted a more precise 'waiting'/'complete' signal a moment earlier.
   private lastAgentEventAt = new Map<string, number>();
+  /** Ctrl+C / ESC ESC detection for the interrupt edge — see noteInterruptInput. */
+  private interruptKeystrokes = new InterruptKeystrokeDetector();
 
   // Micro-batch buffers for the data hot-path. Chunks are accumulated and
   // flushed every BATCH_INTERVAL_MS so middlewares + IPC send each fire once
@@ -215,6 +219,7 @@ export class PTYBridge {
       this.agentDetectorCleanups.delete(ptyId);
     }
     this.lastAgentEventAt.delete(ptyId);
+    this.interruptKeystrokes.forget(ptyId);
     clearLastBroadcastAgentStatus(ptyId);
     clearSuppression(ptyId);
 
@@ -256,6 +261,27 @@ export class PTYBridge {
    * (>2000B/3s of OUTPUT) never fires for a short text-only turn, so without
    * this feed the gate would drop every completion on exactly those panes.
    */
+  /**
+   * The INTERRUPT edge, fed by every path that writes operator input to a pty
+   * in this process (the PTY_WRITE IPC branches for renderer keystrokes, the
+   * input.send / input.sendKey RPC for MCP and CLI callers).
+   *
+   * Live finding (Claude Code 2.1.236): an interrupted turn fires NO Stop hook,
+   * and `claude` stays the foreground command so OSC 133 cannot see it either —
+   * the keystroke is the pane's only evidence that the turn ended.
+   *
+   * A pane with no open latch is left alone: a Ctrl+C in a plain shell is not a
+   * turn end, and broadcasting there would be the byte heuristic's job anyway.
+   */
+  noteInterruptInput(ptyId: string, data: string): void {
+    try {
+      if (!this.interruptKeystrokes.observe(ptyId, data)) return;
+      settleHookTurnToIdle(ptyId, this.getHookRouter?.() ?? null, this.getWindow());
+    } catch (err) {
+      console.warn('[PTYBridge] noteInterruptInput error:', err);
+    }
+  }
+
   noteUserInput(ptyId: string): void {
     const alarm = this.getAlarm?.() ?? null;
     if (!alarm) return;

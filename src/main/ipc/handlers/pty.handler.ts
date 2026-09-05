@@ -658,6 +658,11 @@ export function registerPTYHandlers(
       if (data.length > PTY_WRITE_BACKSTOP) {
         console.warn(`[PTY_WRITE] oversize payload ${data.length} chars > ${PTY_WRITE_BACKSTOP}; segmenting locally. Renderer should chunk at the source.`);
       }
+      // The interrupt edge: Ctrl+C / ESC ESC ends the agent's turn without any
+      // Stop hook, and `claude` stays the foreground command so OSC 133 cannot
+      // see it either. Runs before the write so the settle is not gated on
+      // delivery — the operator's intent is the same either way.
+      ptyBridge.noteInterruptInput(id, data);
       const segments = segmentOversize(data);
       let allDelivered = true;
       for (const segment of segments) {
@@ -688,6 +693,8 @@ export function registerPTYHandlers(
       if (data.length > PTY_WRITE_BACKSTOP) {
         console.warn(`[PTY_WRITE] oversize payload ${data.length} chars > ${PTY_WRITE_BACKSTOP}; segmenting locally. Renderer should chunk at the source.`);
       }
+      // Interrupt edge — same reasoning as the daemon branch above.
+      ptyBridge.noteInterruptInput(id, data);
       const segments = segmentOversize(data);
       for (const segment of segments) {
         ptyManager.write(id, sanitizePtyText(segment));

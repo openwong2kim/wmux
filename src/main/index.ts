@@ -788,6 +788,7 @@ registerInputRpc(
   () => mainWindow,
   () => daemonClient,
   makeRoleBindingResolver(() => mainWindow),
+  (ptyId, data) => ptyBridge.noteInterruptInput(ptyId, data),
 );
 registerApprovalsRpc(rpcRouter, () => daemonClient);
 registerDeckRpc(rpcRouter, () => mainWindow);
