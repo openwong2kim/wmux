@@ -25,7 +25,15 @@
 - **A pane whose agent died without a Stop now settles to idle.** An agent
   killed mid-turn (double Ctrl+C, `/exit`, a crash) sends no Stop hook, so a
   pane the hook had lit could stay amber long after the agent was gone. The
-  agent process's death is now its own settle path.
+  agent process's death is now its own settle path — and when wmux cannot tell
+  which process died, or never sees the death at all, the pane settles anyway
+  30 minutes after its last hook signal. A turn that has already *finished*
+  keeps its result: an agent exiting after its turn ended no longer wipes the
+  "finished" or "needs you" state you had not read yet.
+
+- **A pane that changes agents no longer inherits the previous one's status.**
+  Starting `codex` in a pane where `claude` had exited mid-turn left the new
+  agent's dot governed by the old one's turn.
 
 ### Upgrading
 
@@ -34,4 +42,7 @@
 - **Plugin-less installs (`wmux setup-hooks`):** re-run `wmux setup-hooks`, or
   just let the app do it — every launch refreshes the hooks. Then restart the
   Claude Code session. `wmux setup-hooks --status` gained a **turn-start
-  signal** row that says whether the hook is installed.
+  signal** row that says whether the hook is installed. If you are on a plugin
+  older than 0.4.0, that row and the turn-end row now read **STALE** and point
+  at `/plugin update` — the plugin owns those hooks, so re-running
+  `wmux setup-hooks` cannot supply them.

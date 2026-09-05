@@ -3,7 +3,7 @@
 - **An agent that has said nothing for 30 minutes now says so.** A pane whose
   status is still `running` but which has reported nothing — no hook, no
   activity, no output — for half an hour draws a hollow amber ring in place of
-  its filled dot, and its tooltip reads "No update for 34m". Before, the same
+  its filled dot, and its tooltip reads "No update for 30m+". Before, the same
   pane either kept a confident, breathing amber dot for as long as the window
   stayed open, or quietly slid to idle as if the work had finished. The ring
   appears on the sidebar row, the collapsed rail, the sidebar agent roster and
