@@ -14,6 +14,7 @@ import {
   APPROVAL_URGENT_MS,
   type ApprovalDeadlineRecord,
 } from '../DeckApprovalCountdown';
+import { useStore } from '../../../stores';
 
 let container: HTMLDivElement;
 let root: Root;
@@ -130,5 +131,59 @@ describe('approvalsForWorkspace', () => {
 
   it('filters nothing when there is no workspace to scope to', () => {
     expect(approvalsForWorkspace([a, b, c], undefined)).toEqual([a, b, c]);
+  });
+});
+
+// ─── One event, at most two renditions (DESIGN.md attention grammar) ────────
+//
+// The dialog is one. This badge is the second — but when the Fleet cockpit's
+// Approvals tab is open it draws its own countdown per row, and this badge
+// would be a third thing counting the same seconds down.
+describe('DeckApprovalCountdown vs the Fleet approval inbox', () => {
+  async function mountWithInbox(inboxOwnsApprovals: boolean): Promise<void> {
+    await act(async () => {
+      root.render(
+        createElement(DeckApprovalCountdown, {
+          records: [{ deadlineAt: 31_000 }],
+          now: () => 1_000,
+          inboxOwnsApprovals,
+        }),
+      );
+    });
+  }
+
+  it('renders the badge while the inbox is not the surface on screen', async () => {
+    await mountWithInbox(false);
+    expect(container.querySelector('[data-deck-approval-countdown]')).not.toBeNull();
+  });
+
+  it('steps aside while the Fleet approvals inbox owns the prompt', async () => {
+    await mountWithInbox(true);
+    expect(container.querySelector('[data-deck-approval-countdown]')).toBeNull();
+  });
+
+  it('reads the cockpit state from the store when the prop is omitted', async () => {
+    const render = async () => {
+      await act(async () => {
+        root.render(
+          createElement(DeckApprovalCountdown, {
+            records: [{ deadlineAt: 31_000 }],
+            now: () => 1_000,
+          }),
+        );
+      });
+    };
+    useStore.setState({ fleetViewVisible: true, fleetActiveTab: 'approvals' });
+    await render();
+    expect(container.querySelector('[data-deck-approval-countdown]')).toBeNull();
+
+    // The cockpit is open on another tab — the inbox is not on screen, so the
+    // header badge is again the operator's only view of the deadline.
+    await act(async () => {
+      useStore.setState({ fleetActiveTab: 'fleet' });
+    });
+    expect(container.querySelector('[data-deck-approval-countdown]')).not.toBeNull();
+
+    useStore.setState({ fleetViewVisible: false, fleetActiveTab: 'fleet' });
   });
 });

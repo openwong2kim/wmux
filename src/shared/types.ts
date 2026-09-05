@@ -745,6 +745,9 @@ export interface SessionData {
    *  terminal / split right / split down / new browser). Default true —
    *  hideable for minimal-chrome setups. */
   paneActionsVisible?: boolean;
+  // Titlebar wall-clock (2026-09-05). Default off; persisted so the people who
+  // turn it on keep it across restarts.
+  titlebarClockVisible?: boolean;
   /** Experimental opt-in; absent means off. See uiSlice.paneNewTerminalButton. */
   paneNewTerminalButton?: boolean;
   scrollbackLines?: number;

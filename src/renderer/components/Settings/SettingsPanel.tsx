@@ -3603,6 +3603,8 @@ function TabAppearance() {
 
   const paneActionsVisible = useStore((s) => s.paneActionsVisible);
   const setPaneActionsVisible = useStore((s) => s.setPaneActionsVisible);
+  const titlebarClockVisible = useStore((s) => s.titlebarClockVisible);
+  const setTitlebarClockVisible = useStore((s) => s.setTitlebarClockVisible);
   const paneNewTerminalButton = useStore((s) => s.paneNewTerminalButton);
   const setPaneNewTerminalButton = useStore((s) => s.setPaneNewTerminalButton);
   const applyChromePreset = useStore((s) => s.applyChromePreset);
@@ -3759,6 +3761,15 @@ function TabAppearance() {
             checked={paneActionsVisible}
             onChange={setPaneActionsVisible}
             label={t('settings.paneActionsVisible')}
+          />
+        </SettingRow>
+        {/* Off by default — the OS draws a clock already, and a permanent
+            reading in the titlebar is the dead gauge DESIGN.md rules out. */}
+        <SettingRow label={t('settings.titlebarClock')} description={t('settings.titlebarClockDesc')}>
+          <Toggle
+            checked={titlebarClockVisible}
+            onChange={setTitlebarClockVisible}
+            label={t('settings.titlebarClock')}
           />
         </SettingRow>
         {/* Labelled experimental on purpose: this is the one toggle here that

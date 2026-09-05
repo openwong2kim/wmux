@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
 import { UsageWidgetView } from './UsageWidget';
@@ -61,16 +61,63 @@ export function StatusClockUsage({ isCompanyMode }: { isCompanyMode: boolean }) 
   );
 }
 
+// ─── Titlebar vitals: render only when they mean something ──────────────────
+//
+// DESIGN.md ("Fleet vitals = appearing chips … they render ONLY when nonzero —
+// no dead gauges"). The memory reading and the wall-clock were the two
+// exceptions: `553MB 09:22` sat in the titlebar permanently, saying nothing
+// about the fleet at any moment of any session, and spending two of the
+// strip's meaning-points to do it.
+//
+// Memory now appears only when it is worth interrupting for — a large absolute
+// footprint, or one that has more than doubled since this window started (the
+// shape of the leak the chip was added to catch). The clock is off unless
+// asked for: the OS already draws one, and it is only missing for people
+// running wmux full-screen with the taskbar hidden.
+
+/** Absolute floor for the memory chip. Below this the number is noise. */
+export const MEMORY_CHIP_MIN_BYTES = 1.5 * 1024 * 1024 * 1024;
+
+/** …or this much of the footprint the window started with. */
+export const MEMORY_CHIP_GROWTH_FACTOR = 2;
+
+/**
+ * Pure — the whole rule for whether the chip is worth a titlebar slot.
+ * `baselineBytes` is the first reading this window took (null before one has
+ * landed, in which case only the absolute floor can fire).
+ */
+export function shouldShowMemoryChip(bytes: number, baselineBytes: number | null): boolean {
+  if (!Number.isFinite(bytes) || bytes <= 0) return false;
+  if (bytes >= MEMORY_CHIP_MIN_BYTES) return true;
+  return (
+    baselineBytes !== null &&
+    baselineBytes > 0 &&
+    bytes > baselineBytes * MEMORY_CHIP_GROWTH_FACTOR
+  );
+}
+
+/** Unchanged chip text — the styling and format the strip already had. */
+export function formatMemoryChip(bytes: number): string {
+  return `${Math.round(bytes / 1024 / 1024)}MB`;
+}
+
 /** 메모리(5초 폴) + 시각(1초). 우측 클러스터 뒷부분(채널/벨 뒤). */
 export function StatusClockTime() {
+  const clockVisible = useStore((s) => s.titlebarClockVisible);
   const [time, setTime] = useState(() => new Date());
-  const [memUsage, setMemUsage] = useState('');
+  const [memBytes, setMemBytes] = useState<number | null>(null);
+  // The footprint this window started with. A ref, not state: it is read to
+  // decide the chip, never to trigger a render of its own.
+  const memBaseline = useRef<number | null>(null);
 
-  // Update clock every second.
+  // Update clock every second — only while the clock is actually shown. An
+  // interval driving a hidden node is the dead gauge's running cost.
   useEffect(() => {
+    if (!clockVisible) return;
+    setTime(new Date());
     const timer = setInterval(() => setTime(new Date()), 1000);
     return () => clearInterval(timer);
-  }, []);
+  }, [clockVisible]);
 
   // Update memory usage every 5 seconds. Reads the TOTAL app footprint from
   // main (app.getAppMetrics summed RSS across the whole Electron process tree)
@@ -82,7 +129,8 @@ export function StatusClockTime() {
     const update = () => {
       void window.electronAPI.system.getMemoryUsage().then((bytes) => {
         if (cancelled || typeof bytes !== 'number' || bytes <= 0) return;
-        setMemUsage(`${Math.round(bytes / 1024 / 1024)}MB`);
+        if (memBaseline.current === null) memBaseline.current = bytes;
+        setMemBytes(bytes);
       }).catch(() => { /* main not ready / handler swapped — keep last value */ });
     };
     update();
@@ -91,11 +139,12 @@ export function StatusClockTime() {
   }, []);
 
   const timeStr = time.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
+  const showMemory = memBytes !== null && shouldShowMemoryChip(memBytes, memBaseline.current);
 
   return (
     <>
-      {memUsage && <span>{memUsage}</span>}
-      <span>{timeStr}</span>
+      {showMemory && <span data-statusbar-memory>{formatMemoryChip(memBytes)}</span>}
+      {clockVisible && <span data-statusbar-clock>{timeStr}</span>}
     </>
   );
 }

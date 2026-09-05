@@ -222,6 +222,15 @@ export interface UISlice {
   setPaneActionsVisible: (visible: boolean) => void;
 
   /**
+   * Wall-clock in the titlebar status strip. Default OFF: every OS already
+   * draws a clock, and DESIGN.md's fleet-vitals rule ("render only when
+   * nonzero — no dead gauges") applies to a reading that never changes meaning.
+   * On for the people running wmux full-screen with the taskbar hidden.
+   */
+  titlebarClockVisible: boolean;
+  setTitlebarClockVisible: (visible: boolean) => void;
+
+  /**
    * EXPERIMENTAL, default OFF: a `+` on the pane's tab strip that adds a
    * SECOND terminal to that pane.
    *
@@ -1026,6 +1035,13 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
 
   setPaneActionsVisible: (visible) => set((state) => {
     state.paneActionsVisible = visible;
+  }),
+
+  // Off unless asked for — see the interface note above.
+  titlebarClockVisible: false,
+
+  setTitlebarClockVisible: (visible) => set((state) => {
+    state.titlebarClockVisible = visible;
   }),
 
   // Off unless asked for — see the interface note.

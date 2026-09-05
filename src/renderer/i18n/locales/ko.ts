@@ -492,6 +492,9 @@ export const ko = {
   'settings.sidebarPositionDesc': '터미널 영역의 좌측 또는 우측',
   'settings.sidebarLeft': '왼쪽',
   'settings.sidebarRight': '오른쪽',
+  'settings.titlebarClock': '타이틀바 시계',
+  'settings.titlebarClockDesc':
+    '기본값 꺼짐 — 운영체제가 이미 시각을 표시합니다. 작업 표시줄을 숨긴 전체 화면에서 쓸 때 켜세요.',
   'settings.currentVersion': '현재 버전',
   'settings.latestVersion': '최신 버전',
   'settings.updateReady': '업데이트 준비 완료',

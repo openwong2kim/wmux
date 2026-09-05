@@ -9,6 +9,7 @@ import MiniSidebar from '../Sidebar/MiniSidebar';
 import { WorkspaceCenter } from './WorkspaceCenter';
 import { EmptyLeafFunnel } from './EmptyLeafFunnel';
 import { selectProjectCwdSignature } from '../../stores/selectors/appLayout';
+import { selectInboxOwnsApprovals } from '../../stores/selectors/approvalInbox';
 import { shouldShowInstallError, shouldReannounceAfterError, truncateReason } from './updateNoticePolicy';
 import { registerSessionSaver, saveSessionNow } from '../../utils/sessionSaveBridge';
 import { resolveReconcileRebind } from '../../hooks/resolveReconcileRebind';
@@ -346,6 +347,7 @@ function buildSessionData(dumped: Map<string, boolean>): SessionData {
     deckBrainVendorMigrated: state.deckBrainVendorMigrated,
     channelsTabVisible: state.channelsTabVisible,
     paneActionsVisible: state.paneActionsVisible,
+    titlebarClockVisible: state.titlebarClockVisible,
     paneNewTerminalButton: state.paneNewTerminalButton,
     splitInheritsCwd: state.splitInheritsCwd,
     imeResidueGuardEnabled: state.imeResidueGuardEnabled,
@@ -687,7 +689,9 @@ export default function AppLayout() {
   // surface per item). The container keeps its pluginHost deadlock-break UX in
   // every other state.
   const fleetActiveTab = useStore((s) => s.fleetActiveTab);
-  const inboxOwnsApprovals = fleetViewVisible && fleetActiveTab === 'approvals';
+  // One rule, shared with the deck header's countdown badge — see
+  // selectInboxOwnsApprovals.
+  const inboxOwnsApprovals = selectInboxOwnsApprovals({ fleetViewVisible, fleetActiveTab });
   const onboardingActive = useStore((s) => s.onboardingActive);
   const onboardingCompleted = useStore((s) => s.onboardingCompleted);
   const startOnboarding = useStore((s) => s.startOnboarding);

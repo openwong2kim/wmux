@@ -85,3 +85,20 @@ export function selectApprovalInbox(state: ApprovalInboxState): InboxItem[] {
 
   return items;
 }
+
+/**
+ * Is the Fleet cockpit's Approvals tab the surface that owns the pending
+ * approvals right now?
+ *
+ * DESIGN.md attention grammar: one event, at most TWO renditions. An approval
+ * had three — the dialog, the deck header's countdown badge, and the Fleet
+ * inbox's own countdown. This is the single signal both suppressors read: the
+ * standalone A2A / MCP dialogs (AppLayout) and the deck header badge
+ * (DeckApprovalCountdown). Two callers, one rule — the alternative is two
+ * copies of it drifting apart.
+ */
+export function selectInboxOwnsApprovals(
+  state: Pick<StoreState, 'fleetViewVisible' | 'fleetActiveTab'>,
+): boolean {
+  return state.fleetViewVisible && state.fleetActiveTab === 'approvals';
+}

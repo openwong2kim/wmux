@@ -1041,6 +1041,9 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
         state.channelsTabVisible = data.channelsTabVisible;
       }
       // Pane action cluster — default ON; only an explicit false hides it.
+      if (typeof data.titlebarClockVisible === 'boolean') {
+        state.titlebarClockVisible = data.titlebarClockVisible;
+      }
       if (typeof data.paneActionsVisible === 'boolean') {
         state.paneActionsVisible = data.paneActionsVisible;
       }

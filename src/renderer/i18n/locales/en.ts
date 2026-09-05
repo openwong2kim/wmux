@@ -957,6 +957,9 @@ export const en = {
   'settings.paneNewTerminalButtonDesc':
     'Adds a + that puts a SECOND terminal in this pane. wmux is built around one pane = one terminal — splitting is the usual way to get another — so this is off by default. Ctrl+T does the same thing without the button.',
   'settings.paneActionsVisibleDesc': 'Show new-terminal, split, and new-browser buttons in each pane\'s tab strip.',
+  'settings.titlebarClock': 'Clock in the titlebar',
+  'settings.titlebarClockDesc':
+    'Off by default — your OS already shows the time. Turn it on if you run wmux full-screen with the taskbar hidden.',
   'settings.currentVersion': 'Current',
   'settings.latestVersion': 'Latest',
   'settings.updateReady': 'Update ready',
