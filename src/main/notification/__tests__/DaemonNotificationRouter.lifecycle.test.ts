@@ -112,6 +112,10 @@ function stubHookRouter(decision: 'emit' | 'dedup'): HookSignalRouter {
     noteAgentOnPane: vi.fn(),
     isGovernedFor: vi.fn().mockReturnValue(false),
     governsDetectorStatus: vi.fn().mockReturnValue(false),
+    // ...including for the OSC 133 settle, which asks the same question of an
+    // at-prompt marker before the lifecycle tee these tests are about.
+    governsRunningState: vi.fn().mockReturnValue(false),
+    releaseHookTurnStart: vi.fn(),
   } as unknown as HookSignalRouter;
 }
 

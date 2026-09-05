@@ -58,6 +58,7 @@ interface Captured {
   agent?: (payload: { sessionId: string; event: unknown }) => void;
   active?: (payload: { sessionId: string; agentName?: string }) => void;
   processExit?: (payload: { sessionId: string; slug: string | null }) => void;
+  prompt?: (payload: { sessionId: string; event: unknown }) => void;
 }
 
 /**
@@ -86,6 +87,7 @@ function makeRouter(hookRouter?: HookSignalRouter) {
       if (event === 'session:agent') captured.agent = cb as Captured['agent'];
       if (event === 'session:active') captured.active = cb as Captured['active'];
       if (event === 'session:agentProcessExit') captured.processExit = cb as Captured['processExit'];
+      if (event === 'session:prompt') captured.prompt = cb as Captured['prompt'];
     }),
     off: vi.fn(),
   } as unknown as DaemonClient;
@@ -291,6 +293,81 @@ describe('DaemonNotificationRouter — an agent that died without a Stop settles
     captured.processExit?.({ sessionId: PTY, slug: 'claude' });
     expect(broadcastMetadataUpdateMock).not.toHaveBeenCalled();
     expect(hookRouter.releaseHookTurnStart).not.toHaveBeenCalled();
+    router.stop();
+  });
+});
+
+/**
+ * The prompt-speed settle. `StopFailure` is registered on both install paths
+ * but Claude Code 2.1.236 does not always emit it (a turn that dies on
+ * "API Error: Connection refused" after 10/10 retries produces no turn end at
+ * all), and the process-death edge needs an attribution the daemon's tracker
+ * often cannot make. OSC 133 needs neither: the marker names the pane's own
+ * PTY, and a shell drawing its prompt is proof nothing is running in it.
+ */
+describe('DaemonNotificationRouter — OSC 133 back-at-prompt closes the turn', () => {
+  beforeEach(() => {
+    broadcastMetadataUpdateMock.mockClear();
+    metadataHandlerMocks.lastBroadcastAgentStatus.delete(PTY);
+  });
+
+  const promptEvent = (type: string) => ({
+    sessionId: PTY,
+    event: { type, ts: 1, byteOffset: 10, ...(type === 'command_end' ? { exitCode: 0 } : {}) },
+  });
+
+  it('settles a latched pane to idle and releases the latch', () => {
+    const hookRouter = stubHookRouter(true);
+    const { router, captured } = makeRouter(hookRouter);
+    captured.agent?.(metadataEvent('agent.user_prompt_submit'));
+    expect(lastStatus()).toBe('running');
+
+    captured.prompt?.(promptEvent('command_end'));
+    expect(hookRouter.releaseHookTurnStart).toHaveBeenCalledWith(PTY);
+    expect(lastStatus()).toBe('idle');
+    router.stop();
+  });
+
+  it('accepts the other at-prompt markers too (A / B)', () => {
+    for (const marker of ['prompt_start', 'prompt_end']) {
+      broadcastMetadataUpdateMock.mockClear();
+      metadataHandlerMocks.lastBroadcastAgentStatus.delete(PTY);
+      const { router, captured } = makeRouter(stubHookRouter(true));
+      captured.prompt?.(promptEvent(marker));
+      expect(lastStatus()).toBe('idle');
+      router.stop();
+    }
+  });
+
+  it('ignores the command START marker — that is a turn beginning, not an end', () => {
+    const hookRouter = stubHookRouter(true);
+    const { router, captured } = makeRouter(hookRouter);
+    captured.prompt?.(promptEvent('command_start'));
+    expect(hookRouter.releaseHookTurnStart).not.toHaveBeenCalled();
+    expect(broadcastMetadataUpdateMock).not.toHaveBeenCalled();
+    router.stop();
+  });
+
+  it('leaves an UNLATCHED pane to the byte heuristic', () => {
+    const hookRouter = stubHookRouter(false);
+    const { router, captured } = makeRouter(hookRouter);
+    captured.prompt?.(promptEvent('command_end'));
+    expect(hookRouter.releaseHookTurnStart).not.toHaveBeenCalled();
+    expect(broadcastMetadataUpdateMock).not.toHaveBeenCalled();
+    router.stop();
+  });
+
+  it('never overwrites a finished turn the operator has not read yet', () => {
+    // The Stop hook already reported 'complete'. The shell coming back is not
+    // a reason to erase the one signal saying the work is done — but the turn
+    // IS over, so the latch still goes.
+    const hookRouter = stubHookRouter(true);
+    const { router, captured } = makeRouter(hookRouter);
+    metadataHandlerMocks.lastBroadcastAgentStatus.set(PTY, 'complete');
+    broadcastMetadataUpdateMock.mockClear();
+    captured.prompt?.(promptEvent('command_end'));
+    expect(hookRouter.releaseHookTurnStart).toHaveBeenCalledWith(PTY);
+    expect(broadcastMetadataUpdateMock).not.toHaveBeenCalled();
     router.stop();
   });
 });

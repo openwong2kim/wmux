@@ -30,6 +30,36 @@ import type { ChannelMessage } from '../../shared/channels';
 // daemon and local modes.
 const AGENT_EVENT_SUPPRESSION_MS = 10_000;
 
+/**
+ * The OSC 133 markers that mean the pane's shell is back at its OWN prompt:
+ * a foreground command ended (D), or a fresh prompt was drawn (A / B). Exactly
+ * the `false` branch of `PromptEventLog.isCommandRunning` — the same judgement,
+ * from the same marker stream, that the daemon reports as `commandRunning`.
+ */
+const AT_PROMPT_MARKERS: ReadonlySet<string> = new Set([
+  'command_end',
+  'prompt_start',
+  'prompt_end',
+]);
+
+/**
+ * The statuses a settle edge must never overwrite (the F5 rule, shared by the
+ * process-death edge below and the OSC 133 back-at-prompt edge): they are
+ * RESULTS the operator has not read yet, and neither the agent exiting nor its
+ * shell returning to a prompt un-finishes the turn that reported them.
+ */
+const UNREAD_RESULT_STATUSES: ReadonlySet<AgentStatus> = new Set<AgentStatus>([
+  'complete',
+  'awaiting_input',
+  'waiting',
+  'error',
+]);
+
+function holdsUnreadResult(ptyId: string): boolean {
+  const last = getLastBroadcastAgentStatus(ptyId);
+  return last !== undefined && UNREAD_RESULT_STATUSES.has(last);
+}
+
 interface AgentEventPayload {
   agent: string;
   status: AgentStatus;
@@ -958,6 +988,31 @@ export class DaemonNotificationRouter {
       }
     };
 
+    /**
+     * Release the pane's hook turn latch on the OSC 133 back-at-prompt edge and
+     * settle its dot, on the same METADATA_UPDATE funnel the process-death edge
+     * uses.
+     *
+     * Only a LATCHED pane is touched: the latch is the claim this edge exists to
+     * withdraw, and a pane that never had one is still the byte heuristic's to
+     * write. The latch is released FIRST, exactly as the death edge does it, so
+     * the broadcast is not vetoed by the gate it exists to escape — and it is
+     * released even when the broadcast is withheld, because a shell at a prompt
+     * is proof the turn is over either way.
+     */
+    const settleAtShellPrompt = (ptyId: string) => {
+      const router = this.getHookRouter?.() ?? null;
+      if (!router?.governsRunningState(ptyId, this.now())) return;
+      router.releaseHookTurnStart(ptyId);
+      // The F5 guard: a turn that already reported a result is not un-finished
+      // by its shell coming back.
+      if (holdsUnreadResult(ptyId)) return;
+      broadcastMetadataUpdate(this.getWindow(), {
+        ptyId,
+        agentStatus: 'idle',
+      });
+    };
+
     // OSC 133 D markers from daemon mode. Mirror of PTYBridge.OscParser
     // case 133 — the daemon already parsed the payload and forwarded a
     // PromptEvent; we only need to dispatch `command_end` to the
@@ -968,6 +1023,16 @@ export class DaemonNotificationRouter {
       try {
         const ev = payload.event as { type?: string; exitCode?: number } | null;
         if (!ev || typeof ev !== 'object') return;
+        // THE PROMPT-SPEED SETTLE. Shell integration is tier-1 authoritative in
+        // `isPaneAgentBusy`, above process truth: a shell that has printed its
+        // prompt again cannot be mid-turn, because whatever owned the PTY —
+        // the agent the operator exited, or one that died on a network error
+        // and so never sent a turn end — is gone. And unlike the process-death
+        // edge below it needs no attribution: this marker names the pane's own
+        // PTY, where `AgentProcessTracker` frequently cannot name the process
+        // at all (live dogfood: `agentAliveByPtyId` empty for a whole session,
+        // so a hook-latched pane sat lit for minutes after `claude` exited).
+        if (ev.type && AT_PROMPT_MARKERS.has(ev.type)) settleAtShellPrompt(payload.sessionId);
         if (ev.type !== 'command_end') return;
         const exitCode = typeof ev.exitCode === 'number' ? ev.exitCode : null;
         void this.emitOsc133Lifecycle(payload.sessionId, exitCode);
