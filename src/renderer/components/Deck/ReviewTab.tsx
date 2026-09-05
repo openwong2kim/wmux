@@ -298,7 +298,7 @@ export function ReviewTab(): React.ReactElement {
             —
           </span>
         ) : row.files > 0 ? (
-          <span className="font-mono text-[10.5px] text-[var(--text-sub)] shrink-0" {...tokenAttrs('textSub', 'text')}>
+          <span className="font-mono text-[11px] text-[var(--text-sub)] shrink-0" {...tokenAttrs('textSub', 'text')}>
             {row.files}{' '}
             <span className="text-[var(--text-muted)]">{t('review.files') || 'files'}</span>
             {' '}+{row.additions}{' '}−{row.deletions}
@@ -312,7 +312,7 @@ export function ReviewTab(): React.ReactElement {
           <button
             type="button"
             onClick={() => openDiff(row)}
-            className={`px-1.5 py-0.5 rounded text-[10.5px] text-[var(--text-muted)] hover:text-[var(--text-main)] border border-[var(--bg-surface)] opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity ${FOCUS_RING}`}
+            className={`px-1.5 py-0.5 rounded text-[11px] text-[var(--text-muted)] hover:text-[var(--text-main)] border border-[var(--bg-surface)] opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity ${FOCUS_RING}`}
             title={t('review.openDiffDesc') || 'Open this workspace and review its diff'}
             {...tokenAttrs('textMuted', 'text')}
           >
@@ -323,7 +323,7 @@ export function ReviewTab(): React.ReactElement {
           <button
             type="button"
             onClick={() => goTo(row.workspaceId)}
-            className={`px-1.5 py-0.5 rounded text-[10.5px] text-[var(--text-muted)] hover:text-[var(--text-main)] border border-[var(--bg-surface)] opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity ${FOCUS_RING}`}
+            className={`px-1.5 py-0.5 rounded text-[11px] text-[var(--text-muted)] hover:text-[var(--text-main)] border border-[var(--bg-surface)] opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity ${FOCUS_RING}`}
             title={t('review.goDesc') || 'Switch to this workspace'}
             {...tokenAttrs('textMuted', 'text')}
           >
@@ -346,7 +346,7 @@ export function ReviewTab(): React.ReactElement {
           {t('review.title') || 'Review'}
         </span>
         {!loading && (
-          <span className="font-mono text-[10.5px] text-[var(--text-muted)]" {...tokenAttrs('textMuted', 'text')}>
+          <span className="font-mono text-[11px] text-[var(--text-muted)]" {...tokenAttrs('textMuted', 'text')}>
             {dirty.length}/{rows.length} {t('review.dirtySuffix') || 'with changes'}
           </span>
         )}

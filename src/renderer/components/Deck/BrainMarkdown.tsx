@@ -30,9 +30,14 @@ function renderInline(text: string, keyPrefix: string): React.ReactNode[] {
     const m = match[0];
     if (m.startsWith('`')) {
       parts.push(
+        // Mono on a faint surface, no accent: inline code is a machine token
+        // inside prose, not a "needs you" point. Amber is budgeted at 5±2
+        // meaning-points per screen (DESIGN.md Color) and a transcript can
+        // carry dozens of these in one reply, which alone blew the budget.
         <code
           key={`${keyPrefix}c${match.index}`}
-          className="px-1 rounded font-mono text-[12px] bg-[var(--bg-surface)] text-[var(--accent)]"
+          data-brain-md-code-inline
+          className="px-1 rounded font-mono text-[12px] bg-[color-mix(in_srgb,var(--bg-surface)_65%,transparent)] text-[var(--text-sub)]"
         >
           {m.slice(1, -1)}
         </code>,

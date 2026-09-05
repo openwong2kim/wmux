@@ -149,14 +149,14 @@ export function DeckLoopPanel({
               <div className="flex items-baseline gap-2">
                 <span
                   data-deck-loop-objective
-                  className="flex-1 text-[12.5px] font-semibold text-[var(--text-main)] leading-relaxed break-words"
+                  className="flex-1 text-[13px] font-semibold text-[var(--text-main)] leading-relaxed break-words"
                   {...tokenAttrs('textMain', 'text')}
                 >
                   {loop.objective}
                 </span>
                 <span
                   data-deck-loop-status
-                  className="text-[10.5px] font-mono shrink-0 text-[var(--text-sub)]"
+                  className="text-[11px] font-mono shrink-0 text-[var(--text-sub)]"
                   {...tokenAttrs('textSub', 'text')}
                 >
                   {loop.status}
@@ -183,7 +183,7 @@ export function DeckLoopPanel({
                           .setTask({ workspaceId, taskId: task.id, passes: !task.passes })
                           .then(() => refresh());
                       }}
-                      className={`block w-full text-left text-[11.5px] font-mono leading-relaxed hover:opacity-80 transition-opacity ${
+                      className={`block w-full text-left text-[11px] font-mono leading-relaxed hover:opacity-80 transition-opacity ${
                         task.passes ? 'text-[var(--text-muted)] line-through' : 'text-[var(--text-sub)]'
                       } ${FOCUS_RING}`}
                       {...(task.passes ? tokenAttrs('textMuted', 'text') : tokenAttrs('textSub', 'text'))}
@@ -201,7 +201,7 @@ export function DeckLoopPanel({
                     onClick={() => {
                       if (workspaceId) void resolvedApi.resume(workspaceId).then(() => refresh());
                     }}
-                    className={`px-2.5 py-1 rounded-[4px] text-[12px] font-semibold bg-[var(--accent)] text-[var(--bg-base)] shadow-[inset_0_1px_0_rgba(255,255,255,0.22),0_1px_2px_rgba(0,0,0,0.3)] hover:bg-[color-mix(in_srgb,var(--accent)_88%,var(--text-main))] transition-colors ${FOCUS_RING}`}
+                    className={`px-2.5 py-1 rounded-[4px] text-[12px] font-semibold bg-[var(--accent)] text-[var(--bg-base)] shadow-[inset_0_1px_0_color-mix(in_srgb,var(--surface-highlight)_22%,transparent),0_1px_2px_rgba(0,0,0,0.3)] hover:bg-[color-mix(in_srgb,var(--accent)_88%,var(--text-main))] transition-colors ${FOCUS_RING}`}
                     {...tokenAttrs('accent', 'bg')}
                   >
                     {t('deck.loopResume') || 'Resume'}

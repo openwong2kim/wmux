@@ -56,6 +56,55 @@
   font-display: swap;
 }
 
+/* Inter — the UI/prose typeface DESIGN.md specifies (Copyright (c) 2016 The
+ * Inter Project Authors). Latin + Latin Extended subsets; anything outside them
+ * (Hangul, CJK, and the ▾ ▴ ● ✓ ✕ glyphs the chrome draws) falls through to the
+ * system UI face via the --font-ui stack, which is the intended behaviour.
+ *
+ * The declared axis is the file's FULL 100..900, not the 400..600 DESIGN.md
+ * names. A variable font is clamped to the range its @font-face advertises and
+ * Chromium will not synthesise past it, so declaring 400..600 would have
+ * silently flattened every `font-bold` (28 sites) and `fontWeight: 700` (2) to
+ * 600 — taking DESIGN.md's own "Orchestrator = main 700 vs You = muted 600"
+ * speaker hierarchy with it. These are the same bytes Google serves for
+ * `wght@100..900`; only the declaration was narrow.
+ *
+ * The three combining marks that Google duplicates across both subsets
+ * (U+0304 macron, U+0308 diaeresis, U+0329 vertical line below) are dropped
+ * from latin-ext and kept in latin. When two faces of one family both cover a
+ * codepoint the LATER @font-face wins, so leaving them in latin-ext meant a
+ * single stray combining accent pulled the 85 KB latin-ext file even though the
+ * already-loaded latin file has the glyph. */
+@font-face {
+  font-family: 'Inter';
+  src: url('../assets/fonts/Inter-latin.woff2') format('woff2');
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA,
+    U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193,
+    U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: 'Inter';
+  src: url('../assets/fonts/Inter-latin-ext.woff2') format('woff2');
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7,
+    U+02DD-02FF, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF,
+    U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+
+/* ─── UI Type Stack (theme-independent) ──────────────────────────────────────
+ * DESIGN.md Typography: UI/prose is Inter 400/500/600. Inter is bundled above,
+ * so the stack leads with it and keeps the system faces as the fallback for
+ * scripts Inter does not cover. Terminal/mono stacks are separate and owned by
+ * utils/terminalFont.ts + the @font-face families above. */
+:root {
+  --font-ui: Inter, system-ui, -apple-system, 'Segoe UI', sans-serif;
+}
+
 /* ─── Theme CSS Variables ────────────────────────────────────────────────── */
 
 /* Amber — the redesign default (designs/design-system-20260711). Warm
@@ -79,6 +128,8 @@
   --accent-green: #8FBF7F;
   --accent-red: #D96C6C;
   --accent-yellow: #E8A33D;
+  --bg-overlay-scrim: rgba(0, 0, 0, 0.55);
+  --surface-highlight: #FFFFFF;
   --accent-rgb: 232, 163, 61;
   --accent-blue-rgb: 110, 155, 196;
   --bg-surface-rgb: 32, 32, 36;
@@ -105,6 +156,8 @@
   --accent-green: #3D6750;
   --accent-red: #BC002D;
   --accent-yellow: #A06A1A;
+  --bg-overlay-scrim: rgba(0, 0, 0, 0.35);
+  --surface-highlight: #FFFFFF;
   --accent-rgb: 188, 0, 45;
   --accent-blue-rgb: 28, 77, 106;
   --bg-surface-rgb: 226, 221, 212;
@@ -127,6 +180,8 @@
   --accent-green: #A6E3A1;
   --accent-red: #F38BA8;
   --accent-yellow: #F9E2AF;
+  --bg-overlay-scrim: rgba(0, 0, 0, 0.55);
+  --surface-highlight: #FFFFFF;
   --accent-rgb: 137, 180, 250;
   --accent-blue-rgb: 137, 180, 250;
   --bg-surface-rgb: 49, 50, 68;
@@ -149,6 +204,8 @@
   --accent-green: #909090;
   --accent-red: #FF5555;
   --accent-yellow: #C0C0C0;
+  --bg-overlay-scrim: rgba(0, 0, 0, 0.55);
+  --surface-highlight: #FFFFFF;
   --accent-rgb: 160, 160, 160;
   --accent-blue-rgb: 160, 160, 160;
   --bg-surface-rgb: 26, 26, 26;
@@ -171,6 +228,8 @@
   --accent-green: #4EBF8B;
   --accent-red: #E8554E;
   --accent-yellow: #F2C85B;
+  --bg-overlay-scrim: rgba(0, 0, 0, 0.55);
+  --surface-highlight: #FFFFFF;
   --accent-rgb: 91, 141, 239;
   --accent-blue-rgb: 91, 141, 239;
   --bg-surface-rgb: 30, 46, 74;
@@ -193,6 +252,8 @@
   --accent-green: #5AAE6A;
   --accent-red: #E84040;
   --accent-yellow: #F2C744;
+  --bg-overlay-scrim: rgba(0, 0, 0, 0.55);
+  --surface-highlight: #FFFFFF;
   --accent-rgb: 232, 64, 64;
   --accent-blue-rgb: 106, 160, 204;
   --bg-surface-rgb: 58, 26, 26;
@@ -215,6 +276,8 @@
   --accent-green: #8AAA70;
   --accent-red: #CC6B5A;
   --accent-yellow: #C89060;
+  --bg-overlay-scrim: rgba(0, 0, 0, 0.55);
+  --surface-highlight: #FFFFFF;
   --accent-rgb: 196, 160, 85;
   --accent-blue-rgb: 127, 166, 201;
   --bg-surface-rgb: 46, 42, 34;
@@ -237,6 +300,8 @@
   --accent-green: #909090;
   --accent-red: #FF4444;
   --accent-yellow: #A0A0A0;
+  --bg-overlay-scrim: rgba(0, 0, 0, 0.55);
+  --surface-highlight: #FFFFFF;
   --accent-rgb: 192, 192, 192;
   --accent-blue-rgb: 192, 192, 192;
   --bg-surface-rgb: 10, 10, 10;
@@ -261,6 +326,8 @@
   --accent-green: #1F6940;
   --accent-red: #C60C30;
   --accent-yellow: #9B6A07;
+  --bg-overlay-scrim: rgba(0, 0, 0, 0.35);
+  --surface-highlight: #FFFFFF;
   --accent-rgb: 0, 52, 120;
   --accent-blue-rgb: 0, 52, 120;
   --bg-surface-rgb: 221, 221, 228;
@@ -373,8 +440,9 @@ html, body, #root {
   overflow: hidden;
   background-color: var(--bg-base);
   color: var(--text-main);
-  /* Inter는 번들되지 않아 제거 — system-ui 우선(mac=SF, win=Segoe UI 자동). */
-  font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
+  /* Inter is bundled again (owner re-approved 2026-09-05): the UI face is the
+     one DESIGN.md names, with system-ui behind it for non-Latin scripts. */
+  font-family: var(--font-ui);
 }
 
 /* 네이티브 버튼 외형 제거: macOS에서 <button>이 Aqua 그라데이션·베벨·그림자를

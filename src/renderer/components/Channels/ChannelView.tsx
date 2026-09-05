@@ -400,7 +400,7 @@ export function ChannelViewContent({
           {channel.status === 'archived' && (
             <span
               data-channel-archived-badge
-              className="text-[9px] font-mono uppercase tracking-widest text-[var(--text-muted)]"
+              className="text-[10px] font-mono uppercase tracking-widest text-[var(--text-muted)]"
               {...tokenAttrs('textMuted', 'text')}
             >
               {t('channels.archived') || 'archived'}
@@ -636,7 +636,7 @@ export function ChannelViewContent({
                     </span>
                   )}
                   <span
-                    className="text-[9px] font-mono text-[var(--text-muted)]"
+                    className="text-[10px] font-mono text-[var(--text-muted)]"
                     data-channel-message-time
                     {...tokenAttrs('textMuted', 'text')}
                   >
@@ -652,7 +652,7 @@ export function ChannelViewContent({
                 </div>
                 {myStatus && (
                   <div
-                    className={`text-[9px] font-mono self-end ${
+                    className={`text-[10px] font-mono self-end ${
                       myStatus === 'nudge_exhausted'
                         ? 'text-[var(--accent-yellow)]'
                         : 'text-[var(--text-muted)]'

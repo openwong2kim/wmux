@@ -161,7 +161,7 @@ export function DeckTabs({
             <tab.Icon size={15} />
             {/* 활성 Agent 탭에만 붙는 힌트 — 재클릭하면 모델 메뉴가 열린다는 표시. */}
             {tabHasModelMenu && isActive && (
-              <span aria-hidden="true" className="absolute bottom-0.5 right-1 text-[8px] opacity-70">▾</span>
+              <span aria-hidden="true" className="absolute bottom-0.5 right-1 text-[10px] opacity-70">▾</span>
             )}
             {unread && (
               <span aria-hidden="true" data-deck-tab-unread className={DECK_ICON_BADGE} {...tokenAttrs('accent', 'bg')}>
@@ -204,7 +204,7 @@ export function DeckTabs({
                         onCommanderModelSelect?.(o.value);
                         setModelMenuOpen(false);
                       }}
-                      className={`flex items-center justify-between w-full px-2.5 py-1 text-left text-[11.5px] font-medium transition-colors ${
+                      className={`flex items-center justify-between w-full px-2.5 py-1 text-left text-[11px] font-medium transition-colors ${
                         sel
                           ? 'text-[var(--text-main)] font-semibold'
                           : 'text-[var(--text-sub)] hover:text-[var(--text-main)]'
@@ -212,7 +212,7 @@ export function DeckTabs({
                     >
                       <span>{o.value === '' ? t('deck.orchestratorModelDefault') : o.label}</span>
                       {sel && (
-                        <span aria-hidden="true" className="text-[var(--accent-blue)] text-[8px]" {...tokenAttrs('accent', 'text')}>
+                        <span aria-hidden="true" className="text-[var(--accent-blue)] text-[10px]" {...tokenAttrs('accent', 'text')}>
                           ●
                         </span>
                       )}

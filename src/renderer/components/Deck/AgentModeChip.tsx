@@ -36,39 +36,47 @@ export interface AgentModeApi {
 /** Order shown in the dropdown, least → most autonomous. */
 const MODE_ORDER: readonly AgentMode[] = ['off', 'assist', 'danger'];
 
-// Per-mode chip skin so the CURRENT autonomy state reads at a glance (the chip
-// is the one always-visible answer to "why is it quiet/talking?"). Colors map
-// straight onto the DESIGN.md grammar, no new accents:
-//   off     nothing alive → neutral graphite + gray idle dot
-//   assist  alive, safe   → warm --accent (alive/attention) + subtle warm tint
-//   danger  alive + destructive → red --accent-red outline (destructive = red
-//           tint at rest, never a fill/wash) + red dot, bold for weight
-// `border` is kept on every state (transparent when off) so switching modes
-// never shifts the bar's layout by a pixel.
-const MODE_SKIN: Record<AgentMode, { btn: string; dot: string }> = {
-  off: {
-    btn: 'border border-transparent text-[var(--text-sub)] bg-[rgba(var(--bg-surface-rgb),0.6)]',
-    dot: 'bg-[var(--text-muted)]',
-  },
-  assist: {
-    btn: 'border border-[rgba(var(--accent-rgb),0.45)] text-[var(--accent)] bg-[rgba(var(--accent-rgb),0.12)] font-medium',
-    dot: 'bg-[var(--accent)]',
-  },
-  danger: {
-    btn: 'border border-[var(--accent-red)] text-[var(--accent-red)] bg-[rgba(var(--bg-surface-rgb),0.6)] font-semibold',
-    dot: 'bg-[var(--accent-red)]',
-  },
+// Per-mode DOT so the CURRENT autonomy state reads at a glance (the chip is the
+// one always-visible answer to "why is it quiet/talking?"). The chip body stays
+// boxless and neutral: DESIGN.md's toolbar rule is text-first until hover, and
+// its status-dot vocabulary already carries the meaning —
+//   off     nothing alive        → gray idle dot
+//   assist  alive, safe          → warm --accent (alive/attention) dot
+//   danger  alive + destructive  → red --accent-red dot
+// The previous skin painted a red-tinted bordered pill for `danger` and a warm
+// tinted pill for `assist` at rest, which spent two amber/attention points on a
+// control that is idle most of the time and boxed a toolbar button that the
+// grammar says should be boxless.
+const MODE_DOT: Record<AgentMode, string> = {
+  off: 'bg-[var(--text-muted)]',
+  assist: 'bg-[var(--accent)]',
+  danger: 'bg-[var(--accent-red)]',
+};
+
+// `danger` is the one mode where losing the pill costs real signal: it launches
+// Claude with --dangerously-skip-permissions, and a 6px dot is a thin thing to
+// hang that on. It keeps a text-level cue — the LABEL in --accent-red, no fill
+// and no border, which is still inside the "destructive = red tint at rest,
+// never a wash" rule — while `assist` and `off` stay neutral text. The dot is
+// 8px for every mode so the row does not reflow when the mode changes.
+const MODE_TEXT: Record<AgentMode, string> = {
+  off: '',
+  assist: '',
+  danger: 'text-[var(--accent-red)]',
 };
 
 /** The mode arrives over IPC, so it is not guaranteed to be one of ours: a main
  *  process from a different build (a downgrade, or a dev renderer hot-reloaded
  *  ahead of a stale main) can still answer with a retired name like `auto`.
- *  Indexing MODE_SKIN directly then yields undefined and `.btn` throws, which
- *  takes the whole deck rail down through its ErrorBoundary — a cosmetic lookup
- *  killing a surface the operator steers the fleet from. Fall back to the `off`
- *  skin: the most conservative badge, and never a crash. */
-function modeSkin(mode: AgentMode): { btn: string; dot: string } {
-  return MODE_SKIN[mode] ?? MODE_SKIN.off;
+ *  Indexing MODE_DOT directly then yields undefined, which used to take the
+ *  whole deck rail down through its ErrorBoundary — a cosmetic lookup killing a
+ *  surface the operator steers the fleet from. Fall back to the `off` dot: the
+ *  most conservative badge, and never a crash. */
+function modeDot(mode: AgentMode): string {
+  return MODE_DOT[mode] ?? MODE_DOT.off;
+}
+function modeText(mode: AgentMode): string {
+  return MODE_TEXT[mode] ?? MODE_TEXT.off;
 }
 
 function modeLabel(t: (k: string) => string, mode: AgentMode): string {
@@ -181,13 +189,18 @@ export function AgentModeChip({
         aria-haspopup="listbox"
         aria-expanded={open}
         onClick={() => setOpen((v) => !v)}
-        className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md text-[11px] hover:opacity-80 transition-opacity ${modeSkin(mode).btn} ${FOCUS_RING}`}
+        className={`ui-chip-boxless inline-flex items-center gap-1.5 px-2 py-0.5 text-[11px] ${modeText(mode)} ${FOCUS_RING}`}
+        // The dot is decorative, so without this a screen reader hears only
+        // "Mode: danger" with no statement of what danger means.
+        aria-label={`${t('deck.mode.label') || 'Mode'}: ${modeLabel(t, mode)}${
+          modeDesc(t, mode) ? ` — ${modeDesc(t, mode)}` : ''
+        }`}
         title={modeDesc(t, mode)}
       >
         <span
           aria-hidden="true"
           data-agent-mode-dot
-          className={`inline-block w-1.5 h-1.5 rounded-full shrink-0 ${modeSkin(mode).dot}`}
+          className={`inline-block w-2 h-2 rounded-full shrink-0 ${modeDot(mode)}`}
         />
         {t('deck.mode.label') || 'Mode'}: {modeLabel(t, mode)}
       </button>

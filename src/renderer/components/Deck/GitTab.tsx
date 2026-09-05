@@ -369,7 +369,7 @@ export function GitTab({ cwd }: { cwd?: string } = {}): React.ReactElement {
         </span>
         {repoPath && (
           <span
-            className="font-mono text-[10.5px] text-[var(--text-muted)] truncate"
+            className="font-mono text-[11px] text-[var(--text-muted)] truncate"
             title={repoPath}
             {...tokenAttrs('textMuted', 'text')}
           >
@@ -384,7 +384,7 @@ export function GitTab({ cwd }: { cwd?: string } = {}): React.ReactElement {
             onClick={() => handleDiff(currentWorktree || repoPath)}
             title={t('git.diffDesc') || 'Open the diff view for this repo'}
             data-git-diff-current
-            className={`px-1.5 py-0.5 rounded text-[10.5px] text-[var(--text-sub)] hover:text-[var(--text-main)] border border-[var(--bg-surface)] ${FOCUS_RING}`}
+            className={`px-1.5 py-0.5 rounded text-[11px] text-[var(--text-sub)] hover:text-[var(--text-main)] border border-[var(--bg-surface)] ${FOCUS_RING}`}
             {...tokenAttrs('textSub', 'text')}
           >
             {t('git.diff') || 'Diff'}
@@ -457,7 +457,7 @@ export function GitTab({ cwd }: { cwd?: string } = {}): React.ReactElement {
                 <button
                   type="button"
                   onClick={() => handleDiff(wt.path)}
-                  className={`px-1.5 py-0.5 rounded text-[10.5px] text-[var(--text-muted)] hover:text-[var(--text-main)] border border-[var(--bg-surface)] opacity-0 group-hover:opacity-100 transition-opacity ${FOCUS_RING}`}
+                  className={`px-1.5 py-0.5 rounded text-[11px] text-[var(--text-muted)] hover:text-[var(--text-main)] border border-[var(--bg-surface)] opacity-0 group-hover:opacity-100 transition-opacity ${FOCUS_RING}`}
                   title={t('git.diffDesc') || 'Open the diff view for this worktree'}
                   {...tokenAttrs('textMuted', 'text')}
                 >
@@ -466,7 +466,7 @@ export function GitTab({ cwd }: { cwd?: string } = {}): React.ReactElement {
                 <button
                   type="button"
                   onClick={() => handleOpen(wt)}
-                  className={`px-1.5 py-0.5 rounded text-[10.5px] text-[var(--text-muted)] hover:text-[var(--text-main)] border border-[var(--bg-surface)] opacity-0 group-hover:opacity-100 transition-opacity ${FOCUS_RING}`}
+                  className={`px-1.5 py-0.5 rounded text-[11px] text-[var(--text-muted)] hover:text-[var(--text-main)] border border-[var(--bg-surface)] opacity-0 group-hover:opacity-100 transition-opacity ${FOCUS_RING}`}
                   title={t('git.openDesc') || 'Open as a new workspace'}
                   {...tokenAttrs('textMuted', 'text')}
                 >
@@ -478,7 +478,7 @@ export function GitTab({ cwd }: { cwd?: string } = {}): React.ReactElement {
                     type="button"
                     onClick={() => void handleMerge(wt)}
                     disabled={busy || session !== null}
-                    className={`px-1.5 py-0.5 rounded text-[10.5px] text-[var(--text-muted)] hover:text-[var(--text-main)] border border-[var(--bg-surface)] opacity-0 group-hover:opacity-100 transition-opacity disabled:opacity-40 ${FOCUS_RING}`}
+                    className={`px-1.5 py-0.5 rounded text-[11px] text-[var(--text-muted)] hover:text-[var(--text-main)] border border-[var(--bg-surface)] opacity-0 group-hover:opacity-100 transition-opacity disabled:opacity-40 ${FOCUS_RING}`}
                     title={t('git.mergeDesc') || 'Merge this worktree into the base branch (isolated, verified)'}
                     {...tokenAttrs('textMuted', 'text')}
                   >
@@ -494,7 +494,7 @@ export function GitTab({ cwd }: { cwd?: string } = {}): React.ReactElement {
                     type="button"
                     onClick={() => void handleRemove(wt)}
                     disabled={busy}
-                    className={`px-1.5 py-0.5 rounded text-[10.5px] text-[var(--text-muted)] hover:text-[var(--accent-red,#f87171)] border border-[var(--bg-surface)] opacity-0 group-hover:opacity-100 transition-opacity disabled:opacity-40 ${FOCUS_RING}`}
+                    className={`px-1.5 py-0.5 rounded text-[11px] text-[var(--text-muted)] hover:text-[var(--accent-red)] border border-[var(--bg-surface)] opacity-0 group-hover:opacity-100 transition-opacity disabled:opacity-40 ${FOCUS_RING}`}
                     title={t('git.removeDesc') || 'Remove worktree (refused if dirty)'}
                     {...tokenAttrs('textMuted', 'text')}
                   >
@@ -568,7 +568,7 @@ export function GitTab({ cwd }: { cwd?: string } = {}): React.ReactElement {
               <button
                 type="button"
                 onClick={openIntegration}
-                className={`px-1.5 py-0.5 rounded text-[10.5px] text-[var(--text-sub)] hover:text-[var(--text-main)] border border-[var(--bg-surface)] ${FOCUS_RING}`}
+                className={`px-1.5 py-0.5 rounded text-[11px] text-[var(--text-sub)] hover:text-[var(--text-main)] border border-[var(--bg-surface)] ${FOCUS_RING}`}
                 title={t('git.mergeOpenConflictDesc') || 'Open the integration worktree as a workspace to resolve conflicts with Claude'}
                 {...tokenAttrs('textSub', 'text')}
               >
@@ -580,7 +580,7 @@ export function GitTab({ cwd }: { cwd?: string } = {}): React.ReactElement {
                 type="button"
                 onClick={() => void handleLand()}
                 disabled={busy}
-                className={`px-2 py-0.5 rounded text-[10.5px] text-[var(--text-main)] border border-[var(--bg-surface)] disabled:opacity-40 ${FOCUS_RING}`}
+                className={`px-2 py-0.5 rounded text-[11px] text-[var(--text-main)] border border-[var(--bg-surface)] disabled:opacity-40 ${FOCUS_RING}`}
                 title={t('git.landDesc') || 'Commit the verified merge and fast-forward the base branch'}
                 {...tokenAttrs('textMain', 'text')}
               >
@@ -591,7 +591,7 @@ export function GitTab({ cwd }: { cwd?: string } = {}): React.ReactElement {
               type="button"
               onClick={() => void handleDiscard()}
               disabled={busy}
-              className={`px-1.5 py-0.5 rounded text-[10.5px] text-[var(--text-muted)] hover:text-[var(--accent-red)] border border-[var(--bg-surface)] disabled:opacity-40 ${FOCUS_RING}`}
+              className={`px-1.5 py-0.5 rounded text-[11px] text-[var(--text-muted)] hover:text-[var(--accent-red)] border border-[var(--bg-surface)] disabled:opacity-40 ${FOCUS_RING}`}
               title={t('git.discardDesc') || 'Abort the merge and remove the integration worktree (base unchanged)'}
               {...tokenAttrs('textMuted', 'text')}
             >
@@ -624,7 +624,7 @@ export function GitTab({ cwd }: { cwd?: string } = {}): React.ReactElement {
             type="button"
             onClick={() => void handleCreate()}
             disabled={busy || !newBranch.trim()}
-            className={`px-2 py-0.5 rounded text-[10.5px] text-[var(--text-sub)] hover:text-[var(--text-main)] border border-[var(--bg-surface)] disabled:opacity-40 ${FOCUS_RING}`}
+            className={`px-2 py-0.5 rounded text-[11px] text-[var(--text-sub)] hover:text-[var(--text-main)] border border-[var(--bg-surface)] disabled:opacity-40 ${FOCUS_RING}`}
             {...tokenAttrs('textSub', 'text')}
           >
             {t('git.create') || 'Create'}

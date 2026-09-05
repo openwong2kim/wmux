@@ -241,6 +241,8 @@ export interface FullCssPalette {
   accentGreen: string;     // = success
   accentRed: string;       // = danger
   accentYellow: string;    // = warning
+  overlayScrim: string;    // derived — modal/dialog scrim
+  surfaceHighlight: string; // derived — specular top-inset on filled surfaces
 }
 
 /** Expand the 11 manual UI tokens to the 14 CSS variables we ship at runtime. */
@@ -263,6 +265,19 @@ export function deriveFullPalette(tokens: UIThemeTokens): FullCssPalette {
     accentGreen: tokens.success,
     accentRed: tokens.danger,
     accentYellow: tokens.warning,
+    // The scrim is a neutral black veil, not a themed hue: it has to darken
+    // whatever the theme paints underneath so a dialog reads as modal. A light
+    // theme needs less of it — 0.55 over a near-white page reads as a blackout
+    // rather than a dimming — so the veil follows the theme's polarity.
+    overlayScrim: lightTheme ? 'rgba(0, 0, 0, 0.35)' : 'rgba(0, 0, 0, 0.55)',
+    // The specular top-inset highlight on a FILLED surface (accent CTA, danger
+    // CTA, toast, colour swatch). It models a light source above the control,
+    // so it is white on every theme INCLUDING the light ones: those fills are
+    // saturated accent colours, not the page background, and a dark inset there
+    // reads as a groove pressed into the button rather than a raised edge.
+    // This is why it cannot be a --text-main mix — on hinomaru/taegeuk
+    // --text-main is near-black and inverts the whole "machined" affordance.
+    surfaceHighlight: '#FFFFFF',
   };
 }
 
@@ -399,7 +414,8 @@ export const CSS_VAR_MAP: Record<keyof FullCssPalette, string> = {
   textMuted: '--text-muted', textSubtle: '--text-subtle', textSub: '--text-sub', textSub2: '--text-sub2',
   textMain: '--text-main', accent: '--accent', accentCursor: '--accent-cursor',
   accentBlue: '--accent-blue', accentGreen: '--accent-green', accentRed: '--accent-red',
-  accentYellow: '--accent-yellow',
+  accentYellow: '--accent-yellow', overlayScrim: '--bg-overlay-scrim',
+  surfaceHighlight: '--surface-highlight',
 };
 
 /** Apply a custom theme to document root — derives the 7 secondary tokens. */

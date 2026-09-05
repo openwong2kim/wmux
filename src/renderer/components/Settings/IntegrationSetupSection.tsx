@@ -405,7 +405,7 @@ export function IntegrationSetupSection({
 
   return (
     <div
-      className="rounded-lg p-4 flex flex-col gap-3"
+      className="rounded-[7px] p-4 flex flex-col gap-3"
       style={{ backgroundColor: 'var(--bg-mantle)', border: '1px solid var(--bg-surface)' }}
       data-integration-setup
     >
@@ -534,7 +534,7 @@ function SetupRow({
         {model.state === 'error' && (
           <span
             className="text-[11px]"
-            style={{ color: 'var(--accent-red, #f38ba8)' }}
+            style={{ color: 'var(--accent-red)' }}
             data-setup-row-error
           >
             {/* A skip is not a crash: it says what wmux chose not to touch and

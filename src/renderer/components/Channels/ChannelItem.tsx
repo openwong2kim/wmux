@@ -108,7 +108,7 @@ export function ChannelItemView({
         <span
           data-channel-observed-badge
           title={observedLabel}
-          className="flex-shrink-0 text-[8px] font-mono uppercase tracking-wide px-1 py-0.5 rounded text-[var(--text-muted)] bg-[rgba(var(--bg-surface-rgb),0.6)]"
+          className="flex-shrink-0 text-[10px] font-mono uppercase tracking-wide px-1 py-0.5 rounded text-[var(--text-muted)] bg-[rgba(var(--bg-surface-rgb),0.6)]"
           {...tokenAttrs('textMuted', 'text')}
         >
           {observedLabel}
@@ -117,7 +117,7 @@ export function ChannelItemView({
       {showBadge && (
         <span
           data-channel-mention={mentioned ? 'true' : undefined}
-          className={`text-[var(--bg-base)] text-[9px] font-bold min-w-[16px] h-4 flex items-center justify-center rounded-full px-1 flex-shrink-0 ${
+          className={`text-[var(--bg-base)] text-[10px] font-bold min-w-[16px] h-4 flex items-center justify-center rounded-full px-1 flex-shrink-0 ${
             mentioned ? 'bg-[var(--accent-red)]' : 'bg-[var(--accent)]'
           }`}
           {...tokenAttrs(mentioned ? 'danger' : 'accent', 'accent')}

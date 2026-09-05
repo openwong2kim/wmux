@@ -170,7 +170,7 @@ export default function MiniSidebar() {
                 {label}
                 {unreadCount > 0 && (
                   <span
-                    className="absolute -top-0.5 -right-0.5 bg-[var(--bg-surface)] text-[var(--text-main)] text-[8px] font-bold rounded-full min-w-[12px] h-3 flex items-center justify-center px-0.5 leading-none ring-1 ring-[var(--border-soft)]"
+                    className="absolute -top-0.5 -right-0.5 bg-[var(--bg-surface)] text-[var(--text-main)] text-[10px] font-bold rounded-full min-w-[14px] h-3.5 flex items-center justify-center px-0.5 leading-none ring-1 ring-[var(--border-soft)]"
                     title={t('sidebar.unreadCount', { count: unreadCount })}
                     {...tokenAttrs('bgSurface', 'bg')}
                     {...tokenAttrs('textMain', 'text')}
@@ -180,7 +180,7 @@ export default function MiniSidebar() {
                 )}
                 {agentIcon && (
                   <span
-                    className={`absolute -bottom-0.5 -right-0.5 text-[8px] leading-none ${agentIcon.className} ${agentStatus === 'running' ? 'animate-pulse' : ''}`}
+                    className={`absolute -bottom-0.5 -right-0.5 text-[10px] leading-none ${agentIcon.className} ${agentStatus === 'running' ? 'animate-pulse' : ''}`}
                     title={`${ws.agentName ? `${ws.agentName} — ` : ''}${t(agentIcon.labelKey)}`}
                   >
                     {agentIcon.dot}

@@ -228,6 +228,7 @@ function MissionsSection(): React.ReactElement {
       <div className="flex items-center">
         <button
           type="button"
+          // eslint-disable-next-line no-restricted-syntax -- off-scale size owned by PR #1219; folded onto the ramp there to avoid a cross-PR conflict.
           className={`min-w-0 flex-1 flex items-center gap-1 px-4 pt-1 pb-1 text-[9px] font-mono font-semibold tracking-widest text-[var(--text-muted)] uppercase hover:text-[var(--text-subtle)] transition-colors ${FOCUS_RING}`}
           onClick={() => setExpanded((v) => !v)}
           aria-expanded={expanded}
@@ -249,6 +250,7 @@ function MissionsSection(): React.ReactElement {
         {expanded && (
           <button
             type="button"
+            // eslint-disable-next-line no-restricted-syntax -- off-scale size owned by PR #1219; folded onto the ramp there to avoid a cross-PR conflict.
             className={`shrink-0 pr-4 pl-1 pt-1 pb-1 text-[9px] font-mono uppercase tracking-widest text-[var(--text-subtle)] hover:text-[var(--accent-blue)] transition-colors ${FOCUS_RING}`}
             onClick={() => useStore.getState().setWorktaskCleanupVisible(true)}
             aria-label={t('missions.cleanUpTooltip')}
@@ -269,6 +271,7 @@ function MissionsSection(): React.ReactElement {
             {openGroups.map((group) => (
               <div key={group.parentId} data-missions-parent={group.parentId}>
                 <div
+                  // eslint-disable-next-line no-restricted-syntax -- off-scale size owned by PR #1219; folded onto the ramp there to avoid a cross-PR conflict.
                   className="px-4 py-0.5 truncate text-[9px] font-mono uppercase tracking-widest text-[var(--text-subtle)]"
                   title={group.parentName}
                 >
@@ -284,6 +287,7 @@ function MissionsSection(): React.ReactElement {
             <div data-missions-done-group>
               <button
                 type="button"
+                // eslint-disable-next-line no-restricted-syntax -- off-scale size owned by PR #1219; folded onto the ramp there to avoid a cross-PR conflict.
                 className={`w-full flex items-center gap-1 px-4 py-0.5 text-[9px] font-mono uppercase tracking-widest text-[var(--text-muted)] hover:text-[var(--text-subtle)] transition-colors ${FOCUS_RING}`}
                 onClick={() => setDoneExpanded((v) => !v)}
                 aria-expanded={doneExpanded}

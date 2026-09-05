@@ -180,7 +180,7 @@ function WorkspaceRosterSummary({
       // behind that already-proven guard instead of leaving the mousedown
       // preventDefault below as the single line of defence.
       data-workspace-agent-roster
-      className={`mt-0.5 flex flex-shrink-0 items-center gap-0.5 rounded px-0.5 text-[9px] font-mono tabular-nums text-[var(--text-muted)] transition-colors hover:text-[var(--text-sub)] ${FOCUS_RING}`}
+      className={`mt-0.5 flex flex-shrink-0 items-center gap-0.5 rounded px-0.5 text-[10px] font-mono tabular-nums text-[var(--text-muted)] transition-colors hover:text-[var(--text-sub)] ${FOCUS_RING}`}
       aria-expanded={open}
       aria-controls={rosterListId(workspaceId)}
       aria-label={ariaLabel}
@@ -295,7 +295,7 @@ function WorkspaceAgentRoster({ workspaceId, pulsingPaneId }: WorkspaceAgentRost
               <div key={row.stashed ? row.paneId : row.ptyId} className="min-w-0">
                 {startsStashedGroup && (
                   <div
-                    className="mt-1 flex items-center gap-1.5 border-t border-[var(--border-soft)] pt-1 pr-1 text-[8px] font-mono uppercase tracking-widest text-[var(--text-muted)]"
+                    className="mt-1 flex items-center gap-1.5 border-t border-[var(--border-soft)] pt-1 pr-1 text-[10px] font-mono uppercase tracking-widest text-[var(--text-muted)]"
                     // Not a heading: the rows below it are already listed under
                     // the disclosure's own accessible name, and announcing a
                     // second level would imply a nesting that is not there.
@@ -355,8 +355,8 @@ function WorkspaceAgentRoster({ workspaceId, pulsingPaneId }: WorkspaceAgentRost
                     <span className="min-w-0 flex-1 truncate text-[10px] font-semibold text-[var(--text-main)]">
                       {primary}
                     </span>
-                    <span className="flex-none text-[8px] text-[var(--text-muted)]">·</span>
-                    <span className="max-w-[40%] flex-none truncate text-[8px] font-mono text-[var(--text-muted)]">
+                    <span className="flex-none text-[10px] text-[var(--text-muted)]">·</span>
+                    <span className="max-w-[40%] flex-none truncate text-[10px] font-mono text-[var(--text-muted)]">
                       {secondary}
                     </span>
                   </span>
@@ -377,7 +377,7 @@ function WorkspaceAgentRoster({ workspaceId, pulsingPaneId }: WorkspaceAgentRost
                     </span>
                   )}
                   <span
-                    className={`flex-none whitespace-nowrap text-[8px] ${exited ? 'text-[var(--text-muted)]' : statusIcon.className}`}
+                    className={`flex-none whitespace-nowrap text-[10px] ${exited ? 'text-[var(--text-muted)]' : statusIcon.className}`}
                   >
                     {statusLabel}
                   </span>
@@ -386,14 +386,14 @@ function WorkspaceAgentRoster({ workspaceId, pulsingPaneId }: WorkspaceAgentRost
                     stashed agent burns tokens whether or not anyone remembers
                     it, and "3d ago" is the cheapest possible reminder. */}
                 {row.stashed && stashedAgo && (
-                  <div className="truncate pl-[18px] pr-1 text-[8px] text-[var(--text-muted)]">
+                  <div className="truncate pl-[18px] pr-1 text-[10px] text-[var(--text-muted)]">
                     {stashedAgo}
                   </div>
                 )}
                 {/* 확인 필요일 때만 질문을 빨강 2번째 줄로 편다(실제로 봐야 하는 신호). */}
                 {row.pendingQuestion && (
                   <div
-                    className="truncate pl-[18px] pr-1 text-[8px] text-[var(--accent-red)]"
+                    className="truncate pl-[18px] pr-1 text-[10px] text-[var(--accent-red)]"
                     title={row.pendingQuestion}
                   >
                     ? {row.pendingQuestion}

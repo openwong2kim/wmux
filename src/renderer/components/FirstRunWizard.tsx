@@ -634,10 +634,10 @@ export default function FirstRunWizard({ mode, onClose }: FirstRunWizardProps) {
               <div
                 role="alert"
                 data-testid="first-run-wizard-register-error"
-                className="flex flex-col gap-1 p-3 rounded-lg"
+                className="flex flex-col gap-1 p-3 rounded-[7px]"
                 style={{
                   backgroundColor: 'var(--bg-surface)',
-                  border: '1px solid var(--accent-red, #f38ba8)',
+                  border: '1px solid var(--accent-red)',
                 }}
               >
                 {(() => {
@@ -715,7 +715,7 @@ export default function FirstRunWizard({ mode, onClose }: FirstRunWizardProps) {
               <button
                 onClick={() => void dismiss()}
                 data-testid="first-run-wizard-skip"
-                className="px-4 py-1.5 rounded-lg text-xs font-medium"
+                className="px-4 py-1.5 rounded-[5px] text-xs font-medium"
                 style={{
                   backgroundColor: 'var(--bg-surface)',
                   color: 'var(--text-subtle)',
@@ -836,10 +836,10 @@ export function HooksBlock({
   if (state === 'installed') {
     return (
       <div
-        className="flex flex-col gap-1 p-3 rounded-lg"
+        className="flex flex-col gap-1 p-3 rounded-[7px]"
         style={{
           backgroundColor: 'var(--bg-surface)',
-          border: '1px solid var(--accent-green, #a6e3a1)',
+          border: '1px solid var(--accent-green)',
         }}
         data-testid="first-run-wizard-hooks-installed"
       >
@@ -855,7 +855,7 @@ export function HooksBlock({
 
   return (
     <div
-      className="flex flex-col gap-2 p-3 rounded-lg"
+      className="flex flex-col gap-2 p-3 rounded-[7px]"
       style={{ backgroundColor: 'var(--bg-surface)' }}
       data-testid="first-run-wizard-hooks-offer"
     >
@@ -868,7 +868,7 @@ export function HooksBlock({
       {state === 'error' && (
         <p
           className="text-xs"
-          style={{ color: 'var(--accent-red, #f38ba8)', margin: 0 }}
+          style={{ color: 'var(--accent-red)', margin: 0 }}
           data-testid="first-run-wizard-hooks-error"
         >
           {t('firstRunWizard.hooksError')}
@@ -910,10 +910,10 @@ export function StatuslineBlock({
   if (state === 'installed') {
     return (
       <div
-        className="flex flex-col gap-1 p-3 rounded-lg"
+        className="flex flex-col gap-1 p-3 rounded-[7px]"
         style={{
           backgroundColor: 'var(--bg-surface)',
-          border: '1px solid var(--accent-green, #a6e3a1)',
+          border: '1px solid var(--accent-green)',
         }}
         data-testid="first-run-wizard-statusline-installed"
       >
@@ -929,7 +929,7 @@ export function StatuslineBlock({
 
   return (
     <div
-      className="flex flex-col gap-2 p-3 rounded-lg"
+      className="flex flex-col gap-2 p-3 rounded-[7px]"
       style={{ backgroundColor: 'var(--bg-surface)' }}
       data-testid="first-run-wizard-statusline-offer"
     >
@@ -942,7 +942,7 @@ export function StatuslineBlock({
       {state === 'error' && (
         <p
           className="text-xs"
-          style={{ color: 'var(--accent-red, #f38ba8)', margin: 0 }}
+          style={{ color: 'var(--accent-red)', margin: 0 }}
           data-testid="first-run-wizard-statusline-error"
         >
           {t('firstRunWizard.statuslineError')}
@@ -993,7 +993,7 @@ export function SampleTaskBlock({
   if (sampleState === 'splitting' || sampleState === 'awaiting-prompt') {
     return (
       <div
-        className="flex flex-col gap-2 p-3 rounded-lg"
+        className="flex flex-col gap-2 p-3 rounded-[7px]"
         style={{ backgroundColor: 'var(--bg-surface)' }}
         data-testid="first-run-wizard-sample-running"
       >
@@ -1012,10 +1012,10 @@ export function SampleTaskBlock({
   if (sampleState === 'success') {
     return (
       <div
-        className="flex flex-col gap-2 p-3 rounded-lg"
+        className="flex flex-col gap-2 p-3 rounded-[7px]"
         style={{
           backgroundColor: 'var(--bg-surface)',
-          border: '1px solid var(--accent-green, #a6e3a1)',
+          border: '1px solid var(--accent-green)',
         }}
         data-testid="first-run-wizard-sample-success"
       >
@@ -1029,7 +1029,7 @@ export function SampleTaskBlock({
   if (sampleState === 'timeout-fallback') {
     return (
       <div
-        className="flex flex-col gap-2 p-3 rounded-lg"
+        className="flex flex-col gap-2 p-3 rounded-[7px]"
         style={{ backgroundColor: 'var(--bg-surface)' }}
         data-testid="first-run-wizard-sample-fallback"
       >
@@ -1056,7 +1056,7 @@ export function SampleTaskBlock({
   if (sampleState === 'error') {
     return (
       <div
-        className="flex flex-col gap-2 p-3 rounded-lg"
+        className="flex flex-col gap-2 p-3 rounded-[7px]"
         style={{ backgroundColor: 'var(--bg-surface)' }}
         data-testid="first-run-wizard-sample-error"
       >
@@ -1070,7 +1070,7 @@ export function SampleTaskBlock({
   // idle — render the trigger / disabled trigger.
   return (
     <div
-      className="flex flex-col gap-2 p-3 rounded-lg"
+      className="flex flex-col gap-2 p-3 rounded-[7px]"
       style={{ backgroundColor: 'var(--bg-surface)' }}
       data-testid="first-run-wizard-sample-idle"
     >

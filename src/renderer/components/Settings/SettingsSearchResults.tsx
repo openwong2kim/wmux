@@ -64,7 +64,7 @@ export function SettingsSearchResults({
                 type="button"
                 data-jump={hit.entry.id}
                 onClick={() => onJump(hit.entry.id)}
-                className="text-left rounded-lg px-3 py-2.5"
+                className="text-left rounded-[5px] px-3 py-2.5"
                 style={{
                   backgroundColor: 'var(--bg-mantle)',
                   border: '1px solid var(--bg-surface)',

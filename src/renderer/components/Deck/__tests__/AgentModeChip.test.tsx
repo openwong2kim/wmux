@@ -7,6 +7,8 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { createRoot } from 'react-dom/client';
 import { act } from 'react';
+import { readFileSync } from 'node:fs';
+import { join as pathJoin } from 'node:path';
 import { AgentModeChip, type AgentModeApi } from '../AgentModeChip';
 import type { AgentMode } from '../../../../main/deck/deckAutonomyStore';
 
@@ -86,9 +88,70 @@ describe('AgentModeChip', () => {
 
     const chip = container.querySelector('[data-agent-mode-chip] > button');
     expect(chip).toBeTruthy();
-    // Falls back to the OFF skin — the most conservative badge.
-    expect(chip!.className).toContain('border-transparent');
+    // Falls back to the OFF dot — the most conservative badge.
     expect(container.querySelector('[data-agent-mode-dot]')!.className).toContain('--text-muted');
+  });
+
+  // DESIGN.md amber diet: the chip used to be a red-tinted bordered pill in
+  // `danger` and a warm-tinted pill in `assist`, so an idle control spent
+  // attention points and a toolbar button carried a box at rest. State now
+  // lives in the dot; the chip body is the boxless recipe that only raises on
+  // hover (.ui-chip-boxless in styles/ui.css).
+  it('is a boxless chip: state lives in the dot, never in a tint at rest', async () => {
+    for (const [mode, dotToken] of [
+      ['off', '--text-muted'],
+      ['assist', '--accent)'],
+      ['danger', '--accent-red'],
+    ] as const) {
+      const api: AgentModeApi = {
+        get: async () => ({ mode: mode as AgentMode }),
+        set: async () => ({ ok: true }),
+      };
+      const { container, cleanup } = render(<AgentModeChip api={api} workspaceId="ws-1" t={t} />);
+      cleanups.push(cleanup);
+      await flush();
+
+      const chip = container.querySelector('[data-agent-mode-chip] > button') as HTMLElement;
+      expect(chip.className, `${mode} chip is boxless`).toContain('ui-chip-boxless');
+      // No fill, no coloured border, no per-mode weight bump at rest.
+      expect(chip.className).not.toMatch(/\bbg-\[/);
+      expect(chip.className).not.toMatch(/\bborder(-|\[)/);
+      expect(chip.className).not.toMatch(/font-(medium|semibold)/);
+      // The dot is one size in every mode, so switching never reflows the row.
+      const dot = container.querySelector('[data-agent-mode-dot]') as HTMLElement;
+      expect(dot.className, `${mode} dot`).toContain(dotToken);
+      expect(dot.className, `${mode} dot size`).toContain('w-2 h-2');
+      // `danger` keeps a second, text-level signal — the label in red, still
+      // with no fill or border. The other two modes stay neutral text.
+      if (mode === 'danger') expect(chip.className).toContain('text-[var(--accent-red)]');
+      else expect(chip.className).not.toContain('--accent-red');
+      // The dot is aria-hidden, so the mode has to reach AT users through the
+      // label, together with what the mode actually does.
+      // `t` is the identity here, so the label key itself is the rendered text.
+      expect(chip.getAttribute('aria-label'), `${mode} aria-label`).toContain(`deck.mode.${mode}`);
+      expect(chip.getAttribute('aria-label')).toContain(`deck.mode.${mode}Desc`);
+      cleanup();
+      cleanups.pop();
+    }
+  });
+
+  // The raised hover/open skin paints box-shadow, and so does the app-wide
+  // FOCUS_RING (Tailwind ring-*). ui.css loads after the Tailwind utilities, so
+  // without an explicit :focus-visible rule a hovered or open chip swallowed the
+  // keyboard ring — the one state a keyboard user needs to see.
+  it('keeps a focus-visible ring rule that outranks the raised hover skin', () => {
+    const css = readFileSync(
+      pathJoin(__dirname, '..', '..', '..', 'styles', 'ui.css'),
+      'utf8',
+    );
+    const hover = css.indexOf(".ui-chip-boxless:hover:not(:disabled)");
+    const focus = css.indexOf('.ui-chip-boxless:focus-visible:not(:disabled)');
+    expect(hover).toBeGreaterThan(-1);
+    // Present, and declared AFTER the hover/expanded rule so it wins the tie.
+    expect(focus).toBeGreaterThan(hover);
+    const rule = css.slice(focus, css.indexOf('}', focus));
+    expect(rule).toContain('var(--accent-blue)');
+    expect(rule).toContain('var(--bg-base)');
   });
 
   // The chip lives at the bottom of the deck rail, so the menu opens UPWARD by

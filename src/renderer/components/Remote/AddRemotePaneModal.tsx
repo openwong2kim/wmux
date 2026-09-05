@@ -82,7 +82,7 @@ export default function AddRemotePaneModal({ onClose, onCreated, title }: AddRem
       onMouseDown={onClose}
     >
       <div
-        className="w-[360px] max-h-[70vh] overflow-y-auto rounded-lg p-3"
+        className="w-[360px] max-h-[70vh] overflow-y-auto rounded-[7px] p-3"
         style={{ background: 'var(--bg-surface)', border: '1px solid var(--border-soft)' }}
         onMouseDown={(e) => e.stopPropagation()}
       >
@@ -90,7 +90,7 @@ export default function AddRemotePaneModal({ onClose, onCreated, title }: AddRem
           {title ?? t('pane.newRemote')}
         </div>
         {error && (
-          <div className="text-xs mb-2" style={{ color: 'var(--accent-red, #e5484d)' }}>{error}</div>
+          <div className="text-xs mb-2" style={{ color: 'var(--accent-red)' }}>{error}</div>
         )}
         {hosts === null ? (
           <div className="text-xs" style={{ color: 'var(--text-muted)' }}>…</div>

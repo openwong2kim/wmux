@@ -117,7 +117,7 @@ export default function FloatingPane() {
             paddingRight: 8,
             flexShrink: 0,
             backgroundColor: 'var(--bg-overlay)',
-            borderBottom: '1px solid rgba(255,255,255,0.06)',
+            borderBottom: '1px solid color-mix(in srgb, var(--text-main) 6%, transparent)',
             userSelect: 'none',
           }}
         >
@@ -166,7 +166,7 @@ export default function FloatingPane() {
             }}
             onMouseEnter={(e) => {
               (e.currentTarget as HTMLButtonElement).style.color = 'var(--text-main)';
-              (e.currentTarget as HTMLButtonElement).style.background = 'rgba(255,255,255,0.08)';
+              (e.currentTarget as HTMLButtonElement).style.background = 'color-mix(in srgb, var(--text-main) 8%, transparent)';
             }}
             onMouseLeave={(e) => {
               (e.currentTarget as HTMLButtonElement).style.color = 'var(--text-sub2)';

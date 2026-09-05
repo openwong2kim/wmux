@@ -243,7 +243,7 @@ function TreeItem({
       >
         <span className="mr-1 shrink-0 text-[11px]">{icon}</span>
         <span className="truncate">{node.name}</span>
-        {node.isSymlink && <span className="ml-1 text-[var(--text-muted)] text-[9px]">&rarr;</span>}
+        {node.isSymlink && <span className="ml-1 text-[var(--text-muted)] text-[10px]">&rarr;</span>}
       </button>
       {node.isDirectory && node.isExpanded && (
         <>

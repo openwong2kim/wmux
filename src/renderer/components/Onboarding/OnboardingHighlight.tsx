@@ -155,7 +155,7 @@ export default function OnboardingHighlight({
     width: rect.width,
     height: rect.height,
     borderRadius: 6,
-    boxShadow: '0 0 0 9999px rgba(0, 0, 0, 0.55)',
+    boxShadow: '0 0 0 9999px var(--bg-overlay-scrim, rgba(0, 0, 0, 0.55))',
     pointerEvents: 'none',
     zIndex: 10000,
     transition: 'top 0.3s ease, left 0.3s ease, width 0.3s ease, height 0.3s ease',

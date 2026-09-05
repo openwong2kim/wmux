@@ -723,7 +723,7 @@ export function ChannelsPanelView(props: ChannelsPanelViewProps): React.ReactEle
             <div className="mt-1" data-channels-discover-group>
               <button
                 type="button"
-                className={`w-full flex items-center gap-1 px-4 py-1 text-[9px] font-mono uppercase tracking-widest text-[var(--text-muted)] hover:text-[var(--text-subtle)] transition-colors ${FOCUS_RING}`}
+                className={`w-full flex items-center gap-1 px-4 py-1 text-[10px] font-mono uppercase tracking-widest text-[var(--text-muted)] hover:text-[var(--text-subtle)] transition-colors ${FOCUS_RING}`}
                 onClick={() => setDiscoverExpanded((v) => !v)}
                 aria-expanded={discoverExpanded}
                 data-channels-discover-toggle
@@ -782,7 +782,7 @@ export function ChannelsPanelView(props: ChannelsPanelViewProps): React.ReactEle
             <div className="mt-1" data-channels-archived-group>
               <button
                 type="button"
-                className={`w-full flex items-center gap-1 px-4 py-1 text-[9px] font-mono uppercase tracking-widest text-[var(--text-muted)] hover:text-[var(--text-subtle)] transition-colors ${FOCUS_RING}`}
+                className={`w-full flex items-center gap-1 px-4 py-1 text-[10px] font-mono uppercase tracking-widest text-[var(--text-muted)] hover:text-[var(--text-subtle)] transition-colors ${FOCUS_RING}`}
                 onClick={() => setArchivedExpanded((v) => !v)}
                 aria-expanded={archivedExpanded}
                 data-channels-archived-toggle
@@ -823,7 +823,7 @@ export function ChannelsPanelView(props: ChannelsPanelViewProps): React.ReactEle
             <div className="mt-1" data-channels-trash-group>
               <button
                 type="button"
-                className={`w-full flex items-center gap-1 px-4 py-1 text-[9px] font-mono uppercase tracking-widest text-[var(--text-muted)] hover:text-[var(--text-subtle)] transition-colors ${FOCUS_RING}`}
+                className={`w-full flex items-center gap-1 px-4 py-1 text-[10px] font-mono uppercase tracking-widest text-[var(--text-muted)] hover:text-[var(--text-subtle)] transition-colors ${FOCUS_RING}`}
                 onClick={() => setTrashExpanded((v) => !v)}
                 aria-expanded={trashExpanded}
                 data-channels-trash-toggle
@@ -858,14 +858,14 @@ export function ChannelsPanelView(props: ChannelsPanelViewProps): React.ReactEle
                       {emptyTrashPending ? (
                         <div className="flex items-center gap-2" data-channels-empty-trash-confirm>
                           <span
-                            className="text-[9px] font-mono text-[var(--text-muted)]"
+                            className="text-[10px] font-mono text-[var(--text-muted)]"
                             {...tokenAttrs('textMuted', 'text')}
                           >
                             {t('channels.emptyTrashConfirm') || 'Delete permanently?'}
                           </span>
                           <button
                             type="button"
-                            className={`text-[9px] font-mono uppercase tracking-widest text-[var(--accent-red)] hover:underline ${FOCUS_RING}`}
+                            className={`text-[10px] font-mono uppercase tracking-widest text-[var(--accent-red)] hover:underline ${FOCUS_RING}`}
                             onClick={() => {
                               setEmptyTrashPending(false);
                               onEmptyTrash();
@@ -877,7 +877,7 @@ export function ChannelsPanelView(props: ChannelsPanelViewProps): React.ReactEle
                           </button>
                           <button
                             type="button"
-                            className={`text-[9px] font-mono uppercase tracking-widest text-[var(--text-muted)] hover:underline ${FOCUS_RING}`}
+                            className={`text-[10px] font-mono uppercase tracking-widest text-[var(--text-muted)] hover:underline ${FOCUS_RING}`}
                             onClick={() => setEmptyTrashPending(false)}
                             data-channels-empty-trash-cancel
                             {...tokenAttrs('textMuted', 'text')}
@@ -888,7 +888,7 @@ export function ChannelsPanelView(props: ChannelsPanelViewProps): React.ReactEle
                       ) : (
                         <button
                           type="button"
-                          className={`text-[9px] font-mono uppercase tracking-widest text-[var(--text-muted)] hover:text-[var(--text-sub)] transition-colors ${FOCUS_RING}`}
+                          className={`text-[10px] font-mono uppercase tracking-widest text-[var(--text-muted)] hover:text-[var(--text-sub)] transition-colors ${FOCUS_RING}`}
                           onClick={() => setEmptyTrashPending(true)}
                           data-channels-empty-trash
                           {...tokenAttrs('textMuted', 'text')}
@@ -914,7 +914,7 @@ export function ChannelsPanelView(props: ChannelsPanelViewProps): React.ReactEle
         <div className="mt-1" data-channels-operator-group>
           <button
             type="button"
-            className={`w-full flex items-center gap-1 px-4 py-1 text-[9px] font-mono uppercase tracking-widest text-[var(--text-muted)] hover:text-[var(--text-subtle)] transition-colors ${FOCUS_RING}`}
+            className={`w-full flex items-center gap-1 px-4 py-1 text-[10px] font-mono uppercase tracking-widest text-[var(--text-muted)] hover:text-[var(--text-subtle)] transition-colors ${FOCUS_RING}`}
             onClick={handleOperatorToggle}
             aria-expanded={operatorExpanded}
             data-channels-operator-toggle
@@ -968,7 +968,7 @@ export function ChannelsPanelView(props: ChannelsPanelViewProps): React.ReactEle
                       </span>
                       {isArchived ? (
                         <span
-                          className="shrink-0 px-1.5 py-0.5 text-[9px] font-mono uppercase tracking-wide text-[var(--text-muted)]"
+                          className="shrink-0 px-1.5 py-0.5 text-[10px] font-mono uppercase tracking-wide text-[var(--text-muted)]"
                           data-channels-operator-archived-badge
                           title={t('channels.operatorArchivedCannotJoin') || "Archived — can't be joined"}
                           {...tokenAttrs('textMuted', 'text')}

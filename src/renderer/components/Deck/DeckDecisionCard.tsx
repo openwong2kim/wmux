@@ -156,7 +156,7 @@ export function DeckDecisionCard({
         {t('deck.decisionEyebrow') || 'Decision needed'}
       </div>
       <div
-        className="text-[12.5px] font-semibold text-[var(--text-main)] leading-relaxed"
+        className="text-[13px] font-semibold text-[var(--text-main)] leading-relaxed"
         {...tokenAttrs('textMain', 'text')}
       >
         {decision.question}

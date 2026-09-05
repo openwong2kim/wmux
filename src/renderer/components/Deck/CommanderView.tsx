@@ -464,7 +464,7 @@ export function CommanderViewContent({
         {isEmpty && (
           <div
             data-commander-empty
-            className="text-[12.5px] text-[var(--text-muted)] text-center py-8 leading-relaxed"
+            className="text-[13px] text-[var(--text-muted)] text-center py-8 leading-relaxed"
             {...tokenAttrs('textMuted', 'text')}
           >
             {t('deck.commanderEmpty') ||
@@ -482,7 +482,7 @@ export function CommanderViewContent({
             {...tokenAttrs('bgSurface', 'bg')}
           >
             <div
-              className="text-[12.5px] font-semibold text-[var(--text-main)] leading-relaxed"
+              className="text-[13px] font-semibold text-[var(--text-main)] leading-relaxed"
               {...tokenAttrs('textMain', 'text')}
             >
               {(t('deck.recoveryTitle') ||
@@ -704,7 +704,7 @@ function CommanderBrainItem({
         className="flex flex-col items-end gap-0.5"
       >
         <div
-          className="max-w-[85%] rounded-lg rounded-tr-[3px] px-3 py-1.5 bg-[rgba(var(--bg-surface-rgb),0.8)] text-[13px] leading-relaxed text-[var(--text-main)] whitespace-pre-wrap break-words"
+          className="max-w-[85%] rounded-[7px] rounded-tr-[3px] px-3 py-1.5 bg-[rgba(var(--bg-surface-rgb),0.8)] text-[13px] leading-relaxed text-[var(--text-main)] whitespace-pre-wrap break-words"
           data-commander-brain-text
           {...tokenAttrs('bgSurface', 'bg')}
           {...tokenAttrs('textMain', 'text')}
@@ -861,7 +861,7 @@ function CommanderWakeBadge({
           type="button"
           data-commander-wake-toggle
           onClick={() => setExpanded((v) => !v)}
-          className={`text-[10.5px] text-[var(--text-muted)] underline underline-offset-2 hover:text-[var(--text-sub)] ${FOCUS_RING}`}
+          className={`text-[11px] text-[var(--text-muted)] underline underline-offset-2 hover:text-[var(--text-sub)] ${FOCUS_RING}`}
           {...tokenAttrs('textMuted', 'text')}
         >
           {expanded
@@ -880,7 +880,7 @@ function CommanderWakeBadge({
       {expanded && (
         <pre
           data-commander-wake-raw
-          className="max-w-[85%] overflow-x-auto rounded-[4px] px-3 py-1.5 bg-[rgba(var(--bg-surface-rgb),0.55)] text-[10.5px] font-mono leading-relaxed text-[var(--text-sub)] whitespace-pre-wrap break-words"
+          className="max-w-[85%] overflow-x-auto rounded-[4px] px-3 py-1.5 bg-[rgba(var(--bg-surface-rgb),0.55)] text-[11px] font-mono leading-relaxed text-[var(--text-sub)] whitespace-pre-wrap break-words"
           {...tokenAttrs('textSub', 'text')}
         >
           {message.text}
@@ -965,7 +965,7 @@ function CommanderThreadItem({
           {/* Chat convention: your dispatch sits right-aligned in a bubble, no
               author label (right = you). Local HH:MM below (was UTC slice). */}
           <div
-            className="max-w-[85%] rounded-lg rounded-tr-[3px] px-3 py-1.5 bg-[rgba(var(--bg-surface-rgb),0.8)] text-[13px] leading-relaxed text-[var(--text-main)] whitespace-pre-wrap break-words"
+            className="max-w-[85%] rounded-[7px] rounded-tr-[3px] px-3 py-1.5 bg-[rgba(var(--bg-surface-rgb),0.8)] text-[13px] leading-relaxed text-[var(--text-main)] whitespace-pre-wrap break-words"
             data-commander-dispatch-text
             {...tokenAttrs('bgSurface', 'bg')}
             {...tokenAttrs('textMain', 'text')}
@@ -991,7 +991,7 @@ function CommanderThreadItem({
                   disabled={!m.paneId}
                   onClick={() => m.paneId && onJumpToPane(m.workspaceId, m.paneId)}
                   title={t('deck.jumpToPane') || 'Jump to this pane'}
-                  className={`px-2 py-0.5 rounded-[4px] text-[11.5px] text-[var(--text-sub)] bg-[rgba(var(--bg-surface-rgb),0.6)] hover:text-[var(--accent-blue)] transition-colors disabled:opacity-50 disabled:cursor-default ${FOCUS_RING}`}
+                  className={`px-2 py-0.5 rounded-[4px] text-[11px] text-[var(--text-sub)] bg-[rgba(var(--bg-surface-rgb),0.6)] hover:text-[var(--accent-blue)] transition-colors disabled:opacity-50 disabled:cursor-default ${FOCUS_RING}`}
                   {...tokenAttrs('textSub', 'text')}
                 >
                   @{m.name}

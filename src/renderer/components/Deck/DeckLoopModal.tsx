@@ -166,15 +166,15 @@ export function DeckLoopModal({
     onClose();
   };
 
-  const labelCls = 'text-[10.5px] font-semibold uppercase tracking-wide text-[var(--text-muted)]';
+  const labelCls = 'text-[10px] font-semibold uppercase tracking-wide text-[var(--text-muted)]';
   const inputCls =
-    'w-full text-[12.5px] rounded-[4px] px-2.5 py-1.5 bg-[var(--bg-base)] text-[var(--text-main)] border focus:outline-none';
+    'w-full text-[13px] rounded-[4px] px-2.5 py-1.5 bg-[var(--bg-base)] text-[var(--text-main)] border focus:outline-none';
 
   return (
     <div
       data-deck-loop-modal
       className="fixed inset-0 z-50 flex items-start justify-center pt-[12vh]"
-      style={{ backgroundColor: 'rgba(0,0,0,0.55)' }}
+      style={{ backgroundColor: 'var(--bg-overlay-scrim, rgba(0, 0, 0, 0.55))' }}
       onMouseDown={(e) => {
         if (e.target === e.currentTarget) onClose();
       }}
@@ -231,7 +231,7 @@ export function DeckLoopModal({
             return (
               <div key={idx} className="relative">
                 <div className="flex items-center gap-1.5">
-                  <span className="w-4 text-right text-[10.5px] font-mono text-[var(--text-muted)]" {...tokenAttrs('textMuted', 'text')}>
+                  <span className="w-4 text-right text-[11px] font-mono text-[var(--text-muted)]" {...tokenAttrs('textMuted', 'text')}>
                     {idx + 1}.
                   </span>
                   <input
@@ -245,14 +245,14 @@ export function DeckLoopModal({
                     onFocus={() => setSuggestFor(idx)}
                     onBlur={() => window.setTimeout(() => setSuggestFor((v) => (v === idx ? -1 : v)), 150)}
                     placeholder={t('deck.loopStepPlaceholder') || 'e.g. run /qa, or: fix whatever the tests report'}
-                    className={`${inputCls} text-[11.5px] font-mono`}
+                    className={`${inputCls} text-[11px] font-mono`}
                     style={{ borderColor: 'var(--border-soft)' }}
                   />
                   <button
                     type="button"
                     onClick={() => removeStep(idx)}
                     aria-label={t('deck.loopStepRemove') || 'Remove step'}
-                    className={`shrink-0 w-6 h-6 rounded text-[var(--text-muted)] hover:text-[var(--accent-red,#f87171)] ${FOCUS_RING}`}
+                    className={`shrink-0 w-6 h-6 rounded text-[var(--text-muted)] hover:text-[var(--accent-red)] ${FOCUS_RING}`}
                     {...tokenAttrs('textMuted', 'text')}
                   >
                     ✕
@@ -318,7 +318,7 @@ export function DeckLoopModal({
             onChange={(e) => setDoneWhen(e.target.value)}
             rows={3}
             placeholder={t('deck.loopDoneWhenPlaceholder') || 'One item per line — you tick these off; the loop is done when all pass.'}
-            className={`${inputCls} text-[11.5px] font-mono resize-y`}
+            className={`${inputCls} text-[11px] font-mono resize-y`}
             style={{ borderColor: 'var(--border-soft)' }}
           />
         </div>
@@ -373,7 +373,7 @@ export function DeckLoopModal({
             type="button"
             data-deck-loop-start
             onClick={() => void handleStart()}
-            className={`shrink-0 whitespace-nowrap px-3 py-1 rounded-[4px] text-[12px] font-semibold bg-[var(--accent)] text-[var(--bg-base)] shadow-[inset_0_1px_0_rgba(255,255,255,0.22),0_1px_2px_rgba(0,0,0,0.3)] hover:bg-[color-mix(in_srgb,var(--accent)_88%,var(--text-main))] transition-colors ${FOCUS_RING}`}
+            className={`shrink-0 whitespace-nowrap px-3 py-1 rounded-[4px] text-[12px] font-semibold bg-[var(--accent)] text-[var(--bg-base)] shadow-[inset_0_1px_0_color-mix(in_srgb,var(--surface-highlight)_22%,transparent),0_1px_2px_rgba(0,0,0,0.3)] hover:bg-[color-mix(in_srgb,var(--accent)_88%,var(--text-main))] transition-colors ${FOCUS_RING}`}
             {...tokenAttrs('accent', 'bg')}
           >
             {t('deck.loopStart') || 'Start loop'}
@@ -436,7 +436,7 @@ export function DeckLoopModal({
         })()}
 
         {error && (
-          <div role="alert" data-deck-loop-error className="text-[11.5px] text-[var(--accent-red)]" {...tokenAttrs('danger', 'text')}>
+          <div role="alert" data-deck-loop-error className="text-[11px] text-[var(--accent-red)]" {...tokenAttrs('danger', 'text')}>
             {error}
           </div>
         )}

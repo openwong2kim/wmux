@@ -35,17 +35,17 @@ function DeptSection({ dept, pendingCounts }: { dept: Department; pendingCounts:
         title={t('company.deptRemoveHint')}
       >
         <div className="flex items-center gap-2 min-w-0">
-          <span className="text-[9px] font-mono" style={{ color: 'var(--text-muted)' }}>{'├─'}</span>
+          <span className="text-[10px] font-mono" style={{ color: 'var(--text-muted)' }}>{'├─'}</span>
           <span className="text-[11px] font-mono font-semibold truncate" style={{ color: 'var(--text-main)' }}>
             {dept.name}
           </span>
-          <span className="text-[9px] font-mono" style={{ color: 'var(--text-subtle)' }}>
+          <span className="text-[10px] font-mono" style={{ color: 'var(--text-subtle)' }}>
             ({dept.members.length})
           </span>
         </div>
         <div className="flex items-center gap-1.5">
           {activeCount > 0 && (
-            <span className="text-[8px] font-mono" style={{ color: 'var(--accent-blue)' }}>{t('company.active')}</span>
+            <span className="text-[10px] font-mono" style={{ color: 'var(--accent-blue)' }}>{t('company.active')}</span>
           )}
           <button
             className="text-[10px] leading-none opacity-0 group-hover:opacity-100 transition-opacity"
@@ -61,19 +61,19 @@ function DeptSection({ dept, pendingCounts }: { dept: Department; pendingCounts:
       {/* Delete confirm */}
       {confirmDelete && (
         <div className="mx-2 mb-1 px-2 py-1.5 rounded" style={{ backgroundColor: 'var(--bg-surface)', border: '1px solid rgba(243,139,168,0.3)' }}>
-          <p className="text-[9px] font-mono mb-1.5" style={{ color: 'var(--accent-red)' }}>
+          <p className="text-[10px] font-mono mb-1.5" style={{ color: 'var(--accent-red)' }}>
             {t('company.removeDeptConfirm', { name: dept.name })}
           </p>
           <div className="flex gap-1.5">
             <button
-              className="flex-1 text-[9px] font-mono rounded py-0.5 transition-colors"
+              className="flex-1 text-[10px] font-mono rounded py-0.5 transition-colors"
               style={{ backgroundColor: 'var(--accent-red)', color: 'var(--bg-base)' }}
               onClick={() => { removeDepartment(dept.id); setConfirmDelete(false); }}
             >
               {t('common.remove')}
             </button>
             <button
-              className="flex-1 text-[9px] font-mono rounded py-0.5 transition-colors"
+              className="flex-1 text-[10px] font-mono rounded py-0.5 transition-colors"
               style={{ color: 'var(--text-muted)', border: '1px solid var(--text-muted)' }}
               onClick={() => setConfirmDelete(false)}
             >
@@ -166,7 +166,7 @@ function CeoRow({ ceoWorkspaceId }: { ceoWorkspaceId?: string }) {
       <span className="text-[11px] font-mono font-semibold" style={{ color: 'var(--text-main)' }}>
         CEO
       </span>
-      <span className="ml-auto text-[9px] font-mono" style={{ color: 'var(--text-muted)' }}>
+      <span className="ml-auto text-[10px] font-mono" style={{ color: 'var(--text-muted)' }}>
         {isProvisioned ? t('company.active') : t('company.idle')}
       </span>
     </button>
@@ -221,14 +221,14 @@ export default function CompanyPanel() {
             <p className="text-[11px] font-mono font-semibold truncate" style={{ color: 'var(--text-main)' }}>
               {company.name}
             </p>
-            <p className="text-[9px] font-mono" style={{ color: 'var(--text-muted)' }}>
+            <p className="text-[10px] font-mono" style={{ color: 'var(--text-muted)' }}>
               {t('company.stats', { depts: company.departments.length, provisioned: provisionedCount, total: totalMembers })}
             </p>
           </div>
           <div className="flex items-center gap-1.5">
             <button
               onClick={() => setCompanyViewVisible(true)}
-              className="text-[9px] font-mono transition-colors"
+              className="text-[10px] font-mono transition-colors"
               style={{ color: 'var(--accent-blue)' }}
               title={t('company.manageTitle')}
             >
@@ -244,7 +244,7 @@ export default function CompanyPanel() {
                   void destroyCompanyWithCleanup();
                 }
               }}
-              className="text-[9px] font-mono transition-colors"
+              className="text-[10px] font-mono transition-colors"
               style={{ color: 'var(--text-muted)' }}
               onMouseEnter={(e) => { e.currentTarget.style.color = 'var(--accent-red)'; }}
               onMouseLeave={(e) => { e.currentTarget.style.color = 'var(--text-muted)'; }}
@@ -263,7 +263,7 @@ export default function CompanyPanel() {
         {/* Departments */}
         <div className="px-1 pb-2">
           {company.departments.length === 0 && (
-            <p className="text-[9px] font-mono px-2 py-1" style={{ color: 'var(--text-subtle)' }}>
+            <p className="text-[10px] font-mono px-2 py-1" style={{ color: 'var(--text-subtle)' }}>
               {t('company.noDepts')}
             </p>
           )}

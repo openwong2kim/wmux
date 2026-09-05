@@ -215,7 +215,7 @@ export default function AgentToolbar({ barHandlers, revealed, onHoldChange, onFo
       </button>
       <button className={`${btn} ${popover === 'rich' ? active : idle}`} disabled={disabled} onClick={() => togglePopover('rich')} title={t('toolbar.richInput')}>
         <IconKeyboard size={13} /> <span className="wmux-toolbar-label whitespace-nowrap">{t('toolbar.richInput')}</span>
-        <kbd className="wmux-toolbar-label ml-1 px-1 rounded border border-[var(--bg-overlay)] text-[9px] leading-tight opacity-60 font-sans">{window.electronAPI?.platform === 'darwin' ? '⌘G' : 'Ctrl G'}</kbd>
+        <kbd className="wmux-toolbar-label ml-1 px-1 rounded border border-[var(--bg-overlay)] text-[10px] leading-tight opacity-60 font-sans">{window.electronAPI?.platform === 'darwin' ? '⌘G' : 'Ctrl G'}</kbd>
       </button>
       <button
         className={`${btn} ${popover === 'schedule' ? active : idle}`}

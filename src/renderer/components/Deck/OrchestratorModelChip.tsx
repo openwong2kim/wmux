@@ -65,7 +65,7 @@ export function OrchestratorModelChip({ openUp = false }: { openUp?: boolean } =
         {...tokenAttrs('textSub', 'text')}
       >
         <span>{current.value === '' ? t('deck.orchestratorModelDefault') : current.label}</span>
-        <span aria-hidden="true" className="text-[9px] opacity-70">▾</span>
+        <span aria-hidden="true" className="text-[10px] opacity-70">▾</span>
       </button>
       {open && (
         <div
@@ -88,7 +88,7 @@ export function OrchestratorModelChip({ openUp = false }: { openUp?: boolean } =
                   setModel(o.value);
                   setOpen(false);
                 }}
-                className={`flex items-center justify-between w-full px-2.5 py-1 text-left text-[11.5px] transition-colors ${
+                className={`flex items-center justify-between w-full px-2.5 py-1 text-left text-[11px] transition-colors ${
                   sel
                     ? 'text-[var(--text-main)] font-semibold'
                     : 'text-[var(--text-sub)] hover:text-[var(--text-main)]'
@@ -98,7 +98,7 @@ export function OrchestratorModelChip({ openUp = false }: { openUp?: boolean } =
                 {sel && (
                   <span
                     aria-hidden="true"
-                    className="text-[var(--accent-blue)] text-[8px]"
+                    className="text-[var(--accent-blue)] text-[10px]"
                     {...tokenAttrs('accent', 'text')}
                   >
                     ●
