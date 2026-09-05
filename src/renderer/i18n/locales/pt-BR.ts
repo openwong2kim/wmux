@@ -17,6 +17,7 @@ export const ptBR = {
   'workspace.agentWaiting': 'Agente aguardando',
 
   'workspace.agentAwaitingInput': 'Agente aguarda entrada',
+  'workspace.needsYou': 'Espera por você',
   'workspace.agentIdle': 'Agente inativo',
   'workspace.close': 'Fechar espaço de trabalho',
   'workspace.copyInfo': 'Copiar info da sessão',
@@ -177,6 +178,8 @@ export const ptBR = {
   'settings.uiScaleDesc': 'Dimensione toda a interface — útil em monitores de alta DPI. Não requer reinício.',
   'settings.sidebarPosition': 'Posição da barra lateral',
   'settings.sidebarPositionDesc': 'Esquerda ou direita da área do terminal',
+  'settings.sidebarAttentionFirst': 'Linhas que esperam por você primeiro',
+  'settings.sidebarAttentionFirstDesc': 'Fixe no topo da barra lateral os espaços de trabalho cujo agente está esperando por você. Desativado por padrão: as linhas ficam onde você as arrastou.',
   'settings.sidebarLeft': 'Esquerda',
   'settings.sidebarRight': 'Direita',
   'settings.updateReady': 'Atualização pronta',

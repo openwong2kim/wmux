@@ -17,6 +17,7 @@ export const fr = {
   'workspace.agentWaiting': 'Agent en attente',
 
   'workspace.agentAwaitingInput': 'Agent attend une réponse',
+  'workspace.needsYou': 'Vous attend',
   'workspace.agentIdle': 'Agent inactif',
   'workspace.close': 'Fermer l\'espace de travail',
   'workspace.copyInfo': 'Copier les infos de session',
@@ -177,6 +178,8 @@ export const fr = {
   'settings.uiScaleDesc': 'Mettre à l\'échelle toute l\'interface — utile sur les écrans haute DPI. Redémarrage non requis.',
   'settings.sidebarPosition': 'Position de la barre latérale',
   'settings.sidebarPositionDesc': 'Gauche ou droite de la zone du terminal',
+  'settings.sidebarAttentionFirst': 'Lignes en attente de vous en premier',
+  'settings.sidebarAttentionFirstDesc': 'Épingler en haut de la barre latérale les espaces de travail dont l\'agent vous attend. Désactivé par défaut : les lignes restent où vous les avez déplacées.',
   'settings.sidebarLeft': 'Gauche',
   'settings.sidebarRight': 'Droite',
   'settings.updateReady': 'Mise à jour prête',

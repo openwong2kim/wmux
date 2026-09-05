@@ -17,6 +17,7 @@ export const tr = {
   'workspace.agentWaiting': 'Aracı bekliyor',
 
   'workspace.agentAwaitingInput': 'Aracı girdi bekliyor',
+  'workspace.needsYou': 'Seni bekliyor',
   'workspace.agentIdle': 'Aracı boşta',
   'workspace.close': 'Çalışma alanını kapat',
   'workspace.copyInfo': 'Oturum bilgilerini kopyala',
@@ -177,6 +178,8 @@ export const tr = {
   'settings.uiScaleDesc': 'Tüm arayüzü ölçeklendirin — yüksek DPI ekranlarda kullanışlıdır. Yeniden başlatma gerekmez.',
   'settings.sidebarPosition': 'Kenar çubuğu konumu',
   'settings.sidebarPositionDesc': 'Terminal alanının solu veya sağı',
+  'settings.sidebarAttentionFirst': 'Seni bekleyen satırlar üstte',
+  'settings.sidebarAttentionFirstDesc': 'Aracısı seni bekleyen çalışma alanlarını kenar çubuğunun en üstüne sabitle. Varsayılan olarak kapalı: satırlar sürüklediğin yerde kalır.',
   'settings.sidebarLeft': 'Sol',
   'settings.sidebarRight': 'Sağ',
   'settings.updateReady': 'Güncelleme hazır',

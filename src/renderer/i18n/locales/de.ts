@@ -17,6 +17,7 @@ export const de = {
   'workspace.agentWaiting': 'Agent wartet',
 
   'workspace.agentAwaitingInput': 'Agent wartet auf Eingabe',
+  'workspace.needsYou': 'Wartet auf dich',
   'workspace.agentIdle': 'Agent inaktiv',
   'workspace.close': 'Arbeitsbereich schließen',
   'workspace.copyInfo': 'Sitzungsinfo kopieren',
@@ -177,6 +178,8 @@ export const de = {
   'settings.uiScaleDesc': 'Skaliert die gesamte Oberfläche — nützlich auf High-DPI-Displays. Neustart nicht erforderlich.',
   'settings.sidebarPosition': 'Position der Seitenleiste',
   'settings.sidebarPositionDesc': 'Links oder rechts vom Terminalbereich',
+  'settings.sidebarAttentionFirst': 'Zeilen, die auf dich warten, zuerst',
+  'settings.sidebarAttentionFirstDesc': 'Arbeitsbereiche, deren Agent auf dich wartet, oben in der Seitenleiste anheften. Standardmäßig aus: Zeilen bleiben dort, wohin du sie gezogen hast.',
   'settings.sidebarLeft': 'Links',
   'settings.sidebarRight': 'Rechts',
   'settings.updateReady': 'Update bereit',

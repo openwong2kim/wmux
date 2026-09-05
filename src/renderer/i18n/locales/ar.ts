@@ -17,6 +17,7 @@ export const ar = {
   'workspace.agentWaiting': 'الوكيل في الانتظار',
 
   'workspace.agentAwaitingInput': 'الوكيل يحتاج إدخالاً',
+  'workspace.needsYou': 'ينتظر ردك',
   'workspace.agentIdle': 'الوكيل خامل',
   'workspace.close': 'إغلاق مساحة العمل',
   'workspace.copyInfo': 'نسخ معلومات الجلسة',
@@ -177,6 +178,8 @@ export const ar = {
   'settings.uiScaleDesc': 'تكبير أو تصغير الواجهة بالكامل — مفيد للشاشات عالية الدقة. لا حاجة لإعادة التشغيل.',
   'settings.sidebarPosition': 'موضع الشريط الجانبي',
   'settings.sidebarPositionDesc': 'يسار أو يمين منطقة الطرفية',
+  'settings.sidebarAttentionFirst': 'الصفوف التي تنتظرك أولاً',
+  'settings.sidebarAttentionFirstDesc': 'ثبّت مساحات العمل التي ينتظر وكيلها ردك في أعلى الشريط الجانبي. معطّل افتراضيًا: تبقى الصفوف حيث سحبتها.',
   'settings.sidebarLeft': 'يسار',
   'settings.sidebarRight': 'يمين',
   'settings.updateReady': 'التحديث جاهز',

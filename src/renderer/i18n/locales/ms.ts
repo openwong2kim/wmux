@@ -17,6 +17,7 @@ export const ms = {
   'workspace.agentWaiting': 'Ejen menunggu',
 
   'workspace.agentAwaitingInput': 'Ejen perlukan input',
+  'workspace.needsYou': 'Menunggu anda',
   'workspace.agentIdle': 'Ejen melahu',
   'workspace.close': 'Tutup ruang kerja',
   'workspace.copyInfo': 'Salin maklumat sesi',
@@ -177,6 +178,8 @@ export const ms = {
   'settings.uiScaleDesc': 'Skalakan keseluruhan antara muka — berguna pada paparan DPI tinggi. Tidak perlu mulakan semula.',
   'settings.sidebarPosition': 'Kedudukan bar sisi',
   'settings.sidebarPositionDesc': 'Kiri atau kanan kawasan terminal',
+  'settings.sidebarAttentionFirst': 'Baris yang menunggu anda di atas',
+  'settings.sidebarAttentionFirstDesc': 'Sematkan ruang kerja yang ejennya sedang menunggu anda di bahagian atas bar sisi. Dimatikan secara lalai: baris kekal di tempat anda menyeretnya.',
   'settings.sidebarLeft': 'Kiri',
   'settings.sidebarRight': 'Kanan',
   'settings.updateReady': 'Kemas kini sedia',

@@ -17,6 +17,7 @@ export const hi = {
   'workspace.agentWaiting': 'एजेंट प्रतीक्षारत',
 
   'workspace.agentAwaitingInput': 'एजेंट को इनपुट चाहिए',
+  'workspace.needsYou': 'आपका इंतज़ार',
   'workspace.agentIdle': 'एजेंट निष्क्रिय',
   'workspace.close': 'कार्यक्षेत्र बंद करें',
   'workspace.copyInfo': 'सेशन जानकारी कॉपी करें',
@@ -177,6 +178,8 @@ export const hi = {
   'settings.uiScaleDesc': 'पूरे इंटरफ़ेस को स्केल करें — उच्च-DPI डिस्प्ले पर उपयोगी। पुनरारंभ की आवश्यकता नहीं।',
   'settings.sidebarPosition': 'साइडबार स्थिति',
   'settings.sidebarPositionDesc': 'टर्मिनल क्षेत्र के बाएँ या दाएँ',
+  'settings.sidebarAttentionFirst': 'आपकी प्रतीक्षा वाली पंक्तियाँ सबसे ऊपर',
+  'settings.sidebarAttentionFirstDesc': 'जिन वर्कस्पेस का एजेंट आपका इंतज़ार कर रहा है उन्हें साइडबार में सबसे ऊपर पिन करें। डिफ़ॉल्ट रूप से बंद: पंक्तियाँ वहीं रहती हैं जहाँ आपने उन्हें खींचा था।',
   'settings.sidebarLeft': 'बाएँ',
   'settings.sidebarRight': 'दाएँ',
   'settings.updateReady': 'अपडेट तैयार',
