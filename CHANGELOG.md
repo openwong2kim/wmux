@@ -1,5 +1,511 @@
 ## [Unreleased]
 
+## [3.51.0] — 2026-09-05
+
+### Added
+
+- **Pasted screenshots can reach the agent as real images.** Pasting an
+  image-only clipboard into a pane used to write a temp PNG and type its path —
+  the only route an agent ever saw. Claude Code reads the clipboard itself when
+  it receives its image-paste key, so it now gets a real inline image instead of
+  a file path. Settings › Terminal › Image paste picks the route: Auto (the
+  default) uses it for panes running an agent known to read the clipboard, and
+  falls back to the file path everywhere else. Pasting text is unchanged. (#1209)
+
+- **Optional: put the workspaces that need you at the top of the sidebar.** A new Appearance setting, "Needs-you rows first", lifts every workspace whose agent is blocked on you to the top of both the sidebar list and the collapsed rail. It is off by default, because a list that reorders itself while you are scanning costs more than the scan it saves. Turning it on changes the display only — Ctrl+N still numbers workspaces by their real position, and the stored order is untouched. Drag-to-reorder is paused while it is on, because a drop aimed at the order you can see would land at the order underneath it.
+
+- `browser_type` takes a `selector`, for an element neither snapshot handed out a number for. It is CSS on every transport — a Playwright engine prefix (`text=`, `xpath=`, `>>`) is refused rather than accepted on one lane and not the others — and it must match exactly one element, the same uniqueness rule a ref carries.
+
+- `browser_type` takes `newline: 'enter' | 'shift-enter'`, which splits the text on `\n` and presses a real key between the lines instead of inserting a newline character a single-line input or a rich-text editor drops. Default stays `literal`, today's behaviour. If a keypress submits the field, the remaining lines are not typed into whatever the next page focuses: the type stops and reports how many lines went in.
+
+- `browser_snapshot` takes `q`, keeping only the nodes that match it (case-insensitive substring, or `/pattern/flags`) plus their ancestors — a way to ask a 250-option listbox one question instead of reading it whole.
+
+- Task ledger: a status log keyed by WorkTask id (`~/.wmux/task-ledger.jsonl`, WMUX_DATA_SUFFIX-scoped) recording `working → input_required / review_requested → completed / failed / cancelled` with compare-and-swap revisions, actor authorization and a gate-pass requirement for `completed`.
+
+- MCP: `ledger_update` (every profile) lets a fan-out worker record `review_requested` / `input_required` on its own task; `ledger_list` is a commander-only tool (registered only under `--commander`, never in the full or core profile) that shows the brain the tasks it owns. Fan-out prompts now tell workers to report through the ledger instead of a chat "done".
+
+- Orchestrator: `deck.ledgerGate` (default off, `~/.wmux/deck-ledger-gate.json`) makes the brain's Stop gate hold a turn while the ledger lists open tasks it owns, with the existing consecutive-block cap and hysteresis; while on, `deck_ask_decision` shows the human the open-task list.
+
+- Every ledger transition is posted to the task's mission channel as `[ledger] <task> <from>→<to> <by> <summary>`.
+
+- **An orchestrator can now finish the tasks it starts.** Fanning out could open
+  N isolated tasks, and then nothing: running a task's completion gate, taking
+  its changes back into the parent repository, opening its pull request and
+  closing it were all reachable only from the desktop UI, so a supervising agent
+  could do nothing but ask you to click four times per task. It can now do all
+  four itself, and read a task's git status, recent commits and PR state as data
+  instead of guessing from a terminal screen. It can also stop a gate that is
+  still running, rather than waiting out a hung test suite for fifteen minutes.
+
+- **Closing a task or opening its PR asks you first.** Those two are the ones
+  nothing can take back — one removes a git worktree, the other pushes a branch
+  to your remote — so each raises the same approval prompt a fan-out does, naming
+  the task, its branch and the exact commit it points at, and auto-denying if
+  nobody answers. If the worker pushes another commit while the prompt is up,
+  the pull request is refused rather than sending something you did not see.
+  Running a gate and adopting a task's changes do not prompt: a gate run is
+  reversible by ignoring it, and adopted changes land staged and uncommitted.
+
+- Tasks can now be finished from an agent, not only from the GUI: `task_gate_run`
+  runs a task's completion gate (its trusted verify script, or npm lint + test)
+  inside the task's own worktree and reports a structured verdict; `task_adopt`
+  takes all of a task's changes into the parent repository as a staged,
+  uncommitted patch; `task_close` and `task_pr` close a task or open its pull
+  request. Each refuses with a named reason — a dirty worktree, unpushed
+  commits, missing dependencies, a task branch that needs rebasing — instead of
+  failing silently, and an adopt that will not apply cleanly leaves the parent
+  repository untouched.
+
+- `git_status`, `git_log` and `gh_pr_view` read a task's worktree as data, so a
+  supervising agent no longer has to infer what a task produced from a terminal
+  screen.
+
+- `approval_press` — an orchestrator brain can now answer an approval prompt on
+  a fan-out worker **it delegated**, instead of typing the digit `1` at whatever
+  happens to be on that worker's screen. The press resolves the approval record,
+  so the prompt is confirmed to still be there, the operator's autonomy policy
+  decides whether it may land, and the decision is written to the approval
+  history. `decision` must be given explicitly — there is no default, and an
+  unnamed decision is never taken as an approval. A pane holding more than one
+  pending approval is refused as ambiguous rather than guessed at, and the tool
+  hands back the ids to choose from. On a pane wmux holds an approval record
+  for, a brain's `terminal_send` / `terminal_send_key` is refused and points at
+  the tool — except `ctrl+c` and `escape`, which still go through so a runaway
+  worker can always be interrupted. If the press is refused because the operator
+  has autonomy or approval-press off for that worker, the block lifts so the
+  brain is never left with no move at all. Your own typing is unaffected.
+
+- Approvals raised by a permission gate now carry `deadlineAt`, the moment the
+  gate really stops waiting — reported by the gate broker that holds the timer,
+  so a surface can show an honest countdown.
+
+- **The Deck says what is delegated.** A status panel pinned above the orchestrator conversation lists every open task from the task ledger — title, status, what the worker doing it is up to, its last ledger line and how long it has sat there. It refreshes the moment the ledger moves, collapses to nothing when no task is open, and opens the report rail once while work is outstanding. If the ledger cannot be read at all the panel says so rather than collapsing — "nothing is delegated" and "I cannot tell you what is delegated" are opposite facts.
+
+- **`deck.ledgerGate` has a switch.** The ledger-backed Stop gate — hold the orchestrator's turn while the ledger still lists tasks it delegated, instead of guessing from pane activity — could previously only be turned on by hand-editing `deck-ledger-gate.json`. It is now a toggle in Settings › Agents, labelled experimental, writing the same file the gate reads, so the choice survives a restart.
+
+- **The deck header names the approval deadline.** An approval raised by the orchestrator's own delegation auto-rejects on a timer; with the Claude Code terminal filling the deck, the dialog could sit behind it and the expiry looked like the orchestrator stopping for no reason. The header now counts the deadline down, and turns red for the last ten seconds.
+
+- **Turns say which brain wrote them.** Switching the orchestrator brain mid-session left one log holding turns from two brains that share no transcript and no session. Each turn now carries a short tag for the brain that produced it, and a labelled break separates the runs. Turns from before this change show no tag rather than a guessed one.
+
+- Channel composer now tells you where an @mention will actually land: a mention
+  of a roster member is pinned to that member's own agent pane (the only shape
+  that reaches an idle agent), with a "will reach …" hint under the input. A
+  member with no live agent pane is offered as a badge-only mention and labelled
+  as one instead of silently reaching nobody.
+
+- Channel messages you post now show what actually happened to them: delivered
+  as soon as any recipient got it, target gone when none did, and "no answer —
+  nudges exhausted" when the wake worker gave up on a mentioned agent. A post
+  that never gets an outcome now reads "delivery unconfirmed" instead of
+  claiming to still be sending forever.
+
+- Fleet's approval inbox shows the auto-reject countdown on every approval that
+  has a deadline, and keeps a short "auto-rejected" log of the ones that expired
+  while you were away instead of letting them vanish like an answered prompt.
+
+- The Missions section header now opens the task cleanup scan, and a close that
+  fails on a worktree still holding uncommitted work offers two next steps on
+  the row itself: "Commit & close", which types a ready-to-run
+  `git -C <worktree> add -- <the changed paths> && git -C <worktree> commit -m
+  "wip: <task>"` into the task's own shell without running it, and "Open
+  worktree". The commit line is offered only when the task's pane is a shell (in
+  an agent's TUI it would become a chat message) and only on POSIX shells.
+
+- **`task_adopt` can commit what it takes, so several tasks can be adopted in a
+  row.** Adopt left its changes staged, which made the first adopt easy to review
+  and the second one impossible: the target repository was now dirty, and adopt
+  refuses a dirty target rather than mixing two authors' edits together. Passing
+  `commit: true` commits exactly what was adopted, with a message naming the
+  task, and returns the commit's short hash. It commits only the adoption: if
+  anything else has been staged in the target since the adopt began, it refuses
+  and puts the adopted paths back rather than sweeping someone else's work into
+  the task's commit. The default is unchanged — staged and uncommitted — and
+  nothing is ever pushed.
+
+### Changed
+
+- **The sidebar puts the workspace name first.** The name is now Inter at the body size and gets the full width of its row; the project gear, the shortcut hint and the agent count fade in when you point at a row, and stay up on the active one. Before, all four fought over 240px and the name — 11px mono, the same weight as the metadata beside it — usually lost.
+
+- **Amber in the sidebar now means only "an agent is running".** A git dirty count is written as a muted `·N` instead of an amber `●N`; on a working tree with 41 uncommitted files it used to be the loudest thing on the row while never meaning "look here". Clean green, ahead blue and behind red are unchanged.
+
+- **An agent waiting on you tints its row and says so.** A workspace whose agent is blocked gets a faint red wash and a "Needs you" label, in place of the pause glyph that used to sit at the row's edge without saying what it was paused on. Red is also spent on errors, so an errored agent now draws a ✕ instead of a round dot — the shape, not the hue, tells the two apart.
+
+- **A Claude Code pane turns amber the moment you submit a prompt.** The
+  running dot used to come from a byte-rate guess — roughly 2 KB of output had
+  to flow before wmux would call the pane busy, so the first seconds of every
+  turn looked idle. wmux now registers Claude Code's `UserPromptSubmit` hook,
+  which fires once per turn, and the pane lights on the prompt itself.
+
+- **A hook-governed pane no longer flickers.** While the hook speaks for a
+  pane, the byte heuristic stops writing its status in both directions: quiet
+  reasoning, a long web search, or a slow `bash` no longer drops the pane to
+  idle mid-turn, and a mid-turn redraw burst no longer overwrites a correct
+  "finished" or "needs you" with "running". Panes with no hook bridge — and
+  panes whose bridge only reports turn *ends* — keep the heuristic exactly as
+  it was.
+
+- **A turn that dies on an API error marks the pane errored (red ✕) instead of
+  leaving it amber.** Claude Code fires `StopFailure` and no `Stop` on that
+  path, so a pane the turn-start hook had lit stayed amber until the agent
+  process died. wmux now registers `StopFailure` too, and reports the failed
+  turn as its own notification rather than as "Task finished".
+
+- **A pane settles the moment its shell is back at its prompt.** wmux reads
+  your shell's integration markers, and a shell that has drawn its prompt again
+  cannot have an agent working in it — so the agent you exited, or one that
+  died on a network error with no turn end at all, stops sitting there lit.
+  This is the settle that does not need wmux to identify the process that died,
+  which is why it fires where the others cannot. `StopFailure` is registered on
+  both install paths, but Claude Code does not always emit it — a turn that
+  fails on "API Error: Connection refused" after its last retry ends with no
+  hook — and panes whose shell emits no markers are unaffected: they keep the
+  settle paths they already had. A finished turn keeps its result either way.
+
+- **Interrupting an agent settles its pane right away.** Ctrl+C — or a double
+  ESC — stops the turn, but Claude Code sends no turn-end hook for it and the
+  agent is still the pane's foreground command, so nothing else could see it.
+  wmux now reads the interrupt from the keystroke itself, on every path that
+  types into a pane (the terminal, `terminal_send`, the CLI), and the dot drops
+  to idle instead of staying amber. A Ctrl+C in a plain shell still changes
+  nothing.
+
+- **Existing installs need one action.** **Plugin users:** run `/plugin update` in Claude Code to pick up `wmux-claude-integration` 0.4.0, which registers the new hook. **Plugin-less installs (`wmux setup-hooks`):** re-run `wmux setup-hooks`, or just let the app do it — every launch refreshes the hooks. Then restart the Claude Code session. `wmux setup-hooks --status` gained a **turn-start signal** row that says whether the hook is installed. If you are on a plugin older than 0.4.0, that row and the turn-end row now read **STALE** and point at `/plugin update` — the plugin owns those hooks, so re-running `wmux setup-hooks` cannot supply them.
+
+- **An agent that has said nothing for 30 minutes now says so.** A pane whose
+  status is still `running` but which has reported nothing — no hook, no
+  activity, no output — for half an hour draws a hollow amber ring in place of
+  its filled dot, and its tooltip reads "No update for 30m+". Before, the same
+  pane either kept a confident, breathing amber dot for as long as the window
+  stayed open, or quietly slid to idle as if the work had finished. The ring
+  appears on the sidebar row, the collapsed rail, the sidebar agent roster and
+  the deck Fleet roster. It is a rendition, not a new status: the roll-up, the
+  needs-you ordering and the "N need you" chip are unaffected, any agent that
+  wants you still shows red and sorts above, and a pane whose shell is back at
+  its prompt or whose agent process has exited is idle as before.
+
+- The sidebar's task list stays visible when it is empty, indents each task under
+  the workspace that started it, and summarises finished tasks in one line
+  instead of a list.
+
+- Multi Task asks for confirmation before launching tasks with no prompt at all,
+  and reports the launch in a single notification rather than one per task.
+
+- Settings names what the `claude-pty` orchestrator option changes: it switches
+  the Deck to a terminal interface.
+
+- A pane that joined a channel over MCP or the CLI is now named the way the rest
+  of wmux names it — its rename, else `w<workspace>-<pane>(<agent>)` — in the
+  members roster and on the transcript's sender chip, instead of the opaque
+  spawn-stamped member id it used to print.
+
+- **Every glyph in the chrome is now a target you can actually hit.** An audit
+  of the packaged window found 66 controls under the 24px pointer floor: the
+  pane tab's close was a 7px glyph with no box at all, the workspace row's
+  hover actions were 11px icons in 13px boxes, the dock toggle was 20x20. They
+  now carry real 24x24 hit areas on the same drawing — and no box reaches over
+  its neighbour to do it, so the workspace row's close button cannot take a
+  click meant for Copy, and the tab close cannot take one meant for the end of
+  the tab's name. The hover actions also stop accepting clicks while they are
+  invisible, and appear for the keyboard when one of them is focused.
+
+- **Icon-only buttons say what they are.** The titlebar's settings gear was an
+  unnamed button to a screen reader — a `title` tooltip is not an accessible
+  name when the button's only child is an SVG. The gear, the sidebar's collapse
+  chevron, the pane tab close (which now names the tab it closes, not just
+  "Close tab"), the company panel's add and destroy glyphs, the profile modal's
+  row remove and the mini sidebar's unread count all announce themselves now.
+
+- **Copy that repeated a control is gone.** The orchestrator deck's empty state
+  was a three-line paragraph saying what the composer's own placeholder says one
+  row below it, so the thread simply stays empty until there is something in it.
+  The new-workspace menu's "Browse Folder…" row now tells you something ("Choose
+  any folder on disk") instead of restating its own label. The schedules empty
+  state keeps the fact you cannot infer — they survive reboots — and drops the
+  sentence describing what a schedule is.
+
+- **A task's status dot means one thing everywhere.** The sidebar painted every open task green while the deck's task panel painted the same task from its worker — so one task could read as "done" on one edge of the window and "idle" on the other. Both now read the same rule: amber is running, green is complete, gray is idle, red needs you, and a task handed back for review is amber because it is waiting on the orchestrator, not finished. The dot's meaning is also read out to screen readers instead of living only in the colour.
+
+- **The sidebar states your tasks in one line instead of listing them twice.** It now reads `Tasks · 3 open`, and clicking it takes you to the workspace whose ledger holds those tasks and opens the deck's Agent tab on them — previously the line counted every workspace's tasks and could open an empty panel. The line no longer repeats a "needs you" count: the titlebar chip already carries that, and it was reading it off a different source than the deck's red dots. With no tasks at all the line is gone entirely; the worktree `Clean up` scan is then reached from the command palette.
+
+- **The deck's task panel got the row's exits back.** A row's title opens the task's own workspace and its `#` opens the task's channel — the two things the deleted sidebar rows could do. Closed tasks are reachable again too, under a collapsed `Finished (N)` disclosure at the foot of the panel; before this their mission channels had no entry point at all once the sidebar rows went.
+
+- **The deck's task panel no longer pushes the conversation off the screen.** It shows five tasks and keeps the rest behind `+N more`; expanded or collapsed is remembered. When the ledger read itself is capped, the toggle says `showing 20 of 34` rather than implying the list is complete.
+
+- **An approval prompt is announced at most twice.** The deck header's auto-reject countdown steps aside while the Fleet cockpit's Approvals tab is open and listing that workspace's prompt, since that row already counts the same deadline down. An inbox showing somebody else's prompts no longer silences it.
+
+- **The titlebar stopped showing gauges that never said anything.** The memory reading appears only when the footprint is large or has outgrown what the window started with, holds through a small dip instead of blinking on the threshold, and is polled rarely while hidden. The clock is off unless you turn it on in Settings → Appearance (your OS already draws one).
+
+- **Fewer wasted redraws behind the deck.** The 15-second task poll used to hand the interface a brand-new list every tick even when nothing had changed, redrawing the deck four times a minute for nothing. A task the orchestrator starts also gets its channel link immediately now, rather than up to fifteen seconds later.
+
+The new strings ship in English, Korean and Polish; every other language falls back to English until it is translated.
+
+- The UI now renders in Inter, the typeface the design system has always
+  specified. It is bundled with the app under the SIL Open Font License (Latin +
+  Latin Extended, +131 KB, full 100–900 weight range), so it looks the same on
+  every machine instead of falling back to whatever the OS supplies. Text
+  outside those scripts, including Hangul, still uses the system face.
+
+- Every UI text size now lands on one of the four design steps — 10px section
+  labels, 11px meta and tool lines, 13px body, 14px titles. 116 places were
+  drifting onto in-between sizes (8, 9, 10.5, 11.5, 12.5px) that blurred the
+  hierarchy without adding one. Terminal text is unaffected.
+
+- Corner radii follow the design system again: 5px on buttons and controls,
+  7px on cards, panels, popovers and dialogs. 75 surfaces were rounder than the
+  chrome allows.
+
+- Inline `code` in the orchestrator's replies is now mono on a quiet surface
+  instead of amber, and the workspace Mode control is a plain label with a
+  status dot (red for danger, amber for assist, gray for off) instead of a
+  tinted pill. Amber is reserved for things that are alive or need you, and a
+  single screen was spending it on dozens of code spans and an idle control.
+
+- Modal dimming, inset highlights and hairlines now derive from theme tokens
+  rather than hardcoded white and black. Light themes were getting a highlight
+  lit the wrong way, and 33 colours carried a hardcoded fallback from an
+  unrelated palette that would have surfaced if a theme token ever went missing.
+
+- The two light themes now dim behind a dialog more gently than the dark ones,
+  where the previous single value read as a blackout rather than a dimming.
+
+### Fixed
+
+- `browser_replay` now lets a step's navigation land before looking for the next element. A click that started a Turbo/SPA navigation used to have the next step measured against the old page and stopped with "no … on the page any more" while the element was there a moment later (#1193).
+
+- `browser_wait` is recorded as a replay step (url, selector, text, network idle) and counts toward the ring and per-flow step limits like any other action. A wait on a JS predicate is not recorded: a replay never evaluates a script from the cache file.
+
+- **A WSL pane gets an image path it can actually open.** The Windows temp
+  directory is reachable from the Linux side only under `/mnt`, so the pasted
+  path pointed at a file the agent could not read. WSL panes now receive the
+  `/mnt` view; PowerShell and Git Bash panes keep the Windows path. (#1209)
+
+- **A pane whose agent died without a Stop now settles to idle.** An agent
+  killed mid-turn (double Ctrl+C, `/exit`, a crash) sends no Stop hook, so a
+  pane the hook had lit could stay amber long after the agent was gone. The
+  agent process's death is now its own settle path — and when wmux cannot tell
+  which process died, or never sees the death at all, the pane settles anyway
+  30 minutes after its last hook signal. A turn that has already *finished*
+  keeps its result: an agent exiting after its turn ended no longer wipes the
+  "finished" or "needs you" state you had not read yet.
+
+- **The sidebar roster no longer contradicts the dot above it.** A workspace
+  row could show a running agent while its own roster row called the same pane
+  "Idle": the row aged the turn out after two quiet minutes, which is exactly
+  what a long, silent turn looks like. Both now read the same open turn.
+
+- **A pane that changes agents no longer inherits the previous one's status.**
+  Starting `codex` in a pane where `claude` had exited mid-turn left the new
+  agent's dot governed by the old one's turn.
+
+- **An orchestrator now wakes when a worker's turn dies on an API error.**
+  Claude Code reports that as `StopFailure` and no `Stop`, and wmux published
+  no lifecycle event for it — so a Deck brain or fan-out parent waiting on the
+  worker sat on the stop gate with nothing to react to. The failed turn is now
+  its own `agent.lifecycle` kind (`agent.stop_failure`), pollable through
+  `wmux_events_poll` and woken on like a stop, but with its own reason so the
+  brain can tell a turn that finished from one that died.
+
+- A pane whose turn keeps dying no longer loops the orchestrator. After three
+  consecutive failed turns on the same pane, the wake tells the brain to raise
+  it with the human instead of resuming into the same rate limit again.
+
+- A Claude Code session that has only just started, sitting at its prompt with
+  no turn yet, no longer shows as "needs you" — the red status dot, the
+  "Waiting" label and the titlebar's "N need you" count all stay quiet until
+  the agent actually wants something.
+
+- The Deck fleet roster's status dots now derive "running" from the same
+  signals the sidebar roster uses, so the two can no longer disagree about
+  whether the same pane is working.
+
+- An unanswered decision no longer silently kills the delegation loop. A
+  workspace with a pending decision is never auto-woken — that part is
+  deliberate — but until now the events it blocked were dropped without a
+  trace, so a decision left over from a previous session ate every fan-out
+  worker's "I'm done" and the orchestrator simply looked asleep. The block is
+  now logged (once per workspace per minute, and again straight away for a new
+  decision), naming how many events it blocked and which delegated tasks they
+  belonged to. A worker's own events are no longer thrown away either: they are
+  parked in the same durable backlog that already holds events for a workspace
+  with no orchestrator, so they survive an app restart — the decision does —
+  and answering the decision replays them into the turn that follows. Answering
+  also restores the auto-wake budget the wait may have eaten. Ambient chatter is
+  still dropped, as before.
+
+- `fanout_start` now warns you at the moment it accepts when the launching
+  workspace has a pending decision, instead of starting workers whose reports
+  will not reach anyone until it is answered. The warning leads the tool's
+  answer as its own line, not just a field an agent can skim past.
+
+- A refused `task_adopt`, `task_close` or `task_pr` now says so in a sentence
+  before it says so in JSON. The answer opens with `REFUSED (<reason>):
+  <error>`, states that nothing was adopted / closed / opened, and names the
+  one move that clears it — because an orchestrator reading an envelope for a
+  commit sha was skimming past `ok: false` and reporting an adopt that had
+  never happened. Refusals from the permission gate (an approval declined or
+  expired, a task that is not yours) now name their real cause instead of
+  reading as "unknown", and the JSON itself is left untouched so anything that
+  parses it still works.
+
+- The task ledger explains itself when it refuses a status change. An illegal
+  transition now lists the statuses that ARE reachable from the current one —
+  and only the ones the caller is actually allowed to set, so it never suggests
+  a move that would be refused a moment later. The `ledger_update` tool text
+  states the whole table, says plainly that a task can only be completed from
+  `review_requested`, and that an orchestrator may set that itself when the
+  worker cannot — with `force` and a reason as the way past a missing gate.
+
+- `browser_type` and `browser_fill` now accept `smartRef` (from `browser_smart_snapshot`) as well as `ref`, the way `browser_click` already did. A smart ref passed as `ref` no longer reads as a missing element: the error names which ref space the argument was read in and which parameter the number belongs to.
+
+- `contenteditable` fields (a rich-text title or caption) now count as interactive in `browser_snapshot`, page-level and under a `selector`. They were absent from `filter: 'interactive'` entirely, so a dialog built out of them looked like it had no fields.
+
+- On the RPC transport (a surface with no live Chrome page), `browser_fill` and `browser_type` stop when the element they were pointed at did not take focus, instead of typing over whichever field the page had focused. A `smartRef` is refused there rather than resolved through a `browser_snapshot` tag that numbers a different element.
+
+- The `LIVE_CHROME_UNAVAILABLE` hint names the "Remote debugging" item in the `chrome://inspect` sidebar. Its old `chrome://inspect/#remote-debugging` link opens the Devices tab, leaving the user on the wrong page.
+
+- **A fan-out worker no longer launches on whatever model your shell profile
+  exports.** The worker's command is typed into the pane's interactive login
+  shell, so an `ANTHROPIC_MODEL` exported by `~/.zshrc` (or any other rc file)
+  overrode the environment wmux had set and every worker's first turn came back
+  "There's an issue with the selected model", indistinguishable from an idle
+  worker. A `claude` worker's launch now unsets that variable in the pane's own
+  shell, which is the only place late enough to win — and it does it without
+  bypassing your shell, so an aliased `claude` (what `claude migrate-installer`
+  leaves behind) still resolves.
+
+  Three things call it off, each because wmux would otherwise be overruling a
+  choice you made: a launch that already passes `--model`; a role bound to an
+  agent and a model in Settings, whose flag is spliced in first; and a shell
+  that routes claude through a gateway (`ANTHROPIC_BASE_URL`), where the model
+  name is exactly what the gateway needs. `ANTHROPIC_BASE_URL` and
+  `ANTHROPIC_AUTH_TOKEN` are never touched — routing claude through your own
+  proxy is a whole-machine choice, and a worker that quietly bypassed it would
+  be talking to a different endpoint than every other pane you open. Panes whose
+  shell is fish, PowerShell or nushell are left alone entirely.
+
+- A fan-out worker whose first turn fails on its model is now reported as
+  `input_required` in the task ledger, with the model it was refused and where
+  that model came from, instead of sitting in `working` next to an idle-looking
+  pane. wmux reports that screen rather than typing at it, and looks once more a
+  few seconds after the pane goes quiet — the error only arrives after the agent
+  has painted its composer and been refused.
+
+- Orchestrator: a brain that fanned out work now learns when its workers stop or wait for input — worker lifecycle events are copied to the owning workspace tagged with the task, bypass the owner's `none` wake policy, and are parked as a backlog when the owner has no brain yet.
+
+- **An approval prompt waiting behind another no longer expires unseen.** Each
+  prompt's 30-second countdown started when it was created, so a second one
+  queued behind the first could auto-deny having never been on screen — a
+  refusal nobody made. The clock now starts when the prompt is actually shown.
+
+- **An agent with autonomy on can answer its own workers' prompts again.** The
+  check that keeps automated approval presses inside delegated task panes had no
+  way to learn which panes those were, so it refused every one of them. It is now
+  told, and a refusal says whether it was policy or missing wiring. Presses into
+  a pane you opened yourself are still refused, and a person answering from the
+  phone or the web was never subject to any of this.
+
+- `terminal_send({ submit: true })` now reports whether the prompt was actually
+  committed. The result carries `accepted` — true only when the pane was
+  observed to move (its turn started, or the input line cleared) — plus
+  `agentStatusAfter`, and the pane's last screen lines when it did not. The
+  Enter is re-sent once before giving up. Previously `submitted: true` meant
+  only "a carriage return was written", so an orchestrator reported progress on
+  panes whose prompt was still sitting uncommitted in the composer.
+
+- An orchestrator brain can finally reach the agents in its own workspace. A
+  brain owns no pane, so every same-workspace A2A reply it sent to an ADDRESSED
+  pane was suppressed as an "unverified sender" and merely stored — the brain
+  was told the message landed while the worker sat waiting. A caller carrying
+  the daemon-validated commander binding, for the workspace that binding names,
+  now satisfies that one guard. An anchorless reply is still suppressed (it
+  would fall back to whichever pane happens to be focused), and the self-loop
+  protection for pane callers is unchanged.
+
+- An automated approval press is now scoped to panes that were actually
+  delegated: the target's workspace must be a task workspace with autonomy on,
+  the prompt must have come from a hook rather than the screen-regex detector,
+  and a re-read must still show it. A fact the daemon cannot establish counts
+  as a refusal, and a refusal leaves the request live for a human to answer.
+  People are not subject to any of this — approving or denying from the phone
+  or the web works exactly as before — and a DENY is always allowed, from any
+  caller, because refusing one would keep a pane blocked in the name of safety.
+
+- A channel wake nudge now carries the first line of the message it is waking
+  you for, so an agent no longer has to spend a turn reading just to find out
+  whether the nudge mattered. It rides only into panes wmux can name as an
+  agent TUI, with shell metacharacters stripped: the text comes from another
+  workspace and is committed with an Enter, so a pane that is really a shell
+  would run it. A nudge that never landed (the pane died mid-race) marks that
+  member's own rows, over the message range it announced, `target_gone` instead
+  of leaving them looking pending forever — and a later ack promotes them back
+  to `delivered`. A nudge that DID land is still not a delivery receipt.
+
+- `wmux channel unread` and the `channel_unread` tool now answer from the same
+  daemon call and report the same set. The CLI no longer takes the member from
+  `$WMUX_MEMBER_ID` (only an explicit `--member`, matching the tool) and no
+  longer hides caught-up rows, so the two surfaces can no longer contradict
+  each other about what you owe. Each row names its member, and a workspace
+  holding several says so, since without `--member` the rows shown are the
+  whole workspace's and not only yours.
+
+- Fan-out workers no longer freeze on Claude Code's first-run screens. A `claude`
+  worker is launched with the environment flag that skips the workspace-trust
+  dialog (wmux writes nothing to your global Claude Code config), and a worker
+  left sitting on a known one-shot onboarding screen is dismissed automatically.
+  One that is still stuck is reported as `input_required` in the task ledger
+  instead of looking idle forever. Set `WMUX_AGENT_FIRST_RUN=off` to turn both
+  behaviours off.
+
+- A fan-out task workspace now inherits the autonomy of the workspace that
+  launched it, so a brain running in `danger` can actually act on its workers'
+  approvals. Previously every task workspace was created with no autonomy entry
+  at all, which reads as `off`. An owner in `assist` still gets workers whose
+  approvals must be answered by a human — that is what `assist` means.
+
+- The channel composer's "no channel or workspace identity" post failure and the
+  agent mention-loop warning are translated (en/ko/pl) instead of always English.
+
+- The members roster's agent liveness dot carries an accessible label, so a
+  screen reader reports whether an agent's pane is live or gone.
+
+- Two channel members of the same workspace that have no live pane can both be
+  @mentioned in one post — the second mention used to be dropped silently.
+
+- A "no answer — nudges exhausted" mark applies only to the messages that were
+  already posted when the wake worker gave up, and clears once that member
+  catches up, leaves, or the channel is archived. It used to stick to every
+  message you ever posted in that channel.
+
+- **A project with no lint or test script can finish a task again.** The
+  completion gate refuses to certify a repository it cannot grade, but it also
+  recorded nothing when there was nothing to run — and the task ledger will not
+  mark a task completed without a recorded pass. So any repository that declares
+  neither `scripts/verify.sh` nor npm `lint`/`test` scripts could only be closed
+  by forcing it. Running the gate on such a project now records an honest
+  verdict — a pass whose command is `none` and whose note says no gate exists —
+  and the task completes normally. The two skips that mean the gate *could not*
+  run (missing dependencies, a command that would not start) still record
+  nothing, because there a human should look. The waiver needs the parent
+  repository to agree: a task worktree that has lost the lint or test script its
+  project declares records a *failing* gate naming what is missing, not a pass.
+  This also unblocks projects that are not Node projects at all, which used to
+  be turned away for having no `node_modules` before anything asked whether they
+  had a gate to run.
+
+- **The orchestrator can read the repository it just adopted into.** `git_status`
+  and `git_log` only accepted a task id, so after taking a task's work into the
+  parent checkout there was no way to look at that checkout — the parent
+  repository is not a task. Both now work with no task id at all and answer for
+  the repository your own terminal is in.
+
+- The orchestrator's Stop gate and `deck_complete_work` no longer treat a plain shell pane as an outstanding worker. Typing a command into your own terminal made that pane report `running`, which refused the brain's completion with `workers_outstanding` and held its turn open on a pane only you could clear. Both gates now count a pane only when wmux has evidence it holds an agent, and their refusal text says "agent panes". A pane wmux is still unsure about keeps holding the turn, so a worker is never released by mistake.
+
+- The auto-wake heartbeat no longer wakes the orchestrator about a pane it is not allowed to act on: a shell that is waiting or finished is skipped, exactly as the Stop gate skips it.
+
+- Your shells keep their kill protection. A busy shell no longer blocks the brain's turn, but the brain still cannot end that session with `exit` or Ctrl+D — the two rules are now tracked separately.
+
+- **A fan-out task workspace no longer spawns an orchestrator brain of its own.** Since the task workspace started inheriting its owner's Deck mode (so the owner's brain may press its approvals), that mode also made it brain-eligible: every worker got a brain that consumed the worker's own stop events before the owner ever saw them, one extra Claude session per worker, held open by the Stop gate. Task workspaces are now brain-less for as long as their task is open — the composer and every ambient driver answer `task_workspace` — and a worker's stop reaches only the owner, tagged with its task.
+
 ## [3.50.1] — 2026-09-03
 
 ### Changed
