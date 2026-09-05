@@ -51,6 +51,15 @@ describe('renderBrainMarkdown', () => {
     expect(container.querySelector('strong')?.textContent).toBe('good');
     expect(container.querySelector('em')?.textContent).toBe('mostly');
     expect(container.querySelector('code')?.textContent).toBe('npm test');
+    // DESIGN.md amber diet: inline code is machine evidence (mono on a faint
+    // surface), not an attention point. It used to render in --accent, and a
+    // single reply can carry dozens of them — enough on its own to blow the
+    // 5±2 warm-meaning-point budget for the screen.
+    const inlineCode = container.querySelector('[data-brain-md-code-inline]') as HTMLElement;
+    expect(inlineCode).not.toBeNull();
+    expect(inlineCode.className).toContain('font-mono');
+    expect(inlineCode.className).toContain('--text-sub');
+    expect(inlineCode.className).not.toContain('--accent');
   });
 
   it('renders bullet and numbered lists with markers', () => {

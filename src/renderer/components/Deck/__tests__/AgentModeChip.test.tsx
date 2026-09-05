@@ -86,9 +86,41 @@ describe('AgentModeChip', () => {
 
     const chip = container.querySelector('[data-agent-mode-chip] > button');
     expect(chip).toBeTruthy();
-    // Falls back to the OFF skin — the most conservative badge.
-    expect(chip!.className).toContain('border-transparent');
+    // Falls back to the OFF dot — the most conservative badge.
     expect(container.querySelector('[data-agent-mode-dot]')!.className).toContain('--text-muted');
+  });
+
+  // DESIGN.md amber diet: the chip used to be a red-tinted bordered pill in
+  // `danger` and a warm-tinted pill in `assist`, so an idle control spent
+  // attention points and a toolbar button carried a box at rest. State now
+  // lives in the dot; the chip body is the boxless recipe that only raises on
+  // hover (.ui-chip-boxless in styles/ui.css).
+  it('is a boxless chip: state lives in the dot, never in a tint at rest', async () => {
+    for (const [mode, dotToken] of [
+      ['off', '--text-muted'],
+      ['assist', '--accent)'],
+      ['danger', '--accent-red'],
+    ] as const) {
+      const api: AgentModeApi = {
+        get: async () => ({ mode: mode as AgentMode }),
+        set: async () => ({ ok: true }),
+      };
+      const { container, cleanup } = render(<AgentModeChip api={api} workspaceId="ws-1" t={t} />);
+      cleanups.push(cleanup);
+      await flush();
+
+      const chip = container.querySelector('[data-agent-mode-chip] > button') as HTMLElement;
+      expect(chip.className, `${mode} chip is boxless`).toContain('ui-chip-boxless');
+      // No fill, no coloured border, no per-mode weight bump at rest.
+      expect(chip.className).not.toMatch(/\bbg-\[/);
+      expect(chip.className).not.toMatch(/\bborder(-|\[)/);
+      expect(chip.className).not.toMatch(/font-(medium|semibold)/);
+      // The dot is the only thing that changes colour.
+      const dot = container.querySelector('[data-agent-mode-dot]') as HTMLElement;
+      expect(dot.className, `${mode} dot`).toContain(dotToken);
+      cleanup();
+      cleanups.pop();
+    }
   });
 
   // The chip lives at the bottom of the deck rail, so the menu opens UPWARD by
