@@ -45,7 +45,7 @@ import type { RpcRouter } from '../RpcRouter';
 import { sendToRenderer } from './_bridge';
 import { dispatchNotification } from '../../notification/dispatchNotification';
 import { broadcastMetadataUpdate } from '../../ipc/handlers/metadata.handler';
-import type { HookSignalRouter } from '../../hooks/HookSignalRouter';
+import { DEFAULT_DEDUP_WINDOW_MS, type HookSignalRouter } from '../../hooks/HookSignalRouter';
 import { HookFloodMeter, describeHookFlood } from '../../hooks/HookFloodMeter';
 import { eventBus } from '../../events/EventBus';
 import { IPC, dataSuffix } from '../../../shared/constants';
@@ -481,6 +481,20 @@ export function registerHooksRpc(
   // workspaceCache/floodMeter) so it lives for the handler's lifetime and is
   // cleared wholesale on the returned cleanup (see ACTIVITY_THROTTLE_MS).
   const activityThrottle = createLeadingEdgeThrottle(ACTIVITY_THROTTLE_MS);
+  // Rate limit for the DEDUPED lifecycle tee, keyed `${ptyId}:${kind}`.
+  //
+  // A 'dedup' decision does not mean "already announced by the detector" — for
+  // `agent.stop_failure` the detector cannot write that kind at all (ledger
+  // keys include the kind), so the only thing that can produce it is the SAME
+  // hook arriving twice: a bridge retry, a duplicated hook registration, a
+  // wrapper that fires Stop hooks more than once. The tee publishes on 'dedup'
+  // for observability, which turned every one of those retries into another
+  // events_poll event for one turn.
+  //
+  // One window per (pane, kind), matching the ledger's own: a retry lands
+  // inside it and collapses, while a genuinely NEW turn's first signal finds
+  // the ledger stale and decides 'emit', which is never gated here at all.
+  const dedupTeeThrottle = createLeadingEdgeThrottle(DEFAULT_DEDUP_WINDOW_MS);
 
   // Observability: surface a hook-RPC flood in the main log (postmortem
   // visible) by tallying slow/failed workspace.list resolutions per window.
@@ -734,12 +748,21 @@ export function registerHooksRpc(
       // waiting on the pane cannot afford to be told nothing at all.
       //
       // 'dedup' means a same-kind signal already claimed this turn on the
-      // ledger, so a failed turn cannot double-toast. The tee publishes on
-      // BOTH decisions (the turn died either way) — only the toast is gated.
+      // ledger, so a failed turn cannot double-toast. NOT "the detector spoke
+      // first": the detector has no way to write this kind, so on a
+      // stop_failure the only thing that can dedup it is the SAME hook
+      // arriving twice. The tee publishes on BOTH decisions (the turn died
+      // either way) — the toast is gated on 'emit', and a deduped tee is
+      // rate-limited so a retry storm cannot re-announce one dead turn.
       const decision = hookRouter.recordHook(signal, ptyId);
       const failureWorkspaceId = findWorkspaceIdForPty(ptyId, workspaces);
       const emitFailureTee = (teeDecision: 'emit' | 'dedup' | 'internal'): void => {
         if (!failureWorkspaceId) return;
+        // `allow` runs FIRST so a published tee always stamps the window —
+        // otherwise the retry immediately behind an 'emit' would find the
+        // window untouched and publish the same turn a second time. Only a
+        // 'dedup' is actually held back by it.
+        if (!dedupTeeThrottle.allow(`${ptyId}:${signal.kind}`) && teeDecision === 'dedup') return;
         eventBus.emit({
           type: 'agent.lifecycle',
           workspaceId: failureWorkspaceId,
@@ -861,6 +884,14 @@ export function registerHooksRpc(
       //    workspace filtering works for orchestrator clients scoped to a
       //    single claimed workspace.
       const workspaceId = findWorkspaceIdForPty(ptyId, workspaces);
+      // A DEDUPED tee is rate-limited per (pane, kind): the same hook arriving
+      // twice for one turn (bridge retry, duplicated registration) would
+      // otherwise re-announce that turn to events_poll on every retry. 'emit'
+      // is never gated — it is the first word on a fresh turn by definition.
+      // `allow` runs FIRST so a published tee always stamps the window — a
+      // retry immediately behind an 'emit' would otherwise find it untouched
+      // and publish the same turn twice. Only a 'dedup' is held back by it.
+      const teeAllowed = dedupTeeThrottle.allow(`${ptyId}:${signal.kind}`) || decision !== 'dedup';
       if (workspaceId) {
         // Attach the pane's closing words to a turn-end wake. Without this the
         // orchestrator receives "pane stopped" and nothing else, so its only way
@@ -874,16 +905,18 @@ export function registerHooksRpc(
         // already on screen, and subagent_stop is a nested return the human is
         // not waiting on. Best-effort — a null just restores the old behavior.
         const lastMessage = stopMessage;
-        eventBus.emit({
-          type: 'agent.lifecycle',
-          workspaceId,
-          ptyId,
-          kind: signal.kind,
-          source: 'hook',
-          agent: signal.agent,
-          decision,
-          ...(lastMessage ? { lastMessage } : {}),
-        });
+        if (teeAllowed) {
+          eventBus.emit({
+            type: 'agent.lifecycle',
+            workspaceId,
+            ptyId,
+            kind: signal.kind,
+            source: 'hook',
+            agent: signal.agent,
+            decision,
+            ...(lastMessage ? { lastMessage } : {}),
+          });
+        }
         // M2: a claude turn just ended in this workspace — the usage number for
         // its bound account may have moved. Hook-gate a per-account probe (main
         // applies the enabled/cooldown/inflight gates). Fires on BOTH emit and
@@ -1015,6 +1048,7 @@ export function registerHooksRpc(
     clearInterval(floodTimer);
     // Drop the activity throttle state wholesale (no per-ptyId sweep needed).
     activityThrottle.clear();
+    dedupTeeThrottle.clear();
   };
 }
 

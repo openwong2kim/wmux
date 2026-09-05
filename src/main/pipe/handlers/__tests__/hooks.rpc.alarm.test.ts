@@ -365,6 +365,44 @@ describe('hooks.signal — local verdict gate (CompletionAlarm)', () => {
     expect(sendNotificationMock).not.toHaveBeenCalled();
   });
 
+  // 'dedup' on a stop_failure cannot mean "the detector announced it" — the
+  // detector has no way to write that kind. It means the SAME hook arrived
+  // twice, and every retry used to publish another events_poll event for one
+  // dead turn.
+  it('a retried failure hook tees ONCE, not once per retry', async () => {
+    const r = rig();
+    await primeWorking(r);
+    r.recordHook.mockReturnValue('dedup');
+
+    await r.dispatch({ kind: 'agent.stop_failure' });
+    await r.dispatch({ kind: 'agent.stop_failure' });
+    await r.dispatch({ kind: 'agent.stop_failure' });
+
+    const events = pollLifecycle();
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ kind: 'agent.stop_failure', decision: 'dedup' });
+  });
+
+  it('a retried STOP hook tees once too, and an emit is never gated', async () => {
+    const r = rig();
+    await primeWorking(r);
+    // First turn: a genuine emit, always published.
+    await r.dispatch({ kind: 'agent.stop' });
+    vi.advanceTimersByTime(DEFAULT_ALARM_WINDOW_MS);
+    expect(pollLifecycle()).toHaveLength(1);
+
+    // Retries of the same turn now land as 'dedup'.
+    r.recordHook.mockReturnValue('dedup');
+    await r.dispatch({ kind: 'agent.activity' });
+    await r.dispatch({ kind: 'agent.stop' });
+    vi.advanceTimersByTime(DEFAULT_ALARM_WINDOW_MS);
+    await r.dispatch({ kind: 'agent.activity' });
+    await r.dispatch({ kind: 'agent.stop' });
+    vi.advanceTimersByTime(DEFAULT_ALARM_WINDOW_MS);
+
+    expect(pollLifecycle()).toHaveLength(1);
+  });
+
   it('closes the turn gate, so a stop behind the failure raises no completion', async () => {
     const r = rig();
     await primeWorking(r);
