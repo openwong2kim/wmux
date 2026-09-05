@@ -33,7 +33,8 @@ function walk(dir: string, out: string[] = []): string[] {
   return out;
 }
 
-const files = walk(RENDERER).map((p) => [path.relative(RENDERER, p), fs.readFileSync(p, 'utf8')] as const);
+// Forward slashes on every platform: the exemption lists below are written POSIX-style.
+const files = walk(RENDERER).map((p) => [path.relative(RENDERER, p).split(path.sep).join('/'), fs.readFileSync(p, 'utf8')] as const);
 
 function hits(re: RegExp): string[] {
   const found: string[] = [];
