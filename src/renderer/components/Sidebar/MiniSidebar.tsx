@@ -228,6 +228,11 @@ export default function MiniSidebar() {
             className="w-8 h-8 rounded-[4px] flex items-center justify-center bg-[var(--bg-surface)] text-[var(--text-sub)] text-[10px] font-bold"
             onClick={() => useStore.getState().toggleNotificationPanel()}
             title={t('sidebar.unreadCount', { count: totalUnread })}
+            // The visible content is a bare number; the sibling channel badge
+            // one row up already names itself, and a screen reader announcing
+            // "3, button" beside "3 unread channel messages, button" cannot
+            // tell the two apart.
+            aria-label={t('sidebar.unreadCount', { count: totalUnread })}
           >
             {totalUnread > 99 ? '99+' : totalUnread}
           </button>

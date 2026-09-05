@@ -713,6 +713,9 @@ export default function SurfaceTabs({
             className={`${HIT_TARGET_24_TIGHT} text-[var(--text-subtle)] hover:text-[var(--accent-red)] transition-colors leading-none`}
             onClick={(e) => { e.stopPropagation(); onClose(s.id); }}
             title={t('surface.closeTab')}
+            // A strip of four buttons all announcing "Close tab" says nothing
+            // about WHICH tab closes, so the name carries the tab's own label.
+            aria-label={t('surface.closeTabNamed', { name: s.title || t('surface.terminal') })}
             {...tokenAttrs('danger', 'accent')}
           >
             ✕

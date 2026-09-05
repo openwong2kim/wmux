@@ -344,6 +344,7 @@ export const pl = {
   'surface.remoteTooltip': 'Terminal zdalny — {path}',
   'surface.remoteTerminal': 'Terminal zdalny',
   'surface.closeTab': 'Zamknij kartę',
+  'surface.closeTabNamed': 'Zamknij {name}',
 
   // Search
   'search.placeholder': 'Szukaj...',

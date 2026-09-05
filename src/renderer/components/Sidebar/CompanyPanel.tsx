@@ -52,6 +52,7 @@ function DeptSection({ dept, pendingCounts }: { dept: Department; pendingCounts:
             style={{ color: 'var(--accent-green)' }}
             onClick={() => setAddMemberOpen(true)}
             title={t('company.addMember')}
+            aria-label={t('company.addMember')}
           >
             +
           </button>
@@ -249,6 +250,7 @@ export default function CompanyPanel() {
               onMouseEnter={(e) => { e.currentTarget.style.color = 'var(--accent-red)'; }}
               onMouseLeave={(e) => { e.currentTarget.style.color = 'var(--text-muted)'; }}
               title={t('company.destroyTitle')}
+              aria-label={t('company.destroyTitle')}
             >
               {'\u2715'}
             </button>

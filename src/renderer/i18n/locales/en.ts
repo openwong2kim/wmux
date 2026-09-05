@@ -349,6 +349,7 @@ export const en = {
   'surface.remoteTooltip': 'Remote terminal — {path}',
   'surface.remoteTerminal': 'Remote terminal',
   'surface.closeTab': 'Close tab',
+  'surface.closeTabNamed': 'Close {name}',
 
   // Search
   'search.placeholder': 'Search...',

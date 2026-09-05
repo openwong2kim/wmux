@@ -250,6 +250,11 @@ export default function StatusBar() {
           // does not slide (it replaces the old `ml-1` — see hitArea.ts).
           className={`${HIT_TARGET_24_TIGHT} text-[var(--text-muted)] hover:text-[var(--text-main)] transition-colors`}
           title={t('statusBar.settingsTooltip')}
+          // `title` is not an accessible name here: the button's only child is
+          // an inline <svg> with no <title>, so a screen reader announced it as
+          // an unnamed button (a CDP sweep for /settings/i over aria-label
+          // matched nothing in the whole window).
+          aria-label={t('statusBar.settingsTooltip')}
           data-onboarding-target="settings-button"
         >
           <IconGear size={13} />

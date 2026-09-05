@@ -229,6 +229,7 @@ export default function Sidebar() {
           className={`${HIT_TARGET_24} rounded text-[var(--text-muted)] hover:text-[var(--text-main)] hover:bg-[rgba(var(--bg-surface-rgb),0.6)] transition-colors duration-150 ${FOCUS_RING}`}
           onClick={() => useStore.getState().toggleSidebar()}
           title={t('sidebar.hideTooltip')}
+          aria-label={t('sidebar.hideTooltip')}
         >
           <IconChevronDir dir={collapseDirection(sidebarPosition)} />
         </button>

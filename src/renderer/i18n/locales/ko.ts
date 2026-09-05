@@ -69,6 +69,7 @@ export const ko = {
   'surface.remoteTooltip': '원격 터미널 — {path}',
   'surface.remoteTerminal': '원격 터미널',
   'surface.closeTab': '탭 닫기',
+  'surface.closeTabNamed': '{name} 탭 닫기',
 
   // Search
   'search.placeholder': '검색...',
