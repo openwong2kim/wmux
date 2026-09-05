@@ -5822,6 +5822,19 @@ async function main(): Promise<void> {
   // activity.active / getAgentName on the next output burst.
   agentProcessTracker.setStateChangeListener((sessionId, state) => {
     if (!state.alive) hookIngest?.expireAuthorityFor(sessionId, state.slug);
+    // A pane whose status the HOOK owns has exactly two settle paths: the Stop
+    // hook, and this edge. An agent killed mid-turn (double Ctrl+C, /exit, a
+    // crash) sends no Stop, and byte silence no longer clears a hook-governed
+    // pane — so without this broadcast the dot would stay lit until the
+    // authority TTL. Sent on the death edge only; `alive:true` is the launch
+    // edge and settles nothing.
+    if (!state.alive) {
+      pipeServer.broadcast({
+        type: 'agent.processExit',
+        sessionId,
+        data: { slug: state.slug ?? null },
+      });
+    }
     const managed = sessionManager.getSession(sessionId);
     if (!managed) return;
     const screenSlug = managed.bridge.getLastAgent();

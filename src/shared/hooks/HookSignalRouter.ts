@@ -255,6 +255,19 @@ export class HookSignalRouter {
   }
 
   /**
+   * Hand the pane's running dot back to the byte heuristic ahead of the TTL.
+   *
+   * Wired to the agent process's confirmed death edge: an agent killed
+   * mid-turn never sends a Stop, so releasing the claim is what lets the pane
+   * settle instead of sitting lit for the rest of the 30-minute window. Unlike
+   * `dropPty` this touches nothing else — the PANE is still alive, and its
+   * dedup ledger still belongs to it.
+   */
+  releaseHookTurnStart(ptyId: string): void {
+    this.turnStart.delete(ptyId);
+  }
+
+  /**
    * True when the pane's live hook bridge owns this detector-sourced status,
    * so the caller must withhold it from `metadata.agentStatus` as well as from
    * the notification.

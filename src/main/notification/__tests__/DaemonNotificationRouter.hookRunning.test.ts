@@ -57,6 +57,7 @@ interface Captured {
   idle?: (payload: { sessionId: string }) => void;
   agent?: (payload: { sessionId: string; event: unknown }) => void;
   active?: (payload: { sessionId: string; agentName?: string }) => void;
+  processExit?: (payload: { sessionId: string; slug: string | null }) => void;
 }
 
 /**
@@ -67,6 +68,7 @@ interface Captured {
 function stubHookRouter(runningGoverned: boolean): HookSignalRouter {
   return {
     noteHookTurnStart: vi.fn(),
+    releaseHookTurnStart: vi.fn(),
     governsRunningState: vi.fn().mockReturnValue(runningGoverned),
     isGovernedFor: vi.fn().mockReturnValue(false),
     governsDetectorStatus: vi.fn().mockReturnValue(false),
@@ -82,6 +84,7 @@ function makeRouter(hookRouter?: HookSignalRouter) {
       if (event === 'session:idle') captured.idle = cb as Captured['idle'];
       if (event === 'session:agent') captured.agent = cb as Captured['agent'];
       if (event === 'session:active') captured.active = cb as Captured['active'];
+      if (event === 'session:agentProcessExit') captured.processExit = cb as Captured['processExit'];
     }),
     off: vi.fn(),
   } as unknown as DaemonClient;
@@ -206,6 +209,47 @@ describe('DaemonNotificationRouter — the byte heuristic stands down on a hook-
     expect(lastStatus()).toBe('running');
     captured.idle?.({ sessionId: PTY });
     expect(lastStatus()).toBe('idle');
+    router.stop();
+  });
+});
+
+/**
+ * The second and last settle path for a hook-lit pane. A Stop hook ends the
+ * ordinary turn; an agent killed mid-turn never sends one, and byte silence no
+ * longer clears a governed pane — so this edge is all that is left.
+ */
+describe('DaemonNotificationRouter — an agent that died without a Stop settles to idle', () => {
+  beforeEach(() => {
+    broadcastMetadataUpdateMock.mockClear();
+    metadataHandlerMocks.lastBroadcastAgentStatus.delete(PTY);
+  });
+
+  it('clears the pane to idle on the process death edge', () => {
+    const { router, captured } = makeRouter(stubHookRouter(true));
+    captured.agent?.(metadataEvent('agent.user_prompt_submit'));
+    expect(lastStatus()).toBe('running');
+
+    captured.processExit?.({ sessionId: PTY, slug: 'claude' });
+    expect(lastStatus()).toBe('idle');
+    router.stop();
+  });
+
+  it('releases the hook claim FIRST, so the clear is not vetoed by its own gate', () => {
+    const hookRouter = stubHookRouter(true);
+    const { router, captured } = makeRouter(hookRouter);
+    captured.processExit?.({ sessionId: PTY, slug: 'claude' });
+    expect(hookRouter.releaseHookTurnStart).toHaveBeenCalledWith(PTY);
+    // The stub keeps answering `true`, so a clear that consulted the gate
+    // would be suppressed — it must not.
+    expect(lastStatus()).toBe('idle');
+    router.stop();
+  });
+
+  it('clears the agent name too, so a dead pane stops advertising one', () => {
+    const { router, captured } = makeRouter(stubHookRouter(true));
+    captured.processExit?.({ sessionId: PTY, slug: 'claude' });
+    const patch = broadcastMetadataUpdateMock.mock.calls.at(-1)?.[1] as Record<string, unknown>;
+    expect(patch.agentName).toBe('');
     router.stop();
   });
 });

@@ -812,6 +812,18 @@ export class DaemonClient extends EventEmitter {
         case 'agent.critical':
           this.emit('session:critical', { sessionId: event.sessionId, event: event.data });
           break;
+        case 'agent.processExit': {
+          // The pane's agent process died with the shell still alive. The one
+          // release path for a pane the hook lit and never settled (killed
+          // mid-turn, so no Stop ever fires); DaemonNotificationRouter clears
+          // the status dot on it.
+          const data = event.data as { slug?: string | null } | null;
+          this.emit('session:agentProcessExit', {
+            sessionId: event.sessionId,
+            slug: data?.slug ?? null,
+          });
+          break;
+        }
         case 'prompt.event':
           // OSC 133 shell-integration marker (A/B/C/D) parsed in the daemon.
           // DaemonNotificationRouter consumes this to tee the D variant onto

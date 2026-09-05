@@ -240,6 +240,17 @@ describe('HookSignalRouter', () => {
       router.noteHookTurnStart('p1', 1000);
       expect(router.governsRunningState('p2', 1100)).toBe(false);
     });
+
+    it('releaseHookTurnStart hands the dot back without touching the ledger', () => {
+      // The agent process died mid-turn: no Stop will ever come, so the claim
+      // has to go early. The PANE is still alive, though — its dedup ledger
+      // still belongs to it, unlike the dropPty case.
+      router.recordHook(makeSignal(), 'p1', 1000);
+      router.noteHookTurnStart('p1', 1000);
+      router.releaseHookTurnStart('p1');
+      expect(router.governsRunningState('p1', 1100)).toBe(false);
+      expect(router.recordDetector('claude', 'agent.stop', 'p1', 1100)).toBe('dedup');
+    });
   });
 
   describe('hook authority (detector veto)', () => {

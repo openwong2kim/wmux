@@ -1059,6 +1059,29 @@ export class DaemonNotificationRouter {
       }
     };
 
+    /**
+     * The agent process inside a still-live pane died (AgentProcessTracker's
+     * alive->dead edge). This is the second and last settle path for a pane
+     * whose status the hook owns: the first is the Stop hook, and an agent
+     * killed mid-turn never sends one. Byte silence no longer clears such a
+     * pane, so without this the dot would stay lit for the authority TTL.
+     *
+     * The order matters — the hook's claim is released FIRST, so the clear
+     * below is not vetoed by the very gate it exists to escape.
+     */
+    const onAgentProcessExit = (payload: { sessionId: string }) => {
+      try {
+        this.getHookRouter?.()?.releaseHookTurnStart(payload.sessionId);
+        broadcastMetadataUpdate(this.getWindow(), {
+          ptyId: payload.sessionId,
+          agentStatus: 'idle',
+          agentName: '',
+        });
+      } catch (err) {
+        console.warn('[DaemonNotificationRouter] agent process exit error:', err);
+      }
+    };
+
     // session:died (natural PTY exit) and session:destroyed (pty:dispose)
     // both clear agentStatus. Only listening to session:died left a stale
     // sidebar dot when the user closed a terminal intentionally (Codex P2).
@@ -1156,6 +1179,7 @@ export class DaemonNotificationRouter {
     this.daemonClient.on('session:notification', onNotification);
     this.daemonClient.on('session:died', onSessionEnd);
     this.daemonClient.on('session:destroyed', onSessionEnd);
+    this.daemonClient.on('session:agentProcessExit', onAgentProcessExit);
     this.daemonClient.on('session:restarted', onRestarted);
     this.daemonClient.on('supervision:changed', onSupervisionChanged);
     // A2A channels (a2a-channels U4) — project daemon-broadcast channel
@@ -1188,6 +1212,7 @@ export class DaemonNotificationRouter {
       () => this.daemonClient.off('session:notification', onNotification),
       () => this.daemonClient.off('session:died', onSessionEnd),
       () => this.daemonClient.off('session:destroyed', onSessionEnd),
+      () => this.daemonClient.off('session:agentProcessExit', onAgentProcessExit),
       () => this.daemonClient.off('session:restarted', onRestarted),
       () => this.daemonClient.off('supervision:changed', onSupervisionChanged),
       () => this.daemonClient.off('channel:message', onChannelMessage),
