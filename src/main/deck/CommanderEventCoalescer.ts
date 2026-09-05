@@ -164,6 +164,10 @@ export interface BufferedEvent {
   lastMessage?: AgentLastMessage;
   /** Set when this event was routed from a fan-out task workspace to its owner. */
   task?: DelegatedTaskTag;
+  /** kind === 'agent.stop_failure' only: how many times IN A ROW this pane's
+   *  turn has died without a healthy turn end in between. Stamped at push
+   *  (see WsState.stopFailureStreak) so the pure prompt builder stays pure. */
+  failureStreak?: number;
   /** Internal: replayed from the orphan backlog — acknowledged on delivery. */
   replayed?: true;
 }
@@ -215,6 +219,13 @@ interface WsState {
    *  next block is announced fresh. */
   pendingDecisionLoggedAt: number;
   pendingDecisionLoggedId: string | null;
+  /** ptyId → consecutive `agent.stop_failure` count, reset by ANY other pane
+   *  lifecycle event for that pane (a stop or an awaiting_input means the pane
+   *  got a turn out). A rate limit or a 402 crash loop fires stop_failure on
+   *  every retry, and the verdict invites a resume — so without a count the
+   *  brain would resume into the same wall indefinitely. Entries are deleted
+   *  on reset, so this holds at most one number per pane that has ever failed. */
+  stopFailureStreak: Map<string, number>;
 }
 
 /** A running loop's wake-relevant slice (read fresh at every flush). */
@@ -363,6 +374,16 @@ export class CommanderEventCoalescer {
     // skips the check: its seqs predate whatever this workspace has flushed
     // since, yet by construction nobody ever delivered them.
     if (!opts.replay && ev.seq <= st.watermark) return;
+    // Consecutive-failure count for this pane. A stop or an awaiting_input
+    // means the pane got a turn out, so the streak is over; a second death in
+    // a row is a loop the brain must be told about rather than resumed into.
+    let failureStreak = 0;
+    if (ev.kind === 'agent.stop_failure') {
+      failureStreak = (st.stopFailureStreak.get(ev.ptyId) ?? 0) + 1;
+      st.stopFailureStreak.set(ev.ptyId, failureStreak);
+    } else if (ev.kind === 'agent.stop' || ev.kind === 'agent.awaiting_input') {
+      st.stopFailureStreak.delete(ev.ptyId);
+    }
     const byKind = st.buffer.get(ev.ptyId) ?? new Map<CoalescedKind, BufferedEvent>();
     byKind.set(ev.kind, {
       ptyId: ev.ptyId,
@@ -375,6 +396,7 @@ export class CommanderEventCoalescer {
       ...(ev.a2a ? { a2a: ev.a2a } : {}),
       ...(ev.lastMessage ? { lastMessage: ev.lastMessage } : {}),
       ...(ev.task ? { task: ev.task } : {}),
+      ...(failureStreak > 0 ? { failureStreak } : {}),
       ...(opts.replay ? { replayed: true as const } : {}),
     });
     st.buffer.set(ev.ptyId, byKind);
@@ -724,6 +746,7 @@ export class CommanderEventCoalescer {
         snapshotSurfacedComplete: new Set(),
         pendingDecisionLoggedAt: -Infinity,
         pendingDecisionLoggedId: null,
+        stopFailureStreak: new Map(),
       };
       this.states.set(workspaceId, st);
     }
@@ -1329,7 +1352,7 @@ function renderEventLine(
   } else if (e.kind === 'agent.stop') {
     verdict = stopVerdict(autonomy, e.lastMessage);
   } else if (e.kind === 'agent.stop_failure') {
-    verdict = stopFailureVerdict(autonomy);
+    verdict = stopFailureVerdict(autonomy, e.failureStreak ?? 1);
   } else {
     // agent.awaiting_input
     verdict = awaitingVerdict(e.source, autonomy, {
@@ -1430,21 +1453,43 @@ function stopVerdict(autonomy: WorkspaceAutonomy, lastMessage?: AgentLastMessage
     : `(turn ended${said} — summarize only — do not send anything to this pane)`;
 }
 
+/** Consecutive deaths at which resuming stops being a retry and becomes a
+ *  loop. Three is the first count that cannot be a transient blip: one is
+ *  noise, two is a coincidence, three in a row on the same pane with no turn
+ *  in between is the rate limit / expired credit / 402 that no instruction the
+ *  brain can type will clear. */
+const STOP_FAILURE_ESCALATE_AT = 3;
+
 /**
  * The stop_failure verdict. A turn boundary that finished NOTHING: the pane's
  * work is incomplete and its own output is not a report. Phrased distinctly
  * from stopVerdict so a brain reading the line cannot mistake a dead turn for a
  * delivered result — the whole reason this kind exists as its own lifecycle
  * kind instead of collapsing into 'agent.stop'.
+ *
+ * `streak` is how many times in a row this pane has died with no healthy turn
+ * end in between. It is in the line because the verdict INVITES a resume, and
+ * a rate limit or a crashed account re-fires stop_failure on every retry: brain
+ * resumes, pane dies, brain wakes, brain resumes. At STOP_FAILURE_ESCALATE_AT
+ * the invitation is withdrawn and replaced with the escalation — the only move
+ * that can actually end the loop is a human's.
  */
-function stopFailureVerdict(autonomy: WorkspaceAutonomy): string {
-  return autonomy.continueInstruction
-    ? '(TURN DIED ON AN API ERROR — the turn ended without finishing, so the work is '
-      + 'INCOMPLETE and nothing it printed is a result. You MAY send ONE instruction to '
-      + 'this pane to resume the unfinished work; escalate with deck_ask_decision if it '
-      + 'keeps dying.)'
-    : '(TURN DIED ON AN API ERROR — the turn ended without finishing, so the work is '
+function stopFailureVerdict(autonomy: WorkspaceAutonomy, streak = 1): string {
+  const run = streak > 1 ? ` — ${streak} CONSECUTIVE failed turns on this pane` : '';
+  if (!autonomy.continueInstruction) {
+    return `(TURN DIED ON AN API ERROR${run} — the turn ended without finishing, so the work is `
       + 'INCOMPLETE. Report the failure to the human — do not send anything to this pane.)';
+  }
+  if (streak >= STOP_FAILURE_ESCALATE_AT) {
+    return `(TURN DIED ON AN API ERROR${run} — resuming is NOT working. Do NOT send another `
+      + 'instruction to this pane: raise it with deck_ask_decision and let the human decide '
+      + '(the cause is upstream — a rate limit, an expired credit, a wedged account — and no '
+      + 'instruction you can type will clear it).)';
+  }
+  return `(TURN DIED ON AN API ERROR${run} — the turn ended without finishing, so the work is `
+    + 'INCOMPLETE and nothing it printed is a result. You MAY send ONE instruction to '
+    + 'this pane to resume the unfinished work; escalate with deck_ask_decision if it '
+    + 'keeps dying.)';
 }
 
 /**
@@ -1532,6 +1577,8 @@ function renderSnapshotLine(
   if (pane.agentStatus === 'awaiting_input' || pane.agentStatus === 'waiting') {
     verdict = awaitingVerdict('detector', autonomy, { ptyId: pane.ptyId });
   } else if (pane.agentStatus === 'error') {
+    // Level state is a photograph, not a history: it cannot say how many turns
+    // in a row died, so the streak reads 1. The EDGE path is what counts.
     verdict = stopFailureVerdict(autonomy);
   } else if (pane.agentStatus === 'complete') {
     verdict = stopVerdict(autonomy, undefined);

@@ -535,6 +535,43 @@ describe('CommanderEventCoalescer — mode wake policy (value filter)', () => {
 
   // A turn that DIED is not the summary spam the assist filter drops: nothing
   // finished, so the operator is owed it exactly like a blocked pane.
+  it('escalates instead of resuming once a pane has died 3 turns in a row', async () => {
+    // A rate limit / 402 crash loop re-fires stop_failure on every retry, and
+    // the verdict INVITES a resume — so the brain would resume into the same
+    // wall forever. The third consecutive death withdraws the invitation.
+    const h = makeHarness({ debounceMs: 1_000 });
+    for (const seq of [1, 2, 3]) {
+      h.c.push({ ...stop(seq, 'ptyLoop'), kind: 'agent.stop_failure' });
+      await vi.advanceTimersByTimeAsync(5_000);
+      await settle();
+    }
+    expect(h.prompts).toHaveLength(3);
+    expect(h.prompts[0].prompt).toContain('MAY send ONE instruction');
+    expect(h.prompts[1].prompt).toContain('2 CONSECUTIVE failed turns');
+    expect(h.prompts[1].prompt).toContain('MAY send ONE instruction');
+    expect(h.prompts[2].prompt).toContain('3 CONSECUTIVE failed turns');
+    expect(h.prompts[2].prompt).toContain('deck_ask_decision');
+    expect(h.prompts[2].prompt).not.toContain('MAY send ONE instruction');
+  });
+
+  it('a healthy turn end resets the consecutive-failure count for that pane', async () => {
+    const h = makeHarness({ debounceMs: 1_000 });
+    h.c.push({ ...stop(1, 'ptyLoop'), kind: 'agent.stop_failure' });
+    await vi.advanceTimersByTimeAsync(5_000);
+    await settle();
+    // The pane got a turn out, so the streak is over.
+    h.c.push(stop(2, 'ptyLoop'));
+    await vi.advanceTimersByTimeAsync(5_000);
+    await settle();
+    h.c.push({ ...stop(3, 'ptyLoop'), kind: 'agent.stop_failure' });
+    await vi.advanceTimersByTimeAsync(5_000);
+    await settle();
+
+    const last = h.prompts[h.prompts.length - 1].prompt;
+    expect(last).toContain('TURN DIED ON AN API ERROR');
+    expect(last).not.toContain('CONSECUTIVE');
+  });
+
   it('assist WAKES on a stop_failure (the turn died, nothing finished)', async () => {
     const h = makeHarness({ autonomy: assist });
     h.c.push({ ...stop(4), kind: 'agent.stop_failure' });

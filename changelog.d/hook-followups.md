@@ -7,3 +7,6 @@
   its own `agent.lifecycle` kind (`agent.stop_failure`), pollable through
   `wmux_events_poll` and woken on like a stop, but with its own reason so the
   brain can tell a turn that finished from one that died.
+- A pane whose turn keeps dying no longer loops the orchestrator. After three
+  consecutive failed turns on the same pane, the wake tells the brain to raise
+  it with the human instead of resuming into the same rate limit again.
