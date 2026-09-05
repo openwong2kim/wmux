@@ -105,7 +105,7 @@ function ToastItem({
           style={{
             backgroundColor: 'var(--accent)',
             color: 'var(--bg-base)',
-            boxShadow: 'inset 0 1px 0 color-mix(in srgb, var(--text-main) 22%, transparent), 0 1px 2px rgba(0, 0, 0, 0.3)',
+            boxShadow: 'inset 0 1px 0 color-mix(in srgb, var(--surface-highlight) 22%, transparent), 0 1px 2px rgba(0, 0, 0, 0.3)',
           }}
         >
           {action.label}

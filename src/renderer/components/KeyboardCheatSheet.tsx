@@ -147,7 +147,7 @@ export function KeyboardCheatSheetView({
       data-testid="keyboard-cheat-sheet"
       className="fixed bottom-4 right-4 z-[var(--z-cheatsheet)] w-[280px] rounded-[7px] shadow-lg overflow-hidden text-xs"
       style={{
-        backgroundColor: 'var(--bg-mantle, rgba(24,24,37,0.95))',
+        backgroundColor: 'var(--bg-mantle)',
         border: '1px solid color-mix(in srgb, var(--text-main) 8%, transparent)',
         color: 'var(--text-main)',
       }}

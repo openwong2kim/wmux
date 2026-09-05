@@ -174,7 +174,7 @@ export function DeckLoopModal({
     <div
       data-deck-loop-modal
       className="fixed inset-0 z-50 flex items-start justify-center pt-[12vh]"
-      style={{ backgroundColor: 'var(--bg-overlay-scrim)' }}
+      style={{ backgroundColor: 'var(--bg-overlay-scrim, rgba(0, 0, 0, 0.55))' }}
       onMouseDown={(e) => {
         if (e.target === e.currentTarget) onClose();
       }}
@@ -373,7 +373,7 @@ export function DeckLoopModal({
             type="button"
             data-deck-loop-start
             onClick={() => void handleStart()}
-            className={`shrink-0 whitespace-nowrap px-3 py-1 rounded-[4px] text-[12px] font-semibold bg-[var(--accent)] text-[var(--bg-base)] shadow-[inset_0_1px_0_color-mix(in_srgb,var(--text-main)_22%,transparent),0_1px_2px_rgba(0,0,0,0.3)] hover:bg-[color-mix(in_srgb,var(--accent)_88%,var(--text-main))] transition-colors ${FOCUS_RING}`}
+            className={`shrink-0 whitespace-nowrap px-3 py-1 rounded-[4px] text-[12px] font-semibold bg-[var(--accent)] text-[var(--bg-base)] shadow-[inset_0_1px_0_color-mix(in_srgb,var(--surface-highlight)_22%,transparent),0_1px_2px_rgba(0,0,0,0.3)] hover:bg-[color-mix(in_srgb,var(--accent)_88%,var(--text-main))] transition-colors ${FOCUS_RING}`}
             {...tokenAttrs('accent', 'bg')}
           >
             {t('deck.loopStart') || 'Start loop'}

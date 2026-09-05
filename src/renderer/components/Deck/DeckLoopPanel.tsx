@@ -201,7 +201,7 @@ export function DeckLoopPanel({
                     onClick={() => {
                       if (workspaceId) void resolvedApi.resume(workspaceId).then(() => refresh());
                     }}
-                    className={`px-2.5 py-1 rounded-[4px] text-[12px] font-semibold bg-[var(--accent)] text-[var(--bg-base)] shadow-[inset_0_1px_0_color-mix(in_srgb,var(--text-main)_22%,transparent),0_1px_2px_rgba(0,0,0,0.3)] hover:bg-[color-mix(in_srgb,var(--accent)_88%,var(--text-main))] transition-colors ${FOCUS_RING}`}
+                    className={`px-2.5 py-1 rounded-[4px] text-[12px] font-semibold bg-[var(--accent)] text-[var(--bg-base)] shadow-[inset_0_1px_0_color-mix(in_srgb,var(--surface-highlight)_22%,transparent),0_1px_2px_rgba(0,0,0,0.3)] hover:bg-[color-mix(in_srgb,var(--accent)_88%,var(--text-main))] transition-colors ${FOCUS_RING}`}
                     {...tokenAttrs('accent', 'bg')}
                   >
                     {t('deck.loopResume') || 'Resume'}

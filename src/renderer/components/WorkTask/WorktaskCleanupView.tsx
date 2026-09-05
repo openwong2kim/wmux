@@ -283,7 +283,7 @@ export default function WorktaskCleanupView() {
   return (
     <div
       className="fixed inset-0 z-50 flex items-start justify-center pt-[10vh]"
-      style={{ backgroundColor: 'var(--bg-overlay-scrim)' }}
+      style={{ backgroundColor: 'var(--bg-overlay-scrim, rgba(0, 0, 0, 0.55))' }}
       onMouseDown={(e) => {
         if (e.target === e.currentTarget) setVisible(false);
       }}

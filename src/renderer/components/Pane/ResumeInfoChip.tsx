@@ -261,7 +261,7 @@ export default function ResumeInfoChip(props: {
               display: 'block',
               padding: '4px 6px',
               color: 'var(--text-sub)',
-              backgroundColor: 'var(--bg-base, rgba(0,0,0,0.25))',
+              backgroundColor: 'var(--bg-base)',
               border: '1px solid var(--border-soft)',
               borderRadius: 3,
               userSelect: 'text',

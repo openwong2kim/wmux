@@ -2638,7 +2638,7 @@ function TokenRow({
               className={`inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium ${FOCUS_RING}`}
               style={{ backgroundColor: '#1F2937', color: '#93C5FD', border: '1px solid #3B5067' }}
             >
-              <span className="w-3 h-3 rounded-sm" style={{ backgroundColor: nudgeHex, border: '1px solid color-mix(in srgb, var(--text-main) 30%, transparent)' }} />
+              <span className="w-3 h-3 rounded-sm" style={{ backgroundColor: nudgeHex, border: '1px solid color-mix(in srgb, var(--surface-highlight) 30%, transparent)' }} />
               {t('settings.contrast.nudge')}
             </button>
           ) : (
