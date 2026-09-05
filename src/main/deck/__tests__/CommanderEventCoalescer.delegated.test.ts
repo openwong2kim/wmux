@@ -64,6 +64,25 @@ describe('delegated-task events under wakePolicy none', () => {
     expect(prompts[0].prompt).toContain('worker-task=wtask-1 ws=ws-task');
   });
 
+  // Before agent.stop_failure had its own lifecycle kind, a worker whose turn
+  // died on an API error produced no wake at all — the parent sat on the stop
+  // gate until something unrelated woke it.
+  it('a tagged worker whose turn DIED wakes the parent with the failure reason', async () => {
+    const { c, prompts } = mk({ ...DEFAULT_AUTONOMY, wakePolicy: 'none' });
+    c.push(stop({
+      kind: 'agent.stop_failure',
+      task: { taskId: 'wtask-1', taskWorkspaceId: 'ws-task' },
+    }));
+    vi.advanceTimersByTime(1_000);
+    await settle();
+    expect(prompts).toHaveLength(1);
+    expect(prompts[0].prompt).toContain('kind=stop-failed');
+    // The reason must not read like a completed turn — `stopVerdict`'s
+    // canonical opener is what a brain matches on for "finished".
+    expect(prompts[0].prompt).toContain('TURN DIED ON AN API ERROR');
+    expect(prompts[0].prompt).not.toContain('(turn ended');
+  });
+
   it('an untagged stop is still consumed under none (unchanged behaviour)', async () => {
     const { c, prompts } = mk({ ...DEFAULT_AUTONOMY, wakePolicy: 'none' });
     c.push(stop());

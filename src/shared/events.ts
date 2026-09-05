@@ -250,11 +250,18 @@ export interface AgentLifecycleEvent extends WmuxEventBase {
    *                          orchestrators that auto-approve trusted operations
    *                          can react to this kind to feed input back without
    *                          waiting for the turn to end.
+   * 'agent.stop_failure'   — the turn ENDED on an API error (Claude Code's
+   *                          `StopFailure`). A turn boundary like 'agent.stop',
+   *                          but nothing finished: an orchestrator waiting on
+   *                          this pane must be woken to retry or escalate, not
+   *                          told the work is done. Never collapsed into
+   *                          'agent.stop' — that would report a dead turn as a
+   *                          normal completion.
    *
    * Other AgentSignalKind values are NOT emitted here — see the doc comment
    * above for rationale.
    */
-  kind: 'agent.stop' | 'agent.subagent_stop' | 'agent.awaiting_input';
+  kind: 'agent.stop' | 'agent.subagent_stop' | 'agent.awaiting_input' | 'agent.stop_failure';
   source: 'hook' | 'detector' | 'osc133';
   /**
    * Canonical agent slug. `null` only when `source:'osc133'` and no agent

@@ -17,6 +17,7 @@ import {
   clearLastBroadcastAgentStatus,
 } from '../ipc/handlers/metadata.handler';
 import { dispatchNotification } from '../notification/dispatchNotification';
+import { createLeadingEdgeThrottle, VETO_TRACE_THROTTLE_MS } from '../pipe/handlers/hooks.rpc';
 import { settleHookTurnToIdle } from '../notification/turnSettle';
 import { InterruptKeystrokeDetector } from '../../shared/hooks/interruptKeystroke';
 import {
@@ -57,6 +58,8 @@ export class PTYBridge {
   // ActivityMonitor idle fallback notification when the agent already
   // emitted a more precise 'waiting'/'complete' signal a moment earlier.
   private lastAgentEventAt = new Map<string, number>();
+  /** Rate limit for the vetoed-turn-end trace — see VETO_TRACE_THROTTLE_MS. */
+  private vetoTraceThrottle = createLeadingEdgeThrottle(VETO_TRACE_THROTTLE_MS);
   /** Ctrl+C / ESC ESC detection for the interrupt edge — see noteInterruptInput. */
   private interruptKeystrokes = new InterruptKeystrokeDetector();
 
@@ -505,6 +508,10 @@ export class PTYBridge {
         // 'waiting' onto a working pane's roster row and into "N need you".
         // Identity (name/slug) still rides every event — only the lifecycle
         // status is withheld.
+        // Live finding (Claude Code 2.1.236): that footer is up before the
+        // session has done anything, so a `claude` that had just started and
+        // was sitting at its prompt read as "1 need you". `waiting` is now
+        // withheld from the first bridge signal on, SessionStart included.
         const withholdStatus = hookRouter?.governsDetectorStatus(ptyId, slug, status) === true;
         broadcastMetadataUpdate(win, {
           ptyId,
@@ -538,8 +545,9 @@ export class PTYBridge {
           // the detector both re-alerts while the agent is still working
           // AND pre-poisons the HookSignalRouter ledger so the real Stop
           // hook lands as 'dedup' → the true completion goes silent.
-          // Skipping recordDetector + the EventBus tee here is the point:
-          // the hook path emits the one canonical lifecycle event. The
+          // Skipping recordDetector and the TOAST here is the point: the hook
+          // path emits the one canonical lifecycle event. (The EventBus still
+          // gets an 'internal' trace — see below.) The
           // metadata broadcast above rides the SAME rule now (#935) —
           // `governsDetectorStatus` withholds the lifecycle status while
           // still carrying identity, so the roster stops showing a working
@@ -559,6 +567,41 @@ export class PTYBridge {
           // status set is {waiting, complete, awaiting_input}, and
           // `governsDetectorStatus` covers exactly the first two.
           if (withholdStatus) {
+            // ...but the EVENT still goes out, as a trace. The veto governs
+            // the USER-VISIBLE surfaces (toast, status dot); silencing the
+            // EventBus as well left a pane whose bridge died after SessionStart
+            // (kill -9, a hook that cannot exec) emitting no turn boundary to
+            // any external observer for the full 30-minute authority TTL.
+            //
+            // `decision:'internal'` is the existing vocabulary for exactly this
+            // shape — "published as a trace only; no notification fired and no
+            // ledger entry was written" (see AgentLifecycleEvent.decision).
+            // The ledger deliberately stays untouched: writing it here is what
+            // pre-poisons the real Stop hook into landing as 'dedup', which is
+            // the silent-completion bug this veto exists to prevent. And a
+            // consumer that WAKES on this (the deck brain filters 'internal'
+            // out) must not be woken by a footer regex on a governed pane —
+            // that footer is on screen mid-turn.
+            //
+            // Throttled for the same reason the ledger is skipped: with no
+            // ledger entry to collapse them, the footer's every re-read would
+            // publish another trace. See VETO_TRACE_THROTTLE_MS.
+            if (
+              instance.workspaceId && slug
+              && this.vetoTraceThrottle.allow(`${ptyId}:agent.stop`)
+            ) {
+              eventBus.emit({
+                type: 'agent.lifecycle',
+                workspaceId: instance.workspaceId,
+                ptyId,
+                // governsDetectorStatus covers {waiting, complete} only, and
+                // both collapse to the turn-end kind.
+                kind: 'agent.stop',
+                source: 'detector',
+                agent: slug,
+                decision: 'internal',
+              });
+            }
             return;
           }
 

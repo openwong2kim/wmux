@@ -596,17 +596,22 @@ describe('PaneSlice', () => {
   });
 
   describe('setSurfaceAgentStatus (B8: completed-terminal blink)', () => {
-    it('stores attention statuses (complete / waiting / awaiting_input)', () => {
+    it('stores attention statuses (complete / waiting / awaiting_input / error)', () => {
       store.getState().setSurfaceAgentStatus('pty-1', 'complete');
       store.getState().setSurfaceAgentStatus('pty-2', 'waiting');
       store.getState().setSurfaceAgentStatus('pty-3', 'awaiting_input');
+      // 'error' is a turn that DIED on an API error. Dropping it here made a
+      // background worker's failed turn invisible: the fleet selector read the
+      // pane as idle and the deck's level snapshot never saw it.
+      store.getState().setSurfaceAgentStatus('pty-4', 'error');
       const map = store.getState().surfaceAgentStatus;
       expect(map['pty-1']).toBe('complete');
       expect(map['pty-2']).toBe('waiting');
       expect(map['pty-3']).toBe('awaiting_input');
+      expect(map['pty-4']).toBe('error');
     });
 
-    it('clears the entry on running / idle / error (non-attention statuses)', () => {
+    it('clears the entry on running / idle (non-attention statuses)', () => {
       store.getState().setSurfaceAgentStatus('pty-1', 'complete');
       store.getState().setSurfaceAgentStatus('pty-1', 'running');
       expect(store.getState().surfaceAgentStatus['pty-1']).toBeUndefined();
@@ -614,10 +619,6 @@ describe('PaneSlice', () => {
       store.getState().setSurfaceAgentStatus('pty-2', 'awaiting_input');
       store.getState().setSurfaceAgentStatus('pty-2', 'idle');
       expect(store.getState().surfaceAgentStatus['pty-2']).toBeUndefined();
-
-      store.getState().setSurfaceAgentStatus('pty-3', 'complete');
-      store.getState().setSurfaceAgentStatus('pty-3', 'error');
-      expect(store.getState().surfaceAgentStatus['pty-3']).toBeUndefined();
     });
 
     it('clears the entry on null (pane focused / seen)', () => {

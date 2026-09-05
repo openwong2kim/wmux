@@ -1042,9 +1042,15 @@ export class HookIngest {
       return { source };
     }
     // #935 — one predicate, both processes. `governsDetectorStatus` already
-    // excludes `awaiting_input` (and every non-lifecycle status) and adds the
-    // turn-liveness scope that plain `isGovernedFor` lacks: a live bridge on an
-    // IDLE pane must not veto the detector's true "ready for input" read.
+    // excludes `awaiting_input` (and every non-lifecycle status). Its scope is
+    // asymmetric by kind now: `complete` is released back to the detector on a
+    // pane whose bridge has only said SessionStart (a real turn-end read the
+    // hook has not claimed yet), while `waiting` is withheld for the WHOLE
+    // authority window — Claude paints its "ready for input" footer before the
+    // session has done anything, so on a governed pane that read can only cry
+    // wolf. Main tees an 'internal' trace on the vetoed event so an external
+    // observer still sees the boundary; the toast and the dot are what the
+    // veto withholds.
     if (this.router.governsDetectorStatus(sessionId, slug, event.status, this.now())) {
       return { source, decision: 'veto' };
     }

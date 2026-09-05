@@ -48,7 +48,8 @@ vi.mock('../../notification/rendererNotificationReadiness', () => ({
 
 import { PTYBridge } from '../PTYBridge';
 import type { PTYManager, PTYInstance } from '../PTYManager';
-import type { HookSignalRouter } from '../../hooks/HookSignalRouter';
+import { HookSignalRouter } from '../../hooks/HookSignalRouter';
+import type { SignalLatencyMeter } from '../../../shared/hooks/SignalLatencyMeter';
 import { eventBus } from '../../events/EventBus';
 import { markResize, clearPty as clearSuppression, RESIZE_REDRAW_GUARD_MS } from '../../notification/idleSuppression';
 
@@ -207,12 +208,18 @@ describe('PTYBridge — agent.lifecycle EventBus tee (detector source)', () => {
     expect(pollLifecycle().length).toBeGreaterThanOrEqual(1);
   });
 
-  it('hook-authority veto: governed (ptyId, slug) suppresses detector notification, ledger write and tee', () => {
+  it('hook-authority veto: governed (ptyId, slug) suppresses the notification and the ledger write, but still traces the event', () => {
     // While the pane's hook bridge is fresh for the SAME agent, the
     // detector's footer heuristics must go fully silent on the
     // notification path: no sendNotification, no recordDetector (a ledger
     // write here would make the REAL Stop hook land as 'dedup' → silent
-    // completion), no lifecycle tee (the hook path emits the canonical one).
+    // completion).
+    //
+    // The EventBus tee is NOT silenced: a pane whose bridge died after
+    // SessionStart otherwise emitted no turn boundary at all to any external
+    // observer for the 30-minute authority TTL. It rides as 'internal' — the
+    // published "trace only, nothing fired" decision — so a consumer filtering
+    // on 'emit' (and the deck brain, which drops 'internal') is unaffected.
     const router = stubHookRouter('emit', { governed: true });
     const { proc } = makeBridge({ workspaceId: 'ws-a', hookRouter: router });
 
@@ -223,7 +230,14 @@ describe('PTYBridge — agent.lifecycle EventBus tee (detector source)', () => {
 
     expect(mocks.sendNotification).not.toHaveBeenCalled();
     expect(router.recordDetector).not.toHaveBeenCalled();
-    expect(pollLifecycle()).toHaveLength(0);
+    const events = pollLifecycle();
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      kind: 'agent.stop',
+      source: 'detector',
+      agent: 'claude',
+      decision: 'internal',
+    });
   });
 
   it('#935 REGRESSION: a governed pane never gets a detector "waiting" onto agentStatus — Claude\'s bypass footer is on screen the WHOLE turn', () => {
@@ -253,6 +267,56 @@ describe('PTYBridge — agent.lifecycle EventBus tee (detector source)', () => {
       expect.anything(),
       expect.objectContaining({ ptyId: 'pty-1', agentName: 'Claude Code', agentSlug: 'claude' }),
     );
+  });
+
+  it('a fresh Claude session sitting at its prompt is not "needs you" (live finding, Claude Code 2.1.236)', () => {
+    // The real router, not the stub: the bug lived in the predicate. Right
+    // after `claude` starts, the bridge has sent SessionStart and nothing
+    // else, and the footer it paints ("bypass permissions on") is the same
+    // chrome the detector reads as "Ready for input" — so the sidebar showed
+    // the red dot and the titlebar said "1 need you" before the operator had
+    // typed a single character. Since #1224 the hook owns turn start too, so
+    // 'waiting' is withheld from the first bridge signal on.
+    const router = new HookSignalRouter({
+      latencyMeter: { recordSignal: vi.fn() } as unknown as SignalLatencyMeter,
+    });
+    router.touchAuthority('pty-1', 'claude', Date.now(), true, 'agent.session_start');
+    const { proc } = makeBridge({ workspaceId: 'ws-a', hookRouter: router });
+
+    proc.emitData('Claude Code\n');
+    proc.emitData('  bypass permissions on\n');
+    proc.emitData('  shift+tab to cycle\n');
+    flush();
+
+    const statusCalls = mocks.broadcastMetadataUpdate.mock.calls.filter(
+      (c) => (c[1] as { agentStatus?: string }).agentStatus === 'waiting',
+    );
+    expect(statusCalls).toHaveLength(0);
+    // The status is withheld; the EVENT is not. Withholding both is what left
+    // a dead-bridge pane invisible to events_poll for the authority TTL.
+    expect(pollLifecycle()).toMatchObject([{ kind: 'agent.stop', decision: 'internal' }]);
+  });
+
+  it('a fresh governed session still reports a real approval prompt — awaiting_input has no hook', () => {
+    const router = new HookSignalRouter({
+      latencyMeter: { recordSignal: vi.fn() } as unknown as SignalLatencyMeter,
+    });
+    router.touchAuthority('pty-1', 'claude', Date.now(), true, 'agent.session_start');
+    const { proc } = makeBridge({ workspaceId: 'ws-a', hookRouter: router });
+
+    proc.emitData('Claude Code\n');
+    proc.emitData('  bypass permissions on\n'); // #850: compound gate needs prompt evidence
+    proc.emitData('Do you want to proceed?\n');
+    flush();
+
+    expect(mocks.broadcastMetadataUpdate).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ ptyId: 'pty-1', agentStatus: 'awaiting_input' }),
+    );
+    const approvals = mocks.sendNotification.mock.calls.filter(
+      ([, , payload]) => payload?.category === 'approval',
+    );
+    expect(approvals.length).toBeGreaterThan(0);
   });
 
   it('#935: an UNGOVERNED pane keeps the detector status — no hook bridge means the detector is still the backstop', () => {

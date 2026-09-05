@@ -28,9 +28,14 @@ There are exactly **eight** event types (`WmuxEventType` in
 | `agent.lifecycle` | `ptyId`, `kind`, `source`, `agent`, `decision`, `exitCode?` |
 
 `agent.lifecycle` carries **`ptyId`, not `paneId`**: its `kind` is one of
-`agent.stop` / `agent.subagent_stop` / `agent.awaiting_input`; its `source` is
-`hook` / `detector` / `osc133`; `agent` is a slug (`claude`, `codex`, …) or
-`null` for `osc133` shell commands.
+`agent.stop` / `agent.subagent_stop` / `agent.awaiting_input` /
+`agent.stop_failure`; its `source` is `hook` / `detector` / `osc133`; `agent`
+is a slug (`claude`, `codex`, …) or `null` for `osc133` shell commands.
+
+`agent.stop_failure` is a turn that ENDED on an API error — a turn boundary
+like `agent.stop`, but nothing finished. It is never collapsed into
+`agent.stop`: an orchestrator waiting on the pane must retry or escalate, not
+be told the work is done.
 
 ## Steps
 

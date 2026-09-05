@@ -404,14 +404,26 @@ describe('HookSignalRouter', () => {
       expect(router.governsDetectorStatus('p1', 'claude', 'complete', 2000)).toBe(true);
     });
 
-    it('#935 SessionStart alone does not hand the lifecycle to the hook', () => {
+    it('#935 SessionStart alone does not hand the COMPLETE lifecycle to the hook', () => {
       // The bridge is alive but has never written a lifecycle status, so the
       // detector's read is all the roster has. Withholding it left a freshly
       // launched agent showing the gate's one-shot `running` while it sat at
       // its prompt — live-measured at 30+ seconds per launch.
       router.touchAuthority('p1', 'claude', 1000, true, 'agent.session_start');
       expect(router.isGovernedFor('p1', 'claude', 2000)).toBe(true);
-      expect(router.governsDetectorStatus('p1', 'claude', 'waiting', 2000)).toBe(false);
+      expect(router.governsDetectorStatus('p1', 'claude', 'complete', 2000)).toBe(false);
+    });
+
+    it('a fresh session at its prompt is not "needs you": waiting is withheld from SessionStart on', () => {
+      // Live finding (Claude Code 2.1.236): the always-visible footer
+      // ("bypass permissions on") made a `claude` that had only just started
+      // read as waiting — red dot + "1 need you" — before any turn existed.
+      router.touchAuthority('p1', 'claude', 1000, true, 'agent.session_start');
+      expect(router.governsDetectorStatus('p1', 'claude', 'waiting', 2000)).toBe(true);
+      // The approval path is untouched: those prompts have no hook at all.
+      expect(router.governsDetectorStatus('p1', 'claude', 'awaiting_input', 2000)).toBe(false);
+      // An ungoverned pane keeps the detector as its backstop.
+      expect(router.governsDetectorStatus('p2', 'claude', 'waiting', 2000)).toBe(false);
     });
 
     it('#935 any signal after SessionStart hands the lifecycle back to the hook', () => {
@@ -421,15 +433,17 @@ describe('HookSignalRouter', () => {
         router.resetForTests();
         router.touchAuthority('p1', 'claude', 1000, true, 'agent.session_start');
         router.touchAuthority('p1', 'claude', 2000, true, kind);
-        expect(router.governsDetectorStatus('p1', 'claude', 'waiting', 2100)).toBe(true);
+        expect(router.governsDetectorStatus('p1', 'claude', 'complete', 2100)).toBe(true);
       }
     });
 
-    it('#935 a relaunch in the same pane returns the lifecycle to the detector', () => {
+    it('#935 a relaunch in the same pane returns the complete lifecycle to the detector', () => {
       router.touchAuthority('p1', 'claude', 1000, true, 'agent.stop');
-      expect(router.governsDetectorStatus('p1', 'claude', 'waiting', 1100)).toBe(true);
+      expect(router.governsDetectorStatus('p1', 'claude', 'complete', 1100)).toBe(true);
       router.touchAuthority('p1', 'claude', 2000, true, 'agent.session_start');
-      expect(router.governsDetectorStatus('p1', 'claude', 'waiting', 2100)).toBe(false);
+      expect(router.governsDetectorStatus('p1', 'claude', 'complete', 2100)).toBe(false);
+      // ...but the relaunched session still must not read as "needs you".
+      expect(router.governsDetectorStatus('p1', 'claude', 'waiting', 2100)).toBe(true);
     });
 
     it('#935 governsDetectorStatus spares awaiting_input and running', () => {

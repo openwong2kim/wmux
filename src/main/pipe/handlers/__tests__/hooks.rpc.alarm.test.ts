@@ -315,19 +315,92 @@ describe('hooks.signal — local verdict gate (CompletionAlarm)', () => {
     }
   });
 
-  it('keeps a failed turn out of the lifecycle tee and the usage probe', async () => {
+  it('tees a failed turn under its OWN lifecycle kind, and skips the usage probe', async () => {
     const r = rig();
     await primeWorking(r);
 
     await r.dispatch({ kind: 'agent.stop_failure' });
     vi.advanceTimersByTime(DEFAULT_ALARM_WINDOW_MS);
 
-    // `AgentLifecycleEvent.kind` speaks only of stop / subagent_stop /
-    // awaiting_input; emitting 'agent.stop' here would tell an orchestrator the
-    // turn finished normally.
-    expect(pollLifecycle()).toHaveLength(0);
-    // And no turn-end usage probe: the API call is what failed.
+    // An orchestrator waiting on this pane must be woken — but never with
+    // 'agent.stop', which would report the dead turn as a normal completion.
+    const events = pollLifecycle();
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ kind: 'agent.stop_failure', decision: 'emit' });
+    // No turn-end usage probe: the API call is what failed.
     expect(r.onClaudeTurnEnd).not.toHaveBeenCalled();
+  });
+
+  it('tees a DEDUPED failure too — the turn died whichever source spoke first', async () => {
+    const r = rig();
+    await primeWorking(r);
+    r.recordHook.mockReturnValue('dedup');
+
+    await r.dispatch({ kind: 'agent.stop_failure' });
+    vi.advanceTimersByTime(DEFAULT_ALARM_WINDOW_MS);
+
+    const events = pollLifecycle();
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ kind: 'agent.stop_failure', decision: 'dedup' });
+    // Only the toast is gated on 'emit'.
+    expect(sendNotificationMock).not.toHaveBeenCalled();
+  });
+
+  // The failure tee must not ride the window. A stop_failure fires ONCE per
+  // dead turn (Claude Code sends no Stop behind it), so a rebutted window used
+  // to lose the event forever — nothing reached events_poll or the deck brain,
+  // and nothing re-fired.
+  it('tees the failed turn even when a byte burst rebuts the window', async () => {
+    const r = rig();
+    await primeWorking(r);
+
+    await r.dispatch({ kind: 'agent.stop_failure' });
+    // The event is already out, before the window could be rebutted.
+    expect(pollLifecycle()).toHaveLength(1);
+
+    // Working evidence inside the window: the toast is cancelled.
+    await r.dispatch({ kind: 'agent.activity' });
+    vi.advanceTimersByTime(DEFAULT_ALARM_WINDOW_MS);
+
+    expect(sendNotificationMock).not.toHaveBeenCalled();
+  });
+
+  // 'dedup' on a stop_failure cannot mean "the detector announced it" — the
+  // detector has no way to write that kind. It means the SAME hook arrived
+  // twice, and every retry used to publish another events_poll event for one
+  // dead turn.
+  it('a retried failure hook tees ONCE, not once per retry', async () => {
+    const r = rig();
+    await primeWorking(r);
+    r.recordHook.mockReturnValue('dedup');
+
+    await r.dispatch({ kind: 'agent.stop_failure' });
+    await r.dispatch({ kind: 'agent.stop_failure' });
+    await r.dispatch({ kind: 'agent.stop_failure' });
+
+    const events = pollLifecycle();
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ kind: 'agent.stop_failure', decision: 'dedup' });
+  });
+
+  it('a retried STOP hook tees once too, and an emit is never gated', async () => {
+    const r = rig();
+    await primeWorking(r);
+    // First turn: a genuine emit, always published.
+    await r.dispatch({ kind: 'agent.stop' });
+    vi.advanceTimersByTime(DEFAULT_ALARM_WINDOW_MS);
+    expect(pollLifecycle()).toHaveLength(1);
+
+    // Retries of the same turn now land as 'dedup'.
+    r.recordHook.mockReturnValue('dedup');
+    await r.dispatch({ kind: 'agent.activity' });
+    await r.dispatch({ kind: 'agent.stop' });
+    vi.advanceTimersByTime(DEFAULT_ALARM_WINDOW_MS);
+    await r.dispatch({ kind: 'agent.activity' });
+    await r.dispatch({ kind: 'agent.stop' });
+    vi.advanceTimersByTime(DEFAULT_ALARM_WINDOW_MS);
+
+    expect(pollLifecycle()).toHaveLength(1);
   });
 
   it('closes the turn gate, so a stop behind the failure raises no completion', async () => {

@@ -22,6 +22,7 @@ import {
   activityFromSignalPayload,
   buildTurnBoundaryMetadata,
   createLeadingEdgeThrottle,
+  VETO_TRACE_THROTTLE_MS,
   readStopMessage,
 } from '../pipe/handlers/hooks.rpc';
 import type { AgentSignal } from '../../shared/hooks/signal-types';
@@ -118,7 +119,11 @@ function arbitratedDecision(
 }
 
 /** Lifecycle kinds a `session:agent` event may carry. */
-type AgentLifecycleKind = 'agent.stop' | 'agent.subagent_stop' | 'agent.awaiting_input';
+type AgentLifecycleKind =
+  | 'agent.stop'
+  | 'agent.subagent_stop'
+  | 'agent.awaiting_input'
+  | 'agent.stop_failure';
 
 /**
  * Kind for the lifecycle tee. A hook-sourced event carries the ORIGINAL signal
@@ -131,9 +136,17 @@ function lifecycleKindFor(ev: AgentEventPayload): AgentLifecycleKind {
     ev.hookKind === 'agent.stop'
     || ev.hookKind === 'agent.subagent_stop'
     || ev.hookKind === 'agent.awaiting_input'
+    || ev.hookKind === 'agent.stop_failure'
   ) {
     return ev.hookKind;
   }
+  // The fallback reads the detector's status vocabulary. 'error' is what the
+  // daemon ships for a turn that died on an API error (eventShapeFor), and an
+  // event can reach here carrying it with no hookKind — an older daemon, or a
+  // detector-sourced error. Mapping that to 'agent.stop' told an orchestrator
+  // the turn FINISHED, which is the exact confusion `agent.stop_failure` was
+  // added to prevent.
+  if (ev.status === 'error') return 'agent.stop_failure';
   return ev.status === 'awaiting_input' ? 'agent.awaiting_input' : 'agent.stop';
 }
 
@@ -202,6 +215,8 @@ export class DaemonNotificationRouter {
    * throttled identically whichever path serves it. Cleared wholesale in stop().
    */
   private activityThrottle = createLeadingEdgeThrottle(ACTIVITY_THROTTLE_MS);
+  /** Rate limit for the vetoed-turn-end trace — see VETO_TRACE_THROTTLE_MS. */
+  private vetoTraceThrottle = createLeadingEdgeThrottle(VETO_TRACE_THROTTLE_MS);
 
   constructor(
     private daemonClient: DaemonClient,
@@ -311,7 +326,9 @@ export class DaemonNotificationRouter {
     kind: AgentLifecycleKind = 'agent.stop',
     arbitrated: {
       source: 'hook' | 'detector';
-      decision: 'emit' | 'dedup';
+      /** 'internal' = a vetoed / alarm-rejected candidate, published as a
+       *  trace only. No toast fired and no ledger entry was written for it. */
+      decision: 'emit' | 'dedup' | 'internal';
       /** Transcript tail for a turn-end wake; hook-sourced `agent.stop` only. */
       lastMessage?: AgentLastMessage | null;
       /** The ingested envelope, for side effects keyed on the original kind. */
@@ -787,6 +804,13 @@ export class DaemonNotificationRouter {
         //   otherwise   → the pre-M1 fallback, where main's own authority is
         //                 the only thing that knows.
         //
+        // Live finding (Claude Code 2.1.236): the footer is up before the
+        // session has done anything, so a freshly started `claude` sitting at
+        // its prompt read as "1 need you". `governsDetectorStatus` now
+        // withholds `waiting` from the first bridge signal on (SessionStart
+        // included) — and because HookIngest stamps 'veto' through that same
+        // predicate, the arbitrated arm below inherits the fix unchanged.
+        //
         // `awaiting_input` is excluded on BOTH arms. The daemon already
         // refuses to stamp 'veto' on it (HookIngest), but that guarantee lives
         // in another process: an older daemon paired with this main would
@@ -876,12 +900,49 @@ export class DaemonNotificationRouter {
             // only in the status dot: 'veto' means the hook owns the
             // lifecycle, so the broadcast above withheld the status (#935);
             // 'internal' is the alarm's own judgement and leaves it live.
-            if (decision === 'veto' || decision === 'internal') return;
+            //
+            // Both still TEE, as a trace. Suppressing the event as well left a
+            // pane whose bridge died after SessionStart (kill -9, a hook that
+            // cannot exec) emitting no turn boundary to any external observer
+            // for the full 30-minute authority TTL — and daemon mode is the
+            // production path. `decision:'internal'` is the published
+            // vocabulary for it: no toast, no ledger, trace only. The deck
+            // brain filters those out, which is the right answer here — a
+            // vetoed read comes off a footer that is on screen mid-turn, so
+            // waking an orchestrator on it would announce work that never
+            // ended.
+            //
+            // Throttled: the veto writes no ledger entry, so nothing else
+            // collapses a footer the detector re-reads all turn. See
+            // VETO_TRACE_THROTTLE_MS.
+            if (decision === 'veto' || decision === 'internal') {
+              const traceKind = lifecycleKindFor(ev);
+              if (this.vetoTraceThrottle.allow(`${payload.sessionId}:${traceKind}`)) {
+                void this.emitDetectorLifecycle(
+                  payload.sessionId,
+                  ev.agent,
+                  traceKind,
+                  { source: arbitrated, decision: 'internal' },
+                );
+              }
+              return;
+            }
           } else if (
             ev.status !== 'awaiting_input'
             && slug
             && hookRouter?.isGovernedFor(payload.sessionId, slug)
           ) {
+            // Pre-M1 fallback arm of the same veto — same trace, same throttle,
+            // same reason.
+            const traceKind = lifecycleKindFor(ev);
+            if (this.vetoTraceThrottle.allow(`${payload.sessionId}:${traceKind}`)) {
+              void this.emitDetectorLifecycle(
+                payload.sessionId,
+                ev.agent,
+                traceKind,
+                { source: 'detector', decision: 'internal' },
+              );
+            }
             return;
           }
 
@@ -953,13 +1014,12 @@ export class DaemonNotificationRouter {
           // the tee, so the event reads `source:'hook'`/`decision:'dedup'` and
           // main's ledger is left alone.
           //
-          // `agent.stop_failure` is skipped: `lifecycleKindFor` would fall
-          // through to 'agent.stop' for it (its hookKind is not one of the
-          // three the published `AgentLifecycleEvent.kind` union names), and a
-          // failed turn announced to orchestrators as a normal stop is worse
-          // than no event. Widening that union is a separate change. Same
-          // boundary the local `hooks.signal` path draws.
-          if (ev.hookKind === 'agent.stop_failure') return;
+          // `agent.stop_failure` rides through with its own kind now that the
+          // published `AgentLifecycleEvent.kind` union names it. It used to be
+          // dropped here, because falling through to 'agent.stop' would have
+          // told orchestrators a failed turn finished normally — and in daemon
+          // mode, the production path, that meant a turn that died on an API
+          // error reached no observer at all.
           void this.emitDetectorLifecycle(
             payload.sessionId,
             ev.agent,
@@ -1355,6 +1415,7 @@ export class DaemonNotificationRouter {
     // `clearLastBroadcastAgentStatus` above); there is nothing of this
     // router's own left to clear here.
     this.activityThrottle.clear();
+    this.vetoTraceThrottle.clear();
     this.workspaceCache = null;
   }
 }

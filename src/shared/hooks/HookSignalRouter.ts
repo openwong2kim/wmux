@@ -380,13 +380,27 @@ export class HookSignalRouter {
    *     veto makes, and for the same reason.
    *   - `running` — a working cue, not a turn boundary; nothing about it
    *     competes with the Stop signal.
-   *   - a pane whose bridge has said `SessionStart` and nothing since. It is
-   *     governed, but the hook has not written a lifecycle status yet, so
-   *     withholding the detector's read leaves the roster on the gate's
+   *   - `complete` on a pane whose bridge has said `SessionStart` and nothing
+   *     since. It is governed, but the hook has not written a lifecycle status
+   *     yet, so withholding the detector's read leaves the roster on the gate's
    *     one-shot `running` — a launched-but-idle agent reading as busy, live-
    *     measured at 30+ seconds per launch. See `hookOwnsLifecycleAfter`. Once
    *     any other kind arrives the hook owns the lifecycle and this returns
-   *     true again, so the post-Stop double-toast veto is unaffected.
+   *     true again, so the post-Stop double-toast veto is unaffected. Only
+   *     `complete` keeps this carve-out — see the `waiting` note below.
+   *
+   * `waiting` is withheld for the WHOLE authority window, SessionStart
+   * included. Live finding (Claude Code 2.1.236, PR #1224 dev instance): a
+   * fresh `claude` sitting at its prompt with no turn yet showed the red dot,
+   * "Waiting", and "1 need you" in the titlebar. The SessionStart carve-out
+   * above was letting the always-visible footer through as "Ready for input"
+   * before the operator had typed anything. Since #1224 the hook owns both
+   * ends of a governed pane's turn — `UserPromptSubmit` starts it, `Stop`
+   * ends it — so the footer regex speaks for nothing there and can only cry
+   * wolf. The pane is not left stuck busy either: no turn has been claimed,
+   * so the byte-silence clear still settles it to idle. `complete` is
+   * unaffected because it is a real turn-end read (Aider's "Applied edit
+   * to"), never TUI chrome.
    *
    * An ungoverned pane (no bridge, or a bridge gone quiet past the authority
    * TTL) is unaffected: the detector stays the backstop it has always been.
@@ -412,6 +426,10 @@ export class HookSignalRouter {
     if (status !== 'waiting' && status !== 'complete') return false;
     if (!slug) return false;
     if (!this.isGovernedFor(ptyId, slug, now)) return false;
+    // A governed pane's "ready for input" is the hook's to write, from the
+    // first signal on — the detector reads it off chrome that is on screen
+    // before the session has done anything at all.
+    if (status === 'waiting') return true;
     return this.authority.get(ptyId)?.lifecycleOwned === true;
   }
 

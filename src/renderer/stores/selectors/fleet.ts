@@ -109,6 +109,20 @@ export type FleetSelectorState = Pick<StoreState, 'workspaces' | 'surfaceAgentSt
    *  `surfaceActivityAt`, which is evidence and decays at HOOK_RUNNING_TTL_MS.
    *  Optional so existing fixtures stay terse. */
   surfaceTurnOpenAt?: StoreState['surfaceTurnOpenAt'];
+  /**
+   * PRECOMPUTED hook-'running' verdicts, ptyId → true. Supplied instead of
+   * `agentClockMs` by a consumer that must not re-run on every clock tick: the
+   * decay clock bumps every 2 s while any agent is fresh, and the ONLY thing it
+   * can change about a roster row is whether that row's activity stamp has aged
+   * past HOOK_RUNNING_TTL_MS — which is precisely this map. Subscribing to it
+   * shallowly turns "re-derive the fleet every 2 s" into "re-derive it when a
+   * dot actually flips".
+   *
+   * Produced by `selectHookRunningByPtyId`, which calls the same `isHookRunning`
+   * this selector would have called, so the two cannot drift. When absent the
+   * selector derives it inline from the clock, exactly as before.
+   */
+  hookRunningByPtyId?: Record<string, boolean>;
 };
 
 /**
@@ -275,8 +289,8 @@ const STATUS_RANK: Record<AgentStatus, number> = {
 /**
  * Status fidelity (S-C1 v1, confirmed scope):
  * `surfaceAgentStatus` only retains the ATTENTION statuses
- * (complete / waiting / awaiting_input) keyed per-ptyId — see paneSlice
- * ATTENTION_STATUSES. `running` / `idle` / `error` are *deleted* from that map,
+ * (complete / waiting / awaiting_input / error) keyed per-ptyId — see paneSlice
+ * ATTENTION_STATUSES. `running` / `idle` are *deleted* from that map,
  * so they are not available per background pane. Resolution order:
  *   1. surfaceAgentStatus[ptyId]  — accurate for attention states everywhere
  *   2. ws.metadata.agentStatus    — workspace-level, only valid for the ACTIVE pane
@@ -308,6 +322,35 @@ export function pickStashedRepresentativeSurface(
     ?? terminals[0]
     ?? leaf.surfaces[0]
   );
+}
+
+/**
+ * ptyId → true for every pane the hook derivation currently calls 'running'.
+ *
+ * The clock-dependent half of `selectFleetPanes`, pulled out so a consumer can
+ * subscribe to it SHALLOWLY and stop re-deriving the whole roster on a decay
+ * tick that flips nothing. Cheap by construction: it walks the two per-pty
+ * stamp maps, not the workspace tree.
+ *
+ * Uses `isHookRunning` — the same function the inline path calls — so a roster
+ * fed this map and a roster fed the raw clock cannot disagree.
+ */
+export function selectHookRunningByPtyId(state: FleetSelectorState): Record<string, boolean> {
+  const out: Record<string, boolean> = {};
+  const turnOpen = state.surfaceTurnOpenAt ?? {};
+  const activity = state.surfaceActivityAt ?? {};
+  for (const ptyId of new Set([...Object.keys(turnOpen), ...Object.keys(activity)])) {
+    if (isHookRunning({
+      activityAt: activity[ptyId],
+      turnOpenAt: turnOpen[ptyId],
+      agentClockMs: state.agentClockMs,
+    })) {
+      // Only TRUE entries are kept: a shallow compare over a map that also
+      // carried `false` would change identity for every pane that ever ran.
+      out[ptyId] = true;
+    }
+  }
+  return out;
 }
 
 export function selectFleetPanes(state: FleetSelectorState): FleetPane[] {
@@ -381,8 +424,9 @@ export function selectFleetPanes(state: FleetSelectorState): FleetPane[] {
       // 'running' would land in the shared slot and get painted onto the active
       // pane, which is exactly the misattribution #837 fixed. Tier 3's per-pty
       // clock is what carries running, so vetoing it here costs no coverage.
-      // `error` is still inherited: it is not an ATTENTION status, so the
-      // workspace slot is its only carrier for the active pane.
+      // `error` is still inherited here, but no longer as its ONLY carrier:
+      // it is an ATTENTION status now, so the per-pty attention scan above
+      // reaches it on background panes too.
       const metaStatus =
         isActivePane && metaMatchesPane && wsMeta?.agentStatus !== 'running'
           ? wsMeta?.agentStatus
@@ -397,7 +441,9 @@ export function selectFleetPanes(state: FleetSelectorState): FleetPane[] {
       // says it is working"; only a turn end takes that back.
       const turnOpenAt = ptyId ? state.surfaceTurnOpenAt?.[ptyId] : undefined;
       const turnOpen = turnOpenAt !== undefined && turnOpenAt > 0;
-      const hookRunning = isHookRunning({ activityAt, turnOpenAt, agentClockMs: state.agentClockMs });
+      const hookRunning = state.hookRunningByPtyId
+        ? (!!ptyId && state.hookRunningByPtyId[ptyId] === true)
+        : isHookRunning({ activityAt, turnOpenAt, agentClockMs: state.agentClockMs });
       // #1168 — a stashed pane whose every terminal surface has lost its pty is
       // a session the daemon has confirmed gone. The roster reports that as
       // `error` / needs-you and offers recovery; this pass had no liveness

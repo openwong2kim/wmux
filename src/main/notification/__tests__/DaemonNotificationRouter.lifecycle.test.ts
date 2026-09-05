@@ -12,7 +12,8 @@
 // the workspace.list resolution path; this file focuses on dispatch shape.
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import type { DaemonClient } from '../../DaemonClient';
-import type { HookSignalRouter } from '../../hooks/HookSignalRouter';
+import { HookSignalRouter } from '../../hooks/HookSignalRouter';
+import type { SignalLatencyMeter } from '../../../shared/hooks/SignalLatencyMeter';
 import { eventBus } from '../../events/EventBus';
 
 vi.mock('electron', () => ({ BrowserWindow: class {} }));
@@ -202,11 +203,13 @@ describe('DaemonNotificationRouter — detector lifecycle tee (awaiting_input)',
     }
   });
 
-  it('hook-authority veto: governed (ptyId, slug) suppresses notification, ledger write and tee', async () => {
+  it('hook-authority veto: governed (ptyId, slug) suppresses notification and ledger write, but still traces the event', async () => {
     // Daemon-mode twin of the PTYBridge veto test. While the pane's hook
-    // bridge is fresh for the same agent, the detector must not dispatch,
-    // must not write the dedup ledger (that would kill the real Stop hook),
-    // and must not tee a lifecycle event (the hook emits the canonical one).
+    // bridge is fresh for the same agent, the detector must not dispatch and
+    // must not write the dedup ledger (that would kill the real Stop hook).
+    // The tee still fires as 'internal': daemon mode is the production path,
+    // so silencing it left a pane whose bridge died after SessionStart with no
+    // turn boundary reaching any observer for the 30-minute authority TTL.
     const hookRouter = {
       recordDetector: vi.fn(),
       recordHook: vi.fn(),
@@ -229,7 +232,9 @@ describe('DaemonNotificationRouter — detector lifecycle tee (awaiting_input)',
 
       expect(vi.mocked(hookRouter.isGovernedFor)).toHaveBeenCalledWith('pty-a', 'claude');
       expect(hookRouter.recordDetector).not.toHaveBeenCalled();
-      expect(pollLifecycle()).toHaveLength(0);
+      expect(pollLifecycle()).toMatchObject([
+        { kind: 'agent.stop', source: 'detector', agent: 'claude', decision: 'internal' },
+      ]);
     } finally {
       nr.stop();
     }
@@ -271,6 +276,12 @@ describe('DaemonNotificationRouter — detector lifecycle tee (awaiting_input)',
         agentName: 'Claude Code',
         agentSlug: 'claude',
       });
+      // The status is withheld; the event is traced. This is the arm the
+      // packaged build takes, so it is the one where a dead bridge used to
+      // cost every external observer the turn boundary.
+      expect(pollLifecycle()).toMatchObject([
+        { kind: 'agent.stop', source: 'detector', decision: 'internal' },
+      ]);
     } finally {
       nr.stop();
     }
@@ -301,6 +312,61 @@ describe('DaemonNotificationRouter — detector lifecycle tee (awaiting_input)',
         (c) => (c[1] as { agentStatus?: string }).agentStatus === 'waiting',
       );
       expect(statusCalls).toHaveLength(0);
+    } finally {
+      nr.stop();
+    }
+  });
+
+  it('daemon twin: a fresh Claude session at its prompt is not "needs you" (live finding, Claude Code 2.1.236)', async () => {
+    // The real router, so the predicate itself is under test: the bridge has
+    // sent SessionStart and nothing else, and the detector is reading the
+    // footer that Claude paints before any turn exists. That was the red dot
+    // + "1 need you" on a session the operator had not yet spoken to.
+    const hookRouter = new HookSignalRouter({
+      latencyMeter: { recordSignal: vi.fn() } as unknown as SignalLatencyMeter,
+    });
+    hookRouter.touchAuthority('pty-a', 'claude', Date.now(), true, 'agent.session_start');
+    const { router: nr, captured } = makeRouter({ hookRouter });
+    try {
+      broadcastMetadataUpdateMock.mockClear();
+      captured.agent!({
+        sessionId: 'pty-a',
+        event: { agent: 'Claude Code', status: 'waiting', message: 'Ready for input' },
+      });
+      await flushMicrotasks();
+
+      const statusCalls = broadcastMetadataUpdateMock.mock.calls.filter(
+        (c) => (c[1] as { agentStatus?: string }).agentStatus === 'waiting',
+      );
+      expect(statusCalls).toHaveLength(0);
+      // Identity still rides the withheld broadcast.
+      expect(broadcastMetadataUpdateMock).toHaveBeenCalledWith(
+        null,
+        expect.objectContaining({ ptyId: 'pty-a', agentName: 'Claude Code', agentSlug: 'claude' }),
+      );
+    } finally {
+      nr.stop();
+    }
+  });
+
+  it('daemon twin: a fresh governed session still shows a real approval prompt', async () => {
+    const hookRouter = new HookSignalRouter({
+      latencyMeter: { recordSignal: vi.fn() } as unknown as SignalLatencyMeter,
+    });
+    hookRouter.touchAuthority('pty-a', 'claude', Date.now(), true, 'agent.session_start');
+    const { router: nr, captured } = makeRouter({ hookRouter });
+    try {
+      broadcastMetadataUpdateMock.mockClear();
+      captured.agent!({
+        sessionId: 'pty-a',
+        event: { agent: 'Claude Code', status: 'awaiting_input', message: 'Approval requested' },
+      });
+      await flushMicrotasks();
+
+      expect(broadcastMetadataUpdateMock).toHaveBeenCalledWith(
+        null,
+        expect.objectContaining({ ptyId: 'pty-a', agentStatus: 'awaiting_input' }),
+      );
     } finally {
       nr.stop();
     }
@@ -491,7 +557,7 @@ describe('DaemonNotificationRouter — M1 daemon-arbitrated events (source field
     }
   });
 
-  it('#935 decision:"veto" withholds the lifecycle status too — no dot, no toast, no tee', async () => {
+  it('#935 decision:"veto" withholds the lifecycle status too — no dot, no toast, trace only', async () => {
     // The daemon applied the hook-authority rule main used to apply locally.
     // It used to leave the status dot live, which put the detector's reading
     // of Claude's always-visible bypass footer onto the roster row and into
@@ -524,17 +590,21 @@ describe('DaemonNotificationRouter — M1 daemon-arbitrated events (source field
       );
       expect(statusCalls).toHaveLength(0);
       expect(dispatchNotificationMock).not.toHaveBeenCalled();
-      expect(pollLifecycle()).toHaveLength(0);
+      // The event still reaches external observers as a trace — see the
+      // 'internal' decision contract. No toast, no ledger, no wake.
+      expect(pollLifecycle()).toMatchObject([{ kind: 'agent.stop', decision: 'internal' }]);
       expect(hookRouter.recordDetector).not.toHaveBeenCalled();
     } finally {
       nr.stop();
     }
   });
 
-  it('decision:"internal" is treated exactly like veto — dot only, no toast, no tee', async () => {
+  it('decision:"internal" is treated exactly like veto — dot only, no toast, trace only', async () => {
     // The daemon's CompletionAlarm rejected the candidate as NOT a real turn
     // end (subagent stop, leftover background work, turn-gate miss, already
-    // announced, or a rebutted window). Main must not fan anything out.
+    // announced, or a rebutted window). Main must not fan anything out — but
+    // the trace still rides the EventBus, exactly as local mode's own alarm
+    // rejections do in PTYBridge.
     const hookRouter = stubHookRouter('emit');
     const { router: nr, captured } = makeRouter({ hookRouter });
     try {
@@ -555,7 +625,7 @@ describe('DaemonNotificationRouter — M1 daemon-arbitrated events (source field
 
       expect(broadcastMetadataUpdateMock).toHaveBeenCalled(); // dot stays live
       expect(dispatchNotificationMock).not.toHaveBeenCalled();
-      expect(pollLifecycle()).toHaveLength(0);
+      expect(pollLifecycle()).toMatchObject([{ kind: 'agent.stop', decision: 'internal' }]);
       expect(hookRouter.recordDetector).not.toHaveBeenCalled();
     } finally {
       nr.stop();
@@ -626,7 +696,7 @@ describe('DaemonNotificationRouter — M1 daemon-arbitrated events (source field
 
       expect(vi.mocked(hookRouter.isGovernedFor)).toHaveBeenCalledWith('pty-a', 'claude');
       expect(hookRouter.recordDetector).not.toHaveBeenCalled(); // vetoed
-      expect(pollLifecycle()).toHaveLength(0);
+      expect(pollLifecycle()).toMatchObject([{ kind: 'agent.stop', decision: 'internal' }]);
     } finally {
       nr.stop();
     }
@@ -1059,15 +1129,90 @@ describe('DaemonNotificationRouter — M1 side-effect replay', () => {
       }
     });
 
-    it('emits no agent.lifecycle event for it', async () => {
-      // `lifecycleKindFor` would fall through to 'agent.stop', which tells an
-      // orchestrator the turn finished normally. Silence is the lesser wrong
-      // until the published kind union is widened deliberately.
+    it('tees agent.lifecycle with its OWN kind, not a plain stop', async () => {
+      // Daemon mode is the production path, so dropping this event meant a turn
+      // that died on an API error reached no orchestrator at all. It could not
+      // ride 'agent.stop' either — that reads as "finished normally" — so the
+      // published kind union names it, and the tee carries it through.
       const { router: nr, captured } = makeRouter();
       try {
         captured.agent!(failureEvent());
         await flushMicrotasks();
-        expect(pollLifecycle()).toHaveLength(0);
+
+        const events = pollLifecycle();
+        expect(events.length).toBe(1);
+        expect(events[0]).toMatchObject({
+          type: 'agent.lifecycle',
+          ptyId: 'pty-a',
+          kind: 'agent.stop_failure',
+          source: 'hook',
+          agent: 'claude',
+          decision: 'emit',
+        });
+      } finally {
+        nr.stop();
+      }
+    });
+  });
+
+  // The mapping itself, asserted through the router because `lifecycleKindFor`
+  // is module-private: a hook-sourced event keeps its ORIGINAL kind, and only
+  // an event with no hookKind falls back to the detector's status mapping.
+  describe('lifecycleKindFor', () => {
+    it.each([
+      ['agent.stop_failure', 'error'],
+      ['agent.subagent_stop', 'complete'],
+      ['agent.awaiting_input', 'awaiting_input'],
+      ['agent.stop', 'complete'],
+    ])('keeps hookKind %s through the tee', async (hookKind, status) => {
+      const { router: nr, captured } = makeRouter();
+      try {
+        captured.agent!({
+          sessionId: 'pty-a',
+          event: {
+            agent: 'Claude Code',
+            status,
+            message: 'x',
+            source: 'hook',
+            hookKind,
+            decision: 'emit',
+          },
+        });
+        await flushMicrotasks();
+        expect(pollLifecycle()[0]).toMatchObject({ kind: hookKind, source: 'hook' });
+      } finally {
+        nr.stop();
+      }
+    });
+
+    it('falls back to agent.stop_failure for a bare status:"error" — never a plain stop', async () => {
+      // No hookKind (an older daemon, or a detector-sourced error). Mapping it
+      // onto 'agent.stop' would report a turn that DIED as one that finished.
+      const { router: nr, captured } = makeRouter();
+      try {
+        captured.agent!({
+          sessionId: 'pty-a',
+          event: { agent: 'Claude Code', status: 'error', message: 'Turn failed (API error)' },
+        });
+        await flushMicrotasks();
+        expect(pollLifecycle()[0]).toMatchObject({
+          kind: 'agent.stop_failure',
+          source: 'detector',
+        });
+      } finally {
+        nr.stop();
+      }
+    });
+
+    it('falls back to the status mapping when no hookKind rides along', async () => {
+      const { router: nr, captured } = makeRouter();
+      try {
+        captured.agent!({
+          sessionId: 'pty-a',
+          event: { agent: 'Claude Code', status: 'awaiting_input', message: 'x' },
+        });
+        await flushMicrotasks();
+        expect(pollLifecycle()[0]).toMatchObject({ kind: 'agent.awaiting_input', source: 'detector' });
       } finally {
         nr.stop();
       }

@@ -1719,7 +1719,14 @@ export function registerDeckHandler(
       return;
     }
     if (ev.type !== 'agent.lifecycle') return;
-    if (ev.kind !== 'agent.stop' && ev.kind !== 'agent.awaiting_input') return;
+    // 'agent.stop_failure' rides with the two: a turn that died on an API error
+    // is as much a turn end as one that finished, and a brain waiting on a
+    // delegated worker would otherwise sit on the stop gate forever.
+    if (
+      ev.kind !== 'agent.stop'
+      && ev.kind !== 'agent.stop_failure'
+      && ev.kind !== 'agent.awaiting_input'
+    ) return;
     // 'internal' traces are turn-end candidates the CompletionAlarm REJECTED
     // (subagent stop, leftover background work, rebutted provisional window).
     // Waking the deck brain on one would announce work that never ended —
