@@ -7,6 +7,7 @@ import { tokenAttrs } from '../../themes';
 import {
   formatStaleMinutes,
   selectFleetPanes,
+  selectHookRunningByPtyId,
   selectUnverifiablePaneMinutes,
   sortFleetPanes,
   type FleetPane,
@@ -81,18 +82,20 @@ export default function DeckFleet({
   const roleBindings = useStore((s) => s.orchestratorRoleBindings);
   // The running-state inputs `selectFleetPanes` ranks ABOVE the raw status:
   // OSC 133 command liveness, agent process truth, the hook's open-turn latch,
-  // and the decaying activity stamp read against `agentClockMs`. Omitting them
-  // did not make the roster cheaper, it made it WRONG — every one is optional
-  // on FleetSelectorState, so the selector silently fell back to the bare
-  // status and these dots stopped deriving 'running' the way the sidebar's do
-  // for the same pane. The clock only bumps while something can still decay
-  // (see useAgentActivityClock), which is exactly when this roster has to
-  // re-render anyway.
+  // and the decaying activity stamp. Omitting them did not make the roster
+  // cheaper, it made it WRONG — every one is optional on FleetSelectorState,
+  // so the selector silently fell back to the bare status and these dots
+  // stopped deriving 'running' the way the sidebar's do for the same pane.
   const surfaceActivityAt = useStore((s) => s.surfaceActivityAt);
-  const agentClockMs = useStore((s) => s.agentClockMs);
   const surfaceTurnOpenAt = useStore((s) => s.surfaceTurnOpenAt);
   const commandRunningByPtyId = useStore((s) => s.commandRunningByPtyId);
   const agentAliveByPtyId = useStore((s) => s.agentAliveByPtyId);
+  // ...and the decay clock's VERDICT rather than the clock itself. Subscribing
+  // to `agentClockMs` here would re-run the fleet selector and re-render every
+  // roster row every 2 s while any agent is fresh, for a tick that usually
+  // changes nothing. This map is the only thing a tick can change about a row,
+  // shallow-compared, so a tick that flips no dot is not a state change at all.
+  const hookRunningByPtyId = useStore(useShallow(selectHookRunningByPtyId));
   // Per-PTY silence in whole minutes for panes still claiming 'running' past
   // the hook-authority window. Still its own minute-granular subscription —
   // the hollow-ring flip is the one thing here that must NOT re-render at the
@@ -108,7 +111,7 @@ export default function DeckFleet({
       surfaceAgent,
       surfacePendingQuestion,
       surfaceActivityAt,
-      agentClockMs,
+      hookRunningByPtyId,
       surfaceTurnOpenAt,
       commandRunningByPtyId,
       agentAliveByPtyId,
@@ -126,7 +129,7 @@ export default function DeckFleet({
     );
   }, [
     workspaces, activeWorkspaceId, surfaceAgentStatus, surfaceActivity, paneLabel,
-    surfaceAgent, surfacePendingQuestion, surfaceActivityAt, agentClockMs,
+    surfaceAgent, surfacePendingQuestion, surfaceActivityAt, hookRunningByPtyId,
     surfaceTurnOpenAt, commandRunningByPtyId, agentAliveByPtyId,
   ]);
 

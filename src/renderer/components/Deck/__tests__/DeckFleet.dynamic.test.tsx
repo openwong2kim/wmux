@@ -16,7 +16,19 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { createElement, act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
+// The fleet selector is spied through the module so the clock-tick test can
+// count DeckFleet's OWN calls. Calls made INSIDE the selectors module (the
+// roll-up cache behind selectUnverifiablePaneMinutes) bind to the local
+// reference and never reach this spy, which is exactly the isolation wanted.
+vi.mock('../../../stores/selectors/fleet', async () => {
+  const actual = await vi.importActual<typeof import('../../../stores/selectors/fleet')>(
+    '../../../stores/selectors/fleet',
+  );
+  return { ...actual, selectFleetPanes: vi.fn(actual.selectFleetPanes) };
+});
+
 import DeckFleet from '../DeckFleet';
+import { selectFleetPanes } from '../../../stores/selectors/fleet';
 import { useStore } from '../../../stores';
 import { ORCH_ROLES } from '../../../../shared/orchestratorRole';
 import type { Workspace, Pane, Surface, AgentStatus } from '../../../../shared/types';
@@ -216,12 +228,12 @@ describe('DeckFleet role dropdown', () => {
 // selector ranks above the raw status — and because they are all optional on
 // FleetSelectorState, nothing complained: the rows just fell back to 'idle'
 // while the sidebar showed the pane working.
-describe('DeckFleet running derivation', () => {
-  /** The status dot — the first round span inside the row's jump button. */
-  function dotStyle(): CSSStyleDeclaration {
-    return q<HTMLSpanElement>('[data-deck-fleet-row] button span.rounded-full').style;
-  }
+/** The status dot — the first round span inside the row's jump button. */
+function dotStyle(): CSSStyleDeclaration {
+  return q<HTMLSpanElement>('[data-deck-fleet-row] button span.rounded-full').style;
+}
 
+describe('DeckFleet running derivation', () => {
   it('derives running from the hook turn latch, exactly as the sidebar does', () => {
     const now = Date.now();
     seedStore();
@@ -251,6 +263,50 @@ describe('DeckFleet running derivation', () => {
       agentClockMs: Date.now(),
     }));
     mount();
+    expect(dotStyle().backgroundColor).toBe('var(--text-muted)');
+  });
+});
+
+// The roster subscribed to `agentClockMs` in its main memo, so every 2 s tick
+// of the decay clock re-ran `selectFleetPanes` and re-rendered every row —
+// contradicting the component's own comment and the separate minute-granular
+// subscription right beside it. Only the clock's VERDICT (which panes are
+// hook-'running') can change a row, so that is what it subscribes to now.
+describe('DeckFleet clock cadence', () => {
+  it('a clock tick that flips no dot does not re-run the fleet selector', () => {
+    const now = Date.now();
+    seedStore();
+    act(() => useStore.setState({
+      surfaceTurnOpenAt: { 'pty-1': now },
+      surfaceActivityAt: {},
+      agentClockMs: now,
+    }));
+    mount();
+    // Guard the guard: if the spy were not wired to DeckFleet's own import,
+    // "not called" below would pass vacuously.
+    expect(selectFleetPanes).toHaveBeenCalled();
+    vi.mocked(selectFleetPanes).mockClear();
+
+    // Two ticks. The latch does not decay, so no dot changes.
+    act(() => useStore.setState({ agentClockMs: now + 2_000 }));
+    act(() => useStore.setState({ agentClockMs: now + 4_000 }));
+
+    expect(selectFleetPanes).not.toHaveBeenCalled();
+  });
+
+  it('...but a stamp decaying past the TTL still re-derives the roster', () => {
+    const now = Date.now();
+    seedStore();
+    act(() => useStore.setState({
+      surfaceTurnOpenAt: {},
+      surfaceActivityAt: { 'pty-1': now },
+      agentClockMs: now,
+    }));
+    mount();
+    expect(dotStyle().backgroundColor).toBe('var(--accent-cursor)');
+
+    // HOOK_RUNNING_TTL_MS is 120 s; past it the pane is no longer running.
+    act(() => useStore.setState({ agentClockMs: now + 200_000 }));
     expect(dotStyle().backgroundColor).toBe('var(--text-muted)');
   });
 });
