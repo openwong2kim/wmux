@@ -907,9 +907,12 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
 
         {/* The blocked-agent label, right-aligned. It replaces the play/pause
             mark this row used to carry: "running" is already the amber dot, and
-            a paused glyph never said what it was paused ON. Words do. */}
+            a paused glyph never said what it was paused ON. Words do.
+            On hover the row's chrome comes back and the label steps aside for
+            it (the wash and the red dot keep saying "needs you"); the active
+            row, which shows its chrome permanently, keeps the label too. */}
         {needsYou && (
-          <span className="font-sans text-[10px] font-semibold text-[var(--accent-red)] flex-shrink-0 mt-0.5">
+          <span className={`font-sans text-[10px] font-semibold text-[var(--accent-red)] flex-shrink-0 mt-0.5 ${isActive ? '' : 'group-hover:hidden'}`}>
             {t('workspace.needsYou')}
           </span>
         )}
