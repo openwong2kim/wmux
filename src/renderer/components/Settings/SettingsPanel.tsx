@@ -3597,6 +3597,8 @@ function TabAppearance() {
   const setTerminalCursorStyle = useStore((s) => s.setTerminalCursorStyle);
 
   const sidebarPosition = useStore((s) => s.sidebarPosition);
+  const sidebarAttentionFirst = useStore((s) => s.sidebarAttentionFirst);
+  const setSidebarAttentionFirst = useStore((s) => s.setSidebarAttentionFirst);
   const setSidebarPosition = useStore((s) => s.setSidebarPosition);
   const multiviewArrangement = useStore((s) => s.multiviewArrangement);
   const setMultiviewArrangement = useStore((s) => s.setMultiviewArrangement);
@@ -3722,6 +3724,19 @@ function TabAppearance() {
               </button>
             ))}
           </div>
+        </SettingRow>
+        {/* Off by default on purpose: a list that reorders itself under the
+            user's eyes costs more than the scan it saves. */}
+        <SettingRow
+          id="sidebarattention"
+          label={t('settings.sidebarAttentionFirst')}
+          description={t('settings.sidebarAttentionFirstDesc')}
+        >
+          <Toggle
+            checked={sidebarAttentionFirst}
+            onChange={setSidebarAttentionFirst}
+            label={t('settings.sidebarAttentionFirst')}
+          />
         </SettingRow>
         <SettingRow
           id="multiview"

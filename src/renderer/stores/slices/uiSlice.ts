@@ -365,6 +365,12 @@ export interface UISlice {
   sidebarPosition: 'left' | 'right';
   setSidebarPosition: (position: 'left' | 'right') => void;
 
+  /** Display-only: lift workspaces whose agent is waiting on the user to the
+   *  top of the sidebar list and the mini rail. Off by default — see
+   *  components/Sidebar/attentionOrder.ts for why it is opt-in. */
+  sidebarAttentionFirst: boolean;
+  setSidebarAttentionFirst: (enabled: boolean) => void;
+
   // ─── Toast / ring notification UI ────────────────────────────────────────
   toastEnabled: boolean;
   setToastEnabled: (enabled: boolean) => void;
@@ -1221,6 +1227,12 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
 
   setSidebarPosition: (position) => set((state) => {
     state.sidebarPosition = position;
+  }),
+
+  sidebarAttentionFirst: false,
+
+  setSidebarAttentionFirst: (enabled) => set((state) => {
+    state.sidebarAttentionFirst = enabled;
   }),
 
   // ─── Toast / ring notification UI ────────────────────────────────────────

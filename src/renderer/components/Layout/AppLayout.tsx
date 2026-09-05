@@ -360,6 +360,7 @@ function buildSessionData(dumped: Map<string, boolean>): SessionData {
     scrollbackRestoreEnabled: state.scrollbackRestoreEnabled,
     a2aAutoApproveExecute: state.a2aAutoApproveExecute,
     sidebarPosition: state.sidebarPosition,
+    sidebarAttentionFirst: state.sidebarAttentionFirst,
     multiviewArrangement: state.multiviewArrangement,
     notificationSoundEnabled: state.notificationSoundEnabled,
     toastEnabled: state.toastEnabled,
