@@ -233,7 +233,7 @@ const WMUX_EVENTS_POLL_SHAPE = {
   max: z.number().int().positive().max(1024).optional().describe('Max events per poll (default 256).'),
   blockMs: z.number().int().nonnegative().max(600_000).optional().describe('Wait up to this long (ms) for a match instead of returning an empty page; 0 (default) = immediate. With ptyId+kinds it replaces a terminal_read loop; add process.exited to types so the wait ends if the pane dies (pane.closed is paneId-keyed, so ptyId drops it). parkedCapReached=true means it did NOT wait — back off. One cursor chain per filter combination; nextCursor passes events your filter skipped.'),
   ptyId: z.string().optional().describe('Only events about this pane. Events with no ptyId are excluded — that is every pane.* event (paneId-keyed); use process.exited to see the pane go away.'),
-  kinds: z.array(z.string()).optional().describe('Narrow agent.lifecycle by kind; other types pass through. agent.subagent_stop is a nested subagent returning, not the pane\'s own turn ending.'),
+  kinds: z.array(z.string()).optional().describe('Narrow agent.lifecycle by kind; other types pass through. agent.subagent_stop is a nested subagent returning, not the pane\'s own turn ending. agent.stop_failure = the turn DIED on an API error; it finished nothing.'),
 };
 
 const A2A_TASK_QUERY_SHAPE = {
