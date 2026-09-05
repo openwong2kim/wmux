@@ -487,9 +487,13 @@ export class CommanderEventCoalescer {
     // pane reaches snapPanes, so none is added to the retired set. That is the
     // correct no-op, not a gap — assist already drops a lone finished pane before
     // the worthiness gate, so there is no repeat review to suppress there.
+    // 'error' rides with 'awaiting_input' through the assist filter for the
+    // same reason a stop_failure EDGE does: a turn that DIED is not the
+    // "agent summarized its work" spam this filter drops. Without it the edge
+    // and level policies disagreed about the same pane.
     const snapPanes =
       policy === 'value-filtered'
-        ? attention.filter((p) => p.agentStatus === 'awaiting_input')
+        ? attention.filter((p) => p.agentStatus === 'awaiting_input' || p.agentStatus === 'error')
         : attention;
 
     // Fold in currently-buffered edges (same value filter as the edge path:
@@ -1513,8 +1517,11 @@ function isAttentionStatus(s: FleetSnapshotPane['agentStatus']): boolean {
  *  agentStatus onto the SAME verdict grammar:
  *    - awaiting_input / waiting → the awaiting_input verdict, source treated as
  *      'detector' (VERIFY-THEN-PRESS) because snapshot state is never hook-fresh;
- *    - complete / error → the stop verdict (continueInstruction gating), with no
+ *    - complete → the stop verdict (continueInstruction gating), with no
  *      transcript (contentless turn-ended phrasing);
+ *    - error → the STOP-FAILURE verdict. A pane sitting at 'error' ended its
+ *      turn on an API error and finished nothing, so the stop verdict's
+ *      "summarize what it said" reading is exactly wrong for it;
  *    - anything else → report-only (should not occur; isAttentionStatus filters). */
 function renderSnapshotLine(
   pane: FleetSnapshotPane,
@@ -1524,7 +1531,9 @@ function renderSnapshotLine(
   let verdict: string;
   if (pane.agentStatus === 'awaiting_input' || pane.agentStatus === 'waiting') {
     verdict = awaitingVerdict('detector', autonomy, { ptyId: pane.ptyId });
-  } else if (pane.agentStatus === 'complete' || pane.agentStatus === 'error') {
+  } else if (pane.agentStatus === 'error') {
+    verdict = stopFailureVerdict(autonomy);
+  } else if (pane.agentStatus === 'complete') {
     verdict = stopVerdict(autonomy, undefined);
   } else {
     verdict = '(report only — no action needed)';

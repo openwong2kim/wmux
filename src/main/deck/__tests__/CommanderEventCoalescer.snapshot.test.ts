@@ -85,17 +85,26 @@ describe('buildSnapshotPrompt — untrusted LEVEL block + verdict grammar', () =
     expect(p).toContain('VERIFY THEN PRESS');
   });
 
-  it('complete/error map to the stop verdict, gated by continueInstruction', () => {
+  it('complete maps to the stop verdict, gated by continueInstruction', () => {
     const drive = buildSnapshotPrompt(snap([pane({ agentStatus: 'complete' })]), [], AUTO_AUTONOMY, budget);
     expect(drive).toContain('MAY send ONE follow-up instruction');
 
     const noDrive = buildSnapshotPrompt(
-      snap([pane({ agentStatus: 'error' })]),
+      snap([pane({ agentStatus: 'complete' })]),
       [],
       { ...AUTO_AUTONOMY, continueInstruction: false },
       budget,
     );
     expect(noDrive).toContain('summarize only');
+  });
+
+  it('error maps to the STOP-FAILURE verdict, never the stop verdict', () => {
+    // A pane at 'error' ended its turn on an API error and finished nothing,
+    // so the stop verdict's "summarize what it said" reading is exactly wrong.
+    const p = buildSnapshotPrompt(snap([pane({ agentStatus: 'error' })]), [], AUTO_AUTONOMY, budget);
+    expect(p).toContain('state=error');
+    expect(p).toContain('TURN DIED ON AN API ERROR');
+    expect(p).not.toContain('(turn ended');
   });
 
   it('folds real buffered edges in below, with their ORIGINAL edge verdicts (seq lines)', () => {
@@ -197,6 +206,25 @@ beforeEach(() => vi.useFakeTimers());
 afterEach(() => vi.useRealTimers());
 
 describe('flushSnapshot — gate stack + accounting', () => {
+  it('assist surfaces an errored pane in the level snapshot, like a blocked one', async () => {
+    // The edge path already treats a stop_failure as worth the operator's time
+    // under assist; the level path dropped the same pane, so the two policies
+    // disagreed about the same fact.
+    const h = mk({ autonomy: ASSIST });
+    h.c.flushSnapshot('ws-1', snap([pane({ ptyId: 'ptyErr', agentStatus: 'error' })]));
+    await settle();
+    expect(h.prompts).toHaveLength(1);
+    expect(h.prompts[0].prompt).toContain('state=error');
+    expect(h.prompts[0].prompt).toContain('TURN DIED ON AN API ERROR');
+  });
+
+  it('assist still drops a plain finished pane from the level snapshot', async () => {
+    const h = mk({ autonomy: ASSIST });
+    h.c.flushSnapshot('ws-1', snap([pane({ agentStatus: 'complete' })]));
+    await settle();
+    expect(h.prompts).toHaveLength(0);
+  });
+
   it('accepts a snapshot, accounts a wake, and drains it', async () => {
     const h = mk();
     h.c.flushSnapshot('ws-1', snap([pane({ agentStatus: 'awaiting_input' })]));

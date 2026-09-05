@@ -174,8 +174,8 @@ export interface PaneSlice {
   paneNotificationRing: Record<string, 'flash' | 'glow'>;
   setPaneNotificationRing: (paneId: string, ring: 'flash' | 'glow' | null) => void;
   // B8: per-surface agent lifecycle status keyed by ptyId. Only the
-  // "needs attention" statuses (complete / waiting / awaiting_input) are
-  // retained; running / idle / error / null all clear the entry. Drives the
+  // "needs attention" statuses (complete / waiting / awaiting_input / error)
+  // are retained; running / idle / null all clear the entry. Drives the
   // "completed terminal" blink on inactive panes (Pane.tsx) and the per-tab
   // status dot (SurfaceTabs). Populated from METADATA_UPDATE in
   // useNotificationListener; cleared when the owning pane is focused or the
@@ -301,11 +301,22 @@ export interface PaneSlice {
 }
 
 // The agent statuses that mean "this terminal wants the user's attention"
-// (the work finished or is paused waiting for input). Anything else clears.
+// (the work finished, is paused waiting for input, or DIED). Anything else
+// clears.
+//
+// 'error' is what a turn that ended on an API error settles to
+// (`agent.stop_failure`). It was omitted while nothing produced it per-pane;
+// now that the failed turn is its own lifecycle kind, leaving it out silently
+// dropped a background worker's dead turn — `surfaceAgentStatus` never
+// retained it, so the fleet selector read the pane as idle and the deck's
+// level snapshot could not see it at all. It does NOT reach the "N need you"
+// chip (countNeedsAttention counts awaiting_input/waiting only); it reaches
+// the red dot the roster already draws for it.
 const ATTENTION_STATUSES: ReadonlySet<AgentStatus> = new Set<AgentStatus>([
   'complete',
   'waiting',
   'awaiting_input',
+  'error',
 ]);
 
 // The statuses that END a hook-reported turn, and so withdraw the turn latch.
@@ -589,7 +600,7 @@ export const createPaneSlice: StateCreator<StoreState, [['zustand/immer', never]
   setSurfaceAgentStatus: (ptyId, status) => set((state: StoreState) => {
     if (!ptyId) return;
     // Store only attention-worthy statuses; everything else (running, idle,
-    // error, null) clears the entry so the blink stops as soon as the agent
+    // null) clears the entry so the blink stops as soon as the agent
     // resumes, goes idle, or the PTY exits.
     if (status && ATTENTION_STATUSES.has(status)) {
       state.surfaceAgentStatus[ptyId] = status;

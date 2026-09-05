@@ -275,8 +275,8 @@ const STATUS_RANK: Record<AgentStatus, number> = {
 /**
  * Status fidelity (S-C1 v1, confirmed scope):
  * `surfaceAgentStatus` only retains the ATTENTION statuses
- * (complete / waiting / awaiting_input) keyed per-ptyId — see paneSlice
- * ATTENTION_STATUSES. `running` / `idle` / `error` are *deleted* from that map,
+ * (complete / waiting / awaiting_input / error) keyed per-ptyId — see paneSlice
+ * ATTENTION_STATUSES. `running` / `idle` are *deleted* from that map,
  * so they are not available per background pane. Resolution order:
  *   1. surfaceAgentStatus[ptyId]  — accurate for attention states everywhere
  *   2. ws.metadata.agentStatus    — workspace-level, only valid for the ACTIVE pane
@@ -381,8 +381,9 @@ export function selectFleetPanes(state: FleetSelectorState): FleetPane[] {
       // 'running' would land in the shared slot and get painted onto the active
       // pane, which is exactly the misattribution #837 fixed. Tier 3's per-pty
       // clock is what carries running, so vetoing it here costs no coverage.
-      // `error` is still inherited: it is not an ATTENTION status, so the
-      // workspace slot is its only carrier for the active pane.
+      // `error` is still inherited here, but no longer as its ONLY carrier:
+      // it is an ATTENTION status now, so the per-pty attention scan above
+      // reaches it on background panes too.
       const metaStatus =
         isActivePane && metaMatchesPane && wsMeta?.agentStatus !== 'running'
           ? wsMeta?.agentStatus
