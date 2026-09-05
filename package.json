@@ -1,7 +1,7 @@
 {
   "name": "wmux",
   "productName": "wmux",
-  "version": "3.50.1",
+  "version": "3.51.0",
   "description": "Workspace multiplexer for AI agents \u2014 run fleets of Claude Code, Codex & Gemini in parallel on Windows & macOS, with MCP browser automation built in",
   "private": true,
   "main": ".vite/build/index.js",
