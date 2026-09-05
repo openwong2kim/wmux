@@ -63,6 +63,10 @@ import { isAgentPane } from './stopGate';
 /** The kinds we wake on:
  *   - agent.stop / agent.awaiting_input — pane lifecycle (decision 7 —
  *     subagent_stop / notification excluded).
+ *   - agent.stop_failure — the pane's turn ENDED on an API error. A turn
+ *     boundary like agent.stop, so the brain must be woken the same way; it
+ *     carries its own verdict because nothing finished, and it survives the
+ *     `value-filtered` (assist) filter that drops a plain stop as summary spam.
  *   - pr.ci_failed — this workspace's PR checks flipped to FAILING (AO-style
  *     CI feedback routing, owner decision 2026-07-18). Edge-triggered by the
  *     metadata poll (PrCiRouter): fires ONCE on the passing/pending→failing
@@ -76,6 +80,7 @@ import { isAgentPane } from './stopGate';
  */
 export type CoalescedKind =
   | 'agent.stop'
+  | 'agent.stop_failure'
   | 'agent.awaiting_input'
   | 'pr.ci_failed'
   | 'pr.review_comment'
@@ -343,6 +348,7 @@ export class CommanderEventCoalescer {
     if (this.disposed) return;
     if (
       ev.kind !== 'agent.stop' &&
+      ev.kind !== 'agent.stop_failure' &&
       ev.kind !== 'agent.awaiting_input' &&
       ev.kind !== 'pr.ci_failed' &&
       ev.kind !== 'pr.review_comment' &&
@@ -1049,6 +1055,9 @@ export class CommanderEventCoalescer {
         (e) =>
           e.task !== undefined ||
           e.kind === 'agent.awaiting_input' ||
+          // A turn that DIED is not the "agent summarized its work" spam this
+          // filter exists to drop — nothing finished, so the human is owed it.
+          e.kind === 'agent.stop_failure' ||
           e.kind === 'pr.ci_failed' ||
           e.kind === 'pr.review_comment' ||
           e.kind === 'pr.merge_conflict' ||
@@ -1257,6 +1266,7 @@ function renderEventLine(
       : `pane=${e.ptyId}(${e.agent ?? 'shell'})`;
   const kindLabel =
     e.kind === 'agent.stop' ? 'stop'
+    : e.kind === 'agent.stop_failure' ? 'stop-failed'
     : e.kind === 'pr.ci_failed' ? 'ci-failed'
     : e.kind === 'pr.review_comment' ? 'review'
     : e.kind === 'pr.merge_conflict' ? 'conflict'
@@ -1314,6 +1324,8 @@ function renderEventLine(
       : `(CI FAILING on${prRef} — report only, do not send anything to this pane)`;
   } else if (e.kind === 'agent.stop') {
     verdict = stopVerdict(autonomy, e.lastMessage);
+  } else if (e.kind === 'agent.stop_failure') {
+    verdict = stopFailureVerdict(autonomy);
   } else {
     // agent.awaiting_input
     verdict = awaitingVerdict(e.source, autonomy, {
@@ -1412,6 +1424,23 @@ function stopVerdict(autonomy: WorkspaceAutonomy, lastMessage?: AgentLastMessage
   return autonomy.continueInstruction
     ? `(turn ended${said} — you MAY send ONE follow-up instruction to this pane)`
     : `(turn ended${said} — summarize only — do not send anything to this pane)`;
+}
+
+/**
+ * The stop_failure verdict. A turn boundary that finished NOTHING: the pane's
+ * work is incomplete and its own output is not a report. Phrased distinctly
+ * from stopVerdict so a brain reading the line cannot mistake a dead turn for a
+ * delivered result — the whole reason this kind exists as its own lifecycle
+ * kind instead of collapsing into 'agent.stop'.
+ */
+function stopFailureVerdict(autonomy: WorkspaceAutonomy): string {
+  return autonomy.continueInstruction
+    ? '(TURN DIED ON AN API ERROR — the turn ended without finishing, so the work is '
+      + 'INCOMPLETE and nothing it printed is a result. You MAY send ONE instruction to '
+      + 'this pane to resume the unfinished work; escalate with deck_ask_decision if it '
+      + 'keeps dying.)'
+    : '(TURN DIED ON AN API ERROR — the turn ended without finishing, so the work is '
+      + 'INCOMPLETE. Report the failure to the human — do not send anything to this pane.)';
 }
 
 /**

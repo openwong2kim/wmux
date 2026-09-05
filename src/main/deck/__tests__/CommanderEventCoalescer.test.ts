@@ -533,6 +533,18 @@ describe('CommanderEventCoalescer — mode wake policy (value filter)', () => {
     expect(h.prompts[0].prompt).toContain('kind=awaiting');
   });
 
+  // A turn that DIED is not the summary spam the assist filter drops: nothing
+  // finished, so the operator is owed it exactly like a blocked pane.
+  it('assist WAKES on a stop_failure (the turn died, nothing finished)', async () => {
+    const h = makeHarness({ autonomy: assist });
+    h.c.push({ ...stop(4), kind: 'agent.stop_failure' });
+    await vi.advanceTimersByTimeAsync(5_000);
+    await settle();
+    expect(h.prompts).toHaveLength(1);
+    expect(h.prompts[0].prompt).toContain('kind=stop-failed');
+    expect(h.prompts[0].prompt).toContain('TURN DIED ON AN API ERROR');
+  });
+
   it('assist flushes awaiting_input but consumes a co-buffered stop', async () => {
     const h = makeHarness({ autonomy: assist, debounceMs: 1_000 });
     h.c.push(stop(5, 'ptyA'));
