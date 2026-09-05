@@ -187,6 +187,7 @@ export function DeckLedgerPanel({
             </span>
             <span
               data-deck-ledger-status
+              // eslint-disable-next-line no-restricted-syntax -- off-scale size owned by PR #1219; folded onto the ramp there to avoid a cross-PR conflict.
               className="text-[10.5px] font-mono shrink-0 text-[var(--text-sub)]"
               {...tokenAttrs('textSub', 'text')}
             >
@@ -203,6 +204,7 @@ export function DeckLedgerPanel({
             </span>
             <span
               data-deck-ledger-age
+              // eslint-disable-next-line no-restricted-syntax -- off-scale size owned by PR #1219; folded onto the ramp there to avoid a cross-PR conflict.
               className="text-[10.5px] font-mono shrink-0 text-[var(--text-muted)]"
               {...tokenAttrs('textMuted', 'text')}
             >

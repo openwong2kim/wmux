@@ -20,45 +20,37 @@
         "src/renderer/**/*.tsx"
       ],
       "excludedFiles": [
-        "src/renderer/**/__tests__/**"
+        "src/renderer/**/__tests__/**",
+        "src/renderer/components/Terminal/**"
       ],
       "rules": {
         "no-restricted-syntax": [
           "error",
           {
             "selector": "Literal[value=/text-\\[(?:8|9|10\\.5|11\\.5|12\\.5)px\\]/]",
-            "message": "Off-scale text size. DESIGN.md Typography defines a 4-step ramp (10px section labels / 11px meta+tool lines / 13px body / 14px titles); 8, 9, 10.5, 11.5 and 12.5 are not steps on it. Use the nearest step (8|9 -> 10, 10.5 -> 10 for section labels or 11 for meta lines, 11.5 -> 11, 12.5 -> 13). Terminal/xterm font sizes are exempt and live outside src/renderer's className strings."
+            "message": "Off-scale text size. DESIGN.md Typography defines a 4-step ramp (10px section labels / 11px meta+tool lines / 13px body / 14px titles); 8, 9, 10.5, 11.5 and 12.5 are not steps on it. Use the nearest step (8|9 -> 10, 10.5 -> 10 for section labels or 11 for meta lines, 11.5 -> 11, 12.5 -> 13). src/renderer/components/Terminal/** is exempt: the terminal owns its own scale."
           },
           {
             "selector": "TemplateElement[value.raw=/text-\\[(?:8|9|10\\.5|11\\.5|12\\.5)px\\]/]",
-            "message": "Off-scale text size. DESIGN.md Typography defines a 4-step ramp (10px section labels / 11px meta+tool lines / 13px body / 14px titles); 8, 9, 10.5, 11.5 and 12.5 are not steps on it. Use the nearest step (8|9 -> 10, 10.5 -> 10 for section labels or 11 for meta lines, 11.5 -> 11, 12.5 -> 13). Terminal/xterm font sizes are exempt and live outside src/renderer's className strings."
+            "message": "Off-scale text size. DESIGN.md Typography defines a 4-step ramp (10px section labels / 11px meta+tool lines / 13px body / 14px titles); 8, 9, 10.5, 11.5 and 12.5 are not steps on it. Use the nearest step (8|9 -> 10, 10.5 -> 10 for section labels or 11 for meta lines, 11.5 -> 11, 12.5 -> 13). src/renderer/components/Terminal/** is exempt: the terminal owns its own scale."
           },
           {
             "selector": "Property[key.name='fontSize'] > Literal:matches([value=8], [value=9], [value=10.5], [value=11.5], [value=12.5])",
-            "message": "Off-scale text size. DESIGN.md Typography defines a 4-step ramp (10px section labels / 11px meta+tool lines / 13px body / 14px titles); 8, 9, 10.5, 11.5 and 12.5 are not steps on it. Use the nearest step (8|9 -> 10, 10.5 -> 10 for section labels or 11 for meta lines, 11.5 -> 11, 12.5 -> 13). Terminal/xterm font sizes are exempt and live outside src/renderer's className strings."
+            "message": "Off-scale text size. DESIGN.md Typography defines a 4-step ramp (10px section labels / 11px meta+tool lines / 13px body / 14px titles); 8, 9, 10.5, 11.5 and 12.5 are not steps on it. Use the nearest step (8|9 -> 10, 10.5 -> 10 for section labels or 11 for meta lines, 11.5 -> 11, 12.5 -> 13). src/renderer/components/Terminal/** is exempt: the terminal owns its own scale."
           },
           {
             "selector": "Property[key.value='fontSize'] > Literal:matches([value=8], [value=9], [value=10.5], [value=11.5], [value=12.5])",
-            "message": "Off-scale text size. DESIGN.md Typography defines a 4-step ramp (10px section labels / 11px meta+tool lines / 13px body / 14px titles); 8, 9, 10.5, 11.5 and 12.5 are not steps on it. Use the nearest step (8|9 -> 10, 10.5 -> 10 for section labels or 11 for meta lines, 11.5 -> 11, 12.5 -> 13). Terminal/xterm font sizes are exempt and live outside src/renderer's className strings."
+            "message": "Off-scale text size. DESIGN.md Typography defines a 4-step ramp (10px section labels / 11px meta+tool lines / 13px body / 14px titles); 8, 9, 10.5, 11.5 and 12.5 are not steps on it. Use the nearest step (8|9 -> 10, 10.5 -> 10 for section labels or 11 for meta lines, 11.5 -> 11, 12.5 -> 13). src/renderer/components/Terminal/** is exempt: the terminal owns its own scale."
           },
           {
             "selector": "Property[key.name='fontSize'] > Literal[value=/^(?:8|9|10\\.5|11\\.5|12\\.5)(?:px)?$/]",
-            "message": "Off-scale text size. DESIGN.md Typography defines a 4-step ramp (10px section labels / 11px meta+tool lines / 13px body / 14px titles); 8, 9, 10.5, 11.5 and 12.5 are not steps on it. Use the nearest step (8|9 -> 10, 10.5 -> 10 for section labels or 11 for meta lines, 11.5 -> 11, 12.5 -> 13). Terminal/xterm font sizes are exempt and live outside src/renderer's className strings."
+            "message": "Off-scale text size. DESIGN.md Typography defines a 4-step ramp (10px section labels / 11px meta+tool lines / 13px body / 14px titles); 8, 9, 10.5, 11.5 and 12.5 are not steps on it. Use the nearest step (8|9 -> 10, 10.5 -> 10 for section labels or 11 for meta lines, 11.5 -> 11, 12.5 -> 13). src/renderer/components/Terminal/** is exempt: the terminal owns its own scale."
           },
           {
             "selector": "Property[key.value='fontSize'] > Literal[value=/^(?:8|9|10\\.5|11\\.5|12\\.5)(?:px)?$/]",
-            "message": "Off-scale text size. DESIGN.md Typography defines a 4-step ramp (10px section labels / 11px meta+tool lines / 13px body / 14px titles); 8, 9, 10.5, 11.5 and 12.5 are not steps on it. Use the nearest step (8|9 -> 10, 10.5 -> 10 for section labels or 11 for meta lines, 11.5 -> 11, 12.5 -> 13). Terminal/xterm font sizes are exempt and live outside src/renderer's className strings."
+            "message": "Off-scale text size. DESIGN.md Typography defines a 4-step ramp (10px section labels / 11px meta+tool lines / 13px body / 14px titles); 8, 9, 10.5, 11.5 and 12.5 are not steps on it. Use the nearest step (8|9 -> 10, 10.5 -> 10 for section labels or 11 for meta lines, 11.5 -> 11, 12.5 -> 13). src/renderer/components/Terminal/** is exempt: the terminal owns its own scale."
           }
         ]
-      }
-    },
-    {
-      "files": [
-        "src/renderer/components/Sidebar/MissionsSection.tsx",
-        "src/renderer/components/Deck/DeckLedgerPanel.tsx"
-      ],
-      "rules": {
-        "no-restricted-syntax": "off"
       }
     },
     {

@@ -16,6 +16,7 @@ const REPO_ROOT = path.resolve(__dirname, '../../..');
 // to resolve which config overrides apply.
 const RENDERER_FILE = path.join(REPO_ROOT, 'src/renderer/components/__fixture__.tsx');
 const TEST_FILE = path.join(REPO_ROOT, 'src/renderer/components/__tests__/__fixture__.tsx');
+const TERMINAL_FILE = path.join(REPO_ROOT, 'src/renderer/components/Terminal/__fixture__.tsx');
 
 const eslint = new ESLint({ cwd: REPO_ROOT });
 
@@ -73,5 +74,34 @@ describe('off-scale text size lint rule', () => {
   it('does not fire inside renderer test files, which assert on class strings', async () => {
     const errors = await scaleErrors("export const a = 'text-[9px]';\n", TEST_FILE);
     expect(errors).toEqual([]);
+  });
+
+  it('exempts the Terminal tree, which owns its own scale', async () => {
+    const errors = await scaleErrors('export const a = <span className="text-[9px]" />;\n', TERMINAL_FILE);
+    expect(errors).toEqual([]);
+  });
+
+  it('says where the terminal exemption actually lives', async () => {
+    // The first message wording claimed terminal sizes live "outside
+    // src/renderer", which is false — src/renderer/components/Terminal is the
+    // exemption, and it is expressed in excludedFiles, not in prose.
+    const [msg] = await scaleErrors('export const a = <span className="text-[9px]" />;\n');
+    expect(msg).toContain('src/renderer/components/Terminal/**');
+    expect(msg).not.toContain('outside src/renderer');
+  });
+
+  it('stays live inside the files that carry per-line suppressions', async () => {
+    // The two files a sibling PR owns are suppressed line-by-line, not by a
+    // file-level carve-out, so every OTHER off-scale size in them still fails.
+    for (const rel of [
+      'src/renderer/components/Sidebar/MissionsSection.tsx',
+      'src/renderer/components/Deck/DeckLedgerPanel.tsx',
+    ]) {
+      const errors = await scaleErrors(
+        'export const a = <span className="text-[8px]" />;\n',
+        path.join(REPO_ROOT, rel),
+      );
+      expect(errors, `${rel} still linted`).toHaveLength(1);
+    }
   });
 });

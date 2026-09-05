@@ -53,6 +53,18 @@ const MODE_DOT: Record<AgentMode, string> = {
   danger: 'bg-[var(--accent-red)]',
 };
 
+// `danger` is the one mode where losing the pill costs real signal: it launches
+// Claude with --dangerously-skip-permissions, and a 6px dot is a thin thing to
+// hang that on. It keeps a text-level cue — the LABEL in --accent-red, no fill
+// and no border, which is still inside the "destructive = red tint at rest,
+// never a wash" rule — while `assist` and `off` stay neutral text. The dot is
+// 8px for every mode so the row does not reflow when the mode changes.
+const MODE_TEXT: Record<AgentMode, string> = {
+  off: '',
+  assist: '',
+  danger: 'text-[var(--accent-red)]',
+};
+
 /** The mode arrives over IPC, so it is not guaranteed to be one of ours: a main
  *  process from a different build (a downgrade, or a dev renderer hot-reloaded
  *  ahead of a stale main) can still answer with a retired name like `auto`.
@@ -62,6 +74,9 @@ const MODE_DOT: Record<AgentMode, string> = {
  *  most conservative badge, and never a crash. */
 function modeDot(mode: AgentMode): string {
   return MODE_DOT[mode] ?? MODE_DOT.off;
+}
+function modeText(mode: AgentMode): string {
+  return MODE_TEXT[mode] ?? MODE_TEXT.off;
 }
 
 function modeLabel(t: (k: string) => string, mode: AgentMode): string {
@@ -174,13 +189,18 @@ export function AgentModeChip({
         aria-haspopup="listbox"
         aria-expanded={open}
         onClick={() => setOpen((v) => !v)}
-        className={`ui-chip-boxless inline-flex items-center gap-1.5 px-2 py-0.5 text-[11px] ${FOCUS_RING}`}
+        className={`ui-chip-boxless inline-flex items-center gap-1.5 px-2 py-0.5 text-[11px] ${modeText(mode)} ${FOCUS_RING}`}
+        // The dot is decorative, so without this a screen reader hears only
+        // "Mode: danger" with no statement of what danger means.
+        aria-label={`${t('deck.mode.label') || 'Mode'}: ${modeLabel(t, mode)}${
+          modeDesc(t, mode) ? ` — ${modeDesc(t, mode)}` : ''
+        }`}
         title={modeDesc(t, mode)}
       >
         <span
           aria-hidden="true"
           data-agent-mode-dot
-          className={`inline-block w-1.5 h-1.5 rounded-full shrink-0 ${modeDot(mode)}`}
+          className={`inline-block w-2 h-2 rounded-full shrink-0 ${modeDot(mode)}`}
         />
         {t('deck.mode.label') || 'Mode'}: {modeLabel(t, mode)}
       </button>

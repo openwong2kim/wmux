@@ -210,6 +210,17 @@
   box-shadow: inset 0 1px 0 color-mix(in srgb, var(--text-main) 6%, transparent);
   color: var(--text-main);
 }
+/* The app-wide FOCUS_RING paints its ring through `box-shadow` (Tailwind
+ * `ring-*`), and the raised skin above sets `box-shadow` too — at equal or
+ * higher specificity, from a stylesheet imported after the Tailwind utilities.
+ * A hovered or open chip therefore swallowed the keyboard ring, which is the
+ * one state a keyboard user needs to see. Re-paint both here at matching
+ * specificity so the later rule wins: the inset highlight plus the same
+ * 1px bg-base offset + 2px accent-blue ring FOCUS_RING would have drawn. */
+.ui-chip-boxless:focus-visible:not(:disabled) {
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--text-main) 6%, transparent),
+    0 0 0 1px var(--bg-base), 0 0 0 3px var(--accent-blue);
+}
 
 /* Left-aligned ghost row (list item that hovers to a chip). */
 .ui-row-ghost {

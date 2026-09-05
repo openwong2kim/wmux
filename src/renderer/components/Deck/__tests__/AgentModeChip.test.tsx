@@ -7,6 +7,8 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { createRoot } from 'react-dom/client';
 import { act } from 'react';
+import { readFileSync } from 'node:fs';
+import { join as pathJoin } from 'node:path';
 import { AgentModeChip, type AgentModeApi } from '../AgentModeChip';
 import type { AgentMode } from '../../../../main/deck/deckAutonomyStore';
 
@@ -115,12 +117,41 @@ describe('AgentModeChip', () => {
       expect(chip.className).not.toMatch(/\bbg-\[/);
       expect(chip.className).not.toMatch(/\bborder(-|\[)/);
       expect(chip.className).not.toMatch(/font-(medium|semibold)/);
-      // The dot is the only thing that changes colour.
+      // The dot is one size in every mode, so switching never reflows the row.
       const dot = container.querySelector('[data-agent-mode-dot]') as HTMLElement;
       expect(dot.className, `${mode} dot`).toContain(dotToken);
+      expect(dot.className, `${mode} dot size`).toContain('w-2 h-2');
+      // `danger` keeps a second, text-level signal — the label in red, still
+      // with no fill or border. The other two modes stay neutral text.
+      if (mode === 'danger') expect(chip.className).toContain('text-[var(--accent-red)]');
+      else expect(chip.className).not.toContain('--accent-red');
+      // The dot is aria-hidden, so the mode has to reach AT users through the
+      // label, together with what the mode actually does.
+      // `t` is the identity here, so the label key itself is the rendered text.
+      expect(chip.getAttribute('aria-label'), `${mode} aria-label`).toContain(`deck.mode.${mode}`);
+      expect(chip.getAttribute('aria-label')).toContain(`deck.mode.${mode}Desc`);
       cleanup();
       cleanups.pop();
     }
+  });
+
+  // The raised hover/open skin paints box-shadow, and so does the app-wide
+  // FOCUS_RING (Tailwind ring-*). ui.css loads after the Tailwind utilities, so
+  // without an explicit :focus-visible rule a hovered or open chip swallowed the
+  // keyboard ring — the one state a keyboard user needs to see.
+  it('keeps a focus-visible ring rule that outranks the raised hover skin', () => {
+    const css = readFileSync(
+      pathJoin(__dirname, '..', '..', '..', 'styles', 'ui.css'),
+      'utf8',
+    );
+    const hover = css.indexOf(".ui-chip-boxless:hover:not(:disabled)");
+    const focus = css.indexOf('.ui-chip-boxless:focus-visible:not(:disabled)');
+    expect(hover).toBeGreaterThan(-1);
+    // Present, and declared AFTER the hover/expanded rule so it wins the tie.
+    expect(focus).toBeGreaterThan(hover);
+    const rule = css.slice(focus, css.indexOf('}', focus));
+    expect(rule).toContain('var(--accent-blue)');
+    expect(rule).toContain('var(--bg-base)');
   });
 
   // The chip lives at the bottom of the deck rail, so the menu opens UPWARD by

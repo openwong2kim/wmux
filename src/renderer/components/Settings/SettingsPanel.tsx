@@ -184,7 +184,7 @@ export function ContrastBadge({
       data-testid={`contrast-badge-${report.token}`}
       data-contrast-state={severe ? 'severe' : 'warn'}
       className="shrink-0 inline-flex items-center gap-1 rounded px-1 font-mono tabular-nums"
-      style={{ backgroundColor: s.bg, color: s.fg, border: `1px solid ${s.border}`, height: 16, fontSize: 10, lineHeight: '14px' }}
+      style={{ backgroundColor: s.bg, color: s.fg, border: `1px solid ${s.border}`, height: 18, fontSize: 10, lineHeight: '16px' }}
     >
       <span aria-hidden="true" style={{ width: 10, height: 10, display: 'inline-flex' }}><IconX /></span>
       <span aria-hidden="true">{ratio}:1</span>
