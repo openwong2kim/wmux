@@ -123,6 +123,39 @@ export type FleetSelectorState = Pick<StoreState, 'workspaces' | 'surfaceAgentSt
 export const HOOK_RUNNING_TTL_MS = 120_000;
 
 /**
+ * The 'running' claim, from the two things that can make it — shared so every
+ * per-pane consumer derives it identically.
+ *
+ * Two inputs, and the difference between them is the whole point:
+ *   - `turnOpenAt` is a CLAIM. The agent's own turn-start hook said a turn
+ *     began and nothing has said it ended, so it does not decay: a quiet turn
+ *     (a long bash, a web search, silent reasoning) is still a turn.
+ *   - `activityAt` is EVIDENCE, and evidence goes stale. It carries panes whose
+ *     agent reports no turn start at all, and only within HOOK_RUNNING_TTL_MS.
+ *
+ * A consumer that reads only the second one disagrees with the workspace dot
+ * about the same pane the moment a turn goes quiet past the TTL — live-observed
+ * as an amber workspace row over a roster row reading "Idle".
+ */
+export function isHookRunning(args: {
+  /** `surfaceActivityAt[ptyId]` — last agent-activity stamp (ms), if any. */
+  activityAt: number | undefined;
+  /** `surfaceTurnOpenAt[ptyId]` — the open-turn latch stamp, if any. */
+  turnOpenAt: number | undefined;
+  /** The reactive decay clock (`state.agentClockMs`). */
+  agentClockMs: number | undefined;
+}): boolean {
+  const { activityAt, turnOpenAt, agentClockMs } = args;
+  if (turnOpenAt !== undefined && turnOpenAt > 0) return true;
+  return (
+    activityAt !== undefined
+    && activityAt > 0
+    && agentClockMs !== undefined
+    && agentClockMs - activityAt <= HOOK_RUNNING_TTL_MS
+  );
+}
+
+/**
  * How long a pane may sit at 'running' with no signal of any kind before the
  * UI stops repeating the claim and says so instead ("No update for 34m").
  *
@@ -364,11 +397,7 @@ export function selectFleetPanes(state: FleetSelectorState): FleetPane[] {
       // says it is working"; only a turn end takes that back.
       const turnOpenAt = ptyId ? state.surfaceTurnOpenAt?.[ptyId] : undefined;
       const turnOpen = turnOpenAt !== undefined && turnOpenAt > 0;
-      const hookRunning =
-        turnOpen
-        || (activityAt !== undefined
-          && state.agentClockMs !== undefined
-          && state.agentClockMs - activityAt <= HOOK_RUNNING_TTL_MS);
+      const hookRunning = isHookRunning({ activityAt, turnOpenAt, agentClockMs: state.agentClockMs });
       // #1168 — a stashed pane whose every terminal surface has lost its pty is
       // a session the daemon has confirmed gone. The roster reports that as
       // `error` / needs-you and offers recovery; this pass had no liveness

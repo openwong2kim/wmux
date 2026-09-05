@@ -4,7 +4,7 @@ import { getLeafPanes } from '../../../shared/paneUtils';
 import { stashedPaneLiveness, type StashedLiveness } from '../../../shared/paneStash';
 import type { StoreState } from '../index';
 import { computePaneAutoName, paneDisplayName } from '../../utils/paneNaming';
-import { HOOK_RUNNING_TTL_MS, pickStashedRepresentativeSurface } from './fleet';
+import { HOOK_RUNNING_TTL_MS, isHookRunning, pickStashedRepresentativeSurface } from './fleet';
 
 /** One detected agent session, kept attached to the terminal surface that owns it. */
 export interface WorkspaceAgentRosterRow {
@@ -91,13 +91,22 @@ export function selectWorkspaceAgentRoster(
       const activityAt = state.surfaceActivityAt[ptyId] ?? 0;
       const activityIsFresh =
         activityAt > 0 && state.agentClockMs - activityAt <= HOOK_RUNNING_TTL_MS;
+      // The SAME derivation `selectFleetPanes` uses for the workspace dot (see
+      // isHookRunning). Reading only the activity stamp made this row age a
+      // quiet turn out at 120 s while the dot above it — which honours the
+      // agent's open-turn latch — stayed amber: one pane, two answers.
+      const hookRunning = isHookRunning({
+        activityAt,
+        turnOpenAt: state.surfaceTurnOpenAt?.[ptyId],
+        agentClockMs: state.agentClockMs,
+      });
 
       // Identity-only boot hydration currently seeds `running` without an
       // activity signal. Treat that synthetic value as idle until live output
       // or a hook proves the agent is working; otherwise a quiet recovered
       // pane would pulse forever and disagree with the workspace aggregate.
       const lifecycleStatus: AgentStatus =
-        agent.status === 'running' && !activityIsFresh ? 'idle' : agent.status;
+        agent.status === 'running' && !hookRunning ? 'idle' : agent.status;
 
       // A transcript-derived pending question is the strongest evidence that
       // this agent needs input. Otherwise an unseen attention state outranks
@@ -110,7 +119,7 @@ export function selectWorkspaceAgentRoster(
         !attentionStatus &&
         !pendingQuestion &&
         lifecycleStatus === 'idle' &&
-        activityIsFresh
+        hookRunning
       ) {
         status = 'running';
       }
@@ -173,6 +182,13 @@ export function selectWorkspaceAgentRoster(
     const activityAt = (ptyId ? state.surfaceActivityAt[ptyId] : 0) ?? 0;
     const activityIsFresh =
       activityAt > 0 && state.agentClockMs - activityAt <= HOOK_RUNNING_TTL_MS;
+    // Same shared derivation as the visible rows above — a stashed agent is
+    // off-screen, not exempt from the latch.
+    const hookRunning = isHookRunning({
+      activityAt,
+      turnOpenAt: ptyId ? state.surfaceTurnOpenAt?.[ptyId] : undefined,
+      agentClockMs: state.agentClockMs,
+    });
 
     // An exited pane has no status to report — the session is gone, and painting
     // it 'idle' would be indistinguishable from a quiet agent. The row says
@@ -184,9 +200,9 @@ export function selectWorkspaceAgentRoster(
       status = 'awaiting_input';
     } else {
       const lifecycle: AgentStatus =
-        agent?.status === 'running' && !activityIsFresh ? 'idle' : (agent?.status ?? 'idle');
+        agent?.status === 'running' && !hookRunning ? 'idle' : (agent?.status ?? 'idle');
       status = attentionStatus ?? lifecycle;
-      if (!attentionStatus && lifecycle === 'idle' && activityIsFresh) status = 'running';
+      if (!attentionStatus && lifecycle === 'idle' && hookRunning) status = 'running';
     }
 
     rows.push({
