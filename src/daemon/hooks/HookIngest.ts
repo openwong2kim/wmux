@@ -153,7 +153,7 @@ export interface HookArbitration {
 export interface HookAgentEventData extends HookArbitration {
   /** DISPLAY name ("Claude Code"), NOT the slug — see agentSlugToDisplay. */
   agent: string;
-  status: 'complete' | 'awaiting_input' | 'running';
+  status: 'complete' | 'awaiting_input' | 'running' | 'error';
   /** Empty for `decision:'activity'` — main derives the label from `signal`. */
   message: string;
   /**
@@ -411,9 +411,19 @@ function summarizeToolInput(payload: Record<string, unknown> | undefined): strin
 /**
  * Emit-class kinds — the turn boundaries. These are the only kinds that
  * produce a user-visible event and the only ones that touch the dedup ledger.
+ *
+ * `agent.stop_failure` is one of them: a turn that died on an API error has
+ * ended just as definitively as one that finished, and the operator is owed
+ * the same notification. What differs is the STATUS it carries ('error', not
+ * 'complete') and the alarm cue it normalizes to (`attention`, not `stop`) —
+ * see eventShapeFor and normalizeHookCue.
  */
-function isEmitKind(kind: AgentSignalKind): kind is 'agent.stop' | 'agent.subagent_stop' | 'agent.awaiting_input' {
-  return kind === 'agent.stop' || kind === 'agent.subagent_stop' || kind === 'agent.awaiting_input';
+function isEmitKind(kind: AgentSignalKind): kind is
+  'agent.stop' | 'agent.subagent_stop' | 'agent.awaiting_input' | 'agent.stop_failure' {
+  return kind === 'agent.stop'
+    || kind === 'agent.subagent_stop'
+    || kind === 'agent.awaiting_input'
+    || kind === 'agent.stop_failure';
 }
 
 /**
@@ -460,8 +470,8 @@ function isMetadataKind(kind: AgentSignalKind): kind is
  * finished") verbatim.
  */
 function eventShapeFor(
-  kind: 'agent.stop' | 'agent.subagent_stop' | 'agent.awaiting_input',
-): { status: 'complete' | 'awaiting_input'; message: string } {
+  kind: 'agent.stop' | 'agent.subagent_stop' | 'agent.awaiting_input' | 'agent.stop_failure',
+): { status: 'complete' | 'awaiting_input' | 'error'; message: string } {
   switch (kind) {
     case 'agent.stop':
       return { status: 'complete', message: 'Task finished' };
@@ -469,6 +479,11 @@ function eventShapeFor(
       return { status: 'complete', message: 'Subagent finished' };
     case 'agent.awaiting_input':
       return { status: 'awaiting_input', message: 'Awaiting input' };
+    // The turn is over but nothing finished, so the pane must NOT wear
+    // 'complete' — 'error' is the attention status the roster already draws in
+    // red, and the message is the toast title main builds from it.
+    case 'agent.stop_failure':
+      return { status: 'error', message: 'Turn failed (API error)' };
   }
 }
 

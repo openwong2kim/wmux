@@ -994,6 +994,74 @@ describe('DaemonNotificationRouter — M1 side-effect replay', () => {
       router.stop();
     }
   });
+
+  // A turn that ends on an API error reaches main as status 'error' with
+  // hookKind 'agent.stop_failure'. It used to fall outside the emit-class
+  // status list entirely, so nothing fired at all.
+  describe('agent.stop_failure replay', () => {
+    function failureEvent() {
+      return {
+        sessionId: 'pty-a',
+        event: {
+          agent: 'Claude Code',
+          status: 'error',
+          message: 'Turn failed (API error)',
+          source: 'hook',
+          hookKind: 'agent.stop_failure',
+          decision: 'emit',
+          signal: {
+            kind: 'agent.stop_failure',
+            agent: 'claude',
+            cwd: '/repo',
+            payload: {},
+            ts: 1,
+          },
+        },
+      };
+    }
+
+    it('paints the pane error, clears the stale activity label, and toasts', async () => {
+      const { router: nr, captured } = makeRouter();
+      try {
+        dispatchNotificationMock.mockClear();
+        broadcastMetadataUpdateMock.mockClear();
+        captured.agent!(failureEvent());
+        await flushMicrotasks();
+
+        const patches = broadcastMetadataUpdateMock.mock.calls
+          .map((c) => c[1] as Record<string, unknown>);
+        expect(patches.some((p) => p.agentStatus === 'error')).toBe(true);
+        // Never 'complete' — the turn finished nothing.
+        expect(patches.some((p) => p.agentStatus === 'complete')).toBe(false);
+        // The turn boundary clears the stale tool label, exactly as a stop does.
+        expect(patches.some((p) => p.activity === '')).toBe(true);
+
+        expect(dispatchNotificationMock).toHaveBeenCalledTimes(1);
+        const [, , notification] = dispatchNotificationMock.mock.calls[0];
+        expect(notification).toMatchObject({
+          title: 'Claude Code: Turn failed (API error)',
+          body: 'The turn ended on an API error',
+          category: 'agent-turn',
+        });
+      } finally {
+        nr.stop();
+      }
+    });
+
+    it('emits no agent.lifecycle event for it', async () => {
+      // `lifecycleKindFor` would fall through to 'agent.stop', which tells an
+      // orchestrator the turn finished normally. Silence is the lesser wrong
+      // until the published kind union is widened deliberately.
+      const { router: nr, captured } = makeRouter();
+      try {
+        captured.agent!(failureEvent());
+        await flushMicrotasks();
+        expect(pollLifecycle()).toHaveLength(0);
+      } finally {
+        nr.stop();
+      }
+    });
+  });
 });
 
 describe('DaemonNotificationRouter — osc133 lifecycle tee', () => {

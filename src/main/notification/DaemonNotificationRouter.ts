@@ -789,7 +789,14 @@ export class DaemonNotificationRouter {
         if (ev.agent) {
           this.lastAgentNameByPty.set(payload.sessionId, ev.agent);
         }
-        if (ev.status === 'waiting' || ev.status === 'complete' || ev.status === 'awaiting_input') {
+        // 'error' joins the emit-class statuses: it is what the daemon ships
+        // for `agent.stop_failure`, a turn that ended on an API error. It is as
+        // much a turn boundary as 'complete' — the operator is owed the toast
+        // and the idle-clear suppression window — it simply finished nothing.
+        if (
+          ev.status === 'waiting' || ev.status === 'complete'
+          || ev.status === 'awaiting_input' || ev.status === 'error'
+        ) {
           this.lastAgentEventAt.set(payload.sessionId, Date.now());
 
           // Hook-authority veto — daemon-mode twin of PTYBridge.onEvent.
@@ -862,7 +869,11 @@ export class DaemonNotificationRouter {
           const title = `${ev.agent}: ${ev.message}`;
           const body = ev.status === 'awaiting_input'
             ? 'Awaiting input'
-            : ev.status === 'waiting' ? 'Ready for input' : 'Task finished';
+            // A turn the API killed finished nothing. Its title already says
+            // so ("Turn failed (API error)", from the daemon's eventShapeFor);
+            // 'Task finished' underneath it would take the claim straight back.
+            : ev.status === 'error' ? 'The turn ended on an API error'
+              : ev.status === 'waiting' ? 'Ready for input' : 'Task finished';
           // 'dedup' means the other source already fanned out this turn, so the
           // tee below still records it but no second toast fires — the same
           // rule main's own hooks.signal handler applies to its dedup verdict.
@@ -905,6 +916,14 @@ export class DaemonNotificationRouter {
           // M1: `arbitrated` carries the daemon's source + verdict through to
           // the tee, so the event reads `source:'hook'`/`decision:'dedup'` and
           // main's ledger is left alone.
+          //
+          // `agent.stop_failure` is skipped: `lifecycleKindFor` would fall
+          // through to 'agent.stop' for it (its hookKind is not one of the
+          // three the published `AgentLifecycleEvent.kind` union names), and a
+          // failed turn announced to orchestrators as a normal stop is worse
+          // than no event. Widening that union is a separate change. Same
+          // boundary the local `hooks.signal` path draws.
+          if (ev.hookKind === 'agent.stop_failure') return;
           void this.emitDetectorLifecycle(
             payload.sessionId,
             ev.agent,

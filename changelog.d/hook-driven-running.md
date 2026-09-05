@@ -14,6 +14,12 @@
   panes whose bridge only reports turn *ends* — keep the heuristic exactly as
   it was.
 
+- **A turn that dies on an API error marks the pane errored (red ✕) instead of
+  leaving it amber.** Claude Code fires `StopFailure` and no `Stop` on that
+  path, so a pane the turn-start hook had lit stayed amber until the agent
+  process died. wmux now registers `StopFailure` too, and reports the failed
+  turn as its own notification rather than as "Task finished".
+
 ### Fixed
 
 - **A pane whose agent died without a Stop now settles to idle.** An agent

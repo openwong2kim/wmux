@@ -273,6 +273,61 @@ describe('HookIngest', () => {
     });
   });
 
+  describe('stop_failure broadcast (turn end on an API error)', () => {
+    it('broadcasts error, never complete, and says what failed', () => {
+      ingest.handle(makeSignal({ ptyId: 'pty-a', kind: 'agent.user_prompt_submit' }));
+      ingest.handle(makeSignal({ ptyId: 'pty-a', kind: 'agent.stop_failure' }));
+      // The cue is `attention`, so the candidate always holds a window.
+      expect(fixture.emitted).toHaveLength(1);
+      vi.advanceTimersByTime(DEFAULT_ALARM_WINDOW_MS);
+      const failure = fixture.emitted[1];
+      expect(failure.sessionId).toBe('pty-a');
+      expect(failure.data.status).toBe('error');
+      expect(failure.data.hookKind).toBe('agent.stop_failure');
+      expect(failure.data.decision).toBe('emit');
+      // The message is the toast title main builds. "Task finished" here would
+      // be the exact lie this kind exists to stop telling.
+      expect(failure.data.message).toBe('Turn failed (API error)');
+    });
+
+    it('closes the turn gate, so a stray later stop cannot announce a completion', () => {
+      ingest.handle(makeSignal({ ptyId: 'pty-a', kind: 'agent.user_prompt_submit' }));
+      ingest.handle(makeSignal({ ptyId: 'pty-a', kind: 'agent.stop_failure' }));
+      vi.advanceTimersByTime(DEFAULT_ALARM_WINDOW_MS);
+      const afterFailure = fixture.emitted.length;
+      // A Stop arriving behind the failure with no new work in between: the
+      // alarm confirmed the attention window, so `announced` is set and
+      // `seenWorking` cleared — the gate drops it to a status-only 'internal'
+      // and no second, contradicting completion toast fires.
+      fixture.advance(100);
+      ingest.handle(makeSignal({ ptyId: 'pty-a', kind: 'agent.stop' }));
+      vi.advanceTimersByTime(DEFAULT_ALARM_WINDOW_MS);
+      expect(fixture.emitted.slice(afterFailure).map((e) => e.data.decision)).toEqual(['internal']);
+    });
+
+    it('is deduped against the detector the same way a stop is', () => {
+      // A detector emission for the same pane and kind inside the window makes
+      // the hook land as 'dedup' — the ledger is the shared one, not a
+      // separate path bolted on for failures.
+      ingest.handle(makeSignal({ ptyId: 'pty-a', kind: 'agent.user_prompt_submit' }));
+      ingest.router.recordDetector('claude', 'agent.stop_failure', 'pty-a', 10_000);
+      ingest.handle(makeSignal({ ptyId: 'pty-a', kind: 'agent.stop_failure' }));
+      vi.advanceTimersByTime(DEFAULT_ALARM_WINDOW_MS);
+      expect(fixture.emitted.at(-1)?.data.decision).toBe('dedup');
+    });
+
+    it('reports without a turn start — an API error on an unarmed pane still lands', () => {
+      // Unlike a stop, this is not gated on working evidence: `attention`
+      // windows skip the turn gate, and a turn that failed before any tool
+      // call is exactly when the operator most needs to be told.
+      ingest.handle(makeSignal({ ptyId: 'pty-a', kind: 'agent.stop_failure' }));
+      vi.advanceTimersByTime(DEFAULT_ALARM_WINDOW_MS);
+      expect(fixture.emitted.map((e) => [e.data.hookKind, e.data.status])).toEqual([
+        ['agent.stop_failure', 'error'],
+      ]);
+    });
+  });
+
   describe('input_answered (#770 — locally-answered AskUserQuestion expires the phone card)', () => {
     it('expires the pending request with reason answered-locally and never broadcasts', () => {
       // PC answers an AskUserQuestion directly: the bridge promotes the
