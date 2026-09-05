@@ -1,0 +1,3 @@
+### Added
+
+- **Optional: put the workspaces that need you at the top of the sidebar.** A new Appearance setting, "Needs-you rows first", lifts every workspace whose agent is blocked on you to the top of both the sidebar list and the collapsed rail. It is off by default, because a list that reorders itself while you are scanning costs more than the scan it saves. Turning it on changes the display only — Ctrl+N still numbers workspaces by their real position, and dragging a row still drops it where you meant.
