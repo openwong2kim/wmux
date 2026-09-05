@@ -30,7 +30,18 @@ The bench measures the substrate **end to end over the Named Pipe against the pa
 - Spawns `out/wmux-win32-x64/wmux.exe` with a temp `USERPROFILE`/`HOME`/`APPDATA`/`LOCALAPPDATA`, so `.wmux/`, the auth token, the pid-map, and the tcp-port file are sandboxed. `WMUX_DISABLE_CDP=true` keeps the browser engine out of the measurement.
 - The win32 pipe name is shared per Windows account (`\\.\pipe\wmux-<username>`), so the bench pre-flights `pipeAlive()` and **aborts** if a real wmux daemon is already on it — two daemons collide on the single per-user pipe.
 - Reads the token from `<TEST_HOME>/.wmux-auth-token` once the app writes it, then talks raw newline-delimited JSON-RPC over the pipe.
-- **No `clientName`.** The request is recorded as `legacy` by `RpcRouter` and grandfathered, so the bench runs against the production **enforce-mode** app without tripping an approval dialog (the same reason `m0-dynamic-verify.mjs` works against the packaged build — see `RpcRouter.dispatch`). **This stops working when #1111 closes the legacy lane (first release on or after 2026-09-30)** — the bench must migrate to a `clientName` (e.g. the `wmux-cli` curated lane) before then.
+- **`clientName` = `wmux-bench`, with a seeded trust row.** The bench used to send no `clientName`: the request was recorded as `legacy` by `RpcRouter` and grandfathered, so it ran against the production **enforce-mode** app without tripping an approval dialog. #1111 closes that lane in the first release on or after 2026-09-30, so the bench now identifies itself properly.
+
+  The bench does not use the `wmux-cli` lane. That lane's curated allowlist covers neither `events.poll` / `pane.getMetadata` / `pane.setMetadata` (substrate-bench B2-B4) nor `pane.close` / `mcp.claimWorkspace` (perf-bench reap and hidden-flood) — and widening it is not an option, because `wmux-cli` is in `NON_IDENTIFYING_CLIENT_NAMES`: anyone may send that name, so every method added there is granted to every caller who claims it.
+
+  **The seeded-trust pattern.** Each bench already owns a throwaway sandbox (temp `USERPROFILE`/`HOME`/`APPDATA`/`LOCALAPPDATA`, and for perf-bench a unique `WMUX_DATA_SUFFIX`), so before spawning the app it writes into that sandbox's `~/.wmux<suffix>/`:
+
+  - `plugin-trust.json` — a `trusted` row for `wmux-bench` whose `declaredCapabilities` are exactly the capabilities its own calls require (`seedBenchTrust()` in each script; a bare capability with no `:glob` is an unrestricted grant for that capability). perf-bench declares `pane.read`, `pane.create`, `terminal.send`, `workspace.claim`; substrate-bench declares `workspace.read`, `pane.read`, `meta.read`, `meta.write`, `events.subscribe`.
+  - `config.json` — pins `mcp.mode: "enforce"`, so the bench measures the production gate rather than the build's default.
+
+  The row must exist before the app boots, because the very first RPC is already gated. The result is least privilege (only the declared capabilities, nothing else), no approval dialog, and no dependency on any lane that a non-identifying name can claim. `daemon.*` needs none of this — it is dispatched by the daemon control pipe, which has no enforcer.
+
+  The same pattern is applied to the `a2a-*` dogfood scripts, with one wrinkle: those also call `wmux.internal` methods (`workspace.new`, `workspace.focus`, `surface.list`) that no declaration can ever contain, so they must keep the `wmux-cli` name for the curated lane and seed the declaration under that name for the methods outside it.
 - Cleanup is SIGTERM then SIGKILL, awaited before exit so the temp HOME is removed.
 
 Unlike the one-shot `rpc()` in the verification scripts, the bench keeps **long-lived sockets** (a small `PipeClient` that buffers on `\n` and correlates by request `id`) so it can issue many RPCs without paying a connect per call or tripping `MAX_NEW_CONNECTIONS_PER_SEC = 30`.
