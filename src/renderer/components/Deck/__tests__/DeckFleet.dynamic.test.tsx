@@ -209,3 +209,48 @@ describe('DeckFleet role dropdown', () => {
     expect(setRole).toHaveBeenCalledWith('p1', 'ws-1', '');
   });
 });
+
+// The roster's dots and the sidebar's are the same claim about the same pane,
+// so they must be derived from the same inputs. This component built its
+// `selectFleetPanes` argument inline and left out every running input the
+// selector ranks above the raw status — and because they are all optional on
+// FleetSelectorState, nothing complained: the rows just fell back to 'idle'
+// while the sidebar showed the pane working.
+describe('DeckFleet running derivation', () => {
+  /** The status dot — the first round span inside the row's jump button. */
+  function dotStyle(): CSSStyleDeclaration {
+    return q<HTMLSpanElement>('[data-deck-fleet-row] button span.rounded-full').style;
+  }
+
+  it('derives running from the hook turn latch, exactly as the sidebar does', () => {
+    const now = Date.now();
+    seedStore();
+    act(() => useStore.setState({ surfaceTurnOpenAt: { 'pty-1': now }, agentClockMs: now }));
+    mount();
+    // Amber = alive (DESIGN.md). Without the latch this row reads grey/idle.
+    expect(dotStyle().backgroundColor).toBe('var(--accent-cursor)');
+  });
+
+  it('derives running from a fresh activity stamp read against the store clock', () => {
+    const now = Date.now();
+    seedStore();
+    act(() => useStore.setState({
+      surfaceTurnOpenAt: {},
+      surfaceActivityAt: { 'pty-1': now - 1_000 },
+      agentClockMs: now,
+    }));
+    mount();
+    expect(dotStyle().backgroundColor).toBe('var(--accent-cursor)');
+  });
+
+  it('a pane with neither signal stays idle', () => {
+    seedStore();
+    act(() => useStore.setState({
+      surfaceTurnOpenAt: {},
+      surfaceActivityAt: {},
+      agentClockMs: Date.now(),
+    }));
+    mount();
+    expect(dotStyle().backgroundColor).toBe('var(--text-muted)');
+  });
+});

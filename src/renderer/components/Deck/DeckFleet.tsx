@@ -79,14 +79,40 @@ export default function DeckFleet({
   const surfacePendingQuestion = useStore((s) => s.surfacePendingQuestion);
   const paneRole = useStore((s) => s.paneRole);
   const roleBindings = useStore((s) => s.orchestratorRoleBindings);
+  // The running-state inputs `selectFleetPanes` ranks ABOVE the raw status:
+  // OSC 133 command liveness, agent process truth, the hook's open-turn latch,
+  // and the decaying activity stamp read against `agentClockMs`. Omitting them
+  // did not make the roster cheaper, it made it WRONG — every one is optional
+  // on FleetSelectorState, so the selector silently fell back to the bare
+  // status and these dots stopped deriving 'running' the way the sidebar's do
+  // for the same pane. The clock only bumps while something can still decay
+  // (see useAgentActivityClock), which is exactly when this roster has to
+  // re-render anyway.
+  const surfaceActivityAt = useStore((s) => s.surfaceActivityAt);
+  const agentClockMs = useStore((s) => s.agentClockMs);
+  const surfaceTurnOpenAt = useStore((s) => s.surfaceTurnOpenAt);
+  const commandRunningByPtyId = useStore((s) => s.commandRunningByPtyId);
+  const agentAliveByPtyId = useStore((s) => s.agentAliveByPtyId);
   // Per-PTY silence in whole minutes for panes still claiming 'running' past
-  // the hook-authority window. Read as its own minute-granular subscription
-  // rather than by feeding the decay clock into the memo below: that clock
-  // ticks every 2 s, and this roster has no other reason to re-render that often.
+  // the hook-authority window. Still its own minute-granular subscription —
+  // the hollow-ring flip is the one thing here that must NOT re-render at the
+  // clock's cadence.
   const unverifiableMinutesByPtyId = useStore(useShallow(selectUnverifiablePaneMinutes));
 
   const panes = useMemo(() => {
-    const all = selectFleetPanes({ workspaces, surfaceAgentStatus, surfaceActivity, paneLabel, surfaceAgent, surfacePendingQuestion });
+    const all = selectFleetPanes({
+      workspaces,
+      surfaceAgentStatus,
+      surfaceActivity,
+      paneLabel,
+      surfaceAgent,
+      surfacePendingQuestion,
+      surfaceActivityAt,
+      agentClockMs,
+      surfaceTurnOpenAt,
+      commandRunningByPtyId,
+      agentAliveByPtyId,
+    });
     // Roster = live terminal panes of the ACTIVE workspace only (M1.5: the
     // deck is this workspace's orchestrator, so its roster is this
     // workspace's agents — the fleet-wide view lives in the titlebar vitals).
@@ -98,7 +124,11 @@ export default function DeckFleet({
       ),
       'attention',
     );
-  }, [workspaces, activeWorkspaceId, surfaceAgentStatus, surfaceActivity, paneLabel, surfaceAgent, surfacePendingQuestion]);
+  }, [
+    workspaces, activeWorkspaceId, surfaceAgentStatus, surfaceActivity, paneLabel,
+    surfaceAgent, surfacePendingQuestion, surfaceActivityAt, agentClockMs,
+    surfaceTurnOpenAt, commandRunningByPtyId, agentAliveByPtyId,
+  ]);
 
   if (panes.length === 0) return null;
 
