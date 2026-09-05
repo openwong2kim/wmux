@@ -3,13 +3,17 @@ import type { DaemonClient } from '../DaemonClient';
 import type { AgentStatus } from '../../shared/types';
 import type { HookSignalRouter } from '../hooks/HookSignalRouter';
 import { dispatchNotification } from './dispatchNotification';
-import { clearPty as clearSuppression } from './idleSuppression';
+import {
+  clearPty as clearSuppression,
+  recentlySettled,
+  SETTLE_REDRAW_GUARD_MS,
+} from './idleSuppression';
 import {
   broadcastMetadataUpdate,
   getLastBroadcastAgentStatus,
   clearLastBroadcastAgentStatus,
 } from '../ipc/handlers/metadata.handler';
-import { settleHookTurnToIdle } from './turnSettle';
+import { settleHookTurnToIdle, broadcastSettledIdle } from './turnSettle';
 import { eventBus } from '../events/EventBus';
 import {
   findWorkspaceIdForPty,
@@ -1072,6 +1076,10 @@ export class DaemonNotificationRouter {
         // unconditional 'running' here is what overwrote a correct
         // 'complete'/'awaiting_input' on every mid-turn redraw.
         if (this.getHookRouter?.()?.governsRunningState(payload.sessionId, this.now())) return;
+        // Settle-redraw guard, twin of PTYBridge's: the repaint that follows a
+        // settle (an interrupt's "Interrupted …", a shell redrawing its prompt)
+        // must not re-light the pane it just cleared.
+        if (recentlySettled(payload.sessionId, SETTLE_REDRAW_GUARD_MS, this.now())) return;
         // daemon이 active 이벤트에 gate로 확정한 agentName을 실어 보낸다(있으면).
         // 이게 있어야 idle prompt 패턴이 안 잡히는 에이전트(Claude Code v2.1.x:
         // 입력대기 hint가 "❯"만 남음)도 running 상태에서 agentName이 채워진다.
@@ -1186,10 +1194,7 @@ export class DaemonNotificationRouter {
         const latchOpen = router?.governsRunningState(payload.sessionId, this.now()) === true;
         if (!latchOpen && getLastBroadcastAgentStatus(payload.sessionId) !== 'running') return;
         router?.releaseHookTurnStart(payload.sessionId);
-        broadcastMetadataUpdate(this.getWindow(), {
-          ptyId: payload.sessionId,
-          agentStatus: 'idle',
-        });
+        broadcastSettledIdle(payload.sessionId, this.getWindow(), this.now());
       } catch (err) {
         console.warn('[DaemonNotificationRouter] agent process exit error:', err);
       }

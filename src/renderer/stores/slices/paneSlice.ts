@@ -271,6 +271,13 @@ export interface PaneSlice {
   surfaceTurnOpenAt: Record<string, number>;
   markSurfaceTurnOpen: (ptyId: string) => void;
   clearSurfaceTurnOpen: (ptyId: string) => void;
+  // A SETTLE from main (`settled:true` on an idle broadcast): the turn is over,
+  // so BOTH carriers of 'running' are withdrawn — the latch and the activity
+  // stamp below. Clearing the latch alone left the stamp to keep the pane amber
+  // for the rest of its 120s window, which is what made every settle path
+  // (interrupt, shell back at its prompt, agent exit, latch expiry) look
+  // ignored for up to two minutes.
+  settleSurfaceTurn: (ptyId: string) => void;
   // A coarse clock the status derivation re-reads so a fresh stamp DECAYS to
   // idle on its own with no new store event. Bumped ~every 2s by
   // useAgentActivityClock while any pane is recently active; membership in
@@ -728,6 +735,15 @@ export const createPaneSlice: StateCreator<StoreState, [['zustand/immer', never]
   clearSurfaceTurnOpen: (ptyId) => set((state: StoreState) => {
     if (!ptyId) return;
     delete state.surfaceTurnOpenAt[ptyId];
+  }),
+
+  settleSurfaceTurn: (ptyId) => set((state: StoreState) => {
+    if (!ptyId) return;
+    // Both inputs of isHookRunning: the CLAIM (latch) and the EVIDENCE
+    // (activity stamp). A settle withdraws both — main has told us the turn
+    // ended, which is strictly better information than a 120s freshness window.
+    delete state.surfaceTurnOpenAt[ptyId];
+    delete state.surfaceActivityAt[ptyId];
   }),
 
   surfaceOutputAt: {},

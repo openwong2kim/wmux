@@ -630,7 +630,7 @@ export function useNotificationListener() {
       // workspace metadata — pull it OUT here, alongside ptyId, so it can never
       // flow into `...rest` and get written into updateWorkspaceMetadata by
       // applyToWorkspace's spread.
-      const { ptyId, workspaceId: payloadWsId, activity, pendingQuestion, paneId, paneLabel, paneRole, agentSlug, hookKind, ...rest } = payload;
+      const { ptyId, workspaceId: payloadWsId, activity, pendingQuestion, paneId, paneLabel, paneRole, agentSlug, hookKind, settled, ...rest } = payload;
 
       // The orchestrator's own brain pty (the `claude-pty` vendor's embedded
       // Claude Code TUI) is not a fleet agent. The daemon has no idea it is
@@ -707,6 +707,16 @@ export function useNotificationListener() {
             if (hookKind === 'agent.user_prompt_submit') {
               state.markSurfaceTurnOpen(ptyId);
             }
+          }
+          // A SETTLE (main's interrupt / back-at-prompt / process-exit / latch
+          // expiry edges, marked `settled`). setSurfaceAgentStatus above has
+          // already dropped the latch; this also drops the byte heuristic's
+          // activity stamp, which otherwise kept the dot amber for the rest of
+          // its 120s window — live-observed as a pane still reading "Running"
+          // ten seconds after Ctrl+C. An UNMARKED idle leaves the stamp alone:
+          // byte silence is not proof the turn ended.
+          if (rest.agentStatus === 'idle' && settled === true) {
+            state.settleSurfaceTurn(ptyId);
           }
         }
         // Part A: stamp per-surface agent IDENTITY (name + status) keyed by

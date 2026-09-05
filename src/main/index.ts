@@ -156,6 +156,7 @@ import { collectLegacyMetadata } from './metadata/legacyMigration';
 import { sessionManager, registerSessionHandlers } from './ipc/handlers/session.handler';
 import { eventBus } from './events/EventBus';
 import { broadcastMetadataUpdate } from './ipc/handlers/metadata.handler';
+import { broadcastSettledIdle } from './notification/turnSettle';
 import { readOrchRole } from '../shared/orchestratorRole';
 import { initLogSink, isBrokenPipeError, logLine, stdioErrorsConsumed } from './util/logSink';
 
@@ -761,7 +762,7 @@ hookSignalRouter = new HookSignalRouter({ latencyMeter: signalLatencyMeter });
 // after the pane's last hook signal; this settles the dot on the same
 // METADATA_UPDATE funnel the process-death edge uses.
 hookSignalRouter.setTurnExpiryListener((ptyId) => {
-  broadcastMetadataUpdate(mainWindow, { ptyId, agentStatus: 'idle' });
+  broadcastSettledIdle(ptyId, mainWindow);
 });
 
 // Local-mode verdict gate — the same CompletionAlarm the daemon's HookIngest

@@ -19,7 +19,13 @@ import {
 import { dispatchNotification } from '../notification/dispatchNotification';
 import { settleHookTurnToIdle } from '../notification/turnSettle';
 import { InterruptKeystrokeDetector } from '../../shared/hooks/interruptKeystroke';
-import { recentlyResized, RESIZE_REDRAW_GUARD_MS, clearPty as clearSuppression } from '../notification/idleSuppression';
+import {
+  recentlyResized,
+  RESIZE_REDRAW_GUARD_MS,
+  recentlySettled,
+  SETTLE_REDRAW_GUARD_MS,
+  clearPty as clearSuppression,
+} from '../notification/idleSuppression';
 import { eventBus } from '../events/EventBus';
 import type { HookSignalRouter } from '../hooks/HookSignalRouter';
 import { normalizeDetectorCue, type CompletionAlarm } from '../../shared/hooks/CompletionAlarm';
@@ -678,7 +684,17 @@ export class PTYBridge {
         // 'running'. Everything else in this handler still runs: the alarm's
         // working cue above (byte activity is still real evidence for the
         // completion gate) and the detector's emission-dedup reset below.
-        if (!this.getHookRouter?.()?.governsRunningState(ptyId)) {
+        // Settle-redraw guard: a pane main JUST settled answers with a repaint
+        // ("Interrupted · What should Claude do instead?", a shell drawing its
+        // prompt), and re-broadcasting 'running' for it undoes the settle — the
+        // renderer's 120s activity stamp then holds the dot amber long after
+        // the turn ended. Only this broadcast is gated; the alarm cue above and
+        // the detector reset below still run, and a real new turn lights the
+        // pane through its own turn-start hook.
+        if (
+          !this.getHookRouter?.()?.governsRunningState(ptyId)
+          && !recentlySettled(ptyId, SETTLE_REDRAW_GUARD_MS)
+        ) {
           broadcastMetadataUpdate(this.getWindow(), {
             ptyId,
             agentStatus: 'running',

@@ -5,7 +5,7 @@
 // OSC 133 never reports the shell back at its prompt either. Both existing
 // settle edges are blind, and the turn latch held the pane amber ("Running" in
 // the roster) until its 30-minute expiry.
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => {
   const lastBroadcastAgentStatus = new Map<string, string>();
@@ -34,20 +34,42 @@ vi.mock('../../ipc/handlers/metadata.handler', () => ({
 }));
 
 import { PTYBridge } from '../PTYBridge';
-import type { PTYManager } from '../PTYManager';
+import type { PTYManager, PTYInstance } from '../PTYManager';
 import { HookSignalRouter } from '../../hooks/HookSignalRouter';
 import { SignalLatencyMeter } from '../../../shared/hooks/SignalLatencyMeter';
+import { clearPty as clearSuppression, SETTLE_REDRAW_GUARD_MS } from '../../notification/idleSuppression';
+
+interface MockProcess {
+  onData: (cb: (data: string) => void) => void;
+  onExit: (cb: (info: { exitCode: number }) => void) => void;
+  emitData: (data: string) => void;
+}
+
+function makeMockProcess(): MockProcess {
+  let dataCb: ((data: string) => void) | null = null;
+  return {
+    onData: (cb) => { dataCb = cb; },
+    onExit: () => undefined,
+    emitData: (d) => { dataCb?.(d); },
+  };
+}
 
 function makeBridge() {
+  const proc = makeMockProcess();
+  const instance: PTYInstance = {
+    id: 'p1',
+    process: proc as unknown as PTYInstance['process'],
+    shell: 'bash',
+  };
   const manager = {
-    get: vi.fn(() => undefined),
+    get: vi.fn(() => instance),
     remove: vi.fn(),
     onDispose: vi.fn(),
   } as unknown as PTYManager;
   const win = { isDestroyed: () => false, webContents: { send: vi.fn() } };
   const router = new HookSignalRouter({ latencyMeter: new SignalLatencyMeter() });
   const bridge = new PTYBridge(manager, () => win as never, () => router);
-  return { bridge, router };
+  return { bridge, router, proc };
 }
 
 function idleBroadcasts(ptyId: string): number {
@@ -125,5 +147,68 @@ describe('PTYBridge interrupt edge (Ctrl+C / ESC ESC settles a latched pane)', (
 
     expect(router.governsRunningState('p1')).toBe(false);
     expect(idleBroadcasts('p1')).toBe(0);
+  });
+
+});
+
+function runningBroadcasts(ptyId: string): number {
+  return mocks.broadcastMetadataUpdate.mock.calls.filter(
+    (c) => (c[1] as { ptyId?: string }).ptyId === ptyId
+      && (c[1] as { agentStatus?: string }).agentStatus === 'running',
+  ).length;
+}
+
+describe('PTYBridge settle-redraw guard (the burst that follows a settle)', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    mocks.broadcastMetadataUpdate.mockClear();
+    mocks.lastBroadcastAgentStatus.clear();
+    clearSuppression('p1');
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  /** >2000 bytes crosses ActivityMonitor.ACTIVE_THRESHOLD and fires onActive. */
+  function burst(proc: MockProcess) {
+    proc.emitData('x'.repeat(3000));
+    vi.advanceTimersByTime(50); // flush the 8ms micro-batch
+  }
+
+  it('swallows the byte "running" for the redraw right after a settle', () => {
+    const { bridge, router, proc } = makeBridge();
+    bridge.setupDataForwarding('p1');
+    router.noteHookTurnStart('p1', Date.now(), 'claude');
+
+    bridge.noteInterruptInput('p1', '\x03');
+    mocks.broadcastMetadataUpdate.mockClear();
+    // Claude's answer to Ctrl+C: "Interrupted · What should Claude do instead?"
+    // plus a full prompt repaint — several KB, indistinguishable from work.
+    burst(proc);
+
+    expect(runningBroadcasts('p1')).toBe(0);
+  });
+
+  it('broadcasts byte "running" again once the guard window has passed', () => {
+    const { bridge, router, proc } = makeBridge();
+    bridge.setupDataForwarding('p1');
+    router.noteHookTurnStart('p1', Date.now(), 'claude');
+    bridge.noteInterruptInput('p1', '\x03');
+
+    // Past the guard, and past ActivityMonitor's idle delay so onActive re-arms.
+    vi.advanceTimersByTime(SETTLE_REDRAW_GUARD_MS + 5_100);
+    mocks.broadcastMetadataUpdate.mockClear();
+    burst(proc);
+
+    expect(runningBroadcasts('p1')).toBe(1);
+  });
+
+  it('leaves an unsettled pane alone — byte "running" broadcasts as before', () => {
+    const { bridge, proc } = makeBridge();
+    bridge.setupDataForwarding('p1');
+
+    burst(proc);
+
+    expect(runningBroadcasts('p1')).toBe(1);
   });
 });

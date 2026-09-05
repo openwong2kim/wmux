@@ -6,7 +6,7 @@
 // which returns early before the ordinary status broadcast — so without an
 // explicit branch the one signal that knows exactly when a turn begins would
 // light nothing at all.
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import type { DaemonClient } from '../../DaemonClient';
 import type { HookSignalRouter } from '../../hooks/HookSignalRouter';
 
@@ -48,6 +48,7 @@ vi.mock('../../pipe/handlers/_bridge', () => ({
 }));
 
 import { DaemonNotificationRouter } from '../DaemonNotificationRouter';
+import { clearPty as clearSuppression, SETTLE_REDRAW_GUARD_MS } from '../idleSuppression';
 
 const broadcastMetadataUpdateMock = metadataHandlerMocks.broadcastMetadataUpdate;
 
@@ -368,6 +369,95 @@ describe('DaemonNotificationRouter — OSC 133 back-at-prompt closes the turn', 
     captured.prompt?.(promptEvent('command_end'));
     expect(hookRouter.releaseHookTurnStart).toHaveBeenCalledWith(PTY);
     expect(broadcastMetadataUpdateMock).not.toHaveBeenCalled();
+    router.stop();
+  });
+});
+
+/**
+ * The settle marker and the settle-redraw guard.
+ *
+ * Live re-test of the interrupt edge: main released the latch and broadcast
+ * idle, and the sidebar still read "Running" ten seconds later. Two halves, one
+ * cause — an idle broadcast never told the renderer to drop its 120s activity
+ * stamp, and the redraw that every settle provokes ("Interrupted · What should
+ * Claude do instead?", a shell repainting its prompt) came straight back
+ * through `session:active` as byte-'running'.
+ */
+describe('DaemonNotificationRouter — a settle is marked, and survives its own redraw', () => {
+  /** A stub that behaves like the real latch: releasing it ends the governance. */
+  function latchedHookRouter(): HookSignalRouter {
+    let governed = true;
+    return {
+      noteHookTurnStart: vi.fn(() => { governed = true; }),
+      releaseHookTurnStart: vi.fn(() => { governed = false; }),
+      governsRunningState: vi.fn(() => governed),
+      noteAgentOnPane: vi.fn(),
+      isGovernedFor: vi.fn().mockReturnValue(false),
+      governsDetectorStatus: vi.fn().mockReturnValue(false),
+      recordDetector: vi.fn().mockReturnValue('emit'),
+      dropPty: vi.fn(),
+    } as unknown as HookSignalRouter;
+  }
+
+  const promptEnd = { sessionId: PTY, event: { type: 'command_end', ts: 1, byteOffset: 10, exitCode: 0 } };
+
+  function runningBroadcasts(): number {
+    return broadcastMetadataUpdateMock.mock.calls.filter(
+      ([, patch]) => (patch as { ptyId?: string }).ptyId === PTY
+        && (patch as { agentStatus?: string }).agentStatus === 'running',
+    ).length;
+  }
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    broadcastMetadataUpdateMock.mockClear();
+    metadataHandlerMocks.lastBroadcastAgentStatus.delete(PTY);
+    clearSuppression(PTY);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('marks the settle broadcast so the renderer clears its activity stamp too', () => {
+    const { router, captured } = makeRouter(latchedHookRouter());
+    captured.prompt?.(promptEnd);
+    const settle = broadcastMetadataUpdateMock.mock.calls.at(-1)?.[1] as
+      { agentStatus?: string; settled?: boolean };
+    expect(settle.agentStatus).toBe('idle');
+    expect(settle.settled).toBe(true);
+    router.stop();
+  });
+
+  it('swallows the byte "running" that the settle redraw produces', () => {
+    const { router, captured } = makeRouter(latchedHookRouter());
+    captured.prompt?.(promptEnd);
+    broadcastMetadataUpdateMock.mockClear();
+
+    captured.active?.({ sessionId: PTY });
+
+    expect(runningBroadcasts()).toBe(0);
+    router.stop();
+  });
+
+  it('broadcasts byte "running" again once the guard window has passed', () => {
+    const { router, captured } = makeRouter(latchedHookRouter());
+    captured.prompt?.(promptEnd);
+    vi.advanceTimersByTime(SETTLE_REDRAW_GUARD_MS + 1);
+    broadcastMetadataUpdateMock.mockClear();
+
+    captured.active?.({ sessionId: PTY });
+
+    expect(runningBroadcasts()).toBe(1);
+    router.stop();
+  });
+
+  it('leaves a pane that was never settled alone', () => {
+    const { router, captured } = makeRouter(stubHookRouter(false));
+
+    captured.active?.({ sessionId: PTY });
+
+    expect(runningBroadcasts()).toBe(1);
     router.stop();
   });
 });
