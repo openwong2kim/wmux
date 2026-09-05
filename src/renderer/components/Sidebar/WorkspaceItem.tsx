@@ -696,6 +696,22 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
         {/* Status indicator */}
         {(() => {
           const st = agentStatus !== 'idle' ? AGENT_STATUS_ICON[agentStatus] : null;
+          // Red is spent on both "needs you" and "error", so hue alone cannot
+          // say which one this row is: an errored agent gets a ✕ in the dot's
+          // own footprint instead of a round dot.
+          if (st?.shape === 'cross') {
+            return (
+              <span
+                className="w-1.5 h-1.5 flex items-center justify-center flex-shrink-0 mt-1.5 text-[10px] leading-none"
+                style={{ color: st.dotVar }}
+                role="img"
+                aria-label={t(st.labelKey)}
+                title={t(st.labelKey)}
+              >
+                ✕
+              </span>
+            );
+          }
           return (
             <div
               className={`sidebar-dot w-1.5 h-1.5 rounded-full flex-shrink-0 mt-1.5 ${st ? st.glowClass : ''}`}
