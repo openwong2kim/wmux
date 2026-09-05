@@ -60,6 +60,16 @@ export const en = {
   // C-4 — entry point to the worktree cleanup scan from the finished tasks.
   'missions.cleanUp': 'Clean up',
   'missions.cleanUpTooltip': 'Scan task worktrees and close what is left over',
+  // One status-dot vocabulary, shared by every surface that draws a task dot
+  // (components/shared/taskStatusDot.ts). DESIGN.md: amber = running,
+  // green = ok, gray = idle, red = needs input.
+  'taskStatus.running': 'Running',
+  'taskStatus.idle': 'Idle',
+  'taskStatus.needsYou': 'Needs you',
+  'taskStatus.review': 'Waiting on review',
+  'taskStatus.done': 'Done',
+  'taskStatus.failed': 'Failed',
+  'taskStatus.cancelled': 'Cancelled',
 
   // Sidebar — Company mode
   'company.deptRemoveHint': 'Right-click to remove',

@@ -57,6 +57,13 @@ export const pl = {
   'missions.doneSummary': 'ostatnie: {title}',
   'missions.cleanUp': 'Posprzątaj',
   'missions.cleanUpTooltip': 'Przeskanuj worktree zadań i zamknij to, co zostało',
+  'taskStatus.running': 'W toku',
+  'taskStatus.idle': 'Bezczynne',
+  'taskStatus.needsYou': 'Czeka na Ciebie',
+  'taskStatus.review': 'Czeka na przegląd',
+  'taskStatus.done': 'Gotowe',
+  'taskStatus.failed': 'Niepowodzenie',
+  'taskStatus.cancelled': 'Anulowane',
 
   // Sidebar — Company mode
   'company.deptRemoveHint': 'Kliknij prawym przyciskiem, aby usunąć',

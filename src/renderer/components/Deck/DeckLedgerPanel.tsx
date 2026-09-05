@@ -21,7 +21,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { tokenAttrs } from '../../themes';
-import type { AgentStatus } from '../../../shared/types';
+import { taskStatusDot } from '../shared/taskStatusDot';
 import type { DeckLedgerRow, DeckLedgerSummary } from '../../../main/deck/deckLedgerSummary';
 
 /** Fallback poll — a push that never arrived must not strand the panel. */
@@ -31,24 +31,6 @@ export interface DeckLedgerApi {
   summary: (workspaceId: string) => Promise<DeckLedgerSummary>;
   /** Main's transition ping. Returns the unsubscribe. */
   onChanged?: (callback: (envelope: { workspaceId: string }) => void) => () => void;
-}
-
-/** DESIGN.md status-dot vocabulary: amber=running, green=ok, gray=idle,
- *  red=needs input. Same mapping DeckFleet uses — a worker row and a fleet row
- *  must not disagree about what a colour means. */
-function workerDotColor(status: AgentStatus | null): string {
-  switch (status) {
-    case 'running':
-      return 'var(--accent-cursor)';
-    case 'complete':
-      return 'var(--accent-green)';
-    case 'awaiting_input':
-    case 'waiting':
-    case 'error':
-      return 'var(--accent-red)';
-    default:
-      return 'var(--text-muted)';
-  }
 }
 
 /** Compact age: seconds under a minute, then minutes, then hours. */
@@ -165,7 +147,12 @@ export function DeckLedgerPanel({
       {/* Scrolls past a handful of rows — the panel is pinned chrome, so it
           must not grow until it owns the deck. */}
       <div className="max-h-44 overflow-y-auto">
-        {rows.map((row) => (
+        {rows.map((row) => {
+          // ONE vocabulary, shared with every other surface that draws a task
+          // dot (components/shared/taskStatusDot.ts). The panel does not decide
+          // what a colour means.
+          const dot = taskStatusDot(row.status, row.workerStatus);
+          return (
           <div
             key={row.id}
             data-deck-ledger-row
@@ -175,8 +162,10 @@ export function DeckLedgerPanel({
             <span
               aria-hidden="true"
               data-deck-ledger-dot
+              data-tone={dot.tone}
+              title={t(dot.labelKey)}
               className="inline-block w-1.5 h-1.5 rounded-full shrink-0 self-center"
-              style={{ backgroundColor: workerDotColor(row.workerStatus) }}
+              style={{ backgroundColor: dot.color }}
             />
             <span
               data-deck-ledger-title
@@ -211,7 +200,8 @@ export function DeckLedgerPanel({
               {formatAge(row.ageMs)}
             </span>
           </div>
-        ))}
+          );
+        })}
       </div>
     </div>
   );
