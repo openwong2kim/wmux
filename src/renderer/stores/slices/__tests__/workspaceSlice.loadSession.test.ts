@@ -24,6 +24,7 @@ type TestState = WorkspaceSlice & {
   scrollbackLines: number;
   a2aAutoApproveExecute: boolean;
   sidebarPosition: 'left' | 'right';
+  sidebarAttentionFirst: boolean;
   multiviewArrangement: 'auto' | 'columns' | 'rows';
   notificationSoundEnabled: boolean;
   toastEnabled: boolean;
@@ -81,6 +82,7 @@ function createTestStore() {
       scrollbackLines: 10000,
       a2aAutoApproveExecute: false,
       sidebarPosition: 'left',
+      sidebarAttentionFirst: false,
       multiviewArrangement: 'auto',
       notificationSoundEnabled: true,
       toastEnabled: true,
@@ -594,6 +596,40 @@ describe('loadSession — multiview arrangement (#746)', () => {
     const store = createTestStore();
     store.getState().loadSession(sessionWith('masonry'));
     expect(store.getState().multiviewArrangement).toBe('auto');
+  });
+});
+
+describe('loadSession — sidebar attention-first ordering', () => {
+  function sessionWith(attentionFirst: unknown): SessionData {
+    const ws: Workspace = {
+      id: 'ws-att',
+      name: 'ATT',
+      rootPane: makeBrowserSurfaceTree('https://example.com'),
+      activePaneId: 'pane-root',
+    };
+    return {
+      workspaces: [ws],
+      activeWorkspaceId: ws.id,
+      sidebarVisible: true,
+      sidebarAttentionFirst: attentionFirst,
+    } as unknown as SessionData;
+  }
+
+  it('restores the saved flag', () => {
+    // The save side (AppLayout.buildSessionData) and this read-back are
+    // separate edits; without this the pref silently resets on every restart.
+    const store = createTestStore();
+    expect(store.getState().sidebarAttentionFirst).toBe(false);
+    store.getState().loadSession(sessionWith(true));
+    expect(store.getState().sidebarAttentionFirst).toBe(true);
+  });
+
+  it('ignores a non-boolean instead of parking it in the store', () => {
+    // A corrupted session file holding the string "false" must not read as
+    // truthy and start reordering the list the user never asked to reorder.
+    const store = createTestStore();
+    store.getState().loadSession(sessionWith('false'));
+    expect(store.getState().sidebarAttentionFirst).toBe(false);
   });
 });
 

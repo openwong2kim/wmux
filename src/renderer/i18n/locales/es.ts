@@ -17,6 +17,7 @@ export const es = {
   'workspace.agentWaiting': 'Agente en espera',
 
   'workspace.agentAwaitingInput': 'Agente requiere entrada',
+  'workspace.needsYou': 'Te espera',
   'workspace.agentIdle': 'Agente inactivo',
   'workspace.agentUnverifiable': 'Sin novedades desde hace {time}',
   'workspace.close': 'Cerrar espacio de trabajo',
@@ -178,6 +179,8 @@ export const es = {
   'settings.uiScaleDesc': 'Escala toda la interfaz — útil en pantallas de alto DPI. No requiere reiniciar.',
   'settings.sidebarPosition': 'Posición de la barra lateral',
   'settings.sidebarPositionDesc': 'Izquierda o derecha del área del terminal',
+  'settings.sidebarAttentionFirst': 'Filas que te esperan primero',
+  'settings.sidebarAttentionFirstDesc': 'Fija en la parte superior de la barra lateral los espacios de trabajo cuyo agente te está esperando. Desactivado por defecto: las filas se quedan donde las arrastraste. Mientras está activado, el reordenamiento por arrastre está en pausa.',
   'settings.sidebarLeft': 'Izquierda',
   'settings.sidebarRight': 'Derecha',
   'settings.updateReady': 'Actualización lista',

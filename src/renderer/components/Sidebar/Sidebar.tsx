@@ -2,11 +2,13 @@ import { useState, useCallback, useMemo, useRef, useEffect } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '../../stores';
 import { selectWorkspaceIdName } from '../../stores/selectors/workspaceProjections';
+import { selectAllWorkspaceAgentStatus } from '../../stores/selectors/fleet';
+import { orderByAttention } from './attentionOrder';
 import WorkspaceItem from './WorkspaceItem';
 import RemoteWorkspaceItem from './RemoteWorkspaceItem';
 import MissionsSection from './MissionsSection';
 import PresetPicker from './PresetPicker';
-import type { Workspace } from '../../../shared/types';
+import type { AgentStatus, Workspace } from '../../../shared/types';
 import { getWorkspacePtyIds } from '../../../shared/paneUtils';
 import { destroyWorkspaceRemoteSessions } from '../../utils/remoteSessionTeardown';
 import { useT } from '../../hooks/useT';
@@ -19,6 +21,10 @@ import { HIT_TARGET_24 } from '../hitArea';
 import PluginPanels from '../../plugins/PluginPanels';
 import CompanyPanel from './CompanyPanel';
 import { COMPANY_MODE_ENABLED } from '../../../shared/featureFlags';
+
+// Frozen stand-in the attention selector returns while the setting is off, so
+// useShallow sees the same empty map every time and nothing re-renders.
+const NO_AGENT_STATUS: Record<string, AgentStatus> = {};
 
 // 워크스페이스가 소유한 모든 PTY를 dispose
 // (traversal is the shared canonical walk; the dispose policy stays local)
@@ -48,6 +54,22 @@ export default function Sidebar() {
     const q = wsSearch.toLowerCase();
     return workspaces.filter((ws) => ws.name.toLowerCase().includes(q));
   }, [workspaces, wsSearch]);
+  // Needs-you-first ordering (attentionOrder.ts) — display only. Subscribing to
+  // the status roll-up unconditionally would re-couple this component to the
+  // per-pane churn the A1 refactor above decoupled it from, so the selector
+  // short-circuits to a frozen empty map while the setting is off.
+  const sidebarAttentionFirst = useStore((s) => s.sidebarAttentionFirst);
+  const agentStatusById = useStore(
+    useShallow((s) => (s.sidebarAttentionFirst ? selectAllWorkspaceAgentStatus(s) : NO_AGENT_STATUS)),
+  );
+  const orderedWorkspaces = useMemo(
+    () => orderByAttention(
+      filteredWorkspaces,
+      (id) => agentStatusById[id] ?? 'idle',
+      sidebarAttentionFirst,
+    ),
+    [filteredWorkspaces, agentStatusById, sidebarAttentionFirst],
+  );
   const activeWorkspaceId = useStore((s) => s.activeWorkspaceId);
   const remoteWorkspaces = useStore((s) => s.remoteWorkspaces);
   const activeRemoteKey = useStore((s) => s.activeRemoteKey);
@@ -172,8 +194,11 @@ export default function Sidebar() {
             memo(WorkspaceItem)가 실효한다. 항목 내용은 WorkspaceItem이 자기
             ws를 self-subscribe해 반영한다. */}
         {/* index must be the position in the UNFILTERED list — reorder and
-            the Ctrl+number labels are defined against it. */}
-        {filteredWorkspaces.map((ws) => (
+            the Ctrl+number labels are defined against it. That also settles
+            drops on a pinned row: `index` is the row's real position, so a
+            reorder onto it lands where the row actually lives, not where the
+            needs-you sort happens to be showing it. */}
+        {orderedWorkspaces.map((ws) => (
           <WorkspaceItem
             key={ws.id}
             workspaceId={ws.id}

@@ -17,6 +17,7 @@ export const ja = {
   'workspace.agentWaiting': 'エージェント待機中',
 
   'workspace.agentAwaitingInput': 'エージェント入力待ち',
+  'workspace.needsYou': '応答待ち',
   'workspace.agentIdle': 'エージェントアイドル',
   'workspace.agentUnverifiable': '{time} 更新なし',
   'workspace.close': 'ワークスペースを閉じる',
@@ -180,6 +181,8 @@ export const ja = {
   'settings.uiScaleDesc': 'インターフェース全体を拡大・縮小します — 高 DPI ディスプレイで便利です。再起動は不要です。',
   'settings.sidebarPosition': 'サイドバー位置',
   'settings.sidebarPositionDesc': 'ターミナルエリアの左右',
+  'settings.sidebarAttentionFirst': 'あなた待ちの行を上に',
+  'settings.sidebarAttentionFirstDesc': 'エージェントがあなたの応答を待っているワークスペースをサイドバーの最上部に固定します。既定はオフ：行はドラッグした位置のままです。 オンの間、ドラッグでの並べ替えは停止します。',
   'settings.sidebarLeft': '左',
   'settings.sidebarRight': '右',
   'settings.updateReady': 'アップデート準備完了',

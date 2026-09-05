@@ -17,6 +17,7 @@ export const da = {
   'workspace.agentWaiting': 'Agent venter',
 
   'workspace.agentAwaitingInput': 'Agent afventer input',
+  'workspace.needsYou': 'Venter på dig',
   'workspace.agentIdle': 'Agent inaktiv',
   'workspace.agentUnverifiable': 'Ingen opdatering i {time}',
   'workspace.close': 'Luk arbejdsområde',
@@ -178,6 +179,8 @@ export const da = {
   'settings.uiScaleDesc': 'Skalér hele grænsefladen — nyttigt på skærme med høj DPI. Genstart ikke påkrævet.',
   'settings.sidebarPosition': 'Sidepanelposition',
   'settings.sidebarPositionDesc': 'Venstre eller højre for terminalområdet',
+  'settings.sidebarAttentionFirst': 'Rækker der venter på dig øverst',
+  'settings.sidebarAttentionFirstDesc': 'Fastgør arbejdsområder, hvis agent venter på dig, øverst i sidepanelet. Slået fra som standard: rækker bliver, hvor du trak dem hen. Mens den er slået til, er træk-og-omarrangér sat på pause.',
   'settings.sidebarLeft': 'Venstre',
   'settings.sidebarRight': 'Højre',
   'settings.updateReady': 'Opdatering klar',

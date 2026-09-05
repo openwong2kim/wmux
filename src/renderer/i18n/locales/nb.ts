@@ -17,6 +17,7 @@ export const nb = {
   'workspace.agentWaiting': 'Agent venter',
 
   'workspace.agentAwaitingInput': 'Agent venter på input',
+  'workspace.needsYou': 'Venter på deg',
   'workspace.agentIdle': 'Agent inaktiv',
   'workspace.agentUnverifiable': 'Ingen oppdatering på {time}',
   'workspace.close': 'Lukk arbeidsområde',
@@ -178,6 +179,8 @@ export const nb = {
   'settings.uiScaleDesc': 'Skaler hele grensesnittet — nyttig på høy-DPI-skjermer. Omstart kreves ikke.',
   'settings.sidebarPosition': 'Sidepanelposisjon',
   'settings.sidebarPositionDesc': 'Venstre eller høyre for terminalområdet',
+  'settings.sidebarAttentionFirst': 'Rader som venter på deg først',
+  'settings.sidebarAttentionFirstDesc': 'Fest arbeidsområder der agenten venter på deg øverst i sidepanelet. Av som standard: rader blir der du dro dem. Mens den er på, er omrokkering med dra-og-slipp satt på pause.',
   'settings.sidebarLeft': 'Venstre',
   'settings.sidebarRight': 'Høyre',
   'settings.updateReady': 'Oppdatering klar',

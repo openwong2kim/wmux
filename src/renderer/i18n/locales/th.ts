@@ -17,6 +17,7 @@ export const th = {
   'workspace.agentWaiting': 'เอเจนต์รออยู่',
 
   'workspace.agentAwaitingInput': 'เอเจนต์รอการป้อนข้อมูล',
+  'workspace.needsYou': 'รอคุณอยู่',
   'workspace.agentIdle': 'เอเจนต์ว่าง',
   'workspace.agentUnverifiable': 'ไม่มีการอัปเดตมา {time}',
   'workspace.close': 'ปิดพื้นที่ทำงาน',
@@ -178,6 +179,8 @@ export const th = {
   'settings.uiScaleDesc': 'ปรับสเกลทั้งอินเทอร์เฟซ — มีประโยชน์สำหรับจอ DPI สูง ไม่ต้องรีสตาร์ท',
   'settings.sidebarPosition': 'ตำแหน่งแถบด้านข้าง',
   'settings.sidebarPositionDesc': 'ซ้ายหรือขวาของพื้นที่เทอร์มินัล',
+  'settings.sidebarAttentionFirst': 'แถวที่รอคุณอยู่ด้านบน',
+  'settings.sidebarAttentionFirstDesc': 'ปักหมุดเวิร์กสเปซที่เอเจนต์กำลังรอคุณไว้ด้านบนสุดของแถบด้านข้าง ปิดไว้ตามค่าเริ่มต้น: แถวจะอยู่ตรงที่คุณลากไว้ ขณะเปิดอยู่ การลากเพื่อจัดลำดับจะหยุดชั่วคราว',
   'settings.sidebarLeft': 'ซ้าย',
   'settings.sidebarRight': 'ขวา',
   'settings.updateReady': 'การอัปเดตพร้อมแล้ว',

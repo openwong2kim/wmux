@@ -17,6 +17,7 @@ export const ru = {
   'workspace.agentWaiting': 'Агент ожидает',
 
   'workspace.agentAwaitingInput': 'Агент ждёт ввода',
+  'workspace.needsYou': 'Ждёт вас',
   'workspace.agentIdle': 'Агент простаивает',
   'workspace.agentUnverifiable': 'Нет обновлений {time}',
   'workspace.close': 'Закрыть рабочее пространство',
@@ -178,6 +179,8 @@ export const ru = {
   'settings.uiScaleDesc': 'Масштабируйте весь интерфейс — полезно для дисплеев с высоким DPI. Перезапуск не требуется.',
   'settings.sidebarPosition': 'Положение боковой панели',
   'settings.sidebarPositionDesc': 'Слева или справа от области терминала',
+  'settings.sidebarAttentionFirst': 'Строки, ждущие вас, сверху',
+  'settings.sidebarAttentionFirstDesc': 'Закреплять вверху боковой панели рабочие пространства, агент которых ждёт вашего ответа. По умолчанию выключено: строки остаются там, куда вы их перетащили. Пока включено, перетаскивание для изменения порядка приостановлено.',
   'settings.sidebarLeft': 'Слева',
   'settings.sidebarRight': 'Справа',
   'settings.updateReady': 'Обновление готово',

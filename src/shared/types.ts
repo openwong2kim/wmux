@@ -829,6 +829,8 @@ export interface SessionData {
    */
   a2aAutoApproveExecute?: boolean;
   sidebarPosition?: 'left' | 'right';
+  /** Whether the sidebar lifts needs-you workspaces to the top. Default false. */
+  sidebarAttentionFirst?: boolean;
   /** How the multiview grid arranges its tiles (#746). Whitelisted on load. */
   multiviewArrangement?: 'auto' | 'columns' | 'rows';
   notificationSoundEnabled?: boolean;

@@ -1,10 +1,11 @@
-import { useRef, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '../../stores';
 import { selectWorkspaceRailSummary } from '../../stores/selectors/workspaceProjections';
 import { formatStaleMinutes, selectAllWorkspaceAgentStatus, selectAllWorkspaceUnverifiableMinutes } from '../../stores/selectors/fleet';
 import { useT } from '../../hooks/useT';
 import { AGENT_STATUS_ICON } from './agentStatusIcon';
+import { orderByAttention } from './attentionOrder';
 import { tokenAttrs } from '../../themes';
 import { expandDirection } from './sidebarGlyphs';
 import { IconPlus, IconChevronDir } from '../icons';
@@ -24,6 +25,13 @@ export default function MiniSidebar() {
   // window, in whole minutes of silence. Same roll-up, minute-granular so the
   // shallow compare holds between clock ticks.
   const unverifiableMinutesById = useStore(useShallow(selectAllWorkspaceUnverifiableMinutes));
+  // Needs-you-first ordering (attentionOrder.ts) — display only, same setting
+  // and same roll-up as the full sidebar so the two surfaces never disagree.
+  const sidebarAttentionFirst = useStore((s) => s.sidebarAttentionFirst);
+  const orderedWorkspaces = useMemo(
+    () => orderByAttention(workspaces, (id) => agentStatusById[id] ?? 'idle', sidebarAttentionFirst),
+    [workspaces, agentStatusById, sidebarAttentionFirst],
+  );
   const activeWorkspaceId = useStore((s) => s.activeWorkspaceId);
   const setActiveWorkspace = useStore((s) => s.setActiveWorkspace);
   const toggleSidebar = useStore((s) => s.toggleSidebar);
@@ -71,7 +79,12 @@ export default function MiniSidebar() {
 
       {/* Workspace dots */}
       <div className="flex-1 overflow-y-auto py-2 flex flex-col items-center gap-1">
-        {workspaces.map((ws, i) => {
+        {orderedWorkspaces.map((ws, i) => {
+          // `i` is the DISPLAY position and drives only the drop indicator.
+          // Everything the user reads or reorders against — the Ctrl+N label,
+          // the tooltip, the reorder payload — uses the unfiltered position, so
+          // a pinned row keeps its real number and drops land where it lives.
+          const railIndex = workspaces.indexOf(ws);
           const isActive = ws.id === activeWorkspaceId;
           const isMultiview = multiviewIds.includes(ws.id);
           const isDragging = draggingIndex === i;
@@ -84,7 +97,7 @@ export default function MiniSidebar() {
           const unverifiableMinutes = unverifiableMinutesById[ws.id] ?? 0;
           // Initial + position so workspaces with identical prefixes (W, W, W…)
           // remain distinguishable in the 48px rail.
-          const label = `${ws.name.charAt(0).toUpperCase()}${i + 1}`;
+          const label = `${ws.name.charAt(0).toUpperCase()}${railIndex + 1}`;
           const railColor = workspaceColorHex(ws.color);
 
           const handleClick = (e: React.MouseEvent<HTMLButtonElement>) => {
@@ -102,8 +115,9 @@ export default function MiniSidebar() {
           };
 
           const handleDragStart = (e: React.DragEvent<HTMLButtonElement>) => {
+            if (sidebarAttentionFirst) return;
             dragStartTimeRef.current = Date.now();
-            e.dataTransfer.setData('text/plain', String(i));
+            e.dataTransfer.setData('text/plain', String(railIndex));
             e.dataTransfer.effectAllowed = 'move';
             setDraggingIndex(i);
           };
@@ -114,6 +128,7 @@ export default function MiniSidebar() {
           };
 
           const handleDragOver = (e: React.DragEvent<HTMLButtonElement>) => {
+            if (sidebarAttentionFirst) return;
             e.preventDefault();
             e.dataTransfer.dropEffect = 'move';
             const rect = e.currentTarget.getBoundingClientRect();
@@ -128,15 +143,16 @@ export default function MiniSidebar() {
           };
 
           const handleDrop = (e: React.DragEvent<HTMLButtonElement>) => {
+            if (sidebarAttentionFirst) return;
             e.preventDefault();
             setDropIndicator(null);
             const fromIndex = parseInt(e.dataTransfer.getData('text/plain'), 10);
-            if (isNaN(fromIndex) || fromIndex === i) return;
+            if (isNaN(fromIndex) || fromIndex === railIndex) return;
             const rect = e.currentTarget.getBoundingClientRect();
             const midY = rect.top + rect.height / 2;
             const toIndex = e.clientY < midY
-              ? (fromIndex < i ? i - 1 : i)
-              : (fromIndex > i ? i + 1 : i);
+              ? (fromIndex < railIndex ? railIndex - 1 : railIndex)
+              : (fromIndex > railIndex ? railIndex + 1 : railIndex);
             reorderWorkspace(fromIndex, toIndex);
           };
 
@@ -158,7 +174,9 @@ export default function MiniSidebar() {
                 <div className="absolute top-0 left-0 right-0 h-0.5 bg-[var(--accent-blue)] rounded-full z-10 -translate-y-px" />
               )}
               <button
-                draggable
+                // Paused while needs-you-first ordering is on: the rail's drop
+                // is judged in display order but reorders the array position.
+                draggable={!sidebarAttentionFirst}
                 className={`relative w-8 h-8 rounded-md flex items-center justify-center text-[10px] font-bold font-mono select-none transition-colors ${
                   isActive
                     ? 'bg-[var(--bg-surface)] text-[var(--text-main)]'
@@ -173,7 +191,7 @@ export default function MiniSidebar() {
                 onDragOver={handleDragOver}
                 onDragLeave={handleDragLeave}
                 onDrop={handleDrop}
-                title={`${ws.name} (Ctrl+${i + 1})`}
+                title={`${ws.name} (Ctrl+${railIndex + 1})`}
               >
                 {label}
                 {unreadCount > 0 && (
@@ -188,12 +206,17 @@ export default function MiniSidebar() {
                 )}
                 {agentIcon && (
                   <span
-                    className={`absolute -bottom-0.5 -right-0.5 text-[10px] leading-none ${agentIcon.className} ${agentStatus === 'running' && !unverifiableMinutes ? 'animate-pulse' : ''}`}
+                    // The cross gets a box sized to its own glyph, mirroring the
+                    // full row: the dot's footprint is 6px and the ✕ is 10px.
+                    className={`absolute -bottom-0.5 -right-0.5 text-[10px] leading-none ${agentIcon.shape === 'cross' ? 'w-2.5 h-2.5 flex items-center justify-center font-bold' : ''} ${agentIcon.className} ${agentStatus === 'running' && !unverifiableMinutes ? 'animate-pulse' : ''}`}
                     title={unverifiableMinutes
                       ? t('workspace.agentUnverifiable', { time: formatStaleMinutes(unverifiableMinutes) })
                       : `${ws.agentName ? `${ws.agentName} — ` : ''}${t(agentIcon.labelKey)}`}
                   >
-                    {unverifiableMinutes ? '○' : agentIcon.dot}
+                    {/* Error is the one red status told apart by FORM, not hue
+                        (agentStatusIcon.ts) — the rail mirrors that ✕. A silent
+                        running agent is the hollow ring. */}
+                    {unverifiableMinutes ? '○' : agentIcon.shape === 'cross' ? '✕' : agentIcon.dot}
                   </span>
                 )}
               </button>

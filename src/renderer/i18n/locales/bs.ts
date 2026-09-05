@@ -17,6 +17,7 @@ export const bs = {
   'workspace.agentWaiting': 'Agent čeka',
 
   'workspace.agentAwaitingInput': 'Agent traži unos',
+  'workspace.needsYou': 'Čeka te',
   'workspace.agentIdle': 'Agent miruje',
   'workspace.agentUnverifiable': 'Nema ažuriranja {time}',
   'workspace.close': 'Zatvori radni prostor',
@@ -178,6 +179,8 @@ export const bs = {
   'settings.uiScaleDesc': 'Povećajte ili smanjite cijelo sučelje — korisno na zaslonima visoke rezolucije. Ponovno pokretanje nije potrebno.',
   'settings.sidebarPosition': 'Pozicija bočne trake',
   'settings.sidebarPositionDesc': 'Lijevo ili desno od područja terminala',
+  'settings.sidebarAttentionFirst': 'Redovi koji te čekaju na vrh',
+  'settings.sidebarAttentionFirstDesc': 'Zakači na vrh bočne trake radne prostore čiji agent čeka na tebe. Podrazumijevano isključeno: redovi ostaju gdje si ih povukao. Dok je uključeno, preraspoređivanje povlačenjem je pauzirano.',
   'settings.sidebarLeft': 'Lijevo',
   'settings.sidebarRight': 'Desno',
   'settings.updateReady': 'Ažuriranje spremno',
