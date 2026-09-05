@@ -118,7 +118,11 @@ function arbitratedDecision(
 }
 
 /** Lifecycle kinds a `session:agent` event may carry. */
-type AgentLifecycleKind = 'agent.stop' | 'agent.subagent_stop' | 'agent.awaiting_input';
+type AgentLifecycleKind =
+  | 'agent.stop'
+  | 'agent.subagent_stop'
+  | 'agent.awaiting_input'
+  | 'agent.stop_failure';
 
 /**
  * Kind for the lifecycle tee. A hook-sourced event carries the ORIGINAL signal
@@ -131,6 +135,7 @@ function lifecycleKindFor(ev: AgentEventPayload): AgentLifecycleKind {
     ev.hookKind === 'agent.stop'
     || ev.hookKind === 'agent.subagent_stop'
     || ev.hookKind === 'agent.awaiting_input'
+    || ev.hookKind === 'agent.stop_failure'
   ) {
     return ev.hookKind;
   }
@@ -960,13 +965,12 @@ export class DaemonNotificationRouter {
           // the tee, so the event reads `source:'hook'`/`decision:'dedup'` and
           // main's ledger is left alone.
           //
-          // `agent.stop_failure` is skipped: `lifecycleKindFor` would fall
-          // through to 'agent.stop' for it (its hookKind is not one of the
-          // three the published `AgentLifecycleEvent.kind` union names), and a
-          // failed turn announced to orchestrators as a normal stop is worse
-          // than no event. Widening that union is a separate change. Same
-          // boundary the local `hooks.signal` path draws.
-          if (ev.hookKind === 'agent.stop_failure') return;
+          // `agent.stop_failure` rides through with its own kind now that the
+          // published `AgentLifecycleEvent.kind` union names it. It used to be
+          // dropped here, because falling through to 'agent.stop' would have
+          // told orchestrators a failed turn finished normally — and in daemon
+          // mode, the production path, that meant a turn that died on an API
+          // error reached no observer at all.
           void this.emitDetectorLifecycle(
             payload.sessionId,
             ev.agent,

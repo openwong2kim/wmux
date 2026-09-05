@@ -1115,15 +1115,71 @@ describe('DaemonNotificationRouter — M1 side-effect replay', () => {
       }
     });
 
-    it('emits no agent.lifecycle event for it', async () => {
-      // `lifecycleKindFor` would fall through to 'agent.stop', which tells an
-      // orchestrator the turn finished normally. Silence is the lesser wrong
-      // until the published kind union is widened deliberately.
+    it('tees agent.lifecycle with its OWN kind, not a plain stop', async () => {
+      // Daemon mode is the production path, so dropping this event meant a turn
+      // that died on an API error reached no orchestrator at all. It could not
+      // ride 'agent.stop' either — that reads as "finished normally" — so the
+      // published kind union names it, and the tee carries it through.
       const { router: nr, captured } = makeRouter();
       try {
         captured.agent!(failureEvent());
         await flushMicrotasks();
-        expect(pollLifecycle()).toHaveLength(0);
+
+        const events = pollLifecycle();
+        expect(events.length).toBe(1);
+        expect(events[0]).toMatchObject({
+          type: 'agent.lifecycle',
+          ptyId: 'pty-a',
+          kind: 'agent.stop_failure',
+          source: 'hook',
+          agent: 'claude',
+          decision: 'emit',
+        });
+      } finally {
+        nr.stop();
+      }
+    });
+  });
+
+  // The mapping itself, asserted through the router because `lifecycleKindFor`
+  // is module-private: a hook-sourced event keeps its ORIGINAL kind, and only
+  // an event with no hookKind falls back to the detector's status mapping.
+  describe('lifecycleKindFor', () => {
+    it.each([
+      ['agent.stop_failure', 'error'],
+      ['agent.subagent_stop', 'complete'],
+      ['agent.awaiting_input', 'awaiting_input'],
+      ['agent.stop', 'complete'],
+    ])('keeps hookKind %s through the tee', async (hookKind, status) => {
+      const { router: nr, captured } = makeRouter();
+      try {
+        captured.agent!({
+          sessionId: 'pty-a',
+          event: {
+            agent: 'Claude Code',
+            status,
+            message: 'x',
+            source: 'hook',
+            hookKind,
+            decision: 'emit',
+          },
+        });
+        await flushMicrotasks();
+        expect(pollLifecycle()[0]).toMatchObject({ kind: hookKind, source: 'hook' });
+      } finally {
+        nr.stop();
+      }
+    });
+
+    it('falls back to the status mapping when no hookKind rides along', async () => {
+      const { router: nr, captured } = makeRouter();
+      try {
+        captured.agent!({
+          sessionId: 'pty-a',
+          event: { agent: 'Claude Code', status: 'awaiting_input', message: 'x' },
+        });
+        await flushMicrotasks();
+        expect(pollLifecycle()[0]).toMatchObject({ kind: 'agent.awaiting_input', source: 'detector' });
       } finally {
         nr.stop();
       }
