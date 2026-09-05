@@ -346,6 +346,25 @@ describe('hooks.signal — local verdict gate (CompletionAlarm)', () => {
     expect(sendNotificationMock).not.toHaveBeenCalled();
   });
 
+  // The failure tee must not ride the window. A stop_failure fires ONCE per
+  // dead turn (Claude Code sends no Stop behind it), so a rebutted window used
+  // to lose the event forever — nothing reached events_poll or the deck brain,
+  // and nothing re-fired.
+  it('tees the failed turn even when a byte burst rebuts the window', async () => {
+    const r = rig();
+    await primeWorking(r);
+
+    await r.dispatch({ kind: 'agent.stop_failure' });
+    // The event is already out, before the window could be rebutted.
+    expect(pollLifecycle()).toHaveLength(1);
+
+    // Working evidence inside the window: the toast is cancelled.
+    await r.dispatch({ kind: 'agent.activity' });
+    vi.advanceTimersByTime(DEFAULT_ALARM_WINDOW_MS);
+
+    expect(sendNotificationMock).not.toHaveBeenCalled();
+  });
+
   it('closes the turn gate, so a stop behind the failure raises no completion', async () => {
     const r = rig();
     await primeWorking(r);

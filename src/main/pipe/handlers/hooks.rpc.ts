@@ -709,25 +709,33 @@ export function registerHooksRpc(
     //     published kind — an orchestrator waiting on this pane learns the turn
     //     died rather than sitting on the stop gate until it times out.
     if (signal.kind === 'agent.stop_failure') {
-      const fanOutFailure = (): void => {
-        // 'dedup' means the detector already spoke for this turn — same rule
-        // the stop fan-out applies, so a failed turn cannot double-toast.
-        const decision = hookRouter.recordHook(signal, ptyId);
-        // Tee to EventBus for external observers, on the confirmed-fan-out
-        // rule: BOTH 'emit' and 'dedup' publish (the turn died either way);
-        // only the toast below is gated on 'emit'.
-        const failureWorkspaceId = findWorkspaceIdForPty(ptyId, workspaces);
-        if (failureWorkspaceId) {
-          eventBus.emit({
-            type: 'agent.lifecycle',
-            workspaceId: failureWorkspaceId,
-            ptyId,
-            kind: signal.kind,
-            source: 'hook',
-            agent: signal.agent,
-            decision,
-          });
-        }
+      // The ledger write and the lifecycle tee happen ON ARRIVAL; ONLY the
+      // toast is held behind the verdict gate. They used to live together
+      // inside the resume closure, and a window rebutted by a byte burst then
+      // lost the event outright — no tee, no toast, not even an 'internal'
+      // trace — while a stop_failure NEVER re-fires: Claude Code emits it once
+      // per dead turn and emits no Stop behind it. The toast is a re-askable
+      // interruption and can afford the 1.5s confirmation; an orchestrator
+      // waiting on the pane cannot afford to be told nothing at all.
+      //
+      // 'dedup' means a same-kind signal already claimed this turn on the
+      // ledger, so a failed turn cannot double-toast. The tee publishes on
+      // BOTH decisions (the turn died either way) — only the toast is gated.
+      const decision = hookRouter.recordHook(signal, ptyId);
+      const failureWorkspaceId = findWorkspaceIdForPty(ptyId, workspaces);
+      const emitFailureTee = (teeDecision: 'emit' | 'dedup' | 'internal'): void => {
+        if (!failureWorkspaceId) return;
+        eventBus.emit({
+          type: 'agent.lifecycle',
+          workspaceId: failureWorkspaceId,
+          ptyId,
+          kind: 'agent.stop_failure',
+          source: 'hook',
+          agent: signal.agent,
+          decision: teeDecision,
+        });
+      };
+      const toastFailure = (): void => {
         if (decision === 'dedup') return;
         dispatchNotification(
           getWindow(),
@@ -744,14 +752,17 @@ export function registerHooksRpc(
       // No verdict gate configured (tests / a boot ordering gap): the same
       // immediate path every other emit kind falls back to.
       if (!alarm) {
-        fanOutFailure();
+        emitFailureTee(decision);
+        toastFailure();
         return { ok: true };
       }
-      // The cue is `attention` (see normalizeHookCue), so this always holds a
-      // window and the toast fires at confirmation — cancelled only if the
-      // agent produces working evidence inside it, which would mean the turn
-      // did not end after all.
-      alarm.observe(ptyId, signal.agent, normalizeHookCue(signal), fanOutFailure);
+      // The cue is `attention` (see normalizeHookCue), so this normally holds a
+      // window and the toast fires at confirmation. A gate that DROPS instead
+      // means no toast will ever fire for this signal, so the tee says so with
+      // the existing 'internal' trace vocabulary rather than claiming a
+      // fan-out that never happened.
+      const outcome = alarm.observe(ptyId, signal.agent, normalizeHookCue(signal), toastFailure);
+      emitFailureTee(outcome === 'hold' ? decision : 'internal');
       return { ok: true };
     }
 
