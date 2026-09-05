@@ -1,10 +1,13 @@
 import { useMemo } from 'react';
+import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
 import { t } from '../../i18n';
 import { tokenAttrs } from '../../themes';
 import {
+  formatStaleMinutes,
   selectFleetPanes,
+  selectUnverifiablePaneMinutes,
   sortFleetPanes,
   type FleetPane,
 } from '../../stores/selectors/fleet';
@@ -76,6 +79,11 @@ export default function DeckFleet({
   const surfacePendingQuestion = useStore((s) => s.surfacePendingQuestion);
   const paneRole = useStore((s) => s.paneRole);
   const roleBindings = useStore((s) => s.orchestratorRoleBindings);
+  // Per-PTY silence in whole minutes for panes still claiming 'running' past
+  // the hook-authority window. Read as its own minute-granular subscription
+  // rather than by feeding the decay clock into the memo below: that clock
+  // ticks every 2 s, and this roster has no other reason to re-render that often.
+  const unverifiableMinutesByPtyId = useStore(useShallow(selectUnverifiablePaneMinutes));
 
   const panes = useMemo(() => {
     const all = selectFleetPanes({ workspaces, surfaceAgentStatus, surfaceActivity, paneLabel, surfaceAgent, surfacePendingQuestion });
@@ -114,6 +122,7 @@ export default function DeckFleet({
       <div className="max-h-44 overflow-y-auto">
         {panes.map((p) => {
           const attention = p.agentStatus === 'awaiting_input' || p.agentStatus === 'waiting';
+          const unverifiableMinutes = unverifiableMinutesByPtyId[p.ptyId] ?? 0;
           // Operator-assigned role (soft). A value set via MCP may be outside the
           // built-in vocabulary; surface it as an extra option so the <select>
           // never renders blank for a known-but-custom role.
@@ -148,13 +157,20 @@ export default function DeckFleet({
               <button
                 type="button"
                 onClick={() => onJumpToPane(p.workspaceId, p.paneId)}
-                title={`${rowLabel(p)} — ${p.workspaceName}`}
+                title={unverifiableMinutes
+                  ? `${rowLabel(p)} — ${t('workspace.agentUnverifiable', { time: formatStaleMinutes(unverifiableMinutes) })}`
+                  : `${rowLabel(p)} — ${p.workspaceName}`}
                 className="flex-1 min-w-0 flex items-center gap-2 h-full text-left rounded-[4px] transition-colors hover:bg-[rgba(var(--bg-surface-rgb),0.6)]"
               >
+                {/* Unverifiable: a hollow amber ring instead of a filled dot —
+                    same footprint, no fill. The status is unchanged, so the
+                    needs-you wash and the attention sort above are untouched. */}
                 <span
                   aria-hidden="true"
                   className="w-[7px] h-[7px] rounded-full shrink-0"
-                  style={{ backgroundColor: dotColor(p.agentStatus) }}
+                  style={unverifiableMinutes
+                    ? { border: '1.5px solid var(--accent-cursor)' }
+                    : { backgroundColor: dotColor(p.agentStatus) }}
                 />
                 <span
                   className="text-[12px] font-medium text-[var(--text-main)] shrink-0 max-w-[45%] truncate"

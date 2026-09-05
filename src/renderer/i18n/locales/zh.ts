@@ -175,6 +175,7 @@ export const zh = {
   'workspace.agentError': '智能体错误',
   'workspace.agentWaiting': '智能体等待中',
   'workspace.agentIdle': '智能体空闲',
+  'workspace.agentUnverifiable': '{time} 无更新',
   'workspace.close': '关闭工作区',
   'workspace.copyInfo': '复制会话信息',
   'workspace.copied': '已复制！',

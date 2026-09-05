@@ -18,6 +18,7 @@ export const ru = {
 
   'workspace.agentAwaitingInput': 'Агент ждёт ввода',
   'workspace.agentIdle': 'Агент простаивает',
+  'workspace.agentUnverifiable': 'Нет обновлений {time}',
   'workspace.close': 'Закрыть рабочее пространство',
   'workspace.copyInfo': 'Копировать данные сессии',
   'workspace.copied': 'Скопировано!',

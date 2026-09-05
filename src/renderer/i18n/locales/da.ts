@@ -18,6 +18,7 @@ export const da = {
 
   'workspace.agentAwaitingInput': 'Agent afventer input',
   'workspace.agentIdle': 'Agent inaktiv',
+  'workspace.agentUnverifiable': 'Ingen opdatering i {time}',
   'workspace.close': 'Luk arbejdsområde',
   'workspace.copyInfo': 'Kopier sessionsoplysninger',
   'workspace.copied': 'Kopieret!',

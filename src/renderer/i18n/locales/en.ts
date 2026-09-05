@@ -216,6 +216,7 @@ export const en = {
   'workspace.agentWaiting': 'Waiting',
   'workspace.agentAwaitingInput': 'Needs input',
   'workspace.agentIdle': 'Idle',
+  'workspace.agentUnverifiable': 'No update for {time}',
   'workspace.agentCount': 'Agents {count}',
   'workspace.agentNeedsAttention': 'Needs you {count}',
   'workspace.showAgents': 'Show agent list',

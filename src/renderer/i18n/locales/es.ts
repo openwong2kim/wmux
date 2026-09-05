@@ -18,6 +18,7 @@ export const es = {
 
   'workspace.agentAwaitingInput': 'Agente requiere entrada',
   'workspace.agentIdle': 'Agente inactivo',
+  'workspace.agentUnverifiable': 'Sin novedades desde hace {time}',
   'workspace.close': 'Cerrar espacio de trabajo',
   'workspace.copyInfo': 'Copiar información de sesión',
   'workspace.copied': '¡Copiado!',

@@ -18,6 +18,7 @@ export const vi = {
 
   'workspace.agentAwaitingInput': 'Tác nhân cần phản hồi',
   'workspace.agentIdle': 'Tác nhân nhàn rỗi',
+  'workspace.agentUnverifiable': 'Không có cập nhật trong {time}',
   'workspace.close': 'Đóng không gian làm việc',
   'workspace.copyInfo': 'Sao chép thông tin phiên',
   'workspace.copied': 'Đã sao chép!',

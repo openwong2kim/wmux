@@ -18,6 +18,7 @@ export const th = {
 
   'workspace.agentAwaitingInput': 'เอเจนต์รอการป้อนข้อมูล',
   'workspace.agentIdle': 'เอเจนต์ว่าง',
+  'workspace.agentUnverifiable': 'ไม่มีการอัปเดตมา {time}',
   'workspace.close': 'ปิดพื้นที่ทำงาน',
   'workspace.copyInfo': 'คัดลอกข้อมูลเซสชัน',
   'workspace.copied': 'คัดลอกแล้ว!',

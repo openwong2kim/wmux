@@ -18,6 +18,7 @@ export const ja = {
 
   'workspace.agentAwaitingInput': 'エージェント入力待ち',
   'workspace.agentIdle': 'エージェントアイドル',
+  'workspace.agentUnverifiable': '{time} 更新なし',
   'workspace.close': 'ワークスペースを閉じる',
   'workspace.copyInfo': 'セッション情報をコピー',
   'workspace.copied': 'コピーしました！',

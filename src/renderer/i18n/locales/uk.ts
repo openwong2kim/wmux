@@ -18,6 +18,7 @@ export const uk = {
 
   'workspace.agentAwaitingInput': 'Агент очікує введення',
   'workspace.agentIdle': 'Агент простоює',
+  'workspace.agentUnverifiable': 'Немає оновлень {time}',
   'workspace.close': 'Закрити робочий простір',
   'workspace.copyInfo': 'Скопіювати дані сесії',
   'workspace.copied': 'Скопійовано!',

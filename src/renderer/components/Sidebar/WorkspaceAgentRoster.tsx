@@ -1,4 +1,5 @@
 import { memo, useEffect, useMemo, useState } from 'react';
+import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '../../stores';
 import {
   createWorkspaceAgentRosterSelector,
@@ -12,6 +13,7 @@ import { FOCUS_RING } from '../focusRing';
 import { HIT_TARGET_24_ROW } from '../hitArea';
 import { timeAgo } from '../../utils/timeAgo';
 import { AGENT_STATUS_ICON } from './agentStatusIcon';
+import { formatStaleMinutes, selectUnverifiablePaneMinutes } from '../../stores/selectors/fleet';
 
 /** How long the just-stashed row stays highlighted. Long enough to catch the
  *  eye after the pane vanishes from the layout, short enough not to linger. */
@@ -244,6 +246,10 @@ function WorkspaceAgentRoster({ workspaceId, pulsingPaneId }: WorkspaceAgentRost
     [workspaceId],
   );
   const roster = useStore(selector);
+  // Per-PTY silence, in whole minutes, for the rows whose agent still claims to
+  // be running but has reported nothing for the hook-authority window. Keyed by
+  // ptyId, which is the id these rows already carry; verifiable panes are absent.
+  const unverifiableMinutesByPtyId = useStore(useShallow(selectUnverifiablePaneMinutes));
 
   if (roster.agentCount === 0 && roster.stashedCount === 0) return null;
 
@@ -275,6 +281,14 @@ function WorkspaceAgentRoster({ workspaceId, pulsingPaneId }: WorkspaceAgentRost
             const startsStashedGroup = !!row.stashed && !roster.rows[index - 1]?.stashed;
             const exited = row.stashedLiveness === 'exited';
             const statusIcon = AGENT_STATUS_ICON[row.status];
+            // Silence past the hook-authority window: the dot goes hollow (an
+            // amber ring, drawn with a border so forced-colors keeps it) and
+            // the row says how long. Only a row that still claims 'running' can
+            // be here — the status itself is untouched.
+            const unverifiableMinutes = unverifiableMinutesByPtyId[row.ptyId] ?? 0;
+            const unverifiableLabel = unverifiableMinutes
+              ? t('workspace.agentUnverifiable', { time: formatStaleMinutes(unverifiableMinutes) })
+              : undefined;
             // An exited stashed pane has no agent state left to report; saying
             // "session ended" is both the status and the reason the row looks
             // different from its neighbours.
@@ -294,7 +308,7 @@ function WorkspaceAgentRoster({ workspaceId, pulsingPaneId }: WorkspaceAgentRost
               ? (exited ? t('roster.recoverAction') : t('roster.unstashAction'))
               : undefined;
             const stashedAgo = row.stashedAt ? timeAgo(row.stashedAt) : undefined;
-            const rowAriaLabel = [primary, secondary, statusLabel, stashedAgo, detail, verb]
+            const rowAriaLabel = [primary, secondary, unverifiableLabel ?? statusLabel, stashedAgo, detail, verb]
               .filter(Boolean)
               .join(', ');
             return (
@@ -351,10 +365,14 @@ function WorkspaceAgentRoster({ workspaceId, pulsingPaneId }: WorkspaceAgentRost
                       only status signal with it — and dimming would say "dead"
                       about a pane whose whole claim is the opposite. The stash
                       is signalled by the archive glyph, the list position, and
-                      the label instead. */}
+                      the label instead. The one hollow rendition is silence
+                      (below): there the ring IS the claim being withdrawn, and
+                      it is drawn with a border, which forced-colors keeps. */}
                   <span
-                    className={`sidebar-dot h-1.5 w-1.5 flex-none rounded-full ${statusIcon.glowClass}`}
-                    style={{ backgroundColor: statusIcon.dotVar }}
+                    className={`sidebar-dot h-1.5 w-1.5 flex-none rounded-full ${
+                      unverifiableLabel ? 'sidebar-dot-unverifiable' : statusIcon.glowClass
+                    }`}
+                    style={unverifiableLabel ? undefined : { backgroundColor: statusIcon.dotVar }}
                   />
                   {/* Name and location on one line. The title truncates first;
                       the coordinate (w85-1 etc.) takes at most 40% before it

@@ -18,6 +18,7 @@ export const ms = {
 
   'workspace.agentAwaitingInput': 'Ejen perlukan input',
   'workspace.agentIdle': 'Ejen melahu',
+  'workspace.agentUnverifiable': 'Tiada kemas kini selama {time}',
   'workspace.close': 'Tutup ruang kerja',
   'workspace.copyInfo': 'Salin maklumat sesi',
   'workspace.copied': 'Disalin!',

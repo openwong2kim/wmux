@@ -18,6 +18,7 @@ export const fr = {
 
   'workspace.agentAwaitingInput': 'Agent attend une réponse',
   'workspace.agentIdle': 'Agent inactif',
+  'workspace.agentUnverifiable': 'Aucune mise à jour depuis {time}',
   'workspace.close': 'Fermer l\'espace de travail',
   'workspace.copyInfo': 'Copier les infos de session',
   'workspace.copied': 'Copié !',

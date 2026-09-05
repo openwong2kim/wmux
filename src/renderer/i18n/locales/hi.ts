@@ -18,6 +18,7 @@ export const hi = {
 
   'workspace.agentAwaitingInput': 'एजेंट को इनपुट चाहिए',
   'workspace.agentIdle': 'एजेंट निष्क्रिय',
+  'workspace.agentUnverifiable': '{time} से कोई अपडेट नहीं',
   'workspace.close': 'कार्यक्षेत्र बंद करें',
   'workspace.copyInfo': 'सेशन जानकारी कॉपी करें',
   'workspace.copied': 'कॉपी हो गया!',
