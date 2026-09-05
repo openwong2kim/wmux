@@ -1185,6 +1185,25 @@ describe('DaemonNotificationRouter — M1 side-effect replay', () => {
       }
     });
 
+    it('falls back to agent.stop_failure for a bare status:"error" — never a plain stop', async () => {
+      // No hookKind (an older daemon, or a detector-sourced error). Mapping it
+      // onto 'agent.stop' would report a turn that DIED as one that finished.
+      const { router: nr, captured } = makeRouter();
+      try {
+        captured.agent!({
+          sessionId: 'pty-a',
+          event: { agent: 'Claude Code', status: 'error', message: 'Turn failed (API error)' },
+        });
+        await flushMicrotasks();
+        expect(pollLifecycle()[0]).toMatchObject({
+          kind: 'agent.stop_failure',
+          source: 'detector',
+        });
+      } finally {
+        nr.stop();
+      }
+    });
+
     it('falls back to the status mapping when no hookKind rides along', async () => {
       const { router: nr, captured } = makeRouter();
       try {

@@ -140,6 +140,13 @@ function lifecycleKindFor(ev: AgentEventPayload): AgentLifecycleKind {
   ) {
     return ev.hookKind;
   }
+  // The fallback reads the detector's status vocabulary. 'error' is what the
+  // daemon ships for a turn that died on an API error (eventShapeFor), and an
+  // event can reach here carrying it with no hookKind — an older daemon, or a
+  // detector-sourced error. Mapping that to 'agent.stop' told an orchestrator
+  // the turn FINISHED, which is the exact confusion `agent.stop_failure` was
+  // added to prevent.
+  if (ev.status === 'error') return 'agent.stop_failure';
   return ev.status === 'awaiting_input' ? 'agent.awaiting_input' : 'agent.stop';
 }
 
