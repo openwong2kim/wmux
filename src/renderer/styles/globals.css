@@ -810,13 +810,28 @@ select option {
 
 /* DESIGN.md, no-area-washes rule: "the only permitted wash is the danger
  * needs-input row" — this is that row, and nothing else in the sidebar may
- * fill an area. The :hover pair keeps the row's own hover-background utility
- * (equal specificity, earlier in the cascade) from repainting the wash away.
- * Declared after .sidebar-row-active so an active row that also needs you
- * shows the danger wash rather than the neutral selection gradient. */
-.sidebar-row-needs,
-.sidebar-row-needs:hover {
+ * fill an area. Both selectors carry `.sidebar-row` as well, so the wash beats
+ * the row's own `hover:bg-*` utility and .sidebar-row-active on SPECIFICITY
+ * rather than on source order — nothing guarantees where a utility layer lands
+ * relative to this file. */
+.sidebar-row.sidebar-row-needs {
   background: color-mix(in srgb, var(--accent-red) 9%, transparent);
+}
+
+/* The row still has to answer the pointer: a hover that repaints nothing reads
+ * as a dead row. A slightly deeper wash, not a different colour. */
+.sidebar-row.sidebar-row-needs:hover {
+  background: color-mix(in srgb, var(--accent-red) 14%, transparent);
+}
+
+/* Selected AND blocked. The wash replaces the selection gradient, so the inset
+ * top highlight is all that is left to say which row you are in — restated
+ * here (identical to .sidebar-row-active's) so the pair is declared, not
+ * inherited by accident. */
+.sidebar-row-active.sidebar-row-needs {
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, var(--text-main) 7%, transparent),
+    0 1px 3px color-mix(in srgb, var(--bg-base) 60%, transparent);
 }
 
 /* Status dots. Color comes from the inline background (set per status in
