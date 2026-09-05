@@ -60,7 +60,7 @@ export const pl = {
   'taskStatus.cancelled': 'Anulowane',
   'missions.label': 'Zadania',
   'missions.openCount': 'otwarte: {count}',
-  'missions.needYouCount': '{count} czeka na Ciebie',
+  'missions.finishedCount': 'ukończone: {count}',
   'missions.summaryTooltip': 'Otwórz zlecone zadania w decku Agent',
 
   // Sidebar — Company mode
@@ -1668,6 +1668,9 @@ export const pl = {
   'deck.ledgerUnavailable': 'Rejestr niedostępny',
   'deck.ledgerMore': 'jeszcze {count}',
   'deck.ledgerShowLess': 'Pokaż mniej',
+  'deck.ledgerShowingOf': 'pokazano {shown} z {total}',
+  'deck.ledgerFinished': 'Ukończone ({count})',
+  'deck.ledgerJumpToTask': 'Przejdź do tego zadania',
   'deck.approvalCountdown': 'Automatyczne odrzucenie za {seconds} s',
   'deck.vendorTagClaudePty': 'terminal',
   'deck.vendorTagClaude': 'sdk',

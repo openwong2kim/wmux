@@ -7,16 +7,22 @@
 // to hold status at all. Two lists of the same tasks, in two colour grammars,
 // on opposite edges of the window.
 //
-// What is left here is one line: how many tasks are open, how many need you,
-// and a click that takes you to the place that owns them (the deck's Agent tab,
-// with the ledger panel scrolled into view). The per-task rows live in
-// DeckLedgerPanel, which carries the `#` channel jump those rows had, so no
-// entry point was lost.
+// What is left here is one line — how many tasks are open — and a click that
+// takes you to the place that owns them: the workspace whose ledger holds
+// them, the deck, its Agent tab. The per-task rows live in DeckLedgerPanel,
+// which carries the `#` channel jump and the workspace jump those rows had, so
+// no entry point was lost.
 //
-// With zero tasks it renders NOTHING. A header reading "Tasks · 0 open" is a
-// dead gauge (DESIGN.md: vitals render only when nonzero), and the fan-out
-// entry point that justified the old always-there empty line moved to the
-// agent toolbar long ago.
+// It does NOT state "N need you". That fact already has its two permitted
+// renditions (the titlebar vitals chip and the deck's red dots, DESIGN.md
+// attention grammar), and a third one here would have had to be rolled up from
+// the pane mirror while the deck rolls its dots up from the ledger — two
+// derivations of one fact, free to disagree.
+//
+// With zero tasks it renders NOTHING (a "Tasks · 0 open" row is a dead gauge).
+// When only finished tasks are left it says so, and the click opens the deck's
+// finished disclosure — that is the only way back to a closed task's mission
+// channel now.
 //
 // Lifetime (owner policy): a task counts only while its fan-out workspace is
 // alive. When the workspace is gone the task goes with it, and the record stays
@@ -27,9 +33,7 @@ import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
 import type { WorkTask } from '../../../shared/workTask';
-import { selectAllWorkspaceAgentStatus } from '../../stores/selectors/fleet';
-import { summarizeMissions } from '../../stores/selectors/missions';
-import { TASK_DOT_COLOR } from '../shared/taskStatusDot';
+import { ownerForTaskLedger, summarizeMissions } from '../../stores/selectors/missions';
 import { FOCUS_RING } from '../focusRing';
 
 /**
@@ -82,16 +86,30 @@ function useLiveMissions(): WorkTask[] {
 }
 
 /**
- * Take the operator to the surface that OWNS the tasks: open the deck, select
- * its Agent tab, and put the ledger panel in view. Exported so the click is
- * testable without a DOM: the two store actions are the whole navigation, and
- * the scroll is a best-effort courtesy on top (the panel is pinned chrome, so
- * on a normal-height deck it is already on screen).
+ * Take the operator to the surface that OWNS the tasks: the workspace whose
+ * ledger holds them, the deck, its Agent tab, and — for a finished-only
+ * summary — the finished disclosure the closed tasks live in.
+ *
+ * The workspace hop is the point. The summary counts every workspace's tasks
+ * while the deck panel reads one workspace's ledger, so without it "Tasks · 3
+ * open" could open an empty panel. Exported for the test: the store calls ARE
+ * the navigation, and the scroll is a best-effort courtesy on top.
  */
-export function openTaskLedger(): void {
+export function openTaskLedger(wanted: WorkTask['status'] = 'open'): void {
   const state = useStore.getState();
+  const liveIds = new Set(state.workspaces.map((w) => w.id));
+  const owner = ownerForTaskLedger(
+    state.missionsByWorkspace,
+    state.activeWorkspaceId,
+    wanted,
+    (task) => !task.paneGroupId || liveIds.has(task.paneGroupId),
+  );
+  if (owner) state.setActiveWorkspace(owner);
   state.setChannelDockVisible(true);
   state.setActiveDeckTab('commander');
+  // A finished-only line has nothing to show in the open list — it is pointing
+  // at the disclosure, so it opens it.
+  state.setDeckLedgerFinishedExpanded(wanted === 'closed');
   if (typeof requestAnimationFrame !== 'function') return;
   requestAnimationFrame(() => {
     document
@@ -103,50 +121,45 @@ export function openTaskLedger(): void {
 function MissionsSection(): React.ReactElement | null {
   const t = useT();
   const missions = useLiveMissions();
-  // The same per-workspace roll-up the titlebar vitals and the sidebar dots
-  // read, so "N need you" here means what it means everywhere else.
-  const agentStatusByWorkspace = useStore(useShallow(selectAllWorkspaceAgentStatus));
-  const summary = useMemo(
-    () => summarizeMissions(missions, agentStatusByWorkspace),
-    [missions, agentStatusByWorkspace],
-  );
+  const summary = useMemo(() => summarizeMissions(missions), [missions]);
 
-  // No tasks, no header. See the file note: a zero row is a dead gauge.
-  if (missions.length === 0) return null;
+  // No tasks at all, no line. See the file note: a zero row is a dead gauge,
+  // and with the line gone the command palette is the way to the cleanup scan.
+  if (summary.open === 0 && summary.finished === 0) return null;
+  // Open work is what the line is for; a finished-only line still says so,
+  // because the closed tasks' mission channels are reachable from the deck's
+  // finished disclosure and nowhere else.
+  const wanted: WorkTask['status'] = summary.open > 0 ? 'open' : 'closed';
 
   return (
     <div className="mb-1 flex items-center" data-missions-section>
       <button
         type="button"
         className={`min-w-0 flex-1 flex items-center gap-1.5 px-4 pt-1 pb-1 text-[9px] font-mono font-semibold tracking-widest text-[var(--text-muted)] uppercase hover:text-[var(--text-subtle)] transition-colors ${FOCUS_RING}`}
-        onClick={openTaskLedger}
+        onClick={() => openTaskLedger(wanted)}
         title={t('missions.summaryTooltip')}
         data-missions-summary
         data-open-count={summary.open}
-        data-need-you-count={summary.needYou}
+        data-finished-count={summary.finished}
       >
         <span>{t('missions.label')}</span>
         <span aria-hidden="true">·</span>
         <span>{t('missions.openCount', { count: summary.open })}</span>
-        {/* "0 need you" is the dead gauge this whole section is getting rid of —
-            the clause appears only when somebody is actually waiting. */}
-        {summary.needYou > 0 && (
+        {/* Only when the open list is empty: otherwise the line would carry a
+            count nobody is going to act on next. */}
+        {summary.open === 0 && summary.finished > 0 && (
           <>
             <span aria-hidden="true">·</span>
-            <span
-              className="normal-case tracking-normal font-semibold"
-              style={{ color: TASK_DOT_COLOR.attention }}
-              data-missions-need-you
-            >
-              {t('missions.needYouCount', { count: summary.needYou })}
+            <span data-missions-finished>
+              {t('missions.finishedCount', { count: summary.finished })}
             </span>
           </>
         )}
       </button>
-      {/* C-4: the worktree cleanup scan has no entry point outside the command
-          palette, and it stays on this header — the orphaned directories and
-          unmaterialized tasks it finds are exactly what you have when the
-          ledger shows nothing left to do. */}
+      {/* C-4: the worktree cleanup scan rides this line — the orphaned
+          directories and unmaterialized tasks it finds are exactly what you
+          have when the ledger shows nothing left to do. With no tasks at all
+          the line is gone and the command palette is the way in. */}
       <button
         type="button"
         className={`shrink-0 pr-4 pl-1 pt-1 pb-1 text-[9px] font-mono uppercase tracking-widest text-[var(--text-subtle)] hover:text-[var(--accent-blue)] transition-colors ${FOCUS_RING}`}

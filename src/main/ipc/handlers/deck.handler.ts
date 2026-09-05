@@ -2317,7 +2317,11 @@ export function registerDeckHandler(
       try {
         const now = Date.now();
         return buildDeckLedgerSummary({
-          entries: getTaskLedger().list({ ownerWorkspaceId: workspaceId, openOnly: true }),
+          // Everything the ledger still holds for this owner, open AND
+          // terminal: buildDeckLedgerSummary splits them. The finished half is
+          // what the panel's "Finished (N)" disclosure lists, and its mission
+          // channel is otherwise unreachable once a task closes.
+          entries: getTaskLedger().list({ ownerWorkspaceId: workspaceId }),
           panesFor: (taskWorkspaceId) =>
             freshSnapshotPanes(
               getWorkspaceMirror().getFleetSnapshot(taskWorkspaceId),

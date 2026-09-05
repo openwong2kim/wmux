@@ -20,6 +20,7 @@
 // mentioned workspaces, then post the pinned mentions).
 
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
 import { tokenAttrs } from '../../themes';
@@ -201,16 +202,26 @@ export function CommanderViewContent({
   // (DESIGN.md Layout Contract). The ledger summary is built in main from the
   // ledger alone and has no channel ids, so the mapping comes from the task
   // store here.
-  const missionsByWorkspace = useStore((s) => s.missionsByWorkspace);
-  const channelByTaskId = useMemo(
-    () => selectMissionChannelIds(missionsByWorkspace),
-    [missionsByWorkspace],
-  );
+  // Shallow-compared: the map is rebuilt on every mission poll tick, and a new
+  // object identity for the same ids would re-render the whole deck every 15 s.
+  const channelByTaskId = useStore(useShallow((s) => selectMissionChannelIds(s.missionsByWorkspace)));
   const openMissionChannel = useCallback((channelId: string) => {
     // Reuse the existing channel route — setActiveChannel opens the dock and
     // selects the channel. No new routing.
     useStore.getState().setActiveChannel(channelId);
   }, []);
+  const jumpToTaskWorkspace = useCallback((taskWorkspaceId: string) => {
+    useStore.getState().setActiveWorkspace(taskWorkspaceId);
+  }, []);
+  // Main pushed a ledger transition — a task the brain just started has a row
+  // here before the 15 s mission poll knows its channel. Re-pull once so the
+  // `#` lands with the row instead of up to fifteen seconds later.
+  const onLedgerPush = useCallback(() => {
+    if (!activeWorkspaceId) return;
+    void useStore.getState().refreshMissions(activeWorkspaceId);
+  }, [activeWorkspaceId]);
+  const finishedExpanded = useStore((s) => s.deckLedgerFinishedExpanded);
+  const setFinishedExpanded = useStore((s) => s.setDeckLedgerFinishedExpanded);
   // Delegated work makes the rail worth opening: the ledger panel says a task
   // is outstanding, and the rail is where its turn reports land. Once only —
   // after that the collapse is the operator's to own again, so a later
@@ -336,6 +347,10 @@ export function CommanderViewContent({
           onOpenCountChange={onLedgerOpenCount}
           channelByTaskId={channelByTaskId}
           onOpenChannel={openMissionChannel}
+          onJumpToTaskWorkspace={jumpToTaskWorkspace}
+          finishedExpanded={finishedExpanded}
+          onToggleFinished={setFinishedExpanded}
+          onLedgerPush={onLedgerPush}
         />
         {/* One control row: the Fleet roster and the automation controls. */}
         {fleetSlot}
@@ -468,6 +483,10 @@ export function CommanderViewContent({
         onOpenCountChange={onLedgerOpenCount}
         channelByTaskId={channelByTaskId}
         onOpenChannel={openMissionChannel}
+        onJumpToTaskWorkspace={jumpToTaskWorkspace}
+        finishedExpanded={finishedExpanded}
+        onToggleFinished={setFinishedExpanded}
+        onLedgerPush={onLedgerPush}
       />
       {/* P2① — Fleet roster pinned above the thread (does not scroll with it). */}
       {fleetSlot}

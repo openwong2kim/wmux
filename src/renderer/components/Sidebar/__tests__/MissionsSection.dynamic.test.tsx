@@ -1,9 +1,10 @@
 // @vitest-environment jsdom
 //
 // The sidebar's Tasks line after the 2026-09-05 de-duplication: ONE summary
-// row, no per-task rows (they live in the deck's ledger panel), nothing at all
-// when there are no tasks, and a click that lands on the surface that owns
-// them.
+// row, no per-task rows (they live in the deck's ledger panel), no attention
+// count (that fact already has its two renditions), nothing at all when there
+// are no tasks, and a click that lands on the workspace whose ledger actually
+// holds them.
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { createElement, act } from 'react';
@@ -23,9 +24,10 @@ beforeEach(() => {
   useStore.setState({
     missionsByWorkspace: {},
     workspaces: [],
-    surfaceAgentStatus: {},
+    activeWorkspaceId: undefined,
     channelDockVisible: false,
     activeDeckTab: 'channels',
+    deckLedgerFinishedExpanded: false,
   });
 });
 afterEach(() => {
@@ -72,6 +74,11 @@ async function render(): Promise<void> {
   });
 }
 
+async function click(selector: string): Promise<void> {
+  const el = container.querySelector(selector) as HTMLButtonElement;
+  await act(async () => { el.click(); });
+}
+
 describe('MissionsSection summary', () => {
   it('renders nothing when there are no tasks (no dead header)', async () => {
     await render();
@@ -82,6 +89,7 @@ describe('MissionsSection summary', () => {
   it('renders ONE summary row and no per-task rows', async () => {
     useStore.setState({
       workspaces: [workspace('parent'), workspace('child-1'), workspace('child-2')],
+      activeWorkspaceId: 'parent',
       missionsByWorkspace: {
         parent: [
           mission({ id: 't1', title: 'one', paneGroupId: 'child-1' }),
@@ -97,51 +105,113 @@ describe('MissionsSection summary', () => {
     // and so is the `#` channel link that used to sit on each of them.
     expect(container.querySelector('[data-mission-row]')).toBeNull();
     expect(container.querySelector('[data-mission-channel-link]')).toBeNull();
-    expect(container.querySelector('[data-missions-done-group]')).toBeNull();
     // The titles themselves are not restated here — that is the deck's job.
     expect(container.textContent).not.toContain('one');
   });
 
-  it('keeps the Clean up action on the summary header', async () => {
-    useStore.setState({
-      workspaces: [workspace('parent')],
-      missionsByWorkspace: { parent: [mission({ id: 't1', title: 'one' })] },
-    });
-    await render();
-    expect(container.querySelector('[data-missions-cleanup]')).not.toBeNull();
-  });
-
-  it('states "need you" only when somebody is actually waiting', async () => {
+  // Attention already has its two permitted renditions (titlebar chip + the
+  // deck's red dots), and this one would have been rolled up from the pane
+  // mirror while the deck rolls up from the ledger.
+  it('never states an attention count, even with a worker awaiting input', async () => {
     useStore.setState({
       workspaces: [workspace('parent'), workspace('child-1')],
+      activeWorkspaceId: 'parent',
+      surfaceAgentStatus: { 'pty-child-1': 'awaiting_input' },
       missionsByWorkspace: {
         parent: [mission({ id: 't1', title: 'one', paneGroupId: 'child-1' })],
       },
     });
     await render();
     expect(container.querySelector('[data-missions-need-you]')).toBeNull();
-
-    await act(async () => {
-      useStore.setState({ surfaceAgentStatus: { 'pty-child-1': 'awaiting_input' } });
-    });
-    const needYou = container.querySelector('[data-missions-need-you]');
-    expect(needYou).not.toBeNull();
-    expect(
-      container.querySelector('[data-missions-summary]')?.getAttribute('data-need-you-count'),
-    ).toBe('1');
+    expect(container.textContent).not.toMatch(/need you/i);
   });
 
-  it('opens the deck on its Agent tab when the summary is clicked', async () => {
+  it('keeps the Clean up action on the summary line', async () => {
     useStore.setState({
       workspaces: [workspace('parent')],
+      activeWorkspaceId: 'parent',
       missionsByWorkspace: { parent: [mission({ id: 't1', title: 'one' })] },
     });
     await render();
-    const summary = container.querySelector('[data-missions-summary]') as HTMLButtonElement;
-    await act(async () => {
-      summary.click();
+    expect(container.querySelector('[data-missions-cleanup]')).not.toBeNull();
+  });
+
+  it('states the finished count only once nothing is open', async () => {
+    useStore.setState({
+      workspaces: [workspace('parent')],
+      activeWorkspaceId: 'parent',
+      missionsByWorkspace: {
+        parent: [
+          mission({ id: 't1', title: 'one' }),
+          mission({ id: 't2', title: 'two', status: 'closed', closedAt: 1 }),
+        ],
+      },
     });
-    expect(useStore.getState().channelDockVisible).toBe(true);
-    expect(useStore.getState().activeDeckTab).toBe('commander');
+    await render();
+    expect(container.querySelector('[data-missions-finished]')).toBeNull();
+
+    await act(async () => {
+      useStore.setState({
+        missionsByWorkspace: {
+          parent: [mission({ id: 't2', title: 'two', status: 'closed', closedAt: 1 })],
+        },
+      });
+    });
+    const summary = container.querySelector('[data-missions-summary]');
+    expect(summary?.getAttribute('data-open-count')).toBe('0');
+    expect(summary?.getAttribute('data-finished-count')).toBe('1');
+    expect(container.querySelector('[data-missions-finished]')).not.toBeNull();
+    // Cleanup is still reachable — that state is exactly when it matters.
+    expect(container.querySelector('[data-missions-cleanup]')).not.toBeNull();
+  });
+
+  it('opens the deck on its Agent tab when the active workspace owns the tasks', async () => {
+    useStore.setState({
+      workspaces: [workspace('parent')],
+      activeWorkspaceId: 'parent',
+      missionsByWorkspace: { parent: [mission({ id: 't1', title: 'one' })] },
+    });
+    await render();
+    await click('[data-missions-summary]');
+    const state = useStore.getState();
+    expect(state.channelDockVisible).toBe(true);
+    expect(state.activeDeckTab).toBe('commander');
+    // No hop — the deck was already pointed at the ledger that holds them.
+    expect(state.activeWorkspaceId).toBe('parent');
+    expect(state.deckLedgerFinishedExpanded).toBe(false);
+  });
+
+  // The dead link: the summary counts every workspace, the deck panel reads
+  // one. Clicking "1 open" from a workspace with no tasks used to open an
+  // empty panel.
+  it('switches to the workspace that owns the tasks first', async () => {
+    useStore.setState({
+      workspaces: [workspace('parent'), workspace('other')],
+      activeWorkspaceId: 'other',
+      missionsByWorkspace: {
+        parent: [mission({ id: 't1', title: 'one', createdAt: 5 })],
+      },
+    });
+    await render();
+    await click('[data-missions-summary]');
+    const state = useStore.getState();
+    expect(state.activeWorkspaceId).toBe('parent');
+    expect(state.activeDeckTab).toBe('commander');
+    expect(state.channelDockVisible).toBe(true);
+  });
+
+  it('opens the deck finished disclosure when only finished tasks are left', async () => {
+    useStore.setState({
+      workspaces: [workspace('parent'), workspace('other')],
+      activeWorkspaceId: 'other',
+      missionsByWorkspace: {
+        parent: [mission({ id: 't1', title: 'one', status: 'closed', closedAt: 1 })],
+      },
+    });
+    await render();
+    await click('[data-missions-summary]');
+    const state = useStore.getState();
+    expect(state.activeWorkspaceId).toBe('parent');
+    expect(state.deckLedgerFinishedExpanded).toBe(true);
   });
 });

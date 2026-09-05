@@ -14,6 +14,7 @@
 // never as markup or instructions.
 
 import type { LedgerEntry, LedgerStatus } from '../../shared/ledger';
+import { isOpenLedgerStatus } from '../../daemon/ledger/TaskLedger';
 import type { AgentStatus } from '../../shared/types';
 import type { FleetSnapshot } from '../../shared/workspaceMirror';
 
@@ -51,6 +52,19 @@ export interface DeckLedgerSummary {
   /** Open tasks the owner has — NOT capped by LEDGER_SUMMARY_ROW_CAP. */
   openCount: number;
   rows: DeckLedgerRow[];
+  /**
+   * Terminal tasks (completed / failed / cancelled) still inside the ledger's
+   * retention window, newest first and capped like `rows`. Optional: a caller
+   * that asked for open entries only gets no field at all, which is not the
+   * same claim as "nothing has finished".
+   *
+   * These exist because closing a task used to take its mission channel out of
+   * reach — the sidebar's finished-tasks disclosure was the only way back to
+   * the record, and it went away with the sidebar rows.
+   */
+  finishedRows?: DeckLedgerRow[];
+  /** Finished tasks the owner has — NOT capped, like `openCount`. */
+  finishedCount?: number;
   /** Main's clock when the summary was built. */
   ts: number;
   /**
@@ -169,7 +183,7 @@ export interface DeckLedgerSummaryInput {
 export function buildDeckLedgerSummary(input: DeckLedgerSummaryInput): DeckLedgerSummary {
   const now = (input.now ?? Date.now)();
   const sorted = [...input.entries].sort((a, b) => b.updatedAt - a.updatedAt);
-  const rows: DeckLedgerRow[] = sorted.slice(0, LEDGER_SUMMARY_ROW_CAP).map((e) => ({
+  const toRow = (e: LedgerEntry): DeckLedgerRow => ({
     id: e.id,
     // A title scrubbed to nothing falls back to the id: the row must stay
     // identifiable, and the id is the one field the panel already trusts.
@@ -180,8 +194,22 @@ export function buildDeckLedgerSummary(input: DeckLedgerSummaryInput): DeckLedge
     lastLine: sanitizeLedgerLine(e.summary),
     updatedAt: e.updatedAt,
     ageMs: Math.max(0, now - e.updatedAt),
-  }));
-  return { openCount: sorted.length, rows, ts: now };
+  });
+  // The caller decides what it asked for; this splits what it got. A caller
+  // that filtered to open entries sees no finished half at all (the fields stay
+  // absent), so "I did not ask" never renders as "nothing has finished".
+  const open = sorted.filter((e) => isOpenLedgerStatus(e.status));
+  const finished = sorted.filter((e) => !isOpenLedgerStatus(e.status));
+  const summary: DeckLedgerSummary = {
+    openCount: open.length,
+    rows: open.slice(0, LEDGER_SUMMARY_ROW_CAP).map(toRow),
+    ts: now,
+  };
+  if (finished.length > 0) {
+    summary.finishedRows = finished.slice(0, LEDGER_SUMMARY_ROW_CAP).map(toRow);
+    summary.finishedCount = finished.length;
+  }
+  return summary;
 }
 
 /** Trailing-edge coalesce window for the ledger push. */

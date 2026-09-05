@@ -68,7 +68,7 @@ export const en = {
   // deck's ledger panel (DESIGN.md: the left sidebar is navigation only).
   'missions.label': 'Tasks',
   'missions.openCount': '{count} open',
-  'missions.needYouCount': '{count} need you',
+  'missions.finishedCount': '{count} finished',
   'missions.summaryTooltip': 'Open the delegated tasks in the Agent deck',
 
   // Sidebar — Company mode
@@ -1680,6 +1680,11 @@ export const en = {
   // pinned above the conversation and must not grow until it owns the deck.
   'deck.ledgerMore': '+{count} more',
   'deck.ledgerShowLess': 'Show less',
+  // The ledger read is capped, so an expanded list is not always the whole
+  // ledger — say what is on screen rather than implying completeness.
+  'deck.ledgerShowingOf': 'showing {shown} of {total}',
+  'deck.ledgerFinished': 'Finished ({count})',
+  'deck.ledgerJumpToTask': 'Go to this task',
   'deck.approvalCountdown': 'Auto-reject in {seconds}s',
   'deck.vendorTagClaudePty': 'terminal',
   'deck.vendorTagClaude': 'sdk',
