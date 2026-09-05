@@ -160,6 +160,7 @@ export default function WorkspaceProfileModal({ workspace, onClose }: WorkspaceP
                     <button
                       className="text-[var(--text-subtle)] hover:text-[var(--accent-red)] text-[12px] px-1 flex-shrink-0"
                       title={t('workspaceProfile.removeRow')}
+                      aria-label={t('workspaceProfile.removeRow')}
                       onClick={() => removeRow(row.id)}
                     >
                       ✕

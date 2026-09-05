@@ -87,8 +87,12 @@ export default function PresetPicker({ onClose, anchorStyle }: PresetPickerProps
         className="w-full text-left px-3 py-1.5 hover:bg-[var(--bg-surface)] text-[var(--text-main)] transition-colors"
         onClick={handleBrowseFolder}
       >
+        {/* Every other row in this menu is label + description, so dropping this
+            one's sub-line entirely left it reading as a section header. It says
+            something now instead of restating the label: the old line was "Pick
+            a folder as workspace" in a menu whose only job is making one. */}
         <div className="font-semibold">{t('sidebar.browseFolder')}</div>
-        <div className="text-[var(--text-muted)] text-[10px]">{t('sidebar.pickFolderAsWorkspace')}</div>
+        <div className="text-[var(--text-muted)] text-[10px]">{t('sidebar.browseFolderDesc')}</div>
       </button>
 
       <div className="border-t border-[var(--bg-surface)] my-0.5" />

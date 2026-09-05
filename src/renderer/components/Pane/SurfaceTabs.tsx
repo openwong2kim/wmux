@@ -12,6 +12,7 @@ import { computePaneAutoName, paneDisplayName } from '../../utils/paneNaming';
 import { findPane } from '../../../shared/paneUtils';
 import PaneDragGrip from './PaneDragGrip';
 import { FOCUS_RING } from '../focusRing';
+import { HIT_TARGET_24 } from '../hitArea';
 import { IconSplitRight, IconSplitDown, IconBrowser, IconExternalLink, IconEyeOff, IconPencil } from '../icons';
 import { displayPath } from '../../utils/displayPath';
 import { workspaceColorHex } from '../../../shared/workspaceColors';
@@ -704,11 +705,23 @@ export default function SurfaceTabs({
               {s.title || t('surface.terminal')}
             </span>
           )}
-          {/* X close button — always visible, not just on hover */}
+          {/* X close button — always visible, not just on hover. The glyph is
+              ~7px and now sits in a real 24px box. The only refund is `-mr-1.5`,
+              into the tab cell's own 12px right padding: a LEFT refund would put
+              the box over the last 2px of the tab title — and over the rename
+              input when the tab is being renamed — so a click meant for the end
+              of the name would close the tab instead. The 36px strip absorbs
+              the height, so no vertical refund is needed either. */}
           <button
-            className="text-[var(--text-subtle)] hover:text-[var(--accent-red)] transition-colors ml-1 leading-none"
+            data-surface-tab-close
+            className={`${HIT_TARGET_24} -mr-1.5 text-[var(--text-subtle)] hover:text-[var(--accent-red)] transition-colors leading-none`}
             onClick={(e) => { e.stopPropagation(); onClose(s.id); }}
-            title={t('surface.closeTab')}
+            // A strip of four buttons all saying "Close tab" says nothing about
+            // WHICH tab closes, so both the tooltip and the accessible name
+            // carry the tab's own label — and they say the same thing, which is
+            // the point of having two of them.
+            title={t('surface.closeTabNamed', { name: s.title || t('surface.terminal') })}
+            aria-label={t('surface.closeTabNamed', { name: s.title || t('surface.terminal') })}
             {...tokenAttrs('danger', 'accent')}
           >
             ✕

@@ -15,6 +15,7 @@ import { tokenAttrs } from '../../themes';
 import { collapseDirection } from './sidebarGlyphs';
 import { IconPlus, IconChevronDir } from '../icons';
 import { FOCUS_RING } from '../focusRing';
+import { HIT_TARGET_24 } from '../hitArea';
 import PluginPanels from '../../plugins/PluginPanels';
 import CompanyPanel from './CompanyPanel';
 import { COMPANY_MODE_ENABLED } from '../../../shared/featureFlags';
@@ -224,9 +225,11 @@ export default function Sidebar() {
       <div className={`flex items-center justify-between h-9 shrink-0 px-4 border-t border-[var(--bg-surface)] text-[11px] font-mono text-[var(--text-muted)] ${sidebarPosition === 'right' ? 'flex-row-reverse' : ''}`} style={{ borderColor: 'var(--border-soft)' }} {...tokenAttrs('textMuted', 'text')}>
         <span>{workspaces.length} {t('sidebar.workspaces')}</span>
         <button
-          className={`flex items-center justify-center w-5 h-5 rounded text-[var(--text-muted)] hover:text-[var(--text-main)] hover:bg-[rgba(var(--bg-surface-rgb),0.6)] transition-colors duration-150 ${FOCUS_RING}`}
+          data-sidebar-collapse
+          className={`${HIT_TARGET_24} rounded text-[var(--text-muted)] hover:text-[var(--text-main)] hover:bg-[rgba(var(--bg-surface-rgb),0.6)] transition-colors duration-150 ${FOCUS_RING}`}
           onClick={() => useStore.getState().toggleSidebar()}
           title={t('sidebar.hideTooltip')}
+          aria-label={t('sidebar.hideTooltip')}
         >
           <IconChevronDir dir={collapseDirection(sidebarPosition)} />
         </button>

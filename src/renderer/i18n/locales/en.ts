@@ -25,7 +25,7 @@ export const en = {
   'sidebar.screenOffAccessibility': 'Grant Accessibility permission to wmux (System Settings → Privacy & Security → Accessibility).',
   'sidebar.screenOffFailed': 'Could not toggle the built-in display.',
   'sidebar.browseFolder': 'Browse Folder…',
-  'sidebar.pickFolderAsWorkspace': 'Pick a folder as workspace',
+  'sidebar.browseFolderDesc': 'Choose any folder on disk',
   'sidebar.emptyWorkspace': 'Empty',
   'sidebar.blankSinglePane': 'Blank single pane',
 
@@ -349,6 +349,7 @@ export const en = {
   'surface.remoteTooltip': 'Remote terminal — {path}',
   'surface.remoteTerminal': 'Remote terminal',
   'surface.closeTab': 'Close tab',
+  'surface.closeTabNamed': 'Close {name}',
 
   // Search
   'search.placeholder': 'Search...',
@@ -1537,8 +1538,6 @@ export const en = {
   'deck.expandDock': 'Expand dock',
   'deck.hasSignal': 'something in here needs you',
   'deck.commanderPlaceholder': 'Tell the orchestrator, or @mention panes…',
-  'deck.commanderEmpty':
-    'Ask the orchestrator to run your agents, or @mention agent panes to command them directly.',
   'deck.jumpToPane': 'Jump to this pane',
   // Bridge P2① — Fleet roster pinned above the orchestrator thread.
   'deck.fleetLabel': 'Fleet',
@@ -1608,7 +1607,7 @@ export const en = {
   // Command Deck — the control bar (Mode·Loop·Schedules) is component-owned.
   // Command Deck P3d — orchestrator schedules (reboot-surviving).
   'deck.schedules': 'Schedules',
-  'deck.schedulesEmpty': 'No schedules yet. Schedules survive reboots, and the orchestrator runs them when the time comes.',
+  'deck.schedulesEmpty': 'No schedules yet. Schedules survive reboots.',
   'deck.schedulePromptPlaceholder': 'What should the orchestrator do?',
   'deck.scheduleRepeat': 'Repeat',
   'deck.scheduleRepeatNone': 'Once',

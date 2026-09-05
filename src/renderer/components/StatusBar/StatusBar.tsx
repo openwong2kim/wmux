@@ -7,6 +7,7 @@ import type { Notification, Workspace } from '../../../shared/types';
 import { StatusClockUsage, StatusClockTime } from './StatusClock';
 import { selectActiveWorkspaceSummary } from '../../stores/selectors/workspaceProjections';
 import { tokenAttrs } from '../../themes';
+import { HIT_TARGET_24 } from '../hitArea';
 import { IconGear } from '../icons';
 import { selectFleetPanes, sortFleetPanes, countNeedsAttention } from '../../stores/selectors/fleet';
 import PluginStatusBarWidgets from '../../plugins/PluginStatusBarWidgets';
@@ -222,7 +223,10 @@ export default function StatusBar() {
             type="button"
             data-statusbar-needs
             onClick={jumpToUrgent}
-            className="flex items-center gap-1.5 font-semibold text-[var(--accent-red)] hover:opacity-80 transition-opacity"
+            // min-h only: the chip is text, so it is already wide enough — it
+            // was the 13px line-height that put it under the pointer floor, and
+            // the 36px titlebar absorbs the extra height with no layout change.
+            className="flex items-center gap-1.5 min-h-[24px] font-semibold text-[var(--accent-red)] hover:opacity-80 transition-opacity"
             title={t('strip.needsYouTooltip') || 'Jump to the pane that needs you'}
             {...tokenAttrs('danger', 'text')}
           >
@@ -238,9 +242,21 @@ export default function StatusBar() {
         {/* A5: 메모리 + 시각(시계 커서 의존) — 분리된 소형 컴포넌트. */}
         <StatusClockTime />
         <button
+          type="button"
+          data-statusbar-settings
           onClick={toggleSettingsPanel}
-          className="text-[var(--text-muted)] hover:text-[var(--text-main)] transition-colors ml-1"
+          // The gear drew a 13px icon with no box at all. Plain HIT_TARGET_24,
+          // no refund: this strip is 36px tall and right-aligned with room to
+          // spare, and a side refund here would eat half of the cluster's gap-3
+          // rhythm and reach into the clock beside it. It replaces the old
+          // `ml-1`, which the 24px box now provides on its own.
+          className={`${HIT_TARGET_24} text-[var(--text-muted)] hover:text-[var(--text-main)] transition-colors`}
           title={t('statusBar.settingsTooltip')}
+          // `title` is not an accessible name here: the button's only child is
+          // an inline <svg> with no <title>, so a screen reader announced it as
+          // an unnamed button (a CDP sweep for /settings/i over aria-label
+          // matched nothing in the whole window).
+          aria-label={t('statusBar.settingsTooltip')}
           data-onboarding-target="settings-button"
         >
           <IconGear size={13} />

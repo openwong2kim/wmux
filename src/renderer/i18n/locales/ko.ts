@@ -19,6 +19,7 @@ export const ko = {
   'sidebar.screenOffTooltip': '내장 화면만 끕니다 (외장 모니터는 유지)',
   'sidebar.screenOffAccessibility': 'wmux에 손쉬운 사용 권한을 허용해 주세요 (시스템 설정 → 개인정보 보호 및 보안 → 손쉬운 사용).',
   'sidebar.screenOffFailed': '내장 화면 전환에 실패했습니다.',
+  'sidebar.browseFolderDesc': '디스크의 아무 폴더나 선택',
 
   // Workspace
   'workspace.agentRunning': '실행 중',
@@ -69,6 +70,7 @@ export const ko = {
   'surface.remoteTooltip': '원격 터미널 — {path}',
   'surface.remoteTerminal': '원격 터미널',
   'surface.closeTab': '탭 닫기',
+  'surface.closeTabNamed': '{name} 탭 닫기',
 
   // Search
   'search.placeholder': '검색...',
@@ -987,8 +989,6 @@ export const ko = {
   'deck.hasSignal': '확인할 것이 있음',
   'web.running': '실행 중',
   'deck.commanderPlaceholder': 'agent에 지시하거나 @로 pane을 멘션…',
-  'deck.commanderEmpty':
-    'agent에게 에이전트 운영을 맡기거나, @로 에이전트 pane을 멘션해 직접 지시하세요.',
   'deck.jumpToPane': '이 pane으로 이동',
   // Bridge P2① — agent 스레드 위에 고정되는 에이전트 명단.
   'deck.fleetLabel': '에이전트',
@@ -1016,7 +1016,7 @@ export const ko = {
   // 커맨드 데크 — 컨트롤 바(Mode·Loop·Schedules)는 각 컴포넌트가 담당.
   // 커맨드 데크 P3d — agent 예약(재부팅 생존).
   'deck.schedules': '예약',
-  'deck.schedulesEmpty': '예약이 없습니다. 예약은 재부팅 후에도 유지되고, 시간이 되면 agent가 실행합니다.',
+  'deck.schedulesEmpty': '예약이 없습니다. 예약은 재부팅 후에도 유지됩니다.',
   'deck.schedulePromptPlaceholder': 'agent가 무엇을 하면 될까요?',
   'deck.scheduleRepeat': '반복',
   'deck.scheduleRepeatNone': '한 번',

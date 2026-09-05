@@ -17,7 +17,7 @@ export const zh = {
   'sidebar.expandTooltip': '展开侧边栏 (Ctrl+B)',
   'sidebar.unreadCount': '{count} 条未读',
   'sidebar.browseFolder': '浏览文件夹…',
-  'sidebar.pickFolderAsWorkspace': '选择一个文件夹作为工作区',
+  'sidebar.browseFolderDesc': '选择磁盘上的任意文件夹',
   'sidebar.emptyWorkspace': '空',
   'sidebar.blankSinglePane': '空白单面板',
 
@@ -190,6 +190,7 @@ export const zh = {
   'surface.remoteTooltip': '远程终端 — {path}',
   'surface.remoteTerminal': '远程终端',
   'surface.closeTab': '关闭标签',
+  'surface.closeTabNamed': '关闭 {name}',
 
   // Search
   'search.placeholder': '搜索...',
@@ -1366,7 +1367,6 @@ export const zh = {
   'deck.expandDock': '展开停靠栏',
   'deck.hasSignal': '这里有需要处理的内容',
   'deck.commanderPlaceholder': '向编排器下达指令，或 @提及面板…',
-  'deck.commanderEmpty': '请编排器运行你的智能体，或 @提及智能体面板以直接命令它们。',
   'deck.jumpToPane': '跳转到此面板',
   'deck.fleetLabel': '舰队',
   'deck.fleetNeedsYou': '{count} 个需要你处理',
@@ -1422,7 +1422,7 @@ export const zh = {
   'settings.briefingAutoShow': '自动展开简报',
   'settings.briefingAutoShowDesc': '在冷启动、出现新决策或出现新阻塞面板时自动展开简报。',
   'deck.schedules': '计划',
-  'deck.schedulesEmpty': '还没有计划。计划可跨重启保留，到时编排器会自动运行。',
+  'deck.schedulesEmpty': '还没有计划。计划可跨重启保留。',
   'deck.schedulePromptPlaceholder': '编排器应该做什么？',
   'deck.scheduleRepeat': '重复',
   'deck.scheduleRepeatNone': '一次',
