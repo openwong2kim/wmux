@@ -79,11 +79,11 @@ function PrBadge({ pr }: { pr: PrStatus }): React.ReactElement {
 
 /**
  * Git 신호등(owner 2026-07-20) — 워크스페이스 이름 아래 전용 행에서 색으로
- * 상태를 즉독: clean=green ●, dirty=amber ●N, ahead=blue ↑N, behind=red ↓N.
+ * 상태를 즉독: clean=green ●, dirty=muted ·N, ahead=blue ↑N, behind=red ↓N.
  * 브랜치가 잡힌 워크스페이스는 항상 최소 1개의 불이 켜진다(clean이면 green).
  * 숫자는 항상 동반(맨 화살표는 모호 — GitHub Desktop #9282).
  */
-function GitSyncBadge({ sync }: { sync: GitSyncStatus }): React.ReactElement | null {
+export function GitSyncBadge({ sync }: { sync: GitSyncStatus }): React.ReactElement | null {
   const t = useT();
   const ahead = sync.hasUpstream ? sync.ahead : 0;
   const behind = sync.hasUpstream ? sync.behind : 0;
@@ -95,7 +95,8 @@ function GitSyncBadge({ sync }: { sync: GitSyncStatus }): React.ReactElement | n
       data-git-signal
     >
       {clean && <span style={{ color: 'var(--accent-green)' }}>●</span>}
-      {sync.dirty > 0 && <span style={{ color: 'var(--accent)' }}>●{sync.dirty}</span>}
+      {/* Uncommitted files are information, not attention: amber is reserved for "running". */}
+      {sync.dirty > 0 && <span style={{ color: 'var(--text-muted)' }}>·{sync.dirty}</span>}
       {ahead > 0 && <span style={{ color: 'var(--accent-blue)' }}>↑{ahead}</span>}
       {behind > 0 && <span style={{ color: 'var(--accent-red)' }}>↓{behind}</span>}
     </span>
