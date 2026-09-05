@@ -70,6 +70,12 @@ export const en = {
   'taskStatus.done': 'Done',
   'taskStatus.failed': 'Failed',
   'taskStatus.cancelled': 'Cancelled',
+  // The sidebar states the tasks in ONE line and hands the list itself to the
+  // deck's ledger panel (DESIGN.md: the left sidebar is navigation only).
+  'missions.label': 'Tasks',
+  'missions.openCount': '{count} open',
+  'missions.needYouCount': '{count} need you',
+  'missions.summaryTooltip': 'Open the delegated tasks in the Agent deck',
 
   // Sidebar — Company mode
   'company.deptRemoveHint': 'Right-click to remove',
@@ -1673,6 +1679,10 @@ export const en = {
   // Orchestrator wave 2 — the pinned task-ledger panel.
   'deck.ledgerOpenTasks': '{count} open tasks',
   'deck.ledgerUnavailable': 'Ledger unavailable',
+  // The panel shows five rows and keeps the rest behind this toggle — it is
+  // pinned above the conversation and must not grow until it owns the deck.
+  'deck.ledgerMore': '+{count} more',
+  'deck.ledgerShowLess': 'Show less',
   'deck.approvalCountdown': 'Auto-reject in {seconds}s',
   'deck.vendorTagClaudePty': 'terminal',
   'deck.vendorTagClaude': 'sdk',

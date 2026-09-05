@@ -21,11 +21,40 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { tokenAttrs } from '../../themes';
+import { FOCUS_RING } from '../focusRing';
 import { taskStatusDot } from '../shared/taskStatusDot';
 import type { DeckLedgerRow, DeckLedgerSummary } from '../../../main/deck/deckLedgerSummary';
 
 /** Fallback poll — a push that never arrived must not strand the panel. */
 export const LEDGER_PANEL_POLL_MS = 10_000;
+
+/** Rows shown before the `+N more` toggle. The panel is pinned chrome above the
+ *  conversation, so an eight-task fan-out used to push the brain's own thread
+ *  off the bottom of the deck. Five rows is the header line plus enough to see
+ *  a fan-out is running. */
+export const LEDGER_PANEL_VISIBLE_ROWS = 5;
+
+/** Per-viewer convenience only — which way the operator last left the panel.
+ *  Collapsed is the default, including when storage is unreadable. */
+export const LEDGER_PANEL_EXPANDED_KEY = 'deck.ledgerPanel.expanded';
+
+/** localStorage throws outright in some embeddings; a panel that cannot read a
+ *  preference must still render. */
+export function readLedgerPanelExpanded(): boolean {
+  try {
+    return window.localStorage.getItem(LEDGER_PANEL_EXPANDED_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+export function writeLedgerPanelExpanded(expanded: boolean): void {
+  try {
+    window.localStorage.setItem(LEDGER_PANEL_EXPANDED_KEY, expanded ? '1' : '0');
+  } catch {
+    /* private window / storage blocked — the session keeps its own state */
+  }
+}
 
 export interface DeckLedgerApi {
   summary: (workspaceId: string) => Promise<DeckLedgerSummary>;
@@ -47,6 +76,8 @@ export function DeckLedgerPanel({
   workspaceId,
   t: tProp,
   onOpenCountChange,
+  channelByTaskId,
+  onOpenChannel,
 }: {
   api?: DeckLedgerApi;
   /** The workspace whose brain owns the tasks — the deck is per-workspace. */
@@ -55,6 +86,14 @@ export function DeckLedgerPanel({
   /** Reported on every change so the deck can open its report rail while work
    *  is outstanding. */
   onOpenCountChange?: (openCount: number) => void;
+  /** `taskId → mission channel id`. A row whose task is not in the map draws
+   *  no `#` — the affordance appears only where it goes somewhere. The ledger
+   *  summary is built from the ledger alone and knows nothing about channels,
+   *  so the mapping is the caller's (see stores/selectors/missions.ts). */
+  channelByTaskId?: Readonly<Record<string, string>>;
+  /** Opens one mission channel. Together with the map above this is the `#`
+   *  jump the deleted sidebar task rows used to own. */
+  onOpenChannel?: (channelId: string) => void;
 }): React.ReactElement | null {
   const t = tProp ?? (() => '');
   // Optional-chain the whole path — window.electronAPI is absent under jsdom
@@ -66,6 +105,10 @@ export function DeckLedgerPanel({
   const [rows, setRows] = useState<DeckLedgerRow[]>([]);
   const [openCount, setOpenCount] = useState(0);
   const [unavailable, setUnavailable] = useState(false);
+  // Collapsed by default; the operator's last choice is remembered per browser
+  // profile. This is a per-viewer convenience, which is exactly what
+  // localStorage is for — nothing here has to survive a reinstall.
+  const [expanded, setExpanded] = useState(readLedgerPanelExpanded);
   const reportRef = useRef(onOpenCountChange);
   reportRef.current = onOpenCountChange;
   // Request sequence. Reads are fired by four things (mount, the fallback
@@ -112,6 +155,14 @@ export function DeckLedgerPanel({
   // a ledger neither of us can see, and a collapsed panel would call it idle.
   if (!resolvedApi || (openCount === 0 && !unavailable)) return null;
 
+  const hidden = Math.max(0, rows.length - LEDGER_PANEL_VISIBLE_ROWS);
+  const visibleRows = expanded ? rows : rows.slice(0, LEDGER_PANEL_VISIBLE_ROWS);
+  const toggle = (): void => {
+    const next = !expanded;
+    setExpanded(next);
+    writeLedgerPanelExpanded(next);
+  };
+
   return (
     <div
       data-deck-ledger-panel
@@ -144,14 +195,17 @@ export function DeckLedgerPanel({
           </span>
         )}
       </div>
-      {/* Scrolls past a handful of rows — the panel is pinned chrome, so it
-          must not grow until it owns the deck. */}
-      <div className="max-h-44 overflow-y-auto">
-        {rows.map((row) => {
+      {/* Collapsed the panel shows LEDGER_PANEL_VISIBLE_ROWS and nothing more:
+          it is pinned chrome above the conversation, and a fan-out of eight
+          used to push the brain's own thread off the bottom. Expanded it grows
+          to a bounded, scrolling list — never past the deck. */}
+      <div className={expanded ? 'max-h-44 overflow-y-auto' : undefined}>
+        {visibleRows.map((row) => {
           // ONE vocabulary, shared with every other surface that draws a task
           // dot (components/shared/taskStatusDot.ts). The panel does not decide
           // what a colour means.
           const dot = taskStatusDot(row.status, row.workerStatus);
+          const channelId = channelByTaskId?.[row.id];
           return (
           <div
             key={row.id}
@@ -199,10 +253,44 @@ export function DeckLedgerPanel({
             >
               {formatAge(row.ageMs)}
             </span>
+            {/* The `#` jump the deleted sidebar task rows carried. Drawn only
+                when the caller can actually resolve a channel for this task —
+                DESIGN.md "every claim is one click from its evidence", never a
+                link to nowhere. */}
+            {channelId && onOpenChannel && (
+              <button
+                type="button"
+                data-deck-ledger-channel
+                data-channel-id={channelId}
+                className="shrink-0 text-[10px] font-mono text-[var(--text-subtle)] hover:text-[var(--accent-blue)] transition-colors"
+                onClick={() => onOpenChannel(channelId)}
+                title={t('missions.openChannel') || 'Open task channel'}
+                aria-label={(t('missions.openChannelFor') || 'Open task channel for {title}').replace(
+                  '{title}',
+                  row.title,
+                )}
+              >
+                #
+              </button>
+            )}
           </div>
           );
         })}
       </div>
+      {hidden > 0 && (
+        <button
+          type="button"
+          data-deck-ledger-more
+          aria-expanded={expanded}
+          onClick={toggle}
+          className={`w-full text-left px-1 py-1 text-[10px] font-mono text-[var(--text-muted)] hover:text-[var(--accent-blue)] transition-colors ${FOCUS_RING}`}
+          {...tokenAttrs('textMuted', 'text')}
+        >
+          {expanded
+            ? t('deck.ledgerShowLess') || 'Show less'
+            : (t('deck.ledgerMore') || '+{count} more').replace('{count}', String(hidden))}
+        </button>
+      )}
     </div>
   );
 }

@@ -8,7 +8,14 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { createElement, act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import { DeckLedgerPanel, formatAge, type DeckLedgerApi } from '../DeckLedgerPanel';
+import {
+  DeckLedgerPanel,
+  LEDGER_PANEL_EXPANDED_KEY,
+  LEDGER_PANEL_VISIBLE_ROWS,
+  formatAge,
+  readLedgerPanelExpanded,
+  type DeckLedgerApi,
+} from '../DeckLedgerPanel';
 import type { DeckLedgerRow, DeckLedgerSummary } from '../../../../main/deck/deckLedgerSummary';
 
 let container: HTMLDivElement;
@@ -159,5 +166,112 @@ describe('DeckLedgerPanel', () => {
     expect(summaryFn).toHaveBeenCalledTimes(1);
     await act(async () => { notify?.({ workspaceId: 'ws-owner' }); });
     expect(summaryFn).toHaveBeenCalledTimes(2);
+  });
+});
+
+// ─── The dot vocabulary, shared with every other task surface ───────────────
+describe('DeckLedgerPanel status dots', () => {
+  it('paints each row from the shared helper, not from the ledger status alone', async () => {
+    await mount({
+      summary: async () =>
+        summary([
+          row({ id: 'a', status: 'working', workerStatus: 'running' }),
+          row({ id: 'b', status: 'working', workerStatus: 'idle' }),
+          row({ id: 'c', status: 'input_required', workerStatus: 'running' }),
+          row({ id: 'd', status: 'completed', workerStatus: 'idle' }),
+        ]),
+    });
+    const tones = Array.from(
+      container.querySelectorAll('[data-deck-ledger-dot]'),
+      (el) => el.getAttribute('data-tone'),
+    );
+    expect(tones).toEqual(['running', 'idle', 'attention', 'ok']);
+  });
+});
+
+// ─── The `#` jump the deleted sidebar rows carried ──────────────────────────
+describe('DeckLedgerPanel channel jump', () => {
+  it('opens the task channel from the row', async () => {
+    const opened: string[] = [];
+    await mount({ summary: async () => summary([row({ id: 'a' })]) }, {
+      channelByTaskId: { a: 'chan-a' },
+      onOpenChannel: (id: string) => opened.push(id),
+    });
+    const link = container.querySelector('[data-deck-ledger-channel]') as HTMLButtonElement;
+    expect(link.getAttribute('data-channel-id')).toBe('chan-a');
+    await act(async () => { link.click(); });
+    expect(opened).toEqual(['chan-a']);
+  });
+
+  it('draws no link for a task with no known channel', async () => {
+    await mount({ summary: async () => summary([row({ id: 'a' }), row({ id: 'b' })]) }, {
+      channelByTaskId: { a: 'chan-a' },
+      onOpenChannel: vi.fn(),
+    });
+    const links = container.querySelectorAll('[data-deck-ledger-channel]');
+    expect(links).toHaveLength(1);
+    expect(links[0].getAttribute('data-channel-id')).toBe('chan-a');
+  });
+
+  it('draws no link at all when the caller cannot open a channel', async () => {
+    await mount({ summary: async () => summary([row({ id: 'a' })]) }, {
+      channelByTaskId: { a: 'chan-a' },
+    });
+    expect(container.querySelector('[data-deck-ledger-channel]')).toBeNull();
+  });
+});
+
+// ─── The panel must not push the conversation off the deck ──────────────────
+describe('DeckLedgerPanel row cap', () => {
+  const many = (n: number) =>
+    Array.from({ length: n }, (_, i) => row({ id: `t${i}`, title: `task ${i}` }));
+
+  beforeEach(() => {
+    try { window.localStorage.clear(); } catch { /* storage blocked */ }
+  });
+
+  it('shows at most five rows and offers the rest behind a toggle', async () => {
+    await mount({ summary: async () => summary(many(8)) });
+    expect(container.querySelectorAll('[data-deck-ledger-row]')).toHaveLength(
+      LEDGER_PANEL_VISIBLE_ROWS,
+    );
+    const more = container.querySelector('[data-deck-ledger-more]') as HTMLButtonElement;
+    expect(more.textContent).toContain('3');
+    expect(more.getAttribute('aria-expanded')).toBe('false');
+    // The header count stays honest about the whole ledger.
+    expect(container.querySelector('[data-deck-ledger-count]')?.textContent).toContain('8');
+  });
+
+  it('offers no toggle when everything already fits', async () => {
+    await mount({ summary: async () => summary(many(LEDGER_PANEL_VISIBLE_ROWS)) });
+    expect(container.querySelectorAll('[data-deck-ledger-row]')).toHaveLength(
+      LEDGER_PANEL_VISIBLE_ROWS,
+    );
+    expect(container.querySelector('[data-deck-ledger-more]')).toBeNull();
+  });
+
+  it('expands to every row and remembers the choice', async () => {
+    await mount({ summary: async () => summary(many(8)) });
+    const more = container.querySelector('[data-deck-ledger-more]') as HTMLButtonElement;
+    await act(async () => { more.click(); });
+    expect(container.querySelectorAll('[data-deck-ledger-row]')).toHaveLength(8);
+    expect(
+      container.querySelector('[data-deck-ledger-more]')?.getAttribute('aria-expanded'),
+    ).toBe('true');
+    expect(window.localStorage.getItem(LEDGER_PANEL_EXPANDED_KEY)).toBe('1');
+  });
+
+  it('mounts expanded when that is how it was left', async () => {
+    window.localStorage.setItem(LEDGER_PANEL_EXPANDED_KEY, '1');
+    await mount({ summary: async () => summary(many(8)) });
+    expect(container.querySelectorAll('[data-deck-ledger-row]')).toHaveLength(8);
+  });
+
+  it('mounts collapsed with nothing stored', async () => {
+    expect(readLedgerPanelExpanded()).toBe(false);
+    await mount({ summary: async () => summary(many(8)) });
+    expect(container.querySelectorAll('[data-deck-ledger-row]')).toHaveLength(
+      LEDGER_PANEL_VISIBLE_ROWS,
+    );
   });
 });

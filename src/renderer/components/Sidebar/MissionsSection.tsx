@@ -1,32 +1,35 @@
-// ─── 사이드바 "Missions" 섹션 (NB2 파동2 사이클 C) ───────────────────────────
+// ─── Sidebar "Tasks" summary ────────────────────────────────────────────────
 //
-// fan-out(J1)이 만든 미션(WorkTask)을 워크스페이스 리스트 상단의 별도 그룹으로
-// 승격한다. 각 미션 = 프롬프트 1개가 펼쳐진 격리 태스크이고, `paneGroupId`가 곧
-// 그 태스크 전용 자식 워크스페이스 id다. 행은 title·status(open/closed)와 미션
-// 채널로 이어지는 링크를 보여준다.
+// The sidebar is NAVIGATION ONLY (DESIGN.md Layout Contract). It used to render
+// the full fan-out task list — title, status dot, `#` channel link, parent
+// grouping, a finished-tasks disclosure — which is the exact same list the
+// deck's ledger panel renders from the ledger, in a column that is not supposed
+// to hold status at all. Two lists of the same tasks, in two colour grammars,
+// on opposite edges of the window.
 //
-// worktree 배지(⊕, WorkspaceItem)와의 공존: 배지는 "이 워크스페이스가 git worktree"
-// 라는 저수준 사실을, 이 섹션은 "이 워크스페이스가 fan-out 태스크"라는 상위 개념을
-// 얹는다(worktree ⊂ task는 아님 — broadcast 모드는 격리 없음). 둘은 서로 다른 축이라
-// 같은 자식 워크스페이스가 사이드바 리스트(배지 있음)와 이 섹션(미션 행)에 모두 나올
-// 수 있고, 이는 의도된 이중 표현이다.
+// What is left here is one line: how many tasks are open, how many need you,
+// and a click that takes you to the place that owns them (the deck's Agent tab,
+// with the ledger panel scrolled into view). The per-task rows live in
+// DeckLedgerPanel, which carries the `#` channel jump those rows had, so no
+// entry point was lost.
 //
-// Empty state (changed): the section renders a single line rather than nothing.
-// A section that disappears cannot answer "does this workspace have tasks?" —
-// the reader is left unsure whether there are none or whether the list failed
-// to load, and the fan-out button next to it implies a list that should exist.
-// One line costs less than that ambiguity.
+// With zero tasks it renders NOTHING. A header reading "Tasks · 0 open" is a
+// dead gauge (DESIGN.md: vitals render only when nonzero), and the fan-out
+// entry point that justified the old always-there empty line moved to the
+// agent toolbar long ago.
 //
-// Lifetime (owner policy): a mission row is visible only while its fan-out workspace
-// is alive. When the workspace is gone the row goes with it, and the record stays in
-// the mission channel (see selectLiveMissions).
+// Lifetime (owner policy): a task counts only while its fan-out workspace is
+// alive. When the workspace is gone the task goes with it, and the record stays
+// in the mission channel (see selectLiveMissions).
 
-import { memo, useMemo, useState } from 'react';
+import { memo, useMemo } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
 import type { WorkTask } from '../../../shared/workTask';
-import { IconChevron } from '../icons';
+import { selectAllWorkspaceAgentStatus } from '../../stores/selectors/fleet';
+import { summarizeMissions } from '../../stores/selectors/missions';
+import { TASK_DOT_COLOR } from '../shared/taskStatusDot';
 import { FOCUS_RING } from '../focusRing';
 
 /**
@@ -65,47 +68,6 @@ export function selectLiveMissions(
   );
 }
 
-/** One parent workspace and the tasks it started. */
-export interface MissionGroup {
-  parentId: string;
-  /** The parent workspace's name, or its id when it is no longer in the list
-   *  (a task outliving its parent is rare but must not render as blank). */
-  parentName: string;
-  tasks: WorkTask[];
-}
-
-/**
- * Group live tasks under the workspace that started them. A task belongs to
- * exactly one parent (the cache is keyed by it), so this is a partition, not a
- * join — and the parent is what makes a flat list of eight `task #2`s legible
- * once two fan-outs are running at once.
- *
- * Ordering is the parent's own order in the sidebar, so the tree reads in the
- * same sequence as the workspace list above it; a parent that has gone away
- * sorts last, under its id.
- */
-export function groupMissionsByParent(
-  byWorkspace: Record<string, WorkTask[]>,
-  liveWorkspaceIds: ReadonlySet<string>,
-  parentNames: ReadonlyMap<string, string>,
-  parentOrder: readonly string[],
-): MissionGroup[] {
-  const groups: MissionGroup[] = [];
-  const rank = new Map(parentOrder.map((id, i) => [id, i]));
-  for (const [parentId, tasks] of Object.entries(byWorkspace)) {
-    const live = tasks.filter((task) => !task.paneGroupId || liveWorkspaceIds.has(task.paneGroupId));
-    if (live.length === 0) continue;
-    groups.push({
-      parentId,
-      parentName: parentNames.get(parentId) ?? parentId,
-      tasks: live.sort((a, b) => b.createdAt - a.createdAt),
-    });
-  }
-  return groups.sort(
-    (a, b) => (rank.get(a.parentId) ?? Number.MAX_SAFE_INTEGER) - (rank.get(b.parentId) ?? Number.MAX_SAFE_INTEGER),
-  );
-}
-
 function useLiveMissions(): WorkTask[] {
   const byWorkspace = useStore(useShallow((s) => s.missionsByWorkspace));
   // Subscribe to the id array with a shallow compare (renames and metadata changes do
@@ -119,204 +81,81 @@ function useLiveMissions(): WorkTask[] {
   );
 }
 
-/** The same live set, partitioned by the workspace that started each task. */
-function useLiveMissionGroups(): MissionGroup[] {
-  const byWorkspace = useStore(useShallow((s) => s.missionsByWorkspace));
-  const workspaceIds = useStore(useShallow((s) => s.workspaces.map((w) => w.id)));
-  // Names are subscribed to separately so a rename repaints the parent row —
-  // and shallow-compared, so unrelated workspace metadata churn does not.
-  const workspaceNames = useStore(useShallow((s) => s.workspaces.map((w) => w.name)));
-  return useMemo(
-    () =>
-      groupMissionsByParent(
-        byWorkspace,
-        new Set(workspaceIds),
-        new Map(workspaceIds.map((id, i) => [id, workspaceNames[i] ?? id])),
-        workspaceIds,
-      ),
-    [byWorkspace, workspaceIds, workspaceNames],
-  );
+/**
+ * Take the operator to the surface that OWNS the tasks: open the deck, select
+ * its Agent tab, and put the ledger panel in view. Exported so the click is
+ * testable without a DOM: the two store actions are the whole navigation, and
+ * the scroll is a best-effort courtesy on top (the panel is pinned chrome, so
+ * on a normal-height deck it is already on screen).
+ */
+export function openTaskLedger(): void {
+  const state = useStore.getState();
+  state.setChannelDockVisible(true);
+  state.setActiveDeckTab('commander');
+  if (typeof requestAnimationFrame !== 'function') return;
+  requestAnimationFrame(() => {
+    document
+      .querySelector('[data-deck-ledger-panel]')
+      ?.scrollIntoView({ block: 'nearest' });
+  });
 }
 
-function MissionRow({ task, indented = false }: { task: WorkTask; indented?: boolean }): React.ReactElement {
-  const t = useT();
-  // 자식 워크스페이스 존재 여부(존재할 때만 행 클릭으로 점프 가능).
-  const childExists = useStore((s) =>
-    task.paneGroupId ? s.workspaces.some((w) => w.id === task.paneGroupId) : false,
-  );
-  const isOpen = task.status === 'open';
-  const statusColor = isOpen ? 'var(--accent-green)' : 'var(--text-muted)';
-
-  const jumpToChild = (): void => {
-    if (task.paneGroupId && childExists) {
-      useStore.getState().setActiveWorkspace(task.paneGroupId);
-    }
-  };
-  const openMissionChannel = (): void => {
-    // 기존 채널 열기 경로 재사용(setActiveChannel이 dock을 열고 채널을 선택) —
-    // 새 라우팅을 만들지 않는다.
-    useStore.getState().setActiveChannel(task.missionChannelId);
-  };
-
-  return (
-    <div
-      className={`group flex items-center gap-2 mx-2 ${indented ? 'pl-6 pr-3' : 'px-3'} py-1 rounded-md select-none ${
-        task.paneGroupId && childExists
-          ? 'cursor-pointer hover:bg-[rgba(var(--bg-surface-rgb),0.5)]'
-          : ''
-      }`}
-      onClick={jumpToChild}
-      data-mission-row
-      data-task-id={task.id}
-      data-task-status={task.status}
-    >
-      {/* status dot: open=green, closed=muted */}
-      <span
-        className="w-1.5 h-1.5 rounded-full flex-shrink-0"
-        style={{ backgroundColor: statusColor }}
-        title={isOpen ? t('missions.open') : t('missions.closed')}
-      />
-      <span
-        className={`flex-1 min-w-0 truncate text-caption font-mono ${
-          isOpen ? 'text-[var(--text-sub)]' : 'text-[var(--text-muted)] line-through'
-        }`}
-        title={task.title}
-      >
-        {task.title}
-      </span>
-      {/* 미션 채널 링크 — 기존 ChannelDock으로 해당 채널을 연다. */}
-      <button
-        type="button"
-        className="flex-shrink-0 text-[10px] font-mono text-[var(--text-subtle)] hover:text-[var(--accent-blue)] transition-colors"
-        onClick={(e) => {
-          e.stopPropagation();
-          openMissionChannel();
-        }}
-        title={t('missions.openChannel')}
-        aria-label={t('missions.openChannelFor', { title: task.title })}
-        data-mission-channel-link
-      >
-        #
-      </button>
-    </div>
-  );
-}
-
-function MissionsSection(): React.ReactElement {
+function MissionsSection(): React.ReactElement | null {
   const t = useT();
   const missions = useLiveMissions();
-  const groups = useLiveMissionGroups();
-  // Collapse for the whole section (expanded by default — running tasks are the work
-  // that is happening right now).
-  const [expanded, setExpanded] = useState(true);
-  // Finished tasks get their own disclosure, collapsed by default, with a one-line
-  // summary on the toggle itself. A task row stays valid as long as its workspace is
-  // alive (jump and channel links still work), but there is no reason for a finished
-  // one to sit permanently expanded taking up room — and the summary means collapsing
-  // it does not hide WHICH task finished last.
-  const [doneExpanded, setDoneExpanded] = useState(false);
-  const done = missions.filter((m) => m.status !== 'open');
-  // Only the running tasks are grouped under their parent: a finished task's parent
-  // is no longer where the reader is going next, and repeating the tree there would
-  // double the section's height for information nobody acts on.
-  const openGroups = groups
-    .map((g) => ({ ...g, tasks: g.tasks.filter((m) => m.status === 'open') }))
-    .filter((g) => g.tasks.length > 0);
+  // The same per-workspace roll-up the titlebar vitals and the sidebar dots
+  // read, so "N need you" here means what it means everywhere else.
+  const agentStatusByWorkspace = useStore(useShallow(selectAllWorkspaceAgentStatus));
+  const summary = useMemo(
+    () => summarizeMissions(missions, agentStatusByWorkspace),
+    [missions, agentStatusByWorkspace],
+  );
+
+  // No tasks, no header. See the file note: a zero row is a dead gauge.
+  if (missions.length === 0) return null;
 
   return (
-    <div className="mb-1" data-missions-section>
-      <div className="flex items-center">
-        <button
-          type="button"
-          // eslint-disable-next-line no-restricted-syntax -- off-scale size owned by PR #1219; folded onto the ramp there to avoid a cross-PR conflict.
-          className={`min-w-0 flex-1 flex items-center gap-1 px-4 pt-1 pb-1 text-[9px] font-mono font-semibold tracking-widest text-[var(--text-muted)] uppercase hover:text-[var(--text-subtle)] transition-colors ${FOCUS_RING}`}
-          onClick={() => setExpanded((v) => !v)}
-          aria-expanded={expanded}
-          data-missions-toggle
-        >
-          <span
-            className={`transition-transform ${expanded ? 'rotate-90' : ''}`}
-            aria-hidden="true"
-          >
-            <IconChevron size={9} />
-          </span>
-          <span>{t('missions.title', { count: missions.length })}</span>
-        </button>
-        {/* C-4: the worktree scan has no entry point outside the command
-            palette. Review fix — it sits on the SECTION header, not inside the
-            finished-tasks group: the orphaned directories and unmaterialized
-            tasks it finds are exactly what you have when the list shows
-            nothing finished at all. */}
-        {expanded && (
-          <button
-            type="button"
-            // eslint-disable-next-line no-restricted-syntax -- off-scale size owned by PR #1219; folded onto the ramp there to avoid a cross-PR conflict.
-            className={`shrink-0 pr-4 pl-1 pt-1 pb-1 text-[9px] font-mono uppercase tracking-widest text-[var(--text-subtle)] hover:text-[var(--accent-blue)] transition-colors ${FOCUS_RING}`}
-            onClick={() => useStore.getState().setWorktaskCleanupVisible(true)}
-            aria-label={t('missions.cleanUpTooltip')}
-            data-missions-cleanup
-          >
-            {t('missions.cleanUp')}
-          </button>
+    <div className="mb-1 flex items-center" data-missions-section>
+      <button
+        type="button"
+        className={`min-w-0 flex-1 flex items-center gap-1.5 px-4 pt-1 pb-1 text-[9px] font-mono font-semibold tracking-widest text-[var(--text-muted)] uppercase hover:text-[var(--text-subtle)] transition-colors ${FOCUS_RING}`}
+        onClick={openTaskLedger}
+        title={t('missions.summaryTooltip')}
+        data-missions-summary
+        data-open-count={summary.open}
+        data-need-you-count={summary.needYou}
+      >
+        <span>{t('missions.label')}</span>
+        <span aria-hidden="true">·</span>
+        <span>{t('missions.openCount', { count: summary.open })}</span>
+        {/* "0 need you" is the dead gauge this whole section is getting rid of —
+            the clause appears only when somebody is actually waiting. */}
+        {summary.needYou > 0 && (
+          <>
+            <span aria-hidden="true">·</span>
+            <span
+              className="normal-case tracking-normal font-semibold"
+              style={{ color: TASK_DOT_COLOR.attention }}
+              data-missions-need-you
+            >
+              {t('missions.needYouCount', { count: summary.needYou })}
+            </span>
+          </>
         )}
-      </div>
-      {expanded && missions.length === 0 && (
-        <div className="px-4 py-1 text-[10px] font-mono text-[var(--text-muted)]" data-missions-empty>
-          {t('missions.empty')}
-        </div>
-      )}
-      {expanded && missions.length > 0 && (
-        <>
-          <div className="space-y-0.5" data-missions-open-group>
-            {openGroups.map((group) => (
-              <div key={group.parentId} data-missions-parent={group.parentId}>
-                <div
-                  // eslint-disable-next-line no-restricted-syntax -- off-scale size owned by PR #1219; folded onto the ramp there to avoid a cross-PR conflict.
-                  className="px-4 py-0.5 truncate text-[9px] font-mono uppercase tracking-widest text-[var(--text-subtle)]"
-                  title={group.parentName}
-                >
-                  {group.parentName}
-                </div>
-                {group.tasks.map((task) => (
-                  <MissionRow key={task.id} task={task} indented />
-                ))}
-              </div>
-            ))}
-          </div>
-          {done.length > 0 && (
-            <div data-missions-done-group>
-              <button
-                type="button"
-                // eslint-disable-next-line no-restricted-syntax -- off-scale size owned by PR #1219; folded onto the ramp there to avoid a cross-PR conflict.
-                className={`w-full flex items-center gap-1 px-4 py-0.5 text-[9px] font-mono uppercase tracking-widest text-[var(--text-muted)] hover:text-[var(--text-subtle)] transition-colors ${FOCUS_RING}`}
-                onClick={() => setDoneExpanded((v) => !v)}
-                aria-expanded={doneExpanded}
-                data-missions-done-toggle
-              >
-                <span
-                  className={`transition-transform ${doneExpanded ? 'rotate-90' : ''}`}
-                  aria-hidden="true"
-                >
-                  <IconChevron size={9} />
-                </span>
-                <span>{t('missions.done', { count: done.length })}</span>
-                {/* `done` is newest-first (selectLiveMissions sorts by createdAt
-                    desc within a status), so [0] is the most recent one. */}
-                <span className="min-w-0 flex-1 truncate text-left normal-case tracking-normal text-[var(--text-subtle)]" data-missions-done-summary>
-                  {t('missions.doneSummary', { title: done[0]?.title ?? '' })}
-                </span>
-              </button>
-              {doneExpanded && (
-                <div className="space-y-0.5 opacity-60">
-                  {done.map((task) => (
-                    <MissionRow key={task.id} task={task} />
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
-        </>
-      )}
+      </button>
+      {/* C-4: the worktree cleanup scan has no entry point outside the command
+          palette, and it stays on this header — the orphaned directories and
+          unmaterialized tasks it finds are exactly what you have when the
+          ledger shows nothing left to do. */}
+      <button
+        type="button"
+        className={`shrink-0 pr-4 pl-1 pt-1 pb-1 text-[9px] font-mono uppercase tracking-widest text-[var(--text-subtle)] hover:text-[var(--accent-blue)] transition-colors ${FOCUS_RING}`}
+        onClick={() => useStore.getState().setWorktaskCleanupVisible(true)}
+        aria-label={t('missions.cleanUpTooltip')}
+        data-missions-cleanup
+      >
+        {t('missions.cleanUp')}
+      </button>
     </div>
   );
 }

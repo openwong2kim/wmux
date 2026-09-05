@@ -32,6 +32,7 @@ import {
   type DeckLimitNotice,
 } from './deckBrain';
 import DeckFleet from './DeckFleet';
+import { selectMissionChannelIds } from '../../stores/selectors/missions';
 import { getWorkspaceLeafPanes } from '../../../shared/paneUtils';
 import { generateId } from '../../../shared/types';
 import type { ChannelMention, ChannelMessage } from '../../../shared/channels';
@@ -195,6 +196,21 @@ export function CommanderViewContent({
   // `brainPtyId` hydrates a frame after mount and can go null again mid-session
   // — the state must survive the layout swap.
   const [railCollapsed, setRailCollapsed] = useState(true);
+  // The `#` jump for the ledger rows. The sidebar used to own this link; the
+  // deck's rows own it now, so the sidebar could shrink to one navigation line
+  // (DESIGN.md Layout Contract). The ledger summary is built in main from the
+  // ledger alone and has no channel ids, so the mapping comes from the task
+  // store here.
+  const missionsByWorkspace = useStore((s) => s.missionsByWorkspace);
+  const channelByTaskId = useMemo(
+    () => selectMissionChannelIds(missionsByWorkspace),
+    [missionsByWorkspace],
+  );
+  const openMissionChannel = useCallback((channelId: string) => {
+    // Reuse the existing channel route — setActiveChannel opens the dock and
+    // selects the channel. No new routing.
+    useStore.getState().setActiveChannel(channelId);
+  }, []);
   // Delegated work makes the rail worth opening: the ledger panel says a task
   // is outstanding, and the rail is where its turn reports land. Once only —
   // after that the collapse is the operator's to own again, so a later
@@ -318,6 +334,8 @@ export function CommanderViewContent({
           t={t}
           workspaceId={activeWorkspaceId}
           onOpenCountChange={onLedgerOpenCount}
+          channelByTaskId={channelByTaskId}
+          onOpenChannel={openMissionChannel}
         />
         {/* One control row: the Fleet roster and the automation controls. */}
         {fleetSlot}
@@ -448,6 +466,8 @@ export function CommanderViewContent({
         t={t}
         workspaceId={activeWorkspaceId}
         onOpenCountChange={onLedgerOpenCount}
+        channelByTaskId={channelByTaskId}
+        onOpenChannel={openMissionChannel}
       />
       {/* P2① — Fleet roster pinned above the thread (does not scroll with it). */}
       {fleetSlot}
