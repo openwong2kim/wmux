@@ -747,9 +747,15 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
           // say which one this row is: an errored agent gets a ✕ in the dot's
           // own footprint instead of a round dot.
           if (st?.shape === 'cross') {
+            // The box is sized to the GLYPH (10px), not to the dot it replaces
+            // (6px), which the ✕ overflowed. `-mx-0.5` refunds the 4px of extra
+            // width so the name column starts where it does on every other row,
+            // and `mt-1` puts the taller box's centre on the dot's centre line
+            // (6px + 3 − 5). No glow: the cross is told apart by FORM, so the
+            // glow channel would only make it read as one more red dot.
             return (
               <span
-                className="w-1.5 h-1.5 flex items-center justify-center flex-shrink-0 mt-1.5 text-[10px] leading-none"
+                className="w-2.5 h-2.5 -mx-0.5 flex items-center justify-center flex-shrink-0 mt-1 text-[10px] font-bold leading-none"
                 style={{ color: st.dotVar }}
                 role="img"
                 aria-label={t(st.labelKey)}

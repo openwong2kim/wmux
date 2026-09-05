@@ -198,7 +198,9 @@ export default function MiniSidebar() {
                 )}
                 {agentIcon && (
                   <span
-                    className={`absolute -bottom-0.5 -right-0.5 text-[10px] leading-none ${agentIcon.className} ${agentStatus === 'running' ? 'animate-pulse' : ''}`}
+                    // The cross gets a box sized to its own glyph, mirroring the
+                    // full row: the dot's footprint is 6px and the ✕ is 10px.
+                    className={`absolute -bottom-0.5 -right-0.5 text-[10px] leading-none ${agentIcon.shape === 'cross' ? 'w-2.5 h-2.5 flex items-center justify-center font-bold' : ''} ${agentIcon.className} ${agentStatus === 'running' ? 'animate-pulse' : ''}`}
                     title={`${ws.agentName ? `${ws.agentName} — ` : ''}${t(agentIcon.labelKey)}`}
                   >
                     {/* Error is the one red status told apart by FORM, not hue
