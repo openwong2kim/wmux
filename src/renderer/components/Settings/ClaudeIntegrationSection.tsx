@@ -293,7 +293,7 @@ function ToggleSwitch({
 function Card({ children }: { children: React.ReactNode }) {
   return (
     <div
-      className="rounded-lg p-4 flex flex-col gap-3"
+      className="rounded-[7px] p-4 flex flex-col gap-3"
       style={{ backgroundColor: 'var(--bg-mantle)', border: '1px solid var(--bg-surface)' }}
     >
       {children}

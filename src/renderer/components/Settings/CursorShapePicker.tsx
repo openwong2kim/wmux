@@ -43,7 +43,7 @@ export function CursorShapePicker({
             aria-checked={selected}
             data-cursor-style={style}
             onClick={() => onChange(style)}
-            className={`rounded-lg text-left px-2 pt-2 pb-1.5 ${FOCUS_RING}`}
+            className={`rounded-[5px] text-left px-2 pt-2 pb-1.5 ${FOCUS_RING}`}
             style={{
               backgroundColor: 'var(--bg-surface)',
               border: `1px solid ${selected ? 'var(--accent-blue)' : 'var(--bg-overlay)'}`,

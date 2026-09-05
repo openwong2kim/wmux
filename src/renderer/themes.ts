@@ -241,6 +241,7 @@ export interface FullCssPalette {
   accentGreen: string;     // = success
   accentRed: string;       // = danger
   accentYellow: string;    // = warning
+  overlayScrim: string;    // derived — modal/dialog scrim
 }
 
 /** Expand the 11 manual UI tokens to the 14 CSS variables we ship at runtime. */
@@ -263,6 +264,11 @@ export function deriveFullPalette(tokens: UIThemeTokens): FullCssPalette {
     accentGreen: tokens.success,
     accentRed: tokens.danger,
     accentYellow: tokens.warning,
+    // The scrim is a neutral black veil, not a themed hue: it has to darken
+    // whatever the theme paints underneath so a dialog reads as modal. It
+    // lives in the palette rather than hardcoded at each overlay so a theme
+    // can override it via BUILTIN_CSS_OVERRIDES like any other derived var.
+    overlayScrim: 'rgba(0, 0, 0, 0.55)',
   };
 }
 
@@ -399,7 +405,7 @@ export const CSS_VAR_MAP: Record<keyof FullCssPalette, string> = {
   textMuted: '--text-muted', textSubtle: '--text-subtle', textSub: '--text-sub', textSub2: '--text-sub2',
   textMain: '--text-main', accent: '--accent', accentCursor: '--accent-cursor',
   accentBlue: '--accent-blue', accentGreen: '--accent-green', accentRed: '--accent-red',
-  accentYellow: '--accent-yellow',
+  accentYellow: '--accent-yellow', overlayScrim: '--bg-overlay-scrim',
 };
 
 /** Apply a custom theme to document root — derives the 7 secondary tokens. */

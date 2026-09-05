@@ -219,7 +219,7 @@ export default function ResumeInfoChip(props: {
                 padding: '0 5px',
                 font: 'inherit',
                 color: 'var(--text-main)',
-                background: 'var(--bg-surface0, rgba(255,255,255,0.06))',
+                background: 'color-mix(in srgb, var(--text-main) 6%, transparent)',
                 border: '1px solid var(--border-soft)',
                 borderRadius: 3,
                 cursor: 'pointer',

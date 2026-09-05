@@ -38,7 +38,7 @@ export default function RemoteInboxList({ items, focusedIdx, onDismiss }: Remote
             tabIndex={focused ? 0 : -1}
             data-inbox-row
             data-source="remote"
-            className="flex flex-col gap-2 p-3 rounded-lg outline-none"
+            className="flex flex-col gap-2 p-3 rounded-[7px] outline-none"
             style={{
               backgroundColor: 'var(--bg-surface)',
               border: `1px solid ${focused ? 'var(--accent-blue)' : 'var(--bg-overlay)'}`,

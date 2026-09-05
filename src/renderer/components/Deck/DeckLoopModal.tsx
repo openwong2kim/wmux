@@ -174,7 +174,7 @@ export function DeckLoopModal({
     <div
       data-deck-loop-modal
       className="fixed inset-0 z-50 flex items-start justify-center pt-[12vh]"
-      style={{ backgroundColor: 'rgba(0,0,0,0.55)' }}
+      style={{ backgroundColor: 'var(--bg-overlay-scrim)' }}
       onMouseDown={(e) => {
         if (e.target === e.currentTarget) onClose();
       }}
@@ -252,7 +252,7 @@ export function DeckLoopModal({
                     type="button"
                     onClick={() => removeStep(idx)}
                     aria-label={t('deck.loopStepRemove') || 'Remove step'}
-                    className={`shrink-0 w-6 h-6 rounded text-[var(--text-muted)] hover:text-[var(--accent-red,#f87171)] ${FOCUS_RING}`}
+                    className={`shrink-0 w-6 h-6 rounded text-[var(--text-muted)] hover:text-[var(--accent-red)] ${FOCUS_RING}`}
                     {...tokenAttrs('textMuted', 'text')}
                   >
                     ✕
@@ -373,7 +373,7 @@ export function DeckLoopModal({
             type="button"
             data-deck-loop-start
             onClick={() => void handleStart()}
-            className={`shrink-0 whitespace-nowrap px-3 py-1 rounded-[4px] text-[12px] font-semibold bg-[var(--accent)] text-[var(--bg-base)] shadow-[inset_0_1px_0_rgba(255,255,255,0.22),0_1px_2px_rgba(0,0,0,0.3)] hover:bg-[color-mix(in_srgb,var(--accent)_88%,var(--text-main))] transition-colors ${FOCUS_RING}`}
+            className={`shrink-0 whitespace-nowrap px-3 py-1 rounded-[4px] text-[12px] font-semibold bg-[var(--accent)] text-[var(--bg-base)] shadow-[inset_0_1px_0_color-mix(in_srgb,var(--text-main)_22%,transparent),0_1px_2px_rgba(0,0,0,0.3)] hover:bg-[color-mix(in_srgb,var(--accent)_88%,var(--text-main))] transition-colors ${FOCUS_RING}`}
             {...tokenAttrs('accent', 'bg')}
           >
             {t('deck.loopStart') || 'Start loop'}

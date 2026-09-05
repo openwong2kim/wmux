@@ -241,7 +241,7 @@ export function HooksInstallPrompt({
         role="dialog"
         aria-modal="true"
         aria-label={t('hooks.prompt.title') || 'Install wmux hooks'}
-        className="w-[420px] max-w-[90vw] bg-[var(--bg-overlay)] border border-[var(--bg-surface)] rounded-lg shadow-xl p-4 text-[13px] text-[var(--text-main)]"
+        className="w-[420px] max-w-[90vw] bg-[var(--bg-overlay)] border border-[var(--bg-surface)] rounded-[7px] shadow-xl p-4 text-[13px] text-[var(--text-main)]"
         {...tokenAttrs('textMain', 'text')}
       >
         {phase === 'done' ? (

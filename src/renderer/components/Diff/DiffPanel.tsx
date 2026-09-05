@@ -22,7 +22,7 @@ import { buildDiffAskContext } from '../../../shared/diffAskContext';
 const BTN_RAISED =
   'rounded-[5px] border transition-colors bg-[color-mix(in_srgb,var(--bg-surface)_72%,transparent)] border-[color-mix(in_srgb,var(--text-main)_10%,transparent)] shadow-[inset_0_1px_0_color-mix(in_srgb,var(--text-main)_6%,transparent)] hover:bg-[var(--bg-surface)] hover:border-[color-mix(in_srgb,var(--text-main)_16%,transparent)] hover:shadow-[0_1px_3px_rgba(0,0,0,0.25)]';
 const BTN_PRIMARY_WARM =
-  'rounded-[5px] font-semibold bg-[var(--accent)] text-[var(--bg-base)] shadow-[inset_0_1px_0_rgba(255,255,255,0.22),0_1px_2px_rgba(0,0,0,0.3)] hover:bg-[color-mix(in_srgb,var(--accent)_88%,var(--text-main))] transition-colors';
+  'rounded-[5px] font-semibold bg-[var(--accent)] text-[var(--bg-base)] shadow-[inset_0_1px_0_color-mix(in_srgb,var(--text-main)_22%,transparent),0_1px_2px_rgba(0,0,0,0.3)] hover:bg-[color-mix(in_srgb,var(--accent)_88%,var(--text-main))] transition-colors';
 const BTN_DANGER_TINTED =
   'rounded-[5px] border transition-colors bg-[color-mix(in_srgb,var(--accent-red)_15%,transparent)] border-[color-mix(in_srgb,var(--accent-red)_32%,transparent)] text-[color-mix(in_srgb,var(--accent-red)_70%,var(--text-main))] hover:bg-[color-mix(in_srgb,var(--accent-red)_22%,transparent)]';
 
@@ -314,9 +314,9 @@ function HunkBody({ bodyLines }: { bodyLines: readonly string[] }) {
         const c = line.charAt(0);
         const color =
           c === '+'
-            ? 'text-[var(--accent-green,#4ade80)]'
+            ? 'text-[var(--accent-green)]'
             : c === '-'
-              ? 'text-[var(--accent-red,#f87171)]'
+              ? 'text-[var(--accent-red)]'
               : 'text-[var(--text-sub)]';
         return (
           <div key={i} className={color}>
@@ -846,8 +846,8 @@ export default function DiffPanel({ source, isActive, surfaceId, verifiedWorkspa
                     <span className="truncate">{path}</span>
                     {num && (
                       <span className="ml-1 text-[10px]">
-                        <span className="text-[var(--accent-green,#4ade80)]">+{num.additions ?? '?'}</span>{' '}
-                        <span className="text-[var(--accent-red,#f87171)]">-{num.deletions ?? '?'}</span>
+                        <span className="text-[var(--accent-green)]">+{num.additions ?? '?'}</span>{' '}
+                        <span className="text-[var(--accent-red)]">-{num.deletions ?? '?'}</span>
                       </span>
                     )}
                     {f && !f.hunkSelectable && (
@@ -894,7 +894,7 @@ export default function DiffPanel({ source, isActive, surfaceId, verifiedWorkspa
                         )}
                         <span className="font-mono text-[var(--text-sub)] truncate">{hunk.header}</span>
                         {failed && (
-                          <span className="text-[10px] text-[var(--accent-red,#f87171)]">{t('diff.nonAdoptable')}</span>
+                          <span className="text-[10px] text-[var(--accent-red)]">{t('diff.nonAdoptable')}</span>
                         )}
                         <div className="flex-1" />
                         {/* diff→오케스트레이터 질문 — 양 모드 공통(hunk 컨텍스트 동봉). */}
@@ -1010,7 +1010,7 @@ export default function DiffPanel({ source, isActive, surfaceId, verifiedWorkspa
                 })}
               {/* F10: hunkHeader 불일치(위치 이동됨) 코멘트 그룹 — 파일 하단. */}
               {activeFile && fileComments.moved.length > 0 && (
-                <div className="mb-2 border border-[var(--accent-red,#f87171)] rounded overflow-hidden">
+                <div className="mb-2 border border-[var(--accent-red)] rounded overflow-hidden">
                   <div className="px-2 py-1 bg-[var(--bg-surface)] text-[10px] text-[var(--text-muted)]">
                     {t('diff.commentMoved', { count: fileComments.moved.length })}
                   </div>

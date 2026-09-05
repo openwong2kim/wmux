@@ -634,7 +634,7 @@ export default function RemoteMirrorTerminal({ attachId, error, readOnly, onTitl
       {exited && (
         <div
           className="absolute bottom-0 left-0 right-0 px-2 py-1 text-[10px] font-mono"
-          style={{ color: 'var(--text-muted)', background: 'rgba(0,0,0,0.55)' }}
+          style={{ color: 'var(--text-muted)', background: 'var(--bg-overlay-scrim)' }}
         >
           {t('remote.exited')}
         </div>
@@ -642,7 +642,7 @@ export default function RemoteMirrorTerminal({ attachId, error, readOnly, onTitl
       {disconnected && (
         <div
           className="absolute bottom-0 left-0 right-0 px-2 py-1 text-[10px] font-mono"
-          style={{ color: 'var(--accent-red)', background: 'rgba(0,0,0,0.55)' }}
+          style={{ color: 'var(--accent-red)', background: 'var(--bg-overlay-scrim)' }}
         >
           {t('remote.disconnected')}
         </div>

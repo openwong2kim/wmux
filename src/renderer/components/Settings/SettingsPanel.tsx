@@ -54,7 +54,7 @@ type ShellInfo = { name: string; path: string; args?: string[] };
 
 // ─── Card primitive ────────────────────────────────────────────────────────────
 //
-// The `rounded-lg + bg-mantle + 1px bg-surface border` surface was copy-pasted
+// The `rounded-[7px] + bg-mantle + 1px bg-surface border` surface was copy-pasted
 // ~25× inline. One component now owns it — change the surface treatment once and
 // it propagates everywhere. Callers pass layout via className and may override
 // individual style properties (e.g. maxHeight) via `style`.
@@ -67,7 +67,7 @@ function Card({
 }: React.HTMLAttributes<HTMLDivElement>) {
   return (
     <div
-      className={`rounded-lg ${className}`}
+      className={`rounded-[7px] ${className}`}
       style={{ backgroundColor: 'var(--bg-mantle)', border: '1px solid var(--bg-surface)', ...style }}
       {...rest}
     >
@@ -96,7 +96,7 @@ function Button({
 }: React.ButtonHTMLAttributes<HTMLButtonElement> & { variant?: ButtonVariant }) {
   return (
     <button
-      className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${FOCUS_RING} ${className}`}
+      className={`px-3 py-1.5 rounded-[5px] text-xs font-medium transition-colors ${FOCUS_RING} ${className}`}
       style={{ ...BUTTON_VARIANT_STYLE[variant], ...style }}
       {...rest}
     >
@@ -496,7 +496,7 @@ function KbdRow({ keys, description, disabled, onToggleDisabled, toggleTitle }: 
   toggleTitle?: string;
 }) {
   return (
-    <div className="flex items-center justify-between py-1.5 px-3 rounded-lg hover:bg-[color:var(--bg-mantle)] transition-colors">
+    <div className="flex items-center justify-between py-1.5 px-3 rounded-[7px] hover:bg-[color:var(--bg-mantle)] transition-colors">
       <span
         className="text-[12px] text-[color:var(--text-sub)]"
         style={disabled ? { textDecoration: 'line-through', opacity: 0.5 } : undefined}
@@ -621,7 +621,7 @@ function ResetSection() {
     <div>
       <SectionLabel id="reset" label={t('settings.reset')} />
       <div
-        className="px-3 py-2.5 rounded-lg flex items-center justify-between"
+        className="px-3 py-2.5 rounded-[7px] flex items-center justify-between"
         style={{ backgroundColor: 'var(--bg-mantle)', border: '1px solid var(--bg-surface)' }}
       >
         <div>
@@ -1167,7 +1167,7 @@ function McpStatusSection() {
     server: { registered: boolean; path: string | null },
   ) => (
     <div
-      className="px-3 py-2 rounded-lg flex items-center justify-between gap-3"
+      className="px-3 py-2 rounded-[7px] flex items-center justify-between gap-3"
       style={{ backgroundColor: 'var(--bg-mantle)', border: '1px solid var(--bg-surface)' }}
     >
       <div className="min-w-0 flex-1">
@@ -1214,7 +1214,7 @@ function McpStatusSection() {
         </>
       ) : (
         <div
-          className="px-3 py-2 rounded-lg text-[11px] text-[color:var(--text-muted)]"
+          className="px-3 py-2 rounded-[7px] text-[11px] text-[color:var(--text-muted)]"
           style={{ backgroundColor: 'var(--bg-mantle)', border: '1px solid var(--bg-surface)' }}
         >
           {t('settings.mcpNotDetected')}<span className="font-mono">{target.configPath}</span>
@@ -1228,7 +1228,7 @@ function McpStatusSection() {
       <SectionLabel id="mcp" label={t('settings.mcpServers')} />
       {loading ? (
         <div
-          className="px-3 py-2 rounded-lg text-[11px] text-[color:var(--text-muted)]"
+          className="px-3 py-2 rounded-[7px] text-[11px] text-[color:var(--text-muted)]"
           style={{ backgroundColor: 'var(--bg-mantle)', border: '1px solid var(--bg-surface)' }}
         >
           {t('settings.mcpChecking')}
@@ -1276,7 +1276,7 @@ function McpStatusSection() {
         </>
       ) : (
         <div
-          className="px-3 py-2 rounded-lg text-[11px] text-[color:var(--text-muted)]"
+          className="px-3 py-2 rounded-[7px] text-[11px] text-[color:var(--text-muted)]"
           style={{ backgroundColor: 'var(--bg-mantle)', border: '1px solid var(--bg-surface)' }}
         >
           {t('settings.mcpUnavailable')}
@@ -1461,7 +1461,7 @@ function LanLinkSection() {
       <div className="flex flex-col gap-3">
         <SectionLabel label={t('settings.lanlink')} />
         <div
-          className="px-3 py-2 rounded-lg text-[11px] text-[color:var(--text-muted)]"
+          className="px-3 py-2 rounded-[7px] text-[11px] text-[color:var(--text-muted)]"
           style={{ backgroundColor: 'var(--bg-mantle)', border: '1px solid var(--bg-surface)' }}
         >
           {t('settings.lanlinkUnavailable')}
@@ -1474,7 +1474,7 @@ function LanLinkSection() {
       <div className="flex flex-col gap-3">
         <SectionLabel label={t('settings.lanlink')} />
         <div
-          className="px-3 py-2 rounded-lg text-[11px] text-[color:var(--text-muted)]"
+          className="px-3 py-2 rounded-[7px] text-[11px] text-[color:var(--text-muted)]"
           style={{ backgroundColor: 'var(--bg-mantle)', border: '1px solid var(--bg-surface)' }}
         >
           {t('settings.lanlinkLoading')}
@@ -1557,7 +1557,7 @@ export function LanLinkPairingView(props: LanLinkPairingViewProps) {
       <div className="flex flex-col gap-3" data-testid="lanlink-pairing-section">
         <SectionLabel id="lanpair" label={t('settings.lanlinkPair')} />
         <div
-          className="px-3 py-2 rounded-lg text-[11px] text-[color:var(--text-muted)]"
+          className="px-3 py-2 rounded-[7px] text-[11px] text-[color:var(--text-muted)]"
           style={{ backgroundColor: 'var(--bg-mantle)', border: '1px solid var(--bg-surface)' }}
         >
           {t('settings.lanlinkPairDisabled')}
@@ -1646,7 +1646,7 @@ export function LanLinkPairingView(props: LanLinkPairingViewProps) {
       <SectionLabel label={t('settings.lanlinkPeers')} />
       {peers.length === 0 ? (
         <div
-          className="px-3 py-2 rounded-lg text-[11px] text-[color:var(--text-muted)]"
+          className="px-3 py-2 rounded-[7px] text-[11px] text-[color:var(--text-muted)]"
           style={{ backgroundColor: 'var(--bg-mantle)', border: '1px solid var(--bg-surface)' }}
         >
           {t('settings.lanlinkPeersEmpty')}
@@ -1656,7 +1656,7 @@ export function LanLinkPairingView(props: LanLinkPairingViewProps) {
           {peers.map((p) => (
             <div
               key={p.peerUuid}
-              className="flex items-center gap-2 px-3 py-2 rounded-lg"
+              className="flex items-center gap-2 px-3 py-2 rounded-[7px]"
               style={{ backgroundColor: 'var(--bg-surface)', border: '1px solid var(--bg-overlay)' }}
             >
               <span
@@ -1825,7 +1825,7 @@ function LanLinkPairingSection() {
       <div className="flex flex-col gap-3">
         <SectionLabel label={t('settings.lanlinkPair')} />
         <div
-          className="px-3 py-2 rounded-lg text-[11px] text-[color:var(--text-muted)]"
+          className="px-3 py-2 rounded-[7px] text-[11px] text-[color:var(--text-muted)]"
           style={{ backgroundColor: 'var(--bg-mantle)', border: '1px solid var(--bg-surface)' }}
         >
           {t('settings.lanlinkUnavailable')}
@@ -2004,7 +2004,7 @@ function UpdateStatus() {
 
   return (
     <div
-      className="px-3 py-2.5 rounded-lg flex items-center justify-between"
+      className="px-3 py-2.5 rounded-[7px] flex items-center justify-between"
       style={{ backgroundColor: 'var(--bg-mantle)', border: '1px solid var(--bg-surface)' }}
     >
       <div>
@@ -2137,7 +2137,7 @@ function TabGeneral() {
             <button
               key={value}
               onClick={() => setLocale(value as Locale)}
-              className={`px-3 py-2 rounded-lg text-sm transition-colors text-left ${FOCUS_RING}`}
+              className={`px-3 py-2 rounded-[5px] text-sm transition-colors text-left ${FOCUS_RING}`}
               style={{
                 backgroundColor: locale === value ? 'var(--bg-surface)' : 'transparent',
                 color: locale === value ? 'var(--text-main)' : 'var(--text-subtle)',
@@ -2429,7 +2429,7 @@ function TailwindSwatchPicker({ value, onChange, hueScope = 'all' }: TailwindSwa
 
   return (
     <div
-      className="w-full rounded-lg p-2 flex flex-col gap-2"
+      className="w-full rounded-[7px] p-2 flex flex-col gap-2"
       style={{ backgroundColor: 'var(--bg-base)', border: '1px solid var(--bg-overlay)' }}
     >
       {/* Hue tabs */}
@@ -2638,7 +2638,7 @@ function TokenRow({
               className={`inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium ${FOCUS_RING}`}
               style={{ backgroundColor: '#1F2937', color: '#93C5FD', border: '1px solid #3B5067' }}
             >
-              <span className="w-3 h-3 rounded-sm" style={{ backgroundColor: nudgeHex, border: '1px solid rgba(255,255,255,0.3)' }} />
+              <span className="w-3 h-3 rounded-sm" style={{ backgroundColor: nudgeHex, border: '1px solid color-mix(in srgb, var(--text-main) 30%, transparent)' }} />
               {t('settings.contrast.nudge')}
             </button>
           ) : (
@@ -2815,7 +2815,7 @@ function CustomThemeEditor() {
         type="button"
         data-testid="inspect-start"
         onClick={() => enterInspect()}
-        className={`flex items-center gap-2 w-full px-3 py-2 rounded-lg text-left transition-colors ${FOCUS_RING}`}
+        className={`flex items-center gap-2 w-full px-3 py-2 rounded-[5px] text-left transition-colors ${FOCUS_RING}`}
         style={{ backgroundColor: 'var(--bg-surface)', color: 'var(--text-main)', border: '1px solid var(--accent-blue)' }}
       >
         <span className="inline-flex items-center shrink-0" style={{ color: 'var(--accent-blue)' }}>
@@ -2827,7 +2827,7 @@ function CustomThemeEditor() {
 
       {/* Header: "Custom (based on …)" + Reset-to-preset control */}
       <div
-        className="flex items-center justify-between px-3 py-2 rounded-lg gap-2"
+        className="flex items-center justify-between px-3 py-2 rounded-[7px] gap-2"
         style={{ backgroundColor: 'var(--bg-mantle)', border: '1px solid var(--bg-surface)' }}
       >
         <span className="text-[11px] text-[color:var(--text-sub)] truncate" data-testid="custom-theme-based-on">
@@ -2855,7 +2855,7 @@ function CustomThemeEditor() {
       {UI_TOKEN_GROUPS.map((group) => (
         <div
           key={group.label}
-          className="rounded-lg overflow-hidden"
+          className="rounded-[7px] overflow-hidden"
           style={{ backgroundColor: 'var(--bg-mantle)', border: '1px solid var(--bg-surface)' }}
         >
           <div
@@ -2900,7 +2900,7 @@ function CustomThemeEditor() {
 
       {/* Terminal palette preset */}
       <div
-        className="flex items-center justify-between px-3 py-2 rounded-lg"
+        className="flex items-center justify-between px-3 py-2 rounded-[7px]"
         style={{ backgroundColor: 'var(--bg-mantle)', border: '1px solid var(--bg-surface)' }}
       >
         <div className="flex flex-col">
@@ -3007,7 +3007,7 @@ function XtermOverrideEditor() {
 
   return (
     <div
-      className="rounded-lg overflow-hidden"
+      className="rounded-[7px] overflow-hidden"
       style={{ backgroundColor: 'var(--bg-mantle)', border: '1px solid var(--bg-surface)' }}
     >
       <button
@@ -3643,7 +3643,7 @@ function TabAppearance() {
                 role="radio"
                 aria-checked={selected}
                 aria-label={label}
-                className={`theme-card rounded-lg overflow-hidden text-left ${FOCUS_RING}`}
+                className={`theme-card rounded-[7px] overflow-hidden text-left ${FOCUS_RING}`}
                 style={{
                   border: `1px solid ${selected ? 'var(--accent-blue)' : 'var(--bg-surface)'}`,
                   // Ring + a soft lift shadow on the selected card. Uses inline
@@ -3705,7 +3705,7 @@ function TabAppearance() {
           <ChromePresetActionsView onApply={applyChromePresetWithFeedback} />
         </SettingRow>
         <SettingRow id="sidebarpos" label={t('settings.sidebarPosition')} description={t('settings.sidebarPositionDesc')}>
-          <div className="flex rounded-lg overflow-hidden" style={{ border: '1px solid var(--bg-overlay)' }}>
+          <div className="flex rounded-[5px] overflow-hidden" style={{ border: '1px solid var(--bg-overlay)' }}>
             {(['left', 'right'] as const).map((pos) => (
               <button
                 key={pos}
@@ -3729,7 +3729,7 @@ function TabAppearance() {
           <div
             role="group"
             aria-label={t('settings.multiviewArrangement')}
-            className="flex rounded-lg overflow-hidden"
+            className="flex rounded-[5px] overflow-hidden"
             style={{ border: '1px solid var(--bg-overlay)' }}
           >
             {MULTIVIEW_ARRANGEMENTS.map((mode) => (
@@ -3956,7 +3956,7 @@ export function NotificationsView(props: NotificationsViewProps) {
 
         {/* T12 — Notification sound choice (radio group, not a toggle) */}
         <div
-          className="px-3 py-2.5 rounded-lg"
+          className="px-3 py-2.5 rounded-[7px]"
           style={{ backgroundColor: 'var(--bg-mantle)', border: '1px solid var(--bg-surface)' }}
           data-testid="notification-sound-choice-row"
         >
@@ -4035,7 +4035,7 @@ export function NotificationsView(props: NotificationsViewProps) {
         </p>
         {workspaces.length === 0 ? (
           <p
-            className="text-[11px] text-[color:var(--text-muted)] px-3 py-2 rounded-lg"
+            className="text-[11px] text-[color:var(--text-muted)] px-3 py-2 rounded-[7px]"
             style={{ backgroundColor: 'var(--bg-mantle)', border: '1px solid var(--bg-surface)' }}
             data-testid="per-workspace-mute-empty"
           >
@@ -4043,7 +4043,7 @@ export function NotificationsView(props: NotificationsViewProps) {
           </p>
         ) : (
           <div
-            className="rounded-lg overflow-hidden flex flex-col"
+            className="rounded-[7px] overflow-hidden flex flex-col"
             style={{
               backgroundColor: 'var(--bg-mantle)',
               border: '1px solid var(--bg-surface)',
@@ -4306,7 +4306,7 @@ function TabShortcuts() {
     <div className="flex flex-col gap-1">
       <SectionLabel label={t('settings.shortcuts')} />
       <div
-        className="rounded-lg overflow-hidden py-1"
+        className="rounded-[7px] overflow-hidden py-1"
         style={{ backgroundColor: 'var(--bg-mantle)', border: '1px solid var(--bg-surface)' }}
       >
         {shortcuts.map((s) => (
@@ -4327,7 +4327,7 @@ function TabShortcuts() {
 
       {/* Prefix trigger key */}
       <div
-        className="flex items-center gap-3 px-3 py-2.5 rounded-lg"
+        className="flex items-center gap-3 px-3 py-2.5 rounded-[7px]"
         style={{ backgroundColor: 'var(--bg-mantle)', border: '1px solid var(--bg-surface)' }}
       >
         <span data-setting-id="prefix" className="text-[11px] text-[color:var(--text-sub)] font-mono flex-1 scroll-mt-4">
@@ -4354,7 +4354,7 @@ function TabShortcuts() {
         </button>
       </div>
       <div
-        className="rounded-lg overflow-hidden"
+        className="rounded-[7px] overflow-hidden"
         style={{ backgroundColor: 'var(--bg-mantle)', border: '1px solid var(--bg-surface)' }}
       >
         {bindingEntries.length === 0 ? (
@@ -4397,7 +4397,7 @@ function TabShortcuts() {
 
       {/* Add prefix binding */}
       <button
-        className={`mt-1 px-3 py-1.5 rounded-lg text-xs font-mono transition-colors ${FOCUS_RING}`}
+        className={`mt-1 px-3 py-1.5 rounded-[5px] text-xs font-mono transition-colors ${FOCUS_RING}`}
         style={{ backgroundColor: 'var(--bg-surface)', color: 'var(--accent-green)', border: '1px solid var(--bg-overlay)' }}
         onClick={() => setAddingBinding(true)}
       >
@@ -4463,7 +4463,7 @@ function TabShortcuts() {
           {customKeybindings.map((kb) => (
             <div
               key={kb.id}
-              className="flex items-center gap-2 px-3 py-2 rounded-lg"
+              className="flex items-center gap-2 px-3 py-2 rounded-[7px]"
               style={{ backgroundColor: 'var(--bg-mantle)', border: '1px solid var(--bg-surface)' }}
             >
               {/* Key badge */}
@@ -4522,7 +4522,7 @@ function TabShortcuts() {
 
       {/* Add button */}
       <button
-        className={`mt-2 px-3 py-1.5 rounded-lg text-xs font-mono transition-colors ${FOCUS_RING}`}
+        className={`mt-2 px-3 py-1.5 rounded-[5px] text-xs font-mono transition-colors ${FOCUS_RING}`}
         style={{ backgroundColor: 'var(--bg-surface)', color: 'var(--accent-green)', border: '1px solid var(--bg-overlay)' }}
         onClick={() => setCapturingFor('new')}
       >
@@ -4628,7 +4628,7 @@ export function FirstRunStatusView({ status, onOpenWizard, onShowCheatSheet }: F
         <SectionLabel id="firstrun" label={t('settings.firstRunSetup')} />
 
         <div
-          className="px-3 py-2.5 rounded-lg"
+          className="px-3 py-2.5 rounded-[7px]"
           style={{ backgroundColor: 'var(--bg-mantle)', border: '1px solid var(--bg-surface)' }}
           data-testid="first-run-setup-last-completed"
         >
@@ -4639,7 +4639,7 @@ export function FirstRunStatusView({ status, onOpenWizard, onShowCheatSheet }: F
         </div>
 
         <div
-          className="px-3 py-2 rounded-lg flex items-center gap-2"
+          className="px-3 py-2 rounded-[7px] flex items-center gap-2"
           style={{ backgroundColor: 'var(--bg-mantle)', border: '1px solid var(--bg-surface)' }}
           data-testid="first-run-setup-claude-row"
         >
@@ -4648,7 +4648,7 @@ export function FirstRunStatusView({ status, onOpenWizard, onShowCheatSheet }: F
         </div>
 
         <div
-          className="px-3 py-2 rounded-lg flex items-center gap-2"
+          className="px-3 py-2 rounded-[7px] flex items-center gap-2"
           style={{ backgroundColor: 'var(--bg-mantle)', border: '1px solid var(--bg-surface)' }}
           data-testid="first-run-setup-mcp-row"
         >
@@ -4778,7 +4778,7 @@ function TabAbout() {
           href="https://github.com/openwong2kim/wmux"
           target="_blank"
           rel="noopener noreferrer"
-          className={`flex items-center gap-2 px-3 py-2.5 rounded-lg text-sm text-[color:var(--accent-blue)] hover:text-[color:var(--text-main)] transition-colors ${FOCUS_RING}`}
+          className={`flex items-center gap-2 px-3 py-2.5 rounded-[5px] text-sm text-[color:var(--accent-blue)] hover:text-[color:var(--text-main)] transition-colors ${FOCUS_RING}`}
           style={{ backgroundColor: 'var(--bg-mantle)', border: '1px solid var(--bg-surface)' }}
         >
           <IconExternalLink />
@@ -4861,7 +4861,7 @@ export function InspectMinimizedBar({
     <div
       data-testid="inspect-minimized-bar"
       role="status"
-      className="fixed bottom-4 right-4 z-50 flex items-center gap-3 rounded-lg px-4 py-3 shadow-2xl"
+      className="fixed bottom-4 right-4 z-50 flex items-center gap-3 rounded-[7px] px-4 py-3 shadow-2xl"
       style={{
         width: 320,
         backgroundColor: '#111827',
@@ -5110,7 +5110,7 @@ export default function SettingsPanel() {
                           setActiveTab(tabId);
                         }}
                         aria-current={isActive ? 'page' : undefined}
-                        className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-left transition-colors text-[12px] ${!isActive ? 'hover:bg-[color:var(--bg-surface)]' : ''} ${FOCUS_RING}`}
+                        className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-[5px] text-left transition-colors text-[12px] ${!isActive ? 'hover:bg-[color:var(--bg-surface)]' : ''} ${FOCUS_RING}`}
                         style={{
                           backgroundColor: isActive ? 'var(--bg-surface)' : 'transparent',
                           color: isActive ? 'var(--text-main)' : 'var(--text-subtle)',

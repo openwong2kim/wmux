@@ -45,8 +45,8 @@ function stateLabel(pr: PrSummary): string {
 
 function checksClass(checks: PrSummary['checks']): string {
   // diff 콘텐츠와 동일 규칙: 상태색은 자체 녹/적 팔레트(theme accent 금지).
-  if (checks === 'passing') return 'text-[var(--accent-green,#4ade80)]';
-  if (checks === 'failing') return 'text-[var(--accent-red,#f87171)]';
+  if (checks === 'passing') return 'text-[var(--accent-green)]';
+  if (checks === 'failing') return 'text-[var(--accent-red)]';
   if (checks === 'pending') return 'text-[var(--text-muted)]';
   return 'text-transparent';
 }
@@ -262,7 +262,7 @@ export function PrSection({ repoPath }: { repoPath: string | null }): React.Reac
                 )}
                 {/* 상세 실패는 빈 상태와 구분해 명시(Codex P2). */}
                 {!commentsLoading && commentsError && (
-                  <div className="text-[var(--accent-red,#f87171)] break-words">
+                  <div className="text-[var(--accent-red)] break-words">
                     {t('git.commentsFailed') || 'Could not load comments'}: {commentsError}
                   </div>
                 )}

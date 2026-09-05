@@ -688,7 +688,7 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
             fontFamily: 'ui-monospace, monospace',
             color: 'var(--text-main)',
             backgroundColor: 'var(--bg-surface)',
-            border: '1px solid var(--bg-surface0, rgba(255,255,255,0.12))',
+            border: '1px solid color-mix(in srgb, var(--text-main) 12%, transparent)',
             borderRadius: 3,
             cursor: 'pointer',
           }}
@@ -723,7 +723,7 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
             fontFamily: 'ui-monospace, monospace',
             color: 'var(--text-main)',
             backgroundColor: 'var(--bg-surface)',
-            border: '1px solid var(--bg-surface0, rgba(255,255,255,0.12))',
+            border: '1px solid color-mix(in srgb, var(--text-main) 12%, transparent)',
             borderRadius: 3,
             cursor: 'pointer',
           }}

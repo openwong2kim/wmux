@@ -730,7 +730,7 @@ export default function CommandPalette() {
     // Backdrop
     <div
       className="fixed inset-0 z-50 flex items-start justify-center pt-[10vh]"
-      style={{ backgroundColor: 'rgba(0,0,0,0.55)' }}
+      style={{ backgroundColor: 'var(--bg-overlay-scrim)' }}
       onMouseDown={(e) => {
         // Close when clicking the backdrop, not the palette itself
         if (e.target === e.currentTarget) setVisible(false);

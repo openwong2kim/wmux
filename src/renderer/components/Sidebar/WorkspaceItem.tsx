@@ -771,7 +771,7 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
                 )}
                 {departedCwd && (
                   <span
-                    className="text-[10px] text-[var(--accent-yellow,#f9e2af)] flex-shrink-0"
+                    className="text-[10px] text-[var(--accent-yellow)] flex-shrink-0"
                     title={t('workspace.cwdDeparted', { cwd: departedCwd })}
                   >
                     ⚠ {t('workspace.departed')}

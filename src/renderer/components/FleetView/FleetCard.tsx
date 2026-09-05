@@ -177,7 +177,7 @@ function FleetCard({ card, focused, onJump, tail, resource }: FleetCardProps) {
       data-pty-id={card.ptyId}
       data-workspace-id={card.workspaceId}
       data-workspace-name={card.workspaceName}
-      className="group text-left flex flex-col gap-1.5 rounded-lg p-3 transition-[transform,box-shadow,border-color,background-color] duration-150 cursor-pointer outline-none hover:-translate-y-px hover:shadow-[0_2px_8px_rgba(0,0,0,0.25)] motion-reduce:transition-none motion-reduce:hover:translate-y-0"
+      className="group text-left flex flex-col gap-1.5 rounded-[7px] p-3 transition-[transform,box-shadow,border-color,background-color] duration-150 cursor-pointer outline-none hover:-translate-y-px hover:shadow-[0_2px_8px_rgba(0,0,0,0.25)] motion-reduce:transition-none motion-reduce:hover:translate-y-0"
       style={{
         backgroundColor: 'var(--bg-surface)',
         border: `1px solid ${

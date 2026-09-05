@@ -163,7 +163,7 @@ export function PermissionApprovalDialogView(
         <div className="flex items-center justify-end gap-2">
           <button
             onClick={props.onDeny}
-            className="px-4 py-1.5 rounded-lg text-xs font-medium transition-colors"
+            className="px-4 py-1.5 rounded-[5px] text-xs font-medium transition-colors"
             style={{
               backgroundColor: 'var(--bg-surface)',
               color: 'var(--text-subtle)',
@@ -173,7 +173,7 @@ export function PermissionApprovalDialogView(
           </button>
           <button
             onClick={props.onApprove}
-            className="px-4 py-1.5 rounded-lg text-xs font-medium transition-colors"
+            className="px-4 py-1.5 rounded-[5px] text-xs font-medium transition-colors"
             style={{
               backgroundColor: hasCritical
                 ? 'var(--accent-red)'

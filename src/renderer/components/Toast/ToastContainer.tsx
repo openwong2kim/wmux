@@ -18,12 +18,12 @@ const AUTO_DISMISS_MS = 5_000;
 function levelColor(level: ToastLevel): string {
   switch (level) {
     case 'error':
-      return 'var(--accent-red, #f38ba8)';
+      return 'var(--accent-red)';
     case 'warn':
-      return 'var(--accent-yellow, #f9e2af)';
+      return 'var(--accent-yellow)';
     case 'info':
     default:
-      return 'var(--accent-blue, #89b4fa)';
+      return 'var(--accent-blue)';
   }
 }
 
@@ -69,7 +69,7 @@ function ToastItem({
     <div
       role="status"
       aria-live="polite"
-      className="flex items-start gap-2 px-3 py-2 rounded-lg shadow-lg max-w-sm text-xs"
+      className="flex items-start gap-2 px-3 py-2 rounded-[7px] shadow-lg max-w-sm text-xs"
       style={{
         backgroundColor: 'var(--bg-mantle)',
         border: `1px solid ${levelColor(level)}`,
@@ -105,7 +105,7 @@ function ToastItem({
           style={{
             backgroundColor: 'var(--accent)',
             color: 'var(--bg-base)',
-            boxShadow: 'inset 0 1px 0 rgba(255, 255, 255, 0.22), 0 1px 2px rgba(0, 0, 0, 0.3)',
+            boxShadow: 'inset 0 1px 0 color-mix(in srgb, var(--text-main) 22%, transparent), 0 1px 2px rgba(0, 0, 0, 0.3)',
           }}
         >
           {action.label}

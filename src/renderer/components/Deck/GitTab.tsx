@@ -494,7 +494,7 @@ export function GitTab({ cwd }: { cwd?: string } = {}): React.ReactElement {
                     type="button"
                     onClick={() => void handleRemove(wt)}
                     disabled={busy}
-                    className={`px-1.5 py-0.5 rounded text-[11px] text-[var(--text-muted)] hover:text-[var(--accent-red,#f87171)] border border-[var(--bg-surface)] opacity-0 group-hover:opacity-100 transition-opacity disabled:opacity-40 ${FOCUS_RING}`}
+                    className={`px-1.5 py-0.5 rounded text-[11px] text-[var(--text-muted)] hover:text-[var(--accent-red)] border border-[var(--bg-surface)] opacity-0 group-hover:opacity-100 transition-opacity disabled:opacity-40 ${FOCUS_RING}`}
                     title={t('git.removeDesc') || 'Remove worktree (refused if dirty)'}
                     {...tokenAttrs('textMuted', 'text')}
                   >

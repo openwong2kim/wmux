@@ -146,7 +146,7 @@ export function DeckSchedulesPanel({
       {open && (
         <div
           data-deck-schedules-panel
-          className="w-full mt-1.5 rounded-lg px-4 py-3 space-y-2 bg-[rgba(var(--bg-surface-rgb),0.55)]"
+          className="w-full mt-1.5 rounded-[7px] px-4 py-3 space-y-2 bg-[rgba(var(--bg-surface-rgb),0.55)]"
         >
           {/* Existing schedules */}
           {schedules.length === 0 ? (
@@ -285,7 +285,7 @@ export function DeckSchedulesPanel({
                 type="button"
                 data-deck-schedule-create
                 onClick={() => void handleCreate()}
-                className={`ml-auto shrink-0 whitespace-nowrap px-2.5 py-1 rounded-md text-[12px] font-semibold bg-[var(--accent)] text-[var(--bg-base)] shadow-[inset_0_1px_0_rgba(255,255,255,0.22),0_1px_2px_rgba(0,0,0,0.3)] hover:bg-[color-mix(in_srgb,var(--accent)_88%,var(--text-main))] transition-colors ${FOCUS_RING}`}
+                className={`ml-auto shrink-0 whitespace-nowrap px-2.5 py-1 rounded-md text-[12px] font-semibold bg-[var(--accent)] text-[var(--bg-base)] shadow-[inset_0_1px_0_color-mix(in_srgb,var(--text-main)_22%,transparent),0_1px_2px_rgba(0,0,0,0.3)] hover:bg-[color-mix(in_srgb,var(--accent)_88%,var(--text-main))] transition-colors ${FOCUS_RING}`}
                 {...tokenAttrs('accent', 'bg')}
               >
                 {t('deck.scheduleAdd') || 'Add schedule'}

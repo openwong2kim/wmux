@@ -113,6 +113,7 @@
   --accent-green: #8FBF7F;
   --accent-red: #D96C6C;
   --accent-yellow: #E8A33D;
+  --bg-overlay-scrim: rgba(0, 0, 0, 0.55);
   --accent-rgb: 232, 163, 61;
   --accent-blue-rgb: 110, 155, 196;
   --bg-surface-rgb: 32, 32, 36;
@@ -139,6 +140,7 @@
   --accent-green: #3D6750;
   --accent-red: #BC002D;
   --accent-yellow: #A06A1A;
+  --bg-overlay-scrim: rgba(0, 0, 0, 0.55);
   --accent-rgb: 188, 0, 45;
   --accent-blue-rgb: 28, 77, 106;
   --bg-surface-rgb: 226, 221, 212;
@@ -161,6 +163,7 @@
   --accent-green: #A6E3A1;
   --accent-red: #F38BA8;
   --accent-yellow: #F9E2AF;
+  --bg-overlay-scrim: rgba(0, 0, 0, 0.55);
   --accent-rgb: 137, 180, 250;
   --accent-blue-rgb: 137, 180, 250;
   --bg-surface-rgb: 49, 50, 68;
@@ -183,6 +186,7 @@
   --accent-green: #909090;
   --accent-red: #FF5555;
   --accent-yellow: #C0C0C0;
+  --bg-overlay-scrim: rgba(0, 0, 0, 0.55);
   --accent-rgb: 160, 160, 160;
   --accent-blue-rgb: 160, 160, 160;
   --bg-surface-rgb: 26, 26, 26;
@@ -205,6 +209,7 @@
   --accent-green: #4EBF8B;
   --accent-red: #E8554E;
   --accent-yellow: #F2C85B;
+  --bg-overlay-scrim: rgba(0, 0, 0, 0.55);
   --accent-rgb: 91, 141, 239;
   --accent-blue-rgb: 91, 141, 239;
   --bg-surface-rgb: 30, 46, 74;
@@ -227,6 +232,7 @@
   --accent-green: #5AAE6A;
   --accent-red: #E84040;
   --accent-yellow: #F2C744;
+  --bg-overlay-scrim: rgba(0, 0, 0, 0.55);
   --accent-rgb: 232, 64, 64;
   --accent-blue-rgb: 106, 160, 204;
   --bg-surface-rgb: 58, 26, 26;
@@ -249,6 +255,7 @@
   --accent-green: #8AAA70;
   --accent-red: #CC6B5A;
   --accent-yellow: #C89060;
+  --bg-overlay-scrim: rgba(0, 0, 0, 0.55);
   --accent-rgb: 196, 160, 85;
   --accent-blue-rgb: 127, 166, 201;
   --bg-surface-rgb: 46, 42, 34;
@@ -271,6 +278,7 @@
   --accent-green: #909090;
   --accent-red: #FF4444;
   --accent-yellow: #A0A0A0;
+  --bg-overlay-scrim: rgba(0, 0, 0, 0.55);
   --accent-rgb: 192, 192, 192;
   --accent-blue-rgb: 192, 192, 192;
   --bg-surface-rgb: 10, 10, 10;
@@ -295,6 +303,7 @@
   --accent-green: #1F6940;
   --accent-red: #C60C30;
   --accent-yellow: #9B6A07;
+  --bg-overlay-scrim: rgba(0, 0, 0, 0.55);
   --accent-rgb: 0, 52, 120;
   --accent-blue-rgb: 0, 52, 120;
   --bg-surface-rgb: 221, 221, 228;

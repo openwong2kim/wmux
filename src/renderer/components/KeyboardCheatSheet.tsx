@@ -145,11 +145,11 @@ export function KeyboardCheatSheetView({
       role="region"
       aria-label={title}
       data-testid="keyboard-cheat-sheet"
-      className="fixed bottom-4 right-4 z-[var(--z-cheatsheet)] w-[280px] rounded-lg shadow-lg overflow-hidden text-xs"
+      className="fixed bottom-4 right-4 z-[var(--z-cheatsheet)] w-[280px] rounded-[7px] shadow-lg overflow-hidden text-xs"
       style={{
         backgroundColor: 'var(--bg-mantle, rgba(24,24,37,0.95))',
-        border: '1px solid var(--bg-surface0, rgba(255,255,255,0.08))',
-        color: 'var(--text-main, #cdd6f4)',
+        border: '1px solid color-mix(in srgb, var(--text-main) 8%, transparent)',
+        color: 'var(--text-main)',
       }}
       onMouseEnter={onMouseEnter}
       onMouseLeave={onMouseLeave}
@@ -175,8 +175,8 @@ export function KeyboardCheatSheetView({
             <kbd
               className="font-mono text-[10px] px-1.5 py-0.5 rounded"
               style={{
-                backgroundColor: 'var(--bg-surface0, rgba(255,255,255,0.08))',
-                color: 'var(--text-main, #cdd6f4)',
+                backgroundColor: 'color-mix(in srgb, var(--text-main) 8%, transparent)',
+                color: 'var(--text-main)',
               }}
               data-testid={`combo-${entry.label}`}
             >
@@ -200,7 +200,7 @@ export function KeyboardCheatSheetView({
         className="h-[1px]"
         style={{
           width: `${clamped * 100}%`,
-          backgroundColor: 'var(--accent-blue, #89b4fa)',
+          backgroundColor: 'var(--accent-blue)',
           transition: 'width 100ms linear',
         }}
         data-testid="keyboard-cheat-sheet-progress"

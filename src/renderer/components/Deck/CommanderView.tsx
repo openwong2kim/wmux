@@ -704,7 +704,7 @@ function CommanderBrainItem({
         className="flex flex-col items-end gap-0.5"
       >
         <div
-          className="max-w-[85%] rounded-lg rounded-tr-[3px] px-3 py-1.5 bg-[rgba(var(--bg-surface-rgb),0.8)] text-[13px] leading-relaxed text-[var(--text-main)] whitespace-pre-wrap break-words"
+          className="max-w-[85%] rounded-[7px] rounded-tr-[3px] px-3 py-1.5 bg-[rgba(var(--bg-surface-rgb),0.8)] text-[13px] leading-relaxed text-[var(--text-main)] whitespace-pre-wrap break-words"
           data-commander-brain-text
           {...tokenAttrs('bgSurface', 'bg')}
           {...tokenAttrs('textMain', 'text')}
@@ -965,7 +965,7 @@ function CommanderThreadItem({
           {/* Chat convention: your dispatch sits right-aligned in a bubble, no
               author label (right = you). Local HH:MM below (was UTC slice). */}
           <div
-            className="max-w-[85%] rounded-lg rounded-tr-[3px] px-3 py-1.5 bg-[rgba(var(--bg-surface-rgb),0.8)] text-[13px] leading-relaxed text-[var(--text-main)] whitespace-pre-wrap break-words"
+            className="max-w-[85%] rounded-[7px] rounded-tr-[3px] px-3 py-1.5 bg-[rgba(var(--bg-surface-rgb),0.8)] text-[13px] leading-relaxed text-[var(--text-main)] whitespace-pre-wrap break-words"
             data-commander-dispatch-text
             {...tokenAttrs('bgSurface', 'bg')}
             {...tokenAttrs('textMain', 'text')}

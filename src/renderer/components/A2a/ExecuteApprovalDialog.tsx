@@ -203,14 +203,14 @@ export default function ExecuteApprovalDialog() {
           <div className="flex gap-2">
             <button
               onClick={() => resolveExecuteApproval(approval.approvalId, false)}
-              className="px-4 py-1.5 rounded-lg text-xs font-medium transition-colors"
+              className="px-4 py-1.5 rounded-[5px] text-xs font-medium transition-colors"
               style={{ backgroundColor: 'var(--bg-surface)', color: 'var(--text-subtle)' }}
             >
               {t('approval.deny')}
             </button>
             <button
               onClick={() => resolveExecuteApproval(approval.approvalId, true)}
-              className="px-4 py-1.5 rounded-lg text-xs font-medium transition-colors"
+              className="px-4 py-1.5 rounded-[5px] text-xs font-medium transition-colors"
               style={{ backgroundColor: 'var(--accent-red)', color: 'var(--bg-base)' }}
             >
               {t('approval.approve')}

@@ -26,9 +26,9 @@ const CATEGORY_LABEL_KEY: Record<WorktaskScanCategoryWire, string> = {
 };
 
 const CATEGORY_COLOR: Record<WorktaskScanCategoryWire, string> = {
-  'unmaterialized-open': 'var(--accent-yellow, #f9e2af)',
-  'disk-missing': 'var(--accent-red, #f87171)',
-  preserved: 'var(--accent-blue, #89b4fa)',
+  'unmaterialized-open': 'var(--accent-yellow)',
+  'disk-missing': 'var(--accent-red)',
+  preserved: 'var(--accent-blue)',
   'orphan-dir': 'var(--text-muted)',
 };
 
@@ -283,7 +283,7 @@ export default function WorktaskCleanupView() {
   return (
     <div
       className="fixed inset-0 z-50 flex items-start justify-center pt-[10vh]"
-      style={{ backgroundColor: 'rgba(0,0,0,0.55)' }}
+      style={{ backgroundColor: 'var(--bg-overlay-scrim)' }}
       onMouseDown={(e) => {
         if (e.target === e.currentTarget) setVisible(false);
       }}
@@ -317,7 +317,7 @@ export default function WorktaskCleanupView() {
               {t('worktask.cleanup.root')}: {scannedRoot}
             </div>
           )}
-          {error && <div className="px-2 py-2 text-[11px] text-[var(--accent-red,#f87171)]">{error}</div>}
+          {error && <div className="px-2 py-2 text-[11px] text-[var(--accent-red)]">{error}</div>}
           {!loading && !error && entries.length === 0 && (
             <div className="px-2 py-8 text-center text-[12px] text-[var(--text-muted)]">
               {t('worktask.cleanup.empty')}
@@ -377,7 +377,7 @@ export default function WorktaskCleanupView() {
                 </div>
                 {canClose && (
                   <button
-                    className="px-2 py-0.5 rounded text-[10px] bg-[var(--bg-mantle)] text-[var(--text-sub)] hover:text-[var(--accent-red,#f87171)] border border-[var(--bg-mantle)] disabled:opacity-40 shrink-0"
+                    className="px-2 py-0.5 rounded text-[10px] bg-[var(--bg-mantle)] text-[var(--text-sub)] hover:text-[var(--accent-red)] border border-[var(--bg-mantle)] disabled:opacity-40 shrink-0"
                     onClick={() => void handleClose(e.taskId!, e.ownerWorkspaceId)}
                     disabled={busyTaskId !== null}
                   >
