@@ -876,6 +876,16 @@ select option {
   opacity: 1;
   box-shadow: 0 0 5px 0 var(--sidebar-dot-glow);
 }
+/* Unverifiable: a running pane nobody has heard from in 30 min. A HOLLOW amber
+ * ring — same footprint, no fill, no glow: the pane still claims to be working,
+ * but the app has nothing to back the claim, and a breathing filled dot would
+ * keep asserting it. Drawn with a BORDER, not box-shadow: forced-colors keeps
+ * borders (it drops shadows), so the ring survives there as a ring — the reason
+ * the roster's stashed rows had to stay filled (DESIGN.md 2026-08-24). */
+.sidebar-dot-unverifiable {
+  background-color: transparent;
+  border: 1.5px solid var(--accent-cursor);
+}
 /* Reduced motion: 숨쉬기 대신 정적 글로우로 상태만 전달. */
 @media (prefers-reduced-motion: reduce) {
   .sidebar-dot-running::after,

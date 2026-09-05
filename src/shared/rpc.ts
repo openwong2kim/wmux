@@ -757,6 +757,14 @@ export interface DaemonEvent {
     | 'agent.critical'
     | 'activity.idle'
     | 'activity.active'
+    // The agent process inside an interactive pane died (AgentProcessTracker's
+    // alive->dead edge), while the pane's shell keeps running. Not a session
+    // event and not a turn boundary: it is the ONLY signal that settles a pane
+    // whose agent was killed without ever sending a Stop hook. `data` is
+    // `{ slug: string | null }` — which agent's process the tracker was
+    // watching, or null when it could not attribute one.
+    //   agent.processExit → { slug: string | null }
+    | 'agent.processExit'
     | 'prompt.event'
     | 'notification.event'
     | 'cwd.changed'

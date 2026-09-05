@@ -19,6 +19,7 @@ export const ptBR = {
   'workspace.agentAwaitingInput': 'Agente aguarda entrada',
   'workspace.needsYou': 'Espera por você',
   'workspace.agentIdle': 'Agente inativo',
+  'workspace.agentUnverifiable': 'Sem atualização há {time}',
   'workspace.close': 'Fechar espaço de trabalho',
   'workspace.copyInfo': 'Copiar info da sessão',
   'workspace.copied': 'Copiado!',

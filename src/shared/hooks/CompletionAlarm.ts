@@ -303,10 +303,14 @@ export class CompletionAlarm {
 
 /**
  * Normalize a hook-bridge signal into a cue. Total: every AgentSignalKind
- * maps to something. `agent.user_prompt_submit` maps to working as
- * future-proofing — hooks.json does not register UserPromptSubmit today, so
- * prompt-arrival rebuttal rides on byte activity (session:active / PTY
- * writes) instead.
+ * maps to something. `agent.user_prompt_submit` is WORKING evidence — the turn
+ * has just begun — and now that both install paths register UserPromptSubmit
+ * it is the earliest and most precise such cue a governed pane produces. Byte
+ * activity (session:active / PTY writes) remains the backstop for panes with
+ * no bridge.
+ *
+ * `agent.stop_failure` is a turn END that is NOT a completion — see the case
+ * below for why it rides `attention` rather than `stop`.
  */
 export function normalizeHookCue(signal: AgentSignal): AlarmCue {
   switch (signal.kind) {
@@ -316,6 +320,18 @@ export function normalizeHookCue(signal: AgentSignal): AlarmCue {
     case 'agent.user_prompt_submit':
       return { class: 'working' };
     case 'agent.awaiting_input':
+      return { class: 'attention' };
+    case 'agent.stop_failure':
+      // The turn ended on an API error. That IS a boundary — whatever window
+      // was open has to close — but it is not a completion, so it must not
+      // ride the `stop` class, whose confirmed window is literally the "work
+      // finished" alarm. `attention` is the class that already means "the turn
+      // stopped and a human has to act": it cancels the open window, opens the
+      // needs-a-human one instead of the done one, and at confirmation sets
+      // announced=true / seenWorking=false — closing the turn gate exactly as a
+      // stop confirmation would, so a stray later Stop for the same turn cannot
+      // announce a completion behind it. A separate `failure` class would be
+      // this behaviour byte-for-byte under a second name.
       return { class: 'attention' };
     case 'agent.input_answered':
     case 'agent.permission_answered':

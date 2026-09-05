@@ -29,6 +29,7 @@ export const ko = {
   'workspace.agentAwaitingInput': '입력 대기',
   'workspace.needsYou': '답변 대기',
   'workspace.agentIdle': '유휴',
+  'workspace.agentUnverifiable': '{time}째 응답 없음',
   'workspace.agentCount': '에이전트 {count}',
   'workspace.agentNeedsAttention': '확인 필요 {count}',
   'workspace.showAgents': '에이전트 목록 펼치기',

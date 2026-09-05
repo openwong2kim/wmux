@@ -170,8 +170,10 @@ export function buildTurnBoundaryMetadata(
   kind: AgentSignal['kind'],
   stopMessage: AgentLastMessage | null,
   leftoverWork = 0,
-): { activity: string; pendingQuestion: string; agentStatus?: 'complete' } | null {
-  if (kind !== 'agent.stop' && kind !== 'agent.session_start') return null;
+): { activity: string; pendingQuestion: string; agentStatus?: 'complete' | 'error' } | null {
+  if (kind !== 'agent.stop' && kind !== 'agent.session_start' && kind !== 'agent.stop_failure') {
+    return null;
+  }
   return {
     activity: '',
     pendingQuestion: stopMessage?.endsWithQuestion ? stopMessage.text : '',
@@ -182,6 +184,12 @@ export function buildTurnBoundaryMetadata(
     // stale); the real stop after the hold arrives with leftoverWork 0 and
     // stamps 'complete' as before.
     ...(kind === 'agent.stop' && leftoverWork === 0 ? { agentStatus: 'complete' as const } : {}),
+    // A turn killed by an API error is a turn END — the activity label and any
+    // pending question are as stale as they are after a Stop — but it finished
+    // nothing, so it writes the 'error' attention status instead of 'complete'.
+    // Without this the pane kept the amber dot its turn START lit, because the
+    // hook that would have cleared it (Stop) never fires on this path.
+    ...(kind === 'agent.stop_failure' ? { agentStatus: 'error' as const } : {}),
   };
 }
 
@@ -687,6 +695,50 @@ export function registerHooksRpc(
       }
     }
 
+    // 3b. Turn end on an API ERROR (`StopFailure`). A real turn boundary — so
+    //     it must not fall into the non-emit drop below — and the operator is
+    //     owed the same toast a Stop earns, written to the same dedup ledger so
+    //     a detector emission for the same turn still collapses. The pane's
+    //     status came from the boundary broadcast above ('error', never
+    //     'complete'), so this closure is the notification and nothing else.
+    //
+    //     Deliberately NOT folded into `isEmitKind`: that constant also gates
+    //     the `agent.lifecycle` tee, whose `kind` is a PUBLISHED payload union
+    //     (AgentLifecycleEvent) covering stop / subagent_stop / awaiting_input
+    //     only. A failed turn mapped onto 'agent.stop' there would tell an
+    //     orchestrator the turn finished normally; widening that union is a
+    //     separate change with its own consumers to answer for.
+    if (signal.kind === 'agent.stop_failure') {
+      const fanOutFailure = (): void => {
+        // 'dedup' means the detector already spoke for this turn — same rule
+        // the stop fan-out applies, so a failed turn cannot double-toast.
+        if (hookRouter.recordHook(signal, ptyId) === 'dedup') return;
+        dispatchNotification(
+          getWindow(),
+          ptyId,
+          {
+            type: 'agent',
+            title: titleFor(signal),
+            body: bodyFor(signal),
+            category: categoryFor(signal),
+          },
+          { ptyId },
+        );
+      };
+      // No verdict gate configured (tests / a boot ordering gap): the same
+      // immediate path every other emit kind falls back to.
+      if (!alarm) {
+        fanOutFailure();
+        return { ok: true };
+      }
+      // The cue is `attention` (see normalizeHookCue), so this always holds a
+      // window and the toast fires at confirmation — cancelled only if the
+      // agent produces working evidence inside it, which would mean the turn
+      // did not end after all.
+      alarm.observe(ptyId, signal.agent, normalizeHookCue(signal), fanOutFailure);
+      return { ok: true };
+    }
+
     // 4. Emit decision. PostToolUse / SessionStart never produce a
     //    toast (would be spam — codex round-2 P1 #5). They also
     //    DO NOT write to the dedup ledger (claude review 2026-05-23
@@ -703,6 +755,34 @@ export function registerHooksRpc(
       // attention window. These kinds return here, so this is their only feed
       // site on the local path.
       alarm?.observe(ptyId, signal.agent, normalizeHookCue(signal));
+      // Turn START. The daemon-unreachable twin of HookIngest's metadata-kind
+      // broadcast: a prompt submitted means this pane is working RIGHT NOW, so
+      // the status dot lights immediately instead of waiting for the byte-rate
+      // heuristic to accumulate enough output to guess. Unthrottled — the hook
+      // fires once per turn — and confined to the status funnel: still no
+      // toast, no ledger write, no lifecycle tee, exactly like every other
+      // non-emit kind that returns here.
+      if (signal.kind === 'agent.user_prompt_submit') {
+        // Deliberately NOT `noteHookTurnStart`, and deliberately not tagged
+        // with `hookKind` for the renderer's latch either. The latch mutes the
+        // byte heuristic in both directions, and its two release paths are the
+        // turn's own end hook and the agent process's death edge — but this is
+        // the daemon-UNREACHABLE fallback, and `agent.processExit` comes from
+        // the daemon's AgentProcessTracker. Claiming the dot here would seal
+        // the heuristic shut with only one way out. So this stays a one-shot
+        // cue: the pane lights the instant the prompt is submitted, and the
+        // byte heuristic keeps owning the state after that, exactly as it did
+        // before hooks reported turn starts at all.
+        const win = getWindow();
+        if (win) {
+          broadcastMetadataUpdate(win, {
+            ptyId,
+            agentStatus: 'running',
+            agentName: agentDisplayName(signal.agent),
+            agentSlug: signal.agent,
+          });
+        }
+      }
       return { ok: true };
     }
 
@@ -1331,6 +1411,11 @@ function titleFor(signal: AgentSignal): string {
       return `${display}: Permission answered`;
     case 'agent.tool_started':
       return `${display}: Running a tool`;
+    // A turn end, but never a completion — the wording has to say so, because
+    // "Task finished" on a turn the API killed is the exact lie this kind
+    // exists to stop telling.
+    case 'agent.stop_failure':
+      return `${display}: Turn failed (API error)`;
   }
 }
 
@@ -1350,7 +1435,10 @@ function categoryFor(signal: AgentSignal): NotificationCategory {
     // rides the same mute category as an approval.
     case 'agent.awaiting_permission':
       return 'approval';
+    // `agent.stop_failure` below is a turn END, not a blocked tool call: it
+    // rides the turn category the operator already mutes Stop with.
     case 'agent.stop':
+    case 'agent.stop_failure':
     case 'agent.activity':
     case 'agent.session_start':
     case 'agent.input_answered':
@@ -1386,6 +1474,8 @@ function bodyFor(signal: AgentSignal): string {
       return 'Tool permission resolved';
     case 'agent.tool_started':
       return 'Tool call started';
+    case 'agent.stop_failure':
+      return 'The turn ended on an API error';
   }
 }
 

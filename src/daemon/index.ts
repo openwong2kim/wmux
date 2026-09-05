@@ -4559,7 +4559,9 @@ function wireEvents(
     // rebuts an open completion window and arms the turn gate. The detected
     // agent name is the primary key; a pane with no live detection falls back
     // to the persisted lastDetectedAgent so an ungoverned agent pane still
-    // gets text-only-turn rebuttals (hooks.json has no UserPromptSubmit).
+    // gets text-only-turn rebuttals. A GOVERNED pane no longer needs this feed
+    // for that: hooks.json and `wmux setup-hooks` both register
+    // UserPromptSubmit, whose cue arms the gate at the exact turn start.
     // EXCEPT a resize repaint: a refit burst right after pty:resize is not
     // work, and letting it rebut would silently kill a real completion
     // alarm (the same class of false-negative the resize-redraw guard in
@@ -5820,6 +5822,19 @@ async function main(): Promise<void> {
   // activity.active / getAgentName on the next output burst.
   agentProcessTracker.setStateChangeListener((sessionId, state) => {
     if (!state.alive) hookIngest?.expireAuthorityFor(sessionId, state.slug);
+    // A pane whose status the HOOK owns has exactly two settle paths: the Stop
+    // hook, and this edge. An agent killed mid-turn (double Ctrl+C, /exit, a
+    // crash) sends no Stop, and byte silence no longer clears a hook-governed
+    // pane — so without this broadcast the dot would stay lit until the
+    // authority TTL. Sent on the death edge only; `alive:true` is the launch
+    // edge and settles nothing.
+    if (!state.alive) {
+      pipeServer.broadcast({
+        type: 'agent.processExit',
+        sessionId,
+        data: { slug: state.slug ?? null },
+      });
+    }
     const managed = sessionManager.getSession(sessionId);
     if (!managed) return;
     const screenSlug = managed.bridge.getLastAgent();

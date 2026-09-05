@@ -19,6 +19,7 @@ export const bs = {
   'workspace.agentAwaitingInput': 'Agent traži unos',
   'workspace.needsYou': 'Čeka te',
   'workspace.agentIdle': 'Agent miruje',
+  'workspace.agentUnverifiable': 'Nema ažuriranja {time}',
   'workspace.close': 'Zatvori radni prostor',
   'workspace.copyInfo': 'Kopiraj podatke sesije',
   'workspace.copied': 'Kopirano!',

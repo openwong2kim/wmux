@@ -41,6 +41,7 @@ import { STALE_REPLAY_INPUT_MODE_RESETS, STALE_REPLAY_ALIVE_SHELL_RESETS, STALE_
 import { attachAltScreenWheel, PAGE_SCROLL_AGENTS } from '../terminal/altScreenWheel';
 import { RestingCursorGuard } from '../terminal/restingCursor';
 import { restoreSeam } from '../../shared/restoreSeam';
+import { InterruptKeystrokeDetector } from '../../shared/hooks/interruptKeystroke';
 import {
   writeTerminalOutput,
   flushTerminalOutput,
@@ -56,6 +57,10 @@ import {
 } from '../terminal/terminalOutputScheduler';
 import { reconnectPtyWithRetry as reconnectPtyWithRetryImpl } from './reconnectPtyWithRetry';
 import { adoptTerminal, parkTerminal, restoreParkedViewport, type ParkedTerminal } from '../terminal/terminalPark';
+
+// One detector for every pane in this renderer: the ESC-pair state is keyed by
+// ptyId, and a per-mount instance would lose a double-tap split across a remount.
+const interruptKeystrokes = new InterruptKeystrokeDetector();
 
 // Module-level terminal registry for scrollback persistence
 const terminalRegistry = new Map<string, Terminal>();
@@ -1962,6 +1967,15 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         // takes the zero-latency direct-write path in the output scheduler.
         // (Focus reports above are excluded — they are not user input.)
         noteTerminalInput(terminal);
+      }
+      // The interrupt edge, renderer half. Live finding (Claude Code 2.1.236):
+      // Ctrl+C / ESC ESC ends the turn with NO Stop hook, and `claude` stays the
+      // foreground command so OSC 133 never reports the shell back at its
+      // prompt. Main settles the pane from the same bytes; dropping the latch
+      // here flips the dot without waiting for that round-trip. A pane with no
+      // latch is untouched — the delete is a no-op.
+      if (interruptKeystrokes.observe(ptyId, data)) {
+        useStore.getState().clearSurfaceTurnOpen(ptyId);
       }
       void chunkOnDataIfNeeded(
         (d) => window.electronAPI.pty.write(ptyId, d),

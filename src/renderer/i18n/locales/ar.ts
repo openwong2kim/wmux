@@ -19,6 +19,7 @@ export const ar = {
   'workspace.agentAwaitingInput': 'الوكيل يحتاج إدخالاً',
   'workspace.needsYou': 'ينتظر ردك',
   'workspace.agentIdle': 'الوكيل خامل',
+  'workspace.agentUnverifiable': 'لا تحديث منذ {time}',
   'workspace.close': 'إغلاق مساحة العمل',
   'workspace.copyInfo': 'نسخ معلومات الجلسة',
   'workspace.copied': 'تم النسخ!',

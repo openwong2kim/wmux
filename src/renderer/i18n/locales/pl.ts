@@ -212,6 +212,7 @@ export const pl = {
   'workspace.agentAwaitingInput': 'Czeka na Ciebie',
   'workspace.needsYou': 'Czeka na Ciebie',
   'workspace.agentIdle': 'Bezczynny',
+  'workspace.agentUnverifiable': 'Brak aktualizacji od {time}',
   'workspace.agentCount': 'Agenci: {count}',
   'workspace.agentNeedsAttention': '{count} potrzebuje Cię',
   'workspace.showAgents': 'Pokaż listę agentów',

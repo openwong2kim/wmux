@@ -58,6 +58,18 @@ export interface FleetPane {
    * path filters on the visible tree and would otherwise no-op in silence.
    */
   stashed?: boolean;
+  /**
+   * DISPLAY state, not a status: this pane reads 'running' but nothing has
+   * reported in for UNVERIFIABLE_AFTER_MS, so "busy" is no longer a claim the
+   * app can stand behind. Deliberately NOT a new AgentStatus value — the
+   * roll-up ranking, the needs-you ordering and the pane_list schema all stay
+   * exactly as they are; only the rendition changes (hollow amber ring +
+   * "No update for 34m").
+   */
+  unverifiable: boolean;
+  /** Milliseconds since this pane's last activity stamp. Only set when
+   *  `unverifiable` — it is that state's evidence, and its label. */
+  staleForMs?: number;
 }
 
 /** Minimal store surface the selector reads — keeps the fixture trivial and the
@@ -84,6 +96,19 @@ export type FleetSelectorState = Pick<StoreState, 'workspaces' | 'surfaceAgentSt
    *  needs input"); this pass has to read the same signal or the dot above the
    *  roster contradicts it. Optional so existing fixtures stay terse. */
   surfacePendingQuestion?: StoreState['surfacePendingQuestion'];
+  /** Liveness inputs for the `unverifiable` display state — the same two maps
+   *  `isPaneAgentBusy` ranks above the heuristic. A pane whose shell is back at
+   *  a prompt or whose agent process is gone is IDLE, not unverifiable, so a
+   *  `false` in either map vetoes the ring. Optional so existing fixtures stay
+   *  terse; the live store always provides them. */
+  commandRunningByPtyId?: StoreState['commandRunningByPtyId'];
+  agentAliveByPtyId?: StoreState['agentAliveByPtyId'];
+  /** The hook turn latch — ptyId → turn-start stamp, present only while the
+   *  pane's agent has an open turn nobody has ended. See surfaceTurnOpenAt in
+   *  paneSlice: this is a CLAIM the selector must not age out, unlike
+   *  `surfaceActivityAt`, which is evidence and decays at HOOK_RUNNING_TTL_MS.
+   *  Optional so existing fixtures stay terse. */
+  surfaceTurnOpenAt?: StoreState['surfaceTurnOpenAt'];
 };
 
 /**
@@ -96,6 +121,66 @@ export type FleetSelectorState = Pick<StoreState, 'workspaces' | 'surfaceAgentSt
  * (no Stop) settles to idle promptly.
  */
 export const HOOK_RUNNING_TTL_MS = 120_000;
+
+/**
+ * The 'running' claim, from the two things that can make it — shared so every
+ * per-pane consumer derives it identically.
+ *
+ * Two inputs, and the difference between them is the whole point:
+ *   - `turnOpenAt` is a CLAIM. The agent's own turn-start hook said a turn
+ *     began and nothing has said it ended, so it does not decay: a quiet turn
+ *     (a long bash, a web search, silent reasoning) is still a turn.
+ *   - `activityAt` is EVIDENCE, and evidence goes stale. It carries panes whose
+ *     agent reports no turn start at all, and only within HOOK_RUNNING_TTL_MS.
+ *
+ * A consumer that reads only the second one disagrees with the workspace dot
+ * about the same pane the moment a turn goes quiet past the TTL — live-observed
+ * as an amber workspace row over a roster row reading "Idle".
+ */
+export function isHookRunning(args: {
+  /** `surfaceActivityAt[ptyId]` — last agent-activity stamp (ms), if any. */
+  activityAt: number | undefined;
+  /** `surfaceTurnOpenAt[ptyId]` — the open-turn latch stamp, if any. */
+  turnOpenAt: number | undefined;
+  /** The reactive decay clock (`state.agentClockMs`). */
+  agentClockMs: number | undefined;
+}): boolean {
+  const { activityAt, turnOpenAt, agentClockMs } = args;
+  if (turnOpenAt !== undefined && turnOpenAt > 0) return true;
+  return (
+    activityAt !== undefined
+    && activityAt > 0
+    && agentClockMs !== undefined
+    && agentClockMs - activityAt <= HOOK_RUNNING_TTL_MS
+  );
+}
+
+/**
+ * How long a pane may sit at 'running' with no signal of any kind before the
+ * UI stops repeating the claim and says so instead ("No update for 34m").
+ *
+ * Mirrors `HOOK_AUTHORITY_TTL_MS` in `src/shared/hooks/HookSignalRouter.ts`:
+ * past that window main no longer treats the hook stream as the authority on
+ * this pane, so the renderer should not keep painting a confident amber dot
+ * from it either. Deliberately a copy of the number rather than an import —
+ * this file is renderer-pure and must not reach into main.
+ */
+export const UNVERIFIABLE_AFTER_MS = 30 * 60_000;
+
+/**
+ * Whole minutes of silence → the compact duration the ring's tooltip names.
+ *
+ * Caps at "30m+" rather than counting on: UNVERIFIABLE_AFTER_MS is 30 minutes,
+ * so every value this is ever called with is already ≥ 30, and the precise
+ * figure past that point is not something the app can stand behind either — the
+ * clock that produces it ticks every 30 s only while a turn latch is open, and
+ * exact minutes would be a second confident claim layered on top of the one the
+ * ring exists to withdraw. "30m+" is the honest reading, and it is stable, so
+ * the label stops re-rendering the sidebar for a number nobody is watching.
+ */
+export function formatStaleMinutes(minutes: number): string {
+  return minutes >= 30 ? '30m+' : `${minutes}m`;
+}
 
 /**
  * Whether an agent is actively occupying a pane's active surface — the gate the
@@ -117,7 +202,9 @@ export const HOOK_RUNNING_TTL_MS = 120_000;
  *      `false` = it was observed and DIED — the alive→dead edge, however the
  *      agent exited (double Ctrl+C, /exit, crash). `undefined` = never
  *      attributed → fall through.
- *   3. HEURISTIC FALLBACK (both above undefined) —
+ *   3. HEURISTIC FALLBACK (both above undefined) — an OPEN HOOK TURN
+ *      (`turnOpen`, which does not decay: the agent's own hook said a turn
+ *      started and nothing has said it ended) OR
  *      recent hook activity within the TTL (focus-safe — `surfaceActivityAt` is
  *      NOT cleared on focus the way `surfaceAgentStatus` is) OR a live attention
  *      status still carried on a non-focused pane. `agentClockMs` freezes at
@@ -142,8 +229,15 @@ export function isPaneAgentBusy(args: {
    * short-circuits the heuristic; `undefined` (never attributed) falls through.
    */
   agentProcessAlive?: boolean;
+  /**
+   * `surfaceTurnOpenAt[ptyId] > 0` — the pane's hook reported a turn start and
+   * nothing has reported its end. Sits inside tier 3 rather than above it: the
+   * two authoritative tiers observe the PROCESS, and a process that is provably
+   * gone outranks a claim its own hook left dangling.
+   */
+  turnOpen?: boolean;
 }): boolean {
-  const { activityAt, agentClockMs, status, commandRunning, agentProcessAlive } = args;
+  const { activityAt, agentClockMs, status, commandRunning, agentProcessAlive, turnOpen } = args;
   // Tier 1 — authoritative OSC 133 signal. Ranked above process truth: when
   // the shell says it is back at a prompt, typing is safe even if some
   // background descendant lingers — and vice versa, a foreground non-agent
@@ -153,9 +247,10 @@ export function isPaneAgentBusy(args: {
   // Tier 2 — process truth (the edge trigger).
   if (agentProcessAlive === true) return true;
   if (agentProcessAlive === false) return false;
-  // Tier 3 — activity heuristic.
+  // Tier 3 — the hook's open-turn latch, then the activity heuristic.
   const hookRunning =
-    activityAt > 0 && agentClockMs - activityAt <= HOOK_RUNNING_TTL_MS;
+    turnOpen === true
+    || (activityAt > 0 && agentClockMs - activityAt <= HOOK_RUNNING_TTL_MS);
   return (
     hookRunning ||
     status === 'running' ||
@@ -293,10 +388,16 @@ export function selectFleetPanes(state: FleetSelectorState): FleetPane[] {
           ? wsMeta?.agentStatus
           : undefined;
       const activityAt = ptyId ? state.surfaceActivityAt?.[ptyId] : undefined;
-      const hookRunning =
-        activityAt !== undefined &&
-        state.agentClockMs !== undefined &&
-        state.agentClockMs - activityAt <= HOOK_RUNNING_TTL_MS;
+      // The hook's TURN LATCH — set by a `UserPromptSubmit` broadcast, cleared
+      // by whatever ends the turn. It does NOT ride the TTL, and that is the
+      // whole point: on a hook-governed pane the byte heuristic no longer
+      // broadcasts 'running' at all, so a quiet turn (a long bash, a web
+      // search, silent reasoning) crossed the 120 s window and went idle
+      // MID-TURN with nothing able to bring it back. A latch says "the agent
+      // says it is working"; only a turn end takes that back.
+      const turnOpenAt = ptyId ? state.surfaceTurnOpenAt?.[ptyId] : undefined;
+      const turnOpen = turnOpenAt !== undefined && turnOpenAt > 0;
+      const hookRunning = isHookRunning({ activityAt, turnOpenAt, agentClockMs: state.agentClockMs });
       // #1168 — a stashed pane whose every terminal surface has lost its pty is
       // a session the daemon has confirmed gone. The roster reports that as
       // `error` / needs-you and offers recovery; this pass had no liveness
@@ -317,6 +418,30 @@ export function selectFleetPanes(state: FleetSelectorState): FleetPane[] {
           ?? (metaStatus && metaStatus !== 'idle' ? metaStatus : undefined)
           ?? (hookRunning ? 'running' : undefined)
           ?? 'idle');
+      // ── The 'running' claim's expiry date (display only) ──────────────────
+      // Only an OPEN LATCH can get here, and that is the point: a latched
+      // 'running' never decays, so a crashed or wedged agent would otherwise
+      // keep a confident amber dot forever. Past UNVERIFIABLE_AFTER_MS the
+      // renderer says what it actually knows — "no update for 30m+" — without
+      // inventing a status. An UNGOVERNED running pane cannot reach this at
+      // all: its status comes from the 120 s activity TTL, so it has already
+      // gone idle long before 30 minutes of silence.
+      // The clock runs from the LATER of the two stamps: a turn that opened
+      // quietly and then ran a tool has been heard from at the tool, and a
+      // turn opened after an older tool call has been heard from at the prompt.
+      // `!== false` on both liveness maps: a shell back at its prompt or an
+      // agent process observed dead is IDLE, and the status derivation above
+      // owns that case; `undefined` (no shell integration / never attributed)
+      // must not veto, or the ring would never appear where it matters most.
+      const lastHeardAt = Math.max(activityAt ?? 0, turnOpenAt ?? 0);
+      const staleForMs =
+        status === 'running' && turnOpen && state.agentClockMs !== undefined
+          ? state.agentClockMs - lastHeardAt
+          : 0;
+      const unverifiable =
+        staleForMs > UNVERIFIABLE_AFTER_MS &&
+        (ptyId ? state.commandRunningByPtyId?.[ptyId] : undefined) !== false &&
+        (ptyId ? state.agentAliveByPtyId?.[ptyId] : undefined) !== false;
       result.push({
         workspaceId: ws.id,
         workspaceName: ws.name,
@@ -338,6 +463,8 @@ export function selectFleetPanes(state: FleetSelectorState): FleetPane[] {
         // pane badge). Only supervised panes have an entry; unsupervised →
         // undefined. An unspawned surface (empty ptyId) never carries one.
         supervision: ptyId ? state.supervisionByPtyId?.[ptyId] : undefined,
+        unverifiable,
+        ...(unverifiable ? { staleForMs } : {}),
         ...(stashed ? { stashed: true } : {}),
       });
     }
@@ -446,12 +573,7 @@ export function selectWorkspaceAgentStatus(
   state: FleetSelectorState,
   workspaceId: string,
 ): AgentStatus {
-  let best: AgentStatus = 'idle';
-  for (const pane of selectFleetPanes(state)) {
-    if (pane.workspaceId !== workspaceId) continue;
-    if (STATUS_RANK[pane.agentStatus] < STATUS_RANK[best]) best = pane.agentStatus;
-  }
-  return best;
+  return workspaceRollups(state).status[workspaceId] ?? 'idle';
 }
 
 /**
@@ -464,10 +586,102 @@ export function selectWorkspaceAgentStatus(
 export function selectAllWorkspaceAgentStatus(
   state: FleetSelectorState,
 ): Record<string, AgentStatus> {
-  const out: Record<string, AgentStatus> = {};
+  return workspaceRollups(state).status;
+}
+
+// ─── Unverifiable roll-ups — the hollow-ring rendition's source ──────────────
+//
+// All of these report WHOLE MINUTES of silence, not milliseconds: the label is
+// minute-granular and capped ("30m+"), and a ms value would change on every
+// clock tick, defeating the shallow-compare subscriptions these feed and re-
+// rendering the sidebar for a number nobody can see move. 0 = not unverifiable,
+// so callers read the value as both the flag and the label.
+
+/**
+ * Minutes of silence for a workspace whose whole story is "running, but nobody
+ * has heard anything". Returns 0 unless the workspace's roll-up status IS
+ * 'running' (so any attention state — needs-you, error, a finished turn —
+ * outranks the ring exactly as it outranks the running dot) AND every running
+ * pane in it is unverifiable. One live pane working alongside a wedged one
+ * means the workspace really is being worked on; claiming "no update for 30m+"
+ * over it would be false. The reported number is the FRESHEST stale pane's, the
+ * only figure true of the workspace as a whole.
+ */
+export function selectWorkspaceUnverifiableMinutes(
+  state: FleetSelectorState,
+  workspaceId: string,
+): number {
+  return workspaceRollups(state).unverifiableByWorkspace[workspaceId] ?? 0;
+}
+
+/**
+ * All-workspaces variant of the above — for loop renderers (MiniSidebar), which
+ * would otherwise re-scan per row. Workspaces that are not unverifiable are
+ * omitted; the caller defaults to 0.
+ */
+export function selectAllWorkspaceUnverifiableMinutes(
+  state: FleetSelectorState,
+): Record<string, number> {
+  return workspaceRollups(state).unverifiableByWorkspace;
+}
+
+/**
+ * Per-PTY variant for the surfaces that draw one dot PER PANE (the sidebar
+ * agent roster, the deck Fleet roster) rather than one per workspace. Keyed by
+ * ptyId because that is the id those rows carry. Verifiable panes are omitted.
+ */
+export function selectUnverifiablePaneMinutes(
+  state: FleetSelectorState,
+): Record<string, number> {
+  return workspaceRollups(state).unverifiableByPty;
+}
+
+interface WorkspaceRollups {
+  /** workspaceId → most-urgent pane status. Idle workspaces omitted. */
+  status: Record<string, AgentStatus>;
+  /** workspaceId → whole minutes of unreported silence. Verifiable ones omitted. */
+  unverifiableByWorkspace: Record<string, number>;
+  /** ptyId → whole minutes of unreported silence. Verifiable panes omitted. */
+  unverifiableByPty: Record<string, number>;
+}
+
+/**
+ * Every workspace-level roll-up in ONE `selectFleetPanes` pass, memoized on the
+ * state object's identity.
+ *
+ * Each of the five exported roll-ups is a zustand subscription, and the sidebar
+ * mounts two of them PER WORKSPACE ROW plus one per roster. Computed
+ * independently that was a full fleet scan per row per store update — and the
+ * decay clock makes a store update every 2 s. Zustand hands every subscriber
+ * the same state object within one update, and immer replaces that object on
+ * every `set`, so a WeakMap keyed on it collapses the whole fan-out to a single
+ * pass and invalidates exactly when the store changes.
+ */
+const rollupCache = new WeakMap<FleetSelectorState, WorkspaceRollups>();
+
+function workspaceRollups(state: FleetSelectorState): WorkspaceRollups {
+  const cached = rollupCache.get(state);
+  if (cached) return cached;
+  const status: Record<string, AgentStatus> = {};
+  const unverifiableByWorkspace: Record<string, number> = {};
+  const unverifiableByPty: Record<string, number> = {};
+  const quietest: Record<string, number> = {};
+  const verifiableRunning = new Set<string>();
   for (const pane of selectFleetPanes(state)) {
-    const cur = out[pane.workspaceId] ?? 'idle';
-    if (STATUS_RANK[pane.agentStatus] < STATUS_RANK[cur]) out[pane.workspaceId] = pane.agentStatus;
+    const cur = status[pane.workspaceId] ?? 'idle';
+    if (STATUS_RANK[pane.agentStatus] < STATUS_RANK[cur]) status[pane.workspaceId] = pane.agentStatus;
+    if (pane.agentStatus !== 'running') continue;
+    if (!pane.unverifiable) { verifiableRunning.add(pane.workspaceId); continue; }
+    const mins = Math.floor((pane.staleForMs ?? 0) / 60_000);
+    if (pane.ptyId) unverifiableByPty[pane.ptyId] = mins;
+    const prev = quietest[pane.workspaceId];
+    if (prev === undefined || mins < prev) quietest[pane.workspaceId] = mins;
   }
+  for (const workspaceId in quietest) {
+    if (status[workspaceId] !== 'running' || verifiableRunning.has(workspaceId)) continue;
+    unverifiableByWorkspace[workspaceId] = quietest[workspaceId];
+  }
+  const out = { status, unverifiableByWorkspace, unverifiableByPty };
+  rollupCache.set(state, out);
   return out;
 }

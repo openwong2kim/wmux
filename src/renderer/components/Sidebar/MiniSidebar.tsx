@@ -2,7 +2,7 @@ import { useMemo, useRef, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '../../stores';
 import { selectWorkspaceRailSummary } from '../../stores/selectors/workspaceProjections';
-import { selectAllWorkspaceAgentStatus } from '../../stores/selectors/fleet';
+import { formatStaleMinutes, selectAllWorkspaceAgentStatus, selectAllWorkspaceUnverifiableMinutes } from '../../stores/selectors/fleet';
 import { useT } from '../../hooks/useT';
 import { AGENT_STATUS_ICON } from './agentStatusIcon';
 import { orderByAttention } from './attentionOrder';
@@ -21,6 +21,10 @@ export default function MiniSidebar() {
   // Dot source (agent-status-dot fix): whole-workspace roll-up, same derivation
   // as WorkspaceItem — not the active-pane-only `ws.agentStatus` projection.
   const agentStatusById = useStore(useShallow(selectAllWorkspaceAgentStatus));
+  // Workspaces whose 'running' has gone unreported past the hook-authority
+  // window, in whole minutes of silence. Same roll-up, minute-granular so the
+  // shallow compare holds between clock ticks.
+  const unverifiableMinutesById = useStore(useShallow(selectAllWorkspaceUnverifiableMinutes));
   // Needs-you-first ordering (attentionOrder.ts) — display only, same setting
   // and same roll-up as the full sidebar so the two surfaces never disagree.
   const sidebarAttentionFirst = useStore((s) => s.sidebarAttentionFirst);
@@ -87,6 +91,10 @@ export default function MiniSidebar() {
           const unreadCount = notifications.filter((n) => !n.read && n.workspaceId === ws.id).length;
           const agentStatus = agentStatusById[ws.id] ?? 'idle';
           const agentIcon = agentStatus !== 'idle' ? AGENT_STATUS_ICON[agentStatus] : null;
+          // Unverifiable: the rail's filled glyph goes hollow and stops
+          // pulsing — the same "running, but nobody has heard from it" ring the
+          // full sidebar draws, in the one glyph this 48px rail can afford.
+          const unverifiableMinutes = unverifiableMinutesById[ws.id] ?? 0;
           // Initial + position so workspaces with identical prefixes (W, W, W…)
           // remain distinguishable in the 48px rail.
           const label = `${ws.name.charAt(0).toUpperCase()}${railIndex + 1}`;
@@ -200,12 +208,15 @@ export default function MiniSidebar() {
                   <span
                     // The cross gets a box sized to its own glyph, mirroring the
                     // full row: the dot's footprint is 6px and the ✕ is 10px.
-                    className={`absolute -bottom-0.5 -right-0.5 text-[10px] leading-none ${agentIcon.shape === 'cross' ? 'w-2.5 h-2.5 flex items-center justify-center font-bold' : ''} ${agentIcon.className} ${agentStatus === 'running' ? 'animate-pulse' : ''}`}
-                    title={`${ws.agentName ? `${ws.agentName} — ` : ''}${t(agentIcon.labelKey)}`}
+                    className={`absolute -bottom-0.5 -right-0.5 text-[10px] leading-none ${agentIcon.shape === 'cross' ? 'w-2.5 h-2.5 flex items-center justify-center font-bold' : ''} ${agentIcon.className} ${agentStatus === 'running' && !unverifiableMinutes ? 'animate-pulse' : ''}`}
+                    title={unverifiableMinutes
+                      ? t('workspace.agentUnverifiable', { time: formatStaleMinutes(unverifiableMinutes) })
+                      : `${ws.agentName ? `${ws.agentName} — ` : ''}${t(agentIcon.labelKey)}`}
                   >
                     {/* Error is the one red status told apart by FORM, not hue
-                        (agentStatusIcon.ts) — the rail mirrors that ✕. */}
-                    {agentIcon.shape === 'cross' ? '✕' : agentIcon.dot}
+                        (agentStatusIcon.ts) — the rail mirrors that ✕. A silent
+                        running agent is the hollow ring. */}
+                    {unverifiableMinutes ? '○' : agentIcon.shape === 'cross' ? '✕' : agentIcon.dot}
                   </span>
                 )}
               </button>

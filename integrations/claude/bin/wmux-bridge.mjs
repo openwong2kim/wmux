@@ -83,8 +83,15 @@ const HOOK_TO_KIND = {
   Stop: 'agent.stop',
   SubagentStop: 'agent.subagent_stop',
   SessionStart: 'agent.session_start',
-  // Deck brain ptys only — no ordinary pane's profile registers this hook.
+  // Turn START. Registered by hooks.json (plugin path), `wmux setup-hooks`
+  // (plugin-less path) and the deck brain's generated profile alike, so an
+  // ordinary pane goes 'running' the moment a prompt is submitted instead of
+  // after the byte-rate heuristic has seen enough output.
   UserPromptSubmit: 'agent.user_prompt_submit',
+  // Turn END on an API error. Claude Code fires this INSTEAD of Stop when the
+  // turn dies that way, so without it a hook-governed pane keeps the amber dot
+  // its UserPromptSubmit lit until the agent process exits.
+  StopFailure: 'agent.stop_failure',
 };
 
 // Determine the signal kind for a PostToolUse hook. AskUserQuestion completing

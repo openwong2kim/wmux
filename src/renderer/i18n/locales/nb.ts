@@ -19,6 +19,7 @@ export const nb = {
   'workspace.agentAwaitingInput': 'Agent venter på input',
   'workspace.needsYou': 'Venter på deg',
   'workspace.agentIdle': 'Agent inaktiv',
+  'workspace.agentUnverifiable': 'Ingen oppdatering på {time}',
   'workspace.close': 'Lukk arbeidsområde',
   'workspace.copyInfo': 'Kopier øktinformasjon',
   'workspace.copied': 'Kopiert!',

@@ -15,10 +15,10 @@ import path from 'node:path';
 //      for exactly the panes that are mid-turn.
 //   2. `session:active` — byte activity feeds `notePaneWorking`, with the
 //      detected name falling back to the persisted lastDetectedAgent. This is
-//      the PRIMARY prompt-arrival rebuttal (hooks.json has no
-//      UserPromptSubmit) and the only working-evidence feed for ungoverned
-//      panes; without the fallback, a text-only turn on an ungoverned pane
-//      would leave the gate closed and every completion silently dropped.
+//      the only working-evidence feed for UNGOVERNED panes; without the
+//      fallback, a text-only turn on an ungoverned pane would leave the gate
+//      closed and every completion silently dropped. A governed pane gets a
+//      precise prompt-arrival rebuttal from the UserPromptSubmit hook instead.
 describe('CompletionAlarm daemon wiring', () => {
   const daemonIndexPath = path.join(__dirname, '..', 'index.ts');
   const src = fs.readFileSync(daemonIndexPath, 'utf-8');

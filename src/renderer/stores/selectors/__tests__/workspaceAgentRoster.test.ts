@@ -33,6 +33,7 @@ interface StateOverrides {
   surfacePendingQuestion?: Record<string, string>;
   surfaceActivity?: Record<string, string>;
   surfaceActivityAt?: Record<string, number>;
+  surfaceTurnOpenAt?: Record<string, number>;
   paneLabel?: Record<string, string>;
   agentClockMs?: number;
 }
@@ -46,6 +47,7 @@ function state(overrides: StateOverrides = {}): StoreState {
     surfacePendingQuestion: {},
     surfaceActivity: {},
     surfaceActivityAt: {},
+    surfaceTurnOpenAt: {},
     paneLabel: {},
     agentClockMs: NOW,
     ...overrides,
@@ -176,6 +178,30 @@ describe('selectWorkspaceAgentRoster', () => {
       });
       expect(row.status).toBe('idle');
       expect(row.activity).toBeUndefined();
+    });
+
+    it('stays running on an OPEN TURN whose activity stamp went stale', () => {
+      // The latch is the agent's own claim ("a turn started, nothing ended
+      // it"), so it does not decay. Without this the row said "Idle" under a
+      // workspace dot that was still amber for the same pane — live-observed
+      // as "Claude Code · w1-1 Idle" beside an amber ▶.
+      const row = base({
+        surfaceAgent: { 'pty-1': { name: 'A', status: 'idle' } },
+        surfaceActivityAt: { 'pty-1': NOW - 10 * 60_000 },
+        surfaceTurnOpenAt: { 'pty-1': NOW - 10 * 60_000 },
+      });
+      expect(row.status).toBe('running');
+    });
+
+    it('keeps a hydrated running state alive on an open turn', () => {
+      // The synthetic-'running' demotion reads the same derivation: a latched
+      // pane is working, so it must not be aged down to idle either.
+      const row = base({
+        surfaceAgent: { 'pty-1': { name: 'A', status: 'running' } },
+        surfaceActivityAt: {},
+        surfaceTurnOpenAt: { 'pty-1': NOW - 10 * 60_000 },
+      });
+      expect(row.status).toBe('running');
     });
 
     it('keeps an explicit complete state even with fresh activity', () => {

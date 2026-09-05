@@ -32,6 +32,7 @@ function card(overrides: Partial<FleetPane> = {}): FleetPane {
     title: 'claude',
     surfaceType: 'terminal',
     isActivePane: true,
+    unverifiable: false,
     ...overrides,
   };
 }

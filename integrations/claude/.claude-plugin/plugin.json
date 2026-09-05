@@ -1,7 +1,7 @@
 {
   "name": "wmux-claude-integration",
-  "version": "0.3.0",
-  "description": "Deterministic Claude Code → wmux notifications via Stop / SubagentStop / SessionStart / PreToolUse hooks. Replaces wmux's regex-based agent detector with 100%-accurate hook signals when this plugin is installed.",
+  "version": "0.4.0",
+  "description": "Deterministic Claude Code → wmux notifications via UserPromptSubmit / Stop / StopFailure / SubagentStop / SessionStart / PreToolUse hooks. Replaces wmux's regex-based agent detector with 100%-accurate hook signals when this plugin is installed.",
   "author": {
     "name": "wmux",
     "url": "https://github.com/openwong2kim/wmux"

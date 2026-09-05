@@ -19,6 +19,7 @@ export const id = {
   'workspace.agentAwaitingInput': 'Agen perlu masukan',
   'workspace.needsYou': 'Menunggu Anda',
   'workspace.agentIdle': 'Agen menganggur',
+  'workspace.agentUnverifiable': 'Tidak ada pembaruan selama {time}',
   'workspace.close': 'Tutup ruang kerja',
   'workspace.copyInfo': 'Salin info sesi',
   'workspace.copied': 'Tersalin!',

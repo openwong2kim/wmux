@@ -85,6 +85,13 @@ const SUPERSEDED_STOP_WINDOW_MS = 60_000;
  *  had just claimed. Sleeping one window and re-reading closes the common case
  *  cheaply — ambient turns are never latency-sensitive. */
 const FOREIGN_TURN_RECHECK_MS = 250;
+/** How long after a foreign turn opened a SECOND UserPromptSubmit still counts
+ *  as the same submission rather than a new turn. Covers the two mechanical
+ *  repeats — a duplicated hook delivery, and an ESC-then-resend of the same
+ *  text — without swallowing the case that matters: a human who interrupted the
+ *  agent and typed something else. Nobody composes a new instruction in 2 s;
+ *  identical prompt text folds regardless of how much later it arrives. */
+const FOREIGN_RESUBMIT_FOLD_MS = 2_000;
 /** Claude Code's own wording when `--resume <id>` names a transcript it cannot
  *  find. Matched case-insensitively on the spawn banner only. */
 const STALE_RESUME_MARKER = 'no conversation found';
@@ -641,6 +648,9 @@ export interface ClaudePtyBrainAdapterDeps {
   /** How long an automation-origin send() waits before re-reading `busy`.
    *  Tests shrink this. See FOREIGN_TURN_RECHECK_MS. */
   foreignTurnRecheckMs?: number;
+  /** How long a second UserPromptSubmit still folds into the open foreign turn.
+   *  Tests shrink this. See FOREIGN_RESUBMIT_FOLD_MS. */
+  foreignResubmitFoldMs?: number;
 }
 
 /** One pending waiter — resolved by a hook signal, a timeout, or dispose(). */
@@ -710,6 +720,9 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
    *  would strand `busy` forever — `busy` releases the flag past this stamp
    *  plus the turn timeout. */
   private foreignTurnOpenedAt: number | null = null;
+  /** The open foreign turn's prompt text, for the repeat test in
+   *  `onHookSignal`. Empty when the hook payload carried none. */
+  private foreignTurnPrompt = '';
   /** Spawn-banner buffer, kept only for the stale-resume probe window. */
   private banner = '';
   private bannerWatching = false;
@@ -756,6 +769,7 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
     const wasOpen = this.foreignTurnOpen;
     this.foreignTurnOpen = false;
     this.foreignTurnOpenedAt = null;
+    this.foreignTurnPrompt = '';
     if (!wasOpen) return;
     try {
       this.deps.onForeignTurnEnd?.();
@@ -797,12 +811,40 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
     // that turn is already tracked by `turnStop`.
     if (signal.kind === 'agent.user_prompt_submit') {
       if (this.turnStop === null) {
-        this.foreignTurnOpen = true;
-        this.foreignTurnOpenedAt = Date.now();
+        const now = Date.now();
         const prompt =
           typeof signal.payload['prompt'] === 'string'
             ? signal.payload['prompt'].trim()
             : '';
+        // Two UserPromptSubmits with no Stop between them have two very
+        // different causes, and folding both into one turn loses the second.
+        //
+        // The one worth folding is a RESUBMISSION: the human hit ESC and sent
+        // the same thing again (an interrupt fires no Stop), or the bridge
+        // delivered the hook twice. Announcing that twice opened a second work
+        // row for one turn.
+        //
+        // The other is a genuinely NEW prompt after an interrupt — the human
+        // stopped the agent and asked for something else, minutes later. Folded,
+        // the deck kept announcing the abandoned objective and never opened a
+        // row for the work actually running. So a submission that is neither
+        // prompt-identical nor inside the resubmission window CLOSES the old
+        // foreign turn and opens its own.
+        const repeat =
+          this.foreignTurnOpen
+          && (
+            (prompt.length > 0 && prompt === this.foreignTurnPrompt)
+            || (this.foreignTurnOpenedAt !== null
+              && now - this.foreignTurnOpenedAt
+                <= (this.deps.foreignResubmitFoldMs ?? FOREIGN_RESUBMIT_FOLD_MS))
+          );
+        if (this.foreignTurnOpen && !repeat) this.closeForeignTurn();
+        this.foreignTurnOpen = true;
+        // The stamp always refreshes: the turn is live again, so `busy`'s
+        // stale-release deadline must measure from the latest submission.
+        this.foreignTurnOpenedAt = now;
+        this.foreignTurnPrompt = prompt;
+        if (repeat) return;
         try {
           // Empty is still meaningful: older Claude hook payloads may omit the
           // prompt. The deck supplies a neutral fallback objective rather than

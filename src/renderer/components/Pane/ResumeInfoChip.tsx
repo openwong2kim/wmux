@@ -332,7 +332,11 @@ export function ResumeInfoChipGate(props: {
   // trigger that keeps the chip hidden while a QUIET agent is still alive on
   // a pane without shell integration, and lets it appear on the exit edge.
   const agentProcessAlive = useStore((s) => s.agentAliveByPtyId[ptyId]);
-  const agentBusy = isPaneAgentBusy({ activityAt, agentClockMs, status, commandRunning, agentProcessAlive });
+  // The hook's turn latch. Without it a governed pane's quiet turn (no byte
+  // output for two minutes) would decay out of the heuristic tier and pop the
+  // chip over a live agent's TUI, which is precisely what the chip must not do.
+  const turnOpen = useStore((s) => (s.surfaceTurnOpenAt[ptyId] ?? 0) > 0);
+  const agentBusy = isPaneAgentBusy({ activityAt, agentClockMs, status, commandRunning, agentProcessAlive, turnOpen });
   if (agentBusy) return null;
   return (
     <ResumeInfoChip

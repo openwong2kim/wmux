@@ -172,3 +172,53 @@ describe('resumeSlice', () => {
     });
   });
 });
+
+// The OSC 133 back-at-prompt settle. `commandRunning` is the tier-1 signal in
+// `isPaneAgentBusy`, and a shell that has printed its own prompt again cannot
+// be mid-turn — so the same snapshot that stores it withdraws the pane's hook
+// turn latch. This is the settle path that fires on panes the daemon's process
+// tracker never attributed, where `agent.processExit` never arrives at all.
+describe('hydrateCommandRunning — a shell back at its prompt closes the turn', () => {
+  beforeEach(() => {
+    useStore.setState((state) => {
+      state.surfaceTurnOpenAt = {};
+      state.surfaceActivityAt = {};
+    });
+    useStore.getState().hydrateCommandRunning({});
+  });
+
+  it('clears the latch on the true → false transition', () => {
+    useStore.getState().hydrateCommandRunning({ 'pty-a': true });
+    useStore.getState().markSurfaceTurnOpen('pty-a');
+    expect(useStore.getState().surfaceTurnOpenAt['pty-a']).toBeGreaterThan(0);
+
+    useStore.getState().hydrateCommandRunning({ 'pty-a': false });
+    expect(useStore.getState().surfaceTurnOpenAt['pty-a']).toBeUndefined();
+    expect(useStore.getState().commandRunningByPtyId['pty-a']).toBe(false);
+  });
+
+  it('leaves the latch alone for a pty the daemon reports nothing about', () => {
+    // No shell integration → no value in the snapshot. Reading that silence as
+    // "at a prompt" would settle every hook-governed pane on such a machine.
+    useStore.getState().markSurfaceTurnOpen('pty-b');
+    useStore.getState().hydrateCommandRunning({ 'pty-other': false });
+    expect(useStore.getState().surfaceTurnOpenAt['pty-b']).toBeGreaterThan(0);
+    expect(useStore.getState().commandRunningByPtyId['pty-b']).toBeUndefined();
+  });
+
+  it('is a no-op on a pane that never opened a turn', () => {
+    useStore.getState().hydrateCommandRunning({ 'pty-c': false });
+    expect(useStore.getState().surfaceTurnOpenAt['pty-c']).toBeUndefined();
+    expect(useStore.getState().commandRunningByPtyId['pty-c']).toBe(false);
+  });
+
+  it('keeps surfaceActivityAt — the latch is the claim, the stamp is evidence', () => {
+    useStore.getState().markSurfaceRunning('pty-d');
+    useStore.getState().markSurfaceTurnOpen('pty-d');
+    const stamp = useStore.getState().surfaceActivityAt['pty-d'];
+
+    useStore.getState().hydrateCommandRunning({ 'pty-d': false });
+    expect(useStore.getState().surfaceTurnOpenAt['pty-d']).toBeUndefined();
+    expect(useStore.getState().surfaceActivityAt['pty-d']).toBe(stamp);
+  });
+});

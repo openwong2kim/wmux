@@ -1117,6 +1117,96 @@ describe('a foreign turn that could get stuck open', () => {
   });
 });
 
+describe('the foreign-turn-START notification', () => {
+  it('announces one turn per submission, and folds an immediate repeat', async () => {
+    // Two UserPromptSubmits with no Stop between them, back to back, is a
+    // RESUBMISSION: the human hit ESC (which fires no Stop) and sent it again.
+    // It is ONE foreign turn — a second announcement opened a second work row
+    // for the same turn.
+    //
+    // It is ALSO the shape a duplicate hook delivery would take, which is why
+    // the fold is asserted rather than assumed. The brain launches with
+    // `--setting-sources project`, so the operator's own settings hooks do not
+    // load for its pty and today only one bridge fires; this test is what
+    // keeps that from being load-bearing.
+    const host = makeHost();
+    const onForeignTurnStart = vi.fn();
+    const adapter = makeAdapter(host, { onForeignTurnStart });
+    const turn = collect(adapter.send('hi'));
+    await vi.waitFor(() => expect(host.writes.length).toBeGreaterThan(0));
+    const ptyId = host.created[0].id;
+    deliverBrainPtyHookSignal(signal('agent.stop', ptyId, { agentSessionId: 'sess-1' }));
+    await turn;
+    // Our OWN turn's UserPromptSubmit is not foreign — turnStop owned it.
+    expect(onForeignTurnStart).not.toHaveBeenCalled();
+
+    deliverBrainPtyHookSignal(signal('agent.user_prompt_submit', ptyId, { payload: { prompt: 'do it' } }));
+    deliverBrainPtyHookSignal(signal('agent.user_prompt_submit', ptyId, { payload: { prompt: 'no, do it this way' } }));
+    expect(onForeignTurnStart).toHaveBeenCalledTimes(1);
+    expect(onForeignTurnStart).toHaveBeenCalledWith('do it');
+    // Still exactly one open turn, closed by exactly one Stop.
+    expect(adapter.busy).toBe(true);
+    deliverBrainPtyHookSignal(signal('agent.stop', ptyId, { agentSessionId: 'sess-2' }));
+    expect(adapter.busy).toBe(false);
+
+    // A submission AFTER the turn closed is a new turn and announces again.
+    deliverBrainPtyHookSignal(signal('agent.user_prompt_submit', ptyId, { payload: { prompt: 'next' } }));
+    expect(onForeignTurnStart).toHaveBeenCalledTimes(2);
+    adapter.dispose();
+  });
+
+  it('a genuinely new prompt after an ESC opens its own turn', async () => {
+    // The other cause of two submits with no Stop between them: the human
+    // interrupted the agent and, some time later, asked for something else.
+    // Folding that into the abandoned turn left the deck announcing the old
+    // objective and never opening a row for the work actually running.
+    const host = makeHost();
+    const onForeignTurnStart = vi.fn();
+    const onForeignTurnEnd = vi.fn();
+    const adapter = makeAdapter(host, {
+      onForeignTurnStart,
+      onForeignTurnEnd,
+      foreignResubmitFoldMs: 1,
+    });
+    const turn = collect(adapter.send('hi'));
+    await vi.waitFor(() => expect(host.writes.length).toBeGreaterThan(0));
+    const ptyId = host.created[0].id;
+    deliverBrainPtyHookSignal(signal('agent.stop', ptyId, { agentSessionId: 'sess-1' }));
+    await turn;
+
+    deliverBrainPtyHookSignal(signal('agent.user_prompt_submit', ptyId, { payload: { prompt: 'do it' } }));
+    await new Promise((r) => setTimeout(r, 5));
+    deliverBrainPtyHookSignal(signal('agent.user_prompt_submit', ptyId, { payload: { prompt: 'no, do it this way' } }));
+    expect(onForeignTurnStart).toHaveBeenCalledTimes(2);
+    expect(onForeignTurnStart).toHaveBeenNthCalledWith(2, 'no, do it this way');
+    // The abandoned turn was CLOSED, not left open behind the new one.
+    expect(onForeignTurnEnd).toHaveBeenCalledTimes(1);
+    // …and exactly one turn is open, which one Stop closes.
+    expect(adapter.busy).toBe(true);
+    deliverBrainPtyHookSignal(signal('agent.stop', ptyId, { agentSessionId: 'sess-2' }));
+    expect(adapter.busy).toBe(false);
+    adapter.dispose();
+  });
+
+  it('folds an identical prompt however long the gap', async () => {
+    // A duplicate delivery is identifiable by its text, not by its timing.
+    const host = makeHost();
+    const onForeignTurnStart = vi.fn();
+    const adapter = makeAdapter(host, { onForeignTurnStart, foreignResubmitFoldMs: 1 });
+    const turn = collect(adapter.send('hi'));
+    await vi.waitFor(() => expect(host.writes.length).toBeGreaterThan(0));
+    const ptyId = host.created[0].id;
+    deliverBrainPtyHookSignal(signal('agent.stop', ptyId, { agentSessionId: 'sess-1' }));
+    await turn;
+
+    deliverBrainPtyHookSignal(signal('agent.user_prompt_submit', ptyId, { payload: { prompt: 'do it' } }));
+    await new Promise((r) => setTimeout(r, 5));
+    deliverBrainPtyHookSignal(signal('agent.user_prompt_submit', ptyId, { payload: { prompt: 'do it' } }));
+    expect(onForeignTurnStart).toHaveBeenCalledTimes(1);
+    adapter.dispose();
+  });
+});
+
 describe('the foreign-turn-end notification', () => {
   it('fires once when the human`s Stop closes their turn, and not for our own turns', async () => {
     const host = makeHost();

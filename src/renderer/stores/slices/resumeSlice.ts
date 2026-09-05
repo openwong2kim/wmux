@@ -180,6 +180,24 @@ export const createResumeSlice: StateCreator<
   }),
 
   hydrateCommandRunning: (snapshot) => set((draft: StoreState) => {
+    // A shell back at its prompt closes the pane's open turn. `commandRunning`
+    // is the OSC 133 signal `isPaneAgentBusy` ranks FIRST — above process truth
+    // — and a shell that is printing its own prompt cannot be mid-turn: the
+    // agent the operator exited, or the one that died on a network error with
+    // no turn-end hook, is no longer the thing owning this PTY. It is also the
+    // only settle signal that needs no attribution, which is what makes it the
+    // one that fires: `agentAliveByPtyId` is empty on panes the daemon's
+    // process tracker never resolved, so the `agent.processExit` path never
+    // reaches them and the latch held 'running' for minutes.
+    //
+    // Only a REPORTED `false` counts. A pty missing from the snapshot has no
+    // shell integration at all (the daemon sends no value), and reading that
+    // silence as "at a prompt" would settle every hook-governed pane on a
+    // machine whose shell emits no markers. `surfaceActivityAt` is untouched:
+    // it is evidence about when the pane was last heard from, not the claim.
+    for (const ptyId of Object.keys(draft.surfaceTurnOpenAt)) {
+      if (snapshot[ptyId] === false) delete draft.surfaceTurnOpenAt[ptyId];
+    }
     draft.commandRunningByPtyId = { ...snapshot };
   }),
 

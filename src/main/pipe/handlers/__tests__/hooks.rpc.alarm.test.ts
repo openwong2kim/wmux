@@ -289,6 +289,64 @@ describe('hooks.signal — local verdict gate (CompletionAlarm)', () => {
     );
   });
 
+  // A turn that dies on an API error fires StopFailure and no Stop at all, so
+  // without this branch the pane kept the amber dot its turn START lit until
+  // the agent process died.
+  it('stop_failure paints the pane error at once and toasts at confirmation', async () => {
+    const r = rig();
+    await primeWorking(r);
+
+    await r.dispatch({ kind: 'agent.stop_failure' });
+    // The status is not held: the turn is over NOW, and the dot is what the
+    // operator is staring at. The toast still waits out the window.
+    expect(broadcastMetadataUpdateMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ ptyId: 'pty-1', agentStatus: 'error' }),
+    );
+    expect(sendNotificationMock).not.toHaveBeenCalled();
+
+    vi.advanceTimersByTime(DEFAULT_ALARM_WINDOW_MS);
+
+    expect(r.recordHook).toHaveBeenCalledTimes(1);
+    expect(sendNotificationMock).toHaveBeenCalledTimes(1);
+    // Never 'complete': nothing finished.
+    for (const [, patch] of broadcastMetadataUpdateMock.mock.calls) {
+      expect((patch as { agentStatus?: string }).agentStatus).not.toBe('complete');
+    }
+  });
+
+  it('keeps a failed turn out of the lifecycle tee and the usage probe', async () => {
+    const r = rig();
+    await primeWorking(r);
+
+    await r.dispatch({ kind: 'agent.stop_failure' });
+    vi.advanceTimersByTime(DEFAULT_ALARM_WINDOW_MS);
+
+    // `AgentLifecycleEvent.kind` speaks only of stop / subagent_stop /
+    // awaiting_input; emitting 'agent.stop' here would tell an orchestrator the
+    // turn finished normally.
+    expect(pollLifecycle()).toHaveLength(0);
+    // And no turn-end usage probe: the API call is what failed.
+    expect(r.onClaudeTurnEnd).not.toHaveBeenCalled();
+  });
+
+  it('closes the turn gate, so a stop behind the failure raises no completion', async () => {
+    const r = rig();
+    await primeWorking(r);
+
+    await r.dispatch({ kind: 'agent.stop_failure' });
+    vi.advanceTimersByTime(DEFAULT_ALARM_WINDOW_MS);
+    vi.clearAllMocks();
+
+    // No new working evidence in between: the confirmed attention window set
+    // `announced` and cleared `seenWorking`, so this cannot announce.
+    await r.dispatch({ kind: 'agent.stop' });
+    vi.advanceTimersByTime(DEFAULT_ALARM_WINDOW_MS);
+
+    expect(sendNotificationMock).not.toHaveBeenCalled();
+    expect(r.recordHook).not.toHaveBeenCalled();
+  });
+
   it('an answered cue rebuts a pending attention window', async () => {
     const r = rig();
     await primeWorking(r);

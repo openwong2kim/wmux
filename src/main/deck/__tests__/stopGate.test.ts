@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { evaluateStopGate, DEFAULT_MAX_SNAPSHOT_AGE_MS } from '../stopGate';
+import { evaluateStopGate, isOutstandingWorkerPane, DEFAULT_MAX_SNAPSHOT_AGE_MS } from '../stopGate';
 import type { FleetSnapshot, FleetSnapshotPane } from '../../../shared/workspaceMirror';
 
 function pane(over: Partial<FleetSnapshotPane> = {}): FleetSnapshotPane {
@@ -217,6 +217,40 @@ describe('evaluateStopGate', () => {
 // forward", and the decision block orders it NOT to proceed. Refusing the Stop
 // on top of that left the model exactly one move — re-printing its question —
 // which is the transcript pathology (2026-08-07) this rule removes.
+// ── Hook-driven `running`: a worker counts the instant it starts ────────────
+// A worker pane goes `running` on its UserPromptSubmit hook, before it has
+// emitted a byte of output. Both gates read that status and nothing else — no
+// activity stamp, no byte count, no settling delay — so a brain that delegates
+// and immediately tries to stop is held on the worker it just started, not on
+// whether that worker has produced enough output to look busy yet.
+describe('a worker counts from its turn start, with no byte threshold', () => {
+  const justStarted = pane({
+    ptyId: 'pane-worker',
+    // Freshly spawned: the roster has no name for it yet and it has written
+    // nothing. `running` came from the hook, and it is the whole input.
+    agentName: null,
+    agentStatus: 'running',
+    isAgent: true,
+  });
+
+  it('holds the stop gate open', () => {
+    const verdict = evaluateStopGate({
+      snapshot: snapshot([justStarted]),
+      consecutiveBlocks: 0,
+    });
+    if (!verdict.block) throw new Error('expected a block');
+    expect(verdict.outstandingPtyIds).toEqual(['pane-worker']);
+  });
+
+  it('counts as outstanding for deck_complete_work too (the shared rule)', () => {
+    expect(isOutstandingWorkerPane(justStarted)).toBe(true);
+  });
+
+  it('and the same pane at rest does not', () => {
+    expect(isOutstandingWorkerPane({ ...justStarted, agentStatus: 'idle' })).toBe(false);
+  });
+});
+
 describe('a pending decision releases the gate (rule 4)', () => {
   it('allows even with outstanding panes AND active work', () => {
     const verdict = evaluateStopGate({

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { HookSignalRouter, DEFAULT_DEDUP_WINDOW_MS, HOOK_AUTHORITY_TTL_MS } from '../HookSignalRouter';
 import { SignalLatencyMeter } from '../SignalLatencyMeter';
 import type { AgentSignal } from '../signal-types';
@@ -201,6 +201,164 @@ describe('HookSignalRouter', () => {
 
       // p10 entry survives, same kind within window still deduped.
       expect(router.recordDetector('claude', 'agent.stop', 'p10', 1100)).toBe('dedup');
+    });
+  });
+
+  describe('turn-start latch (who writes the running dot)', () => {
+    it('an untouched pane keeps the byte heuristic', () => {
+      expect(router.governsRunningState('p1', 1000)).toBe(false);
+    });
+
+    it('is NOT implied by authority — a bridge can be alive and never report a turn start', () => {
+      // The exact case an older plugin (< 0.4.0) or a turn-end-only
+      // integration produces. Muting the heuristic here would leave the pane
+      // with no running source at all.
+      router.touchAuthority('p1', 'claude', 1000);
+      expect(router.isGovernedFor('p1', 'claude', 2000)).toBe(true);
+      expect(router.governsRunningState('p1', 2000)).toBe(false);
+    });
+
+    it('a reported turn start claims the dot for the hook', () => {
+      router.noteHookTurnStart('p1', 1000);
+      expect(router.governsRunningState('p1', 2000)).toBe(true);
+    });
+
+    it('expires on the authority TTL, so a dead bridge hands the pane back', () => {
+      router = new HookSignalRouter({ latencyMeter: meter, authorityTtlMs: 5_000 });
+      router.noteHookTurnStart('p1', 1000);
+      expect(router.governsRunningState('p1', 5_999)).toBe(true);
+      expect(router.governsRunningState('p1', 6_000)).toBe(false);
+    });
+
+    it('dropPty releases it immediately, so a reused id does not inherit it', () => {
+      router.noteHookTurnStart('p1', 1000);
+      router.dropPty('p1');
+      expect(router.governsRunningState('p1', 1100)).toBe(false);
+    });
+
+    it('is scoped to the pane', () => {
+      router.noteHookTurnStart('p1', 1000);
+      expect(router.governsRunningState('p2', 1100)).toBe(false);
+    });
+
+    it('expires on its own timer and settles the pane once', () => {
+      // The F2 case: a pane whose agent process the tracker never attributed
+      // (arm failure / backoff / no slug) has NO death edge, and the byte
+      // heuristic is muted in both directions — so without this the pane would
+      // report 'running' to pane_list for the rest of the process's life.
+      vi.useFakeTimers();
+      try {
+        const settled: string[] = [];
+        router = new HookSignalRouter({ latencyMeter: meter, authorityTtlMs: 5_000 });
+        router.setTurnExpiryListener((ptyId) => settled.push(ptyId));
+        router.noteHookTurnStart('p1', 1000);
+        vi.advanceTimersByTime(4_999);
+        expect(settled).toEqual([]);
+        expect(router.governsRunningState('p1', 1000)).toBe(true);
+        vi.advanceTimersByTime(1);
+        expect(settled).toEqual(['p1']);
+        // The latch is released BEFORE the listener runs, so the settle
+        // broadcast is not vetoed by the gate it exists to escape.
+        expect(router.governsRunningState('p1', 1000)).toBe(false);
+        // Once only.
+        vi.advanceTimersByTime(60_000);
+        expect(settled).toEqual(['p1']);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('a live bridge re-arms the deadline, so a long turn never trips it', () => {
+      vi.useFakeTimers();
+      try {
+        const settled: string[] = [];
+        router = new HookSignalRouter({ latencyMeter: meter, authorityTtlMs: 5_000 });
+        router.setTurnExpiryListener((ptyId) => settled.push(ptyId));
+        router.noteHookTurnStart('p1', 1000);
+        vi.advanceTimersByTime(4_000);
+        router.touchAuthority('p1', 'claude', 5_000); // a tool call mid-turn
+        vi.advanceTimersByTime(4_000);
+        expect(settled).toEqual([]);
+        vi.advanceTimersByTime(1_000);
+        expect(settled).toEqual(['p1']);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('a signal on a pane with no open turn does not arm an expiry', () => {
+      vi.useFakeTimers();
+      try {
+        const settled: string[] = [];
+        router = new HookSignalRouter({ latencyMeter: meter, authorityTtlMs: 5_000 });
+        router.setTurnExpiryListener((ptyId) => settled.push(ptyId));
+        router.touchAuthority('p1', 'claude', 1000);
+        vi.advanceTimersByTime(60_000);
+        // Nothing claimed this pane's dot, so nothing may broadcast idle over it.
+        expect(settled).toEqual([]);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('the turn end and pane disposal both cancel the expiry', () => {
+      vi.useFakeTimers();
+      try {
+        const settled: string[] = [];
+        router = new HookSignalRouter({ latencyMeter: meter, authorityTtlMs: 5_000 });
+        router.setTurnExpiryListener((ptyId) => settled.push(ptyId));
+        router.noteHookTurnStart('p1', 1000);
+        router.releaseHookTurnStart('p1');
+        router.noteHookTurnStart('p2', 1000);
+        router.dropPty('p2');
+        vi.advanceTimersByTime(60_000);
+        expect(settled).toEqual([]);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('a different agent on the same pane does not inherit the latch', () => {
+      // F4: a pane is a SHELL. `claude` exits without a Stop, the operator
+      // starts `codex` in the same pane, and the byte heuristic that would
+      // light the new agent's dot is muted by the dead one's claim.
+      router.noteHookTurnStart('p1', 1000, 'claude');
+      expect(router.governsRunningState('p1', 1100)).toBe(true);
+      router.touchAuthority('p1', 'codex', 1100);
+      expect(router.governsRunningState('p1', 1200)).toBe(false);
+    });
+
+    it('a detector event for a different agent retires the latch too', () => {
+      router.noteHookTurnStart('p1', 1000, 'claude');
+      router.recordDetector('codex', 'agent.stop', 'p1', 1100);
+      expect(router.governsRunningState('p1', 1200)).toBe(false);
+    });
+
+    it('the SAME agent signalling mid-turn keeps its own latch', () => {
+      router.noteHookTurnStart('p1', 1000, 'claude');
+      router.touchAuthority('p1', 'claude', 1100);
+      router.recordDetector('claude', 'agent.activity', 'p1', 1200);
+      expect(router.governsRunningState('p1', 1300)).toBe(true);
+      expect(router.turnStartAgentFor('p1')).toBe('claude');
+    });
+
+    it('a latch with no recorded owner survives — unknown is not different', () => {
+      // The pre-F4 call shape (and any caller that cannot resolve a slug). An
+      // unknown owner is not evidence of a DIFFERENT one; F2's expiry bounds it.
+      router.noteHookTurnStart('p1', 1000);
+      router.touchAuthority('p1', 'codex', 1100);
+      expect(router.governsRunningState('p1', 1200)).toBe(true);
+    });
+
+    it('releaseHookTurnStart hands the dot back without touching the ledger', () => {
+      // The agent process died mid-turn: no Stop will ever come, so the claim
+      // has to go early. The PANE is still alive, though — its dedup ledger
+      // still belongs to it, unlike the dropPty case.
+      router.recordHook(makeSignal(), 'p1', 1000);
+      router.noteHookTurnStart('p1', 1000);
+      router.releaseHookTurnStart('p1');
+      expect(router.governsRunningState('p1', 1100)).toBe(false);
+      expect(router.recordDetector('claude', 'agent.stop', 'p1', 1100)).toBe('dedup');
     });
   });
 

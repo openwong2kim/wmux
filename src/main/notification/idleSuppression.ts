@@ -47,6 +47,37 @@ export function recentlyResized(
   return now - (lastResizeAt.get(ptyId) ?? 0) < windowMs;
 }
 
+/**
+ * Per-PTY settle bookkeeping — the same timestamp-window mechanism as the
+ * resize guard above, for the same shape of problem.
+ *
+ * A settle is immediately followed by a redraw: Claude Code answers an
+ * interrupt by printing "Interrupted · What should Claude do instead?" and
+ * repainting its prompt, an exited agent's shell repaints its own. That burst
+ * reaches ActivityMonitor.onActive, which broadcasts byte-'running' and undoes
+ * the settle the user just earned. The window only gates that broadcast: the
+ * alarm's working cue and the detector's dedup reset are untouched, and a
+ * genuinely new turn lights the pane through its own turn-start hook, which
+ * never passes through here.
+ */
+const lastSettleAt = new Map<string, number>();
+
+export const SETTLE_REDRAW_GUARD_MS = 3_000;
+
+export function markSettled(ptyId: string, now: number = Date.now()): void {
+  if (!ptyId) return;
+  lastSettleAt.set(ptyId, now);
+}
+
+export function recentlySettled(
+  ptyId: string,
+  windowMs: number = SETTLE_REDRAW_GUARD_MS,
+  now: number = Date.now(),
+): boolean {
+  return now - (lastSettleAt.get(ptyId) ?? 0) < windowMs;
+}
+
 export function clearPty(ptyId: string): void {
   lastResizeAt.delete(ptyId);
+  lastSettleAt.delete(ptyId);
 }

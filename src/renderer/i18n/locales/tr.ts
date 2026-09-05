@@ -19,6 +19,7 @@ export const tr = {
   'workspace.agentAwaitingInput': 'Aracı girdi bekliyor',
   'workspace.needsYou': 'Seni bekliyor',
   'workspace.agentIdle': 'Aracı boşta',
+  'workspace.agentUnverifiable': '{time} boyunca güncelleme yok',
   'workspace.close': 'Çalışma alanını kapat',
   'workspace.copyInfo': 'Oturum bilgilerini kopyala',
   'workspace.copied': 'Kopyalandı!',

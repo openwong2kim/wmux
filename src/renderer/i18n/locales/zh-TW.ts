@@ -19,6 +19,7 @@ export const zhTW = {
   'workspace.agentAwaitingInput': '代理等待輸入',
   'workspace.needsYou': '等你回應',
   'workspace.agentIdle': '代理閒置',
+  'workspace.agentUnverifiable': '{time} 無更新',
   'workspace.close': '關閉工作區',
   'workspace.copyInfo': '複製工作階段資訊',
   'workspace.copied': '已複製!',

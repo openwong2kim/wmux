@@ -153,7 +153,7 @@ export interface HookArbitration {
 export interface HookAgentEventData extends HookArbitration {
   /** DISPLAY name ("Claude Code"), NOT the slug — see agentSlugToDisplay. */
   agent: string;
-  status: 'complete' | 'awaiting_input' | 'running';
+  status: 'complete' | 'awaiting_input' | 'running' | 'error';
   /** Empty for `decision:'activity'` — main derives the label from `signal`. */
   message: string;
   /**
@@ -411,9 +411,19 @@ function summarizeToolInput(payload: Record<string, unknown> | undefined): strin
 /**
  * Emit-class kinds — the turn boundaries. These are the only kinds that
  * produce a user-visible event and the only ones that touch the dedup ledger.
+ *
+ * `agent.stop_failure` is one of them: a turn that died on an API error has
+ * ended just as definitively as one that finished, and the operator is owed
+ * the same notification. What differs is the STATUS it carries ('error', not
+ * 'complete') and the alarm cue it normalizes to (`attention`, not `stop`) —
+ * see eventShapeFor and normalizeHookCue.
  */
-function isEmitKind(kind: AgentSignalKind): kind is 'agent.stop' | 'agent.subagent_stop' | 'agent.awaiting_input' {
-  return kind === 'agent.stop' || kind === 'agent.subagent_stop' || kind === 'agent.awaiting_input';
+function isEmitKind(kind: AgentSignalKind): kind is
+  'agent.stop' | 'agent.subagent_stop' | 'agent.awaiting_input' | 'agent.stop_failure' {
+  return kind === 'agent.stop'
+    || kind === 'agent.subagent_stop'
+    || kind === 'agent.awaiting_input'
+    || kind === 'agent.stop_failure';
 }
 
 /**
@@ -429,19 +439,28 @@ function isEmitKind(kind: AgentSignalKind): kind is 'agent.stop' | 'agent.subage
  * from them locally and can't anymore once the bridge talks to the daemon
  * directly — activity feeds the Fleet "running: <tool>" line, session_start
  * CLEARS the previous session's stale activity/pendingQuestion labels when a
- * pane is reused. They share `decision:'activity'`; consumers tell them apart
- * by `hookKind`.
+ * pane is reused, and user_prompt_submit turns the pane's status dot on at the
+ * exact moment the turn starts. They share `decision:'activity'`; consumers
+ * tell them apart by `hookKind`.
  */
 function isMetadataKind(kind: AgentSignalKind): kind is
-  'agent.activity' | 'agent.session_start' | 'agent.tool_started' | 'agent.awaiting_permission' {
+  'agent.activity' | 'agent.session_start' | 'agent.tool_started'
+  | 'agent.awaiting_permission' | 'agent.user_prompt_submit' {
   // #783 — agent.tool_started (non-gated tool passed the gate hook, liveness)
   // and agent.awaiting_permission (gated tool blocked, pane STATE) are metadata-
   // only: they ride the same agent.event family tagged decision:'activity', and
   // never touch the dedup ledger (they are not turn boundaries).
+  //
+  // agent.user_prompt_submit is the TURN START, and it is metadata by exactly
+  // the same rule: pane state, no toast, no ledger. Before it was classified
+  // here it fell through to the `!isEmitKind` drop below, so the one signal
+  // that knows precisely when a turn begins produced no status at all and the
+  // pane had to wait for the byte-rate heuristic to guess.
   return kind === 'agent.activity'
     || kind === 'agent.session_start'
     || kind === 'agent.tool_started'
-    || kind === 'agent.awaiting_permission';
+    || kind === 'agent.awaiting_permission'
+    || kind === 'agent.user_prompt_submit';
 }
 
 /**
@@ -451,8 +470,8 @@ function isMetadataKind(kind: AgentSignalKind): kind is
  * finished") verbatim.
  */
 function eventShapeFor(
-  kind: 'agent.stop' | 'agent.subagent_stop' | 'agent.awaiting_input',
-): { status: 'complete' | 'awaiting_input'; message: string } {
+  kind: 'agent.stop' | 'agent.subagent_stop' | 'agent.awaiting_input' | 'agent.stop_failure',
+): { status: 'complete' | 'awaiting_input' | 'error'; message: string } {
   switch (kind) {
     case 'agent.stop':
       return { status: 'complete', message: 'Task finished' };
@@ -460,6 +479,11 @@ function eventShapeFor(
       return { status: 'complete', message: 'Subagent finished' };
     case 'agent.awaiting_input':
       return { status: 'awaiting_input', message: 'Awaiting input' };
+    // The turn is over but nothing finished, so the pane must NOT wear
+    // 'complete' — 'error' is the attention status the roster already draws in
+    // red, and the message is the toast title main builds from it.
+    case 'agent.stop_failure':
+      return { status: 'error', message: 'Turn failed (API error)' };
   }
 }
 

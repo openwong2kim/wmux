@@ -109,8 +109,13 @@ function stubHookRouter(decision: 'emit' | 'dedup'): HookSignalRouter {
     recordHook: vi.fn().mockReturnValue('emit'),
     touchAuthority: vi.fn(),
     // Tests here exercise the detector tee — no pane is hook-governed.
+    noteAgentOnPane: vi.fn(),
     isGovernedFor: vi.fn().mockReturnValue(false),
     governsDetectorStatus: vi.fn().mockReturnValue(false),
+    // ...including for the OSC 133 settle, which asks the same question of an
+    // at-prompt marker before the lifecycle tee these tests are about.
+    governsRunningState: vi.fn().mockReturnValue(false),
+    releaseHookTurnStart: vi.fn(),
   } as unknown as HookSignalRouter;
 }
 
@@ -206,7 +211,8 @@ describe('DaemonNotificationRouter — detector lifecycle tee (awaiting_input)',
       recordDetector: vi.fn(),
       recordHook: vi.fn(),
       touchAuthority: vi.fn(),
-      isGovernedFor: vi.fn().mockReturnValue(true),
+      noteAgentOnPane: vi.fn(),
+    isGovernedFor: vi.fn().mockReturnValue(true),
       // #935: the status broadcast rides the same authority as the veto.
       governsDetectorStatus: vi.fn(
         (_p: string, slug: string | null | undefined, status: string) =>
@@ -277,7 +283,8 @@ describe('DaemonNotificationRouter — detector lifecycle tee (awaiting_input)',
       recordDetector: vi.fn(),
       recordHook: vi.fn(),
       touchAuthority: vi.fn(),
-      isGovernedFor: vi.fn().mockReturnValue(true),
+      noteAgentOnPane: vi.fn(),
+    isGovernedFor: vi.fn().mockReturnValue(true),
       governsDetectorStatus: vi.fn().mockReturnValue(true),
     } as unknown as HookSignalRouter;
     const { router: nr, captured } = makeRouter({ hookRouter });
@@ -307,7 +314,8 @@ describe('DaemonNotificationRouter — detector lifecycle tee (awaiting_input)',
       recordDetector: vi.fn(),
       recordHook: vi.fn(),
       touchAuthority: vi.fn(),
-      isGovernedFor: vi.fn().mockReturnValue(true),
+      noteAgentOnPane: vi.fn(),
+    isGovernedFor: vi.fn().mockReturnValue(true),
       governsDetectorStatus: vi.fn().mockReturnValue(true),
     } as unknown as HookSignalRouter;
     const { router: nr, captured } = makeRouter({ hookRouter });
@@ -373,7 +381,8 @@ describe('DaemonNotificationRouter — detector lifecycle tee (awaiting_input)',
       recordDetector: vi.fn().mockReturnValue('emit'),
       recordHook: vi.fn(),
       touchAuthority: vi.fn(),
-      isGovernedFor: vi.fn().mockReturnValue(true),
+      noteAgentOnPane: vi.fn(),
+    isGovernedFor: vi.fn().mockReturnValue(true),
       // #935: the status broadcast rides the same authority as the veto.
       governsDetectorStatus: vi.fn(
         (_p: string, slug: string | null | undefined, status: string) =>
@@ -408,7 +417,8 @@ describe('DaemonNotificationRouter — M1 daemon-arbitrated events (source field
       recordDetector: vi.fn(),
       recordHook: vi.fn(),
       touchAuthority: vi.fn(),
-      isGovernedFor: vi.fn().mockReturnValue(true),
+      noteAgentOnPane: vi.fn(),
+    isGovernedFor: vi.fn().mockReturnValue(true),
       // #935: the status broadcast rides the same authority as the veto.
       governsDetectorStatus: vi.fn(
         (_p: string, slug: string | null | undefined, status: string) =>
@@ -598,7 +608,8 @@ describe('DaemonNotificationRouter — M1 daemon-arbitrated events (source field
       recordDetector: vi.fn().mockReturnValue('emit'),
       recordHook: vi.fn(),
       touchAuthority: vi.fn(),
-      isGovernedFor: vi.fn().mockReturnValue(true),
+      noteAgentOnPane: vi.fn(),
+    isGovernedFor: vi.fn().mockReturnValue(true),
       // #935: the status broadcast rides the same authority as the veto.
       governsDetectorStatus: vi.fn(
         (_p: string, slug: string | null | undefined, status: string) =>
@@ -993,6 +1004,74 @@ describe('DaemonNotificationRouter — M1 side-effect replay', () => {
     } finally {
       router.stop();
     }
+  });
+
+  // A turn that ends on an API error reaches main as status 'error' with
+  // hookKind 'agent.stop_failure'. It used to fall outside the emit-class
+  // status list entirely, so nothing fired at all.
+  describe('agent.stop_failure replay', () => {
+    function failureEvent() {
+      return {
+        sessionId: 'pty-a',
+        event: {
+          agent: 'Claude Code',
+          status: 'error',
+          message: 'Turn failed (API error)',
+          source: 'hook',
+          hookKind: 'agent.stop_failure',
+          decision: 'emit',
+          signal: {
+            kind: 'agent.stop_failure',
+            agent: 'claude',
+            cwd: '/repo',
+            payload: {},
+            ts: 1,
+          },
+        },
+      };
+    }
+
+    it('paints the pane error, clears the stale activity label, and toasts', async () => {
+      const { router: nr, captured } = makeRouter();
+      try {
+        dispatchNotificationMock.mockClear();
+        broadcastMetadataUpdateMock.mockClear();
+        captured.agent!(failureEvent());
+        await flushMicrotasks();
+
+        const patches = broadcastMetadataUpdateMock.mock.calls
+          .map((c) => c[1] as Record<string, unknown>);
+        expect(patches.some((p) => p.agentStatus === 'error')).toBe(true);
+        // Never 'complete' — the turn finished nothing.
+        expect(patches.some((p) => p.agentStatus === 'complete')).toBe(false);
+        // The turn boundary clears the stale tool label, exactly as a stop does.
+        expect(patches.some((p) => p.activity === '')).toBe(true);
+
+        expect(dispatchNotificationMock).toHaveBeenCalledTimes(1);
+        const [, , notification] = dispatchNotificationMock.mock.calls[0];
+        expect(notification).toMatchObject({
+          title: 'Claude Code: Turn failed (API error)',
+          body: 'The turn ended on an API error',
+          category: 'agent-turn',
+        });
+      } finally {
+        nr.stop();
+      }
+    });
+
+    it('emits no agent.lifecycle event for it', async () => {
+      // `lifecycleKindFor` would fall through to 'agent.stop', which tells an
+      // orchestrator the turn finished normally. Silence is the lesser wrong
+      // until the published kind union is widened deliberately.
+      const { router: nr, captured } = makeRouter();
+      try {
+        captured.agent!(failureEvent());
+        await flushMicrotasks();
+        expect(pollLifecycle()).toHaveLength(0);
+      } finally {
+        nr.stop();
+      }
+    });
   });
 });
 

@@ -318,7 +318,7 @@ describe('sortFleetPanes', () => {
   });
 
   it('breaks ties by workspace (selector) order, NOT alphabetical name', () => {
-    const base: FleetPane = { workspaceId: 'w', workspaceName: '', paneId: '', surfaceId: 's', ptyId: 'p', agentStatus: 'running', title: '', surfaceType: 'terminal', isActivePane: false };
+    const base: FleetPane = { workspaceId: 'w', workspaceName: '', paneId: '', surfaceId: 's', ptyId: 'p', agentStatus: 'running', title: '', surfaceType: 'terminal', isActivePane: false, unverifiable: false };
     // Same status → the selector's emission order (== state.workspaces / sidebar
     // order) is preserved, even though the names are reverse-alphabetical. The
     // old behavior reordered these to [b, a] by name; the fix keeps input order
@@ -329,7 +329,7 @@ describe('sortFleetPanes', () => {
   });
 
   it("'workspace' mode mirrors selector order and ignores status", () => {
-    const base: FleetPane = { workspaceId: 'w', workspaceName: 'w', paneId: '', surfaceId: 's', ptyId: 'p', agentStatus: 'idle', title: 't', surfaceType: 'terminal', isActivePane: false };
+    const base: FleetPane = { workspaceId: 'w', workspaceName: 'w', paneId: '', surfaceId: 's', ptyId: 'p', agentStatus: 'idle', title: 't', surfaceType: 'terminal', isActivePane: false, unverifiable: false };
     const first = { ...base, paneId: 'first', agentStatus: 'idle' as const };
     const second = { ...base, paneId: 'second', agentStatus: 'awaiting_input' as const };
     // workspace mode: pure input (sidebar) order, status ignored.
@@ -339,7 +339,7 @@ describe('sortFleetPanes', () => {
   });
 
   it('preserves input order for fully-equal entries (stable sort)', () => {
-    const base: FleetPane = { workspaceId: 'w', workspaceName: 'w', paneId: '', surfaceId: 's', ptyId: 'p', agentStatus: 'running', title: 't', surfaceType: 'terminal', isActivePane: false };
+    const base: FleetPane = { workspaceId: 'w', workspaceName: 'w', paneId: '', surfaceId: 's', ptyId: 'p', agentStatus: 'running', title: 't', surfaceType: 'terminal', isActivePane: false, unverifiable: false };
     const x = { ...base, paneId: 'x' };
     const y = { ...base, paneId: 'y' };
     const z = { ...base, paneId: 'z' };
@@ -363,7 +363,7 @@ describe('countNeedsAttention', () => {
   });
 
   it('counts both awaiting_input and waiting states', () => {
-    const base: FleetPane = { workspaceId: 'w', workspaceName: 'w', paneId: 'x', surfaceId: 'x', ptyId: 'x', agentStatus: 'idle', title: 'x', surfaceType: 'terminal', isActivePane: false };
+    const base: FleetPane = { workspaceId: 'w', workspaceName: 'w', paneId: 'x', surfaceId: 'x', ptyId: 'x', agentStatus: 'idle', title: 'x', surfaceType: 'terminal', isActivePane: false, unverifiable: false };
     const panes: FleetPane[] = [
       { ...base, paneId: '1', agentStatus: 'awaiting_input' },
       { ...base, paneId: '2', agentStatus: 'waiting' },

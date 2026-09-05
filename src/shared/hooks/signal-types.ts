@@ -61,7 +61,14 @@ export type AgentSignalKind =
   // and is running now. Feeds the phone header "tool running · elapsed". A
   // PreToolUse that the daemon decided NOT to gate emits this instead of
   // agent.awaiting_permission. Metadata-only (same class as agent.activity).
-  | 'agent.tool_started';
+  | 'agent.tool_started'
+  // The turn ended on an API ERROR — Claude Code's `StopFailure` hook, which
+  // fires INSTEAD of `Stop` when the turn dies that way. A turn boundary
+  // exactly like `agent.stop` (the pane has stopped working), but never a
+  // completion: nothing finished and the operator has to retry. Without it a
+  // hook-governed pane sat amber until the agent process died or the
+  // 30-minute hook-authority TTL lapsed, because a failed turn fires no Stop.
+  | 'agent.stop_failure';
 
 /**
  * SLUG-form agent identifiers, and the slug → display name lookup.
@@ -207,7 +214,8 @@ export function isAgentSignal(value: unknown): value is AgentSignal {
     v['kind'] !== 'agent.user_prompt_submit' &&
     v['kind'] !== 'agent.awaiting_permission' &&
     v['kind'] !== 'agent.permission_answered' &&
-    v['kind'] !== 'agent.tool_started'
+    v['kind'] !== 'agent.tool_started' &&
+    v['kind'] !== 'agent.stop_failure'
   ) return false;
   if (typeof v['agent'] !== 'string' || !ALLOWED_AGENT_SLUGS.has(v['agent'])) return false;
   if (typeof v['cwd'] !== 'string' || v['cwd'].length === 0) return false;

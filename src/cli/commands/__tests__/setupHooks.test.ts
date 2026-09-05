@@ -38,6 +38,27 @@ function writePluginManifest(raw: string): void {
   fs.writeFileSync(manifestPath, raw, 'utf8');
 }
 
+/**
+ * Lay down a fake INSTALLED plugin directory, the way Claude Code's marketplace
+ * cache does. `version: null` writes the directory with no manifest — the shape
+ * the doctor must fail OPEN on, because the layout below `plugins/` is Claude
+ * Code's to change and a missed path guess must not report every install stale.
+ */
+function writePluginDir(version: string | null): void {
+  const dir = path.join(
+    path.dirname(settingsPath), 'plugins', 'cache', 'wmux-marketplace',
+    'wmux-claude-integration', '.claude-plugin',
+  );
+  fs.mkdirSync(dir, { recursive: true });
+  if (version !== null) {
+    fs.writeFileSync(
+      path.join(dir, 'plugin.json'),
+      JSON.stringify({ name: 'wmux-claude-integration', version }),
+      'utf8',
+    );
+  }
+}
+
 /** Build a wmux-owned hook group without invoking the installer. */
 function wmuxHookGroup(event: string, matcher?: string): {
   matcher?: string;
@@ -79,7 +100,7 @@ describe('installHooks', () => {
     expect(outcome.ok).toBe(true);
     expect(outcome.error).toBeNull();
     expect(outcome.events.sort()).toEqual(
-      ['PostToolUse', 'PreToolUse', 'PreToolUse', 'SessionStart', 'Stop', 'SubagentStop'],
+      ['PostToolUse', 'PreToolUse', 'PreToolUse', 'SessionStart', 'Stop', 'StopFailure', 'SubagentStop', 'UserPromptSubmit'],
     );
     expect(fs.existsSync(bridgeDest)).toBe(true);
     expect(fs.readFileSync(bridgeDest, 'utf8')).toBe('BRIDGE_CONTENT_V1\n');
@@ -88,7 +109,7 @@ describe('installHooks', () => {
     const hooks = s.hooks as Record<string, unknown[]>;
     // Event KEYS (PreToolUse carries two groups: the gate + AskUserQuestion).
     expect(Object.keys(hooks).sort()).toEqual(
-      ['PostToolUse', 'PreToolUse', 'SessionStart', 'Stop', 'SubagentStop'],
+      ['PostToolUse', 'PreToolUse', 'SessionStart', 'Stop', 'StopFailure', 'SubagentStop', 'UserPromptSubmit'],
     );
     // Each entry references the stable dest path, NOT the source/install dir.
     const stop = hooks.Stop[0] as { hooks: { command: string }[] };
@@ -154,7 +175,7 @@ describe('installHooks', () => {
     installHooks(paths());
 
     const hooks = readSettings().hooks as Record<string, unknown[]>;
-    for (const event of ['Stop', 'SubagentStop', 'SessionStart', 'PreToolUse', 'PostToolUse']) {
+    for (const event of ['Stop', 'StopFailure', 'SubagentStop', 'SessionStart', 'UserPromptSubmit', 'PreToolUse', 'PostToolUse']) {
       const wmuxGroups = (hooks[event] as { hooks: { command: string }[] }[]).filter((g) =>
         g.hooks.some((h) => h.command.includes('wmux-bridge.mjs')),
       );
@@ -249,7 +270,7 @@ describe('installHooks — plugin-aware', () => {
     const outcome = installHooks(paths());
     expect(outcome.ok).toBe(true);
     expect(outcome.pluginDetected).toBe(true);
-    expect(outcome.removedForPlugin).toBe(6);
+    expect(outcome.removedForPlugin).toBe(8);
     expect(outcome.events).toEqual([]);
 
     // No wmux command remains; both foreign hooks are preserved.
@@ -269,10 +290,10 @@ describe('installHooks — plugin-aware', () => {
     const outcome = installHooks(paths());
     expect(outcome.ok).toBe(true);
     expect(outcome.pluginDetected).toBe(false);
-    expect(outcome.events.sort()).toEqual(['PostToolUse', 'PreToolUse', 'PreToolUse', 'SessionStart', 'Stop', 'SubagentStop']);
+    expect(outcome.events.sort()).toEqual(['PostToolUse', 'PreToolUse', 'PreToolUse', 'SessionStart', 'Stop', 'StopFailure', 'SubagentStop', 'UserPromptSubmit']);
     const hooks = readSettings().hooks as Record<string, unknown[]>;
     expect(Object.keys(hooks).sort()).toEqual(
-      ['PostToolUse', 'PreToolUse', 'SessionStart', 'Stop', 'SubagentStop'],
+      ['PostToolUse', 'PreToolUse', 'SessionStart', 'Stop', 'StopFailure', 'SubagentStop', 'UserPromptSubmit'],
     );
   });
 
@@ -281,7 +302,7 @@ describe('installHooks — plugin-aware', () => {
     const outcome = installHooks(paths());
     expect(outcome.ok).toBe(true);
     expect(outcome.pluginDetected).toBe(false);
-    expect(outcome.events.sort()).toEqual(['PostToolUse', 'PreToolUse', 'PreToolUse', 'SessionStart', 'Stop', 'SubagentStop']);
+    expect(outcome.events.sort()).toEqual(['PostToolUse', 'PreToolUse', 'PreToolUse', 'SessionStart', 'Stop', 'StopFailure', 'SubagentStop', 'UserPromptSubmit']);
     expect(allHookCommands().some((c) => c.includes('wmux-bridge.mjs'))).toBe(true);
   });
 
@@ -310,7 +331,7 @@ describe('installHooks — plugin-aware', () => {
     const outcome = installHooks(paths());
     expect(outcome.ok).toBe(true);
     expect(outcome.pluginDetected).toBe(false);
-    expect(outcome.events.sort()).toEqual(['PostToolUse', 'PreToolUse', 'PreToolUse', 'SessionStart', 'Stop', 'SubagentStop']);
+    expect(outcome.events.sort()).toEqual(['PostToolUse', 'PreToolUse', 'PreToolUse', 'SessionStart', 'Stop', 'StopFailure', 'SubagentStop', 'UserPromptSubmit']);
     expect(allHookCommands().some((c) => c.includes('wmux-bridge.mjs'))).toBe(true);
     // The user's enabledPlugins map is preserved untouched.
     expect((readSettings().enabledPlugins as Record<string, unknown>)[
@@ -354,7 +375,7 @@ describe('removeHooks', () => {
 
     const outcome = removeHooks(paths());
     expect(outcome.ok).toBe(true);
-    expect(outcome.removed).toBe(6);
+    expect(outcome.removed).toBe(8);
 
     const s = readSettings();
     expect(s.model).toBe('opus');
@@ -474,10 +495,55 @@ describe('statusHooks', () => {
     // installedEvents is a deduped event list, so PreToolUse appears once even
     // though it carries two wmux groups.
     expect(s.installedEvents.sort()).toEqual(
-      ['PostToolUse', 'PreToolUse', 'SessionStart', 'Stop', 'SubagentStop'],
+      ['PostToolUse', 'PreToolUse', 'SessionStart', 'Stop', 'StopFailure', 'SubagentStop', 'UserPromptSubmit'],
     );
     expect(s.bridgeExists).toBe(true);
     expect(s.bridgeStale).toBe(false);
+  });
+
+  // Hook-driven `running`: UserPromptSubmit is the turn START, so the pane can
+  // go amber on the prompt instead of on the byte-rate heuristic. A missing
+  // registration is exactly the install the doctor has to name.
+  it('reports the turn-start signal as ok once UserPromptSubmit is installed', () => {
+    installHooks(paths());
+    const s = statusHooks(paths());
+    expect(s.features.turnStart.state).toBe('ok');
+    expect(s.features.turnStart.detail).toContain('UserPromptSubmit');
+  });
+
+  it('reports the turn-start signal as off when UserPromptSubmit is absent', () => {
+    installHooks(paths());
+    const settings = readSettings();
+    delete (settings.hooks as Record<string, unknown>)['UserPromptSubmit'];
+    fs.writeFileSync(settingsPath, JSON.stringify(settings), 'utf8');
+    const s = statusHooks(paths());
+    expect(s.features.turnStart.state).toBe('off');
+    expect(s.features.turnStart.detail).toContain('wmux setup-hooks');
+    // The other features are unaffected — this is one hook, not a broken install.
+    expect(s.features.turnEnd.state).toBe('ok');
+  });
+
+  // A turn that dies on an API error fires StopFailure and no Stop. An install
+  // that carries Stop but not StopFailure therefore has a whole class of turn
+  // end with no signal, and the doctor must say so on the turn-end row rather
+  // than report it green.
+  it('reports the turn-end signal as off when StopFailure is absent', () => {
+    installHooks(paths());
+    const settings = readSettings();
+    delete (settings.hooks as Record<string, unknown>)['StopFailure'];
+    fs.writeFileSync(settingsPath, JSON.stringify(settings), 'utf8');
+    const s = statusHooks(paths());
+    expect(s.features.turnEnd.state).toBe('off');
+    expect(s.features.turnEnd.detail).toContain('StopFailure');
+    // One missing hook, not a broken install.
+    expect(s.features.turnStart.state).toBe('ok');
+  });
+
+  it('names StopFailure on the turn-end row once it is installed', () => {
+    installHooks(paths());
+    const s = statusHooks(paths());
+    expect(s.features.turnEnd.state).toBe('ok');
+    expect(s.features.turnEnd.detail).toContain('StopFailure');
   });
 
   it('flags a stale bridge when the copy differs from source', () => {
@@ -581,6 +647,7 @@ describe('statusHooks', () => {
         hooks: {
           SessionStart: [wmuxHookGroup('SessionStart')],
           Stop: [wmuxHookGroup('Stop', 'ignored-by-Claude-Code')],
+          StopFailure: [wmuxHookGroup('StopFailure')],
           SubagentStop: [wmuxHookGroup('SubagentStop', '*')],
         },
       }),
@@ -610,6 +677,49 @@ describe('statusHooks', () => {
     // The plugin's hooks.json ships the wide permission-gate hook too (#783).
     expect(s.features.permissionGate.state).toBe('ok');
     expect(s.features.permissionGate.detail).toContain('plugin-managed');
+  });
+
+  it('reports the turn rows STALE for a plugin older than the turn hooks', () => {
+    // The plugin OWNS these hooks — installHooks removes wmux's own copies when
+    // it detects one — so an old plugin turns the feature silently off and
+    // `wmux setup-hooks` is the wrong fix. The row has to say `/plugin update`.
+    writePluginManifest(
+      JSON.stringify({ 'wmux-claude-integration@wmux-marketplace': { version: '0.3.0' } }),
+    );
+    writePluginDir('0.3.0');
+
+    const s = statusHooks(paths());
+    expect(s.features.turnStart.state).toBe('stale');
+    expect(s.features.turnStart.detail).toContain('0.3.0');
+    expect(s.features.turnStart.detail).toContain('/plugin update');
+    expect(s.features.turnEnd.state).toBe('stale');
+    expect(s.features.turnEnd.detail).toContain('/plugin update');
+    // Everything the old plugin DOES register is untouched.
+    expect(s.features.conversationRead.state).toBe('ok');
+    expect(s.features.approvalCard.state).toBe('ok');
+  });
+
+  it('reports the turn rows OK once the plugin is new enough', () => {
+    writePluginManifest(
+      JSON.stringify({ 'wmux-claude-integration@wmux-marketplace': { version: '0.4.0' } }),
+    );
+    writePluginDir('0.4.0');
+
+    const s = statusHooks(paths());
+    expect(s.features.turnStart.state).toBe('ok');
+    expect(s.features.turnStart.detail).toContain('plugin-managed');
+    expect(s.features.turnEnd.state).toBe('ok');
+  });
+
+  it('fails open when the installed plugin carries no readable version', () => {
+    writePluginManifest(
+      JSON.stringify({ 'wmux-claude-integration@wmux-marketplace': { version: '9.9.9' } }),
+    );
+    writePluginDir(null);
+
+    const s = statusHooks(paths());
+    expect(s.features.turnStart.state).toBe('ok');
+    expect(s.features.turnEnd.state).toBe('ok');
   });
 
   it('does not count an explicitly disabled plugin without manual hooks', () => {
@@ -951,5 +1061,40 @@ describe('isPermissionGateInstalled (#970)', () => {
     const only = { hooks: { PreToolUse: [wmuxHookGroup('PreToolUse', 'AskUserQuestion')] } };
     fs.writeFileSync(settingsPath, JSON.stringify(only), 'utf8');
     expect(isPermissionGateInstalled(settingsPath)).toBe(false);
+  });
+});
+
+/**
+ * The plugin path and the plugin-LESS path must register the same events —
+ * `HOOK_EVENTS` is documented as "mirrors hooks.json", and a drift between the
+ * two means a feature (here: hook-driven `running`) silently works for one
+ * install kind and not the other. Reads the bundled manifest, not a fixture.
+ */
+describe('bundled hooks.json ↔ setup-hooks parity', () => {
+  const bundled = path.resolve(__dirname, '../../../../integrations/claude/hooks/hooks.json');
+
+  function bundledEvents(): Record<string, { matcher?: string }[]> {
+    return JSON.parse(fs.readFileSync(bundled, 'utf8')).hooks;
+  }
+
+  it('registers UserPromptSubmit at matcher:"" in the plugin manifest', () => {
+    const groups = bundledEvents()['UserPromptSubmit'];
+    expect(groups).toBeDefined();
+    expect(groups.some((g) => g.matcher === '')).toBe(true);
+  });
+
+  it('registers StopFailure at matcher:"" in the plugin manifest', () => {
+    const groups = bundledEvents()['StopFailure'];
+    expect(groups).toBeDefined();
+    expect(groups.some((g) => g.matcher === '')).toBe(true);
+  });
+
+  it('covers every event the plugin-less installer writes', () => {
+    const inBundle = new Set(Object.keys(bundledEvents()));
+    fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
+    fs.writeFileSync(bridgeSource, 'BRIDGE_CONTENT_V1\n', 'utf8');
+    for (const event of installHooks(paths()).events) {
+      expect(inBundle.has(event)).toBe(true);
+    }
   });
 });

@@ -2,7 +2,7 @@ import { useState, useRef, useEffect, useCallback, useMemo, memo } from 'react';
 import type { GitSyncStatus, PrStatus, WorkspaceMetadata } from '../../../shared/types';
 import { useStore } from '../../stores';
 import { selectWorkspaceById } from '../../stores/selectors/workspaceProjections';
-import { selectWorkspaceAgentStatus } from '../../stores/selectors/fleet';
+import { formatStaleMinutes, selectWorkspaceAgentStatus, selectWorkspaceUnverifiableMinutes } from '../../stores/selectors/fleet';
 import { createWorkspaceRosterCountsSelector } from '../../stores/selectors/workspaceAgentRoster';
 import { useT } from '../../hooks/useT';
 import type { TranslationKey } from '../../i18n/locales/en';
@@ -317,6 +317,11 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
   // `metadata.agentStatus` directly only ever saw the active pane and never
   // self-healed. Scalar return → Object.is subscription re-renders only on change.
   const agentStatus = useStore((s) => selectWorkspaceAgentStatus(s, workspaceId));
+  // Minutes of silence when this workspace is 'running' but nothing has
+  // reported in for the hook-authority window — 0 otherwise. Whole minutes so
+  // the scalar subscription settles between ticks instead of re-rendering the
+  // row every 2 s for a label that only moves once a minute.
+  const unverifiableMinutes = useStore((s) => selectWorkspaceUnverifiableMinutes(s, workspaceId));
   // An agent that is blocked on the user is the one row state the design
   // system lets us paint (DESIGN.md: the only permitted wash is the danger
   // needs-input row). Two renditions and no more — the wash and the label.
@@ -768,10 +773,20 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
               </span>
             );
           }
+          // Unverifiable (running, but silent past the hook-authority window):
+          // the same 6px footprint goes hollow — an amber ring, no fill, no
+          // glow — and says how long the silence has lasted. The status itself
+          // is untouched, so the needs-you wash and the row order are too.
+          const unverifiable = unverifiableMinutes > 0;
           return (
             <div
-              className={`sidebar-dot w-1.5 h-1.5 rounded-full flex-shrink-0 mt-1.5 ${st ? st.glowClass : ''}`}
-              style={{ backgroundColor: st ? st.dotVar : isActive ? 'var(--accent-green)' : 'var(--text-muted)' }}
+              className={`sidebar-dot w-1.5 h-1.5 rounded-full flex-shrink-0 mt-1.5 ${
+                unverifiable ? 'sidebar-dot-unverifiable' : st ? st.glowClass : ''
+              }`}
+              style={unverifiable ? undefined : { backgroundColor: st ? st.dotVar : isActive ? 'var(--accent-green)' : 'var(--text-muted)' }}
+              title={unverifiable
+                ? t('workspace.agentUnverifiable', { time: formatStaleMinutes(unverifiableMinutes) })
+                : undefined}
             />
           );
         })()}

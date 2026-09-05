@@ -17,7 +17,15 @@ import {
   clearLastBroadcastAgentStatus,
 } from '../ipc/handlers/metadata.handler';
 import { dispatchNotification } from '../notification/dispatchNotification';
-import { recentlyResized, RESIZE_REDRAW_GUARD_MS, clearPty as clearSuppression } from '../notification/idleSuppression';
+import { settleHookTurnToIdle } from '../notification/turnSettle';
+import { InterruptKeystrokeDetector } from '../../shared/hooks/interruptKeystroke';
+import {
+  recentlyResized,
+  RESIZE_REDRAW_GUARD_MS,
+  recentlySettled,
+  SETTLE_REDRAW_GUARD_MS,
+  clearPty as clearSuppression,
+} from '../notification/idleSuppression';
 import { eventBus } from '../events/EventBus';
 import type { HookSignalRouter } from '../hooks/HookSignalRouter';
 import { normalizeDetectorCue, type CompletionAlarm } from '../../shared/hooks/CompletionAlarm';
@@ -49,6 +57,8 @@ export class PTYBridge {
   // ActivityMonitor idle fallback notification when the agent already
   // emitted a more precise 'waiting'/'complete' signal a moment earlier.
   private lastAgentEventAt = new Map<string, number>();
+  /** Ctrl+C / ESC ESC detection for the interrupt edge — see noteInterruptInput. */
+  private interruptKeystrokes = new InterruptKeystrokeDetector();
 
   // Micro-batch buffers for the data hot-path. Chunks are accumulated and
   // flushed every BATCH_INTERVAL_MS so middlewares + IPC send each fire once
@@ -93,6 +103,13 @@ export class PTYBridge {
     // forever even though output stopped.
     this.activityMonitor.onActiveToIdle((ptyId) => {
       const now = Date.now();
+      // Hook-governed pane: byte silence says nothing about whether the turn
+      // ended. Quiet reasoning, a long web search, a slow bash — all of them
+      // cross IDLE_DELAY_MS while the agent is very much working, and clearing
+      // there is what made a hook-driven pane flicker to idle mid-turn. The
+      // hook's own Stop settles it instead; a pane whose agent died without one
+      // is settled by the process-death edge, which releases this claim first.
+      if (this.getHookRouter?.()?.governsRunningState(ptyId, now)) return;
       const lastAgentAt = this.lastAgentEventAt.get(ptyId) ?? 0;
       // #935 direction 3: defer to a recent precise status ONLY while that
       // status is still what is actually showing. `onActive` broadcasts
@@ -208,6 +225,7 @@ export class PTYBridge {
       this.agentDetectorCleanups.delete(ptyId);
     }
     this.lastAgentEventAt.delete(ptyId);
+    this.interruptKeystrokes.forget(ptyId);
     clearLastBroadcastAgentStatus(ptyId);
     clearSuppression(ptyId);
 
@@ -249,6 +267,27 @@ export class PTYBridge {
    * (>2000B/3s of OUTPUT) never fires for a short text-only turn, so without
    * this feed the gate would drop every completion on exactly those panes.
    */
+  /**
+   * The INTERRUPT edge, fed by every path that writes operator input to a pty
+   * in this process (the PTY_WRITE IPC branches for renderer keystrokes, the
+   * input.send / input.sendKey RPC for MCP and CLI callers).
+   *
+   * Live finding (Claude Code 2.1.236): an interrupted turn fires NO Stop hook,
+   * and `claude` stays the foreground command so OSC 133 cannot see it either —
+   * the keystroke is the pane's only evidence that the turn ended.
+   *
+   * A pane with no open latch is left alone: a Ctrl+C in a plain shell is not a
+   * turn end, and broadcasting there would be the byte heuristic's job anyway.
+   */
+  noteInterruptInput(ptyId: string, data: string): void {
+    try {
+      if (!this.interruptKeystrokes.observe(ptyId, data)) return;
+      settleHookTurnToIdle(ptyId, this.getHookRouter?.() ?? null, this.getWindow());
+    } catch (err) {
+      console.warn('[PTYBridge] noteInterruptInput error:', err);
+    }
+  }
+
   noteUserInput(ptyId: string): void {
     const alarm = this.getAlarm?.() ?? null;
     if (!alarm) return;
@@ -638,14 +677,33 @@ export class PTYBridge {
         if (activeAlarm && activeSlug && !recentlyResized(ptyId, RESIZE_REDRAW_GUARD_MS)) {
           activeAlarm.observe(ptyId, activeSlug, { class: 'working' });
         }
-        broadcastMetadataUpdate(this.getWindow(), {
-          ptyId,
-          agentStatus: 'running',
-          agentName: lastAgent,
-          // P2: slug alongside the periodic 'running' name ('' when no agent is
-          // detected yet → agentDisplayToSlug returns undefined → null).
-          agentSlug: agentDisplayToSlug(lastAgent) ?? null,
-        });
+        // Hook-governed pane: its bridge reports the turn START, so the
+        // heuristic's guess is strictly worse than what the pane already
+        // shows. Skipping the broadcast is the point — a redraw burst mid-turn
+        // used to overwrite a correct 'complete'/'awaiting_input' with
+        // 'running'. Everything else in this handler still runs: the alarm's
+        // working cue above (byte activity is still real evidence for the
+        // completion gate) and the detector's emission-dedup reset below.
+        // Settle-redraw guard: a pane main JUST settled answers with a repaint
+        // ("Interrupted · What should Claude do instead?", a shell drawing its
+        // prompt), and re-broadcasting 'running' for it undoes the settle — the
+        // renderer's 120s activity stamp then holds the dot amber long after
+        // the turn ended. Only this broadcast is gated; the alarm cue above and
+        // the detector reset below still run, and a real new turn lights the
+        // pane through its own turn-start hook.
+        if (
+          !this.getHookRouter?.()?.governsRunningState(ptyId)
+          && !recentlySettled(ptyId, SETTLE_REDRAW_GUARD_MS)
+        ) {
+          broadcastMetadataUpdate(this.getWindow(), {
+            ptyId,
+            agentStatus: 'running',
+            agentName: lastAgent,
+            // P2: slug alongside the periodic 'running' name ('' when no agent is
+            // detected yet → agentDisplayToSlug returns undefined → null).
+            agentSlug: agentDisplayToSlug(lastAgent) ?? null,
+          });
+        }
         // #935 direction 3: recorded at the broadcastMetadataUpdate funnel.
         // Resize-redraw guard: a workspace switch / split / zoom refits xterm,
         // fires pty:resize, and TUI agents answer with a multi-KB full redraw —

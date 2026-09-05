@@ -128,11 +128,67 @@ export class HookSignalRouter {
     string,
     { agent: string; lastSignalAt: number; exact: boolean; lifecycleOwned: boolean }
   >();
+  /** ptyId → the pane's open TURN START: which agent reported it, and when.
+   *  Separate from `authority` on purpose: it answers "has the hook proven it
+   *  can light this pane's running dot", not "is a bridge alive". The AGENT is
+   *  part of the key in effect — a pane is a shell, and the next thing launched
+   *  in it is frequently a different agent that must not inherit the previous
+   *  one's open turn. See governsRunningState / noteAgentOnPane. */
+  private readonly turnStart = new Map<string, { agent: string | null; at: number }>();
+  /** ptyId → the pending expiry for that pane's open turn latch. See
+   *  `setTurnExpiryListener`. */
+  private readonly turnExpiryTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private onTurnExpired?: (ptyId: string) => void;
 
   constructor(deps: { latencyMeter: SignalLatencyMeter; dedupWindowMs?: number; authorityTtlMs?: number }) {
     this.latencyMeter = deps.latencyMeter;
     this.windowMs = deps.dedupWindowMs ?? DEFAULT_DEDUP_WINDOW_MS;
     this.authorityTtlMs = deps.authorityTtlMs ?? HOOK_AUTHORITY_TTL_MS;
+  }
+
+  /**
+   * Register the callback that SETTLES a pane whose turn latch expired.
+   *
+   * `governsRunningState` mutes the byte heuristic in both directions, so a
+   * latched pane has exactly two release paths: the turn's own end hook, and
+   * the agent process's death edge. Neither is guaranteed. The death edge comes
+   * from the daemon's AgentProcessTracker, which cannot always attribute a
+   * process to a pane (arm failure, backoff, a pane it never resolved a slug
+   * for) — and on those panes the latch would hold 'running' for the rest of
+   * the process's life, with `pane_list`, `surface_list` and `a2a_discover` all
+   * repeating it to orchestrators as fact.
+   *
+   * So the latch carries its own deadline: HOOK_AUTHORITY_TTL_MS after the LAST
+   * hook signal on that pane (re-armed by every signal, so a live bridge never
+   * trips it). On expiry the latch is released and the listener is called once,
+   * to broadcast the same `agentStatus:'idle'` the death edge broadcasts.
+   * Wiring is the caller's: the router is shared code and owns no window.
+   */
+  setTurnExpiryListener(fn: (ptyId: string) => void): void {
+    this.onTurnExpired = fn;
+  }
+
+  /** (Re)arm the latch deadline for a pane that currently holds one. */
+  private armTurnExpiry(ptyId: string): void {
+    const existing = this.turnExpiryTimers.get(ptyId);
+    if (existing) clearTimeout(existing);
+    const timer = setTimeout(() => {
+      this.turnExpiryTimers.delete(ptyId);
+      // Release BEFORE notifying, exactly as the death edge does: the settle
+      // broadcast must not be vetoed by the gate it exists to escape.
+      this.turnStart.delete(ptyId);
+      this.onTurnExpired?.(ptyId);
+    }, this.authorityTtlMs);
+    // Never hold the process open at quit — same rule as the completion alarm's.
+    timer.unref?.();
+    this.turnExpiryTimers.set(ptyId, timer);
+  }
+
+  private clearTurnExpiry(ptyId: string): void {
+    const timer = this.turnExpiryTimers.get(ptyId);
+    if (!timer) return;
+    clearTimeout(timer);
+    this.turnExpiryTimers.delete(ptyId);
   }
 
   /**
@@ -156,12 +212,25 @@ export class HookSignalRouter {
     exact = true,
     kind?: AgentSignalKind,
   ): void {
+    // A signal from a DIFFERENT agent means the pane changed hands; the
+    // previous agent's open turn does not survive that.
+    this.noteAgentOnPane(ptyId, agent);
     this.authority.set(ptyId, {
       agent,
       lastSignalAt: now,
       exact,
       lifecycleOwned: hookOwnsLifecycleAfter(kind),
     });
+    // Any live signal proves the bridge is still speaking for this pane, so the
+    // open turn's deadline restarts from here. Only a pane that HAS a latch is
+    // re-armed; arming one here would claim a running state no turn start
+    // announced.
+    if (this.turnStart.has(ptyId)) this.armTurnExpiry(ptyId);
+  }
+
+  /** Read side of the turn latch's owner — testing aid, not a contract. */
+  turnStartAgentFor(ptyId: string): string | null | undefined {
+    return this.turnStart.get(ptyId)?.agent;
   }
 
   /**
@@ -210,6 +279,83 @@ export class HookSignalRouter {
     const entry = this.authority.get(ptyId);
     if (!entry || entry.agent !== slug) return false;
     return now - entry.lastSignalAt < this.authorityTtlMs;
+  }
+
+  /**
+   * Record that this pane's bridge reported a TURN START
+   * (`agent.user_prompt_submit`). Called from both ingest paths' prompt-submit
+   * branch — main's `hooks.signal` fallback and, in daemon mode, the
+   * `session:agent` replay in DaemonNotificationRouter, because main's own
+   * authority map is deliberately never touched for a daemon-served pane (the
+   * daemon's arbitration stamp stands in for it there).
+   */
+  noteHookTurnStart(ptyId: string, now: number = Date.now(), agent?: string | null): void {
+    if (!ptyId) return;
+    this.turnStart.set(ptyId, { agent: agent ?? null, at: now });
+    // The latch's own deadline. See setTurnExpiryListener: a pane the tracker
+    // could never attribute a process to has no death edge, so without this a
+    // turn that never ends holds the dot lit for the life of the process.
+    this.armTurnExpiry(ptyId);
+  }
+
+  /**
+   * True when this pane's `running` state is the HOOK's to write, so the
+   * byte-rate heuristic must stop writing it — neither promoting the pane on an
+   * output burst nor clearing it on silence.
+   *
+   * The question is deliberately NOT `isGovernedFor`. A bridge can be alive on
+   * a pane and still never report a turn start: an older plugin (< 0.4.0), an
+   * install that predates `UserPromptSubmit` in setup-hooks, or an agent whose
+   * integration only wires turn ENDS. Suppressing the heuristic there would
+   * leave those panes with no `running` source at all — grey for the whole
+   * turn. So authority is not the gate; EVIDENCE is: only a pane that has
+   * actually delivered a turn start has proven the hook can light it.
+   *
+   * Rides the same 30-minute TTL as the notification veto, and for the same
+   * reason (a single turn can run 20+ minutes with no bridge traffic on a
+   * turn-boundary-only install, so a short window would just restore the bug).
+   * The accepted cost is symmetric too: a bridge that dies mid-session leaves
+   * the pane's dot on whatever the hook last wrote until the TTL lapses.
+   * `dropPty` releases it immediately on pane death or reuse.
+   */
+  governsRunningState(ptyId: string, now: number = Date.now()): boolean {
+    const entry = this.turnStart.get(ptyId);
+    return entry !== undefined && now - entry.at < this.authorityTtlMs;
+  }
+
+  /**
+   * A named agent has been observed on this pane. When it is not the agent that
+   * opened the pane's turn, that turn is over as far as this router can know.
+   *
+   * A pane is a SHELL, and its ptyId outlives whatever ran in it: `claude` exits
+   * without a Stop, the operator starts `codex` in the same pane, and the
+   * heuristic that would light the new agent's dot is muted by a latch the old
+   * one left behind. Keying the latch by ptyId alone made that inheritance
+   * silent and 30 minutes long.
+   *
+   * A latch with no recorded agent is left alone — an unknown owner is not
+   * evidence of a DIFFERENT owner, and the F2 expiry bounds it either way.
+   */
+  noteAgentOnPane(ptyId: string, agent: string | null | undefined): void {
+    if (!ptyId || !agent) return;
+    const entry = this.turnStart.get(ptyId);
+    if (!entry || entry.agent === null || entry.agent === agent) return;
+    this.turnStart.delete(ptyId);
+    this.clearTurnExpiry(ptyId);
+  }
+
+  /**
+   * Hand the pane's running dot back to the byte heuristic ahead of the TTL.
+   *
+   * Wired to the agent process's confirmed death edge: an agent killed
+   * mid-turn never sends a Stop, so releasing the claim is what lets the pane
+   * settle instead of sitting lit for the rest of the 30-minute window. Unlike
+   * `dropPty` this touches nothing else — the PANE is still alive, and its
+   * dedup ledger still belongs to it.
+   */
+  releaseHookTurnStart(ptyId: string): void {
+    this.turnStart.delete(ptyId);
+    this.clearTurnExpiry(ptyId);
   }
 
   /**
@@ -341,6 +487,9 @@ export class HookSignalRouter {
     ptyId: string,
     now: number = Date.now(),
   ): RouteDecision {
+    // Same rule as the hook funnel: the detector seeing a different agent on
+    // this pane retires the latch the previous one left open.
+    this.noteAgentOnPane(ptyId, slug);
     const key = this.key(slug, ptyId, kind);
     const recent = this.ledger.get(key);
     if (
@@ -364,6 +513,8 @@ export class HookSignalRouter {
   resetForTests(): void {
     this.ledger.clear();
     this.authority.clear();
+    for (const ptyId of [...this.turnExpiryTimers.keys()]) this.clearTurnExpiry(ptyId);
+    this.turnStart.clear();
   }
 
   /**
@@ -384,6 +535,11 @@ export class HookSignalRouter {
     // Authority rides the same lifecycle: a disposed PTY must return to
     // detector-backstop behavior immediately if the id is ever reused.
     this.authority.delete(ptyId);
+    // Same rule for the turn-start latch: a reused id must not inherit the
+    // dead pane's "the hook owns my running dot" claim, which would leave the
+    // new pane's heuristic muted with no bridge to replace it.
+    this.turnStart.delete(ptyId);
+    this.clearTurnExpiry(ptyId);
     const needle = `:${ptyId}:`;
     let removed = 0;
     for (const k of this.ledger.keys()) {

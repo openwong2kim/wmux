@@ -70,6 +70,7 @@ function stubHookRouter(): StubRouter {
     },
     recordDetector: vi.fn(),
     touchAuthority: vi.fn(),
+    noteHookTurnStart: vi.fn(),
     isGovernedFor: vi.fn().mockReturnValue(false),
     governsDetectorStatus: vi.fn().mockReturnValue(false),
     getLatencyMeter: () => ({
@@ -659,5 +660,93 @@ describe('hooks.signal — agent.lifecycle event tee', () => {
     // The awaiting_input broadcast must not carry an activity field.
     const call = broadcastMetadataUpdateMock.mock.calls[0][1] as Record<string, unknown>;
     expect(call).not.toHaveProperty('activity');
+  });
+});
+
+/**
+ * Turn START on the daemon-UNREACHABLE fallback path. The daemon owns hook
+ * ingest in production (HookIngest broadcasts the same 'running'), but this
+ * local path has to agree — a bridge that reaches main while the daemon is
+ * down must still light the pane.
+ */
+describe('hooks.signal — agent.user_prompt_submit turns the pane running', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    eventBus.reset();
+    sendToRendererMock.mockResolvedValue(workspaces());
+  });
+
+  it('broadcasts running for the resolved pane, with no toast and no ledger write', async () => {
+    const stub = stubHookRouter();
+    const router = new RpcRouter();
+    registerHooksRpc(router, () => fakeWindow(), stub.router);
+
+    const res = await router.dispatch({
+      id: 'ups-1',
+      method: 'hooks.signal',
+      params: signal({ kind: 'agent.user_prompt_submit' }) as unknown as Record<string, unknown>,
+    });
+
+    expect(res.ok).toBe(true);
+    expect(broadcastMetadataUpdateMock).toHaveBeenCalledWith(
+      expect.anything(),
+      // The display name rides along, as it does on the daemon twin: the
+      // renderer's per-surface identity map ignores an empty one, so a
+      // name-less 'running' left a freshly launched pane unlabelled until its
+      // first byte burst.
+      expect.objectContaining({
+        ptyId: 'pty-1',
+        agentStatus: 'running',
+        agentName: 'Claude Code',
+        agentSlug: 'claude',
+      }),
+    );
+    // Not a turn boundary: no toast, no dedup ledger entry, no lifecycle tee.
+    expect(sendNotificationMock).not.toHaveBeenCalled();
+    expect(stub.recordHookCalls).toHaveLength(0);
+    expect(pollLifecycle()).toHaveLength(0);
+  });
+
+  it('marks the pane hook-governed but does NOT claim its running dot', async () => {
+    const stub = stubHookRouter();
+    const router = new RpcRouter();
+    registerHooksRpc(router, () => fakeWindow(), stub.router);
+
+    await router.dispatch({
+      id: 'ups-2',
+      method: 'hooks.signal',
+      params: signal({ kind: 'agent.user_prompt_submit' }) as unknown as Record<string, unknown>,
+    });
+
+    expect(stub.router.touchAuthority).toHaveBeenCalledWith(
+      'pty-1',
+      'claude',
+      expect.any(Number),
+      expect.any(Boolean),
+      'agent.user_prompt_submit',
+    );
+    // The turn latch is NOT armed here (F3). This path runs only when the
+    // daemon is unreachable, and `agent.processExit` — one of the latch's two
+    // release paths — is a daemon broadcast. Arming it would mute the byte
+    // heuristic with only the turn-end hook left to unmute it.
+    expect(stub.router.noteHookTurnStart).not.toHaveBeenCalled();
+  });
+
+  it('does not tag the broadcast with a hookKind, so the renderer latch stays shut', async () => {
+    const stub = stubHookRouter();
+    const router = new RpcRouter();
+    registerHooksRpc(router, () => fakeWindow(), stub.router);
+
+    await router.dispatch({
+      id: 'ups-3',
+      method: 'hooks.signal',
+      params: signal({ kind: 'agent.user_prompt_submit' }) as unknown as Record<string, unknown>,
+    });
+
+    // The renderer's turn latch does not decay either, and this path has no
+    // process-death broadcast to withdraw it — so the cue must arrive as a
+    // plain 'running', which the byte heuristic's idle clear can still undo.
+    const call = broadcastMetadataUpdateMock.mock.calls.at(-1)?.[1] as Record<string, unknown>;
+    expect(call).not.toHaveProperty('hookKind');
   });
 });

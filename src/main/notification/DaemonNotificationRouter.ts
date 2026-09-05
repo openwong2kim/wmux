@@ -3,12 +3,17 @@ import type { DaemonClient } from '../DaemonClient';
 import type { AgentStatus } from '../../shared/types';
 import type { HookSignalRouter } from '../hooks/HookSignalRouter';
 import { dispatchNotification } from './dispatchNotification';
-import { clearPty as clearSuppression } from './idleSuppression';
+import {
+  clearPty as clearSuppression,
+  recentlySettled,
+  SETTLE_REDRAW_GUARD_MS,
+} from './idleSuppression';
 import {
   broadcastMetadataUpdate,
   getLastBroadcastAgentStatus,
   clearLastBroadcastAgentStatus,
 } from '../ipc/handlers/metadata.handler';
+import { settleHookTurnToIdle, broadcastSettledIdle } from './turnSettle';
 import { eventBus } from '../events/EventBus';
 import {
   findWorkspaceIdForPty,
@@ -29,6 +34,22 @@ import type { ChannelMessage } from '../../shared/channels';
 // Mirrors PTYBridge.AGENT_EVENT_SUPPRESSION_MS — same dedup semantics across
 // daemon and local modes.
 const AGENT_EVENT_SUPPRESSION_MS = 10_000;
+
+/**
+ * The OSC 133 markers that mean the pane's shell is back at its OWN prompt:
+ * a foreground command ended (D), or a fresh prompt was drawn (A / B). Exactly
+ * the `false` branch of `PromptEventLog.isCommandRunning` — the same judgement,
+ * from the same marker stream, that the daemon reports as `commandRunning`.
+ */
+const AT_PROMPT_MARKERS: ReadonlySet<string> = new Set([
+  'command_end',
+  'prompt_start',
+  'prompt_end',
+]);
+
+// The F5 rule (which statuses a settle edge must never overwrite) and the
+// settle itself live in turnSettle.ts, shared with the interrupt edge in
+// PTYBridge so the two cannot drift apart.
 
 interface AgentEventPayload {
   agent: string;
@@ -675,8 +696,9 @@ export class DaemonNotificationRouter {
         // broadcast per tool call — that flood is exactly what
         // ACTIVITY_THROTTLE_MS exists to prevent.
         //
-        // Two kinds land here and they are NOT interchangeable, so dispatch on
-        // the kind rather than letting the activity summarizer stand in for both.
+        // Several kinds land here and they are NOT interchangeable, so dispatch
+        // on the kind rather than letting the activity summarizer stand in for
+        // all of them.
         if (arbitratedSource(ev) && arbitratedDecision(ev) === 'activity') {
           // hookKind is the daemon's own label; the envelope's kind is the
           // fallback for an event that ships one but not the other.
@@ -700,6 +722,39 @@ export class DaemonNotificationRouter {
               ptyId: payload.sessionId,
               activity: '',
               pendingQuestion: '',
+            });
+          } else if (metadataKind === 'agent.user_prompt_submit') {
+            // The TURN START, and the whole point of the hook: the pane goes
+            // 'running' the instant a prompt is submitted, instead of once the
+            // byte-rate heuristic has seen enough output to guess. Like the
+            // session_start clear above and unlike the activity line below, it
+            // is NEVER throttled — UserPromptSubmit fires once per turn, so it
+            // can never contribute to the flood the throttle guards against,
+            // and a dropped one would leave the pane looking idle for a whole
+            // turn. It also does not stamp the throttle window.
+            const promptSlug = agentDisplayToSlug(ev.agent);
+            // Remember WHO is running here. The process-death edge below has to
+            // check the dying process against this pane's agent, and a turn
+            // start may be the only event a pane produces before it dies.
+            if (ev.agent) this.lastAgentNameByPty.set(payload.sessionId, ev.agent);
+            // From here the hook owns this pane's running dot — onActive stops
+            // promoting it on output bursts and onIdle stops clearing it on
+            // silence. Recorded on main's router even though a daemon-served
+            // pane never touches its authority map: this latch is a separate,
+            // narrower claim. See HookSignalRouter.governsRunningState.
+            this.getHookRouter?.()?.noteHookTurnStart(payload.sessionId, this.now(), promptSlug ?? null);
+            broadcastMetadataUpdate(win, {
+              ptyId: payload.sessionId,
+              agentStatus: 'running',
+              // The renderer's half of the same latch: tagged with the hook
+              // kind so `surfaceTurnOpenAt` opens on THIS broadcast and not on
+              // a byte-rate 'running', which is a guess and could never be
+              // trusted to hold a pane at running with no decay.
+              hookKind: 'agent.user_prompt_submit',
+              // Same rule as the daemon-mode running broadcast in `onActive`:
+              // an empty name is omitted rather than written, because a blank
+              // overwrite erases a legitimate label the renderer already has.
+              ...(ev.agent ? { agentName: ev.agent, agentSlug: promptSlug ?? null } : {}),
             });
           } else if (ev.signal && this.activityThrottle.allow(payload.sessionId)) {
             // agent.activity, or a kind this build does not know yet: the
@@ -739,6 +794,12 @@ export class DaemonNotificationRouter {
         // which is worse than the bug this fixes. Cheap to enforce locally.
         const statusSlug = agentDisplayToSlug(ev.agent);
         const statusRouter = this.getHookRouter?.() ?? null;
+        // A pane is a shell: the agent that reported a turn start may already be
+        // gone and a different one launched in its place. Main's authority map
+        // is never touched for a daemon-served pane, so this is the daemon-mode
+        // arm of that invalidation — without it the new agent's dot would be
+        // muted by the old one's latch. Same-agent events are a no-op.
+        statusRouter?.noteAgentOnPane(payload.sessionId, statusSlug);
         const withholdStatus = ev.status !== 'awaiting_input' && (
           arbitratedSource(ev)
             ? arbitratedDecision(ev) === 'veto'
@@ -764,7 +825,14 @@ export class DaemonNotificationRouter {
         if (ev.agent) {
           this.lastAgentNameByPty.set(payload.sessionId, ev.agent);
         }
-        if (ev.status === 'waiting' || ev.status === 'complete' || ev.status === 'awaiting_input') {
+        // 'error' joins the emit-class statuses: it is what the daemon ships
+        // for `agent.stop_failure`, a turn that ended on an API error. It is as
+        // much a turn boundary as 'complete' — the operator is owed the toast
+        // and the idle-clear suppression window — it simply finished nothing.
+        if (
+          ev.status === 'waiting' || ev.status === 'complete'
+          || ev.status === 'awaiting_input' || ev.status === 'error'
+        ) {
           this.lastAgentEventAt.set(payload.sessionId, Date.now());
 
           // Hook-authority veto — daemon-mode twin of PTYBridge.onEvent.
@@ -837,7 +905,11 @@ export class DaemonNotificationRouter {
           const title = `${ev.agent}: ${ev.message}`;
           const body = ev.status === 'awaiting_input'
             ? 'Awaiting input'
-            : ev.status === 'waiting' ? 'Ready for input' : 'Task finished';
+            // A turn the API killed finished nothing. Its title already says
+            // so ("Turn failed (API error)", from the daemon's eventShapeFor);
+            // 'Task finished' underneath it would take the claim straight back.
+            : ev.status === 'error' ? 'The turn ended on an API error'
+              : ev.status === 'waiting' ? 'Ready for input' : 'Task finished';
           // 'dedup' means the other source already fanned out this turn, so the
           // tee below still records it but no second toast fires — the same
           // rule main's own hooks.signal handler applies to its dedup verdict.
@@ -880,6 +952,14 @@ export class DaemonNotificationRouter {
           // M1: `arbitrated` carries the daemon's source + verdict through to
           // the tee, so the event reads `source:'hook'`/`decision:'dedup'` and
           // main's ledger is left alone.
+          //
+          // `agent.stop_failure` is skipped: `lifecycleKindFor` would fall
+          // through to 'agent.stop' for it (its hookKind is not one of the
+          // three the published `AgentLifecycleEvent.kind` union names), and a
+          // failed turn announced to orchestrators as a normal stop is worse
+          // than no event. Widening that union is a separate change. Same
+          // boundary the local `hooks.signal` path draws.
+          if (ev.hookKind === 'agent.stop_failure') return;
           void this.emitDetectorLifecycle(
             payload.sessionId,
             ev.agent,
@@ -899,6 +979,27 @@ export class DaemonNotificationRouter {
       }
     };
 
+    /**
+     * Release the pane's hook turn latch on the OSC 133 back-at-prompt edge and
+     * settle its dot, on the same METADATA_UPDATE funnel the process-death edge
+     * uses.
+     *
+     * Only a LATCHED pane is touched: the latch is the claim this edge exists to
+     * withdraw, and a pane that never had one is still the byte heuristic's to
+     * write. The latch is released FIRST, exactly as the death edge does it, so
+     * the broadcast is not vetoed by the gate it exists to escape — and it is
+     * released even when the broadcast is withheld, because a shell at a prompt
+     * is proof the turn is over either way.
+     */
+    const settleAtShellPrompt = (ptyId: string) => {
+      settleHookTurnToIdle(
+        ptyId,
+        this.getHookRouter?.() ?? null,
+        this.getWindow(),
+        this.now(),
+      );
+    };
+
     // OSC 133 D markers from daemon mode. Mirror of PTYBridge.OscParser
     // case 133 — the daemon already parsed the payload and forwarded a
     // PromptEvent; we only need to dispatch `command_end` to the
@@ -909,6 +1010,16 @@ export class DaemonNotificationRouter {
       try {
         const ev = payload.event as { type?: string; exitCode?: number } | null;
         if (!ev || typeof ev !== 'object') return;
+        // THE PROMPT-SPEED SETTLE. Shell integration is tier-1 authoritative in
+        // `isPaneAgentBusy`, above process truth: a shell that has printed its
+        // prompt again cannot be mid-turn, because whatever owned the PTY —
+        // the agent the operator exited, or one that died on a network error
+        // and so never sent a turn end — is gone. And unlike the process-death
+        // edge below it needs no attribution: this marker names the pane's own
+        // PTY, where `AgentProcessTracker` frequently cannot name the process
+        // at all (live dogfood: `agentAliveByPtyId` empty for a whole session,
+        // so a hook-latched pane sat lit for minutes after `claude` exited).
+        if (ev.type && AT_PROMPT_MARKERS.has(ev.type)) settleAtShellPrompt(payload.sessionId);
         if (ev.type !== 'command_end') return;
         const exitCode = typeof ev.exitCode === 'number' ? ev.exitCode : null;
         void this.emitOsc133Lifecycle(payload.sessionId, exitCode);
@@ -960,6 +1071,15 @@ export class DaemonNotificationRouter {
 
     const onActive = (payload: { sessionId: string; agentName?: string }) => {
       try {
+        // Daemon-mode twin of the PTYBridge.onActive gate: a pane whose bridge
+        // reports turn starts has a better answer than this burst does, and an
+        // unconditional 'running' here is what overwrote a correct
+        // 'complete'/'awaiting_input' on every mid-turn redraw.
+        if (this.getHookRouter?.()?.governsRunningState(payload.sessionId, this.now())) return;
+        // Settle-redraw guard, twin of PTYBridge's: the repaint that follows a
+        // settle (an interrupt's "Interrupted …", a shell redrawing its prompt)
+        // must not re-light the pane it just cleared.
+        if (recentlySettled(payload.sessionId, SETTLE_REDRAW_GUARD_MS, this.now())) return;
         // daemon이 active 이벤트에 gate로 확정한 agentName을 실어 보낸다(있으면).
         // 이게 있어야 idle prompt 패턴이 안 잡히는 에이전트(Claude Code v2.1.x:
         // 입력대기 hint가 "❯"만 남음)도 running 상태에서 agentName이 채워진다.
@@ -982,6 +1102,11 @@ export class DaemonNotificationRouter {
 
     const onIdle = (payload: { sessionId: string }) => {
       const now = Date.now();
+      // Daemon-mode twin of the PTYBridge.onActiveToIdle gate: byte silence on
+      // a hook-governed pane is not a turn end (quiet reasoning, a long tool
+      // call), so the clear would only make the dot flicker. The hook's Stop
+      // settles it; the process-death edge covers an agent that never sent one.
+      if (this.getHookRouter?.()?.governsRunningState(payload.sessionId, now)) return;
       const lastAgentAt = this.lastAgentEventAt.get(payload.sessionId) ?? 0;
       // #935 direction 3: the suppression window defers to a recent precise
       // status ONLY while that status is still what is actually showing.
@@ -1021,6 +1146,57 @@ export class DaemonNotificationRouter {
         });
       } catch (err) {
         console.warn('[DaemonNotificationRouter] session:idle error:', err);
+      }
+    };
+
+    /**
+     * The agent process inside a still-live pane died (AgentProcessTracker's
+     * alive->dead edge). This is the second and last settle path for a pane
+     * whose status the hook owns: the first is the Stop hook, and an agent
+     * killed mid-turn never sends one. Byte silence no longer clears such a
+     * pane, so without this the dot would stay lit for the authority TTL.
+     *
+     * It is also, unguarded, a way to LOSE state: an exit is only ever a reason
+     * to clear a pane that is currently claiming to be working, and only when
+     * the process that died is the one this pane was running. Three guards, in
+     * the order they can disqualify the edge most cheaply:
+     *
+     *   1. ATTRIBUTION. `slug: null` is the tracker admitting it could not name
+     *      the process it was watching (arm failure, backoff, a pick with no
+     *      slug). An unattributed death is not evidence about THIS pane.
+     *   2. IDENTITY. A named death must match the agent the pane is running, or
+     *      it belongs to some other process the tracker followed into this
+     *      session — a sidecar, a leftover child, a previous launch.
+     *   3. LIVE STATUS. Only a pane showing 'running' (or holding an open turn
+     *      latch) has anything to settle. `complete` / `awaiting_input` /
+     *      `waiting` / `error` are results the operator has not read yet, and
+     *      the agent exiting afterwards does not un-finish the turn. This
+     *      reuses the same `getLastBroadcastAgentStatus` record #935 added for
+     *      onIdle's deference.
+     *
+     * `agentName` is deliberately NOT cleared: it is per-PTY identity ("this
+     * pane is a Claude Code pane"), not a liveness claim, and blanking it drops
+     * the roster row's label — and with it the pane's place in the roster —
+     * for a pane that is still very much there.
+     *
+     * The order matters — the hook's claim is released FIRST, so the clear
+     * below is not vetoed by the very gate it exists to escape.
+     */
+    const onAgentProcessExit = (payload: { sessionId: string; slug?: string | null }) => {
+      try {
+        if (!payload.slug) return;
+        const paneName = this.lastAgentNameByPty.get(payload.sessionId);
+        const paneSlug = paneName ? agentDisplayToSlug(paneName) : undefined;
+        // An unknown pane agent cannot contradict the tracker: the payload is
+        // then the only attribution anyone has.
+        if (paneSlug && paneSlug !== payload.slug) return;
+        const router = this.getHookRouter?.() ?? null;
+        const latchOpen = router?.governsRunningState(payload.sessionId, this.now()) === true;
+        if (!latchOpen && getLastBroadcastAgentStatus(payload.sessionId) !== 'running') return;
+        router?.releaseHookTurnStart(payload.sessionId);
+        broadcastSettledIdle(payload.sessionId, this.getWindow(), this.now());
+      } catch (err) {
+        console.warn('[DaemonNotificationRouter] agent process exit error:', err);
       }
     };
 
@@ -1121,6 +1297,7 @@ export class DaemonNotificationRouter {
     this.daemonClient.on('session:notification', onNotification);
     this.daemonClient.on('session:died', onSessionEnd);
     this.daemonClient.on('session:destroyed', onSessionEnd);
+    this.daemonClient.on('session:agentProcessExit', onAgentProcessExit);
     this.daemonClient.on('session:restarted', onRestarted);
     this.daemonClient.on('supervision:changed', onSupervisionChanged);
     // A2A channels (a2a-channels U4) — project daemon-broadcast channel
@@ -1153,6 +1330,7 @@ export class DaemonNotificationRouter {
       () => this.daemonClient.off('session:notification', onNotification),
       () => this.daemonClient.off('session:died', onSessionEnd),
       () => this.daemonClient.off('session:destroyed', onSessionEnd),
+      () => this.daemonClient.off('session:agentProcessExit', onAgentProcessExit),
       () => this.daemonClient.off('session:restarted', onRestarted),
       () => this.daemonClient.off('supervision:changed', onSupervisionChanged),
       () => this.daemonClient.off('channel:message', onChannelMessage),
