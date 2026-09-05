@@ -754,3 +754,19 @@ describe('UISlice — #1152 disabled built-in shortcuts', () => {
     expect(store.getState().disabledShortcuts).toEqual(['Ctrl+D']);
   });
 });
+
+describe('UISlice — sidebar attention-first ordering', () => {
+  let store: ReturnType<typeof createTestStore>;
+  beforeEach(() => { store = createTestStore(); });
+
+  it('defaults to off — the list must not reorder itself unasked', () => {
+    expect(store.getState().sidebarAttentionFirst).toBe(false);
+  });
+
+  it('setSidebarAttentionFirst flips the flag both ways', () => {
+    store.getState().setSidebarAttentionFirst(true);
+    expect(store.getState().sidebarAttentionFirst).toBe(true);
+    store.getState().setSidebarAttentionFirst(false);
+    expect(store.getState().sidebarAttentionFirst).toBe(false);
+  });
+});

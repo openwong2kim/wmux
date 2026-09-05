@@ -210,6 +210,7 @@ export const pl = {
   // Was missing entirely, so the one status the user must act on fell back to
   // English ("Needs input") in an otherwise Polish UI.
   'workspace.agentAwaitingInput': 'Czeka na Ciebie',
+  'workspace.needsYou': 'Czeka na Ciebie',
   'workspace.agentIdle': 'Bezczynny',
   'workspace.agentCount': 'Agenci: {count}',
   'workspace.agentNeedsAttention': '{count} potrzebuje Cię',
@@ -929,6 +930,8 @@ export const pl = {
   'settings.uiScaleDesc': 'Skaluj cały interfejs — przydatne na ekranach o wysokiej DPI. Restart nie jest wymagany.',
   'settings.sidebarPosition': 'Pozycja paska bocznego',
   'settings.sidebarPositionDesc': 'Po lewej lub po prawej stronie obszaru terminala',
+  'settings.sidebarAttentionFirst': 'Wiersze czekające na Ciebie u góry',
+  'settings.sidebarAttentionFirstDesc': 'Przypnij na górze paska bocznego przestrzenie robocze, których agent czeka na Ciebie. Domyślnie wyłączone: wiersze zostają tam, gdzie je przeciągniesz. Gdy jest włączone, zmiana kolejności przeciąganiem jest wstrzymana.',
   'settings.sidebarLeft': 'Lewo',
   'settings.sidebarRight': 'Prawo',
   'settings.multiviewArrangement': 'Układ multiview',

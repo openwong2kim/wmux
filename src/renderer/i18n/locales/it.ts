@@ -17,6 +17,7 @@ export const it = {
   'workspace.agentWaiting': 'Agente in attesa',
 
   'workspace.agentAwaitingInput': 'Agente richiede input',
+  'workspace.needsYou': 'Ti attende',
   'workspace.agentIdle': 'Agente inattivo',
   'workspace.close': 'Chiudi area di lavoro',
   'workspace.copyInfo': 'Copia info sessione',
@@ -177,6 +178,8 @@ export const it = {
   'settings.uiScaleDesc': 'Ridimensiona l\'intera interfaccia — utile sui display ad alto DPI. Riavvio non richiesto.',
   'settings.sidebarPosition': 'Posizione barra laterale',
   'settings.sidebarPositionDesc': 'Sinistra o destra dell\'area del terminale',
+  'settings.sidebarAttentionFirst': 'Righe che ti attendono in cima',
+  'settings.sidebarAttentionFirstDesc': 'Fissa in cima alla barra laterale gli spazi di lavoro il cui agente sta aspettando te. Disattivato per impostazione predefinita: le righe restano dove le hai trascinate. Mentre è attivo, il riordino tramite trascinamento è sospeso.',
   'settings.sidebarLeft': 'Sinistra',
   'settings.sidebarRight': 'Destra',
   'settings.updateReady': 'Aggiornamento pronto',

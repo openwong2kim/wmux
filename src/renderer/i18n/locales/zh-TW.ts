@@ -17,6 +17,7 @@ export const zhTW = {
   'workspace.agentWaiting': '代理等待中',
 
   'workspace.agentAwaitingInput': '代理等待輸入',
+  'workspace.needsYou': '等你回應',
   'workspace.agentIdle': '代理閒置',
   'workspace.close': '關閉工作區',
   'workspace.copyInfo': '複製工作階段資訊',
@@ -177,6 +178,8 @@ export const zhTW = {
   'settings.uiScaleDesc': '縮放整個介面 — 在高 DPI 顯示器上很實用。不需重新啟動。',
   'settings.sidebarPosition': '側邊欄位置',
   'settings.sidebarPositionDesc': '終端機區域的左側或右側',
+  'settings.sidebarAttentionFirst': '需要你的列置頂',
+  'settings.sidebarAttentionFirstDesc': '將代理正在等待你回應的工作區固定在側邊欄頂部。預設關閉：列會留在你拖曳的位置。 開啟期間，拖曳排序會暫停。',
   'settings.sidebarLeft': '左側',
   'settings.sidebarRight': '右側',
   'settings.updateReady': '更新已就緒',

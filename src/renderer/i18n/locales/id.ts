@@ -17,6 +17,7 @@ export const id = {
   'workspace.agentWaiting': 'Agen menunggu',
 
   'workspace.agentAwaitingInput': 'Agen perlu masukan',
+  'workspace.needsYou': 'Menunggu Anda',
   'workspace.agentIdle': 'Agen menganggur',
   'workspace.close': 'Tutup ruang kerja',
   'workspace.copyInfo': 'Salin info sesi',
@@ -177,6 +178,8 @@ export const id = {
   'settings.uiScaleDesc': 'Skalakan seluruh antarmuka — berguna pada layar DPI tinggi. Tidak perlu mulai ulang.',
   'settings.sidebarPosition': 'Posisi bilah sisi',
   'settings.sidebarPositionDesc': 'Kiri atau kanan area terminal',
+  'settings.sidebarAttentionFirst': 'Baris yang menunggu Anda di atas',
+  'settings.sidebarAttentionFirstDesc': 'Sematkan ruang kerja yang agennya sedang menunggu Anda di bagian atas bilah sisi. Nonaktif secara bawaan: baris tetap di tempat Anda menyeretnya. Selama aktif, pengurutan ulang dengan seret dijeda.',
   'settings.sidebarLeft': 'Kiri',
   'settings.sidebarRight': 'Kanan',
   'settings.updateReady': 'Pembaruan siap',

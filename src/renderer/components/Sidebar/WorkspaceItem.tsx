@@ -7,7 +7,7 @@ import { createWorkspaceRosterCountsSelector } from '../../stores/selectors/work
 import { useT } from '../../hooks/useT';
 import type { TranslationKey } from '../../i18n/locales/en';
 import { AGENT_STATUS_ICON } from './agentStatusIcon';
-import { IconCopy, IconX, IconGear, IconPlay, IconPause, IconChevron, IconBell, IconFolder, IconTerminal, IconExternalLink } from '../icons';
+import { IconCopy, IconX, IconGear, IconChevron, IconBell, IconFolder, IconTerminal, IconExternalLink } from '../icons';
 import { tokenAttrs } from '../../themes';
 import { HIT_TARGET_24_CLUSTER, HIT_TARGET_24_IN_CLUSTER } from '../hitArea';
 import { buildWorkspaceMarkdown } from '../../utils/sessionInfoMarkdown';
@@ -79,11 +79,11 @@ function PrBadge({ pr }: { pr: PrStatus }): React.ReactElement {
 
 /**
  * Git 신호등(owner 2026-07-20) — 워크스페이스 이름 아래 전용 행에서 색으로
- * 상태를 즉독: clean=green ●, dirty=amber ●N, ahead=blue ↑N, behind=red ↓N.
+ * 상태를 즉독: clean=green ●, dirty=muted ·N, ahead=blue ↑N, behind=red ↓N.
  * 브랜치가 잡힌 워크스페이스는 항상 최소 1개의 불이 켜진다(clean이면 green).
  * 숫자는 항상 동반(맨 화살표는 모호 — GitHub Desktop #9282).
  */
-function GitSyncBadge({ sync }: { sync: GitSyncStatus }): React.ReactElement | null {
+export function GitSyncBadge({ sync }: { sync: GitSyncStatus }): React.ReactElement | null {
   const t = useT();
   const ahead = sync.hasUpstream ? sync.ahead : 0;
   const behind = sync.hasUpstream ? sync.behind : 0;
@@ -95,7 +95,8 @@ function GitSyncBadge({ sync }: { sync: GitSyncStatus }): React.ReactElement | n
       data-git-signal
     >
       {clean && <span style={{ color: 'var(--accent-green)' }}>●</span>}
-      {sync.dirty > 0 && <span style={{ color: 'var(--accent)' }}>●{sync.dirty}</span>}
+      {/* Uncommitted files are information, not attention: amber is reserved for "running". */}
+      {sync.dirty > 0 && <span style={{ color: 'var(--text-muted)' }}>·{sync.dirty}</span>}
       {ahead > 0 && <span style={{ color: 'var(--accent-blue)' }}>↑{ahead}</span>}
       {behind > 0 && <span style={{ color: 'var(--accent-red)' }}>↓{behind}</span>}
     </span>
@@ -245,6 +246,31 @@ const IDLE_SHOW_AFTER_MS = 60_000;
 /** Re-render cadence for the idle label; minute granularity needs no more. */
 const IDLE_TICK_MS = 30_000;
 
+/**
+ * Rest-state chrome: invisible AND weightless.
+ *
+ * `opacity-0` alone still spends the item's width, and in a 240px sidebar that
+ * width comes straight out of the workspace name — a "Needs you" row truncated
+ * a readable name to "sa…" while the chrome nobody could see sat beside it.
+ * `max-w-0` + `overflow-hidden` collapse the box at rest; hover and
+ * focus-within hand back the width AND the overflow the 24px hit recipes need
+ * for their margin refunds. `pointer-events` follow visibility so an invisible
+ * control never takes a click meant for the row underneath.
+ */
+const REST_HIDDEN =
+  'opacity-0 pointer-events-none max-w-0 overflow-hidden transition-opacity duration-150'
+  + ' group-hover:opacity-100 group-hover:pointer-events-auto group-hover:max-w-none group-hover:overflow-visible'
+  + ' group-focus-within:opacity-100 group-focus-within:pointer-events-auto group-focus-within:max-w-none group-focus-within:overflow-visible';
+
+/**
+ * A collapsed flex item still contributes its parent's `gap`, so the width the
+ * box gave back would be spent again on nothing. These cancel the gap that
+ * precedes the item — `-ml-2` for the row (`gap-2`), `-ml-1` for the name line
+ * (`gap-1`) — and return it the moment the item is shown.
+ */
+const REST_HIDDEN_GAP_ROW = '-ml-2 group-hover:ml-0 group-focus-within:ml-0';
+const REST_HIDDEN_GAP_NAME_LINE = '-ml-1 group-hover:ml-0 group-focus-within:ml-0';
+
 function shortenPath(path: string, maxLen = 25): string {
   if (!path || path.length <= maxLen) return path;
   const parts = path.replace(/\\/g, '/').split('/');
@@ -276,6 +302,11 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
   // See uiSlice.draggedWorkspaceIndex for why this is out-of-band.
   const setWorkspaceColor = useStore((s) => s.setWorkspaceColor);
   const setDraggedWorkspaceIndex = useStore((s) => s.setDraggedWorkspaceIndex);
+  // Needs-you-first ordering is display-only, so a drop judged against the
+  // DISPLAY order would move the row to a different ARRAY index than the
+  // indicator promised. Reorder is paused while it is on; Ctrl+N and the
+  // stored order are untouched.
+  const sidebarAttentionFirst = useStore((s) => s.sidebarAttentionFirst);
   const setTerminalTextDropDragActive = useStore((s) => s.setTerminalTextDropDragActive);
 
   const metadata = workspace?.metadata;
@@ -286,6 +317,20 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
   // `metadata.agentStatus` directly only ever saw the active pane and never
   // self-healed. Scalar return → Object.is subscription re-renders only on change.
   const agentStatus = useStore((s) => selectWorkspaceAgentStatus(s, workspaceId));
+  // An agent that is blocked on the user is the one row state the design
+  // system lets us paint (DESIGN.md: the only permitted wash is the danger
+  // needs-input row). Two renditions and no more — the wash and the label.
+  const needsYou = agentStatus === 'waiting' || agentStatus === 'awaiting_input';
+  // Name first. At rest the row shows the workspace name and the signals that
+  // change on their own (status dot, unread, idle, "needs you"); the project
+  // badge, the agent count and the shortcut hint are chrome you only look for
+  // once you are already pointing at the row, and at 240px they were spending
+  // the name's width to sit there. The ACTIVE row keeps them — it is the one
+  // row you are working in. See REST_HIDDEN for why hiding is not enough on its
+  // own: at rest the chrome must also give its WIDTH back to the name.
+  const restHidden = isActive ? '' : `${REST_HIDDEN} ${REST_HIDDEN_GAP_ROW}`;
+  /** The same, for chrome that sits inside the `gap-1` name line. */
+  const restHiddenNameLine = isActive ? '' : `${REST_HIDDEN} ${REST_HIDDEN_GAP_NAME_LINE}`;
   // #997 — the roster's expanded state. It lives here, not in the roster,
   // because the control that toggles it now sits on THIS row while the list it
   // reveals is rendered below; the two would otherwise need to agree across a
@@ -301,6 +346,9 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
   );
   const rosterCounts = useStore(rosterCountsSelector);
   const hasRoster = rosterCounts.agentCount > 0 || rosterCounts.stashedCount > 0;
+  /** Rows whose roster summary must not wait for the pointer — see its JSX. */
+  const rosterAlwaysShown =
+    rosterOpen || (rosterCounts.agentCount === 0 && rosterCounts.stashedCount > 0);
   // Newly selected workspaces reveal their agents automatically; workspaces
   // that move to the background collapse back to the count. The user can still
   // explicitly toggle either state until selection changes again.
@@ -481,7 +529,7 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
   };
 
   const handleDragStart = (e: React.DragEvent<HTMLDivElement>) => {
-    if (!workspace) return;
+    if (!workspace || sidebarAttentionFirst) return;
     // Roster controls live inside this draggable card. Chromium chooses the
     // nearest draggable ancestor as the native source, so `draggable={false}`
     // on a nested button is not enough. Reject a drag whose pointer originated
@@ -526,6 +574,7 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
   };
 
   const handleDragOver = (e: React.DragEvent<HTMLDivElement>) => {
+    if (sidebarAttentionFirst) return;
     e.preventDefault();
     const reorderFrom = useStore.getState().draggedWorkspaceIndex;
     if (reorderFrom === null) return;
@@ -551,6 +600,7 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
   };
 
   const handleDrop = (e: React.DragEvent<HTMLDivElement>) => {
+    if (sidebarAttentionFirst) return;
     e.preventDefault();
     setDropIndicator(null);
     // Reorder source comes from the store, not dataTransfer. A null
@@ -675,9 +725,9 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
       )}
 
       <div
-        draggable
+        draggable={!sidebarAttentionFirst}
         {...tokenAttrs('bgSurface', 'bg')}
-        className={`group sidebar-row px-3 py-1 cursor-pointer rounded-md select-none ${
+        className={`group sidebar-row px-3 py-1 cursor-pointer rounded-md select-none ${needsYou ? 'sidebar-row-needs' : ''} ${
           isActive
             ? 'sidebar-row-active text-[var(--text-main)]'
             : 'text-[var(--text-subtle)] hover:bg-[rgba(var(--bg-surface-rgb),0.5)] hover:text-[var(--text-sub)]'
@@ -696,6 +746,28 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
         {/* Status indicator */}
         {(() => {
           const st = agentStatus !== 'idle' ? AGENT_STATUS_ICON[agentStatus] : null;
+          // Red is spent on both "needs you" and "error", so hue alone cannot
+          // say which one this row is: an errored agent gets a ✕ in the dot's
+          // own footprint instead of a round dot.
+          if (st?.shape === 'cross') {
+            // The box is sized to the GLYPH (10px), not to the dot it replaces
+            // (6px), which the ✕ overflowed. `-mx-0.5` refunds the 4px of extra
+            // width so the name column starts where it does on every other row,
+            // and `mt-1` puts the taller box's centre on the dot's centre line
+            // (6px + 3 − 5). No glow: the cross is told apart by FORM, so the
+            // glow channel would only make it read as one more red dot.
+            return (
+              <span
+                className="w-2.5 h-2.5 -mx-0.5 flex items-center justify-center flex-shrink-0 mt-1 text-[10px] font-bold leading-none"
+                style={{ color: st.dotVar }}
+                role="img"
+                aria-label={t(st.labelKey)}
+                title={t(st.labelKey)}
+              >
+                ✕
+              </span>
+            );
+          }
           return (
             <div
               className={`sidebar-dot w-1.5 h-1.5 rounded-full flex-shrink-0 mt-1.5 ${st ? st.glowClass : ''}`}
@@ -727,7 +799,7 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
                     idle minutes too, which is where they go when the roster
                     chip takes their place on the row (#997). */}
                 <span
-                  className="text-caption font-mono truncate"
+                  className={`font-sans text-[13px] truncate ${unreadCount > 0 ? 'font-semibold' : 'font-medium'} ${idleLabel && !hasRoster ? 'text-[var(--text-sub)]' : ''}`}
                   title={idleLabel ? `${workspace.name} · ${t('workspace.idleTooltip', { time: idleLabel })}` : workspace.name}
                 >
                   {workspace.name}
@@ -752,10 +824,15 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
                   // dialog it opens has a keyboard path already (⌘K → the
                   // project config command), so the badge is not the only way
                   // in. Left for a pass that can restructure the name line.
+                  //
+                  // Only a TRUSTED badge waits for the pointer. The other two
+                  // states are unresolved verdicts the user has to act on —
+                  // "needs review" and "denied" are warnings, and a warning
+                  // nobody sees until they hover the row is not one.
                   <button
                     type="button"
                     data-workspace-action="project-badge"
-                    className="text-[10px] leading-none flex-shrink-0 font-mono cursor-pointer hover:underline"
+                    className={`text-[10px] leading-none flex-shrink-0 font-mono cursor-pointer hover:underline ${projectState.trust === 'trusted' ? restHiddenNameLine : ''}`}
                     style={{
                       color: projectState.trust === 'trusted'
                         ? 'var(--accent-blue)'
@@ -809,28 +886,39 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
         {/* #997 — roster disclosure + agent count. Lives on this row, not on
             a line of its own: see WorkspaceRosterSummary's own comment. */}
         {!editing && (
-          <WorkspaceRosterSummaryMemo
-            workspaceId={workspaceId}
-            agentCount={rosterCounts.agentCount}
-            stashedCount={rosterCounts.stashedCount}
-            open={rosterOpen}
-            onToggle={toggleRoster}
-          />
+          // The wrapper carries the rest-state fade so the summary's own
+          // internals stay untouched; it takes over the flex-item traits
+          // (self-center, no shrink) the button had as a direct child.
+          //
+          // Two rows keep it at rest. A workspace whose only entries are
+          // stashed panes has nothing else to show it is not empty (see the
+          // stash-glyph comment in WorkspaceAgentRoster.tsx), and an expanded
+          // roster must keep the control that collapses it reachable.
+          <span className={`inline-flex self-center flex-shrink-0 ${rosterAlwaysShown ? '' : restHidden}`}>
+            <WorkspaceRosterSummaryMemo
+              workspaceId={workspaceId}
+              agentCount={rosterCounts.agentCount}
+              stashedCount={rosterCounts.stashedCount}
+              open={rosterOpen}
+              onToggle={toggleRoster}
+            />
+          </span>
         )}
 
-        {/* Agent status mark (play/pause), right-aligned. */}
-        {(() => {
-          const st = AGENT_STATUS_ICON[agentStatus];
-          if (!st?.mark) return null;
-          return (
-            <span className={`flex-shrink-0 mt-1 ${st.className}`} title={t(st.labelKey)}>
-              {st.mark === 'play' ? <IconPlay size={9} /> : <IconPause size={9} />}
-            </span>
-          );
-        })()}
+        {/* The blocked-agent label, right-aligned. It replaces the play/pause
+            mark this row used to carry: "running" is already the amber dot, and
+            a paused glyph never said what it was paused ON. Words do.
+            On hover the row's chrome comes back and the label steps aside for
+            it (the wash and the red dot keep saying "needs you"); the active
+            row, which shows its chrome permanently, keeps the label too. */}
+        {needsYou && (
+          <span className={`font-sans text-[10px] font-semibold text-[var(--accent-red)] flex-shrink-0 mt-0.5 ${isActive ? '' : 'group-hover:hidden'}`}>
+            {t('workspace.needsYou')}
+          </span>
+        )}
 
         {/* Shortcut hint */}
-        <span className="text-[10px] font-mono text-[var(--text-muted)] flex-shrink-0 mt-0.5">
+        <span className={`text-[10px] font-mono text-[var(--text-muted)] flex-shrink-0 mt-0.5 ${restHidden}`}>
           {index < 9 ? `^${index + 1}` : ''}
         </span>
 
@@ -847,10 +935,18 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
             ~23px row, so at rest they extend a fraction past the row's edge,
             and an invisible control must not take a click meant for the row
             under it. `focus-within` reveals the cluster for the keyboard, which
-            could previously focus a button it could not see. */}
+            could previously focus a button it could not see.
+
+            `max-w-0 overflow-hidden` collapses the cluster at rest for the same
+            reason the rest of the chrome collapses (REST_HIDDEN): three 24px
+            boxes held ~72px of the name's column to show nothing. The overflow
+            comes back on reveal — the members' `-mx-1.5` refunds live outside
+            the cluster's content box, and a clipped refund is a smaller target.
+            No negative left margin here: hitArea.ts forbids one on a cluster
+            (chromeHitArea.test.ts asserts it), so this one item keeps its gap. */}
         <div
           data-workspace-actions
-          className={`${HIT_TARGET_24_CLUSTER} flex-shrink-0 opacity-0 pointer-events-none transition-opacity duration-150 group-hover:opacity-100 group-hover:pointer-events-auto focus-within:opacity-100 focus-within:pointer-events-auto`}
+          className={`${HIT_TARGET_24_CLUSTER} flex-shrink-0 opacity-0 pointer-events-none max-w-0 overflow-hidden transition-opacity duration-150 group-hover:opacity-100 group-hover:pointer-events-auto group-hover:max-w-none group-hover:overflow-visible focus-within:opacity-100 focus-within:pointer-events-auto focus-within:max-w-none focus-within:overflow-visible`}
         >
           {/* Folder icon — reveals this workspace's cwd in the OS file manager. */}
           <button

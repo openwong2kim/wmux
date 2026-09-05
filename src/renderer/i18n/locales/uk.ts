@@ -17,6 +17,7 @@ export const uk = {
   'workspace.agentWaiting': 'Агент очікує',
 
   'workspace.agentAwaitingInput': 'Агент очікує введення',
+  'workspace.needsYou': 'Чекає на вас',
   'workspace.agentIdle': 'Агент простоює',
   'workspace.close': 'Закрити робочий простір',
   'workspace.copyInfo': 'Скопіювати дані сесії',
@@ -177,6 +178,8 @@ export const uk = {
   'settings.uiScaleDesc': 'Масштабуйте весь інтерфейс — корисно для дисплеїв із високим DPI. Перезапуск не потрібен.',
   'settings.sidebarPosition': 'Положення бічної панелі',
   'settings.sidebarPositionDesc': 'Зліва або справа від області термінала',
+  'settings.sidebarAttentionFirst': 'Рядки, що чекають на вас, угорі',
+  'settings.sidebarAttentionFirstDesc': 'Закріплювати вгорі бічної панелі робочі простори, агент яких чекає на вас. Типово вимкнено: рядки лишаються там, куди ви їх перетягнули. Поки увімкнено, перетягування для зміни порядку призупинено.',
   'settings.sidebarLeft': 'Ліворуч',
   'settings.sidebarRight': 'Праворуч',
   'settings.updateReady': 'Оновлення готове',

@@ -17,6 +17,7 @@ export const vi = {
   'workspace.agentWaiting': 'Tác nhân đang chờ',
 
   'workspace.agentAwaitingInput': 'Tác nhân cần phản hồi',
+  'workspace.needsYou': 'Đang chờ bạn',
   'workspace.agentIdle': 'Tác nhân nhàn rỗi',
   'workspace.close': 'Đóng không gian làm việc',
   'workspace.copyInfo': 'Sao chép thông tin phiên',
@@ -177,6 +178,8 @@ export const vi = {
   'settings.uiScaleDesc': 'Thu phóng toàn bộ giao diện — hữu ích trên màn hình DPI cao. Không cần khởi động lại.',
   'settings.sidebarPosition': 'Vị trí thanh bên',
   'settings.sidebarPositionDesc': 'Trái hoặc phải vùng terminal',
+  'settings.sidebarAttentionFirst': 'Hàng đang chờ bạn lên đầu',
+  'settings.sidebarAttentionFirstDesc': 'Ghim các không gian làm việc có tác nhân đang chờ bạn lên đầu thanh bên. Mặc định tắt: các hàng vẫn ở nơi bạn đã kéo. Khi bật, việc kéo để sắp xếp lại sẽ tạm dừng.',
   'settings.sidebarLeft': 'Trái',
   'settings.sidebarRight': 'Phải',
   'settings.updateReady': 'Cập nhật sẵn sàng',
