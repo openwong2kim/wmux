@@ -1040,6 +1040,11 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       if (typeof data.channelsTabVisible === 'boolean') {
         state.channelsTabVisible = data.channelsTabVisible;
       }
+      // Titlebar wall-clock — default OFF; only an explicit boolean applies,
+      // so a session written before this setting existed keeps the default.
+      if (typeof data.titlebarClockVisible === 'boolean') {
+        state.titlebarClockVisible = data.titlebarClockVisible;
+      }
       // Pane action cluster — default ON; only an explicit false hides it.
       if (typeof data.paneActionsVisible === 'boolean') {
         state.paneActionsVisible = data.paneActionsVisible;

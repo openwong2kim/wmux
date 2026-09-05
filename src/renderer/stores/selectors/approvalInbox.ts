@@ -85,3 +85,51 @@ export function selectApprovalInbox(state: ApprovalInboxState): InboxItem[] {
 
   return items;
 }
+
+/**
+ * Is the Fleet cockpit's Approvals tab the surface that owns the pending
+ * approvals right now?
+ *
+ * DESIGN.md attention grammar: one event, at most TWO renditions. An approval
+ * had three — the dialog, the deck header's countdown badge, and the Fleet
+ * inbox's own countdown. This is the single signal both suppressors read: the
+ * standalone A2A / MCP dialogs (AppLayout) and the deck header badge
+ * (DeckApprovalCountdown). Two callers, one rule — the alternative is two
+ * copies of it drifting apart.
+ */
+export function selectInboxOwnsApprovals(
+  state: Pick<StoreState, 'fleetViewVisible' | 'fleetActiveTab'>,
+  scope?: {
+    /** The surface's workspace. Absent ⇒ the caller speaks for every prompt
+     *  (the standalone dialogs), and the open tab owns all of them. */
+    workspaceId?: string;
+    /** Workspaces the inbox is actually listing a row for. */
+    listedWorkspaceIds: readonly string[];
+  },
+): boolean {
+  if (!state.fleetViewVisible || state.fleetActiveTab !== 'approvals') return false;
+  if (!scope || !scope.workspaceId) return true;
+  // An open tab that lists nothing for THIS workspace has not taken over its
+  // prompt, and stepping aside for it would leave the operator with no
+  // countdown anywhere.
+  return scope.listedWorkspaceIds.includes(scope.workspaceId);
+}
+
+/**
+ * The workspaces the approval inbox draws a row for. Only the A2A execute
+ * approvals carry a workspace — an MCP prompt is a client asking for
+ * capabilities and belongs to no deck — so an inbox of MCP prompts alone
+ * suppresses nobody's badge.
+ */
+export function selectInboxWorkspaceIds(
+  state: Pick<StoreState, 'pendingExecuteApprovals' | 'pendingExecuteApprovalOrder'>,
+): string[] {
+  const out: string[] = [];
+  for (const id of state.pendingExecuteApprovalOrder) {
+    const record = state.pendingExecuteApprovals[id];
+    if (!record) continue;
+    if (record.senderWorkspaceId) out.push(record.senderWorkspaceId);
+    if (record.receiverWorkspaceId) out.push(record.receiverWorkspaceId);
+  }
+  return out;
+}

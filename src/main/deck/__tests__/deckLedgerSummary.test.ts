@@ -232,3 +232,49 @@ describe('createLedgerPushCoalescer', () => {
     expect(seen).toEqual([]);
   });
 });
+
+// Closing a task used to take its mission channel out of reach: the sidebar's
+// finished-tasks disclosure was the way back, and it went away with the
+// sidebar rows. The panel's own disclosure reads this half of the summary.
+describe('buildDeckLedgerSummary — the finished half', () => {
+  it('splits terminal entries out of the open rows and counts each honestly', () => {
+    const summary = buildDeckLedgerSummary({
+      entries: [
+        entry({ id: 'open-1', updatedAt: 1_000 }),
+        entry({ id: 'done', updatedAt: 5_000, status: 'completed' }),
+        entry({ id: 'failed', updatedAt: 4_000, status: 'failed' }),
+        entry({ id: 'cancelled', updatedAt: 3_000, status: 'cancelled' }),
+        entry({ id: 'review', updatedAt: 2_000, status: 'review_requested' }),
+      ],
+      panesFor: () => null,
+      now: () => 6_000,
+    });
+    // review_requested is OPEN work — a worker handed it back, nobody closed it.
+    expect(summary.openCount).toBe(2);
+    expect(summary.rows.map((r) => r.id)).toEqual(['review', 'open-1']);
+    expect(summary.finishedCount).toBe(3);
+    expect(summary.finishedRows?.map((r) => r.id)).toEqual(['done', 'failed', 'cancelled']);
+  });
+
+  it('leaves both fields absent when the caller asked for open entries only', () => {
+    const summary = buildDeckLedgerSummary({
+      entries: [entry({ id: 'a', updatedAt: 1_000 })],
+      panesFor: () => null,
+      now: () => 2_000,
+    });
+    // Absent, not zero: "I did not ask" is not "nothing has finished".
+    expect(summary.finishedRows).toBeUndefined();
+    expect(summary.finishedCount).toBeUndefined();
+  });
+
+  it('caps the finished rows but keeps the finished count honest', () => {
+    const entries = Array.from({ length: LEDGER_SUMMARY_ROW_CAP + 4 }, (_, i) =>
+      entry({ id: `f${i}`, updatedAt: 1_000 + i, status: 'completed' }),
+    );
+    const summary = buildDeckLedgerSummary({ entries, panesFor: () => null, now: () => 9_000 });
+    expect(summary.openCount).toBe(0);
+    expect(summary.rows).toHaveLength(0);
+    expect(summary.finishedCount).toBe(LEDGER_SUMMARY_ROW_CAP + 4);
+    expect(summary.finishedRows).toHaveLength(LEDGER_SUMMARY_ROW_CAP);
+  });
+});

@@ -70,6 +70,43 @@ function rebuildPaneGroupIndex(byWorkspace: Record<string, WorkTask[]>): Record<
   return index;
 }
 
+/**
+ * Is this list the same tasks in the same states as the one already cached?
+ * Exported for the test: it is the whole reason the 15 s mission poll stopped
+ * re-rendering the deck.
+ *
+ * Compares the fields any consumer renders or navigates by — a change the UI
+ * cannot see is not a change worth a new array identity. `updatedAt` is not a
+ * WorkTask field, so a same-shaped list IS the same list to every reader.
+ */
+export function sameMissionList(
+  previous: readonly WorkTask[] | undefined,
+  next: readonly WorkTask[],
+): boolean {
+  if (previous === next) return true;
+  if (!previous || previous.length !== next.length) return false;
+  for (let i = 0; i < next.length; i += 1) {
+    const a = previous[i];
+    const b = next[i];
+    if (
+      a.id !== b.id ||
+      a.status !== b.status ||
+      a.title !== b.title ||
+      a.missionChannelId !== b.missionChannelId ||
+      a.paneGroupId !== b.paneGroupId ||
+      a.createdAt !== b.createdAt ||
+      a.closedAt !== b.closedAt ||
+      a.detachedAt !== b.detachedAt ||
+      a.branch !== b.branch ||
+      a.worktreePath !== b.worktreePath ||
+      a.prUrl !== b.prUrl
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
 /** J3 §3 — onExhausted 토스트/재발사 매핑 항목(ptyId → 태스크 좌표). */
 export interface TaskPtyEntry {
   taskId: string;
@@ -160,6 +197,12 @@ export const createWorkTaskSlice: StateCreator<
 
   setMissions: (parentWorkspaceId, tasks) =>
     set((state: StoreState) => {
+      // The 15 s poll re-lists the same tasks and used to write a fresh array
+      // every time, so `missionsByWorkspace` changed identity on every tick and
+      // every consumer memoizing on it (the deck's channel map, the sidebar
+      // summary) recomputed and re-rendered for nothing. Content-equal writes
+      // are dropped; a real transition still lands.
+      if (sameMissionList(state.missionsByWorkspace[parentWorkspaceId], tasks)) return;
       state.missionsByWorkspace[parentWorkspaceId] = tasks;
       state.missionByPaneGroup = rebuildPaneGroupIndex(state.missionsByWorkspace);
     }),

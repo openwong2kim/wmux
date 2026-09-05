@@ -47,19 +47,29 @@ export const en = {
   'sidebar.searchPlaceholder': 'Search workspaces…',
 
   // Sidebar — Tasks (the isolated worktree tasks an orchestrator runs)
-  'missions.open': 'running',
-  'missions.closed': 'finished',
   'missions.openChannel': 'Open task channel',
   'missions.openChannelFor': 'Open task channel for {title}',
-  'missions.title': 'Tasks ({count})',
-  'missions.done': 'Finished ({count})',
-  // Shown instead of hiding the section outright: an empty list is the answer
-  // to "does this workspace have tasks", and a section that vanishes is not.
-  'missions.empty': 'No tasks yet',
-  'missions.doneSummary': 'last: {title}',
-  // C-4 — entry point to the worktree cleanup scan from the finished tasks.
+  // C-4 — entry point to the worktree cleanup scan; it rides the sidebar's
+  // one-line task summary. With no tasks at all the line is gone and the
+  // command palette is the way in.
   'missions.cleanUp': 'Clean up',
   'missions.cleanUpTooltip': 'Scan task worktrees and close what is left over',
+  // One status-dot vocabulary, shared by every surface that draws a task dot
+  // (components/shared/taskStatusDot.ts). DESIGN.md: amber = running,
+  // green = ok, gray = idle, red = needs input.
+  'taskStatus.running': 'Running',
+  'taskStatus.idle': 'Idle',
+  'taskStatus.needsYou': 'Needs you',
+  'taskStatus.review': 'Waiting on review',
+  'taskStatus.done': 'Done',
+  'taskStatus.failed': 'Failed',
+  'taskStatus.cancelled': 'Cancelled',
+  // The sidebar states the tasks in ONE line and hands the list itself to the
+  // deck's ledger panel (DESIGN.md: the left sidebar is navigation only).
+  'missions.label': 'Tasks',
+  'missions.openCount': '{count} open',
+  'missions.finishedCount': '{count} finished',
+  'missions.summaryTooltip': 'Open the delegated tasks in the Agent deck',
 
   // Sidebar — Company mode
   'company.deptRemoveHint': 'Right-click to remove',
@@ -941,6 +951,9 @@ export const en = {
   'settings.paneNewTerminalButtonDesc':
     'Adds a + that puts a SECOND terminal in this pane. wmux is built around one pane = one terminal — splitting is the usual way to get another — so this is off by default. Ctrl+T does the same thing without the button.',
   'settings.paneActionsVisibleDesc': 'Show new-terminal, split, and new-browser buttons in each pane\'s tab strip.',
+  'settings.titlebarClock': 'Clock in the titlebar',
+  'settings.titlebarClockDesc':
+    'Off by default — your OS already shows the time. Turn it on if you run wmux full-screen with the taskbar hidden.',
   'settings.currentVersion': 'Current',
   'settings.latestVersion': 'Latest',
   'settings.updateReady': 'Update ready',
@@ -1663,6 +1676,15 @@ export const en = {
   // Orchestrator wave 2 — the pinned task-ledger panel.
   'deck.ledgerOpenTasks': '{count} open tasks',
   'deck.ledgerUnavailable': 'Ledger unavailable',
+  // The panel shows five rows and keeps the rest behind this toggle — it is
+  // pinned above the conversation and must not grow until it owns the deck.
+  'deck.ledgerMore': '+{count} more',
+  'deck.ledgerShowLess': 'Show less',
+  // The ledger read is capped, so an expanded list is not always the whole
+  // ledger — say what is on screen rather than implying completeness.
+  'deck.ledgerShowingOf': 'showing {shown} of {total}',
+  'deck.ledgerFinished': 'Finished ({count})',
+  'deck.ledgerJumpToTask': 'Go to this task',
   'deck.approvalCountdown': 'Auto-reject in {seconds}s',
   'deck.vendorTagClaudePty': 'terminal',
   'deck.vendorTagClaude': 'sdk',

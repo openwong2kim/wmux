@@ -7,7 +7,7 @@
 import { describe, expect, it } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { createElement } from 'react';
-import MissionsSection, { flattenMissions, groupMissionsByParent, selectLiveMissions } from '../MissionsSection';
+import MissionsSection, { flattenMissions, selectLiveMissions } from '../MissionsSection';
 import type { WorkTask } from '../../../../shared/workTask';
 
 function mission(over: Partial<WorkTask> & Pick<WorkTask, 'id' | 'title'>): WorkTask {
@@ -23,25 +23,13 @@ function mission(over: Partial<WorkTask> & Pick<WorkTask, 'id' | 'title'>): Work
 }
 
 describe('MissionsSection', () => {
-  // Changed from "renders nothing": a section that disappears cannot answer
-  // "does this workspace have tasks?", and the reader cannot tell an empty list
-  // from a list that failed to load.
-  it('renders a one-line empty state instead of nothing', () => {
+  // Reverted to "renders nothing" (2026-09-05): the sidebar is navigation only,
+  // and a permanent "Tasks · 0 open" line is the dead gauge DESIGN.md forbids.
+  // The list itself now lives in the deck's ledger panel.
+  it('renders nothing with zero tasks', () => {
     // 스토어 생성 시점 missionsByWorkspace는 비어 있으므로 SSR은 빈 상태를 본다.
     const html = renderToStaticMarkup(createElement(MissionsSection));
-    expect(html).not.toBe('');
-    expect(html).toContain('data-missions-empty');
-    // The header is still there, and it says zero rather than hiding.
-    expect(html).toContain('data-missions-section');
-  });
-
-  // Review fix: cleanup used to live inside the finished-tasks group, so the
-  // one state where it matters most — nothing finished, but orphaned worktrees
-  // on disk — could not reach it.
-  it('offers the cleanup entry with zero missions', () => {
-    const html = renderToStaticMarkup(createElement(MissionsSection));
-    expect(html).toContain('data-missions-cleanup');
-    expect(html).not.toContain('data-missions-done-group');
+    expect(html).toBe('');
   });
 
   describe('flattenMissions (순수)', () => {
@@ -138,83 +126,5 @@ describe('selectLiveMissions (pure)', () => {
       live('parent-a'),
     );
     expect(out).toEqual([]);
-  });
-});
-
-
-// ── Tasks indented under the workspace that started them ───────────────────
-// A flat list of eight rows called "task #1"…"task #4" twice over is unreadable
-// the moment two fan-outs are running, and the parent is the only thing that
-// tells them apart.
-describe('groupMissionsByParent (pure)', () => {
-  const names = new Map([
-    ['parent-a', 'api'],
-    ['parent-b', 'web'],
-  ]);
-  const order = ['parent-a', 'parent-b'];
-
-  it('partitions tasks under their own parent', () => {
-    const groups = groupMissionsByParent(
-      {
-        'parent-a': [mission({ id: 'a1', title: 'A', paneGroupId: 'c1' })],
-        'parent-b': [mission({ id: 'b1', title: 'B', paneGroupId: 'c2' })],
-      },
-      new Set(['parent-a', 'parent-b', 'c1', 'c2']),
-      names,
-      order,
-    );
-    expect(groups.map((g) => [g.parentName, g.tasks.map((t) => t.id)])).toEqual([
-      ['api', ['a1']],
-      ['web', ['b1']],
-    ]);
-  });
-
-  it('drops a task whose own workspace is gone, and the group with it', () => {
-    const groups = groupMissionsByParent(
-      { 'parent-a': [mission({ id: 'gone', title: 'A', paneGroupId: 'c-dead' })] },
-      new Set(['parent-a']),
-      names,
-      order,
-    );
-    expect(groups).toEqual([]);
-  });
-
-  it('falls back to the parent id when the workspace is no longer listed', () => {
-    const groups = groupMissionsByParent(
-      { 'parent-x': [mission({ id: 'a1', title: 'A' })] },
-      new Set(['parent-x']),
-      names,
-      order,
-    );
-    expect(groups[0].parentName).toBe('parent-x');
-  });
-
-  it('orders groups by the sidebar order, unknown parents last', () => {
-    const groups = groupMissionsByParent(
-      {
-        'parent-x': [mission({ id: 'x1', title: 'X' })],
-        'parent-b': [mission({ id: 'b1', title: 'B' })],
-        'parent-a': [mission({ id: 'a1', title: 'A' })],
-      },
-      new Set(['parent-a', 'parent-b', 'parent-x']),
-      names,
-      order,
-    );
-    expect(groups.map((g) => g.parentId)).toEqual(['parent-a', 'parent-b', 'parent-x']);
-  });
-
-  it('sorts newest first inside a group', () => {
-    const groups = groupMissionsByParent(
-      {
-        'parent-a': [
-          mission({ id: 'older', title: 'O', createdAt: 1 }),
-          mission({ id: 'newer', title: 'N', createdAt: 5 }),
-        ],
-      },
-      new Set(['parent-a']),
-      names,
-      order,
-    );
-    expect(groups[0].tasks.map((t) => t.id)).toEqual(['newer', 'older']);
   });
 });

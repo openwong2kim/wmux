@@ -15,9 +15,23 @@
 // is an indicator, never a control — a header button that resolves an approval
 // the operator cannot read on the same screen is exactly the affordance the
 // approval design forbids.
+//
+// Renditions (DESIGN.md attention grammar: one event, at most TWO). The dialog
+// is one. This badge is the second — UNLESS the Fleet cockpit's Approvals tab
+// is open AND listing a row for THIS deck's workspace, which draws its own
+// countdown on that row and is then the surface that owns the prompt. In that
+// state the badge steps aside rather than making the same deadline the third
+// thing on screen counting the same seconds down. An inbox that is open but
+// listing somebody else's prompts (or only MCP prompts, which belong to no
+// deck) has taken nothing over, and the badge stays.
 
 import { useEffect, useState } from 'react';
+import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '../../stores';
+import {
+  selectInboxOwnsApprovals,
+  selectInboxWorkspaceIds,
+} from '../../stores/selectors/approvalInbox';
 import { tokenAttrs } from '../../themes';
 
 /** Below this the badge switches to the attention rendition. */
@@ -81,6 +95,7 @@ export function DeckApprovalCountdown({
   records,
   workspaceId,
   now: nowProp,
+  inboxOwnsApprovals: inboxOwnsApprovalsProp,
 }: {
   t?: (key: string) => string;
   /** Test seam — defaults to the store's pending execute approvals. */
@@ -90,10 +105,24 @@ export function DeckApprovalCountdown({
   workspaceId?: string;
   /** Test seam for the tick clock. */
   now?: () => number;
+  /** Test seam — defaults to the store's Fleet cockpit state. */
+  inboxOwnsApprovals?: boolean;
 }): React.ReactElement | null {
   const t = tProp ?? (() => '');
   const pending = useStore((s) => s.pendingExecuteApprovals);
   const order = useStore((s) => s.pendingExecuteApprovalOrder);
+  const fleetViewVisible = useStore((s) => s.fleetViewVisible);
+  const fleetActiveTab = useStore((s) => s.fleetActiveTab);
+  // A string array, shallow-compared: the inbox's own item objects are rebuilt
+  // on every read, so subscribing to them would re-render this badge on every
+  // store touch.
+  const listedWorkspaceIds = useStore(useShallow(selectInboxWorkspaceIds));
+  const inboxOwns =
+    inboxOwnsApprovalsProp ??
+    selectInboxOwnsApprovals(
+      { fleetViewVisible, fleetActiveTab },
+      { workspaceId, listedWorkspaceIds },
+    );
   const resolved =
     records ?? order.map((id) => pending[id]).filter((r): r is NonNullable<typeof r> => !!r);
   const deadlineAt = soonestApprovalDeadline(approvalsForWorkspace(resolved, workspaceId));
@@ -105,7 +134,10 @@ export function DeckApprovalCountdown({
   // running past the deadline would add a second render loop to a surface that
   // has nothing left to say.
   useEffect(() => {
-    if (deadlineAt === null) return;
+    // No deadline, or the inbox owns the prompt and this badge renders nothing
+    // — either way there is nothing for a 1 s timer to update. The effect
+    // re-runs (and re-reads the clock) the moment either changes back.
+    if (deadlineAt === null || inboxOwns) return;
     setNow(clock());
     if (clock() >= deadlineAt) return;
     const timer = setInterval(() => {
@@ -117,9 +149,12 @@ export function DeckApprovalCountdown({
     // `clock` is deliberately NOT a dependency: it is a test seam, stable in
     // the app, and re-running on it would restart the interval on every render
     // of a parent that inlines the prop.
-  }, [deadlineAt]);
+  }, [deadlineAt, inboxOwns]);
 
   if (deadlineAt === null) return null;
+  // The inbox is on screen with its own countdown per row — two renditions
+  // already (the dialog is suppressed for the same reason, AppLayout).
+  if (inboxOwns) return null;
   const remainingMs = deadlineAt - now;
   // The deadline passed: the auto-reject has fired (or is firing) and the
   // record is on its way out of the queue. "Auto-reject in 0s" parked forever

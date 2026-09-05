@@ -55,6 +55,15 @@ export interface DeckSlice {
   activeDeckTab: DeckTab;
   setActiveDeckTab: (tab: DeckTab) => void;
 
+  /**
+   * Whether the ledger panel's finished-tasks disclosure is open. Store state
+   * rather than panel-local because the sidebar's "N finished" line navigates
+   * INTO it — a click on the sidebar has to be able to open it. Transient (not
+   * persisted): finished tasks are history, and the deck opens on the work.
+   */
+  deckLedgerFinishedExpanded: boolean;
+  setDeckLedgerFinishedExpanded: (expanded: boolean) => void;
+
   /** Per-workspace orchestrator conversations (this-session only — the
    *  transcript itself resumes SDK-side via the persisted session id). */
   brainThreads: Record<string, DeckBrainThread>;
@@ -131,6 +140,14 @@ export const createDeckSlice: StateCreator<
   DeckSlice
 > = (set) => ({
   activeDeckTab: 'commander',
+
+  deckLedgerFinishedExpanded: false,
+
+  setDeckLedgerFinishedExpanded: (expanded) =>
+    set((state) => {
+      state.deckLedgerFinishedExpanded = expanded;
+    }),
+
 
   setActiveDeckTab: (tab) =>
     set((state: StoreState) => {

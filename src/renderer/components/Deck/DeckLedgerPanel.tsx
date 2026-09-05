@@ -21,34 +21,45 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { tokenAttrs } from '../../themes';
-import type { AgentStatus } from '../../../shared/types';
+import { FOCUS_RING } from '../focusRing';
+import { taskStatusDot } from '../shared/taskStatusDot';
 import type { DeckLedgerRow, DeckLedgerSummary } from '../../../main/deck/deckLedgerSummary';
 
 /** Fallback poll — a push that never arrived must not strand the panel. */
 export const LEDGER_PANEL_POLL_MS = 10_000;
 
+/** Rows shown before the `+N more` toggle. The panel is pinned chrome above the
+ *  conversation, so an eight-task fan-out used to push the brain's own thread
+ *  off the bottom of the deck. Five rows is the header line plus enough to see
+ *  a fan-out is running. */
+export const LEDGER_PANEL_VISIBLE_ROWS = 5;
+
+/** Per-viewer convenience only — which way the operator last left the panel.
+ *  Collapsed is the default, including when storage is unreadable. */
+export const LEDGER_PANEL_EXPANDED_KEY = 'deck.ledgerPanel.expanded';
+
+/** localStorage throws outright in some embeddings; a panel that cannot read a
+ *  preference must still render. */
+export function readLedgerPanelExpanded(): boolean {
+  try {
+    return window.localStorage.getItem(LEDGER_PANEL_EXPANDED_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+export function writeLedgerPanelExpanded(expanded: boolean): void {
+  try {
+    window.localStorage.setItem(LEDGER_PANEL_EXPANDED_KEY, expanded ? '1' : '0');
+  } catch {
+    /* private window / storage blocked — the session keeps its own state */
+  }
+}
+
 export interface DeckLedgerApi {
   summary: (workspaceId: string) => Promise<DeckLedgerSummary>;
   /** Main's transition ping. Returns the unsubscribe. */
   onChanged?: (callback: (envelope: { workspaceId: string }) => void) => () => void;
-}
-
-/** DESIGN.md status-dot vocabulary: amber=running, green=ok, gray=idle,
- *  red=needs input. Same mapping DeckFleet uses — a worker row and a fleet row
- *  must not disagree about what a colour means. */
-function workerDotColor(status: AgentStatus | null): string {
-  switch (status) {
-    case 'running':
-      return 'var(--accent-cursor)';
-    case 'complete':
-      return 'var(--accent-green)';
-    case 'awaiting_input':
-    case 'waiting':
-    case 'error':
-      return 'var(--accent-red)';
-    default:
-      return 'var(--text-muted)';
-  }
 }
 
 /** Compact age: seconds under a minute, then minutes, then hours. */
@@ -65,6 +76,12 @@ export function DeckLedgerPanel({
   workspaceId,
   t: tProp,
   onOpenCountChange,
+  channelByTaskId,
+  onOpenChannel,
+  onJumpToTaskWorkspace,
+  finishedExpanded = false,
+  onToggleFinished,
+  onLedgerPush,
 }: {
   api?: DeckLedgerApi;
   /** The workspace whose brain owns the tasks — the deck is per-workspace. */
@@ -73,6 +90,28 @@ export function DeckLedgerPanel({
   /** Reported on every change so the deck can open its report rail while work
    *  is outstanding. */
   onOpenCountChange?: (openCount: number) => void;
+  /** `taskId → mission channel id`. A row whose task is not in the map draws
+   *  no `#` — the affordance appears only where it goes somewhere. The ledger
+   *  summary is built from the ledger alone and knows nothing about channels,
+   *  so the mapping is the caller's (see stores/selectors/missions.ts). */
+  channelByTaskId?: Readonly<Record<string, string>>;
+  /** Opens one mission channel. Together with the map above this is the `#`
+   *  jump the deleted sidebar task rows used to own. */
+  onOpenChannel?: (channelId: string) => void;
+  /** Activates a task's own workspace. The row click the sidebar rows had —
+   *  a task the panel names must be one click from the terminal running it. */
+  onJumpToTaskWorkspace?: (taskWorkspaceId: string) => void;
+  /** Whether the finished-tasks disclosure is open. Lifted to the store (via
+   *  the caller) because the sidebar's "N finished" line navigates INTO it. */
+  finishedExpanded?: boolean;
+  onToggleFinished?: (expanded: boolean) => void;
+  /**
+   * Fired when MAIN pushed a ledger transition for this workspace. The caller
+   * uses it to re-pull whatever it joins onto these rows — the channel map is
+   * on a 15 s poll of its own, so without this a task the brain just started
+   * sat here with no `#` for up to fifteen seconds after the row appeared.
+   */
+  onLedgerPush?: () => void;
 }): React.ReactElement | null {
   const t = tProp ?? (() => '');
   // Optional-chain the whole path — window.electronAPI is absent under jsdom
@@ -82,10 +121,21 @@ export function DeckLedgerPanel({
     (window.electronAPI as unknown as { deck?: { ledger?: DeckLedgerApi } } | undefined)?.deck
       ?.ledger;
   const [rows, setRows] = useState<DeckLedgerRow[]>([]);
+  const [finishedRows, setFinishedRows] = useState<DeckLedgerRow[]>([]);
+  const [finishedCount, setFinishedCount] = useState(0);
   const [openCount, setOpenCount] = useState(0);
   const [unavailable, setUnavailable] = useState(false);
+  // Collapsed by default; the operator's last choice is remembered per browser
+  // profile. This is a per-viewer convenience, which is exactly what
+  // localStorage is for — nothing here has to survive a reinstall.
+  const [expanded, setExpanded] = useState(readLedgerPanelExpanded);
   const reportRef = useRef(onOpenCountChange);
   reportRef.current = onOpenCountChange;
+  // Read through a ref for the same reason as reportRef: the callback is a
+  // fresh closure on every parent render, and depending on it would tear down
+  // and re-subscribe the push listener on every streamed token.
+  const pushRef = useRef(onLedgerPush);
+  pushRef.current = onLedgerPush;
   // Request sequence. Reads are fired by four things (mount, the fallback
   // timer, main's ping and a workspace change) and IPC replies are not ordered,
   // so without this an older workspace's slow reply can land after a newer
@@ -101,6 +151,11 @@ export function DeckLedgerPanel({
       const summary = await resolvedApi.summary(workspaceId);
       if (reqSeq.current !== seq) return;
       setRows(summary.rows);
+      // Absent fields mean "the caller did not ask for the finished half",
+      // which is not the same claim as "nothing has finished" — but an empty
+      // list is all this panel can render either way.
+      setFinishedRows(summary.finishedRows ?? []);
+      setFinishedCount(summary.finishedCount ?? 0);
       setOpenCount(summary.openCount);
       setUnavailable(summary.error === true);
       reportRef.current?.(summary.openCount);
@@ -115,7 +170,9 @@ export function DeckLedgerPanel({
     const off = resolvedApi?.onChanged?.((envelope) => {
       // Another workspace's brain moving its own ledger is not this panel's
       // business — re-reading on it would be a wasted IPC per fan-out worker.
-      if (!workspaceId || envelope.workspaceId === workspaceId) void refresh();
+      if (workspaceId && envelope.workspaceId !== workspaceId) return;
+      void refresh();
+      pushRef.current?.();
     });
     return () => {
       // Invalidate every read still in flight for the workspace being left.
@@ -128,7 +185,116 @@ export function DeckLedgerPanel({
   // "Nothing is delegated" collapses; "I cannot read the ledger" must NOT —
   // that is the state in which the Stop gate may be holding the brain's turn on
   // a ledger neither of us can see, and a collapsed panel would call it idle.
-  if (!resolvedApi || (openCount === 0 && !unavailable)) return null;
+  if (!resolvedApi || (openCount === 0 && finishedCount === 0 && !unavailable)) return null;
+
+  const hidden = Math.max(0, rows.length - LEDGER_PANEL_VISIBLE_ROWS);
+  // The ledger read is capped at LEDGER_SUMMARY_ROW_CAP rows while `openCount`
+  // is not, so on a very large fan-out "Show less" would be claiming the list
+  // above it is complete when it is not. Say what is actually on screen.
+  const capped = rows.length < openCount;
+  const visibleRows = expanded ? rows : rows.slice(0, LEDGER_PANEL_VISIBLE_ROWS);
+  const toggle = (): void => {
+    const next = !expanded;
+    setExpanded(next);
+    writeLedgerPanelExpanded(next);
+  };
+  const renderRow = (row: DeckLedgerRow): React.ReactElement => {
+    // ONE vocabulary, shared with every other surface that draws a task dot
+    // (components/shared/taskStatusDot.ts). The panel does not decide what a
+    // colour means.
+    const dot = taskStatusDot(row.status, row.workerStatus);
+    const channelId = channelByTaskId?.[row.id];
+    return (
+      <div
+        key={row.id}
+        data-deck-ledger-row
+        data-task-id={row.id}
+        className="flex items-baseline gap-2 px-1 py-1 leading-relaxed"
+      >
+        <span
+          aria-hidden="true"
+          data-deck-ledger-dot
+          data-tone={dot.tone}
+          className="inline-block w-1.5 h-1.5 rounded-full shrink-0 self-center"
+          style={{ backgroundColor: dot.color }}
+        />
+        {/* The dot's meaning as text. A title on an aria-hidden span reaches
+            nobody using a screen reader, and the colour is the only other
+            carrier of this fact. */}
+        <span className="sr-only" data-deck-ledger-dot-label>
+          {t(dot.labelKey)}
+        </span>
+        {/* The task's own workspace is one click away — the row click the
+            deleted sidebar rows had. Falls back to plain text when the caller
+            cannot navigate (the panel never draws a control that does
+            nothing). */}
+        {onJumpToTaskWorkspace && row.taskWorkspaceId ? (
+          <button
+            type="button"
+            data-deck-ledger-title
+            data-jump-workspace-id={row.taskWorkspaceId}
+            onClick={() => onJumpToTaskWorkspace(row.taskWorkspaceId)}
+            title={t('deck.ledgerJumpToTask') || 'Go to this task'}
+            className={`text-left text-[12px] text-[var(--text-main)] truncate max-w-[42%] hover:text-[var(--accent-blue)] transition-colors ${FOCUS_RING}`}
+            {...tokenAttrs('textMain', 'text')}
+          >
+            {row.title}
+          </button>
+        ) : (
+          <span
+            data-deck-ledger-title
+            className="text-[12px] text-[var(--text-main)] truncate max-w-[42%]"
+            {...tokenAttrs('textMain', 'text')}
+          >
+            {row.title}
+          </span>
+        )}
+        <span
+          data-deck-ledger-status
+          className="text-[11px] font-mono shrink-0 text-[var(--text-sub)]"
+          {...tokenAttrs('textSub', 'text')}
+        >
+          {row.status}
+          {row.workerStatus ? ` · ${row.workerStatus}` : ''}
+        </span>
+        {/* Actor-written text (a worker, usually) — rendered as data. */}
+        <span
+          data-deck-ledger-line
+          className="flex-1 min-w-0 text-[11px] font-mono truncate text-[var(--text-muted)]"
+          {...tokenAttrs('textMuted', 'text')}
+        >
+          {row.lastLine ?? ''}
+        </span>
+        <span
+          data-deck-ledger-age
+          className="text-[11px] font-mono shrink-0 text-[var(--text-muted)]"
+          {...tokenAttrs('textMuted', 'text')}
+        >
+          {formatAge(row.ageMs)}
+        </span>
+        {/* The `#` jump the deleted sidebar task rows carried. Drawn only when
+            the caller can actually resolve a channel for this task — DESIGN.md
+            "every claim is one click from its evidence", never a link to
+            nowhere. */}
+        {channelId && onOpenChannel && (
+          <button
+            type="button"
+            data-deck-ledger-channel
+            data-channel-id={channelId}
+            className={`shrink-0 text-[10px] font-mono text-[var(--text-subtle)] hover:text-[var(--accent-blue)] transition-colors ${FOCUS_RING}`}
+            onClick={() => onOpenChannel(channelId)}
+            title={t('missions.openChannel') || 'Open task channel'}
+            aria-label={(t('missions.openChannelFor') || 'Open task channel for {title}').replace(
+              '{title}',
+              row.title,
+            )}
+          >
+            #
+          </button>
+        )}
+      </div>
+    );
+  };
 
   return (
     <div
@@ -162,57 +328,64 @@ export function DeckLedgerPanel({
           </span>
         )}
       </div>
-      {/* Scrolls past a handful of rows — the panel is pinned chrome, so it
-          must not grow until it owns the deck. */}
-      <div className="max-h-44 overflow-y-auto">
-        {rows.map((row) => (
-          <div
-            key={row.id}
-            data-deck-ledger-row
-            data-task-id={row.id}
-            className="flex items-baseline gap-2 px-1 py-1 leading-relaxed"
-          >
-            <span
-              aria-hidden="true"
-              data-deck-ledger-dot
-              className="inline-block w-1.5 h-1.5 rounded-full shrink-0 self-center"
-              style={{ backgroundColor: workerDotColor(row.workerStatus) }}
-            />
-            <span
-              data-deck-ledger-title
-              className="text-[12px] text-[var(--text-main)] truncate max-w-[42%]"
-              {...tokenAttrs('textMain', 'text')}
-            >
-              {row.title}
-            </span>
-            <span
-              data-deck-ledger-status
-              // eslint-disable-next-line no-restricted-syntax -- off-scale size owned by PR #1219; folded onto the ramp there to avoid a cross-PR conflict.
-              className="text-[10.5px] font-mono shrink-0 text-[var(--text-sub)]"
-              {...tokenAttrs('textSub', 'text')}
-            >
-              {row.status}
-              {row.workerStatus ? ` · ${row.workerStatus}` : ''}
-            </span>
-            {/* Actor-written text (a worker, usually) — rendered as data. */}
-            <span
-              data-deck-ledger-line
-              className="flex-1 min-w-0 text-[11px] font-mono truncate text-[var(--text-muted)]"
-              {...tokenAttrs('textMuted', 'text')}
-            >
-              {row.lastLine ?? ''}
-            </span>
-            <span
-              data-deck-ledger-age
-              // eslint-disable-next-line no-restricted-syntax -- off-scale size owned by PR #1219; folded onto the ramp there to avoid a cross-PR conflict.
-              className="text-[10.5px] font-mono shrink-0 text-[var(--text-muted)]"
-              {...tokenAttrs('textMuted', 'text')}
-            >
-              {formatAge(row.ageMs)}
-            </span>
-          </div>
-        ))}
+      {/* Collapsed the panel shows LEDGER_PANEL_VISIBLE_ROWS and nothing more:
+          it is pinned chrome above the conversation, and a fan-out of eight
+          used to push the brain's own thread off the bottom. Expanded it grows
+          to a bounded, scrolling list — never past the deck. */}
+      {/* Collapsed the panel shows LEDGER_PANEL_VISIBLE_ROWS and nothing more:
+          it is pinned chrome above the conversation, and a fan-out of eight
+          used to push the brain's own thread off the bottom. Expanded it grows
+          to a bounded, scrolling list — never past the deck. */}
+      <div className={expanded ? 'max-h-44 overflow-y-auto' : undefined}>
+        {visibleRows.map(renderRow)}
       </div>
+      {(hidden > 0 || (expanded && capped)) && (
+        <button
+          type="button"
+          data-deck-ledger-more
+          data-capped={capped ? 'true' : undefined}
+          aria-expanded={expanded}
+          onClick={toggle}
+          className={`w-full text-left px-1 py-1 text-[10px] font-mono text-[var(--text-muted)] hover:text-[var(--accent-blue)] transition-colors ${FOCUS_RING}`}
+          {...tokenAttrs('textMuted', 'text')}
+        >
+          {!expanded
+            ? (t('deck.ledgerMore') || '+{count} more').replace('{count}', String(hidden))
+            : capped
+              // The read itself is capped, so the expanded list is not the
+              // whole ledger. "Show less" here would be a lie by omission.
+              ? (t('deck.ledgerShowingOf') || 'showing {shown} of {total}')
+                  .replace('{shown}', String(rows.length))
+                  .replace('{total}', String(openCount))
+              : t('deck.ledgerShowLess') || 'Show less'}
+        </button>
+      )}
+      {/* Finished tasks. Closing a task used to take its mission channel out of
+          reach the moment the sidebar's finished-tasks disclosure went away —
+          this is where that record lives now. Collapsed by default: it is
+          history, not work. */}
+      {finishedCount > 0 && (
+        <div data-deck-ledger-finished>
+          <button
+            type="button"
+            data-deck-ledger-finished-toggle
+            aria-expanded={finishedExpanded}
+            onClick={() => onToggleFinished?.(!finishedExpanded)}
+            className={`w-full text-left px-1 py-1 text-[10px] font-mono uppercase tracking-[0.09em] text-[var(--text-muted)] hover:text-[var(--accent-blue)] transition-colors ${FOCUS_RING}`}
+            {...tokenAttrs('textMuted', 'text')}
+          >
+            {(t('deck.ledgerFinished') || 'Finished ({count})').replace(
+              '{count}',
+              String(finishedCount),
+            )}
+          </button>
+          {finishedExpanded && (
+            <div className="max-h-44 overflow-y-auto opacity-70" data-deck-ledger-finished-rows>
+              {finishedRows.map(renderRow)}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }

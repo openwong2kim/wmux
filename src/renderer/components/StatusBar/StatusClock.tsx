@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
 import { UsageWidgetView } from './UsageWidget';
@@ -61,16 +61,91 @@ export function StatusClockUsage({ isCompanyMode }: { isCompanyMode: boolean }) 
   );
 }
 
+// ─── Titlebar vitals: render only when they mean something ──────────────────
+//
+// DESIGN.md ("Fleet vitals = appearing chips … they render ONLY when nonzero —
+// no dead gauges"). The memory reading and the wall-clock were the two
+// exceptions: `553MB 09:22` sat in the titlebar permanently, saying nothing
+// about the fleet at any moment of any session, and spending two of the
+// strip's meaning-points to do it.
+//
+// Memory now appears only when it is worth interrupting for — a large absolute
+// footprint, or one that has more than doubled since this window started (the
+// shape of the leak the chip was added to catch). The clock is off unless
+// asked for: the OS already draws one, and it is only missing for people
+// running wmux full-screen with the taskbar hidden.
+
+/** Absolute floor for the memory chip. Below this the number is noise. */
+export const MEMORY_CHIP_MIN_BYTES = 1.5 * 1024 * 1024 * 1024;
+
+/** …or this much of the footprint the window started with. */
+export const MEMORY_CHIP_GROWTH_FACTOR = 1.5;
+
+/**
+ * Once shown, the chip holds until the footprint drops below this fraction of
+ * the level that showed it. Without the band a footprint sitting ON the
+ * threshold flickers the chip in and out every poll — the titlebar equivalent
+ * of a blinking light, and worse than either state.
+ */
+export const MEMORY_CHIP_HYSTERESIS = 0.9;
+
+/** Poll cadence: rare while the chip is hidden, live while it is on screen. */
+export const MEMORY_POLL_HIDDEN_MS = 30_000;
+export const MEMORY_POLL_SHOWN_MS = 5_000;
+
+/**
+ * The footprint at which the chip appears: the absolute floor, or the growth
+ * rule, whichever this window reaches first. `baselineBytes` is the first
+ * reading it took (null before one has landed, so only the floor can fire).
+ */
+export function memoryChipLevel(baselineBytes: number | null): number {
+  if (baselineBytes === null || baselineBytes <= 0) return MEMORY_CHIP_MIN_BYTES;
+  return Math.min(MEMORY_CHIP_MIN_BYTES, baselineBytes * MEMORY_CHIP_GROWTH_FACTOR);
+}
+
+/**
+ * Pure — the whole rule for whether the chip is worth a titlebar slot.
+ * `wasShown` carries the hysteresis: showing takes the full level, staying
+ * shown only takes MEMORY_CHIP_HYSTERESIS of it.
+ */
+export function shouldShowMemoryChip(
+  bytes: number,
+  baselineBytes: number | null,
+  wasShown = false,
+): boolean {
+  if (!Number.isFinite(bytes) || bytes <= 0) return false;
+  const level = memoryChipLevel(baselineBytes);
+  return bytes >= (wasShown ? level * MEMORY_CHIP_HYSTERESIS : level);
+}
+
+/** Unchanged chip text — the styling and format the strip already had. */
+export function formatMemoryChip(bytes: number): string {
+  return `${Math.round(bytes / 1024 / 1024)}MB`;
+}
+
 /** 메모리(5초 폴) + 시각(1초). 우측 클러스터 뒷부분(채널/벨 뒤). */
 export function StatusClockTime() {
+  const clockVisible = useStore((s) => s.titlebarClockVisible);
   const [time, setTime] = useState(() => new Date());
-  const [memUsage, setMemUsage] = useState('');
+  const [memBytes, setMemBytes] = useState<number | null>(null);
+  // Whether the chip is on screen. State, because it also picks the poll
+  // cadence — there is no reason to ask main for a number every 5 s while
+  // nothing is rendering it.
+  const [memShown, setMemShown] = useState(false);
+  // The footprint this window started with, and the last decision — refs
+  // because the poll reads them, it does not render them.
+  const memBaseline = useRef<number | null>(null);
+  const memShownRef = useRef(false);
+  memShownRef.current = memShown;
 
-  // Update clock every second.
+  // Update clock every second — only while the clock is actually shown. An
+  // interval driving a hidden node is the dead gauge's running cost.
   useEffect(() => {
+    if (!clockVisible) return;
+    setTime(new Date());
     const timer = setInterval(() => setTime(new Date()), 1000);
     return () => clearInterval(timer);
-  }, []);
+  }, [clockVisible]);
 
   // Update memory usage every 5 seconds. Reads the TOTAL app footprint from
   // main (app.getAppMetrics summed RSS across the whole Electron process tree)
@@ -82,20 +157,24 @@ export function StatusClockTime() {
     const update = () => {
       void window.electronAPI.system.getMemoryUsage().then((bytes) => {
         if (cancelled || typeof bytes !== 'number' || bytes <= 0) return;
-        setMemUsage(`${Math.round(bytes / 1024 / 1024)}MB`);
+        if (memBaseline.current === null) memBaseline.current = bytes;
+        setMemBytes(bytes);
+        setMemShown(shouldShowMemoryChip(bytes, memBaseline.current, memShownRef.current));
       }).catch(() => { /* main not ready / handler swapped — keep last value */ });
     };
     update();
-    const timer = setInterval(update, 5000);
+    const timer = setInterval(update, memShown ? MEMORY_POLL_SHOWN_MS : MEMORY_POLL_HIDDEN_MS);
     return () => { cancelled = true; clearInterval(timer); };
-  }, []);
+  }, [memShown]);
 
   const timeStr = time.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
 
   return (
     <>
-      {memUsage && <span>{memUsage}</span>}
-      <span>{timeStr}</span>
+      {memShown && memBytes !== null && (
+        <span data-statusbar-memory>{formatMemoryChip(memBytes)}</span>
+      )}
+      {clockVisible && <span data-statusbar-clock>{timeStr}</span>}
     </>
   );
 }

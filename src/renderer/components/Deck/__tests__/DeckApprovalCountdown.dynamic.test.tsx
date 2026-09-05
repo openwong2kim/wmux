@@ -14,6 +14,7 @@ import {
   APPROVAL_URGENT_MS,
   type ApprovalDeadlineRecord,
 } from '../DeckApprovalCountdown';
+import { useStore } from '../../../stores';
 
 let container: HTMLDivElement;
 let root: Root;
@@ -130,5 +131,128 @@ describe('approvalsForWorkspace', () => {
 
   it('filters nothing when there is no workspace to scope to', () => {
     expect(approvalsForWorkspace([a, b, c], undefined)).toEqual([a, b, c]);
+  });
+});
+
+// ─── One event, at most two renditions (DESIGN.md attention grammar) ────────
+//
+// The dialog is one. This badge is the second — but when the Fleet cockpit's
+// Approvals tab is open it draws its own countdown per row, and this badge
+// would be a third thing counting the same seconds down.
+describe('DeckApprovalCountdown vs the Fleet approval inbox', () => {
+  async function mountWithInbox(inboxOwnsApprovals: boolean): Promise<void> {
+    await act(async () => {
+      root.render(
+        createElement(DeckApprovalCountdown, {
+          records: [{ deadlineAt: 31_000 }],
+          now: () => 1_000,
+          inboxOwnsApprovals,
+        }),
+      );
+    });
+  }
+
+  it('renders the badge while the inbox is not the surface on screen', async () => {
+    await mountWithInbox(false);
+    expect(container.querySelector('[data-deck-approval-countdown]')).not.toBeNull();
+  });
+
+  it('steps aside while the Fleet approvals inbox owns the prompt', async () => {
+    await mountWithInbox(true);
+    expect(container.querySelector('[data-deck-approval-countdown]')).toBeNull();
+  });
+
+  it('reads the cockpit state from the store when the prop is omitted', async () => {
+    const render = async () => {
+      await act(async () => {
+        root.render(
+          createElement(DeckApprovalCountdown, {
+            records: [{ deadlineAt: 31_000 }],
+            now: () => 1_000,
+          }),
+        );
+      });
+    };
+    useStore.setState({ fleetViewVisible: true, fleetActiveTab: 'approvals' });
+    await render();
+    expect(container.querySelector('[data-deck-approval-countdown]')).toBeNull();
+
+    // The cockpit is open on another tab — the inbox is not on screen, so the
+    // header badge is again the operator's only view of the deadline.
+    await act(async () => {
+      useStore.setState({ fleetActiveTab: 'fleet' });
+    });
+    expect(container.querySelector('[data-deck-approval-countdown]')).not.toBeNull();
+
+    useStore.setState({ fleetViewVisible: false, fleetActiveTab: 'fleet' });
+  });
+});
+
+// Suppression is scoped: an inbox that is open but listing nothing for THIS
+// deck has taken nothing over, and stepping aside for it would leave the
+// operator with no countdown anywhere.
+describe('DeckApprovalCountdown suppression scope', () => {
+  const record = {
+    approvalId: 'a1',
+    taskId: 't1',
+    messagePreview: '',
+    expiresAt: 31_000,
+    senderWorkspaceId: 'ws-a',
+    receiverWorkspaceId: 'ws-a',
+    cwd: null,
+  };
+
+  async function render(workspaceId: string): Promise<void> {
+    await act(async () => {
+      root.render(
+        createElement(DeckApprovalCountdown, {
+          records: [{ deadlineAt: 31_000, senderWorkspaceId: workspaceId, receiverWorkspaceId: workspaceId }],
+          workspaceId,
+          now: () => 1_000,
+        }),
+      );
+    });
+  }
+
+  afterEach(() => {
+    useStore.setState({
+      fleetViewVisible: false,
+      fleetActiveTab: 'fleet',
+      pendingExecuteApprovals: {},
+      pendingExecuteApprovalOrder: [],
+    });
+  });
+
+  it('steps aside when the open inbox lists a row for this workspace', async () => {
+    useStore.setState({
+      fleetViewVisible: true,
+      fleetActiveTab: 'approvals',
+      pendingExecuteApprovals: { a1: record },
+      pendingExecuteApprovalOrder: ['a1'],
+    });
+    await render('ws-a');
+    expect(container.querySelector('[data-deck-approval-countdown]')).toBeNull();
+  });
+
+  it('keeps the badge when the open inbox is listing somebody else', async () => {
+    useStore.setState({
+      fleetViewVisible: true,
+      fleetActiveTab: 'approvals',
+      pendingExecuteApprovals: { a1: record },
+      pendingExecuteApprovalOrder: ['a1'],
+    });
+    await render('ws-b');
+    expect(container.querySelector('[data-deck-approval-countdown]')).not.toBeNull();
+  });
+
+  it('keeps the badge when the open inbox holds only MCP prompts (no deck owns one)', async () => {
+    useStore.setState({
+      fleetViewVisible: true,
+      fleetActiveTab: 'approvals',
+      pendingExecuteApprovals: {},
+      pendingExecuteApprovalOrder: [],
+    });
+    await render('ws-a');
+    expect(container.querySelector('[data-deck-approval-countdown]')).not.toBeNull();
   });
 });
