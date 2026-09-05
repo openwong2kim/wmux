@@ -53,8 +53,15 @@ GLOBAL FLAGS
 `.trimStart();
 
 /** Claude Code hook events wmux owns at matcher:'' (mirrors hooks.json). These
- *  fire at turn boundaries, never per tool call. */
-const HOOK_EVENTS = ['Stop', 'SubagentStop', 'SessionStart'] as const;
+ *  fire at turn boundaries, never per tool call.
+ *
+ *  `UserPromptSubmit` is the turn START, and it is what makes a pane's
+ *  `running` state hook-driven instead of a byte-rate guess. It is compatible
+ *  with the 2026-07-13 decision that removed the matcher:'' PostToolUse hook:
+ *  that removal was about a ~110 ms node bridge PER TOOL CALL, and
+ *  UserPromptSubmit fires exactly ONCE per turn — the same cost class as Stop,
+ *  which has always been installed. */
+const HOOK_EVENTS = ['Stop', 'SubagentStop', 'SessionStart', 'UserPromptSubmit'] as const;
 
 /**
  * AskUserQuestion-scoped hook pair that drives the in-app approval card:
@@ -839,6 +846,7 @@ export interface StatusOutcome {
   features: {
     conversationRead: HookFeatureStatus;
     approvalCard: HookFeatureStatus;
+    turnStart: HookFeatureStatus;
     turnEnd: HookFeatureStatus;
     permissionGate: HookFeatureStatus;
   };
@@ -944,6 +952,11 @@ export function statusHooks(paths: SetupHooksPaths): StatusOutcome {
   const pluginFeatures = {
     conversationRead: pluginActive,
     approvalCard: pluginActive,
+    // Plugin >= 0.4.0 registers UserPromptSubmit. An older installed plugin is
+    // indistinguishable here (the manifest scan reads no version), which is the
+    // same best-effort contract every other plugin-managed row already has —
+    // `/plugin update` is the fix, and the detail line says which hook is meant.
+    turnStart: pluginActive,
     turnEnd: pluginActive,
   };
   const features = {
@@ -960,6 +973,15 @@ export function statusHooks(paths: SetupHooksPaths): StatusOutcome {
       hasSpec('PreToolUse') && hasSpec('PostToolUse'),
       'PreToolUse + PostToolUse (AskUserQuestion) → card create + expire',
       `PreToolUse/PostToolUse:AskUserQuestion missing → run \`${FIX}\``,
+    ),
+    // Turn START — the hook that makes the pane's `running` state precise
+    // instead of a byte-rate guess. Without it the pane still works, it just
+    // falls back to the activity heuristic (amber only after enough output).
+    turnStart: featureStatus(
+      pluginFeatures.turnStart,
+      has('UserPromptSubmit'),
+      'UserPromptSubmit → pane turns running the moment a prompt is submitted',
+      `UserPromptSubmit missing → run \`${FIX}\``,
     ),
     turnEnd: featureStatus(
       pluginFeatures.turnEnd,
@@ -1103,6 +1125,7 @@ function printStatus(outcome: StatusOutcome, jsonMode: boolean): void {
   const featureRows: Array<[string, HookFeatureStatus]> = [
     ['conversation read', outcome.features.conversationRead],
     ['approval card', outcome.features.approvalCard],
+    ['turn-start signal', outcome.features.turnStart],
     ['turn-end signal', outcome.features.turnEnd],
     ['permission gate', outcome.features.permissionGate],
   ];

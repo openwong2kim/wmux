@@ -83,7 +83,10 @@ const HOOK_TO_KIND = {
   Stop: 'agent.stop',
   SubagentStop: 'agent.subagent_stop',
   SessionStart: 'agent.session_start',
-  // Deck brain ptys only — no ordinary pane's profile registers this hook.
+  // Turn START. Registered by hooks.json (plugin path), `wmux setup-hooks`
+  // (plugin-less path) and the deck brain's generated profile alike, so an
+  // ordinary pane goes 'running' the moment a prompt is submitted instead of
+  // after the byte-rate heuristic has seen enough output.
   UserPromptSubmit: 'agent.user_prompt_submit',
 };
 
