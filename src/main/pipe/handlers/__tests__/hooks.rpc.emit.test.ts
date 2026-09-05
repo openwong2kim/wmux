@@ -690,7 +690,16 @@ describe('hooks.signal — agent.user_prompt_submit turns the pane running', () 
     expect(res.ok).toBe(true);
     expect(broadcastMetadataUpdateMock).toHaveBeenCalledWith(
       expect.anything(),
-      expect.objectContaining({ ptyId: 'pty-1', agentStatus: 'running', agentSlug: 'claude' }),
+      // The display name rides along, as it does on the daemon twin: the
+      // renderer's per-surface identity map ignores an empty one, so a
+      // name-less 'running' left a freshly launched pane unlabelled until its
+      // first byte burst.
+      expect.objectContaining({
+        ptyId: 'pty-1',
+        agentStatus: 'running',
+        agentName: 'Claude Code',
+        agentSlug: 'claude',
+      }),
     );
     // Not a turn boundary: no toast, no dedup ledger entry, no lifecycle tee.
     expect(sendNotificationMock).not.toHaveBeenCalled();

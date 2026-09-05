@@ -778,6 +778,7 @@ export function registerHooksRpc(
           broadcastMetadataUpdate(win, {
             ptyId,
             agentStatus: 'running',
+            agentName: agentDisplayName(signal.agent),
             agentSlug: signal.agent,
           });
         }
