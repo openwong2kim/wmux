@@ -318,6 +318,38 @@ describe('HookSignalRouter', () => {
       }
     });
 
+    it('a different agent on the same pane does not inherit the latch', () => {
+      // F4: a pane is a SHELL. `claude` exits without a Stop, the operator
+      // starts `codex` in the same pane, and the byte heuristic that would
+      // light the new agent's dot is muted by the dead one's claim.
+      router.noteHookTurnStart('p1', 1000, 'claude');
+      expect(router.governsRunningState('p1', 1100)).toBe(true);
+      router.touchAuthority('p1', 'codex', 1100);
+      expect(router.governsRunningState('p1', 1200)).toBe(false);
+    });
+
+    it('a detector event for a different agent retires the latch too', () => {
+      router.noteHookTurnStart('p1', 1000, 'claude');
+      router.recordDetector('codex', 'agent.stop', 'p1', 1100);
+      expect(router.governsRunningState('p1', 1200)).toBe(false);
+    });
+
+    it('the SAME agent signalling mid-turn keeps its own latch', () => {
+      router.noteHookTurnStart('p1', 1000, 'claude');
+      router.touchAuthority('p1', 'claude', 1100);
+      router.recordDetector('claude', 'agent.activity', 'p1', 1200);
+      expect(router.governsRunningState('p1', 1300)).toBe(true);
+      expect(router.turnStartAgentFor('p1')).toBe('claude');
+    });
+
+    it('a latch with no recorded owner survives — unknown is not different', () => {
+      // The pre-F4 call shape (and any caller that cannot resolve a slug). An
+      // unknown owner is not evidence of a DIFFERENT one; F2's expiry bounds it.
+      router.noteHookTurnStart('p1', 1000);
+      router.touchAuthority('p1', 'codex', 1100);
+      expect(router.governsRunningState('p1', 1200)).toBe(true);
+    });
+
     it('releaseHookTurnStart hands the dot back without touching the ledger', () => {
       // The agent process died mid-turn: no Stop will ever come, so the claim
       // has to go early. The PANE is still alive, though — its dedup ledger

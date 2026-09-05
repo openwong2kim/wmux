@@ -109,6 +109,7 @@ function stubHookRouter(decision: 'emit' | 'dedup'): HookSignalRouter {
     recordHook: vi.fn().mockReturnValue('emit'),
     touchAuthority: vi.fn(),
     // Tests here exercise the detector tee — no pane is hook-governed.
+    noteAgentOnPane: vi.fn(),
     isGovernedFor: vi.fn().mockReturnValue(false),
     governsDetectorStatus: vi.fn().mockReturnValue(false),
   } as unknown as HookSignalRouter;
@@ -206,7 +207,8 @@ describe('DaemonNotificationRouter — detector lifecycle tee (awaiting_input)',
       recordDetector: vi.fn(),
       recordHook: vi.fn(),
       touchAuthority: vi.fn(),
-      isGovernedFor: vi.fn().mockReturnValue(true),
+      noteAgentOnPane: vi.fn(),
+    isGovernedFor: vi.fn().mockReturnValue(true),
       // #935: the status broadcast rides the same authority as the veto.
       governsDetectorStatus: vi.fn(
         (_p: string, slug: string | null | undefined, status: string) =>
@@ -277,7 +279,8 @@ describe('DaemonNotificationRouter — detector lifecycle tee (awaiting_input)',
       recordDetector: vi.fn(),
       recordHook: vi.fn(),
       touchAuthority: vi.fn(),
-      isGovernedFor: vi.fn().mockReturnValue(true),
+      noteAgentOnPane: vi.fn(),
+    isGovernedFor: vi.fn().mockReturnValue(true),
       governsDetectorStatus: vi.fn().mockReturnValue(true),
     } as unknown as HookSignalRouter;
     const { router: nr, captured } = makeRouter({ hookRouter });
@@ -307,7 +310,8 @@ describe('DaemonNotificationRouter — detector lifecycle tee (awaiting_input)',
       recordDetector: vi.fn(),
       recordHook: vi.fn(),
       touchAuthority: vi.fn(),
-      isGovernedFor: vi.fn().mockReturnValue(true),
+      noteAgentOnPane: vi.fn(),
+    isGovernedFor: vi.fn().mockReturnValue(true),
       governsDetectorStatus: vi.fn().mockReturnValue(true),
     } as unknown as HookSignalRouter;
     const { router: nr, captured } = makeRouter({ hookRouter });
@@ -373,7 +377,8 @@ describe('DaemonNotificationRouter — detector lifecycle tee (awaiting_input)',
       recordDetector: vi.fn().mockReturnValue('emit'),
       recordHook: vi.fn(),
       touchAuthority: vi.fn(),
-      isGovernedFor: vi.fn().mockReturnValue(true),
+      noteAgentOnPane: vi.fn(),
+    isGovernedFor: vi.fn().mockReturnValue(true),
       // #935: the status broadcast rides the same authority as the veto.
       governsDetectorStatus: vi.fn(
         (_p: string, slug: string | null | undefined, status: string) =>
@@ -408,7 +413,8 @@ describe('DaemonNotificationRouter — M1 daemon-arbitrated events (source field
       recordDetector: vi.fn(),
       recordHook: vi.fn(),
       touchAuthority: vi.fn(),
-      isGovernedFor: vi.fn().mockReturnValue(true),
+      noteAgentOnPane: vi.fn(),
+    isGovernedFor: vi.fn().mockReturnValue(true),
       // #935: the status broadcast rides the same authority as the veto.
       governsDetectorStatus: vi.fn(
         (_p: string, slug: string | null | undefined, status: string) =>
@@ -598,7 +604,8 @@ describe('DaemonNotificationRouter — M1 daemon-arbitrated events (source field
       recordDetector: vi.fn().mockReturnValue('emit'),
       recordHook: vi.fn(),
       touchAuthority: vi.fn(),
-      isGovernedFor: vi.fn().mockReturnValue(true),
+      noteAgentOnPane: vi.fn(),
+    isGovernedFor: vi.fn().mockReturnValue(true),
       // #935: the status broadcast rides the same authority as the veto.
       governsDetectorStatus: vi.fn(
         (_p: string, slug: string | null | undefined, status: string) =>

@@ -70,6 +70,7 @@ function stubHookRouter(runningGoverned: boolean): HookSignalRouter {
     noteHookTurnStart: vi.fn(),
     releaseHookTurnStart: vi.fn(),
     governsRunningState: vi.fn().mockReturnValue(runningGoverned),
+    noteAgentOnPane: vi.fn(),
     isGovernedFor: vi.fn().mockReturnValue(false),
     governsDetectorStatus: vi.fn().mockReturnValue(false),
     recordDetector: vi.fn().mockReturnValue('emit'),
@@ -181,7 +182,9 @@ describe('DaemonNotificationRouter — the byte heuristic stands down on a hook-
     const hookRouter = stubHookRouter(false);
     const { router, captured } = makeRouter(hookRouter);
     captured.agent?.(metadataEvent('agent.user_prompt_submit'));
-    expect(hookRouter.noteHookTurnStart).toHaveBeenCalledWith(PTY, expect.any(Number));
+    // The latch records WHICH agent opened the turn (F4): a different agent
+    // launched in the same shell must not inherit this one's claim.
+    expect(hookRouter.noteHookTurnStart).toHaveBeenCalledWith(PTY, expect.any(Number), 'claude');
     router.stop();
   });
 

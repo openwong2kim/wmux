@@ -717,7 +717,7 @@ export class DaemonNotificationRouter {
             // silence. Recorded on main's router even though a daemon-served
             // pane never touches its authority map: this latch is a separate,
             // narrower claim. See HookSignalRouter.governsRunningState.
-            this.getHookRouter?.()?.noteHookTurnStart(payload.sessionId, this.now());
+            this.getHookRouter?.()?.noteHookTurnStart(payload.sessionId, this.now(), promptSlug ?? null);
             broadcastMetadataUpdate(win, {
               ptyId: payload.sessionId,
               agentStatus: 'running',
@@ -769,6 +769,12 @@ export class DaemonNotificationRouter {
         // which is worse than the bug this fixes. Cheap to enforce locally.
         const statusSlug = agentDisplayToSlug(ev.agent);
         const statusRouter = this.getHookRouter?.() ?? null;
+        // A pane is a shell: the agent that reported a turn start may already be
+        // gone and a different one launched in its place. Main's authority map
+        // is never touched for a daemon-served pane, so this is the daemon-mode
+        // arm of that invalidation — without it the new agent's dot would be
+        // muted by the old one's latch. Same-agent events are a no-op.
+        statusRouter?.noteAgentOnPane(payload.sessionId, statusSlug);
         const withholdStatus = ev.status !== 'awaiting_input' && (
           arbitratedSource(ev)
             ? arbitratedDecision(ev) === 'veto'

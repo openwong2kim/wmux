@@ -128,10 +128,13 @@ export class HookSignalRouter {
     string,
     { agent: string; lastSignalAt: number; exact: boolean; lifecycleOwned: boolean }
   >();
-  /** ptyId → when this pane's bridge last reported a TURN START. Separate from
-   *  `authority` on purpose: it answers "has the hook proven it can light this
-   *  pane's running dot", not "is a bridge alive". See governsRunningState. */
-  private readonly turnStart = new Map<string, number>();
+  /** ptyId → the pane's open TURN START: which agent reported it, and when.
+   *  Separate from `authority` on purpose: it answers "has the hook proven it
+   *  can light this pane's running dot", not "is a bridge alive". The AGENT is
+   *  part of the key in effect — a pane is a shell, and the next thing launched
+   *  in it is frequently a different agent that must not inherit the previous
+   *  one's open turn. See governsRunningState / noteAgentOnPane. */
+  private readonly turnStart = new Map<string, { agent: string | null; at: number }>();
   /** ptyId → the pending expiry for that pane's open turn latch. See
    *  `setTurnExpiryListener`. */
   private readonly turnExpiryTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -209,6 +212,9 @@ export class HookSignalRouter {
     exact = true,
     kind?: AgentSignalKind,
   ): void {
+    // A signal from a DIFFERENT agent means the pane changed hands; the
+    // previous agent's open turn does not survive that.
+    this.noteAgentOnPane(ptyId, agent);
     this.authority.set(ptyId, {
       agent,
       lastSignalAt: now,
@@ -220,6 +226,11 @@ export class HookSignalRouter {
     // re-armed; arming one here would claim a running state no turn start
     // announced.
     if (this.turnStart.has(ptyId)) this.armTurnExpiry(ptyId);
+  }
+
+  /** Read side of the turn latch's owner — testing aid, not a contract. */
+  turnStartAgentFor(ptyId: string): string | null | undefined {
+    return this.turnStart.get(ptyId)?.agent;
   }
 
   /**
@@ -278,9 +289,9 @@ export class HookSignalRouter {
    * authority map is deliberately never touched for a daemon-served pane (the
    * daemon's arbitration stamp stands in for it there).
    */
-  noteHookTurnStart(ptyId: string, now: number = Date.now()): void {
+  noteHookTurnStart(ptyId: string, now: number = Date.now(), agent?: string | null): void {
     if (!ptyId) return;
-    this.turnStart.set(ptyId, now);
+    this.turnStart.set(ptyId, { agent: agent ?? null, at: now });
     // The latch's own deadline. See setTurnExpiryListener: a pane the tracker
     // could never attribute a process to has no death edge, so without this a
     // turn that never ends holds the dot lit for the life of the process.
@@ -308,8 +319,29 @@ export class HookSignalRouter {
    * `dropPty` releases it immediately on pane death or reuse.
    */
   governsRunningState(ptyId: string, now: number = Date.now()): boolean {
-    const at = this.turnStart.get(ptyId);
-    return at !== undefined && now - at < this.authorityTtlMs;
+    const entry = this.turnStart.get(ptyId);
+    return entry !== undefined && now - entry.at < this.authorityTtlMs;
+  }
+
+  /**
+   * A named agent has been observed on this pane. When it is not the agent that
+   * opened the pane's turn, that turn is over as far as this router can know.
+   *
+   * A pane is a SHELL, and its ptyId outlives whatever ran in it: `claude` exits
+   * without a Stop, the operator starts `codex` in the same pane, and the
+   * heuristic that would light the new agent's dot is muted by a latch the old
+   * one left behind. Keying the latch by ptyId alone made that inheritance
+   * silent and 30 minutes long.
+   *
+   * A latch with no recorded agent is left alone — an unknown owner is not
+   * evidence of a DIFFERENT owner, and the F2 expiry bounds it either way.
+   */
+  noteAgentOnPane(ptyId: string, agent: string | null | undefined): void {
+    if (!ptyId || !agent) return;
+    const entry = this.turnStart.get(ptyId);
+    if (!entry || entry.agent === null || entry.agent === agent) return;
+    this.turnStart.delete(ptyId);
+    this.clearTurnExpiry(ptyId);
   }
 
   /**
@@ -455,6 +487,9 @@ export class HookSignalRouter {
     ptyId: string,
     now: number = Date.now(),
   ): RouteDecision {
+    // Same rule as the hook funnel: the detector seeing a different agent on
+    // this pane retires the latch the previous one left open.
+    this.noteAgentOnPane(ptyId, slug);
     const key = this.key(slug, ptyId, kind);
     const recent = this.ledger.get(key);
     if (
