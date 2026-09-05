@@ -248,11 +248,49 @@ describe('DaemonNotificationRouter — an agent that died without a Stop settles
     router.stop();
   });
 
-  it('clears the agent name too, so a dead pane stops advertising one', () => {
+  it('keeps the agent NAME — the pane is still a Claude Code pane', () => {
+    // The name is per-PTY identity, not a liveness claim. Blanking it drops the
+    // roster row's label, and with it the pane's place in the roster, for a
+    // pane that is still on screen.
     const { router, captured } = makeRouter(stubHookRouter(true));
     captured.processExit?.({ sessionId: PTY, slug: 'claude' });
     const patch = broadcastMetadataUpdateMock.mock.calls.at(-1)?.[1] as Record<string, unknown>;
-    expect(patch.agentName).toBe('');
+    expect(patch.agentStatus).toBe('idle');
+    expect(patch).not.toHaveProperty('agentName');
+    router.stop();
+  });
+
+  it('ignores an exit the tracker could not attribute', () => {
+    // `slug: null` is the tracker admitting it does not know what died (arm
+    // failure, backoff, a pick with no slug). That is not evidence about this
+    // pane, and acting on it would erase a live agent's status.
+    const { router, captured } = makeRouter(stubHookRouter(true));
+    captured.agent?.(metadataEvent('agent.user_prompt_submit'));
+    broadcastMetadataUpdateMock.mockClear();
+    captured.processExit?.({ sessionId: PTY, slug: null });
+    expect(broadcastMetadataUpdateMock).not.toHaveBeenCalled();
+    router.stop();
+  });
+
+  it('ignores an exit naming a different agent than the pane is running', () => {
+    const { router, captured } = makeRouter(stubHookRouter(true));
+    captured.agent?.(metadataEvent('agent.user_prompt_submit'));
+    broadcastMetadataUpdateMock.mockClear();
+    captured.processExit?.({ sessionId: PTY, slug: 'codex' });
+    expect(broadcastMetadataUpdateMock).not.toHaveBeenCalled();
+    router.stop();
+  });
+
+  it('never overwrites a finished turn the operator has not read yet', () => {
+    // The agent printed its answer, ended its turn ('complete'), and then
+    // exited. Clearing here would wipe the one signal saying the work is done.
+    const hookRouter = stubHookRouter(false);
+    const { router, captured } = makeRouter(hookRouter);
+    metadataHandlerMocks.lastBroadcastAgentStatus.set(PTY, 'complete');
+    broadcastMetadataUpdateMock.mockClear();
+    captured.processExit?.({ sessionId: PTY, slug: 'claude' });
+    expect(broadcastMetadataUpdateMock).not.toHaveBeenCalled();
+    expect(hookRouter.releaseHookTurnStart).not.toHaveBeenCalled();
     router.stop();
   });
 });

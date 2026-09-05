@@ -712,6 +712,10 @@ export class DaemonNotificationRouter {
             // and a dropped one would leave the pane looking idle for a whole
             // turn. It also does not stamp the throttle window.
             const promptSlug = agentDisplayToSlug(ev.agent);
+            // Remember WHO is running here. The process-death edge below has to
+            // check the dying process against this pane's agent, and a turn
+            // start may be the only event a pane produces before it dies.
+            if (ev.agent) this.lastAgentNameByPty.set(payload.sessionId, ev.agent);
             // From here the hook owns this pane's running dot — onActive stops
             // promoting it on output bursts and onIdle stops clearing it on
             // silence. Recorded on main's router even though a daemon-served
@@ -1096,16 +1100,47 @@ export class DaemonNotificationRouter {
      * killed mid-turn never sends one. Byte silence no longer clears such a
      * pane, so without this the dot would stay lit for the authority TTL.
      *
+     * It is also, unguarded, a way to LOSE state: an exit is only ever a reason
+     * to clear a pane that is currently claiming to be working, and only when
+     * the process that died is the one this pane was running. Three guards, in
+     * the order they can disqualify the edge most cheaply:
+     *
+     *   1. ATTRIBUTION. `slug: null` is the tracker admitting it could not name
+     *      the process it was watching (arm failure, backoff, a pick with no
+     *      slug). An unattributed death is not evidence about THIS pane.
+     *   2. IDENTITY. A named death must match the agent the pane is running, or
+     *      it belongs to some other process the tracker followed into this
+     *      session — a sidecar, a leftover child, a previous launch.
+     *   3. LIVE STATUS. Only a pane showing 'running' (or holding an open turn
+     *      latch) has anything to settle. `complete` / `awaiting_input` /
+     *      `waiting` / `error` are results the operator has not read yet, and
+     *      the agent exiting afterwards does not un-finish the turn. This
+     *      reuses the same `getLastBroadcastAgentStatus` record #935 added for
+     *      onIdle's deference.
+     *
+     * `agentName` is deliberately NOT cleared: it is per-PTY identity ("this
+     * pane is a Claude Code pane"), not a liveness claim, and blanking it drops
+     * the roster row's label — and with it the pane's place in the roster —
+     * for a pane that is still very much there.
+     *
      * The order matters — the hook's claim is released FIRST, so the clear
      * below is not vetoed by the very gate it exists to escape.
      */
-    const onAgentProcessExit = (payload: { sessionId: string }) => {
+    const onAgentProcessExit = (payload: { sessionId: string; slug?: string | null }) => {
       try {
-        this.getHookRouter?.()?.releaseHookTurnStart(payload.sessionId);
+        if (!payload.slug) return;
+        const paneName = this.lastAgentNameByPty.get(payload.sessionId);
+        const paneSlug = paneName ? agentDisplayToSlug(paneName) : undefined;
+        // An unknown pane agent cannot contradict the tracker: the payload is
+        // then the only attribution anyone has.
+        if (paneSlug && paneSlug !== payload.slug) return;
+        const router = this.getHookRouter?.() ?? null;
+        const latchOpen = router?.governsRunningState(payload.sessionId, this.now()) === true;
+        if (!latchOpen && getLastBroadcastAgentStatus(payload.sessionId) !== 'running') return;
+        router?.releaseHookTurnStart(payload.sessionId);
         broadcastMetadataUpdate(this.getWindow(), {
           ptyId: payload.sessionId,
           agentStatus: 'idle',
-          agentName: '',
         });
       } catch (err) {
         console.warn('[DaemonNotificationRouter] agent process exit error:', err);
