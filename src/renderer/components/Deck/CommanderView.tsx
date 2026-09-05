@@ -234,7 +234,6 @@ export function CommanderViewContent({
     }
   }, []);
   const [decisionPending, setDecisionPending] = useState(false);
-  const isEmpty = !brainPtyId && threads.length === 0 && brainMessages.length === 0;
   // The pty layout's durable turn reports (pure selector — the store keeps the
   // full message array for the other vendors' bubble log).
   const railMessages = useMemo(() => selectReportRail(brainMessages), [brainMessages]);
@@ -500,16 +499,11 @@ export function CommanderViewContent({
         className="flex-1 min-h-0 overflow-y-auto px-4 py-3 space-y-3"
         data-commander-threads
       >
-        {isEmpty && (
-          <div
-            data-commander-empty
-            className="text-[13px] text-[var(--text-muted)] text-center py-8 leading-relaxed"
-            {...tokenAttrs('textMuted', 'text')}
-          >
-            {t('deck.commanderEmpty') ||
-              'Ask the orchestrator to run your agents, or @mention agent panes to command them directly.'}
-          </div>
-        )}
+        {/* No empty-state paragraph. It said "Ask the orchestrator to run your
+            agents, or @mention agent panes to command them directly" — three
+            centred lines saying what the composer's own placeholder ("Tell the
+            orchestrator, or @mention panes…") says one row below, inside the box
+            you would type it into. One instruction, at the point of use. */}
 
         {/* Reboot-recovery greeting card (P3b) — shown while recoverable panes
             exist and the card wasn't dismissed. One click sends the canned

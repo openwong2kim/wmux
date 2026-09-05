@@ -988,8 +988,6 @@ export const ko = {
   'deck.hasSignal': '확인할 것이 있음',
   'web.running': '실행 중',
   'deck.commanderPlaceholder': 'agent에 지시하거나 @로 pane을 멘션…',
-  'deck.commanderEmpty':
-    'agent에게 에이전트 운영을 맡기거나, @로 에이전트 pane을 멘션해 직접 지시하세요.',
   'deck.jumpToPane': '이 pane으로 이동',
   // Bridge P2① — agent 스레드 위에 고정되는 에이전트 명단.
   'deck.fleetLabel': '에이전트',
@@ -1017,7 +1015,7 @@ export const ko = {
   // 커맨드 데크 — 컨트롤 바(Mode·Loop·Schedules)는 각 컴포넌트가 담당.
   // 커맨드 데크 P3d — agent 예약(재부팅 생존).
   'deck.schedules': '예약',
-  'deck.schedulesEmpty': '예약이 없습니다. 예약은 재부팅 후에도 유지되고, 시간이 되면 agent가 실행합니다.',
+  'deck.schedulesEmpty': '예약이 없습니다. 예약은 재부팅 후에도 유지됩니다.',
   'deck.schedulePromptPlaceholder': 'agent가 무엇을 하면 될까요?',
   'deck.scheduleRepeat': '반복',
   'deck.scheduleRepeatNone': '한 번',

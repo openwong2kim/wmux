@@ -69,9 +69,15 @@ const brainTurn = (): DeckBrainMessage[] => [
 ];
 
 describe('CommanderViewContent — brain surface', () => {
-  it('shows the empty state when there is no brain or fan-out history', () => {
+  it('says nothing at all when there is no brain or fan-out history', () => {
+    // The empty state used to be a three-line centred paragraph repeating the
+    // composer's placeholder. The thread is now simply empty: the one
+    // instruction lives in the box you would type it into.
     mount({});
-    expect(container.querySelector('[data-commander-empty]')).not.toBeNull();
+    expect(container.querySelector('[data-commander-empty]')).toBeNull();
+    const threads = container.querySelector('[data-commander-threads]');
+    expect(threads).not.toBeNull();
+    expect(threads!.textContent?.trim()).toBe('');
   });
 
   it('renders brain messages as bubbles with tool chips', () => {

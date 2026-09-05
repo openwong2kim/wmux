@@ -25,7 +25,6 @@ export const pl = {
   'sidebar.screenOffAccessibility': 'Nadaj wmuxowi uprawnienie Ułatwienia dostępu (Ustawienia systemowe → Prywatność i bezpieczeństwo → Ułatwienia dostępu).',
   'sidebar.screenOffFailed': 'Nie udało się przełączyć wbudowanego ekranu.',
   'sidebar.browseFolder': 'Przeglądaj folder…',
-  'sidebar.pickFolderAsWorkspace': 'Wybierz folder jako obszar roboczy',
   'sidebar.emptyWorkspace': 'Pusty',
   'sidebar.blankSinglePane': 'Pusty pojedynczy panel',
 
@@ -1529,8 +1528,6 @@ export const pl = {
   'deck.expandDock': 'Rozwiń dok',
   'deck.hasSignal': 'coś tu Cię potrzebuje',
   'deck.commanderPlaceholder': 'Powiedz orkiestratorowi albo @wspomnij panele…',
-  'deck.commanderEmpty':
-    'Poproś orkiestratora, aby uruchomił Twoich agentów, albo @wspomnij panele agentów, żeby nimi sterować bezpośrednio.',
   'deck.jumpToPane': 'Przejdź do tego panelu',
   // Bridge P2① — Fleet roster pinned above the orchestrator thread.
   'deck.fleetLabel': 'Flota',
@@ -1600,7 +1597,7 @@ export const pl = {
   // Command Deck — the control bar (Mode·Loop·Schedules) is component-owned.
   // Command Deck P3d — orchestrator schedules (reboot-surviving).
   'deck.schedules': 'Harmonogramy',
-  'deck.schedulesEmpty': 'Brak harmonogramów. Harmonogramy przeżywają restarty, a orkiestrator uruchamia je, gdy nadejdzie czas.',
+  'deck.schedulesEmpty': 'Brak harmonogramów. Harmonogramy przeżywają restarty.',
   'deck.schedulePromptPlaceholder': 'Co ma zrobić orkiestrator?',
   'deck.scheduleRepeat': 'Powtarzaj',
   'deck.scheduleRepeatNone': 'Raz',
