@@ -135,7 +135,7 @@ function MissionsSection(): React.ReactElement | null {
     <div className="mb-1 flex items-center" data-missions-section>
       <button
         type="button"
-        className={`min-w-0 flex-1 flex items-center gap-1.5 px-4 pt-1 pb-1 text-[9px] font-mono font-semibold tracking-widest text-[var(--text-muted)] uppercase hover:text-[var(--text-subtle)] transition-colors ${FOCUS_RING}`}
+        className={`min-w-0 flex-1 flex items-center gap-1.5 px-4 pt-1 pb-1 text-[10px] font-mono font-semibold tracking-widest text-[var(--text-muted)] uppercase hover:text-[var(--text-subtle)] transition-colors ${FOCUS_RING}`}
         onClick={() => openTaskLedger(wanted)}
         title={t('missions.summaryTooltip')}
         data-missions-summary
@@ -162,7 +162,7 @@ function MissionsSection(): React.ReactElement | null {
           the line is gone and the command palette is the way in. */}
       <button
         type="button"
-        className={`shrink-0 pr-4 pl-1 pt-1 pb-1 text-[9px] font-mono uppercase tracking-widest text-[var(--text-subtle)] hover:text-[var(--accent-blue)] transition-colors ${FOCUS_RING}`}
+        className={`shrink-0 pr-4 pl-1 pt-1 pb-1 text-[10px] font-mono uppercase tracking-widest text-[var(--text-subtle)] hover:text-[var(--accent-blue)] transition-colors ${FOCUS_RING}`}
         onClick={() => useStore.getState().setWorktaskCleanupVisible(true)}
         aria-label={t('missions.cleanUpTooltip')}
         data-missions-cleanup

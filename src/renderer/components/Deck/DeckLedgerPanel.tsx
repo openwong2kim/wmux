@@ -251,7 +251,7 @@ export function DeckLedgerPanel({
         )}
         <span
           data-deck-ledger-status
-          className="text-[10.5px] font-mono shrink-0 text-[var(--text-sub)]"
+          className="text-[11px] font-mono shrink-0 text-[var(--text-sub)]"
           {...tokenAttrs('textSub', 'text')}
         >
           {row.status}
@@ -267,7 +267,7 @@ export function DeckLedgerPanel({
         </span>
         <span
           data-deck-ledger-age
-          className="text-[10.5px] font-mono shrink-0 text-[var(--text-muted)]"
+          className="text-[11px] font-mono shrink-0 text-[var(--text-muted)]"
           {...tokenAttrs('textMuted', 'text')}
         >
           {formatAge(row.ageMs)}
