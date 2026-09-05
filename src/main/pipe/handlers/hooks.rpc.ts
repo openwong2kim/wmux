@@ -763,10 +763,16 @@ export function registerHooksRpc(
       // toast, no ledger write, no lifecycle tee, exactly like every other
       // non-emit kind that returns here.
       if (signal.kind === 'agent.user_prompt_submit') {
-        // From here the hook owns this pane's running dot: the byte-rate
-        // heuristic must stop promoting it on output and stop clearing it on
-        // silence. See HookSignalRouter.governsRunningState.
-        hookRouter.noteHookTurnStart(ptyId, Date.now());
+        // Deliberately NOT `noteHookTurnStart`, and deliberately not tagged
+        // with `hookKind` for the renderer's latch either. The latch mutes the
+        // byte heuristic in both directions, and its two release paths are the
+        // turn's own end hook and the agent process's death edge — but this is
+        // the daemon-UNREACHABLE fallback, and `agent.processExit` comes from
+        // the daemon's AgentProcessTracker. Claiming the dot here would seal
+        // the heuristic shut with only one way out. So this stays a one-shot
+        // cue: the pane lights the instant the prompt is submitted, and the
+        // byte heuristic keeps owning the state after that, exactly as it did
+        // before hooks reported turn starts at all.
         const win = getWindow();
         if (win) {
           broadcastMetadataUpdate(win, {

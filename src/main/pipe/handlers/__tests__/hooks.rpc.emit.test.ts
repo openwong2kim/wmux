@@ -698,7 +698,7 @@ describe('hooks.signal — agent.user_prompt_submit turns the pane running', () 
     expect(pollLifecycle()).toHaveLength(0);
   });
 
-  it('marks the pane hook-governed, so the byte heuristic can stand down', async () => {
+  it('marks the pane hook-governed but does NOT claim its running dot', async () => {
     const stub = stubHookRouter();
     const router = new RpcRouter();
     registerHooksRpc(router, () => fakeWindow(), stub.router);
@@ -716,7 +716,28 @@ describe('hooks.signal — agent.user_prompt_submit turns the pane running', () 
       expect.any(Boolean),
       'agent.user_prompt_submit',
     );
-    // …and claims the running dot, so PTYBridge's byte heuristic stands down.
-    expect(stub.router.noteHookTurnStart).toHaveBeenCalledWith('pty-1', expect.any(Number));
+    // The turn latch is NOT armed here (F3). This path runs only when the
+    // daemon is unreachable, and `agent.processExit` — one of the latch's two
+    // release paths — is a daemon broadcast. Arming it would mute the byte
+    // heuristic with only the turn-end hook left to unmute it.
+    expect(stub.router.noteHookTurnStart).not.toHaveBeenCalled();
+  });
+
+  it('does not tag the broadcast with a hookKind, so the renderer latch stays shut', async () => {
+    const stub = stubHookRouter();
+    const router = new RpcRouter();
+    registerHooksRpc(router, () => fakeWindow(), stub.router);
+
+    await router.dispatch({
+      id: 'ups-3',
+      method: 'hooks.signal',
+      params: signal({ kind: 'agent.user_prompt_submit' }) as unknown as Record<string, unknown>,
+    });
+
+    // The renderer's turn latch does not decay either, and this path has no
+    // process-death broadcast to withdraw it — so the cue must arrive as a
+    // plain 'running', which the byte heuristic's idle clear can still undo.
+    const call = broadcastMetadataUpdateMock.mock.calls.at(-1)?.[1] as Record<string, unknown>;
+    expect(call).not.toHaveProperty('hookKind');
   });
 });
