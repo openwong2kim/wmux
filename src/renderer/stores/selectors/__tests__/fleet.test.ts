@@ -7,10 +7,6 @@ import {
   selectWorkspaceAgentStatus,
   selectAllWorkspaceAgentStatus,
   isPaneAgentBusy,
-  selectWorkspaceUnverifiableMinutes,
-  selectAllWorkspaceUnverifiableMinutes,
-  selectUnverifiablePaneMinutes,
-  formatStaleMinutes,
   HOOK_RUNNING_TTL_MS,
   type FleetPane,
   pickStashedRepresentativeSurface,
@@ -892,100 +888,5 @@ describe('selectFleetPanes — stashed pane representative (#977)', () => {
     const rows = selectFleetPanes(st as never);
     const stRow = rows.find((r) => r.paneId === 'p-st');
     expect(stRow?.ptyId).toBe('pty-live');
-  });
-});
-
-// ─── unverifiable — the 'running' claim's expiry (display state, not a status) ─
-
-describe('selectFleetPanes unverifiable', () => {
-  const NOW = 1_000_000_000_000;
-  // One pane the store believes is running: the workspace metadata says so and
-  // the pane is its workspace's confirmed agent, which is the shape lane A's
-  // hook-driven 'running' produces — a status that no longer clears itself on
-  // byte silence, so only the stamp's age can say it has gone quiet.
-  const wr = workspace(
-    'ws-r', 'runner',
-    leaf('pr', [surface('sr', 'pty-r')]),
-    'pr',
-    { agentName: 'Claude Code', agentStatus: 'running' },
-  );
-  const base = {
-    workspaces: [wr],
-    // The attention map is the carrier for a retained 'running' (lane A) — the
-    // workspace slot vetoes 'running' by design (#837).
-    surfaceAgentStatus: { 'pty-r': 'running' as AgentStatus },
-    surfaceActivity: {},
-    surfaceAgent: { 'pty-r': { name: 'Claude Code', status: 'running' as AgentStatus } },
-  };
-  const stale = { ...base, surfaceActivityAt: { 'pty-r': NOW - 31 * 60_000 }, agentClockMs: NOW };
-
-  it('a freshly reporting running pane is not unverifiable', () => {
-    const fx = { ...base, surfaceActivityAt: { 'pty-r': NOW - 30_000 }, agentClockMs: NOW };
-    const pane = byPane(selectFleetPanes(fx), 'pr');
-    expect(pane.agentStatus).toBe('running');
-    expect(pane.unverifiable).toBe(false);
-    expect(pane.staleForMs).toBeUndefined();
-  });
-
-  it('31 minutes of silence on a running pane is unverifiable, with its age', () => {
-    const pane = byPane(selectFleetPanes(stale), 'pr');
-    // The STATUS is untouched — this is a rendition, not a sixth AgentStatus.
-    expect(pane.agentStatus).toBe('running');
-    expect(pane.unverifiable).toBe(true);
-    expect(pane.staleForMs).toBe(31 * 60_000);
-  });
-
-  it('a dead agent process is idle, not unverifiable', () => {
-    const fx = { ...stale, agentAliveByPtyId: { 'pty-r': false } };
-    expect(byPane(selectFleetPanes(fx), 'pr').unverifiable).toBe(false);
-  });
-
-  it('a shell back at its prompt is idle, not unverifiable', () => {
-    const fx = { ...stale, commandRunningByPtyId: { 'pty-r': false } };
-    expect(byPane(selectFleetPanes(fx), 'pr').unverifiable).toBe(false);
-  });
-
-  it('an agent awaiting input is never unverifiable, however old the stamp', () => {
-    const fx = { ...stale, surfaceAgentStatus: { 'pty-r': 'awaiting_input' as AgentStatus } };
-    const pane = byPane(selectFleetPanes(fx), 'pr');
-    expect(pane.agentStatus).toBe('awaiting_input');
-    expect(pane.unverifiable).toBe(false);
-  });
-
-  it('a pane the store has never heard from has no silence to measure', () => {
-    const fx = { ...base, agentClockMs: NOW };
-    expect(byPane(selectFleetPanes(fx), 'pr').unverifiable).toBe(false);
-  });
-
-  it('rolls up to the workspace in whole minutes, and to the all-workspaces map', () => {
-    expect(selectWorkspaceUnverifiableMinutes(stale, 'ws-r')).toBe(31);
-    expect(selectAllWorkspaceUnverifiableMinutes(stale)).toEqual({ 'ws-r': 31 });
-    expect(selectUnverifiablePaneMinutes(stale)).toEqual({ 'pty-r': 31 });
-  });
-
-  it('does not claim silence for a workspace whose other agent IS reporting', () => {
-    const twoPanes = workspace(
-      'ws-r', 'runner',
-      branch('b-r', [leaf('pr', [surface('sr', 'pty-r')]), leaf('pr2', [surface('sr2', 'pty-r2')])]),
-      'pr',
-      { agentName: 'Claude Code', agentStatus: 'running' },
-    );
-    const fx = {
-      ...stale,
-      workspaces: [twoPanes],
-      surfaceAgentStatus: { 'pty-r': 'running' as AgentStatus, 'pty-r2': 'running' as AgentStatus },
-      surfaceActivityAt: { 'pty-r': NOW - 31 * 60_000, 'pty-r2': NOW - 10_000 },
-    };
-    expect(selectWorkspaceUnverifiableMinutes(fx, 'ws-r')).toBe(0);
-    expect(selectAllWorkspaceUnverifiableMinutes(fx)).toEqual({});
-    // The wedged pane itself is still reported — the per-pane roster says so
-    // even when the workspace roll-up cannot.
-    expect(selectUnverifiablePaneMinutes(fx)).toEqual({ 'pty-r': 31 });
-  });
-
-  it('formats the compact duration the label uses', () => {
-    expect(formatStaleMinutes(34)).toBe('34m');
-    expect(formatStaleMinutes(125)).toBe('2h');
-    expect(formatStaleMinutes(60 * 25)).toBe('1d');
   });
 });

@@ -254,6 +254,23 @@ export interface PaneSlice {
   // Cleared with the activity string (pane disposal); byte-'running' has no
   // string, so it stamps the timestamp only (markSurfaceRunning).
   surfaceActivityAt: Record<string, number>;
+  // The TURN LATCH: ptyId → epoch-ms of the hook-reported turn start
+  // (`UserPromptSubmit`, arriving as a METADATA_UPDATE tagged
+  // hookKind:'agent.user_prompt_submit').
+  //
+  // Deliberately NOT a timestamp the fleet selector ages out. `surfaceActivityAt`
+  // decays at HOOK_RUNNING_TTL_MS because it is EVIDENCE ("a tool fired 40s
+  // ago"), and evidence goes stale. This is a CLAIM ("the agent's own hook says
+  // a turn is open"), and a claim stands until it is withdrawn — by the turn's
+  // end (any complete/awaiting_input/waiting/error/idle broadcast, incl. the
+  // process-death edge and main's 30-min expiry) or by the pane's disposal. It
+  // exists because a hook-governed pane no longer emits byte-driven 'running'
+  // at all: a quiet turn (long bash, web search, silent reasoning) would
+  // otherwise cross the 120 s TTL and read as idle mid-turn, which is the
+  // exact bug the hook was installed to fix.
+  surfaceTurnOpenAt: Record<string, number>;
+  markSurfaceTurnOpen: (ptyId: string) => void;
+  clearSurfaceTurnOpen: (ptyId: string) => void;
   // A coarse clock the status derivation re-reads so a fresh stamp DECAYS to
   // idle on its own with no new store event. Bumped ~every 2s by
   // useAgentActivityClock while any pane is recently active; membership in
@@ -282,6 +299,18 @@ const ATTENTION_STATUSES: ReadonlySet<AgentStatus> = new Set<AgentStatus>([
   'complete',
   'waiting',
   'awaiting_input',
+]);
+
+// The statuses that END a hook-reported turn, and so withdraw the turn latch.
+// Everything an agent can report EXCEPT 'running' — including 'idle', which is
+// what the process-death edge and main's turn-expiry timer broadcast for a pane
+// whose agent died without ever sending a Stop.
+const TURN_CLOSING_STATUSES: ReadonlySet<AgentStatus> = new Set<AgentStatus>([
+  'complete',
+  'waiting',
+  'awaiting_input',
+  'error',
+  'idle',
 ]);
 
 /** Normalized leaf rectangle in a 0–100 coordinate space (both axes). */
@@ -560,6 +589,15 @@ export const createPaneSlice: StateCreator<StoreState, [['zustand/immer', never]
     } else {
       delete state.surfaceAgentStatus[ptyId];
     }
+    // Turn-latch withdrawal. Every one of these statuses is a TURN END the
+    // agent (or the process-death edge) reported, so the hook's "a turn is
+    // open" claim is over and the pane goes back to the byte heuristic.
+    // `null` is NOT in the list on purpose: it is the focus clear from
+    // Pane.tsx ("the user has seen this"), which says nothing about whether
+    // the turn is still running.
+    if (status && TURN_CLOSING_STATUSES.has(status)) {
+      delete state.surfaceTurnOpenAt[ptyId];
+    }
   }),
 
   surfaceAgent: {},
@@ -629,6 +667,7 @@ export const createPaneSlice: StateCreator<StoreState, [['zustand/immer', never]
 
   surfaceActivity: {},
   surfaceActivityAt: {},
+  surfaceTurnOpenAt: {},
   surfacePendingQuestion: {},
   agentClockMs: Date.now(),
 
@@ -676,6 +715,19 @@ export const createPaneSlice: StateCreator<StoreState, [['zustand/immer', never]
     // question. Same reasoning as setSurfaceActivity; this is the path that
     // covers agents with no tool hooks at all.
     delete state.surfacePendingQuestion[ptyId];
+  }),
+
+  markSurfaceTurnOpen: (ptyId) => set((state: StoreState) => {
+    if (!ptyId) return;
+    // Re-stamping an already-open latch is deliberate: a second prompt with no
+    // Stop between them (the human hit ESC and re-submitted) is the SAME open
+    // turn, but the silence clock must run from the latest submission.
+    state.surfaceTurnOpenAt[ptyId] = Date.now();
+  }),
+
+  clearSurfaceTurnOpen: (ptyId) => set((state: StoreState) => {
+    if (!ptyId) return;
+    delete state.surfaceTurnOpenAt[ptyId];
   }),
 
   surfaceOutputAt: {},
@@ -896,6 +948,10 @@ export const createPaneSlice: StateCreator<StoreState, [['zustand/immer', never]
             delete state.surfaceActivity[s.ptyId];
             delete state.surfacePendingQuestion[s.ptyId];
             delete state.surfaceActivityAt[s.ptyId];
+            // A reused ptyId must not inherit a dead pane's open turn — the
+            // latch outranks the byte heuristic, so a leaked one would pin the
+            // new pane at 'running' with nothing left alive to withdraw it.
+            delete state.surfaceTurnOpenAt[s.ptyId];
             delete state.surfaceOutputAt[s.ptyId];
             delete state.surfacePorts[s.ptyId];
             delete state.surfaceAgentStatus[s.ptyId];

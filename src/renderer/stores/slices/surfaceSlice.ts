@@ -313,6 +313,9 @@ export const createSurfaceSlice: StateCreator<StoreState, [['zustand/immer', nev
       recomputeWorkspacePorts(state.workspaces, state.surfacePorts);
     }
     if (closedPtyId && state.surfaceAgentStatus) delete state.surfaceAgentStatus[closedPtyId];
+    // Same rule for the turn latch: it outranks the byte heuristic, so a leaked
+    // entry would pin a REUSED ptyId at 'running' with no live agent to end it.
+    if (closedPtyId && state.surfaceTurnOpenAt) delete state.surfaceTurnOpenAt[closedPtyId];
     if (closedPtyId) clearNudgesFor(closedPtyId); // A5: free the rate-cap entry for a reusable ptyId
     // J3 F4: onExhausted 매핑도 이 ptyId 소멸과 함께 evict(무한 성장·재사용 ptyId 오염 방지).
     if (closedPtyId && state.taskPtyRegistry) delete state.taskPtyRegistry[closedPtyId];

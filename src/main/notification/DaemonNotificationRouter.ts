@@ -721,6 +721,11 @@ export class DaemonNotificationRouter {
             broadcastMetadataUpdate(win, {
               ptyId: payload.sessionId,
               agentStatus: 'running',
+              // The renderer's half of the same latch: tagged with the hook
+              // kind so `surfaceTurnOpenAt` opens on THIS broadcast and not on
+              // a byte-rate 'running', which is a guess and could never be
+              // trusted to hold a pane at running with no decay.
+              hookKind: 'agent.user_prompt_submit',
               // Same rule as the daemon-mode running broadcast in `onActive`:
               // an empty name is omitted rather than written, because a blank
               // overwrite erases a legitimate label the renderer already has.

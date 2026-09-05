@@ -24,6 +24,7 @@ import type { WorkspaceColorId } from './workspaceColors';
 // cycle, which TypeScript resolves without any runtime import.
 import type { AgentSlug } from './events';
 import type { OrchestratorRoleBindings } from './orchestratorRole';
+import type { AgentSignalKind } from './hooks/signal-types';
 
 // Re-export for backward compatibility
 /** BYOB M0 — which runtime serves as a workspace's orchestrator brain.
@@ -478,6 +479,15 @@ export interface MetadataUpdatePayload {
   // the renderer can build a pane's `(<agent>)` auto-name suffix without
   // importing the main-only display→slug map.
   agentSlug?: AgentSlug | null;
+  /**
+   * Which hook signal produced this update, when one did. Carried ONLY for
+   * `agent.user_prompt_submit` today, and for one reason: the renderer's turn
+   * latch (`surfaceTurnOpenAt`) must distinguish "the agent's own hook says a
+   * turn just started" from every other source of `agentStatus:'running'` (the
+   * byte-rate heuristic, the activity reconciliation). A latch opened by a
+   * heuristic guess would never decay and could never be trusted to close.
+   */
+  hookKind?: AgentSignalKind;
 }
 
 // === Status indicator colors ===

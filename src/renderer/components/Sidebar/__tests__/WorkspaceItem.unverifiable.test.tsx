@@ -43,14 +43,23 @@ async function render(): Promise<void> {
   });
 }
 
-/** A workspace with one pane the store believes is running. */
-function seed(activityAt: number): void {
+/**
+ * A workspace with one pane holding an OPEN TURN LATCH — the only shape that
+ * can read 'running' after the 120 s activity TTL, and so the only one the ring
+ * can ever apply to. `surfaceAgentStatus` deliberately stays empty: the store
+ * refuses to hold 'running' there (attention statuses only), which is exactly
+ * why the latch exists.
+ */
+function seed(lastSignalAt: number): void {
   useStore.setState({
     workspaces: [workspace('ws')],
     activeWorkspaceId: 'ws',
-    surfaceAgentStatus: { 'pty-ws': 'running' },
+    surfaceAgentStatus: {},
     surfaceAgent: { 'pty-ws': { name: 'Claude Code', status: 'running' } },
-    surfaceActivityAt: { 'pty-ws': activityAt },
+    surfaceActivityAt: { 'pty-ws': lastSignalAt },
+    surfaceTurnOpenAt: { 'pty-ws': lastSignalAt },
+    commandRunningByPtyId: {},
+    agentAliveByPtyId: {},
     agentClockMs: NOW,
   });
 }
@@ -88,7 +97,7 @@ describe('WorkspaceItem unverifiable ring', () => {
     // No glow: the ring is the absence of a claim, not a quieter version of one.
     expect(dot().className).not.toContain('sidebar-dot-running');
     expect(dot().style.backgroundColor).toBe('');
-    expect(dot().getAttribute('title')).toBe('No update for 34m');
+    expect(dot().getAttribute('title')).toBe('No update for 30m+');
   });
 
   it('never rings a workspace that needs the user — that dot is red', async () => {
