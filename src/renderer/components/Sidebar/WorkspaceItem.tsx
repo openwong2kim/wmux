@@ -346,6 +346,9 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
   );
   const rosterCounts = useStore(rosterCountsSelector);
   const hasRoster = rosterCounts.agentCount > 0 || rosterCounts.stashedCount > 0;
+  /** Rows whose roster summary must not wait for the pointer — see its JSX. */
+  const rosterAlwaysShown =
+    rosterOpen || (rosterCounts.agentCount === 0 && rosterCounts.stashedCount > 0);
   // Newly selected workspaces reveal their agents automatically; workspaces
   // that move to the background collapse back to the count. The user can still
   // explicitly toggle either state until selection changes again.
@@ -881,7 +884,12 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
           // The wrapper carries the rest-state fade so the summary's own
           // internals stay untouched; it takes over the flex-item traits
           // (self-center, no shrink) the button had as a direct child.
-          <span className={`inline-flex self-center flex-shrink-0 ${restHidden}`}>
+          //
+          // Two rows keep it at rest. A workspace whose only entries are
+          // stashed panes has nothing else to show it is not empty (see the
+          // stash-glyph comment in WorkspaceAgentRoster.tsx), and an expanded
+          // roster must keep the control that collapses it reachable.
+          <span className={`inline-flex self-center flex-shrink-0 ${rosterAlwaysShown ? '' : restHidden}`}>
             <WorkspaceRosterSummaryMemo
               workspaceId={workspaceId}
               agentCount={rosterCounts.agentCount}
