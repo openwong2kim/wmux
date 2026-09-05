@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState, useCallback, type ReactNode } from 'react';
 import { BROWSER_BACKENDS, isBrowserBackend } from '../../../shared/browserBackend';
+import type { ImagePasteMode } from '../../../shared/imagePaste';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '../../stores';
 import { selectWorkspaceMuteRows } from '../../stores/selectors/workspaceProjections';
@@ -2194,6 +2195,44 @@ function TabGeneral() {
 }
 
 // ─── Terminal tab — shell, cwd, scrollback, pane behavior ────────────────────
+// #1196 — the three image-paste routes, in escalating explicitness.
+const IMAGE_PASTE_MODE_LABELS: ReadonlyArray<{ mode: ImagePasteMode; labelKey: string }> = [
+  { mode: 'auto', labelKey: 'settings.imagePasteAuto' },
+  { mode: 'native', labelKey: 'settings.imagePasteNative' },
+  { mode: 'path', labelKey: 'settings.imagePastePath' },
+];
+
+/** Exported for tests — the same seam ChromePresetActionsView uses. */
+export function ImagePasteModeView({
+  value,
+  onChange,
+  t,
+}: {
+  value: ImagePasteMode;
+  onChange: (mode: ImagePasteMode) => void;
+  t: (key: string) => string;
+}) {
+  return (
+    <div className="flex rounded-lg overflow-hidden" style={{ border: '1px solid var(--bg-overlay)' }}>
+      {IMAGE_PASTE_MODE_LABELS.map(({ mode, labelKey }) => (
+        <button
+          key={mode}
+          data-image-paste-mode={mode}
+          onClick={() => onChange(mode)}
+          aria-pressed={value === mode}
+          className="px-3 py-1 text-xs font-mono transition-colors"
+          style={{
+            backgroundColor: value === mode ? 'var(--accent-blue)' : 'var(--bg-surface)',
+            color: value === mode ? 'var(--bg-base)' : 'var(--text-subtle)',
+          }}
+        >
+          {t(labelKey)}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 function TabTerminal() {
   const t = useT();
   const defaultShell = useStore((s) => s.defaultShell);
@@ -2202,6 +2241,8 @@ function TabTerminal() {
   const setScrollbackLines = useStore((s) => s.setScrollbackLines);
   const scrollbackRestoreEnabled = useStore((s) => s.scrollbackRestoreEnabled);
   const setScrollbackRestoreEnabled = useStore((s) => s.setScrollbackRestoreEnabled);
+  const imagePasteMode = useStore((s) => s.imagePasteMode);
+  const setImagePasteMode = useStore((s) => s.setImagePasteMode);
   const splitInheritsCwd = useStore((s) => s.splitInheritsCwd);
   const setSplitInheritsCwd = useStore((s) => s.setSplitInheritsCwd);
   const imeResidueGuardEnabled = useStore((s) => s.imeResidueGuardEnabled);
@@ -2338,6 +2379,9 @@ function TabTerminal() {
             onChange={setScrollbackRestoreEnabled}
             label={t('settings.scrollbackRestore')}
           />
+        </SettingRow>
+        <SettingRow id="imagepaste" label={t('settings.imagePaste')} description={t('settings.imagePasteDesc')}>
+          <ImagePasteModeView value={imagePasteMode} onChange={setImagePasteMode} t={t} />
         </SettingRow>
       </div>
     </div>

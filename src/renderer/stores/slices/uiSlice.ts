@@ -67,6 +67,11 @@ import {
   sanitizeTerminalCursorStyle,
   type TerminalCursorStyle,
 } from '../../../shared/terminalCursor';
+import {
+  DEFAULT_IMAGE_PASTE_MODE,
+  sanitizeImagePasteMode,
+  type ImagePasteMode,
+} from '../../../shared/imagePaste';
 
 // String-valued tokens only. xtermOverrides is an object handled by separate
 // setXtermOverride / clearXtermOverrides actions below.
@@ -169,6 +174,12 @@ export interface UISlice {
 
   terminalCursorStyle: TerminalCursorStyle;
   setTerminalCursorStyle: (style: TerminalCursorStyle) => void;
+
+  // How an image-only clipboard is pasted into a pane (#1196). 'auto' hands the
+  // agent its own image-paste key when the pane runs an agent known to read the
+  // clipboard itself, and falls back to wmux's temp-PNG path otherwise.
+  imagePasteMode: ImagePasteMode;
+  setImagePasteMode: (mode: ImagePasteMode) => void;
 
   defaultShell: string;
   setDefaultShell: (shell: string) => void;
@@ -974,6 +985,12 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
 
   setTerminalCursorStyle: (style) => set((state) => {
     state.terminalCursorStyle = sanitizeTerminalCursorStyle(style);
+  }),
+
+  imagePasteMode: DEFAULT_IMAGE_PASTE_MODE,
+
+  setImagePasteMode: (mode) => set((state) => {
+    state.imagePasteMode = sanitizeImagePasteMode(mode);
   }),
 
   defaultShell: 'powershell',

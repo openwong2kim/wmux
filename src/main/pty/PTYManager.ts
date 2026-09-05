@@ -13,6 +13,7 @@ import { getShellUtf8Locale } from './shellLocale';
 import { isWindows, parseWindowsBuildNumber } from '../../shared/platform';
 import { shouldUseBundledConpty, spawnWithConptyPolicy } from '../../shared/conptyWindows';
 import { ShellDetector } from '../../shared/ShellDetector';
+import { forgetPtyShell, recordPtyShell } from './ptyShellRegistry';
 
 export type ShellType = 'powershell' | 'bash' | 'cmd' | 'unknown';
 
@@ -252,6 +253,9 @@ export class PTYManager {
       ...(options?.workspaceId ? { workspaceId: options.workspaceId } : {}),
     };
     this.instances.set(id, instance);
+    // Mirrored into the shared registry so the clipboard handler can ask one
+    // place which shell a pane runs, local or daemon mode (#1196).
+    recordPtyShell(id, shell);
 
     // Write PID->ptyId mapping so MCP servers can resolve identity (Claude
     // Code doesn't propagate env vars to MCP child processes). We store the
@@ -300,12 +304,14 @@ export class PTYManager {
       try { instance.process.kill(); } catch { /* already dead */ }
       this.onDisposeCallback?.(id);
       this.instances.delete(id);
+      forgetPtyShell(id);
     }
   }
 
   /** Remove an entry from the map without killing — use when the process has already exited. */
   remove(id: string): void {
     this.instances.delete(id);
+    forgetPtyShell(id);
   }
 
   get(id: string): PTYInstance | undefined {

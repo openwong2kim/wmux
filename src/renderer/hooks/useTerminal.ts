@@ -13,6 +13,7 @@ import { XTERM_THEMES, extractXtermColors, type ThemeId, type BuiltinThemeId } f
 import { resolveMinimumContrastRatio } from '../tailwindPalette';
 import { isDaemonModeActive } from '../daemon/daemonMode';
 import { pastePtyChunked, chunkOnDataIfNeeded } from '../utils/clipboardChunk';
+import { pasteClipboardImage } from '../utils/imagePaste';
 import { openTerminalUrl } from '../utils/browserPaneActions';
 import { runCopyWithFeedback } from '../utils/copyWithFeedback';
 import { claimFit } from '../utils/fitGuard';
@@ -1717,13 +1718,12 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
             await pastePtyChunked((d) => window.electronAPI.pty.write(ptyId, d), text, modes);
             return;
           }
-          if (window.clipboardAPI.readImage) {
-            const imagePath = await window.clipboardAPI.readImage();
-            if (imagePath) {
-              const quoted = imagePath.includes(' ') ? `"${imagePath}"` : imagePath;
-              window.electronAPI.pty.write(ptyId, quoted);
-            }
-          }
+          const imgModes = (terminal as unknown as { modes?: { bracketedPasteMode?: boolean } }).modes;
+          await pasteClipboardImage({
+            ptyId,
+            write: (d) => window.electronAPI.pty.write(ptyId, d),
+            bracketedPasteMode: !!imgModes?.bracketedPasteMode,
+          });
         })().catch(() => {});
         return false;
       }
@@ -1770,14 +1770,14 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
             await pastePtyChunked((d) => window.electronAPI.pty.write(ptyId, d), text, modes);
             return;
           }
-          // No text — check for image, save to temp file, paste path
-          if (window.clipboardAPI.readImage) {
-            const imagePath = await window.clipboardAPI.readImage();
-            if (imagePath) {
-              const quoted = imagePath.includes(' ') ? `"${imagePath}"` : imagePath;
-              window.electronAPI.pty.write(ptyId, quoted);
-            }
-          }
+          // No text — hand the image-only clipboard to the paste helper, which
+          // picks the native-key or temp-PNG-path route per setting (#1196).
+          const imgModes = (terminal as unknown as { modes?: { bracketedPasteMode?: boolean } }).modes;
+          await pasteClipboardImage({
+            ptyId,
+            write: (d) => window.electronAPI.pty.write(ptyId, d),
+            bracketedPasteMode: !!imgModes?.bracketedPasteMode,
+          });
         })().catch(() => {});
         return false;
       }
@@ -1807,13 +1807,12 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
             await pastePtyChunked((d) => window.electronAPI.pty.write(ptyId, d), text, modes);
             return;
           }
-          if (window.clipboardAPI.readImage) {
-            const imagePath = await window.clipboardAPI.readImage();
-            if (imagePath) {
-              const quoted = imagePath.includes(' ') ? `"${imagePath}"` : imagePath;
-              window.electronAPI.pty.write(ptyId, quoted);
-            }
-          }
+          const imgModes = (terminal as unknown as { modes?: { bracketedPasteMode?: boolean } }).modes;
+          await pasteClipboardImage({
+            ptyId,
+            write: (d) => window.electronAPI.pty.write(ptyId, d),
+            bracketedPasteMode: !!imgModes?.bracketedPasteMode,
+          });
         })().catch(() => {});
         return false;
       }
@@ -1902,11 +1901,12 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         // PNG when copying paragraphs; image-first would silently swap the
         // text out for a PNG path here, which is almost never the user's
         // intent. Image-only clipboards (Snipping Tool / PrtSc / image
-        // editors) still flow through the fallback. readImage saves a PNG
-        // temp file and returns its path — quoted on spaces and wrapped in
-        // bracketed-paste sequences when the foreground app (Claude Code,
-        // fish, modern bash) supports them so the path is recognized as a
-        // single paste rather than streamed character-by-character.
+        // editors) flow through pasteClipboardImage, which either hands the
+        // agent its own image-paste key (a real inline image) or falls back to
+        // the temp-PNG path — quoted on spaces and wrapped in bracketed-paste
+        // sequences when the foreground app supports them, so the path is
+        // recognized as a single paste rather than streamed character-by-
+        // character.
         const text = await window.clipboardAPI.readText();
         if (text) {
           // Async chunked write: paces the IPC queue so the conpty input
@@ -1918,18 +1918,11 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
           return;
         }
 
-        const hasImg = await window.clipboardAPI.hasImage();
-        if (hasImg) {
-          const imagePath = await window.clipboardAPI.readImage();
-          if (imagePath) {
-            const quoted = imagePath.includes(' ') ? `"${imagePath}"` : imagePath;
-            if (modes?.bracketedPasteMode) {
-              window.electronAPI.pty.write(ptyId, `\x1b[200~${quoted}\x1b[201~`);
-            } else {
-              window.electronAPI.pty.write(ptyId, quoted);
-            }
-          }
-        }
+        await pasteClipboardImage({
+          ptyId,
+          write: (d) => window.electronAPI.pty.write(ptyId, d),
+          bracketedPasteMode: !!modes?.bracketedPasteMode,
+        });
       })().catch((err) => console.error('[wmux:clipboard] right-click error:', err));
     };
     terminal.element?.addEventListener('contextmenu', onTerminalContextMenu);

@@ -5,6 +5,7 @@ import { t } from '../../i18n';
 import { useIpc } from '../../hooks/useIpc';
 import { resolveRespawnCwd, shouldHealSurfaceCwd, withDefaultShell, withWorkspaceProfile } from '../../utils/ptyCreateOptions';
 import { pastePtyChunked } from '../../utils/clipboardChunk';
+import { pasteClipboardImage } from '../../utils/imagePaste';
 import { openTerminalUrl } from '../../utils/browserPaneActions';
 import { terminalFontFamilyCss } from '../../utils/terminalFont';
 import { isFileDrag } from '../../../shared/dragDrop';
@@ -268,10 +269,9 @@ export default function TerminalComponent({ ptyId: externalPtyId, shell, cwd, on
       // selection-screenshot image when the user copies a paragraph. Image-
       // first would silently throw away the text in that case and paste a
       // PNG path instead — almost never what the user wanted. Image-only
-      // clipboards (Snipping Tool, PrtSc, image editors) still work via
-      // the fallback below. readImage() saves the bitmap to a PNG temp file
-      // and returns its path — quoted on spaces and wrapped in bracketed-
-      // paste sequences so apps like Claude Code see it as a single paste.
+      // clipboards (Snipping Tool, PrtSc, image editors) go to
+      // pasteClipboardImage, which routes them to the agent's own image-paste
+      // key or to the temp-PNG path (#1196).
       const text = await window.clipboardAPI.readText();
       if (text) {
         // Async chunked write: paces the IPC queue so the conpty input
@@ -282,18 +282,11 @@ export default function TerminalComponent({ ptyId: externalPtyId, shell, cwd, on
         return;
       }
 
-      const hasImg = await window.clipboardAPI.hasImage();
-      if (hasImg) {
-        const imagePath = await window.clipboardAPI.readImage();
-        if (imagePath) {
-          const quoted = imagePath.includes(' ') ? `"${imagePath}"` : imagePath;
-          if (modes?.bracketedPasteMode) {
-            window.electronAPI.pty.write(ptyId, `\x1b[200~${quoted}\x1b[201~`);
-          } else {
-            window.electronAPI.pty.write(ptyId, quoted);
-          }
-        }
-      }
+      await pasteClipboardImage({
+        ptyId,
+        write: (d) => window.electronAPI.pty.write(ptyId, d),
+        bracketedPasteMode: !!modes?.bracketedPasteMode,
+      });
     })();
   }, [ptyId, terminalRef]);
 

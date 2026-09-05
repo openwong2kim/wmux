@@ -4,6 +4,8 @@ import * as path from 'path';
 import { execFile } from 'node:child_process';
 import { IPC } from '../../../shared/constants';
 import { wrapHandler } from '../wrapHandler';
+import { imagePathForPane } from '../../../shared/imagePaste';
+import { getPtyShell } from '../../pty/ptyShellRegistry';
 
 // Paste temp files must outlive the next paste: consumers (e.g. Claude Code)
 // read the pasted file path later, so deleting the previous file on each paste
@@ -236,7 +238,7 @@ export function registerClipboardHandlers(): void {
     return text;
   }));
 
-  ipcMain.handle(IPC.CLIPBOARD_READ_IMAGE, wrapHandler(IPC.CLIPBOARD_READ_IMAGE, (_event: Electron.IpcMainInvokeEvent) => {
+  ipcMain.handle(IPC.CLIPBOARD_READ_IMAGE, wrapHandler(IPC.CLIPBOARD_READ_IMAGE, (_event: Electron.IpcMainInvokeEvent, ptyId?: string) => {
     const image = clipboard.readImage();
     if (image.isEmpty()) return null;
 
@@ -247,7 +249,16 @@ export function registerClipboardHandlers(): void {
       `wmux-paste-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.png`
     );
     fs.writeFileSync(filePath, image.toPNG());
-    return filePath;
+    // A WSL pane sees the Windows temp dir only under /mnt (#1196): pasting the
+    // native `C:\...` path there hands the agent a file it cannot open. Any pane
+    // whose shell we can't identify keeps the untouched path — a wrong /mnt
+    // rewrite for a PowerShell pane would be worse than no rewrite at all.
+    return imagePathForPane(filePath, {
+      platform: process.platform,
+      // Renderer-supplied; anything but a non-empty string is treated as "no
+      // pane", which just means no rewrite.
+      shellPath: getPtyShell(typeof ptyId === 'string' && ptyId ? ptyId : undefined),
+    });
   }));
 
   ipcMain.handle(IPC.CLIPBOARD_HAS_IMAGE, wrapHandler(IPC.CLIPBOARD_HAS_IMAGE, (_event: Electron.IpcMainInvokeEvent) => {
