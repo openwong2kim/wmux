@@ -179,7 +179,7 @@ export const it = {
   'settings.sidebarPosition': 'Posizione barra laterale',
   'settings.sidebarPositionDesc': 'Sinistra o destra dell\'area del terminale',
   'settings.sidebarAttentionFirst': 'Righe che ti attendono in cima',
-  'settings.sidebarAttentionFirstDesc': 'Fissa in cima alla barra laterale gli spazi di lavoro il cui agente sta aspettando te. Disattivato per impostazione predefinita: le righe restano dove le hai trascinate.',
+  'settings.sidebarAttentionFirstDesc': 'Fissa in cima alla barra laterale gli spazi di lavoro il cui agente sta aspettando te. Disattivato per impostazione predefinita: le righe restano dove le hai trascinate. Mentre è attivo, il riordino tramite trascinamento è sospeso.',
   'settings.sidebarLeft': 'Sinistra',
   'settings.sidebarRight': 'Destra',
   'settings.updateReady': 'Aggiornamento pronto',

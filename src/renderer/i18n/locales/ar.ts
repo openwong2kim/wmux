@@ -179,7 +179,7 @@ export const ar = {
   'settings.sidebarPosition': 'موضع الشريط الجانبي',
   'settings.sidebarPositionDesc': 'يسار أو يمين منطقة الطرفية',
   'settings.sidebarAttentionFirst': 'الصفوف التي تنتظرك أولاً',
-  'settings.sidebarAttentionFirstDesc': 'ثبّت مساحات العمل التي ينتظر وكيلها ردك في أعلى الشريط الجانبي. معطّل افتراضيًا: تبقى الصفوف حيث سحبتها.',
+  'settings.sidebarAttentionFirstDesc': 'ثبّت مساحات العمل التي ينتظر وكيلها ردك في أعلى الشريط الجانبي. معطّل افتراضيًا: تبقى الصفوف حيث سحبتها. أثناء التفعيل، يتوقف إعادة الترتيب بالسحب.',
   'settings.sidebarLeft': 'يسار',
   'settings.sidebarRight': 'يمين',
   'settings.updateReady': 'التحديث جاهز',

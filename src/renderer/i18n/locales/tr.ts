@@ -179,7 +179,7 @@ export const tr = {
   'settings.sidebarPosition': 'Kenar çubuğu konumu',
   'settings.sidebarPositionDesc': 'Terminal alanının solu veya sağı',
   'settings.sidebarAttentionFirst': 'Seni bekleyen satırlar üstte',
-  'settings.sidebarAttentionFirstDesc': 'Aracısı seni bekleyen çalışma alanlarını kenar çubuğunun en üstüne sabitle. Varsayılan olarak kapalı: satırlar sürüklediğin yerde kalır.',
+  'settings.sidebarAttentionFirstDesc': 'Aracısı seni bekleyen çalışma alanlarını kenar çubuğunun en üstüne sabitle. Varsayılan olarak kapalı: satırlar sürüklediğin yerde kalır. Açıkken sürükleyerek sıralama duraklatılır.',
   'settings.sidebarLeft': 'Sol',
   'settings.sidebarRight': 'Sağ',
   'settings.updateReady': 'Güncelleme hazır',

@@ -302,6 +302,11 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
   // See uiSlice.draggedWorkspaceIndex for why this is out-of-band.
   const setWorkspaceColor = useStore((s) => s.setWorkspaceColor);
   const setDraggedWorkspaceIndex = useStore((s) => s.setDraggedWorkspaceIndex);
+  // Needs-you-first ordering is display-only, so a drop judged against the
+  // DISPLAY order would move the row to a different ARRAY index than the
+  // indicator promised. Reorder is paused while it is on; Ctrl+N and the
+  // stored order are untouched.
+  const sidebarAttentionFirst = useStore((s) => s.sidebarAttentionFirst);
   const setTerminalTextDropDragActive = useStore((s) => s.setTerminalTextDropDragActive);
 
   const metadata = workspace?.metadata;
@@ -521,7 +526,7 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
   };
 
   const handleDragStart = (e: React.DragEvent<HTMLDivElement>) => {
-    if (!workspace) return;
+    if (!workspace || sidebarAttentionFirst) return;
     // Roster controls live inside this draggable card. Chromium chooses the
     // nearest draggable ancestor as the native source, so `draggable={false}`
     // on a nested button is not enough. Reject a drag whose pointer originated
@@ -566,6 +571,7 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
   };
 
   const handleDragOver = (e: React.DragEvent<HTMLDivElement>) => {
+    if (sidebarAttentionFirst) return;
     e.preventDefault();
     const reorderFrom = useStore.getState().draggedWorkspaceIndex;
     if (reorderFrom === null) return;
@@ -591,6 +597,7 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
   };
 
   const handleDrop = (e: React.DragEvent<HTMLDivElement>) => {
+    if (sidebarAttentionFirst) return;
     e.preventDefault();
     setDropIndicator(null);
     // Reorder source comes from the store, not dataTransfer. A null
@@ -715,7 +722,7 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
       )}
 
       <div
-        draggable
+        draggable={!sidebarAttentionFirst}
         {...tokenAttrs('bgSurface', 'bg')}
         className={`group sidebar-row px-3 py-1 cursor-pointer rounded-md select-none ${needsYou ? 'sidebar-row-needs' : ''} ${
           isActive

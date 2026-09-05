@@ -179,7 +179,7 @@ export const ms = {
   'settings.sidebarPosition': 'Kedudukan bar sisi',
   'settings.sidebarPositionDesc': 'Kiri atau kanan kawasan terminal',
   'settings.sidebarAttentionFirst': 'Baris yang menunggu anda di atas',
-  'settings.sidebarAttentionFirstDesc': 'Sematkan ruang kerja yang ejennya sedang menunggu anda di bahagian atas bar sisi. Dimatikan secara lalai: baris kekal di tempat anda menyeretnya.',
+  'settings.sidebarAttentionFirstDesc': 'Sematkan ruang kerja yang ejennya sedang menunggu anda di bahagian atas bar sisi. Dimatikan secara lalai: baris kekal di tempat anda menyeretnya. Semasa dihidupkan, penyusunan semula secara seret dijeda.',
   'settings.sidebarLeft': 'Kiri',
   'settings.sidebarRight': 'Kanan',
   'settings.updateReady': 'Kemas kini sedia',

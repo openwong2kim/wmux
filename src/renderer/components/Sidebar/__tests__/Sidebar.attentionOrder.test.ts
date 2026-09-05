@@ -18,6 +18,7 @@ import { resolve } from 'node:path';
 const SIDEBAR_DIR = resolve(__dirname, '..');
 const sidebarSrc = readFileSync(resolve(SIDEBAR_DIR, 'Sidebar.tsx'), 'utf8');
 const miniSrc = readFileSync(resolve(SIDEBAR_DIR, 'MiniSidebar.tsx'), 'utf8');
+const itemSrc = readFileSync(resolve(SIDEBAR_DIR, 'WorkspaceItem.tsx'), 'utf8');
 
 describe('Sidebar — needs-you-first ordering wiring', () => {
   it('imports and applies orderByAttention', () => {
@@ -65,5 +66,16 @@ describe('MiniSidebar — needs-you-first ordering wiring', () => {
 
   it('mirrors the error cross instead of a second red dot', () => {
     expect(miniSrc).toContain("agentIcon.shape === 'cross'");
+  });
+});
+
+describe('drag reorder is paused while the ordering is on', () => {
+  // A drop is judged against the DISPLAY order while the index it reorders is
+  // the array position, so with rows pinned the indicator and the result
+  // disagree. Both surfaces gate `draggable` on the setting rather than each
+  // shipping its own translation between the two orders.
+  it('gates draggable on the setting, on both surfaces', () => {
+    expect(itemSrc).toContain('draggable={!sidebarAttentionFirst}');
+    expect(miniSrc).toContain('draggable={!sidebarAttentionFirst}');
   });
 });

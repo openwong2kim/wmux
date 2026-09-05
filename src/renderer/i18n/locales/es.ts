@@ -179,7 +179,7 @@ export const es = {
   'settings.sidebarPosition': 'Posición de la barra lateral',
   'settings.sidebarPositionDesc': 'Izquierda o derecha del área del terminal',
   'settings.sidebarAttentionFirst': 'Filas que te esperan primero',
-  'settings.sidebarAttentionFirstDesc': 'Fija en la parte superior de la barra lateral los espacios de trabajo cuyo agente te está esperando. Desactivado por defecto: las filas se quedan donde las arrastraste.',
+  'settings.sidebarAttentionFirstDesc': 'Fija en la parte superior de la barra lateral los espacios de trabajo cuyo agente te está esperando. Desactivado por defecto: las filas se quedan donde las arrastraste. Mientras está activado, el reordenamiento por arrastre está en pausa.',
   'settings.sidebarLeft': 'Izquierda',
   'settings.sidebarRight': 'Derecha',
   'settings.updateReady': 'Actualización lista',

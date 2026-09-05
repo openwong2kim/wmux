@@ -179,7 +179,7 @@ export const nb = {
   'settings.sidebarPosition': 'Sidepanelposisjon',
   'settings.sidebarPositionDesc': 'Venstre eller høyre for terminalområdet',
   'settings.sidebarAttentionFirst': 'Rader som venter på deg først',
-  'settings.sidebarAttentionFirstDesc': 'Fest arbeidsområder der agenten venter på deg øverst i sidepanelet. Av som standard: rader blir der du dro dem.',
+  'settings.sidebarAttentionFirstDesc': 'Fest arbeidsområder der agenten venter på deg øverst i sidepanelet. Av som standard: rader blir der du dro dem. Mens den er på, er omrokkering med dra-og-slipp satt på pause.',
   'settings.sidebarLeft': 'Venstre',
   'settings.sidebarRight': 'Høyre',
   'settings.updateReady': 'Oppdatering klar',

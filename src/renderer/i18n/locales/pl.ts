@@ -931,7 +931,7 @@ export const pl = {
   'settings.sidebarPosition': 'Pozycja paska bocznego',
   'settings.sidebarPositionDesc': 'Po lewej lub po prawej stronie obszaru terminala',
   'settings.sidebarAttentionFirst': 'Wiersze czekające na Ciebie u góry',
-  'settings.sidebarAttentionFirstDesc': 'Przypnij na górze paska bocznego przestrzenie robocze, których agent czeka na Ciebie. Domyślnie wyłączone: wiersze zostają tam, gdzie je przeciągniesz.',
+  'settings.sidebarAttentionFirstDesc': 'Przypnij na górze paska bocznego przestrzenie robocze, których agent czeka na Ciebie. Domyślnie wyłączone: wiersze zostają tam, gdzie je przeciągniesz. Gdy jest włączone, zmiana kolejności przeciąganiem jest wstrzymana.',
   'settings.sidebarLeft': 'Lewo',
   'settings.sidebarRight': 'Prawo',
   'settings.multiviewArrangement': 'Układ multiview',

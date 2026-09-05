@@ -494,7 +494,7 @@ export const ko = {
   'settings.sidebarPosition': '사이드바 위치',
   'settings.sidebarPositionDesc': '터미널 영역의 좌측 또는 우측',
   'settings.sidebarAttentionFirst': '응답 필요 행을 위로',
-  'settings.sidebarAttentionFirstDesc': '에이전트가 응답을 기다리는 워크스페이스를 사이드바 맨 위에 고정합니다. 기본은 꺼짐: 행은 드래그한 자리에 그대로 있습니다.',
+  'settings.sidebarAttentionFirstDesc': '에이전트가 응답을 기다리는 워크스페이스를 사이드바 맨 위에 고정합니다. 기본은 꺼짐: 행은 드래그한 자리에 그대로 있습니다. 켜져 있는 동안 드래그 정렬은 멈춥니다.',
   'settings.sidebarLeft': '왼쪽',
   'settings.sidebarRight': '오른쪽',
   'settings.titlebarClock': '타이틀바 시계',

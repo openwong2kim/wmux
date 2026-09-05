@@ -368,7 +368,7 @@ export const zh = {
   'settings.sidebarPosition': '侧边栏位置',
   'settings.sidebarPositionDesc': '终端区域的左侧或右侧',
   'settings.sidebarAttentionFirst': '需要你的行置顶',
-  'settings.sidebarAttentionFirstDesc': '将代理正在等待你响应的工作区固定到侧边栏顶部。默认关闭：行保持在你拖放的位置。',
+  'settings.sidebarAttentionFirstDesc': '将代理正在等待你响应的工作区固定到侧边栏顶部。默认关闭：行保持在你拖放的位置。 开启期间，拖动排序会暂停。',
   'settings.sidebarLeft': '左',
   'settings.sidebarRight': '右',
   'settings.currentVersion': '当前版本',

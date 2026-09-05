@@ -179,7 +179,7 @@ export const bs = {
   'settings.sidebarPosition': 'Pozicija bočne trake',
   'settings.sidebarPositionDesc': 'Lijevo ili desno od područja terminala',
   'settings.sidebarAttentionFirst': 'Redovi koji te čekaju na vrh',
-  'settings.sidebarAttentionFirstDesc': 'Zakači na vrh bočne trake radne prostore čiji agent čeka na tebe. Podrazumijevano isključeno: redovi ostaju gdje si ih povukao.',
+  'settings.sidebarAttentionFirstDesc': 'Zakači na vrh bočne trake radne prostore čiji agent čeka na tebe. Podrazumijevano isključeno: redovi ostaju gdje si ih povukao. Dok je uključeno, preraspoređivanje povlačenjem je pauzirano.',
   'settings.sidebarLeft': 'Lijevo',
   'settings.sidebarRight': 'Desno',
   'settings.updateReady': 'Ažuriranje spremno',

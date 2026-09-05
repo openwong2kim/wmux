@@ -179,7 +179,7 @@ export const da = {
   'settings.sidebarPosition': 'Sidepanelposition',
   'settings.sidebarPositionDesc': 'Venstre eller højre for terminalområdet',
   'settings.sidebarAttentionFirst': 'Rækker der venter på dig øverst',
-  'settings.sidebarAttentionFirstDesc': 'Fastgør arbejdsområder, hvis agent venter på dig, øverst i sidepanelet. Slået fra som standard: rækker bliver, hvor du trak dem hen.',
+  'settings.sidebarAttentionFirstDesc': 'Fastgør arbejdsområder, hvis agent venter på dig, øverst i sidepanelet. Slået fra som standard: rækker bliver, hvor du trak dem hen. Mens den er slået til, er træk-og-omarrangér sat på pause.',
   'settings.sidebarLeft': 'Venstre',
   'settings.sidebarRight': 'Højre',
   'settings.updateReady': 'Opdatering klar',

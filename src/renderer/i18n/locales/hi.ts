@@ -179,7 +179,7 @@ export const hi = {
   'settings.sidebarPosition': 'साइडबार स्थिति',
   'settings.sidebarPositionDesc': 'टर्मिनल क्षेत्र के बाएँ या दाएँ',
   'settings.sidebarAttentionFirst': 'आपकी प्रतीक्षा वाली पंक्तियाँ सबसे ऊपर',
-  'settings.sidebarAttentionFirstDesc': 'जिन वर्कस्पेस का एजेंट आपका इंतज़ार कर रहा है उन्हें साइडबार में सबसे ऊपर पिन करें। डिफ़ॉल्ट रूप से बंद: पंक्तियाँ वहीं रहती हैं जहाँ आपने उन्हें खींचा था।',
+  'settings.sidebarAttentionFirstDesc': 'जिन वर्कस्पेस का एजेंट आपका इंतज़ार कर रहा है उन्हें साइडबार में सबसे ऊपर पिन करें। डिफ़ॉल्ट रूप से बंद: पंक्तियाँ वहीं रहती हैं जहाँ आपने उन्हें खींचा था। चालू रहने के दौरान, खींचकर क्रम बदलना रुका रहता है।',
   'settings.sidebarLeft': 'बाएँ',
   'settings.sidebarRight': 'दाएँ',
   'settings.updateReady': 'अपडेट तैयार',

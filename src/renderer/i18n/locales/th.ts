@@ -179,7 +179,7 @@ export const th = {
   'settings.sidebarPosition': 'ตำแหน่งแถบด้านข้าง',
   'settings.sidebarPositionDesc': 'ซ้ายหรือขวาของพื้นที่เทอร์มินัล',
   'settings.sidebarAttentionFirst': 'แถวที่รอคุณอยู่ด้านบน',
-  'settings.sidebarAttentionFirstDesc': 'ปักหมุดเวิร์กสเปซที่เอเจนต์กำลังรอคุณไว้ด้านบนสุดของแถบด้านข้าง ปิดไว้ตามค่าเริ่มต้น: แถวจะอยู่ตรงที่คุณลากไว้',
+  'settings.sidebarAttentionFirstDesc': 'ปักหมุดเวิร์กสเปซที่เอเจนต์กำลังรอคุณไว้ด้านบนสุดของแถบด้านข้าง ปิดไว้ตามค่าเริ่มต้น: แถวจะอยู่ตรงที่คุณลากไว้ ขณะเปิดอยู่ การลากเพื่อจัดลำดับจะหยุดชั่วคราว',
   'settings.sidebarLeft': 'ซ้าย',
   'settings.sidebarRight': 'ขวา',
   'settings.updateReady': 'การอัปเดตพร้อมแล้ว',

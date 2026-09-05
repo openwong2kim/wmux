@@ -107,6 +107,7 @@ export default function MiniSidebar() {
           };
 
           const handleDragStart = (e: React.DragEvent<HTMLButtonElement>) => {
+            if (sidebarAttentionFirst) return;
             dragStartTimeRef.current = Date.now();
             e.dataTransfer.setData('text/plain', String(railIndex));
             e.dataTransfer.effectAllowed = 'move';
@@ -119,6 +120,7 @@ export default function MiniSidebar() {
           };
 
           const handleDragOver = (e: React.DragEvent<HTMLButtonElement>) => {
+            if (sidebarAttentionFirst) return;
             e.preventDefault();
             e.dataTransfer.dropEffect = 'move';
             const rect = e.currentTarget.getBoundingClientRect();
@@ -133,6 +135,7 @@ export default function MiniSidebar() {
           };
 
           const handleDrop = (e: React.DragEvent<HTMLButtonElement>) => {
+            if (sidebarAttentionFirst) return;
             e.preventDefault();
             setDropIndicator(null);
             const fromIndex = parseInt(e.dataTransfer.getData('text/plain'), 10);
@@ -163,7 +166,9 @@ export default function MiniSidebar() {
                 <div className="absolute top-0 left-0 right-0 h-0.5 bg-[var(--accent-blue)] rounded-full z-10 -translate-y-px" />
               )}
               <button
-                draggable
+                // Paused while needs-you-first ordering is on: the rail's drop
+                // is judged in display order but reorders the array position.
+                draggable={!sidebarAttentionFirst}
                 className={`relative w-8 h-8 rounded-md flex items-center justify-center text-[10px] font-bold font-mono select-none transition-colors ${
                   isActive
                     ? 'bg-[var(--bg-surface)] text-[var(--text-main)]'

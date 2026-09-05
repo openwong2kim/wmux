@@ -181,7 +181,7 @@ export const ja = {
   'settings.sidebarPosition': 'サイドバー位置',
   'settings.sidebarPositionDesc': 'ターミナルエリアの左右',
   'settings.sidebarAttentionFirst': 'あなた待ちの行を上に',
-  'settings.sidebarAttentionFirstDesc': 'エージェントがあなたの応答を待っているワークスペースをサイドバーの最上部に固定します。既定はオフ：行はドラッグした位置のままです。',
+  'settings.sidebarAttentionFirstDesc': 'エージェントがあなたの応答を待っているワークスペースをサイドバーの最上部に固定します。既定はオフ：行はドラッグした位置のままです。 オンの間、ドラッグでの並べ替えは停止します。',
   'settings.sidebarLeft': '左',
   'settings.sidebarRight': '右',
   'settings.updateReady': 'アップデート準備完了',

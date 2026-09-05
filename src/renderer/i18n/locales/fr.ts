@@ -179,7 +179,7 @@ export const fr = {
   'settings.sidebarPosition': 'Position de la barre latérale',
   'settings.sidebarPositionDesc': 'Gauche ou droite de la zone du terminal',
   'settings.sidebarAttentionFirst': 'Lignes en attente de vous en premier',
-  'settings.sidebarAttentionFirstDesc': 'Épingler en haut de la barre latérale les espaces de travail dont l\'agent vous attend. Désactivé par défaut : les lignes restent où vous les avez déplacées.',
+  'settings.sidebarAttentionFirstDesc': 'Épingler en haut de la barre latérale les espaces de travail dont l\'agent vous attend. Désactivé par défaut : les lignes restent où vous les avez déplacées. Tant que l\'option est activée, le réordonnancement par glisser-déposer est suspendu.',
   'settings.sidebarLeft': 'Gauche',
   'settings.sidebarRight': 'Droite',
   'settings.updateReady': 'Mise à jour prête',

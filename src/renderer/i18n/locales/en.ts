@@ -942,7 +942,7 @@ export const en = {
   'settings.sidebarPosition': 'Sidebar position',
   'settings.sidebarPositionDesc': 'Left or right of the terminal area',
   'settings.sidebarAttentionFirst': 'Needs-you rows first',
-  'settings.sidebarAttentionFirstDesc': 'Pin workspaces whose agent is waiting on you to the top of the sidebar. Off by default: rows stay where you dragged them.',
+  'settings.sidebarAttentionFirstDesc': 'Pin workspaces whose agent is waiting on you to the top of the sidebar. Off by default: rows stay where you dragged them. While on, drag-to-reorder is paused.',
   'settings.sidebarLeft': 'Left',
   'settings.sidebarRight': 'Right',
   'settings.multiviewArrangement': 'Multiview arrangement',

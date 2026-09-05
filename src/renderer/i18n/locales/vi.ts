@@ -179,7 +179,7 @@ export const vi = {
   'settings.sidebarPosition': 'Vị trí thanh bên',
   'settings.sidebarPositionDesc': 'Trái hoặc phải vùng terminal',
   'settings.sidebarAttentionFirst': 'Hàng đang chờ bạn lên đầu',
-  'settings.sidebarAttentionFirstDesc': 'Ghim các không gian làm việc có tác nhân đang chờ bạn lên đầu thanh bên. Mặc định tắt: các hàng vẫn ở nơi bạn đã kéo.',
+  'settings.sidebarAttentionFirstDesc': 'Ghim các không gian làm việc có tác nhân đang chờ bạn lên đầu thanh bên. Mặc định tắt: các hàng vẫn ở nơi bạn đã kéo. Khi bật, việc kéo để sắp xếp lại sẽ tạm dừng.',
   'settings.sidebarLeft': 'Trái',
   'settings.sidebarRight': 'Phải',
   'settings.updateReady': 'Cập nhật sẵn sàng',
