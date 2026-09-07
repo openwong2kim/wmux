@@ -51,8 +51,25 @@ export const DEFAULT_DEDUP_WINDOW_MS = 10_000;
  *  30min mirrors Orca's AGENT_STATUS_STALE_AFTER_MS: long enough to span a
  *  long tool call between hook signals, short enough that a bridge killed
  *  with -9 (no Stop ever arrives) eventually returns the pane to the
- *  detector backstop. PTY dispose clears immediately via dropPty. */
+ *  detector backstop. PTY dispose clears immediately via dropPty.
+ *
+ *  #1009: the TTL is a DEATH backstop, not a freshness guarantee — an entry
+ *  is only subject to it once the bridge has spoken a per-tool-call kind
+ *  (`agent.activity` / `agent.tool_started`). On the full profile the dormant
+ *  gate touches authority on every tool call, so those entries always carry
+ *  the TTL (behavior unchanged, byte for byte). A turn-boundary-only entry
+ *  (`--signals-only`, #979) never ages out: nothing it could send mid-turn
+ *  would refresh it, so a TTL would strip the veto 30 minutes into a long
+ *  turn — exactly the #935 false-waiting this window exists to prevent. Such
+ *  an entry is released only by confirmed process death
+ *  (`expireAuthorityFor` + the daemon liveness poll), by a relaunch
+ *  (`agent.session_start` resets lifecycle ownership), or by pane dispose
+ *  (`dropPty`). */
 export const HOOK_AUTHORITY_TTL_MS = 30 * 60_000;
+
+/** Kinds a bridge can only emit per tool call. Seeing one proves the bridge
+ *  speaks often enough to keep a freshness TTL meaningful (#1009). */
+const TOOL_TRAFFIC_KINDS: ReadonlySet<string> = new Set(['agent.activity', 'agent.tool_started']);
 
 /** Ledger entry. Source field is what lets us implement the Iron Rule
  *  ("hook wins") asymmetrically — a detector emission gets suppressed
@@ -123,10 +140,21 @@ export class HookSignalRouter {
    *  SessionStart/activity). Drives the detector veto — see HOOK_AUTHORITY_TTL_MS —
    *  and (daemon-side, #919) the canonical identity tier. `exact` records
    *  whether the signal was routed by exact ptyId or via the cwd-prefix
-   *  fallback: only exact-routed authority may decide identity alone. */
+   *  fallback: only exact-routed authority may decide identity alone.
+   *  `toolTrafficSeen` (#1009) is the self-describing latch: `true` once a
+   *  per-tool-call kind ever arrives (entry keeps the freshness TTL),
+   *  `false` once a classified kind arrives and none ever did (entry is
+   *  TTL-exempt, released only by death / relaunch / dispose). `undefined`
+   *  means no kind was named — treated as TTL-bound, the pre-#1009 rule. */
   private readonly authority = new Map<
     string,
-    { agent: string; lastSignalAt: number; exact: boolean; lifecycleOwned: boolean }
+    {
+      agent: string;
+      lastSignalAt: number;
+      exact: boolean;
+      lifecycleOwned: boolean;
+      toolTrafficSeen: boolean | undefined;
+    }
   >();
   /** ptyId → the pane's open TURN START: which agent reported it, and when.
    *  Separate from `authority` on purpose: it answers "has the hook proven it
@@ -203,7 +231,10 @@ export class HookSignalRouter {
    * neighboring pane.
    *
    * `kind` sets the pane's lifecycle-ownership latch that
-   * `governsDetectorStatus` reads — see `hookOwnsLifecycleAfter`.
+   * `governsDetectorStatus` reads — see `hookOwnsLifecycleAfter` — and feeds
+   * the #1009 `toolTrafficSeen` latch: a per-tool-call kind marks the entry
+   * TTL-bound, a classified turn-boundary kind marks it TTL-exempt, and an
+   * absent kind leaves the latch where it was (undefined = TTL-bound).
    */
   touchAuthority(
     ptyId: string,
@@ -215,11 +246,20 @@ export class HookSignalRouter {
     // A signal from a DIFFERENT agent means the pane changed hands; the
     // previous agent's open turn does not survive that.
     this.noteAgentOnPane(ptyId, agent);
+    const prev = this.authority.get(ptyId);
+    // #1009 self-describing latch, sticky in both directions once decided:
+    // once a bridge has proven it speaks per tool call it stays TTL-bound
+    // even if it later goes quiet mid-session; once it has only ever spoken
+    // turn boundaries it stays TTL-exempt even across many turns.
+    let toolTrafficSeen = prev?.toolTrafficSeen;
+    if (kind !== undefined && TOOL_TRAFFIC_KINDS.has(kind)) toolTrafficSeen = true;
+    else if (kind !== undefined && toolTrafficSeen !== true) toolTrafficSeen = false;
     this.authority.set(ptyId, {
       agent,
       lastSignalAt: now,
       exact,
       lifecycleOwned: hookOwnsLifecycleAfter(kind),
+      toolTrafficSeen,
     });
     // Any live signal proves the bridge is still speaking for this pane, so the
     // open turn's deadline restarts from here. Only a pane that HAS a latch is
@@ -234,9 +274,24 @@ export class HookSignalRouter {
   }
 
   /**
+   * #1009 — is this authority entry still live at `now`? TTL-exempt entries
+   * (turn-boundary-only bridges, `toolTrafficSeen === false`) are live until
+   * explicitly released (death / relaunch / dispose); everything else ages
+   * out per the freshness TTL. See HOOK_AUTHORITY_TTL_MS for the doctrine.
+   */
+  private authorityLive(
+    entry: { lastSignalAt: number; toolTrafficSeen: boolean | undefined },
+    now: number,
+  ): boolean {
+    if (entry.toolTrafficSeen === false) return true;
+    return now - entry.lastSignalAt < this.authorityTtlMs;
+  }
+
+  /**
    * #919 — the pane's hook authority within the map TTL, as identity input:
    * which agent's bridge signaled, how long ago, and with which routing
-   * provenance. Undefined past the 30-min TTL (the caller applies the much
+   * provenance. Undefined once a TTL-bound entry ages out (#1009: a
+   * turn-boundary-only entry never ages out; the caller applies the much
    * shorter identity TTL to `ageMs` on the uncorroborated path only).
    */
   authorityAgentFor(
@@ -245,9 +300,8 @@ export class HookSignalRouter {
   ): { slug: AgentSlug; ageMs: number; exact: boolean } | undefined {
     const entry = this.authority.get(ptyId);
     if (!entry || !isAgentSlug(entry.agent)) return undefined;
-    const ageMs = now - entry.lastSignalAt;
-    if (ageMs >= this.authorityTtlMs) return undefined;
-    return { slug: entry.agent, ageMs, exact: entry.exact };
+    if (!this.authorityLive(entry, now)) return undefined;
+    return { slug: entry.agent, ageMs: now - entry.lastSignalAt, exact: entry.exact };
   }
 
   /**
@@ -278,7 +332,7 @@ export class HookSignalRouter {
   isGovernedFor(ptyId: string, slug: string, now: number = Date.now()): boolean {
     const entry = this.authority.get(ptyId);
     if (!entry || entry.agent !== slug) return false;
-    return now - entry.lastSignalAt < this.authorityTtlMs;
+    return this.authorityLive(entry, now);
   }
 
   /**
@@ -402,21 +456,33 @@ export class HookSignalRouter {
    * unaffected because it is a real turn-end read (Aider's "Applied edit
    * to"), never TUI chrome.
    *
-   * An ungoverned pane (no bridge, or a bridge gone quiet past the authority
-   * TTL) is unaffected: the detector stays the backstop it has always been.
-   *
-   * Accepted cost, stated because a reviewer will ask: this rides the same
-   * 30-minute authority TTL as the notification veto, so a bridge that stops
-   * speaking while its agent process is still alive leaves the status stale
-   * until the TTL expires. That is deliberately symmetric — the notification
-   * veto has always accepted exactly that window on the LOUDER surface, and
-   * making the status less trusting than the toast would be the odd choice.
-   * A shorter TTL is not the answer either: a single turn can run past twenty
-   * minutes with no bridge traffic at all on a turn-boundary-only hook install
-   * (the #935 report measured 21m), so a short window would simply restore the
-   * bug it fixes. Confirmed process death already releases authority ahead of
-   * the TTL (`expireAuthorityFor`, wired to the daemon's liveness poll).
-   */
+    * An ungoverned pane (no bridge, or a TTL-bound bridge gone quiet past the
+    * authority TTL) is unaffected: the detector stays the backstop it has
+    * always been.
+    *
+    * Accepted cost, stated because a reviewer will ask: this rides the same
+    * authority window as the notification veto. For a bridge that has ever
+    * spoken a per-tool-call kind (the full profile, where the dormant gate
+    * touches authority on every tool call) that window is the 30-minute
+    * freshness TTL — a bridge killed while its agent process lives leaves the
+    * status stale until the TTL expires, and `running` is never vetoed, so the
+    * pane degrades to detector-truth rather than being silenced. For a
+    * turn-boundary-only bridge (`--signals-only`, #979) the entry is
+    * TTL-exempt (#1009): nothing such a bridge could send mid-turn would
+    * refresh a TTL, so having one would strip this veto 30 minutes into a
+    * long turn — the #935 report caught 21-22 minute turns on exactly that
+    * profile — and hand the roster back to the always-visible footer the veto
+    * exists to suppress. Such an entry is released only by confirmed process
+    * death (`expireAuthorityFor`, wired to the daemon's liveness poll), by a
+    * relaunch (`agent.session_start` resets lifecycle ownership), or by pane
+    * dispose (`dropPty`). The residual failure mode is a signals-only bridge
+    * killed with its process left alive: `waiting`/`complete` stay withheld
+    * until death or relaunch, unbounded where the full profile bounds it at
+    * 30 minutes. We take that trade with open eyes because the failure is
+    * mild and one-directional — the pane degrades to stale-busy, never to a
+    * false "needs you" — and a stale-busy pane is an annoyance where a false
+    * roll-up count is the bug this veto exists to prevent.
+    */
   governsDetectorStatus(
     ptyId: string,
     slug: string | null | undefined,
