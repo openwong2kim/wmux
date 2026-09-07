@@ -467,6 +467,88 @@ describe('HookSignalRouter', () => {
       expect(router.governsDetectorStatus('p1', 'claude', 'waiting', 1000 + HOOK_AUTHORITY_TTL_MS)).toBe(false);
     });
 
+    // #1009 — the TTL is a death backstop, not a freshness guarantee. An
+    // entry is TTL-bound only once the bridge has proven it speaks per tool
+    // call; a turn-boundary-only bridge (--signals-only, #979) cannot refresh
+    // a TTL mid-turn, so being subject to one would resurrect #935's
+    // false-waiting 30 minutes into a long turn.
+    it('#1009 a turn-boundary-only bridge keeps the veto past the TTL mid-turn', () => {
+      // The issue's demonstration: signals-only = SessionStart, then turn
+      // boundaries. A 45-minute turn with no Stop yet must not lapse.
+      const t0 = 0;
+      const midTurn = t0 + 45 * 60_000;
+      router.touchAuthority('p1', 'claude', t0, true, 'agent.session_start');
+      router.touchAuthority('p1', 'claude', t0 + 1_000, true, 'agent.stop'); // previous turn's end
+      expect(router.isGovernedFor('p1', 'claude', midTurn)).toBe(true);
+      expect(router.governsDetectorStatus('p1', 'claude', 'waiting', midTurn)).toBe(true);
+      // The latch is self-describing, not installer-declared: many turns of
+      // turn boundaries never turn into TTL exemption the other way either.
+      router.touchAuthority('p1', 'claude', midTurn, true, 'agent.stop');
+      expect(router.governsDetectorStatus('p1', 'claude', 'waiting', midTurn + 45 * 60_000)).toBe(true);
+    });
+
+    it('#1009 the full profile keeps the freshness TTL, byte for byte', () => {
+      // The dormant gate touches authority with a per-tool-call kind on every
+      // tool call — that is what kept the veto alive on the full profile all
+      // along, and it must keep the TTL-bound behavior it had before #1009.
+      const t0 = 0;
+      const midTurn = t0 + 45 * 60_000;
+      router.touchAuthority('p1', 'claude', t0, true, 'agent.session_start');
+      router.touchAuthority('p1', 'claude', t0 + 1_000, true, 'agent.stop');
+      for (let t = t0; t <= midTurn; t += 60_000) {
+        router.touchAuthority('p1', 'claude', t, true, 'agent.tool_started');
+      }
+      expect(router.governsDetectorStatus('p1', 'claude', 'waiting', midTurn)).toBe(true);
+      // ...and once such a bridge goes quiet, the entry ages out at the TTL.
+      const lastSignal = midTurn + 60_000;
+      router.touchAuthority('p1', 'claude', lastSignal, true, 'agent.tool_started');
+      expect(router.governsDetectorStatus('p1', 'claude', 'waiting', lastSignal + HOOK_AUTHORITY_TTL_MS - 1)).toBe(true);
+      expect(router.governsDetectorStatus('p1', 'claude', 'waiting', lastSignal + HOOK_AUTHORITY_TTL_MS)).toBe(false);
+    });
+
+    // The owner's pinned case for the latch: one tool-traffic signal is
+    // enough to bind the entry to the TTL forever, even if the bridge then
+    // goes turn-boundary-only (a profile switch without a reinstall, a
+    // hand-edited hook config, a version-skewed bridge).
+    it('#1009 one agent.activity ever seen keeps the freshness TTL even after the bridge goes boundary-only', () => {
+      router.touchAuthority('p1', 'claude', 1000, true, 'agent.activity');
+      router.touchAuthority('p1', 'claude', 2000, true, 'agent.stop');
+      router.touchAuthority('p1', 'claude', 3000, true, 'agent.stop');
+      expect(router.governsDetectorStatus('p1', 'claude', 'waiting', 3000 + HOOK_AUTHORITY_TTL_MS - 1)).toBe(true);
+      expect(router.governsDetectorStatus('p1', 'claude', 'waiting', 3000 + HOOK_AUTHORITY_TTL_MS)).toBe(false);
+    });
+
+    it('#1009 a TTL-exempt entry is released by process death, relaunch, and dispose — nothing else', () => {
+      // Signals-only entry, far past the old TTL: still governed...
+      router.touchAuthority('p1', 'claude', 1000, true, 'agent.stop');
+      const wayPast = 1000 + 5 * HOOK_AUTHORITY_TTL_MS;
+      expect(router.isGovernedFor('p1', 'claude', wayPast)).toBe(true);
+      // ...until confirmed process death releases it (#919 liveness poll).
+      router.expireAuthorityFor('p1', 'claude');
+      expect(router.isGovernedFor('p1', 'claude', wayPast)).toBe(false);
+      // A relaunch keeps the entry (the bridge is alive) but hands the
+      // COMPLETE lifecycle back to the detector until it claims a turn again.
+      router.touchAuthority('p1', 'claude', 2000, true, 'agent.stop');
+      router.touchAuthority('p1', 'claude', 3000, true, 'agent.session_start');
+      expect(router.isGovernedFor('p1', 'claude', wayPast)).toBe(true);
+      expect(router.governsDetectorStatus('p1', 'claude', 'complete', wayPast)).toBe(false);
+      expect(router.governsDetectorStatus('p1', 'claude', 'waiting', wayPast)).toBe(true);
+      // Pane dispose clears immediately.
+      router.dropPty('p1');
+      expect(router.isGovernedFor('p1', 'claude', wayPast)).toBe(false);
+    });
+
+    it('#1009 authorityAgentFor keeps reporting a TTL-exempt entry, age bounded by the identity tier', () => {
+      // The identity callers apply their own much shorter window to ageMs on
+      // the uncorroborated path (IDENTITY_TTL_MS), so a live pane's identity
+      // no longer flips to screen-truth 30 minutes into a signals-only turn.
+      router.touchAuthority('p1', 'claude', 1000, true, 'agent.stop');
+      const wayPast = 1000 + 2 * HOOK_AUTHORITY_TTL_MS;
+      const auth = router.authorityAgentFor('p1', wayPast);
+      expect(auth?.slug).toBe('claude');
+      expect(auth?.ageMs).toBe(wayPast - 1000);
+    });
+
     it('dropPty releases authority immediately (pane disposal)', () => {
       router.touchAuthority('p1', 'claude', 1000);
       router.dropPty('p1');
