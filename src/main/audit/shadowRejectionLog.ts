@@ -38,8 +38,9 @@ import type { RpcMethod, RpcRejection } from '../../shared/rpc';
  * starts with three kinds:
  *
  *   - 'rejection'       — would-be permission rejection (shadow mode)
- *   - 'legacy-traffic'  — per-method legacy (envelope-less) call counts,
- *                          emitted at threshold milestones (1, 10, 100, ...)
+ *   - 'legacy-traffic'  — per-method legacy (external-wire envelope-less)
+ *                          call counts, emitted at threshold milestones
+ *                          (1, 10, 100, ...)
  *   - 'browser-scope'    — a browser target lookup the future caller-scope
  *                          enforcement would refuse (#810)
  *

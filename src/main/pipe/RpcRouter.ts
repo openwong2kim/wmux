@@ -8,6 +8,7 @@ import type {
 } from '../../shared/rpc';
 import { sanitizeClientDisplayName } from '../../shared/rpc';
 import { check as enforcerCheck } from '../mcp/PermissionEnforcer';
+import { isLocalExternalWireContext } from '../mcp/rpcProvenance';
 import { commanderTokenWorkspace } from '../deck/commanderTrust';
 import { COMMANDER_TEARDOWN_DENY } from '../../shared/commanderSurface';
 import type { EnforcementMode } from '../mcp/enforcementMode';
@@ -28,10 +29,10 @@ type RpcHandler = (
 ) => Promise<unknown>;
 
 // Optional sink for legacy-contact bookkeeping — wired in main/index.ts
-// to PluginTrustStore.upsertLegacyContact so an envelope-less RPC ends up
-// in plugin-trust.json as a `legacy` record. RpcRouter does not import
-// the trust store directly: it stays storage-agnostic, tests opt in by
-// passing their own recorder, and unit tests stay isolated from the
+// to PluginTrustStore.upsertLegacyContact so an envelope-less wire RPC
+// ends up in plugin-trust.json as a `legacy` record. RpcRouter does not
+// import the trust store directly: it stays storage-agnostic, tests opt
+// in by passing their own recorder, and unit tests stay isolated from the
 // real ~/.wmux state.
 type LegacyContactRecorder = (method: RpcMethod) => void;
 
@@ -440,12 +441,20 @@ export class RpcRouter {
           : { kind: 'stale' };
     }
 
-    // Spec §2.2: requests without `clientName` are recorded as `legacy`.
-    // Two side-channels fire here:
+    // Spec §2.2: external-wire requests without `clientName` are recorded as
+    // `legacy`. The trusted in-process surfaces are excluded: the renderer
+    // bridge (`operator`) and the iframe plugin host (`firstParty`) send no
+    // clientName by design, so counting them here drowned the wire signal in
+    // renderer polling (events.poll alone accounted for ~445k dogfood
+    // entries) — and this counter is the evidence base for the #1111 close
+    // decision, which must see only envelope-less WIRE callers. The in-process
+    // lanes were never the grandfather's audience (#1139 exempts them at the
+    // enforcement points for the same reason). Two side-channels fire here:
     //
     //   1. Process-once trust-DB write (`legacyRecorder`) — one row per
     //      process in `~/.wmux/plugin-trust.json`. Enough to signal "this
-    //      process saw legacy traffic" without disk-pounding on every RPC.
+    //      process saw legacy wire traffic" without disk-pounding on every
+    //      RPC.
     //
     //   2. Per-method counter (`legacyTrafficCounter`, Phase 2.2 pre-commit
     //      4) — every call ticks a counter; threshold milestones flush a
@@ -456,7 +465,11 @@ export class RpcRouter {
     // handlers (which own their own recording) don't double-count. Both
     // are fire-and-forget and wrapped in try/catch — they MUST NOT
     // affect dispatch latency or response.
-    if (!ctx.clientName && !IDENTITY_OWN_METHODS.has(request.method)) {
+    if (
+      isLocalExternalWireContext(ctx) &&
+      !ctx.clientName &&
+      !IDENTITY_OWN_METHODS.has(request.method)
+    ) {
       if (!this.legacyContactPersisted && this.legacyRecorder) {
         this.legacyContactPersisted = true;
         try {
