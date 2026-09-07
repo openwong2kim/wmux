@@ -1,0 +1,529 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>wmux — ideal chrome (2026-08-15)</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg-base:#151517; --bg-mantle:#19191C; --bg-surface:#202024; --bg-overlay:#26262B;
+    --text-main:#EFEEEC; --text-sub:#A5A29C; --text-muted:#66645F;
+    --accent:#E8A33D; --accent-blue:#6E9BC4;
+    --success:#8FBF7F; --danger:#D96C6C;
+    --hair:rgba(255,255,255,.06);
+    --sans:'Inter','Segoe UI',system-ui,sans-serif;
+    --mono:'JetBrains Mono','Cascadia Code',ui-monospace,monospace;
+    --r-btn:5px; --r-in:6px; --r-card:7px;
+  }
+  *{box-sizing:border-box; margin:0; padding:0}
+  html,body{height:100%}
+  body{
+    background:#0c0c0e; color:var(--text-main); font-family:var(--sans);
+    display:flex; flex-direction:column; align-items:center; gap:16px;
+    padding:22px 16px 40px; min-height:100%;
+    -webkit-font-smoothing:antialiased;
+  }
+  .page-hd{text-align:center; max-width:760px}
+  .page-hd h1{font-size:15px; font-weight:600; letter-spacing:-.01em}
+  .page-hd p{margin-top:6px; font-size:12.5px; line-height:1.55; color:#8a8780}
+
+  .win{
+    width:min(1480px,98vw); height:900px;
+    background:var(--bg-base); border-radius:10px; overflow:hidden;
+    display:flex; flex-direction:column;
+    border:1px solid var(--hair);
+    box-shadow:0 28px 70px rgba(0,0,0,.58), inset 0 1px 0 rgba(255,255,255,.04);
+  }
+
+  /* titlebar — orca cue: left = sidebar width */
+  .titlebar{height:36px; flex:0 0 36px; display:flex; align-items:stretch; background:var(--bg-base);
+    box-shadow:inset 0 -1px 0 var(--hair)}
+  .tb-left{
+    width:248px; flex:0 0 248px; display:flex; align-items:center; gap:9px;
+    padding:0 11px; background:var(--bg-mantle);
+    box-shadow:inset -1px 0 0 var(--hair);
+  }
+  .lights{display:flex; gap:6px; flex:0 0 auto}
+  .lights i{width:12px; height:12px; border-radius:50%; display:block}
+  .lights .r{background:#ff5f57} .lights .y{background:#febc2e} .lights .g{background:#28c840}
+  .mark{
+    width:15px; height:15px; border-radius:4px; flex:0 0 auto;
+    display:grid; place-items:center; font-size:9px; font-weight:800;
+    color:var(--accent); background:var(--bg-surface); border:1px solid var(--hair);
+  }
+  .ws-name{font-size:12px; font-weight:600; color:var(--text-main)}
+  .ws-name em{font-style:normal; color:var(--text-muted); font-weight:500; margin-left:5px}
+  .tb-add{
+    margin-left:auto; width:22px; height:22px; border:0; border-radius:5px;
+    background:transparent; color:var(--text-muted); display:grid; place-items:center; font-size:15px;
+  }
+  .tb-add:hover{background:var(--bg-surface); color:var(--text-main)}
+  .tb-center{flex:1}
+  .tb-right{display:flex; align-items:center; gap:11px; padding:0 12px; font-size:11px; color:var(--text-muted)}
+  .chip{display:inline-flex; align-items:center; gap:6px; height:22px; font-weight:500; cursor:default}
+  .chip i{width:6px; height:6px; border-radius:50%; display:block}
+  .chip.run{color:var(--accent)} .chip.run i{background:var(--accent)}
+  .chip.need{color:var(--danger)} .chip.need i{background:var(--danger)}
+  .tb-meta{font-variant-numeric:tabular-nums; font-family:var(--mono); font-size:10.5px}
+  .tb-ico{width:22px; height:22px; display:grid; place-items:center; color:var(--text-muted); border-radius:5px}
+  .tb-ico:hover{background:var(--bg-surface); color:var(--text-sub)}
+
+  .body{flex:1; display:flex; min-height:0}
+
+  /* sidebar */
+  .side{
+    width:248px; flex:0 0 248px; background:var(--bg-mantle);
+    box-shadow:inset -1px 0 0 var(--hair);
+    display:flex; flex-direction:column; min-height:0;
+  }
+  .search{height:36px; flex:0 0 36px; display:flex; align-items:center; padding:0 10px}
+  .search input{
+    width:100%; height:26px; border:0; border-radius:var(--r-in);
+    background:color-mix(in srgb,var(--bg-base) 82%,#000);
+    box-shadow:inset 0 1px 2px rgba(0,0,0,.35);
+    color:var(--text-sub); font:500 12px var(--sans); padding:0 8px; outline:none;
+  }
+  .search input::placeholder{color:var(--text-muted)}
+  .search input:focus{box-shadow:0 0 0 1px var(--accent-blue), 0 0 0 4px color-mix(in srgb,var(--accent-blue) 22%,transparent)}
+  .list{flex:1; overflow:auto; padding:4px 0 8px}
+  .ws{
+    display:flex; align-items:flex-start; gap:7px;
+    padding:6px 12px 5px; color:var(--text-sub); position:relative;
+  }
+  .ws:hover{background:color-mix(in srgb,var(--bg-surface) 40%,transparent)}
+  .ws .dot{width:7px; height:7px; border-radius:50%; flex:0 0 auto; margin-top:6px}
+  .ws .dot.need{background:var(--danger)}
+  .ws .dot.off{background:transparent; box-shadow:inset 0 0 0 1px #3f3e3b}
+  .ws .bodycol{flex:1; min-width:0}
+  .ws .line1{display:flex; align-items:baseline; gap:6px; font-size:13px; line-height:1.3}
+  .ws .nm{color:var(--text-sub); font-weight:500}
+  .ws .br{font-family:var(--mono); font-size:10px; color:var(--text-muted)}
+  .ws .meta{margin-top:2px; font-size:11px; color:var(--text-muted); display:flex; gap:8px}
+  .ws .chev{margin-left:auto; color:var(--text-muted); font-size:10px; padding-top:3px}
+
+  .ws.on{
+    margin:2px 7px; padding:7px 8px 6px 10px;
+    background:var(--bg-surface);
+    border:1px solid color-mix(in srgb,var(--text-main) 10%,transparent);
+    border-radius:var(--r-card);
+    box-shadow:inset 0 1px 0 color-mix(in srgb,var(--text-main) 6%,transparent);
+    color:var(--text-main);
+  }
+  .ws.on::before{
+    content:""; position:absolute; left:-7px; top:10px; bottom:10px; width:2px;
+    background:var(--accent-blue); border-radius:0 2px 2px 0;
+  }
+  .ws.on .nm{color:var(--text-main); font-weight:600}
+  .ws.on .dot.off{box-shadow:inset 0 0 0 1px #5a5854}
+
+  .panes{margin:4px 0 2px 15px; display:flex; flex-direction:column; gap:1px}
+  .plab{font-size:10px; letter-spacing:.06em; color:var(--text-muted); padding:3px 0 2px; font-weight:600;
+    display:flex; align-items:center; gap:8px}
+  .fan{
+    margin-left:auto; height:20px; padding:0 7px; border:0; border-radius:5px;
+    background:var(--accent); color:var(--bg-base); font:600 10px var(--sans);
+    box-shadow:inset 0 1px 0 color-mix(in srgb,#fff 28%,transparent); letter-spacing:0;
+    text-transform:none;
+  }
+  .fan:hover{filter:brightness(1.06)}
+  .prow{
+    display:flex; align-items:center; gap:7px; height:24px; padding:0 4px;
+    border-radius:5px; font-size:12px; color:var(--text-sub);
+  }
+  .prow:hover{background:color-mix(in srgb,var(--bg-overlay) 80%,transparent)}
+  .prow .pd{width:6px; height:6px; border-radius:50%; flex:0 0 auto}
+  .prow .pd.stop{background:#4a4946}
+  .prow .pd.run{background:var(--accent)}
+  .prow .pn{flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+  .prow .id{font-family:var(--mono); font-size:10px; color:var(--text-muted)}
+  .prow .st{font-size:11px; color:var(--text-muted)}
+  .prow .st.live{color:var(--accent)}
+  .prow .jump{color:var(--accent-blue); font-size:12px; opacity:.7}
+
+  .side-foot{
+    height:36px; flex:0 0 36px; display:flex; align-items:center;
+    padding:0 12px; font-size:11px; color:var(--text-muted);
+    box-shadow:inset 0 1px 0 var(--hair);
+  }
+
+  /* center */
+  .center{flex:1; min-width:0; display:flex; flex-direction:column; background:var(--bg-base)}
+  .grid{flex:1; display:grid; grid-template-columns:1fr 1fr; min-height:0}
+  .pane{display:flex; flex-direction:column; min-width:0; min-height:0; position:relative}
+  .pane + .pane{box-shadow:inset 1px 0 0 var(--hair)}
+  .ptabs{
+    height:36px; flex:0 0 36px; display:flex; align-items:stretch;
+    padding:0 4px 0 6px; box-shadow:inset 0 -1px 0 var(--hair);
+  }
+  .tab{
+    display:flex; align-items:center; gap:6px; padding:0 10px;
+    font-size:12px; color:var(--text-sub); position:relative; max-width:180px;
+  }
+  .tab .lab{overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+  .tab.on{color:var(--text-main)}
+  .tab.on::after{
+    content:""; position:absolute; left:8px; right:8px; bottom:0; height:2px;
+    background:var(--accent-blue); border-radius:2px;
+  }
+  .tab .x{color:var(--text-muted); font-size:11px}
+  .tab-new{
+    display:none; align-items:center; gap:4px; margin-left:2px; padding:0 8px;
+    font-size:11px; color:var(--text-muted); border-radius:5px;
+  }
+  .pane.focus .tab-new{display:flex}
+  .tab-new:hover{color:var(--text-sub); background:var(--bg-surface)}
+  .tab-tools{margin-left:auto; display:flex; align-items:center; gap:1px; padding-right:4px; color:var(--text-muted)}
+  .tab-tools b,.tab-tools button{
+    width:22px; height:22px; display:grid; place-items:center; border-radius:5px;
+    font-weight:400; font-size:12px; border:0; background:transparent; color:inherit; padding:0;
+  }
+  .tab-tools b:hover,.tab-tools button:hover{background:var(--bg-surface); color:var(--text-sub)}
+  .tab-tools .into{display:none}
+  .pane.focus .tab-tools .into{display:grid}
+  .tab-tools button.on{background:var(--bg-surface); color:var(--text-main);
+    box-shadow:inset 0 0 0 1px var(--accent-blue)}
+
+  .pane.focus .term{
+    box-shadow:inset 0 2px 0 var(--accent-blue);
+  }
+
+  .term{
+    flex:1; min-height:0; overflow:hidden; padding:10px 14px 8px;
+    font-family:var(--mono); font-size:12px; line-height:1.55; color:var(--text-sub);
+    display:flex; flex-direction:column;
+  }
+  .term .hd{display:flex; justify-content:space-between; align-items:baseline; color:var(--text-muted); font-size:11.5px; margin-bottom:8px}
+  .term .hd b{color:var(--text-main); font-weight:500}
+  .term .ctx{color:var(--text-muted); font-variant-numeric:tabular-nums}
+  .ok{color:var(--success)} .err{color:var(--danger)} .dim{color:var(--text-muted)} .hi{color:var(--text-main)}
+  .warn{color:var(--accent)}
+  .log{display:flex; flex-direction:column; gap:6px}
+  .log p{white-space:pre-wrap}
+  .cmd{color:var(--text-muted)}
+  .cmd span{color:var(--text-sub)}
+  .userbar{
+    margin:8px 0 2px; padding:4px 8px; border-radius:4px;
+    background:var(--bg-surface); color:var(--text-main);
+  }
+  .checks{margin:2px 0 0; padding-left:2px}
+  .checks p{padding-left:12px}
+  .chip-file{
+    align-self:flex-start; margin-top:6px; padding:1px 7px; border-radius:4px;
+    background:color-mix(in srgb,var(--accent-blue) 18%,transparent);
+    color:var(--accent-blue); font-size:11px;
+  }
+  .prompt{
+    margin-top:auto; display:flex; align-items:center; gap:8px;
+    min-height:34px; padding:0 10px; border-radius:var(--r-in);
+    background:color-mix(in srgb,var(--bg-surface) 72%,transparent);
+    box-shadow:inset 0 0 0 1px var(--hair);
+    color:var(--text-muted);
+  }
+  .prompt .caret{color:var(--accent)}
+  .prompt .model{margin-left:auto; font-size:11px}
+  .meta-line{margin-top:6px; font-size:10.5px; color:var(--text-muted)}
+  .foot-agent{
+    margin-top:8px; padding-top:6px; box-shadow:inset 0 1px 0 var(--hair);
+    font-size:11px; color:var(--text-muted); display:flex; flex-direction:column; gap:3px;
+  }
+  .foot-agent .row{display:flex; gap:8px; flex-wrap:wrap}
+  .bypass{color:var(--accent)}
+
+  .compose{
+    display:none; position:absolute; right:8px; top:40px; width:320px; z-index:5;
+    background:var(--bg-mantle); border:1px solid var(--accent-blue); border-radius:7px;
+    box-shadow:0 16px 40px rgba(0,0,0,.45); padding:10px;
+  }
+  .pane.focus .compose.open{display:block}
+  .compose .row{display:flex; align-items:center; gap:6px; margin-bottom:8px}
+  .compose .ttl{font-size:12px; font-weight:600; color:var(--text-main)}
+  .seg{display:inline-flex; margin-left:auto; border:1px solid var(--hair); border-radius:5px; overflow:hidden}
+  .seg button{
+    border:0; background:transparent; color:var(--text-muted);
+    font:500 10.5px var(--sans); padding:3px 7px;
+  }
+  .seg button.on{background:var(--bg-surface); color:var(--text-main)}
+  .compose textarea{
+    width:100%; height:88px; resize:none; border:0; border-radius:6px;
+    background:color-mix(in srgb,var(--bg-base) 80%,#000); color:var(--text-main);
+    font:400 12px var(--mono); padding:8px; outline:none;
+    box-shadow:inset 0 1px 2px rgba(0,0,0,.35);
+  }
+  .compose textarea:focus{box-shadow:0 0 0 1px var(--accent-blue), 0 0 0 4px color-mix(in srgb,var(--accent-blue) 22%,transparent)}
+  .snips{display:flex; gap:4px; margin:8px 0; flex-wrap:wrap}
+  .snips i{
+    font-style:normal; font-size:10.5px; color:var(--text-muted);
+    border:1px solid var(--hair); border-radius:999px; padding:2px 7px;
+  }
+  .compose .send{
+    display:flex; align-items:center; gap:8px; margin-top:8px;
+  }
+  .compose .send span{font-size:11px; color:var(--text-muted)}
+  .compose .send button{
+    margin-left:auto; height:22px; padding:0 10px; border:0; border-radius:5px;
+    background:var(--accent); color:var(--bg-base); font:600 11px var(--sans);
+    box-shadow:inset 0 1px 0 color-mix(in srgb,#fff 28%,transparent);
+  }
+
+  /* collapsed deck rail */
+  .rail{
+    width:36px; flex:0 0 36px; background:var(--bg-mantle);
+    box-shadow:inset 1px 0 0 var(--hair);
+    display:flex; flex-direction:column; align-items:center; padding:6px 0; gap:2px;
+  }
+  .rail button{
+    width:28px; height:28px; border:0; border-radius:5px;
+    background:transparent; color:var(--text-muted);
+    display:grid; place-items:center; position:relative;
+  }
+  .rail button:hover{background:var(--bg-surface); color:var(--text-sub)}
+  .rail .badge{
+    position:absolute; top:2px; right:1px; min-width:12px; height:12px; padding:0 3px;
+    border-radius:999px; background:var(--accent); color:var(--bg-base);
+    font:700 8px var(--sans); line-height:12px; text-align:center;
+  }
+  .rail .sp{flex:1}
+
+  .notes{
+    width:min(1480px,98vw); display:grid; grid-template-columns:repeat(4,1fr); gap:10px;
+  }
+  .note{background:#161618; border:1px solid var(--hair); border-radius:7px; padding:10px 12px}
+  .note b{display:block; font-size:11px; font-weight:600; margin-bottom:4px; color:#d4d0c8}
+  .note span{font-size:11.5px; line-height:1.45; color:#8a8780}
+  @media (max-width:900px){ .notes{grid-template-columns:1fr 1fr} }
+</style>
+</head>
+<body>
+  <header class="page-hd">
+    <h1>wmux — ideal chrome</h1>
+    <p>호버 바와 타이틀바 동사는 버렸다. 넣기는 이미 있는 탭 도구 칸. 함대 스폰은 이 워크스페이스 카드. Broadcast는 입력창의 대상 스위치다.</p>
+  </header>
+
+  <div class="win" role="application" aria-label="wmux ideal">
+    <div class="titlebar">
+      <div class="tb-left">
+        <div class="lights" aria-hidden="true"><i class="r"></i><i class="y"></i><i class="g"></i></div>
+        <div class="mark">w</div>
+        <div class="ws-name">wmux <em>main</em></div>
+        <button class="tb-add" title="New workspace">+</button>
+      </div>
+      <div class="tb-center"></div>
+      <div class="tb-right">
+        <span class="chip run" title="Jump to a running pane"><i></i>2 running</span>
+        <span class="chip need" title="Jump to the most urgent pane"><i></i>2개 응답 필요</span>
+        <span class="tb-meta">417MB</span>
+        <span class="tb-meta">23:12</span>
+        <span class="tb-ico" title="Settings" aria-label="Settings">
+          <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><circle cx="6" cy="6" r="1.6" stroke="currentColor" stroke-width="1.1"/><path d="M6 1.6v1.2M6 9.2v1.2M1.6 6h1.2M9.2 6h1.2M2.9 2.9l.85.85M8.25 8.25l.85.85M9.1 2.9l-.85.85M3.75 8.25l-.85.85" stroke="currentColor" stroke-width="1.1" stroke-linecap="round"/></svg>
+        </span>
+      </div>
+    </div>
+
+    <div class="body">
+      <nav class="side" aria-label="Workspaces">
+        <div class="search"><input placeholder="워크스페이스 검색" spellcheck="false"></div>
+        <div class="list">
+
+          <div class="ws">
+            <i class="dot need"></i>
+            <div class="bodycol">
+              <div class="line1"><span class="nm">cutcut</span><span class="br">main</span></div>
+              <div class="meta"><span>에이전트 1</span></div>
+            </div>
+            <span class="chev">›</span>
+          </div>
+
+          <div class="ws">
+            <i class="dot need"></i>
+            <div class="bodycol">
+              <div class="line1"><span class="nm">axing</span><span class="br">main</span></div>
+              <div class="meta"><span>에이전트 1</span></div>
+            </div>
+            <span class="chev">›</span>
+          </div>
+
+          <div class="ws">
+            <i class="dot off"></i>
+            <div class="bodycol">
+              <div class="line1"><span class="nm">AgiBell</span><span class="br">main</span></div>
+              <div class="meta"><span>에이전트 1</span></div>
+            </div>
+            <span class="chev">›</span>
+          </div>
+
+          <div class="ws on">
+            <i class="dot off"></i>
+            <div class="bodycol">
+              <div class="line1"><span class="nm">wmux</span><span class="br">main · 3</span></div>
+              <div class="panes">
+                <div class="plab">에이전트 2 <button class="fan" title="이 워크스페이스에 N개 격리 태스크">병렬 작업</button></div>
+                <div class="prow">
+                  <i class="pd stop"></i>
+                  <span class="pn">Claude Code</span>
+                  <span class="id">w115-5</span>
+                  <span class="st">멈춤</span>
+                  <span class="jump">→</span>
+                </div>
+                <div class="prow">
+                  <i class="pd run"></i>
+                  <span class="pn">Claude Code</span>
+                  <span class="id">w115-7</span>
+                  <span class="st live">실행 중</span>
+                  <span class="jump">→</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="ws">
+            <i class="dot off"></i>
+            <div class="bodycol">
+              <div class="line1"><span class="nm">golf-shorts</span><span class="br">main</span></div>
+              <div class="meta"><span>에이전트 1</span></div>
+            </div>
+            <span class="chev">›</span>
+          </div>
+
+        </div>
+        <div class="side-foot">5 워크스페이스</div>
+      </nav>
+
+      <main class="center">
+        <div class="grid">
+          <section class="pane focus" aria-label="Focused pane: grok">
+            <div class="ptabs">
+              <div class="tab"><span class="lab">w115-5 · claude</span></div>
+              <div class="tab on"><span class="lab">grok</span> <span class="x">×</span></div>
+              <div class="tab-new" title="Reset the focused pane">+ 새 대화</div>
+              <div class="tab-tools">
+                <button class="into" title="파일 경로를 이 페인에" aria-label="첨부">
+                  <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M4.2 6.4l3.1-3.1a1.5 1.5 0 112.1 2.1L5 9.8a2.2 2.2 0 11-3.1-3.1l3.4-3.4" stroke="currentColor" stroke-width="1.15" stroke-linecap="round"/></svg>
+                </button>
+                <button class="into on" id="btn-compose" title="입력창 ⌘G — 이 페인 또는 전체" aria-label="입력창">
+                  <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><rect x="2" y="2.6" width="8" height="6.8" rx="1" stroke="currentColor" stroke-width="1.15"/><path d="M4 5h4M4 7h2.4" stroke="currentColor" stroke-width="1.1"/></svg>
+                </button>
+                <b title="Split">⊞</b><b title="Layout">▤</b><b title="Browser">◎</b>
+              </div>
+            </div>
+            <div class="compose open" id="compose">
+              <div class="row">
+                <span class="ttl">입력창</span>
+                <div class="seg" id="target">
+                  <button class="on" type="button">이 페인</button>
+                  <button type="button">전체 2</button>
+                </div>
+              </div>
+              <textarea placeholder="여러 줄 붙여넣기. Enter는 줄바꿈."></textarea>
+              <div class="snips"><i>스니펫</i><i>review 체크</i><i>재시도</i></div>
+              <div class="send"><span>⌘G 로 열고 Esc 로 닫기</span><button type="button">보내기</button></div>
+            </div>
+            <div class="term">
+              <div class="hd"><span><b>main</b> ~/Desktop/coding/wmux/wmux</span><span class="ctx">21K / 500K</span></div>
+              <div class="log">
+                <p class="dim">◆ session_start  [hooks: 5]</p>
+                <p class="dim">Session 01a005c4-3475-7381-876b-e7596a09becf — use /dashboard to switch between sessions</p>
+              </div>
+              <div class="prompt"><span class="caret">›</span> <span class="model">Grok 4.6 (high) · always-approve</span></div>
+              <div class="meta-line">Shift+Tab mode  ·  Ctrl+X shortcuts</div>
+            </div>
+          </section>
+
+          <section class="pane" aria-label="Pane: completion-alarm-rules">
+            <div class="ptabs">
+              <div class="tab"><span class="lab">w115-7 · claude</span></div>
+              <div class="tab on"><span class="lab">completion-alarm-rules</span> <span class="x">×</span></div>
+              <div class="tab-new" title="Reset the focused pane">+ 새 대화</div>
+              <div class="tab-tools">
+                <button class="into" title="파일 경로를 이 페인에" aria-label="첨부">
+                  <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M4.2 6.4l3.1-3.1a1.5 1.5 0 112.1 2.1L5 9.8a2.2 2.2 0 11-3.1-3.1l3.4-3.4" stroke="currentColor" stroke-width="1.15" stroke-linecap="round"/></svg>
+                </button>
+                <button class="into" title="입력창 ⌘G" aria-label="입력창">
+                  <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><rect x="2" y="2.6" width="8" height="6.8" rx="1" stroke="currentColor" stroke-width="1.15"/><path d="M4 5h4M4 7h2.4" stroke="currentColor" stroke-width="1.1"/></svg>
+                </button>
+                <b title="Split">⊞</b><b title="Layout">▤</b><b title="Browser">◎</b>
+              </div>
+            </div>
+            <div class="term">
+              <div class="log">
+                <p><span class="err">●</span> Codex 패스 실패 (비차단): 워크스페이스 크레딧 소진 — <span class="err">ERROR: Your workspace is out of credits.</span> 패널은 GLM+Claude 2모델로 계속 진행하고 리포트에 명시한다. 두 패스 완료 알림을 기다린다.</p>
+                <p class="dim">* Waiting for 1 background agent to finish</p>
+                <p class="ok">● Background command "Run GLM review pass in background" completed (exit code 0)</p>
+                <p class="dim">Thought for 4s, read 1 file</p>
+                <p>● GLM 패스 완료 (6건). Claude 서브에이전트 완료 알림을 기다린 뒤 교차 합의 진행한다.</p>
+                <p class="dim">* Waiting for 1 background agent to finish</p>
+                <p class="ok">● Agent "Claude review pass (fresh)" finished · 1h 10m 31s</p>
+                <p class="dim">Thought for 1m 4s</p>
+                <p>● 양 패스 완료 (Codex는 크레딧 소진 skip). 합의 전에 지적 지점들을 스스로 검증한다:</p>
+                <p class="cmd">  Reading DaemonPTYBridge active emission and resize guard<br>  <span>$ grep -n "emit('active'" src/daemon/DaemonPTYBridge.ts</span></p>
+                <div class="userbar">응 진행하고 있나?</div>
+                <p class="hi">* 리뷰팀 · PR 진행 중… (2m 24s · thinking with high effort)</p>
+                <div class="checks">
+                  <p class="ok">✓ 정찰 · 훅 브라우저·알람 경로 파악</p>
+                  <p class="ok">✓ 구현 계획 작성</p>
+                  <p class="ok">✓ plan-eng-review + Claude 리뷰</p>
+                  <p class="ok">✓ 구현 + verify.sh</p>
+                  <p class="warn">■ review-team → PR</p>
+                </div>
+                <div class="chip-file">completion-alarm-rules</div>
+              </div>
+              <div class="foot-agent">
+                <div class="row">1% until auto-compact  ·  @ /goal active (2h)</div>
+                <div class="row">glm-5.3 (high) · wykim777 · ctx 83% · usage —</div>
+                <div class="row"><span class="bypass">▶▶ bypass permissions on</span> (shift+tab to cycle)  ·  ← 2 agents</div>
+              </div>
+            </div>
+          </section>
+        </div>
+      </main>
+
+      <aside class="rail" aria-label="Deck">
+        <button title="Agent">
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><circle cx="7" cy="5" r="2.1" stroke="currentColor" stroke-width="1.15"/><path d="M3.2 11.2c.7-1.8 2-2.7 3.8-2.7s3.1.9 3.8 2.7" stroke="currentColor" stroke-width="1.15"/></svg>
+        </button>
+        <button title="Git">
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><circle cx="4" cy="10" r="1.4" stroke="currentColor"/><circle cx="10" cy="4" r="1.4" stroke="currentColor"/><circle cx="10" cy="10" r="1.4" stroke="currentColor"/><path d="M4 8.6V5.2l4.4-2" stroke="currentColor" stroke-width="1.1"/><path d="M10 5.5v3" stroke="currentColor" stroke-width="1.1"/></svg>
+          <span class="badge">3</span>
+        </button>
+        <button title="채널">
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M2.5 4.5h9M2.5 7h9M2.5 9.5h6" stroke="currentColor" stroke-width="1.15"/></svg>
+        </button>
+        <button title="web">
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><circle cx="7" cy="7" r="4.2" stroke="currentColor" stroke-width="1.15"/><path d="M3 7h8M7 3c1.4 1.4 1.4 6.6 0 8M7 3c-1.4 1.4-1.4 6.6 0 8" stroke="currentColor" stroke-width="1.05"/></svg>
+        </button>
+        <div class="sp"></div>
+      </aside>
+    </div>
+  </div>
+
+  <section class="notes">
+    <div class="note"><b>왜 저번이 아닌가</b><span>타이틀바는 계기판이다. 동사를 넣으면 드래그 영역과 칩이 죽는다. 호버 바는 에이전트 입력창을 가리고, 찾으려면 바닥을 훔쳐봐야 한다.</span></div>
+    <div class="note"><b>넣기 → 탭 도구</b><span>클립 = 첨부·파일. 노트 = 입력창 ⌘G. 이미 있는 36px에 글리프 둘. 새 줄 없음. 포커스된 페인에만 보인다.</span></div>
+    <div class="note"><b>Broadcast → 입력창 모드</b><span>보내는 문장이 하나면 대상만 갈린다. `이 페인` / `전체 2`. 스니펫도 그 안에. 키보드 아이콘을 눌러 보라.</span></div>
+    <div class="note"><b>병렬 작업 → 이 카드</b><span>스폰은 이 워크스페이스의 함대에 에이전트를 더하는 일이다. `에이전트 2` 옆이 정직한 자리. 타이틀바·호버·공용 하단이 아니다.</span></div>
+  </section>
+  <script>
+    document.querySelectorAll('.pane').forEach((pane) => {
+      pane.addEventListener('mousedown', (e) => {
+        if (e.target.closest('.compose')) return;
+        document.querySelectorAll('.pane').forEach((p) => p.classList.remove('focus'));
+        pane.classList.add('focus');
+      });
+    });
+    const compose = document.getElementById('compose');
+    const btn = document.getElementById('btn-compose');
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      compose.classList.toggle('open');
+      btn.classList.toggle('on', compose.classList.contains('open'));
+    });
+    document.getElementById('target').addEventListener('click', (e) => {
+      const b = e.target.closest('button');
+      if (!b) return;
+      document.querySelectorAll('#target button').forEach((x) => x.classList.toggle('on', x === b));
+    });
+  </script>
+</body>
+</html>

@@ -1,0 +1,447 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Workspace tile — Option A final (discussion #948)</title>
+<style>
+  /* amber-graphite tokens — themes.ts `amber` */
+  :root {
+    --bg-base: #151517;
+    --bg-mantle: #19191C;
+    --bg-surface: #202024;
+    --bg-surface-rgb: 32, 32, 36;
+    --bg-overlay: #2A2A2F;
+    --text-main: #EFEEEC;
+    --text-sub: #A5A29C;
+    --text-subtle: #85827C;
+    --text-muted: #66645F;
+    --accent: #E8A33D;
+    --accent-cursor: #E8A33D;
+    --accent-blue: #6E9BC4;
+    --accent-green: #8FBF7F;
+    --accent-red: #D96C6C;
+    --border-soft: rgba(255,255,255,.06);
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 40px 32px 80px;
+    background: var(--bg-base); color: var(--text-sub);
+    font-family: var(--sans); font-size: 13px; line-height: 1.55;
+  }
+  header { max-width: 1180px; margin: 0 auto 30px; }
+  h1 { font-size: 17px; font-weight: 600; color: var(--text-main); margin: 0 0 6px; letter-spacing: -0.01em; }
+  header p { margin: 0; color: var(--text-muted); max-width: 74ch; }
+  header code, .sp code {
+    font: 400 11px/1 var(--mono); color: var(--text-subtle);
+    background: color-mix(in srgb, var(--text-main) 6%, transparent);
+    padding: 1.5px 4px; border-radius: 3px;
+  }
+
+  .board {
+    max-width: 1180px; margin: 0 auto;
+    display: grid; grid-template-columns: repeat(3, minmax(300px, 1fr)); gap: 28px;
+  }
+  @media (max-width: 1020px) { .board { grid-template-columns: 1fr; } }
+
+  .col > h2 {
+    font-size: 12px; font-weight: 700; letter-spacing: .09em; text-transform: uppercase;
+    color: var(--text-muted); margin: 0 0 3px;
+  }
+  .col > h2 .tag { text-transform: none; letter-spacing: 0; font-weight: 500; }
+  .cap { margin: 0 0 14px; font-size: 12px; color: var(--text-subtle); min-height: 36px; }
+
+  .sidebar {
+    width: 100%; max-width: 288px;
+    background: var(--bg-mantle);
+    border: 1px solid var(--border-soft);
+    border-radius: 7px; padding: 10px 0;
+  }
+  .sb-head {
+    height: 36px; display: flex; align-items: center; padding: 0 14px; margin: -10px 0 10px;
+    font: 600 10px/1 var(--sans); letter-spacing: .1em; text-transform: uppercase;
+    color: var(--text-muted); border-bottom: 1px solid var(--border-soft);
+  }
+
+  /* ── tile ───────────────────────────────────────────────── */
+  .row {
+    position: relative; margin: 0 8px 4px;
+    border-radius: 6px; padding: 4px 12px;
+    cursor: pointer; user-select: none;
+    background: color-mix(in srgb, var(--bg-surface) 70%, transparent);
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--text-main) 5%, transparent);
+  }
+  .row.active {
+    background: var(--bg-surface);
+    box-shadow: inset 0 1px 0 color-mix(in srgb, var(--text-main) 6%, transparent),
+                inset 0 0 0 1px color-mix(in srgb, var(--text-main) 9%, transparent);
+  }
+  .row.dim { opacity: .62; }
+  /* simulated hover — this page is a static spec, so the hovered rendition
+     is a forced state, not a real :hover */
+  .row.hovered {
+    background: var(--bg-surface);
+    box-shadow: inset 0 1px 0 color-mix(in srgb, var(--text-main) 8%, transparent),
+                inset 0 0 0 1px color-mix(in srgb, var(--text-main) 12%, transparent);
+  }
+
+  /* name row: dot + name + rail. meta/note live BELOW at full tile width so
+     the status word on the rail never squeezes the branch out. */
+  .top { display: flex; align-items: center; gap: 8px; min-width: 0; }
+  .below { padding-left: 14px; }
+  .dot { width: 6px; height: 6px; border-radius: 999px; flex: none; background: var(--text-muted); }
+  .dot.running { background: var(--accent-cursor); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent-cursor) 18%, transparent); }
+  .dot.needs   { background: var(--accent-red);    box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent-red) 20%, transparent); }
+  .dot.ok      { background: var(--accent-green); }
+
+  .body { flex: 1; min-width: 0; }
+  .name { flex: 1; min-width: 0; font: 500 11.5px/1.5 var(--mono); color: var(--text-main);
+          white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .row.dim .name { color: var(--text-sub); }
+
+  .meta { display: flex; align-items: center; gap: 7px; margin-top: 2px;
+          font: 400 10px/1.7 var(--mono); color: var(--text-muted); min-width: 0; }
+  .meta .branch { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .note { display: flex; gap: 5px; align-items: center; margin-top: 1px;
+          font: 400 9px/1.6 var(--sans); color: var(--text-muted);
+          white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+  /* ③ jump chips — PR + ports. Reserved width, opacity-revealed on hover
+     (same rule as the shipped folder/copy/close icons → zero layout shift).
+     Raised-chip treatment per DESIGN.md "boxless until hover". */
+  .chips { display: inline-flex; gap: 4px; flex: none; opacity: 0; }
+  .row.hovered .chips, .row:hover .chips { opacity: 1; }
+  .chip {
+    display: inline-flex; align-items: center; gap: 3px;
+    font: 500 9px/1 var(--mono);
+    padding: 2px 5px; border-radius: 4px;
+    background: color-mix(in srgb, var(--text-main) 5%, transparent);
+    border: 1px solid color-mix(in srgb, var(--text-main) 10%, transparent);
+    box-shadow: inset 0 1px 0 color-mix(in srgb, var(--text-main) 6%, transparent);
+    cursor: pointer;
+  }
+  .chip.pr   { color: var(--accent-green); }
+  .chip.port { color: var(--accent-blue); }
+  .chip:hover { background: color-mix(in srgb, var(--text-main) 9%, transparent); }
+
+  /* ④ right rail: status word + shortcut + hover icons */
+  .rail { display: flex; align-items: center; gap: 6px; flex: none; }
+  .statusword { font: 500 9px/1 var(--sans); letter-spacing: .02em; white-space: nowrap; }
+  .statusword.running { color: var(--accent-cursor); }
+  .statusword.needs   { color: var(--accent-red); }
+  .statusword.idle    { color: var(--text-muted); }
+  .hint { font: 400 8px/1 var(--mono); color: var(--text-muted); }
+  .icons { display: flex; gap: 6px; opacity: 0; }
+  .row.hovered .icons, .row:hover .icons { opacity: 1; }
+  .icons i { font-style: normal; font-size: 10px; color: var(--text-subtle); cursor: pointer; }
+  .icons i:hover { color: var(--accent-blue); }
+  .icons i.x:hover { color: var(--accent-red); }
+
+  /* ① agents line: narrow chip only, the rest of the line is card surface */
+  .agents { margin-top: 3px; display: flex; align-items: center; gap: 4px; }
+  .disc {
+    display: inline-flex; align-items: center; gap: 4px; flex: none;
+    font: 400 9px/1.4 var(--mono); color: var(--text-muted);
+    padding: 1px 5px 1px 3px; border-radius: 4px; cursor: pointer;
+    background: none; border: 0;
+  }
+  .disc:hover { color: var(--text-sub); background: color-mix(in srgb, var(--text-main) 5%, transparent); }
+  .chev { display: inline-block; font-size: 8px; }
+  .chev.open { transform: rotate(90deg); }
+  .fan { margin-left: auto; font: 400 9px/1 var(--mono); color: var(--text-subtle); opacity: 0; cursor: pointer; }
+  .row.hovered .fan, .row:hover .fan { opacity: 1; }
+
+  /* ② roster — wrapper is inert; only rows are targets */
+  .roster { margin: 2px 0 2px 4px; padding-left: 7px; border-left: 1px solid var(--border-soft); }
+  .arow { display: flex; align-items: center; gap: 6px; padding: 2px 4px; border-radius: 4px; cursor: pointer; }
+  .arow:hover { background: rgba(var(--bg-surface-rgb), .65); }
+  .arow .an { font: 600 10px/1.4 var(--sans); color: var(--text-main); flex: none; }
+  .arow .al { font: 400 8px/1.4 var(--mono); color: var(--text-muted);
+              overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .arow .as { margin-left: auto; font-size: 8px; flex: none; }
+  .as.running { color: var(--accent-cursor); }
+  .as.needs { color: var(--accent-red); }
+  .q { padding-left: 16px; font: 400 8px/1.5 var(--sans); color: var(--accent-red);
+       white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+  /* numbered callout badges */
+  .n {
+    position: absolute; z-index: 2;
+    width: 14px; height: 14px; border-radius: 999px;
+    background: var(--accent); color: var(--bg-base);
+    font: 700 9px/14px var(--sans); text-align: center;
+    box-shadow: 0 0 0 2px var(--bg-mantle);
+  }
+
+  /* spec list */
+  .sp { margin-top: 16px; max-width: 288px; }
+  .sp ol { margin: 0; padding-left: 0; list-style: none; counter-reset: sp; }
+  .sp li {
+    counter-increment: sp; position: relative;
+    font-size: 11.5px; color: var(--text-subtle);
+    margin-bottom: 8px; padding-left: 22px;
+  }
+  .sp li::before {
+    content: counter(sp); position: absolute; left: 0; top: 2px;
+    width: 14px; height: 14px; border-radius: 999px;
+    background: var(--accent); color: var(--bg-base);
+    font: 700 9px/14px var(--sans); text-align: center;
+  }
+  .sp li strong { color: var(--text-sub); font-weight: 600; }
+  /* plain variant: bullets, no counters */
+  .sp.plain li { padding-left: 14px; }
+  .sp.plain li::before {
+    content: '·'; background: none; color: var(--text-muted);
+    font: 700 14px/1 var(--sans); width: auto; height: auto; top: 0;
+  }
+
+  footer {
+    max-width: 1180px; margin: 56px auto 0; padding-top: 20px;
+    border-top: 1px solid var(--border-soft);
+    font-size: 11.5px; color: var(--text-muted);
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Workspace tile — Option A, final</h1>
+  <p>
+    The tile is one click target: anywhere that isn't a numbered control selects the
+    workspace. Every secondary verb is either hover-revealed (with reserved width, so
+    nothing shifts) or lives in the right-click menu, unchanged. Status keeps the
+    DESIGN.md dot vocabulary and adds the word next to it. Middle column is the same
+    tile with hover forced on.
+  </p>
+</header>
+
+<div class="board">
+
+  <!-- ═══ REST ═══ -->
+  <section class="col">
+    <h2>Rest <span class="tag">— as it sits in the sidebar</span></h2>
+    <p class="cap">Quiet. No addresses, no badges, no full-width buttons.
+      Three lines: name · branch · last notification.</p>
+
+    <div class="sidebar">
+      <div class="sb-head">Workspaces</div>
+
+      <div class="row active">
+        <div class="top">
+          <span class="dot needs"></span>
+          <span class="name">KANBAN BOARD B…</span>
+          <div class="rail">
+            <span class="statusword needs">⏸ Needs input</span>
+            <span class="hint">^1</span>
+            <span class="icons"><i>▢</i><i>⧉</i><i class="x">✕</i></span>
+          </div>
+        </div>
+        <div class="below">
+          <div class="meta">
+            <span class="branch">⎇ master</span>
+            <span style="color:var(--accent)">●3</span>
+            <span class="chips"><span class="chip pr">#948 ✓</span><span class="chip port">▸ :3000</span></span>
+          </div>
+          <div class="note">🔔&nbsp;Claude Code: Claude needs your…</div>
+        </div>
+        <div class="agents">
+          <button class="disc"><span class="chev open">›</span><span>2</span></button>
+          <span class="fan">⑂</span>
+        </div>
+        <div class="roster">
+          <div>
+            <div class="arow">
+              <span class="dot needs" style="margin-top:0"></span>
+              <span class="an">Claude</span><span class="al">· main</span>
+              <span class="as needs">Needs input</span>
+            </div>
+            <div class="q">? Apply the migration to prod?</div>
+          </div>
+          <div class="arow">
+            <span class="dot running" style="margin-top:0"></span>
+            <span class="an">Codex</span><span class="al">· w85-1 · #2/3</span>
+            <span class="as running">Running</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="row dim">
+        <div class="top">
+          <span class="dot running"></span>
+          <span class="name">wmux</span>
+          <div class="rail"><span class="statusword running">▶ Running</span><span class="hint">^2</span></div>
+        </div>
+        <div class="below">
+          <div class="meta"><span class="branch">⎇ feat/agent-chrome</span><span style="color:var(--accent)">●7</span></div>
+        </div>
+        <div class="agents"><button class="disc"><span class="chev">›</span><span>1</span></button></div>
+      </div>
+
+      <div class="row dim">
+        <div class="top">
+          <span class="dot ok"></span>
+          <span class="name">wmux-web</span>
+          <div class="rail"><span class="statusword idle">· 42m</span><span class="hint">^3</span></div>
+        </div>
+        <div class="below">
+          <div class="meta"><span class="branch">⎇ main</span><span style="color:var(--accent-green)">●</span></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══ HOVER ═══ -->
+  <section class="col">
+    <h2>Hover <span class="tag">— verbs revealed, nothing moves</span></h2>
+    <p class="cap">PR/port become raised chips on the branch line; window verbs appear
+      on the rail. All widths were reserved at rest — zero layout shift.</p>
+
+    <div class="sidebar">
+      <div class="sb-head">Workspaces</div>
+
+      <div class="row active hovered" style="position:relative">
+        <span class="n" style="top:26px; right:-7px">3</span>
+        <span class="n" style="top:-7px; right:78px">4</span>
+        <span class="n" style="bottom:64px; left:-7px">1</span>
+        <span class="n" style="bottom:26px; left:-7px">2</span>
+        <div class="top">
+          <span class="dot needs"></span>
+          <span class="name">KANBAN BOARD B…</span>
+          <div class="rail">
+            <span class="statusword needs">⏸ Needs input</span>
+            <span class="hint">^1</span>
+            <span class="icons"><i title="Reveal in Finder">▢</i><i title="Copy session info">⧉</i><i class="x" title="Close">✕</i></span>
+          </div>
+        </div>
+        <div class="below">
+          <div class="meta">
+            <span class="branch">⎇ master</span>
+            <span style="color:var(--accent)">●3</span>
+            <span class="chips"><span class="chip pr">#948 ✓</span><span class="chip port">▸ :3000</span></span>
+          </div>
+          <div class="note">🔔&nbsp;Claude Code: Claude needs your…</div>
+        </div>
+        <div class="agents">
+          <button class="disc"><span class="chev open">›</span><span>2</span></button>
+          <span class="fan" title="Multi Task">⑂</span>
+        </div>
+        <div class="roster">
+          <div>
+            <div class="arow">
+              <span class="dot needs" style="margin-top:0"></span>
+              <span class="an">Claude</span><span class="al">· main</span>
+              <span class="as needs">Needs input</span>
+            </div>
+            <div class="q">? Apply the migration to prod?</div>
+          </div>
+          <div class="arow">
+            <span class="dot running" style="margin-top:0"></span>
+            <span class="an">Codex</span><span class="al">· w85-1 · #2/3</span>
+            <span class="as running">Running</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="row dim">
+        <div class="top">
+          <span class="dot running"></span>
+          <span class="name">wmux</span>
+          <div class="rail"><span class="statusword running">▶ Running</span><span class="hint">^2</span></div>
+        </div>
+        <div class="below">
+          <div class="meta"><span class="branch">⎇ feat/agent-chrome</span><span style="color:var(--accent)">●7</span></div>
+        </div>
+        <div class="agents"><button class="disc"><span class="chev">›</span><span>1</span></button></div>
+      </div>
+    </div>
+
+    <div class="sp">
+      <ol>
+        <li><strong>Agents disclosure → chip.</strong> <code>flex-1</code> →
+          <code>inline-flex</code>; chevron + count only. The rest of the line selects
+          the workspace. (<code>WorkspaceAgentRoster.tsx:66</code>)</li>
+        <li><strong>Roster wrapper goes inert.</strong> <code>preventDefault</code> only
+          on its buttons; empty margin selects. Agent rows still jump to their pane —
+          that's navigation, kept. (<code>:54</code>)</li>
+        <li><strong>PR/ports → hover chips.</strong> Address text out, raised chips in:
+          <code>#948 ✓</code> and <code>▸ :3000</code>. Width reserved at rest
+          (opacity-reveal, same as folder/copy/close). 3+ ports fold to
+          <code>+N</code>. (<code>WorkspaceItem.tsx:62,140</code>)</li>
+        <li><strong>Status word on the rail.</strong> <code>⏸ Needs input</code> /
+          <code>▶ Running</code> replaces the bare icon; dot stays as the scan colour.
+          Idle keeps the quiet <code>· 42m</code>. i18n ×3.</li>
+      </ol>
+    </div>
+  </section>
+
+  <!-- ═══ WHAT CHANGED ═══ -->
+  <section class="col">
+    <h2>Delta <span class="tag">— shipped vs final</span></h2>
+    <p class="cap">Same information, different ownership. Everything not numbered
+      is the workspace click.</p>
+
+    <div class="sidebar" style="max-width:288px">
+      <div class="sb-head">Shipped · for contrast</div>
+      <div class="row active" style="cursor:default">
+        <div class="top">
+          <span class="dot needs"></span>
+          <div class="body">
+            <div class="name">KANBAN BOARD B…</div>
+            <div class="meta">
+              <span class="branch">⎇ master</span>
+              <span style="color:var(--accent)">●3</span>
+              <span style="color:var(--accent-green);text-decoration:underline dotted">#948✓</span>
+            </div>
+            <div class="meta" style="font-size:9px;margin-top:0">
+              <span style="text-decoration:underline dotted;color:var(--text-muted)">:3000</span>
+              <span style="text-decoration:underline dotted;color:var(--text-muted)">:5173</span>
+            </div>
+            <div class="note">🔔&nbsp;Claude Code: Claude needs your…</div>
+          </div>
+          <div class="rail">
+            <span style="font-size:9px;color:var(--accent-red)">⏸</span>
+            <span class="hint">^1</span>
+          </div>
+        </div>
+        <div class="agents">
+          <button class="disc" style="flex:1;justify-content:flex-start"><span class="chev open">›</span><span>Agents 2</span></button>
+          <span class="fan" style="opacity:1">⑂</span>
+        </div>
+        <div class="roster">
+          <div class="arow"><span class="dot needs" style="margin-top:0"></span><span class="an">Claude</span><span class="al">· main</span><span class="as needs">Needs input</span></div>
+          <div class="arow"><span class="dot running" style="margin-top:0"></span><span class="an">Codex</span><span class="al">· w85-1 · #2/3</span><span class="as running">Running</span></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="sp plain">
+      <ol>
+        <li><strong>Reads at a glance:</strong> the red
+          <code>⏸ Needs input</code> answers cmux's "big subheader" ask without a
+          redesign — word + dot, not dot alone.</li>
+        <li><strong>Rest is 1 line shorter:</strong> the port
+          address line is gone; ports surface as chips on hover.</li>
+        <li><strong>Click math:</strong> shipped tile ≈ 40% of
+          its area steals or redirects the click at rest; final ≈ 4%
+          (the <code>› 2</code> chip) plus the roster rows, which are deliberate
+          jump-to-pane navigation.</li>
+        <li><strong>Not touched:</strong> right-click menu,
+          drag-reorder, ⌘-click multiview, wmux.json gear (kept, 8px, name-line),
+          DESIGN.md dot vocabulary.</li>
+      </ol>
+    </div>
+  </section>
+
+</div>
+
+<footer>
+  Option A final for discussion #948 · edits land in
+  <code>WorkspaceItem.tsx</code> / <code>WorkspaceAgentRoster.tsx</code> ·
+  tokens: <code>themes.ts → amber</code> · no DESIGN.md change required.
+  Static spec — the "Hover" column is a forced state.
+</footer>
+
+</body>
+</html>

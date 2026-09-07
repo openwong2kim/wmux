@@ -1,0 +1,570 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Workspace tile — click targets (discussion #948)</title>
+<style>
+  /* amber-graphite tokens — themes.ts `amber` */
+  :root {
+    --bg-base: #151517;
+    --bg-mantle: #19191C;
+    --bg-surface: #202024;
+    --bg-surface-rgb: 32, 32, 36;
+    --bg-overlay: #2A2A2F;
+    --text-main: #EFEEEC;
+    --text-sub: #A5A29C;
+    --text-subtle: #85827C;
+    --text-muted: #66645F;
+    --accent: #E8A33D;
+    --accent-cursor: #E8A33D;
+    --accent-blue: #6E9BC4;
+    --accent-green: #8FBF7F;
+    --accent-red: #D96C6C;
+    --border-soft: rgba(255,255,255,.06);
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    padding: 40px 32px 80px;
+    background: var(--bg-base);
+    color: var(--text-sub);
+    font-family: var(--sans);
+    font-size: 13px;
+    line-height: 1.55;
+  }
+
+  header { max-width: 1180px; margin: 0 auto 8px; }
+  h1 {
+    font-size: 17px; font-weight: 600; color: var(--text-main);
+    margin: 0 0 6px; letter-spacing: -0.01em;
+  }
+  header p { margin: 0; color: var(--text-muted); max-width: 68ch; }
+  header a { color: var(--accent-blue); }
+
+  /* ── controls ───────────────────────────────────────────── */
+  .controls {
+    max-width: 1180px; margin: 26px auto 8px;
+    display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+  }
+  .btn {
+    font: 500 12px/1 var(--sans);
+    color: var(--text-sub);
+    background: color-mix(in srgb, var(--text-main) 4%, transparent);
+    border: 1px solid color-mix(in srgb, var(--text-main) 10%, transparent);
+    box-shadow: inset 0 1px 0 color-mix(in srgb, var(--text-main) 6%, transparent);
+    border-radius: 5px; padding: 7px 11px; cursor: pointer;
+  }
+  .btn:hover { color: var(--text-main); background: color-mix(in srgb, var(--text-main) 7%, transparent); }
+  .btn.on {
+    background: var(--accent); color: var(--bg-base);
+    border-color: transparent; font-weight: 600;
+  }
+
+  /* CSS-only toggles — no script, so the page works in any renderer that
+     strips JS (the panel preview does). The checkboxes sit at body level and
+     drive .board through the general sibling combinator. */
+  .toggle { position: absolute; opacity: 0; pointer-events: none; }
+  #mapToggle:checked ~ .controls label[for="mapToggle"],
+  #expandToggle:checked ~ .controls label[for="expandToggle"] {
+    background: var(--accent); color: var(--bg-base);
+    border-color: transparent; font-weight: 600;
+  }
+  #mapToggle:checked ~ .board .hit { opacity: 1; }
+  #expandToggle:not(:checked) ~ .board .js-roster { display: none; }
+  #expandToggle:not(:checked) ~ .board .js-disc .chev { transform: none; }
+  .legend { display: flex; gap: 16px; align-items: center; color: var(--text-muted); font-size: 11.5px; }
+  .legend span { display: inline-flex; align-items: center; gap: 6px; }
+  .sw { width: 12px; height: 12px; border-radius: 3px; display: inline-block; }
+  .sw.ok  { background: rgba(143,191,127,.28); border: 1px solid rgba(143,191,127,.7); }
+  .sw.bad { background: rgba(217,108,108,.28); border: 1px solid rgba(217,108,108,.8); }
+  .sw.warn{ background: rgba(232,163,61,.24);  border: 1px solid rgba(232,163,61,.75); }
+  .sw.hov { background: rgba(217,108,108,.12); border: 1px dashed rgba(217,108,108,.7); }
+
+  /* ── layout ─────────────────────────────────────────────── */
+  .board {
+    max-width: 1180px; margin: 24px auto 0;
+    display: grid; grid-template-columns: repeat(3, minmax(300px, 1fr)); gap: 28px;
+  }
+  @media (max-width: 1020px) { .board { grid-template-columns: 1fr; } }
+
+  .col > h2 {
+    font-size: 12px; font-weight: 700; letter-spacing: .09em; text-transform: uppercase;
+    color: var(--text-muted); margin: 0 0 3px;
+  }
+  .col > h2 .tag { text-transform: none; letter-spacing: 0; font-weight: 500; }
+  .verdict { margin: 0 0 14px; font-size: 12px; color: var(--text-subtle); min-height: 34px; }
+  .verdict.bad  { color: var(--accent-red); }
+  .verdict.good { color: var(--accent-green); }
+
+  /* the sidebar shell the tile lives in — 264px, like the real column */
+  .sidebar {
+    width: 100%; max-width: 288px;
+    background: var(--bg-mantle);
+    border: 1px solid var(--border-soft);
+    border-radius: 7px;
+    padding: 10px 0;
+  }
+  .sb-head {
+    height: 36px; display: flex; align-items: center; padding: 0 14px; margin-top: -10px;
+    font: 600 10px/1 var(--sans); letter-spacing: .1em; text-transform: uppercase;
+    color: var(--text-muted); border-bottom: 1px solid var(--border-soft); margin-bottom: 10px;
+  }
+
+  /* ── the tile ───────────────────────────────────────────── */
+  .row-wrap { position: relative; margin: 0 8px 4px; }
+  .row {
+    position: relative;
+    border-radius: 6px;
+    padding: 4px 12px;
+    cursor: pointer;
+    user-select: none;
+    background: color-mix(in srgb, var(--bg-surface) 70%, transparent);
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--text-main) 5%, transparent);
+  }
+  .row.active {
+    background: var(--bg-surface);
+    box-shadow: inset 0 1px 0 color-mix(in srgb, var(--text-main) 6%, transparent),
+                inset 0 0 0 1px color-mix(in srgb, var(--text-main) 9%, transparent);
+    color: var(--text-main);
+  }
+  .row.dim { opacity: .62; }
+
+  .top { display: flex; align-items: flex-start; gap: 8px; min-width: 0; }
+  .dot {
+    width: 6px; height: 6px; border-radius: 999px; flex: none; margin-top: 6px;
+    background: var(--text-muted);
+  }
+  .dot.running { background: var(--accent-cursor); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent-cursor) 18%, transparent); }
+  .dot.needs   { background: var(--accent-red);    box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent-red) 20%, transparent); }
+  .dot.ok      { background: var(--accent-green); }
+
+  .body { flex: 1; min-width: 0; }
+  .name {
+    font: 500 11.5px/1.5 var(--mono);
+    color: var(--text-main);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .row:not(.active) .name { color: var(--text-sub); }
+
+  .meta { display: flex; align-items: center; gap: 8px; margin-top: 2px;
+          font: 400 10px/1.5 var(--mono); color: var(--text-muted); min-width: 0; }
+  .meta .branch { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ports { display: flex; gap: 6px; margin-top: 1px; font: 400 9px/1.6 var(--mono); color: var(--text-muted); }
+  .note  { display: flex; gap: 5px; align-items: center; margin-top: 1px;
+           font: 400 9px/1.6 var(--sans); color: var(--text-muted);
+           white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+  .rail { display: flex; align-items: center; gap: 6px; flex: none; margin-top: 3px; }
+  .hint { font: 400 8px/1 var(--mono); color: var(--text-muted); }
+  /* shipped rendition: opacity-only, so the glyphs still reserve their width */
+  .icons { display: flex; gap: 6px; opacity: 0; transition: opacity .15s; }
+  .row:hover .icons { opacity: 1; }
+  .icons i { font-style: normal; font-size: 10px; color: var(--text-subtle); }
+  /* option A: conditionally rendered, so the line collapses at rest */
+  .icons.collapse { display: none; }
+  .row:hover .icons.collapse { display: flex; opacity: 1; }
+
+  /* status word (options A / B) */
+  .statusword { font: 500 9px/1 var(--sans); letter-spacing: .02em; white-space: nowrap; }
+  .statusword.running { color: var(--accent-cursor); }
+  .statusword.needs   { color: var(--accent-red); }
+  .subhead {
+    margin-top: 2px; font: 600 12px/1.35 var(--sans); letter-spacing: -0.005em;
+  }
+  .subhead.running { color: var(--accent-cursor); }
+  .subhead.needs   { color: var(--accent-red); }
+  .subhead.idle    { color: var(--text-muted); }
+
+  /* agents disclosure */
+  .agents { margin-top: 4px; display: flex; align-items: center; gap: 4px; }
+  .disc {
+    display: flex; align-items: center; gap: 4px;
+    font: 400 9px/1.6 var(--mono); color: var(--text-muted);
+    padding: 1px 3px; border-radius: 4px; cursor: pointer; background: none; border: 0;
+  }
+  .disc.wide { flex: 1; min-width: 0; }
+  .disc.narrow { flex: none; }
+  .disc:hover { color: var(--text-sub); }
+  .chev { display: inline-block; transition: transform .15s; }
+  .chev.open { transform: rotate(90deg); }
+  .multi { margin-left: auto; font: 400 9px/1 var(--mono); color: var(--text-subtle); }
+
+  .roster { margin: 2px 0 2px 4px; padding-left: 7px; border-left: 1px solid var(--border-soft); }
+  .arow {
+    display: flex; align-items: center; gap: 6px; padding: 2px 4px; border-radius: 4px; cursor: pointer;
+  }
+  .arow:hover { background: rgba(var(--bg-surface-rgb), .65); }
+  .arow .an { font: 600 10px/1.4 var(--sans); color: var(--text-main); flex: none; }
+  .arow .al { font: 400 8px/1.4 var(--mono); color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .arow .as { margin-left: auto; font-size: 8px; flex: none; }
+  .as.running { color: var(--accent-cursor); }
+  .as.needs { color: var(--accent-red); }
+  .q { padding-left: 16px; font: 400 8px/1.5 var(--sans); color: var(--accent-red);
+       white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+  /* ── hit map overlay ────────────────────────────────────── */
+  .hit { position: absolute; inset: 0; pointer-events: none; opacity: 0; transition: opacity .18s; border-radius: 6px; }
+  #expandToggle:not(:checked) ~ .board .hit-roster { display: none; }
+  .hit b {
+    position: absolute; display: block; border-radius: 3px;
+    font: 700 7px/1 var(--sans); letter-spacing: .04em; text-transform: uppercase;
+    color: transparent;
+  }
+  .hit b.bad  { background: rgba(217,108,108,.30); outline: 1px solid rgba(217,108,108,.85); }
+  /* hover-only control: steals the click, but only once the pointer is on the row */
+  .hit b.hov  { background: rgba(217,108,108,.12); outline: 1px dashed rgba(217,108,108,.7); }
+  .hit b.warn { background: rgba(232,163,61,.24);  outline: 1px solid rgba(232,163,61,.8); }
+  .hit b.ok   { background: rgba(143,191,127,.16); outline: 1px dashed rgba(143,191,127,.55); }
+
+  /* ── notes ──────────────────────────────────────────────── */
+  .notes { margin-top: 16px; max-width: 288px; }
+  .notes ul { margin: 0; padding-left: 16px; }
+  .notes li { font-size: 11.5px; color: var(--text-subtle); margin-bottom: 5px; }
+  .notes li code {
+    font: 400 10.5px/1 var(--mono); color: var(--text-sub);
+    background: color-mix(in srgb, var(--text-main) 6%, transparent);
+    padding: 1.5px 4px; border-radius: 3px;
+  }
+  .notes .cost { margin-top: 10px; font-size: 11px; color: var(--text-muted); }
+  .notes .cost strong { color: var(--text-sub); font-weight: 600; }
+
+  footer {
+    max-width: 1180px; margin: 56px auto 0; padding-top: 20px;
+    border-top: 1px solid var(--border-soft);
+    font-size: 11.5px; color: var(--text-muted);
+  }
+  footer code { font-family: var(--mono); font-size: 11px; color: var(--text-subtle); }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Workspace tile — where the click actually goes</h1>
+  <p>
+    Discussion #948: “There shouldn’t be any clickable elements on a workspace tile.”
+    Three renditions of the same workspace at the same width the sidebar really uses.
+    The hit map is on: it paints which pixels select the workspace and which ones
+    a nested control steals. Toggle it off to compare the tiles as they read.
+  </p>
+</header>
+
+<input type="checkbox" id="mapToggle" class="toggle" checked />
+<input type="checkbox" id="expandToggle" class="toggle" checked />
+
+<div class="controls">
+  <label class="btn" for="mapToggle">Hit map</label>
+  <label class="btn" for="expandToggle">Agents expanded</label>
+  <div class="legend">
+    <span><i class="sw ok"></i> selects the workspace</span>
+    <span><i class="sw warn"></i> navigates elsewhere (agent pane)</span>
+    <span><i class="sw bad"></i> steals the click — workspace never selected</span>
+    <span><i class="sw hov"></i> same, but only revealed on hover</span>
+  </div>
+</div>
+
+<div class="board">
+
+  <!-- ═══════════════ CURRENT ═══════════════ -->
+  <section class="col">
+    <h2>Now <span class="tag">— shipped</span></h2>
+    <p class="verdict bad">5 nested controls call <code>stopPropagation</code>. The full-width
+      <em>Agents</em> disclosure makes the bottom third a dead strip.</p>
+
+    <div class="sidebar">
+      <div class="sb-head">Workspaces</div>
+
+      <div class="row-wrap">
+        <div class="row active">
+          <div class="top">
+            <span class="dot needs"></span>
+            <div class="body">
+              <div class="name">KANBAN BOARD B…</div>
+              <div class="meta">
+                <span class="branch">⎇ master</span>
+                <span style="color:var(--accent)">●3</span>
+                <span style="color:var(--accent-green)">#948✓</span>
+              </div>
+              <div class="ports">
+                <span style="text-decoration:underline dotted">:3000</span>
+                <span style="text-decoration:underline dotted">:5173</span>
+              </div>
+              <div class="note">🔔&nbsp;Claude Code: Claude needs your…</div>
+            </div>
+            <div class="rail">
+              <span style="font-size:9px;color:var(--accent-red)">⏸</span>
+              <span class="hint">^1</span>
+              <span class="icons"><i>▢</i><i>⧉</i><i>✕</i></span>
+            </div>
+          </div>
+
+          <div class="agents">
+            <button class="disc wide js-disc"><span class="chev open">›</span><span>Agents 2</span></button>
+            <span class="multi">⑂</span>
+          </div>
+          <div class="roster js-roster">
+            <div>
+              <div class="arow">
+                <span class="dot needs" style="margin-top:0"></span>
+                <span class="an">Claude</span><span class="al">· main</span>
+                <span class="as needs">Needs input</span>
+              </div>
+              <div class="q">? Apply the migration to prod?</div>
+            </div>
+            <div class="arow">
+              <span class="dot running" style="margin-top:0"></span>
+              <span class="an">Codex</span><span class="al">· w85-1 · #2/3</span>
+              <span class="as running">Running</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="hit">
+          <!-- name row: ok -->
+          <b class="ok"   style="left:20px;  top:4px;   width:150px; height:17px"></b>
+          <!-- pause + ^1: ok -->
+          <b class="ok"   style="right:44px; top:6px;   width:36px;  height:13px"></b>
+          <!-- hover icons: bad (hover-only, but they reserve their width at rest) -->
+          <b class="hov"  style="right:8px;  top:6px;   width:34px;  height:13px"></b>
+          <!-- branch + git badge: ok / PR badge: bad -->
+          <b class="ok"   style="left:20px;  top:22px;  width:78px;  height:14px"></b>
+          <b class="bad"  style="left:100px; top:22px;  width:36px;  height:14px"></b>
+          <!-- ports: bad -->
+          <b class="bad"  style="left:20px;  top:37px;  width:66px;  height:13px"></b>
+          <!-- note: ok -->
+          <b class="ok"   style="left:20px;  top:51px;  width:190px; height:13px"></b>
+          <!-- agents disclosure: full width bad -->
+          <b class="bad"  style="left:8px;   top:68px;  right:26px;  height:16px"></b>
+          <b class="bad"  style="right:6px;  top:68px;  width:18px;  height:16px"></b>
+          <!-- roster: navigates away -->
+          <b class="warn hit-roster" style="left:8px;   top:86px;  right:6px;   bottom:4px"></b>
+        </div>
+      </div>
+
+      <div class="row-wrap">
+        <div class="row dim">
+          <div class="top">
+            <span class="dot running"></span>
+            <div class="body">
+              <div class="name">wmux</div>
+              <div class="meta"><span class="branch">⎇ feat/agent-chrome</span><span style="color:var(--accent)">●7</span></div>
+            </div>
+            <div class="rail"><span style="font-size:9px;color:var(--accent-cursor)">▶</span><span class="hint">^2</span></div>
+          </div>
+          <div class="agents"><button class="disc wide"><span class="chev">›</span><span>Agents 1</span></button></div>
+        </div>
+        <div class="hit">
+          <b class="bad" style="left:8px; bottom:4px; right:6px; height:16px"></b>
+        </div>
+      </div>
+    </div>
+
+    <div class="notes">
+      <ul>
+        <li><code>Agents N</code> is <code>flex-1</code> → the whole row width is a
+          disclosure button that never selects (<code>WorkspaceAgentRoster.tsx:66</code>).</li>
+        <li>The roster wrapper kills <code>mousedown</code> unconditionally, so even its
+          empty margin is dead (<code>:54</code>).</li>
+        <li>Ports open <code>http://localhost:N</code> in a browser pane —
+          the “random localhost link” (<code>WorkspaceItem.tsx:140</code>).</li>
+        <li>PR badge opens the system browser (<code>:62</code>).</li>
+        <li>Status is a 6px dot only; the word lives in the roster rows.</li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- ═══════════════ OPTION A ═══════════════ -->
+  <section class="col">
+    <h2>A <span class="tag">— reclaim the click</span></h2>
+    <p class="verdict good">Tile becomes one target. Controls shrink to their glyph,
+      ports/PR go hover-only, status gains a word.</p>
+
+    <div class="sidebar">
+      <div class="sb-head">Workspaces</div>
+
+      <div class="row-wrap">
+        <div class="row active">
+          <div class="top">
+            <span class="dot needs"></span>
+            <div class="body">
+              <div class="name">KANBAN BOARD B…</div>
+              <div class="meta">
+                <span class="branch">⎇ master</span>
+                <span style="color:var(--accent)">●3</span>
+                <span class="icons collapse" style="gap:5px"><i style="color:var(--accent-green)">#948✓</i><i style="color:var(--accent-blue)">:3000</i></span>
+              </div>
+              <div class="note">🔔&nbsp;Claude Code: Claude needs your…</div>
+            </div>
+            <div class="rail">
+              <span class="statusword needs">⏸ Needs input</span>
+              <span class="hint">^1</span>
+              <span class="icons"><i>▢</i><i>✕</i></span>
+            </div>
+          </div>
+
+          <div class="agents">
+            <button class="disc narrow js-disc"><span class="chev open">›</span><span>2</span></button>
+            <span style="flex:1"></span>
+            <span class="multi">⑂</span>
+          </div>
+          <div class="roster js-roster">
+            <div>
+              <div class="arow">
+                <span class="dot needs" style="margin-top:0"></span>
+                <span class="an">Claude</span><span class="al">· main</span>
+                <span class="as needs">Needs input</span>
+              </div>
+              <div class="q">? Apply the migration to prod?</div>
+            </div>
+            <div class="arow">
+              <span class="dot running" style="margin-top:0"></span>
+              <span class="an">Codex</span><span class="al">· w85-1 · #2/3</span>
+              <span class="as running">Running</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="hit">
+          <b class="ok"  style="left:8px;  top:4px;   right:96px; height:17px"></b>
+          <b class="ok"  style="right:56px;top:5px;   width:52px; height:14px"></b>
+          <b class="ok"  style="left:8px;  top:22px;  right:80px; height:15px"></b>
+          <b class="hov" style="right:8px; top:22px;  width:72px; height:15px"></b>
+          <b class="hov" style="right:8px; top:5px;   width:26px; height:14px"></b>
+          <b class="ok"  style="left:8px;  top:38px;  right:6px;  height:15px"></b>
+          <!-- narrow disclosure only -->
+          <b class="bad" style="left:8px;  top:56px;  width:28px; height:15px"></b>
+          <b class="ok"  style="left:38px; top:56px;  right:26px; height:15px"></b>
+          <b class="bad" style="right:6px; top:56px;  width:18px; height:15px"></b>
+          <b class="warn hit-roster" style="left:8px; top:74px;  right:6px;  bottom:4px"></b>
+        </div>
+      </div>
+
+      <div class="row-wrap">
+        <div class="row dim">
+          <div class="top">
+            <span class="dot running"></span>
+            <div class="body">
+              <div class="name">wmux</div>
+              <div class="meta"><span class="branch">⎇ feat/agent-chrome</span><span style="color:var(--accent)">●7</span></div>
+            </div>
+            <div class="rail"><span class="statusword running">▶ Running</span><span class="hint">^2</span></div>
+          </div>
+          <div class="agents"><button class="disc narrow"><span class="chev">›</span><span>1</span></button></div>
+        </div>
+        <div class="hit">
+          <b class="bad" style="left:8px; bottom:4px; width:28px; height:15px"></b>
+          <b class="ok"  style="left:38px; bottom:4px; right:6px; height:15px"></b>
+        </div>
+      </div>
+    </div>
+
+    <div class="notes">
+      <ul>
+        <li><code>Agents N</code> → chevron + count only (<code>flex-1</code> → <code>inline-flex</code>).
+          ~88% of that row returns to the card.</li>
+        <li>Roster wrapper stops <code>mousedown</code> <em>on its buttons</em>, not on itself.</li>
+        <li>Ports + PR join the folder/copy/close rule: invisible until hover.
+          The tile loses a whole line at rest.</li>
+        <li>Right rail carries <code>▶ Running</code> / <code>⏸ Needs input</code> —
+          the dot stays as the scannable colour, the word disambiguates it.</li>
+        <li>Roster rows keep jumping to their pane (amber): that <em>is</em> navigation,
+          and DESIGN.md’s “one click from its evidence” rule wants it.</li>
+      </ul>
+      <p class="cost"><strong>Cost:</strong> ~half a day. No DESIGN.md change —
+        the dot vocabulary (line 175) survives intact.</p>
+    </div>
+  </section>
+
+  <!-- ═══════════════ OPTION B ═══════════════ -->
+  <section class="col">
+    <h2>B <span class="tag">— cmux parity</span></h2>
+    <p class="verdict good">Tile is pure navigation. Zero nested targets, status is a
+      subheader, everything else moves to right-click / the deck.</p>
+
+    <div class="sidebar">
+      <div class="sb-head">Workspaces</div>
+
+      <div class="row-wrap">
+        <div class="row active" style="padding:7px 12px">
+          <div class="top">
+            <div class="body">
+              <div class="name" style="font-size:12px">KANBAN BOARD B…</div>
+              <div class="subhead needs">Needs input</div>
+              <div class="meta" style="margin-top:4px">
+                <span class="branch">⎇ master</span>
+                <span style="color:var(--accent)">●3</span>
+                <span>· 2 agents</span>
+              </div>
+            </div>
+            <div class="rail"><span class="hint">^1</span></div>
+          </div>
+        </div>
+        <div class="hit"><b class="ok" style="inset:2px"></b></div>
+      </div>
+
+      <div class="row-wrap">
+        <div class="row dim" style="padding:7px 12px">
+          <div class="top">
+            <div class="body">
+              <div class="name" style="font-size:12px">wmux</div>
+              <div class="subhead running">In progress</div>
+              <div class="meta" style="margin-top:4px">
+                <span class="branch">⎇ feat/agent-chrome</span>
+                <span style="color:var(--accent)">●7</span>
+                <span>· 1 agent</span>
+              </div>
+            </div>
+            <div class="rail"><span class="hint">^2</span></div>
+          </div>
+        </div>
+        <div class="hit"><b class="ok" style="inset:2px"></b></div>
+      </div>
+
+      <div class="row-wrap">
+        <div class="row dim" style="padding:7px 12px">
+          <div class="top">
+            <div class="body">
+              <div class="name" style="font-size:12px">wmux-web</div>
+              <div class="subhead idle">Idle · 42m</div>
+              <div class="meta" style="margin-top:4px">
+                <span class="branch">⎇ main</span>
+                <span style="color:var(--accent-green)">●</span>
+              </div>
+            </div>
+            <div class="rail"><span class="hint">^3</span></div>
+          </div>
+        </div>
+        <div class="hit"><b class="ok" style="inset:2px"></b></div>
+      </div>
+    </div>
+
+    <div class="notes">
+      <ul>
+        <li>Status reads as a word first. Colour still carries it, but the tile no
+          longer asks you to decode a 6px dot.</li>
+        <li>Ports, PR badge, wmux.json gear, per-agent rows, fan-out, folder/copy/close →
+          right-click menu and the deck’s Fleet roster.</li>
+        <li>Agent count collapses to <code>· 2 agents</code>, no disclosure.</li>
+        <li>Taller rows (≈52px vs 30px) — fewer workspaces visible without scrolling.</li>
+      </ul>
+      <p class="cost"><strong>Cost:</strong> 2–3 days, and it breaks two DESIGN.md
+        contracts: the status-dot vocabulary (line 175) and “every claim is one click
+        from its evidence” (the PR/port jump affordances leave the tile).
+        Needs an explicit owner decision, not a bugfix.</p>
+    </div>
+  </section>
+
+</div>
+
+<footer>
+  Source of the shipped rendition: <code>src/renderer/components/Sidebar/WorkspaceItem.tsx</code> ·
+  <code>WorkspaceAgentRoster.tsx</code>. Tokens: <code>themes.ts</code> → <code>amber</code>
+  (bg <code>#151517</code>, accent <code>#E8A33D</code>, steel <code>#6E9BC4</code>).
+  Hit-map boxes are hand-placed to the shipped layout, not measured from a live render.
+</footer>
+
+</body>
+</html>
