@@ -1610,6 +1610,11 @@ export default function AppLayout() {
             // flight — setSurfaceAgent keeps existing names, but skip the
             // principal round-trip in that case entirely.
             if (store.surfaceAgent[ptyId]?.name) return;
+            // #1210: the agent may have died while resolveAgent was in
+            // flight. Re-stamping would undo clearSurfaceAgentsKnownGone
+            // until the next 15s poll.
+            if (store.agentAliveByPtyId[ptyId] === false) return;
+            if (store.commandRunningByPtyId[ptyId] === false) return;
             store.setSurfaceAgent(ptyId, name, undefined, asAgentSlug(name));
             // R2: freshly-identified panes register into the principal
             // registry exactly like the live-detection path (debounced

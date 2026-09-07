@@ -2304,7 +2304,10 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
           // Restored scrollback is the oldest replay of all — bytes from a
           // previous run of this pane. Muted (#998).
           writeReplayed(terminal, restored, replayMuteRef.current);
-          noteKeyboard(restored);
+          // Do not fold restored scrollback into keyboardRef: those bytes
+          // are from a previous run. A leftover ?9001h would make Shift+Enter
+          // send win32-input-mode to the fresh shell (#1228 review). Live
+          // PTY data still folds through deliverPtyData.
           // #952: the fresh PTY about to connect starts from an empty ConPTY
           // whose absolute coordinates begin at row 1 — restored rows left in
           // the viewport get overdrawn by its first absolute repaint
