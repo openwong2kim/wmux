@@ -35,9 +35,15 @@ import {
   isWmuxOwnedNotify,
   upsertNotifyToml,
   removeNotifyToml,
+  codexVersionSupportsHooks,
+  findCodexHooksBlock,
+  removeCodexHooksToml,
+  upsertCodexHooksToml,
+  CODEX_HOOK_EVENTS,
   type WmuxMcpEntryProfile,
   type McpServerEntry,
 } from './configIO';
+import { getWmuxHomeDir } from './constants';
 
 /** The surface a registered entry launches with, read back off its argv. Null
  *  when nothing is registered. `commander` can appear even though no host
@@ -434,4 +440,245 @@ export function readCodexNotifyStatus(home: string): CodexNotifyStatus {
   } catch {
     return { configPath, configExists, state: 'malformed', path: null };
   }
+}
+
+// ── Codex `[[hooks.*]]` lifecycle-bridge registration (#1107) ─────────────────
+//
+// The hooks bridge replaces screen-scraping for Codex turn state — but Codex
+// will not run a hook the operator has not trusted, and it says NOTHING when it
+// hasn't (no warning, no non-zero exit; measured, integrations/codex/README.md).
+// So this lane's contract is approve-then-verify, never write-and-report-success:
+//
+//   register  writes the block and stamps WHEN it was written
+//   status    reports 'written' (block present, never fired since) vs
+//             'active' (the bridge LOGGED an event after the stamp — the only
+//             proof the operator approved and Codex actually runs the hook)
+//
+// The stamp lives in `<wmux-home>/codex-hooks-install.json`; the evidence is
+// `<wmux-home>/codex-hooks.log`, which the bridge appends one JSON line to per
+// firing. ISO-8601 strings compare lexicographically, so "a log line newer
+// than the stamp" is a string compare — same machine, so no clock-skew case.
+
+export interface CodexHooksRegisterResult {
+  configPath: string;
+  /** 'absent' = Codex config missing; 'malformed' = unparseable; 'foreign' =
+   *  a user hooks table we refuse to sit beside; 'manual' = a start marker
+   *  with no end marker (hand-pasted block) we refuse to guess the bounds of;
+   *  'unsupported-version'/'version-unknown' = the bisected 0.141.0 floor
+   *  gate (fail closed); null = registered (wrote or already current). */
+  skipped:
+    | 'absent'
+    | 'malformed'
+    | 'foreign'
+    | 'manual'
+    | 'unsupported-version'
+    | 'version-unknown'
+    | null;
+  wrote: boolean;
+}
+
+/** Path of the install stamp — when wmux last wrote/refreshed the block. */
+export function codexHooksInstallStatePath(): string {
+  return path.join(getWmuxHomeDir(), 'codex-hooks-install.json');
+}
+
+function readInstallStamp(): string | null {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(codexHooksInstallStatePath(), 'utf8')) as {
+      installedAt?: unknown;
+    };
+    return typeof parsed.installedAt === 'string' ? parsed.installedAt : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeInstallStamp(): void {
+  writeFileAtomic(codexHooksInstallStatePath(), `${JSON.stringify({ installedAt: new Date().toISOString() }, null, 2)}\n`);
+}
+
+/** Newest bridge log timestamp, or null when the bridge has never logged.
+ *  Never throws: an unreadable log is "no evidence", which renders as
+ *  'written' — the honest side of the dichotomy. */
+function readLastFiredAt(): string | null {
+  let text: string;
+  try {
+    text = fs.readFileSync(path.join(getWmuxHomeDir(), 'codex-hooks.log'), 'utf8');
+  } catch {
+    return null;
+  }
+  let newest: string | null = null;
+  for (const line of text.split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    try {
+      const entry = JSON.parse(trimmed) as { ts?: unknown };
+      if (typeof entry.ts === 'string' && (!newest || entry.ts > newest)) newest = entry.ts;
+    } catch {
+      // A torn/partial line (crash between write and newline) is skipped.
+    }
+  }
+  return newest;
+}
+
+/**
+ * Write/refresh the wmux hooks block in Codex's config.toml and stamp the
+ * install time. Idempotent; skip-if-foreign; version-gated (fail closed —
+ * 0.140.0 parses the block, advertises the feature, and silently fires
+ * nothing, so anything we cannot prove >= 0.141.0 is refused).
+ *
+ * WRITING IS NOT INSTALLING: until the operator approves the hook in Codex it
+ * will not run, silently. The honest "done" is readCodexHooksStatus() ===
+ * 'active', i.e. a bridge log entry newer than the stamp.
+ */
+export function registerCodexHooks(
+  home: string,
+  bridgeScript: string,
+  codexVersionOutput: string | null,
+): CodexHooksRegisterResult {
+  const target = getMcpTarget('codex');
+  if (!target) return { configPath: '', skipped: 'absent', wrote: false };
+  const configPath = target.configPath(home);
+  if (!fs.existsSync(configPath)) return { configPath, skipped: 'absent', wrote: false };
+  if (codexVersionOutput === null) {
+    return { configPath, skipped: 'version-unknown', wrote: false };
+  }
+  if (!codexVersionSupportsHooks(codexVersionOutput)) {
+    return { configPath, skipped: 'unsupported-version', wrote: false };
+  }
+
+  let text: string;
+  let parsed: Record<string, unknown>;
+  try {
+    text = fs.readFileSync(configPath, 'utf8');
+    parsed = parseConfig(text, 'toml');
+  } catch {
+    return { configPath, skipped: 'malformed', wrote: false };
+  }
+
+  const block = findCodexHooksBlock(text);
+  if (block && 'unterminated' in block) {
+    return { configPath, skipped: 'manual', wrote: false };
+  }
+  // No marker of ours + ANY hooks table → the user (or another tool) owns
+  // hooks here. Appending ours would coexist structurally (array-of-tables),
+  // but silently injecting wmux into a hand-managed hooks config is the
+  // notify lane's decision 1 applied one level wider.
+  if (!block && Object.prototype.hasOwnProperty.call(parsed, 'hooks')) {
+    return { configPath, skipped: 'foreign', wrote: false };
+  }
+  if (block && block.commandPath
+    && block.commandPath.replace(/\\/g, '/') === bridgeScript.replace(/\\/g, '/')
+    && CODEX_HOOK_EVENTS.every((event) =>
+      block.text.includes(`[[hooks.${event}]]`) && block.text.includes(`[[hooks.${event}.hooks]]`))) {
+    // Already ours and structurally current (same bridge path, every event
+    // section present — Codex's own trust annotations inside the region are
+    // none of our business and are preserved by NOT rewriting). Re-stamp ONLY
+    // when the stamp is missing, so idempotent re-runs never move the
+    // goalposts past firing evidence.
+    if (!readInstallStamp()) writeInstallStamp();
+    return { configPath, skipped: null, wrote: false };
+  }
+
+  let newText: string;
+  try {
+    newText = upsertCodexHooksToml(text, bridgeScript);
+  } catch {
+    return { configPath, skipped: 'malformed', wrote: false };
+  }
+  if (newText !== text) writeFileAtomic(configPath, newText); // write errors propagate
+  writeInstallStamp();
+  return { configPath, skipped: null, wrote: newText !== text };
+}
+
+/** Remove the wmux-owned hooks block (marker-bounded; foreign untouched). */
+export function unregisterCodexHooks(home: string): { configPath: string; removed: boolean } {
+  const target = getMcpTarget('codex');
+  if (!target) return { configPath: '', removed: false };
+  const configPath = target.configPath(home);
+  if (!fs.existsSync(configPath)) return { configPath, removed: false };
+  let text: string;
+  try {
+    text = fs.readFileSync(configPath, 'utf8');
+  } catch {
+    return { configPath, removed: false };
+  }
+  let newText: string;
+  try {
+    newText = removeCodexHooksToml(text);
+  } catch {
+    return { configPath, removed: false };
+  }
+  if (newText === text) return { configPath, removed: false };
+  writeFileAtomic(configPath, newText);
+  return { configPath, removed: true };
+}
+
+export interface CodexHooksStatus {
+  configPath: string;
+  configExists: boolean;
+  /** 'written' = block present but the bridge has NOT fired since it was
+   *  written — Codex is silently ignoring the hook until the operator
+   *  approves it; 'active' = a bridge log entry postdates the install stamp,
+   *  i.e. approved AND running; 'stale' = marker-owned block points at a
+   *  different bridge path (older manual install / moved file); 'foreign' =
+   *  a user hooks table; 'malformed'; 'none'. */
+  state: 'written' | 'active' | 'stale' | 'foreign' | 'malformed' | 'none';
+  /** The bridge path named in the block, when the block is ours. */
+  path: string | null;
+  /** Newest bridge log timestamp (proof of firing), when any exists. */
+  lastFiredAt: string | null;
+}
+
+/** Read-only snapshot of the Codex hooks lane. Never creates / throws. */
+export function readCodexHooksStatus(home: string, managedBridgeScript: string): CodexHooksStatus {
+  const target = getMcpTarget('codex');
+  const configPath = target ? target.configPath(home) : '';
+  let configExists = false;
+  try {
+    configExists = fs.statSync(configPath).isFile();
+  } catch {
+    configExists = false;
+  }
+  if (!configExists) return { configPath, configExists, state: 'none', path: null, lastFiredAt: null };
+  let text: string;
+  let parsed: Record<string, unknown>;
+  try {
+    text = fs.readFileSync(configPath, 'utf8');
+    parsed = parseConfig(text, 'toml');
+  } catch {
+    return { configPath, configExists, state: 'malformed', path: null, lastFiredAt: null };
+  }
+  const block = findCodexHooksBlock(text);
+  if (!block && Object.prototype.hasOwnProperty.call(parsed, 'hooks')) {
+    return { configPath, configExists, state: 'foreign', path: null, lastFiredAt: null };
+  }
+  if (!block) {
+    return { configPath, configExists, state: 'none', path: null, lastFiredAt: null };
+  }
+  if ('unterminated' in block) {
+    // Ours-shaped (a marker is ours by construction) but unbounded: treat as
+    // stale so the operator is told to re-run rather than as absent.
+    return { configPath, configExists, state: 'stale', path: null, lastFiredAt: null };
+  }
+  const pathMatches = !!block.commandPath
+    && block.commandPath.replace(/\\/g, '/') === managedBridgeScript.replace(/\\/g, '/');
+  const structureCurrent = pathMatches && CODEX_HOOK_EVENTS.every((event) =>
+    block.text.includes(`[[hooks.${event}]]`) && block.text.includes(`[[hooks.${event}.hooks]]`));
+  const lastFiredAt = readLastFiredAt();
+  const stamp = readInstallStamp();
+  if (!structureCurrent) {
+    return { configPath, configExists, state: 'stale', path: block.commandPath, lastFiredAt };
+  }
+  // Active = the bridge logged at least once AFTER the block was written. No
+  // stamp (a manual install predating the installer) degrades to "ever fired"
+  // — the honest floor for a block we did not write.
+  const firedPostInstall = !!lastFiredAt && (!stamp || lastFiredAt > stamp);
+  return {
+    configPath,
+    configExists,
+    state: firedPostInstall ? 'active' : 'written',
+    path: block.commandPath,
+    lastFiredAt,
+  };
 }

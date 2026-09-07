@@ -1,12 +1,16 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { randomBytes } from 'crypto';
-import { CODEX_NOTIFY_BASENAME } from './configIO';
+import { CODEX_NOTIFY_BASENAME, CODEX_HOOKS_BRIDGE_BASENAME } from './configIO';
 import {
   readCodexNotifyStatus,
   registerCodexNotify,
   type CodexNotifyStatus,
   type RegisterNotifyResult,
+  readCodexHooksStatus,
+  registerCodexHooks,
+  type CodexHooksStatus,
+  type CodexHooksRegisterResult,
 } from './mcpRegistration';
 
 /** Stable bundle/install names for first-party lifecycle integrations. */
@@ -14,6 +18,8 @@ export const OPENCODE_PLUGIN_BUNDLE_BASENAME = 'wmux-opencode-plugin.js';
 export const OPENCODE_PLUGIN_INSTALL_BASENAME = 'wmux.js';
 export const CODEX_NOTIFY_MANAGED_MARKER = 'wmux ↔ Codex CLI notify bridge';
 export const OPENCODE_PLUGIN_MANAGED_MARKER = 'wmux-managed: opencode-lifecycle-bridge';
+/** First line of the hooks bridge — same string as the bridge source carries. */
+export const CODEX_HOOKS_MANAGED_MARKER = 'wmux-managed: codex-hooks-bridge';
 
 export type LifecycleAssetState =
   | 'current'
@@ -150,6 +156,7 @@ export interface LifecycleIntegrationPaths {
   home: string;
   codex: LifecycleAssetSpec;
   opencode: LifecycleAssetSpec;
+  codexHooksBridge: LifecycleAssetSpec;
 }
 
 function resolveOpenCodeConfigHome(home: string): string {
@@ -170,6 +177,15 @@ export function resolveLifecycleIntegrationPaths(home: string, startDir: string)
       ),
       destinationPath: path.join(home, '.wmux', 'hooks', CODEX_NOTIFY_BASENAME),
       ownershipMarkers: [CODEX_NOTIFY_MANAGED_MARKER],
+    },
+    codexHooksBridge: {
+      sourcePath: findLifecycleAssetSourceFrom(
+        startDir,
+        CODEX_HOOKS_BRIDGE_BASENAME,
+        ['integrations', 'codex', 'bin', CODEX_HOOKS_BRIDGE_BASENAME],
+      ),
+      destinationPath: path.join(home, '.wmux', 'hooks', CODEX_HOOKS_BRIDGE_BASENAME),
+      ownershipMarkers: [CODEX_HOOKS_MANAGED_MARKER],
     },
     opencode: {
       sourcePath: findLifecycleAssetSourceFrom(
@@ -197,6 +213,14 @@ export interface LifecycleIntegrationsStatus {
   codexBridge: LifecycleAssetStatus;
   codexNotify: LifecycleCodexNotifyStatus;
   opencodePlugin: LifecycleAssetStatus;
+  /**
+   * The hooks bridge lane (#1107). `codexHooksBridge` is the script file;
+   * `codexHooks` is the config.toml block + the honesty verdict: 'written'
+   * means the block is in place but Codex will not run it until the operator
+   * approves it (silently), 'active' means it has actually fired since.
+   */
+  codexHooksBridge: LifecycleAssetStatus;
+  codexHooks: CodexHooksStatus;
 }
 
 const normalizePath = (value: string): string => value.replace(/\\/g, '/');
@@ -215,6 +239,8 @@ export function statusLifecycleIntegrations(paths: LifecycleIntegrationPaths): L
     codexBridge: inspectLifecycleAsset(paths.codex),
     codexNotify,
     opencodePlugin: inspectLifecycleAsset(paths.opencode),
+    codexHooksBridge: inspectLifecycleAsset(paths.codexHooksBridge),
+    codexHooks: readCodexHooksStatus(paths.home, paths.codexHooksBridge.destinationPath),
   };
 }
 
@@ -223,22 +249,57 @@ export interface LifecycleIntegrationsInstallOutcome {
   codexBridge: LifecycleAssetInstallOutcome;
   codexNotify: RegisterNotifyResult | null;
   opencodePlugin: LifecycleAssetInstallOutcome;
+  codexHooksBridge: LifecycleAssetInstallOutcome;
+  codexHooks: CodexHooksRegisterResult | null;
 }
 
-/** Install/refresh runtime assets and register Codex notify without clobbering conflicts. */
+export interface InstallLifecycleIntegrationsOptions {
+  /**
+   * Output of `codex --version`, probed by the caller (the CLI). null = the
+   * probe could not run. The hooks block is only written when this proves the
+   * codex-cli is at/above the bisected 0.141.0 floor — fail closed, because
+   * 0.140.0 parses the block, advertises the feature, and silently fires
+   * nothing. Omitted (undefined) skips registration entirely, for callers
+   * that have not probed and must not guess.
+   */
+  codexVersionOutput?: string | null;
+}
+
+/**
+ * Install/refresh runtime assets and register Codex notify without clobbering
+ * conflicts.
+ *
+ * The hooks bridge (#1107) follows approve-then-verify: the script is
+ * installed and the `[[hooks.*]]` block written, but the result is never
+ * "installed and working" — Codex requires the operator to trust the hook and
+ * says nothing when they haven't. `statusLifecycleIntegrations().codexHooks`
+ * is the verdict: 'written' until the bridge actually fires post-approval.
+ */
 export function installLifecycleIntegrations(
   paths: LifecycleIntegrationPaths,
+  options: InstallLifecycleIntegrationsOptions = {},
 ): LifecycleIntegrationsInstallOutcome {
   const codexBridge = installLifecycleAsset(paths.codex);
   const codexNotify = codexBridge.state === 'current'
     ? registerCodexNotify(paths.home, paths.codex.destinationPath)
     : null;
   const opencodePlugin = installLifecycleAsset(paths.opencode);
+  const codexHooksBridge = installLifecycleAsset(paths.codexHooksBridge);
+  const codexHooks = codexHooksBridge.state === 'current'
+    && options.codexVersionOutput !== undefined
+    ? registerCodexHooks(paths.home, paths.codexHooksBridge.destinationPath, options.codexVersionOutput)
+    : null;
   const fatalStates = new Set<LifecycleAssetState>(['source-missing', 'error']);
+  // `ok` deliberately does NOT include codexHooksBridge: the hooks bridge is
+  // the newest asset, so installs built before it existed report
+  // source-missing for it and that must not fail an otherwise-good setup run.
+  // Its own outcome field carries the detail.
   return {
     ok: !fatalStates.has(codexBridge.state) && !fatalStates.has(opencodePlugin.state),
     codexBridge,
     codexNotify,
     opencodePlugin,
+    codexHooksBridge,
+    codexHooks,
   };
 }

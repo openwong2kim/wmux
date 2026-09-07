@@ -300,3 +300,72 @@ describe('installLifecycleIntegrations — aggregation + codexNotify gating', ()
     expect(outcome.ok).toBe(true);
   });
 });
+
+// ── The hooks lane (#1107): writing ≠ installing ──────────────────────────────
+
+describe('lifecycleIntegrations — codex hooks lane', () => {
+  const HOOKS_SOURCE = '// wmux-managed: codex-hooks-bridge\n// hooks bridge body\n';
+  const VERSION_OK = 'codex-cli 0.151.0';
+
+  /** Paths with real sources for every asset so nothing is source-missing. */
+  function pathsWithSources(): LifecycleIntegrationPaths {
+    const paths = resolveLifecycleIntegrationPaths(home, home);
+    for (const spec of [paths.codex, paths.codexHooksBridge, paths.opencode]) {
+      const src = path.join(home, `src-${path.basename(spec.destinationPath)}.mjs`);
+      fs.writeFileSync(src, SOURCE_TEXT, 'utf8');
+      spec.sourcePath = src;
+    }
+    return paths;
+  }
+
+  it('resolves the hooks bridge destination beside the notify bridge', () => {
+    const paths = resolveLifecycleIntegrationPaths(home, home);
+    expect(paths.codexHooksBridge.destinationPath)
+      .toBe(path.join(home, '.wmux', 'hooks', 'wmux-codex-hooks-bridge.mjs'));
+    expect(paths.codexHooksBridge.ownershipMarkers).toContain('wmux-managed: codex-hooks-bridge');
+  });
+
+  it('status: codexHooks is none when Codex is not installed', () => {
+    const status = statusLifecycleIntegrations(pathsWithSources());
+    expect(status.codexHooks.state).toBe('none');
+    expect(status.codexHooksBridge.state).toBe('missing');
+  });
+
+  it('install (no version probed) leaves codexHooks null — never guesses', () => {
+    const paths = pathsWithSources();
+    writeCodexConfig('model = "x"\n');
+    const outcome = installLifecycleIntegrations(paths);
+    expect(outcome.codexHooks).toBeNull();
+    expect(outcome.codexHooksBridge.state).toBe('current');
+    // The notify lane registers as usual; the hooks lane must not.
+    expect(fs.readFileSync(codexTarget.configPath(home), 'utf8')).not.toContain('[[hooks');
+  });
+
+  it('install with a probed version writes the block; status says WRITTEN, not installed', () => {
+    const paths = pathsWithSources();
+    writeCodexConfig('model = "x"\n');
+    const outcome = installLifecycleIntegrations(paths, { codexVersionOutput: VERSION_OK });
+    expect(outcome.codexHooks!.skipped).toBeNull();
+    expect(outcome.codexHooks!.wrote).toBe(true);
+    // The honesty verdict: block present, never fired → 'written'.
+    expect(statusLifecycleIntegrations(paths).codexHooks.state).toBe('written');
+  });
+
+  it('install fails the version gate closed for codex-cli 0.140.0', () => {
+    const paths = pathsWithSources();
+    writeCodexConfig('model = "x"\n');
+    const outcome = installLifecycleIntegrations(paths, { codexVersionOutput: 'codex-cli 0.140.0' });
+    expect(outcome.codexHooks!.skipped).toBe('unsupported-version');
+    expect(fs.readFileSync(codexTarget.configPath(home), 'utf8')).not.toContain('[[hooks');
+  });
+
+  it('ok stays true even when the hooks bridge source is missing (newest asset)', () => {
+    const paths = pathsWithSources();
+    paths.codexHooksBridge.sourcePath = path.join(home, 'absent.mjs');
+    writeCodexConfig('model = "x"\n');
+    const outcome = installLifecycleIntegrations(paths, { codexVersionOutput: VERSION_OK });
+    expect(outcome.codexHooksBridge.state).toBe('source-missing');
+    expect(outcome.codexHooks).toBeNull();
+    expect(outcome.ok).toBe(true);
+  });
+});

@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { spawnSync } from 'child_process';
 import { writeJsonAtomic } from '../../shared/settingsFile';
 
 /**
@@ -32,12 +33,18 @@ USAGE
 
 ACTIONS (mutually exclusive; default = install)
   (default)    Install or refresh Claude Code hooks, the Codex notify bridge,
-               and the OpenCode lifecycle plugin. Existing foreign hooks,
-               notify commands, and plugin files are never overwritten.
+               the Codex hooks bridge (config.toml [[hooks.*]] block; requires
+               codex-cli >= 0.141.0 and STILL needs you to approve the hooks
+               inside Codex — written ≠ installed), and the OpenCode lifecycle
+               plugin. Existing foreign hooks, notify commands, and plugin
+               files are never overwritten.
                Re-running KEEPS the hook profile already on disk.
   --remove     Remove only wmux-owned Claude hook entries (legacy behavior;
                Codex/OpenCode files and foreign configuration are untouched).
   --status     Report Claude, Codex, and OpenCode lifecycle integration status.
+               For Codex hooks this includes the trust verdict: WRITTEN (block
+               in place, Codex silently runs nothing until you approve it) vs
+               ACTIVE (the bridge has actually fired).
 
 HOOK PROFILE (install only; mutually exclusive)
   --signals-only  Install the lifecycle signals and the approval card WITHOUT
@@ -1247,6 +1254,30 @@ interface PrintableAssetStatus {
   error: string | null;
 }
 
+/**
+ * Probe `codex --version` for the #1107 hooks floor (0.141.0, bisected — older
+ * builds parse the hooks block, advertise the feature, and silently fire
+ * nothing). Best-effort: a failed probe returns null and the hooks block is
+ * NOT written, because an unprovable Codex is indistinguishable from one that
+ * would silently ignore the hook. shell:true only on Windows, where npm
+ * installs the CLI as codex.cmd; the args are fixed, so there is nothing to
+ * inject.
+ */
+function probeCodexVersion(): string | null {
+  try {
+    const result = spawnSync('codex', ['--version'], {
+      encoding: 'utf8',
+      timeout: 5000,
+      shell: process.platform === 'win32',
+    });
+    if (result.error || result.status !== 0) return null;
+    const output = `${result.stdout ?? ''}${result.stderr ?? ''}`.trim();
+    return output || null;
+  } catch {
+    return null;
+  }
+}
+
 function printAssetStatus(label: string, asset: PrintableAssetStatus): void {
   switch (asset.state) {
     case 'current':
@@ -1280,6 +1311,78 @@ function printAssetInstall(
     console.log(`${label}: refreshed → ${asset.destinationPath}`);
   } else {
     printAssetStatus(label, asset);
+  }
+}
+
+/**
+ * The #1107 approve-then-verify print. Codex will not run a hook the operator
+ * has not trusted AND SAYS NOTHING when it hasn't — so a written block must
+ * never read as done. 'active' is the only "working" verdict, and it is
+ * earned by the bridge actually firing, not by the file existing.
+ */
+function printCodexHooksInstall(result: {
+  codexHooks: { configPath: string; skipped: string | null; wrote: boolean } | null;
+}): void {
+  const hooks = result.codexHooks;
+  if (!hooks) {
+    // Not probed (or the bridge asset could not be installed) — say that
+    // rather than implying the lane is set up.
+    console.log('codex hooks: not registered (bridge unavailable or version not probed)');
+    return;
+  }
+  if (hooks.skipped === 'absent') {
+    console.log(`codex hooks: Codex config not found (${hooks.configPath})`);
+  } else if (hooks.skipped === 'foreign') {
+    console.warn(`codex hooks: CONFLICT in ${hooks.configPath}; existing [[hooks]] left untouched`);
+  } else if (hooks.skipped === 'manual') {
+    console.warn(
+      `codex hooks: a hand-installed wmux block in ${hooks.configPath} is missing its end ` +
+      'marker; remove it and re-run so the installer can own the region',
+    );
+  } else if (hooks.skipped === 'malformed') {
+    console.warn(`codex hooks: malformed config left untouched (${hooks.configPath})`);
+  } else if (hooks.skipped === 'unsupported-version') {
+    console.warn(
+      'codex hooks: NOT registered — codex-cli is below 0.141.0, the version below which ' +
+      'hooks parse but silently never fire (panes stay on screen detection)',
+    );
+  } else if (hooks.skipped === 'version-unknown') {
+    console.warn(
+      'codex hooks: NOT registered — could not determine the codex-cli version (fail closed)',
+    );
+  } else {
+    console.log(`codex hooks: block ${hooks.wrote ? 'written' : 'already present'} in ${hooks.configPath}`);
+    console.log(
+      'codex hooks: WRITTEN ≠ INSTALLED — start Codex and approve the wmux hooks when it ' +
+      'asks; until then Codex silently runs nothing. Verify with `wmux setup-hooks --status`.',
+    );
+  }
+}
+
+function printCodexHooksStatus(status: {
+  configPath: string;
+  configExists: boolean;
+  state: string;
+  path: string | null;
+  lastFiredAt: string | null;
+}): void {
+  if (!status.configExists || status.state === 'none') {
+    console.log(`codex hooks: not registered (${status.configPath})`);
+  } else if (status.state === 'active') {
+    console.log(`codex hooks: ACTIVE — bridge fired${status.lastFiredAt ? ` (last ${status.lastFiredAt})` : ''}`);
+  } else if (status.state === 'written') {
+    console.warn(
+      'codex hooks: WRITTEN but NOT trusted — Codex will not run them and will not say so. ' +
+      'Start Codex, approve the wmux hooks, then re-check; panes stay on screen detection until then.',
+    );
+  } else if (status.state === 'stale') {
+    console.warn(
+      `codex hooks: STALE (${status.path ?? 'unbounded block'}) — re-run \`wmux setup-hooks\``,
+    );
+  } else if (status.state === 'foreign') {
+    console.warn(`codex hooks: CONFLICT — foreign [[hooks]] in ${status.configPath} left untouched`);
+  } else if (status.state === 'malformed') {
+    console.warn(`codex hooks: MALFORMED config left untouched (${status.configPath})`);
   }
 }
 
@@ -1378,6 +1481,8 @@ export async function handleSetupHooks(args: string[], jsonMode: boolean): Promi
         console.log(`codex notify: NOT registered (${integrations.codexNotify.configPath})`);
       }
       printAssetStatus('opencode plugin', integrations.opencodePlugin);
+      printAssetStatus('codex hooks bridge', integrations.codexHooksBridge);
+      printCodexHooksStatus(integrations.codexHooks);
     }
     // Keep the existing scripted contract: status is non-zero only when the
     // Claude settings file is corrupt, not merely because an optional CLI is
@@ -1389,7 +1494,8 @@ export async function handleSetupHooks(args: string[], jsonMode: boolean): Promi
   // Run each integration independently so a corrupt Claude settings file does
   // not prevent safe Codex/OpenCode installation (and vice versa).
   const claude = installHooks(paths, requestedProfile);
-  const integrations = lifecycle.installLifecycleIntegrations(lifecyclePaths);
+  const codexVersionOutput = probeCodexVersion();
+  const integrations = lifecycle.installLifecycleIntegrations(lifecyclePaths, { codexVersionOutput });
   const outcome = {
     ...claude,
     ...integrations,
@@ -1418,6 +1524,8 @@ export async function handleSetupHooks(args: string[], jsonMode: boolean): Promi
     if (integrations.opencodePlugin.action !== 'none') {
       console.log('Restart existing OpenCode sessions so they load the wmux plugin.');
     }
+    printAssetInstall('codex hooks bridge', integrations.codexHooksBridge);
+    printCodexHooksInstall(integrations);
   }
   if (!outcome.ok) process.exit(1);
 }

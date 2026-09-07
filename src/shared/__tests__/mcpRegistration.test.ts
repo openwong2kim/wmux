@@ -10,7 +10,11 @@ import {
   registerCodexNotify,
   unregisterCodexNotify,
   readCodexNotifyStatus,
+  registerCodexHooks,
+  unregisterCodexHooks,
+  readCodexHooksStatus,
 } from '../mcpRegistration';
+import { upsertCodexHooksToml } from '../configIO';
 
 let home = '';
 const claudeTarget = getMcpTarget('claude')!;
@@ -391,5 +395,183 @@ describe('MCP_TARGETS registry', () => {
     expect(getMcpTarget('codex')!.createIfMissing).toBe(false);
     expect(getMcpTarget('codex')!.format).toBe('toml');
     expect(getMcpTarget('gemini')!.createIfMissing).toBe(false);
+  });
+});
+
+// ── Codex [[hooks.*]] lifecycle bridge — approve-then-verify lane (#1107) ─────
+//
+// The contract under test is the honesty one: writing the block is NEVER
+// "installed", because Codex silently refuses to run an untrusted hook. The
+// install stamp (`codex-hooks-install.json`) + the bridge log
+// (`codex-hooks.log`) are what turn 'written' into 'active'.
+
+describe('registerCodexHooks — the hooks lane (#1107)', () => {
+  const BRIDGE = '/home/u/.wmux/hooks/wmux-codex-hooks-bridge.mjs';
+  const VERSION_OK = 'codex-cli 0.151.0';
+  let wmuxHome = '';
+  let prevUserProfile: string | undefined;
+
+  const writeCodex = (text: string): string => {
+    const p = codexTarget.configPath(home);
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(p, text, 'utf8');
+    return p;
+  };
+  const stamp = (): string => (
+    JSON.parse(fs.readFileSync(path.join(wmuxHome, 'codex-hooks-install.json'), 'utf8')) as { installedAt: string }
+  ).installedAt;
+  const logFiring = (iso: string): void => {
+    fs.mkdirSync(wmuxHome, { recursive: true });
+    fs.appendFileSync(path.join(wmuxHome, 'codex-hooks.log'), `${JSON.stringify({ ts: iso, outcome: 'ok' })}\n`);
+  };
+
+  beforeEach(() => {
+    // Route getWmuxHomeDir() (USERPROFILE-first) at the temp home so the
+    // stamp/log never touch the real ~/.wmux.
+    prevUserProfile = process.env.USERPROFILE;
+    process.env.USERPROFILE = home;
+    wmuxHome = path.join(home, '.wmux');
+  });
+  afterEach(() => {
+    if (prevUserProfile === undefined) delete process.env.USERPROFILE;
+    else process.env.USERPROFILE = prevUserProfile;
+  });
+
+  it('SKIPS when ~/.codex/config.toml does not exist (never created)', () => {
+    const r = registerCodexHooks(home, BRIDGE, VERSION_OK);
+    expect(r.skipped).toBe('absent');
+    expect(fs.existsSync(codexTarget.configPath(home))).toBe(false);
+  });
+
+  it('refuses when the version could not be probed (fail closed)', () => {
+    writeCodex('model = "x"\n');
+    const r = registerCodexHooks(home, BRIDGE, null);
+    expect(r.skipped).toBe('version-unknown');
+    expect(fs.readFileSync(codexTarget.configPath(home), 'utf8')).toBe('model = "x"\n');
+  });
+
+  it('refuses codex-cli below the bisected 0.141.0 floor and writes nothing', () => {
+    // 0.140.0 parses the block, advertises `hooks stable true`, fires nothing.
+    writeCodex('model = "x"\n');
+    const r = registerCodexHooks(home, BRIDGE, 'codex-cli 0.140.0');
+    expect(r.skipped).toBe('unsupported-version');
+    expect(fs.readFileSync(codexTarget.configPath(home), 'utf8')).toBe('model = "x"\n');
+  });
+
+  it('writes the marker-bracketed block and stamps the install time', () => {
+    const p = writeCodex('# hand-written\nmodel = "x"\n');
+    const r = registerCodexHooks(home, BRIDGE, VERSION_OK);
+    expect(r.skipped).toBeNull();
+    expect(r.wrote).toBe(true);
+    const after = fs.readFileSync(p, 'utf8');
+    expect(after).toContain('# hand-written');
+    expect(after).toContain('[[hooks.Stop]]');
+    expect(stamp()).toBeTruthy();
+  });
+
+  it('is idempotent — and a re-run does NOT move the stamp past firing evidence', () => {
+    writeCodex('model = "x"\n');
+    registerCodexHooks(home, BRIDGE, VERSION_OK);
+    const stampAtInstall = stamp();
+    // The operator approves; the bridge fires AFTER the stamp.
+    logFiring('2999-01-01T00:00:00.000Z');
+    const r2 = registerCodexHooks(home, BRIDGE, VERSION_OK);
+    expect(r2.wrote).toBe(false);
+    expect(stamp()).toBe(stampAtInstall);
+    expect(readCodexHooksStatus(home, BRIDGE).state).toBe('active');
+  });
+
+  it('preserves Codex trust annotations inside the region on an idempotent re-run', () => {
+    writeCodex('model = "x"\n');
+    registerCodexHooks(home, BRIDGE, VERSION_OK);
+    const p = codexTarget.configPath(home);
+    // Codex marks the hook trusted in place.
+    const annotated = fs.readFileSync(p, 'utf8').replace('async = false', 'async = false\nenabled = true\ntrusted_hash = "abc"');
+    fs.writeFileSync(p, annotated, 'utf8');
+    const r2 = registerCodexHooks(home, BRIDGE, VERSION_OK);
+    expect(r2.wrote).toBe(false); // structurally current → no rewrite
+    expect(fs.readFileSync(p, 'utf8')).toContain('trusted_hash = "abc"');
+  });
+
+  it('refreshes when the bridge path changed (annotation loss is honest — re-approval)', () => {
+    writeCodex('model = "x"\n');
+    registerCodexHooks(home, BRIDGE, VERSION_OK);
+    const moved = BRIDGE.replace('wmux-codex-hooks-bridge', 'moved');
+    const r2 = registerCodexHooks(home, moved, VERSION_OK);
+    expect(r2.wrote).toBe(true);
+    expect(readCodexHooksStatus(home, moved).path).toBe(moved);
+  });
+
+  it('SKIPS a foreign [[hooks]] table — never sits beside the user’s own hooks', () => {
+    const p = writeCodex('[[hooks.Stop]]\nmatcher = "*"\ncommand = "user-own"\n');
+    const r = registerCodexHooks(home, BRIDGE, VERSION_OK);
+    expect(r.skipped).toBe('foreign');
+    expect(fs.readFileSync(p, 'utf8')).toBe('[[hooks.Stop]]\nmatcher = "*"\ncommand = "user-own"\n');
+    expect(readCodexHooksStatus(home, BRIDGE).state).toBe('foreign');
+  });
+
+  it('SKIPS a hand-pasted marker block with no end marker (manual)', () => {
+    writeCodex('model = "x"\n# wmux-managed: codex-hooks-bridge\n[[hooks.Stop]]\nmatcher = "*"\n');
+    const r = registerCodexHooks(home, BRIDGE, VERSION_OK);
+    expect(r.skipped).toBe('manual');
+  });
+
+  it('leaves a malformed config.toml untouched', () => {
+    const p = writeCodex('this = = broken [[');
+    const r = registerCodexHooks(home, BRIDGE, VERSION_OK);
+    expect(r.skipped).toBe('malformed');
+    expect(fs.readFileSync(p, 'utf8')).toBe('this = = broken [[');
+  });
+
+  it('status: WRITTEN, not active, until the bridge fires after the stamp', () => {
+    writeCodex('model = "x"\n');
+    registerCodexHooks(home, BRIDGE, VERSION_OK);
+    // No firing at all → written.
+    expect(readCodexHooksStatus(home, BRIDGE).state).toBe('written');
+    // Firing BEFORE the install stamp (a log left over from an older block)
+    // still does not count — evidence must postdate the write.
+    logFiring('2000-01-01T00:00:00.000Z');
+    expect(readCodexHooksStatus(home, BRIDGE).state).toBe('written');
+    // Post-stamp firing flips it.
+    logFiring(new Date(Date.now() + 1000).toISOString());
+    const status = readCodexHooksStatus(home, BRIDGE);
+    expect(status.state).toBe('active');
+    expect(status.lastFiredAt).toBeTruthy();
+  });
+
+  it('status: a manual block with no stamp is active on ANY firing (honest floor)', () => {
+    // The manual flow (README) writes the block without an install stamp;
+    // any firing at all proves the operator approved it.
+    const block = upsertCodexHooksToml('model = "x"\n', BRIDGE).replace('model = "x"\n', '');
+    writeCodex(`model = "x"\n${block}`);
+    expect(readCodexHooksStatus(home, BRIDGE).state).toBe('written');
+    logFiring('2000-01-01T00:00:00.000Z');
+    expect(readCodexHooksStatus(home, BRIDGE).state).toBe('active');
+  });
+
+  it('status: stale when the block names a different bridge path', () => {
+    writeCodex('model = "x"\n');
+    registerCodexHooks(home, BRIDGE, VERSION_OK);
+    expect(readCodexHooksStatus(home, '/elsewhere/bridge.mjs').state).toBe('stale');
+  });
+
+  it('status: none when config absent; malformed config → malformed', () => {
+    expect(readCodexHooksStatus(home, BRIDGE).state).toBe('none');
+    writeCodex('broken = = [[');
+    expect(readCodexHooksStatus(home, BRIDGE).state).toBe('malformed');
+  });
+
+  it('unregisterCodexHooks removes our block, leaves foreign hooks alone', () => {
+    writeCodex('model = "x"\n');
+    registerCodexHooks(home, BRIDGE, VERSION_OK);
+    const r = unregisterCodexHooks(home);
+    expect(r.removed).toBe(true);
+    expect(readCodexHooksStatus(home, BRIDGE).state).toBe('none');
+    expect(fs.readFileSync(codexTarget.configPath(home), 'utf8')).toBe('model = "x"\n');
+
+    const foreign = '[[hooks.Stop]]\nmatcher = "*"\ncommand = "user-own"\n';
+    writeCodex(foreign);
+    expect(unregisterCodexHooks(home).removed).toBe(false);
+    expect(fs.readFileSync(codexTarget.configPath(home), 'utf8')).toBe(foreign);
   });
 });

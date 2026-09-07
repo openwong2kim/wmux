@@ -521,3 +521,195 @@ export function removeNotifyToml(text: string): string {
   }
   return text;
 }
+
+// ── Codex `[[hooks.*]]` lifecycle-bridge block read/write ─────────────────────
+//
+// wmux's Codex hooks bridge (#1107) registers as array-of-tables under
+// `[[hooks.<Event>]]` in config.toml. Unlike the single-slot `notify` line,
+// array-of-tables can COEXIST with a user's own hooks — so the wmux-owned
+// region is bracketed by start/end marker comments, and every surgical edit is
+// bounded by exactly those markers: a refresh replaces precisely what wmux
+// rendered, never a foreign `[[hooks.*]]` section a user appended after ours,
+// and never more of ours than the region even after Codex annotates sections
+// with on-disk trust state (`enabled` / `trusted_hash`) that a naive rewrite
+// would silently destroy — un-trusting the hook, the exact silent failure this
+// whole lane exists to prevent.
+//
+// The renderer and the version gate are TS mirrors of the dependency-free
+// source of truth in integrations/codex/hooks/wmuxHooks.mjs (a bridge-side
+// module src/ cannot require() as ESM). A lockstep test asserts the copies are
+// byte-identical, the same discipline hookBridge.lockstep.test.ts applies.
+
+/** Basename of the wmux Codex hooks bridge. */
+export const CODEX_HOOKS_BRIDGE_BASENAME = 'wmux-codex-hooks-bridge.mjs';
+
+/** Marker comments bracketing the wmux-owned `[[hooks.*]]` region. */
+export const CODEX_HOOKS_MANAGED_MARKER = 'wmux-managed: codex-hooks-bridge';
+export const CODEX_HOOKS_MANAGED_END_MARKER = 'wmux-managed: codex-hooks-bridge end';
+
+/** The events wmux registers — mirrors CODEX_HOOK_EVENTS in wmuxHooks.mjs. */
+export const CODEX_HOOK_EVENTS: readonly string[] = [
+  'SessionStart',
+  'UserPromptSubmit',
+  'Stop',
+  'PermissionRequest',
+];
+
+/** Codex's own hook timeout; mirrors CODEX_HOOK_TIMEOUT_MS in wmuxHooks.mjs. */
+export const CODEX_HOOK_TIMEOUT_MS = 2500;
+
+/**
+ * Render the wmux-owned `[[hooks.*]]` block. Byte-identical to
+ * `renderCodexHooksToml` in integrations/codex/hooks/wmuxHooks.mjs — the
+ * lockstep test in __tests__/configIO.test.ts is what keeps them together.
+ */
+export function renderCodexHooksBlockToml(bridgeScript: string): string {
+  const command = `node "${bridgeScript}"`;
+  const lines = [`# ${CODEX_HOOKS_MANAGED_MARKER}`];
+  for (const event of CODEX_HOOK_EVENTS) {
+    lines.push(
+      '',
+      `[[hooks.${event}]]`,
+      'matcher = "*"',
+      `[[hooks.${event}.hooks]]`,
+      'type = "command"',
+      `command = ${JSON.stringify(command)}`,
+      `commandWindows = ${JSON.stringify(command)}`,
+      `timeout = ${CODEX_HOOK_TIMEOUT_MS}`,
+      'async = false',
+    );
+  }
+  lines.push('', `# ${CODEX_HOOKS_MANAGED_END_MARKER}`);
+  return lines.join('\n') + '\n';
+}
+
+function markerLine(marker: string, line: string): boolean {
+  return line.trim() === `# ${marker}`;
+}
+
+export interface CodexHooksBlockRegion {
+  /** Inclusive line indices of the marker-bracketed region. */
+  start: number;
+  end: number;
+  /** The region's text verbatim. */
+  text: string;
+  /** The first `command` value inside the region (the bridge path), or null. */
+  commandPath: string | null;
+}
+
+/**
+ * Locate the wmux-owned hooks region. Returns null when no start marker is
+ * present. A start marker WITHOUT an end marker (a hand-pasted block from the
+ * pre-marker README flow, or a truncated edit) is returned as
+ * `{ unterminated: true }` so callers can refuse to touch it rather than
+ * guess at a boundary.
+ */
+export function findCodexHooksBlock(text: string):
+  | CodexHooksBlockRegion
+  | { unterminated: true }
+  | null {
+  const lines = text.split(/\r?\n/);
+  let start = -1;
+  for (let i = 0; i < lines.length; i++) {
+    if (markerLine(CODEX_HOOKS_MANAGED_MARKER, lines[i])) { start = i; break; }
+  }
+  if (start === -1) return null;
+  let end = -1;
+  for (let i = start + 1; i < lines.length; i++) {
+    if (markerLine(CODEX_HOOKS_MANAGED_END_MARKER, lines[i])) { end = i; break; }
+  }
+  if (end === -1) return { unterminated: true };
+  const region = lines.slice(start, end + 1);
+  for (const line of region) {
+    const m = line.match(/^\s*command\s*=\s*"((?:[^"\\]|\\.)*)"\s*$/);
+    if (m) {
+      // Our own render JSON.stringify's the value, so JSON.parse reverses it
+      // exactly (incl. Windows backslash escapes).
+      try {
+        const command = JSON.parse(`"${m[1]}"`) as string;
+        const path = /^node "(.*)"$/s.exec(command)?.[1] ?? null;
+        return { start, end, text: region.join('\n'), commandPath: path };
+      } catch {
+        return { start, end, text: region.join('\n'), commandPath: null };
+      }
+    }
+  }
+  return { start, end, text: region.join('\n'), commandPath: null };
+}
+
+/**
+ * Return new TOML text with the wmux hooks block written or refreshed.
+ * Caller has already decided the file is ours-or-absent (skip-if-foreign and
+ * version gating live in registerCodexHooks). Throws ConfigParseError on
+ * malformed input, and on an unterminated marker pair — a block we cannot
+ * bound is a block we must not rewrite.
+ */
+export function upsertCodexHooksToml(text: string, bridgeScript: string): string {
+  parseConfig(text, 'toml'); // abort on malformed rather than append to garbage
+  const eol = detectEol(text);
+  const block = findCodexHooksBlock(text);
+  if (block && 'unterminated' in block) {
+    throw new ConfigParseError('wmux hooks block is missing its end marker; remove it manually and re-run');
+  }
+  const renderLines = renderCodexHooksBlockToml(bridgeScript).trimEnd().split('\n');
+  const original = text.split(/\r?\n/);
+  let lines: string[];
+  if (block) {
+    lines = [...original.slice(0, block.start), ...renderLines, ...original.slice(block.end + 1)];
+  } else {
+    const trimmed = [...original];
+    while (trimmed.length && trimmed[trimmed.length - 1].trim() === '') trimmed.pop();
+    lines = trimmed.length ? [...trimmed, '', ...renderLines] : [...renderLines];
+  }
+  while (lines.length && lines[lines.length - 1].trim() === '') lines.pop();
+  const out = lines.join(eol) + eol;
+  parseConfig(out, 'toml'); // never return unparseable TOML
+  return out;
+}
+
+/**
+ * Return new TOML text with the wmux-owned hooks block removed. No-op (returns
+ * input) when the region is absent or unterminated — never guesses a boundary.
+ */
+export function removeCodexHooksToml(text: string): string {
+  parseConfig(text, 'toml');
+  const block = findCodexHooksBlock(text);
+  if (!block || 'unterminated' in block) return text;
+  const eol = detectEol(text);
+  const lines = text.split(/\r?\n/);
+  // Swallow at most one blank line immediately above the region so a removal
+  // in the middle of a file does not leave a doubled blank gap.
+  const start = block.start > 0 && lines[block.start - 1].trim() === ''
+    ? block.start - 1
+    : block.start;
+  lines.splice(start, block.end - start + 1);
+  while (lines.length && lines[lines.length - 1].trim() === '') lines.pop();
+  const out = lines.length ? lines.join(eol) + eol : '';
+  if (out) parseConfig(out, 'toml');
+  return out;
+}
+
+/**
+ * True when a codex-cli version string is at or above the hooks floor
+ * (0.141.0, bisected — see wmuxHooks.mjs for the measurement). Mirrors
+ * `codexSupportsHooks` there; a lockstep test keeps the copies identical.
+ * A version it cannot parse is TOO OLD: an unknown build that silently runs
+ * no hooks is the failure this gate exists to prevent.
+ */
+export function codexVersionSupportsHooks(versionOutput: string | null | undefined): boolean {
+  const parse = (text: string | null | undefined) => {
+    const m = /(\d+)\.(\d+)\.(\d+)(-[0-9A-Za-z.-]+)?/.exec(String(text ?? ''));
+    return m
+      ? { nums: [Number(m[1]), Number(m[2]), Number(m[3])], pre: Boolean(m[4]) }
+      : null;
+  };
+  const found = parse(versionOutput);
+  const want = parse('0.141.0');
+  if (!found || !want) return false;
+  for (let i = 0; i < 3; i++) {
+    if (found.nums[i] > want.nums[i]) return true;
+    if (found.nums[i] < want.nums[i]) return false;
+  }
+  // Numerically equal to the floor: a pre-release of it predates it.
+  return !found.pre;
+}
