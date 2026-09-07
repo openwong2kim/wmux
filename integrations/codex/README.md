@@ -8,7 +8,7 @@ different routes, and you want **one** of them, not both.
 | Registered as | `notify = [...]` in `config.toml` | `[[hooks.<Event>]]` in `config.toml` |
 | Payload arrives | last argv token | stdin |
 | Codex floor | any | **0.141.0** |
-| Reports | turn complete | turn complete, turn start, session start |
+| Reports | turn complete | turn complete, turn start, session start, approval pause |
 | Needs operator approval | no | **yes** (trust gate) |
 | Installed by wmux | yes (`lifecycleIntegrations`) | no — see *Installation* |
 
@@ -42,8 +42,11 @@ entirely local.
 `SubagentStart`, `SubagentStop`, `Stop`, `Interrupt`.
 
 **Measured firing** — `SessionStart`, `UserPromptSubmit`, `Stop`, `SessionEnd`,
-`PreToolUse`. Everything else is an enum member nobody has watched fire, and
-none of those is mapped. An unmeasured event is not a signal.
+`PreToolUse` (2026-08-31); `PostToolUse`, `PermissionRequest` (2026-09-07,
+codex-cli 0.153.4, PTY-driven interactive TUI — the only way to see an
+approval pause, since `codex exec` forces `approval: never`). Everything else
+is an enum member nobody has watched fire, and none of those is mapped. An
+unmeasured event is not a signal.
 
 **`Stop` is a turn boundary, not a session one.** This was the question the
 whole spike existed to answer. Across two turns of one session, `Stop` fired
@@ -107,16 +110,43 @@ parse `[[hooks.*]]` without complaint — and both fire nothing. Bisected:
 Only the version distinguishes them, which is why `codexSupportsHooks()` gates
 on the version and fails closed on anything it cannot parse.
 
-### Not verified
+### PermissionRequest, measured 2026-09-07
 
-`PermissionRequest` is the event that would let wmux retire the three
-transcribed approval regexes in `AgentDetector.ts`, and it is the one that could
-not be measured: `codex exec` forces `approval: never`, so no approval pause can
-occur in a non-interactive run, and no amount of config overrides it
-(`approval_policy = "untrusted"` is rejected outright in 0.151.0). Confirming it
-needs an interactive TUI session. Until then the event is unmapped and the
-screen regexes stay — mapping it now would mean guessing at its field names, and
-a wrong `awaiting_permission` is worse than none.
+The event that lets wmux stop screen-scraping Codex approval pauses was finally
+observed. `codex exec` forces `approval: never` and no config overrides it, so
+the measurement drove the **interactive TUI** in a PTY (node-pty) against the
+stub Responses endpoint, returning an `exec_command` call with
+`sandbox_permissions: "require_escalated"` — the model-side request for an
+unsandboxed run, which is what raises the TUI approval dialog.
+
+Firing order for one gated call, all events carrying the same `turn_id`:
+
+```
+PreToolUse → PermissionRequest → (operator approves in the TUI) → PostToolUse → Stop
+```
+
+A captured `PermissionRequest` (elided):
+
+```json
+{"session_id":"01a07ba6-…","turn_id":"01a07ba7-…","transcript_path":"…/rollout-….jsonl",
+ "cwd":"/spike/work","hook_event_name":"PermissionRequest","model":"stub-1",
+ "permission_mode":"default","tool_name":"Bash",
+ "tool_input":{"command":"echo proof > /tmp/…","description":"write the spike proof file outside the sandbox"}}
+```
+
+Three facts that matter for the mapping:
+
+- **`tool_name` is Claude-normalized** ("Bash"), like every tool event.
+- **`tool_input.description` is the call's user-facing `justification`** —
+  content, never forwarded (the bridge is metadata-only).
+- **No `tool_use_id`**, unlike the `PreToolUse`/`PostToolUse` events firing
+  around it.
+
+The spike also surfaced two TUI-only dialogs the driver had to get past, worth
+recording for the next person to drive this thing: a fresh cwd raises a
+*directory trust* dialog (pre-answerable in config: `[projects."<abs path>"]`
+with `trust_level = "trusted"`), and a version-update nag whose default option
+runs `npm install -g @openai/codex` — pick Skip when driving a spike.
 
 ## What the bridge reports
 
@@ -125,16 +155,24 @@ a wrong `awaiting_permission` is worse than none.
 | `SessionStart` | `agent.session_start` (with `source`) |
 | `UserPromptSubmit` | `agent.user_prompt_submit` |
 | `Stop` | `agent.stop` |
+| `PermissionRequest` | `agent.awaiting_input` |
+
+`PermissionRequest` maps to `agent.awaiting_input` — the same pane state the
+three transcribed approval regexes in `AgentDetector.ts` produce — and **not**
+to `agent.awaiting_permission`, which is reserved for wmux's own blocking
+permission gate (#783: the daemon holding the bridge RPC open until a phone
+resolves it), not the agent's local TUI dialog. The regexes stay as the
+fallback for panes without a trusted hook; a pane with this bridge gets the
+fact instead of the screenshot guess.
 
 Deliberately unmapped, each for its own reason — the full argument is in the
 `EVENT_TO_KIND` comment in the bridge:
 
 - `PreToolUse` / `PostToolUse` — a spawn per tool call for a signal the server
-  already throttles. And `PreToolUse` must **not** become `awaiting_input` the
-  way Claude's does: Codex fires it on every tool call, gated or not, and has a
-  separate `PermissionRequest` for the approval pause. Conflating them is the
-  mistake #898 punished.
-- `PermissionRequest` — unverified, see above.
+  already throttles. And `PreToolUse` must **not** become `awaiting_input`
+  the way Claude's does: Codex fires it on every tool call, gated or not, and
+  has a separate `PermissionRequest` for the approval pause. Conflating them
+  is the mistake #898 punished.
 - `SessionEnd` — measured, but there is no `AgentSignalKind` for "session
   over", and `agent.stop` would be a lie.
 - `SubagentStart` / `SubagentStop` / `PreCompact` / `PostCompact` / `Interrupt`
@@ -210,7 +248,7 @@ means widening the lane in `hookBridge.ts` deliberately.
 Both bridges are covered by `scripts/lib/hookHarmlessness.mjs`, which runs each
 one against a fake daemon and requires it to classify identically to a no-op
 hook: byte-empty stdout, exit 0, no surviving process, inside the latency
-budget. The hooks bridge is exercised on all five measured events, including the
+budget. The hooks bridge is exercised on all six measured events, including the
 two it ignores — "ignored" has to mean silent and fast, not a slow no-op, and
 `PreToolUse` fires on every tool call so a slow ignore there would be the most
 expensive kind.

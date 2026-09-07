@@ -50,8 +50,13 @@ export const CODEX_HOOK_TIMEOUT_MS = 2500;
  * The events wmux registers. Kept in lockstep with EVENT_TO_KIND in
  * bin/wmux-codex-hooks-bridge.mjs — registering an event the bridge drops
  * would spawn a process per occurrence to do nothing.
+ *
+ * PermissionRequest joined on 2026-09-07 when it was finally measured firing
+ * (PTY-driven interactive TUI, codex-cli 0.153.4): it is the hook equivalent
+ * of the approval regexes in AgentDetector.ts, which had been the only way to
+ * see an approval pause because `codex exec` forces `approval: never`.
  */
-export const CODEX_HOOK_EVENTS = ['SessionStart', 'UserPromptSubmit', 'Stop'];
+export const CODEX_HOOK_EVENTS = ['SessionStart', 'UserPromptSubmit', 'Stop', 'PermissionRequest'];
 
 /**
  * Build the `hooks` value for config.toml as plain JS data.

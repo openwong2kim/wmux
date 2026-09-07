@@ -292,11 +292,11 @@ const AGENT_PATTERNS: AgentPattern[] = [
       // exempts these from hook-authority veto for exactly that reason.
       //
       // #1107: codex-cli >= 0.141.0 also has a `PermissionRequest` lifecycle
-      // hook, which would replace these three regexes outright. It is NOT
-      // wired up: it is the one event the 2026-08-31 measurement could not
-      // make fire, because `codex exec` forces `approval: never` and an
-      // approval pause needs an interactive TUI. Confirming it is what would
-      // let these go; see integrations/codex/README.md.
+      // hook, measured firing 2026-09-07 and now mapped to
+      // agent.awaiting_input by the hooks bridge. These regexes are the
+      // FALLBACK, not the primary: a pane with a trusted hook gets the fact,
+      // and these cover panes whose operator never approved the hook (the
+      // trust gate is silent, so an uninstalled bridge is the common case).
       //
       // Anchored to the whole line: the question occupies its own line in
       // the TUI (two-space indent, no box-drawing frame in Codex), whereas

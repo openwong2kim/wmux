@@ -376,6 +376,18 @@ export function buildCases(payloadOpts) {
       hook_event_name: 'UserPromptSubmit',
       prompt: 'the user typed this',
     }],
+    // Measured 2026-09-07 (codex-cli 0.153.4). Carries content — the approval
+    // justification rides in tool_input.description — which the bridge must
+    // never forward, so the harness exercises the real shape.
+    ['PermissionRequest', {
+      session_id: codexSession,
+      turn_id: 'harness-turn',
+      transcript_path: codexTranscript,
+      cwd: codexCwd,
+      hook_event_name: 'PermissionRequest',
+      tool_name: 'Bash',
+      tool_input: { command: 'echo proof > /tmp/x', description: 'write outside the sandbox' },
+    }],
     // Events wmux deliberately does not map. "Ignored" must still mean silent
     // and fast, not a slow no-op — and PreToolUse fires on EVERY Codex tool
     // call, so a slow ignore there would be the most expensive kind.

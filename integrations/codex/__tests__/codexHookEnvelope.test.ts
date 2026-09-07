@@ -48,6 +48,25 @@ const PRE_TOOL_USE_PAYLOAD = {
   tool_input: { command: 'rm -rf /secret' },
   tool_use_id: 'call_1',
 };
+// Measured 2026-09-07 (codex-cli 0.153.4, PTY-driven interactive TUI against
+// a stub Responses endpoint returning a require_escalated exec_command). Note
+// what this payload does NOT carry: no tool_use_id, unlike the PreToolUse /
+// PostToolUse events firing around it. `tool_input.description` is the call's
+// user-facing `justification` — content, never forwarded.
+const PERMISSION_REQUEST_PAYLOAD = {
+  session_id: '01a07ba6-cd03-7183-a616-5a523fa50a98',
+  turn_id: '01a07ba7-0b34-7902-a924-1d09a2a89e71',
+  transcript_path: 'C:\\codex\\sessions\\rollout-01a07ba6.jsonl',
+  cwd: 'D:\\work\\proj',
+  hook_event_name: 'PermissionRequest',
+  model: 'gpt-5.6-sol',
+  permission_mode: 'default',
+  tool_name: 'Bash',
+  tool_input: {
+    command: 'echo proof > /tmp/wmux-permspike-proof.txt',
+    description: 'write the spike proof file outside the sandbox',
+  },
+};
 
 const baseEnv = {
   WMUX_PTY_ID: 'pty-123',
@@ -108,8 +127,29 @@ describe('buildCodexHookEnvelope', () => {
       .toBe('agent.user_prompt_submit');
   });
 
+  // The approval pause. Same pane state the three transcribed approval
+  // regexes in AgentDetector.ts produce — NOT agent.awaiting_permission,
+  // which is wmux's own blocking permission gate (#783), not the agent's
+  // local TUI approval dialog.
+  it('maps PermissionRequest to agent.awaiting_input, metadata-only', () => {
+    const envelope = buildCodexHookEnvelope(PERMISSION_REQUEST_PAYLOAD, { env: baseEnv, now: 1 });
+    expect(envelope?.kind).toBe('agent.awaiting_input');
+    expect(envelope?.agentSessionId).toBe(PERMISSION_REQUEST_PAYLOAD.session_id);
+    expect(envelope?.payload).toEqual({
+      turn_id: PERMISSION_REQUEST_PAYLOAD.turn_id,
+      transcript_path: PERMISSION_REQUEST_PAYLOAD.transcript_path,
+    });
+    // tool_name / tool_input (including the justification in `description`)
+    // are content and must not survive.
+    const serialized = JSON.stringify(envelope);
+    expect(serialized).not.toContain('Bash');
+    expect(serialized).not.toContain('proof');
+    expect(serialized).not.toContain('justification');
+    expect(serialized).not.toContain('description');
+  });
+
   it('produces an envelope the wmux daemon accepts', () => {
-    for (const payload of [STOP_PAYLOAD, SESSION_START_PAYLOAD, PROMPT_PAYLOAD]) {
+    for (const payload of [STOP_PAYLOAD, SESSION_START_PAYLOAD, PROMPT_PAYLOAD, PERMISSION_REQUEST_PAYLOAD]) {
       expect(isAgentSignal(buildCodexHookEnvelope(payload, { env: baseEnv, now: 1 }))).toBe(true);
     }
   });
@@ -143,15 +183,16 @@ describe('buildCodexHookEnvelope', () => {
     expect(buildCodexHookEnvelope(STOP_PAYLOAD, { env: { WMUX_PTY_ID: '' }, now: 1 })).toBeNull();
   });
 
-  // Every one of these is a real member of Codex's HookEventName enum. Three
-  // were measured firing (PreToolUse, SessionEnd) or are documented as
-  // unmeasured (PermissionRequest, the rest) — none is mapped, each for a
-  // reason recorded in the bridge's EVENT_TO_KIND comment. Pinning them keeps
-  // a later "while we're here" mapping from landing unnoticed.
+  // Every one of these is a real member of Codex's HookEventName enum.
+  // PermissionRequest used to sit here; it was promoted to a mapping on
+  // 2026-09-07 when it was finally measured firing (see the payload above).
+  // The rest stay unmapped, each for a reason recorded in the bridge's
+  // EVENT_TO_KIND comment. Pinning them keeps a later "while we're here"
+  // mapping from landing unnoticed.
   it('ignores events wmux has no faithful mapping for', () => {
     expect(buildCodexHookEnvelope(PRE_TOOL_USE_PAYLOAD, { env: baseEnv, now: 1 })).toBeNull();
     for (const event of [
-      'PreToolUse', 'PermissionRequest', 'PostToolUse', 'PreCompact', 'PostCompact',
+      'PreToolUse', 'PostToolUse', 'PreCompact', 'PostCompact',
       'SessionEnd', 'SubagentStart', 'SubagentStop', 'Interrupt', 'SomethingNew',
     ]) {
       expect(
