@@ -28,7 +28,7 @@ import { terminalFontFamilyCss } from '../utils/terminalFont';
 import { createPathLinkProvider } from '../terminal/pathLinkProvider';
 import { resolveNewlineKeyByte } from '../terminal/newlineKeys';
 import { resolveCtrlLetterByte } from '../terminal/ctrlLetterKeys';
-import { foldRemoteKeyboardState, INITIAL_REMOTE_KEYBOARD_STATE } from '../components/Remote/keyboardProtocol';
+import { foldRemoteKeyboardState, INITIAL_REMOTE_KEYBOARD_STATE, type RemoteKeyboardState } from '../components/Remote/keyboardProtocol';
 import { attachImeAnchor } from '../terminal/imeAnchor';
 import { attachImeResidueGuard } from '../terminal/imeResidueGuard';
 import { attachImeStormGuard } from '../terminal/imeStormGuard';
@@ -64,6 +64,11 @@ import { adoptTerminal, parkTerminal, restoreParkedViewport, type ParkedTerminal
 // One detector for every pane in this renderer: the ESC-pair state is keyed by
 // ptyId, and a per-mount instance would lose a double-tap split across a remount.
 const interruptKeystrokes = new InterruptKeystrokeDetector();
+
+// #1228 review — keyboard-protocol state parked with the Terminal instance so
+// a restructure-driven unmount/remount (park → adopt, #1002) keeps the
+// negotiation a live TUI armed. Keyed weakly: final disposal drops it.
+const parkedKeyboardByTerminal = new WeakMap<Terminal, RemoteKeyboardState>();
 
 // Module-level terminal registry for scrollback persistence
 const terminalRegistry = new Map<string, Terminal>();
@@ -1579,10 +1584,47 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
 
     // Keyboard-protocol negotiation folded from this pane's own output
     // (kitty / win32-input-mode / modifyOtherKeys). Shift+Enter encoding
-    // reads it; unknown = the historical local CSI-u default.
-    const keyboardRef = { current: INITIAL_REMOTE_KEYBOARD_STATE };
+    // reads it; unknown = the historical local CSI-u default. An adopted
+    // terminal keeps the state its previous mount parked (#1228 review:
+    // otherwise a workspace switch makes a live Codex fall back to CSI-u).
+    const keyboardRef = { current: adopted
+      ? parkedKeyboardByTerminal.get(terminal) ?? INITIAL_REMOTE_KEYBOARD_STATE
+      : INITIAL_REMOTE_KEYBOARD_STATE };
     const noteKeyboard = (data: string | Uint8Array) => {
       keyboardRef.current = foldRemoteKeyboardState(keyboardRef.current, data);
+      parkedKeyboardByTerminal.set(terminal, keyboardRef.current);
+    };
+    // #1228 review (C1): the fold is liveness-scoped. When process-truth or
+    // OSC 133 says the pane's foreground command is gone, any negotiation it
+    // armed (?9001h / kitty push) is stale — the next app in the pane starts
+    // from a clean slate, not the dead app's encoding. Same edges #1210 uses.
+    const unsubscribeKeyboardLiveness = useStore.subscribe((state, prev) => {
+      const gone = (now: boolean | undefined, was: boolean | undefined) =>
+        now === false && was !== false;
+      if (
+        gone(state.commandRunningByPtyId[ptyId], prev.commandRunningByPtyId[ptyId])
+        || gone(state.agentAliveByPtyId[ptyId], prev.agentAliveByPtyId[ptyId])
+      ) {
+        keyboardRef.current = INITIAL_REMOTE_KEYBOARD_STATE;
+        parkedKeyboardByTerminal.delete(terminal);
+      }
+    });
+
+    // Side effects every real user keystroke owes the pane, whichever path
+    // writes the byte. terminal.onData runs these for xterm-encoded keys; the
+    // direct-write branches in the custom key handler run them for bytes we
+    // encode ourselves. Before this, direct writes fed only the dead-input
+    // watchdog, so a directly-written Ctrl+C (0x03) skipped the interrupt
+    // observer and the running dot waited on main's round-trip — the exact
+    // latency the renderer half exists to avoid (Claude 2.1.236 fires no Stop
+    // hook on Ctrl+C).
+    const noteUserKeystroke = (data: string) => {
+      useStore.getState().clearResumeHint(ptyId);
+      deadInputWatchdog.onData();
+      noteTerminalInput(terminal);
+      if (interruptKeystrokes.observe(ptyId, data)) {
+        useStore.getState().clearSurfaceTurnOpen(ptyId);
+      }
     };
 
     // Clipboard + shortcut handling
@@ -1609,7 +1651,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       if (newlineByte !== null) {
         e.preventDefault();
         window.electronAPI.pty.write(ptyId, newlineByte);
-        deadInputWatchdog.onData(); // direct write bypasses terminal.onData
+        noteUserKeystroke(newlineByte);
         return false;
       }
 
@@ -1628,7 +1670,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       if (e.code === 'Escape' && !e.isComposing && e.keyCode === 229) {
         e.preventDefault();
         window.electronAPI.pty.write(ptyId, '\x1b');
-        deadInputWatchdog.onData(); // direct write bypasses terminal.onData
+        noteUserKeystroke('\x1b');
         return false;
       }
 
@@ -1658,7 +1700,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         if (disabledCtrl) {
           e.preventDefault();
           window.electronAPI.pty.write(ptyId, disabledCtrl);
-          deadInputWatchdog.onData();
+          noteUserKeystroke(disabledCtrl);
           return false;
         }
         return true;
@@ -1850,7 +1892,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       if (ctrlByte) {
         e.preventDefault();
         window.electronAPI.pty.write(ptyId, ctrlByte);
-        deadInputWatchdog.onData();
+        noteUserKeystroke(ctrlByte);
         return false;
       }
 
@@ -1991,21 +2033,13 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       // Focus reports are the only non-input bytes observed here; real keys,
       // pastes, and IME commits all still clear as intended.
       if (data !== '\x1b[I' && data !== '\x1b[O') {
-        useStore.getState().clearResumeHint(ptyId);
-        // Real user input reached the app — clear the dead-input watchdog.
-        deadInputWatchdog.onData();
-        // Open the interactive window so this terminal's imminent echo / redraw
-        // takes the zero-latency direct-write path in the output scheduler.
-        // (Focus reports above are excluded — they are not user input.)
-        noteTerminalInput(terminal);
-      }
-      // The interrupt edge, renderer half. Live finding (Claude Code 2.1.236):
-      // Ctrl+C / ESC ESC ends the turn with NO Stop hook, and `claude` stays the
-      // foreground command so OSC 133 never reports the shell back at its
-      // prompt. Main settles the pane from the same bytes; dropping the latch
-      // here flips the dot without waiting for that round-trip. A pane with no
-      // latch is untouched — the delete is a no-op.
-      if (interruptKeystrokes.observe(ptyId, data)) {
+        noteUserKeystroke(data);
+      } else if (interruptKeystrokes.observe(ptyId, data)) {
+        // Not user input, but the interrupt detector still consumes every
+        // chunk: a focus report between two ESC taps is "something else" and
+        // must cancel the double-tap. (Pre-#1228 this observe ran
+        // unconditionally — the split keeps that contract while the pill /
+        // watchdog / scheduler side effects stay gated on real input.)
         useStore.getState().clearSurfaceTurnOpen(ptyId);
       }
       void chunkOnDataIfNeeded(
@@ -2622,6 +2656,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       } else {
         disposeTerminal();
       }
+      unsubscribeKeyboardLiveness();
       terminalRef.current = null;
       fitAddonRef.current = null;
       searchAddonRef.current = null;
