@@ -53,14 +53,13 @@ describe('useTerminal macOS Ctrl passthrough (source-level lock)', () => {
   });
 
   it('Ctrl+C copy interception is non-mac only — mac is always SIGINT', () => {
-    expect(HANDLER).toMatch(
-      /!isMac && e\.ctrlKey && !e\.shiftKey && \(e\.key === 'c' \|\| e\.code === 'KeyC'\)/,
-    );
+    // #1227: copy is still Windows/Linux-only (`!isMac`). The letter match
+    // moved to resolveCtrlLetterByte so Dvorak logical C is SIGINT, with
+    // the physical-KeyC IME fallback inside that helper.
+    expect(HANDLER).toMatch(/!isMac && resolveCtrlLetterByte\(e\) === '\\x03'/);
   });
 
   it('Ctrl+V paste interception is non-mac only — mac passes through to the PTY as quoted-insert', () => {
-    expect(HANDLER).toMatch(
-      /!isMac && e\.ctrlKey && !e\.shiftKey && \(e\.key === 'v' \|\| e\.code === 'KeyV'\)/,
-    );
+    expect(HANDLER).toMatch(/!isMac && resolveCtrlLetterByte\(e\) === '\\x16'/);
   });
 });
