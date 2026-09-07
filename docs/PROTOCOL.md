@@ -329,7 +329,7 @@ Either default can be overridden explicitly via the config key. The enforcement 
 
 Plugin identity rides the JSON-RPC envelope as `clientName` (and optional `clientVersion`). The MCP server (`src/mcp/index.ts`) populates them from the MCP `InitializeRequest.clientInfo` so the substrate can attribute every call to a declared plugin. Identity is **declared, not verified** — there is no root-of-trust today; threat-model details live in `api/mcp-plugin-spec.md`.
 
-Requests without `clientName` are recorded as `legacy`. That grandfather is now on a deprecation clock: **the lane closes in the first release on or after 2026-09-30** (#1111). After the close, envelope-less requests are refused; `wmux-cli` remains as an honestly-labelled limited lane (curated allowlist, no approval dialog).
+Requests without `clientName` **on the external wire** are recorded as `legacy` — the trusted in-process surfaces (renderer bridge, iframe plugin host) send no `clientName` by design and are not recorded. That grandfather is now on a deprecation clock: **the lane closes in the first release on or after 2026-09-30** (#1111). After the close, envelope-less requests are refused; `wmux-cli` remains as an honestly-labelled limited lane (curated allowlist, no approval dialog).
 
 The trust DB lives at `~/.wmux/plugin-trust.json` (atomic-write, single-process owner = wmux main). Per-plugin record shape (`PluginIdentityRecord` in `src/shared/rpc.ts`):
 

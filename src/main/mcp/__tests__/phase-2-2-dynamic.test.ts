@@ -119,10 +119,13 @@ afterEach(() => {
 
 describe('phase 2.2 dynamic — full plugin lifecycle against real disk', () => {
   it('replays the unconfirmed → trusted → capability-mismatch sequence', async () => {
-    // === Step 1: envelope-less RPC. Legacy path runs — trust DB gets a
+    // === Step 1: envelope-less wire RPC. Legacy path runs — trust DB gets a
     // 'legacy' row, traffic counter ticks (milestone 1 → log entry), but
     // the enforcer ALLOWS legacy so no shadow rejection lands.
-    await router.dispatch({ id: 's1', method: 'pane.list', params: {} });
+    await router.dispatch(
+      { id: 's1', method: 'pane.list', params: {} },
+      { externalWire: true },
+    );
     await drainWrites();
     await settle();
 
@@ -309,14 +312,17 @@ describe('phase 2.2 dynamic — full plugin lifecycle against real disk', () => 
   });
 
   it('produces legacy-traffic milestones at configured thresholds', async () => {
-    // 6 envelope-less RPCs against `pane.list`. With milestones=[1,3,5],
+    // 6 envelope-less wire RPCs against `pane.list`. With milestones=[1,3,5],
     // log gets entries at calls 1, 3, 5 (3 entries).
     for (let i = 0; i < 6; i++) {
-      await router.dispatch({
-        id: `legacy-${i}`,
-        method: 'pane.list',
-        params: {},
-      });
+      await router.dispatch(
+        {
+          id: `legacy-${i}`,
+          method: 'pane.list',
+          params: {},
+        },
+        { externalWire: true },
+      );
     }
     await drainWrites();
     await settle();
@@ -331,9 +337,12 @@ describe('phase 2.2 dynamic — full plugin lifecycle against real disk', () => 
   });
 
   it('counts distinct methods separately', async () => {
-    await router.dispatch({ id: 'a-1', method: 'pane.list', params: {} });
-    await router.dispatch({ id: 'b-1', method: 'input.send', params: { text: 'x' } });
-    await router.dispatch({ id: 'a-2', method: 'pane.list', params: {} });
+    await router.dispatch({ id: 'a-1', method: 'pane.list', params: {} }, { externalWire: true });
+    await router.dispatch(
+      { id: 'b-1', method: 'input.send', params: { text: 'x' } },
+      { externalWire: true },
+    );
+    await router.dispatch({ id: 'a-2', method: 'pane.list', params: {} }, { externalWire: true });
     await drainWrites();
     await settle();
 

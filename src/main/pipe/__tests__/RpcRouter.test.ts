@@ -82,14 +82,14 @@ describe('RpcRouter dispatch envelope', () => {
 });
 
 describe('RpcRouter legacy-contact recorder', () => {
-  it('fires once per process when the first envelope-less RPC dispatches', async () => {
+  it('fires once per process when the first envelope-less wire RPC dispatches', async () => {
     const router = makeRouter();
     const recorder = vi.fn();
     router.setLegacyContactRecorder(recorder);
 
-    await router.dispatch({ id: 'r-1', method: 'pane.list', params: {} });
-    await router.dispatch({ id: 'r-2', method: 'pane.list', params: {} });
-    await router.dispatch({ id: 'r-3', method: 'pane.list', params: {} });
+    await router.dispatch({ id: 'r-1', method: 'pane.list', params: {} }, { externalWire: true });
+    await router.dispatch({ id: 'r-2', method: 'pane.list', params: {} }, { externalWire: true });
+    await router.dispatch({ id: 'r-3', method: 'pane.list', params: {} }, { externalWire: true });
 
     expect(recorder).toHaveBeenCalledTimes(1);
     expect(recorder).toHaveBeenCalledWith('pane.list');
@@ -100,12 +100,15 @@ describe('RpcRouter legacy-contact recorder', () => {
     const recorder = vi.fn();
     router.setLegacyContactRecorder(recorder);
 
-    await router.dispatch({
-      id: 'r-1',
-      method: 'pane.list',
-      params: {},
-      clientName: 'claude-ai',
-    });
+    await router.dispatch(
+      {
+        id: 'r-1',
+        method: 'pane.list',
+        params: {},
+        clientName: 'claude-ai',
+      },
+      { externalWire: true },
+    );
     expect(recorder).not.toHaveBeenCalled();
   });
 
@@ -116,12 +119,28 @@ describe('RpcRouter legacy-contact recorder', () => {
     const recorder = vi.fn();
     router.setLegacyContactRecorder(recorder);
 
-    await router.dispatch({ id: 'r-1', method: 'mcp.identify', params: {} });
-    await router.dispatch({
-      id: 'r-2',
-      method: 'mcp.declarePermissions',
-      params: {},
-    });
+    await router.dispatch({ id: 'r-1', method: 'mcp.identify', params: {} }, { externalWire: true });
+    await router.dispatch(
+      {
+        id: 'r-2',
+        method: 'mcp.declarePermissions',
+        params: {},
+      },
+      { externalWire: true },
+    );
+    expect(recorder).not.toHaveBeenCalled();
+  });
+
+  it('does not fire for trusted in-process surfaces (operator / firstParty send no clientName)', async () => {
+    // #1111 evidence hygiene: the renderer bridge and the plugin host are
+    // not legacy wire callers. Counting them drowned the shadow log's
+    // legacy-traffic signal in renderer polling.
+    const router = makeRouter();
+    const recorder = vi.fn();
+    router.setLegacyContactRecorder(recorder);
+
+    await router.dispatch({ id: 'r-1', method: 'pane.list', params: {} }, { operator: true });
+    await router.dispatch({ id: 'r-2', method: 'pane.list', params: {} }, { firstParty: true });
     expect(recorder).not.toHaveBeenCalled();
   });
 
@@ -132,11 +151,14 @@ describe('RpcRouter legacy-contact recorder', () => {
     router.setLegacyContactRecorder(() => {
       throw new Error('disk full');
     });
-    const response = await router.dispatch({
-      id: 'r-1',
-      method: 'pane.list',
-      params: {},
-    });
+    const response = await router.dispatch(
+      {
+        id: 'r-1',
+        method: 'pane.list',
+        params: {},
+      },
+      { externalWire: true },
+    );
     expect(response.ok).toBe(true);
   });
 
@@ -144,12 +166,18 @@ describe('RpcRouter legacy-contact recorder', () => {
     const router = makeRouter();
     const first = vi.fn();
     router.setLegacyContactRecorder(first);
-    await router.dispatch({ id: 'r-1', method: 'pane.list' as RpcMethod, params: {} });
+    await router.dispatch(
+      { id: 'r-1', method: 'pane.list' as RpcMethod, params: {} },
+      { externalWire: true },
+    );
     expect(first).toHaveBeenCalledTimes(1);
 
     const second = vi.fn();
     router.setLegacyContactRecorder(second);
-    await router.dispatch({ id: 'r-2', method: 'pane.list' as RpcMethod, params: {} });
+    await router.dispatch(
+      { id: 'r-2', method: 'pane.list' as RpcMethod, params: {} },
+      { externalWire: true },
+    );
     expect(second).toHaveBeenCalledTimes(1);
   });
 });
@@ -332,14 +360,14 @@ describe('RpcRouter shadow-mode enforcement wiring', () => {
 });
 
 describe('RpcRouter legacy traffic counter', () => {
-  it('ticks on every envelope-less RPC (not process-once like the trust recorder)', async () => {
+  it('ticks on every envelope-less wire RPC (not process-once like the trust recorder)', async () => {
     const router = makeRouter();
     const counter = { record: vi.fn() };
     router.setLegacyTrafficCounter(counter);
 
-    await router.dispatch({ id: 'r-1', method: 'pane.list', params: {} });
-    await router.dispatch({ id: 'r-2', method: 'pane.list', params: {} });
-    await router.dispatch({ id: 'r-3', method: 'pane.list', params: {} });
+    await router.dispatch({ id: 'r-1', method: 'pane.list', params: {} }, { externalWire: true });
+    await router.dispatch({ id: 'r-2', method: 'pane.list', params: {} }, { externalWire: true });
+    await router.dispatch({ id: 'r-3', method: 'pane.list', params: {} }, { externalWire: true });
 
     expect(counter.record).toHaveBeenCalledTimes(3);
     expect(counter.record.mock.calls.map((c) => c[0])).toEqual([
@@ -354,12 +382,31 @@ describe('RpcRouter legacy traffic counter', () => {
     const counter = { record: vi.fn() };
     router.setLegacyTrafficCounter(counter);
 
-    await router.dispatch({
-      id: 'r-1',
-      method: 'pane.list',
-      params: {},
-      clientName: 'p1',
-    });
+    await router.dispatch(
+      {
+        id: 'r-1',
+        method: 'pane.list',
+        params: {},
+        clientName: 'p1',
+      },
+      { externalWire: true },
+    );
+    expect(counter.record).not.toHaveBeenCalled();
+  });
+
+  it('does NOT tick for trusted in-process surfaces, which send no clientName by design', async () => {
+    // #1111 evidence hygiene — the operator renderer bridge polls
+    // events.poll / task.mission.list all day; those must not land in the
+    // legacy-traffic shadow log as if they were external wire callers.
+    const router = makeRouter();
+    const counter = { record: vi.fn() };
+    router.setLegacyTrafficCounter(counter);
+
+    await router.dispatch({ id: 'r-1', method: 'pane.list', params: {} }, { operator: true });
+    await router.dispatch(
+      { id: 'r-2', method: 'pane.list', params: {} },
+      { firstParty: true, hostedWorkspace: null },
+    );
     expect(counter.record).not.toHaveBeenCalled();
   });
 
@@ -370,12 +417,15 @@ describe('RpcRouter legacy traffic counter', () => {
     const counter = { record: vi.fn() };
     router.setLegacyTrafficCounter(counter);
 
-    await router.dispatch({ id: 'r-1', method: 'mcp.identify', params: {} });
-    await router.dispatch({
-      id: 'r-2',
-      method: 'mcp.declarePermissions',
-      params: {},
-    });
+    await router.dispatch({ id: 'r-1', method: 'mcp.identify', params: {} }, { externalWire: true });
+    await router.dispatch(
+      {
+        id: 'r-2',
+        method: 'mcp.declarePermissions',
+        params: {},
+      },
+      { externalWire: true },
+    );
     expect(counter.record).not.toHaveBeenCalled();
   });
 
@@ -386,12 +436,12 @@ describe('RpcRouter legacy traffic counter', () => {
     router.setLegacyContactRecorder(recorder);
     router.setLegacyTrafficCounter(counter);
 
-    await router.dispatch({ id: 'r-1', method: 'pane.list', params: {} });
+    await router.dispatch({ id: 'r-1', method: 'pane.list', params: {} }, { externalWire: true });
     expect(recorder).toHaveBeenCalledTimes(1);
     expect(counter.record).toHaveBeenCalledTimes(1);
 
     // Second call: recorder is process-once (silent), counter keeps ticking.
-    await router.dispatch({ id: 'r-2', method: 'pane.list', params: {} });
+    await router.dispatch({ id: 'r-2', method: 'pane.list', params: {} }, { externalWire: true });
     expect(recorder).toHaveBeenCalledTimes(1);
     expect(counter.record).toHaveBeenCalledTimes(2);
   });
@@ -403,11 +453,14 @@ describe('RpcRouter legacy traffic counter', () => {
         throw new Error('counter blew up');
       },
     });
-    const response = await router.dispatch({
-      id: 'r-1',
-      method: 'pane.list',
-      params: {},
-    });
+    const response = await router.dispatch(
+      {
+        id: 'r-1',
+        method: 'pane.list',
+        params: {},
+      },
+      { externalWire: true },
+    );
     expect(response.ok).toBe(true);
   });
 });

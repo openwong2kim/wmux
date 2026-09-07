@@ -101,9 +101,12 @@ function readDbFromDisk(): {
 
 describe('phase 2.1 production wiring — multi-step RPC sequence', () => {
   it('replays a realistic plugin lifecycle and verifies disk state at each step', async () => {
-    // === Step 1: envelope-less RPC (pre-v2.10 caller or pre-handshake race)
-    // Expected: legacy 'unknown' entry persisted, status === 'legacy'.
-    await router.dispatch({ id: 's1', method: 'pane.list', params: {} });
+    // === Step 1: envelope-less wire RPC (pre-v2.10 caller or pre-handshake
+    // race) Expected: legacy 'unknown' entry persisted, status === 'legacy'.
+    await router.dispatch(
+      { id: 's1', method: 'pane.list', params: {} },
+      { externalWire: true },
+    );
     // Fire-and-forget audit write — let the next tick land it on disk.
     await drainWrites();
     await settle();
@@ -120,7 +123,10 @@ describe('phase 2.1 production wiring — multi-step RPC sequence', () => {
     // record itself because applyContact would advance lastSeen.
     const mtimeAfterStep1 = fs.statSync(dbPath).mtimeMs;
     await settle(10);
-    await router.dispatch({ id: 's2', method: 'pane.list', params: {} });
+    await router.dispatch(
+      { id: 's2', method: 'pane.list', params: {} },
+      { externalWire: true },
+    );
     await drainWrites();
     await settle();
     const mtimeAfterStep2 = fs.statSync(dbPath).mtimeMs;
