@@ -80,8 +80,18 @@ describe('useTerminal ctrl-letter encoding + keyboard-state lifecycle (source-le
   });
 
   it('an adopted terminal seeds keyboard state from the parked WeakMap (C1)', () => {
+    // Seeding is refused when the pane's foreground command is known dead at
+    // adopt time — the alive→dead edge can fire inside the park→adopt window
+    // where no subscription observes it, so the seed keys on the same
+    // liveness the reset uses.
     expect(SRC).toMatch(
-      /adopted\s*\?\s*parkedKeyboardByTerminal\.get\(terminal\) \?\? INITIAL_REMOTE_KEYBOARD_STATE/,
+      /const parkedKnownGone = seedState\.agentAliveByPtyId\[ptyId\] === false/,
+    );
+    expect(SRC).toMatch(
+      /\|\| seedState\.commandRunningByPtyId\[ptyId\] === false/,
+    );
+    expect(SRC).toMatch(
+      /adopted && !parkedKnownGone\s*\n\s*\? parkedKeyboardByTerminal\.get\(terminal\) \?\? INITIAL_REMOTE_KEYBOARD_STATE/,
     );
     expect(SRC).toMatch(/parkedKeyboardByTerminal\.set\(terminal, keyboardRef\.current\)/);
   });

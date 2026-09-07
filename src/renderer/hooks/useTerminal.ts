@@ -1586,8 +1586,15 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     // (kitty / win32-input-mode / modifyOtherKeys). Shift+Enter encoding
     // reads it; unknown = the historical local CSI-u default. An adopted
     // terminal keeps the state its previous mount parked (#1228 review:
-    // otherwise a workspace switch makes a live Codex fall back to CSI-u).
-    const keyboardRef = { current: adopted
+    // otherwise a workspace switch makes a live Codex fall back to CSI-u) —
+    // unless the pane's foreground command died while it was parked: the
+    // alive→dead edge can fire inside the park→adopt window where no
+    // subscription observes it, so the seed refuses the same liveness the
+    // reset below keys on.
+    const seedState = useStore.getState();
+    const parkedKnownGone = seedState.agentAliveByPtyId[ptyId] === false
+      || seedState.commandRunningByPtyId[ptyId] === false;
+    const keyboardRef = { current: adopted && !parkedKnownGone
       ? parkedKeyboardByTerminal.get(terminal) ?? INITIAL_REMOTE_KEYBOARD_STATE
       : INITIAL_REMOTE_KEYBOARD_STATE };
     const noteKeyboard = (data: string | Uint8Array) => {
