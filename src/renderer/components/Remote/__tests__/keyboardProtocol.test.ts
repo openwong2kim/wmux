@@ -69,4 +69,15 @@ describe('foldRemoteKeyboardState', () => {
     // A pane printing documentation about the protocol has no ESC in it.
     expect(acceptsCsiU(foldRemoteKeyboardState(INIT, 'send CSI [>1u to enable'))).toBe(false);
   });
+
+  it('recognises win32-input-mode (?9001h) and follows the reset', () => {
+    const on = foldRemoteKeyboardState(INIT, '\x1b[?9001h');
+    expect(on.win32Input).toBe(true);
+    expect(acceptsCsiU(on)).toBe(false);
+    expect(foldRemoteKeyboardState(on, '\x1b[?9001l').win32Input).toBe(false);
+  });
+
+  it('picks 9001 out of a combined DECSET list', () => {
+    expect(foldRemoteKeyboardState(INIT, '\x1b[?1;9001h').win32Input).toBe(true);
+  });
 });

@@ -29,6 +29,19 @@ beforeEach(() => {
 });
 
 describe('pasteClipboardImage', () => {
+  it('auto + Claude pane after the TUI has left: path route, not the native key (#1210)', async () => {
+    const readImage = stubClipboard({ hasImage: true, imagePath: '/tmp/x.png' });
+    useStore.getState().setSurfaceAgent(PTY, 'Claude Code', 'running', 'claude');
+    const write = vi.fn();
+
+    await pasteClipboardImage({
+      ptyId: PTY, write, bracketedPasteMode: false, screenIsAlternate: false,
+    });
+
+    expect(write).toHaveBeenCalledWith('/tmp/x.png');
+    expect(readImage).toHaveBeenCalledWith(PTY);
+  });
+
   it('auto + Claude pane: sends the agent its own paste key and writes no temp file', async () => {
     const readImage = stubClipboard({ hasImage: true, imagePath: '/tmp/x.png' });
     useStore.getState().setSurfaceAgent(PTY, 'Claude Code', 'running', 'claude');

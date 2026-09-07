@@ -18,6 +18,22 @@ describe('resolveImagePasteStrategy (#1196)', () => {
     expect(resolveImagePasteStrategy({ mode: 'auto', agentSlug: undefined })).toBe('path');
   });
 
+  it('auto does not trust a stale slug once the TUI has left (#1210)', () => {
+    expect(resolveImagePasteStrategy({
+      mode: 'auto', agentSlug: 'claude', screenIsAlternate: false,
+    })).toBe('path');
+    expect(resolveImagePasteStrategy({
+      mode: 'auto', agentSlug: 'claude', agentProcessAlive: false,
+    })).toBe('path');
+    expect(resolveImagePasteStrategy({
+      mode: 'auto', agentSlug: 'claude', commandRunning: false,
+    })).toBe('path');
+    // Unknown liveness still trusts the slug — the TUI may be up.
+    expect(resolveImagePasteStrategy({
+      mode: 'auto', agentSlug: 'claude', screenIsAlternate: true,
+    })).toBe('native');
+  });
+
   it('explicit modes ignore the detected agent', () => {
     expect(resolveImagePasteStrategy({ mode: 'native', agentSlug: undefined })).toBe('native');
     expect(resolveImagePasteStrategy({ mode: 'path', agentSlug: 'claude' })).toBe('path');

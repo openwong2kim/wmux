@@ -286,6 +286,7 @@ export default function TerminalComponent({ ptyId: externalPtyId, shell, cwd, on
         ptyId,
         write: (d) => window.electronAPI.pty.write(ptyId, d),
         bracketedPasteMode: !!modes?.bracketedPasteMode,
+        screenIsAlternate: terminal?.buffer.active.type === 'alternate',
       });
     })();
   }, [ptyId, terminalRef]);

@@ -27,6 +27,8 @@ import {
 import { terminalFontFamilyCss } from '../utils/terminalFont';
 import { createPathLinkProvider } from '../terminal/pathLinkProvider';
 import { resolveNewlineKeyByte } from '../terminal/newlineKeys';
+import { resolveCtrlLetterByte } from '../terminal/ctrlLetterKeys';
+import { foldRemoteKeyboardState, INITIAL_REMOTE_KEYBOARD_STATE } from '../components/Remote/keyboardProtocol';
 import { attachImeAnchor } from '../terminal/imeAnchor';
 import { attachImeResidueGuard } from '../terminal/imeResidueGuard';
 import { attachImeStormGuard } from '../terminal/imeStormGuard';
@@ -1575,6 +1577,14 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       }
     });
 
+    // Keyboard-protocol negotiation folded from this pane's own output
+    // (kitty / win32-input-mode / modifyOtherKeys). Shift+Enter encoding
+    // reads it; unknown = the historical local CSI-u default.
+    const keyboardRef = { current: INITIAL_REMOTE_KEYBOARD_STATE };
+    const noteKeyboard = (data: string | Uint8Array) => {
+      keyboardRef.current = foldRemoteKeyboardState(keyboardRef.current, data);
+    };
+
     // Clipboard + shortcut handling
     terminal.attachCustomKeyEventHandler((e) => {
       if (e.type !== 'keydown') return true;
@@ -1590,6 +1600,11 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         hasCustomCtrlJBinding: useStore.getState().customKeybindings.some(
           (kb) => kb.key === 'Ctrl+J',
         ),
+        protocol: keyboardRef.current,
+        // Local pane: Claude Code never emits a kitty push but understands
+        // CSI-u. Keep sending it unless the pane asked for win32-input-mode
+        // (Codex on Windows, #1152).
+        shiftEnterFallback: 'csi-u',
       });
       if (newlineByte !== null) {
         e.preventDefault();
@@ -1636,6 +1651,16 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       if (matchesDisabledShortcut(
         useStore.getState().disabledShortcuts, e, isMac ? 'darwin' : 'win32',
       )) {
+        // #1227 — xterm encodes Ctrl+letter from keyCode (QWERTY position).
+        // Write the logical control byte ourselves so a disabled Ctrl+T on
+        // Dvorak still delivers 0x14 instead of whatever physical keyCode says.
+        const disabledCtrl = resolveCtrlLetterByte(e);
+        if (disabledCtrl) {
+          e.preventDefault();
+          window.electronAPI.pty.write(ptyId, disabledCtrl);
+          deadInputWatchdog.onData();
+          return false;
+        }
         return true;
       }
       const bubbleKeys = isMac
@@ -1723,21 +1748,19 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
             ptyId,
             write: (d) => window.electronAPI.pty.write(ptyId, d),
             bracketedPasteMode: !!imgModes?.bracketedPasteMode,
+            screenIsAlternate: terminal.buffer.active.type === 'alternate',
           });
         })().catch(() => {});
         return false;
       }
 
-      // Ctrl+C: copy if selection exists, otherwise send SIGINT. Match physical
-      // `code` (KeyC) too — under a CJK IME xterm derives Ctrl+<letter> from the
-      // deprecated keyCode, which becomes 229 ("Process"), so `e.key` is the
-      // composed jamo ('ㅊ') or 'Process' rather than 'c'. Without the code
-      // fallback the copy silently falls through to SIGINT (the reported "Ctrl+C
-      // copy broken in Hangul mode" bug). Same IME class as the Ctrl+J / Escape
-      // handlers above.
+      // Ctrl+C: copy if selection exists, otherwise fall through so the
+      // layout-correct encoder below writes SIGINT. Match the LOGICAL letter
+      // (Dvorak C is physical I — #1227) with an IME fallback on physical
+      // KeyC when `key` is mangled to Process/jamo (Hangul copy).
       // macOS는 복사가 Cmd+C 전담(위 분기)이므로 Ctrl+C는 항상 SIGINT — 선택영역이
       // 남아 있어도 인터럽트를 가로채지 않는다(owner-reported 2026-07-19).
-      if (!isMac && e.ctrlKey && !e.shiftKey && (e.key === 'c' || e.code === 'KeyC')) {
+      if (!isMac && resolveCtrlLetterByte(e) === '\x03') {
         const sel = terminal.getSelection();
         if (sel) {
           // main now throws on clipboard failure — await + catch so the
@@ -1745,14 +1768,14 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
           void copySelectionWithFeedback(terminal, sel);
           return false;
         }
-        return true; // no selection → SIGINT
+        // no selection → SIGINT via resolveCtrlLetterByte at the end of this handler
       }
 
       // Ctrl+V: paste from clipboard (use our IPC clipboard, block event
       // so xterm doesn't also paste via browser's native paste event)
       // mac은 Cmd+V가 붙여넣기 전담(위 분기) — Ctrl+V는 readline quoted-insert
       // (verbatim)이므로 PTY로 통과시킨다.
-      if (!isMac && e.ctrlKey && !e.shiftKey && (e.key === 'v' || e.code === 'KeyV')) {
+      if (!isMac && resolveCtrlLetterByte(e) === '\x16') {
         e.preventDefault();
         // isMac 게이트: blockNativePaste 리스너가 비-macOS에선 등록조차 안 되므로(위 참고)
         // 스탬프도 macOS에서만 찍는다 — 안 그러면 나중에 등록 게이트를 넓힐 때 값이 이미
@@ -1777,6 +1800,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
             ptyId,
             write: (d) => window.electronAPI.pty.write(ptyId, d),
             bracketedPasteMode: !!imgModes?.bracketedPasteMode,
+            screenIsAlternate: terminal.buffer.active.type === 'alternate',
           });
         })().catch(() => {});
         return false;
@@ -1812,8 +1836,21 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
             ptyId,
             write: (d) => window.electronAPI.pty.write(ptyId, d),
             bracketedPasteMode: !!imgModes?.bracketedPasteMode,
+            screenIsAlternate: terminal.buffer.active.type === 'alternate',
           });
         })().catch(() => {});
+        return false;
+      }
+
+      // #1227 — remaining Ctrl+letters (SIGINT, EOF, Ctrl+Z, …). xterm encodes
+      // these from keyCode, which is the QWERTY position, so a Dvorak Ctrl+C
+      // became Ctrl+I. Write the logical control byte ourselves. App shortcuts
+      // and clipboard chords already returned above.
+      const ctrlByte = resolveCtrlLetterByte(e);
+      if (ctrlByte) {
+        e.preventDefault();
+        window.electronAPI.pty.write(ptyId, ctrlByte);
+        deadInputWatchdog.onData();
         return false;
       }
 
@@ -1922,6 +1959,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
           ptyId,
           write: (d) => window.electronAPI.pty.write(ptyId, d),
           bracketedPasteMode: !!modes?.bracketedPasteMode,
+          screenIsAlternate: terminal.buffer.active.type === 'alternate',
         });
       })().catch((err) => console.error('[wmux:clipboard] right-click error:', err));
     };
@@ -2122,6 +2160,9 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       deliverPtyData({ ...payload, data: restingCursor.process(payload.data) });
     };
     const deliverPtyData = (payload: PtyDataPayload) => {
+      // Fold before the resync buffer so a ?9001h that arrives mid-resync
+      // still arms Shift+Enter encoding (#1152).
+      noteKeyboard(payload.data);
       const st = resyncRef.current;
       if (st.pending) {
         st.buffer.push(payload);
@@ -2263,6 +2304,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
           // Restored scrollback is the oldest replay of all — bytes from a
           // previous run of this pane. Muted (#998).
           writeReplayed(terminal, restored, replayMuteRef.current);
+          noteKeyboard(restored);
           // #952: the fresh PTY about to connect starts from an empty ConPTY
           // whose absolute coordinates begin at row 1 — restored rows left in
           // the viewport get overdrawn by its first absolute repaint

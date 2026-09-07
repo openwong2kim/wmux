@@ -5,7 +5,7 @@ import { sanitizeTitle } from '../../../main/pty/titleDetect';
 import { applyUnicodeWidthModel } from '../../../shared/terminalUnicode';
 import { computeMirrorFontSize, mirrorFitKey, MAX_FIT_PASSES } from './mirrorFit';
 import { decideMirrorKeyWithRepeat } from './mirrorInput';
-import { foldRemoteKeyboardState, acceptsCsiU, INITIAL_REMOTE_KEYBOARD_STATE } from './keyboardProtocol';
+import { foldRemoteKeyboardState, INITIAL_REMOTE_KEYBOARD_STATE } from './keyboardProtocol';
 import { useStore } from '../../stores';
 import { terminalFontFamilyCss } from '../../utils/terminalFont';
 import { createAutoSelectionCopy } from '../../utils/autoSelectionCopy';
@@ -435,7 +435,7 @@ export default function RemoteMirrorTerminal({ attachId, error, readOnly, onTitl
         isMac,
         hasSelection: term.hasSelection(),
         readOnly: readOnlyRef.current === true,
-        remoteAcceptsCsiU: acceptsCsiU(remoteKeyboardRef.current),
+        protocol: remoteKeyboardRef.current,
         hasCustomCtrlJBinding: useStore.getState().customKeybindings.some(
           (kb) => kb.key === 'Ctrl+J',
         ),

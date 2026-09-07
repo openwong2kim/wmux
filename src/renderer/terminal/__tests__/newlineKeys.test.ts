@@ -66,8 +66,40 @@ describe('resolveNewlineKeyByte — Ctrl+J', () => {
 });
 
 describe('resolveNewlineKeyByte — Shift+Enter (preserved behavior)', () => {
-  it('emits CSI u for Shift+Enter', () => {
+  it('emits CSI u for Shift+Enter on a local pane (default fallback)', () => {
     expect(resolveNewlineKeyByte(ev({ key: 'Enter', shiftKey: true }))).toBe('\x1b[13;2u');
+  });
+
+  it('emits the win32-input-mode pair when the pane negotiated ?9001h (#1152)', () => {
+    expect(
+      resolveNewlineKeyByte(ev({ key: 'Enter', shiftKey: true }), {
+        protocol: { win32Input: true },
+      }),
+    ).toBe('\x1b[13;28;13;1;16;1_\x1b[13;28;0;0;16;1_');
+  });
+
+  it('prefers win32-input-mode over kitty when both were seen', () => {
+    // Codex on Windows requests 9001; a stray kitty sequence must not win.
+    expect(
+      resolveNewlineKeyByte(ev({ key: 'Enter', shiftKey: true }), {
+        protocol: { win32Input: true, kitty: true },
+      }),
+    ).toBe('\x1b[13;28;13;1;16;1_\x1b[13;28;0;0;16;1_');
+  });
+
+  it('hands Shift+Enter back to xterm when a mirror/web viewer saw no protocol', () => {
+    expect(
+      resolveNewlineKeyByte(ev({ key: 'Enter', shiftKey: true }), { shiftEnterFallback: 'xterm' }),
+    ).toBeNull();
+  });
+
+  it('emits CSI u for a mirror once the remote asked for kitty', () => {
+    expect(
+      resolveNewlineKeyByte(ev({ key: 'Enter', shiftKey: true }), {
+        protocol: { kitty: true },
+        shiftEnterFallback: 'xterm',
+      }),
+    ).toBe('\x1b[13;2u');
   });
 
   it('ignores plain Enter', () => {

@@ -21,7 +21,7 @@ type KeyLike = {
   isComposing?: boolean;
 };
 
-type Decide = (ev: KeyLike, opts: { isMac?: boolean; hasSelection?: boolean; readOnly?: boolean; remoteAcceptsCsiU?: boolean }) => {
+type Decide = (ev: KeyLike, opts: { isMac?: boolean; hasSelection?: boolean; readOnly?: boolean; remoteAcceptsCsiU?: boolean; remoteWin32Input?: boolean }) => {
   action: string;
   data?: string;
 } | null;
@@ -55,6 +55,23 @@ describe('newline keys', () => {
     expect(decideWebKey(kd({ key: 'Enter', code: 'Enter', shiftKey: true }), { remoteAcceptsCsiU: true })).toEqual({
       action: 'newline',
       data: '\x1b[13;2u',
+    });
+  });
+
+  it('Shift+Enter emits the win32-input-mode pair when the pane negotiated ?9001h', () => {
+    expect(decideWebKey(kd({ key: 'Enter', code: 'Enter', shiftKey: true }), { remoteWin32Input: true })).toEqual({
+      action: 'newline',
+      data: '\x1b[13;28;13;1;16;1_\x1b[13;28;0;0;16;1_',
+    });
+  });
+
+  it('Shift+Enter prefers win32-input-mode over kitty', () => {
+    expect(decideWebKey(kd({ key: 'Enter', code: 'Enter', shiftKey: true }), {
+      remoteAcceptsCsiU: true,
+      remoteWin32Input: true,
+    })).toEqual({
+      action: 'newline',
+      data: '\x1b[13;28;13;1;16;1_\x1b[13;28;0;0;16;1_',
     });
   });
 

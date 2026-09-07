@@ -303,12 +303,19 @@
   function paneAcceptsCsiU(sessionId) {
     // Claude Code (and any other detected agent) accepts CSI-u by contract —
     // it is why the desktop sends the byte unconditionally. A shell's claim is
-    // decided by the kitty fold instead.
+    // decided by the kitty fold instead. Codex on Windows is the exception:
+    // it negotiates win32-input-mode, and paneAcceptsWin32 wins in decideWebKey.
     var s = sessions.filter(function (x) { return x.id === sessionId; })[0];
     if (s && s.agent) return true;
     var kb = window.wmuxKeyboardProtocol;
     if (!kb) return false;
     return kb.acceptsCsiU(keyboardStates[sessionId] || kb.INITIAL_STATE);
+  }
+
+  function paneAcceptsWin32(sessionId) {
+    var kb = window.wmuxKeyboardProtocol;
+    if (!kb || !kb.acceptsWin32Input) return false;
+    return kb.acceptsWin32Input(keyboardStates[sessionId] || kb.INITIAL_STATE);
   }
 
   /**
@@ -325,8 +332,10 @@
    * @param {function(): boolean} acceptsCsiU whether THIS pane negotiated the
    *        kitty keyboard protocol (drives the Shift+Enter byte; see
    *        keyboardProtocol.js). A tile must query ITS session's state.
+   * @param {function(): boolean} [acceptsWin32] whether THIS pane negotiated
+   *        win32-input-mode (`?9001h`). Wins over CSI-u for Shift+Enter.
    */
-  function attachTerminalKeys(term, send, readOnly, acceptsCsiU) {
+  function attachTerminalKeys(term, send, readOnly, acceptsCsiU, acceptsWin32) {
     // xterm exposes the custom key handler as a METHOD, not a constructor
     // option. Wired here so Ctrl+C-with-a-selection copies instead of SIGINT,
     // Shift+Enter / Ctrl+Enter insert a newline, and Ctrl+V / Ctrl+D fall back
@@ -338,7 +347,8 @@
           isMac: isMac,
           hasSelection: term.hasSelection(),
           readOnly: readOnly,
-          remoteAcceptsCsiU: acceptsCsiU ? acceptsCsiU() : false
+          remoteAcceptsCsiU: acceptsCsiU ? acceptsCsiU() : false,
+          remoteWin32Input: acceptsWin32 ? acceptsWin32() : false
         });
         if (!decision) return true;
         // Copy: an explicit Ctrl+C must cancel any pending debounced auto-copy.
@@ -419,7 +429,7 @@
         if (termRepaints > 0) return; // parser reply to a replayed query
         sendInput(d);
       });
-      attachTerminalKeys(term, sendInput, !allowInput, function () { return paneAcceptsCsiU(currentSession); });
+      attachTerminalKeys(term, sendInput, !allowInput, function () { return paneAcceptsCsiU(currentSession); }, function () { return paneAcceptsWin32(currentSession); });
       // Auto-focus so typing and Ctrl+V work without a click first — a browser
       // only delivers the paste event to the focused xterm textarea.
       if (allowInput) term.focus();
@@ -1576,7 +1586,7 @@
     // OUTSIDE `if (allowInput)`: a read-only split tile still needs copy —
     // select-to-copy and Ctrl+C-with-selection must work there, only typing is
     // gated on allowInput (the readOnly flag passed here decides newline/paste).
-    attachTerminalKeys(tile.term, function (d) { sendTo(tile.sessionId, d); }, !allowInput, function () { return paneAcceptsCsiU(tile.sessionId); });
+    attachTerminalKeys(tile.term, function (d) { sendTo(tile.sessionId, d); }, !allowInput, function () { return paneAcceptsCsiU(tile.sessionId); }, function () { return paneAcceptsWin32(tile.sessionId); });
     renderTileHead(tile);
     el.addEventListener('pointerdown', function () { focusTile(tile); });
 

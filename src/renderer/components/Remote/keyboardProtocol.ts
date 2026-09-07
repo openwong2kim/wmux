@@ -8,8 +8,8 @@
  * that leaves insert and runs the remainder as normal-mode input.
  *
  * xterm.js parses DECSET 2004 for us (`term.modes.bracketedPasteMode`) but
- * exposes nothing about keyboard protocols, so this watches the remote's own
- * output for the two negotiations that matter. Same idea as the bracketed-paste
+ * exposes nothing about keyboard protocols, so this watches the pane's own
+ * output for the negotiations that matter. Same idea as the bracketed-paste
  * read, one layer lower.
  *
  * Deliberately conservative: unknown state means NOT negotiated, so the mirror
@@ -42,6 +42,12 @@ const KITTY_POP = new RegExp('\\x1b\\[<\\d*u', 'g');
  * something" state is not silently conflated with "negotiated kitty".
  */
 const MODIFY_OTHER_KEYS = new RegExp('\\x1b\\[>4;([0-2])m', 'g');
+/**
+ * win32-input-mode (Microsoft private mode 9001). Codex on Windows requests
+ * this and then expects Shift+Enter as a KEY_EVENT_RECORD, not CSI-u.
+ * Combined DECSET (`CSI ? 1 ; 9001 h`) is matched by walking the mode list.
+ */
+const DECSET_PRIVATE = new RegExp('\\x1b\\[\\?([\\d;]+)([hl])', 'g');
 /* eslint-enable no-control-regex */
 
 export interface RemoteKeyboardState {
@@ -49,11 +55,14 @@ export interface RemoteKeyboardState {
   kitty: boolean;
   /** The remote's modifyOtherKeys level, 0 when off. */
   modifyOtherKeys: 0 | 1 | 2;
+  /** The app enabled win32-input-mode (`CSI ? 9001 h`) and has not disabled it. */
+  win32Input: boolean;
 }
 
 export const INITIAL_REMOTE_KEYBOARD_STATE: RemoteKeyboardState = {
   kitty: false,
   modifyOtherKeys: 0,
+  win32Input: false,
 };
 
 /**
@@ -83,6 +92,7 @@ export function foldRemoteKeyboardState(
 
   let kitty = prev.kitty;
   let modifyOtherKeys = prev.modifyOtherKeys;
+  let win32Input = prev.win32Input;
   let changed = false;
 
   // Walk in order so a push followed by a pop inside one chunk lands on the
@@ -106,13 +116,23 @@ export function foldRemoteKeyboardState(
     const index = m.index;
     events.push({ index, apply: () => { modifyOtherKeys = level; } });
   }
+  DECSET_PRIVATE.lastIndex = 0;
+  for (let m = DECSET_PRIVATE.exec(chunk); m; m = DECSET_PRIVATE.exec(chunk)) {
+    const modes = m[1].split(';');
+    if (!modes.includes('9001')) continue;
+    const enable = m[2] === 'h';
+    const index = m.index;
+    events.push({ index, apply: () => { win32Input = enable; } });
+  }
 
   if (events.length === 0) return prev;
   events.sort((a, b) => a.index - b.index);
   for (const e of events) e.apply();
 
-  changed = kitty !== prev.kitty || modifyOtherKeys !== prev.modifyOtherKeys;
-  return changed ? { kitty, modifyOtherKeys } : prev;
+  changed = kitty !== prev.kitty
+    || modifyOtherKeys !== prev.modifyOtherKeys
+    || win32Input !== prev.win32Input;
+  return changed ? { kitty, modifyOtherKeys, win32Input } : prev;
 }
 
 /**
@@ -124,4 +144,9 @@ export function foldRemoteKeyboardState(
  */
 export function acceptsCsiU(state: RemoteKeyboardState): boolean {
   return state.kitty;
+}
+
+/** Whether the pane asked for win32-input-mode key events (`?9001h`). */
+export function acceptsWin32Input(state: RemoteKeyboardState): boolean {
+  return state.win32Input;
 }

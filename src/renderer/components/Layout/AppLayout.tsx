@@ -88,6 +88,20 @@ interface ReconcilePtySession extends DeadPaneSessionSnapshot {
   createdAt?: string;
 }
 
+/** #1210 — drop a pane's detected agent identity once we know the TUI is gone. */
+function clearSurfaceAgentsKnownGone(
+  agentAlive: Record<string, boolean>,
+  commandRunning: Record<string, boolean>,
+): void {
+  const store = useStore.getState();
+  for (const [id, alive] of Object.entries(agentAlive)) {
+    if (alive === false) store.clearSurfaceAgent(id);
+  }
+  for (const [id, running] of Object.entries(commandRunning)) {
+    if (running === false) store.clearSurfaceAgent(id);
+  }
+}
+
 /**
  * Fix 0 — startup reconcile timeout.
  *
@@ -1568,6 +1582,12 @@ export default function AppLayout() {
         useStore.getState().hydrateResumeBindings(resumeBindingSnapshot);
         useStore.getState().hydrateCommandRunning(commandRunningSnapshot);
         useStore.getState().hydrateAgentAlive(agentAliveSnapshot);
+        // #1210: the slug is stamped on detect and was never cleared on
+        // agent exit. Process-truth `false` and OSC 133 "back at a prompt"
+        // are the two signals that the TUI is gone — drop the identity so
+        // auto-name, image-paste `auto`, and the principal registry stop
+        // treating the leftover shell as Claude.
+        clearSurfaceAgentsKnownGone(agentAliveSnapshot, commandRunningSnapshot);
         // 4d (channels): seed agent identity for panes the user has NOT
         // visited yet, so recovered agents show up as invite/mention
         // candidates right after boot instead of only after a visit.
@@ -1576,7 +1596,7 @@ export default function AppLayout() {
         const seedTargets = planAgentCandidateSeed(
           sessions.map((s) => s.id),
           useStore.getState().surfaceAgent,
-        );
+        ).filter((id) => agentAliveSnapshot[id] !== false && commandRunningSnapshot[id] !== false);
         for (const ptyId of seedTargets) {
           void window.electronAPI.metadata.resolveAgent(ptyId).then((name) => {
             // Attempted either way — a null answer means "not an agent pane
@@ -1638,6 +1658,7 @@ export default function AppLayout() {
         useStore.getState().hydrateResumeBindings(snapshot);
         useStore.getState().hydrateCommandRunning(cmdSnapshot);
         useStore.getState().hydrateAgentAlive(agentAliveSnapshot);
+        clearSurfaceAgentsKnownGone(agentAliveSnapshot, cmdSnapshot);
       }).catch(() => { /* transient list failure — the next tick self-heals */ });
     };
     const id = window.setInterval(refreshBindings, 15_000);
