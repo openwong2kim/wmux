@@ -68,16 +68,37 @@ export interface ImagePasteStrategyInput {
   mode: ImagePasteMode;
   /** Detected agent slug for the target PTY, if any. */
   agentSlug?: string | null;
+  /**
+   * Whether the pane's xterm buffer is the alternate screen (a full-screen
+   * TUI). `false` means the agent has left and a shell prompt is showing —
+   * the slug is then a lie (#1210).
+   */
+  screenIsAlternate?: boolean;
+  /** Process-truth liveness from AgentProcessTracker. `false` = observed dead. */
+  agentProcessAlive?: boolean;
+  /** OSC 133: `false` = the shell is back at a prompt. */
+  commandRunning?: boolean;
 }
 
 /** Which route an image-only clipboard takes for this pane. */
 export function resolveImagePasteStrategy({
   mode,
   agentSlug,
+  screenIsAlternate,
+  agentProcessAlive,
+  commandRunning,
 }: ImagePasteStrategyInput): 'native' | 'path' {
   if (mode === 'path') return 'path';
   if (mode === 'native') return 'native';
-  return agentSupportsNativeImagePaste(agentSlug) ? 'native' : 'path';
+  if (!agentSupportsNativeImagePaste(agentSlug)) return 'path';
+  // #1210: the slug is stamped on detect and was never cleared on exit, so a
+  // finished Claude session still looks like Claude. Negative liveness — left
+  // the alt screen, process died, or OSC 133 says the shell is back — means
+  // the native key would land in readline as quoted-insert and drop the image.
+  if (screenIsAlternate === false) return 'path';
+  if (agentProcessAlive === false) return 'path';
+  if (commandRunning === false) return 'path';
+  return 'native';
 }
 
 /** Windows-side WSL tooling that is not a shell — a /mnt path there is wrong. */

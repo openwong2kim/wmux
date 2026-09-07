@@ -55,9 +55,17 @@ describe('decideMirrorKey — the four conveniences #895 asked for', () => {
   it('sends the CSI-u newline on Shift+Enter once the remote has asked for it', () => {
     const d = decideMirrorKey(
       key({ key: 'Enter', code: 'Enter', shiftKey: true }),
-      opts({ remoteAcceptsCsiU: true }),
+      opts({ protocol: { kitty: true } }),
     );
     expect(d).toEqual({ kind: 'write', data: '\x1b[13;2u' });
+  });
+
+  it('sends the win32-input-mode pair when the remote negotiated ?9001h', () => {
+    const d = decideMirrorKey(
+      key({ key: 'Enter', code: 'Enter', shiftKey: true }),
+      opts({ protocol: { win32Input: true } }),
+    );
+    expect(d).toEqual({ kind: 'write', data: '\x1b[13;28;13;1;16;1_\x1b[13;28;0;0;16;1_' });
   });
 
   it('hands Shift+Enter back to xterm when the remote never negotiated', () => {

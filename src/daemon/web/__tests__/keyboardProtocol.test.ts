@@ -10,14 +10,12 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { runInNewContext } from 'node:vm';
 
-type Fold = (prev: { kitty: boolean; modifyOtherKeys: number }, bytes: Uint8Array | string) => {
-  kitty: boolean;
-  modifyOtherKeys: number;
-};
+type KbState = { kitty: boolean; modifyOtherKeys: number; win32Input: boolean };
+type Fold = (prev: KbState, bytes: Uint8Array | string) => KbState;
 
 let fold: Fold;
 let acceptsCsiU: (state: { kitty: boolean }) => boolean;
-let INITIAL_STATE: { kitty: boolean; modifyOtherKeys: number };
+let INITIAL_STATE: KbState;
 
 const frontend = (name: string) => join(__dirname, '..', 'frontend', name);
 
@@ -30,12 +28,12 @@ beforeAll(() => {
   const mod = sandbox.wmuxKeyboardProtocol as Record<string, unknown>;
   fold = mod.foldRemoteKeyboardState as Fold;
   acceptsCsiU = mod.acceptsCsiU as (state: { kitty: boolean }) => boolean;
-  INITIAL_STATE = mod.INITIAL_STATE as { kitty: boolean; modifyOtherKeys: number };
+  INITIAL_STATE = mod.INITIAL_STATE as KbState;
 });
 
 describe('initial state', () => {
   it('starts not negotiated', () => {
-    expect(INITIAL_STATE).toEqual({ kitty: false, modifyOtherKeys: 0 });
+    expect(INITIAL_STATE).toEqual({ kitty: false, modifyOtherKeys: 0, win32Input: false });
   });
 
   it('does not accept CSI-u before any negotiation', () => {
@@ -99,5 +97,17 @@ describe('robustness', () => {
   it('a string input is accepted as well as bytes', () => {
     const next = fold(INITIAL_STATE, '\x1b[>1u' as string);
     expect(next.kitty).toBe(true);
+  });
+});
+
+describe('win32-input-mode (?9001h)', () => {
+  it('turns on for CSI ? 9001 h and off for l', () => {
+    const on = fold(INITIAL_STATE, bytes('\x1b[?9001h'));
+    expect(on.win32Input).toBe(true);
+    expect(fold(on, bytes('\x1b[?9001l')).win32Input).toBe(false);
+  });
+
+  it('picks 9001 out of a combined DECSET', () => {
+    expect(fold(INITIAL_STATE, bytes('\x1b[?1;9001h')).win32Input).toBe(true);
   });
 });

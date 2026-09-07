@@ -32,7 +32,7 @@
    *
    * @param ev KeyboardEvent-like ({ type, key, code, ctrlKey, shiftKey, altKey,
    *            metaKey, isComposing })
-   * @param opts { isMac, hasSelection, readOnly, remoteAcceptsCsiU }
+   * @param opts { isMac, hasSelection, readOnly, remoteAcceptsCsiU, remoteWin32Input }
    * @returns null to pass through to xterm/browser; or
    *          { action: 'copy' } — copy the selection to the clipboard;
    *          { action: 'paste' } — decline the key so xterm neither encodes
@@ -53,13 +53,17 @@
     // Un-negotiated, hand the key back to xterm and let it encode the legacy
     // CR (mirrorInput.ts does the same for the attach mirror, #924).
     var remoteAcceptsCsiU = !!opts.remoteAcceptsCsiU;
+    var remoteWin32Input = !!opts.remoteWin32Input;
+    // Keep in lockstep with newlineKeys.ts SHIFT_ENTER_WIN32.
+    var WIN32_SHIFT_ENTER = '\x1b[13;28;13;1;16;1_\x1b[13;28;0;0;16;1_';
 
-    // Shift+Enter → CSI u (`ESC [ 13 ; 2 u`): kitty-protocol apps (Claude Code,
-    // codex) insert a newline instead of submitting. Same byte #924's mirror
-    // sends; a read-only host takes nothing; a non-negotiating pane gets the
-    // legacy CR from xterm instead of a byte it would misread.
+    // Shift+Enter. Encoding depends on what the pane negotiated: win32-input-
+    // mode (Codex on Windows, #1152) first, then kitty CSI-u. A pane that
+    // never negotiated gets the legacy CR from xterm instead of a byte it
+    // would misread (bash/vim).
     if (ev.key === 'Enter' && ev.shiftKey && !ev.ctrlKey && !ev.altKey && !ev.metaKey && !ev.isComposing) {
       if (readOnly) return { action: 'swallow' };
+      if (remoteWin32Input) return { action: 'newline', data: WIN32_SHIFT_ENTER };
       if (!remoteAcceptsCsiU) return null;
       return { action: 'newline', data: '\x1b[13;2u' };
     }

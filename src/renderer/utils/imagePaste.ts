@@ -28,19 +28,18 @@ export async function pasteClipboardImage(opts: {
   ptyId: string;
   write: (data: string) => void;
   bracketedPasteMode: boolean;
+  /** xterm alternate-screen bit. `false` means a shell, not a TUI (#1210). */
+  screenIsAlternate?: boolean;
 }): Promise<boolean> {
   const { ptyId, write, bracketedPasteMode } = opts;
 
   const state = useStore.getState();
-  // Known limit of the auto route: a pane's detected agent slug is retained
-  // after the agent exits (nothing clears surfaceAgent), so pasting an image
-  // into the plain shell left behind by a finished Claude session sends the
-  // key to readline, where it is quoted-insert and the image is dropped. The
-  // 'path' setting is the escape hatch until agent-exit detection clears the
-  // slug.
   const strategy = resolveImagePasteStrategy({
     mode: state.imagePasteMode,
     agentSlug: state.surfaceAgent[ptyId]?.slug,
+    screenIsAlternate: opts.screenIsAlternate,
+    agentProcessAlive: state.agentAliveByPtyId[ptyId],
+    commandRunning: state.commandRunningByPtyId[ptyId],
   });
 
   // No platform means no way to know WHICH key the agent listens on, and the

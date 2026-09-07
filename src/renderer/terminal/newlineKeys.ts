@@ -18,9 +18,9 @@
  *   regardless of IME state.
  *
  * Returned byte:
- *   - Shift+Enter → CSI u (`ESC [ 13 ; 2 u`): Claude Code / kitty-protocol
- *     apps insert a newline instead of submitting. (Pre-existing behavior,
- *     moved here verbatim.)
+ *   - Shift+Enter → protocol-aware (see encodeShiftEnter): kitty CSI-u,
+ *     win32-input-mode (`?9001h`, Codex on Windows — #1152), or xterm's
+ *     own encoding when the caller says the app never negotiated.
  *   - Ctrl+Enter → LF (`\n`): same intent as Ctrl+J. With no extended keyboard
  *     protocol enabled, xterm sends a bare CR for Ctrl+Enter — byte-identical
  *     to plain Enter — so an in-pane TUI submits instead of inserting a
@@ -46,6 +46,27 @@ export interface NewlineKeyEventLike {
   isComposing: boolean;
 }
 
+/**
+ * What the pane's app asked the terminal to send for modified keys.
+ *
+ * Folded from the pane's own output (keyboardProtocol.ts). Unknown fields
+ * are treated as "not negotiated."
+ */
+export interface KeyboardProtocolHint {
+  kitty?: boolean;
+  win32Input?: boolean;
+  modifyOtherKeys?: 0 | 1 | 2;
+}
+
+/**
+ * When no keyboard protocol is negotiated, a local pane still sends CSI-u
+ * (Claude Code never emits a kitty push, yet understands the byte — the
+ * historical newlineKeys behaviour). A mirror / web viewer must not: the
+ * app on the other side never negotiated with this xterm, so CSI-u is
+ * Escape + garbage. Those callers pass `'xterm'` and we return null.
+ */
+export type ShiftEnterFallback = 'csi-u' | 'xterm';
+
 export interface NewlineKeyOptions {
   /**
    * Whether the user has bound Ctrl+J to a custom keybinding. When true we
@@ -55,17 +76,58 @@ export interface NewlineKeyOptions {
    * but we must not actively override it with an LF.)
    */
   hasCustomCtrlJBinding?: boolean;
+  /** Observed keyboard-protocol negotiation. Absent = nothing observed. */
+  protocol?: KeyboardProtocolHint;
+  /**
+   * What to send for Shift+Enter when `protocol` names no encoding.
+   * Defaults to `'csi-u'` (local pane). Remote/web pass `'xterm'`.
+   */
+  shiftEnterFallback?: ShiftEnterFallback;
+}
+
+/** Kitty CSI-u Shift+Enter. Claude Code inserts a newline instead of submitting. */
+export const SHIFT_ENTER_CSI_U = '\x1b[13;2u';
+
+/**
+ * win32-input-mode Shift+Enter (`CSI Vk;Sc;Uc;Kd;Cs;Rc _`).
+ *
+ * VK_RETURN=13, scan 0x1C=28, Unicode CR=13, key-down, SHIFT_PRESSED=0x10,
+ * repeat 1 — then the matching key-up (Unicode 0, key-down 0). Codex on
+ * Windows negotiates `?9001h` and does not understand CSI-u (#1152).
+ */
+export const SHIFT_ENTER_WIN32 =
+  '\x1b[13;28;13;1;16;1_\x1b[13;28;0;0;16;1_';
+
+/** xterm modifyOtherKeys mode 2: CSI 27 ; 2 ; 13 ~ */
+export const SHIFT_ENTER_MODIFY_OTHER_KEYS = '\x1b[27;2;13~';
+
+/**
+ * Encode Shift+Enter for the protocol the pane actually asked for.
+ *
+ * Win32-input-mode wins over kitty: Codex on Windows requests `?9001h` and
+ * will misread CSI-u as Escape + `[13;2u`. modifyOtherKeys mode 2 is the
+ * other non-CSI-u encoding we know how to produce. Everything else follows
+ * `fallback`.
+ */
+export function encodeShiftEnter(
+  protocol: KeyboardProtocolHint | undefined,
+  fallback: ShiftEnterFallback,
+): string | null {
+  if (protocol?.win32Input) return SHIFT_ENTER_WIN32;
+  if (protocol?.kitty) return SHIFT_ENTER_CSI_U;
+  if (protocol?.modifyOtherKeys === 2) return SHIFT_ENTER_MODIFY_OTHER_KEYS;
+  return fallback === 'csi-u' ? SHIFT_ENTER_CSI_U : null;
 }
 
 export function resolveNewlineKeyByte(
   e: NewlineKeyEventLike,
   opts?: NewlineKeyOptions,
 ): string | null {
-  // Shift+Enter → CSI u so Claude Code inserts a newline instead of submitting.
-  // Kitty keyboard protocol: ESC [ 13 ; 2 u. (metaKey intentionally not
-  // constrained — preserves the original inline handler's exact predicate.)
+  // Shift+Enter. Encoding depends on what the pane negotiated (kitty CSI-u,
+  // win32-input-mode, modifyOtherKeys). metaKey is intentionally not
+  // constrained — preserves the original inline handler's exact predicate.
   if (e.key === 'Enter' && e.shiftKey && !e.ctrlKey && !e.altKey) {
-    return '\x1b[13;2u';
+    return encodeShiftEnter(opts?.protocol, opts?.shiftEnterFallback ?? 'csi-u');
   }
 
   // Ctrl+Enter → LF, same intent as Ctrl+J: insert a newline without

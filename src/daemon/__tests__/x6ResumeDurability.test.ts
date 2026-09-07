@@ -133,14 +133,21 @@ describe('X6 ② reboot-survival durability', () => {
     // (the bug that made the pill invisible after every reboot). The handler must
     // exclude those reports so only real input retracts the offer.
     const utPath = path.join(__dirname, '..', '..', 'renderer', 'hooks', 'useTerminal.ts');
-    const src = fs.readFileSync(utPath, 'utf-8');
+    const src = fs.readFileSync(utPath, 'utf8');
     const idx = src.indexOf('terminal.onData((data)');
     expect(idx).toBeGreaterThan(-1);
     const body = src.slice(idx, idx + 1400);
-    expect(body).toMatch(/clearResumeHint/);
+    // #1228 C2 restructure: the clear itself moved into the shared
+    // noteUserKeystroke helper (so direct-write bytes get the same side
+    // effects), but the contract is unchanged — only real input retracts.
+    expect(body).toMatch(/noteUserKeystroke\(data\)/);
     // focus reports must be excluded from the clear path
     expect(body).toMatch(/\\x1b\[I/);
     expect(body).toMatch(/\\x1b\[O/);
+    // the helper is where clearResumeHint now lives — real input reaches it.
+    const helperIdx = src.indexOf('const noteUserKeystroke =');
+    expect(helperIdx).toBeGreaterThan(-1);
+    expect(src.slice(helperIdx, helperIdx + 400)).toMatch(/clearResumeHint/);
   });
 
   it('bridge cwd handler has a change-guard so the immediate write only fires on real cd', () => {

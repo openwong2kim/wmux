@@ -35,9 +35,10 @@
   var KITTY_PUSH_OR_SET = new RegExp('\\x1b\\[[>=](\\d*)(?:;\\d+)?u', 'g');
   var KITTY_POP = new RegExp('\\x1b\\[<\\d*u', 'g');
   var MODIFY_OTHER_KEYS = new RegExp('\\x1b\\[>4;([0-2])m', 'g');
+  var DECSET_PRIVATE = new RegExp('\\x1b\\[\\?([\\d;]+)([hl])', 'g');
   /* eslint-enable no-control-regex */
 
-  var INITIAL_STATE = { kitty: false, modifyOtherKeys: 0 };
+  var INITIAL_STATE = { kitty: false, modifyOtherKeys: 0, win32Input: false };
 
   /**
    * Fold one chunk of pane output into the keyboard state.
@@ -66,6 +67,7 @@
 
     var kitty = prev.kitty;
     var modifyOtherKeys = prev.modifyOtherKeys;
+    var win32Input = prev.win32Input;
     var events = [];
 
     // Walk in order so a push followed by a pop inside one chunk lands on the
@@ -85,13 +87,23 @@
       var level = Number(m[1]);
       events.push({ index: m.index, apply: function () { modifyOtherKeys = level; } });
     }
+    DECSET_PRIVATE.lastIndex = 0;
+    while ((m = DECSET_PRIVATE.exec(chunk)) !== null) {
+      if (m[1].split(';').indexOf('9001') < 0) continue;
+      // Capture per-match: a var in this while would be shared across apply().
+      (function (enable, index) {
+        events.push({ index: index, apply: function () { win32Input = enable; } });
+      })(m[2] === 'h', m.index);
+    }
 
     if (events.length === 0) return prev;
     events.sort(function (a, b) { return a.index - b.index; });
     for (var i = 0; i < events.length; i++) events[i].apply();
 
-    var changed = kitty !== prev.kitty || modifyOtherKeys !== prev.modifyOtherKeys;
-    return changed ? { kitty: kitty, modifyOtherKeys: modifyOtherKeys } : prev;
+    var changed = kitty !== prev.kitty
+      || modifyOtherKeys !== prev.modifyOtherKeys
+      || win32Input !== prev.win32Input;
+    return changed ? { kitty: kitty, modifyOtherKeys: modifyOtherKeys, win32Input: win32Input } : prev;
   }
 
   /**
@@ -108,9 +120,14 @@
     return state.kitty;
   }
 
+  function acceptsWin32Input(state) {
+    return !!state.win32Input;
+  }
+
   return {
     INITIAL_STATE: INITIAL_STATE,
     foldRemoteKeyboardState: foldRemoteKeyboardState,
-    acceptsCsiU: acceptsCsiU
+    acceptsCsiU: acceptsCsiU,
+    acceptsWin32Input: acceptsWin32Input
   };
 });

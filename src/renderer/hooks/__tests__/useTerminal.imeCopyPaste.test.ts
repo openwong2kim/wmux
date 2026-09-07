@@ -34,10 +34,14 @@ describe('useTerminal copy/paste survives a CJK IME (source-level lock)', () => 
   });
 
   it('Ctrl+C copy matches physical KeyC, not only e.key', () => {
+    // Windows/Linux copy uses resolveCtrlLetterByte (logical letter, IME
+    // fallback on KeyC). macOS copy is still Cmd+C with the KeyC fallback.
+    expect(HANDLER).toMatch(/!isMac && resolveCtrlLetterByte\(e\) === '\\x03'/);
     expect(HANDLER).toMatch(/e\.key === 'c' \|\| e\.code === 'KeyC'/);
   });
 
   it('Ctrl+V paste matches physical KeyV, not only e.key', () => {
+    expect(HANDLER).toMatch(/!isMac && resolveCtrlLetterByte\(e\) === '\\x16'/);
     expect(HANDLER).toMatch(/e\.key === 'v' \|\| e\.code === 'KeyV'/);
   });
 

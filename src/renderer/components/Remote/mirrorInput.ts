@@ -19,7 +19,11 @@
  * `newlineKeys.ts` already use.
  */
 
-import { resolveNewlineKeyByte, type NewlineKeyEventLike } from '../../terminal/newlineKeys';
+import {
+  resolveNewlineKeyByte,
+  type KeyboardProtocolHint,
+  type NewlineKeyEventLike,
+} from '../../terminal/newlineKeys';
 
 export interface MirrorKeyEventLike extends NewlineKeyEventLike {
   /** Only `keydown` decides anything; keyup/keypress always pass. */
@@ -37,12 +41,11 @@ export interface MirrorKeyOptions {
   /** The user bound Ctrl+J themselves — see newlineKeys.ts. */
   hasCustomCtrlJBinding?: boolean;
   /**
-   * The remote app asked for kitty CSI-u key encodings (observed in its own
-   * output — see keyboardProtocol.ts). Defaults to false, which is the
-   * conservative side: an app that never negotiated gets what xterm would
-   * have encoded.
+   * Keyboard-protocol negotiation observed in the remote's own output
+   * (keyboardProtocol.ts). Defaults to nothing negotiated, which is the
+   * conservative side: Shift+Enter is handed back to xterm.
    */
-  remoteAcceptsCsiU?: boolean;
+  protocol?: KeyboardProtocolHint;
 }
 
 export type MirrorKeyDecision =
@@ -78,24 +81,21 @@ export function decideMirrorKey(
   // Shift+Enter / Ctrl+Enter / Ctrl+J. Same resolver the local pane uses, so a
   // remote Claude Code gets the same newline byte a local one does instead of
   // whatever xterm's legacy keyCode path happens to produce under an IME.
+  // A read-only host takes no bytes at all. Shift+Enter is swallowed even
+  // when the resolver returns null (un-negotiated → would otherwise `pass`
+  // to xterm, which would encode a CR and send it).
+  if (opts.readOnly && e.key === 'Enter' && e.shiftKey && !e.ctrlKey && !e.altKey) {
+    return { kind: 'swallow' };
+  }
   const newlineByte = resolveNewlineKeyByte(e, {
     hasCustomCtrlJBinding: opts.hasCustomCtrlJBinding,
+    protocol: opts.protocol,
+    // A mirror never negotiated with the app it is watching. CSI-u is
+    // Escape + garbage there unless the app asked for kitty (or win32).
+    shiftEnterFallback: 'xterm',
   });
   if (newlineByte !== null) {
-    // A read-only host takes no bytes at all, negotiated or not — decided here
-    // rather than left to the write path so the table says so.
     if (opts.readOnly) return { kind: 'swallow' };
-    // The CSI-u byte only means "newline" to an app that asked for kitty
-    // encodings. A local pane can send it blind because it and the TUI share
-    // this xterm; a mirror is talking to an app it never negotiated with, and
-    // there `\x1b[13;2u` reads as Escape followed by normal-mode input — in
-    // vim's insert mode that leaves insert and runs the rest as commands.
-    // Un-negotiated, hand the key back to xterm and let it encode the legacy
-    // CR: what the mirror did before it had a key table at all.
-    //
-    // Ctrl+Enter and Ctrl+J are unaffected — a bare LF needs no negotiation.
-    const isCsiU = newlineByte.startsWith('\x1b');
-    if (isCsiU && !opts.remoteAcceptsCsiU) return { kind: 'pass' };
     return { kind: 'write', data: newlineByte };
   }
 

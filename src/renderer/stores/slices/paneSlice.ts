@@ -187,7 +187,8 @@ export interface PaneSlice {
   // detected agent name + last status for the life of the PTY so a2a_discover /
   // surface_list / pane_list can label each pane individually — one workspace
   // can host >1 agent (gaps 1/3/8). Populated from METADATA_UPDATE in
-  // useNotificationListener; cleared when the owning surface/pane closes.
+  // useNotificationListener; cleared when the owning surface/pane closes
+  // OR when process-truth / OSC 133 say the agent has left (#1210).
   // Transient — never persisted (buildSessionData allowlist excludes it).
   surfaceAgent: Record<string, { name: string; status: AgentStatus; slug?: AgentSlug }>;
   setSurfaceAgent: (ptyId: string, name: string | undefined, status: AgentStatus | undefined, slug?: AgentSlug) => void;
