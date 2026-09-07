@@ -27,6 +27,9 @@ const INTEGRATIONS = path.join(REPO_ROOT, 'integrations');
 const BRIDGES = [
   path.join('claude', 'bin', 'wmux-bridge.mjs'),
   path.join('codex', 'bin', 'wmux-codex-notify.mjs'),
+  // #1107: the hooks bridge carried a local duplicate of this guard in
+  // codexHookEnvelope.test.ts until this list existed; both now run.
+  path.join('codex', 'bin', 'wmux-codex-hooks-bridge.mjs'),
   path.join('kiro', 'bin', 'wmux-kiro-bridge.mjs'),
   path.join('openclaude', 'bin', 'wmux-bridge.mjs'),
   path.join('opencode', 'plugins', 'wmux.js'),
