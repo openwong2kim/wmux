@@ -7,6 +7,7 @@ import {
   BURST_QUIET_MS_DEFAULT,
   FOCUS_THROTTLE_MS_DEFAULT,
   BURST_STREAM_FLUSH_MS_DEFAULT,
+  SETTLE_VERIFY_MS_DEFAULT,
   type RepaintReason,
 } from '../glyphRepaint';
 
@@ -170,8 +171,12 @@ describe('glyphRepaint scheduler', () => {
 
     it('resets both the window and the settle flag so the next sub-floor stream stays silent', () => {
       let t = 0;
+      // settleVerifyMs: Infinity isolates this test's window/flag-leak assertions
+      // from the idle-tail verify — the first settle arms one at t=2400, and this
+      // test's later time advances (ending t=2300) would race into it.
       const s = createGlyphRepaintScheduler({
-        repaint, activityBytes: 256, burstQuietMs: 300, burstStreamFlushMs: 500, now: () => t,
+        repaint, activityBytes: 256, burstQuietMs: 300, burstStreamFlushMs: 500,
+        settleVerifyMs: Infinity, now: () => t,
       });
       const tick = (ms: number) => { t += ms; vi.advanceTimersByTime(ms); };
       s.onData(1000);          // t=0 mid flush → windowAccum=0, flushedSinceSettle=true
@@ -230,6 +235,97 @@ describe('glyphRepaint scheduler', () => {
       for (let i = 0; i < 20; i++) { s.onData(30); tick(1000); } // 30 units < 256, 1s apart
       vi.advanceTimersByTime(BURST_QUIET_MS_DEFAULT);
       expect(repaints).toEqual([]);
+    });
+  });
+
+  // Idle-tail repair (2026-09-07 opencode ghosting report): the settle flush is
+  // the stream's final repaint, but its own WebGL raster can race and leave
+  // stale pixels on rows it just marked clean. After the stream ends, no other
+  // trigger can fire (pane already focused, no visibility change, no output),
+  // so the ghost persists until the user selects text. One delayed verify
+  // repaint after each settle flush closes that window.
+  describe('post-settle verification repaint (idle-tail repair)', () => {
+    it('fires once more after the settle flush, not before', () => {
+      const s = createGlyphRepaintScheduler({ repaint, burstStreamFlushMs: Infinity });
+      s.onData(ACTIVITY_BYTES_DEFAULT);
+      vi.advanceTimersByTime(BURST_QUIET_MS_DEFAULT);
+      expect(repaints).toEqual(['burst']); // settle flush
+      vi.advanceTimersByTime(SETTLE_VERIFY_MS_DEFAULT - 1);
+      expect(repaints).toEqual(['burst']); // verify not yet
+      vi.advanceTimersByTime(1);
+      expect(repaints).toEqual(['burst', 'settle-verify']);
+    });
+
+    it('schedules nothing for sub-floor noise that never flushed', () => {
+      const s = createGlyphRepaintScheduler({ repaint, burstStreamFlushMs: Infinity });
+      s.onData(ACTIVITY_BYTES_DEFAULT - 1);
+      vi.advanceTimersByTime(BURST_QUIET_MS_DEFAULT + SETTLE_VERIFY_MS_DEFAULT * 2);
+      expect(repaints).toEqual([]);
+    });
+
+    it('is not cancelled by sub-floor writes after the settle — the hole stays closed', () => {
+      // A keystroke echo after the stream ends must NOT cancel the pending
+      // verify: that echo never flushes, so its own settle cannot re-arm one.
+      const s = createGlyphRepaintScheduler({ repaint, burstStreamFlushMs: Infinity });
+      s.onData(ACTIVITY_BYTES_DEFAULT);
+      vi.advanceTimersByTime(BURST_QUIET_MS_DEFAULT); // settle → verify armed
+      s.onData(30); // sub-floor echo
+      vi.advanceTimersByTime(BURST_QUIET_MS_DEFAULT + SETTLE_VERIFY_MS_DEFAULT);
+      expect(repaints).toEqual(['burst', 'settle-verify']);
+    });
+
+    it('re-arms instead of stacking when a second stream settles', () => {
+      let t = 0;
+      const s = createGlyphRepaintScheduler({
+        repaint, activityBytes: 10, burstQuietMs: 50,
+        burstStreamFlushMs: Infinity, settleVerifyMs: 100, now: () => t,
+      });
+      const tick = (ms: number) => { t += ms; vi.advanceTimersByTime(ms); };
+      s.onData(100);
+      tick(50); // settle #1 → verify #1 armed at t=150
+      tick(30); // t=80: a second short stream
+      s.onData(100);
+      tick(50); // t=130: settle #2 re-arms verify (fires at t=230)
+      expect(repaints).toEqual(['burst', 'burst']);
+      tick(100); // t=230
+      expect(repaints).toEqual(['burst', 'burst', 'settle-verify']); // ONE verify, not two
+    });
+
+    it('a mid-stream flush alone does not arm a verify — only the settle does', () => {
+      // Pins WHERE the verify is armed: a refactor moving the arm to every
+      // flush (not just the settle) would fire a redundant verify per cadence
+      // tick during streaming. Default-config timings (finite cadence), which
+      // the other verify tests all disable via burstStreamFlushMs: Infinity.
+      let t = 0;
+      const s = createGlyphRepaintScheduler({
+        repaint, activityBytes: 256, burstQuietMs: 300,
+        burstStreamFlushMs: 500, settleVerifyMs: 100, now: () => t,
+      });
+      const tick = (ms: number) => { t += ms; vi.advanceTimersByTime(ms); };
+      s.onData(1000);            // t=0: mid flush only
+      expect(repaints).toEqual(['burst']);
+      tick(99);                  // t=99: past midFlush+100 — a misplaced arm would fire here
+      expect(repaints).toEqual(['burst']);
+      tick(201);                 // t=300: settle (flushedSinceSettle)
+      expect(repaints).toEqual(['burst', 'burst']);
+      tick(100);                 // t=400: settle-armed verify fires
+      expect(repaints).toEqual(['burst', 'burst', 'settle-verify']);
+    });
+
+    it('is cancelled by dispose', () => {
+      const s = createGlyphRepaintScheduler({ repaint, burstStreamFlushMs: Infinity });
+      s.onData(ACTIVITY_BYTES_DEFAULT);
+      vi.advanceTimersByTime(BURST_QUIET_MS_DEFAULT); // settle → verify armed
+      s.dispose();
+      vi.advanceTimersByTime(SETTLE_VERIFY_MS_DEFAULT * 2);
+      expect(repaints).toEqual(['burst']);
+    });
+
+    it('Infinity disables the verify entirely', () => {
+      const s = createGlyphRepaintScheduler({ repaint, burstStreamFlushMs: Infinity, settleVerifyMs: Infinity });
+      s.onData(ACTIVITY_BYTES_DEFAULT);
+      vi.advanceTimersByTime(BURST_QUIET_MS_DEFAULT + 10_000);
+      expect(repaints).toEqual(['burst']);
     });
   });
 
