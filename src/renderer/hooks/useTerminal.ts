@@ -1119,6 +1119,18 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       // element is detached at this point (React removed the old container
       // before flushing passive effects), so appending is all that is left.
       container.appendChild(adopted.element);
+      // The previous mount's glyphRepaint scheduler died with its cleanup —
+      // taking any still-armed settle-verify with it — and this mount's fresh
+      // scheduler has no history, so a pane restructured right after a stream
+      // settled (split/drag within ~2s of output ending) would carry a raced
+      // final raster with no self-repair left (#1002 adopt path). One
+      // full-range refresh heals it for exactly the cost the verify would
+      // have paid.
+      try {
+        terminal.refresh(0, terminal.rows - 1);
+      } catch {
+        // terminal may already be disposed — teardown owns cleanup
+      }
     } else {
       // Activate Unicode 11 width tables — required for correct CJK / emoji
       // width. Without this, xterm defaults to v6 and TUI apps that use cursor
@@ -1369,7 +1381,8 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
 
     // Issue #166 — defensive full-range repaint for the "garbled glyphs until
     // resize" corruption (dirty-region desync). Strategy and trigger rationale
-    // live in terminal/glyphRepaint.ts. Every reason (focus / visible / burst)
+    // live in terminal/glyphRepaint.ts. Every reason (focus / visible / burst /
+    // settle-verify)
     // does a plain full-range refresh; "focus" is throttled because it fires on
     // every keyboard pane-nav / MCP pane.focus via useActivePaneFocus's
     // term.focus(), not just mouse clicks, so the throttle is load-bearing. The
@@ -1382,8 +1395,10 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         // burst refresh — nobody can see the staleness, and the `visible`
         // repaint on re-show repairs it at the moment it matters. Without
         // this gate, N background agent panes each schedule a full-range
-        // refresh after every output burst.
-        if (reason === 'burst' && !isVisibleRef.current) return;
+        // refresh after every output burst. The idle-tail settle-verify is
+        // gated for the same reason: a hidden pane is repaired by `visible`
+        // on reveal, so its verify would be wasted GPU work.
+        if ((reason === 'burst' || reason === 'settle-verify') && !isVisibleRef.current) return;
         // Do NOT clearTextureAtlas here (#191). xterm shares ONE glyph atlas
         // across every same-config terminal (CharAtlasCache); clearing it from
         // one pane empties it for all of them, and siblings that do not rebuild

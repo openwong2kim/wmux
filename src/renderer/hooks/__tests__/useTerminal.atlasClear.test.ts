@@ -39,4 +39,16 @@ describe('#191 — repaint must not clear the shared texture atlas (source-level
   it('repairs staleness with a full-range refresh instead', () => {
     expect(repaintBlock).toMatch(/terminal\.refresh\(0, terminal\.rows - 1\)/);
   });
+
+  // The repaint's output-driven reasons ('burst' and the idle-tail
+  // 'settle-verify') must stay behind the visibility gate: a hidden pane
+  // cannot show staleness, its reveal is repaired by the `visible` repaint,
+  // and un-gating either reason would put a full-range refresh on every
+  // background agent pane after every output burst / stream settle — the GPU
+  // churn this gate exists to prevent. Pinned at source level like the rest
+  // of this file (the gate is an xterm-bound side effect).
+  it('gates both output-driven repaint reasons on pane visibility', () => {
+    expect(repaintBlock).toMatch(/reason === 'burst' \|\| reason === 'settle-verify'/);
+    expect(repaintBlock).toMatch(/!isVisibleRef\.current\) return/);
+  });
 });

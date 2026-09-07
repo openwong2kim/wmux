@@ -25,6 +25,8 @@
 //   - `burst`   — output is actively flowing to a visible pane. Fired on a
 //                 time cadence (see below) so live streaming self-repairs, plus
 //                 once more when the stream finally settles.
+//   - `settle-verify` — one delayed repaint after the trailing settle flush
+//                 (see the "idle tail" note below).
 //
 // --- Why the `burst` gate is an activity-based TIME cadence (issue #318) ---
 //
@@ -69,7 +71,32 @@
 // (Old gate: staleness could persist for the entire multi-second stream — the
 // #318 report.)
 //
-// All three reasons run the same full-range refresh; the caller does not vary
+// --- The idle tail: why the settle flush alone is not enough (`settle-verify`) ---
+//
+// The corruption is non-deterministic at the RASTER level: any single full-range
+// refresh can itself race (WebGL dirty-region upload) and paint stale pixels
+// while marking the rows clean — including the settle flush that is supposed to
+// be the stream's final repair. Once the pane goes idle (agent finished, TUI
+// waiting for input), NO further repaint is ever scheduled: focus is throttled
+// but, worse, never re-fires on a pane that is already focused; `visible` needs
+// a workspace switch; `burst` needs output. The user sees the ghosted/stale
+// frame indefinitely, and repairs it manually by selecting text (selection
+// forces renderRows from the correct buffer) — the exact 2026-09-07 opencode
+// report. The settle-verify repaint closes that window: after every settle
+// flush, one more full-range refresh fires `settleVerifyMs` later — after the
+// settle's own raster has committed — so a raced final paint cannot outlive
+// ~`burstQuietMs + settleVerifyMs`. Cost: at most one extra refresh per stream
+// that flushed (overlapping tails coalesce into a single verify); noise-only
+// trickles (no flush) schedule nothing. A pane that PULSES — ≥ activityBytes
+// on a ≥ settleVerifyMs cadence forever (watch loops, status pollers) — pays
+// one verify per pulse (~0.4 full refreshes/s ceiling), an accepted standing
+// cost for the repair guarantee. The verify is deliberately NOT cancelled by
+// new writes: a sub-floor keystroke echo must not reopen the hole (its own
+// settle won't re-arm the verify because nothing flushed), and a stray verify
+// landing mid-stream is just one more harmless full-range repair on the burst
+// cadence. A later real settle re-arms it.
+//
+// All four reasons run the same full-range refresh; the caller does not vary
 // repaint cost per reason. The refresh never mutates the shared glyph atlas
 // (#191), so it cannot corrupt sibling panes — the burst-visibility gate aside,
 // the only per-reason difference is the throttle on `focus`.
@@ -78,7 +105,7 @@
 // tested without xterm; all rendering side effects live in the caller's
 // `repaint` callback.
 
-export type RepaintReason = 'focus' | 'visible' | 'burst';
+export type RepaintReason = 'focus' | 'visible' | 'burst' | 'settle-verify';
 
 export interface GlyphRepaintScheduler {
   /** Feed PTY write sizes; fires repaint('burst') on the streaming cadence. */
@@ -111,6 +138,9 @@ export interface GlyphRepaintOptions {
    *  without churning a full refresh on every write. Pass Infinity to disable
    *  the mid-stream cadence entirely (the trailing settle flush still runs). */
   burstStreamFlushMs?: number;
+  /** Delay after the trailing settle flush for the one-shot verification
+   *  repaint (see the "idle tail" header note). Pass Infinity to disable. */
+  settleVerifyMs?: number;
   /** Injectable clock for tests. */
   now?: () => number;
 }
@@ -129,6 +159,11 @@ export const FOCUS_THROTTLE_MS_DEFAULT = 1000;
 // the trailing settle flush also remains) at half the GPU cost. If glyph
 // corruption is ever seen lingering mid-stream, drop back toward 750.
 export const BURST_STREAM_FLUSH_MS_DEFAULT = 1000;
+// Idle-tail verification (see header): late enough that the settle flush's own
+// raster has long committed (so the verify genuinely re-rasterizes), early
+// enough that a user watching the pane sees the ghost for ~2s instead of
+// forever.
+export const SETTLE_VERIFY_MS_DEFAULT = 2000;
 
 export function createGlyphRepaintScheduler(
   options: GlyphRepaintOptions,
@@ -139,6 +174,7 @@ export function createGlyphRepaintScheduler(
     burstQuietMs = BURST_QUIET_MS_DEFAULT,
     focusThrottleMs = FOCUS_THROTTLE_MS_DEFAULT,
     burstStreamFlushMs: burstStreamFlushMsRaw = BURST_STREAM_FLUSH_MS_DEFAULT,
+    settleVerifyMs: settleVerifyMsRaw = SETTLE_VERIFY_MS_DEFAULT,
     now = Date.now,
   } = options;
   // Floor the mid-stream cadence at 1ms so a 0/negative value can't turn the
@@ -147,6 +183,8 @@ export function createGlyphRepaintScheduler(
   // Infinity); a non-finite cadence disables the mid-stream flush below.
   const burstStreamFlushMs = Math.max(1, burstStreamFlushMsRaw);
   const midStreamEnabled = Number.isFinite(burstStreamFlushMs);
+  const settleVerifyMs = Math.max(1, settleVerifyMsRaw);
+  const settleVerifyEnabled = Number.isFinite(settleVerifyMsRaw);
 
   let disposed = false;
   // Units written since the last flush of any kind. Reset to 0 at every flush.
@@ -156,6 +194,11 @@ export function createGlyphRepaintScheduler(
   // in a mid flush (that flush ran pre-parse; see the header rationale).
   let flushedSinceSettle = false;
   let quietTimer: ReturnType<typeof setTimeout> | null = null;
+  // One-shot idle-tail verify, armed by each settle flush. Never cancelled by
+  // writes (see header); a later settle clears and re-arms it with a FULL
+  // delay — the latest settle's deadline wins (the verify must postdate the
+  // newest settle's own raster), and one verify is in flight at a time.
+  let settleVerifyTimer: ReturnType<typeof setTimeout> | null = null;
   let lastFocusRepaintAt = -Infinity;
   // Timestamp of the last real flush (mid or trailing). Seeded to -Infinity so
   // the first qualifying write flushes immediately — intentional and harmless.
@@ -201,6 +244,16 @@ export function createGlyphRepaintScheduler(
           windowAccum = 0;
           flushedSinceSettle = false;
           repaint('burst');
+          // Idle-tail verify: this settle flush is the stream's final repair,
+          // but its own raster can race and paint stale pixels. One more
+          // full-range refresh after the raster commits closes that window.
+          if (settleVerifyEnabled) {
+            if (settleVerifyTimer) clearTimeout(settleVerifyTimer);
+            settleVerifyTimer = setTimeout(() => {
+              settleVerifyTimer = null;
+              if (!disposed) repaint('settle-verify');
+            }, settleVerifyMs);
+          }
         } else {
           // Sub-threshold noise that never flushed: drop it so a stale trickle
           // can't leak into a later unrelated stream's first-flush timing. No
@@ -229,6 +282,10 @@ export function createGlyphRepaintScheduler(
       if (quietTimer) {
         clearTimeout(quietTimer);
         quietTimer = null;
+      }
+      if (settleVerifyTimer) {
+        clearTimeout(settleVerifyTimer);
+        settleVerifyTimer = null;
       }
       windowAccum = 0;
       flushedSinceSettle = false;
