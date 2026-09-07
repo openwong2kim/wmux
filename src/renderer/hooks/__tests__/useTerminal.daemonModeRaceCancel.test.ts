@@ -26,8 +26,12 @@ describe('A6 — useTerminal async restore race cancel (source-level)', () => {
   it('scrollback.load().then(content) guards on isDaemonModeActive() before writing', () => {
     const loadIdx = src.indexOf('scrollback.load(scrollbackFile)');
     expect(loadIdx).toBeGreaterThan(0);
-    // Slice forward enough lines to capture the then handler body.
-    const body = src.slice(loadIdx, loadIdx + 4000);
+    // Slice forward enough lines to capture the then handler body. 6000, not
+    // 4000: a CRLF checkout (Windows runner) costs one extra char per line,
+    // and the trailing `for (const payload of pendingData` flush sat at 4020
+    // CRLF chars — one comment growth away from silently falling out of the
+    // window again. The regexes themselves are \s*-based and CRLF-safe.
+    const body = src.slice(loadIdx, loadIdx + 6000);
     // The guard substitutes the .txt content with null when daemon-mode
     // activated during the IPC round-trip.
     expect(body).toMatch(/isDaemonModeActive\(\)\s*\?\s*null\s*:\s*content/);
@@ -40,7 +44,7 @@ describe('A6 — useTerminal async restore race cancel (source-level)', () => {
 
   it('still flushes pending PTY data after the daemon-mode skip', () => {
     const loadIdx = src.indexOf('scrollback.load(scrollbackFile)');
-    const body = src.slice(loadIdx, loadIdx + 4000);
+    const body = src.slice(loadIdx, loadIdx + 6000);
     // pendingData.length > 0 check happens whether or not restored ran.
     expect(body).toMatch(/scrollbackLoaded\s*=\s*true/);
     expect(body).toMatch(/for\s*\(\s*const\s+payload\s+of\s+pendingData/);
@@ -57,7 +61,7 @@ describe('A6 — useTerminal async restore race cancel (source-level)', () => {
     expect(src).toMatch(/let\s+removeDaemonConnectedForRestore/);
     // Inside the restore branch, the flag flips true and the listener arms.
     const loadIdx = src.indexOf('scrollback.load(scrollbackFile)');
-    const body = src.slice(loadIdx, loadIdx + 4000);
+    const body = src.slice(loadIdx, loadIdx + 6000);
     expect(body).toMatch(/didRestoreTxt\s*=\s*true/);
     expect(body).toMatch(/window\.electronAPI\.daemon\.onConnected\(/);
     // The listener resets the terminal and clears the flag.
