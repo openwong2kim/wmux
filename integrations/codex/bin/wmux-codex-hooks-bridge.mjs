@@ -29,8 +29,10 @@
 //     PreCompact, PostCompact, SessionStart, SessionEnd, UserPromptSubmit,
 //     SubagentStart, SubagentStop, Stop, Interrupt.
 //   * MEASURED FIRING: SessionStart, UserPromptSubmit, Stop, SessionEnd,
-//     PreToolUse. The rest are enum members this bridge has NOT seen fire, and
-//     none of them is mapped below — an unmeasured event is not a signal.
+//     PreToolUse (2026-08-31); PostToolUse, PermissionRequest (2026-09-07,
+//     PTY-driven interactive TUI). The rest are enum members this bridge has
+//     NOT seen fire, and none of them is mapped below — an unmeasured event
+//     is not a signal.
 //   * `Stop` is a TURN boundary, not a session one. Measured across two turns
 //     of one session: `Stop` fired once per turn carrying that turn's
 //     `turn_id`, and `SessionEnd` fired separately, once, with no `turn_id`.
@@ -87,7 +89,8 @@ import { randomUUID } from 'node:crypto';
 const HOOK_TIMEOUT_MS = 2000; // hard cap so we never stall a Codex turn
 // Stamped on every codex-hooks.log line; bump on behavior changes.
 //   0.1.0 — initial: SessionStart + UserPromptSubmit + Stop, metadata-only.
-const BRIDGE_VERSION = '0.1.0';
+//   0.2.0 — PermissionRequest → agent.awaiting_input, measured 2026-09-07.
+const BRIDGE_VERSION = '0.2.0';
 const CONNECT_RETRY_BACKOFFS_MS = [100, 250];
 const TRANSIENT_CONNECT_CODES = new Set([
   'EPERM', 'ECONNREFUSED', 'ECONNRESET', 'EPIPE', 'ETIMEDOUT', 'EBUSY', 'EAGAIN',
@@ -126,20 +129,29 @@ const MAX_STDIN_BYTES = 256 * 1024;
 //     EVERY tool call, gated or not, and has a separate PermissionRequest
 //     event for the approval pause. Conflating them is the mistake #898
 //     punished.
-//   * PermissionRequest — the event that would retire the screen-scraped
-//     approval regexes in AgentDetector.ts, and the one this bridge could NOT
-//     measure: `codex exec` forces `approval: never`, so no approval pause can
-//     occur in a non-interactive run. It is in the enum; it has not been seen
-//     to fire, or its payload observed. Mapping it now would be guessing at
-//     the field names, and a wrong awaiting_permission is worse than none.
 //   * SessionEnd — measured firing, but there is no AgentSignalKind for
 //     "session over"; agent.stop would be a lie (it is not a turn boundary).
 //   * SubagentStart / SubagentStop / PreCompact / PostCompact / Interrupt —
 //     enum members never observed firing.
+//
+// PermissionRequest maps to agent.awaiting_input — the same pane state the
+// three transcribed approval regexes in AgentDetector.ts produce, not
+// agent.awaiting_permission, which is reserved for wmux's own blocking
+// permission gate (#783: the daemon holds the bridge RPC open until a phone
+// resolves it). Measured live 2026-09-07, codex-cli 0.153.4, PTY-driven TUI
+// against a stub Responses endpoint returning an `exec_command` call with
+// `sandbox_permissions: "require_escalated"`: the firing order for one gated
+// call is PreToolUse → PermissionRequest → (operator approves in the TUI) →
+// PostToolUse → Stop, all carrying the same turn_id. The payload carries the
+// Claude-normalized `tool_name` ("Bash"), a `tool_input` whose `description`
+// field is the call's user-facing `justification`, and NO `tool_use_id`
+// (unlike PreToolUse/PostToolUse). tool_name/tool_input are content and are
+// not read — the envelope allowlist below is the enforcement.
 const EVENT_TO_KIND = {
   SessionStart: 'agent.session_start',
   UserPromptSubmit: 'agent.user_prompt_submit',
   Stop: 'agent.stop',
+  PermissionRequest: 'agent.awaiting_input',
 };
 
 // ----- Path helpers (Node built-ins only) ---------------------------------
