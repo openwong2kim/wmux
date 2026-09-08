@@ -1437,12 +1437,17 @@ export default function AppLayout() {
   // D8: spotlight stays gated behind firstRunCompleted so the wizard always
   // wins the first impression. Once the wizard completes/dismisses, the
   // spotlight tutorial picks up the UI tour for single-workspace users.
+  // #1164: it also waits out a pending auto-update consent — the spotlight's
+  // z-9999 backdrop would cover the prompt's buttons, the same stacked-overlay
+  // pointer-deadness the wizard/prompt pair had. First-boot order: wizard →
+  // consent → spotlight.
   useEffect(() => {
     if (!sessionLoadedRef.current) return;
+    if (showAutoUpdatePrompt) return;
     if (firstRunCompleted && !onboardingCompleted && workspaceCount === 1) {
       startOnboarding();
     }
-  }, [firstRunCompleted, onboardingCompleted, workspaceCount, startOnboarding]);
+  }, [firstRunCompleted, onboardingCompleted, workspaceCount, showAutoUpdatePrompt, startOnboarding]);
 
   // Re-reconcile when daemon connects late (respawn/reconnect after the
   // startup reconcile already ran). Gating + abort/timeout/preserve logic
@@ -1919,8 +1924,15 @@ export default function AppLayout() {
         <OnboardingOverlay onComplete={() => { completeOnboarding(); }} />
       )}
 
-      {/* First-run auto-update prompt */}
-      {showAutoUpdatePrompt && (
+      {/* First-run auto-update prompt. #1164 — gated behind the first-run
+          wizard: on a fresh boot both surfaces fire at once (session.load()
+          nulls → prompt, firstRun.check() → wizard), and the wizard's
+          --z-dialog backdrop then covers the prompt's buttons, producing a
+          pointer-dead stack that only the keyboard can escape. Sequencing
+          instead of stacking: the wizard owns the first impression (the same
+          D8 ruling that gates the onboarding spotlight), and the consent
+          question — still pending — appears the moment it closes. */}
+      {showAutoUpdatePrompt && showFirstRunWizard === null && (
         <div
           className="fixed inset-0 z-[var(--z-modal)] flex items-center justify-center"
           style={{ backgroundColor: 'var(--backdrop-modal)' }}
