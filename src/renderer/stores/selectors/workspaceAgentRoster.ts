@@ -148,7 +148,9 @@ export function selectWorkspaceAgentRoster(
         status,
         attentionStatus,
         pendingQuestion,
-        questionSeen: pendingQuestion !== undefined && state.surfaceQuestionSeen[ptyId] === pendingQuestion,
+        // Optional-chained like surfaceTurnOpenAt in fleet.ts: minimal test
+        // states (dotRosterParity) build partial stores without this map.
+        questionSeen: pendingQuestion !== undefined && state.surfaceQuestionSeen?.[ptyId] === pendingQuestion,
         activity,
         hasAttention: attentionStatus !== undefined || pendingQuestion !== undefined,
         needsAttention: needsAttention(status),
