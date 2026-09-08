@@ -88,6 +88,23 @@ describe('remoteWorkspacesSlice', () => {
     expect(store.getState().remoteWorkspaces[0].label).toBeUndefined();
   });
 
+  it('#1086 — a re-attach keeps the user\'s rename and color tag', () => {
+    const remote = makeRemote();
+    store.getState().attachRemoteWorkspace(remote);
+    store.getState().renameRemoteWorkspace(remote.key, 'CTO-mirror');
+    store.getState().setRemoteWorkspaceColor(remote.key, 'rose');
+    // Re-attach the same key with a FRESH snapshot (no aliases on it), as the
+    // attach flow and the bootstrap path both do.
+    store.getState().attachRemoteWorkspace({ ...makeRemote(), panes: [{ sessionId: 's9' }] });
+    const entry = store.getState().remoteWorkspaces[0];
+    expect(entry.label).toBe('CTO-mirror');
+    expect(entry.color).toBe('rose');
+    // But a re-attach that CARRIES a label wins over the old one (forwarded
+    // aliases are not sticky-forever).
+    store.getState().attachRemoteWorkspace({ ...makeRemote(), label: 'new-name' });
+    expect(store.getState().remoteWorkspaces[0].label).toBe('new-name');
+  });
+
   it('attach dedups by key and sets activeRemoteKey', () => {
     const remote = makeRemote();
     store.getState().attachRemoteWorkspace(remote);

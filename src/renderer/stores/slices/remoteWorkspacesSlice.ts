@@ -148,8 +148,17 @@ export const createRemoteWorkspacesSlice: StateCreator<StoreState, [['zustand/im
       } else {
         // Carry the epoch across a re-attach: its only job is to be different
         // from the value the mounted PaneCells last saw, and resetting it
-        // would tear down streams that are perfectly healthy.
-        state.remoteWorkspaces[idx] = { ...w, attachEpoch: state.remoteWorkspaces[idx].attachEpoch };
+        // would tear down streams that are perfectly healthy. The #1086
+        // aliases survive too — a re-attach (re-attach flow, bootstrap) hands
+        // us a fresh snapshot with no label/color, and letting it overwrite
+        // would silently wipe the user's rename/tag.
+        const prev = state.remoteWorkspaces[idx];
+        state.remoteWorkspaces[idx] = {
+          ...w,
+          attachEpoch: prev.attachEpoch,
+          ...(prev.label && !w.label ? { label: prev.label } : {}),
+          ...(prev.color && !w.color ? { color: prev.color } : {}),
+        };
       }
       state.activeRemoteKey = w.key;
     });
