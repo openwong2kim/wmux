@@ -1012,8 +1012,11 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
         : undefined;
       // Re-push the choice to main so pty.create injects `-d <distro>` from
       // the very first pane (the mirror is main-side and does not survive a
-      // main restart on its own).
-      window.electronAPI?.settings?.setDefaultWslDistro?.(state.defaultWslDistro ?? null);
+      // main restart on its own). Guarded: loadSession also runs in node-env
+      // tests where `window` does not exist.
+      if (typeof window !== 'undefined') {
+        window.electronAPI?.settings?.setDefaultWslDistro?.(state.defaultWslDistro ?? null);
+      }
       if (typeof data.deckBrainModel === 'string') state.deckBrainModel = data.deckBrainModel;
       // D2 — re-normalize on load (session.json is hand-editable / untrusted).
       state.orchestratorRoleBindings = normalizeRoleBindings(data.orchestratorRoleBindings);
