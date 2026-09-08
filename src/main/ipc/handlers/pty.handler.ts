@@ -926,6 +926,11 @@ export function registerPTYHandlers(
         // additive volatile runtime joined by the daemon's listSessions handler.
         supervision?: { restart: string; limit: unknown; status: 'armed' | 'stopped' };
         supervisionRuntime?: { status: 'armed' | 'stopped'; restartCount: number };
+        // #1101 — origin identity for the orphaned-session list: the workspace
+        // the session was spawned in (env-stamped by main force-stamps) and
+        // the agent identity the daemon already derives for /api/sessions.
+        agent?: { displayName?: string };
+        lastDetectedAgent?: string;
         // X6 ② — present only for an interactive agent pane recovered this boot.
         resumeAgent?: string;
         // X6 ③ — the captured resume binding (origin id + cwd + permission mode),
@@ -996,6 +1001,14 @@ export function registerPTYHandlers(
           ...(s.commandRunning !== undefined ? { commandRunning: s.commandRunning } : {}),
           // Process-truth agent liveness — the resume chip's edge-trigger gate.
           ...(s.agentProcessAlive !== undefined ? { agentProcessAlive: s.agentProcessAlive } : {}),
+          // #1101 — origin identity for the orphaned-session list. workspaceId
+          // is the spawn-time env stamp (present for every pane-origin session;
+          // absent for phone-created ones, which then adopt into the active
+          // workspace). agentName mirrors /api/sessions' precedence.
+          ...(s.env?.[ENV_KEYS.WORKSPACE_ID] ? { workspaceId: s.env[ENV_KEYS.WORKSPACE_ID] } : {}),
+          ...(s.agent?.displayName ?? s.lastDetectedAgent
+            ? { agentName: (s.agent?.displayName ?? s.lastDetectedAgent) as string }
+            : {}),
         }));
       // RCA A8 — log the count the renderer's reconcile will act on. An empty
       // or short list here, correlated with a renderer ptyId-clear, is the

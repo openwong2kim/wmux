@@ -26,7 +26,10 @@ export const pl = {
   'sidebar.screenOffFailed': 'Nie udało się przełączyć wbudowanego ekranu.',
   'sidebar.browseFolder': 'Przeglądaj folder…',
   'sidebar.browseFolderDesc': 'Wybierz dowolny folder na dysku',
-  'sidebar.emptyWorkspace': 'Pusty',
+  'sidebar.emptyWorkspace': 'Puste',
+  'sidebar.orphanSessions': 'Sesje odłączone',
+  'sidebar.orphanAdopt': 'Przywróć do panelu — sesja nadal działa',
+  'sidebar.orphanDispose': 'Zakończ tę sesję',
   'sidebar.blankSinglePane': 'Pusty pojedynczy panel',
 
   // Workspace layout presets (the + menu)
