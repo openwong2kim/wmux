@@ -1,4 +1,5 @@
 import http from 'node:http';
+import { agentSlugToDisplay, isAgentSlug } from '../../shared/agentIdentity';
 import https from 'node:https';
 import crypto from 'node:crypto';
 import os from 'node:os';
@@ -1832,8 +1833,15 @@ export class WebTerminalServer {
         // Both fields stay absent when nothing is known — additive-optional.
         ...(() => {
           const managed = this.deps.sessionManager.getSession(s.id);
+          // The slug fallback maps through the shared display-name table:
+          // 'claude-code' must surface as 'Claude Code' like every other
+          // source, or the roster's vendor column sees two spellings of one
+          // vendor and turns itself on spuriously.
+          const slugFallback = s.lastDetectedAgent !== undefined && isAgentSlug(s.lastDetectedAgent)
+            ? agentSlugToDisplay(s.lastDetectedAgent)
+            : null;
           const agentName =
-            s.agent?.displayName ?? managed?.bridge.getLastAgent() ?? s.lastDetectedAgent ?? null;
+            s.agent?.displayName ?? managed?.bridge.getLastAgent() ?? slugFallback ?? null;
           if (!agentName) return {};
           return {
             agentName,

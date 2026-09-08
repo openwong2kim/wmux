@@ -4192,7 +4192,7 @@ describe('WebTerminalServer', () => {
           agent: undefined,
           // Persisted slug fallback: the pane's detector is quiet, but X6
           // recorded what ran here.
-          lastDetectedAgent: 'claude-code',
+          lastDetectedAgent: 'claude',
           lastActivity: '2020-01-01T00:00:00.000Z',
           env: { WMUX_WORKSPACE_ID: 'ws-1', WMUX_WORKSPACE_NAME: 'Workspace 1' },
           cmd: '/usr/bin/bash',
@@ -4201,7 +4201,7 @@ describe('WebTerminalServer', () => {
           id: 's-role', cwd: '/b', cols: 80, rows: 24, state: 'detached',
           // Creation-time role metadata outranks the persisted slug.
           agent: { role: 'worker', teamId: 't1', displayName: 'Codex' },
-          lastDetectedAgent: 'claude-code',
+          lastDetectedAgent: 'claude',
           lastActivity: '2020-01-01T00:00:00.000Z',
           env: { WMUX_WORKSPACE_ID: 'ws-1', WMUX_WORKSPACE_NAME: 'Workspace 1' },
           cmd: '/usr/bin/bash',
@@ -4234,7 +4234,8 @@ describe('WebTerminalServer', () => {
       boxes.agentStatusBox = 'idle';
       body = await read();
       const fallbackById = new Map(body.workspaces.flatMap((w) => w.panes).map((p) => [p.sessionId, p]));
-      expect(fallbackById.get('s-agent')).toMatchObject({ agentName: 'claude-code', agentStatus: 'idle' });
+      // The slug fallback surfaces as a DISPLAY name (vendor-column parity).
+      expect(fallbackById.get('s-agent')).toMatchObject({ agentName: 'Claude Code', agentStatus: 'idle' });
       expect(fallbackById.get('s1')).not.toHaveProperty('agentName');
       expect(fallbackById.get('s2')).not.toHaveProperty('agentName');
     });

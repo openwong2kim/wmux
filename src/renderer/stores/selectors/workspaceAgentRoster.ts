@@ -96,7 +96,13 @@ export function selectWorkspaceAgentRoster(
         const hostId = surface.remoteHostId;
         const sessionId = surface.remoteSessionId;
         if (!hostId || !sessionId) return;
-        const attached = state.remoteWorkspaces.find((r) => r.hostId === hostId);
+        // Search EVERY entry on the host, not just the first: multiple
+        // attached workspaces per host are a supported configuration (the
+        // dedup key is hostId:workspaceId), and a session in the host's
+        // second workspace must still find its pane + hostLabel.
+        const attached = state.remoteWorkspaces.find(
+          (r) => r.hostId === hostId && r.panes.some((p) => p.sessionId === sessionId),
+        );
         const pane = attached?.panes.find((p) => p.sessionId === sessionId);
         if (!pane?.agentName) return;
         const status: AgentStatus = pane.agentStatus ?? 'idle';

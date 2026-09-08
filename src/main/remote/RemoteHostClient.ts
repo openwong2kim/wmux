@@ -163,7 +163,9 @@ function normalizeWorkspaces(body: unknown): RemoteWorkspaceSummary[] {
           // smuggling a foreign value into the local AgentStatus union.
           ...(typeof pane.agentName === 'string' && pane.agentName
             ? {
-                agentName: pane.agentName,
+                // Capped: the value is another machine's output flowing into
+                // row text, title/aria labels, and per-tick string compares.
+                agentName: pane.agentName.slice(0, 256),
                 ...(isRemoteAgentStatus(pane.agentStatus) ? { agentStatus: pane.agentStatus } : {}),
               }
             : {}),

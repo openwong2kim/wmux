@@ -318,7 +318,13 @@ function WorkspaceAgentRoster({ workspaceId, pulsingPaneId }: WorkspaceAgentRost
             return (
               // Keyed by paneId for stashed rows: an exited pane has no ptyId
               // left, and two of them would collide on the empty string.
-              <div key={row.stashed ? row.paneId : row.ptyId} className="min-w-0">
+              <div
+                // Remote rows key by surfaceId: the synthetic remote:{...}
+                // ptyId collides when two mirror tabs attach to the SAME
+                // remote session (multi-attach is supported).
+                key={row.stashed ? row.paneId : row.remote ? row.surfaceId : row.ptyId}
+                className="min-w-0"
+              >
                 {startsStashedGroup && (
                   <div
                     className="mt-1 flex items-center gap-1.5 border-t border-[var(--border-soft)] pt-1 pr-1 text-[10px] font-mono uppercase tracking-widest text-[var(--text-muted)]"
