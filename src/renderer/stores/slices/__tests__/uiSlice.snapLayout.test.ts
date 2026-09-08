@@ -34,9 +34,9 @@ function createTestStore() {
       workspaces: [ws],
       activeWorkspaceId: ws.id,
       pushToast: vi.fn(),
-      zoomedPaneId: null,
       // @ts-expect-error — minimal test store doesn't match full StoreState
       ...createUISlice(...args),
+      // @ts-expect-error — same: slice factories type set/get against StoreState
       ...createPaneSlice(...args),
     })),
   );
