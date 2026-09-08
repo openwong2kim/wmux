@@ -1820,7 +1820,27 @@ export class WebTerminalServer {
         const n = s.env?.[ENV_KEYS.WORKSPACE_NAME];
         if (typeof n === 'string' && n.trim()) entry.name = n.trim();
       }
-      entry.panes.push({ sessionId: s.id, ...shellLabelOf(s.cmd), ...(s.cwd ? { cwd: s.cwd } : {}) });
+      entry.panes.push({
+        sessionId: s.id,
+        ...shellLabelOf(s.cmd),
+        ...(s.cwd ? { cwd: s.cwd } : {}),
+        // #1163 — per-session agent metadata, so the attaching desktop's
+        // roster can count remote agents. Name precedence matches
+        // /api/sessions: creation-time role metadata, then the live detector
+        // (authoritative even mid-race), then the persisted slug. Status comes
+        // from the same bridge snapshot the desktop reconnect path trusts.
+        // Both fields stay absent when nothing is known — additive-optional.
+        ...(() => {
+          const managed = this.deps.sessionManager.getSession(s.id);
+          const agentName =
+            s.agent?.displayName ?? managed?.bridge.getLastAgent() ?? s.lastDetectedAgent ?? null;
+          if (!agentName) return {};
+          return {
+            agentName,
+            ...(managed ? { agentStatus: managed.bridge.getAgentStatus() } : {}),
+          };
+        })(),
+      });
       byId.set(id, entry);
     }
     const workspaces = [...byId.values()]

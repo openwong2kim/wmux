@@ -8,7 +8,7 @@ import {
 } from '../../stores/selectors/workspaceAgentRoster';
 import { focusNotificationTarget, focusPaneByPtyId } from '../../hooks/useNotificationListener';
 import { useT } from '../../hooks/useT';
-import { IconEye, IconEyeOff, IconChevron } from '../icons';
+import { IconEye, IconEyeOff, IconChevron, IconExternalLink } from '../icons';
 import { FOCUS_RING } from '../focusRing';
 import { HIT_TARGET_24_ROW } from '../hitArea';
 import { timeAgo } from '../../utils/timeAgo';
@@ -112,7 +112,11 @@ export function rosterSecondaryLabel(
   const showVendor = opts.showVendor ?? true;
   const parts: string[] = [];
   if (showVendor && row.surfaceTitle) parts.push(row.agentName);
-  parts.push(row.paneName);
+  // #1163 — a remote session's local pane coordinate is meaningless (it names
+  // the mirror cell, not the agent); the HOST is the "where" that identifies
+  // the row and marks its origin.
+  if (row.remote) parts.push(`@${row.remote.hostLabel}`);
+  else parts.push(row.paneName);
   if (row.surfaceCount > 1) parts.push(`#${row.surfaceIndex + 1}/${row.surfaceCount}`);
   return parts.join(' · ');
 }
@@ -352,6 +356,15 @@ function WorkspaceAgentRoster({ workspaceId, pulsingPaneId }: WorkspaceAgentRost
                       });
                       return;
                     }
+                    if (row.remote) {
+                      // #1163 — the synthetic remote:{host}:{session} key is
+                      // not a local ptyId; resolve the mirror's own surface.
+                      focusNotificationTarget(() => useStore.getState(), {
+                        ptyId: null,
+                        surfaceId: row.surfaceId,
+                      });
+                      return;
+                    }
                     focusPaneByPtyId(() => useStore.getState(), row.ptyId);
                   }}
                   onDoubleClick={(event) => event.stopPropagation()}
@@ -378,6 +391,15 @@ function WorkspaceAgentRoster({ workspaceId, pulsingPaneId }: WorkspaceAgentRost
                       the coordinate (w85-1 etc.) takes at most 40% before it
                       ellipses too. */}
                   <span className="flex min-w-0 flex-1 items-baseline gap-1">
+                    {row.remote && (
+                      // #1163 — origin glyph: this agent runs on another
+                      // host. Same steel-not-accent rule as the tab strip's
+                      // RemoteSurfaceGlyph (a provenance marker must not read
+                      // as focus); shape carries the meaning.
+                      <span className="flex-none self-center text-[var(--text-muted)]" aria-hidden="true">
+                        <IconExternalLink size={9} />
+                      </span>
+                    )}
                     <span className="min-w-0 flex-1 truncate text-[10px] font-semibold text-[var(--text-main)]">
                       {primary}
                     </span>

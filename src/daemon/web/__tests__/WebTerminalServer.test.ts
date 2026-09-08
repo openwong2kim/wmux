@@ -28,7 +28,15 @@ import type { DaemonSessionManager } from '../../DaemonSessionManager';
 // A minimal fake of exactly what WebTerminalServer touches: getSession() (for
 // stream/input) and listLiveSessions() (for the picker). No real daemon/pty.
 function makeDeps() {
-  const bridge = new EventEmitter();
+  const bridge = Object.assign(new EventEmitter(), {
+    // #1163 — the agent-metadata source for /api/workspaces. Default to "the
+    // detector knows nothing"; tests that need a live detection or a status
+    // override the boxes.
+    agentNameBox: null as string | null,
+    agentStatusBox: 'idle' as 'idle' | 'running' | 'complete' | 'waiting' | 'awaiting_input' | 'error',
+    getLastAgent() { return this.agentNameBox; },
+    getAgentStatus() { return this.agentStatusBox; },
+  });
   const write = vi.fn();
   const managed = {
     // `cwd` and `spawnCwd` DIFFER on purpose: `cwd` is what the pane's own
@@ -58,11 +66,12 @@ function makeDeps() {
   // and no wmux identity at all.
   type LiveRow = {
     id: string; cwd: string; cols: number; rows: number; state: string;
-    agent: undefined; lastDetectedAgent: undefined; lastActivity: string;
+    agent: { role: string; teamId: string; displayName: string } | undefined;
+    lastDetectedAgent: string | undefined;
+    lastActivity: string;
     env: Record<string, string>; cmd: string;
   };
-  const live: LiveRow[] = [
-    {
+  const live: LiveRow[] = [    {
       id: 's1', cwd: '/x', cols: 80, rows: 24, state: 'detached',
       agent: undefined, lastDetectedAgent: undefined, lastActivity: '2020-01-01T00:00:00.000Z',
       env: { WMUX_WORKSPACE_ID: 'ws-1', WMUX_WORKSPACE_NAME: 'Workspace 1', ANTHROPIC_API_KEY: 'sk-secret' },
@@ -4171,6 +4180,63 @@ describe('WebTerminalServer', () => {
       expect(body.workspaces[1].panes).toEqual([{ sessionId: 's2', shell: 'pwsh', cwd: '/y' }]);
       // The env-less session (s3) is omitted entirely.
       expect(body.workspaces.flatMap((w) => w.panes).map((p) => p.sessionId)).not.toContain('s3');
+    });
+
+    // #1163 — per-session agent metadata, so the attaching desktop's roster
+    // can count remote Claude sessions. Additive-optional: panes the host
+    // knows nothing about carry no agent fields at all.
+    it('surfaces per-pane agent name and status, omitting them when unknown', async () => {
+      live.push(
+        {
+          id: 's-agent', cwd: '/a', cols: 80, rows: 24, state: 'detached',
+          agent: undefined,
+          // Persisted slug fallback: the pane's detector is quiet, but X6
+          // recorded what ran here.
+          lastDetectedAgent: 'claude-code',
+          lastActivity: '2020-01-01T00:00:00.000Z',
+          env: { WMUX_WORKSPACE_ID: 'ws-1', WMUX_WORKSPACE_NAME: 'Workspace 1' },
+          cmd: '/usr/bin/bash',
+        },
+        {
+          id: 's-role', cwd: '/b', cols: 80, rows: 24, state: 'detached',
+          // Creation-time role metadata outranks the persisted slug.
+          agent: { role: 'worker', teamId: 't1', displayName: 'Codex' },
+          lastDetectedAgent: 'claude-code',
+          lastActivity: '2020-01-01T00:00:00.000Z',
+          env: { WMUX_WORKSPACE_ID: 'ws-1', WMUX_WORKSPACE_NAME: 'Workspace 1' },
+          cmd: '/usr/bin/bash',
+        },
+      );
+      // The live detector outranks everything for s1. (The fake manager shares
+      // one bridge across sessions, so the box speaks for all of them — the
+      // second fetch below clears it to prove the persisted-slug fallback.)
+      const boxes = bridge as unknown as { agentNameBox: string | null; agentStatusBox: string };
+      boxes.agentNameBox = 'Claude Code';
+      boxes.agentStatusBox = 'awaiting_input';
+      const info = await startRO();
+      const res = await fetch(`${base()}/api/workspaces`, { headers: bearer(info.token as string) });
+      expect(res.status).toBe(200);
+      const read = async () => {
+        const r = await fetch(`${base()}/api/workspaces`, { headers: bearer(info.token as string) });
+        return (await r.json()) as {
+          workspaces: Array<{ panes: Array<{ sessionId: string; agentName?: string; agentStatus?: string }> }>;
+        };
+      };
+      let body = await read();
+      const byId = new Map(body.workspaces.flatMap((w) => w.panes).map((p) => [p.sessionId, p]));
+      expect(byId.get('s1')).toMatchObject({ agentName: 'Claude Code', agentStatus: 'awaiting_input' });
+      // Role metadata outranks the slug.
+      expect(byId.get('s-role')).toMatchObject({ agentName: 'Codex' });
+
+      // Detector quiet → the persisted slug carries the name, status degrades
+      // to the idle default; s1 (nothing known) carries no agent fields.
+      boxes.agentNameBox = null;
+      boxes.agentStatusBox = 'idle';
+      body = await read();
+      const fallbackById = new Map(body.workspaces.flatMap((w) => w.panes).map((p) => [p.sessionId, p]));
+      expect(fallbackById.get('s-agent')).toMatchObject({ agentName: 'claude-code', agentStatus: 'idle' });
+      expect(fallbackById.get('s1')).not.toHaveProperty('agentName');
+      expect(fallbackById.get('s2')).not.toHaveProperty('agentName');
     });
 
     it('groups multiple panes into the same workspace, sorted by sessionId', async () => {

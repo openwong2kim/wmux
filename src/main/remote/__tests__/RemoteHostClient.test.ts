@@ -270,6 +270,42 @@ describe('RemoteHostClient', () => {
         const client = new RemoteHostClient(host, fetchImpl as unknown as typeof fetch);
         await expect(client.listWorkspaces()).rejects.toThrow(/not JSON/);
       });
+
+      // #1163 — agent metadata is additive-optional: an older host omits both
+      // fields, a same-age host fills them, and a NEWER host's unknown status
+      // degrades to name-only instead of entering the local union.
+      it('keeps valid agent fields, drops an unknown status, and omits absent ones', async () => {
+        const body = {
+          workspaces: [
+            {
+              id: 'w1',
+              name: 'proj',
+              panes: [
+                { sessionId: 's1', agentName: 'Claude Code', agentStatus: 'awaiting_input' },
+                { sessionId: 's2', agentName: 'claude-code' },
+                { sessionId: 's3', agentName: 'Codex', agentStatus: 'hypersleep' },
+                { sessionId: 's4', agentStatus: 'running' },
+                { sessionId: 's5' },
+              ],
+            },
+          ],
+        };
+        await expect(clientFor(body).listWorkspaces()).resolves.toEqual({
+          workspaces: [{
+            id: 'w1',
+            name: 'proj',
+            panes: [
+              { sessionId: 's1', agentName: 'Claude Code', agentStatus: 'awaiting_input' },
+              { sessionId: 's2', agentName: 'claude-code' },
+              // Unknown status dropped, name kept.
+              { sessionId: 's3', agentName: 'Codex' },
+              // A status without a name carries no row — dropped with it.
+              { sessionId: 's4' },
+              { sessionId: 's5' },
+            ],
+          }],
+        });
+      });
     });
   });
 
