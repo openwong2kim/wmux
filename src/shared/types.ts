@@ -705,9 +705,31 @@ export const DEFAULT_PREFIX_CONFIG: PrefixConfig = {
 };
 
 // === Session: serialized app state ===
+
+/**
+ * #1011 — an archived workspace: the CONFIGURATION snapshot of a workspace
+ * the user put away. Sessions do not survive archiving (closing them is part
+ * of the point — the sidebar goes quiet); what persists is everything it
+ * takes to bring the workspace back: name, color tag, profile, the pane
+ * arrangement, and the ordinal so the restored `w<N>` coordinate matches.
+ * The pane tree is a LayoutNode snapshot (no pane ids — restore mints fresh
+ * ones, so a restored workspace can never collide with live A2A addresses).
+ */
+export interface ArchivedWorkspace {
+  id: string;                // archived-entry id (NOT the live workspace id restore mints)
+  name: string;
+  color?: string;            // WorkspaceColorId — string-typed like the persisted tag
+  wsOrdinal: number;
+  profile?: WorkspaceProfile;
+  tree: LayoutNode;
+  archivedAt: number;        // epoch ms, for the "3d ago" trailer
+}
+
 export interface SessionData {
   workspaces: Workspace[];
   activeWorkspaceId: string;
+  /** #1011 — archived workspace snapshots, oldest first. */
+  archivedWorkspaces?: ArchivedWorkspace[];
   /** P2 — persisted global high-water for Workspace.wsOrdinal (stable
    *  workspace numbers across restart). Optional for pre-P2 sessions. */
   nextWorkspaceOrdinal?: number;

@@ -1,6 +1,6 @@
 import type { StateCreator } from 'zustand';
 import type { StoreState } from '../index';
-import { createWorkspace, clonePaneTreeFresh, assignPaneOrdinals, generateId, BUILTIN_TEMPLATES, DEFAULT_PREFIX_CONFIG, buildDefaultCustomKeybindings, upgradeDefaultKeybindingsForPlatform, TERMINAL_STATES, NOTIFICATION_CATEGORIES, type Pane, type PaneLeaf, type SessionData, type StashedPane, type Workspace, type WorkspaceMetadata, type WorkspaceProfile } from '../../../shared/types';
+import { createWorkspace, clonePaneTreeFresh, assignPaneOrdinals, generateId, BUILTIN_TEMPLATES, DEFAULT_PREFIX_CONFIG, buildDefaultCustomKeybindings, upgradeDefaultKeybindingsForPlatform, TERMINAL_STATES, NOTIFICATION_CATEGORIES, type ArchivedWorkspace, type Pane, type PaneLeaf, type SessionData, type StashedPane, type Workspace, type WorkspaceMetadata, type WorkspaceProfile } from '../../../shared/types';
 import { normalizeWorkspaceProfile } from '../../../shared/workspaceProfile';
 import { ADVERTISED_SHORTCUTS } from '../../../shared/keymap';
 import { normalizeWorkspaceColor, type WorkspaceColorId } from '../../../shared/workspaceColors';
@@ -8,7 +8,7 @@ import { normalizeRoleBindings } from '../../../shared/orchestratorRole';
 import { getPresetById } from '../../../shared/layoutPresets';
 import { setLocale as i18nSetLocale, t as i18nT, detectSupportedLocale, type Locale } from '../../i18n';
 import { applyCustomCssVars, migrateThemeId, migrateCustomThemeColors } from '../../themes';
-import { resetInspectState } from './uiSlice';
+import { resetInspectState, extractLayout, buildPaneFromLayout } from './uiSlice';
 import { sanitizeFontFamily } from '../../utils/terminalFont';
 import { sanitizeTerminalCursorStyle } from '../../../shared/terminalCursor';
 import { sanitizeImagePasteMode } from '../../../shared/imagePaste';
@@ -201,6 +201,16 @@ export interface WorkspaceSlice {
    */
   duplicateWorkspace: (id: string) => void;
   removeWorkspace: (id: string) => void;
+  // #1011 — Active → Archived → Permanently Deleted.
+  archivedWorkspaces: ArchivedWorkspace[];
+  /** Snapshot the configuration, then tear the workspace down exactly like
+   *  Close (sessions die; the sidebar goes quiet; the config survives). */
+  archiveWorkspace: (id: string) => void;
+  /** Bring a snapshot back as a LIVE workspace: fresh ids, same name, color,
+   *  profile, pane arrangement and w<N> ordinal. */
+  restoreArchivedWorkspace: (archivedId: string) => void;
+  /** Destroy the snapshot forever. */
+  deleteArchivedWorkspace: (archivedId: string) => void;
   setActiveWorkspace: (id: string) => void;
   renameWorkspace: (id: string, name: string) => void;
   updateWorkspaceMetadata: (id: string, metadata: Partial<WorkspaceMetadata>) => void;
@@ -247,6 +257,7 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
   return {
     workspaces: [initial],
     activeWorkspaceId: initial.id,
+    archivedWorkspaces: [],
     nextWorkspaceOrdinal: 2,
     lastVisibleAt: {},
     parkedWorkspaceIds: {},
@@ -356,6 +367,66 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       state.workspaces.push(ws);
       state.activeWorkspaceId = ws.id;
       clearRemoteSelection(state);
+    }),
+
+    // #1011 — Active → Archived → Deleted. Archiving snapshots the
+    // configuration, then delegates the teardown to removeWorkspace so every
+    // invariant of Close (a2a force-fail, ring/recovery cleanup, multiview
+    // pruning, promotion) stays in exactly one place. PTY disposal is the
+    // CALLER's job, same as Close — the sidebar path disposes everything the
+    // workspace owns (stashed panes included) before calling here.
+    archiveWorkspace: (id) => {
+      const ws = get().workspaces.find((w: Workspace) => w.id === id);
+      // Same protection as removeWorkspace: never archive the last workspace.
+      if (!ws || get().workspaces.length <= 1) return;
+      const color = normalizeWorkspaceColor(ws.color);
+      const snapshot: ArchivedWorkspace = {
+        id: generateId('arch'),
+        name: ws.name,
+        ...(color ? { color } : {}),
+        wsOrdinal: ws.wsOrdinal ?? 1,
+        ...(ws.profile ? { profile: ws.profile } : {}),
+        tree: extractLayout(ws.rootPane),
+        archivedAt: Date.now(),
+      };
+      get().removeWorkspace(id);
+      set((state: StoreState) => {
+        state.archivedWorkspaces.push(snapshot);
+      });
+    },
+
+    // Fresh ids on the way back: the snapshot's LayoutNode carries no pane
+    // ids, and the workspace itself mints a new id + a FRESH ordinal, so a
+    // restored workspace can never collide with a live auto-name or A2A
+    // address. The NAME (what the user actually recognizes) is preserved.
+    restoreArchivedWorkspace: (archivedId) => {
+      const archived = get().archivedWorkspaces.find((a) => a.id === archivedId);
+      if (!archived) return;
+      set((state: StoreState) => {
+        // Fresh ordinal from the true FREE high-water: the counter, or one
+        // past the highest live ordinal when a fixture/backfilled session
+        // left the counter sitting at a live workspace's number. A restored
+        // w<N> must never collide with a live one.
+        const maxLive = state.workspaces.reduce((m, w) => Math.max(m, w.wsOrdinal ?? 0), 0);
+        const highWater = Math.max(state.nextWorkspaceOrdinal ?? 1, maxLive + 1);
+        const ws = createWorkspace(archived.name, highWater);
+        const rootPane = buildPaneFromLayout(archived.tree);
+        const leaves = collectLeafPanes(rootPane);
+        ws.nextPaneOrdinal = assignPaneOrdinals(rootPane, 1);
+        ws.rootPane = rootPane;
+        ws.activePaneId = leaves[0]?.id ?? rootPane.id;
+        const color = normalizeWorkspaceColor(archived.color);
+        if (color) ws.color = color;
+        if (archived.profile) ws.profile = archived.profile;
+        state.nextWorkspaceOrdinal = highWater + 1;
+        state.workspaces.push(ws);
+        state.activeWorkspaceId = ws.id;
+        state.archivedWorkspaces = state.archivedWorkspaces.filter((a) => a.id !== archivedId);
+      });
+    },
+
+    deleteArchivedWorkspace: (archivedId) => set((state: StoreState) => {
+      state.archivedWorkspaces = state.archivedWorkspaces.filter((a) => a.id !== archivedId);
     }),
 
     duplicateWorkspace: (id) => set((state: StoreState) => {
@@ -881,6 +952,15 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       }
 
       state.workspaces = data.workspaces;
+      // #1011 — archived snapshots hydrate shape-guarded: a hand-edited or
+      // downgrade-round-tripped session file must not crash the load. Entries
+      // without a usable id/tree are dropped, not guessed at.
+      state.archivedWorkspaces = Array.isArray(data.archivedWorkspaces)
+        ? data.archivedWorkspaces.filter(
+            (a): a is ArchivedWorkspace =>
+              !!a && typeof a.id === 'string' && typeof a.name === 'string' && !!a.tree,
+          )
+        : [];
       // The previous session's group cannot describe this one's workspaces.
       pruneMultiviewMembership(state);
       state.activeWorkspaceId = data.activeWorkspaceId;
