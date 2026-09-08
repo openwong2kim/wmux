@@ -1,8 +1,14 @@
 import { app, BrowserWindow, powerMonitor, shell } from 'electron';
 import path from 'node:path';
-import { platformChoice } from '../../shared/platform';
+import os from 'node:os';
+import { platformChoice, parseWindowsBuildNumber } from '../../shared/platform';
+import { WINDOWS_11_FIRST_BUILD } from '../../shared/conptyWindows';
 import { IPC } from '../../shared/constants';
 import { PLUGIN_PROTOCOL_SCHEME } from '../../shared/pluginHost';
+import {
+  type WindowAppearancePrefs,
+  windowNeedsTransparentCreation,
+} from '../../shared/windowAppearance';
 import { attachFlashFrameAutoClear } from './flashFrame';
 import { windowDisplayedReporter } from './windowDisplayed';
 
@@ -85,7 +91,25 @@ export function loadMainRenderer(mainWindow: BrowserWindow): void {
  * leaves `deferLoad` unset because the daemon is already healthy by the
  * time activate fires.
  */
-export function createWindow(opts: { deferLoad?: boolean } = {}): BrowserWindow {
+/**
+ * #1133 — whether this machine's next window is created translucent. The
+ * platform term lives here (next to its only consumer) so main/index.ts's
+ * "was the current window created translucent" mirror cannot drift from the
+ * creation decision. Linux stays opaque on purpose — without a compositor
+ * guarantee the transparent flag yields a black window.
+ */
+export function windowWillBeTranslucent(appearance: WindowAppearancePrefs): boolean {
+  return windowNeedsTransparentCreation(appearance)
+    && (process.platform === 'win32' || process.platform === 'darwin');
+}
+
+export function createWindow(
+  opts: { deferLoad?: boolean; appearance?: WindowAppearancePrefs } = {},
+): BrowserWindow {
+  // #1133 — translucency is a CREATION-time flag in Chromium: `transparent`
+  // cannot be toggled on a live window, so the prefs (main-owned, read before
+  // the renderer boots) decide it here.
+  const translucent = opts.appearance !== undefined && windowWillBeTranslucent(opts.appearance);
   const mainWindow = new BrowserWindow({
     width: 1280,
     height: 800,
@@ -130,7 +154,9 @@ export function createWindow(opts: { deferLoad?: boolean } = {}): BrowserWindow 
     }),
     // Matches the amber (default) theme's bgBase so the first paint doesn't
     // flash a foreign color behind the renderer (was catppuccin '#1e1e2e').
-    backgroundColor: '#151517',
+    // A translucent window must NOT set it: an opaque native background would
+    // sit behind the web content forever, defeating transparency entirely.
+    ...(translucent ? { transparent: true } : { backgroundColor: '#151517' }),
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -138,6 +164,21 @@ export function createWindow(opts: { deferLoad?: boolean } = {}): BrowserWindow 
       webviewTag: true,
     },
   });
+
+  // #1133 — Windows 11 system backdrop. mica/acrylic composite at the OS level
+  // (near-zero GPU cost); the renderer's `--bg-base` tint paints OVER whatever
+  // material shows through. Older Windows and other platforms ignore it.
+  const material = opts.appearance?.material;
+  const winBuild = parseWindowsBuildNumber(os.release());
+  if (translucent && material && material !== 'none' && process.platform === 'win32' &&
+      winBuild !== null && winBuild >= WINDOWS_11_FIRST_BUILD) {
+    try {
+      mainWindow.setBackgroundMaterial(material);
+    } catch {
+      // A driver/OS refusal must not take the window down — opaque-ish tint
+      // over nothing is the graceful degradation.
+    }
+  }
 
   // macOS: native fullscreen hides the traffic lights, so the renderer's
   // titlebar must drop its 72px left reserve (and restore it on exit) — the

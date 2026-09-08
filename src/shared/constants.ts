@@ -490,6 +490,14 @@ export const IPC = {
   // native min/max/close) so the controls never clash with the theme.
   // Windows-only no-op elsewhere (see registerHandlers).
   WINDOW_SET_TITLEBAR_OVERLAY: 'window:setTitleBarOverlay',
+  // #1133 — window transparency prefs. Main owns them (the window's
+  // `transparent` flag is decided at creation, before the renderer boots):
+  // pull the current value + whether the LIVE window was created translucent
+  // (restart-gated changes), push writes, and a change event so every
+  // renderer surface re-tints without a reload.
+  WINDOW_APPEARANCE_GET: 'window:appearance:get',
+  WINDOW_APPEARANCE_SET: 'window:appearance:set',
+  WINDOW_APPEARANCE_CHANGED: 'window:appearance-changed',
   // Whole-interface zoom (#822): the renderer asks main to scale the
   // BrowserWindow with setZoomFactor and re-place the native chrome to match.
   // One-way send — the persisted factor lives in the renderer store.

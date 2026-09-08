@@ -34,9 +34,13 @@ process.on('uncaughtException', (err) => {
 import { markBoot, emitBootSummary } from './util/bootTrace';
 import * as crypto from 'crypto';
 import * as path from 'path';
+import * as os from 'os';
+import { parseWindowsBuildNumber } from '../shared/platform';
+import { WINDOWS_11_FIRST_BUILD } from '../shared/conptyWindows';
+import { normalizeWindowAppearance, type WindowAppearancePrefs } from '../shared/windowAppearance';
 import { app, BrowserWindow, dialog, ipcMain, powerMonitor } from 'electron';
 import { checkUserDataIsolation } from './dataIsolation';
-import { createWindow, loadMainRenderer } from './window/createWindow';
+import { createWindow, loadMainRenderer, windowWillBeTranslucent } from './window/createWindow';
 import { attachDesktopPresenceReporter, reportDesktopPresence } from './window/desktopPresence';
 import { PTYManager } from './pty/PTYManager';
 import { PTYBridge } from './pty/PTYBridge';
@@ -109,6 +113,7 @@ import { McpRegistrar } from './mcp/McpRegistrar';
 import { BrokerSupervisor, isMcpBrokerEnabled } from './mcp/BrokerSupervisor';
 import { WebviewCdpManager } from './browser-session/WebviewCdpManager';
 import { BrowserBackendStore } from './browser-session/BrowserBackendStore';
+import { WindowAppearanceStore } from './window/WindowAppearanceStore';
 import { ChromeLauncherRegistry } from './browser-session/ChromeLauncher';
 import { ChromeProfileStore } from './browser-session/ChromeProfileStore';
 import { ChromeSurfaceStore } from './browser-session/ChromeSurfaceStore';
@@ -801,6 +806,37 @@ registerPerfRpc(rpcRouter);
 // arrive before the renderer has pushed anything, so renderer-push authority
 // would race and fail open to builtin).
 const browserBackendStore = new BrowserBackendStore(app.getPath('userData'));
+// #1133 window transparency: main owns the prefs for the same reason — the
+// window is created `transparent: true` (or not) before the renderer boots.
+const windowAppearanceStore = new WindowAppearanceStore(app.getPath('userData'));
+/** Whether the CURRENT main window was created translucent — flips only with
+ *  a window rebuild, so the Settings UI can say "restart to apply" honestly. */
+let mainWindowCreatedTranslucent = false;
+/** Every main-window creation site goes through here so the appearance prefs
+ *  (and the translucency mirror above) apply uniformly — boot, the updater's
+ *  abort-install rebuild, and the macOS activate re-open. */
+function createMainWindow(opts: { deferLoad?: boolean } = {}): BrowserWindow {
+  const appearance = windowAppearanceStore.get();
+  mainWindowCreatedTranslucent = windowWillBeTranslucent(appearance);
+  return createWindow({ ...opts, appearance });
+}
+/** Live-apply what CAN change without a window rebuild: the OS backdrop
+ *  material and the renderer tint. The `transparent` flag itself cannot. */
+function applyLiveWindowAppearance(prefs: WindowAppearancePrefs): void {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    if (process.platform === 'win32') {
+      const build = parseWindowsBuildNumber(os.release());
+      if (build !== null && build >= WINDOWS_11_FIRST_BUILD) {
+        try {
+          mainWindow.setBackgroundMaterial(prefs.material);
+        } catch {
+          /* OS/driver refusal degrades to the plain tint */
+        }
+      }
+    }
+    mainWindow.webContents.send(IPC.WINDOW_APPEARANCE_CHANGED, prefs);
+  }
+}
 // 'chrome' backend: per-profile real-Chrome instances (Phase 2.5). The
 // 'default' profile keeps the pre-registry dir so existing logins survive.
 const chromeProfileStore = new ChromeProfileStore();
@@ -1178,6 +1214,20 @@ ipcMain.handle('browser:set-backend', (_event, value: unknown) => {
   browserBackendStore.set(value);
   return { ok: true };
 });
+// #1133 — window transparency prefs. `active` reports whether the LIVE window
+// was created translucent: the `transparent` flag is creation-only in
+// Chromium, so a prefs write that flips windowNeedsTransparentCreation() is
+// restart-gated and the Settings UI must say so instead of silently applying.
+ipcMain.handle(IPC.WINDOW_APPEARANCE_GET, () => ({
+  ...windowAppearanceStore.get(),
+  active: mainWindowCreatedTranslucent,
+}));
+ipcMain.handle(IPC.WINDOW_APPEARANCE_SET, (_event, raw: unknown) => {
+  const prefs = normalizeWindowAppearance(raw);
+  windowAppearanceStore.set(prefs);
+  applyLiveWindowAppearance(prefs);
+  return { ...prefs, active: mainWindowCreatedTranslucent };
+});
 // Phase 2.5 — chrome-backend profiles + workspace bindings (workspace card
 // menu). Validation lives in the store; IPC only shapes the payloads.
 ipcMain.handle('browser:chrome-profiles:list', () => ({
@@ -1400,7 +1450,7 @@ app.on('ready', async () => {
   registerPluginProtocolHandler(() => pluginHostLoader);
   markBoot('plugins-loaded');
 
-  mainWindow = createWindow({ deferLoad: true });
+  mainWindow = createMainWindow({ deferLoad: true });
   markBoot('window-created');
   console.log(`[Main] Window created (renderer load deferred): ${!!mainWindow}`);
   logLine('info', 'main', `window created (deferred): present=${!!mainWindow}`);
@@ -2107,7 +2157,7 @@ async function abortInstallQuit(): Promise<void> {
   // its renderer, or the caller's error IPC lands before any listener exists.
   // deferLoad so the reload backoff and console wiring are attached before the
   // navigation starts — this window's whole job is to render the failure.
-  const win = createWindow({ deferLoad: true });
+  const win = createMainWindow({ deferLoad: true });
   mainWindow = win;
   adoptMainWindow(win);
   loadMainRenderer(win);
@@ -2448,7 +2498,7 @@ app.on('activate', () => {
   if (isQuitting) return;
   const windows = BrowserWindow.getAllWindows();
   if (windows.length === 0) {
-    mainWindow = createWindow();
+    mainWindow = createMainWindow();
     adoptMainWindow(mainWindow);
     return;
   }

@@ -298,6 +298,26 @@ const electronAPI = {
     get: () => ipcRenderer.invoke(IPC.AUTOSTART_GET) as Promise<{ enabled: boolean }>,
     set: (enabled: boolean) => ipcRenderer.invoke(IPC.AUTOSTART_SET, enabled) as Promise<{ enabled: boolean }>,
   },
+  // #1133 — window transparency. Main owns the prefs (the `transparent` flag
+  // is decided at window creation, before this renderer exists). `active` in
+  // the responses says whether the LIVE window was created translucent — a
+  // change that flips it applies after a restart, not now. The changed event
+  // re-tints every renderer surface without a reload.
+  windowAppearance: {
+    get: () => ipcRenderer.invoke(
+      IPC.WINDOW_APPEARANCE_GET,
+    ) as Promise<import('../shared/windowAppearance').WindowAppearancePrefs & { active: boolean }>,
+    set: (prefs: import('../shared/windowAppearance').WindowAppearancePrefs) =>
+      ipcRenderer.invoke(
+        IPC.WINDOW_APPEARANCE_SET,
+        prefs,
+      ) as Promise<import('../shared/windowAppearance').WindowAppearancePrefs & { active: boolean }>,
+    onChanged: (listener: (prefs: import('../shared/windowAppearance').WindowAppearancePrefs) => void) => {
+      const l = (_e: Electron.IpcRendererEvent, prefs: import('../shared/windowAppearance').WindowAppearancePrefs): void => listener(prefs);
+      ipcRenderer.on(IPC.WINDOW_APPEARANCE_CHANGED, l);
+      return () => { ipcRenderer.removeListener(IPC.WINDOW_APPEARANCE_CHANGED, l); };
+    },
+  },
   notification: {
     // ptyId may be null for app-level notifications (e.g. external MCP
     // `notify` RPC, where no PTY originates the message). When null, the

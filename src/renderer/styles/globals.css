@@ -445,6 +445,21 @@ html, body, #root {
   font-family: var(--font-ui);
 }
 
+/* #1133 — window transparency. The document root paints --bg-base with the
+   user's opacity over whatever the OS composites behind the (transparent)
+   window: the desktop, or the Windows 11 mica/acrylic backdrop material.
+   Attribute selectors so these beats the tailwind utilities above without
+   !important; the AppLayout root carries the same tint so its own
+   bg-[var(--bg-base)] cannot repaint the window opaque. Surfaces INSIDE the
+   layout (mantle/surface panels, terminals) stay fully opaque on purpose —
+   readability over blur is the whole point of the tint model. */
+html[data-window-translucent='true'],
+html[data-window-translucent='true'] body,
+html[data-window-translucent='true'] #root,
+html[data-window-translucent='true'] .app-layout-root {
+  background-color: color-mix(in srgb, var(--bg-base) calc(var(--window-bg-opacity, 100) * 1%), transparent);
+}
+
 /* 네이티브 버튼 외형 제거: macOS에서 <button>이 Aqua 그라데이션·베벨·그림자를
    직접 그려 평평한 커스텀 테마 위로 새어나오는 문제를 막는다. checkbox/radio/
    select는 네이티브 외형(체크표시·드롭다운 화살표)이 필요하므로 건드리지 않는다. */

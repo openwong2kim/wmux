@@ -934,6 +934,16 @@ export const pl = {
   'settings.chromePresetApplied': 'Zaktualizowano widoczność interfejsu.',
   'settings.uiScale': 'Skala interfejsu',
   'settings.uiScaleDesc': 'Skaluj cały interfejs — przydatne na ekranach o wysokiej DPI. Restart nie jest wymagany.',
+
+  // Przezroczystość okna (#1133) — Windows/macOS; wiersz materiału tylko Win11.
+  'settings.windowOpacity': 'Przezroczystość okna',
+  'settings.windowOpacityDesc': 'Rysuje tło okna ze zmniejszoną nieprzezroczystością, aby biurko (lub kompozycja systemowa) prześwitywało. Włączenie lub wyłączenie zadziała po restarcie.',
+  'settings.windowMaterial': 'Materiał tła (Windows 11)',
+  'settings.windowMaterialDesc': 'Kompozycja systemowa za warstwą koloru — mica jest subtelna, akryl daje efekt mlecznego szkła.',
+  'settings.windowMaterialNone': 'Brak',
+  'settings.windowMaterialMica': 'Mica',
+  'settings.windowMaterialAcrylic': 'Akryl',
+  'settings.windowTransparencyRestart': 'Oczekuje na restart — okno powstaje z (lub bez) przezroczystości podczas uruchamiania.',
   'settings.sidebarPosition': 'Pozycja paska bocznego',
   'settings.sidebarPositionDesc': 'Po lewej lub po prawej stronie obszaru terminala',
   'settings.sidebarAttentionFirst': 'Wiersze czekające na Ciebie u góry',

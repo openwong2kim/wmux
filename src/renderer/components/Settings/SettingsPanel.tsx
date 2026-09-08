@@ -1,5 +1,10 @@
 import { useEffect, useMemo, useRef, useState, useCallback, type ReactNode } from 'react';
 import { BROWSER_BACKENDS, isBrowserBackend } from '../../../shared/browserBackend';
+import {
+  WINDOW_OPACITY_SLIDER_MIN,
+  type WindowMaterial,
+  type WindowAppearancePrefs,
+} from '../../../shared/windowAppearance';
 import type { ImagePasteMode } from '../../../shared/imagePaste';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '../../stores';
@@ -3665,6 +3670,58 @@ function TabAppearance() {
   const uiScale = useStore((s) => s.uiScale);
   const setUiScale = useStore((s) => s.setUiScale);
 
+  // #1133 — window transparency. Main owns the prefs (creation-time
+  // `transparent` flag); the mirror here is non-persisted, for rendering only.
+  // Linux is excluded — without a compositor guarantee the flag yields a black
+  // window — and the material row additionally needs Windows 11.
+  const isWindows11 = useMemo(() => {
+    const build = window.electronAPI?.windowsBuildNumber;
+    return build !== null && build !== undefined && build >= 22000;
+  }, []);
+  const appearanceSupported = useMemo(
+    () => window.electronAPI?.platform === 'win32' || window.electronAPI?.platform === 'darwin',
+    [],
+  );
+  const [windowOpacity, setWindowOpacity] = useState<number | null>(null);
+  const [windowMaterial, setWindowMaterial] = useState<WindowMaterial | null>(null);
+  const [windowTransparencyActive, setWindowTransparencyActive] = useState<boolean | null>(null);
+  useEffect(() => {
+    const api = window.electronAPI?.windowAppearance;
+    if (!api || !appearanceSupported) return;
+    let alive = true;
+    void api.get().then((prefs) => {
+      if (!alive) return;
+      setWindowOpacity(prefs.opacity);
+      setWindowMaterial(prefs.material);
+      setWindowTransparencyActive(prefs.active);
+    }).catch(() => { /* preload gap → controls stay hidden */ });
+    const off = api.onChanged((prefs) => {
+      setWindowOpacity(prefs.opacity);
+      setWindowMaterial(prefs.material);
+    });
+    return () => { alive = false; off(); };
+  }, [appearanceSupported]);
+  const pushWindowAppearance = useCallback((next: WindowAppearancePrefs) => {
+    void window.electronAPI?.windowAppearance?.set(next).then((res) => {
+      // The live window cannot become (un)translucent without a rebuild —
+      // surface that honestly instead of pretending the toggle applied.
+      setWindowTransparencyActive(res.active);
+    }).catch(() => { /* main persists best-effort */ });
+  }, []);
+  const onWindowOpacityChange = useCallback((opacity: number) => {
+    setWindowOpacity(opacity);
+    if (windowMaterial !== null) pushWindowAppearance({ opacity, material: windowMaterial });
+  }, [pushWindowAppearance, windowMaterial]);
+  const onWindowMaterialChange = useCallback((material: WindowMaterial) => {
+    setWindowMaterial(material);
+    if (windowOpacity !== null) pushWindowAppearance({ opacity: windowOpacity, material });
+  }, [pushWindowAppearance, windowOpacity]);
+  // Restart is needed when the prefs ask for translucency the live window
+  // was not created with (or no longer wants).
+  const windowRestartPending = windowOpacity !== null && windowMaterial !== null &&
+    windowTransparencyActive !== null &&
+    windowTransparencyActive !== (windowOpacity < 100 || windowMaterial !== 'none');
+
   const currentTheme = useStore((s) => s.theme);
   const setTheme = useStore((s) => s.setTheme);
   // Live custom-theme colors drive the `custom` card's thumbnail so it always
@@ -3870,6 +3927,57 @@ function TabAppearance() {
             </span>
           </div>
         </SettingRow>
+        {/* #1133 — window transparency (Windows/macOS; material is Win11). */}
+        {appearanceSupported && windowOpacity !== null && windowMaterial !== null && (
+          <>
+            <SettingRow
+              id="window-opacity"
+              label={t('settings.windowOpacity')}
+              description={t('settings.windowOpacityDesc')}
+            >
+              <div className="flex items-center gap-2">
+                <input
+                  type="range"
+                  min={WINDOW_OPACITY_SLIDER_MIN}
+                  max={100}
+                  step={1}
+                  value={windowOpacity}
+                  onChange={(e) => onWindowOpacityChange(Number(e.target.value))}
+                  aria-label={t('settings.windowOpacity')}
+                  className="w-24 accent-[color:var(--accent-blue)]"
+                />
+                <span className="text-xs font-mono tabular-nums text-[color:var(--text-sub)] w-8 text-right">
+                  {windowOpacity}%
+                </span>
+              </div>
+            </SettingRow>
+            {isWindows11 && (
+              <SettingRow
+                id="window-material"
+                label={t('settings.windowMaterial')}
+                description={t('settings.windowMaterialDesc')}
+              >
+                <div className="flex items-center gap-2">
+                  <select
+                    className="ui-select text-xs"
+                    value={windowMaterial}
+                    onChange={(e) => onWindowMaterialChange(e.target.value as WindowMaterial)}
+                    aria-label={t('settings.windowMaterial')}
+                  >
+                    <option value="none">{t('settings.windowMaterialNone')}</option>
+                    <option value="mica">{t('settings.windowMaterialMica')}</option>
+                    <option value="acrylic">{t('settings.windowMaterialAcrylic')}</option>
+                  </select>
+                </div>
+              </SettingRow>
+            )}
+            {windowRestartPending && (
+              <p className="text-xs text-[color:var(--accent-amber)]">
+                {t('settings.windowTransparencyRestart')}
+              </p>
+            )}
+          </>
+        )}
       </div>
     </div>
   );

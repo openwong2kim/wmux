@@ -945,6 +945,16 @@ export const en = {
   'settings.chromePresetApplied': 'Interface visibility updated.',
   'settings.uiScale': 'UI scale',
   'settings.uiScaleDesc': 'Scale the whole interface — useful on high-DPI displays. Restart not required.',
+
+  // Window transparency (#1133) — Windows/macOS; the material row is Win11.
+  'settings.windowOpacity': 'Window transparency',
+  'settings.windowOpacityDesc': 'Paint the window background at reduced opacity so the desktop (or the system backdrop) shows through. Turning this on or off applies after a restart.',
+  'settings.windowMaterial': 'Backdrop material (Windows 11)',
+  'settings.windowMaterialDesc': 'The system-composited backdrop behind the tint — mica is subtle, acrylic is the frosted-glass look.',
+  'settings.windowMaterialNone': 'None',
+  'settings.windowMaterialMica': 'Mica',
+  'settings.windowMaterialAcrylic': 'Acrylic',
+  'settings.windowTransparencyRestart': 'Pending restart — the window is built with (or without) transparency at startup.',
   'settings.sidebarPosition': 'Sidebar position',
   'settings.sidebarPositionDesc': 'Left or right of the terminal area',
   'settings.sidebarAttentionFirst': 'Needs-you rows first',

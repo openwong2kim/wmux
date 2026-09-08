@@ -652,6 +652,35 @@ function useUiScaleSync(uiScale: number): void {
   }, [uiScale]);
 }
 
+/**
+ * #1133 — window transparency tint. Reflects main's prefs onto the document
+ * root as two properties the globals.css rules read: whether translucency is
+ * wanted at all (`data-window-translucent`) and how much of `--bg-base` to
+ * paint over the desktop / backdrop material (`--window-bg-opacity`). Live
+ * via the WINDOW_APPEARANCE_CHANGED push; the creation-time `transparent`
+ * flag itself is main's to gate (restart-required changes surface in the
+ * Settings UI, not here).
+ */
+function useWindowAppearanceTint(): void {
+  useEffect(() => {
+    const api = window.electronAPI?.windowAppearance;
+    if (!api) return; // tests / non-electron
+    const apply = (prefs: { opacity: number; material: string }): void => {
+      const translucent = prefs.opacity < 100 || prefs.material !== 'none';
+      if (translucent) {
+        document.documentElement.dataset.windowTranslucent = 'true';
+        document.documentElement.style.setProperty('--window-bg-opacity', String(prefs.opacity));
+      } else {
+        delete document.documentElement.dataset.windowTranslucent;
+        document.documentElement.style.removeProperty('--window-bg-opacity');
+      }
+    };
+    void api.get().then(apply).catch(() => { /* preload gap → opaque, today's behaviour */ });
+    const off = api.onChanged(apply);
+    return off;
+  }, []);
+}
+
 export default function AppLayout() {
   // UI scale (#822): the persisted factor. The sync effect below forwards it
   // to main, which scales the whole renderer and re-places the native chrome.
@@ -661,6 +690,8 @@ export default function AppLayout() {
   // Forward the persisted UI-scale factor to main whenever it changes or the
   // theme (overlay colors) does — see useUiScaleSync below.
   useUiScaleSync(uiScale);
+  // #1133 — reflect the window-transparency prefs onto the document root.
+  useWindowAppearanceTint();
   const sidebarVisible = useStore((s) => s.sidebarVisible);
   const channelDockVisible = useStore((s) => s.channelDockVisible);
   const sidebarPosition = useStore((s) => s.sidebarPosition);
@@ -1779,7 +1810,7 @@ export default function AppLayout() {
   return (
     <ErrorBoundary name="AppLayout">
     <div
-      className="flex flex-col h-screen w-screen bg-[var(--bg-base)] overflow-hidden"
+      className="app-layout-root flex flex-col h-screen w-screen bg-[var(--bg-base)] overflow-hidden"
       style={{
         ...(prefixMode ? {
           boxShadow: 'inset 0 0 0 2px var(--accent-red)',
