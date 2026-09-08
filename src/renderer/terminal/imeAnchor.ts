@@ -539,6 +539,13 @@ const CLAUDE_BOX_BOTTOM = /^\s*╰─/;
 // Interior rows of the box below the prompt row: wrapped continuation lines.
 // They carry the side border but no prompt glyph (#1032).
 const CLAUDE_BOX_ROW = /^\s*│ /;
+// v2.1.246+ chrome (#1035): the rounded box is gone. The input line is a bare
+// `› ` row sitting directly under a horizontal rule — no side borders, no
+// corners, no `│ > `. The rule plays the same structural role the box top
+// played: transcript output may quote a bare `›` line, but it does not place
+// a full-width rule directly above the bottom-most one.
+const CLAUDE_RULE_ROW = /^\s*─{4,}\s*$/;
+const CLAUDE_CHEVRON_PROMPT_ROW = /^(\s*)› /;
 
 /**
  * Find Claude Code's input line in the visible rows (#1016).
@@ -563,6 +570,23 @@ export function scanClaudeInputLine(
   for (let r = rows - 1; r >= 1; r--) {
     const line = readLine(r);
     if (line === undefined) continue;
+
+    // ── v2.1.246+ shape (#1035): `› ` row directly under a full-width rule.
+    // Checked FIRST and bottom-up so the bottom-most chevron wins; a chevron
+    // quoted in streamed output fails the rule-above test. Wrapped input in
+    // this chrome has no structural continuation marker (no side borders), so
+    // the span stays the conservative single row — the preedit gate treats the
+    // typed row as caret territory, same as the box's first interior row.
+    const chevron = CLAUDE_CHEVRON_PROMPT_ROW.exec(line);
+    if (chevron) {
+      const above = readLine(r - 1);
+      if (above !== undefined && CLAUDE_RULE_ROW.test(above)) {
+        // `› x`: chevron, space — input begins 2 cells past the indent.
+        return { relRow: r, col: chevron[1].length + 2, rowSpan: 1 };
+      }
+    }
+
+    // ── Pre-v2.1.246 shape: the rounded box.
     const m = CLAUDE_PROMPT_ROW.exec(line);
     if (!m) continue;
     const above = readLine(r - 1);

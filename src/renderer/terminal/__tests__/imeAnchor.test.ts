@@ -1087,6 +1087,62 @@ describe('#1016 input-line content scan (pure)', () => {
     expect(scanClaudeInputLine(() => undefined, 40)).toBeNull();
     expect(scanClaudeInputLine(lines(['plain shell $']), 1)).toBeNull();
   });
+
+  // #1035 — Claude Code v2.1.246+ dropped the rounded box: the input line is
+  // a bare `› ` row directly under a horizontal rule. The scan must win there
+  // again (`src=marker` had gone 0-for-69 in the field logs) while the old
+  // shape keeps working for older clients.
+  describe('v2.1.246+ rule-and-chevron chrome', () => {
+    it('finds the › row under the horizontal rule', () => {
+      const screen = [
+        'some streamed output',
+        '────────────────────────────────',
+        '› 정확히어떻게해야하는지알려주',
+        '⚠ Transcript saving is off',
+      ];
+      expect(scanClaudeInputLine(lines(screen), screen.length))
+        .toEqual({ relRow: 2, col: 2, rowSpan: 1 });
+    });
+
+    it('keeps the column honest on an indented chevron', () => {
+      const screen = ['──────────', '  › x'];
+      expect(scanClaudeInputLine(lines(screen), screen.length))
+        .toEqual({ relRow: 1, col: 4, rowSpan: 1 });
+    });
+
+    it('a bare › line in transcript output is not matched without the rule above', () => {
+      const screen = ['› printed by a program', 'output'];
+      expect(scanClaudeInputLine(lines(screen), screen.length)).toBeNull();
+    });
+
+    it('the bottom-most chevron wins over a quoted one in the transcript', () => {
+      const screen = [
+        '──────────────',
+        '› quoted in output',
+        'more output',
+        '──────────────',
+        '› live input',
+      ];
+      expect(scanClaudeInputLine(lines(screen), screen.length))
+        .toEqual({ relRow: 4, col: 2, rowSpan: 1 });
+    });
+
+    it('mixed chrome: the new shape wins when the old box is absent, and vice versa', () => {
+      const newChrome = ['╭────╮', '│ > quoted │', '──────────', '› live'];
+      expect(scanClaudeInputLine(lines(newChrome), newChrome.length))
+        .toEqual({ relRow: 3, col: 2, rowSpan: 1 });
+      const oldChrome = ['──────────', '› quoted', '╭────╮', '│ > live │'];
+      expect(scanClaudeInputLine(lines(oldChrome), oldChrome.length))
+        .toEqual({ relRow: 3, col: 4, rowSpan: 1 });
+    });
+
+    it('a rule that is too short to be chrome does not sponsor a chevron', () => {
+      // An em-dash run inside transcript text (e.g. a printed separator) is
+      // shorter than a full-width rule; only 4+ counts as chrome.
+      const screen = ['──', '› not chrome'];
+      expect(scanClaudeInputLine(lines(screen), screen.length)).toBeNull();
+    });
+  });
 });
 
 describe('#1016 marker selection (pure)', () => {
