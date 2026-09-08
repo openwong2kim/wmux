@@ -559,6 +559,18 @@ export default function CommandPalette() {
           setVisible(false);
         },
       });
+      // #1237 — the non-destructive twin: re-fit the RUNNING panes into the
+      // template instead of replacing them with empty leaves.
+      items.push({
+        id: `snap-template-${tmpl.id}`,
+        label: `${t('palette.cmd.snapPrefix')}${tmpl.name}`,
+        category: 'command' as PaletteCategory,
+        icon: <IconGrid />,
+        action: () => {
+          useStore.getState().snapToLayoutTemplate(tmpl.id);
+          setVisible(false);
+        },
+      });
     }
 
     items.push({

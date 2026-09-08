@@ -1,7 +1,10 @@
 import type { StateCreator } from 'zustand';
 import type { StoreState } from '../index';
 import { setLocale as i18nSetLocale, t, type Locale } from '../../i18n';
-import { collectLeafIds, getWorkspaceLeafPanes } from '../../../shared/paneUtils';
+import { collectLeafIds, getLeafPanes, getWorkspaceLeafPanes } from '../../../shared/paneUtils';
+import { canStashPaneSurfaces } from '../../../shared/paneStash';
+import { isDaemonModeActive } from '../../daemon/daemonMode';
+import { computePaneAutoName } from '../../utils/paneNaming';
 import { MAX_PANES_PER_WORKSPACE } from './paneSlice';
 import { markRetentionMigrationDone } from '../retentionMigration';
 import { DEFAULT_BROWSER_BACKEND, isBrowserBackend, type BrowserBackend } from '../../../shared/browserBackend';
@@ -693,6 +696,7 @@ export interface UISlice {
   saveLayoutTemplate: (name: string) => void;
   deleteLayoutTemplate: (id: string) => void;
   applyLayoutTemplate: (templateId: string, workspaceId?: string) => void;
+  snapToLayoutTemplate: (templateId: string, workspaceId?: string) => void;
 
   // ─── Recent terminal commands ─────────────────────────────────────
   recentCommands: string[];
@@ -723,6 +727,11 @@ function buildPaneFromLayout(node: LayoutNode): Pane {
     children: node.children.map(buildPaneFromLayout),
   };
   return branch;
+}
+
+function countLayoutLeaves(node: LayoutNode): number {
+  if (node.type === 'leaf') return 1;
+  return node.children.reduce((n, c) => n + countLayoutLeaves(c), 0);
 }
 
 function collectFirstLeafId(pane: Pane): string {
@@ -1806,6 +1815,139 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
       get().pushToast({
         message: t('pane.maxLeavesReachedWithStash', { count: cap.count, stashed: cap.stashed }),
         level: 'warn',
+      });
+    }
+  },
+
+  /**
+   * #1237 — snap the EXISTING panes into a template's arrangement.
+   *
+   * `applyLayoutTemplate` replaces the tree with fresh empty leaves (the old
+   * PTYs die); this is its non-destructive counterpart: running sessions keep
+   * their pane identities and merely change position. Existing leaves map onto
+   * the template's slots in tree order (top-left to bottom-right), so the
+   * spatial reading the user has stays put.
+   *
+   * Surplus handling, in tree order — the trailing panes are the surplus:
+   *   - an EMPTY pane is discarded: it holds no session, so there is nothing
+   *     to preserve and nothing the stash could replay;
+   *   - a stashable pane is stashed (same contract as `stashPane`: daemon
+   *     connection required — without the ring its bytes would be lost);
+   *   - anything else (editor/diff/git tabs) refuses the whole snap. Losing
+   *     unsaved edits is exactly what this feature exists not to do.
+   *
+   * Deficit handling: fresh empty leaves, ordinals continuing past the
+   * workspace high-water (the same collision rule #977 gave apply).
+   */
+  snapToLayoutTemplate: (templateId, workspaceId) => {
+    type SnapBlock =
+      | { key: 'cap'; count: number; stashed: number }
+      | { key: 'daemon'; count: number }
+      | { key: 'surface'; name: string; type: string };
+    let blocked: SnapBlock | null = null;
+    let stashedSurplus = 0;
+    let templateName = '';
+    set((state) => {
+      const targetWsId = workspaceId || state.activeWorkspaceId;
+      const ws = state.workspaces.find((w) => w.id === targetWsId);
+      if (!ws) return;
+      const tmpl = state.layoutTemplates.find((t) => t.id === templateId);
+      if (!tmpl) return;
+      templateName = tmpl.name;
+      const visible = getLeafPanes(ws.rootPane);
+      const slotCount = countLayoutLeaves(tmpl.tree);
+      const surplus = visible.length > slotCount ? visible.slice(slotCount) : [];
+      const toStash = surplus.filter((p) => p.surfaces.length > 0);
+
+      // Cap: every pane the workspace owns afterwards must fit. Surplus panes
+      // that get stashed still count (#977), discarded empties do not.
+      const stashedCount = (ws.stashedPanes ?? []).length;
+      if (slotCount + stashedCount + toStash.length > MAX_PANES_PER_WORKSPACE) {
+        blocked = { key: 'cap', count: MAX_PANES_PER_WORKSPACE, stashed: stashedCount };
+        return;
+      }
+
+      // Refusals BEFORE any mutation — a half-snapped tree would be the one
+      // outcome worse than no snap.
+      if (toStash.length > 0) {
+        if (!isDaemonModeActive()) {
+          blocked = { key: 'daemon', count: toStash.length };
+          return;
+        }
+        for (const p of toStash) {
+          const allowed = canStashPaneSurfaces(p);
+          if (!allowed.ok) {
+            blocked = {
+              key: 'surface',
+              name: computePaneAutoName(ws.wsOrdinal ?? 1, p.ordinal ?? 0),
+              type: allowed.reason === 'surface' ? allowed.surfaceType : 'empty',
+            };
+            return;
+          }
+        }
+      }
+
+      // Reuse in tree order, then fill any deficit with fresh leaves whose
+      // ordinals continue past the high-water (visible + stashed).
+      const queue = visible.slice(0, Math.min(visible.length, slotCount));
+      const ownedOrdinal = getWorkspaceLeafPanes(ws).reduce((m, l) => Math.max(m, l.ordinal ?? 0), 0);
+      let nextOrdinal = ownedOrdinal + 1;
+      const build = (node: LayoutNode): Pane => {
+        if (node.type === 'leaf') {
+          const existing = queue.shift();
+          if (existing) return existing;
+          return createLeafPane(undefined, nextOrdinal++);
+        }
+        const branch: PaneBranch = {
+          id: generateId('pane'),
+          type: 'branch',
+          direction: node.direction,
+          sizes: node.sizes,
+          children: node.children.map(build),
+        };
+        return branch;
+      };
+      const newRoot = build(tmpl.tree);
+      ws.nextPaneOrdinal = nextOrdinal;
+
+      if (toStash.length > 0) {
+        // No `origin`: the topology is being replaced wholesale, so a neighbour
+        // anchor would describe a split that no longer exists. Unstash falls
+        // back to "next to the active pane", which is honest here.
+        if (!ws.stashedPanes) ws.stashedPanes = [];
+        const now = Date.now();
+        for (const p of toStash) ws.stashedPanes.push({ pane: p, stashedAt: now });
+        stashedSurplus = toStash.length;
+      }
+
+      if (!collectLeafIds(newRoot).includes(ws.activePaneId)) {
+        ws.activePaneId = collectFirstLeafId(newRoot);
+      }
+      ws.rootPane = newRoot;
+      state.zoomedPaneId = null;
+    });
+    if (blocked) {
+      const b = blocked as SnapBlock;
+      if (b.key === 'cap') {
+        get().pushToast({
+          message: t('pane.maxLeavesReachedWithStash', { count: b.count, stashed: b.stashed }),
+          level: 'warn',
+        });
+      } else if (b.key === 'daemon') {
+        get().pushToast({
+          message: t('pane.snapNoDaemon', { count: b.count }),
+          level: 'warn',
+        });
+      } else {
+        get().pushToast({
+          message: t('pane.snapBlockedSurface', { name: b.name, type: b.type }),
+          level: 'warn',
+        });
+      }
+    } else if (stashedSurplus > 0) {
+      get().pushToast({
+        message: t('pane.snapStashedSurplus', { name: templateName, count: stashedSurplus }),
+        level: 'info',
       });
     }
   },

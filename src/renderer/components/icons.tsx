@@ -47,6 +47,18 @@ export function IconCheck({ size = 14 }: { size?: number }) {
   return <Icon size={size}><polyline points="2.5,7.4 5.8,10.5 11.5,3.5" /></Icon>;
 }
 
+/** Four equal quadrants — layout templates / snap-to-layout verbs. */
+export function IconGrid({ size = 14 }: { size?: number }) {
+  return (
+    <Icon size={size}>
+      <rect x="1" y="1" width="5" height="5" rx="0.8" />
+      <rect x="8" y="1" width="5" height="5" rx="0.8" />
+      <rect x="1" y="8" width="5" height="5" rx="0.8" />
+      <rect x="8" y="8" width="5" height="5" rx="0.8" />
+    </Icon>
+  );
+}
+
 /** A friendly little robot — the agent panel toggle. Antenna + rounded head +
  *  two dot eyes + a small smile; ears nudge it toward "cute" over "clinical". */
 export function IconRobot({ size = 14 }: { size?: number }) {
