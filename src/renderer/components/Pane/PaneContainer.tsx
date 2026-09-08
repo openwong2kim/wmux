@@ -6,6 +6,22 @@ import { findLeaf } from '../../../shared/paneUtils';
 import { useStore } from '../../stores';
 import PaneComponent from './Pane';
 
+/**
+ * #1233 — the sizes a double-clicked separator commits: the space of the two
+ * panes it separates, split evenly between them. The two-pane case is the
+ * 50/50 the issue asks for; in a three-plus group only the flanking pair is
+ * touched, so the gesture stays local to the divider under the cursor. Pure so
+ * the arithmetic is testable without mounting the panel tree.
+ */
+export function separatorEqualizePair(sizes: number[], index: number): number[] {
+  const next = [...sizes];
+  if (index < 1 || index >= next.length) return next;
+  const pair = next[index - 1] + next[index];
+  next[index - 1] = pair / 2;
+  next[index] = pair / 2;
+  return next;
+}
+
 interface PaneContainerProps {
   pane: PaneType;
   // The workspace this pane tree belongs to. Threaded through PaneContainer's
@@ -119,6 +135,27 @@ export default function PaneContainer({ pane, workspace, isWorkspaceVisible = tr
     [pane.id, paneChildren, updatePaneSizes],
   );
 
+  // #1233 — double-click a separator to even out the two panes it separates
+  // (separatorEqualizePair above). Goes through the store, not setLayout
+  // directly, so the change persists like a drag and the sync effect above
+  // drives the visual resize. A pending drag-write is dropped first: it would
+  // land ~200ms later and snap the widths back to the arrangement the
+  // double-click just reset.
+  const handleSeparatorDoubleClick = useCallback(
+    (index: number) => {
+      if (!paneChildren) return;
+      const sizes = paneChildren.map(
+        (_, i) => paneSizes?.[i] ?? 100 / paneChildren.length,
+      );
+      if (debounceRef.current) {
+        clearTimeout(debounceRef.current);
+        debounceRef.current = undefined;
+      }
+      updatePaneSizes(pane.id, separatorEqualizePair(sizes, index));
+    },
+    [pane.id, paneSizes, paneChildren, updatePaneSizes],
+  );
+
   if (pane.type === 'leaf') {
     return (
       <PaneComponent
@@ -160,6 +197,7 @@ export default function PaneContainer({ pane, workspace, isWorkspaceVisible = tr
                 } bg-[var(--border-soft)] hover:bg-[var(--accent-blue)] transition-colors ${
                   zoomInSubtree ? 'wmux-zoom-hidden' : ''
                 }`}
+                onDoubleClick={() => handleSeparatorDoubleClick(i)}
               />
             )}
             <Panel
