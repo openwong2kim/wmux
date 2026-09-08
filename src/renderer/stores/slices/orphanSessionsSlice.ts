@@ -18,7 +18,10 @@ import type { StateCreator } from 'zustand';
 import type { StoreState } from '../index';
 import type { Pane, PaneLeaf, Workspace } from '../../../shared/types';
 import { generateId } from '../../../shared/types';
-import { getWorkspacePtyIds, findPane, getLeafPanes } from '../../../shared/paneUtils';
+import { getWorkspacePtyIds, getWorkspaceLeafPanes, findPane, getLeafPanes } from '../../../shared/paneUtils';
+import { MAX_PANES_PER_WORKSPACE } from './paneSlice';
+import { publishPaneCreated, publishPaneFocused } from '../../events/publisher';
+import { saveSessionNow } from '../../utils/sessionSaveBridge';
 
 export interface OrphanSession {
   /** Daemon session id — the address for adopt (surface.ptyId) and dispose. */
@@ -58,7 +61,10 @@ function shellLabel(shell: string): string {
   return base.replace(/\.exe$/i, '') || 'session';
 }
 
-/** Every ptyId any workspace still owns (visible tree + stash + zoomed). */
+/** Every ptyId the app still owns: visible tree + stash per workspace, PLUS
+ *  the floating terminal's session — it is never in any workspace tree, and
+ *  missing it listed the floating pane's live session as an orphan whose ✕
+ *  would kill it out from under the pane (review P1). */
 function ownedPtyIds(state: StoreState): Set<string> {
   const owned = new Set<string>();
   for (const ws of state.workspaces) {
@@ -66,6 +72,7 @@ function ownedPtyIds(state: StoreState): Set<string> {
       if (ptyId) owned.add(ptyId);
     }
   }
+  if (state.floatingPanePtyId) owned.add(state.floatingPanePtyId);
   return owned;
 }
 
@@ -80,7 +87,11 @@ export const createOrphanSessionsSlice: StateCreator<
   setDaemonSessionInventory: (sessions) => set((state) => {
     const owned = ownedPtyIds(state);
     state.orphanSessions = sessions
-      .filter((s) => s.state === 'detached' || s.state === undefined)
+      // 'detached' is the daemon's word for "no client owns me". Local mode
+      // returns no state at all and has no orphan concept by construction
+      // (PTYs die with their panes) — a state-less listing is the local
+      // branch and contributes nothing.
+      .filter((s) => s.state === 'detached')
       .filter((s) => !owned.has(s.id))
       .map((s) => ({
         id: s.id,
@@ -106,7 +117,20 @@ export const createOrphanSessionsSlice: StateCreator<
   adoptOrphanSession: (sessionId) => {
     const orphan = get().orphanSessions.find((o) => o.id === sessionId);
     if (!orphan) return null;
+    // Re-check ownership NOW, not at list time: the row may be a boot-race
+    // stale (pty.list resolved before loadSession restored the trees) or the
+    // session may have been re-owned in the last ≤30s. Double-owning one pty
+    // means closing either surface kills it under the other (review P1).
+    if (ownedPtyIds(get()).has(sessionId)) {
+      set((state) => {
+        state.orphanSessions = state.orphanSessions.filter((o) => o.id !== sessionId);
+      });
+      return null;
+    }
     let newPaneId: string | null = null;
+    // Plain values captured INSIDE the producer (drafts must not escape
+    // set()) for the post-transaction event publishes.
+    let adopted: { wsId: string; paneId: string; previousActiveId: string } | null = null;
     set((state) => {
       // Prefer the origin workspace (the session keeps its env-stamped
       // identity: agent addresses, hooks routing); fall back to the active
@@ -119,7 +143,18 @@ export const createOrphanSessionsSlice: StateCreator<
       // A surface BOUND to the existing session: ptyId set at birth is the
       // same shape a restored/stashed surface has, so useTerminal's
       // active-at-mount reconnect attaches instead of creating.
+      // The 20-pane cap every other leaf-construction site enforces — an
+      // adopted pane is a pane like any other.
+      if (getWorkspaceLeafPanes(ws).length >= MAX_PANES_PER_WORKSPACE) {
+        newPaneId = null;
+        return;
+      }
       const surfaceId = generateId('surface');
+      // Ordinal from the owned high-water (visible + stash — the #977 rule
+      // splitPane follows), so an adopted pane can never reuse a stashed
+      // pane's number: the auto name doubles as the A2A address.
+      const nextOrdinal = ws.nextPaneOrdinal
+        ?? (getWorkspaceLeafPanes(ws).reduce((m, l) => Math.max(m, l.ordinal ?? 0), 0) + 1);
       const leaf: PaneLeaf = {
         id: generateId('pane'),
         type: 'leaf',
@@ -131,9 +166,9 @@ export const createOrphanSessionsSlice: StateCreator<
           ...(orphan.cwd ? { cwd: orphan.cwd } : { cwd: '' }),
         }],
         activeSurfaceId: surfaceId,
-        ...(ws.nextPaneOrdinal ? { ordinal: ws.nextPaneOrdinal } : {}),
+        ordinal: nextOrdinal,
       };
-      ws.nextPaneOrdinal = (ws.nextPaneOrdinal ?? 1) + 1;
+      ws.nextPaneOrdinal = nextOrdinal + 1;
 
       const anchorLeaf = findPane(ws.rootPane, ws.activePaneId);
       if (anchorLeaf && anchorLeaf.type === 'leaf') {
@@ -151,13 +186,30 @@ export const createOrphanSessionsSlice: StateCreator<
           else ws.rootPane = leaf;
         }
       }
+      adopted = { wsId: ws.id, paneId: leaf.id, previousActiveId: ws.activePaneId };
       ws.activePaneId = leaf.id;
       state.activeWorkspaceId = ws.id;
+      // A zoom pinned elsewhere must not swallow the adopted pane — the same
+      // born-hidden un-zoom splitPane applies (#182).
+      if (state.zoomedPaneId && findPane(ws.rootPane, state.zoomedPaneId)) {
+        state.zoomedPaneId = null;
+      }
       newPaneId = leaf.id;
 
       // The row leaves the list the moment it is owned again.
       state.orphanSessions = state.orphanSessions.filter((o) => o.id !== sessionId);
     });
+    const adoptedInfo = adopted as { wsId: string; paneId: string; previousActiveId: string } | null;
+    if (adoptedInfo) {
+      // pane.list + events.poll is the documented complete recovery path for
+      // external pollers (docs/api/stability.md): a pane appearing in the
+      // layout silently would break that contract. Focus follows the same
+      // rule every other activePaneId assignment obeys. And the tree change
+      // rides the 5s autosave otherwise — adopt-then-quit must not lose it.
+      publishPaneCreated(adoptedInfo.wsId, adoptedInfo.paneId);
+      publishPaneFocused(adoptedInfo.wsId, adoptedInfo.paneId, adoptedInfo.previousActiveId);
+      saveSessionNow();
+    }
     return newPaneId;
   },
 

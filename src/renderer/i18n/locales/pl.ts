@@ -30,6 +30,7 @@ export const pl = {
   'sidebar.orphanSessions': 'Sesje odłączone',
   'sidebar.orphanAdopt': 'Przywróć do panelu — sesja nadal działa',
   'sidebar.orphanDispose': 'Zakończ tę sesję',
+  'sidebar.orphanKillConfirm': 'Zakończyć?',
   'sidebar.blankSinglePane': 'Pusty pojedynczy panel',
 
   // Workspace layout presets (the + menu)

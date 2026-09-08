@@ -31,6 +31,7 @@ export const en = {
   'sidebar.orphanSessions': 'Detached sessions',
   'sidebar.orphanAdopt': 'Bring back into a pane — the session is still running',
   'sidebar.orphanDispose': 'Kill this session',
+  'sidebar.orphanKillConfirm': 'Kill?',
   'sidebar.blankSinglePane': 'Blank single pane',
 
   // Workspace layout presets (the + menu)

@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
 import { FOCUS_RING } from '../focusRing';
@@ -34,6 +34,26 @@ export default function OrphanSessions() {
     const timer = setInterval(() => { void refresh(); }, 30_000);
     return () => clearInterval(timer);
   }, [refresh]);
+
+  // Two-step kill: ✕ arms a confirm, the next click fires. Killing a running
+  // session (possibly an agent mid-task) is irreversible and the ✕ sits flush
+  // against the adopt row — one stray click must not do it (review).
+  const [armedKill, setArmedKill] = useState<string | null>(null);
+  const killResetRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => {
+    if (killResetRef.current) clearTimeout(killResetRef.current);
+  }, []);
+  const onKillClick = (id: string): void => {
+    if (armedKill !== id) {
+      setArmedKill(id);
+      if (killResetRef.current) clearTimeout(killResetRef.current);
+      killResetRef.current = setTimeout(() => setArmedKill(null), 3000);
+      return;
+    }
+    if (killResetRef.current) clearTimeout(killResetRef.current);
+    setArmedKill(null);
+    void disposeOrphanSession(id);
+  };
 
   if (orphans.length === 0) return null;
 
@@ -75,15 +95,28 @@ export default function OrphanSessions() {
                 <span className="flex-none text-[10px] text-[var(--text-muted)]">{ago}</span>
               )}
             </button>
-            <button
-              type="button"
-              className={`${HIT_TARGET_24_ROW} ml-0.5 rounded text-[var(--text-muted)] opacity-0 transition-opacity group-hover/orphan-row:opacity-100 hover:text-[var(--accent-red)] ${FOCUS_RING}`}
-              title={t('sidebar.orphanDispose')}
-              aria-label={t('sidebar.orphanDispose')}
-              onClick={() => { void disposeOrphanSession(session.id); }}
-            >
-              <IconX size={10} />
-            </button>
+            {armedKill === session.id ? (
+              <button
+                type="button"
+                data-orphan-kill-confirm
+                className={`${HIT_TARGET_24_ROW} ml-0.5 rounded px-1 text-[10px] font-mono text-[var(--accent-red)] ${FOCUS_RING}`}
+                title={t('sidebar.orphanDispose')}
+                aria-label={t('sidebar.orphanDispose')}
+                onClick={() => { onKillClick(session.id); }}
+              >
+                {t('sidebar.orphanKillConfirm')}
+              </button>
+            ) : (
+              <button
+                type="button"
+                className={`${HIT_TARGET_24_ROW} ml-0.5 rounded text-[var(--text-muted)] opacity-0 transition-opacity group-hover/orphan-row:opacity-100 hover:text-[var(--accent-red)] ${FOCUS_RING}`}
+                title={t('sidebar.orphanDispose')}
+                aria-label={t('sidebar.orphanDispose')}
+                onClick={() => { onKillClick(session.id); }}
+              >
+                <IconX size={10} />
+              </button>
+            )}
           </div>
         );
       })}
