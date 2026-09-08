@@ -358,6 +358,10 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
   const activeSurfaceStatus = useStore((s) =>
     activeSurfacePtyId ? s.surfaceAgentStatus[activeSurfacePtyId] : undefined,
   );
+  const activePendingQuestion = useStore((s) =>
+    activeSurfacePtyId ? s.surfacePendingQuestion[activeSurfacePtyId] : undefined,
+  );
+  const markSurfaceQuestionSeen = useStore((s) => s.markSurfaceQuestionSeen);
   const completeBlink = !isActive && !!activeSurfaceStatus;
 
   // Clear the attention status once the user is actually on the pane (covers
@@ -369,6 +373,17 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
       setSurfaceAgentStatus(activeSurfacePtyId, null);
     }
   }, [isActive, activeSurfacePtyId, activeSurfaceStatus, setSurfaceAgentStatus]);
+
+  // #1176 — focusing a BLOCKED pane marks its question as seen. The question
+  // itself survives (the agent is still blocked — looking does not answer it);
+  // only the roster's animated glow drops, separating triaged from untriaged
+  // blocked agents. Same placement as the attention clear above so keyboard
+  // nav marks it seen too.
+  useEffect(() => {
+    if (isActive && activeSurfacePtyId && activePendingQuestion) {
+      markSurfaceQuestionSeen(activeSurfacePtyId);
+    }
+  }, [isActive, activeSurfacePtyId, activePendingQuestion, markSurfaceQuestionSeen]);
 
   // Ctrl+Shift+H: flash the active pane
   useEffect(() => {

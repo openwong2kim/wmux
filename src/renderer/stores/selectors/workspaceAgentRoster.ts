@@ -20,6 +20,13 @@ export interface WorkspaceAgentRosterRow {
   status: AgentStatus;
   attentionStatus?: AgentStatus;
   pendingQuestion?: string;
+  /**
+   * #1176 — the user focused the pane while THIS question was showing. The dot
+   * stays red (still blocked) but the roster drops the animated glow: triaged
+   * vs untriaged blocked agents at a glance. Undefined when there is no live
+   * question or it has not been seen.
+   */
+  questionSeen?: boolean;
   activity?: string;
   hasAttention: boolean;
   needsAttention: boolean;
@@ -141,6 +148,7 @@ export function selectWorkspaceAgentRoster(
         status,
         attentionStatus,
         pendingQuestion,
+        questionSeen: pendingQuestion !== undefined && state.surfaceQuestionSeen[ptyId] === pendingQuestion,
         activity,
         hasAttention: attentionStatus !== undefined || pendingQuestion !== undefined,
         needsAttention: needsAttention(status),
@@ -265,6 +273,7 @@ function rowsEqual(
       a.status !== b.status ||
       a.attentionStatus !== b.attentionStatus ||
       a.pendingQuestion !== b.pendingQuestion ||
+      a.questionSeen !== b.questionSeen ||
       a.activity !== b.activity ||
       a.hasAttention !== b.hasAttention ||
       a.needsAttention !== b.needsAttention ||

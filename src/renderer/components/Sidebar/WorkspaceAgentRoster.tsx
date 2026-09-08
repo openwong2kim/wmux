@@ -368,9 +368,18 @@ function WorkspaceAgentRoster({ workspaceId, pulsingPaneId }: WorkspaceAgentRost
                       the label instead. The one hollow rendition is silence
                       (below): there the ring IS the claim being withdrawn, and
                       it is drawn with a border, which forced-colors keeps. */}
+                  {/* #1176 — a SEEN question drops only the animated glow: the
+                      dot itself stays red because the agent is still blocked;
+                      looking does not answer the question. An attention EVENT
+                      (attentionStatus) keeps its glow — those are unseen by
+                      definition, since focusing clears them. */}
                   <span
                     className={`sidebar-dot h-1.5 w-1.5 flex-none rounded-full ${
-                      unverifiableLabel ? 'sidebar-dot-unverifiable' : statusIcon.glowClass
+                      unverifiableLabel
+                        ? 'sidebar-dot-unverifiable'
+                        : row.questionSeen && !row.attentionStatus
+                          ? ''
+                          : statusIcon.glowClass
                     }`}
                     style={unverifiableLabel ? undefined : { backgroundColor: statusIcon.dotVar }}
                   />
