@@ -235,6 +235,9 @@ const electronAPI = {
   },
   shell: {
     list: () => ipcRenderer.invoke(IPC.SHELL_LIST) as Promise<{ name: string; path: string; args?: string[] }[]>,
+    // #1103 — WSL distro names for the default-terminal picker ([] off
+    // Windows / on any enumeration failure).
+    wslDistros: () => ipcRenderer.invoke(IPC.SHELL_WSL_DISTROS) as Promise<string[]>,
     openExternal: (url: string) => ipcRenderer.invoke(IPC.SHELL_OPEN_EXTERNAL, url) as Promise<void>,
     // Open an absolute filesystem path in the OS default app / explorer.
     // Backed by Electron's shell.openPath; main validates the path is
@@ -290,6 +293,8 @@ const electronAPI = {
     setMutedNotificationCategories: (categories: NotificationCategory[]) =>
       ipcRenderer.send(IPC.MUTED_NOTIFICATION_CATEGORIES, categories),
     setAutoUpdateEnabled: (enabled: boolean) => ipcRenderer.send(IPC.AUTO_UPDATE_ENABLED, enabled),
+    // #1103 — null clears the choice (back to wsl.exe's system default).
+    setDefaultWslDistro: (distro: string | null) => ipcRenderer.send(IPC.SETTINGS_DEFAULT_WSL_DISTRO, distro),
   },
   // Windows "start on login" toggle (issue #460). Backed by the per-user Run
   // registry key. `get`/`set` resolve to the live state; off-Windows both

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState, useCallback, type ReactNode } from 'react';
 import { BROWSER_BACKENDS, isBrowserBackend } from '../../../shared/browserBackend';
+import { isWslShellPath } from '../../../shared/wslDistro';
 import type { ImagePasteMode } from '../../../shared/imagePaste';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '../../stores';
@@ -2263,6 +2264,28 @@ function TabTerminal() {
   const [detectedShells, setDetectedShells] = useState<ShellInfo[]>([]);
   const shellOptions = detectedShells.map((shell) => ({ value: shell.path, label: shell.name }));
 
+  // #1103 — WSL distro picker: shown only when the default terminal IS WSL
+  // and more than one distro exists (a single-distro machine has nothing to
+  // choose). '' = the system default (today's behaviour).
+  const defaultWslDistro = useStore((s) => s.defaultWslDistro);
+  const setDefaultWslDistro = useStore((s) => s.setDefaultWslDistro);
+  const [wslDistros, setWslDistros] = useState<string[]>([]);
+  const selectedIsWsl = detectedShells.some(
+    (shell) => shell.path === defaultShell && isWslShellPath(shell.path),
+  );
+  useEffect(() => {
+    let cancelled = false;
+    if (!selectedIsWsl) return;
+    void window.electronAPI.shell.wslDistros()
+      .then((distros) => { if (!cancelled) setWslDistros(distros); })
+      .catch(() => { if (!cancelled) setWslDistros([]); });
+    return () => { cancelled = true; };
+  }, [selectedIsWsl]);
+  const onWslDistroChange = useCallback((value: string) => {
+    setDefaultWslDistro(value === '' ? null : value);
+    window.electronAPI.settings.setDefaultWslDistro(value === '' ? null : value);
+  }, [setDefaultWslDistro]);
+
   useEffect(() => {
     let cancelled = false;
     window.electronAPI.shell.list()
@@ -2292,6 +2315,21 @@ function TabTerminal() {
             options={shellOptions}
           />
         </SettingRow>
+        {selectedIsWsl && wslDistros.length > 1 && (
+          <SettingRow
+            id="wsl-distro"
+            label={t('settings.wslDistro')}
+            description={t('settings.wslDistroDesc')}
+          >
+            <SettingSelect
+              label={t('settings.wslDistro')}
+              value={defaultWslDistro ?? ''}
+              onChange={onWslDistroChange}
+              options={[{ value: '', label: t('settings.wslDistroDefault') }]
+                .concat(wslDistros.map((name) => ({ value: name, label: name })))}
+            />
+          </SettingRow>
+        )}
         <SettingRow id="startdir" label={t('settings.startupDirectory')} description={t('settings.startupDirectoryDesc')}>
           <SettingPathInput
             label={t('settings.startupDirectory')}

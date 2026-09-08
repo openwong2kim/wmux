@@ -727,6 +727,8 @@ export interface SessionData {
   /** Image-only clipboard paste route. Absent = 'auto' (#1196). */
   imagePasteMode?: 'auto' | 'native' | 'path';
   defaultShell?: string;
+  /** #1103 — WSL distro for the WSL default terminal. Absent = system default. */
+  defaultWslDistro?: string;
   /** Orchestrator (deck brain) model override — '' / absent = the
    *  subscription's default model. A claude model alias or full id. */
   deckBrainModel?: string;

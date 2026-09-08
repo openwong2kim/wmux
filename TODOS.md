@@ -534,3 +534,10 @@
 - **Why:** monthly already accepts up to a month of exposure. A bot PR nobody owns becomes a bot PR nobody merges, and six months later the pins are stale again — the same state #964 fixed, but now with the appearance of being covered.
 - **Shape:** CODEOWNERS on `.github/`, plus a decision on whether `ci-actions` is auto-merge-eligible once its PR is green (it is fully exercised by its own PR; `release-actions` is not, and needs a dry_run first).
 - **Effort:** XS. **Priority:** P3.
+
+## A2A 대화 계층 — claim ID·delta context·debate UI (P2, 도그푸드 리포트 2026-08-13)
+- **What:** ① 메시지별 claim ID + accepted/rejected/contested 상태 + 공동결론 artifact 구조화 ② 스레드 delta만 전달(매 턴 전체 재주입 방지, opaque ID는 envelope에만) ③ debate session UI(thread header에 current speaker/round/terminal status).
+- **Why:** Codex↔Grok 실사용 토론 리포트(A2A task-36b5e27f)의 P1·P2. 논점·합의를 사람이 문장으로 복사·관리했다.
+- **왜 지금 안 하나:** 리포트가 관찰된 시점에는 reply 배달 자체가 4중 억제로 침묵하던 상태였다(same-ws no-anchor 등, `useRpcBridge.ts:1820-1850`). 배달 복구(delivery reason + anchor stamp + from_pane_id + 라운드 캡) 후 실제 왕복 토론을 다시 관찰하면 이 항목들의 절반은 체감이 달라질 수 있다. 배달이 되기 전의 UX 관찰로 UI를 지으면 잘못된 병을 고친다.
+- **Context:** 리포트 원문은 A2A task-36b5e27f-2ae7-4036-b2e9-620a0229425d의 history에 있음(triage evidence 포함). 라운드 캡이 들어가면 round 카운트는 `history.length`에서 유도 가능 — thread header의 절반은 공짜.
+- **Depends on:** A2A reply delivery PR(억제 관측화+anchor stamp) 머지 + 재도그푸드 1회. **Effort:** M~L. **Priority:** P2.

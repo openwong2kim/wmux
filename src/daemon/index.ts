@@ -68,6 +68,7 @@ import { PortWatcher } from '../main/pty/portWatch';
 import { initDaemonLogSink, isBrokenPipeError, stdioErrorsConsumed } from './util/logSink';
 import type { DaemonState } from './types';
 import type { DaemonEvent, DaemonCreateSessionParams, DaemonSessionIdParams, DaemonResizeParams, DaemonSetResumeBindingParams } from '../shared/rpc';
+import { isWslDistroSpawnArgs } from '../shared/wslDistro';
 import { randomUUID } from 'node:crypto';
 import { monitorEventLoopDelay, performance as nodePerformance } from 'node:perf_hooks';
 import { DAEMON_EXIT_ALREADY_RUNNING, ENV_KEYS } from '../shared/constants';
@@ -1784,9 +1785,16 @@ function registerRpcHandlers(
     if (typeof p.id !== 'string' || !/^[a-zA-Z0-9_-]{1,64}$/.test(p.id)) {
       throw new Error('Invalid session ID');
     }
+    // #1103 — spawn args over the wire are exactly a validated WSL distro
+    // selection for a wsl shell; anything else is refused (the daemon's spawn
+    // surface is not a shell parser).
+    if (p.args !== undefined && !isWslDistroSpawnArgs(p.cmd, p.args)) {
+      throw new Error('Invalid session args: expected [\'-d\', wsl-distro] for a wsl.exe cmd');
+    }
     const session = sessionManager.createSession({
       id: p.id,
       cmd: p.cmd,
+      args: p.args,
       cwd: p.cwd,
       env: p.env,
       cols: p.cols,

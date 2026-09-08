@@ -44,6 +44,8 @@ import { createDeadPaneRecovery, type DeadPaneRecovery } from '../../../shared/p
 import { resolvePtyCreateCwd, type PtyCwdSource } from '../../pty/resolvePtyCwd';
 import { FANOUT_TASK_PORT_ENV } from '../../worktask/fanoutEnvironment';
 import { agentDisplayToSlug } from '../../../shared/agentIdentity';
+import { wslDistroArgs } from '../../../shared/wslDistro';
+import { getDefaultWslDistro } from '../../pty/defaultWslDistro';
 import { SessionPromptScheduler } from '../../pty/SessionPromptScheduler';
 import {
   removeSessionPromptSchedulesForPty,
@@ -374,6 +376,10 @@ export function registerPTYHandlers(
       // ShellDetector (issue #176) — mirrors PTYManager.getDefaultShell() so
       // both modes pick the same default.
       const shell = options?.shell || (process.platform === 'win32' ? new ShellDetector().getDefault() : (process.env.SHELL || '/bin/bash'));
+      // #1103 — the renderer's WSL distro choice, applied at the one place
+      // the effective shell is known. Non-wsl shells and no-choice both yield
+      // undefined (today's behaviour).
+      const wslArgs = wslDistroArgs(shell, getDefaultWslDistro());
 
       // Generate a unique session ID
       const crypto = require('crypto');
@@ -489,6 +495,7 @@ export function registerPTYHandlers(
       const result = await daemonClient.rpc('daemon.createSession', {
         id: sessionId,
         cmd: shell,
+        ...(wslArgs ? { args: wslArgs } : {}),
         cwd: effectiveCwd,
         cols: options?.cols || 80,
         rows: options?.rows || 24,
@@ -596,7 +603,10 @@ export function registerPTYHandlers(
       // must not reach ptyManager.create, so build a clean spawn-options object
       // from only the local-relevant fields instead of spreading the payload.
       const { initialCommand, shell, cols, rows, workspaceId, surfaceId, env, spawnKind } = options ?? {};
-      const instance = ptyManager.create({ shell, cols, rows, workspaceId, surfaceId, env, cwd: effectiveCwd, spawnKind });
+      // #1103 — same distro injection as the daemon branch, so both modes
+      // boot the same WSL distro for the same setting.
+      const wslArgs = wslDistroArgs(shell, getDefaultWslDistro());
+      const instance = ptyManager.create({ shell, ...(wslArgs ? { shellArgs: wslArgs } : {}), cols, rows, workspaceId, surfaceId, env, cwd: effectiveCwd, spawnKind });
       logCwdResolution(instance.id, cwdResolution.incomingCwd, safeCwd, cwdResolution.source);
       ptyBridge.setupDataForwarding(instance.id);
       const actualCwd = effectiveCwd || require('os').homedir();

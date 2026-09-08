@@ -182,6 +182,13 @@ export class DaemonSessionManager extends EventEmitter {
      * `''` — see resolveShellPath.
      */
     cmd?: string;
+    /**
+     * #1103 — validated WSL distro selection (`['-d', '<name>']`), only ever
+     * for a wsl.exe cmd. Prepended IN FRONT of any integration args so
+     * wsl.exe parses it as its own flag. The RPC boundary has already
+     * enforced the exact shape; this is the spawn site.
+     */
+    args?: string[];
     /** Absent means the home directory. */
     cwd?: string;
     /**
@@ -376,6 +383,11 @@ export class DaemonSessionManager extends EventEmitter {
     }
 
     let spawnArgs: string[] = [];
+    // #1103 — the distro flag goes FIRST: wsl.exe parses its own options
+    // before anything that follows (integration args included).
+    if (params.args && params.args.length > 0) {
+      spawnArgs = [...params.args];
+    }
     if (params.exec) {
       // X8 exec unit: the command IS the pane process — no interactive
       // shell session, so OSC 133 injection is skipped (no prompt to mark,

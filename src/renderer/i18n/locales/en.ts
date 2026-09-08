@@ -877,6 +877,10 @@ export const en = {
   'settings.lanlinkPeerRevoke': 'Revoke',
   'settings.terminal': 'Terminal',
   'settings.defaultShell': 'Default shell',
+  // WSL distro picker (#1103) — shown when the default shell is WSL.
+  'settings.wslDistro': 'WSL distribution',
+  'settings.wslDistroDesc': 'Which distro WSL panes boot into. Docker Desktop distros are listed last.',
+  'settings.wslDistroDefault': 'System default',
   'settings.scrollbackLines': 'Scrollback lines',
   'settings.scrollbackDesc': 'Lines retained in terminal buffer',
   'settings.scrollbackRestore': 'Restore on launch',

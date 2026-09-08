@@ -1,9 +1,10 @@
 import { ipcMain, shell, app } from 'electron';
-import { spawn, execFile } from 'child_process';
+import { spawn, execFile, spawnSync } from 'child_process';
 import * as path from 'path';
 import * as fs from 'fs/promises';
 import * as os from 'os';
 import { ShellDetector } from '../../../shared/ShellDetector';
+import { parseWslDistros } from '../../../shared/wslDistro';
 import { IPC } from '../../../shared/constants';
 import { wrapHandler } from '../wrapHandler';
 import { isAutostartEnabled, setAutostartEnabled } from '../../autostart';
@@ -35,6 +36,29 @@ export function registerShellHandlers(): () => void {
   ipcMain.removeHandler(IPC.SHELL_LIST);
   ipcMain.handle(IPC.SHELL_LIST, wrapHandler(IPC.SHELL_LIST, (_event: Electron.IpcMainInvokeEvent) => {
     return detector.detect();
+  }));
+
+  // #1103 — WSL distro names for the default-terminal picker. Synchronous on
+  // purpose (the Settings panel wants them at mount), bounded, and total:
+  // off-Windows, a missing wsl.exe, a timeout, or garbage output all answer []
+  // — the picker simply hides. WSL_UTF8=1 asks wsl.exe for UTF-8 output; the
+  // parser still tolerates the UTF-16LE it emits on older installs.
+  ipcMain.removeHandler(IPC.SHELL_WSL_DISTROS);
+  ipcMain.handle(IPC.SHELL_WSL_DISTROS, wrapHandler(IPC.SHELL_WSL_DISTROS, (_event: Electron.IpcMainInvokeEvent) => {
+    if (process.platform !== 'win32') return [];
+    try {
+      const wslPath = path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'wsl.exe');
+      const result = spawnSync(wslPath, ['--list', '--quiet'], {
+        encoding: 'utf8',
+        timeout: 3000,
+        windowsHide: true,
+        env: { ...process.env, WSL_UTF8: '1' },
+      });
+      if (result.error || result.status !== 0 || typeof result.stdout !== 'string') return [];
+      return parseWslDistros(result.stdout);
+    } catch {
+      return [];
+    }
   }));
 
   ipcMain.removeHandler(IPC.SHELL_OPEN_EXTERNAL);

@@ -1006,6 +1006,14 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
         state.imagePasteMode = sanitizeImagePasteMode(data.imagePasteMode);
       }
       if (data.defaultShell) state.defaultShell = data.defaultShell;
+      // #1103 — null-clears to undefined (wsl.exe's system default).
+      state.defaultWslDistro = typeof data.defaultWslDistro === 'string' && data.defaultWslDistro
+        ? data.defaultWslDistro
+        : undefined;
+      // Re-push the choice to main so pty.create injects `-d <distro>` from
+      // the very first pane (the mirror is main-side and does not survive a
+      // main restart on its own).
+      window.electronAPI?.settings?.setDefaultWslDistro?.(state.defaultWslDistro ?? null);
       if (typeof data.deckBrainModel === 'string') state.deckBrainModel = data.deckBrainModel;
       // D2 — re-normalize on load (session.json is hand-editable / untrusted).
       state.orchestratorRoleBindings = normalizeRoleBindings(data.orchestratorRoleBindings);

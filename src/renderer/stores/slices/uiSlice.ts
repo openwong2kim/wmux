@@ -182,6 +182,8 @@ export interface UISlice {
   setImagePasteMode: (mode: ImagePasteMode) => void;
 
   defaultShell: string;
+  setDefaultWslDistro: (distro: string | null) => void;
+  defaultWslDistro: string | undefined;
   setDefaultShell: (shell: string) => void;
 
   // Orchestrator (deck brain) model override. '' = the subscription's default
@@ -997,6 +999,19 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
 
   setDefaultShell: (shell) => set((state) => {
     state.defaultShell = shell;
+  }),
+
+  /**
+   * #1103 — which WSL distro `wsl.exe -d <name>` boots when the default
+   * terminal is WSL. undefined = the system's default distro (today's
+   * behaviour — usually docker-desktop on Docker machines, which is exactly
+   * the complaint). Pushed to main on change/boot; main injects the flag at
+   * the shell-resolution choke point.
+   */
+  defaultWslDistro: undefined,
+
+  setDefaultWslDistro: (distro) => set((state) => {
+    state.defaultWslDistro = distro ? distro : undefined;
   }),
 
   deckBrainModel: '',
