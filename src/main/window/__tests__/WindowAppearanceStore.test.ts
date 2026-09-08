@@ -51,12 +51,19 @@ describe('windowNeedsTransparentCreation', () => {
 });
 
 describe('WindowAppearanceStore', () => {
+  // set() debounces the disk write (150ms default) — tests construct with 0
+  // so every set() flushes synchronously, which is what the round-trip
+  // assertions read.
+  function storeNow(dir: string): WindowAppearanceStore {
+    return new WindowAppearanceStore(dir, 0);
+  }
+
   it('falls back to defaults for a missing or corrupt file', () => {
     const dir = tmpDir();
     try {
-      expect(new WindowAppearanceStore(dir).get()).toEqual(DEFAULT_WINDOW_APPEARANCE);
+      expect(new WindowAppearanceStore(dir, 0).get()).toEqual(DEFAULT_WINDOW_APPEARANCE);
       writeFileSync(join(dir, 'window-appearance.json'), '{not json', 'utf8');
-      expect(new WindowAppearanceStore(dir).get()).toEqual(DEFAULT_WINDOW_APPEARANCE);
+      expect(new WindowAppearanceStore(dir, 0).get()).toEqual(DEFAULT_WINDOW_APPEARANCE);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -65,9 +72,9 @@ describe('WindowAppearanceStore', () => {
   it('round-trips a written prefs object', () => {
     const dir = tmpDir();
     try {
-      const store = new WindowAppearanceStore(dir);
+      const store = storeNow(dir);
       store.set({ opacity: 75, material: 'mica' });
-      expect(new WindowAppearanceStore(dir).get()).toEqual({ opacity: 75, material: 'mica' });
+      expect(new WindowAppearanceStore(dir, 0).get()).toEqual({ opacity: 75, material: 'mica' });
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -76,9 +83,9 @@ describe('WindowAppearanceStore', () => {
   it('normalizes on write — an out-of-range value never reaches disk', () => {
     const dir = tmpDir();
     try {
-      const store = new WindowAppearanceStore(dir);
+      const store = storeNow(dir);
       store.set({ opacity: 250, material: 'mica' } as never);
-      expect(new WindowAppearanceStore(dir).get()).toEqual({ opacity: 100, material: 'mica' });
+      expect(new WindowAppearanceStore(dir, 0).get()).toEqual({ opacity: 100, material: 'mica' });
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

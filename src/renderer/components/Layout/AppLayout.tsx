@@ -665,8 +665,12 @@ function useWindowAppearanceTint(): void {
   useEffect(() => {
     const api = window.electronAPI?.windowAppearance;
     if (!api) return; // tests / non-electron
-    const apply = (prefs: { opacity: number; material: string }): void => {
-      const translucent = prefs.opacity < 100 || prefs.material !== 'none';
+    // `active` says whether the LIVE window was created transparent — without
+    // it, first-time enable (pre-restart) would tint html/body over the opaque
+    // native background and every non-amber theme would render a wrong blend.
+    const apply = (prefs: { opacity: number; material: string; active?: boolean }): void => {
+      const translucent = (prefs.opacity < 100 || prefs.material !== 'none')
+        && prefs.active !== false;
       if (translucent) {
         document.documentElement.dataset.windowTranslucent = 'true';
         document.documentElement.style.setProperty('--window-bg-opacity', String(prefs.opacity));

@@ -3675,8 +3675,11 @@ function TabAppearance() {
   // Linux is excluded — without a compositor guarantee the flag yields a black
   // window — and the material row additionally needs Windows 11.
   const isWindows11 = useMemo(() => {
+    // 22621 (22H2), not 22000: Electron documents setBackgroundMaterial as
+    // "Windows 11 22H2 and up" — offering mica/acrylic on 21H2 would show
+    // controls that can never apply.
     const build = window.electronAPI?.windowsBuildNumber;
-    return build !== null && build !== undefined && build >= 22000;
+    return build !== null && build !== undefined && build >= 22621;
   }, []);
   const appearanceSupported = useMemo(
     () => window.electronAPI?.platform === 'win32' || window.electronAPI?.platform === 'darwin',
@@ -3713,8 +3716,15 @@ function TabAppearance() {
     if (windowMaterial !== null) pushWindowAppearance({ opacity, material: windowMaterial });
   }, [pushWindowAppearance, windowMaterial]);
   const onWindowMaterialChange = useCallback((material: WindowMaterial) => {
+    // Picking a material at opacity 100 would paint --bg-base fully opaque
+    // and the backdrop would never show — nudge the tint down once, visibly
+    // (the slider moves with it; the user can drag it back).
+    const nextOpacity = material !== 'none' && windowOpacity === 100 ? 90 : windowOpacity;
     setWindowMaterial(material);
-    if (windowOpacity !== null) pushWindowAppearance({ opacity: windowOpacity, material });
+    if (nextOpacity !== null) {
+      setWindowOpacity(nextOpacity);
+      pushWindowAppearance({ opacity: nextOpacity, material });
+    }
   }, [pushWindowAppearance, windowOpacity]);
   // Restart is needed when the prefs ask for translucency the live window
   // was not created with (or no longer wants).

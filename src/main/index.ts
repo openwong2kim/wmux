@@ -834,7 +834,14 @@ function applyLiveWindowAppearance(prefs: WindowAppearancePrefs): void {
         }
       }
     }
-    mainWindow.webContents.send(IPC.WINDOW_APPEARANCE_CHANGED, prefs);
+    // `active` rides the push too: the renderer must NOT tint a window that
+    // was not created transparent (an opaque native backgroundColor sits
+    // behind the web content — tinting over it renders a wrong, dark-shifted
+    // blend until the restart that rebuilds the window).
+    mainWindow.webContents.send(IPC.WINDOW_APPEARANCE_CHANGED, {
+      ...prefs,
+      active: mainWindowCreatedTranslucent,
+    });
   }
 }
 // 'chrome' backend: per-profile real-Chrome instances (Phase 2.5). The
