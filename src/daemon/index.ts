@@ -1362,6 +1362,7 @@ async function recoverSessions(
             recovered = sessionManager.createSession({
               id: session.id,
             cmd: session.cmd,
+          ...(session.args ? { args: session.args } : {}),
             cwd,
             // Replay the ORIGINAL spawn directory. `cwd` above is the LIVE one
             // (OSC 7-tracked), and letting it re-seed spawnCwd would hand the
@@ -1453,6 +1454,7 @@ async function recoverSessions(
           const recovered = sessionManager.createSession({
             id: session.id,
             cmd: session.cmd,
+          ...(session.args ? { args: session.args } : {}),
             cwd,
             // Replay the ORIGINAL spawn directory. `cwd` above is the LIVE one
             // (OSC 7-tracked), and letting it re-seed spawnCwd would hand the
@@ -1503,6 +1505,7 @@ async function recoverSessions(
         const recovered = sessionManager.createSession({
           id: session.id,
           cmd: session.cmd,
+          ...(session.args ? { args: session.args } : {}),
           cwd,
           // Replay the ORIGINAL spawn directory. `cwd` above is the LIVE one
           // (OSC 7-tracked), and letting it re-seed spawnCwd would hand the
@@ -2362,6 +2365,7 @@ function registerRpcHandlers(
           promoted = sessionManager.createSession({
             id: session.id,
             cmd: session.cmd,
+          ...(session.args ? { args: session.args } : {}),
             cwd,
             spawnCwd: session.spawnCwd,
             env: session.env,

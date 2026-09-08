@@ -2277,7 +2277,18 @@ function TabTerminal() {
     let cancelled = false;
     if (!selectedIsWsl) return;
     void window.electronAPI.shell.wslDistros()
-      .then((distros) => { if (!cancelled) setWslDistros(distros); })
+      .then((distros) => {
+        if (cancelled) return;
+        setWslDistros(distros);
+        // Reconcile a stale choice: a distro that was uninstalled/renamed on
+        // the host must not keep injecting `-d <gone>` into every new pane
+        // while the picker (built from the live list) shows "System default".
+        const stored = useStore.getState().defaultWslDistro;
+        if (stored && distros.length > 0 && !distros.includes(stored)) {
+          useStore.getState().setDefaultWslDistro(null);
+          window.electronAPI.settings.setDefaultWslDistro(null);
+        }
+      })
       .catch(() => { if (!cancelled) setWslDistros([]); });
     return () => { cancelled = true; };
   }, [selectedIsWsl]);

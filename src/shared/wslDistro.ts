@@ -10,12 +10,18 @@
  */
 
 /**
- * A WSL distro name as `wsl --list` prints it: letters, digits, dots,
- * underscores, hyphens (e.g. `Ubuntu-24.04`, `openSUSE-Leap-15.6`). Anchored
- * and charset-restricted on purpose — this value becomes a spawn argument, so
- * it must never be able to carry a flag, a space, or a quote.
+ * A WSL distro name as `wsl --list` prints it: letters (Unicode —
+ * `wsl --import "우분투"` is legal and real), digits, dots, underscores,
+ * hyphens, and spaces INSIDE the name (e.g. `Ubuntu-24.04`, `My Distro`,
+ * `openSUSE-Leap-15.6`). Anchored and charset-restricted on purpose — this
+ * value becomes a spawn argument, so it must never be able to carry a flag,
+ * a quote, or a path/shell metacharacter: the first character must be
+ * alphanumeric (blocks a leading `-`), and nothing outside the class can
+ * appear anywhere. The value travels in an argv ARRAY (no shell parsing),
+ * so an interior space is inert.
  */
-export const WSL_DISTRO_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+export const WSL_DISTRO_NAME_RE =
+  /^[\p{L}\p{N}][\p{L}\p{N}._ -]*$/u;
 
 /** Basename check that tolerates any casing/separators of a wsl.exe path. */
 export function isWslShellPath(shellPath: string | undefined): boolean {
@@ -61,20 +67,28 @@ export function isWslDistroSpawnArgs(
 /**
  * Parse `wsl --list --quiet` output into distro names. Invoked with
  * `WSL_UTF8=1`, the output is UTF-8; older/misbehaving installs still emit
- * UTF-16LE, which is detected by its interleaved NUL bytes and decoded by
- * stripping them. Blank lines, a BOM, and stray \r are tolerated; nothing
- * matching the name charset survives to the output by accident.
+ * UTF-16LE, which is decoded properly from the BUFFER (NUL-stripping a
+ * utf8-mangled string destroys every non-ASCII distro name). Blank lines,
+ * BOMs, and stray \r are tolerated; nothing matching the name charset
+ * survives to the output by accident.
  * Docker-owned distros (`docker-desktop`, `docker-desktop-data`) sort LAST —
  * they are infrastructure, not workspaces (#1103's whole complaint).
  */
-export function parseWslDistros(raw: string): string[] {
-  let text = raw;
-  if (raw.includes('\u0000')) {
-    // UTF-16LE without the decoder: ASCII-range names survive NUL-stripping.
-    text = raw.replace(/\u0000/g, '');
+export function parseWslDistros(raw: string | Buffer): string[] {
+  let text: string;
+  if (Buffer.isBuffer(raw)) {
+    // BOM sniff: UTF-16LE (FF FE) vs UTF-8 (EF BB BF) vs bare bytes.
+    if (raw.length >= 2 && raw[0] === 0xff && raw[1] === 0xfe) {
+      text = raw.subarray(2).toString('utf16le');
+    } else if (raw.length >= 3 && raw[0] === 0xef && raw[1] === 0xbb && raw[2] === 0xbf) {
+      text = raw.subarray(3).toString('utf8');
+    } else {
+      text = raw.toString('utf8');
+    }
+  } else {
+    text = raw.replace(/^\uFEFF/, '');
   }
   const names = text
-    .replace(/^\uFEFF/, '')
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter((line) => WSL_DISTRO_NAME_RE.test(line));

@@ -10,6 +10,7 @@ import { RingBuffer } from './RingBuffer';
 import { DaemonPTYBridge } from './DaemonPTYBridge';
 import { PromptEventLog } from './PromptEventLog';
 import { buildSpawnInjection, classifyShell } from './shell-integration';
+import { isWslDistroSpawnArgs } from '../shared/wslDistro';
 import { expandTilde } from '../shared/expandTilde';
 import { restoreSeam } from '../shared/restoreSeam';
 import { buildExecArgs } from './execWrapper';
@@ -512,6 +513,13 @@ export class DaemonSessionManager extends EventEmitter {
     };
     if (params.agent) {
       meta.agent = params.agent;
+    }
+    // #1103 — persist the distro selection so replays (recovery, supervised
+    // restart, promote) re-spawn the same distro. Re-validated here even
+    // though the RPC boundary already checked: createSession has direct
+    // callers too, and this field becomes spawn argv.
+    if (params.args && isWslDistroSpawnArgs(cmd, params.args)) {
+      meta.args = params.args;
     }
     if (params.exec) {
       meta.exec = { command: params.exec.command };

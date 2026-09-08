@@ -54,14 +54,20 @@ describe('isWslDistroSpawnArgs (daemon RPC boundary)', () => {
 });
 
 describe('isValidWslDistroName', () => {
-  it('accepts real distro names and refuses shell metacharacters', () => {
+  it('accepts real distro names — incl. Unicode and interior spaces — and refuses metacharacters', () => {
     expect(isValidWslDistroName('Ubuntu')).toBe(true);
     expect(isValidWslDistroName('Ubuntu-24.04')).toBe(true);
     expect(isValidWslDistroName('openSUSE-Leap-15.6')).toBe(true);
     expect(isValidWslDistroName('docker-desktop')).toBe(true);
+    expect(isValidWslDistroName('우분투')).toBe(true);
+    expect(isValidWslDistroName('My Distro')).toBe(true);
     expect(isValidWslDistroName('-flag')).toBe(false);
-    expect(isValidWslDistroName('has space')).toBe(false);
+    expect(isValidWslDistroName(' leading')).toBe(false);
     expect(isValidWslDistroName('a"b')).toBe(false);
+    expect(isValidWslDistroName('a;b')).toBe(false);
+    expect(isValidWslDistroName('a/b')).toBe(false);
+    expect(isValidWslDistroName('a\\b')).toBe(false);
+    expect(isValidWslDistroName('')).toBe(false);
     expect(isValidWslDistroName(42)).toBe(false);
   });
 });
@@ -71,9 +77,15 @@ describe('parseWslDistros', () => {
     expect(parseWslDistros('docker-desktop\nUbuntu-24.04\ndocker-desktop-data\n'))
       .toEqual(['Ubuntu-24.04', 'docker-desktop', 'docker-desktop-data']);
   });
-  it('decodes UTF-16LE output (interleaved NULs) and strips the BOM + \\r', () => {
-    const utf16 = 'U\x00b\x00u\x00n\x00t\x00u\x00\r\x00\n\x00d\x00o\x00c\x00k\x00e\x00r\x00-\x00d\x00e\x00s\x00k\x00t\x00o\x00p\x00';
-    expect(parseWslDistros('\uFEFF' + utf16)).toEqual(['Ubuntu', 'docker-desktop']);
+  it('decodes real UTF-16LE buffers (BOM-sniffed), incl. non-ASCII names', () => {
+    const body = 'Ubuntu\r\n우분투\ndocker-desktop';
+    const utf16 = Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(body, 'utf16le')]);
+    expect(parseWslDistros(utf16)).toEqual(['Ubuntu', '우분투', 'docker-desktop']);
+  });
+  it('decodes a BOM-marked UTF-8 buffer and still accepts plain strings', () => {
+    const utf8 = Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from('Ubuntu\n', 'utf8')]);
+    expect(parseWslDistros(utf8)).toEqual(['Ubuntu']);
+    expect(parseWslDistros('Ubuntu\n')).toEqual(['Ubuntu']);
   });
   it('drops blank lines, duplicates, and names outside the charset', () => {
     expect(parseWslDistros('\n\nUbuntu\nUbuntu\n<Default>\nsome weird/name\n'))

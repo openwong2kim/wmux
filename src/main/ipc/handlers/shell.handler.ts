@@ -48,10 +48,13 @@ export function registerShellHandlers(): () => void {
   ipcMain.handle(IPC.SHELL_WSL_DISTROS, wrapHandler(IPC.SHELL_WSL_DISTROS, async (_event: Electron.IpcMainInvokeEvent) => {
     if (process.platform !== 'win32') return [];
     const wslPath = path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'wsl.exe');
-    const stdout = await new Promise<string | null>((resolve) => {
+    const stdout = await new Promise<Buffer | null>((resolve) => {
       try {
         execFile(wslPath, ['--list', '--quiet'], {
-          encoding: 'utf8',
+          // BUFFER, not a forced encoding: wsl.exe emits UTF-16LE on installs
+          // that ignore WSL_UTF8, and utf8-decoding those bytes mangles every
+          // non-ASCII distro name beyond recovery. parseWslDistros BOM-sniffs.
+          encoding: 'buffer',
           timeout: 3000,
           windowsHide: true,
           env: { ...process.env, WSL_UTF8: '1' },
