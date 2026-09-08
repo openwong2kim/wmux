@@ -6,6 +6,8 @@ import { canStashPaneSurfaces } from '../../../shared/paneStash';
 import { isDaemonModeActive } from '../../daemon/daemonMode';
 import { computePaneAutoName } from '../../utils/paneNaming';
 import { MAX_PANES_PER_WORKSPACE } from './paneSlice';
+import { publishPaneStashed, publishPaneFocused } from '../../events/publisher';
+import { saveSessionNow } from '../../utils/sessionSaveBridge';
 import { markRetentionMigrationDone } from '../retentionMigration';
 import { DEFAULT_BROWSER_BACKEND, isBrowserBackend, type BrowserBackend } from '../../../shared/browserBackend';
 import { CHROME_PRESET_VALUES } from '../../../shared/chromePresets';
@@ -1846,6 +1848,10 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
       | { key: 'surface'; name: string; type: string };
     let blocked: SnapBlock | null = null;
     let stashedSurplus = 0;
+    // Plain values captured INSIDE the producer for the post-transaction
+    // publishes (drafts must not escape set()).
+    let stashedEvent: { wsId: string; paneIds: string[] } | null = null;
+    let focusedEvent: { wsId: string; newPaneId: string; previousPaneId: string } | null = null;
     let templateName = '';
     set((state) => {
       const targetWsId = workspaceId || state.activeWorkspaceId;
@@ -1879,7 +1885,7 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
           if (!allowed.ok) {
             blocked = {
               key: 'surface',
-              name: computePaneAutoName(ws.wsOrdinal ?? 1, p.ordinal ?? 0),
+              name: computePaneAutoName(ws.wsOrdinal ?? 0, p.ordinal ?? 0),
               type: allowed.reason === 'surface' ? allowed.surfaceType : 'empty',
             };
             return;
@@ -1918,14 +1924,33 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
         const now = Date.now();
         for (const p of toStash) ws.stashedPanes.push({ pane: p, stashedAt: now });
         stashedSurplus = toStash.length;
+        // Captured for the events.poll contract below (stashPane's rule): a
+        // pane leaving the default listing is always explained by an event.
+        stashedEvent = { wsId: ws.id, paneIds: toStash.map((p) => p.id) };
       }
 
       if (!collectLeafIds(newRoot).includes(ws.activePaneId)) {
-        ws.activePaneId = collectFirstLeafId(newRoot);
+        focusedEvent = { wsId: ws.id, newPaneId: collectFirstLeafId(newRoot), previousPaneId: ws.activePaneId };
+        ws.activePaneId = focusedEvent.newPaneId;
       }
       ws.rootPane = newRoot;
-      state.zoomedPaneId = null;
+      // A zoom pinned to a pane in the SNAPPED workspace is invalidated by the
+      // re-layout; one pinned elsewhere must survive (a background-workspace
+      // snap must not un-zoom the foreground — the same gate applyLayoutTemplate
+      // deserves).
+      if (targetWsId === state.activeWorkspaceId) state.zoomedPaneId = null;
     });
+    if (stashedEvent) {
+      const ev = stashedEvent as { wsId: string; paneIds: string[] };
+      for (const paneId of ev.paneIds) publishPaneStashed(ev.wsId, paneId);
+      // The tree+stash mutation otherwise rides the 5s autosave — a snap
+      // followed by an immediate quit must not come back half-applied.
+      saveSessionNow();
+    }
+    if (focusedEvent) {
+      const ev = focusedEvent as { wsId: string; newPaneId: string; previousPaneId: string };
+      publishPaneFocused(ev.wsId, ev.newPaneId, ev.previousPaneId);
+    }
     if (blocked) {
       const b = blocked as SnapBlock;
       if (b.key === 'cap') {
