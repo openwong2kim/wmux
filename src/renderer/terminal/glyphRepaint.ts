@@ -27,6 +27,16 @@
 //                 once more when the stream finally settles.
 //   - `settle-verify` — one delayed repaint after the trailing settle flush
 //                 (see the "idle tail" note below).
+//   - `window-focus` — the OS window itself regained focus (#1234). Alt-tab
+//                 away and back leaves the textarea's DOM focus untouched (it
+//                 never blurs in Electron), so no pane `focus` fires; the pane
+//                 stays `visible`; and an idle pane produces no output, so no
+//                 `burst`. Nothing else can repair the frame — the reporter's
+//                 "only scrolling fixes it". Fires an immediate repair plus the
+//                 same delayed verify as settle (a single refresh can itself
+//                 race; see the idle-tail note), coalesced to one repaint per
+//                 refocus across the DOM `focus` and `visibilitychange` signals
+//                 that both announce it (the latter is inert on Windows, #882).
 //
 // --- Why the `burst` gate is an activity-based TIME cadence (issue #318) ---
 //
@@ -105,7 +115,7 @@
 // tested without xterm; all rendering side effects live in the caller's
 // `repaint` callback.
 
-export type RepaintReason = 'focus' | 'visible' | 'burst' | 'settle-verify';
+export type RepaintReason = 'focus' | 'visible' | 'burst' | 'settle-verify' | 'window-focus';
 
 export interface GlyphRepaintScheduler {
   /** Feed PTY write sizes; fires repaint('burst') on the streaming cadence. */
@@ -114,6 +124,11 @@ export interface GlyphRepaintScheduler {
   onFocus(): void;
   /** The terminal became visible again; immediate repaint('visible'). */
   onVisible(): void;
+  /** The OS window regained focus (#1234); immediate repaint('window-focus')
+   *  plus one coalesced delayed verify. Cheap to call from both the DOM
+   *  `focus` and `visibilitychange` handlers — the dedup window collapses
+   *  them into a single repair. */
+  onWindowFocus(): void;
   /** Cancel pending timers; all further calls become no-ops. */
   dispose(): void;
 }
@@ -164,6 +179,11 @@ export const BURST_STREAM_FLUSH_MS_DEFAULT = 1000;
 // enough that a user watching the pane sees the ghost for ~2s instead of
 // forever.
 export const SETTLE_VERIFY_MS_DEFAULT = 2000;
+// Coalescing window for `window-focus`: the DOM `focus` event and (on macOS)
+// `visibilitychange` can both announce the same refocus within one tick, and a
+// rapid alt-tab round should not repaint per signal. Human-scale refocus rates
+// are far below 4/s, so this costs nothing real.
+export const WINDOW_FOCUS_DEDUP_MS_DEFAULT = 250;
 
 export function createGlyphRepaintScheduler(
   options: GlyphRepaintOptions,
@@ -199,7 +219,18 @@ export function createGlyphRepaintScheduler(
   // delay — the latest settle's deadline wins (the verify must postdate the
   // newest settle's own raster), and one verify is in flight at a time.
   let settleVerifyTimer: ReturnType<typeof setTimeout> | null = null;
+  // Re-arms `settleVerifyTimer` with a full delay. Shared by the settle path
+  // and `window-focus` so their verifies coalesce (the latest deadline wins).
+  const armVerify = (): void => {
+    if (!settleVerifyEnabled) return;
+    if (settleVerifyTimer) clearTimeout(settleVerifyTimer);
+    settleVerifyTimer = setTimeout(() => {
+      settleVerifyTimer = null;
+      if (!disposed) repaint('settle-verify');
+    }, settleVerifyMs);
+  };
   let lastFocusRepaintAt = -Infinity;
+  let lastWindowFocusAt = -Infinity;
   // Timestamp of the last real flush (mid or trailing). Seeded to -Infinity so
   // the first qualifying write flushes immediately — intentional and harmless.
   // Only ever advanced when a flush actually fires (never on a dropped tail).
@@ -247,13 +278,7 @@ export function createGlyphRepaintScheduler(
           // Idle-tail verify: this settle flush is the stream's final repair,
           // but its own raster can race and paint stale pixels. One more
           // full-range refresh after the raster commits closes that window.
-          if (settleVerifyEnabled) {
-            if (settleVerifyTimer) clearTimeout(settleVerifyTimer);
-            settleVerifyTimer = setTimeout(() => {
-              settleVerifyTimer = null;
-              if (!disposed) repaint('settle-verify');
-            }, settleVerifyMs);
-          }
+          armVerify();
         } else {
           // Sub-threshold noise that never flushed: drop it so a stale trickle
           // can't leak into a later unrelated stream's first-flush timing. No
@@ -275,6 +300,22 @@ export function createGlyphRepaintScheduler(
     onVisible(): void {
       if (disposed) return;
       repaint('visible');
+    },
+
+    onWindowFocus(): void {
+      if (disposed) return;
+      const t = now();
+      // Coalesce the focus + visibilitychange pair (and rapid alt-tab rounds).
+      // Deliberately NOT the pane-focus throttle: a pane-focus repaint may
+      // have fired seconds BEFORE the occlusion that caused the staleness, so
+      // sharing it would skip the repair on exactly the #1234 flow.
+      if (t - lastWindowFocusAt < WINDOW_FOCUS_DEDUP_MS_DEFAULT) return;
+      lastWindowFocusAt = t;
+      repaint('window-focus');
+      // Same lesson as the idle tail: one full-range refresh can itself race,
+      // and after a refocus there is usually no further repaint coming (idle
+      // pane, focus already held). Arm the shared verify.
+      armVerify();
     },
 
     dispose(): void {

@@ -1382,7 +1382,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     // Issue #166 — defensive full-range repaint for the "garbled glyphs until
     // resize" corruption (dirty-region desync). Strategy and trigger rationale
     // live in terminal/glyphRepaint.ts. Every reason (focus / visible / burst /
-    // settle-verify)
+    // settle-verify / window-focus)
     // does a plain full-range refresh; "focus" is throttled because it fires on
     // every keyboard pane-nav / MCP pane.focus via useActivePaneFocus's
     // term.focus(), not just mouse clicks, so the throttle is load-bearing. The
@@ -1422,6 +1422,23 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     const onTextareaFocus = () => glyphRepaint.onFocus();
     // terminal.textarea exists once open() has run (above).
     terminal.textarea?.addEventListener('focus', onTextareaFocus);
+
+    // #1234 — the OS window regained focus. Alt-tab out/back never blurs the
+    // textarea in Electron, so the pane `focus` reason cannot fire; the pane
+    // stays `visible`; an idle pane emits no `burst`. Without this listener a
+    // stale frame survives until the user scrolls. Two signals announce the
+    // same refocus (DOM window focus + visibilitychange — the latter is inert
+    // on Windows, #882); the scheduler's dedup window coalesces them. Gated on
+    // pane visibility: a hidden pane's repair is the `visible` repaint on
+    // reveal, so its refocus repaint would be wasted GPU work.
+    const onWindowRefocus = () => {
+      if (isVisibleRef.current) glyphRepaint.onWindowFocus();
+    };
+    window.addEventListener('focus', onWindowRefocus);
+    const onDocVisibility = () => {
+      if (document.visibilityState === 'visible') onWindowRefocus();
+    };
+    document.addEventListener('visibilitychange', onDocVisibility);
 
     // Shared-atlas page-merge guard (2026-08-01 report) — see atlasGuard.ts
     // for the root cause. glyphRepaint's refresh() above never touches the
@@ -2581,6 +2598,8 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       if (isMac) { container.removeEventListener('paste', blockNativePaste, true); }
       detachAltScreenWheel();
       terminal.textarea?.removeEventListener('focus', onTextareaFocus);
+      window.removeEventListener('focus', onWindowRefocus);
+      document.removeEventListener('visibilitychange', onDocVisibility);
       terminal.textarea?.removeEventListener('keydown', onWatchdogKeyDown);
       terminal.element?.removeEventListener('contextmenu', onTerminalContextMenu);
       glyphRepaint.dispose();

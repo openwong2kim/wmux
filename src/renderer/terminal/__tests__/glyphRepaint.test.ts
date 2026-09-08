@@ -8,6 +8,7 @@ import {
   FOCUS_THROTTLE_MS_DEFAULT,
   BURST_STREAM_FLUSH_MS_DEFAULT,
   SETTLE_VERIFY_MS_DEFAULT,
+  WINDOW_FOCUS_DEDUP_MS_DEFAULT,
   type RepaintReason,
 } from '../glyphRepaint';
 
@@ -356,6 +357,68 @@ describe('glyphRepaint scheduler', () => {
       s.onVisible();
       s.onVisible();
       expect(repaints).toEqual(['visible', 'visible']);
+    });
+  });
+
+  describe('window-focus repaint (#1234 — alt-tab repair)', () => {
+    it('fires an immediate repair plus one delayed verify', () => {
+      const s = createGlyphRepaintScheduler({ repaint });
+      s.onWindowFocus();
+      expect(repaints).toEqual(['window-focus']);
+      vi.advanceTimersByTime(SETTLE_VERIFY_MS_DEFAULT - 1);
+      expect(repaints).toEqual(['window-focus']);
+      vi.advanceTimersByTime(1);
+      expect(repaints).toEqual(['window-focus', 'settle-verify']);
+    });
+
+    it('coalesces the focus + visibilitychange pair into one repair', () => {
+      let t = 0;
+      const s = createGlyphRepaintScheduler({ repaint, now: () => t });
+      s.onWindowFocus(); // DOM window focus
+      s.onWindowFocus(); // visibilitychange, same tick — deduped
+      expect(repaints).toEqual(['window-focus']);
+      t += WINDOW_FOCUS_DEDUP_MS_DEFAULT; // past the dedup window
+      s.onWindowFocus();
+      expect(repaints).toEqual(['window-focus', 'window-focus']);
+      // One verify in flight, not one per signal.
+      vi.advanceTimersByTime(SETTLE_VERIFY_MS_DEFAULT + 1);
+      expect(repaints.filter((r) => r === 'settle-verify')).toHaveLength(1);
+    });
+
+    it('is deliberately NOT throttled by the pane-focus window', () => {
+      // A pane-focus repaint may have fired moments BEFORE the occlusion that
+      // caused the staleness — sharing that throttle would skip the repair on
+      // exactly the #1234 flow.
+      let t = 0;
+      const s = createGlyphRepaintScheduler({ repaint, now: () => t });
+      s.onFocus(); // pane focused at t=0
+      t += 100; // well inside FOCUS_THROTTLE_MS_DEFAULT
+      s.onWindowFocus();
+      expect(repaints).toEqual(['focus', 'window-focus']);
+    });
+
+    it('shares the verify timer with the settle path (latest deadline wins)', () => {
+      let t = 0;
+      const s = createGlyphRepaintScheduler({
+        repaint, activityBytes: 10, burstQuietMs: 50,
+        burstStreamFlushMs: Infinity, settleVerifyMs: 100, now: () => t,
+      });
+      const tick = (ms: number) => { t += ms; vi.advanceTimersByTime(ms); };
+      s.onData(100);
+      tick(50); // settle at t=50 arms verify for t=150
+      tick(40); // t=90: refocus re-arms the verify for t=190
+      s.onWindowFocus();
+      expect(repaints).toEqual(['burst', 'window-focus']);
+      tick(100); // t=190
+      expect(repaints).toEqual(['burst', 'window-focus', 'settle-verify']); // once
+    });
+
+    it('is cancelled by dispose', () => {
+      const s = createGlyphRepaintScheduler({ repaint });
+      s.onWindowFocus();
+      s.dispose();
+      vi.advanceTimersByTime(SETTLE_VERIFY_MS_DEFAULT * 2);
+      expect(repaints).toEqual(['window-focus']);
     });
   });
 
