@@ -384,15 +384,19 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
         id: generateId('arch'),
         name: ws.name,
         ...(color ? { color } : {}),
-        wsOrdinal: ws.wsOrdinal ?? 1,
         ...(ws.profile ? { profile: ws.profile } : {}),
         tree: extractLayout(ws.rootPane),
         archivedAt: Date.now(),
       };
       get().removeWorkspace(id);
-      set((state: StoreState) => {
-        state.archivedWorkspaces.push(snapshot);
-      });
+      // Push only when the removal actually happened. Today both guards read
+      // the same synchronous store, but a future refusal condition inside
+      // removeWorkspace must not produce a live+archived duplicate.
+      if (!get().workspaces.some((w: Workspace) => w.id === id)) {
+        set((state: StoreState) => {
+          state.archivedWorkspaces.push(snapshot);
+        });
+      }
     },
 
     // Fresh ids on the way back: the snapshot's LayoutNode carries no pane
@@ -417,10 +421,19 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
         ws.activePaneId = leaves[0]?.id ?? rootPane.id;
         const color = normalizeWorkspaceColor(archived.color);
         if (color) ws.color = color;
-        if (archived.profile) ws.profile = archived.profile;
+        // Same sanitize policy every other profile-entry path runs
+        // (loadSession normalizes live profiles; duplicateWorkspace
+        // dropSecretKeys) — the snapshot is session.json, i.e. hand-editable.
+        if (archived.profile) {
+          ws.profile = normalizeWorkspaceProfile(archived.profile) ?? undefined;
+        }
         state.nextWorkspaceOrdinal = highWater + 1;
         state.workspaces.push(ws);
         state.activeWorkspaceId = ws.id;
+        // Same convention as every other activeWorkspaceId assignment
+        // (clearRemoteSelection's contract): a restore while a remote mirror
+        // is showing must actually land on the restored workspace.
+        clearRemoteSelection(state);
         state.archivedWorkspaces = state.archivedWorkspaces.filter((a) => a.id !== archivedId);
       });
     },
@@ -958,7 +971,10 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       state.archivedWorkspaces = Array.isArray(data.archivedWorkspaces)
         ? data.archivedWorkspaces.filter(
             (a): a is ArchivedWorkspace =>
-              !!a && typeof a.id === 'string' && typeof a.name === 'string' && !!a.tree,
+              !!a && typeof a.id === 'string' && typeof a.name === 'string'
+              && typeof a.archivedAt === 'number'
+              && (a.tree?.type === 'leaf'
+                || (a.tree?.type === 'branch' && Array.isArray(a.tree.children))),
           )
         : [];
       // The previous session's group cannot describe this one's workspaces.
