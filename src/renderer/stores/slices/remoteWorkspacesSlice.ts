@@ -22,6 +22,14 @@ export interface AttachedRemoteWorkspace {
   workspaceId: string;
   name: string;                   // remote name snapshot ('' → UI falls back to workspaceId prefix)
   panes: RemotePaneSummary[];     // refreshed on re-attach / exit event / poll
+  /**
+   * #1086 — local-side aliases. `label` renames the SIDEBAR ROW without
+   * touching the remote host (which owns the real name); `color` is a
+   * WorkspaceColorId in the same grammar as local workspaces. Both persist
+   * with the descriptor.
+   */
+  label?: string;
+  color?: string;
   /** The host could not be reached, or the workspace is gone from it. The
    *  entry deliberately STAYS in the sidebar — dropping a user's attachment
    *  because a laptop slept would be silent data loss — it just renders
@@ -50,6 +58,8 @@ function toDescriptor(w: AttachedRemoteWorkspace): RemoteAttachmentDescriptor {
     hostLabel: w.hostLabel,
     workspaceId: w.workspaceId,
     name: w.name,
+    ...(w.label ? { label: w.label } : {}),
+    ...(w.color ? { color: w.color } : {}),
   };
 }
 
@@ -116,6 +126,12 @@ export interface RemoteWorkspacesSlice {
   setRemoteWorkspacePanes: (key: string, panes: RemotePaneSummary[], name?: string) => void;
   /** Marks the entry unreachable (or reachable again) without dropping it. */
   setRemoteWorkspaceStale: (key: string, stale: boolean) => void;
+  /** #1086 — rename the row LOCALLY (the remote host owns the real name).
+   *  Empty clears the alias; the remote snapshot name shows again. */
+  renameRemoteWorkspace: (key: string, label: string | null) => void;
+  /** #1086 — color-tag the row in the same grammar as local workspaces.
+   *  undefined clears the tag. */
+  setRemoteWorkspaceColor: (key: string, color: string | undefined) => void;
   /** Selecting a LOCAL workspace calls this with null. */
   setActiveRemoteKey: (key: string | null) => void;
 }
@@ -192,6 +208,42 @@ export const createRemoteWorkspacesSlice: StateCreator<StoreState, [['zustand/im
     entry.stale = stale;
     if (!stale) entry.attachEpoch = (entry.attachEpoch ?? 0) + 1;
   }),
+
+  renameRemoteWorkspace: (key, label) => {
+    // The descriptor is built INSIDE the producer (a draft that escapes set()
+    // is a revoked proxy — the same trap stashPane's comments warn about) and
+    // persisted as a plain object.
+    let descriptor: RemoteAttachmentDescriptor | undefined;
+    set((state: StoreState) => {
+      const entry = state.remoteWorkspaces.find((r: AttachedRemoteWorkspace) => r.key === key);
+      if (!entry) return;
+      const trimmed = label?.trim();
+      if (trimmed) entry.label = trimmed;
+      else delete entry.label;
+      descriptor = toDescriptor(entry);
+    });
+    // Re-adding the same key overwrites its descriptor in place (the store's
+    // own upsert rule), which is how the alias survives a reload.
+    const api = persistApi();
+    if (descriptor && api?.attachmentsAdd) {
+      void api.attachmentsAdd(descriptor).catch(() => { /* best-effort, same as attach */ });
+    }
+  },
+
+  setRemoteWorkspaceColor: (key, color) => {
+    let descriptor: RemoteAttachmentDescriptor | undefined;
+    set((state: StoreState) => {
+      const entry = state.remoteWorkspaces.find((r: AttachedRemoteWorkspace) => r.key === key);
+      if (!entry) return;
+      if (color) entry.color = color;
+      else delete entry.color;
+      descriptor = toDescriptor(entry);
+    });
+    const api = persistApi();
+    if (descriptor && api?.attachmentsAdd) {
+      void api.attachmentsAdd(descriptor).catch(() => { /* best-effort */ });
+    }
+  },
 
   setActiveRemoteKey: (key) => set((state: StoreState) => {
     state.activeRemoteKey = key;

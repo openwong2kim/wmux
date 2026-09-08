@@ -54,6 +54,40 @@ describe('remoteWorkspacesSlice', () => {
     store = createTestStore();
   });
 
+  // #1086 — rename + color are LOCAL aliases on the attachment descriptor.
+  // The node test env has no `window`, so persistence is untestable here; the
+  // store mutations and the descriptor round-trip are what matter.
+  it('rename sets and clears the local label alias', () => {
+    const remote = makeRemote();
+    store.getState().attachRemoteWorkspace(remote);
+    store.getState().renameRemoteWorkspace(remote.key, 'CTO-mirror');
+    expect(store.getState().remoteWorkspaces[0].label).toBe('CTO-mirror');
+    // A remote-side rename of the real name does not touch the alias.
+    store.getState().setRemoteWorkspacePanes(remote.key, [], 'Renamed on host');
+    expect(store.getState().remoteWorkspaces[0].label).toBe('CTO-mirror');
+    expect(store.getState().remoteWorkspaces[0].name).toBe('Renamed on host');
+    // Empty clears it — the remote snapshot name shows again.
+    store.getState().renameRemoteWorkspace(remote.key, '   ');
+    expect(store.getState().remoteWorkspaces[0].label).toBeUndefined();
+  });
+
+  it('color tag sets and clears like the local workspace grammar', () => {
+    const remote = makeRemote();
+    store.getState().attachRemoteWorkspace(remote);
+    store.getState().setRemoteWorkspaceColor(remote.key, 'rose');
+    expect(store.getState().remoteWorkspaces[0].color).toBe('rose');
+    store.getState().setRemoteWorkspaceColor(remote.key, undefined);
+    expect(store.getState().remoteWorkspaces[0].color).toBeUndefined();
+  });
+
+  it('unknown keys are ignored by both alias actions', () => {
+    store.getState().attachRemoteWorkspace(makeRemote());
+    store.getState().renameRemoteWorkspace('nope', 'x');
+    store.getState().setRemoteWorkspaceColor('nope', 'rose');
+    expect(store.getState().remoteWorkspaces).toHaveLength(1);
+    expect(store.getState().remoteWorkspaces[0].label).toBeUndefined();
+  });
+
   it('attach dedups by key and sets activeRemoteKey', () => {
     const remote = makeRemote();
     store.getState().attachRemoteWorkspace(remote);
