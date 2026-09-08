@@ -65,7 +65,13 @@ jobs:
         run: npm run build:daemon
 
       - name: Test
-        run: npm test
+        # #984 bisection step 2: vitest 4.1.11 did NOT fix the fork death
+        # (run 34180314730: "Worker forks emitted error — Worker exited
+        # unexpectedly", all 986 executed files green, one fork dead) — so the
+        # main suite runs on the THREADS pool here instead of forks. If this is
+        # green across runs on windows-latest, the failure is fork-pool
+        # specific on Node 24 and the runtime move can proceed pool=threads.
+        run: npx vitest run --exclude "**/*.runtime.test.ts" --exclude "**/*.runtime.test.tsx" --exclude "**/*.runtime.test.mjs" --pool=threads && npm run test:runtime
         env:
           # Tells those suites the bundle was promised, so removing the step
           # above fails a test instead of silently retiring both files.
