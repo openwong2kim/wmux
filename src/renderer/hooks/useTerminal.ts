@@ -4,6 +4,7 @@ import { FitAddon } from '@xterm/addon-fit';
 import { WebglAddon } from '@xterm/addon-webgl';
 import { SearchAddon } from '@xterm/addon-search';
 import { applyUnicodeWidthModel } from '../../shared/terminalUnicode';
+import { isSafeGeometry } from '../../shared/terminalGeometry';
 import { matchesDisabledShortcut } from '../../shared/keymap';
 import { xtermWindowsBuildNumber } from '../../shared/conptyWindows';
 import { WebLinksAddon } from '@xterm/addon-web-links';
@@ -393,6 +394,29 @@ function writePtyDataImmediately(
 ): void {
   if (payload.replay) writeReplayed(term, payload.data, mute);
   else term.write(payload.data);
+}
+
+/**
+ * #1255: the dimensions a fit() would apply right now, or null when the fit
+ * must be skipped — container not measurable, or the proposal is below the
+ * shared geometry floor. Applying a sub-floor fit reflows the entire
+ * scrollback at that width and permanently garbles the pane; the daemon
+ * would clamp the PTY side to MIN_SAFE_COLS anyway, splitting the two sides
+ * of the pipe. Callers skip; a later resize tick (layout settled, pane
+ * revealed, font swapped) re-proposes.
+ */
+function proposedSafeDimensions(
+  addon: FitAddon | null | undefined,
+): { cols: number; rows: number } | null {
+  if (!addon) return null;
+  try {
+    const dims = addon.proposeDimensions();
+    if (!dims) return null;
+    if (!isSafeGeometry(dims.cols, dims.rows)) return null;
+    return dims;
+  } catch {
+    return null; // disposed addon — caller's other guards own teardown
+  }
 }
 
 function hiddenRetentionActive(): boolean {
@@ -978,6 +1002,12 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     // Calling fit() on a display:none element produces 0 cols/rows which
     // corrupts the xterm buffer and causes the "infinite copy downward" bug.
     if (container.offsetWidth === 0 || container.offsetHeight === 0) return;
+    // #1255: skip sub-floor fits. A mid-split/restoring container can measure
+    // small-but-nonzero; fit() would APPLY those columns to the buffer and
+    // the reflow re-wraps the whole scrollback at that width — damage a later
+    // correct fit does not undo. The ResizeObserver re-fires when the layout
+    // settles, so skipping is self-healing.
+    if (!proposedSafeDimensions(fitAddonRef.current)) return;
     try {
       fitAddonRef.current.fit();
       // This path fits and resizes too, so it settles any deferred debt (#747) —
@@ -1476,7 +1506,10 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     // hidden workspace — an agent splitting a background pane, say) has no
     // valid fit to restore against. Hold the parked viewport until one runs.
     let pendingAdoptViewport: ParkedTerminal | null = null;
-    if (container.offsetWidth > 0 && container.offsetHeight > 0) {
+    // #1255: sub-floor proposals (mid-split/restoring container) are treated
+    // exactly like a hidden container — no fit, and an adoption holds its
+    // parked viewport until a real fit runs.
+    if (container.offsetWidth > 0 && container.offsetHeight > 0 && proposedSafeDimensions(fitAddon)) {
       fitAddon.fit();
       // #1002: the fit runs AFTER the adopted element is back in the DOM and
       // can change how many rows the viewport holds, which moves what "the
@@ -1514,7 +1547,10 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         console.debug('[Terminal] fonts.ready fit deferred — active selection');
         return;
       }
-      fitAddon.fit();
+      pendingFitRef.current = false;
+      // #1255: floor gate — fonts re-measure a container that may still be
+      // mid-layout; a sub-floor proposal is skipped, not applied.
+      if (proposedSafeDimensions(fitAddon)) fitAddon.fit();
       terminal.refresh(0, terminal.rows - 1);
     });
 
@@ -1552,6 +1588,12 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         if (term !== terminal) return;
 
         if (container.offsetWidth === 0 || container.offsetHeight === 0) return;
+
+        // #1255: floor gate BEFORE the selection guard — a sub-floor proposal
+        // records no fit debt: layout settling re-fires the ResizeObserver,
+        // which is the retry. (Checked before claimFit so the debt mechanism
+        // stays reserved for selection-deferred fits.)
+        if (!proposedSafeDimensions(fitAddon)) return;
 
         // Selection-preservation guard: xterm's SelectionService clears the
         // active selection on any rowsChanged event from fit(). While the user
@@ -2217,6 +2259,13 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       st.buffer.length = 0;
       st.bufferedChars = 0;
       resetStaleReplayModes(recoveredBytes);
+      // #1255: re-assert DOM-derived geometry past the runFit dedup. The
+      // recovered session must get the real size even if the renderer's
+      // lastSentCols cache already "matches" — a transient sub-floor fit
+      // could have left the daemon pinned at its MIN_SAFE_COLS clamp while
+      // the cache believed otherwise. sendResize carries no dedup.
+      const dims = proposedSafeDimensions(fitAddon);
+      if (dims) sendResize(ptyId, dims.cols, dims.rows);
       st.resolvers.splice(0).forEach((r) => r());
       return true;
     };
@@ -2775,6 +2824,12 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
           // last reported value so a reattach cannot silently revert it.
           if (ptyIdRef.current !== id) return;
           reportViewerVisibility(id, viewerVisibleRef.current);
+          // #1255: re-assert DOM-derived geometry after a reconnect — the
+          // daemon session was recreated at its default/clamped size; the
+          // renderer's dedup cache may already "match" that stale value, so
+          // the resize goes out unconditionally via sendResize (no dedup).
+          const dims = proposedSafeDimensions(fitAddonRef.current);
+          if (dims) sendResize(id, dims.cols, dims.rows);
         })
         .finally(() => { inFlight = false; reconnectInFlightRef.current = false; });
     };
@@ -2850,6 +2905,12 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     const container = containerRef.current;
     if (!container || container.offsetWidth === 0 || container.offsetHeight === 0) {
       console.debug('[Terminal] font/theme fit skipped — container has zero dimensions');
+      return;
+    }
+    // #1255: floor gate — a font change re-measures the container; skip
+    // sub-floor proposals instead of reflowing the buffer at a broken width.
+    if (!proposedSafeDimensions(fitAddonRef.current)) {
+      console.debug('[Terminal] font/theme fit skipped — sub-floor dimensions');
       return;
     }
     fitAddonRef.current?.fit();
