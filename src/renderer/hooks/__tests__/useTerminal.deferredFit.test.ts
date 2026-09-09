@@ -91,3 +91,71 @@ describe('#747 — a deferred fit must be recorded and settled', () => {
     expect(block).not.toMatch(/fitAddon\.fit\(\)/);
   });
 });
+
+// #1255 — sub-floor fits are skipped, and recovered sessions re-assert their
+// real geometry. A transient small-but-nonzero container (mid-split, session
+// restore before the panels settle) used to be FITTED: the tiny columns were
+// applied to the xterm buffer and the reflow re-wrapped the whole scrollback
+// at that width — damage a later correct fit does not undo, which is how a
+// pane rendered ~1 column wide forever. The daemon clamps its side to
+// MIN_SAFE_COLS(10) regardless, so the two sides of the pipe also split.
+describe('#1255 — every fit() apply site is floor-gated, every recovery re-asserts', () => {
+  const hookPath = path.join(__dirname, '..', 'useTerminal.ts');
+  const src = readSource(hookPath);
+
+  it('imports the shared floor (single-sourced with the daemon clamp)', () => {
+    expect(src).toMatch(/import \{ isSafeGeometry \} from '\.\.\/\.\.\/shared\/terminalGeometry'/);
+  });
+
+  it('the exported fit() gates below the floor, after the zero-dimension guard', () => {
+    const start = src.indexOf('const fit = useCallback');
+    const block = src.slice(start, src.indexOf('}, [ptyId, containerRef]', start));
+    const zero = block.indexOf('offsetWidth === 0');
+    const gate = block.indexOf('proposedSafeDimensions(fitAddonRef.current)');
+    const fitCall = block.indexOf('fitAddonRef.current.fit()');
+    expect(zero).toBeGreaterThan(-1);
+    expect(gate).toBeGreaterThan(zero);
+    expect(fitCall).toBeGreaterThan(gate);
+  });
+
+  it('the initial mount fit treats a sub-floor container like a hidden one', () => {
+    const anchor = 'container.offsetWidth > 0 && container.offsetHeight > 0 && proposedSafeDimensions(fitAddon)';
+    expect(src).toContain(anchor);
+  });
+
+  it('fonts.ready and runFit gate their fits too', () => {
+    const fonts = src.slice(src.indexOf('document.fonts.ready'), src.indexOf('document.fonts.ready') + 1400);
+    expect(fonts).toMatch(/if \(proposedSafeDimensions\(fitAddon\)\) fitAddon\.fit\(\)/);
+    const runFitStart = src.indexOf('const runFit = () => {');
+    const runFit = src.slice(runFitStart, src.indexOf('const autoCopy = createAutoSelectionCopy', runFitStart));
+    // BEFORE claimFit: a floor skip records no selection debt — the settled
+    // layout re-fires the ResizeObserver, which is the retry.
+    const gate = runFit.indexOf('proposedSafeDimensions(fitAddon)) return');
+    const claim = runFit.indexOf('claimFit(');
+    expect(gate).toBeGreaterThan(-1);
+    expect(claim).toBeGreaterThan(gate);
+  });
+
+  it('the font/theme effect gates its fit as well', () => {
+    // The zero-dimension skip logs a near-identical line; anchor on the
+    // sub-floor one specifically.
+    const start = src.indexOf('[Terminal] font/theme fit skipped — sub-floor dimensions');
+    expect(start).toBeGreaterThan(-1);
+    const block = src.slice(start - 500, start);
+    expect(block).toMatch(/proposedSafeDimensions\(fitAddonRef\.current\)/);
+  });
+
+  it('a resync settle and a daemon reattach both re-assert DOM geometry (no dedup)', () => {
+    // sendResize carries no lastSentCols dedup — these two points must push
+    // the real size even when the renderer cache already "matches", or the
+    // daemon stays pinned at its clamp after a transient tiny fit.
+    const resync = src.slice(src.indexOf('const completeResyncFromFlush'), src.indexOf('const completeResyncFromFlush') + 2000);
+    expect(resync).toMatch(/proposedSafeDimensions\(fitAddon\)/);
+    expect(resync).toMatch(/sendResize\(ptyId, dims\.cols, dims\.rows\)/);
+    // Anchor on the reattach log line itself — plain "daemon reattach" also
+    // appears in unrelated comments above this effect.
+    const reattach = src.slice(src.indexOf('[useTerminal] daemon reattach ptyId='), src.indexOf('[useTerminal] daemon reattach ptyId=') + 2200);
+    expect(reattach).toMatch(/proposedSafeDimensions\(fitAddonRef\.current\)/);
+    expect(reattach).toMatch(/sendResize\(id, dims\.cols, dims\.rows\)/);
+  });
+});
