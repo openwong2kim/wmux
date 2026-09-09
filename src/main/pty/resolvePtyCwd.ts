@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import { isLinuxCwd, isWslShell } from '../../shared/wsl';
 import path from 'node:path';
 import type { DeadPaneRecovery } from '../../shared/ptyRecovery';
 
@@ -24,6 +25,11 @@ export function validatePtyCwd(cwd: string | undefined): string | undefined {
     return undefined;
   }
   return resolved;
+}
+
+export function validatePtyCwdForShell(cwd: string | undefined, shell?: string): string | undefined {
+  if (isWslShell(shell) && isLinuxCwd(cwd)) return cwd;
+  return validatePtyCwd(cwd);
 }
 
 /**
@@ -59,4 +65,21 @@ export function resolvePtyCreateCwd(
     safeCwd: validate(requestedCwd),
     source: 'requested',
   };
+}
+
+/** WSL recovery uses the last Linux cwd; legacy spawnCwd may be Windows home. */
+export function resolvePtyCreateCwdForShell(
+  requestedCwd: string | undefined,
+  recovery: Pick<DeadPaneRecovery, 'spawnCwd' | 'cwd'> | undefined,
+  shell?: string,
+): ResolvedPtyCwd {
+  if (isWslShell(shell) && recovery !== undefined) {
+    if (isLinuxCwd(recovery.cwd)) {
+      return { incomingCwd: recovery.cwd, safeCwd: recovery.cwd, source: 'recovery-cwd' };
+    }
+    if (isLinuxCwd(recovery.spawnCwd)) {
+      return { incomingCwd: recovery.spawnCwd, safeCwd: recovery.spawnCwd, source: 'recovery-spawnCwd' };
+    }
+  }
+  return resolvePtyCreateCwd(requestedCwd, recovery, (cwd) => validatePtyCwdForShell(cwd, shell));
 }

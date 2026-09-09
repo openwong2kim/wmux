@@ -115,7 +115,7 @@ describe('daemon.promoteSession — guards', () => {
   });
 
   it('falls back to the home directory when the recorded cwd is gone', () => {
-    expect(promoteRegion()).toMatch(/fs\.existsSync\(session\.cwd\) \? session\.cwd : os\.homedir\(\)/);
+    expect(promoteRegion()).toMatch(/recoveryCwd\(session\)/);
   });
 
   it('reports a spawn failure as a structured error instead of throwing at the pipe', () => {

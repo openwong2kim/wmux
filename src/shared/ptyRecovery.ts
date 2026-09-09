@@ -1,3 +1,4 @@
+import { validWslTarget, type WslTarget } from './wslTarget';
 import { isAgentSlug, type AgentSlug } from './agentIdentity';
 import type { ResumeBinding } from './agentResume';
 
@@ -7,6 +8,7 @@ import type { ResumeBinding } from './agentResume';
  * them at PTY-create time.
  */
 export interface DeadPaneRecovery {
+  wslTarget?: WslTarget;
   spawnCwd?: string;
   cwd?: string;
   resumeAgent?: AgentSlug;
@@ -14,6 +16,7 @@ export interface DeadPaneRecovery {
 }
 
 export interface DeadPaneSessionSnapshot {
+  wslTarget?: WslTarget;
   spawnCwd?: string;
   cwd?: string;
   /** Untrusted daemon/RPC value; normalized before entering renderer state. */
@@ -40,6 +43,7 @@ export function createDeadPaneRecovery(session: DeadPaneSessionSnapshot): DeadPa
   const resumeAgent = asRecoveryAgentSlug(session.resumeAgent)
     ?? asRecoveryAgentSlug(resumeBinding?.agent);
   return {
+    ...(validWslTarget(session.wslTarget) ? { wslTarget: { ...session.wslTarget } } : {}),
     ...(nonBlank(session.spawnCwd) ? { spawnCwd: session.spawnCwd } : {}),
     ...(nonBlank(session.cwd) ? { cwd: session.cwd } : {}),
     ...(resumeAgent ? { resumeAgent } : {}),

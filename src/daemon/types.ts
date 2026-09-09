@@ -1,5 +1,6 @@
 // === Daemon-specific type definitions ===
 
+import type { WslTarget } from '../shared/wsl';
 import type { DaemonSupervisionPolicy } from '../shared/rpc';
 import type { AgentSlug } from '../shared/events';
 import type { ResumeBinding } from '../shared/agentResume';
@@ -56,6 +57,7 @@ export interface DaemonSession {
    */
   pidStartTime?: string;
   cmd: string;              // executed command
+  wslTarget?: WslTarget;
   /**
    * LIVE working directory. Updated at runtime from the OSC 7 sequences the
    * pane's shell emits, so it follows a `cd` — and so it is whatever any

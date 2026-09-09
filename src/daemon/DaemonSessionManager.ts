@@ -1,3 +1,6 @@
+import { isWslShell, resolveWslCwd, type WslTarget } from '../shared/wsl';
+import { buildWslInjection } from '../shared/wslIntegration';
+import { getWmuxDir } from './config';
 import { EventEmitter } from 'node:events';
 import { randomUUID } from 'node:crypto';
 import * as pty from 'node-pty';
@@ -10,7 +13,7 @@ import { MIN_SAFE_COLS, MIN_SAFE_ROWS } from '../shared/terminalGeometry';
 import { RingBuffer } from './RingBuffer';
 import { DaemonPTYBridge } from './DaemonPTYBridge';
 import { PromptEventLog } from './PromptEventLog';
-import { buildSpawnInjection, classifyShell } from './shell-integration';
+import { buildSpawnInjection, classifyShell, BASH_INIT } from './shell-integration';
 import { expandTilde } from '../shared/expandTilde';
 import { restoreSeam } from '../shared/restoreSeam';
 import { buildExecArgs } from './execWrapper';
@@ -198,6 +201,7 @@ export class DaemonSessionManager extends EventEmitter {
      * route depends on: the pane's process cannot choose it.
      */
     spawnCwd?: string;
+    wslTarget?: WslTarget;
     /**
      * The child environment. When provided it is treated as AUTHORITATIVE and
      * replayed verbatim — the caller (main process) has already run
@@ -312,8 +316,10 @@ export class DaemonSessionManager extends EventEmitter {
     // argument that no shell ever touched, so `~/projects/foo` would otherwise
     // stay literal and silently fall back to $HOME (or throw as an unreadable
     // cwd). Single choke point — every caller-supplied cwd converges here.
-    const cwd = params.cwd ? expandTilde(params.cwd) : os.homedir();
     let cmd = this.resolveShellPath(params.cmd) || this.getDefaultShell();
+    const wsl = isWslShell(cmd) ? resolveWslCwd(cmd, params.cwd, params.wslTarget) : undefined;
+    const cwd = wsl?.cwd ?? (params.cwd ? expandTilde(params.cwd) : os.homedir());
+    const hostCwd = wsl ? os.homedir() : cwd;
 
     // Resolve the child environment. A caller-supplied env is AUTHORITATIVE —
     // main already ran buildSafeChildEnv + the workspace-profile overlay +
@@ -376,7 +382,14 @@ export class DaemonSessionManager extends EventEmitter {
     }
 
     let spawnArgs: string[] = [];
-    if (params.exec) {
+    if (wsl) {
+      const injection = buildWslInjection({ target: wsl.target, cwd, env,
+        integrationDir: getWmuxDir(), bashInit: BASH_INIT,
+        execCommand: params.exec ? (params.execLaunchCommand ?? params.exec.command) : undefined,
+      });
+      spawnArgs = injection.args;
+      Object.assign(env, injection.env);
+    } else if (params.exec) {
       // X8 exec unit: the command IS the pane process — no interactive
       // shell session, so OSC 133 injection is skipped (no prompt to mark,
       // and injection args would collide with the wrapper argv). When the
@@ -446,7 +459,7 @@ export class DaemonSessionManager extends EventEmitter {
           name: 'xterm-256color',
           cols,
           rows,
-          cwd,
+          cwd: hostCwd,
           env,
           useConpty: true,
           ...(useBundled ? { useConptyDll: true } : {}),
@@ -479,6 +492,7 @@ export class DaemonSessionManager extends EventEmitter {
       pid: ptyProcess.pid,
       cmd,
       cwd,
+      ...(wsl ? { wslTarget: wsl.target } : {}),
       // Same value as `cwd` for a brand-new session, and deliberately a second
       // field: `cwd` is about to start tracking OSC 7 (see the bridge's 'cwd'
       // handler) and will diverge the first time anything in the pane changes

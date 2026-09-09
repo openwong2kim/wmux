@@ -41,7 +41,8 @@ import {
 import type { DaemonSupervisionPolicy } from '../../../shared/rpc';
 import type { ResumeBinding } from '../../../shared/agentResume';
 import { createDeadPaneRecovery, type DeadPaneRecovery } from '../../../shared/ptyRecovery';
-import { resolvePtyCreateCwd, type PtyCwdSource } from '../../pty/resolvePtyCwd';
+import { isWslShell, type WslTarget } from '../../../shared/wsl';
+import { resolvePtyCreateCwdForShell, type PtyCwdSource } from '../../pty/resolvePtyCwd';
 import { FANOUT_TASK_PORT_ENV } from '../../worktask/fanoutEnvironment';
 import { agentDisplayToSlug } from '../../../shared/agentIdentity';
 import { SessionPromptScheduler } from '../../pty/SessionPromptScheduler';
@@ -98,9 +99,9 @@ interface PtyCreateSupervisionInput {
 type PtyCreateOptions = {
   shell?: string;
   cwd?: string;
-  /** Dead-session replacement candidates. Main validates spawnCwd, then cwd;
+  /** Dead-session replacement candidates. WSL validates inside its distro;
    * neither value is trusted merely because it came from the renderer. */
-  recoveryCwds?: Pick<DeadPaneRecovery, 'spawnCwd' | 'cwd'>;
+  recoveryCwds?: Pick<DeadPaneRecovery, 'spawnCwd' | 'cwd' | 'wslTarget'>;
   cols?: number;
   rows?: number;
   workspaceId?: string;
@@ -367,9 +368,9 @@ export function registerPTYHandlers(
           ? resolveSupervisionPolicy(options.supervision)
           : undefined;
 
-      const cwdResolution = resolvePtyCreateCwd(options?.cwd, options?.recoveryCwds);
+      const cwdResolution = resolvePtyCreateCwdForShell(options?.cwd, options?.recoveryCwds, options?.shell);
       const safeCwd = cwdResolution.safeCwd;
-      const effectiveCwd = safeCwd ?? require('os').homedir();
+      let effectiveCwd = safeCwd ?? (isWslShell(options?.shell) ? '~' : require('os').homedir());
       // Daemon-mode default shell. On Windows prefer PowerShell 7 over 5.1 via
       // ShellDetector (issue #176) — mirrors PTYManager.getDefaultShell() so
       // both modes pick the same default.
@@ -490,12 +491,16 @@ export function registerPTYHandlers(
         id: sessionId,
         cmd: shell,
         cwd: effectiveCwd,
+        wslTarget: options?.recoveryCwds?.wslTarget,
         cols: options?.cols || 80,
         rows: options?.rows || 24,
         env: resolvedEnv,
         ...(execCommand !== undefined ? { exec: { command: execCommand } } : {}),
         ...(supervisionPolicy !== undefined ? { supervision: supervisionPolicy } : {}),
       });
+
+      const createdCwd = (result as { cwd?: string })?.cwd;
+      if (isWslShell(shell) && createdCwd) effectiveCwd = createdCwd;
 
       // Attach to the session (makes daemon start the SessionPipe server)
       await daemonClient.rpc('daemon.attachSession', { id: sessionId });
@@ -588,7 +593,7 @@ export function registerPTYHandlers(
         }
       }
 
-      const cwdResolution = resolvePtyCreateCwd(options?.cwd, options?.recoveryCwds);
+      const cwdResolution = resolvePtyCreateCwdForShell(options?.cwd, options?.recoveryCwds, options?.shell);
       const safeCwd = cwdResolution.safeCwd;
       const effectiveCwd = safeCwd ?? undefined;
       // Split off initialCommand — it's written into the shell post-create, not
@@ -596,10 +601,10 @@ export function registerPTYHandlers(
       // must not reach ptyManager.create, so build a clean spawn-options object
       // from only the local-relevant fields instead of spreading the payload.
       const { initialCommand, shell, cols, rows, workspaceId, surfaceId, env, spawnKind } = options ?? {};
-      const instance = ptyManager.create({ shell, cols, rows, workspaceId, surfaceId, env, cwd: effectiveCwd, spawnKind });
+      const instance = ptyManager.create({ shell, cols, rows, workspaceId, surfaceId, env, cwd: effectiveCwd, spawnKind, wslTarget: options?.recoveryCwds?.wslTarget });
       logCwdResolution(instance.id, cwdResolution.incomingCwd, safeCwd, cwdResolution.source);
       ptyBridge.setupDataForwarding(instance.id);
-      const actualCwd = effectiveCwd || require('os').homedir();
+      const actualCwd = instance.cwd || effectiveCwd || require('os').homedir();
       updateCwd(instance.id, actualCwd);
       // Startup command: gate on the shell's first output (one-shot onData)
       // so it lands at a ready prompt, mirroring the daemon path. ptyManager
@@ -930,6 +935,7 @@ export function registerPTYHandlers(
         resumeAgent?: string;
         // X6 ③ — the captured resume binding (origin id + cwd + permission mode),
         // surfaced alongside resumeAgent (recovery-only, cwd-matched) for the pill.
+        wslTarget?: WslTarget;
         resumeBinding?: ResumeBinding;
         // OSC 133 — true = a foreground command owns the PTY, false = at a shell
         // prompt, undefined = no shell integration. The resume chip's authoritative
@@ -990,6 +996,7 @@ export function registerPTYHandlers(
           ...(s.resumeAgent ? { resumeAgent: s.resumeAgent } : {}),
           // X6 ③ — carry the binding so the pill can build `--resume <id>`.
           ...(s.resumeBinding ? { resumeBinding: s.resumeBinding } : {}),
+          ...(s.wslTarget ? { wslTarget: s.wslTarget } : {}),
           // OSC 133 shell state — the resume chip's authoritative gate. Only
           // present when shell integration emits markers (else undefined → the
           // renderer falls back to its activity heuristic).
@@ -1032,6 +1039,7 @@ export function registerPTYHandlers(
           cwd?: string;
           spawnCwd?: string;
           resumeAgent?: string;
+          wslTarget?: WslTarget;
           resumeBinding?: ResumeBinding;
         }>;
         const session = sessions.find(s => s.id === id);

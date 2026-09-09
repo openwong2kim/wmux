@@ -1,3 +1,4 @@
+import type { WslTarget } from './wslTarget';
 // === JSON-RPC Protocol Types ===
 
 import type { ResumeBinding } from './agentResume';
@@ -826,6 +827,7 @@ export interface DaemonEvent {
 // observed depending on the caller path.
 
 export interface DaemonCreateSessionParams {
+  wslTarget?: WslTarget;
   id: string;
   /** Absent means the home directory. */
   cwd?: string;

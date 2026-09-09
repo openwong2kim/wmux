@@ -1,3 +1,7 @@
+import { isWslShell, resolveWslCwd, type WslTarget } from '../../shared/wsl';
+import { buildWslInjection } from '../../shared/wslIntegration';
+import { BASH_INIT } from '../../daemon/shell-integration';
+import { getWmuxDir } from '../../daemon/config';
 import * as pty from 'node-pty';
 import os from 'node:os';
 import fs from 'node:fs';
@@ -21,6 +25,7 @@ export interface PTYInstance {
   id: string;
   process: pty.IPty;
   shell: string;
+  cwd?: string;
   /**
    * Workspace this PTY belongs to. Captured at create time so the EventBus
    * can scope process.* events without consulting the renderer state.
@@ -131,6 +136,7 @@ export class PTYManager {
   create(options?: {
     shell?: string;
     cwd?: string;
+    wslTarget?: WslTarget;
     cols?: number;
     rows?: number;
     workspaceId?: string;
@@ -151,7 +157,9 @@ export class PTYManager {
     const shell = options?.shell || this.getDefaultShell();
     // Same reason as the daemon spawn path: a caller-supplied cwd may carry a
     // leading `~` that no shell expanded.
-    const cwd = options?.cwd ? expandTilde(options.cwd) : os.homedir();
+    const wsl = isWslShell(shell) ? resolveWslCwd(shell, options?.cwd, options?.wslTarget) : undefined;
+    const cwd = wsl?.cwd ?? (options?.cwd ? expandTilde(options.cwd) : os.homedir());
+    const hostCwd = wsl ? os.homedir() : cwd;
 
     // Filter out sensitive and build-only variables to prevent leaking
     // internal state to child processes. Shared with DaemonSessionManager
@@ -210,7 +218,9 @@ export class PTYManager {
 
     // Detect shell type and inject hook
     const shellType = this.detectShellType(shell);
-    const hookInjection = this.buildHookInjection(shellType, env);
+    const hookInjection = wsl
+      ? buildWslInjection({ target: wsl.target, cwd, env, integrationDir: getWmuxDir(), bashInit: BASH_INIT })
+      : this.buildHookInjection(shellType, env);
 
     // node-pty throws synchronously on a missing/invalid shell binary or an
     // unreadable cwd (common on macOS/Linux where the shell path differs from
@@ -230,7 +240,7 @@ export class PTYManager {
           name: 'xterm-256color',
           cols: options?.cols || 80,
           rows: options?.rows || 24,
-          cwd,
+          cwd: hostCwd,
           env: hookInjection.env,
           useConpty: true,
           ...(useBundled ? { useConptyDll: true } : {}),
@@ -250,6 +260,7 @@ export class PTYManager {
       id,
       process: ptyProcess,
       shell,
+      cwd,
       ...(options?.workspaceId ? { workspaceId: options.workspaceId } : {}),
     };
     this.instances.set(id, instance);
