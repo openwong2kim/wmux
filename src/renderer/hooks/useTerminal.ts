@@ -631,6 +631,16 @@ interface UseTerminalOptions {
 
 export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>, options: UseTerminalOptions) {
   const terminalRef = useRef<Terminal | null>(null);
+  // #1256: the live instance, published as STATE. The ref is populated by
+  // mutation inside the mount effect (fresh Terminal or an adopted parked
+  // one) — no re-render follows, so a consumer that captured
+  // `terminalRef.current` at render time keeps a null (before the instance
+  // exists) or a detached instance (after adoption swapped it) for as long as
+  // nothing else happens to re-render. Terminal.tsx passes this state to the
+  // scroll-to-bottom button and the bookmark indicator; their subscriptions
+  // and click handlers now track the real instance because identity changes
+  // re-render.
+  const [terminalInstance, setTerminalInstance] = useState<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
   /**
    * A fit() that the selection guard skipped, and nobody re-ran (#747).
@@ -824,6 +834,12 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       try {
         const bytes = Uint8Array.from(atob(payloadBase64), (c) => c.charCodeAt(0));
         console.log(`[wmux:reveal] ptyId=${ptyIdRef.current} mechanism=dead-snapshot payload=${bytes.length}`);
+        // #1256: reset() snaps the viewport to the bottom, and this repaint
+        // used to ship that snap — a user scrolled up in a hidden pane was
+        // yanked down on reveal. Capture the distance from the bottom BEFORE
+        // the reset (rows, the same convention terminalPark uses, so the
+        // restore stays proportional if the repaint reflows line counts).
+        const fromBottom = Math.max(0, term.buffer.active.baseY - term.buffer.active.viewportY);
         discardTerminalOutput(term);
         term.reset();
         // Historical bytes — clipboard bridge muted (#998).
@@ -836,6 +852,18 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
           writePtyDataImmediately(term, chunk, replayMuteRef.current);
         }
         markTerminalClean(term);
+        if (fromBottom > 0) {
+          // Everything above went through term.write, and xterm invokes write
+          // callbacks in write order — so an empty trailing write's callback
+          // fires only after the repaint has fully parsed and the buffer's
+          // baseY is final. That is the one moment a scrollToLine lands
+          // where the user was. (Same parse-barrier shape as hydrateForRead.)
+          term.write('', () => {
+            try {
+              term.scrollToLine(Math.max(0, term.buffer.active.baseY - fromBottom));
+            } catch { /* disposed mid-restore — teardown owns cleanup */ }
+          });
+        }
       } catch { /* disposed mid-paint — teardown owns cleanup */ }
     }
     st.buffer.length = 0;
@@ -2165,12 +2193,26 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       const mechanism = st.viaRawFallback ? 'dirty-raw-fallback' : 'dirty-snapshot';
       st.viaRawFallback = false;
       console.log(`[wmux:reveal] ptyId=${ptyId} mechanism=${mechanism} recoveredBytes=${recoveredBytes} buffered=${st.bufferedChars} chunks=${st.buffer.length}`);
+      // #1256: same viewport-preservation contract as paintDeadSnapshot —
+      // the reset below snaps to bottom, and a user scrolled up in the pane
+      // must stay where they were after the recovered screen lands.
+      const fromBottom = Math.max(0, terminal.buffer.active.baseY - terminal.buffer.active.viewportY);
       discardTerminalOutput(terminal); // stale retained backlog + dirty flag
       terminal.reset();
       // The scanner labels every held chunk at its source. Historical bytes
       // are muted for their exact parse lifetime; live output is not muted.
       for (const chunk of st.buffer) {
         writePtyDataImmediately(terminal, chunk, replayMuteRef.current);
+      }
+      if (fromBottom > 0) {
+        // Trailing empty write = parse barrier (callbacks fire in write
+        // order); scrollToLine only after the recovered screen is parsed and
+        // baseY is final. See the identical block in paintDeadSnapshot.
+        terminal.write('', () => {
+          try {
+            terminal.scrollToLine(Math.max(0, terminal.buffer.active.baseY - fromBottom));
+          } catch { /* disposed mid-restore — teardown owns cleanup */ }
+        });
       }
       st.buffer.length = 0;
       st.bufferedChars = 0;
@@ -2488,6 +2530,9 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     //   - fresh/adopted branch: immediately after connectPty()
 
     terminalRef.current = terminal;
+    // #1256: publish identity as state so snapshot consumers re-render onto
+    // the real instance (fresh or adopted — both swap identity here).
+    setTerminalInstance(terminal);
     fitAddonRef.current = fitAddon;
     searchAddonRef.current = searchAddon;
 
@@ -2680,6 +2725,10 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       }
       unsubscribeKeyboardLiveness();
       terminalRef.current = null;
+      // #1256: clear the published instance too. On a ptyId re-run the next
+      // effect publishes the new instance; on a true unmount React ignores
+      // the set. Either way consumers never keep a disposed terminal.
+      setTerminalInstance(null);
       fitAddonRef.current = null;
       searchAddonRef.current = null;
     };
@@ -3004,5 +3053,5 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     terminalRef.current?.scrollToLine(line);
   }, []);
 
-  return { terminal: terminalRef, fit, searchAddonRef, findNext, findPrevious, clearSearch, getScrollPosition, scrollToLine };
+  return { terminal: terminalRef, terminalInstance, fit, searchAddonRef, findNext, findPrevious, clearSearch, getScrollPosition, scrollToLine };
 }
