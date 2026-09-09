@@ -939,6 +939,68 @@ describe('AutoUpdater — the auto-update toggle gates background polls only', (
 
     updater.stop();
   });
+
+  it('#1250: the toggle listener exists at CONSTRUCTION, before start() — the renderer sends during loadSession', async () => {
+    // The renderer pushes the persisted auto-update toggle ~1s into boot,
+    // while start() (end of the ready sequence, waiting on the daemon
+    // bootstrap) may not run for tens of seconds. The send is
+    // ipcRenderer.send — fire-and-forget — so a listener registered in
+    // start() misses it silently and `enabled` stays true for the whole
+    // session. This is the exact shape of the live bug: toggle off, yet
+    // background checks, downloads, and the update toast kept coming.
+    vi.useFakeTimers();
+    const { AutoUpdater, requestUrls, ipcListeners } = await loadForPlatform('win32');
+
+    const updater = new AutoUpdater(() => null, quitHooks());
+    // The renderer's boot-time send happens BEFORE start(). No start() yet.
+    ipcListeners.get(IPC.AUTO_UPDATE_ENABLED)!(null, false);
+
+    updater.start();
+    await vi.advanceTimersByTimeAsync(15_000 + 30 * 60 * 1000);
+    expect(requestUrls).toHaveLength(0);
+
+    updater.stop();
+  });
+
+  it('#1250: start() seeds the toggle from session.json when the renderer never sends it', async () => {
+    // Covers the boots where the IPC never arrives at all: window still
+    // loading, or the renderer's session load failed on a locked file and
+    // fell back without dispatching loadSession. The disk read is the only
+    // voice left, and it must be honoured.
+    vi.useFakeTimers();
+    const { AutoUpdater, requestUrls } = await loadForPlatform('win32');
+
+    const updater = new AutoUpdater(() => null, {
+      ...quitHooks(),
+      readAutoUpdateEnabled: () => false,
+    });
+    // No AUTO_UPDATE_ENABLED send — the renderer never spoke.
+    updater.start();
+    await vi.advanceTimersByTimeAsync(15_000 + 30 * 60 * 1000);
+    expect(requestUrls).toHaveLength(0);
+
+    updater.stop();
+  });
+
+  it('#1250: the renderer-delivered toggle wins over a stale session.json value', async () => {
+    // The disk read in start() fills the silence, never overwrites: if the
+    // renderer already delivered the toggle, its value is fresher (the user
+    // may have flipped the setting after the last session save).
+    vi.useFakeTimers();
+    const { AutoUpdater, requestUrls, ipcListeners } = await loadForPlatform('win32');
+
+    const updater = new AutoUpdater(() => null, {
+      ...quitHooks(),
+      readAutoUpdateEnabled: () => true, // stale disk value
+    });
+    ipcListeners.get(IPC.AUTO_UPDATE_ENABLED)!(null, false); // fresh renderer value
+
+    updater.start();
+    await vi.advanceTimersByTimeAsync(15_000 + 30 * 60 * 1000);
+    expect(requestUrls).toHaveLength(0);
+
+    updater.stop();
+  });
 });
 
 describe('AutoUpdater #866 — a refused install is reported on the next boot', () => {
