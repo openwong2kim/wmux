@@ -4,6 +4,7 @@ import { Terminal, type ILink, type ILinkProvider } from '@xterm/xterm';
 import { createOsc8LinkHandler } from '../osc8LinkHandler';
 import { openTerminalUrl } from '../../utils/browserPaneActions';
 import { useStore } from '../../stores';
+import { getLeafPanes } from '../../../shared/paneUtils';
 
 const terminals: Terminal[] = [];
 const openExternal = vi.fn();
@@ -44,6 +45,18 @@ describe('formatted terminal hyperlinks', () => {
     link!.activate(new MouseEvent('click', { ctrlKey: ctrlKey as boolean }), link!.text);
     expect(window.confirm).toHaveBeenCalledWith(expect.stringContaining(url as string));
     expect(openExternal).toHaveBeenCalledExactlyOnceWith(url);
+    expect(window.open).not.toHaveBeenCalled();
+  });
+
+  it('retains embedded routing for localhost in builtin mode', async () => {
+    useStore.setState({ browserBackend: 'builtin' });
+    const url = 'http://localhost:4991/osc8-report';
+    const link = await hyperlink(url);
+    link!.activate(new MouseEvent('click'), link!.text);
+    const browsers = useStore.getState().workspaces.flatMap((ws) =>
+      getLeafPanes(ws.rootPane).flatMap((pane) => pane.surfaces).filter((surface) => surface.type === 'browser'));
+    expect(browsers.some((surface) => surface.url === url)).toBe(true);
+    expect(openExternal).not.toHaveBeenCalled();
     expect(window.open).not.toHaveBeenCalled();
   });
 
