@@ -54,8 +54,8 @@ describe('formatted terminal hyperlinks', () => {
     const link = await hyperlink(url);
     link!.activate(new MouseEvent('click'), link!.text);
     const browsers = useStore.getState().workspaces.flatMap((ws) =>
-      getLeafPanes(ws.rootPane).flatMap((pane) => pane.surfaces).filter((surface) => surface.type === 'browser'));
-    expect(browsers.some((surface) => surface.url === url)).toBe(true);
+      getLeafPanes(ws.rootPane).flatMap((pane) => pane.surfaces).filter((surface) => surface.surfaceType === 'browser'));
+    expect(browsers.some((surface) => surface.browserUrl === url)).toBe(true);
     expect(openExternal).not.toHaveBeenCalled();
     expect(window.open).not.toHaveBeenCalled();
   });
