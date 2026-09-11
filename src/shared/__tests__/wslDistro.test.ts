@@ -82,6 +82,10 @@ describe('parseWslDistros', () => {
     const utf16 = Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(body, 'utf16le')]);
     expect(parseWslDistros(utf16)).toEqual(['Ubuntu', '우분투', 'docker-desktop']);
   });
+  it('decodes BOM-less UTF-16LE buffers (inbox wsl.exe ignoring WSL_UTF8)', () => {
+    const utf16 = Buffer.from('Ubuntu-24.04\r\n우분투\r\ndocker-desktop\r\n', 'utf16le');
+    expect(parseWslDistros(utf16)).toEqual(['Ubuntu-24.04', '우분투', 'docker-desktop']);
+  });
   it('decodes a BOM-marked UTF-8 buffer and still accepts plain strings', () => {
     const utf8 = Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from('Ubuntu\n', 'utf8')]);
     expect(parseWslDistros(utf8)).toEqual(['Ubuntu']);

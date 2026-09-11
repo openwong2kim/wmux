@@ -385,8 +385,11 @@ export class DaemonSessionManager extends EventEmitter {
 
     let spawnArgs: string[] = [];
     // #1103 — the distro flag goes FIRST: wsl.exe parses its own options
-    // before anything that follows (integration args included).
-    if (params.args && params.args.length > 0) {
+    // before anything that follows (integration args included). Validated
+    // HERE, not only at the RPC boundary: recovery, supervised restart and
+    // promote replay args from the persisted state file, which never crosses
+    // that boundary.
+    if (params.args && isWslDistroSpawnArgs(cmd, params.args)) {
       spawnArgs = [...params.args];
     }
     if (params.exec) {

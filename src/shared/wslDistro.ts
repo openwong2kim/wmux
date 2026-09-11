@@ -82,6 +82,12 @@ export function parseWslDistros(raw: string | Buffer): string[] {
       text = raw.subarray(2).toString('utf16le');
     } else if (raw.length >= 3 && raw[0] === 0xef && raw[1] === 0xbb && raw[2] === 0xbf) {
       text = raw.subarray(3).toString('utf8');
+    } else if (raw.includes(0)) {
+      // BOM-less UTF-16LE — what the inbox wsl.exe emits when it ignores
+      // WSL_UTF8. UTF-8 text never carries a NUL byte, so any NUL means the
+      // bytes are UTF-16 code units (utf8-decoding them leaves a NUL between
+      // every character and no line survives the name charset).
+      text = raw.toString('utf16le');
     } else {
       text = raw.toString('utf8');
     }

@@ -4,7 +4,7 @@ import * as path from 'path';
 import * as fs from 'fs/promises';
 import * as os from 'os';
 import { ShellDetector } from '../../../shared/ShellDetector';
-import { parseWslDistros } from '../../../shared/wslDistro';
+import { enumerateWslDistros } from '../../pty/defaultWslDistro';
 import { IPC } from '../../../shared/constants';
 import { wrapHandler } from '../wrapHandler';
 import { isAutostartEnabled, setAutostartEnabled } from '../../autostart';
@@ -39,32 +39,11 @@ export function registerShellHandlers(): () => void {
   }));
 
   // #1103 — WSL distro names for the default-terminal picker. Bounded and
-  // total: off-Windows, a missing wsl.exe, a timeout, or garbage output all
-  // answer [] — the picker simply hides. WSL_UTF8=1 asks wsl.exe for UTF-8
-  // output; the parser still tolerates the UTF-16LE it emits on older
-  // installs. ASYNC on purpose — a synchronous child_process call would block
-  // the main process (and its guard test) for up to the full timeout.
+  // total ([] off-Windows / on any failure — the picker simply hides); the
+  // same enumeration refreshes the cache pty.create checks the choice against.
   ipcMain.removeHandler(IPC.SHELL_WSL_DISTROS);
-  ipcMain.handle(IPC.SHELL_WSL_DISTROS, wrapHandler(IPC.SHELL_WSL_DISTROS, async (_event: Electron.IpcMainInvokeEvent) => {
-    if (process.platform !== 'win32') return [];
-    const wslPath = path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'wsl.exe');
-    const stdout = await new Promise<Buffer | null>((resolve) => {
-      try {
-        execFile(wslPath, ['--list', '--quiet'], {
-          // BUFFER, not a forced encoding: wsl.exe emits UTF-16LE on installs
-          // that ignore WSL_UTF8, and utf8-decoding those bytes mangles every
-          // non-ASCII distro name beyond recovery. parseWslDistros BOM-sniffs.
-          encoding: 'buffer',
-          timeout: 3000,
-          windowsHide: true,
-          env: { ...process.env, WSL_UTF8: '1' },
-        }, (err, out) => { resolve(err ? null : out); });
-      } catch {
-        resolve(null);
-      }
-    });
-    if (stdout === null) return [];
-    return parseWslDistros(stdout);
+  ipcMain.handle(IPC.SHELL_WSL_DISTROS, wrapHandler(IPC.SHELL_WSL_DISTROS, (_event: Electron.IpcMainInvokeEvent) => {
+    return enumerateWslDistros();
   }));
 
   ipcMain.removeHandler(IPC.SHELL_OPEN_EXTERNAL);
