@@ -11,6 +11,7 @@ import { EmptyLeafFunnel } from './EmptyLeafFunnel';
 import { selectProjectCwdSignature } from '../../stores/selectors/appLayout';
 import { selectInboxOwnsApprovals } from '../../stores/selectors/approvalInbox';
 import { shouldShowInstallError, shouldReannounceAfterError, truncateReason } from './updateNoticePolicy';
+import { shouldShowAutoUpdatePrompt, shouldStartOnboarding } from './firstBootSequence';
 import { registerSessionSaver, saveSessionNow } from '../../utils/sessionSaveBridge';
 import { resolveReconcileRebind } from '../../hooks/resolveReconcileRebind';
 import { getLeafPanes, getWorkspaceLeafPanes } from '../../../shared/paneUtils';
@@ -1442,9 +1443,13 @@ export default function AppLayout() {
   // pointer-deadness the wizard/prompt pair had. First-boot order: wizard →
   // consent → spotlight.
   useEffect(() => {
-    if (!sessionLoadedRef.current) return;
-    if (showAutoUpdatePrompt) return;
-    if (firstRunCompleted && !onboardingCompleted && workspaceCount === 1) {
+    if (shouldStartOnboarding({
+      sessionLoaded: sessionLoadedRef.current,
+      autoUpdatePromptPending: showAutoUpdatePrompt,
+      firstRunCompleted,
+      onboardingCompleted,
+      workspaceCount,
+    })) {
       startOnboarding();
     }
   }, [firstRunCompleted, onboardingCompleted, workspaceCount, showAutoUpdatePrompt, startOnboarding]);
@@ -1931,8 +1936,14 @@ export default function AppLayout() {
           pointer-dead stack that only the keyboard can escape. Sequencing
           instead of stacking: the wizard owns the first impression (the same
           D8 ruling that gates the onboarding spotlight), and the consent
-          question — still pending — appears the moment it closes. */}
-      {showAutoUpdatePrompt && showFirstRunWizard === null && (
+          question — still pending — appears the moment it closes. It also
+          waits for the wizard probe to settle (firstRunCompleted), or it
+          would flash for a frame before the wizard mounts over it. */}
+      {shouldShowAutoUpdatePrompt({
+        pending: showAutoUpdatePrompt,
+        wizardOpen: showFirstRunWizard !== null,
+        firstRunSettled: firstRunCompleted,
+      }) && (
         <div
           className="fixed inset-0 z-[var(--z-modal)] flex items-center justify-center"
           style={{ backgroundColor: 'var(--backdrop-modal)' }}
