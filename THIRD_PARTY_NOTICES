@@ -1998,7 +1998,7 @@ SOFTWARE.
 
 ================================================================================
 
-hono@4.13.3
+hono@4.13.7
 License: MIT
 Author: Yusuke Wada <yusuke@kamawada.com> (https://github.com/yusukebe)
 Repository: https://github.com/honojs/hono
@@ -7289,7 +7289,7 @@ Repository: https://github.com/kazuhikoarase/qrcode-generator
 
 ================================================================================
 
-qs@6.15.3
+qs@6.16.0
 License: BSD-3-Clause
 Repository: https://github.com/ljharb/qs
 
