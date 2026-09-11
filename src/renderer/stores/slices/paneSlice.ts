@@ -166,7 +166,9 @@ export interface PaneSlice {
   focusPaneSurface: (workspaceId: string, paneId: string, surfaceId?: string) => boolean;
   focusPaneDirection: (direction: 'up' | 'down' | 'left' | 'right') => void;
   cyclePane: (direction: 'next' | 'prev') => void;
-  updatePaneSizes: (branchId: string, sizes: number[]) => void;
+  /** `workspaceId` defaults to the active workspace; a multiview tile that is
+   *  not active passes its own. */
+  updatePaneSizes: (branchId: string, sizes: number[], workspaceId?: string) => void;
   resizeActivePane: (direction: 'left' | 'right' | 'up' | 'down', amount: number) => void;
   equalizePaneSizes: () => void;
   // Sparse map of per-pane visual notification rings. Missing entry = no ring.
@@ -1453,8 +1455,8 @@ export const createPaneSlice: StateCreator<StoreState, [['zustand/immer', never]
     return ok;
   },
 
-  updatePaneSizes: (branchId, sizes) => set((state: StoreState) => {
-    const ws = state.workspaces.find((w: Workspace) => w.id === state.activeWorkspaceId);
+  updatePaneSizes: (branchId, sizes, workspaceId) => set((state: StoreState) => {
+    const ws = state.workspaces.find((w: Workspace) => w.id === (workspaceId || state.activeWorkspaceId));
     if (!ws) return;
     const branch = findPane(ws.rootPane, branchId);
     if (branch && branch.type === 'branch') {

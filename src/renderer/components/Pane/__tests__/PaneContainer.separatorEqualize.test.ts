@@ -24,8 +24,9 @@ vi.mock('react-resizable-panels', async (importOriginal) => {
   };
 });
 
-import PaneContainer, { separatorEqualizePair } from '../PaneContainer';
+import PaneContainer, { separatorEqualizePair, separatorIndexAt } from '../PaneContainer';
 import { useStore } from '../../../stores';
+import type { Pane, Workspace } from '../../../../shared/types';
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -71,12 +72,50 @@ describe('separatorEqualizePair', () => {
   });
 });
 
+describe('separatorIndexAt', () => {
+  afterEach(() => { vi.restoreAllMocks(); });
+
+  /** A bare group element: three panels and two dividers at the given x. */
+  function groupWithDividersAt(xs: number[]): Element {
+    const rects = new Map<Element, DOMRect>();
+    const group = document.createElement('div');
+    xs.forEach((x) => {
+      group.appendChild(document.createElement('div'));
+      const sep = document.createElement('div');
+      sep.setAttribute('role', 'separator');
+      rects.set(sep, new DOMRect(x, 0, 1, 500));
+      group.appendChild(sep);
+    });
+    group.appendChild(document.createElement('div'));
+    vi.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(function (this: Element) {
+      return rects.get(this) ?? new DOMRect(0, 0, 0, 0);
+    });
+    return group;
+  }
+
+  it('picks the NEAREST divider when two bands overlap (panes near their floor)', () => {
+    const group = groupWithDividersAt([500, 510]);
+    // 6.5px from the first line, 3.5px from the second: both inside the 16px band.
+    expect(separatorIndexAt(group, 507, 100, 16)).toBe(2);
+    expect(separatorIndexAt(group, 503, 100, 16)).toBe(1);
+  });
+
+  it('never matches a display:none (0x0) divider', () => {
+    const group = document.createElement('div');
+    const sep = document.createElement('div');
+    sep.setAttribute('role', 'separator');
+    group.append(document.createElement('div'), sep, document.createElement('div'));
+    // Default jsdom rects are 0x0 at the origin.
+    expect(separatorIndexAt(group, 0, 0, 16)).toBe(-1);
+  });
+});
+
 // The real gesture. The library grabs a divider anywhere in a 16px band around
-// its 1px line, so a real double-click lands on the NEIGHBOURING panel far more
-// often than on the separator element — an onDoubleClick on the element never
-// fired live, and the library's own dblclick reset (first panel of the pair back
-// to its defaultSize) won instead. These events target the panel, carry real
-// coordinates, and pass through the library's document-capture listener.
+// its 1px line. A double-click OFF the line lands on the neighbouring panel; one
+// exactly ON the line has its pointerdown on the divider and its pointerup on a
+// panel, so the browser dispatches it to their common ancestor, BODY. Neither
+// ever reaches an onDoubleClick on the divider element. These events carry real
+// coordinates and pass through the library's document-capture listener.
 describe('PaneContainer — double-clicking a divider (#1233)', () => {
   let container: HTMLDivElement;
   let root: Root;
@@ -85,8 +124,7 @@ describe('PaneContainer — double-clicking a divider (#1233)', () => {
   const ws = () =>
     useStore.getState().workspaces.find((w) => w.id === useStore.getState().activeWorkspaceId)!;
 
-  function render(): void {
-    const w = ws();
+  function render(w: Workspace = ws()): void {
     act(() => {
       root.render(
         React.createElement(PaneContainer, { pane: w.rootPane, workspace: w, isWorkspaceVisible: true }),
@@ -105,27 +143,30 @@ describe('PaneContainer — double-clicking a divider (#1233)', () => {
   }
 
   /** root(h)[ A, inner(v)[ B, C ] ] at 80/20 and 70/30, laid out in a
-   *  1000x500 box: the outer divider at x=800, the nested one at y=350. */
-  function mountUneven(): { a: string; b: string; outerId: string; innerId: string } {
-    const outer = ws().rootPane;
+   *  1000x500 box: the outer divider at x=800, the nested group to its right
+   *  with its divider at y=350. */
+  function mountUneven(w: Workspace = ws()): { a: string; b: string; outerId: string; innerId: string } {
+    const outer = w.rootPane;
     if (outer.type !== 'branch') throw new Error('expected a branch root');
     const [left, inner] = outer.children;
     if (left.type !== 'leaf' || inner.type !== 'branch') throw new Error('expected root(h)[A, inner(v)[B, C]]');
-    const b = inner.children[0].id;
     act(() => {
-      useStore.getState().updatePaneSizes(outer.id, [80, 20]);
-      useStore.getState().updatePaneSizes(inner.id, [70, 30]);
+      useStore.getState().updatePaneSizes(outer.id, [80, 20], w.id);
+      useStore.getState().updatePaneSizes(inner.id, [70, 30], w.id);
     });
-    render();
-    // Document order: the outer divider precedes the nested group's divider.
+    render(useStore.getState().workspaces.find((x) => x.id === w.id)!);
+    // Document order: the outer group/divider precede the nested ones.
+    const [outerGroup, innerGroup] = container.querySelectorAll('[data-group]');
     const [outerSeparator, innerSeparator] = container.querySelectorAll('[role="separator"]');
+    rects.set(outerGroup, new DOMRect(0, 0, 1000, 500));
+    rects.set(innerGroup, new DOMRect(801, 0, 199, 500));
     rects.set(outerSeparator, new DOMRect(800, 0, 1, 500));
     rects.set(innerSeparator, new DOMRect(801, 350, 199, 1));
-    return { a: left.id, b, outerId: outer.id, innerId: inner.id };
+    return { a: left.id, b: inner.children[0].id, outerId: outer.id, innerId: inner.id };
   }
 
-  function sizesOf(branchId: string): number[] | undefined {
-    const find = (p: ReturnType<typeof ws>['rootPane']): number[] | undefined => {
+  function sizesOf(branchId: string, wsId: string = ws().id): number[] | undefined {
+    const find = (p: Pane): number[] | undefined => {
       if (p.type !== 'branch') return undefined;
       if (p.id === branchId) return p.sizes;
       for (const c of p.children) {
@@ -134,7 +175,7 @@ describe('PaneContainer — double-clicking a divider (#1233)', () => {
       }
       return undefined;
     };
-    return find(ws().rootPane);
+    return find(useStore.getState().workspaces.find((w) => w.id === wsId)!.rootPane);
   }
 
   beforeEach(() => {
@@ -159,6 +200,7 @@ describe('PaneContainer — double-clicking a divider (#1233)', () => {
     container.remove();
     rects.clear();
     vi.restoreAllMocks();
+    vi.unstubAllGlobals();
   });
 
   it('evens out the outer pair for a double-click that lands on the neighbouring panel', () => {
@@ -180,10 +222,36 @@ describe('PaneContainer — double-clicking a divider (#1233)', () => {
     expect(preventedBeforeLibrary).toBe(true);
   });
 
-  it('evens out only the nested pair for a double-click on the nested divider', () => {
+  it('evens out the pair for a double-click exactly ON the line, dispatched to BODY', () => {
+    const { outerId, innerId } = mountUneven();
+
+    const e = dblclickAt(document.body, 800.5, 100);
+
+    expect(sizesOf(outerId)).toEqual([50, 50]);
+    expect(sizesOf(innerId)).toEqual([70, 30]);
+    expect(e.defaultPrevented).toBe(true);
+  });
+
+  it('evens out only the nested pair for a double-click on the nested line', () => {
     const { b, outerId, innerId } = mountUneven();
 
     dblclickAt(leafEl(b), 900, 352);
+    expect(sizesOf(innerId)).toEqual([50, 50]);
+    expect(sizesOf(outerId)).toEqual([80, 20]);
+
+    // And exactly on its centre line, dispatched to BODY.
+    act(() => { useStore.getState().updatePaneSizes(innerId, [70, 30]); });
+    render();
+    dblclickAt(document.body, 900, 350.5);
+    expect(sizesOf(innerId)).toEqual([50, 50]);
+    expect(sizesOf(outerId)).toEqual([80, 20]);
+  });
+
+  it('evens out ONE pair at a T-junction: the innermost group handles it', () => {
+    const { outerId, innerId } = mountUneven();
+
+    // 2.5px from the outer line AND on the nested line.
+    dblclickAt(document.body, 803, 350.5);
 
     expect(sizesOf(innerId)).toEqual([50, 50]);
     expect(sizesOf(outerId)).toEqual([80, 20]);
@@ -197,6 +265,46 @@ describe('PaneContainer — double-clicking a divider (#1233)', () => {
     expect(sizesOf(outerId)).toEqual([80, 20]);
     expect(sizesOf(innerId)).toEqual([70, 30]);
     expect(e.defaultPrevented).toBe(false);
+  });
+
+  it('ignores a double-click on a popover portalled over the band', () => {
+    const { outerId } = mountUneven();
+    const popover = document.createElement('div');
+    document.body.appendChild(popover);
+
+    dblclickAt(popover, 805, 100);
+    popover.remove();
+
+    // Not evened out. (The library's own handler may still claim the event —
+    // its hit test accepts an unstacked target — but its reset now puts the
+    // panel back at its saved percentage, a no-op.)
+    expect(sizesOf(outerId)).toEqual([80, 20]);
+  });
+
+  it('uses the library\'s 37px band on a coarse pointer, 16px otherwise', () => {
+    const { a, outerId } = mountUneven();
+
+    // 14.5px from the line: outside the fine band's 8px reach...
+    dblclickAt(leafEl(a), 815, 100);
+    expect(sizesOf(outerId)).toEqual([80, 20]);
+
+    // ...inside the coarse band's 18.5px.
+    vi.stubGlobal('matchMedia', (query: string) => ({ matches: query.includes('coarse') }));
+    dblclickAt(leafEl(a), 815, 100);
+    expect(sizesOf(outerId)).toEqual([50, 50]);
+  });
+
+  it('writes to the tile\'s own workspace when it is not the active one (multiview)', () => {
+    const tile = ws();
+    useStore.getState().addWorkspace();
+    if (useStore.getState().activeWorkspaceId === tile.id) {
+      throw new Error('expected addWorkspace to activate the new workspace');
+    }
+    const { a, outerId } = mountUneven(tile);
+
+    dblclickAt(leafEl(a), 805, 100);
+
+    expect(sizesOf(outerId, tile.id)).toEqual([50, 50]);
   });
 
   it('hands the library percentages, never bare numbers (v4 reads a number as pixels)', () => {
