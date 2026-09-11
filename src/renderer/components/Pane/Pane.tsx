@@ -378,15 +378,16 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
   // itself survives (the agent is still blocked — looking does not answer it);
   // only the roster's animated glow drops, separating triaged from untriaged
   // blocked agents. Same placement as the attention clear above so keyboard
-  // nav marks it seen too. Gated on workspace visibility: hidden workspaces
-  // stay mounted (WorkspaceSlot, display:none) and their active pane still
-  // reports isActive, so without the gate a question arriving in a background
-  // workspace would be marked seen before anyone looked at it.
+  // nav marks it seen too. Not while a REMOTE workspace is selected: that view
+  // hides the local area (WorkspaceCenter, display:none) without touching
+  // activeWorkspaceId, so this pane still reports isActive while nobody can
+  // see it — a question arriving then must stay unseen.
+  const remoteSelected = useStore((s) => s.activeRemoteKey !== null);
   useEffect(() => {
-    if (isActive && isWorkspaceVisible && activeSurfacePtyId && activePendingQuestion) {
+    if (isActive && !remoteSelected && activeSurfacePtyId && activePendingQuestion) {
       markSurfaceQuestionSeen(activeSurfacePtyId);
     }
-  }, [isActive, isWorkspaceVisible, activeSurfacePtyId, activePendingQuestion, markSurfaceQuestionSeen]);
+  }, [isActive, remoteSelected, activeSurfacePtyId, activePendingQuestion, markSurfaceQuestionSeen]);
 
   // Ctrl+Shift+H: flash the active pane
   useEffect(() => {
