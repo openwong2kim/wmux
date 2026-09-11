@@ -6,6 +6,7 @@ import { selectAllWorkspaceAgentStatus } from '../../stores/selectors/fleet';
 import { orderByAttention } from './attentionOrder';
 import WorkspaceItem from './WorkspaceItem';
 import RemoteWorkspaceItem from './RemoteWorkspaceItem';
+import ArchivedWorkspaces from './ArchivedWorkspaces';
 import MissionsSection from './MissionsSection';
 import PresetPicker from './PresetPicker';
 import type { AgentStatus, Workspace } from '../../../shared/types';
@@ -77,6 +78,7 @@ export default function Sidebar() {
   const detachRemoteWorkspace = useStore((s) => s.detachRemoteWorkspace);
   const addWorkspace = useStore((s) => s.addWorkspace);
   const removeWorkspace = useStore((s) => s.removeWorkspace);
+  const archiveWorkspace = useStore((s) => s.archiveWorkspace);
   const setActiveWorkspace = useStore((s) => s.setActiveWorkspace);
   const renameWorkspace = useStore((s) => s.renameWorkspace);
   const duplicateWorkspace = useStore((s) => s.duplicateWorkspace);
@@ -141,6 +143,19 @@ export default function Sidebar() {
 
     removeWorkspace(wsId);
   }, [removeWorkspace]);
+
+  // #1011 — archive: the same teardown as Close (sessions die — quieting the
+  // sidebar is the point), but the configuration snapshot survives and lists
+  // in the Archived section for one-click restore.
+  const handleArchive = useCallback((wsId: string) => {
+    const { workspaces: all } = useStore.getState();
+    const ws = all.find((w) => w.id === wsId);
+    // archiveWorkspace refuses the last workspace; disposing first would kill
+    // its sessions and then leave the workspace in place, emptied.
+    if (!ws || all.length <= 1) return;
+    disposeAllPtys(ws);
+    archiveWorkspace(wsId);
+  }, [archiveWorkspace]);
 
   return (
     <div
@@ -209,6 +224,7 @@ export default function Sidebar() {
             onCtrlSelect={handleCtrlSelect}
             onRename={renameWorkspace}
             onClose={handleClose}
+            onArchive={handleArchive}
             onCopyInfo={handleCopySessionInfo}
             onDuplicate={duplicateWorkspace}
             onReorder={reorderWorkspace}
@@ -232,6 +248,10 @@ export default function Sidebar() {
             ))}
           </div>
         )}
+
+        {/* #1011 — put-away workspaces: configuration snapshots, one click
+            back to live. Collapsed by default; empty → invisible. */}
+        <ArchivedWorkspaces />
       </div>
       )}
 

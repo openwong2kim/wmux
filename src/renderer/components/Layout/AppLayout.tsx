@@ -332,6 +332,8 @@ function buildSessionData(dumped: Map<string, boolean>): SessionData {
       stashedPanes: cloneStashedPanes(ws, dumped),
     })),
     activeWorkspaceId: state.activeWorkspaceId,
+    // #1011 — archived snapshots ride the session; restore lists them again.
+    ...(state.archivedWorkspaces.length > 0 ? { archivedWorkspaces: state.archivedWorkspaces } : {}),
     // P2: persist the global workspace-ordinal high-water so wsOrdinals are
     // never recycled across restarts (loadSession reads it back + backfills).
     nextWorkspaceOrdinal: state.nextWorkspaceOrdinal,
