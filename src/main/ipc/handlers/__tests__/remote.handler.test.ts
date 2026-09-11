@@ -950,6 +950,22 @@ describe('remote.handler — attachment descriptors', () => {
     expect(attachments.add).toHaveBeenCalledWith(descriptor);
   });
 
+  // #1086 — the rename/color aliases must reach the store, validated.
+  it('passes the label/color aliases through, trimmed, capped, and palette-checked', async () => {
+    const store = fakeStore([host]);
+    const attachments = fakeAttachments();
+    registerRemoteHandlers({ store: store as never, attachments: attachments as never });
+
+    await getHandler(IPC.REMOTE_ATTACHMENTS_ADD)({}, { ...descriptor, label: '  CTO-mirror  ', color: 'red' });
+    expect(attachments.add).toHaveBeenLastCalledWith({ ...descriptor, label: 'CTO-mirror', color: 'red' });
+
+    await getHandler(IPC.REMOTE_ATTACHMENTS_ADD)({}, { ...descriptor, label: 'x'.repeat(500), color: 'not-a-color' });
+    expect(attachments.add).toHaveBeenLastCalledWith({ ...descriptor, label: 'x'.repeat(64) });
+
+    await getHandler(IPC.REMOTE_ATTACHMENTS_ADD)({}, { ...descriptor, label: '   ', color: 42 });
+    expect(attachments.add).toHaveBeenLastCalledWith(descriptor);
+  });
+
   it('refuses a descriptor for an unregistered host', async () => {
     const store = fakeStore();
     const attachments = fakeAttachments();

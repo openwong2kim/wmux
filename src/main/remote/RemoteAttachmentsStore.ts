@@ -31,8 +31,9 @@ function isDescriptorArray(v: unknown): v is RemoteAttachmentDescriptor[] {
   });
 }
 
-/** Strips anything beyond the five persisted fields — a caller that hands us
- *  a full AttachedRemoteWorkspace must not get its `panes` written to disk. */
+/** Strips anything beyond the persisted fields — a caller that hands us
+ *  a full AttachedRemoteWorkspace must not get its `panes` written to disk.
+ *  The #1086 aliases (label/color) pass through when well-typed. */
 function toDescriptor(d: RemoteAttachmentDescriptor): RemoteAttachmentDescriptor {
   return {
     key: d.key,
@@ -40,6 +41,8 @@ function toDescriptor(d: RemoteAttachmentDescriptor): RemoteAttachmentDescriptor
     hostLabel: d.hostLabel,
     workspaceId: d.workspaceId,
     name: d.name,
+    ...(typeof d.label === 'string' && d.label.trim() ? { label: d.label.trim() } : {}),
+    ...(typeof d.color === 'string' ? { color: d.color } : {}),
   };
 }
 

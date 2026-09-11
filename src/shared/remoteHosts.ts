@@ -45,6 +45,14 @@ export interface RemoteAttachmentDescriptor {
   hostLabel: string;     // label snapshot, so a sidebar row can render before the host list loads
   workspaceId: string;
   name: string;          // remote workspace name snapshot ('' possible)
+  /**
+   * #1086 — local-side aliases. The remote host owns the truth (name, panes);
+   * these are what THIS desktop calls the row: a rename that never touches the
+   * host, and a color tag in the same grammar as local workspaces. Optional:
+   * older persisted files predate them.
+   */
+  label?: string;
+  color?: string;        // WorkspaceColorId — validated renderer-side by normalizeWorkspaceColor
 }
 
 /** The ONE place the descriptor key is spelled out. Both the renderer (which

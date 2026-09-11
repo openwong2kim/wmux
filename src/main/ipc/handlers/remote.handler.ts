@@ -23,6 +23,7 @@ import { RemoteHostClient } from '../../remote/RemoteHostClient';
 import type { RemoteHostsStore } from '../../remote/RemoteHostsStore';
 import type { RemoteAttachmentsStore } from '../../remote/RemoteAttachmentsStore';
 import { parseRemoteAttachmentKey, parseWebUrl, remoteAttachmentKey } from '../../../shared/remoteHosts';
+import { normalizeWorkspaceColor } from '../../../shared/workspaceColors';
 import type {
   PairFailureReason,
   RemoteAttachmentDescriptor,
@@ -536,12 +537,19 @@ export function registerRemoteHandlers(deps: RegisterRemoteHandlersDeps): () => 
         throw new Error('descriptor is required');
       }
       const d = descriptor as Record<string, unknown>;
+      // #1086 — the local aliases ride the same descriptor. Validated here, at
+      // the IPC boundary: the label is trimmed and capped at the rename
+      // input's 64-char limit, and the color must be a known palette id.
+      const label = typeof d.label === 'string' ? d.label.trim().slice(0, 64) : '';
+      const color = normalizeWorkspaceColor(d.color);
       const entry: RemoteAttachmentDescriptor = {
         key: assertString(d.key, 'key'),
         hostId: assertString(d.hostId, 'hostId'),
         hostLabel: typeof d.hostLabel === 'string' ? d.hostLabel : '',
         workspaceId: assertString(d.workspaceId, 'workspaceId'),
         name: typeof d.name === 'string' ? d.name : '',
+        ...(label ? { label } : {}),
+        ...(color ? { color } : {}),
       };
       // The key is what every later lookup addresses this record by, so it
       // must actually derive from the pair it claims to describe — a record

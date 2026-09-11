@@ -22,6 +22,14 @@ export interface AttachedRemoteWorkspace {
   workspaceId: string;
   name: string;                   // remote name snapshot ('' → UI falls back to workspaceId prefix)
   panes: RemotePaneSummary[];     // refreshed on re-attach / exit event / poll
+  /**
+   * #1086 — local-side aliases. `label` renames the SIDEBAR ROW without
+   * touching the remote host (which owns the real name); `color` is a
+   * WorkspaceColorId in the same grammar as local workspaces. Both persist
+   * with the descriptor.
+   */
+  label?: string;
+  color?: string;
   /** The host could not be reached, or the workspace is gone from it. The
    *  entry deliberately STAYS in the sidebar — dropping a user's attachment
    *  because a laptop slept would be silent data loss — it just renders
@@ -50,6 +58,8 @@ function toDescriptor(w: AttachedRemoteWorkspace): RemoteAttachmentDescriptor {
     hostLabel: w.hostLabel,
     workspaceId: w.workspaceId,
     name: w.name,
+    ...(w.label ? { label: w.label } : {}),
+    ...(w.color ? { color: w.color } : {}),
   };
 }
 
@@ -116,6 +126,12 @@ export interface RemoteWorkspacesSlice {
   setRemoteWorkspacePanes: (key: string, panes: RemotePaneSummary[], name?: string) => void;
   /** Marks the entry unreachable (or reachable again) without dropping it. */
   setRemoteWorkspaceStale: (key: string, stale: boolean) => void;
+  /** #1086 — rename the row LOCALLY (the remote host owns the real name).
+   *  Empty clears the alias; the remote snapshot name shows again. */
+  renameRemoteWorkspace: (key: string, label: string | null) => void;
+  /** #1086 — color-tag the row in the same grammar as local workspaces.
+   *  undefined clears the tag. */
+  setRemoteWorkspaceColor: (key: string, color: string | undefined) => void;
   /** Selecting a LOCAL workspace calls this with null. */
   setActiveRemoteKey: (key: string | null) => void;
 }
@@ -125,6 +141,11 @@ export const createRemoteWorkspacesSlice: StateCreator<StoreState, [['zustand/im
   activeRemoteKey: null,
 
   attachRemoteWorkspace: (w) => {
+    // Persist the MERGED entry, not `w`: a re-attach hands us a fresh snapshot
+    // without the #1086 aliases, so writing `w` would wipe the carried-over
+    // label/color from disk and lose them on the next reload. Built inside
+    // the producer (a draft must not escape set()).
+    let descriptor: RemoteAttachmentDescriptor | undefined;
     set((state: StoreState) => {
       const idx = state.remoteWorkspaces.findIndex((r: AttachedRemoteWorkspace) => r.key === w.key);
       if (idx === -1) {
@@ -132,16 +153,27 @@ export const createRemoteWorkspacesSlice: StateCreator<StoreState, [['zustand/im
       } else {
         // Carry the epoch across a re-attach: its only job is to be different
         // from the value the mounted PaneCells last saw, and resetting it
-        // would tear down streams that are perfectly healthy.
-        state.remoteWorkspaces[idx] = { ...w, attachEpoch: state.remoteWorkspaces[idx].attachEpoch };
+        // would tear down streams that are perfectly healthy. The #1086
+        // aliases survive too — a re-attach (re-attach flow, bootstrap) hands
+        // us a fresh snapshot with no label/color, and letting it overwrite
+        // would silently wipe the user's rename/tag.
+        const prev = state.remoteWorkspaces[idx];
+        state.remoteWorkspaces[idx] = {
+          ...w,
+          attachEpoch: prev.attachEpoch,
+          ...(prev.label && !w.label ? { label: prev.label } : {}),
+          ...(prev.color && !w.color ? { color: prev.color } : {}),
+        };
       }
       state.activeRemoteKey = w.key;
+      const entry = state.remoteWorkspaces.find((r: AttachedRemoteWorkspace) => r.key === w.key);
+      if (entry) descriptor = toDescriptor(entry);
     });
     // Fire-and-forget: a failed write only costs this attachment its
     // restore-after-reload, and the attach itself has already happened. The
     // method check covers an older preload bundle without these routes.
     const api = persistApi();
-    if (api?.attachmentsAdd) void api.attachmentsAdd(toDescriptor(w)).catch(() => { /* see above */ });
+    if (descriptor && api?.attachmentsAdd) void api.attachmentsAdd(descriptor).catch(() => { /* see above */ });
   },
 
   // ADDITIVE ONLY. A boot restore fetches each host's panes before it lands,
@@ -192,6 +224,42 @@ export const createRemoteWorkspacesSlice: StateCreator<StoreState, [['zustand/im
     entry.stale = stale;
     if (!stale) entry.attachEpoch = (entry.attachEpoch ?? 0) + 1;
   }),
+
+  renameRemoteWorkspace: (key, label) => {
+    // The descriptor is built INSIDE the producer (a draft that escapes set()
+    // is a revoked proxy — the same trap stashPane's comments warn about) and
+    // persisted as a plain object.
+    let descriptor: RemoteAttachmentDescriptor | undefined;
+    set((state: StoreState) => {
+      const entry = state.remoteWorkspaces.find((r: AttachedRemoteWorkspace) => r.key === key);
+      if (!entry) return;
+      const trimmed = label?.trim();
+      if (trimmed) entry.label = trimmed;
+      else delete entry.label;
+      descriptor = toDescriptor(entry);
+    });
+    // Re-adding the same key overwrites its descriptor in place (the store's
+    // own upsert rule), which is how the alias survives a reload.
+    const api = persistApi();
+    if (descriptor && api?.attachmentsAdd) {
+      void api.attachmentsAdd(descriptor).catch(() => { /* best-effort, same as attach */ });
+    }
+  },
+
+  setRemoteWorkspaceColor: (key, color) => {
+    let descriptor: RemoteAttachmentDescriptor | undefined;
+    set((state: StoreState) => {
+      const entry = state.remoteWorkspaces.find((r: AttachedRemoteWorkspace) => r.key === key);
+      if (!entry) return;
+      if (color) entry.color = color;
+      else delete entry.color;
+      descriptor = toDescriptor(entry);
+    });
+    const api = persistApi();
+    if (descriptor && api?.attachmentsAdd) {
+      void api.attachmentsAdd(descriptor).catch(() => { /* best-effort */ });
+    }
+  },
 
   setActiveRemoteKey: (key) => set((state: StoreState) => {
     state.activeRemoteKey = key;
