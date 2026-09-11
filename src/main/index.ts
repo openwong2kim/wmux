@@ -445,6 +445,12 @@ const autoUpdater = new AutoUpdater(() => mainWindow, {
   // before-quit takes the daemon.shutdown branch instead of detaching.
   onInstallRequiresFullShutdown: () => { fullShutdownRequested = true; },
   getDaemonPid: () => readDaemonPid(getWmuxDir()),
+  // #1250: seed the updater's enabled flag from session.json. The renderer
+  // sends the toggle during loadSession, but that send races this module's
+  // own ready sequence; a locked session.json can stop it from ever arriving.
+  // The disk read fills the silence; the renderer's IPC still wins when it
+  // lands (AutoUpdater.start applies the read only if nothing arrived).
+  readAutoUpdateEnabled: () => sessionManager.readAutoUpdateEnabled(),
 });
 
 // #1046: a Squirrel install can half-complete (an AV lock race inside the

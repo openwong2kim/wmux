@@ -403,8 +403,8 @@ export class UsagePoller {
     ) {
       // The same token Anthropic already refused, asked about less than
       // a normal poll period ago. Nothing on disk has changed, so the
-      // answer would almost certainly be the same 401 — leave the state
-      // as it is and spend no request. The next tick re-reads the
+      // answer would almost certainly be the same 401 — restore the
+      // known rejection status and spend no request. The next tick re-reads the
       // credential, which is the whole point of staying armed.
       //
       // Two bounds, because a 401 has two possible causes:
@@ -424,9 +424,11 @@ export class UsagePoller {
       // that fails once moves the status off 'unauthorized' while the
       // credential underneath is unchanged, and the skip would then
       // release early and re-send the token it exists to withhold.
-      // Nor does the pin strand any other status: every one of them
-      // recovers by way of a *different* credential, and a different
-      // token fails this comparison on the first tick that reads it.
+      this.setState({
+        status: 'unauthorized',
+        lastError: 'HTTP 401/403',
+        subscriptionType: credential.subscriptionType,
+      });
       return;
     }
     // Past the skip, so whatever the pin was pointing at is no longer
