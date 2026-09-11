@@ -6,6 +6,7 @@ import { selectAllWorkspaceAgentStatus } from '../../stores/selectors/fleet';
 import { orderByAttention } from './attentionOrder';
 import WorkspaceItem from './WorkspaceItem';
 import RemoteWorkspaceItem from './RemoteWorkspaceItem';
+import OrphanSessions from './OrphanSessions';
 import ArchivedWorkspaces from './ArchivedWorkspaces';
 import MissionsSection from './MissionsSection';
 import PresetPicker from './PresetPicker';
@@ -252,6 +253,11 @@ export default function Sidebar() {
         {/* #1011 — put-away workspaces: configuration snapshots, one click
             back to live. Collapsed by default; empty → invisible. */}
         <ArchivedWorkspaces />
+
+        {/* #1101 — daemon sessions that outlived their pane: still running,
+            owned by nothing. Click a row to bring one back, ✕ to kill it.
+            Renders nothing when the list is empty. */}
+        <OrphanSessions />
       </div>
       )}
 

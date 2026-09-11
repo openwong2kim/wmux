@@ -27,6 +27,11 @@ export const en = {
   'sidebar.browseFolder': 'Browse Folder…',
   'sidebar.browseFolderDesc': 'Choose any folder on disk',
   'sidebar.emptyWorkspace': 'Empty',
+  // Detached daemon sessions (#1101) — running, owned by no pane.
+  'sidebar.orphanSessions': 'Detached sessions',
+  'sidebar.orphanAdopt': 'Bring back into a pane — the session is still running',
+  'sidebar.orphanDispose': 'Kill this session',
+  'sidebar.orphanKillConfirm': 'Kill?',
   'sidebar.blankSinglePane': 'Blank single pane',
 
   // Workspace layout presets (the + menu)
