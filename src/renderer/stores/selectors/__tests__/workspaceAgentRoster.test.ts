@@ -31,6 +31,7 @@ interface StateOverrides {
   surfaceAgent?: Record<string, { name?: string; status: AgentStatus }>;
   surfaceAgentStatus?: Record<string, AgentStatus>;
   surfacePendingQuestion?: Record<string, string>;
+  surfaceQuestionSeen?: Record<string, string>;
   surfaceActivity?: Record<string, string>;
   surfaceActivityAt?: Record<string, number>;
   surfaceTurnOpenAt?: Record<string, number>;
@@ -46,6 +47,7 @@ function state(overrides: StateOverrides = {}): StoreState {
     surfaceAgent: {},
     surfaceAgentStatus: {},
     surfacePendingQuestion: {},
+    surfaceQuestionSeen: {},
     surfaceActivity: {},
     surfaceActivityAt: {},
     surfaceTurnOpenAt: {},
@@ -235,6 +237,40 @@ describe('selectWorkspaceAgentRoster', () => {
       expect(row.status).toBe('awaiting_input');
       expect(row.pendingQuestion).toBe('Shall I merge?');
       expect(row.needsAttention).toBe(true);
+    });
+
+    // #1176 — seen/unseen for BLOCKED agents: the dot stays red either way;
+    // only the roster's animated glow drops for a seen question.
+    it('marks a question seen only when the marker names the SAME question text', () => {
+      const seen = base({
+        surfaceAgent: { 'pty-1': { name: 'A', status: 'idle' } },
+        surfacePendingQuestion: { 'pty-1': 'Shall I merge?' },
+        surfaceQuestionSeen: { 'pty-1': 'Shall I merge?' },
+      });
+      expect(seen.questionSeen).toBe(true);
+      // Still blocked — the red dot and needsAttention are untouched.
+      expect(seen.status).toBe('awaiting_input');
+      expect(seen.needsAttention).toBe(true);
+
+      const unseen = base({
+        surfaceAgent: { 'pty-1': { name: 'A', status: 'idle' } },
+        surfacePendingQuestion: { 'pty-1': 'Delete the repo?' },
+        surfaceQuestionSeen: { 'pty-1': 'Shall I merge?' },
+      });
+      expect(unseen.questionSeen).toBe(false);
+
+      const noMarker = base({
+        surfaceAgent: { 'pty-1': { name: 'A', status: 'idle' } },
+        surfacePendingQuestion: { 'pty-1': 'Shall I merge?' },
+      });
+      expect(noMarker.questionSeen).toBe(false);
+
+      const noQuestion = base({
+        surfaceAgent: { 'pty-1': { name: 'A', status: 'idle' } },
+        surfaceQuestionSeen: { 'pty-1': 'stale marker without a question' },
+      });
+      expect(noQuestion.questionSeen).toBe(false);
+      expect(noQuestion.pendingQuestion).toBeUndefined();
     });
 
     it('an unseen attention state outranks the retained lifecycle state', () => {

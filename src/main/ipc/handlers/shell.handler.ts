@@ -4,6 +4,7 @@ import * as path from 'path';
 import * as fs from 'fs/promises';
 import * as os from 'os';
 import { ShellDetector } from '../../../shared/ShellDetector';
+import { enumerateWslDistros } from '../../pty/defaultWslDistro';
 import { IPC } from '../../../shared/constants';
 import { wrapHandler } from '../wrapHandler';
 import { isAutostartEnabled, setAutostartEnabled } from '../../autostart';
@@ -35,6 +36,14 @@ export function registerShellHandlers(): () => void {
   ipcMain.removeHandler(IPC.SHELL_LIST);
   ipcMain.handle(IPC.SHELL_LIST, wrapHandler(IPC.SHELL_LIST, (_event: Electron.IpcMainInvokeEvent) => {
     return detector.detect();
+  }));
+
+  // #1103 — WSL distro names for the default-terminal picker. Bounded and
+  // total ([] off-Windows / on any failure — the picker simply hides); the
+  // same enumeration refreshes the cache pty.create checks the choice against.
+  ipcMain.removeHandler(IPC.SHELL_WSL_DISTROS);
+  ipcMain.handle(IPC.SHELL_WSL_DISTROS, wrapHandler(IPC.SHELL_WSL_DISTROS, (_event: Electron.IpcMainInvokeEvent) => {
+    return enumerateWslDistros();
   }));
 
   ipcMain.removeHandler(IPC.SHELL_OPEN_EXTERNAL);

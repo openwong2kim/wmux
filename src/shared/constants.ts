@@ -61,6 +61,9 @@ export const IPC = {
   // before letting the live PTY output compose on a clean buffer.
   PTY_FLUSH_COMPLETE: 'pty:flush-complete',
   SHELL_LIST: 'shell:list',
+  // #1103 — WSL distro names (`wsl --list --quiet`), for the default-terminal
+  // distro picker. [] off Windows / on any enumeration failure.
+  SHELL_WSL_DISTROS: 'shell:wsl-distros',
   FONTS_LIST: 'fonts:list',
   SESSION_SAVE: 'session:save',
   // A4 — non-blocking periodic autosave. Same payload/atomicity as SESSION_SAVE
@@ -367,6 +370,10 @@ export const IPC = {
   // no-renderer toast fallback in dispatchNotification can honor them.
   MUTED_NOTIFICATION_CATEGORIES: 'settings:muted-notification-categories',
   AUTO_UPDATE_ENABLED: 'settings:auto-update-enabled',
+  // #1103 — the renderer's default-WSL-distro choice, pushed to main so
+  // pty.create can inject `wsl.exe -d <distro>` at the shell-resolution
+  // choke point without threading it through every create call.
+  SETTINGS_DEFAULT_WSL_DISTRO: 'settings:default-wsl-distro',
   // Phase 2.2 — MCP plugin permission approval (main → renderer subscribe,
   // renderer → main response). Emitted when the enforcer rejects an
   // unconfirmed plugin in enforce mode and the ApprovalQueue mints a

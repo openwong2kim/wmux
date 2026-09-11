@@ -134,7 +134,11 @@ export default function PaneActionsMenu({ anchor, triggerRef, items, onClose }: 
       : e.key === 'End' ? buttons.length - 1
       : e.key === 'ArrowDown' ? (current + 1) % buttons.length
       : current <= 0 ? buttons.length - 1 : current - 1;
+    // scrollIntoView keeps the focused item visible now that the menu can
+    // scroll (long template lists cap at 70vh). Optional call: jsdom does not
+    // implement it.
     buttons[next].focus();
+    buttons[next].scrollIntoView?.({ block: 'nearest' });
   };
 
   useEffect(() => {
@@ -181,6 +185,13 @@ export default function PaneActionsMenu({ anchor, triggerRef, items, onClose }: 
         top: pos.top,
         left: pos.left,
         width: PANE_ACTIONS_MENU_WIDTH,
+        // #1237 — the snap-to-layout entries grow this menu by one row per
+        // saved template; without a cap, a template hoarder pushes items past
+        // the viewport (placePopover flips, it does not shrink). The cap is
+        // 70vh and the list scrolls; the keyboard walk already handles
+        // offscreen items via scrollIntoView.
+        maxHeight: '70vh',
+        overflowY: 'auto',
         zIndex: 'var(--z-popover-top)',
         background: 'var(--bg-surface)',
         border: '1px solid color-mix(in srgb, var(--text-main) 9%, transparent)',

@@ -345,6 +345,10 @@ export const pl = {
   'pane.stashEmptyPane': 'Ten panel jest pusty — nie ma sesji do podtrzymania ani niczego do przywrócenia.',
   'pane.stashNoDaemon': 'Brak połączenia z demonem. Odłożony panel potrzebuje demona, aby utrzymać sesję i ją odtworzyć — dane wyjściowe zostałyby utracone.',
   'pane.stashBlockedSurface': 'Ten panel zawiera kartę {type}. Odłożyć można tylko terminale i przeglądarki — odmontowany edytor utraciłby niezapisane zmiany.',
+  'pane.snapStashedSurplus': 'Przyciągnięto do {name} — {count} nadmiarowych panel(e) przeniesiono do schowka.',
+  'pane.snapNoDaemon': 'Brak połączenia z demonem. {count} nadmiarowych panel(e) straciłoby dane wyjściowe — najpierw połącz demona lub zamknij je.',
+  'pane.snapBlockedSurface': 'Panel {name} zawiera kartę {type}, której nie można odłożyć bez utraty niezapisanych zmian. Zamknij ją albo wybierz większy układ.',
+  'pane.snapMenuPrefix': 'Przyciągnij panele do ',
 
   // Surface
   'surface.terminal': 'Terminal',
@@ -418,6 +422,7 @@ export const pl = {
   'worktask.cleanup.cat.orphan': 'Osierocony katalog',
   'palette.cmd.saveLayout': 'Zapisz bieżący układ jako szablon',
   'palette.cmd.layoutPrefix': 'Układ: ',
+  'palette.cmd.snapPrefix': 'Przyciągnij działające panele do układu: ',
   'palette.cmd.projectPrefix': 'Projekt: ',
   'palette.cmd.projectReview': 'Projekt: Przejrzyj wmux.json…',
   'palette.cmd.projectApplyLayout': 'Projekt: Zastosuj układ',
@@ -871,6 +876,9 @@ export const pl = {
   'settings.lanlinkPeerRevoke': 'Odwołaj',
   'settings.terminal': 'Terminal',
   'settings.defaultShell': 'Domyślna powłoka',
+  'settings.wslDistro': 'Dystrybucja WSL',
+  'settings.wslDistroDesc': 'W którą dystrybucję uruchamiają się panele WSL. Dystrybucje Docker Desktop są na końcu listy.',
+  'settings.wslDistroDefault': 'Domyślna systemowa',
   'settings.scrollbackLines': 'Linie historii',
   'settings.scrollbackDesc': 'Linie zachowywane w buforze terminala',
   'settings.scrollbackRestore': 'Przywróć przy starcie',

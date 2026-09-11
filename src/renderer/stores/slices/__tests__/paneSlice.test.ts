@@ -904,4 +904,44 @@ describe('surfacePendingQuestion lifecycle', () => {
     store.getState().setSurfaceActivity('pty-1', '');
     expect(store.getState().surfacePendingQuestion['pty-1']).toBe('Shall I merge?');
   });
+
+  // #1176 — seen markers ride the question lifecycle.
+  it('markSurfaceQuestionSeen records the CURRENT question text only', () => {
+    const store = createTestStore();
+    store.getState().setSurfacePendingQuestion('pty-1', 'Shall I merge?');
+    store.getState().markSurfaceQuestionSeen('pty-1');
+    expect(store.getState().surfaceQuestionSeen['pty-1']).toBe('Shall I merge?');
+    // A no-op without a live question — a stale marker would glow-drop a
+    // FUTURE question the user never saw.
+    store.getState().markSurfaceQuestionSeen('pty-2');
+    expect(store.getState().surfaceQuestionSeen['pty-2']).toBeUndefined();
+  });
+
+  it('a NEW question text is unseen again (the marker still names the old one)', () => {
+    const store = createTestStore();
+    store.getState().setSurfacePendingQuestion('pty-1', 'Shall I merge?');
+    store.getState().markSurfaceQuestionSeen('pty-1');
+    store.getState().setSurfacePendingQuestion('pty-1', 'Delete the repo?');
+    expect(store.getState().surfaceQuestionSeen['pty-1']).toBe('Shall I merge?');
+    // Text mismatch → the selector treats the new question as unseen.
+  });
+
+  it('the marker dies with the question on every clear path', () => {
+    const store = createTestStore();
+    store.getState().setSurfacePendingQuestion('pty-1', 'Shall I merge?');
+    store.getState().markSurfaceQuestionSeen('pty-1');
+
+    store.getState().setSurfaceActivity('pty-1', '✎ fleet.ts');
+    expect(store.getState().surfaceQuestionSeen['pty-1']).toBeUndefined();
+
+    store.getState().setSurfacePendingQuestion('pty-1', 'Again?');
+    store.getState().markSurfaceQuestionSeen('pty-1');
+    store.getState().markSurfaceRunning('pty-1');
+    expect(store.getState().surfaceQuestionSeen['pty-1']).toBeUndefined();
+
+    store.getState().setSurfacePendingQuestion('pty-1', 'Once more?');
+    store.getState().markSurfaceQuestionSeen('pty-1');
+    store.getState().setSurfacePendingQuestion('pty-1', '');
+    expect(store.getState().surfaceQuestionSeen['pty-1']).toBeUndefined();
+  });
 });
