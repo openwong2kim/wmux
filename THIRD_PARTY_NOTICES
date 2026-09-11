@@ -7823,9 +7823,9 @@ SOFTWARE.
 
 ================================================================================
 
-smol-toml@1.6.1
+smol-toml@1.7.1
 License: BSD-3-Clause
-Author: Cynthia <cyyynthia@borkenware.com>
+Author: Cynthia Rey <cynthia@cynthia.dev>
 Repository: github:squirrelchat/smol-toml
 
 Copyright (c) Squirrel Chat et al., All rights reserved.
