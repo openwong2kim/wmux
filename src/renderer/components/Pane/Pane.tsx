@@ -378,12 +378,15 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
   // itself survives (the agent is still blocked — looking does not answer it);
   // only the roster's animated glow drops, separating triaged from untriaged
   // blocked agents. Same placement as the attention clear above so keyboard
-  // nav marks it seen too.
+  // nav marks it seen too. Gated on workspace visibility: hidden workspaces
+  // stay mounted (WorkspaceSlot, display:none) and their active pane still
+  // reports isActive, so without the gate a question arriving in a background
+  // workspace would be marked seen before anyone looked at it.
   useEffect(() => {
-    if (isActive && activeSurfacePtyId && activePendingQuestion) {
+    if (isActive && isWorkspaceVisible && activeSurfacePtyId && activePendingQuestion) {
       markSurfaceQuestionSeen(activeSurfacePtyId);
     }
-  }, [isActive, activeSurfacePtyId, activePendingQuestion, markSurfaceQuestionSeen]);
+  }, [isActive, isWorkspaceVisible, activeSurfacePtyId, activePendingQuestion, markSurfaceQuestionSeen]);
 
   // Ctrl+Shift+H: flash the active pane
   useEffect(() => {
