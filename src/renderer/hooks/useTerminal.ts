@@ -1,9 +1,11 @@
+import { createOsc8LinkHandler } from '../terminal/osc8LinkHandler';
 import { useEffect, useRef, useCallback, useState } from 'react';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebglAddon } from '@xterm/addon-webgl';
 import { SearchAddon } from '@xterm/addon-search';
 import { applyUnicodeWidthModel } from '../../shared/terminalUnicode';
+import { isSafeGeometry } from '../../shared/terminalGeometry';
 import { matchesDisabledShortcut } from '../../shared/keymap';
 import { xtermWindowsBuildNumber } from '../../shared/conptyWindows';
 import { WebLinksAddon } from '@xterm/addon-web-links';
@@ -395,6 +397,29 @@ function writePtyDataImmediately(
   else term.write(payload.data);
 }
 
+/**
+ * #1255: the dimensions a fit() would apply right now, or null when the fit
+ * must be skipped — container not measurable, or the proposal is below the
+ * shared geometry floor. Applying a sub-floor fit reflows the entire
+ * scrollback at that width and permanently garbles the pane; the daemon
+ * would clamp the PTY side to MIN_SAFE_COLS anyway, splitting the two sides
+ * of the pipe. Callers skip; a later resize tick (layout settled, pane
+ * revealed, font swapped) re-proposes.
+ */
+function proposedSafeDimensions(
+  addon: FitAddon | null | undefined,
+): { cols: number; rows: number } | null {
+  if (!addon) return null;
+  try {
+    const dims = addon.proposeDimensions();
+    if (!dims) return null;
+    if (!isSafeGeometry(dims.cols, dims.rows)) return null;
+    return dims;
+  } catch {
+    return null; // disposed addon — caller's other guards own teardown
+  }
+}
+
 function hiddenRetentionActive(): boolean {
   return isDaemonModeActive() && useStore.getState().hiddenPaneRetentionEnabled;
 }
@@ -631,6 +656,16 @@ interface UseTerminalOptions {
 
 export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>, options: UseTerminalOptions) {
   const terminalRef = useRef<Terminal | null>(null);
+  // #1256: the live instance, published as STATE. The ref is populated by
+  // mutation inside the mount effect (fresh Terminal or an adopted parked
+  // one) — no re-render follows, so a consumer that captured
+  // `terminalRef.current` at render time keeps a null (before the instance
+  // exists) or a detached instance (after adoption swapped it) for as long as
+  // nothing else happens to re-render. Terminal.tsx passes this state to the
+  // scroll-to-bottom button and the bookmark indicator; their subscriptions
+  // and click handlers now track the real instance because identity changes
+  // re-render.
+  const [terminalInstance, setTerminalInstance] = useState<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
   /**
    * A fit() that the selection guard skipped, and nobody re-ran (#747).
@@ -824,6 +859,12 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       try {
         const bytes = Uint8Array.from(atob(payloadBase64), (c) => c.charCodeAt(0));
         console.log(`[wmux:reveal] ptyId=${ptyIdRef.current} mechanism=dead-snapshot payload=${bytes.length}`);
+        // #1256: reset() snaps the viewport to the bottom, and this repaint
+        // used to ship that snap — a user scrolled up in a hidden pane was
+        // yanked down on reveal. Capture the distance from the bottom BEFORE
+        // the reset (rows, the same convention terminalPark uses, so the
+        // restore stays proportional if the repaint reflows line counts).
+        const fromBottom = Math.max(0, term.buffer.active.baseY - term.buffer.active.viewportY);
         discardTerminalOutput(term);
         term.reset();
         // Historical bytes — clipboard bridge muted (#998).
@@ -836,6 +877,18 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
           writePtyDataImmediately(term, chunk, replayMuteRef.current);
         }
         markTerminalClean(term);
+        if (fromBottom > 0) {
+          // Everything above went through term.write, and xterm invokes write
+          // callbacks in write order — so an empty trailing write's callback
+          // fires only after the repaint has fully parsed and the buffer's
+          // baseY is final. That is the one moment a scrollToLine lands
+          // where the user was. (Same parse-barrier shape as hydrateForRead.)
+          term.write('', () => {
+            try {
+              term.scrollToLine(Math.max(0, term.buffer.active.baseY - fromBottom));
+            } catch { /* disposed mid-restore — teardown owns cleanup */ }
+          });
+        }
       } catch { /* disposed mid-paint — teardown owns cleanup */ }
     }
     st.buffer.length = 0;
@@ -950,6 +1003,12 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     // Calling fit() on a display:none element produces 0 cols/rows which
     // corrupts the xterm buffer and causes the "infinite copy downward" bug.
     if (container.offsetWidth === 0 || container.offsetHeight === 0) return;
+    // #1255: skip sub-floor fits. A mid-split/restoring container can measure
+    // small-but-nonzero; fit() would APPLY those columns to the buffer and
+    // the reflow re-wraps the whole scrollback at that width — damage a later
+    // correct fit does not undo. The ResizeObserver re-fires when the layout
+    // settles, so skipping is self-healing.
+    if (!proposedSafeDimensions(fitAddonRef.current)) return;
     try {
       fitAddonRef.current.fit();
       // This path fits and resizes too, so it settles any deferred debt (#747) —
@@ -1054,12 +1113,15 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     // Smart link routing (X3): localhost URLs open in the embedded browser
     // pane, external ones in the system browser; Ctrl/Cmd+click inverts. The
     // ptyId identifies the owning workspace (multiview-safe reverse lookup).
-    const webLinksAddon = new WebLinksAddon((event, uri) => {
+    const activateTerminalUrl = (event: MouseEvent, uri: string) => {
       openTerminalUrl(uri, {
         modifierHeld: event.ctrlKey || event.metaKey,
         ptyId: ptyIdRef.current || undefined,
       });
-    });
+    };
+    // Rebind adopted terminals too, so the callback uses the current pane ref.
+    terminal.options.linkHandler = createOsc8LinkHandler(activateTerminalUrl);
+    const webLinksAddon = new WebLinksAddon(activateTerminalUrl);
     terminal.loadAddon(fitAddon);
     terminal.loadAddon(searchAddon);
     terminal.loadAddon(webLinksAddon);
@@ -1448,7 +1510,10 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     // hidden workspace — an agent splitting a background pane, say) has no
     // valid fit to restore against. Hold the parked viewport until one runs.
     let pendingAdoptViewport: ParkedTerminal | null = null;
-    if (container.offsetWidth > 0 && container.offsetHeight > 0) {
+    // #1255: sub-floor proposals (mid-split/restoring container) are treated
+    // exactly like a hidden container — no fit, and an adoption holds its
+    // parked viewport until a real fit runs.
+    if (container.offsetWidth > 0 && container.offsetHeight > 0 && proposedSafeDimensions(fitAddon)) {
       fitAddon.fit();
       // #1002: the fit runs AFTER the adopted element is back in the DOM and
       // can change how many rows the viewport holds, which moves what "the
@@ -1486,7 +1551,10 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         console.debug('[Terminal] fonts.ready fit deferred — active selection');
         return;
       }
-      fitAddon.fit();
+      pendingFitRef.current = false;
+      // #1255: floor gate — fonts re-measure a container that may still be
+      // mid-layout; a sub-floor proposal is skipped, not applied.
+      if (proposedSafeDimensions(fitAddon)) fitAddon.fit();
       terminal.refresh(0, terminal.rows - 1);
     });
 
@@ -1524,6 +1592,12 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         if (term !== terminal) return;
 
         if (container.offsetWidth === 0 || container.offsetHeight === 0) return;
+
+        // #1255: floor gate BEFORE the selection guard — a sub-floor proposal
+        // records no fit debt: layout settling re-fires the ResizeObserver,
+        // which is the retry. (Checked before claimFit so the debt mechanism
+        // stays reserved for selection-deferred fits.)
+        if (!proposedSafeDimensions(fitAddon)) return;
 
         // Selection-preservation guard: xterm's SelectionService clears the
         // active selection on any rowsChanged event from fit(). While the user
@@ -2165,6 +2239,10 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       const mechanism = st.viaRawFallback ? 'dirty-raw-fallback' : 'dirty-snapshot';
       st.viaRawFallback = false;
       console.log(`[wmux:reveal] ptyId=${ptyId} mechanism=${mechanism} recoveredBytes=${recoveredBytes} buffered=${st.bufferedChars} chunks=${st.buffer.length}`);
+      // #1256: same viewport-preservation contract as paintDeadSnapshot —
+      // the reset below snaps to bottom, and a user scrolled up in the pane
+      // must stay where they were after the recovered screen lands.
+      const fromBottom = Math.max(0, terminal.buffer.active.baseY - terminal.buffer.active.viewportY);
       discardTerminalOutput(terminal); // stale retained backlog + dirty flag
       terminal.reset();
       // The scanner labels every held chunk at its source. Historical bytes
@@ -2172,9 +2250,26 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       for (const chunk of st.buffer) {
         writePtyDataImmediately(terminal, chunk, replayMuteRef.current);
       }
+      if (fromBottom > 0) {
+        // Trailing empty write = parse barrier (callbacks fire in write
+        // order); scrollToLine only after the recovered screen is parsed and
+        // baseY is final. See the identical block in paintDeadSnapshot.
+        terminal.write('', () => {
+          try {
+            terminal.scrollToLine(Math.max(0, terminal.buffer.active.baseY - fromBottom));
+          } catch { /* disposed mid-restore — teardown owns cleanup */ }
+        });
+      }
       st.buffer.length = 0;
       st.bufferedChars = 0;
       resetStaleReplayModes(recoveredBytes);
+      // #1255: re-assert DOM-derived geometry past the runFit dedup. The
+      // recovered session must get the real size even if the renderer's
+      // lastSentCols cache already "matches" — a transient sub-floor fit
+      // could have left the daemon pinned at its MIN_SAFE_COLS clamp while
+      // the cache believed otherwise. sendResize carries no dedup.
+      const dims = proposedSafeDimensions(fitAddon);
+      if (dims) sendResize(ptyId, dims.cols, dims.rows);
       st.resolvers.splice(0).forEach((r) => r());
       return true;
     };
@@ -2488,6 +2583,9 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     //   - fresh/adopted branch: immediately after connectPty()
 
     terminalRef.current = terminal;
+    // #1256: publish identity as state so snapshot consumers re-render onto
+    // the real instance (fresh or adopted — both swap identity here).
+    setTerminalInstance(terminal);
     fitAddonRef.current = fitAddon;
     searchAddonRef.current = searchAddon;
 
@@ -2680,6 +2778,10 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       }
       unsubscribeKeyboardLiveness();
       terminalRef.current = null;
+      // #1256: clear the published instance too. On a ptyId re-run the next
+      // effect publishes the new instance; on a true unmount React ignores
+      // the set. Either way consumers never keep a disposed terminal.
+      setTerminalInstance(null);
       fitAddonRef.current = null;
       searchAddonRef.current = null;
     };
@@ -2726,6 +2828,12 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
           // last reported value so a reattach cannot silently revert it.
           if (ptyIdRef.current !== id) return;
           reportViewerVisibility(id, viewerVisibleRef.current);
+          // #1255: re-assert DOM-derived geometry after a reconnect — the
+          // daemon session was recreated at its default/clamped size; the
+          // renderer's dedup cache may already "match" that stale value, so
+          // the resize goes out unconditionally via sendResize (no dedup).
+          const dims = proposedSafeDimensions(fitAddonRef.current);
+          if (dims) sendResize(id, dims.cols, dims.rows);
         })
         .finally(() => { inFlight = false; reconnectInFlightRef.current = false; });
     };
@@ -2801,6 +2909,12 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     const container = containerRef.current;
     if (!container || container.offsetWidth === 0 || container.offsetHeight === 0) {
       console.debug('[Terminal] font/theme fit skipped — container has zero dimensions');
+      return;
+    }
+    // #1255: floor gate — a font change re-measures the container; skip
+    // sub-floor proposals instead of reflowing the buffer at a broken width.
+    if (!proposedSafeDimensions(fitAddonRef.current)) {
+      console.debug('[Terminal] font/theme fit skipped — sub-floor dimensions');
       return;
     }
     fitAddonRef.current?.fit();
@@ -3004,5 +3118,5 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     terminalRef.current?.scrollToLine(line);
   }, []);
 
-  return { terminal: terminalRef, fit, searchAddonRef, findNext, findPrevious, clearSearch, getScrollPosition, scrollToLine };
+  return { terminal: terminalRef, terminalInstance, fit, searchAddonRef, findNext, findPrevious, clearSearch, getScrollPosition, scrollToLine };
 }
