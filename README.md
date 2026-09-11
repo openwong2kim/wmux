@@ -4,13 +4,14 @@
 
 ### The workspace multiplexer for AI agents.
 
-Run **fleets of Claude Code, Codex & Gemini in parallel** — each agent in its own pane, or fan one prompt out into **N isolated git worktrees** and harvest with **atomic adoption**: tick the hunks you want and they land as one all-or-nothing `git apply` — **your tree takes the whole selection or stays untouched**. Native on **Windows & macOS**, with approval gates, agent-to-agent channels, and an integrated browser your agents can drive. Walk away — after a crash or **full OS reboot**, they come back mid-conversation.
+Run **fleets of Claude Code, Codex & Gemini in parallel** — each agent in its own pane, or fan one prompt out into **N isolated git worktrees** and harvest with **atomic adoption**: tick the hunks you want and they land as one all-or-nothing `git apply` — **your tree takes the whole selection or stays untouched**. Native on **Windows & macOS**, with approval gates, agent-to-agent channels, and an integrated browser your agents can drive. Walk away — after a crash or **full OS reboot**, they come back mid-conversation — and when an agent needs an answer, **approve it from your iPhone** with the [wmux for iOS](https://apps.apple.com/app/wmux-workspace-for-ai-agents/id6797904556) app.
 
 <img width="924" alt="wmux — the workspace multiplexer for AI agents, on Windows and macOS" src="docs/banner.png" />
 
 [![Website](https://img.shields.io/badge/wmux.app-E8A33D?label=&labelColor=151517)](https://www.wmux.app)
 [![Windows 10/11](https://img.shields.io/badge/Windows-10%2F11-0078D6?logo=windows&logoColor=white)](https://github.com/openwong2kim/wmux/releases/latest)
 [![macOS](https://img.shields.io/badge/macOS-Apple%20Silicon-000000?logo=apple&logoColor=white)](https://github.com/openwong2kim/wmux/releases/latest)
+[![iOS app](https://img.shields.io/badge/iOS-App%20Store-0D96F6?logo=apple&logoColor=white)](https://apps.apple.com/app/wmux-workspace-for-ai-agents/id6797904556)
 [![Latest release](https://img.shields.io/github/v/release/openwong2kim/wmux?color=2ea44f&label=release)](https://github.com/openwong2kim/wmux/releases/latest)
 [![Downloads](https://img.shields.io/github/downloads/openwong2kim/wmux/total?color=blue&label=downloads)](https://github.com/openwong2kim/wmux/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
@@ -18,7 +19,7 @@ Run **fleets of Claude Code, Codex & Gemini in parallel** — each agent in its 
 
 </div>
 
-> **What's a *workspace multiplexer*?** tmux splits a terminal. wmux multiplexes whole **workspaces** — terminals, agents, git worktrees, a browser, and the channels they coordinate over — all owned by a daemon that keeps them running across quits, crashes, and full reboots. **One window. One fleet. Windows & macOS.** *Building in the open since March 2026.*
+> **What's a *workspace multiplexer*?** tmux splits a terminal. wmux multiplexes whole **workspaces** — terminals, agents, git worktrees, a browser, and the channels they coordinate over — all owned by a daemon that keeps them running across quits, crashes, and full reboots. **One window. One fleet. Windows & macOS — and your iPhone for approvals.** *Building in the open since March 2026.*
 
 ---
 
@@ -87,6 +88,10 @@ winget install openwong2kim.wmux
 
 <sub>Both platforms update themselves in place: wmux checks for a new release every 30 minutes and verifies the download against a published SHA-256 before installing (Windows x64 and macOS arm64).</sub>
 
+**iPhone** — [**wmux for iOS on the App Store**](https://apps.apple.com/app/wmux-workspace-for-ai-agents/id6797904556) (free)
+
+<sub>A companion to the daemon on your Mac, not a standalone app. Start `wmux web` over HTTPS (the titlebar **web** popover has a one-click Tailscale option), scan the QR it shows, and the phone is paired. From then on an agent's question or approval prompt reaches your locked phone as a push notification — Face ID, tap **Approve** or **Deny**, and the pane on your Mac advances. Terminals and agent output go straight from your Mac to your phone; nothing passes through a wmux server except a sealed push envelope the relay cannot read.</sub>
+
 **Linux** — experimental AppImage / .deb / .rpm builds are on the [releases page](https://github.com/openwong2kim/wmux/releases/latest).
 
 <sub>Prefer a tour first? [**wmux.app**](https://www.wmux.app) walks through the same features with screenshots.</sub>
@@ -102,10 +107,11 @@ winget install openwong2kim.wmux
 | 🪟 **Many agents, one window** | Split panes + workspaces. Claude on the left, Codex on the right, Gemini running tests below — simultaneously. Every pane is a plain PTY, so **any CLI agent works**, not just the ones on the box. |
 | 🤝 **Agents coordinate, not just coexist** | Agent-to-agent messaging + task delegation, plus **channels** — Slack-style rooms several agents read, post, and get @-mentioned into. An **execute approval gate** stops any agent running code in your workspace without your OK. This is the multi-agent moat. |
 | 🧭 **Fleet View cockpit** | `Ctrl+Shift+A` — every agent across every workspace in an **always-on side panel** (other panes stay live), blocked ones floated to the top with a live activity line. Clear every stuck approval from one **inbox**; click any card to jump straight there. |
-| 🔔 **Knows when an agent finishes** | Desktop notification + taskbar flash on completion. Flags `rm -rf`, `git push --force`, `DROP TABLE` for your approval. |
+| 🔔 **Knows when an agent finishes** | Desktop notification + taskbar flash on completion. Flags `rm -rf`, `git push --force`, `DROP TABLE` for your approval. Away from the desk? The daemon can also ping a **webhook or ntfy topic** — no phone app needed. |
+| 📱 **Answer from a locked phone** | The **wmux for iOS** app is approval-first: an agent asks a question, your iPhone buzzes, you pick the option there, and the PTY on your Mac advances. Approval inbox, fleet status, pane view and diff, dictation and photo upload — all against the daemon you run, with nothing stored on our side. |
 | ⏰ **Prompts arrive when the quota resets** | Schedule an exact prompt for one daemon-owned agent session — including a one-click **+5h** target. wmux persists an at-most-once occurrence, waits through running turns, approvals, and active typing, re-verifies the agent before paste and submit, then delivers when the session is ready. |
 | 💾 **Survives quit, crash & reboot** | A tmux-style daemon owns every PTY. Reopen and your sessions are **still running — processes and all.** A pane declared in `wmux.json` is **supervised like an init system** — auto-restarted across crashes and reboots (the app relaunches at login), resuming the *exact* Claude conversation it was on. |
-| 🤖 **Zero-config MCP** | Launch wmux and Claude Code just works — **87 tools** (browser, terminal, panes, channels, A2A, fan-out) register themselves, scoped to the workspace that called them. |
+| 🤖 **Zero-config MCP** | Launch wmux and Claude Code just works — **89 tools** (browser, terminal, panes, channels, A2A, fan-out, orchestrator) across three load-out profiles register themselves, scoped to the workspace that called them. |
 | 🌐 **A browser is in the workspace** | Chrome over CDP is integrated, so browser work happens in the same window as the panes and channels — your agent clicks, types, and screenshots through the same MCP surface, with nothing to wire up. Works with React inputs and CJK text. |
 
 ---
@@ -124,7 +130,9 @@ winget install openwong2kim.wmux
 - 🔀 **Multiview** — several workspaces side by side · layout templates · drag-to-reorder sidebar
 - 🧩 **Plugin host** — sandboxed iframe plugins with an explicit permission model
 - 🛡️ **Token-authed IPC**, SSRF guard, PTY input sanitization, randomized CDP port, Electron Fuses
-- 📱 **`wmux web`** — your live panes in a phone browser (PWA-installable), read-only and loopback-only by default; input and network exposure are explicit, warned-about opt-ins
+- 📱 **`wmux web` + wmux for iOS** — your live panes in a phone browser (PWA-installable), read-only and loopback-only by default; input and network exposure are explicit, warned-about opt-ins · the native [**iOS app**](https://apps.apple.com/app/wmux-workspace-for-ai-agents/id6797904556) pairs with the same server and adds push-notified approvals from the lock screen
+- 🔔 **Webhook & ntfy notifications** — point `notifySinks` in `~/.wmux/config.json` at a webhook or ntfy topic and the daemon pings it when an agent asks for approval or finishes a turn; outbound only, off unless configured
+- 🌐 **Browser layer for agents** — `browser_repl` keeps a stateful page session across calls, `browser_replay` re-runs a recorded flow, and `browser_smart_snapshot` / `browser_snapshot q=` cut a 250-node page to the question asked
 - ⬆️ **In-app auto-update** on Windows and macOS (arm64) — checked every 30 minutes, SHA-256 verified against a published manifest before it installs
 - 🎨 **10 UI themes** (Amber by default · Catppuccin · Nightowl · Monochrome · Void · Hinomaru · Taegeuk · Stars & Stripes · Red Dynasty · Custom) and **10 terminal palettes**, light ones included &nbsp;·&nbsp; 🌏 **23 locales scaffolded** — English · 한국어 · 中文 complete, 日本語 in progress — **[translations welcome](https://github.com/openwong2kim/wmux/labels/good%20first%20issue)**
 
@@ -184,7 +192,7 @@ winget install openwong2kim.wmux
 
 **Daemon** — background session management (survives app restart), scrollback dump + auto-recovery, start-at-login registration on Windows and macOS (relaunches after reboot), dead-session TTL reaping.
 
-**MCP tools** — `browser_*` (open / navigate / screenshot / snapshot / click / fill / type / evaluate / press_key), `terminal_read` / `terminal_read_events` (OSC 133) / `terminal_send` / `terminal_send_key`, `workspace_list` / `surface_list` / `surface_new` / `pane_list` / `pane_split` / `pane_close` / `pane_focus`, `channel_*` (create / post / read / ack / invite / join / list), `a2a_*` agent-to-agent + task delegation, `wmux_events_poll` / `wmux_search_panes`. Every browser tool takes a `surfaceId` so each session drives its own browser.
+**MCP tools** — `browser_*` (open / navigate / screenshot / snapshot / click / fill / type / evaluate / press_key), `terminal_read` / `terminal_read_events` (OSC 133) / `terminal_send` / `terminal_send_key`, `workspace_list` / `surface_list` / `surface_new` / `pane_list` / `pane_split` / `pane_close` / `pane_focus`, `channel_*` (create / post / read / ack / invite / join / list), `a2a_*` agent-to-agent + task delegation, `fanout_start` / `ledger_update` / `deck_*` orchestration, `repl_*` scripting, `wmux_events_poll` / `wmux_search_panes`. 89 tools in the full profile, with slimmer `core` and `commander` load-outs. Every browser tool takes a `surfaceId` so each session drives its own browser.
 
 </details>
 
@@ -221,7 +229,7 @@ Electron Main          Renderer (React 19 + Zustand)     Daemon (standalone)
 
 **Which Macs are supported?** Apple Silicon (arm64) — download the `.dmg` from [releases](https://github.com/openwong2kim/wmux/releases/latest). It is Developer ID signed, notarized and stapled, so Gatekeeper lets it through on first launch. Intel builds aren't produced right now; open an issue if you need one.
 
-**Can I reach my panes from my phone?** Yes — `wmux web` serves your live panes to a browser (PWA-installable). It is **read-only and loopback-only by default**; `--allow-input` and network exposure are explicit opt-ins. For HTTPS, use the one-command `wmux web --tailscale` path, or terminate it directly with `wmux web --expose --tls-cert <fullchain.pem> --tls-key <privkey.pem>` (add `--allow-host <certificate-dns-name>` so requests for that name are accepted and it is advertised in URLs). Re-supply both TLS paths when re-running the CLI to change options; a CLI start without them and without `--tailscale` explicitly selects HTTP. Bare `--expose` remains HTTP and prints an explicit cleartext warning. Even read-only shows a pane's full scrollback to whoever can reach the port, so do not publish it to the open internet. You can also attach a remote machine's `wmux web` into your own desktop app's sidebar and mirror its panes locally — see [Attach a remote machine's workspaces](docs/how-to/remote-workspaces.md).
+**Can I reach my panes from my phone?** Two ways. The native [**wmux for iOS**](https://apps.apple.com/app/wmux-workspace-for-ai-agents/id6797904556) app (free, iPhone) pairs with your Mac's daemon and pushes agent approvals to the lock screen — answer there and the pane advances. Or skip the app: `wmux web` serves your live panes to any browser (PWA-installable). It is **read-only and loopback-only by default**; `--allow-input` and network exposure are explicit opt-ins. For HTTPS, use the one-command `wmux web --tailscale` path, or terminate it directly with `wmux web --expose --tls-cert <fullchain.pem> --tls-key <privkey.pem>` (add `--allow-host <certificate-dns-name>` so requests for that name are accepted and it is advertised in URLs). Re-supply both TLS paths when re-running the CLI to change options; a CLI start without them and without `--tailscale` explicitly selects HTTP. Bare `--expose` remains HTTP and prints an explicit cleartext warning. Even read-only shows a pane's full scrollback to whoever can reach the port, so do not publish it to the open internet. You can also attach a remote machine's `wmux web` into your own desktop app's sidebar and mirror its panes locally — see [Attach a remote machine's workspaces](docs/how-to/remote-workspaces.md).
 
 **Works with Claude Code / Codex / Gemini?** Yes. wmux auto-detects them and registers an MCP server so they can drive the browser and read terminal output.
 
@@ -274,7 +282,7 @@ Built on [xterm.js](https://xtermjs.org/), [node-pty](https://github.com/microso
 
 [MIT](LICENSE)
 
-<sub>**Keywords:** workspace multiplexer · AI coding agent workspace · agent fleet · multi-agent terminal · git worktree fan-out · Claude Code · Codex CLI · Gemini CLI · MCP server · Chrome DevTools Protocol · browser automation · split terminal · cmux alternative · Windows terminal multiplexer · macOS terminal multiplexer · ConPTY · xterm.js · Electron terminal · tmux for Windows</sub>
+<sub>**Keywords:** workspace multiplexer · AI coding agent workspace · agent fleet · multi-agent terminal · git worktree fan-out · Claude Code · Codex CLI · Gemini CLI · iOS approval app · MCP server · Chrome DevTools Protocol · browser automation · split terminal · cmux alternative · Windows terminal multiplexer · macOS terminal multiplexer · ConPTY · xterm.js · Electron terminal · tmux for Windows</sub>
 
 <div align="center"><sub>⭐ Star history</sub><br>
 
