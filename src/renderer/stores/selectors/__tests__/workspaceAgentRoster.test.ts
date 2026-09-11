@@ -129,6 +129,32 @@ describe('selectWorkspaceAgentRoster', () => {
     expect(r.rows).toEqual([]);
   });
 
+  it('a STALE host contributes no row: its frozen status must not read as live', () => {
+    const remote = {
+      id: 'rs1', ptyId: '', title: 'rs1', shell: 'ssh', cwd: '/r',
+      surfaceType: 'remote-terminal' as const,
+      remoteHostId: 'host-1', remoteSessionId: 'rsession-9',
+    };
+    const ws = workspace('ws-1', leaf('p1', [remote], 'rs1'), 'p1');
+    const attached = {
+      key: 'host-1:rw-1', hostId: 'host-1', hostLabel: 'office-mac', workspaceId: 'rw-1', name: 'proj',
+      panes: [{ sessionId: 'rsession-9', agentName: 'Codex', agentStatus: 'awaiting_input' as const }],
+    };
+    const stale = selectWorkspaceAgentRoster(
+      state({ workspaces: [ws], remoteWorkspaces: [{ ...attached, stale: true }] }),
+      'ws-1',
+    );
+    expect(stale.rows).toEqual([]);
+    expect(stale.needsAttentionCount).toBe(0);
+    // Reachable again → the row comes back.
+    const live = selectWorkspaceAgentRoster(
+      state({ workspaces: [ws], remoteWorkspaces: [{ ...attached, stale: false }] }),
+      'ws-1',
+    );
+    expect(live.rows).toHaveLength(1);
+    expect(live.needsAttentionCount).toBe(1);
+  });
+
   it('lists only surfaces that actually carry a detected agent', () => {
     const ws = workspace('ws-1', leaf('p1', [surface('s1', 'pty-1'), surface('s2', 'pty-2')]), 'p1');
     const r = selectWorkspaceAgentRoster(

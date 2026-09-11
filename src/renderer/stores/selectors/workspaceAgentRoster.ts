@@ -100,8 +100,12 @@ export function selectWorkspaceAgentRoster(
         // attached workspaces per host are a supported configuration (the
         // dedup key is hostId:workspaceId), and a session in the host's
         // second workspace must still find its pane + hostLabel.
+        // A STALE entry (host unreachable) keeps its last pane snapshot for the
+        // mirror, but its agent status is frozen at the last successful poll —
+        // counting it would report a disconnected agent as live (or as needing
+        // you) indefinitely. No live metadata, no row.
         const attached = state.remoteWorkspaces.find(
-          (r) => r.hostId === hostId && r.panes.some((p) => p.sessionId === sessionId),
+          (r) => r.hostId === hostId && !r.stale && r.panes.some((p) => p.sessionId === sessionId),
         );
         const pane = attached?.panes.find((p) => p.sessionId === sessionId);
         if (!pane?.agentName) return;
