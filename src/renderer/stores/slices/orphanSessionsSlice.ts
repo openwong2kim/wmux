@@ -22,6 +22,7 @@ import { getWorkspacePtyIds, getWorkspaceLeafPanes, findPane, getLeafPanes } fro
 import { MAX_PANES_PER_WORKSPACE } from './paneSlice';
 import { publishPaneCreated, publishPaneFocused } from '../../events/publisher';
 import { saveSessionNow } from '../../utils/sessionSaveBridge';
+import { t } from '../../i18n';
 
 export interface OrphanSession {
   /** Daemon session id — the address for adopt (surface.ptyId) and dispose. */
@@ -36,12 +37,30 @@ export interface OrphanSession {
   workspaceId?: string;
 }
 
+/** One pty.list row, as the orphan diff consumes it. */
+export interface DaemonSessionInventoryEntry {
+  id: string;
+  shell: string;
+  state?: string;
+  cwd?: string;
+  createdAt?: string;
+  workspaceId?: string;
+  agentName?: string;
+  /** Spawn-time WMUX_SURFACE_ID stamp (live sessions only). */
+  surfaceId?: string;
+}
+
 export interface OrphanSessionsSlice {
   orphanSessions: OrphanSession[];
+  /** The last pty.list snapshot — kept so the diff can re-run the moment
+   *  ownership changes, without waiting for the next poll. */
+  daemonSessionInventory: DaemonSessionInventoryEntry[];
   /** Diff the daemon's live sessions against everything the workspaces own.
    *  Pure store side of the computation; the IPC fetch lives in the refresher
    *  so tests can drive it without a preload. */
-  setDaemonSessionInventory: (sessions: Array<{ id: string; shell: string; state?: string; cwd?: string; createdAt?: string; workspaceId?: string; agentName?: string }>) => void;
+  setDaemonSessionInventory: (sessions: DaemonSessionInventoryEntry[]) => void;
+  /** Re-run the diff against the stored snapshot (ownership changed). */
+  recomputeOrphanSessions: () => void;
   refreshOrphanSessions: () => Promise<void>;
   /** Bind a new pane to the orphan's session id. Returns the new pane id, or
    *  null when the session vanished between listing and clicking. */
@@ -76,6 +95,47 @@ function ownedPtyIds(state: StoreState): Set<string> {
   return owned;
 }
 
+/** Every surface id the workspaces still hold (visible tree + stash). A
+ *  session stamped with one of these belongs to that surface even when no
+ *  ptyId names it yet — reconcile rebinds a stale ptyId to the live session
+ *  on the SAME surfaceId, so listing it would offer the pane's own session
+ *  for kill. */
+function ownedSurfaceIds(state: StoreState): Set<string> {
+  const owned = new Set<string>();
+  for (const ws of state.workspaces) {
+    for (const leaf of getWorkspaceLeafPanes(ws)) {
+      for (const surface of leaf.surfaces) owned.add(surface.id);
+    }
+  }
+  return owned;
+}
+
+function computeOrphans(state: StoreState, sessions: DaemonSessionInventoryEntry[]): OrphanSession[] {
+  // Startup gate: until loadSession has restored the trees AND the startup
+  // reconcile has rebound stale ptyIds (paneGate flips 'ready' only after
+  // both), every restored pane's session reads as unowned.
+  if (state.paneGate !== 'ready') return [];
+  const ownedPtys = ownedPtyIds(state);
+  const ownedSurfaces = ownedSurfaceIds(state);
+  return sessions
+    // 'detached' is the daemon's word for "no client owns me". Local mode
+    // returns no state at all and has no orphan concept by construction
+    // (PTYs die with their panes) — a state-less listing is the local
+    // branch and contributes nothing.
+    .filter((s) => s.state === 'detached')
+    .filter((s) => !ownedPtys.has(s.id))
+    .filter((s) => !(s.surfaceId && ownedSurfaces.has(s.surfaceId)))
+    .map((s) => ({
+      id: s.id,
+      label: s.agentName ?? shellLabel(s.shell),
+      shell: s.shell,
+      ...(s.cwd ? { cwd: s.cwd } : {}),
+      ...(s.createdAt ? { createdAt: s.createdAt } : {}),
+      state: s.state ?? 'detached',
+      ...(s.workspaceId ? { workspaceId: s.workspaceId } : {}),
+    }));
+}
+
 export const createOrphanSessionsSlice: StateCreator<
   StoreState,
   [['zustand/immer', never]],
@@ -83,26 +143,24 @@ export const createOrphanSessionsSlice: StateCreator<
   OrphanSessionsSlice
 > = (set, get) => ({
   orphanSessions: [],
+  daemonSessionInventory: [],
 
   setDaemonSessionInventory: (sessions) => set((state) => {
-    const owned = ownedPtyIds(state);
-    state.orphanSessions = sessions
-      // 'detached' is the daemon's word for "no client owns me". Local mode
-      // returns no state at all and has no orphan concept by construction
-      // (PTYs die with their panes) — a state-less listing is the local
-      // branch and contributes nothing.
-      .filter((s) => s.state === 'detached')
-      .filter((s) => !owned.has(s.id))
-      .map((s) => ({
-        id: s.id,
-        label: s.agentName ?? shellLabel(s.shell),
-        shell: s.shell,
-        ...(s.cwd ? { cwd: s.cwd } : {}),
-        ...(s.createdAt ? { createdAt: s.createdAt } : {}),
-        state: s.state ?? 'detached',
-        ...(s.workspaceId ? { workspaceId: s.workspaceId } : {}),
-      }));
+    state.daemonSessionInventory = sessions;
+    state.orphanSessions = computeOrphans(state, sessions);
   }),
+
+  recomputeOrphanSessions: () => {
+    const state = get();
+    const next = computeOrphans(state, state.daemonSessionInventory);
+    const prev = state.orphanSessions;
+    // Ownership changes on every tree edit; only write when the rows moved,
+    // or each call would re-render every subscriber.
+    if (next.length === prev.length && next.every((o, i) => o.id === prev[i].id)) return;
+    set((draft) => {
+      draft.orphanSessions = next;
+    });
+  },
 
   refreshOrphanSessions: async () => {
     try {
@@ -115,19 +173,14 @@ export const createOrphanSessionsSlice: StateCreator<
   },
 
   adoptOrphanSession: (sessionId) => {
+    // Re-run the diff NOW, not at list time: the row may be up to 30s old and
+    // the session re-owned since. Double-owning one pty means closing either
+    // surface kills it under the other (review P1).
+    get().recomputeOrphanSessions();
     const orphan = get().orphanSessions.find((o) => o.id === sessionId);
     if (!orphan) return null;
-    // Re-check ownership NOW, not at list time: the row may be a boot-race
-    // stale (pty.list resolved before loadSession restored the trees) or the
-    // session may have been re-owned in the last ≤30s. Double-owning one pty
-    // means closing either surface kills it under the other (review P1).
-    if (ownedPtyIds(get()).has(sessionId)) {
-      set((state) => {
-        state.orphanSessions = state.orphanSessions.filter((o) => o.id !== sessionId);
-      });
-      return null;
-    }
     let newPaneId: string | null = null;
+    let blockedAtCap = false as boolean;
     // Plain values captured INSIDE the producer (drafts must not escape
     // set()) for the post-transaction event publishes.
     let adopted: { wsId: string; paneId: string; previousActiveId: string } | null = null;
@@ -147,6 +200,7 @@ export const createOrphanSessionsSlice: StateCreator<
       // adopted pane is a pane like any other.
       if (getWorkspaceLeafPanes(ws).length >= MAX_PANES_PER_WORKSPACE) {
         newPaneId = null;
+        blockedAtCap = true;
         return;
       }
       const surfaceId = generateId('surface');
@@ -199,6 +253,10 @@ export const createOrphanSessionsSlice: StateCreator<
       // The row leaves the list the moment it is owned again.
       state.orphanSessions = state.orphanSessions.filter((o) => o.id !== sessionId);
     });
+    if (blockedAtCap) {
+      // A click that does nothing reads as a broken row — say why.
+      get().pushToast({ message: t('pane.maxLeavesReached', { count: MAX_PANES_PER_WORKSPACE }), level: 'warn' });
+    }
     const adoptedInfo = adopted as { wsId: string; paneId: string; previousActiveId: string } | null;
     if (adoptedInfo) {
       // pane.list + events.poll is the documented complete recovery path for
@@ -214,6 +272,19 @@ export const createOrphanSessionsSlice: StateCreator<
   },
 
   disposeOrphanSession: async (sessionId) => {
+    // Kill only what is STILL an orphan by fresh daemon truth and current
+    // ownership: the row may be up to 30s old, and a pane that attached,
+    // re-owned, or is about to rebind to this session since must never have
+    // it killed out from under it. Unverifiable (list failed) → no kill.
+    let fresh: DaemonSessionInventoryEntry[] | undefined;
+    try {
+      fresh = await window.electronAPI?.pty?.list?.();
+    } catch {
+      fresh = undefined;
+    }
+    if (!fresh) return;
+    get().setDaemonSessionInventory(fresh);
+    if (!get().orphanSessions.some((o) => o.id === sessionId)) return;
     set((state) => {
       state.orphanSessions = state.orphanSessions.filter((o) => o.id !== sessionId);
     });

@@ -25,15 +25,29 @@ export default function OrphanSessions() {
   const adoptOrphanSession = useStore((s) => s.adoptOrphanSession);
   const disposeOrphanSession = useStore((s) => s.disposeOrphanSession);
   const refresh = useStore((s) => s.refreshOrphanSessions);
+  const recompute = useStore((s) => s.recomputeOrphanSessions);
+  const paneGate = useStore((s) => s.paneGate);
+  const workspaces = useStore((s) => s.workspaces);
+  const floatingPanePtyId = useStore((s) => s.floatingPanePtyId);
 
   // Slow poll: orphans appear via app quit / crash / a dispose that raced a
   // daemon disconnect — none of which the renderer sees an event for. 30s is
   // far under the resource cost the issue is about and far above noise.
+  // Held until the startup restore settles: before that, every restored
+  // pane's session reads as unowned.
   useEffect(() => {
+    if (paneGate !== 'ready') return;
     void refresh();
     const timer = setInterval(() => { void refresh(); }, 30_000);
     return () => clearInterval(timer);
-  }, [refresh]);
+  }, [refresh, paneGate]);
+
+  // Ownership moves without a poll (a tree restores, a reconcile rebinds, a
+  // pane is created or adopted): re-diff the last snapshot so a row never
+  // outlives the moment its session gets an owner.
+  useEffect(() => {
+    recompute();
+  }, [recompute, workspaces, floatingPanePtyId, paneGate]);
 
   // Two-step kill: ✕ arms a confirm, the next click fires. Killing a running
   // session (possibly an agent mid-task) is irreversible and the ✕ sits flush

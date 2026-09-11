@@ -17,6 +17,7 @@ import { getLeafPanes } from '../../../../shared/paneUtils';
 
 type TestState = OrphanSessionsSlice & WorkspaceSlice & PaneSlice & {
   pushToast: ReturnType<typeof vi.fn>;
+  paneGate: 'pending' | 'ready';
 };
 
 vi.stubGlobal('window', {
@@ -32,6 +33,8 @@ function createTestStore() {
   return create<TestState>()(
     immer((...args) => ({
       pushToast: vi.fn(),
+      // Startup restore settled — the state every listing below assumes.
+      paneGate: 'ready' as const,
       // @ts-expect-error — minimal test store doesn't match full StoreState
       ...createWorkspaceSlice(...args),
       // @ts-expect-error — same
@@ -104,6 +107,48 @@ describe('orphanSessionsSlice', () => {
     expect(ids).toContain('pty-other');
   });
 
+  it('lists nothing until the startup restore settles (paneGate)', () => {
+    store.setState((s) => { s.paneGate = 'pending'; });
+    store.getState().setDaemonSessionInventory([
+      { id: 'pty-restoring', shell: '/bin/zsh', state: 'detached' },
+    ]);
+    expect(store.getState().orphanSessions).toHaveLength(0);
+    store.setState((s) => { s.paneGate = 'ready'; });
+    store.getState().recomputeOrphanSessions();
+    expect(store.getState().orphanSessions.map((o) => o.id)).toEqual(['pty-restoring']);
+  });
+
+  it('a session stamped with a live surface id is that surface\'s rebind target, not an orphan', () => {
+    const leaf = createLeafPane();
+    leaf.surfaces = [{ id: 'sf-live', ptyId: 'pty-stale', title: '', shell: '', cwd: '' }];
+    leaf.activeSurfaceId = 'sf-live';
+    store.setState((s) => {
+      s.workspaces[0].rootPane = leaf;
+      s.workspaces[0].activePaneId = leaf.id;
+    });
+    store.getState().setDaemonSessionInventory([
+      { id: 'pty-recovered', shell: '/bin/zsh', state: 'detached', surfaceId: 'sf-live' },
+      { id: 'pty-foreign', shell: '/bin/zsh', state: 'detached', surfaceId: 'sf-gone' },
+    ]);
+    expect(store.getState().orphanSessions.map((o) => o.id)).toEqual(['pty-foreign']);
+  });
+
+  it('a row leaves the list the moment a pane owns its session', () => {
+    store.getState().setDaemonSessionInventory([
+      { id: 'pty-x', shell: '/bin/zsh', state: 'detached' },
+    ]);
+    expect(store.getState().orphanSessions).toHaveLength(1);
+    const leaf = createLeafPane();
+    leaf.surfaces = [{ id: 'sf-x', ptyId: 'pty-x', title: '', shell: '', cwd: '' }];
+    leaf.activeSurfaceId = 'sf-x';
+    store.setState((s) => {
+      s.workspaces[0].rootPane = leaf;
+      s.workspaces[0].activePaneId = leaf.id;
+    });
+    store.getState().recomputeOrphanSessions();
+    expect(store.getState().orphanSessions).toHaveLength(0);
+  });
+
   it('adopt binds a new pane to the session id and activates it', () => {
     store.getState().setDaemonSessionInventory([
       { id: 'pty-orphan', shell: '/bin/zsh', state: 'detached', workspaceId: ws.id, cwd: '/repo' },
@@ -134,13 +179,47 @@ describe('orphanSessionsSlice', () => {
     expect(store.getState().workspaces[0].activePaneId).toBe(paneId);
   });
 
-  it('dispose kills via pty.dispose and refreshes', async () => {
+  it('dispose kills a session the fresh list still reports as an unowned detached one', async () => {
     store.getState().setDaemonSessionInventory([
+      { id: 'pty-orphan', shell: '/bin/zsh', state: 'detached' },
+    ]);
+    vi.mocked(window.electronAPI!.pty!.list!).mockResolvedValueOnce([
       { id: 'pty-orphan', shell: '/bin/zsh', state: 'detached' },
     ]);
     await store.getState().disposeOrphanSession('pty-orphan');
     expect(window.electronAPI!.pty!.dispose).toHaveBeenCalledWith('pty-orphan');
     expect(store.getState().orphanSessions).toHaveLength(0);
+  });
+
+  it('dispose refuses a session that attached since the row was listed', async () => {
+    store.getState().setDaemonSessionInventory([
+      { id: 'pty-orphan', shell: '/bin/zsh', state: 'detached' },
+    ]);
+    vi.mocked(window.electronAPI!.pty!.list!).mockResolvedValueOnce([
+      { id: 'pty-orphan', shell: '/bin/zsh', state: 'attached' },
+    ]);
+    await store.getState().disposeOrphanSession('pty-orphan');
+    expect(window.electronAPI!.pty!.dispose).not.toHaveBeenCalled();
+  });
+
+  it('dispose refuses a session a pane owns by now, and when the list is unavailable', async () => {
+    store.getState().setDaemonSessionInventory([
+      { id: 'pty-orphan', shell: '/bin/zsh', state: 'detached' },
+    ]);
+    const leaf = createLeafPane();
+    leaf.surfaces = [{ id: 'sf-o', ptyId: 'pty-orphan', title: '', shell: '', cwd: '' }];
+    leaf.activeSurfaceId = 'sf-o';
+    store.setState((s) => {
+      s.workspaces[0].rootPane = leaf;
+      s.workspaces[0].activePaneId = leaf.id;
+    });
+    vi.mocked(window.electronAPI!.pty!.list!).mockResolvedValueOnce([
+      { id: 'pty-orphan', shell: '/bin/zsh', state: 'detached' },
+    ]);
+    await store.getState().disposeOrphanSession('pty-orphan');
+    vi.mocked(window.electronAPI!.pty!.list!).mockRejectedValueOnce(new Error('daemon down'));
+    await store.getState().disposeOrphanSession('pty-orphan');
+    expect(window.electronAPI!.pty!.dispose).not.toHaveBeenCalled();
   });
 
   it('adopt of an unknown id is a safe null', () => {
