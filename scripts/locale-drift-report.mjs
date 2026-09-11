@@ -51,21 +51,36 @@ function blameTimestamps(file) {
   return times;
 }
 
-function keysInOrder(file) {
-  const src = fs.readFileSync(file, 'utf8');
-  const keys = [];
-  const re = /^ {2}'([a-zA-Z0-9._-]+)':/gm;
-  let m;
-  while ((m = re.exec(src))) keys.push(m[1]);
-  return keys;
+// key -> [firstLine, lastLine] (0-based, inclusive), in file order. A long
+// value is wrapped onto a deeper-indented continuation line under its key, so
+// the entry spans that line too — blaming the key line alone never sees an
+// edit to a wrapped value.
+function entrySpans(file) {
+  const lines = fs.readFileSync(file, 'utf8').split('\n');
+  const spans = new Map();
+  const re = /^ {2}'([a-zA-Z0-9._-]+)':/;
+  for (let i = 0; i < lines.length; i++) {
+    const m = re.exec(lines[i]);
+    if (!m) continue;
+    let end = i;
+    while (end + 1 < lines.length && /^ {4}/.test(lines[end + 1])) end++;
+    if (!spans.has(m[1])) spans.set(m[1], [i, end]);
+  }
+  return spans;
 }
 
-function lineOfKey(file, key) {
-  const src = fs.readFileSync(file, 'utf8');
-  const re = new RegExp(`^ {2}'${key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}':`, 'm');
-  const idx = src.search(re);
-  if (idx === -1) return -1;
-  return src.slice(0, idx).split('\n').length;
+function newestIn(times, [start, end]) {
+  let newest;
+  for (let i = start; i <= end; i++) {
+    const t = times[i];
+    if (t !== undefined && (newest === undefined || t > newest)) newest = t;
+  }
+  return newest;
+}
+
+function isShallowCheckout() {
+  return execFileSync('git', ['-C', ROOT, 'rev-parse', '--is-shallow-repository'])
+    .toString('utf8').trim() === 'true';
 }
 
 function driftFor(locale) {
@@ -77,15 +92,13 @@ function driftFor(locale) {
   }
   const enTimes = blameTimestamps(EN);
   const localeTimes = blameTimestamps(localeFile);
-  const localeKeys = keysInOrder(localeFile);
+  const enSpans = entrySpans(EN);
   const stale = [];
-  for (const key of localeKeys) {
-    const line = lineOfKey(localeFile, key);
-    if (line < 1) continue;
-    const enLine = lineOfKey(EN, key);
-    if (enLine < 1) continue; // orphan key — the coverage test's territory
-    const enAt = enTimes[enLine - 1];
-    const locAt = localeTimes[line - 1];
+  for (const [key, span] of entrySpans(localeFile)) {
+    const enSpan = enSpans.get(key);
+    if (!enSpan) continue; // orphan key — the coverage test's territory
+    const enAt = newestIn(enTimes, enSpan);
+    const locAt = newestIn(localeTimes, span);
     if (enAt !== undefined && locAt !== undefined && enAt > locAt) stale.push(key);
   }
   return stale;
@@ -96,9 +109,29 @@ const check = args.includes('--check');
 const locales = args.filter((a) => !a.startsWith('--'));
 const list = locales.length > 0 ? locales : DEFAULT_LOCALES;
 
+let shallow = false;
+try {
+  shallow = isShallowCheckout();
+} catch {
+  // Not decisive on its own; a real git failure resurfaces per locale below.
+}
+if (shallow) {
+  // Every line blames to the single boundary commit, so "no drift" would be
+  // a false all-clear. Say so instead of printing one.
+  console.log('locale-drift: skipped — shallow checkout, blame history unavailable (fetch full history to run it).');
+  process.exit(0);
+}
+
 let total = 0;
 for (const locale of list) {
-  const stale = driftFor(locale);
+  let stale;
+  try {
+    stale = driftFor(locale);
+  } catch (err) {
+    console.error(`locale-drift[${locale}]: skipped — ${String(err?.message ?? err).split('\n')[0]}`);
+    if (!check) process.exitCode = 1;
+    continue;
+  }
   total += stale.length;
   if (stale.length === 0) {
     console.log(`locale-drift[${locale}]: no keys with English newer than the translation`);
@@ -110,4 +143,7 @@ for (const locale of list) {
 
 if (check) {
   console.log(`locale-drift: advisory complete — ${total} candidate(s). This never fails CI (#1037: the method false-positives on reformats; a human judges).`);
+  // --check is advisory by contract: a missing locale file or a git error
+  // above is reported, never turned into a failing exit code.
+  process.exitCode = 0;
 }
