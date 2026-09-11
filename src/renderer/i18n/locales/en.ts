@@ -238,6 +238,12 @@ export const en = {
   'workspace.copyInfo': 'Copy session info',
   'workspace.copied': 'Copied!',
   'workspace.rename': 'Rename workspace',
+  // Workspace archive (#1011) — Active → Archived → Permanently Deleted.
+  'workspace.archive': 'Archive',
+  'workspace.archived': 'Archived',
+  'workspace.restore': 'Restore workspace — same name, color, profile and pane layout',
+  'workspace.deletePermanently': 'Delete permanently',
+  'workspace.deletePermanentlyConfirm': 'Delete?',
   'workspace.configureProfile': 'Configure profile…',
   'workspace.duplicate': 'Duplicate workspace',
   'workspace.colorTag': 'Color tag',

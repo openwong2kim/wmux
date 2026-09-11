@@ -703,7 +703,7 @@ export interface UISlice {
 
 // ─── Layout template helpers ───────────────────────────────────────────────
 
-function extractLayout(pane: Pane): LayoutNode {
+export function extractLayout(pane: Pane): LayoutNode {
   if (pane.type === 'leaf') return { type: 'leaf' };
   return {
     type: 'branch',
@@ -713,7 +713,7 @@ function extractLayout(pane: Pane): LayoutNode {
   };
 }
 
-function buildPaneFromLayout(node: LayoutNode): Pane {
+export function buildPaneFromLayout(node: LayoutNode): Pane {
   if (node.type === 'leaf') return createLeafPane();
   const branch: PaneBranch = {
     id: generateId('pane'),

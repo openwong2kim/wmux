@@ -22,6 +22,7 @@ import {
   registerCodexNotify,
   unregisterCodexNotify,
   readCodexNotifyStatus,
+  unregisterCodexHooks,
   type TargetRegStatus,
   type ServerRegState,
   type CodexNotifyStatus,
@@ -130,6 +131,14 @@ export class McpRegistrar {
       if (removed) console.log(`[McpRegistrar] Unregistered Codex notify from ${configPath}`);
     } catch (err) {
       console.error('[McpRegistrar] Failed to unregister Codex notify:', err);
+    }
+    // #1107 — the hooks block leaves with the notify bridge. Marker-bounded
+    // removal (configIO), so a user's own [[hooks.*]] tables survive.
+    try {
+      const { removed, configPath } = unregisterCodexHooks(this.home);
+      if (removed) console.log(`[McpRegistrar] Removed Codex hooks block from ${configPath}`);
+    } catch (err) {
+      console.error('[McpRegistrar] Failed to remove Codex hooks block:', err);
     }
     this.registered = false;
   }

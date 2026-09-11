@@ -11,6 +11,11 @@ import {
   isWmuxOwnedNotify,
   upsertNotifyToml,
   removeNotifyToml,
+  renderCodexHooksBlockToml,
+  upsertCodexHooksToml,
+  removeCodexHooksToml,
+  findCodexHooksBlock,
+  codexVersionSupportsHooks,
   wmuxMcpEntry,
   wmuxEntryArgs,
   entryProfileFlags,
@@ -383,5 +388,178 @@ describe('upsertMcpServer — launch profile', () => {
     const back = JSON.parse(upsertMcpServer(seeded, 'json', 'wmux', '/x.js', 'full')) as
       { mcpServers: Record<string, { args: string[] }> };
     expect(back.mcpServers.wmux.args).toEqual(['/x.js']);
+  });
+});
+
+// ── Codex [[hooks.*]] lifecycle-bridge block (#1107) ──────────────────────────
+
+describe('configIO — codex hooks block', () => {
+  const BRIDGE = 'C:\\Users\\u\\.wmux\\hooks\\wmux-codex-hooks-bridge.mjs';
+
+  it('renders a marker-bracketed block that parses as valid TOML', () => {
+    const block = renderCodexHooksBlockToml(BRIDGE);
+    expect(block).toContain('# wmux-managed: codex-hooks-bridge');
+    expect(block).toContain('# wmux-managed: codex-hooks-bridge end');
+    const parsed = parseConfig(block, 'toml') as { hooks?: Record<string, unknown> };
+    for (const event of ['SessionStart', 'UserPromptSubmit', 'Stop', 'PermissionRequest']) {
+      const groups = parsed.hooks![event] as Array<{ matcher: string; hooks: Array<Record<string, unknown>> }>;
+      expect(groups, event).toHaveLength(1);
+      expect(groups[0].matcher, event).toBe('*');
+      expect(groups[0].hooks[0].type, event).toBe('command');
+      expect(groups[0].hooks[0].command, event).toBe(`node "${BRIDGE}"`);
+      expect(groups[0].hooks[0].commandWindows, event).toBe(`node "${BRIDGE}"`);
+      expect(groups[0].hooks[0].async, event).toBe(false);
+    }
+  });
+
+  it('escapes Windows backslashes in the command (JSON.stringify string)', () => {
+    expect(renderCodexHooksBlockToml(BRIDGE)).toContain('command = "node \\"C:\\\\Users');
+  });
+
+  it('appends the block after existing content and keeps it parseable', () => {
+    const input = `model = "gpt-5.5"\n[projects.'d:\\wmux']\ntrust_level = "trusted"\n`;
+    const out = upsertCodexHooksToml(input, BRIDGE);
+    const parsed = parseConfig(out, 'toml');
+    expect((parsed['projects'] as Record<string, unknown>)['d:\\wmux']).toEqual({ trust_level: 'trusted' });
+    expect(parsed['hooks']).toBeDefined();
+  });
+
+  it('replaces exactly the marker-bracketed region on refresh — a user block after it survives', () => {
+    const first = upsertCodexHooksToml('model = "x"\n', BRIDGE);
+    // A foreign user hook appended AFTER our end marker, plus trust
+    // annotations Codex may have written INSIDE our sections.
+    const annotated = first
+      .replace('async = false\n\n[[hooks.UserPromptSubmit]]', 'async = false\nenabled = true\n\n[[hooks.UserPromptSubmit]]')
+      + '\n[[hooks.PreToolUse]]\nmatcher = "*"\ncommand = "user-own-hook"\n';
+    const other = BRIDGE.replace('wmux-codex-hooks-bridge', 'moved-bridge');
+    const out = upsertCodexHooksToml(annotated, other);
+    const region = findCodexHooksBlock(out);
+    expect(region && 'commandPath' in region && region.commandPath).toBe(other);
+    // The user's own section below survived byte-for-byte.
+    expect(out).toContain('command = "user-own-hook"');
+    // Exactly one wmux start marker.
+    expect(out.split('# wmux-managed: codex-hooks-bridge\n').length).toBe(2);
+  });
+
+  it('is idempotent — upserting the same path twice converges', () => {
+    const once = upsertCodexHooksToml('model = "x"\n', BRIDGE);
+    const twice = upsertCodexHooksToml(once, BRIDGE);
+    expect(twice).toBe(once);
+  });
+
+  it('findCodexHooksBlock reports unterminated for a hand-pasted block with no end marker', () => {
+    const partial = 'model = "x"\n# wmux-managed: codex-hooks-bridge\n[[hooks.Stop]]\nmatcher = "*"\n';
+    expect(findCodexHooksBlock(partial)).toEqual({ unterminated: true });
+  });
+
+  it('upsert refuses an unterminated marker pair rather than guessing bounds', () => {
+    const partial = 'model = "x"\n# wmux-managed: codex-hooks-bridge\n[[hooks.Stop]]\nmatcher = "*"\n';
+    expect(() => upsertCodexHooksToml(partial, BRIDGE)).toThrow(ConfigParseError);
+  });
+
+  it('upsert throws on malformed TOML rather than appending to garbage', () => {
+    expect(() => upsertCodexHooksToml('this is = = not toml [[', BRIDGE)).toThrow(ConfigParseError);
+  });
+
+  it('preserves CRLF line endings through an upsert', () => {
+    const input = 'model = "x"\r\n[t]\r\nk = 1\r\n';
+    const out = upsertCodexHooksToml(input, BRIDGE);
+    expect(out).toContain('\r\n');
+    expect(out.startsWith('model = "x"\r\n')).toBe(true);
+    parseConfig(out, 'toml');
+  });
+
+  it('removeCodexHooksToml removes exactly the region and leaves the rest', () => {
+    const withBlock = upsertCodexHooksToml('model = "x"\n\n[t]\nk = 1\n', BRIDGE);
+    const removed = removeCodexHooksToml(withBlock);
+    expect(removed).toBe('model = "x"\n\n[t]\nk = 1\n');
+    parseConfig(removed, 'toml');
+  });
+
+  it('removeCodexHooksToml is a no-op without markers (foreign untouched)', () => {
+    const foreign = '[[hooks.Stop]]\nmatcher = "*"\n';
+    expect(removeCodexHooksToml(foreign)).toBe(foreign);
+  });
+
+  it('removing a file that only held the block yields empty output', () => {
+    const only = upsertCodexHooksToml('', BRIDGE);
+    expect(removeCodexHooksToml(only)).toBe('');
+  });
+
+  it('findCodexHooksBlock extracts the bridge path across path separators', () => {
+    const posix = '/home/u/.wmux/hooks/wmux-codex-hooks-bridge.mjs';
+    const out = upsertCodexHooksToml('model = "x"\n', posix);
+    const region = findCodexHooksBlock(out);
+    expect(region && 'commandPath' in region && region.commandPath).toBe(posix);
+  });
+
+  // Measured on codex-cli 0.153.4: `codex mcp add` (toml_edit) writes the new
+  // table ABOVE our end marker, because a comment at EOF is document trailing
+  // text. That table is the user's and must survive a refresh and a removal.
+  const FOREIGN_TABLE = '[mcp_servers.probe-srv]\ncommand = "echo"\nargs = ["hi"]\n';
+  const withForeignInside = (bridge: string): string => upsertCodexHooksToml('model = "x"\n', bridge)
+    .replace('# wmux-managed: codex-hooks-bridge end', `${FOREIGN_TABLE}\n# wmux-managed: codex-hooks-bridge end`);
+
+  it('a table Codex wrote inside the markers is not part of the wmux region', () => {
+    const region = findCodexHooksBlock(withForeignInside(BRIDGE));
+    expect(region && 'text' in region && region.text).not.toContain('probe-srv');
+    expect(region && 'orphanEndMarker' in region && region.orphanEndMarker).not.toBeNull();
+    expect(region && 'commandPath' in region && region.commandPath).toBe(BRIDGE);
+  });
+
+  it('refresh keeps a table Codex wrote inside the markers and re-closes the region', () => {
+    const other = BRIDGE.replace('wmux-codex-hooks-bridge', 'moved-bridge');
+    const out = upsertCodexHooksToml(withForeignInside(BRIDGE), other);
+    const parsed = parseConfig(out, 'toml') as { mcp_servers?: Record<string, unknown> };
+    expect(parsed.mcp_servers!['probe-srv']).toEqual({ command: 'echo', args: ['hi'] });
+    expect(out.split('# wmux-managed: codex-hooks-bridge end').length).toBe(2);
+    const region = findCodexHooksBlock(out);
+    expect(region && 'orphanEndMarker' in region && region.orphanEndMarker).toBeNull();
+    expect(region && 'commandPath' in region && region.commandPath).toBe(other);
+  });
+
+  it('removal keeps a table Codex wrote inside the markers', () => {
+    const removed = removeCodexHooksToml(withForeignInside(BRIDGE));
+    expect(removed).toBe(`model = "x"\n\n${FOREIGN_TABLE}`);
+  });
+
+  it('refuses a region where one of our tables follows a foreign one (interleaved)', () => {
+    const interleaved = upsertCodexHooksToml('model = "x"\n', BRIDGE)
+      .replace('[[hooks.Stop]]', `${FOREIGN_TABLE}\n[[hooks.Stop]]`);
+    expect(findCodexHooksBlock(interleaved)).toEqual({ unterminated: true });
+    expect(removeCodexHooksToml(interleaved)).toBe(interleaved);
+  });
+});
+
+// ── Lockstep: the TS mirrors must match the bridge-side source of truth ──────
+//
+// The renderer and version gate in configIO duplicate
+// integrations/codex/hooks/wmuxHooks.mjs (a bridge-side .mjs src/ cannot
+// require() as ESM). This is the guard that keeps the copies identical — same
+// discipline as hookBridge.lockstep.test.ts.
+
+describe('configIO — codex hooks lockstep with wmuxHooks.mjs', () => {
+  it('renderCodexHooksBlockToml is byte-identical to renderCodexHooksToml', async () => {
+    const mjs = await import('../../../integrations/codex/hooks/wmuxHooks.mjs');
+    for (const p of [
+      '/home/u/.wmux/hooks/wmux-codex-hooks-bridge.mjs',
+      'C:\\Users\\u\\.wmux\\hooks\\wmux-codex-hooks-bridge.mjs',
+    ]) {
+      expect(renderCodexHooksBlockToml(p)).toBe(mjs.renderCodexHooksToml(p));
+    }
+  });
+
+  it('codexVersionSupportsHooks agrees with codexSupportsHooks across the bisected table', async () => {
+    const mjs = await import('../../../integrations/codex/hooks/wmuxHooks.mjs');
+    const versions = [
+      '', 'unknown', 'codex-cli', 'codex-cli 0.99.0', 'codex-cli 0.135.0', 'codex-cli 0.140.0',
+      'codex-cli 0.140.0-alpha.1', 'codex-cli 0.141.0', '0.141.0-alpha.0', 'codex-cli 0.141.0-rc.1',
+      '0.141.0-nightly', 'codex-cli 0.145.0-alpha.2', 'codex-cli 0.151.0', 'codex-cli 0.153.4', '1.0.0',
+    ];
+    for (const v of versions) {
+      expect(codexVersionSupportsHooks(v), v).toBe(mjs.codexSupportsHooks(v));
+    }
+    expect(codexVersionSupportsHooks(undefined)).toBe(mjs.codexSupportsHooks(undefined));
+    expect(codexVersionSupportsHooks(null)).toBe(mjs.codexSupportsHooks(null));
   });
 });
