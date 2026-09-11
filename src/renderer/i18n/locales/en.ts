@@ -352,6 +352,13 @@ export const en = {
   'pane.stashNoDaemon': 'No daemon connection. A stashed pane needs the daemon to keep its session and replay it — output would be lost.',
   'pane.stashBlockedSurface': 'This pane holds a {type} tab. Only terminals and browsers can be stashed — an unmounted editor would lose unsaved edits.',
 
+  // Snap to layout (#1237) — re-fit the RUNNING panes into a saved template.
+  // applyLayoutTemplate replaces them with empty leaves; snap keeps sessions.
+  'pane.snapStashedSurplus': 'Snapped to {name} — {count} surplus pane(s) moved to the stash.',
+  'pane.snapNoDaemon': 'No daemon connection. {count} surplus pane(s) would lose their output — connect the daemon or close them first.',
+  'pane.snapBlockedSurface': 'Pane {name} holds a {type} tab, which cannot be stashed without losing unsaved edits. Close it or pick a larger layout.',
+  'pane.snapMenuPrefix': 'Snap panes to ',
+
   // Surface
   'surface.terminal': 'Terminal',
   'surface.remoteTooltip': 'Remote terminal — {path}',
@@ -424,6 +431,7 @@ export const en = {
   'worktask.cleanup.cat.orphan': 'Orphaned directory',
   'palette.cmd.saveLayout': 'Save Current Layout as Template',
   'palette.cmd.layoutPrefix': 'Layout: ',
+  'palette.cmd.snapPrefix': 'Snap Running Panes to Layout: ',
   'palette.cmd.projectPrefix': 'Project: ',
   'palette.cmd.projectReview': 'Project: Review wmux.json…',
   'palette.cmd.projectApplyLayout': 'Project: Apply Layout',
