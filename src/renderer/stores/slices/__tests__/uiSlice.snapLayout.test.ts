@@ -240,4 +240,59 @@ describe('uiSlice — snapToLayoutTemplate', () => {
     expect(w.activePaneId).toBe(leaves[0].id);
     expect(store.getState().zoomedPaneId).toBeNull();
   });
+
+  it('keeps the ordinal counter monotonic — a closed pane\'s number is never recycled', () => {
+    // Two live panes (ordinals 1, 2) whose counter already sits at 9: panes
+    // 3–8 were split off and closed. Deficit leaves continue from 9, not 3.
+    store.getState().splitPane(ws(store).rootPane.id, 'horizontal');
+    seedSurfaces(store);
+    store.setState((s) => { draftWs(s).nextPaneOrdinal = 9; });
+
+    store.getState().snapToLayoutTemplate('builtin-grid');
+
+    const after = getLeafPanes(ws(store).rootPane);
+    expect(after.slice(2).map((p) => p.ordinal)).toEqual([9, 10]);
+    expect(ws(store).nextPaneOrdinal).toBe(11);
+  });
+
+  it('a snap that creates no pane leaves the ordinal counter where it was', () => {
+    store.getState().splitPane(ws(store).rootPane.id, 'horizontal');
+    seedSurfaces(store);
+    store.setState((s) => { draftWs(s).nextPaneOrdinal = 9; });
+
+    store.getState().snapToLayoutTemplate('builtin-2row');
+
+    expect(ws(store).nextPaneOrdinal).toBe(9);
+  });
+
+  it('leaves a zoom pinned in ANOTHER workspace alone', () => {
+    store.getState().splitPane(ws(store).rootPane.id, 'horizontal');
+    seedSurfaces(store);
+    const other = createWorkspace('Other');
+    store.setState((s) => {
+      s.workspaces.push(other);
+      s.zoomedPaneId = other.rootPane.id;
+    });
+
+    store.getState().snapToLayoutTemplate('builtin-2row');
+
+    expect(store.getState().zoomedPaneId).toBe(other.rootPane.id);
+  });
+
+  it('names a refused pane by the label its header shows', () => {
+    setDaemonModeActive(true);
+    store.getState().applyLayoutTemplate('builtin-grid');
+    seedSurfaces(store);
+    store.setState((s) => {
+      const leaves = getLeafPanes(draftWs(s).rootPane);
+      leaves[3].surfaces = [editorSurface('sf-editor')];
+      leaves[3].activeSurfaceId = 'sf-editor';
+      s.paneLabel[leaves[3].id] = 'notes';
+    });
+
+    store.getState().snapToLayoutTemplate('builtin-2col');
+
+    const toast = store.getState().pushToast.mock.calls.at(-1)?.[0];
+    expect(String(toast?.message)).toContain('notes');
+  });
 });

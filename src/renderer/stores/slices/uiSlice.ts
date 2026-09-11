@@ -1,10 +1,10 @@
 import type { StateCreator } from 'zustand';
 import type { StoreState } from '../index';
 import { setLocale as i18nSetLocale, t, type Locale } from '../../i18n';
-import { collectLeafIds, getLeafPanes, getWorkspaceLeafPanes } from '../../../shared/paneUtils';
+import { collectLeafIds, findPane, getLeafPanes, getWorkspaceLeafPanes } from '../../../shared/paneUtils';
 import { canStashPaneSurfaces } from '../../../shared/paneStash';
 import { isDaemonModeActive } from '../../daemon/daemonMode';
-import { computePaneAutoName } from '../../utils/paneNaming';
+import { computePaneAutoName, paneDisplayName } from '../../utils/paneNaming';
 import { MAX_PANES_PER_WORKSPACE } from './paneSlice';
 import { publishPaneStashed, publishPaneFocused } from '../../events/publisher';
 import { saveSessionNow } from '../../utils/sessionSaveBridge';
@@ -1885,7 +1885,12 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
           if (!allowed.ok) {
             blocked = {
               key: 'surface',
-              name: computePaneAutoName(ws.wsOrdinal ?? 0, p.ordinal ?? 0),
+              // The name the pane header shows — a renamed pane is not
+              // findable by its auto name.
+              name: paneDisplayName(
+                state.paneLabel[p.id],
+                computePaneAutoName(ws.wsOrdinal ?? 0, p.ordinal ?? 0),
+              ),
               type: allowed.reason === 'surface' ? allowed.surfaceType : 'empty',
             };
             return;
@@ -1897,7 +1902,10 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
       // ordinals continue past the high-water (visible + stashed).
       const queue = visible.slice(0, Math.min(visible.length, slotCount));
       const ownedOrdinal = getWorkspaceLeafPanes(ws).reduce((m, l) => Math.max(m, l.ordinal ?? 0), 0);
-      let nextOrdinal = ownedOrdinal + 1;
+      // Never below the monotonic counter splitPane advances: the surviving
+      // panes keep their numbers, so lowering it would let the next new pane
+      // recycle a closed pane's ordinal (and with it its A2A address).
+      let nextOrdinal = Math.max(ws.nextPaneOrdinal ?? 0, ownedOrdinal + 1);
       const build = (node: LayoutNode): Pane => {
         if (node.type === 'leaf') {
           const existing = queue.shift();
@@ -1933,12 +1941,14 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
         focusedEvent = { wsId: ws.id, newPaneId: collectFirstLeafId(newRoot), previousPaneId: ws.activePaneId };
         ws.activePaneId = focusedEvent.newPaneId;
       }
-      ws.rootPane = newRoot;
       // A zoom pinned to a pane in the SNAPPED workspace is invalidated by the
-      // re-layout; one pinned elsewhere must survive (a background-workspace
-      // snap must not un-zoom the foreground — the same gate applyLayoutTemplate
-      // deserves).
-      if (targetWsId === state.activeWorkspaceId) state.zoomedPaneId = null;
+      // re-layout; one pinned elsewhere must survive (another multiview tile, or
+      // the foreground during a background snap). Checked against the OLD tree,
+      // which still holds every pane that was on screen — stashed ones included.
+      if (state.zoomedPaneId !== null && findPane(ws.rootPane, state.zoomedPaneId)) {
+        state.zoomedPaneId = null;
+      }
+      ws.rootPane = newRoot;
     });
     if (stashedEvent) {
       const ev = stashedEvent as { wsId: string; paneIds: string[] };
