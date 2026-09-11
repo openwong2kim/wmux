@@ -79,6 +79,44 @@ function waitForEventAfter(
   });
 }
 
+/**
+ * Poll the session's raw output until `pattern` matches something written
+ * after `baselineBytes`.
+ *
+ * The prompt body is rendered by the shell itself — it is not reported as a
+ * PromptEvent — so verifying what the WRAPPED prompt observed means reading
+ * the PTY stream rather than promptLog.
+ */
+function waitForOutputAfter(
+  managed: ManagedSession,
+  baselineBytes: number,
+  pattern: RegExp,
+  label: string,
+  timeoutMs = EVENT_TIMEOUT_MS,
+): Promise<RegExpMatchArray> {
+  return new Promise((resolve, reject) => {
+    const deadline = Date.now() + timeoutMs;
+    const tick = () => {
+      const fresh = managed.ringBuffer.readAll().subarray(baselineBytes).toString('utf8');
+      const match = fresh.match(pattern);
+      if (match) {
+        resolve(match);
+        return;
+      }
+      if (Date.now() > deadline) {
+        reject(
+          new Error(
+            `timed out waiting for ${label} — tail after baseline: ${JSON.stringify(fresh.slice(-400))}`,
+          ),
+        );
+        return;
+      }
+      setTimeout(tick, 50);
+    };
+    tick();
+  });
+}
+
 describe.runIf(hasPowerShell)('OSC 133 runtime — powershell.exe', () => {
   let manager: DaemonSessionManager;
 
@@ -162,6 +200,53 @@ describe.runIf(hasPowerShell)('OSC 133 runtime — powershell.exe', () => {
       'command_end with non-zero exitCode',
     );
     expect(cmdEnd.exitCode).toBe(7);
+  }, EVENT_TIMEOUT_MS + 2000);
+
+  // Issue #1267. The wrapper delegates to $global:__wmux_prev_prompt, so
+  // whatever $? that scriptblock observes is exactly what oh-my-posh or
+  // Starship would observe. Installing a probe there exercises the real
+  // contract through a real ConPTY — a substring assertion on PWSH_INIT can
+  // prove the restore is present but not that it actually survives to the
+  // delegation, which is the half that was broken.
+  it('hands the real $? to the wrapped prompt', async () => {
+    manager = new DaemonSessionManager();
+    const id = `rt-pwsh-status-${Date.now()}`;
+    manager.createSession({
+      id,
+      cmd: POWERSHELL,
+      cwd: path.resolve(process.cwd()),
+    });
+
+    const managed = manager.getSession(id)!;
+
+    // Stand in for the user's prompt engine. $q must be assigned as the
+    // scriptblock's first statement — reading $? later would measure this
+    // probe's own bookkeeping instead of the command that just ran.
+    managed.ptyProcess.write('$global:__wmux_prev_prompt = { $q = $?; "WMUXPROBE[$q]" }\r');
+    await waitForOutputAfter(managed, 0, /WMUXPROBE\[(?:True|False)\]/, 'the probe prompt to render');
+
+    // A failing native command: the wrapped prompt must see $? = False.
+    const beforeFailure = managed.ringBuffer.readAll().length;
+    managed.ptyProcess.write(`& "${CMD_EXE}" /c exit 7\r`);
+    const afterFailure = await waitForOutputAfter(
+      managed,
+      beforeFailure,
+      /WMUXPROBE\[(True|False)\]/,
+      'a prompt render after a failing command',
+    );
+    expect(afterFailure[1]).toBe('False');
+
+    // ...and True again after one that succeeds, so a fix that simply pins
+    // the status to False cannot pass.
+    const beforeSuccess = managed.ringBuffer.readAll().length;
+    managed.ptyProcess.write(`& "${CMD_EXE}" /c exit 0\r`);
+    const afterSuccess = await waitForOutputAfter(
+      managed,
+      beforeSuccess,
+      /WMUXPROBE\[(True|False)\]/,
+      'a prompt render after a successful command',
+    );
+    expect(afterSuccess[1]).toBe('True');
   }, EVENT_TIMEOUT_MS + 2000);
 });
 
