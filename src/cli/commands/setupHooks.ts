@@ -1336,8 +1336,8 @@ function printCodexHooksInstall(result: {
     console.warn(`codex hooks: CONFLICT in ${hooks.configPath}; existing [[hooks]] left untouched`);
   } else if (hooks.skipped === 'manual') {
     console.warn(
-      `codex hooks: a hand-installed wmux block in ${hooks.configPath} is missing its end ` +
-      'marker; remove it and re-run so the installer can own the region',
+      `codex hooks: the wmux block in ${hooks.configPath} cannot be bounded safely (end marker ` +
+      'missing, or other config interleaved with it); remove it by hand and re-run',
     );
   } else if (hooks.skipped === 'malformed') {
     console.warn(`codex hooks: malformed config left untouched (${hooks.configPath})`);

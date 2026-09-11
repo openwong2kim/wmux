@@ -492,6 +492,43 @@ describe('configIO — codex hooks block', () => {
     const region = findCodexHooksBlock(out);
     expect(region && 'commandPath' in region && region.commandPath).toBe(posix);
   });
+
+  // Measured on codex-cli 0.153.4: `codex mcp add` (toml_edit) writes the new
+  // table ABOVE our end marker, because a comment at EOF is document trailing
+  // text. That table is the user's and must survive a refresh and a removal.
+  const FOREIGN_TABLE = '[mcp_servers.probe-srv]\ncommand = "echo"\nargs = ["hi"]\n';
+  const withForeignInside = (bridge: string): string => upsertCodexHooksToml('model = "x"\n', bridge)
+    .replace('# wmux-managed: codex-hooks-bridge end', `${FOREIGN_TABLE}\n# wmux-managed: codex-hooks-bridge end`);
+
+  it('a table Codex wrote inside the markers is not part of the wmux region', () => {
+    const region = findCodexHooksBlock(withForeignInside(BRIDGE));
+    expect(region && 'text' in region && region.text).not.toContain('probe-srv');
+    expect(region && 'orphanEndMarker' in region && region.orphanEndMarker).not.toBeNull();
+    expect(region && 'commandPath' in region && region.commandPath).toBe(BRIDGE);
+  });
+
+  it('refresh keeps a table Codex wrote inside the markers and re-closes the region', () => {
+    const other = BRIDGE.replace('wmux-codex-hooks-bridge', 'moved-bridge');
+    const out = upsertCodexHooksToml(withForeignInside(BRIDGE), other);
+    const parsed = parseConfig(out, 'toml') as { mcp_servers?: Record<string, unknown> };
+    expect(parsed.mcp_servers!['probe-srv']).toEqual({ command: 'echo', args: ['hi'] });
+    expect(out.split('# wmux-managed: codex-hooks-bridge end').length).toBe(2);
+    const region = findCodexHooksBlock(out);
+    expect(region && 'orphanEndMarker' in region && region.orphanEndMarker).toBeNull();
+    expect(region && 'commandPath' in region && region.commandPath).toBe(other);
+  });
+
+  it('removal keeps a table Codex wrote inside the markers', () => {
+    const removed = removeCodexHooksToml(withForeignInside(BRIDGE));
+    expect(removed).toBe(`model = "x"\n\n${FOREIGN_TABLE}`);
+  });
+
+  it('refuses a region where one of our tables follows a foreign one (interleaved)', () => {
+    const interleaved = upsertCodexHooksToml('model = "x"\n', BRIDGE)
+      .replace('[[hooks.Stop]]', `${FOREIGN_TABLE}\n[[hooks.Stop]]`);
+    expect(findCodexHooksBlock(interleaved)).toEqual({ unterminated: true });
+    expect(removeCodexHooksToml(interleaved)).toBe(interleaved);
+  });
 });
 
 // ── Lockstep: the TS mirrors must match the bridge-side source of truth ──────

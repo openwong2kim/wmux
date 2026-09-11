@@ -306,6 +306,19 @@ describe('installLifecycleIntegrations — aggregation + codexNotify gating', ()
 describe('lifecycleIntegrations — codex hooks lane', () => {
   const HOOKS_SOURCE = '// wmux-managed: codex-hooks-bridge\n// hooks bridge body\n';
   const VERSION_OK = 'codex-cli 0.151.0';
+  let prevUserProfile: string | undefined;
+
+  beforeEach(() => {
+    // registerCodexHooks stamps (and status reads the bridge log) under
+    // getWmuxHomeDir(), which is USERPROFILE-first. Route it at the temp home
+    // so these tests never write the real ~/.wmux/codex-hooks-install.json.
+    prevUserProfile = process.env.USERPROFILE;
+    process.env.USERPROFILE = home;
+  });
+  afterEach(() => {
+    if (prevUserProfile === undefined) delete process.env.USERPROFILE;
+    else process.env.USERPROFILE = prevUserProfile;
+  });
 
   /** Paths with real sources for every asset so nothing is source-missing. */
   function pathsWithSources(): LifecycleIntegrationPaths {
