@@ -1,5 +1,24 @@
-import { describe, it, expect } from 'vitest';
-import { separatorEqualizePair } from '../PaneContainer';
+// @vitest-environment jsdom
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import React, { act } from 'react';
+import { createRoot, type Root } from 'react-dom/client';
+
+vi.mock('../Pane', () => ({
+  default: ({ pane }: { pane: { id: string } }) =>
+    React.createElement('div', { 'data-testid': `leaf-${pane.id}` }),
+}));
+
+import PaneContainer, { separatorEqualizePair } from '../PaneContainer';
+import { useStore } from '../../../stores';
+
+(globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+
+class ResizeObserverStub {
+  observe(): void { /* layout reflow is irrelevant under jsdom */ }
+  unobserve(): void { /* no-op */ }
+  disconnect(): void { /* no-op */ }
+}
+(globalThis as unknown as { ResizeObserver: unknown }).ResizeObserver ??= ResizeObserverStub;
 
 // #1233 — double-click a pane separator to even out the two panes it
 // separates. Pure arithmetic: the two-pane case is the issue's 50/50; a
@@ -33,5 +52,70 @@ describe('separatorEqualizePair', () => {
     const sizes = [80, 20];
     separatorEqualizePair(sizes, 1);
     expect(sizes).toEqual([80, 20]);
+  });
+});
+
+// Wiring: the separator's double-click reaches the store through
+// updatePaneSizes (the path a drag persists through), and only for the branch
+// it belongs to. jsdom cannot show the visual resize (see
+// PaneContainer.moveSizes.test.tsx), so the store write is the contract here.
+describe('PaneContainer — double-clicking a separator (#1233)', () => {
+  let container: HTMLDivElement;
+  let root: Root;
+
+  const ws = () =>
+    useStore.getState().workspaces.find((w) => w.id === useStore.getState().activeWorkspaceId)!;
+
+  function render(): void {
+    const w = ws();
+    act(() => {
+      root.render(
+        React.createElement(PaneContainer, { pane: w.rootPane, workspace: w, isWorkspaceVisible: true }),
+      );
+    });
+  }
+
+  beforeEach(() => {
+    const state = useStore.getState();
+    for (const w of [...state.workspaces]) state.removeWorkspace(w.id);
+    state.addWorkspace();
+    useStore.setState({ zoomedPaneId: null });
+    // root(h)[ A, inner(v)[ B, C ] ]
+    useStore.getState().splitPane(ws().rootPane.id, 'horizontal');
+    useStore.getState().splitPane(ws().activePaneId, 'vertical');
+
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+  });
+
+  afterEach(() => {
+    act(() => { root.unmount(); });
+    container.remove();
+  });
+
+  it('evens out the pair around the outer divider and leaves the nested split alone', () => {
+    const outer = ws().rootPane;
+    if (outer.type !== 'branch') throw new Error('expected a branch root');
+    const inner = outer.children[1];
+    if (inner.type !== 'branch') throw new Error('expected a nested branch');
+    act(() => {
+      useStore.getState().updatePaneSizes(outer.id, [80, 20]);
+      useStore.getState().updatePaneSizes(inner.id, [70, 30]);
+    });
+    render();
+
+    // Document order: the outer divider precedes the nested group's divider.
+    const [outerSeparator] = container.querySelectorAll('[role="separator"]');
+    act(() => {
+      outerSeparator.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+    });
+
+    const after = ws().rootPane;
+    if (after.type !== 'branch') throw new Error('expected a branch root');
+    expect(after.sizes).toEqual([50, 50]);
+    const innerAfter = after.children[1];
+    if (innerAfter.type !== 'branch') throw new Error('expected a nested branch');
+    expect(innerAfter.sizes).toEqual([70, 30]);
   });
 });
