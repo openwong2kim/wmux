@@ -3,7 +3,7 @@ import { create } from 'zustand';
 import { immer } from 'zustand/middleware/immer';
 import { createPaneSlice, type PaneSlice, MAX_PANES_PER_WORKSPACE } from '../paneSlice';
 import { createWorkspace, createLeafPane, type Workspace, type Surface } from '../../../../shared/types';
-import { findPane, getLeafPanes } from '../../../../shared/paneUtils';
+import { findPane, findParent, getLeafPanes } from '../../../../shared/paneUtils';
 import { setDaemonModeActive, resetDaemonModeForTests } from '../../../daemon/daemonMode';
 
 // Stash is the NON-DESTRUCTIVE counterpart to closePane, so most of these tests
@@ -292,6 +292,45 @@ describe('paneSlice — stash', () => {
       // The fallback branch is built fresh, so it uses the default split.
       const parent = findPane(ws(store).rootPane, a);
       expect(parent).not.toBeNull();
+    });
+
+    it('rescales a pair recorded out of a three-way split so the new branch sums to 100', () => {
+      // A | B | C at 20/30/50. Stashing A records [20, 30] — A's and B's shares
+      // of a THREE-child parent. Copied as-is into the new two-child branch they
+      // would persist as a 50% total; rescaled they keep the proportion.
+      // splitPane nests rather than flattening, so the flat three-child row is
+      // built directly: split once, then add a third leaf to the same branch.
+      const [a, b] = splitOnce(store);
+      store.setState((s) => {
+        const root = draftWs(s).rootPane;
+        if (root.type === 'branch') {
+          root.children.push(createLeafPane(surface('sf-c', 'pty-c'), 3));
+          root.sizes = [20, 30, 50];
+        }
+      });
+      const before = ws(store).rootPane;
+      expect(before.type === 'branch' && before.children.length).toBe(3);
+      store.getState().stashPane(a);
+
+      expect(store.getState().unstashPane(a)).toBe(true);
+
+      const parent = findParent(ws(store).rootPane, a);
+      expect(parent?.type).toBe('branch');
+      if (parent?.type === 'branch') {
+        expect(parent.children.map((c) => c.id)).toEqual([a, b]);
+        expect(parent.sizes).toEqual([40, 60]);
+      }
+    });
+
+    it('builds an even pair for an entry with no recorded origin (a snap-stashed pane)', () => {
+      const [, b] = splitOnce(store);
+      store.getState().stashPane(b);
+      store.setState((s) => { delete draftWs(s).stashedPanes![0].origin; });
+
+      expect(store.getState().unstashPane(b)).toBe(true);
+
+      const parent = findParent(ws(store).rootPane, b);
+      expect(parent?.type === 'branch' && parent.sizes).toEqual([50, 50]);
     });
 
     it('is a silent success when the pane is already back (undo/roster race)', () => {

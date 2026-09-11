@@ -535,7 +535,14 @@ function attachBeside(
   const liveTarget = findPane(ws.rootPane, targetLeafId);
   if (!liveTarget) return false;
 
-  const [nodeShare, targetShare] = sizes && sizes.length === 2 ? sizes : [50, 50];
+  // Normalised to sum to 100: origin sizes are the pair's shares of a parent
+  // that may have had more children (two of three thirds is [33.3, 33.3]), and
+  // a branch is persisted — session file, archive snapshots — with whatever
+  // sizes it carries, not the ones the library normalises on screen.
+  const [rawNode, rawTarget] =
+    sizes && sizes.length === 2 && sizes.every((n) => Number.isFinite(n) && n > 0) ? sizes : [50, 50];
+  const nodeShare = (rawNode * 100) / (rawNode + rawTarget);
+  const targetShare = (rawTarget * 100) / (rawNode + rawTarget);
   const branch: PaneBranch = {
     id: generateId('pane'),
     type: 'branch',
