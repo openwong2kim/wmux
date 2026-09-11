@@ -17,7 +17,7 @@ const destDir = join(repoRoot, 'dist', 'cli-bundle');
 
 // Self-contained agent bridges shipped in the CLI bundle (extraResource):
 //   - Claude Code hook/statusline bridges
-//   - Codex lifecycle notify bridge
+//   - Codex lifecycle notify + hooks bridges
 //   - OpenCode lifecycle plugin (renamed in the bundle to avoid generic wmux.js)
 const bridges = [
   {
@@ -31,6 +31,10 @@ const bridges = [
   {
     src: join(repoRoot, 'integrations', 'codex', 'bin', 'wmux-codex-notify.mjs'),
     dest: 'wmux-codex-notify.mjs',
+  },
+  {
+    src: join(repoRoot, 'integrations', 'codex', 'bin', 'wmux-codex-hooks-bridge.mjs'),
+    dest: 'wmux-codex-hooks-bridge.mjs',
   },
   {
     src: join(repoRoot, 'integrations', 'opencode', 'plugins', 'wmux.js'),

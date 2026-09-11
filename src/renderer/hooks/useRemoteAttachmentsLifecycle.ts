@@ -190,6 +190,9 @@ export function useRemoteAttachmentsLifecycle(): void {
           hostLabel: d.hostLabel,
           workspaceId: d.workspaceId,
           name: d.name,
+          // #1086 — local aliases survive the reload with the descriptor.
+          ...(d.label ? { label: d.label } : {}),
+          ...(d.color ? { color: d.color } : {}),
           // Panes ALWAYS come from the live fetch below, never from disk.
           panes: [],
           stale: true,
