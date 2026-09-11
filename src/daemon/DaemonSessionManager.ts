@@ -6,6 +6,7 @@ import os from 'node:os';
 import fs from 'node:fs';
 import path from 'node:path';
 import type { DaemonSession, DaemonSessionState, DaemonSessionSupervision, DaemonConfig } from './types';
+import { MIN_SAFE_COLS, MIN_SAFE_ROWS } from '../shared/terminalGeometry';
 import { RingBuffer } from './RingBuffer';
 import { DaemonPTYBridge } from './DaemonPTYBridge';
 import { PromptEventLog } from './PromptEventLog';
@@ -120,10 +121,9 @@ const DEFERRED_UNMUTE_DELAY_MS = 100;
  * observed 6/7 boundary, which may shift with prompt width or locale. The
  * renderer's xterm view can briefly be narrower than the PTY during a layout
  * transition — harmless compared to a dead shell, and the next settled resize
- * reconciles them.
+ * reconciles them. (#1255: the renderer now skips sub-floor fits entirely —
+ * shared constant, see shared/terminalGeometry.ts.)
  */
-const MIN_SAFE_COLS = 10;
-const MIN_SAFE_ROWS = 2;
 const clampCols = (cols: number): number => Math.max(MIN_SAFE_COLS, cols);
 const clampRows = (rows: number): number => Math.max(MIN_SAFE_ROWS, rows);
 

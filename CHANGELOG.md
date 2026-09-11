@@ -1,5 +1,44 @@
 ## [Unreleased]
 
+## [3.52.0] — 2026-09-09
+
+### Added
+
+- **Codex approval pauses are now reported by a hook instead of a screenshot guess.** The one Codex lifecycle event wmux could never measure — `PermissionRequest`, the moment a Codex pane stops and shows "would you like to run this command?" — finally fired under a lab rig (interactive TUI driven in a PTY against a stub model endpoint), and the hooks bridge now maps it to the same "needs a human" state the approval screen-regexes produce. A pane whose operator has trusted the hook gets the fact; the regexes stay as the fallback for everyone else. The captured payload confirmed Codex even names the tool the way Claude does, and the user-facing justification it carries never leaves the bridge. (#1231)
+
+### Fixed
+
+- **Ctrl+C on Dvorak (and other non-QWERTY layouts) now interrupts the pane.** xterm.js encoded Ctrl+letter from the physical QWERTY key position, so a Dvorak Ctrl+C arrived as Ctrl+I and Claude would not shut down. The control byte is now taken from the letter you typed. Hangul / IME copy still matches the physical C key when the IME has mangled the letter. (#1228, #1227)
+
+- **Shift+Enter in a Codex pane on Windows inserts a newline.** wmux always sent the kitty form of Shift+Enter, which Codex does not speak — it asks for win32-input-mode instead, and the kitty byte landed as Escape plus junk. The pane's own output is now watched for that negotiation, and Shift+Enter is encoded the way Codex asked. Claude Code is unchanged: it never announces kitty, and still gets the kitty byte it already understood. (#1228, #1152)
+
+- **Pasting an image into a shell that used to be Claude no longer silently drops it.** Leaving a Claude session kept the pane labelled as Claude, so the default image-paste route sent Claude's own paste key into readline and the screenshot vanished. Auto now takes the file-path route once the TUI has left the screen (or the agent process is known dead), and the stale agent name is cleared. (#1228, #1210)
+
+- **Legacy-traffic audit now counts only external-wire callers.** The shadow log and trust-DB legacy records exist to show which no-`clientName` integrations are still calling before the grandfather lane closes (#1111, announced for 2026-09-30). They were also counting wmux's own renderer bridge and plugin host, which send no `clientName` by design — on a dogfood box that noise was ~636k of the ~639k recorded calls (`events.poll` 445k, `task.mission.list` 191k), drowning the signal the close decision relies on. Both audit channels now use the same wire-provenance check the permission lanes use, so anything new in `shadow-rejections.log` is a real external caller. (#1229)
+
+- **An idle pane no longer keeps a ghosted frame until you select its text.**
+  The final repaint after a stream of output could itself race on the GPU and
+  leave stale pixels on rows it had just marked clean — and once the pane went
+  quiet, nothing ever repaired it: focus doesn't re-fire on a pane you're
+  already looking at, and repairs were only scheduled while output flowed or on
+  workspace switches. Selecting the text fixed it instantly (the buffer was
+  always correct), which is what made it so annoying to live with. A pane now
+  schedules one more verification repaint a couple of seconds after output
+  settles, so a raced final paint self-heals instead of haunting the pane — and
+  a pane that gets split or dragged right after a command finishes heals too.
+
+- **Long turns on signals-only installs no longer lose the agent-status veto half an hour in.** The 30-minute hook-authority window was quietly kept alive by the permission gate, which reports on every tool call; the slimmer `--signals-only` profile installs no such hook, so a turn running past 30 minutes handed the pane back to the screen detector — whose always-visible footer reads as "waiting", lighting the roster's red dot and the "N need you" roll-up for an agent that was still working. Authority is now a death backstop rather than a freshness demand: a bridge that only ever reports turn boundaries keeps authority until its process is confirmed dead, the agent is relaunched, or the pane is closed. The cost is deliberate and one-way — a signals-only bridge killed while its agent lives leaves the pane reading busy instead of crying wolf. (#1232)
+
+- **A broken local install now fails loudly at install time instead of sabotaging you days later.** When patch-package was missing from node_modules — the signature of a partially stripped install — the postinstall hook skipped wmux's xterm.js patches with a console warning nobody reads. The unpatched terminal renderer and stale type packages then surfaced as a confusing scatter of test failures and phantom type errors, far from the cause. The hook now checks that the patch actually landed and fails the install on the spot with the recovery command, while genuine production installs (`npm ci --omit=dev`) keep passing exactly as before.
+
+- **Usage status after a credential read recovers.** The usage chip returns to the known token-rejected state when a transient file read failure clears, instead of retaining the obsolete read error until the next full poll. (#1254)
+
+- **The auto-update toggle is honoured from process start.** Turning auto-update off used to be silently ignored on cold boots: the setting reached the updater before its listener existed, so background checks, downloads, and the "update ready" prompt kept appearing. The toggle now lands reliably, is also seeded from the saved session when the window is still loading, and a download that has not started yet is stopped if you flip the toggle mid-check. (#1257)
+
+- **The scroll-to-bottom button and a resynced pane's scroll position.** The floating scroll button could silently do nothing, and revealing a hidden pane could throw you to the bottom of its output. Both came from one pattern: overlay components captured the terminal at render time, before the terminal actually existed — and the pane-recovery repaint reset the viewport. The button (and the bookmark markers) now bind the live terminal instance, and a recovered pane puts you back where you were scrolled to. (#1258)
+
+- **Panes no longer collapse to a single column after resizing, splitting, or restoring a session.** A transient mid-layout measurement used to be applied to the terminal for real, re-wrapping all its scrollback at a broken width — damage a later resize could not undo — while the background session was independently clamped to a minimum width, leaving the two permanently out of step. Sub-floor measurements are now skipped until the layout settles, and every pane recovery re-asserts the real size. (#1259)
+
 ## [3.51.0] — 2026-09-05
 
 ### Added
