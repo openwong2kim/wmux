@@ -352,6 +352,7 @@ function buildSessionData(dumped: Map<string, boolean>): SessionData {
     terminalCursorStyle: state.terminalCursorStyle,
     imagePasteMode: state.imagePasteMode,
     defaultShell: state.defaultShell,
+    defaultWslDistro: state.defaultWslDistro,
     deckBrainModel: state.deckBrainModel || undefined,
     orchestratorRoleBindings:
       Object.keys(state.orchestratorRoleBindings).length > 0 ? state.orchestratorRoleBindings : undefined,

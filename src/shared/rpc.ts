@@ -835,6 +835,13 @@ export interface DaemonCreateSessionParams {
    */
   cmd?: string;
   /**
+   * #1103 — spawn arguments for `cmd`, exactly `['-d', '<distro>']` and only
+   * when `cmd` is wsl.exe (validated by isWslDistroSpawnArgs at this boundary:
+   * the daemon's spawn surface is not a shell parser). Absent → no extra
+   * arguments, today's behaviour.
+   */
+  args?: string[];
+  /**
    * The fully-resolved child environment. Main builds this (resolveSpawnEnv:
    * buildSafeChildEnv + workspace-profile overlay + forced WMUX identity) and
    * the daemon replays it verbatim — NOT re-filtered daemon-side, so any key

@@ -130,6 +130,12 @@ export class PTYManager {
 
   create(options?: {
     shell?: string;
+    /**
+     * #1103 — validated WSL distro selection (`['-d', '<name>']`), prepended
+     * in front of any hook-injection args so wsl.exe parses it as its own
+     * flag. The IPC boundary has already enforced the exact shape.
+     */
+    shellArgs?: string[];
     cwd?: string;
     cols?: number;
     rows?: number;
@@ -210,7 +216,18 @@ export class PTYManager {
 
     // Detect shell type and inject hook
     const shellType = this.detectShellType(shell);
-    const hookInjection = this.buildHookInjection(shellType, env);
+    // #1103 — when a distro selection is present the shell is wsl.exe, which
+    // parses its OWN options first; the bash-family injection flags that
+    // detectShellType maps wsl onto (--rcfile) are not wsl.exe flags and would
+    // either error or run as the in-distro command. Daemon mode already
+    // injects nothing for wsl (classifyShell → null); this brings local mode
+    // in line instead of stacking args behind -d.
+    const skipHookInjection = (options?.shellArgs?.length ?? 0) > 0;
+    const hookInjection = skipHookInjection
+      ? { args: [] as string[], env: {} as Record<string, string> }
+      : this.buildHookInjection(shellType, env);
+    // The distro flag precedes everything.
+    const spawnArgs = [...(options?.shellArgs ?? []), ...hookInjection.args];
 
     // node-pty throws synchronously on a missing/invalid shell binary or an
     // unreadable cwd (common on macOS/Linux where the shell path differs from
@@ -226,7 +243,7 @@ export class PTYManager {
     const useConptyDll = shouldUseBundledConpty(process.platform, parseWindowsBuildNumber(os.release()));
     try {
       ptyProcess = spawnWithConptyPolicy(
-        (useBundled) => pty.spawn(shell, hookInjection.args, {
+        (useBundled) => pty.spawn(shell, spawnArgs, {
           name: 'xterm-256color',
           cols: options?.cols || 80,
           rows: options?.rows || 24,

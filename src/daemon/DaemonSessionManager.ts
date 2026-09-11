@@ -11,6 +11,7 @@ import { RingBuffer } from './RingBuffer';
 import { DaemonPTYBridge } from './DaemonPTYBridge';
 import { PromptEventLog } from './PromptEventLog';
 import { buildSpawnInjection, classifyShell } from './shell-integration';
+import { isWslDistroSpawnArgs } from '../shared/wslDistro';
 import { expandTilde } from '../shared/expandTilde';
 import { restoreSeam } from '../shared/restoreSeam';
 import { buildExecArgs } from './execWrapper';
@@ -182,6 +183,13 @@ export class DaemonSessionManager extends EventEmitter {
      * `''` — see resolveShellPath.
      */
     cmd?: string;
+    /**
+     * #1103 — validated WSL distro selection (`['-d', '<name>']`), only ever
+     * for a wsl.exe cmd. Prepended IN FRONT of any integration args so
+     * wsl.exe parses it as its own flag. The RPC boundary has already
+     * enforced the exact shape; this is the spawn site.
+     */
+    args?: string[];
     /** Absent means the home directory. */
     cwd?: string;
     /**
@@ -376,6 +384,14 @@ export class DaemonSessionManager extends EventEmitter {
     }
 
     let spawnArgs: string[] = [];
+    // #1103 — the distro flag goes FIRST: wsl.exe parses its own options
+    // before anything that follows (integration args included). Validated
+    // HERE, not only at the RPC boundary: recovery, supervised restart and
+    // promote replay args from the persisted state file, which never crosses
+    // that boundary.
+    if (params.args && isWslDistroSpawnArgs(cmd, params.args)) {
+      spawnArgs = [...params.args];
+    }
     if (params.exec) {
       // X8 exec unit: the command IS the pane process — no interactive
       // shell session, so OSC 133 injection is skipped (no prompt to mark,
@@ -500,6 +516,13 @@ export class DaemonSessionManager extends EventEmitter {
     };
     if (params.agent) {
       meta.agent = params.agent;
+    }
+    // #1103 — persist the distro selection so replays (recovery, supervised
+    // restart, promote) re-spawn the same distro. Re-validated here even
+    // though the RPC boundary already checked: createSession has direct
+    // callers too, and this field becomes spawn argv.
+    if (params.args && isWslDistroSpawnArgs(cmd, params.args)) {
+      meta.args = params.args;
     }
     if (params.exec) {
       meta.exec = { command: params.exec.command };

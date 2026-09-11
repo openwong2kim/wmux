@@ -36,6 +36,7 @@ import { IPC } from '../../shared/constants';
 import { toastManager } from '../pipe/handlers/notify.rpc';
 import { markRendererNotificationListenerReady } from '../notification/rendererNotificationReadiness';
 import { setMutedNotificationCategories } from '../notification/mutedCategories';
+import { setDefaultWslDistro } from '../pty/defaultWslDistro';
 import { updateUnreadBadge } from '../tray';
 import { eventBus } from '../events/EventBus';
 import { WMUX_EVENT_TYPES, type WmuxEventType } from '../../shared/events';
@@ -207,6 +208,15 @@ export function registerAllHandlers(
   };
   ipcMain.removeAllListeners(IPC.TOAST_ENABLED);
   ipcMain.on(IPC.TOAST_ENABLED, onToastEnabled);
+
+  // #1103 — mirror the renderer's WSL distro choice; pty.create injects it
+  // as `wsl.exe -d <distro>` at the shell-resolution choke point. Rejected
+  // values degrade to no-args at use time, never to a broken spawn.
+  const onDefaultWslDistro = (_event: Electron.IpcMainEvent, distro: unknown): void => {
+    setDefaultWslDistro(typeof distro === 'string' ? distro : null);
+  };
+  ipcMain.removeAllListeners(IPC.SETTINGS_DEFAULT_WSL_DISTRO);
+  ipcMain.on(IPC.SETTINGS_DEFAULT_WSL_DISTRO, onDefaultWslDistro);
 
   // #516 — mirror the renderer's per-category mute so the no-renderer toast
   // fallback in dispatchNotification can honor it.
@@ -481,6 +491,7 @@ export function registerAllHandlers(
     ipcMain.removeHandler(IPC.RPC_INVOKE);
     ipcMain.removeAllListeners(IPC.TOAST_ENABLED);
     ipcMain.removeAllListeners(IPC.MUTED_NOTIFICATION_CATEGORIES);
+    ipcMain.removeAllListeners(IPC.SETTINGS_DEFAULT_WSL_DISTRO);
     ipcMain.removeAllListeners(IPC.WINDOW_HIDE);
     ipcMain.removeAllListeners(IPC.WINDOW_FLASH_FRAME);
     ipcMain.removeAllListeners(IPC.NOTIFICATION_OS_TOAST);
