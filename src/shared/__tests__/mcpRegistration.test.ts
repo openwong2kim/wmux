@@ -574,4 +574,20 @@ describe('registerCodexHooks — the hooks lane (#1107)', () => {
     expect(unregisterCodexHooks(home).removed).toBe(false);
     expect(fs.readFileSync(codexTarget.configPath(home), 'utf8')).toBe(foreign);
   });
+
+  it('unregister resets the evidence window — a re-pasted block is not ACTIVE on old firings', () => {
+    writeCodex('model = "x"\n');
+    registerCodexHooks(home, BRIDGE, VERSION_OK);
+    // Pin the install window in the past and log a firing inside it.
+    fs.writeFileSync(
+      path.join(wmuxHome, 'codex-hooks-install.json'),
+      JSON.stringify({ installedAt: '2001-01-01T00:00:00.000Z' }),
+    );
+    logFiring('2002-01-01T00:00:00.000Z');
+    expect(readCodexHooksStatus(home, BRIDGE).state).toBe('active');
+    expect(unregisterCodexHooks(home).removed).toBe(true);
+    // The operator re-pastes the block by hand (README flow: no stamp write).
+    writeCodex(upsertCodexHooksToml('model = "x"\n', BRIDGE));
+    expect(readCodexHooksStatus(home, BRIDGE).state).toBe('written');
+  });
 });

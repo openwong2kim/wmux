@@ -290,12 +290,13 @@ export function installLifecycleIntegrations(
     ? registerCodexHooks(paths.home, paths.codexHooksBridge.destinationPath, options.codexVersionOutput)
     : null;
   const fatalStates = new Set<LifecycleAssetState>(['source-missing', 'error']);
-  // `ok` deliberately does NOT include codexHooksBridge: the hooks bridge is
-  // the newest asset, so installs built before it existed report
+  // `ok` deliberately tolerates source-missing for codexHooksBridge: the hooks
+  // bridge is the newest asset, so installs built before it existed report
   // source-missing for it and that must not fail an otherwise-good setup run.
-  // Its own outcome field carries the detail.
+  // A real write error is still fatal. Its own outcome field carries the detail.
   return {
-    ok: !fatalStates.has(codexBridge.state) && !fatalStates.has(opencodePlugin.state),
+    ok: !fatalStates.has(codexBridge.state) && !fatalStates.has(opencodePlugin.state)
+      && codexHooksBridge.state !== 'error',
     codexBridge,
     codexNotify,
     opencodePlugin,

@@ -381,4 +381,13 @@ describe('lifecycleIntegrations — codex hooks lane', () => {
     expect(outcome.codexHooks).toBeNull();
     expect(outcome.ok).toBe(true);
   });
+
+  it('ok is false when the hooks bridge hits a real write error', () => {
+    const paths = pathsWithSources();
+    // A directory where the bridge file should go → EISDIR, not source-missing.
+    fs.mkdirSync(paths.codexHooksBridge.destinationPath, { recursive: true });
+    const outcome = installLifecycleIntegrations(paths, { codexVersionOutput: VERSION_OK });
+    expect(outcome.codexHooksBridge.state).toBe('error');
+    expect(outcome.ok).toBe(false);
+  });
 });

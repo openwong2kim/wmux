@@ -611,6 +611,10 @@ export function unregisterCodexHooks(home: string): { configPath: string; remove
   }
   if (newText === text) return { configPath, removed: false };
   writeFileAtomic(configPath, newText);
+  // Reset the evidence window: a block re-added later (e.g. by the manual
+  // README flow, which writes no stamp) must not read as ACTIVE on firings
+  // logged while the removed block was in place.
+  try { writeInstallStamp(); } catch { /* status then keeps the older window */ }
   return { configPath, removed: true };
 }
 

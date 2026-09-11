@@ -1376,9 +1376,10 @@ function printCodexHooksStatus(status: {
       'Start Codex, approve the wmux hooks, then re-check; panes stay on screen detection until then.',
     );
   } else if (status.state === 'stale') {
-    console.warn(
-      `codex hooks: STALE (${status.path ?? 'unbounded block'}) — re-run \`wmux setup-hooks\``,
-    );
+    console.warn(status.path
+      ? `codex hooks: STALE (${status.path}) — re-run \`wmux setup-hooks\``
+      : `codex hooks: STALE — the wmux block in ${status.configPath} cannot be bounded safely; ` +
+        'remove it by hand and re-run `wmux setup-hooks`');
   } else if (status.state === 'foreign') {
     console.warn(`codex hooks: CONFLICT — foreign [[hooks]] in ${status.configPath} left untouched`);
   } else if (status.state === 'malformed') {
