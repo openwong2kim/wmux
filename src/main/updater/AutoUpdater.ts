@@ -197,6 +197,20 @@ export interface AutoUpdaterHooks {
    * install.
    */
   getDaemonPid: () => number | null;
+  /**
+   * The persisted auto-update toggle, read straight from session.json (#1250).
+   *
+   * Injected rather than imported for the same reason as getDaemonPid above:
+   * pulling the session module into the updater drags its migration machinery
+   * into the electron-mocked unit tests. main owns the SessionManager, so it
+   * hands over a reader instead.
+   *
+   * Used once, in start(), to initialize `enabled` from what the user last
+   * chose — covering the boots where the renderer never delivers the toggle
+   * (window not yet loaded, or its session load failed on a locked file).
+   * A null/undefined means "nothing persisted" and leaves the default.
+   */
+  readAutoUpdateEnabled?: () => boolean | null;
 }
 
 export class AutoUpdater {
@@ -205,6 +219,11 @@ export class AutoUpdater {
   private hooks: AutoUpdaterHooks;
   private isChecking = false;
   private enabled = true;
+  // #1250: whether the renderer's AUTO_UPDATE_ENABLED send has been received.
+  // start() initializes `enabled` from session.json ONLY while this is false —
+  // once the renderer has spoken, its value is fresher than anything on disk
+  // and must not be clobbered by the boot read.
+  private enabledFromRenderer = false;
   private pendingUpdate: UpdateInfo | null = null;
   private downloadedPath: string | null = null;
   // The digest `downloadedPath` was accepted under. Kept so the bytes can be
@@ -237,9 +256,35 @@ export class AutoUpdater {
     // module evaluation, before the window exists at all.
     ipcMain.handle(IPC.UPDATE_TAKE_REFUSED_INSTALL, () => this.takeRefusedInstall());
     ipcMain.handle(IPC.UPDATE_GET_PENDING_INSTALL, () => this.getPendingInstall());
+    // #1250 — same class of bug as #866, one channel over. The renderer sends
+    // the persisted auto-update toggle during loadSession (~1s in), and it
+    // sends with ipcRenderer.send — fire-and-forget. A listener registered in
+    // start() (registerIpcHandlers, which runs at the END of the ready
+    // sequence) is not there yet, the send is silently dropped, and `enabled`
+    // stays at its default true for the whole session: every boot, a user who
+    // turned auto-update off still gets background checks, downloads, and the
+    // "update ready" toast. Registered here so the early send lands.
+    ipcMain.on(IPC.AUTO_UPDATE_ENABLED, (_event, enabled: boolean) => {
+      this.enabledFromRenderer = true;
+      this.setEnabled(enabled);
+    });
   }
 
   start(): void {
+    // #1250: before anything is scheduled, seed `enabled` from what the user
+    // last persisted — unless the renderer already delivered the toggle, which
+    // is fresher than the disk (the user may have flipped the setting between
+    // renderer mount and this point). This covers the boots where the renderer
+    // never sends it at all: window still loading, or its session load failed
+    // on a locked session.json and fell back without dispatching loadSession.
+    if (!this.enabledFromRenderer) {
+      const persisted = this.hooks.readAutoUpdateEnabled?.() ?? null;
+      if (persisted !== null && persisted !== this.enabled) {
+        this.enabled = persisted;
+        console.log(`[AutoUpdater] initialized from session.json: ${persisted ? 'Enabled' : 'Disabled'}`);
+      }
+    }
+
     // Register IPC handlers on every platform so the renderer's "check for
     // updates" UI resolves cleanly (it gets a not-available reply off win32),
     // but only schedule background checks on a supported platform.
@@ -594,6 +639,13 @@ export class AutoUpdater {
    */
   private async downloadUpdate(): Promise<void> {
     if (!isUpdaterSupported) return;
+    // #1250: the enabled gate in check() runs when the poll STARTS. The
+    // renderer's toggle (or the boot read) can land between that start and
+    // this dispatch — fetchUpdate is awaited — and a background download must
+    // still honour it. oneShotInstall is the explicit user request ("check
+    // for updates" as "update now") and stays exempt, matching check()'s
+    // gate: the toggle must never brick the manual path.
+    if (!this.enabled && !this.oneShotInstall) return;
     const pending = this.pendingUpdate;
     if (!pending) return;
     if (this.isDownloading) return;
@@ -799,11 +851,6 @@ export class AutoUpdater {
   }
 
   private registerIpcHandlers(): void {
-    ipcMain.on(IPC.AUTO_UPDATE_ENABLED, (_event, enabled: boolean) => {
-      this.setEnabled(enabled);
-    });
-
-
     ipcMain.handle(IPC.UPDATE_CHECK, async () => {
       if (process.env.NODE_ENV === 'development' || !isUpdaterSupported) {
         return { status: 'not-available' };

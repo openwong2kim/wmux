@@ -239,9 +239,12 @@ export default function TerminalComponent({ ptyId: externalPtyId, shell, cwd, on
   // `isActive` for the stacked/tab case (one tab visible at a time).
   const shown = visible ?? isActive;
   const isVisible = isWorkspaceVisible && shown;
-  const { terminal: terminalRef, findNext, findPrevious, clearSearch } = useTerminal(containerRef, { ptyId, isVisible, scrollbackFile, onFirstData: scrollbackFile ? handleFirstData : undefined, onContextMenu: handleContextMenu });
+  const { terminal: terminalRef, terminalInstance, findNext, findPrevious, clearSearch } = useTerminal(containerRef, { ptyId, isVisible, scrollbackFile, onFirstData: scrollbackFile ? handleFirstData : undefined, onContextMenu: handleContextMenu });
 
-  const showViCopyMode = viCopyModeActive && isActive && terminalRef.current !== null;
+  // terminalInstance (state, #1256) — not terminalRef.current (a render-time
+  // snapshot): the ref is populated after this render ran, so a snapshot read
+  // here sees null until an unrelated re-render happens.
+  const showViCopyMode = viCopyModeActive && isActive && terminalInstance !== null;
   const showSearchBar = searchBarVisible && isActive;
 
   const handleCloseSearch = () => {
@@ -396,15 +399,21 @@ export default function TerminalComponent({ ptyId: externalPtyId, shell, cwd, on
         style={{ width: '100%', height: '100%', padding: '4px' }}
       />
 
-      {/* Scrollback bookmark markers on the left edge */}
+      {/* Scrollback bookmark markers on the left edge. #1256: bound to the
+          state-published instance — a render-time terminalRef.current snapshot
+          goes null/stale when the mount effect swaps the terminal without a
+          re-render (fresh creation, adoption). */}
       <BookmarkIndicator
-        terminal={terminalRef.current}
+        terminal={terminalInstance}
         bookmarks={bookmarks}
         containerRef={containerRef}
       />
 
-      {/* Floating scroll-to-bottom button — appears only when scrolled up */}
-      <ScrollToBottomButton terminal={terminalRef.current} />
+      {/* Floating scroll-to-bottom button — appears only when scrolled up.
+          #1256: same live-instance binding as BookmarkIndicator above; the
+          button's subscriptions and click handler must track the real
+          terminal or scrolling/clicking silently no-ops. */}
+      <ScrollToBottomButton terminal={terminalInstance} />
 
       {/* Search bar overlay */}
       {showSearchBar && (
