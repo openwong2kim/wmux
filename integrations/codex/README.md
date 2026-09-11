@@ -10,10 +10,11 @@ different routes, and you want **one** of them, not both.
 | Codex floor | any | **0.141.0** |
 | Reports | turn complete | turn complete, turn start, session start, approval pause |
 | Needs operator approval | no | **yes** (trust gate) |
-| Installed by wmux | yes (`lifecycleIntegrations`) | no — see *Installation* |
+| Installed by wmux | yes (`lifecycleIntegrations`) | yes — approve-then-verify, see *Installation* |
 
-The notify program is what ships today. The hooks bridge is the replacement,
-and it is not wired into the installer yet for the reason in *Installation*.
+The notify program is what shipped first. The hooks bridge is the
+replacement: it reports everything the notify program does plus turn start,
+session start, and approval pauses.
 
 ## Why the hooks bridge exists
 
@@ -180,41 +181,60 @@ Deliberately unmapped, each for its own reason — the full argument is in the
 
 ## Installation
 
-**Not wired up.** `installLifecycleIntegrations` writes the notify program and
-stops there.
+**Wired up — approve-then-verify.** `wmux setup-hooks` now installs both
+Codex bridges. Writing the block is deliberately **not** the end of the
+install, because Codex requires an operator to trust a hook before it runs,
+gives no warning when it has not been trusted, and a programmatic installer
+almost certainly should not be able to pre-trust its own hook. An installer
+that wrote the block and reported success would be reporting a lie — the pane
+would go on being screen-scraped and nothing would say so.
 
-This is not an oversight, and it is a different shape of problem from Kiro's.
-For Kiro, writing the file *was* the whole job and only an account was missing.
-Here, writing the file is explicitly **not** the job: Codex requires an operator
-to trust the hook before it runs, it gives no warning when it has not been
-trusted, and a programmatic installer almost certainly should not be able to
-pre-trust its own hook. So an installer that wrote this block and reported
-success would be reporting a lie — the pane would go on being screen-scraped
-and nothing would say so.
+So the flow is:
 
-What an installer will have to do instead is write the block, then tell the
-operator to approve it in Codex, then verify it actually fires. The third step
-is the one that needs designing, and it needs a machine with a working Codex
-login to design against.
+1. `wmux setup-hooks` — writes the bridge to the stable managed location
+   (`~/.wmux/hooks/wmux-codex-hooks-bridge.mjs`, refreshed on every run) and
+   appends the marker-bracketed `[[hooks.*]]` block to `$CODEX_HOME/config.toml`
+   (default `~/.codex/config.toml`). It refuses to write when:
+   - `codex --version` cannot be probed or is below **0.141.0** (fail closed —
+     0.140.0 parses the block, advertises the feature, and fires nothing);
+   - config.toml already has ANY `[[hooks.*]]` the wmux markers cannot claim
+     (skip-if-foreign, the notify lane's rule applied one level wider);
+   - the config is unparseable, or a hand-pasted wmux block is missing its
+     end marker (the installer never guesses a region boundary).
+2. **Approve** — start Codex interactively and approve the wmux hooks when it
+   asks. Until then Codex silently runs nothing; wmux's status says so.
+3. **Verify** — `wmux setup-hooks --status` reports the honest verdict:
+   `WRITTEN but NOT trusted` until the bridge has actually fired after the
+   block was written, `ACTIVE` once it has.
 
-Until then, manual setup:
+The verdict is evidence-based, not file-based: the installer stamps when it
+wrote the block (`~/.wmux/codex-hooks-install.json`), and the bridge appends
+one JSON line per firing to `~/.wmux/codex-hooks.log`. A log entry newer than
+the stamp is the only thing that reads as installed — it proves the operator
+approved AND Codex actually spawned the hook. Idempotent re-runs never move
+the stamp, and a refresh that changes the bridge path resets it (re-approval
+genuinely required, and the status says so).
+
+Manual setup (no `wmux setup-hooks`) still works:
 
 1. Check your version: `codex --version` must be **0.141.0 or newer**.
 2. Copy the bridge somewhere **stable** — not the repo checkout:
    ```sh
-   mkdir -p ~/.wmux/bridges
-   cp integrations/codex/bin/wmux-codex-hooks-bridge.mjs ~/.wmux/bridges/
+   mkdir -p ~/.wmux/hooks
+   cp integrations/codex/bin/wmux-codex-hooks-bridge.mjs ~/.wmux/hooks/
    ```
    The path goes into `config.toml` and into the trust hash Codex records
    against it. Pointing it at a working tree means moving, renaming, or
-   re-cloning the checkout silently un-trusts the hook — and an un-trusted hook
-   does not run and does not say so, which is the exact failure mode above.
-   Re-copy after a `git pull` that touches the bridge, then re-approve.
+   re-cloning the checkout silently un-trusts the hook — and an un-trusted
+   hook does not run and does not say so, which is the exact failure mode
+   above. Re-copy after a `git pull` that touches the bridge, then re-approve.
 3. Get the block (substitute the path you copied to):
    ```sh
-   node -e "import('./integrations/codex/hooks/wmuxHooks.mjs').then(m=>console.log(m.renderCodexHooksToml(process.env.HOME + '/.wmux/bridges/wmux-codex-hooks-bridge.mjs')))"
+   node -e "import('./integrations/codex/hooks/wmuxHooks.mjs').then(m=>console.log(m.renderCodexHooksToml(process.env.HOME + '/.wmux/hooks/wmux-codex-hooks-bridge.mjs')))"
    ```
 4. Append it to `$CODEX_HOME/config.toml` (default `~/.codex/config.toml`).
+   A manually-installed block has no install stamp, so `--status` counts ANY
+   firing as active — the honest floor for a block wmux did not write.
 5. Start Codex interactively and **approve the hooks when it asks**. If it never
    asks, the hooks are not registered — re-check step 4.
 6. Confirm: run a turn, then look for `"outcome":"ok"` lines in

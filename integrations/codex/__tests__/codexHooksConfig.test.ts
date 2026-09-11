@@ -5,6 +5,7 @@ import {
   codexSupportsHooks,
   CODEX_HOOK_EVENTS,
   CODEX_HOOKS_MANAGED_MARKER,
+  CODEX_HOOKS_MANAGED_END_MARKER,
   CODEX_HOOKS_MIN_VERSION,
   CODEX_HOOK_TIMEOUT_MS,
 } from '../hooks/wmuxHooks.mjs';
@@ -51,6 +52,17 @@ describe('renderCodexHooksToml', () => {
       expect(toml, event).toContain(`[[hooks.${event}]]`);
       expect(toml, event).toContain(`[[hooks.${event}.hooks]]`);
     }
+  });
+
+  it('brackets the block with start AND end markers (bounded region)', () => {
+    const toml = renderCodexHooksToml(BRIDGE);
+    const start = toml.indexOf(`# ${CODEX_HOOKS_MANAGED_MARKER}`);
+    const end = toml.indexOf(`# ${CODEX_HOOKS_MANAGED_END_MARKER}`);
+    expect(start).toBeGreaterThanOrEqual(0);
+    expect(end).toBeGreaterThan(start);
+    // The end marker is the last line: a region the installer can replace
+    // without ever guessing a boundary.
+    expect(toml.trimEnd().endsWith(`# ${CODEX_HOOKS_MANAGED_END_MARKER}`)).toBe(true);
   });
 
   // Windows paths are the whole reason this is JSON.stringify and not a bare

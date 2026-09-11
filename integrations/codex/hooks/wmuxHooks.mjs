@@ -11,8 +11,11 @@
 //   1. TRUST. A hook Codex has not been told to trust does not run, and says
 //      nothing about it — no warning, no "needs review" line, no non-zero exit.
 //      Writing this block is therefore NOT installation; the operator must
-//      approve the hooks in Codex before they do anything. That is why there is
-//      no installer here, only a builder plus README instructions.
+//      approve the hooks in Codex before they do anything. The TS installer
+//      (src/shared/configIO.ts + lifecycleIntegrations.ts) renders this exact
+//      shape, mirrors this file's constants byte-for-byte under a lockstep
+//      test, and reports "written, NOT trusted" until the bridge actually
+//      fires — approve-then-verify, never write-and-report-success.
 //   2. VERSION. 0.140.0 accepts this exact block, advertises `hooks` as a
 //      stable feature, and fires nothing. 0.141.0 fires. Bisected; see
 //      CODEX_HOOKS_MIN_VERSION.
@@ -22,6 +25,14 @@
 
 /** Marks the block as wmux-owned so an installer never clobbers a user's. */
 export const CODEX_HOOKS_MANAGED_MARKER = 'wmux-managed: codex-hooks-bridge';
+
+/**
+ * Closes the wmux-owned region. The pair brackets the block unambiguously, so
+ * a refresh replaces exactly what it rendered — never a user's own
+ * `[[hooks.*]]` sections appended after ours, and never more or less than the
+ * region even after Codex annotates sections with trust state.
+ */
+export const CODEX_HOOKS_MANAGED_END_MARKER = 'wmux-managed: codex-hooks-bridge end';
 
 /**
  * Lowest codex-cli that actually RUNS a configured hook.
@@ -118,6 +129,7 @@ export function renderCodexHooksToml(bridgeScript) {
       `async = ${handler.async}`,
     );
   }
+  lines.push('', `# ${CODEX_HOOKS_MANAGED_END_MARKER}`);
   return lines.join('\n') + '\n';
 }
 
