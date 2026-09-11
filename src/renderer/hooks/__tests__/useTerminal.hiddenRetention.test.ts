@@ -164,7 +164,9 @@ describe('Phase 3 PR-B — useTerminal snapshot-resync ladder (source-level)', (
   it('dead-snapshot paint mirrors the flush-complete contract', () => {
     const idx = src.indexOf('const paintDeadSnapshot');
     expect(idx).toBeGreaterThan(0);
-    const paint = src.slice(idx, idx + 2200);
+    // Window widened for #1256's scroll-preservation block; the ordering
+    // contract below is unchanged.
+    const paint = src.slice(idx, idx + 3000);
     // discard stale backlog → reset → write payload → write held bytes → clean.
     // The payload write is writeReplayed() since #998 (clipboard bridge muted
     // while stored bytes are parsed); the order is what this locks.
@@ -181,5 +183,49 @@ describe('Phase 3 PR-B — useTerminal snapshot-resync ladder (source-level)', (
     expect(paint).toMatch(/STALE_REPLAY_INPUT_MODE_RESETS/);
     // No flush marker is coming: it settles the resync state itself.
     expect(paint).toMatch(/st\.resolvers\.splice\(0\)\.forEach/);
+  });
+
+  it('#1256: a resync repaint preserves the scroll position across reset()', () => {
+    // reset() snaps the viewport to the bottom; without preservation, showing
+    // a hidden pane yanked a scrolled-up user to the bottom. Both repaint
+    // paths (dead snapshot + live flush-complete) capture the distance from
+    // the bottom BEFORE the reset and restore it after the recovered screen
+    // is parsed — a trailing empty write is the parse barrier, the same
+    // shape as hydrateForRead.
+    for (const [name, fn] of [['dead-snapshot', 'const paintDeadSnapshot'], ['flush-complete', 'const completeResyncFromFlush']] as const) {
+      const idx = src.indexOf(fn);
+      expect(idx).toBeGreaterThan(0);
+      const body = src.slice(idx, idx + 2600);
+      const capture = body.indexOf('fromBottom = Math.max(0,');
+      const reset = body.indexOf('.reset()');
+      // `term.write` (dead-snapshot) / `terminal.write` (flush-complete) —
+      // match on the trailing parse-barrier write itself.
+      const barrier = body.indexOf(".write('', () =>");
+      const restore = body.indexOf('scrollToLine(Math.max(0,');
+      expect(capture).toBeGreaterThan(0);
+      expect(reset).toBeGreaterThan(capture);
+      expect(barrier).toBeGreaterThan(reset);
+      expect(restore).toBeGreaterThan(barrier);
+      expect(body).toMatch(/baseY - fromBottom/);
+      // Restoration is cosmetic and must never take the mount down on a
+      // terminal disposed mid-restore.
+      expect(body.slice(barrier, restore + 400)).toMatch(/catch/);
+      void name;
+    }
+  });
+
+  it('#1256: the live terminal instance is published as state for snapshot consumers', () => {
+    // terminalRef is populated by mutation inside the mount effect — no
+    // re-render follows, so a consumer reading terminalRef.current at render
+    // time keeps null (fresh mount) or a detached instance (adoption swap).
+    // Both assignment sites publish identity through state so Terminal.tsx
+    // can bind the scroll button / bookmark indicator to the real instance.
+    expect(src).toMatch(/const \[terminalInstance, setTerminalInstance\] = useState<Terminal \| null>\(null\)/);
+    const publish = src.match(/terminalRef\.current = terminal;\s*\n\s*\/\/ #1256[\s\S]{0,200}setTerminalInstance\(terminal\)/);
+    expect(publish).not.toBeNull();
+    const clearIdx = src.indexOf('terminalRef.current = null;');
+    const clearBody = src.slice(clearIdx, clearIdx + 400);
+    expect(clearBody).toMatch(/setTerminalInstance\(null\)/);
+    expect(src).toMatch(/return \{ terminal: terminalRef, terminalInstance,/);
   });
 });
