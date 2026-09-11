@@ -181,3 +181,39 @@ describe('BASH_INIT — OSC 7 cwd report (#540)', () => {
     expect(BASH_INIT).not.toContain('"${HOSTNAME-localhost}" "$p"');
   });
 });
+
+// Issue #1267: the wrapper snapshots $? as its very first statement but used
+// to delegate to the wrapped prompt ~10 statements later — and in PowerShell
+// EVERY statement resets $? to true. So any prompt engine that reads $? to
+// detect the last command's status (oh-my-posh `status`, Starship) saw
+// "success" forever inside a wmux pane, while the same config in Windows
+// Terminal coloured correctly. $? is not assignable and the snapshot cannot be
+// deferred, so the wrapper re-creates the value immediately before delegating.
+describe('PWSH_INIT — the wrapped prompt sees the real $? (#1267)', () => {
+  const promptBody = PWSH_INIT.slice(PWSH_INIT.indexOf('function global:prompt'));
+
+  it('re-asserts the status with nothing between it and the delegation', () => {
+    // Placement IS the fix. A single cmdlet call in between — a Test-Path,
+    // say — resets $? straight back to true and the restore silently becomes
+    // a no-op, which looks identical in review and fails only at runtime.
+    expect(promptBody).toMatch(
+      /if \(-not \$__wmux_ok\) \{ Write-Error [^\n]*-ErrorAction Ignore \}\s*\r?\n\s*\$body = if \(\$global:__wmux_prev_prompt\)/,
+    );
+  });
+
+  it('re-asserts AFTER the snapshot is taken, never before', () => {
+    const snapshot = promptBody.indexOf('$__wmux_ok = $?');
+    const restore = promptBody.indexOf('if (-not $__wmux_ok)');
+    expect(snapshot).toBeGreaterThanOrEqual(0);
+    expect(restore).toBeGreaterThan(snapshot);
+  });
+
+  it('uses -ErrorAction Ignore, never SilentlyContinue', () => {
+    // Ignore sets $? false and records NOTHING in $Error. SilentlyContinue
+    // also sets $? false, but pushes a synthetic ErrorRecord — and oh-my-posh
+    // reads the newest record as exit code 1, so the swap would report 1 over
+    // the real exit code instead of fixing anything.
+    expect(promptBody).toMatch(/Write-Error [^\n]*-ErrorAction Ignore/);
+    expect(promptBody).not.toMatch(/Write-Error [^\n]*-ErrorAction SilentlyContinue/);
+  });
+});
