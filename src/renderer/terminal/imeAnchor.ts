@@ -544,8 +544,13 @@ const CLAUDE_BOX_ROW = /^\s*│ /;
 // corners, no `│ > `. The rule plays the same structural role the box top
 // played: transcript output may quote a bare `›` line, but it does not place
 // a full-width rule directly above the bottom-most one.
+// The glyph is `❯` (U+276F) on Claude Code 2.1.268 (read off a live pane) and
+// `›` (U+203A) in the #1035 report clip; both are single-cell. An EMPTY input
+// row is the bare glyph: readLine trims right, and with no right border the
+// trailing space goes with it — the common case of composing the first
+// character of a message.
 const CLAUDE_RULE_ROW = /^\s*─{4,}\s*$/;
-const CLAUDE_CHEVRON_PROMPT_ROW = /^(\s*)› /;
+const CLAUDE_CHEVRON_PROMPT_ROW = /^(\s*)[❯›](?: |$)/;
 
 /**
  * Find Claude Code's input line in the visible rows (#1016).

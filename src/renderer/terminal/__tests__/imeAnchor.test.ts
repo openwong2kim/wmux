@@ -1142,6 +1142,28 @@ describe('#1016 input-line content scan (pure)', () => {
       const screen = ['──', '› not chrome'];
       expect(scanClaudeInputLine(lines(screen), screen.length)).toBeNull();
     });
+
+    it('finds the ❯ (U+276F) prompt current Claude Code draws', () => {
+      // Read off a live Claude Code 2.1.268 pane.
+      const screen = ['✻ Waiting for 6 background agents to finish', '──────────────────', '❯ 한글'];
+      expect(scanClaudeInputLine(lines(screen), screen.length))
+        .toEqual({ relRow: 2, col: 2, rowSpan: 1 });
+    });
+
+    it('finds an EMPTY input row — right-trimmed to the bare glyph', () => {
+      // The first composition of a message starts on an empty input line, and
+      // translateToString(true) strips the trailing space (no right border).
+      for (const glyph of ['❯', '›']) {
+        const screen = ['output', '──────────────────', glyph];
+        expect(scanClaudeInputLine(lines(screen), screen.length), glyph)
+          .toEqual({ relRow: 2, col: 2, rowSpan: 1 });
+      }
+    });
+
+    it('a glyph glued to text is not a prompt row', () => {
+      const screen = ['──────────────────', '❯x'];
+      expect(scanClaudeInputLine(lines(screen), screen.length)).toBeNull();
+    });
   });
 });
 
