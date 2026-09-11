@@ -252,6 +252,22 @@ export interface WorkspaceSlice {
   clearSurfacePtyIdByPty: (ptyId: string, recovery?: DeadPaneRecovery) => void;
 }
 
+/**
+ * #1011 — recursive shape check for a persisted archive tree. Restore feeds it
+ * straight to buildPaneFromLayout, so a malformed nested child (hand-edited
+ * session.json) must be rejected at hydration, not throw on the restore click.
+ */
+function isArchivedLayoutNode(node: unknown, depth: number): boolean {
+  if (depth > 32 || typeof node !== 'object' || node === null) return false;
+  const n = node as { type?: unknown; direction?: unknown; sizes?: unknown; children?: unknown };
+  if (n.type === 'leaf') return true;
+  return n.type === 'branch'
+    && (n.direction === 'horizontal' || n.direction === 'vertical')
+    && Array.isArray(n.sizes) && n.sizes.every((s) => typeof s === 'number' && Number.isFinite(s))
+    && Array.isArray(n.children) && n.children.length > 0
+    && n.children.every((c) => isArchivedLayoutNode(c, depth + 1));
+}
+
 export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', never]], [], WorkspaceSlice> = (set, get) => {
   const initial = createWorkspace('Workspace 1', 1);
   return {
@@ -973,8 +989,7 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
             (a): a is ArchivedWorkspace =>
               !!a && typeof a.id === 'string' && typeof a.name === 'string'
               && typeof a.archivedAt === 'number'
-              && (a.tree?.type === 'leaf'
-                || (a.tree?.type === 'branch' && Array.isArray(a.tree.children))),
+              && isArchivedLayoutNode(a.tree, 0),
           )
         : [];
       // The previous session's group cannot describe this one's workspaces.

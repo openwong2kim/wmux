@@ -21,6 +21,7 @@ export default function ArchivedWorkspaces() {
   const restoreArchivedWorkspace = useStore((s) => s.restoreArchivedWorkspace);
   const deleteArchivedWorkspace = useStore((s) => s.deleteArchivedWorkspace);
   const [open, setOpen] = useState(false);
+  const [armedId, setArmedId] = useState<string | null>(null);
 
   if (archived.length === 0) return null;
 
@@ -65,14 +66,29 @@ export default function ArchivedWorkspaces() {
                   {timeAgo(entry.archivedAt)}
                 </span>
               </button>
+              {/* Irreversible, and it sits flush against the restore row: the
+                  first click only arms it; leaving the row or blurring disarms. */}
               <button
                 type="button"
-                className="ml-0.5 rounded px-1 text-[var(--text-muted)] opacity-0 transition-opacity group-hover/archived-row:opacity-100 hover:text-[var(--accent-red)]"
+                className={`ml-0.5 rounded px-1 transition-opacity hover:text-[var(--accent-red)] focus-visible:opacity-100 ${FOCUS_RING} ${armedId === entry.id
+                  ? 'opacity-100 text-[var(--accent-red)]'
+                  : 'opacity-0 group-hover/archived-row:opacity-100 text-[var(--text-muted)]'}`}
                 title={t('workspace.deletePermanently')}
-                aria-label={`${entry.name} — ${t('workspace.deletePermanently')}`}
-                onClick={() => { deleteArchivedWorkspace(entry.id); }}
+                aria-label={`${entry.name} — ${armedId === entry.id ? t('workspace.deletePermanentlyConfirm') : t('workspace.deletePermanently')}`}
+                onClick={() => {
+                  if (armedId === entry.id) {
+                    setArmedId(null);
+                    deleteArchivedWorkspace(entry.id);
+                  } else {
+                    setArmedId(entry.id);
+                  }
+                }}
+                onBlur={() => setArmedId(null)}
+                onMouseLeave={() => setArmedId(null)}
               >
-                <span aria-hidden="true" className="text-[10px] font-mono">✕</span>
+                {armedId === entry.id
+                  ? <span className="text-[10px]">{t('workspace.deletePermanentlyConfirm')}</span>
+                  : <span aria-hidden="true" className="text-[10px] font-mono">✕</span>}
               </button>
             </div>
           ))}

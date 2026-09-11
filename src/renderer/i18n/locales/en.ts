@@ -238,6 +238,7 @@ export const en = {
   'workspace.archived': 'Archived',
   'workspace.restore': 'Restore workspace — same name, color, profile and pane layout',
   'workspace.deletePermanently': 'Delete permanently',
+  'workspace.deletePermanentlyConfirm': 'Delete?',
   'workspace.configureProfile': 'Configure profile…',
   'workspace.duplicate': 'Duplicate workspace',
   'workspace.colorTag': 'Color tag',

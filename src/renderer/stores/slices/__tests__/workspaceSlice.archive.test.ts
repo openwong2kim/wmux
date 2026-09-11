@@ -10,6 +10,7 @@ import {
   generateId,
   type Workspace,
   type Pane,
+  type SessionData,
 } from '../../../../shared/types';
 import { getLeafPanes } from '../../../../shared/paneUtils';
 
@@ -108,6 +109,22 @@ describe('workspace archive (#1011)', () => {
     store.getState().deleteArchivedWorkspace(archivedId);
     expect(store.getState().archivedWorkspaces).toHaveLength(0);
     expect(store.getState().workspaces.map((w) => w.name)).toEqual(['Beta']);
+  });
+
+  it('hydration drops snapshots whose tree restore could not rebuild', () => {
+    const base = store.getState().workspaces[0];
+    const good = { id: 'arch-good', name: 'Good', archivedAt: 1, tree: { type: 'branch', direction: 'vertical', sizes: [50, 50], children: [{ type: 'leaf' }, { type: 'leaf' }] } };
+    const badChild = { id: 'arch-bad-child', name: 'BadChild', archivedAt: 1, tree: { type: 'branch', direction: 'vertical', sizes: [50, 50], children: [{ type: 'leaf' }, null] } };
+    const noSizes = { id: 'arch-no-sizes', name: 'NoSizes', archivedAt: 1, tree: { type: 'branch', direction: 'vertical', children: [{ type: 'leaf' }] } };
+    store.getState().loadSession({
+      workspaces: [base],
+      activeWorkspaceId: base.id,
+      sidebarVisible: true,
+      archivedWorkspaces: [good, badChild, noSizes],
+    } as unknown as SessionData);
+    expect(store.getState().archivedWorkspaces.map((a) => a.id)).toEqual(['arch-good']);
+    store.getState().restoreArchivedWorkspace('arch-good');
+    expect(store.getState().workspaces.some((w) => w.name === 'Good')).toBe(true);
   });
 
   it('unknown ids are safe no-ops', () => {

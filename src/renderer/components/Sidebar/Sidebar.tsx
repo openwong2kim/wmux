@@ -148,8 +148,12 @@ export default function Sidebar() {
   // sidebar is the point), but the configuration snapshot survives and lists
   // in the Archived section for one-click restore.
   const handleArchive = useCallback((wsId: string) => {
-    const ws = useStore.getState().workspaces.find((w) => w.id === wsId);
-    if (ws) disposeAllPtys(ws);
+    const { workspaces: all } = useStore.getState();
+    const ws = all.find((w) => w.id === wsId);
+    // archiveWorkspace refuses the last workspace; disposing first would kill
+    // its sessions and then leave the workspace in place, emptied.
+    if (!ws || all.length <= 1) return;
+    disposeAllPtys(ws);
     archiveWorkspace(wsId);
   }, [archiveWorkspace]);
 

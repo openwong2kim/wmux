@@ -232,6 +232,7 @@ export const pl = {
   'workspace.archived': 'Zarchiwizowane',
   'workspace.restore': 'Przywróć przestrzeń roboczą — ta sama nazwa, kolor, profil i układ paneli',
   'workspace.deletePermanently': 'Usuń trwale',
+  'workspace.deletePermanentlyConfirm': 'Usunąć?',
   'workspace.configureProfile': 'Konfiguruj profil…',
   'workspace.duplicate': 'Duplikuj obszar roboczy',
   'workspace.colorTag': 'Znacznik koloru',
