@@ -21,6 +21,7 @@ import type {
   RemoteWorkspaceSummary,
   RemoteWorkspacesResponse,
 } from '../../shared/remoteHosts';
+import { isRemoteAgentStatus } from '../../shared/remoteHosts';
 
 export interface RemoteMetaEvent {
   attachId: string;
@@ -156,6 +157,18 @@ function normalizeWorkspaces(body: unknown): RemoteWorkspaceSummary[] {
           sessionId: pane.sessionId,
           ...(typeof pane.shell === 'string' ? { shell: pane.shell } : {}),
           ...(typeof pane.cwd === 'string' ? { cwd: pane.cwd } : {}),
+          // #1163 — agent metadata is additive-optional (older hosts omit
+          // both fields). The status is additionally whitelist-checked so a
+          // NEWER host's unknown status degrades to "name only" instead of
+          // smuggling a foreign value into the local AgentStatus union.
+          ...(typeof pane.agentName === 'string' && pane.agentName
+            ? {
+                // Capped: the value is another machine's output flowing into
+                // row text, title/aria labels, and per-tick string compares.
+                agentName: pane.agentName.slice(0, 256),
+                ...(isRemoteAgentStatus(pane.agentStatus) ? { agentStatus: pane.agentStatus } : {}),
+              }
+            : {}),
         });
       }
     }

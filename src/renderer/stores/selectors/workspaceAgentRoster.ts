@@ -2,6 +2,7 @@ import type { AgentStatus } from '../../../shared/types';
 import { isBrainPtyId } from '../../../shared/constants';
 import { getLeafPanes } from '../../../shared/paneUtils';
 import { stashedPaneLiveness, type StashedLiveness } from '../../../shared/paneStash';
+import { remoteAgentKey } from '../../../shared/remoteHosts';
 import type { StoreState } from '../index';
 import { computePaneAutoName, paneDisplayName } from '../../utils/paneNaming';
 import { HOOK_RUNNING_TTL_MS, isHookRunning, pickStashedRepresentativeSurface } from './fleet';
@@ -27,6 +28,14 @@ export interface WorkspaceAgentRosterRow {
    * question or it has not been seen.
    */
   questionSeen?: boolean;
+  /**
+   * #1163 — this row is an agent session running on a REMOTE host, mirrored
+   * into this workspace as a remote-terminal surface. `ptyId` is then the
+   * synthetic `remote:{hostId}:{sessionId}` key (never a local ptyId), and
+   * hostLabel drives the origin badge so a remote row can never be mistaken
+   * for a local agent.
+   */
+  remote?: { hostId: string; hostLabel: string };
   activity?: string;
   hasAttention: boolean;
   needsAttention: boolean;
@@ -86,6 +95,52 @@ export function selectWorkspaceAgentRoster(
     );
 
     leaf.surfaces.forEach((surface, surfaceIndex) => {
+      // #1163 — a remote-terminal surface has ptyId '' by contract and is
+      // invisible to every local PTY-keyed map. It gets a row iff the attached
+      // mirror carries agent metadata for its session: same "only agent rows"
+      // rule as local panes, counting remote agents into the same roster.
+      if ((surface.surfaceType ?? 'terminal') === 'remote-terminal') {
+        const hostId = surface.remoteHostId;
+        const sessionId = surface.remoteSessionId;
+        if (!hostId || !sessionId) return;
+        // Search EVERY entry on the host, not just the first: multiple
+        // attached workspaces per host are a supported configuration (the
+        // dedup key is hostId:workspaceId), and a session in the host's
+        // second workspace must still find its pane + hostLabel.
+        // A STALE entry (host unreachable) keeps its last pane snapshot for the
+        // mirror, but its agent status is frozen at the last successful poll —
+        // counting it would report a disconnected agent as live (or as needing
+        // you) indefinitely. No live metadata, no row.
+        const attached = state.remoteWorkspaces.find(
+          (r) => r.hostId === hostId && !r.stale && r.panes.some((p) => p.sessionId === sessionId),
+        );
+        const pane = attached?.panes.find((p) => p.sessionId === sessionId);
+        if (!pane?.agentName) return;
+        const status: AgentStatus = pane.agentStatus ?? 'idle';
+        rows.push({
+          workspaceId,
+          paneId: leaf.id,
+          surfaceId: surface.id,
+          ptyId: remoteAgentKey(hostId, sessionId),
+          agentName: pane.agentName,
+          paneName,
+          surfaceTitle: nonEmpty(surface.title),
+          surfaceIndex,
+          surfaceCount: leaf.surfaces.length,
+          status,
+          // The host snapshot has no event channel: no unseen-attention state,
+          // no transcript-derived question. The status IS the whole signal.
+          pendingQuestion: undefined,
+          hasAttention: false,
+          needsAttention: needsAttention(status),
+          isFocused:
+            state.activeWorkspaceId === workspaceId &&
+            workspace.activePaneId === leaf.id &&
+            leaf.activeSurfaceId === surface.id,
+          remote: { hostId, hostLabel: attached?.hostLabel ?? hostId },
+        });
+        return;
+      }
       if ((surface.surfaceType ?? 'terminal') !== 'terminal') return;
       const ptyId = surface.ptyId;
       if (!ptyId || isBrainPtyId(ptyId)) return;
@@ -282,7 +337,9 @@ function rowsEqual(
       a.isFocused !== b.isFocused ||
       a.stashed !== b.stashed ||
       a.stashedLiveness !== b.stashedLiveness ||
-      a.stashedAt !== b.stashedAt
+      a.stashedAt !== b.stashedAt ||
+      a.remote?.hostId !== b.remote?.hostId ||
+      a.remote?.hostLabel !== b.remote?.hostLabel
     ) {
       return false;
     }

@@ -95,11 +95,16 @@ export function mergePaneSets(
 
 /** Whether a merge result is indistinguishable from what is already in the
  *  store — the 10s poll runs forever, so an unchanged fetch must not push a
- *  new array identity and re-render every mirror. */
+ *  new array identity and re-render every mirror. Agent fields participate
+ *  (#1163): a remote agent's status flip must re-render its roster row. */
 function samePanes(a: RemotePaneSummary[], b: RemotePaneSummary[]): boolean {
   if (a.length !== b.length) return false;
   return a.every((pane, i) =>
-    pane.sessionId === b[i].sessionId && pane.shell === b[i].shell && pane.cwd === b[i].cwd);
+    pane.sessionId === b[i].sessionId
+    && pane.shell === b[i].shell
+    && pane.cwd === b[i].cwd
+    && pane.agentName === b[i].agentName
+    && pane.agentStatus === b[i].agentStatus);
 }
 
 export interface RemoteWorkspacesSlice {

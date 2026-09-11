@@ -127,6 +127,11 @@ let hookIngest: HookIngest | null = null;
 let webhookSink: WebhookSink | null = null;
 let transcriptProjector: TranscriptProjector | null = null;
 let transcriptDiscovery: TranscriptDiscovery | null = null;
+// #1163 — registerRpcHandlers' canonical agent-state reader (readDaemonAgentState),
+// read by BOTH WebTerminalServer construction sites for /api/workspaces. Module-
+// scoped because the boot-restore site has no agent tracker in scope; a request
+// that arrives before registration simply reports no agent fields.
+let readAgentStateForWeb: ((id: string) => { agentName: string | null; agentStatus: AgentStatus }) | undefined;
 
 // M3 — per-device credentials for `wmux web`. Module-scoped for the same reason
 // as the servers above: both WebTerminalServer construction paths inject it, and
@@ -368,6 +373,9 @@ async function restoreWebServer(sessionManager: DaemonSessionManager): Promise<v
         sessionManager,
         assetsDir: resolveWebAssetsDir(),
         log: (level, msg) => log(level, msg),
+        // #1163 — canonical agent state for /api/workspaces, resolved per
+        // request (registerRpcHandlers registers the reader).
+        agentState: (id) => readAgentStateForWeb?.(id),
         // M3 — without this, /pair degrades to handing out the shared operator
         // token and nothing is individually revocable. Injected at BOTH
         // construction sites: a restored server serves paired phones on their
@@ -2430,6 +2438,8 @@ function registerRpcHandlers(
       sessionManager,
       assetsDir: resolveWebAssetsDir(),
       log: (level, msg) => log(level, msg),
+      // #1163 — canonical agent state for /api/workspaces (see restoreWebServer).
+      agentState: (id) => readAgentStateForWeb?.(id),
       // M3 — see the restore path for why the roster is injected at both sites.
       devices: getDeviceStore(),
       // See the restore path: the lifecycle routes need this and answer 503
@@ -3225,6 +3235,9 @@ function registerRpcHandlers(
     if (screenSlug) return { agentName: null, ...state };
     return { agentName: rawName, ...state };
   };
+  // #1163 — /api/workspaces answers with this same canonical state, so a
+  // remote roster row appears and disappears exactly when a local one would.
+  readAgentStateForWeb = readDaemonAgentState;
 
   // Authoritative detector state bypasses desktop reconnect/event timing.
   pipeServer.onRpc('daemon.getAgentName', async (params) => {
