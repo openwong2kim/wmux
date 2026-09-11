@@ -403,6 +403,61 @@ describe('AutoUpdater two-step flow (win32)', () => {
     expect(String(unlinkMock.mock.calls[0][0])).toContain('wmux-update-');
   });
 
+  it('#1250: a toggle landing after the check started still stops the background download', async () => {
+    // check() gates on `enabled` when the poll STARTS, but fetchUpdate is
+    // awaited — the toggle (renderer IPC or the boot session.json read) can
+    // land in that window. The dispatch into downloadUpdate must re-honour
+    // it, or a user who turned auto-update off mid-poll still gets the
+    // 150 MB download and the "update ready" nag.
+    const { AutoUpdater, requestUrls, sent, win } = await loadWin32();
+    const updater = new AutoUpdater(() => win as never, quitHooks());
+    updater.start();
+
+    const internals = updater as unknown as {
+      enabled: boolean;
+      oneShotInstall: boolean;
+      pendingUpdate: { name: string; notes: string; url: string } | null;
+      downloadUpdate: () => Promise<void>;
+    };
+    // A background poll found an update; the toggle lands before the
+    // download is dispatched. oneShotInstall is false — nobody pressed
+    // anything.
+    internals.enabled = false;
+    internals.oneShotInstall = false;
+    internals.pendingUpdate = { name: NEW_VERSION, notes: 'n', url: DL_URL };
+
+    await internals.downloadUpdate();
+    await flush();
+
+    expect(requestUrls.some((u) => u.includes('update-manifest.json'))).toBe(false);
+    expect(sent.some((s) => `${s.channel}:${s.data.status}` === `${IPC.UPDATE_AVAILABLE}:downloaded`)).toBe(false);
+  });
+
+  it('#1250: a manual press is exempt from the download gate — the toggle must not brick updating', async () => {
+    const { AutoUpdater, requestUrls, sent, win } = await loadWin32();
+    const updater = new AutoUpdater(() => win as never, quitHooks());
+    updater.start();
+
+    const internals = updater as unknown as {
+      enabled: boolean;
+      oneShotInstall: boolean;
+      pendingUpdate: { name: string; notes: string; url: string } | null;
+      downloadUpdate: () => Promise<void>;
+    };
+    // Toggle off, but the user pressed "check for updates" (one-shot intent):
+    // the download must proceed — with the toggle off this is the ONLY update
+    // path short of reinstalling (same contract as check()'s gate).
+    internals.enabled = false;
+    internals.oneShotInstall = true;
+    internals.pendingUpdate = { name: NEW_VERSION, notes: 'n', url: DL_URL };
+
+    await internals.downloadUpdate();
+    await flush();
+
+    expect(requestUrls.some((u) => u.includes('update-manifest.json'))).toBe(true);
+    expect(sent.some((s) => `${s.channel}:${s.data.status}` === `${IPC.UPDATE_AVAILABLE}:downloaded`)).toBe(true);
+  });
+
   it('a newer release supersedes a downloaded one: old artifact unlinked, new one downloaded', async () => {
     const { AutoUpdater, feed, sent, unlinkMock, win } = await loadWin32();
     const updater = new AutoUpdater(() => win as never, quitHooks());
