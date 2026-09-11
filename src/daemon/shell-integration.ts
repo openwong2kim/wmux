@@ -39,7 +39,13 @@ import { isMac } from '../shared/platform';
 // a directory whose real name contains a literal percent sequence
 // ("build%20cache") was silently corrupted, and a raw ESC/BEL byte in a
 // directory name could terminate the OSC 7 early and inject terminal escapes.
-const INTEGRATION_VERSION = 9;
+// v10: hand the $? snapshot to the wrapped prompt (issue #1267). The wrapper
+// snapshots $? and $LASTEXITCODE as its first two statements, but never gave
+// that snapshot to the prompt it wraps — and every statement in between resets
+// $? to true. So oh-my-posh, Starship, and anything else that reads $? to
+// colour an exit-code segment saw "success" after every failed command, while
+// the same config in Windows Terminal was correct.
+const INTEGRATION_VERSION = 10;
 const VERSION_FILE = '.version';
 
 // -----------------------------------------------------------------------
@@ -107,6 +113,23 @@ function global:prompt {
         $osc7Path = ($loc.ProviderPath -split '\\\\' | ForEach-Object { [Uri]::EscapeDataString($_) }) -join '/'
         $pre += "$esc]7;file://$env:COMPUTERNAME/$osc7Path$bel"
     }
+
+    # Re-assert the snapshot before delegating (#1267). Every statement above
+    # reset $? to true, so the prompt we wrap would otherwise always see
+    # "success" and an exit-code segment (oh-my-posh status, Starship) would
+    # stay green after a failed command. $? is not assignable and the snapshot
+    # cannot be deferred — any statement is enough to reset it — so the value
+    # is re-created here instead.
+    #
+    # -ErrorAction Ignore is the variant with no side effects: unlike
+    # SilentlyContinue it records nothing in $Error, which matters because
+    # oh-my-posh reads the newest error record as exit code 1 and would mask
+    # the real code. Ignore also never throws under $ErrorActionPreference =
+    # 'Stop', on 5.1 and 7+ alike.
+    #
+    # This must stay the LAST statement before the delegation: any cmdlet call
+    # in between (a Test-Path, say) resets $? straight back to true.
+    if (-not $__wmux_ok) { Write-Error -Message 'wmux: last command failed' -ErrorAction Ignore }
 
     $body = if ($global:__wmux_prev_prompt) {
         try { & $global:__wmux_prev_prompt } catch { "PS $($executionContext.SessionState.Path.CurrentLocation)> " }
