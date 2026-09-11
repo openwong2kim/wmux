@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { create } from 'zustand';
 import { immer } from 'zustand/middleware/immer';
 import { createWorkspaceSlice, type WorkspaceSlice } from '../workspaceSlice';
@@ -103,6 +103,35 @@ describe('remoteWorkspacesSlice', () => {
     // aliases are not sticky-forever).
     store.getState().attachRemoteWorkspace({ ...makeRemote(), label: 'new-name' });
     expect(store.getState().remoteWorkspaces[0].label).toBe('new-name');
+  });
+
+  describe('#1086 — alias persistence', () => {
+    const attachmentsAdd = vi.fn(async () => true);
+    beforeEach(() => {
+      attachmentsAdd.mockClear();
+      vi.stubGlobal('window', { electronAPI: { remote: { attachmentsAdd } } });
+    });
+    afterEach(() => {
+      vi.unstubAllGlobals();
+    });
+
+    it('a re-attach persists the MERGED entry, so the aliases survive a reload', () => {
+      const remote = makeRemote();
+      store.getState().attachRemoteWorkspace(remote);
+      store.getState().renameRemoteWorkspace(remote.key, 'CTO-mirror');
+      store.getState().setRemoteWorkspaceColor(remote.key, 'red');
+      // Fresh snapshot, no aliases — what the attach modal hands over.
+      store.getState().attachRemoteWorkspace(makeRemote());
+      expect(attachmentsAdd).toHaveBeenLastCalledWith({
+        key: remote.key,
+        hostId: remote.hostId,
+        hostLabel: remote.hostLabel,
+        workspaceId: remote.workspaceId,
+        name: remote.name,
+        label: 'CTO-mirror',
+        color: 'red',
+      });
+    });
   });
 
   it('attach dedups by key and sets activeRemoteKey', () => {

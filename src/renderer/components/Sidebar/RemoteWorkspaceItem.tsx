@@ -82,6 +82,9 @@ export default function RemoteWorkspaceItem({ workspace, isActive, onSelect, onD
           }
         }}
         onDoubleClick={() => {
+          // A double-click INSIDE the rename input (word select) bubbles here;
+          // re-seeding the draft would discard what the user just typed.
+          if (editing) return;
           setEditName(workspace.label || workspace.name || '');
           setEditing(true);
         }}

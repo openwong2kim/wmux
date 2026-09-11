@@ -141,6 +141,11 @@ export const createRemoteWorkspacesSlice: StateCreator<StoreState, [['zustand/im
   activeRemoteKey: null,
 
   attachRemoteWorkspace: (w) => {
+    // Persist the MERGED entry, not `w`: a re-attach hands us a fresh snapshot
+    // without the #1086 aliases, so writing `w` would wipe the carried-over
+    // label/color from disk and lose them on the next reload. Built inside
+    // the producer (a draft must not escape set()).
+    let descriptor: RemoteAttachmentDescriptor | undefined;
     set((state: StoreState) => {
       const idx = state.remoteWorkspaces.findIndex((r: AttachedRemoteWorkspace) => r.key === w.key);
       if (idx === -1) {
@@ -161,12 +166,14 @@ export const createRemoteWorkspacesSlice: StateCreator<StoreState, [['zustand/im
         };
       }
       state.activeRemoteKey = w.key;
+      const entry = state.remoteWorkspaces.find((r: AttachedRemoteWorkspace) => r.key === w.key);
+      if (entry) descriptor = toDescriptor(entry);
     });
     // Fire-and-forget: a failed write only costs this attachment its
     // restore-after-reload, and the attach itself has already happened. The
     // method check covers an older preload bundle without these routes.
     const api = persistApi();
-    if (api?.attachmentsAdd) void api.attachmentsAdd(toDescriptor(w)).catch(() => { /* see above */ });
+    if (descriptor && api?.attachmentsAdd) void api.attachmentsAdd(descriptor).catch(() => { /* see above */ });
   },
 
   // ADDITIVE ONLY. A boot restore fetches each host's panes before it lands,
