@@ -626,8 +626,17 @@ describe('UsagePoller', () => {
     expect(poller.getState().status).toBe('read-error');
 
     // The same token is back and the poll period has not elapsed, so
-    // nothing goes out — however the chip currently reads.
-    await vi.advanceTimersByTimeAsync(10_000);
+    // nothing goes out, but the recovered read restores the known
+    // rejection instead of leaving the transient read error on screen.
+    await vi.advanceTimersByTimeAsync(1000);
+    await flushPromises();
+    expect(callCount(fetchImpl)).toBe(1);
+    expect(call).toBe(3);
+    expect(poller.getState().status).toBe('unauthorized');
+    expect(poller.getState().lastError).toBe('HTTP 401/403');
+    expect(poller.getState().subscriptionType).toBe('pro');
+
+    await vi.advanceTimersByTimeAsync(9000);
     await flushPromises();
     expect(callCount(fetchImpl)).toBe(1);
     expect(call).toBeGreaterThan(10);

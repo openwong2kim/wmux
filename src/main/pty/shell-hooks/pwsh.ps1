@@ -18,7 +18,16 @@ if (Test-Path Function:\prompt) {
 }
 
 function prompt {
+    # Snapshot $? first and re-assert it immediately before delegating (#1267):
+    # the Test-Path below resets $? to true, so the prompt we wrap would always
+    # see "success" and an exit-code segment (oh-my-posh status, Starship)
+    # would stay green after a failed command. -ErrorAction Ignore sets $?
+    # false while recording nothing in $Error, so oh-my-posh's error-record
+    # branch cannot mistake it for a real failure and report 1 over the true
+    # exit code.
+    $__wmux_ok = $?
     $body = if (Test-Path Function:\__wmux_original_prompt) {
+        if (-not $__wmux_ok) { Write-Error -Message 'wmux: last command failed' -ErrorAction Ignore }
         __wmux_original_prompt
     } else {
         "PS $($executionContext.SessionState.Path.CurrentLocation)$('>' * ($nestedPromptLevel + 1)) "
