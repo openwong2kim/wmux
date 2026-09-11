@@ -1,5 +1,6 @@
 import http from 'node:http';
-import { agentSlugToDisplay, isAgentSlug } from '../../shared/agentIdentity';
+import type { AgentStatus } from '../../shared/types';
+import { isRemoteAgentStatus } from '../../shared/remoteHosts';
 import https from 'node:https';
 import crypto from 'node:crypto';
 import os from 'node:os';
@@ -456,6 +457,14 @@ interface WebTerminalServerDeps {
    * the same answer as "off".
    */
   gateEnabled?: () => boolean;
+  /**
+   * #1163 — the daemon's CANONICAL per-session agent state (the answer
+   * daemon.getAgentName gives the desktop), for GET /api/workspaces. Resolved
+   * per request: the reader is registered with the RPC handlers, which may run
+   * after this server is built. Absent, or undefined for a session, means the
+   * pane carries no detected-agent fields.
+   */
+  agentState?: (sessionId: string) => { agentName: string | null; agentStatus: AgentStatus } | undefined;
 }
 
 /** Cap a single input POST body so a hostile client cannot exhaust memory. */
@@ -1826,26 +1835,20 @@ export class WebTerminalServer {
         ...shellLabelOf(s.cmd),
         ...(s.cwd ? { cwd: s.cwd } : {}),
         // #1163 — per-session agent metadata, so the attaching desktop's
-        // roster can count remote agents. Name precedence matches
-        // /api/sessions: creation-time role metadata, then the live detector
-        // (authoritative even mid-race), then the persisted slug. Status comes
-        // from the same bridge snapshot the desktop reconnect path trusts.
-        // Both fields stay absent when nothing is known — additive-optional.
+        // roster can count remote agents. The name is creation-time role
+        // metadata, then the daemon's CANONICAL answer (the one
+        // daemon.getAgentName gives the desktop). Never the raw detector
+        // (sticky screen truth after exit) nor the persisted slug (outlives
+        // the agent and every reboot): a remote row must vanish when its agent
+        // exits, exactly as a local one does. Both fields stay absent when
+        // nothing is known — additive-optional.
         ...(() => {
-          const managed = this.deps.sessionManager.getSession(s.id);
-          // The slug fallback maps through the shared display-name table:
-          // 'claude-code' must surface as 'Claude Code' like every other
-          // source, or the roster's vendor column sees two spellings of one
-          // vendor and turns itself on spuriously.
-          const slugFallback = s.lastDetectedAgent !== undefined && isAgentSlug(s.lastDetectedAgent)
-            ? agentSlugToDisplay(s.lastDetectedAgent)
-            : null;
-          const agentName =
-            s.agent?.displayName ?? managed?.bridge.getLastAgent() ?? slugFallback ?? null;
+          const state = this.deps.agentState?.(s.id);
+          const agentName = s.agent?.displayName ?? state?.agentName ?? null;
           if (!agentName) return {};
           return {
             agentName,
-            ...(managed ? { agentStatus: managed.bridge.getAgentStatus() } : {}),
+            ...(state && isRemoteAgentStatus(state.agentStatus) ? { agentStatus: state.agentStatus } : {}),
           };
         })(),
       });

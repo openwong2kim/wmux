@@ -28,15 +28,7 @@ import type { DaemonSessionManager } from '../../DaemonSessionManager';
 // A minimal fake of exactly what WebTerminalServer touches: getSession() (for
 // stream/input) and listLiveSessions() (for the picker). No real daemon/pty.
 function makeDeps() {
-  const bridge = Object.assign(new EventEmitter(), {
-    // #1163 — the agent-metadata source for /api/workspaces. Default to "the
-    // detector knows nothing"; tests that need a live detection or a status
-    // override the boxes.
-    agentNameBox: null as string | null,
-    agentStatusBox: 'idle' as 'idle' | 'running' | 'complete' | 'waiting' | 'awaiting_input' | 'error',
-    getLastAgent() { return this.agentNameBox; },
-    getAgentStatus() { return this.agentStatusBox; },
-  });
+  const bridge = new EventEmitter();
   const write = vi.fn();
   const managed = {
     // `cwd` and `spawnCwd` DIFFER on purpose: `cwd` is what the pane's own
@@ -399,9 +391,12 @@ describe('WebTerminalServer', () => {
   let projectorMock: ReturnType<typeof makeDeps>['projectorMock'];
   /** #783 — the daemon's runtime gate flag, which the server only reads/writes. */
   let gateArmed: boolean;
+  /** #1163 — the daemon's canonical agent state per session, as the server reads it. */
+  let agentStates: Record<string, { agentName: string | null; agentStatus: 'idle' | 'running' | 'awaiting_input' }>;
 
   beforeEach(() => {
     gateArmed = true;
+    agentStates = {};
     const deps = makeDeps();
     bridge = deps.bridge;
     write = deps.write;
@@ -438,6 +433,7 @@ describe('WebTerminalServer', () => {
       gateConfig: () => ({ gatedTools: ['Bash'] }),
       gateEnabled: () => gateArmed,
       setGateEnabled: (enabled) => { gateArmed = enabled; },
+      agentState: (id) => agentStates[id],
       log: () => { /* silent in tests */ },
       assetsDir: os.tmpdir(), // no terminal.html needed for the /api/* tests
     });
@@ -4190,8 +4186,9 @@ describe('WebTerminalServer', () => {
         {
           id: 's-agent', cwd: '/a', cols: 80, rows: 24, state: 'detached',
           agent: undefined,
-          // Persisted slug fallback: the pane's detector is quiet, but X6
-          // recorded what ran here.
+          // X6 persisted what USED to run here; the daemon's canonical answer
+          // (below) says nothing runs now. The persisted slug must not
+          // resurrect a ghost roster row.
           lastDetectedAgent: 'claude',
           lastActivity: '2020-01-01T00:00:00.000Z',
           env: { WMUX_WORKSPACE_ID: 'ws-1', WMUX_WORKSPACE_NAME: 'Workspace 1' },
@@ -4207,37 +4204,38 @@ describe('WebTerminalServer', () => {
           cmd: '/usr/bin/bash',
         },
       );
-      // The live detector outranks everything for s1. (The fake manager shares
-      // one bridge across sessions, so the box speaks for all of them — the
-      // second fetch below clears it to prove the persisted-slug fallback.)
-      const boxes = bridge as unknown as { agentNameBox: string | null; agentStatusBox: string };
-      boxes.agentNameBox = 'Claude Code';
-      boxes.agentStatusBox = 'awaiting_input';
+      // The daemon's canonical reader: s1 runs a live, blocked agent; s-agent's
+      // agent has exited (canonical null); s-role's canonical answer is
+      // outranked by its creation-time role metadata.
+      agentStates = {
+        s1: { agentName: 'Claude Code', agentStatus: 'awaiting_input' },
+        's-agent': { agentName: null, agentStatus: 'idle' },
+        's-role': { agentName: 'Claude Code', agentStatus: 'running' },
+      };
       const info = await startRO();
-      const res = await fetch(`${base()}/api/workspaces`, { headers: bearer(info.token as string) });
-      expect(res.status).toBe(200);
       const read = async () => {
         const r = await fetch(`${base()}/api/workspaces`, { headers: bearer(info.token as string) });
+        expect(r.status).toBe(200);
         return (await r.json()) as {
           workspaces: Array<{ panes: Array<{ sessionId: string; agentName?: string; agentStatus?: string }> }>;
         };
       };
       let body = await read();
-      const byId = new Map(body.workspaces.flatMap((w) => w.panes).map((p) => [p.sessionId, p]));
+      let byId = new Map(body.workspaces.flatMap((w) => w.panes).map((p) => [p.sessionId, p]));
       expect(byId.get('s1')).toMatchObject({ agentName: 'Claude Code', agentStatus: 'awaiting_input' });
-      // Role metadata outranks the slug.
-      expect(byId.get('s-role')).toMatchObject({ agentName: 'Codex' });
+      // Role metadata outranks the canonical detector name.
+      expect(byId.get('s-role')).toMatchObject({ agentName: 'Codex', agentStatus: 'running' });
+      // Exited agent: the persisted slug does NOT resurrect a row.
+      expect(byId.get('s-agent')).not.toHaveProperty('agentName');
+      expect(byId.get('s-agent')).not.toHaveProperty('agentStatus');
+      // No canonical state for the session → no agent fields at all.
+      expect(byId.get('s2')).not.toHaveProperty('agentName');
 
-      // Detector quiet → the persisted slug carries the name, status degrades
-      // to the idle default; s1 (nothing known) carries no agent fields.
-      boxes.agentNameBox = null;
-      boxes.agentStatusBox = 'idle';
+      // The agent in s1 exits → its row disappears on the next poll.
+      agentStates.s1 = { agentName: null, agentStatus: 'idle' };
       body = await read();
-      const fallbackById = new Map(body.workspaces.flatMap((w) => w.panes).map((p) => [p.sessionId, p]));
-      // The slug fallback surfaces as a DISPLAY name (vendor-column parity).
-      expect(fallbackById.get('s-agent')).toMatchObject({ agentName: 'Claude Code', agentStatus: 'idle' });
-      expect(fallbackById.get('s1')).not.toHaveProperty('agentName');
-      expect(fallbackById.get('s2')).not.toHaveProperty('agentName');
+      byId = new Map(body.workspaces.flatMap((w) => w.panes).map((p) => [p.sessionId, p]));
+      expect(byId.get('s1')).not.toHaveProperty('agentName');
     });
 
     it('groups multiple panes into the same workspace, sorted by sessionId', async () => {
