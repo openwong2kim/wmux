@@ -166,7 +166,9 @@ export interface PaneSlice {
   focusPaneSurface: (workspaceId: string, paneId: string, surfaceId?: string) => boolean;
   focusPaneDirection: (direction: 'up' | 'down' | 'left' | 'right') => void;
   cyclePane: (direction: 'next' | 'prev') => void;
-  updatePaneSizes: (branchId: string, sizes: number[]) => void;
+  /** `workspaceId` defaults to the active workspace; a multiview tile that is
+   *  not active passes its own. */
+  updatePaneSizes: (branchId: string, sizes: number[], workspaceId?: string) => void;
   resizeActivePane: (direction: 'left' | 'right' | 'up' | 'down', amount: number) => void;
   equalizePaneSizes: () => void;
   // Sparse map of per-pane visual notification rings. Missing entry = no ring.
@@ -535,7 +537,14 @@ function attachBeside(
   const liveTarget = findPane(ws.rootPane, targetLeafId);
   if (!liveTarget) return false;
 
-  const [nodeShare, targetShare] = sizes && sizes.length === 2 ? sizes : [50, 50];
+  // Normalised to sum to 100: origin sizes are the pair's shares of a parent
+  // that may have had more children (two of three thirds is [33.3, 33.3]), and
+  // a branch is persisted — session file, archive snapshots — with whatever
+  // sizes it carries, not the ones the library normalises on screen.
+  const [rawNode, rawTarget] =
+    sizes && sizes.length === 2 && sizes.every((n) => Number.isFinite(n) && n > 0) ? sizes : [50, 50];
+  const nodeShare = (rawNode * 100) / (rawNode + rawTarget);
+  const targetShare = (rawTarget * 100) / (rawNode + rawTarget);
   const branch: PaneBranch = {
     id: generateId('pane'),
     type: 'branch',
@@ -1446,8 +1455,8 @@ export const createPaneSlice: StateCreator<StoreState, [['zustand/immer', never]
     return ok;
   },
 
-  updatePaneSizes: (branchId, sizes) => set((state: StoreState) => {
-    const ws = state.workspaces.find((w: Workspace) => w.id === state.activeWorkspaceId);
+  updatePaneSizes: (branchId, sizes, workspaceId) => set((state: StoreState) => {
+    const ws = state.workspaces.find((w: Workspace) => w.id === (workspaceId || state.activeWorkspaceId));
     if (!ws) return;
     const branch = findPane(ws.rootPane, branchId);
     if (branch && branch.type === 'branch') {

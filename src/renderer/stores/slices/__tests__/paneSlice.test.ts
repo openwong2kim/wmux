@@ -41,6 +41,22 @@ describe('PaneSlice', () => {
     store = createTestStore();
   });
 
+  describe('updatePaneSizes', () => {
+    it('writes to the named workspace, not the active one (a multiview tile)', () => {
+      const other = createWorkspace('Other');
+      store.setState((s) => { s.workspaces.push(other); });
+      store.getState().splitPane(other.rootPane.id, 'horizontal', other.id);
+      const otherRoot = store.getState().workspaces.find((w) => w.id === other.id)!.rootPane;
+      if (otherRoot.type !== 'branch') throw new Error('expected the split to create a branch');
+
+      store.getState().updatePaneSizes(otherRoot.id, [30, 70], other.id);
+
+      const after = store.getState().workspaces.find((w) => w.id === other.id)!.rootPane;
+      expect(after.type === 'branch' && after.sizes).toEqual([30, 70]);
+      expect(getActiveWorkspace(store).rootPane.type).toBe('leaf');
+    });
+  });
+
   describe('splitPane', () => {
     it('creates a branch with 2 children from a leaf', () => {
       const ws = getActiveWorkspace(store);

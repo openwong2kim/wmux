@@ -4,7 +4,7 @@ import { immer } from 'zustand/middleware/immer';
 import { createUISlice, type UISlice } from '../uiSlice';
 import { createPaneSlice, type PaneSlice } from '../paneSlice';
 import { createWorkspace, type Workspace, type Surface } from '../../../../shared/types';
-import { getLeafPanes } from '../../../../shared/paneUtils';
+import { findParent, getLeafPanes } from '../../../../shared/paneUtils';
 import { setDaemonModeActive, resetDaemonModeForTests } from '../../../daemon/daemonMode';
 
 // #1237 — snapToLayoutTemplate is the non-destructive twin of
@@ -294,5 +294,24 @@ describe('uiSlice — snapToLayoutTemplate', () => {
 
     const toast = store.getState().pushToast.mock.calls.at(-1)?.[0];
     expect(String(toast?.message)).toContain('notes');
+  });
+
+  it('unstashing a snap-stashed pane lands it in a pair that sums to 100', () => {
+    // Snap stashes carry no origin, so unstash builds the branch from scratch
+    // beside the active pane. Its sizes are persisted as-is (session file,
+    // archive snapshots), so they have to be a real split, not a pair of ratios.
+    setDaemonModeActive(true);
+    store.getState().applyLayoutTemplate('builtin-grid');
+    seedSurfaces(store);
+    store.getState().snapToLayoutTemplate('builtin-2col');
+    const stashedId = ws(store).stashedPanes![0].pane.id;
+
+    expect(store.getState().unstashPane(stashedId)).toBe(true);
+
+    const parent = findParent(ws(store).rootPane, stashedId);
+    expect(parent?.type).toBe('branch');
+    if (parent?.type === 'branch') {
+      expect(parent.sizes).toEqual([50, 50]);
+    }
   });
 });
