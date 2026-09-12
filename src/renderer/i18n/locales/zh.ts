@@ -399,6 +399,7 @@ export const zh = {
   'settings.sc.searchTerminal': '在终端中搜索',
   'settings.sc.commandPalette': '命令面板',
   'settings.sc.toggleNotifications': '切换通知面板',
+  'settings.sc.richInput': '切换富文本输入',
   'settings.sc.viCopyMode': 'Vi 复制模式',
   'settings.sc.renameWorkspace': '重命名工作区',
   'settings.sc.highlightPane': '高亮活动面板',

@@ -1022,6 +1022,7 @@ export const pl = {
   'settings.sc.searchTerminal': 'Szukaj w terminalu',
   'settings.sc.commandPalette': 'Paleta poleceń',
   'settings.sc.toggleNotifications': 'Przełącz panel powiadomień',
+  'settings.sc.richInput': 'Przełącz rozbudowane wejście',
   'settings.sc.viCopyMode': 'Tryb kopiowania Vi',
   'settings.sc.renameWorkspace': 'Zmień nazwę obszaru roboczego',
   'settings.sc.highlightPane': 'Wyróżnij aktywny panel',

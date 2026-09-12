@@ -528,6 +528,7 @@ export const ko = {
   'settings.sc.searchTerminal': '터미널에서 검색',
   'settings.sc.commandPalette': '명령 팔레트',
   'settings.sc.toggleNotifications': '알림 패널 전환',
+  'settings.sc.richInput': '리치 입력 전환',
   'settings.sc.viCopyMode': 'Vi 복사 모드',
   'settings.sc.renameWorkspace': '작업공간 이름 변경',
   'settings.sc.highlightPane': '활성 창 강조',

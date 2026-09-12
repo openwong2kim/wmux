@@ -30,6 +30,7 @@ import { terminalFontFamilyCss } from '../utils/terminalFont';
 import { createPathLinkProvider } from '../terminal/pathLinkProvider';
 import { resolveNewlineKeyByte } from '../terminal/newlineKeys';
 import { resolveCtrlLetterByte } from '../terminal/ctrlLetterKeys';
+import { isComposeChord, composeOwnerHost, TERMINAL_PTY_ATTR, COMPOSE_OWNER_ATTR } from '../terminal/composeChord';
 import { foldRemoteKeyboardState, INITIAL_REMOTE_KEYBOARD_STATE, type RemoteKeyboardState } from '../components/Remote/keyboardProtocol';
 import { attachImeAnchor } from '../terminal/imeAnchor';
 import { attachImeResidueGuard } from '../terminal/imeResidueGuard';
@@ -652,6 +653,17 @@ interface UseTerminalOptions {
   onFirstData?: () => void;
   /** Called on right-click to show context menu */
   onContextMenu?: (e: ContextMenuEvent) => void;
+  /**
+   * Does this surface own the Rich Input chord (⌘G / Ctrl+G)?
+   *
+   * `useComposeShortcut` acts on the ACTIVE LEAF's pty, so only the terminal
+   * that is the active surface can honour the key. A non-owning xterm —
+   * FloatingPane (Ctrl+`), Deck's BrainTerminalEmbed — must keep encoding
+   * 0x07, or the chord is swallowed here and declined there: a dead key, or a
+   * popover aimed at a different pane (#1280 review). Defaults to false so a
+   * future embed is dead-key-safe until it opts in.
+   */
+  ownsComposeShortcut?: boolean;
 }
 
 export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>, options: UseTerminalOptions) {
@@ -699,7 +711,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
   // Glyph-corruption repair scheduler (issue #166) — created by the main
   // effect, also poked by the visibility effect on regain.
   const glyphRepaintRef = useRef<GlyphRepaintScheduler | null>(null);
-  const { ptyId, isVisible = true, scrollbackFile, onFirstData, onContextMenu } = options;
+  const { ptyId, isVisible = true, scrollbackFile, onFirstData, onContextMenu, ownsComposeShortcut = false } = options;
   const ptyIdRef = useRef(ptyId);
   ptyIdRef.current = ptyId;
   // Live visibility for long-lived callbacks (the burst repaint below) — the
@@ -1027,6 +1039,29 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       // ignore fit errors during unmount
     }
   }, [ptyId, containerRef]);
+
+  // #1280 — publish this terminal's identity and chord ownership on the DOM,
+  // so the document-level Rich Input listener can tell WHICH terminal a
+  // keydown came from. Without it that gate fired for any terminal's keydown
+  // and toggled the popover on the active leaf: pressing Ctrl+G in the
+  // floating pane opened Rich Input over a background pane while the floating
+  // pty got nothing (live dogfood on b4135076).
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+    if (!ptyId) {
+      container.removeAttribute(TERMINAL_PTY_ATTR);
+      container.removeAttribute(COMPOSE_OWNER_ATTR);
+      return;
+    }
+    container.setAttribute(TERMINAL_PTY_ATTR, ptyId);
+    if (ownsComposeShortcut) container.setAttribute(COMPOSE_OWNER_ATTR, '');
+    else container.removeAttribute(COMPOSE_OWNER_ATTR);
+    return () => {
+      container.removeAttribute(TERMINAL_PTY_ATTR);
+      container.removeAttribute(COMPOSE_OWNER_ATTR);
+    };
+  }, [ptyId, ownsComposeShortcut, containerRef]);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -1800,6 +1835,27 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
           return false;
         }
         return true;
+      }
+      // #1280 — the Rich Input chord (⌘G / Ctrl+G) bubbles from HERE, instead
+      // of merely being preventDefault'd downstream: xterm's own encode path
+      // calls stopPropagation (its `cancel()`), so before #1228 Ctrl+G never
+      // reached the document listener at all, and after it the catch-all ctrl
+      // encoder below wrote BEL (0x07) to the pane and then let the event
+      // bubble — `^G` in the shell plus the popover, the reported bug.
+      //
+      // Its own branch, not a row in the allowlists below, whose condition is
+      // only `ctrlKey && !shiftKey`: a row there would also swallow
+      // Ctrl+Alt+G and Ctrl+Meta+G, which nobody claims. And the SAME
+      // predicate the popover gate uses, so the two cannot disagree about
+      // which keydown is the chord (composeChord.ts explains why that matters
+      // more than either gate's own correctness).
+      //
+      // `ownsComposeShortcut` is the other half: the popover gate acts on the
+      // active leaf's pty, so a floating pane / brain embed would see the key
+      // swallowed here and declined there. Those surfaces keep encoding 0x07.
+      if (composeOwnerHost(e.target).owns && isComposeChord(e, isMac ? 'darwin' : 'win32')
+          && !useStore.getState().inspectModeActive) {
+        return false; // let DOM bubble to useComposeShortcut
       }
       const bubbleKeys = isMac
         ? ['b', 'm', 'ArrowUp', 'ArrowDown']
