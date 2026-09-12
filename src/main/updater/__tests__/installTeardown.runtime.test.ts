@@ -23,6 +23,7 @@ import {
   buildWaiterVbsLauncher,
   buildScheduledTaskCreateArgs,
   buildScheduledTaskRunArgs,
+  buildScheduledTaskXml,
   spawnInstallWaiter,
   collectInstallRootPids,
   probeVolume,
@@ -659,7 +660,7 @@ describe.skipIf(!onWindows)('#1264 — the waiter must outlive the app that spaw
    * Returns false when the job could not be built (an agent where nesting is
    * refused), so the caller can skip rather than assert on a broken premise.
    */
-  function runInsideDyingJob(launchLines: string[]): boolean {
+  function runInsideDyingJob(launchLines: string[]): number | null {
     const proofPath = path.join(sandbox, 'job-armed.txt');
     const stub = path.join(sandbox, 'stub-parent.ps1');
     fs.writeFileSync(stub, [
@@ -692,7 +693,40 @@ describe.skipIf(!onWindows)('#1264 — the waiter must outlive the app that spaw
       ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', stub],
       { encoding: 'utf-8', timeout: 90_000, windowsHide: true },
     );
-    return res.status === 0 && fs.existsSync(proofPath);
+    // #1283 review: the stub's exit code is the DIAGNOSIS — 1/2/3 mean the
+    // kill-on-close job could not be built on this agent, 4/5 mean schtasks
+    // refused. Conflating them into a boolean is how a real regression in the
+    // mechanism would have gone green, and this pair of tests is the only proof
+    // the fix has.
+    if (res.status === 0 && !fs.existsSync(proofPath)) return -1;
+    return res.status;
+  }
+
+  // The runtime proof may only be waived deliberately. On windows-latest the
+  // premises (job objects, Task Scheduler) are expected to hold, so a failure
+  // to arm them is a RED test, not a silent skip.
+  const optOut = process.env.WMUX_SKIP_JOB_RUNTIME_TESTS === '1';
+
+  /** Assert the job half armed; returns false only under an explicit opt-out. */
+  function requireJobArmed(status: number | null): boolean {
+    if (status === 0) return true;
+    if (optOut) {
+      console.warn(`[#1264] job/schtasks premise unmet (stub exit ${String(status)}) — waived by WMUX_SKIP_JOB_RUNTIME_TESTS`);
+      return false;
+    }
+    // Named so a CI failure says WHICH premise broke.
+    const why: Record<string, string> = {
+      '1': 'CreateJobObject failed',
+      '2': 'SetInformationJobObject(KILL_ON_JOB_CLOSE) failed',
+      '3': 'AssignProcessToJobObject failed',
+      '4': 'schtasks /Create failed',
+      '5': 'schtasks /Run failed',
+      '-1': 'the stub exited 0 without arming the job',
+    };
+    throw new Error(
+      `[#1264] the runtime premise did not hold: ${why[String(status)] ?? `stub exit ${String(status)}`}. ` +
+      'Set WMUX_SKIP_JOB_RUNTIME_TESTS=1 to waive deliberately.',
+    );
   }
 
   function writeWaiterFor(stamp: string, script: string, vbs: string): void {
@@ -737,13 +771,9 @@ describe.skipIf(!onWindows)('#1264 — the waiter must outlive the app that spaw
     writeWaiterFor(stamp, script, vbs);
     holdRootFor(12);
 
-    const armed = runInsideDyingJob([
+    if (!requireJobArmed(runInsideDyingJob([
       `Start-Process -FilePath ${q(WSCRIPT)} -ArgumentList '//B','//Nologo',${q(vbs)} -WindowStyle Hidden`,
-    ]);
-    if (!armed) {
-      console.warn('[#1264] kill-on-close job objects unavailable on this agent — control skipped');
-      return;
-    }
+    ]))) return;
 
     // It really did start: the launch stamp is the waiter's first act.
     expect(fs.existsSync(stamp)).toBe(true);
@@ -760,21 +790,37 @@ describe.skipIf(!onWindows)('#1264 — the waiter must outlive the app that spaw
     holdRootFor(12);
 
     const taskName = `wmux-update-t${Date.now().toString(36).replace(/[^A-Za-z0-9]/g, '')}`;
-    const createArgs = buildScheduledTaskCreateArgs(taskName, WSCRIPT, vbs);
+    // The REAL definition, through the real builders — so an XML the importer
+    // refuses (a settings element out of sequence, a mis-escaped path) fails
+    // this test rather than silently costing the fix in the field.
+    const xmlPath = path.join(waiterDir, 'waiter-task.xml');
+    const xml = buildScheduledTaskXml(WSCRIPT, vbs);
+    expect(xml).not.toBeNull();
+    fs.writeFileSync(xmlPath, '\uFEFF' + (xml as string), 'utf16le');
+    const createArgs = buildScheduledTaskCreateArgs(taskName, xmlPath);
     expect(createArgs).not.toBeNull();
     tasks.push(taskName);
 
     const psArr = (a: readonly string[]) => '@(' + a.map(q).join(',') + ')';
-    const armed = runInsideDyingJob([
+    if (!requireJobArmed(runInsideDyingJob([
       `& ${q(SCHTASKS)} ${psArr(createArgs as string[])} | Out-Null`,
       `if ($LASTEXITCODE -ne 0) { exit 4 }`,
       `& ${q(SCHTASKS)} ${psArr(buildScheduledTaskRunArgs(taskName))} | Out-Null`,
       `if ($LASTEXITCODE -ne 0) { exit 5 }`,
-    ]);
-    if (!armed) {
-      console.warn('[#1264] job object or schtasks registration unavailable on this agent — survival test skipped');
-      return;
-    }
+    ]))) return;
+
+    // #1283 review asked whether the battery settings are PROVABLY applied.
+    // The builder's own test pins what we emit; this pins what the scheduler
+    // actually stored after importing it.
+    const stored = spawnSync(SCHTASKS, ['/Query', '/TN', taskName, '/XML', 'ONE'],
+      { encoding: 'utf-8', windowsHide: true, timeout: 20_000 });
+    const storedXml = (stored.stdout ?? '').replace(/\0/g, '');
+    expect(storedXml).toContain('<DisallowStartIfOnBatteries>false<');
+    expect(storedXml).toContain('<StopIfGoingOnBatteries>false<');
+    expect(storedXml).toContain('<ExecutionTimeLimit>PT0S<');
+    expect(storedXml).toContain('<MultipleInstancesPolicy>IgnoreNew<');
+    // No trigger survived the import either — a leaked task cannot self-fire.
+    expect(storedXml).not.toContain('<Triggers');
 
     expect(fs.existsSync(stamp)).toBe(true);
     // The parent is gone and its job closed with it. The scheduler's child is

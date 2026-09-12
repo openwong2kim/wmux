@@ -386,30 +386,138 @@ export function selectOwnTreePids(
  * console, so a console-subsystem child would flash the very window #1136
  * removed. wscript is GUI-subsystem and starts PowerShell hidden.
  *
- * `/TR` is capped by Task Scheduler at 261 characters, so a long enough TEMP
- * path has to fail CLOSED here and fall through to transport W rather than
- * register a truncated command.
+ * The definition is registered from XML rather than the `/TR` short form, and
+ * that is load-bearing rather than tidy — see buildScheduledTaskXml for the
+ * power settings `/TR` cannot express and for why the task carries no trigger.
  */
-export const SCHEDULED_TASK_TR_LIMIT = 261;
+export const WAITER_TASK_NAME_RE = /^wmux-update-[A-Za-z0-9]{1,32}$/;
 
-export function buildScheduledTaskCreateArgs(
-  taskName: string,
+/** XML text escape. Everything that can occur in a Windows path plus the
+ *  attribute-safe quotes, so the same helper is safe in both positions. */
+function xmlEscape(v: string): string {
+  return v
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;');
+}
+
+/**
+ * The task definition, as XML.
+ *
+ * #1283 review, CRITICAL — the `/TR` short form was WRONG here, and wrong in a
+ * way that reproduces the very bug this transport fixes. A task registered
+ * through `/TR` inherits the scheduler's power defaults:
+ * `DisallowStartIfOnBatteries=true` and `StopIfGoingOnBatteries=true`. On a
+ * laptop running on battery `/Run` then starts NOTHING (we fall through to
+ * transport W, the one that cannot survive the job), and unplugging mid-wait
+ * makes the scheduler TERMINATE the waiter — a silent kill wearing the
+ * pessimistic marker, i.e. #1264 again. `/TR` cannot express those settings;
+ * only `/XML` (or COM) can. So the settings below are not decoration, they are
+ * the correctness of the transport:
+ *
+ *   DisallowStartIfOnBatteries=false  — start on battery,
+ *   StopIfGoingOnBatteries=false      — do not kill it when the plug is pulled,
+ *   AllowHardTerminate=false          — the scheduler may not hard-kill it,
+ *   ExecutionTimeLimit=PT0S           — no time limit (the waiter's own budgets
+ *                                       are the bound; PT72H would be a second,
+ *                                       invisible deadline),
+ *   MultipleInstancesPolicy=IgnoreNew — belt to the waiter's own root mutex,
+ *   AllowStartOnDemand=true           — /Run is the ONLY way this task starts.
+ *
+ * There is deliberately NO `<Triggers>` element. The `/TR` form needed
+ * `/SC ONCE /ST <time>`, which meant a registration that leaked (a `/Create`
+ * that timed out after the server committed, a `/Delete` that failed) would
+ * FIRE ON ITS OWN later the same day — and a late waiter opens the recorded
+ * pids by NUMBER, so after pid recycling it would `taskkill /T /F` strangers,
+ * possibly relaunch Setup.exe out of %TEMP%, and write a false "install root
+ * still locked" marker against an already-updated install. An on-demand-only
+ * task cannot fire by itself at all, which removes that failure mode rather
+ * than making it rare. The startup sweep below is the second half.
+ *
+ * The element ORDER matches what `schtasks /Query /XML` itself emits: the
+ * importer validates against a sequence, and a definition that does not
+ * round-trip is refused. A refusal here is not dangerous — it fails closed to
+ * transport W exactly like every other S bail-out — but it would silently cost
+ * the fix, so the order is pinned by a test.
+ *
+ * `runLevel` mirrors the CURRENT process. #1283 review: with a hardcoded
+ * LeastPrivilege, a wmux that was started elevated would hand the install to a
+ * medium-IL waiter whose `taskkill` against the elevated app pids fails — the
+ * waiter then reports `$stuck` and refuses with exit 3, a NEW failure mode for
+ * elevated users. `HighestAvailable` when we are elevated reproduces the token
+ * the old in-tree transports inherited.
+ */
+export function buildScheduledTaskXml(
   wscriptPath: string,
   vbsPath: string,
+  runLevel: 'LeastPrivilege' | 'HighestAvailable' = 'LeastPrivilege',
+): string | null {
+  // A line break would split the XML text node and silently change the command.
+  // Everything else — `&`, `<`, quotes, non-ASCII — is handled by escaping plus
+  // the UTF-16 encoding the file is written in, so a path is only refused when
+  // escaping genuinely cannot save it.
+  if (![wscriptPath, vbsPath].every((p) => p.length > 0 && !/[\r\n]/.test(p))) return null;
+  return [
+    '<?xml version="1.0" encoding="UTF-16"?>',
+    '<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">',
+    '  <RegistrationInfo>',
+    '    <Description>wmux update install handoff (on demand only; removed once it has started)</Description>',
+    '  </RegistrationInfo>',
+    '  <Principals>',
+    '    <Principal id="Author">',
+    // InteractiveToken: run as the logged-on user with no stored password, the
+    // `/IT` equivalent. Without it schtasks picks a logon type, and a
+    // non-interactive one has no desktop for the waiter's "please wait" window.
+    '      <LogonType>InteractiveToken</LogonType>',
+    `      <RunLevel>${runLevel}</RunLevel>`,
+    '    </Principal>',
+    '  </Principals>',
+    '  <Settings>',
+    '    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>',
+    '    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>',
+    '    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>',
+    '    <AllowHardTerminate>false</AllowHardTerminate>',
+    '    <StartWhenAvailable>false</StartWhenAvailable>',
+    '    <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>',
+    '    <IdleSettings>',
+    '      <StopOnIdleEnd>false</StopOnIdleEnd>',
+    '      <RestartOnIdle>false</RestartOnIdle>',
+    '    </IdleSettings>',
+    '    <AllowStartOnDemand>true</AllowStartOnDemand>',
+    '    <Enabled>true</Enabled>',
+    '    <Hidden>false</Hidden>',
+    '    <RunOnlyIfIdle>false</RunOnlyIfIdle>',
+    '    <WakeToRun>false</WakeToRun>',
+    '    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>',
+    '    <Priority>5</Priority>',
+    '  </Settings>',
+    '  <Actions Context="Author">',
+    '    <Exec>',
+    `      <Command>${xmlEscape(wscriptPath)}</Command>`,
+    // //B keeps a policy-disabled WSH silent instead of popping a dialog, same
+    // as the in-tree wscript transport.
+    `      <Arguments>//B //Nologo "${xmlEscape(vbsPath)}"</Arguments>`,
+    '    </Exec>',
+    '  </Actions>',
+    '</Task>',
+  ].join('\r\n');
+}
+
+/**
+ * `schtasks /Create` against a definition file. The name is validated here
+ * because it is also the handle `/Run`, `/Delete` and the startup sweep use.
+ */
+export function buildScheduledTaskCreateArgs(
+  taskName: string,
+  xmlPath: string,
 ): string[] | null {
-  // The name rides an argv slot, but it is also a Task Scheduler path: `\`
-  // would nest it into a folder and a quote would break the /TR parse.
-  if (!/^wmux-update-[A-Za-z0-9]{1,32}$/.test(taskName)) return null;
-  // Both paths are QUOTED inside /TR, so whitespace is fine and only a quote
-  // or a line break could break out — same fail-closed rule as the VBS builder.
-  if (![wscriptPath, vbsPath].every((p) => p.length > 0 && !/["\r\n]/.test(p))) return null;
-  const tr = `"${wscriptPath}" //B //Nologo "${vbsPath}"`;
-  if (tr.length > SCHEDULED_TASK_TR_LIMIT) return null;
-  // /SC ONCE needs a /ST even though the task is started by /Run immediately;
-  // 23:59 is simply the furthest-out slot in the day, so a task that somehow
-  // outlives its deletion below is least likely to fire on its own. /F
-  // overwrites a same-named leftover instead of prompting.
-  return ['/Create', '/TN', taskName, '/TR', tr, '/SC', 'ONCE', '/ST', '23:59', '/F'];
+  // A `\` would nest the task into a folder the sweep does not look in, and a
+  // quote would break the argv round-trip.
+  if (!WAITER_TASK_NAME_RE.test(taskName)) return null;
+  if (xmlPath.length === 0 || /["\r\n]/.test(xmlPath)) return null;
+  return ['/Create', '/TN', taskName, '/XML', xmlPath, '/F'];
 }
 
 /** `schtasks` arguments that start, and that remove, a created waiter task. */
@@ -878,12 +986,88 @@ function swallowSpawnError(child: ChildProcess): void {
  * spawnInstallWaiter's outer catch and refuse an install that is already
  * running.
  */
-function deleteScheduledTask(schtasksPath: string, taskName: string): void {
+function deleteScheduledTask(schtasksPath: string, taskName: string): boolean {
   try {
     execFileSync(schtasksPath, buildScheduledTaskDeleteArgs(taskName), {
-      timeout: 10_000, windowsHide: true, stdio: 'ignore',
+      timeout: SCHTASKS_DELETE_TIMEOUT_MS, windowsHide: true, stdio: 'ignore',
     });
-  } catch { /* litter, not a failure */ }
+    return true;
+  } catch (err) {
+    // #1283 review: a swallowed delete is how a registration leaks. It cannot
+    // be made fatal — the install is already under way by then — but it must
+    // not be invisible, because the startup sweep is what has to clean it up.
+    console.warn(`[installTeardown] could not remove waiter task ${taskName}: ${describeError(err)}`);
+    return false;
+  }
+}
+
+/**
+ * #1283 review — remove waiter tasks a previous run failed to clean up.
+ *
+ * Two leak paths exist and neither can be closed at the point it happens: a
+ * `/Create` that TIMES OUT after the server already committed (we never learn
+ * the name was registered), and a `/Delete` that fails. The definitions carry
+ * no trigger, so a leaked one can never fire on its own — but it is still
+ * litter in the user's task list with a `%TEMP%` path in it, and a leaked name
+ * would collide with `/F` on the next update. Swept at startup, where blocking
+ * costs nothing on the quit path.
+ *
+ * Best-effort throughout: this is hygiene, never a gate on the update.
+ */
+export function sweepStaleWaiterTasks(): number {
+  if (process.platform !== 'win32') return 0;
+  const systemRoot = process.env.SystemRoot || 'C:\\Windows';
+  const schtasksPath = path.join(systemRoot, 'System32', 'schtasks.exe');
+  let removed = 0;
+  try {
+    const out = execFileSync(schtasksPath, ['/Query', '/FO', 'LIST'], {
+      encoding: 'utf-8', timeout: SCHTASKS_CALL_TIMEOUT_MS, windowsHide: true,
+    });
+    // `TaskName: \\wmux-update-xxxx` — root folder only, which is the only
+    // place this module ever registers one. Names are re-validated against the
+    // same pattern the builder enforces, so nothing else can be deleted here
+    // however the query output is shaped or localized.
+    const names = new Set<string>();
+    for (const line of out.split(/\r?\n/)) {
+      const m = /^\s*[^:]+:\s*\\(\S+)\s*$/.exec(line);
+      if (m && WAITER_TASK_NAME_RE.test(m[1])) names.add(m[1]);
+    }
+    for (const name of names) {
+      if (deleteScheduledTask(schtasksPath, name)) removed += 1;
+    }
+    if (removed > 0) console.log(`[installTeardown] swept ${removed} leftover waiter task(s)`);
+  } catch { /* no scheduler access — nothing to sweep, nothing to report */ }
+  return removed;
+}
+
+/** Message + errno for a caught exec failure, for the field log. */
+function describeError(err: unknown): string {
+  const e = err as { code?: unknown; status?: unknown; message?: unknown };
+  const bits = [
+    e?.code === undefined ? null : `code=${String(e.code)}`,
+    e?.status === undefined ? null : `status=${String(e.status)}`,
+    e?.message === undefined ? null : String(e.message),
+  ].filter((b): b is string => b !== null);
+  return bits.length > 0 ? bits.join(' ') : 'unknown error';
+}
+
+/**
+ * #1283 review — are we elevated? Mirrored onto the task's RunLevel so an
+ * elevated wmux does not hand the install to a medium-IL waiter whose
+ * `taskkill` against the app's own (elevated) pids would fail and turn into a
+ * spurious exit-3 refusal. `fltMC.exe` with no arguments is the cheap standard
+ * probe: it needs administrator rights and exits non-zero without them.
+ * Anything unexpected answers "not elevated", which is the pre-#1264 behaviour.
+ */
+function isProcessElevated(systemRoot: string): boolean {
+  try {
+    execFileSync(path.join(systemRoot, 'System32', 'fltMC.exe'), [], {
+      timeout: SCHTASKS_CALL_TIMEOUT_MS, windowsHide: true, stdio: 'ignore',
+    });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /** True once `stampPath` exists, polling every 50ms up to `budgetMs`. */
@@ -915,13 +1099,23 @@ function waitForLaunchStamp(stampPath: string, budgetMs: number): boolean {
 // windows (~14s) before the refusal instead of two (~8s) — paid only on the
 // path that was already going to end in a refusal dialog, and nothing is
 // armed yet (the 20s before-quit deadline starts at app.quit()).
-// #1264 — S is the most generous: its critical path is a schtasks registration
-// round-trip plus a scheduler-service process start, on top of the same wscript
-// host + PS 5.1 cold start + AMSI scan the W budget already pays for. It is
-// also the only transport that can actually deliver the install on a machine
-// inside a kill-on-close job, so misreading a slow-but-working scheduler as
-// dead costs the whole update.
-const LAUNCH_STAMP_BUDGET_S_MS = 10_000;
+// #1264 — S gets the same window as W: its extra hop is a scheduler-service
+// process start, and the expensive part (wscript host + PS 5.1 cold start +
+// AMSI scan) is identical. #1283 review: the FIRST draft spent 10s each on the
+// create, the run, the stamp and the delete, which put up to ~40s of
+// synchronous main-process blocking in front of a user who had just clicked
+// Install, on top of W/A/B's existing ~14s. schtasks is a LOCAL RPC — it
+// answers in milliseconds or it is broken — so the calls get short timeouts and
+// only the stamp poll keeps a generous one. Worst case S now adds ~14s, the
+// same order as the fallbacks behind it, and only on a machine where the
+// scheduler accepts the task and then runs nothing.
+const SCHTASKS_CALL_TIMEOUT_MS = 3_000;
+const SCHTASKS_DELETE_TIMEOUT_MS = 2_000;
+const LAUNCH_STAMP_BUDGET_S_MS = 6_000;
+// Grace re-poll after the S gate expires. A scheduler instance that starts
+// just past the deadline would otherwise be abandoned in favour of a transport
+// that cannot survive, and the two would then race the root mutex.
+const LAUNCH_STAMP_GRACE_S_MS = 1_000;
 const LAUNCH_STAMP_BUDGET_W_MS = 6_000;
 const LAUNCH_STAMP_BUDGET_A_MS = 6_000;
 const LAUNCH_STAMP_BUDGET_B_MS = 2_000;
@@ -1018,33 +1212,87 @@ export function spawnInstallWaiter(plan: WaiterPlan): string | null {
 
     // #1264 — transport S, tried FIRST: the only one that structurally
     // survives wmux's exit. Everything below is a child of this process and
-    // therefore a member of the app's job object; see
-    // buildScheduledTaskCreateArgs for the full mechanism.
+    // therefore a member of the app's job object; see buildScheduledTaskXml
+    // for the full mechanism and for the settings that keep it alive on a
+    // laptop running on battery.
     const wscriptPath = path.join(systemRoot, 'System32', 'wscript.exe');
     const schtasksPath = path.join(systemRoot, 'System32', 'schtasks.exe');
     const taskName = `wmux-update-${path.basename(dir).replace(/[^A-Za-z0-9]/g, '')}`;
+    const vbsPathS = path.join(dir, 'launch-waiter-s.vbs');
+    const xmlPathS = path.join(dir, 'waiter-task.xml');
     const vbsS = buildWaiterVbsLauncher(powershell, psArgs, scriptPathS);
-    const taskArgs = vbsS === null ? null : buildScheduledTaskCreateArgs(taskName, wscriptPath, path.join(dir, 'launch-waiter-s.vbs'));
-    if (vbsS !== null && taskArgs !== null) {
+    // #1283 review: log EVERY bail-out with its cause. The field follow-up for
+    // #1264 is "does the log say `verified via scheduled task`?", and until now
+    // its absence could mean any of four different things.
+    const skipS = (why: string): void => {
+      console.warn(`[installTeardown] scheduled-task transport unavailable (${why}) — falling through to the in-tree transports (#1264)`);
+    };
+    const runLevel = isProcessElevated(systemRoot) ? 'HighestAvailable' : 'LeastPrivilege';
+    const xmlS = vbsS === null ? null : buildScheduledTaskXml(wscriptPath, vbsPathS, runLevel);
+    const taskArgs = xmlS === null ? null : buildScheduledTaskCreateArgs(taskName, xmlPathS);
+    if (vbsS === null || xmlS === null || taskArgs === null) {
+      skipS('the task definition could not be built for these paths');
+    } else {
       let created = false;
+      let ran = false;
       try {
-        fs.writeFileSync(path.join(dir, 'launch-waiter-s.vbs'), '\uFEFF' + vbsS, 'utf16le');
-        execFileSync(schtasksPath, taskArgs, { timeout: 10_000, windowsHide: true, stdio: 'ignore' });
-        created = true;
-        execFileSync(schtasksPath, buildScheduledTaskRunArgs(taskName), { timeout: 10_000, windowsHide: true, stdio: 'ignore' });
-      } catch { /* no Task Scheduler access — W/A/B still get their windows */ }
-      if (created && waitForLaunchStamp(stampS, LAUNCH_STAMP_BUDGET_S_MS)) {
-        // The registration has done its job the moment the scheduler has
-        // started the process: the waiter is already running as a child of
-        // the scheduler service, and deleting the task definition does not
-        // stop a started instance. Delete now rather than at the next boot so
-        // nothing of ours is left registered on a machine that is about to be
-        // replaced by the new install.
-        deleteScheduledTask(schtasksPath, taskName);
-        console.log(`[installTeardown] waiter verified via scheduled task (${taskName}): ${scriptPathS}`);
-        return scriptPathS;
+        fs.writeFileSync(vbsPathS, '\uFEFF' + vbsS, 'utf16le');
+        // schtasks /XML wants a Unicode file, and the declared encoding has to
+        // match what is on disk or a non-ASCII path (the %TEMP% under a
+        // non-Latin username that #1056 already paid for once) is misdecoded.
+        fs.writeFileSync(xmlPathS, '\uFEFF' + xmlS, 'utf16le');
+        try {
+          execFileSync(schtasksPath, taskArgs, {
+            timeout: SCHTASKS_CALL_TIMEOUT_MS, windowsHide: true, stdio: 'ignore',
+          });
+          created = true;
+        } catch (err) {
+          // A TIMEOUT is the dangerous shape: the server may have committed
+          // before we gave up, so the name can exist even though we "failed".
+          // Try to remove it here as well as at the next startup sweep.
+          skipS(`schtasks /Create failed: ${describeError(err)}`);
+          deleteScheduledTask(schtasksPath, taskName);
+        }
+        if (created) {
+          execFileSync(schtasksPath, buildScheduledTaskRunArgs(taskName), {
+            timeout: SCHTASKS_CALL_TIMEOUT_MS, windowsHide: true, stdio: 'ignore',
+          });
+          ran = true;
+        }
+      } catch (err) {
+        skipS(`schtasks /Run failed: ${describeError(err)}`);
       }
-      if (created) deleteScheduledTask(schtasksPath, taskName);
+      if (ran) {
+        let stamped = waitForLaunchStamp(stampS, LAUNCH_STAMP_BUDGET_S_MS);
+        if (!stamped) {
+          // The registration has to go either way — it is the leak the startup
+          // sweep exists for — but a scheduler instance that starts just past
+          // the deadline still deserves to be adopted rather than raced.
+          deleteScheduledTask(schtasksPath, taskName);
+          stamped = waitForLaunchStamp(stampS, LAUNCH_STAMP_GRACE_S_MS);
+          if (!stamped) {
+            // #1283 review (GLM): deleting the DEFINITION cannot stop an
+            // instance the scheduler has already started, so there is a narrow
+            // window where a waiter appears after we have given up on S. The
+            // waiter's root mutex makes that safe (the newcomer yields with
+            // exit 5 and writes nothing), but it is worth saying out loud in
+            // the log, because it is also the one case where a user who was
+            // told the install did not start may still get it.
+            skipS('the scheduler accepted the task but nothing had started within the budget — if an instance starts late, the root mutex keeps it from racing the fallback');
+          }
+        }
+        if (stamped) {
+          // Delete once (or confirm the delete above already happened): the
+          // running instance is not ours to keep registered, and a definition
+          // left behind points at a %TEMP% path the installer is about to
+          // invalidate.
+          deleteScheduledTask(schtasksPath, taskName);
+          console.log(`[installTeardown] waiter verified via scheduled task (${taskName}, runLevel=${runLevel}): ${scriptPathS}`);
+          return scriptPathS;
+        }
+      } else if (created) {
+        deleteScheduledTask(schtasksPath, taskName);
+      }
     }
 
     // #1136 — transport W, tried first because it is the only one that stays

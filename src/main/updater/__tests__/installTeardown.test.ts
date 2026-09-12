@@ -21,7 +21,7 @@ import {
   buildScheduledTaskCreateArgs,
   buildScheduledTaskRunArgs,
   buildScheduledTaskDeleteArgs,
-  SCHEDULED_TASK_TR_LIMIT,
+  buildScheduledTaskXml,
   readDaemonPid,
   terminatePids,
   readAbortMarker,
@@ -765,24 +765,108 @@ describe('buildWaiterVbsLauncher (#1136 — the hidden transport)', () => {
   });
 });
 
-describe('buildScheduledTaskCreateArgs (#1264 — the job-escaping transport)', () => {
+describe('buildScheduledTaskXml (#1264 — the definition that survives a laptop)', () => {
   const WSCRIPT = 'C:\\Windows\\System32\\wscript.exe';
   const VBS = 'C:\\Users\\Daniel\\AppData\\Local\\Temp\\wmux-install-waiter-eOsG6n\\launch-waiter-s.vbs';
 
-  it('registers a one-shot task whose action is the hidden wscript launcher', () => {
-    const args = buildScheduledTaskCreateArgs('wmux-update-abc123', WSCRIPT, VBS) as string[];
+  it('carries the power settings the /TR short form cannot express', () => {
+    // These four are the correctness of the transport, not polish. With the
+    // scheduler's defaults (DisallowStartIfOnBatteries / StopIfGoingOnBatteries
+    // both true) a laptop on battery starts NOTHING on /Run — we fall through
+    // to the transport that cannot survive the job — and unplugging mid-wait
+    // makes the scheduler terminate the waiter, which is #1264 all over again.
+    const xml = buildScheduledTaskXml(WSCRIPT, VBS) as string;
+    expect(xml).not.toBeNull();
+    expect(xml).toContain('<DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>');
+    expect(xml).toContain('<StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>');
+    // The waiter's own budgets are the only deadline it may have.
+    expect(xml).toContain('<ExecutionTimeLimit>PT0S</ExecutionTimeLimit>');
+    expect(xml).toContain('<MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>');
+    // The scheduler must not hard-kill it either.
+    expect(xml).toContain('<AllowHardTerminate>false</AllowHardTerminate>');
+    // /IT equivalent: a logon type with a desktop and no stored password.
+    expect(xml).toContain('<LogonType>InteractiveToken</LogonType>');
+  });
+
+  it('has NO trigger, so a leaked registration can never fire by itself', () => {
+    // The /TR form needed /SC ONCE /ST <time>. A registration that leaked (a
+    // /Create that timed out after the server committed, a /Delete that failed)
+    // would then fire later the same day — and a late waiter opens the recorded
+    // pids BY NUMBER, so after pid recycling it would taskkill strangers and
+    // write a false "install root still locked" marker against an already
+    // updated install.
+    const xml = buildScheduledTaskXml(WSCRIPT, VBS) as string;
+    expect(xml).not.toContain('<Triggers');
+    expect(xml).not.toContain('<StartBoundary>');
+    // On-demand is therefore the ONLY way it can start.
+    expect(xml).toContain('<AllowStartOnDemand>true</AllowStartOnDemand>');
+  });
+
+  it('mirrors the current process elevation onto the run level', () => {
+    // An elevated wmux handing the install to a medium-IL waiter means its
+    // taskkill against the app's own pids fails, $stuck fires, and the install
+    // is refused with exit 3 — a failure mode the in-tree transports never had,
+    // because they inherited the app's token.
+    expect(buildScheduledTaskXml(WSCRIPT, VBS) as string)
+      .toContain('<RunLevel>LeastPrivilege</RunLevel>');
+    expect(buildScheduledTaskXml(WSCRIPT, VBS, 'HighestAvailable') as string)
+      .toContain('<RunLevel>HighestAvailable</RunLevel>');
+  });
+
+  it('escapes the command path instead of letting it break the document', () => {
+    // `&` is legal in a Windows path and is the one character that silently
+    // turns a valid path into an invalid document. Quotes and angle brackets
+    // cannot occur in a path, but the escape is unconditional rather than
+    // resting on that.
+    const amp = 'C:\\Temp\\R&D\\launch-waiter-s.vbs';
+    const xml = buildScheduledTaskXml(WSCRIPT, amp) as string;
+    expect(xml).toContain('R&amp;D');
+    expect(xml).not.toMatch(/R&D/);
+    // Non-ASCII rides through untouched — the file is written as UTF-16 and
+    // the declaration says so, which is what makes a non-Latin %TEMP% safe.
+    const korean = 'C:\\Users\\홍길동\\AppData\\Local\\Temp\\w\\launch-waiter-s.vbs';
+    expect(buildScheduledTaskXml(WSCRIPT, korean) as string).toContain('홍길동');
+    expect(buildScheduledTaskXml(WSCRIPT, VBS) as string)
+      .toContain('<?xml version="1.0" encoding="UTF-16"?>');
+    // A line break would split the text node and silently change the command.
+    expect(buildScheduledTaskXml(WSCRIPT, 'C:\\a\nb.vbs')).toBeNull();
+    expect(buildScheduledTaskXml(WSCRIPT, 'C:\\a\rb.vbs')).toBeNull();
+    expect(buildScheduledTaskXml('', VBS)).toBeNull();
+  });
+
+  it('emits Settings in the order the importer round-trips', () => {
+    // The task XSD validates a SEQUENCE; a definition in the wrong order is
+    // refused, which fails closed to transport W and silently costs the fix.
+    // This is the order `schtasks /Query /XML` itself emits.
+    const xml = buildScheduledTaskXml(WSCRIPT, VBS) as string;
+    const order = [
+      'MultipleInstancesPolicy', 'DisallowStartIfOnBatteries', 'StopIfGoingOnBatteries',
+      'AllowHardTerminate', 'StartWhenAvailable', 'RunOnlyIfNetworkAvailable',
+      'IdleSettings', 'AllowStartOnDemand', 'Enabled', 'Hidden', 'RunOnlyIfIdle',
+      'WakeToRun', 'ExecutionTimeLimit', 'Priority',
+    ].map((tag) => xml.indexOf(`<${tag}`));
+    expect(order.every((i) => i >= 0)).toBe(true);
+    expect([...order].sort((a, b) => a - b)).toEqual(order);
+    // RegistrationInfo → Principals → Settings → Actions, likewise a sequence.
+    const top = ['<RegistrationInfo>', '<Principals>', '<Settings>', '<Actions']
+      .map((tag) => xml.indexOf(tag));
+    expect([...top].sort((a, b) => a - b)).toEqual(top);
+  });
+});
+
+describe('buildScheduledTaskCreateArgs (#1264 — the job-escaping transport)', () => {
+  const XML = 'C:\\Users\\Daniel\\AppData\\Local\\Temp\\wmux-install-waiter-eOsG6n\\waiter-task.xml';
+
+  it('registers the definition from XML, overwriting a leftover name', () => {
+    const args = buildScheduledTaskCreateArgs('wmux-update-abc123', XML) as string[];
     expect(args).not.toBeNull();
-    // The task name must be addressable by the /Run and /Delete calls.
     expect(args[args.indexOf('/TN') + 1]).toBe('wmux-update-abc123');
-    const tr = args[args.indexOf('/TR') + 1];
-    // Both paths quoted (TEMP holds spaces), and the wscript switches bare.
-    expect(tr).toBe(`"${WSCRIPT}" //B //Nologo "${VBS}"`);
-    // One-shot, overwrite a leftover rather than prompt.
-    expect(args).toContain('/SC');
-    expect(args[args.indexOf('/SC') + 1]).toBe('ONCE');
+    // /XML, not /TR: the short form cannot express the battery settings.
+    expect(args[args.indexOf('/XML') + 1]).toBe(XML);
+    expect(args).not.toContain('/TR');
+    expect(args).not.toContain('/SC');
     expect(args).toContain('/F');
-    // No /RU: the task runs as the logged-on interactive user, so no password
-    // is needed and no elevation is requested.
+    // No /RU or /RP: the principal is in the XML, and no password is stored.
     expect(args).not.toContain('/RU');
     expect(args).not.toContain('/RP');
   });
@@ -792,27 +876,19 @@ describe('buildScheduledTaskCreateArgs (#1264 — the job-escaping transport)', 
     expect(buildScheduledTaskDeleteArgs('wmux-update-abc123')).toEqual(['/Delete', '/TN', 'wmux-update-abc123', '/F']);
   });
 
-  it('fails closed rather than registering a truncated or broken action', () => {
-    // Task Scheduler silently caps /TR; a truncated command line would
-    // register a task that runs the WRONG thing, which is worse than falling
-    // through to transport W.
-    const longVbs = 'C:\\Users\\' + 'x'.repeat(SCHEDULED_TASK_TR_LIMIT) + '\\launch-waiter-s.vbs';
-    expect(buildScheduledTaskCreateArgs('wmux-update-abc123', WSCRIPT, longVbs)).toBeNull();
-    // A quote would break out of the /TR literal; a newline would break the
-    // argument entirely. Same fail-closed rule as buildWaiterVbsLauncher.
-    expect(buildScheduledTaskCreateArgs('wmux-update-abc123', WSCRIPT, 'C:\\a"b.vbs')).toBeNull();
-    expect(buildScheduledTaskCreateArgs('wmux-update-abc123', WSCRIPT, 'C:\\a\nb.vbs')).toBeNull();
-    expect(buildScheduledTaskCreateArgs('wmux-update-abc123', '', VBS)).toBeNull();
-    // The name is a Task Scheduler PATH: a backslash would nest it into a
-    // folder, and anything unexpected is refused outright.
-    expect(buildScheduledTaskCreateArgs('wmux-update-a\\b', WSCRIPT, VBS)).toBeNull();
-    expect(buildScheduledTaskCreateArgs('Some Other Task', WSCRIPT, VBS)).toBeNull();
-    expect(buildScheduledTaskCreateArgs('wmux-update-', WSCRIPT, VBS)).toBeNull();
+  it('refuses a name it could not address again later', () => {
+    // The name is a Task Scheduler PATH and the handle /Run, /Delete and the
+    // startup sweep all use. A backslash would nest it into a folder the sweep
+    // does not look in.
+    expect(buildScheduledTaskCreateArgs('wmux-update-a\\b', XML)).toBeNull();
+    expect(buildScheduledTaskCreateArgs('Some Other Task', XML)).toBeNull();
+    expect(buildScheduledTaskCreateArgs('wmux-update-', XML)).toBeNull();
+    expect(buildScheduledTaskCreateArgs('wmux-update-abc123', 'C:\\a"b.xml')).toBeNull();
+    expect(buildScheduledTaskCreateArgs('wmux-update-abc123', '')).toBeNull();
   });
 
   it('accepts the name shape spawnInstallWaiter actually generates', () => {
-    // mkdtemp basename with every non-alphanumeric stripped.
     const generated = `wmux-update-${'wmux-install-waiter-eOsG6n'.replace(/[^A-Za-z0-9]/g, '')}`;
-    expect(buildScheduledTaskCreateArgs(generated, WSCRIPT, VBS)).not.toBeNull();
+    expect(buildScheduledTaskCreateArgs(generated, XML)).not.toBeNull();
   });
 });
