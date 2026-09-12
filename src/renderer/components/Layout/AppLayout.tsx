@@ -811,7 +811,9 @@ export default function AppLayout() {
   // Rationale and trigger choice live in terminal/atlasWakeRecovery.ts.
   useEffect(() => {
     // optional-chain electronAPI — jsdom (tests) has no preload bridge; an
-    // older main without the push degrades to visibility-only recovery.
+    // older main without the push degrades to visibility-only recovery (the
+    // module tracks whether a resume is ever actually DELIVERED, so a platform
+    // where powerMonitor never fires keeps that fallback — see #1234).
     const onResumed = (window as any).electronAPI?.system?.onResumed;
     return initAtlasWakeRecovery({
       onSystemResumed:
@@ -822,8 +824,11 @@ export default function AppLayout() {
   // #882 — one renderer-wide subscription to "is anyone looking at this
   // window" (minimized / hidden to tray / screen locked), which panes fold
   // into their #766 viewer-visibility report. All platforms: the bit is right
-  // everywhere, it is only Windows where `document.visibilityState` could not
-  // supply it. See hooks/useWindowDisplayed.ts.
+  // everywhere, whereas `document.visibilityState` cannot supply it — on
+  // Windows it is occlusion-driven, so it flips on an ordinary alt-tab and says
+  // nothing about whether the window is minimized or the screen is locked
+  // (#1234 corrected the earlier claim that it never flips there at all).
+  // See hooks/useWindowDisplayed.ts.
   useEffect(() => windowDisplayedStore.init(), []);
 
 
