@@ -356,6 +356,72 @@ export function selectOwnTreePids(
 }
 
 /**
+ * #1264 — the Task Scheduler transport's command line.
+ *
+ * ROOT CAUSE this exists for. Every transport below (W/A/B) reaches the waiter
+ * by `child_process.spawn` from the Electron main process, and on Windows that
+ * makes the waiter a MEMBER OF WHATEVER JOB OBJECT THE APP IS IN. libuv never
+ * passes `CREATE_BREAKAWAY_FROM_JOB` (its own win/process.c comment says so),
+ * and `detached: true` only buys DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP —
+ * neither of which leaves a job. A job created with
+ * `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` terminates every member the moment its
+ * last handle closes, i.e. exactly when wmux's last process exits. The
+ * `wscript` hop does not help: it is spawned the same way, so the whole
+ * trampoline is inside the job with the PowerShell it hosts.
+ *
+ * That is precisely the reported signature: `update-install-ready.tmp` =
+ * `alive` and `launched-w.txt` = `launched` (the waiter's first two lines ran),
+ * then nothing — no marker overwrite from ANY of the script's own exit
+ * branches, and no Setup.exe. A process that is killed by the kernel cannot
+ * reach a branch.
+ *
+ * The fix is to stop being the parent. `schtasks /Create` + `schtasks /Run`
+ * makes the Task Scheduler service start the process: it is not our child, not
+ * in our job, and not in any tree a `taskkill /T` of ours can walk. No admin
+ * rights are needed for a per-user task, and no password is needed because the
+ * task is left to run as the logged-on interactive user.
+ *
+ * The command still goes through `wscript.exe` rather than straight to
+ * PowerShell: Task Scheduler starts an interactive-user task with a normal
+ * console, so a console-subsystem child would flash the very window #1136
+ * removed. wscript is GUI-subsystem and starts PowerShell hidden.
+ *
+ * `/TR` is capped by Task Scheduler at 261 characters, so a long enough TEMP
+ * path has to fail CLOSED here and fall through to transport W rather than
+ * register a truncated command.
+ */
+export const SCHEDULED_TASK_TR_LIMIT = 261;
+
+export function buildScheduledTaskCreateArgs(
+  taskName: string,
+  wscriptPath: string,
+  vbsPath: string,
+): string[] | null {
+  // The name rides an argv slot, but it is also a Task Scheduler path: `\`
+  // would nest it into a folder and a quote would break the /TR parse.
+  if (!/^wmux-update-[A-Za-z0-9]{1,32}$/.test(taskName)) return null;
+  // Both paths are QUOTED inside /TR, so whitespace is fine and only a quote
+  // or a line break could break out — same fail-closed rule as the VBS builder.
+  if (![wscriptPath, vbsPath].every((p) => p.length > 0 && !/["\r\n]/.test(p))) return null;
+  const tr = `"${wscriptPath}" //B //Nologo "${vbsPath}"`;
+  if (tr.length > SCHEDULED_TASK_TR_LIMIT) return null;
+  // /SC ONCE needs a /ST even though the task is started by /Run immediately;
+  // 23:59 is simply the furthest-out slot in the day, so a task that somehow
+  // outlives its deletion below is least likely to fire on its own. /F
+  // overwrites a same-named leftover instead of prompting.
+  return ['/Create', '/TN', taskName, '/TR', tr, '/SC', 'ONCE', '/ST', '23:59', '/F'];
+}
+
+/** `schtasks` arguments that start, and that remove, a created waiter task. */
+export function buildScheduledTaskRunArgs(taskName: string): string[] {
+  return ['/Run', '/TN', taskName];
+}
+
+export function buildScheduledTaskDeleteArgs(taskName: string): string[] {
+  return ['/Delete', '/TN', taskName, '/F'];
+}
+
+/**
  * The waiter script. Pure so its ordering guarantees are unit-testable — the
  * one property that matters is that Setup.exe is never started before both the
  * handle waits and the lock probe have passed.
@@ -466,7 +532,7 @@ export function buildWaiterScript(plan: WaiterPlan, launchStampPath?: string): s
     // #1043 newcomer-marker note above). Written BEFORE the WinForms block so
     // an Add-Type failure cannot eat it, and only AFTER the mutex so a
     // yielding newcomer (exit 5) cannot clobber the incumbent's outcome.
-    `try { Set-Content -LiteralPath $marker -Value 'install-aborted: wmux quit to install the update, but the installer step was interrupted before it could report an outcome. Try again, or run the installer from the releases page.' -Encoding utf8 } catch { }`,
+    `try { Set-Content -LiteralPath $marker -Value 'install-aborted: wmux quit to install the update and the install waiter did start, but it was stopped before it could run the installer — interrupted before it could report an outcome. Try again, or run the installer from the releases page.' -Encoding utf8 } catch { }`,
     // #1043 — best-effort "please wait" indicator for the whole silent
     // window below. Deliberately outside every correctness path: every use
     // of $form is null-checked and wrapped in its own try/catch, so a
@@ -806,6 +872,20 @@ function swallowSpawnError(child: ChildProcess): void {
   child.on('error', () => { /* the launch-stamp gate is the real verdict */ });
 }
 
+/**
+ * Remove a waiter task registration. Best-effort by construction: a task that
+ * cannot be deleted is cosmetic litter, while a throw here would land in
+ * spawnInstallWaiter's outer catch and refuse an install that is already
+ * running.
+ */
+function deleteScheduledTask(schtasksPath: string, taskName: string): void {
+  try {
+    execFileSync(schtasksPath, buildScheduledTaskDeleteArgs(taskName), {
+      timeout: 10_000, windowsHide: true, stdio: 'ignore',
+    });
+  } catch { /* litter, not a failure */ }
+}
+
 /** True once `stampPath` exists, polling every 50ms up to `budgetMs`. */
 function waitForLaunchStamp(stampPath: string, budgetMs: number): boolean {
   const deadline = Date.now() + budgetMs;
@@ -835,6 +915,13 @@ function waitForLaunchStamp(stampPath: string, budgetMs: number): boolean {
 // windows (~14s) before the refusal instead of two (~8s) — paid only on the
 // path that was already going to end in a refusal dialog, and nothing is
 // armed yet (the 20s before-quit deadline starts at app.quit()).
+// #1264 — S is the most generous: its critical path is a schtasks registration
+// round-trip plus a scheduler-service process start, on top of the same wscript
+// host + PS 5.1 cold start + AMSI scan the W budget already pays for. It is
+// also the only transport that can actually deliver the install on a machine
+// inside a kill-on-close job, so misreading a slow-but-working scheduler as
+// dead costs the whole update.
+const LAUNCH_STAMP_BUDGET_S_MS = 10_000;
 const LAUNCH_STAMP_BUDGET_W_MS = 6_000;
 const LAUNCH_STAMP_BUDGET_A_MS = 6_000;
 const LAUNCH_STAMP_BUDGET_B_MS = 2_000;
@@ -855,7 +942,13 @@ const LAUNCH_STAMP_BUDGET_B_MS = 2_000;
  * nothing on stderr, no AV detection — while the same PowerShell created by
  * a detached cmd.exe survives and runs to completion. So:
  *
- *   transport W — #1136, PREFERRED. wscript.exe (GUI subsystem, so it never
+ *   transport S — #1264, PREFERRED. A one-shot Task Scheduler entry, started
+ *       with `schtasks /Run`. The only transport whose process is NOT our
+ *       child: the scheduler service starts it, so it is outside our job
+ *       object and outside every tree our own `taskkill /T` can walk. It is
+ *       the fix for "the waiter stamped `alive` and then died the instant the
+ *       app exited" — see buildScheduledTaskCreateArgs.
+ *   transport W — #1136. wscript.exe (GUI subsystem, so it never
  *       touches the Win11 default-terminal delegation that made the cmd.exe
  *       trampoline flash a visible Windows Terminal window) running a VBS
  *       one-liner that starts the same PowerShell hidden and waits on it.
@@ -884,13 +977,16 @@ export function spawnInstallWaiter(plan: WaiterPlan): string | null {
   if (process.platform !== 'win32') return null;
   try {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-install-waiter-'));
+    const stampS = path.join(dir, 'launched-s.txt');
     const stampW = path.join(dir, 'launched-w.txt');
     const stampA = path.join(dir, 'launched-a.txt');
     const stampB = path.join(dir, 'launched-b.txt');
+    const scriptS = buildWaiterScript(plan, stampS);
     const scriptW = buildWaiterScript(plan, stampW);
     const scriptA = buildWaiterScript(plan, stampA);
     const scriptB = buildWaiterScript(plan, stampB);
-    if (!scriptW || !scriptA || !scriptB) return null;
+    if (!scriptS || !scriptW || !scriptA || !scriptB) return null;
+    const scriptPathS = path.join(dir, 'wait-and-install-s.ps1');
     const scriptPathW = path.join(dir, 'wait-and-install-w.ps1');
     const scriptPathA = path.join(dir, 'wait-and-install.ps1');
     const scriptPathB = path.join(dir, 'wait-and-install-b.ps1');
@@ -900,6 +996,7 @@ export function spawnInstallWaiter(plan: WaiterPlan): string | null {
     // Measured: with `C:\Users\홍길동\...` the BOM-less script still exits 0
     // while writing to the wrong path, which is the worst shape a failure can
     // take here (silent success). With the BOM it behaves.
+    fs.writeFileSync(scriptPathS, '\uFEFF' + scriptS, 'utf-8');
     fs.writeFileSync(scriptPathW, '\uFEFF' + scriptW, 'utf-8');
     fs.writeFileSync(scriptPathA, '\uFEFF' + scriptA, 'utf-8');
     fs.writeFileSync(scriptPathB, '\uFEFF' + scriptB, 'utf-8');
@@ -919,6 +1016,37 @@ export function spawnInstallWaiter(plan: WaiterPlan): string | null {
     let spawnedA = false;
     let spawnedB = false;
 
+    // #1264 — transport S, tried FIRST: the only one that structurally
+    // survives wmux's exit. Everything below is a child of this process and
+    // therefore a member of the app's job object; see
+    // buildScheduledTaskCreateArgs for the full mechanism.
+    const wscriptPath = path.join(systemRoot, 'System32', 'wscript.exe');
+    const schtasksPath = path.join(systemRoot, 'System32', 'schtasks.exe');
+    const taskName = `wmux-update-${path.basename(dir).replace(/[^A-Za-z0-9]/g, '')}`;
+    const vbsS = buildWaiterVbsLauncher(powershell, psArgs, scriptPathS);
+    const taskArgs = vbsS === null ? null : buildScheduledTaskCreateArgs(taskName, wscriptPath, path.join(dir, 'launch-waiter-s.vbs'));
+    if (vbsS !== null && taskArgs !== null) {
+      let created = false;
+      try {
+        fs.writeFileSync(path.join(dir, 'launch-waiter-s.vbs'), '\uFEFF' + vbsS, 'utf16le');
+        execFileSync(schtasksPath, taskArgs, { timeout: 10_000, windowsHide: true, stdio: 'ignore' });
+        created = true;
+        execFileSync(schtasksPath, buildScheduledTaskRunArgs(taskName), { timeout: 10_000, windowsHide: true, stdio: 'ignore' });
+      } catch { /* no Task Scheduler access — W/A/B still get their windows */ }
+      if (created && waitForLaunchStamp(stampS, LAUNCH_STAMP_BUDGET_S_MS)) {
+        // The registration has done its job the moment the scheduler has
+        // started the process: the waiter is already running as a child of
+        // the scheduler service, and deleting the task definition does not
+        // stop a started instance. Delete now rather than at the next boot so
+        // nothing of ours is left registered on a machine that is about to be
+        // replaced by the new install.
+        deleteScheduledTask(schtasksPath, taskName);
+        console.log(`[installTeardown] waiter verified via scheduled task (${taskName}): ${scriptPathS}`);
+        return scriptPathS;
+      }
+      if (created) deleteScheduledTask(schtasksPath, taskName);
+    }
+
     // #1136 — transport W, tried first because it is the only one that stays
     // invisible under the Win11 default-terminal delegation.
     const vbs = buildWaiterVbsLauncher(powershell, psArgs, scriptPathW);
@@ -933,7 +1061,7 @@ export function spawnInstallWaiter(plan: WaiterPlan): string | null {
       try {
         fs.writeFileSync(vbsPath, '\uFEFF' + vbs, 'utf16le');
         const w = spawn(
-          path.join(systemRoot, 'System32', 'wscript.exe'),
+          wscriptPath,
           // //B: batch mode. Without it a machine with Windows Script Host
           // disabled by policy shows an error DIALOG — the exact class of
           // visible window this transport exists to remove. With it, wscript

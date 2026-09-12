@@ -18,6 +18,10 @@ import {
   parseProcessRows,
   buildWaiterScript,
   buildWaiterVbsLauncher,
+  buildScheduledTaskCreateArgs,
+  buildScheduledTaskRunArgs,
+  buildScheduledTaskDeleteArgs,
+  SCHEDULED_TASK_TR_LIMIT,
   readDaemonPid,
   terminatePids,
   readAbortMarker,
@@ -758,5 +762,57 @@ describe('buildWaiterVbsLauncher (#1136 — the hidden transport)', () => {
     expect(buildWaiterVbsLauncher(PS, ['-NoProfile', ''], 'C:\\Temp\\w.ps1')).toBeNull();
     // A space in either PATH stays legal — that is the whole point of quoting.
     expect(buildWaiterVbsLauncher(PS, ARGS, 'C:\\Program Files\\w.ps1')).not.toBeNull();
+  });
+});
+
+describe('buildScheduledTaskCreateArgs (#1264 — the job-escaping transport)', () => {
+  const WSCRIPT = 'C:\\Windows\\System32\\wscript.exe';
+  const VBS = 'C:\\Users\\Daniel\\AppData\\Local\\Temp\\wmux-install-waiter-eOsG6n\\launch-waiter-s.vbs';
+
+  it('registers a one-shot task whose action is the hidden wscript launcher', () => {
+    const args = buildScheduledTaskCreateArgs('wmux-update-abc123', WSCRIPT, VBS) as string[];
+    expect(args).not.toBeNull();
+    // The task name must be addressable by the /Run and /Delete calls.
+    expect(args[args.indexOf('/TN') + 1]).toBe('wmux-update-abc123');
+    const tr = args[args.indexOf('/TR') + 1];
+    // Both paths quoted (TEMP holds spaces), and the wscript switches bare.
+    expect(tr).toBe(`"${WSCRIPT}" //B //Nologo "${VBS}"`);
+    // One-shot, overwrite a leftover rather than prompt.
+    expect(args).toContain('/SC');
+    expect(args[args.indexOf('/SC') + 1]).toBe('ONCE');
+    expect(args).toContain('/F');
+    // No /RU: the task runs as the logged-on interactive user, so no password
+    // is needed and no elevation is requested.
+    expect(args).not.toContain('/RU');
+    expect(args).not.toContain('/RP');
+  });
+
+  it('the run and delete calls address the same task', () => {
+    expect(buildScheduledTaskRunArgs('wmux-update-abc123')).toEqual(['/Run', '/TN', 'wmux-update-abc123']);
+    expect(buildScheduledTaskDeleteArgs('wmux-update-abc123')).toEqual(['/Delete', '/TN', 'wmux-update-abc123', '/F']);
+  });
+
+  it('fails closed rather than registering a truncated or broken action', () => {
+    // Task Scheduler silently caps /TR; a truncated command line would
+    // register a task that runs the WRONG thing, which is worse than falling
+    // through to transport W.
+    const longVbs = 'C:\\Users\\' + 'x'.repeat(SCHEDULED_TASK_TR_LIMIT) + '\\launch-waiter-s.vbs';
+    expect(buildScheduledTaskCreateArgs('wmux-update-abc123', WSCRIPT, longVbs)).toBeNull();
+    // A quote would break out of the /TR literal; a newline would break the
+    // argument entirely. Same fail-closed rule as buildWaiterVbsLauncher.
+    expect(buildScheduledTaskCreateArgs('wmux-update-abc123', WSCRIPT, 'C:\\a"b.vbs')).toBeNull();
+    expect(buildScheduledTaskCreateArgs('wmux-update-abc123', WSCRIPT, 'C:\\a\nb.vbs')).toBeNull();
+    expect(buildScheduledTaskCreateArgs('wmux-update-abc123', '', VBS)).toBeNull();
+    // The name is a Task Scheduler PATH: a backslash would nest it into a
+    // folder, and anything unexpected is refused outright.
+    expect(buildScheduledTaskCreateArgs('wmux-update-a\\b', WSCRIPT, VBS)).toBeNull();
+    expect(buildScheduledTaskCreateArgs('Some Other Task', WSCRIPT, VBS)).toBeNull();
+    expect(buildScheduledTaskCreateArgs('wmux-update-', WSCRIPT, VBS)).toBeNull();
+  });
+
+  it('accepts the name shape spawnInstallWaiter actually generates', () => {
+    // mkdtemp basename with every non-alphanumeric stripped.
+    const generated = `wmux-update-${'wmux-install-waiter-eOsG6n'.replace(/[^A-Za-z0-9]/g, '')}`;
+    expect(buildScheduledTaskCreateArgs(generated, WSCRIPT, VBS)).not.toBeNull();
   });
 });
