@@ -42,11 +42,8 @@ describe('useTerminal macOS Ctrl passthrough (source-level lock)', () => {
   });
 
   it('the non-mac bubble list keeps the full original set (no win/linux regression)', () => {
-    // 'g' joined the set in #1280: Ctrl+G is Rich Input (useComposeShortcut),
-    // so it must bubble instead of being encoded as BEL by the catch-all ctrl
-    // writer. Every pre-existing member still has to be here.
     expect(HANDLER).toMatch(
-      /\[',', 'b', 'd', 'g', 'k', 'i', 'n', 't', 'm', 'ArrowUp', 'ArrowDown', '`'\]/,
+      /\[',', 'b', 'd', 'k', 'i', 'n', 't', 'm', 'ArrowUp', 'ArrowDown', '`'\]/,
     );
   });
 

@@ -13,10 +13,15 @@ import path from 'node:path';
  * AND the popover opened. Fixing only the modifier match in
  * useComposeShortcut would have left the `^G`.
  *
- * The fix is the allowlist Ctrl+D / Ctrl+T already use: bubble the key so
- * neither xterm nor the catch-all encoder writes anything. jsdom cannot run
- * xterm's custom key handler faithfully, so — like the macCtrlPassthrough and
- * ctrlLetterEncoding locks next to this file — we pin the source.
+ * The fix bubbles the key, the way Ctrl+D / Ctrl+T already do, so neither
+ * xterm nor the catch-all encoder writes anything — but from its OWN branch
+ * testing the exact chord, not from those allowlists: their condition is only
+ * `ctrlKey && !shiftKey`, so a row there would also swallow Ctrl+Alt+G and
+ * Ctrl+Meta+G, which no handler claims (CodeRabbit on #1286).
+ *
+ * jsdom cannot run xterm's custom key handler faithfully, so — like the
+ * macCtrlPassthrough and ctrlLetterEncoding locks next to this file — we pin
+ * the source.
  */
 
 const SRC = readFileSync(
@@ -34,51 +39,58 @@ function bubbleList(name: string): string {
   return HANDLER.slice(at, HANDLER.indexOf(';', at));
 }
 
+const COMPOSE_BRANCH = /!isMac && e\.ctrlKey && !e\.shiftKey && !e\.altKey && !e\.metaKey\s*\n?\s*&& \(e\.key === 'g' \|\| e\.code === 'KeyG'\)/;
+
 describe('useTerminal bubbles Ctrl+G to the Rich Input listener (#1280)', () => {
   it('locates the custom key event handler', () => {
     expect(handlerStart).toBeGreaterThan(-1);
     expect(handlerEnd).toBeGreaterThan(handlerStart);
   });
 
-  it("non-mac bubbleKeys carries 'g'", () => {
-    const list = bubbleList('bubbleKeys');
-    const nonMac = list.slice(list.indexOf(':'));
-    expect(nonMac).toContain("'g'");
+  it('bubbles the exact Ctrl+G chord — no Shift, no Alt, no Meta', () => {
+    // Alt/Meta excluded on purpose: those chords are not the binding, and a
+    // bubble would leave them writing no byte and triggering no action.
+    expect(HANDLER).toMatch(COMPOSE_BRANCH);
   });
 
-  it("non-mac bubbleCodes carries 'KeyG' for the IME/non-Latin layout path", () => {
-    const list = bubbleList('bubbleCodes');
-    const nonMac = list.slice(list.indexOf(':'));
-    expect(nonMac).toContain("'KeyG'");
+  it('matches the physical KeyG too, for a non-Latin layout / IME', () => {
+    expect(COMPOSE_BRANCH.source).toContain("code === 'KeyG'");
+    expect(HANDLER).toMatch(COMPOSE_BRANCH);
   });
 
-  it('macOS keeps Ctrl+G as a readline byte (⌘G is the binding there)', () => {
+  it('is non-mac only — macOS keeps Ctrl+G as a readline byte (⌘G is the binding)', () => {
+    const at = HANDLER.search(COMPOSE_BRANCH);
+    expect(at).toBeGreaterThan(-1);
+    expect(HANDLER.slice(at, at + 20)).toContain('!isMac');
+    // And 'g' / KeyG stay out of the shared allowlists, whose mac branch would
+    // otherwise hand ⌘-less Ctrl+G to the app on macOS as well.
     const keys = bubbleList('bubbleKeys');
-    const macKeys = keys.slice(0, keys.indexOf(':'));
-    expect(macKeys).not.toContain("'g'");
-    const codes = bubbleList('bubbleCodes');
-    const macCodes = codes.slice(0, codes.indexOf(':'));
-    expect(macCodes).not.toContain("'KeyG'");
+    expect(keys).not.toContain("'g'");
+    expect(bubbleList('bubbleCodes')).not.toContain("'KeyG'");
   });
 
-  it('the bubble allowlist is reached before the catch-all ctrl encoder', () => {
+  it('bubbles before the catch-all ctrl encoder, which would write BEL', () => {
     // Order is the whole fix: the catch-all writes 0x07 and returns false.
-    expect(HANDLER.indexOf('const bubbleKeys = isMac'))
+    expect(HANDLER.search(COMPOSE_BRANCH))
       .toBeLessThan(HANDLER.indexOf('const ctrlByte = resolveCtrlLetterByte(e)'));
   });
 
-  it('the disabled-shortcut gate precedes the bubble allowlist and writes the byte', () => {
+  it('the disabled-shortcut branch writes the byte, and runs before the bubble', () => {
     // The escape hatch: Ctrl+G is an advertised keymap row, so a user can
     // switch it off in Settings → Shortcuts and hand the key back to the pane
-    // (Claude Code's external editor, readline's abort). That only works if
-    // the disabled gate is reached BEFORE the bubble allowlist and writes the
-    // control byte itself — returning true would let xterm encode it from the
-    // QWERTY keyCode instead (#1227).
-    const gate = HANDLER.indexOf('matchesDisabledShortcut(');
-    expect(gate).toBeGreaterThan(-1);
-    expect(gate).toBeLessThan(HANDLER.indexOf('const bubbleKeys = isMac'));
-    expect(HANDLER).toMatch(
-      /const disabledCtrl = resolveCtrlLetterByte\(e\);\s*if \(disabledCtrl\) \{\s*e\.preventDefault\(\);\s*window\.electronAPI\.pty\.write\(ptyId, disabledCtrl\);/,
+    // (Claude Code's external editor, readline's abort). That needs the
+    // disabled gate to come FIRST and to write the control byte inside its own
+    // branch — returning true would let xterm encode it from the QWERTY
+    // keyCode instead (#1227). Matched as one contiguous block so the write
+    // cannot drift out of the branch (CodeRabbit on #1286).
+    const disabledBranch = HANDLER.match(
+      /if \(matchesDisabledShortcut\([\s\S]{0,300}?\)\) \{[\s\S]{0,900}?\n {6}\}/,
     );
+    expect(disabledBranch).not.toBeNull();
+    expect(disabledBranch?.[0]).toMatch(
+      /const disabledCtrl = resolveCtrlLetterByte\(e\);\s*if \(disabledCtrl\) \{\s*e\.preventDefault\(\);\s*window\.electronAPI\.pty\.write\(ptyId, disabledCtrl\);\s*noteUserKeystroke\(disabledCtrl\);\s*return false;/,
+    );
+    expect(HANDLER.indexOf(disabledBranch?.[0] ?? ''))
+      .toBeLessThan(HANDLER.search(COMPOSE_BRANCH));
   });
 });
