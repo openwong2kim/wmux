@@ -141,6 +141,25 @@ export interface RemoteWorkspacesSlice {
   setActiveRemoteKey: (key: string | null) => void;
 }
 
+/**
+ * #1086 — the ONE definition of "a remote mirror is what's on screen".
+ *
+ * WorkspaceCenter renders the local pane tree and every attached mirror at
+ * once and picks with display:none, so this predicate decides which surface
+ * the user is looking at. Keeping it here (rather than re-deriving
+ * `activeRemoteKey ? …` at each call site) means the local-vs-remote gate has
+ * a single reading, and it adds the check the raw flag cannot make on its
+ * own: a key with no live entry behind it selects nothing, so it must fall
+ * back to the local tree instead of hiding everything.
+ */
+export function isRemoteMirrorVisible(state: {
+  remoteWorkspaces: AttachedRemoteWorkspace[];
+  activeRemoteKey: string | null;
+}): boolean {
+  if (!state.activeRemoteKey) return false;
+  return state.remoteWorkspaces.some((r) => r.key === state.activeRemoteKey);
+}
+
 export const createRemoteWorkspacesSlice: StateCreator<StoreState, [['zustand/immer', never]], [], RemoteWorkspacesSlice> = (set) => ({
   remoteWorkspaces: [],
   activeRemoteKey: null,

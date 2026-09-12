@@ -64,6 +64,38 @@ export function clearRemoteSelection(state: { activeRemoteKey?: string | null })
 }
 
 /**
+ * #1086 — THE one place that makes a local workspace the visible surface.
+ *
+ * `activeWorkspaceId` and `activeRemoteKey` are independent fields and
+ * WorkspaceCenter checks the remote one FIRST, so an assignment that forgets
+ * `clearRemoteSelection` leaves the mirror on screen while the sidebar
+ * highlights the local row — the user's click looks swallowed and only a
+ * SECOND selection (which does run the clear) gets them back. The convention
+ * of "remember to call the two helpers at every assignment site" is what kept
+ * failing: it was documented but unenforceable, and new sites (orphan-session
+ * adopt) shipped without it.
+ *
+ * So: never write `state.activeWorkspaceId = …` directly — call this. Both
+ * companion clears are idempotent and guarded for stores/tests mounted
+ * without the cold-park maps or the remoteWorkspacesSlice, so this is safe
+ * everywhere. A guard test (activeWorkspaceIdAssignment.guard.test.ts) fails
+ * the build if a raw assignment reappears anywhere in src/renderer.
+ */
+export function activateLocalWorkspace(
+  state: {
+    activeWorkspaceId: string;
+    parkedWorkspaceIds?: Record<string, true>;
+    lastVisibleAt?: Record<string, number>;
+    activeRemoteKey?: string | null;
+  },
+  id: string,
+): void {
+  state.activeWorkspaceId = id;
+  clearColdParkEntry(state, id);
+  clearRemoteSelection(state);
+}
+
+/**
  * Drop multiview members whose workspace is gone, and disband a group left with
  * fewer than two. Call from every path where workspaces disappear — the same set
  * clearColdParkEntry covers (removeWorkspace, company destroy/removeDept,
@@ -344,8 +376,7 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       }
       state.nextWorkspaceOrdinal = wsOrdinal + 1;
       state.workspaces.push(ws);
-      state.activeWorkspaceId = ws.id;
-      clearRemoteSelection(state);
+      activateLocalWorkspace(state, ws.id);
     }),
 
     addWorkspaceWithPreset: (presetId, name) => set((state: StoreState) => {
@@ -381,8 +412,7 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       };
       state.nextWorkspaceOrdinal = wsOrdinal + 1;
       state.workspaces.push(ws);
-      state.activeWorkspaceId = ws.id;
-      clearRemoteSelection(state);
+      activateLocalWorkspace(state, ws.id);
     }),
 
     // #1011 — Active → Archived → Deleted. Archiving snapshots the
@@ -445,11 +475,10 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
         }
         state.nextWorkspaceOrdinal = highWater + 1;
         state.workspaces.push(ws);
-        state.activeWorkspaceId = ws.id;
-        // Same convention as every other activeWorkspaceId assignment
-        // (clearRemoteSelection's contract): a restore while a remote mirror
-        // is showing must actually land on the restored workspace.
-        clearRemoteSelection(state);
+        // A restore while a remote mirror is showing must actually land on the
+        // restored workspace — activateLocalWorkspace is the single site that
+        // guarantees it (see its doc comment).
+        activateLocalWorkspace(state, ws.id);
         state.archivedWorkspaces = state.archivedWorkspaces.filter((a) => a.id !== archivedId);
       });
     },
@@ -502,8 +531,7 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       state.nextWorkspaceOrdinal = wsOrdinal + 1;
       // Insert right after the source for intuitive placement, then activate.
       state.workspaces.splice(idx + 1, 0, ws);
-      state.activeWorkspaceId = ws.id;
-      clearRemoteSelection(state);
+      activateLocalWorkspace(state, ws.id);
     }),
 
     // NOTE: PTY cleanup is the caller's responsibility (see Sidebar.handleClose, useKeyboard Ctrl+Shift+W)
@@ -680,8 +708,7 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
         if (state.parkedWorkspaceIds[id]) delete state.parkedWorkspaceIds[id];
         if (state.lastVisibleAt[id] !== undefined) delete state.lastVisibleAt[id];
       }
-      state.activeWorkspaceId = id;
-      clearRemoteSelection(state);
+      activateLocalWorkspace(state, id);
       // D-teardown: a workspace switch invalidates any marked-region queries
       // the inspect overlay is holding, so exit inspect explicitly rather than
       // letting it dangle against a now-unmounted DOM (inspect is preserved as
@@ -994,8 +1021,7 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
         : [];
       // The previous session's group cannot describe this one's workspaces.
       pruneMultiviewMembership(state);
-      state.activeWorkspaceId = data.activeWorkspaceId;
-      clearRemoteSelection(state);
+      activateLocalWorkspace(state, data.activeWorkspaceId);
       state.sidebarVisible = data.sidebarVisible;
 
       // ── P2 hydration backfill (checklist F) ──────────────────────────────

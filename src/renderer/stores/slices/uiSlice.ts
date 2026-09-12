@@ -6,6 +6,7 @@ import { canStashPaneSurfaces } from '../../../shared/paneStash';
 import { isDaemonModeActive } from '../../daemon/daemonMode';
 import { computePaneAutoName, paneDisplayName } from '../../utils/paneNaming';
 import { MAX_PANES_PER_WORKSPACE } from './paneSlice';
+import { clearRemoteSelection } from './workspaceSlice';
 import { publishPaneStashed, publishPaneFocused } from '../../events/publisher';
 import { saveSessionNow } from '../../utils/sessionSaveBridge';
 import { markRetentionMigrationDone } from '../retentionMigration';
@@ -1414,6 +1415,12 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
       if (!state.multiviewIds.includes(wsId)) {
         state.multiviewIds.push(wsId);
       }
+      // #1086 — the grid IS the local viewport, so joining it is a local-view
+      // action even though it never assigns activeWorkspaceId (which is why
+      // activateLocalWorkspace cannot cover this site). Without the clear,
+      // WorkspaceCenter keeps the mirror on top and Ctrl+click reads as "does
+      // nothing". Guarded for stores mounted without the remote slice.
+      clearRemoteSelection(state);
       // Cold-park (TASK-9): a workspace joining the multiview grid becomes
       // visible — un-park it synchronously so the tile renders live this frame.
       // Guarded for tests that mount uiSlice without the workspaceSlice maps.

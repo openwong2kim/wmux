@@ -20,6 +20,7 @@ import type { Pane, PaneLeaf, Workspace } from '../../../shared/types';
 import { generateId } from '../../../shared/types';
 import { getWorkspacePtyIds, getWorkspaceLeafPanes, findPane, getLeafPanes } from '../../../shared/paneUtils';
 import { MAX_PANES_PER_WORKSPACE } from './paneSlice';
+import { activateLocalWorkspace } from './workspaceSlice';
 import { publishPaneCreated, publishPaneFocused } from '../../events/publisher';
 import { saveSessionNow } from '../../utils/sessionSaveBridge';
 import { t } from '../../i18n';
@@ -242,7 +243,11 @@ export const createOrphanSessionsSlice: StateCreator<
       }
       adopted = { wsId: ws.id, paneId: leaf.id, previousActiveId: ws.activePaneId };
       ws.activePaneId = leaf.id;
-      state.activeWorkspaceId = ws.id;
+      // #1086 — adopting is a local-view action: the adopted pane must be what
+      // the user ends up looking at. Going through the activation helper drops
+      // any remote mirror selection, which otherwise keeps covering the local
+      // tree and makes the adopt click look like it did nothing.
+      activateLocalWorkspace(state, ws.id);
       // A zoom pinned elsewhere must not swallow the adopted pane — the same
       // born-hidden un-zoom splitPane applies (#182).
       if (state.zoomedPaneId && findPane(ws.rootPane, state.zoomedPaneId)) {
