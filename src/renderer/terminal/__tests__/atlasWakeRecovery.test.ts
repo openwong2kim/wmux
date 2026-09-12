@@ -24,7 +24,11 @@ function makeFakeDocument(initial: DocumentVisibilityState = 'hidden') {
   };
 }
 
-function setup(nowStart = 0, initial: DocumentVisibilityState = 'hidden') {
+function setup(
+  nowStart = 0,
+  initial: DocumentVisibilityState = 'hidden',
+  platform = 'win32',
+) {
   let now = nowStart;
   let resumeCb: Listener | null = null;
   let unsubscribed = 0;
@@ -36,6 +40,7 @@ function setup(nowStart = 0, initial: DocumentVisibilityState = 'hidden') {
       return () => { unsubscribed++; };
     },
     recoverNow: (reason) => recovered.push(reason),
+    platform,
     documentRef: doc,
     now: () => now,
   });
@@ -104,11 +109,37 @@ describe('atlasWakeRecovery', () => {
     expect(s.recovered).toEqual(['system-resumed']);
   });
 
+  // #1234's reporter logged 15 minutes of ordinary alt-tabbing with no reason
+  // to think the machine had ever slept in that session. On the platform where
+  // the fix is required, that must be zero atlas wipes -- a fix that waits for
+  // a suspend to take effect is not a fix.
+  it('recovers nothing across repeated visibility transitions with no resume ever delivered (win32)', () => {
+    const s = setup(0, 'hidden', 'win32');
+    for (let i = 0; i < 20; i++) {
+      s.advance(30_000);
+      s.doc.hide();
+      s.advance(5_000);
+      s.doc.show();
+    }
+    expect(s.recovered).toEqual([]);
+  });
+
+  it('requires the latch immediately on darwin too', () => {
+    const s = setup(0, 'hidden', 'darwin');
+    s.doc.show();
+    expect(s.recovered).toEqual([]);
+    // A real wake still recovers, latched.
+    s.doc.hide();
+    s.fireResume();
+    s.doc.show();
+    expect(s.recovered).toEqual(['system-resumed', 'visibility']);
+  });
+
   // Electron's powerMonitor 'resume' exists everywhere but is not reliably
   // emitted on some Linux setups; gating on API presence would remove wake
-  // recovery there forever, so the gate closes on first DELIVERY.
-  it('keeps unconditional visibility recovery until a resume is ever delivered', () => {
-    const s = setup();
+  // recovery there forever, so on linux the gate closes on first DELIVERY.
+  it('keeps unconditional visibility recovery on linux until a resume is ever delivered', () => {
+    const s = setup(0, 'hidden', 'linux');
     s.doc.show();
     expect(s.recovered).toEqual(['visibility']);
     s.advance(WAKE_RECOVER_THROTTLE_MS);
@@ -126,6 +157,26 @@ describe('atlasWakeRecovery', () => {
     expect(s.recovered).toEqual([
       'visibility', 'visibility', 'system-resumed', 'visibility',
     ]);
+  });
+
+  it('treats an unknown platform like linux — recovery kept, not dropped', () => {
+    const s = setup(0, 'hidden', 'freebsd');
+    s.doc.show();
+    expect(s.recovered).toEqual(['visibility']);
+  });
+
+  it('treats an absent platform (no preload bridge) the same way', () => {
+    const recovered: string[] = [];
+    const doc = makeFakeDocument();
+    initAtlasWakeRecovery({
+      onSystemResumed: () => () => { /* never delivers */ },
+      platform: undefined,
+      recoverNow: (reason) => recovered.push(reason),
+      documentRef: doc,
+      now: () => 0,
+    });
+    doc.show();
+    expect(recovered).toEqual(['visibility']);
   });
 
   it('teardown detaches both triggers', () => {

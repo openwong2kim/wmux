@@ -66,15 +66,43 @@
 // on the `visibilitychange` that may follow milliseconds later — exactly what
 // the throttle was introduced to collapse.
 //
-// Until a resume has EVER been delivered, visibility keeps its old
-// unconditional behaviour. Electron's `powerMonitor` 'resume' exists as an API
-// on every platform but is not reliably emitted on some Linux session setups;
-// gating on the API's PRESENCE (rather than on a delivery we have observed)
-// would silently remove wake recovery there forever. So delivery is what flips
-// the gate: the first real resume proves the signal works on this machine, and
-// only from then on is the latch required. The cost is that such a machine
-// keeps one unjustified wipe per visibility change until its first sleep —
-// accepted, because the alternative is a platform with no wake recovery at all.
+// WHERE THE LATCH IS REQUIRED, AND WHY IT IS PLATFORM-SCOPED.
+//
+// Electron's `powerMonitor` 'resume' exists as an API everywhere but is not
+// reliably emitted on some Linux session setups, and on such a machine
+// visibility is the only wake backstop there is. So the latch is required only
+// where the resume signal is trustworthy:
+//
+//   win32 / darwin — required IMMEDIATELY. `powerMonitor` resume is dependable
+//                    on both, and on Windows we have field evidence
+//                    (#1234) that visibility fires on an ordinary alt-tab, so
+//                    an unarmed visibility change is known to be noise.
+//   linux          — keeps the pre-#1234 unconditional behaviour until a resume
+//                    has actually been DELIVERED once. That first delivery
+//                    proves the signal works on this machine and the latch is
+//                    required from then on. The cost is one unjustified wipe
+//                    per visibility change until its first sleep, accepted in
+//                    exchange for never leaving a platform with no wake
+//                    recovery at all.
+//
+// A first draft gated purely on first delivery, on every platform. Live dogfood
+// killed it: it left #1234 UNFIXED on the reporter's machine until that machine
+// happened to sleep once, and their report is 15 minutes of alt-tabbing with no
+// reason to think it ever slept. A bug fix that waits for a suspend to take
+// effect is not a fix.
+//
+// The rejected alternative was to stop trusting the event and detect the wake
+// directly — compare wall-clock elapsed against expected elapsed and treat a
+// large unexplained jump as a sleep. It is the more honest signal in principle
+// and would cover Linux too, but its discriminator is unsound in exactly the
+// state it has to work in: a hidden renderer has its timers throttled (and can
+// have them frozen outright), so an ordinary alt-tab away produces the same
+// unexplained wall-clock jump as a real suspend and would re-arm the wipe on
+// every app switch — the bug this module is fixing. The monotonic-clock variant
+// trades that for a different unknown, since whether the monotonic clock
+// advances across suspend differs by platform; if it pauses, the jump never
+// appears and wake recovery dies silently everywhere. A platform gate rests on
+// something we have actually measured.
 //
 // Anything that needs to know whether the window can be seen must still ask
 // main instead of reading `visibilityState` (see main/window/windowDisplayed.ts,
@@ -91,6 +119,11 @@ export const WAKE_RECOVER_THROTTLE_MS = 1_000;
 export interface AtlasWakeRecoveryDeps {
   /** Subscribe to main's system-resumed push; returns the unsubscribe. */
   onSystemResumed(callback: () => void): () => void;
+  /** The renderer's platform (`window.electronAPI.platform`). Decides whether
+   *  the resume latch is required immediately or only after a first delivered
+   *  resume — see the header. Unknown platforms are treated like linux, the
+   *  conservative side (recovery is kept, not dropped). */
+  platform?: string;
   recoverNow?: (reason: string) => void;
   documentRef?: Pick<Document, 'addEventListener' | 'removeEventListener'> & {
     visibilityState: DocumentVisibilityState;
@@ -102,6 +135,7 @@ export interface AtlasWakeRecoveryDeps {
 export function initAtlasWakeRecovery(deps: AtlasWakeRecoveryDeps): () => void {
   const {
     onSystemResumed,
+    platform = typeof window !== 'undefined' ? window.electronAPI?.platform : undefined,
     recoverNow = (reason) => atlasGuard.recoverNow(reason),
     documentRef = document,
     now = Date.now,
@@ -111,9 +145,12 @@ export function initAtlasWakeRecovery(deps: AtlasWakeRecoveryDeps): () => void {
   // One-shot latch: a resume delivered while the window was hidden owes us one
   // visibility recovery. Cleared the moment it is used.
   let visibilityArmed = false;
-  // Has main's resume push ever actually fired on this machine? Until it has,
-  // visibility stays unconditional (see the header — presence of the API is not
-  // evidence of delivery).
+  // Platforms whose powerMonitor resume we trust without having seen one. The
+  // latch is required from the first visibility change there; everywhere else
+  // it takes a delivered resume to prove the signal works (see the header).
+  const resumeSignalTrusted = platform === 'win32' || platform === 'darwin';
+  // Has main's resume push ever actually fired on this machine? Only consulted
+  // on the untrusted platforms.
   let resumeEverDelivered = false;
 
   const recover = (reason: string, ignoreThrottle = false): void => {
@@ -140,7 +177,7 @@ export function initAtlasWakeRecovery(deps: AtlasWakeRecoveryDeps): () => void {
       recover('visibility', true);
       return;
     }
-    if (resumeEverDelivered) {
+    if (resumeSignalTrusted || resumeEverDelivered) {
       // #1234: on Windows this fires on every alt-tab. Nothing invalidated GPU
       // texture memory, so there is nothing to rebuild and a wipe is pure risk.
       // Logged at Verbose so the next field report can tell "the guard never
@@ -148,8 +185,8 @@ export function initAtlasWakeRecovery(deps: AtlasWakeRecoveryDeps): () => void {
       console.debug('[wmux:atlas-wake] visibility ignored — unarmed (no pending system-resumed)');
       return;
     }
-    // No resume has ever been delivered on this machine; visibility is the only
-    // wake signal we can trust here. Pre-#1234 behaviour.
+    // A platform whose resume push has never been seen to fire; visibility is
+    // the only wake signal we can trust here. Pre-#1234 behaviour.
     recover('visibility');
   };
   documentRef.addEventListener('visibilitychange', onVisibilityChange);
