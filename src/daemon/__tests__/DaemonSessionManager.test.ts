@@ -623,16 +623,33 @@ describe('DaemonSessionManager', () => {
   });
 
   // v2.8.1 hotfix: actionable error at MAX_SESSIONS (Bug 1)
+  //
+  // #1274: this used to spawn 200 mock sessions to reach the *default* cap.
+  // Those 200 sessions' garbage was collected during the NEXT test, which is
+  // why "honours a custom session.maxSessions" — a three-session test that
+  // takes 4 ms in isolation — was measured at 5.4-7.3 s against the 5 s
+  // per-test limit on macos-14. The ceiling is read from config (and the
+  // no-config path falls back to createDefaultConfig, asserted below), so a
+  // small configured cap exercises the identical branch with 1/50th of the
+  // allocation.
   it('throws an actionable error when the session cap is reached', () => {
-    for (let i = 0; i < 200; i++) {
+    const cfg = createDefaultConfig();
+    // The default ceiling is still 200 — pinned here so lowering it for the
+    // spawn loop below does not lose that contract.
+    expect(cfg.session.maxSessions).toBe(200);
+    cfg.session.maxSessions = 4;
+    manager.setConfig(cfg);
+    for (let i = 0; i < 4; i++) {
       manager.createSession({ id: `cap-${i}`, cmd: 'cmd.exe', cwd: '.' });
     }
-    // The 201st must fail with a message the UI can show verbatim. The
-    // pre-v2.8.1 message was "Maximum session limit (50) reached" which
+    // The one past the cap must fail with a message the UI can show verbatim.
+    // The pre-v2.8.1 message was "Maximum session limit (50) reached" which
     // surfaced as a generic "unknown error" toast in the renderer.
     expect(() =>
-      manager.createSession({ id: 'cap-201', cmd: 'cmd.exe', cwd: '.' }),
-    ).toThrow(/Cannot create new terminal: 200 active sessions already running/);
+      manager.createSession({ id: 'cap-overflow', cmd: 'cmd.exe', cwd: '.' }),
+    ).toThrow(
+      /Cannot create new terminal: 4 active sessions already running\. Close some panes/,
+    );
   });
 
   // substrate 3.0: the session cap is configurable (was a 200 literal)

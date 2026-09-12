@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
@@ -203,6 +203,17 @@ describe('killVerifiedDaemonPid — execution (#1025/#1028)', () => {
     try { process.kill(pid, 0); return true; } catch { return false; }
   }
 
+  // #1274: this case is asserted under `definitiveOnly: true` on purpose.
+  // On win32 the argv probe shells out to PowerShell + Get-CimInstance with a
+  // 5 s timeout and returns null on any failure; a loaded CI runner blows past
+  // that budget. With `definitiveOnly: false` a null cmdline plus a matching
+  // image (both plain node) is DOCUMENTED to proceed to SIGKILL, so the old
+  // `toBe(false)` here was a race against WMI latency, not a statement about
+  // the matcher. `definitiveOnly: true` must refuse on an indeterminate
+  // cmdline, which makes the refusal deterministic at any probe latency while
+  // still exercising the argv gate whenever the probe does resolve. The
+  // `definitiveOnly: false` "proceed when indeterminate" behaviour is covered
+  // by its own test below, with the probe stubbed.
   it('refuses an unrelated process whose argv merely ends in daemon/index.js (the #1025 repro)', async () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-identity-innocent-'));
     // Somebody else's program, using the same everyday layout. The image
@@ -210,12 +221,60 @@ describe('killVerifiedDaemonPid — execution (#1025/#1028)', () => {
     // standing between this process and a SIGKILL.
     const pid = await spawnSleeper(path.join(tmpDir, 'someone-elses-app', 'daemon', 'index.js'));
 
-    expect(killVerifiedDaemonPid(pid, { definitiveOnly: false })).toBe(false);
+    expect(killVerifiedDaemonPid(pid, { definitiveOnly: true })).toBe(false);
     expect(killVerifiedDaemonPid(pid, {
-      definitiveOnly: false,
+      definitiveOnly: true,
       scriptCandidates: [path.join(tmpDir, 'unrelated', 'daemon-bundle', 'index.js')],
     })).toBe(false);
     expect(isAlive(pid)).toBe(true);
+    // Explicit 30 s budget (#1274): two kill attempts, each of which may pay
+    // the win32 tasklist (3 s) + WMI cmdline (5 s) worst case, so the real
+    // ceiling is ~16 s and the previous 15 s was under it.
+  }, 30_000);
+
+  // #1274: the other half of the split — the documented indeterminate branch.
+  // When the argv probe cannot resolve and the caller is in the before-quit
+  // mode (`definitiveOnly: false`, what `killDaemonByPidFile` uses), a null
+  // cmdline next to a non-mismatching image is INTENDED to proceed to
+  // SIGKILL. The probe is stubbed (execFileSync throws, /proc reads throw) so
+  // the assertion never waits on the real 5 s WMI timeout.
+  it('proceeds to SIGKILL when the argv probe cannot resolve and definitiveOnly is false', async () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-identity-indeterminate-'));
+    const pid = await spawnSleeper(path.join(tmpDir, 'someone-elses-app', 'daemon', 'index.js'));
+
+    vi.resetModules();
+    // Kill every OS probe the module can use to read an image or a cmdline:
+    // `execFileSync` covers win32 (tasklist / PowerShell) and macOS (`ps`),
+    // and the /proc guard covers Linux. Everything else passes through, so
+    // the real `process.kill` still does the killing.
+    vi.doMock('child_process', async () => {
+      const actual = await vi.importActual<typeof import('child_process')>('child_process');
+      const execFileSync = () => { throw new Error('stubbed probe failure (#1274)'); };
+      return { ...actual, default: { ...actual, execFileSync }, execFileSync };
+    });
+    vi.doMock('fs', async () => {
+      const actual = await vi.importActual<typeof import('fs')>('fs');
+      const readFileSync = ((file: unknown, ...rest: unknown[]) => {
+        if (typeof file === 'string' && file.startsWith('/proc/')) {
+          throw new Error('stubbed /proc failure (#1274)');
+        }
+        return (actual.readFileSync as (...args: unknown[]) => unknown)(file, ...rest);
+      }) as typeof actual.readFileSync;
+      return { ...actual, default: { ...actual, readFileSync }, readFileSync };
+    });
+
+    try {
+      const stubbed = await import('../daemonLauncherCore');
+      expect(stubbed.killVerifiedDaemonPid(pid, { definitiveOnly: false })).toBe(true);
+      // ...and the same indeterminate reading REFUSES under definitiveOnly.
+      const survivorPid = await spawnSleeper(path.join(tmpDir, 'second', 'daemon', 'index.js'));
+      expect(stubbed.killVerifiedDaemonPid(survivorPid, { definitiveOnly: true })).toBe(false);
+      expect(isAlive(survivorPid)).toBe(true);
+    } finally {
+      vi.doUnmock('child_process');
+      vi.doUnmock('fs');
+      vi.resetModules();
+    }
   }, 15_000);
 
   it('requirement 1, executed: our script path as a trailing ARGUMENT does not verify the process', async () => {
@@ -225,12 +284,16 @@ describe('killVerifiedDaemonPid — execution (#1025/#1028)', () => {
     // along as a plain argument (an editor, a build tool, a log grepper).
     const pid = await spawnSleeper(path.join(tmpDir, 'unrelated-entry.js'), [bundlePath]);
 
+    // #1274: a refusal assertion, so it runs under `definitiveOnly: true`
+    // for the same reason as the #1025 repro above — a 5 s-timed-out win32
+    // WMI probe would otherwise legitimately proceed to SIGKILL.
     expect(killVerifiedDaemonPid(pid, {
-      definitiveOnly: false,
+      definitiveOnly: true,
       scriptCandidates: [bundlePath],
     })).toBe(false);
     expect(isAlive(pid)).toBe(true);
-  }, 15_000);
+    // 20 s: one kill attempt at the win32 tasklist + WMI worst case (~8 s).
+  }, 20_000);
 
   it('kills a process running exactly one of the supplied candidate scripts', async () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-identity-ours-'));
@@ -248,13 +311,17 @@ describe('killVerifiedDaemonPid — execution (#1025/#1028)', () => {
   it('requirement 3, executed: daemon-bundler/index.js is refused, daemon-bundle/index.js is killed', async () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-identity-shape-'));
     const bundlerPid = await spawnSleeper(path.join(tmpDir, 'daemon-bundler', 'index.js'));
-    expect(killVerifiedDaemonPid(bundlerPid, { definitiveOnly: false })).toBe(false);
+    // #1274: refusal half under `definitiveOnly: true` (indeterminate cmdline
+    // must refuse); the kill half below stays in the before-quit mode.
+    expect(killVerifiedDaemonPid(bundlerPid, { definitiveOnly: true })).toBe(false);
     expect(isAlive(bundlerPid)).toBe(true);
     try { process.kill(bundlerPid, 'SIGKILL'); } catch { /* cleanup */ }
 
     const exactPid = await spawnSleeper(path.join(tmpDir, 'daemon-bundle', 'index.js'));
     expect(killVerifiedDaemonPid(exactPid, { definitiveOnly: false })).toBe(true);
-  }, 20_000);
+    // 30 s: two spawns and two kill attempts, each kill paying up to ~8 s of
+    // win32 probes (#1274).
+  }, 30_000);
 });
 
 describe('ensureDaemon — cmdline-mismatch branch refuses instead of cleaning (#1028 requirement 4)', () => {

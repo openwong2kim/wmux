@@ -40,10 +40,41 @@ const pageHtml = `<!doctype html>
     return '\\x1b[H\\x1b[2J' + rows.join('\\r\\n');
   };
 
+  // #1274: every wait in this probe is driven by an xterm event, not by a
+  // fixed sleep. The old version slept 80 ms after the warm-up frame and
+  // another 80 ms before reading the screen, so a loaded CI runner whose
+  // requestAnimationFrame callback landed later than that read a stale
+  // viewport and failed on finalFrameVisible.
+  const nextRender = () => new Promise((resolve) => {
+    const sub = term.onRender(() => { sub.dispose(); resolve(); });
+  });
+
+  const visibleText = () => {
+    const buffer = term.buffer.active;
+    let text = '';
+    for (let y = 0; y < term.rows; y++) {
+      text += buffer.getLine(buffer.viewportY + y)?.translateToString(true) ?? '';
+    }
+    return text;
+  };
+
+  // Resolve as soon as the wanted frame is on screen. The deadline only
+  // bounds the failure case (the assertion then reports a stale viewport);
+  // a healthy run returns on the very next render event.
+  const waitForVisible = async (needle, deadlineMs) => {
+    const until = Date.now() + deadlineMs;
+    while (!visibleText().includes(needle)) {
+      if (Date.now() >= until) return false;
+      await Promise.race([nextRender(), new Promise((r) => setTimeout(r, 50))]);
+    }
+    return true;
+  };
+
   window.runProbe = async () => {
+    const warmedUp = nextRender();
     await write('\\x1b[?2026h' + frameBody(-1));
     await write('\\x1b[?2026l');
-    await new Promise((resolve) => setTimeout(resolve, 80));
+    await warmedUp;
 
     let renders = 0;
     const sub = term.onRender(() => { renders++; });
@@ -53,19 +84,14 @@ const pageHtml = `<!doctype html>
       await write('\\x1b[?2026l');
     }
     const rendersDuringStream = renders;
-    await new Promise((resolve) => setTimeout(resolve, 80));
+    const finalFrameVisible = await waitForVisible('frame ' + (sent - 1), 10_000);
     sub.dispose();
 
-    const buffer = term.buffer.active;
-    let visibleText = '';
-    for (let y = 0; y < term.rows; y++) {
-      visibleText += buffer.getLine(buffer.viewportY + y)?.translateToString(true) ?? '';
-    }
     return {
       sent,
       rendersDuringStream,
       rendersAfterSettle: renders,
-      finalFrameVisible: visibleText.includes('frame ' + (sent - 1)),
+      finalFrameVisible,
       webglCanvasCount: document.querySelectorAll('.xterm canvas').length,
     };
   };
@@ -102,4 +128,9 @@ it('paints completed synchronized frames while OpenCode-style output remains act
     await browser?.close();
     server.close();
   }
-}, 30_000);
+  // The 30 s budget was hit on ubuntu and windows runners even though the
+  // probe itself finishes in well under a second: the wall clock here is a
+  // cold `chromium.launch()` of the system Chrome/Edge channel plus the
+  // first WebGL context on a shared runner. Sized for the slowest observed
+  // launch with headroom; the probe's own waits are event-driven (above).
+}, 120_000);

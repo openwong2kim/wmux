@@ -53,6 +53,13 @@ function addFeat(repo: string, content: string): string {
   return oid;
 }
 
+// #1274: the suites below drive the real `git` binary (init/commit/worktree/merge)
+// against a temp repo, so their runtime tracks process-spawn cost rather than code
+// speed. Locally the whole file is ~6.6 s with the slowest test ~1.2 s; on a loaded
+// windows-latest runner the same work measured 6.0 s against vitest's 5 s default
+// and flaked on PRs that never touch this code. Explicit generous budget instead.
+const GIT_PROCESS_TIMEOUT_MS = 30_000;
+
 describe('parseNulList — NUL(-z)-separated parser', () => {
   it('splits NUL-separated items and drops empty items / trailing NULs', () => {
     expect(parseNulList('a.txt\0b/c.txt\0')).toEqual(['a.txt', 'b/c.txt']);
@@ -69,7 +76,7 @@ describe('isIntegrationPath — prefix recognition', () => {
   });
 });
 
-describe('detectConflicts — conflict detection (not exit code)', () => {
+describe('detectConflicts — conflict detection (not exit code)', { timeout: GIT_PROCESS_TIMEOUT_MS }, () => {
   let scn: ReturnType<typeof makeRepo>;
   beforeEach(() => (scn = makeRepo()));
   afterEach(() => scn.cleanup());
@@ -102,7 +109,7 @@ describe('detectConflicts — conflict detection (not exit code)', () => {
   });
 });
 
-describe('checkTargetPreconditions — target (base) preconditions', () => {
+describe('checkTargetPreconditions — target (base) preconditions', { timeout: GIT_PROCESS_TIMEOUT_MS }, () => {
   let scn: ReturnType<typeof makeRepo>;
   beforeEach(() => (scn = makeRepo()));
   afterEach(() => scn.cleanup());
@@ -142,7 +149,7 @@ describe('checkTargetPreconditions — target (base) preconditions', () => {
   });
 });
 
-describe('resolveBaseFromGit — fallback chain (no gh)', () => {
+describe('resolveBaseFromGit — fallback chain (no gh)', { timeout: GIT_PROCESS_TIMEOUT_MS }, () => {
   let scn: ReturnType<typeof makeRepo>;
   beforeEach(() => (scn = makeRepo()));
   afterEach(() => scn.cleanup());
@@ -225,7 +232,7 @@ describe('linkNodeModules — dep link into the integration worktree', () => {
   });
 });
 
-describe('runVerify — exit-code verdict (injected commands)', () => {
+describe('runVerify — exit-code verdict (injected commands)', { timeout: GIT_PROCESS_TIMEOUT_MS }, () => {
   let scn: ReturnType<typeof makeRepo>;
   beforeEach(() => (scn = makeRepo()));
   afterEach(() => scn.cleanup());
@@ -252,7 +259,7 @@ describe('runVerify — exit-code verdict (injected commands)', () => {
   });
 });
 
-describe('clean merge → Land round-trip', () => {
+describe('clean merge → Land round-trip', { timeout: GIT_PROCESS_TIMEOUT_MS }, () => {
   let scn: ReturnType<typeof makeRepo>;
   beforeEach(() => (scn = makeRepo()));
   afterEach(() => scn.cleanup());

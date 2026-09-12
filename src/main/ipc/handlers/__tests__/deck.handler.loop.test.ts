@@ -1153,7 +1153,13 @@ describe('fan-out task workspaces never run a brain of their own (wave 2 dogfood
     expect(capWrites).toContainEqual({ ws: 'ws-task', patch: { mode: 'off' } });
   });
 
-  it("an owner that is itself a task workspace (nested fan-out) has no brain: the event is parked, not pushed", async () => {
+  // #1274: this failed on windows-latest as `expected +0 to be 1`. The park is
+  // an async ledger append behind the coalescer, and `vi.waitFor`'s DEFAULT
+  // timeout is 1 s — shorter than the coalescer's own 1.5 s debounce, so on a
+  // runner where the flush is not early the poll gave up before the append
+  // could happen. The wait is now sized past the debounce (and the test past
+  // the wait); locally the park lands in ~50 ms, so a healthy run is unaffected.
+  it("an owner that is itself a task workspace (nested fan-out) has no brain: the event is parked, not pushed", { timeout: 15_000 }, async () => {
     // ws-1 owns wtask-1 (ws-task); make ws-1 itself a task of ws-root.
     await ledger.register({ id: 'wtask-0', taskWorkspaceId: 'ws-1', ownerWorkspaceId: 'ws-root', title: 'outer' });
     eventBus.emit({
@@ -1166,7 +1172,10 @@ describe('fan-out task workspaces never run a brain of their own (wave 2 dogfood
       decision: 'emit',
     });
     // The park is an async ledger append; poll instead of a fixed delay.
-    await vi.waitFor(() => expect(ledger.peekOrphanedEvents('ws-1').length).toBe(1));
+    await vi.waitFor(
+      () => expect(ledger.peekOrphanedEvents('ws-1').length).toBe(1),
+      { timeout: 10_000, interval: 25 },
+    );
     expect(adapters).toHaveLength(0);
   });
 });

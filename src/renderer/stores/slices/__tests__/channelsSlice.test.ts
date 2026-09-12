@@ -649,7 +649,13 @@ describe('channelsSlice — wiring (composed store)', () => {
   // selector. This is the property the plan's U6 verification
   // asserts — the sidebar (U7) and composer (U8) will read these
   // through `useStore((s) => s.channels)` etc.
-  it('is reachable through the composed store via channels selector', async () => {
+  //
+  // #1274: the assertions here are instant, but the `await import` below pulls
+  // in — and Vite-transforms — the entire composed renderer store graph. In
+  // isolation that costs ~350 ms; inside a full parallel suite run it was
+  // measured at 5022 ms and tripped the 5 s default limit locally. The
+  // explicit timeout covers the one-off module-graph cost on a loaded runner.
+  it('is reachable through the composed store via channels selector', { timeout: 30_000 }, async () => {
     const { useStore } = await import('../../index');
     // Initial state: every field defaults to its empty value.
     const s = useStore.getState();

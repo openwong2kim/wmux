@@ -149,7 +149,15 @@ function baseReq(overrides?: Partial<Parameters<FanOutService['start']>[0]>) {
   };
 }
 
-describe('buildInitialCommand (§4 D4)', () => {
+// #1274: the two suites below are the only ones here that exec a real shell
+// (`bash -c` / `sh -c`) to prove the launch string survives an alias-expanding
+// shell. Locally those tests are 8-25 ms, but the work is real-process, so it
+// scales with runner load: "uses a same-shell form" took 7.4 s on windows-latest
+// and blew vitest's 5 s default on a PR that never touched this code. Explicit
+// generous budget for the shell-spawning suites only.
+const SHELL_SPAWN_TIMEOUT_MS = 30_000;
+
+describe('buildInitialCommand (§4 D4)', { timeout: SHELL_SPAWN_TIMEOUT_MS }, () => {
   it('§7: promptPath 없으면 agentCmd만 그대로(빈 인자로 발사하지 않는다)', () => {
     expect(buildInitialCommand('claude', undefined)).toBe('claude');
     expect(buildInitialCommand('claude')).toBe('claude');
@@ -199,7 +207,7 @@ describe('buildInitialCommand (§4 D4)', () => {
 
 // ── F15: the worker's model is wmux's decision, not the login shell's ─────────
 
-describe('workerLaunchCommand (F15)', () => {
+describe('workerLaunchCommand (F15)', { timeout: SHELL_SPAWN_TIMEOUT_MS }, () => {
   const POSIX = { platform: 'darwin' as NodeJS.Platform };
 
   it('neutralises a shell-exported ANTHROPIC_MODEL for a plain claude worker', () => {
