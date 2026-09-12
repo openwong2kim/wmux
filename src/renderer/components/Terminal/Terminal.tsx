@@ -252,6 +252,19 @@ export default function TerminalComponent({ ptyId: externalPtyId, shell, cwd, on
     setSearchBarVisible(false);
   };
 
+  // #1266 — the search bar is gated on `isActive`, so focusing another pane
+  // unmounts it without ever running handleCloseSearch. The addon keeps its
+  // cached term, and its own onWriteParsed hook keeps re-running the search
+  // and re-creating highlight decorations on every subsequent chunk of
+  // output: highlights the user can no longer see a search bar for, landing
+  // on whatever text happens to occupy those cells now, with no UI left to
+  // dismiss them. Tear the decorations down whenever the bar goes away for
+  // any reason, not just via the close button.
+  useEffect(() => {
+    if (showSearchBar) return;
+    clearSearch();
+  }, [showSearchBar, clearSearch]);
+
   const handleCopy = useCallback(() => {
     if (ctxMenu?.selectedText) {
       // main may throw on failure (size / lock / invalid type); the helper
