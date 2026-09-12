@@ -1801,12 +1801,21 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         }
         return true;
       }
+      // #1280 — 'g' / KeyG is Rich Input (useComposeShortcut, a document-level
+      // listener). It has to be in this allowlist, not merely preventDefault'd
+      // downstream: xterm's own encode path calls stopPropagation (its
+      // `cancel()`), so before #1228 Ctrl+G never reached the document at all,
+      // and after it the catch-all ctrl encoder below wrote BEL (0x07) to the
+      // pane and then let the event bubble — `^G` in the shell plus the
+      // popover, which is the reported bug. Bubbling here is the same contract
+      // Ctrl+D / Ctrl+T already use for their app shortcuts. macOS keeps
+      // Ctrl+G as a readline byte; the binding is ⌘G there.
       const bubbleKeys = isMac
         ? ['b', 'm', 'ArrowUp', 'ArrowDown']
-        : [',', 'b', 'd', 'k', 'i', 'n', 't', 'm', 'ArrowUp', 'ArrowDown', '`'];
+        : [',', 'b', 'd', 'g', 'k', 'i', 'n', 't', 'm', 'ArrowUp', 'ArrowDown', '`'];
       const bubbleCodes = isMac
         ? ['KeyB', 'KeyM', 'ArrowUp', 'ArrowDown']
-        : ['KeyB', 'KeyD', 'KeyK', 'KeyI', 'KeyN', 'KeyT', 'KeyM', 'Comma', 'ArrowUp', 'ArrowDown'];
+        : ['KeyB', 'KeyD', 'KeyG', 'KeyK', 'KeyI', 'KeyN', 'KeyT', 'KeyM', 'Comma', 'ArrowUp', 'ArrowDown'];
       if (e.ctrlKey && !e.shiftKey && bubbleKeys.includes(e.key)) {
         return false; // let DOM bubble to useKeyboard
       }

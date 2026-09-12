@@ -79,6 +79,11 @@ export const WMUX_KEYMAP: readonly KeymapEntry[] = [
   { combo: 'Ctrl+Shift+U', descriptionKey: null },
   { combo: 'Ctrl+Shift+L', descriptionKey: null },
   { combo: 'Ctrl+Shift+O', descriptionKey: null },
+  // Rich Input toggle. Not bound in useKeyboard's if-chain — it is
+  // useComposeShortcut (ToolbarHost), a document-level listener — but it is
+  // a real renderer binding, so it reserves its accelerator and feeds
+  // matchesDisabledShortcut like every other row (#1280).
+  { combo: 'Ctrl+G', descriptionKey: null },
   { combo: 'Ctrl+Shift+G', descriptionKey: null },
   { combo: 'Ctrl+Shift+]', descriptionKey: null },
   { combo: 'Ctrl+Shift+[', descriptionKey: null },
