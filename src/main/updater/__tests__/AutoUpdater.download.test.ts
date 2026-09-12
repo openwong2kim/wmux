@@ -176,6 +176,7 @@ async function loadWin32(
     // never leaks an UPDATE_ERROR into tests about other flows.
     readAbortMarker: vi.fn((): string | null => null),
     clearAbortMarker: vi.fn(),
+    sweepStaleWaiterTasks: vi.fn(() => 0),
     waitForWaiterHeartbeat: vi.fn(async (): Promise<boolean> => true),
     INSTALL_ABORT_MARKER: 'update-install-aborted.txt',
     INSTALL_READY_MARKER: 'update-install-ready.tmp',

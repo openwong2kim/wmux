@@ -20,6 +20,10 @@ import { spawn, spawnSync, execFileSync, type ChildProcess } from 'node:child_pr
 import { createHash } from 'node:crypto';
 import {
   buildWaiterScript,
+  buildWaiterVbsLauncher,
+  buildScheduledTaskCreateArgs,
+  buildScheduledTaskRunArgs,
+  buildScheduledTaskXml,
   spawnInstallWaiter,
   collectInstallRootPids,
   probeVolume,
@@ -558,7 +562,13 @@ describe.skipIf(!onWindows)('waiter transport (#1056 — the REAL spawnInstallWa
     const written = spawnInstallWaiter(mkPlan());
     expect(written).not.toBeNull();
     launchedDir = path.dirname(written as string);
-    expect(path.basename(written as string)).toBe('wait-and-install-w.ps1');
+    // #1264 put the scheduled-task transport AHEAD of this one, because it is
+    // the only one that survives the app's exit. Which of the two wins is a
+    // property of the machine (Task Scheduler access), so both are legal here
+    // — what stays pinned is that a HIDDEN transport wins, never the visible
+    // cmd.exe fallback behind them.
+    expect(['wait-and-install-s.ps1', 'wait-and-install-w.ps1'])
+      .toContain(path.basename(written as string));
 
     // ...and it is a REAL waiter, not just a process that stamped and died:
     // the same end-to-end proof the transport suite's first test makes.
@@ -566,4 +576,294 @@ describe.skipIf(!onWindows)('waiter transport (#1056 — the REAL spawnInstallWa
     while (Date.now() < deadline && !fs.existsSync(envStamp)) sleep200();
     expect(fs.existsSync(envStamp)).toBe(true);
   }, 120_000);
+});
+
+// #1264 — the reported defect, against a real Windows kernel.
+//
+// Every transport before this one was started with `child_process.spawn` from
+// the app, so the waiter was a member of whatever job object the app is in.
+// A job created with JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE terminates every member
+// when its last handle closes — i.e. the instant wmux's last process exits —
+// and a process killed by the kernel cannot reach any of the waiter's own exit
+// branches. That is exactly the reported artifact set: `alive` heartbeat and a
+// launch stamp on disk, then silence and no Setup.exe.
+//
+// The test builds that job for real: a stub "parent" PowerShell that joins a
+// kill-on-close job, launches the waiter, and exits. A lock holder OUTSIDE the
+// job keeps the install root busy past the parent's death, so the waiter can
+// only reach Setup.exe if it OUTLIVED the parent.
+describe.skipIf(!onWindows)('#1264 — the waiter must outlive the app that spawned it', () => {
+  let sandbox: string;
+  let root: string;
+  let heldExe: string;
+  let setupStamp: string;
+  let fakeSetup: string;
+  let waiterDir: string;
+  const children: ChildProcess[] = [];
+  const tasks: string[] = [];
+
+  const SYS = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32');
+  const SCHTASKS = path.join(SYS, 'schtasks.exe');
+  const WSCRIPT = path.join(SYS, 'wscript.exe');
+
+  beforeEach(() => {
+    sandbox = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-job-')));
+    root = path.join(sandbox, 'wmux');
+    fs.mkdirSync(path.join(root, 'app-1.0.0'), { recursive: true });
+    // Shape of a successful install, so the waiter's post-exit verification
+    // exits 0 instead of popping the exit-6 MessageBox at a headless runner.
+    fs.writeFileSync(path.join(root, 'Update.exe'), 'x');
+    fs.writeFileSync(path.join(root, 'app-1.0.0', 'icudtl.dat'), 'x');
+    heldExe = path.join(root, 'app-1.0.0', 'held.exe');
+    fs.writeFileSync(heldExe, 'x');
+    setupStamp = path.join(sandbox, 'setup-ran.txt');
+    fakeSetup = path.join(sandbox, 'fake-setup.cmd');
+    fs.writeFileSync(fakeSetup, `@echo off\r\necho ran > "${setupStamp}"\r\n`);
+    waiterDir = fs.mkdtempSync(path.join(sandbox, 'waiter-'));
+  });
+
+  afterEach(() => {
+    for (const c of children.splice(0)) { try { c.kill(); } catch { /* gone */ } }
+    for (const t of tasks.splice(0)) {
+      try { execFileSync(SCHTASKS, ['/Delete', '/TN', t, '/F'], { windowsHide: true, stdio: 'ignore', timeout: 20_000 }); } catch { /* gone */ }
+    }
+    // The waiter is not our child by design — reap by command line.
+    const dirLike = sandbox.replace(/'/g, "''");
+    try {
+      execFileSync(PS, ['-NoProfile', '-NonInteractive', '-Command',
+        `Get-CimInstance Win32_Process -Filter "Name='powershell.exe' OR Name='wscript.exe'" | Where-Object { $_.CommandLine -like '*${dirLike}*' } | ForEach-Object { taskkill /PID $_.ProcessId /T /F } | Out-Null`,
+      ], { windowsHide: true, timeout: 20_000 });
+    } catch { /* nothing to reap */ }
+    try { fs.rmSync(sandbox, { recursive: true, force: true }); } catch { /* lock lingers */ }
+  });
+
+  /** Holds a binary under the install root open for `seconds`, outside the job. */
+  function holdRootFor(seconds: number): void {
+    const child = spawn(
+      PS,
+      ['-NoProfile', '-NonInteractive', '-Command',
+        `$s=[System.IO.File]::Open(${q(heldExe)},'Open','Read','None'); Start-Sleep -Seconds ${seconds}; $s.Close()`],
+      { windowsHide: true, stdio: 'ignore' },
+    );
+    children.push(child);
+    const deadline = Date.now() + 15_000;
+    while (Date.now() < deadline) {
+      try { const fd = fs.openSync(heldExe, 'r+'); fs.closeSync(fd); } catch { return; }
+      execFileSync(PS, ['-NoProfile', '-Command', 'Start-Sleep -Milliseconds 100'], { windowsHide: true });
+    }
+    throw new Error('holder never took the lock');
+  }
+
+  /**
+   * Run `launchLines` from a process that is inside a kill-on-close job, then
+   * let that process exit — closing the job and killing everything still in it.
+   * Returns false when the job could not be built (an agent where nesting is
+   * refused), so the caller can skip rather than assert on a broken premise.
+   */
+  function runInsideDyingJob(launchLines: string[]): number | null {
+    const proofPath = path.join(sandbox, 'job-armed.txt');
+    const stub = path.join(sandbox, 'stub-parent.ps1');
+    fs.writeFileSync(stub, [
+      `$ErrorActionPreference = 'Stop'`,
+      `Add-Type -Namespace WmuxT -Name Job -MemberDefinition @"`,
+      `[DllImport("kernel32.dll", CharSet=CharSet.Unicode)] public static extern IntPtr CreateJobObject(IntPtr a, string name);`,
+      `[DllImport("kernel32.dll")] public static extern bool SetInformationJobObject(IntPtr job, int infoClass, IntPtr info, uint len);`,
+      `[DllImport("kernel32.dll")] public static extern bool AssignProcessToJobObject(IntPtr job, IntPtr proc);`,
+      `"@`,
+      `$job = [WmuxT.Job]::CreateJobObject([IntPtr]::Zero, $null)`,
+      `if ($job -eq [IntPtr]::Zero) { exit 1 }`,
+      // JOBOBJECT_EXTENDED_LIMIT_INFORMATION is 144 bytes on x64; LimitFlags
+      // sits at offset 16, and 0x2000 is JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE.
+      `$len = 144`,
+      `$buf = [System.Runtime.InteropServices.Marshal]::AllocHGlobal($len)`,
+      `for ($i = 0; $i -lt $len; $i++) { [System.Runtime.InteropServices.Marshal]::WriteByte($buf, $i, 0) }`,
+      `[System.Runtime.InteropServices.Marshal]::WriteInt32($buf, 16, 0x2000)`,
+      `if (-not [WmuxT.Job]::SetInformationJobObject($job, 9, $buf, $len)) { exit 2 }`,
+      `if (-not [WmuxT.Job]::AssignProcessToJobObject($job, (Get-Process -Id $PID).Handle)) { exit 3 }`,
+      `Set-Content -LiteralPath ${q(proofPath)} -Value 'armed'`,
+      ...launchLines,
+      // Long enough for the launched waiter to be well past its first lines,
+      // and still far short of the lock holder's window.
+      `Start-Sleep -Seconds 4`,
+      `exit 0`,
+    ].join('\n'), 'utf-8');
+
+    const res = spawnSync(
+      PS,
+      ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', stub],
+      { encoding: 'utf-8', timeout: 90_000, windowsHide: true },
+    );
+    // #1283 review: the stub's exit code is the DIAGNOSIS — 1/2/3 mean the
+    // kill-on-close job could not be built on this agent, 4/5 mean schtasks
+    // refused. Conflating them into a boolean is how a real regression in the
+    // mechanism would have gone green, and this pair of tests is the only proof
+    // the fix has.
+    if (res.status === 0 && !fs.existsSync(proofPath)) return -1;
+    return res.status;
+  }
+
+  // The runtime proof may only be waived deliberately. On windows-latest the
+  // premises (job objects, Task Scheduler) are expected to hold, so a failure
+  // to arm them is a RED test, not a silent skip.
+  const optOut = process.env.WMUX_SKIP_JOB_RUNTIME_TESTS === '1';
+
+  /** Assert the job half armed; returns false only under an explicit opt-out. */
+  function requireJobArmed(status: number | null): boolean {
+    if (status === 0) return true;
+    if (optOut) {
+      console.warn(`[#1264] job/schtasks premise unmet (stub exit ${String(status)}) — waived by WMUX_SKIP_JOB_RUNTIME_TESTS`);
+      return false;
+    }
+    // Named so a CI failure says WHICH premise broke.
+    const why: Record<string, string> = {
+      '1': 'CreateJobObject failed',
+      '2': 'SetInformationJobObject(KILL_ON_JOB_CLOSE) failed',
+      '3': 'AssignProcessToJobObject failed',
+      '4': 'schtasks /Create failed',
+      '5': 'schtasks /Run failed',
+      '-1': 'the stub exited 0 without arming the job',
+    };
+    throw new Error(
+      `[#1264] the runtime premise did not hold: ${why[String(status)] ?? `stub exit ${String(status)}`}. ` +
+      'Set WMUX_SKIP_JOB_RUNTIME_TESTS=1 to waive deliberately.',
+    );
+  }
+
+  function writeWaiterFor(stamp: string, script: string, vbs: string): void {
+    const plan: WaiterPlan = {
+      pids: [],
+      setupExePath: fakeSetup,
+      installRoot: root,
+      abortMarkerPath: path.join(sandbox, 'abort.txt'),
+      readyMarkerPath: path.join(sandbox, 'ready.tmp'),
+      lockBudgetMs: 60_000,
+      forceKillEligiblePids: [],
+      forceKillGraceMs: 5_000,
+    };
+    const body = buildWaiterScript(plan, stamp);
+    expect(body).not.toBeNull();
+    fs.writeFileSync(script, '\uFEFF' + (body as string), 'utf-8');
+    const launcher = buildWaiterVbsLauncher(
+      PS, ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File'], script,
+    );
+    expect(launcher).not.toBeNull();
+    fs.writeFileSync(vbs, '\uFEFF' + (launcher as string), 'utf16le');
+  }
+
+  /**
+   * The property CRITICAL 2 actually needs: the stored task has no trigger that
+   * could ever fire it, so a registration that leaks cannot start a waiter on
+   * its own later (a late waiter would open the recorded pids BY NUMBER and
+   * taskkill whatever inherited them).
+   *
+   * Measured on both CI runners (validate and the cross-platform baseline,
+   * identical output): Task Scheduler normalises a trigger-less definition by
+   * storing an EMPTY, self-closing `<Triggers />` — it materialises no trigger
+   * of its own. So a substring match on `<Triggers` is the wrong test; what
+   * must be asserted is the absence of CHILD trigger elements.
+   */
+  function expectNoOwnTrigger(xml: string): void {
+    if (!xml.includes('<Triggers')) return;
+    if (/<Triggers\s*\/>/.test(xml)) return;
+    const block = /<Triggers[^>]*>([\s\S]*?)<\/Triggers>/.exec(xml);
+    expect(block, `could not parse the Triggers element out of:\n${xml}`).not.toBeNull();
+    const inner = (block as RegExpExecArray)[1];
+    const found = [...inner.matchAll(/<([A-Za-z][\w.]*)/g)].map((m) => m[1]);
+    // Listed, not just counted: if the scheduler ever DOES materialise a
+    // trigger, the failure has to name it — that would mean this transport
+    // needs a different guarantee (register disabled, enable only for /Run).
+    expect(found, `the scheduler stored trigger element(s) we never asked for: ${found.join(', ')}\nreadback was:\n${xml}`).toEqual([]);
+  }
+
+  /** Poll for `p` for up to `ms`. */
+  function waitFor(p: string, ms: number): boolean {
+    const deadline = Date.now() + ms;
+    while (Date.now() < deadline) {
+      if (fs.existsSync(p)) return true;
+      try {
+        execFileSync(PS, ['-NoProfile', '-Command', 'Start-Sleep -Milliseconds 250'], { windowsHide: true });
+      } catch { /* keep polling */ }
+    }
+    return fs.existsSync(p);
+  }
+
+  it('the in-tree wscript transport is killed with the job (the reported defect)', () => {
+    // This is the CONTROL, and it is the mechanism proof: same script, same
+    // hidden launcher, started the way the app used to start it — as a child.
+    const stamp = path.join(waiterDir, 'launched-w.txt');
+    const script = path.join(waiterDir, 'wait-and-install-w.ps1');
+    const vbs = path.join(waiterDir, 'launch-waiter-w.vbs');
+    writeWaiterFor(stamp, script, vbs);
+    holdRootFor(12);
+
+    if (!requireJobArmed(runInsideDyingJob([
+      `Start-Process -FilePath ${q(WSCRIPT)} -ArgumentList '//B','//Nologo',${q(vbs)} -WindowStyle Hidden`,
+    ]))) return;
+
+    // It really did start: the launch stamp is the waiter's first act.
+    expect(fs.existsSync(stamp)).toBe(true);
+    // ...and then the job closed. The lock clears ~8s after the parent died,
+    // so a SURVIVING waiter would have launched the stub installer by now.
+    expect(waitFor(setupStamp, 25_000)).toBe(false);
+  }, 180_000);
+
+  it('the scheduled-task transport survives the job and runs the installer', () => {
+    const stamp = path.join(waiterDir, 'launched-s.txt');
+    const script = path.join(waiterDir, 'wait-and-install-s.ps1');
+    const vbs = path.join(waiterDir, 'launch-waiter-s.vbs');
+    writeWaiterFor(stamp, script, vbs);
+    holdRootFor(12);
+
+    const taskName = `wmux-update-t${Date.now().toString(36).replace(/[^A-Za-z0-9]/g, '')}`;
+    // The REAL definition, through the real builders — so an XML the importer
+    // refuses (a settings element out of sequence, a mis-escaped path) fails
+    // this test rather than silently costing the fix in the field.
+    const xmlPath = path.join(waiterDir, 'waiter-task.xml');
+    const xml = buildScheduledTaskXml(WSCRIPT, vbs);
+    expect(xml).not.toBeNull();
+    fs.writeFileSync(xmlPath, '\uFEFF' + (xml as string), 'utf16le');
+    const createArgs = buildScheduledTaskCreateArgs(taskName, xmlPath);
+    expect(createArgs).not.toBeNull();
+    tasks.push(taskName);
+
+    const psArr = (a: readonly string[]) => '@(' + a.map(q).join(',') + ')';
+    if (!requireJobArmed(runInsideDyingJob([
+      `& ${q(SCHTASKS)} ${psArr(createArgs as string[])} | Out-Null`,
+      `if ($LASTEXITCODE -ne 0) { exit 4 }`,
+      `& ${q(SCHTASKS)} ${psArr(buildScheduledTaskRunArgs(taskName))} | Out-Null`,
+      `if ($LASTEXITCODE -ne 0) { exit 5 }`,
+    ]))) return;
+
+    expect(fs.existsSync(stamp)).toBe(true);
+    // The parent is gone and its job closed with it. The scheduler's child is
+    // not a member, so it is still there when the lock clears — and it runs
+    // the stub Setup.exe, which is the branch the field never reached.
+    expect(waitFor(setupStamp, 40_000)).toBe(true);
+
+    // #1283 review asked whether the battery settings are PROVABLY applied.
+    // The builder's own test pins what we EMIT; this pins what the scheduler
+    // STORED after importing it. Asserted after the survival proof above so a
+    // definition problem can never mask the property this file exists for.
+    const stored = spawnSync(SCHTASKS, ['/Query', '/TN', taskName, '/XML', 'ONE'],
+      { encoding: 'utf-8', windowsHide: true, timeout: 20_000 });
+    const storedXml = (stored.stdout ?? '').replace(/\0/g, '');
+    expect(storedXml, `readback was:\n${storedXml}`).toContain('<DisallowStartIfOnBatteries>false<');
+    expect(storedXml).toContain('<StopIfGoingOnBatteries>false<');
+    expect(storedXml).toContain('<ExecutionTimeLimit>PT0S<');
+    expect(storedXml).toContain('<MultipleInstancesPolicy>IgnoreNew<');
+    expect(storedXml).toContain('<LogonType>InteractiveToken<');
+    // RunLevel: the scheduler omits an element whose value is the default, and
+    // LeastPrivilege IS the default — so "absent" and "LeastPrivilege" are the
+    // same stored state. Anything else would mean the import changed it.
+    const runLevel = /<RunLevel>([^<]*)<\/RunLevel>/.exec(storedXml)?.[1] ?? 'LeastPrivilege';
+    expect(runLevel, `readback was:\n${storedXml}`).toBe('LeastPrivilege');
+    // The guard has to be able to fail, or it proves nothing. Both shapes of
+    // "empty" pass; a materialised trigger does not.
+    expect(() => expectNoOwnTrigger('<Task><Triggers /></Task>')).not.toThrow();
+    expect(() => expectNoOwnTrigger('<Task><Triggers>\n  </Triggers></Task>')).not.toThrow();
+    expect(() => expectNoOwnTrigger(
+      '<Task><Triggers><TimeTrigger><StartBoundary>2026-01-01T23:59:00</StartBoundary></TimeTrigger></Triggers></Task>',
+    )).toThrow(/TimeTrigger/);
+    expectNoOwnTrigger(storedXml);
+  }, 180_000);
 });

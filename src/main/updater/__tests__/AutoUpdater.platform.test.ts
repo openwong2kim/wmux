@@ -162,6 +162,7 @@ async function loadForPlatform(
     readDaemonPid: vi.fn((): number | null => null),
     readAbortMarker: vi.fn((): string | null => null),
     clearAbortMarker: vi.fn(),
+    sweepStaleWaiterTasks: vi.fn(() => 0),
     // #1056 — resolves true by default so existing tests exercise the same
     // happy path as before this check existed; the dedicated test below
     // overrides it to prove the refusal branch.
@@ -208,6 +209,24 @@ describe('AutoUpdater platform gating', () => {
 
     expect(requestUrls).toContain(EXPECTED_WIN32_FEED);
     updater.stop();
+  });
+
+  it('win32: start() sweeps leftover waiter task registrations; other platforms do not', async () => {
+    // #1283 review — the two leak paths (a /Create that timed out after the
+    // server committed, a /Delete that failed) can only be cleaned up later,
+    // and startup is the one place blocking costs the user nothing.
+    vi.useFakeTimers();
+    const win = await loadForPlatform('win32');
+    const winUpdater = new win.AutoUpdater(() => null, quitHooks());
+    winUpdater.start();
+    expect(win.teardown.sweepStaleWaiterTasks).toHaveBeenCalledTimes(1);
+    winUpdater.stop();
+
+    const mac = await loadForPlatform('darwin');
+    const macUpdater = new mac.AutoUpdater(() => null, quitHooks());
+    macUpdater.start();
+    expect(mac.teardown.sweepStaleWaiterTasks).not.toHaveBeenCalled();
+    macUpdater.stop();
   });
 
   it('win32: periodic timer keeps polling the win32 feed', async () => {
