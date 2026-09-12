@@ -1,5 +1,58 @@
 ## [Unreleased]
 
+## [3.53.0] — 2026-09-12
+
+### Added
+
+- **`wmux setup-hooks` now installs the Codex hooks bridge — and never pretends writing it was enough.** The bridge that reports Codex turn boundaries as facts instead of screen-scraping is wired into the installer at last: the script lands at the stable managed path and a marker-bracketed `[[hooks.*]]` block is appended to `~/.codex/config.toml`. Because Codex silently refuses to run a hook the operator hasn't trusted, the flow is approve-then-verify: the command says **WRITTEN ≠ INSTALLED** and tells you to approve the hooks inside Codex, and `wmux setup-hooks --status` keeps reporting `WRITTEN but NOT trusted` until the bridge has actually fired after the block was written — the only honest definition of installed. The installer refuses outright when the local codex-cli is below 0.141.0 (older builds accept the config and silently fire nothing), when your own `[[hooks]]` entries occupy the config, or when a hand-pasted wmux block can't be bounded safely. (#1236)
+
+- **Snap running panes to a layout** (#1237): the pane ⋮/right-click menu and the command palette can now re-fit the *running* panes into a saved layout template (built-ins: 2 Columns, 2 Rows, 3 Columns, Main + Side, 2x2 Grid) instead of replacing them with empty panes. Sessions keep their identities, tabs and names; surplus panes are stashed (still running, listed in the sidebar) rather than killed, and a snap that would lose unsaved editor/diff work is refused with an explanation.
+
+- **Double-click a pane divider to even out the split** (#1233): double-clicking the divider between two panes splits their combined space evenly between them (a two-pane split snaps to 50/50 in either direction). In groups of three or more panes, only the pair flanking the clicked divider is affected.
+
+- **Seen/unseen distinction for blocked agents in the roster** (#1176): an agent blocked on a question you have already looked at keeps its red dot but stops glowing, distinguishing triaged from untriaged blocked agents across workspaces. A newly asked question glows again; the red dot itself never clears while the agent is still blocked.
+
+- **Remote agents appear in the workspace roster** (#1163): agent sessions running on an attached remote host now count in the roster like local ones, with a live status dot, an origin glyph, and the host name in place of the local pane coordinate. The remote host exposes per-session agent metadata over its API (additive — older hosts and desktops degrade gracefully), and unknown statuses from newer hosts are dropped rather than misread.
+
+- **Choose which WSL distro the WSL terminal boots into** (#1103): when the default terminal is WSL and more than one distro is installed, a distribution picker (Settings → Terminal) lists them all — Docker Desktop distros sorted last — plus the system default. The choice applies to every WSL pane in both local and daemon mode; if the chosen distro is later uninstalled, new panes fall back to the system default.
+
+- **Detached sessions list in the sidebar** (#1101): daemon sessions that are still running but no longer belong to any pane (they survive closing a pane or quitting the app by design) are now listed under the workspaces — click a row to bring the session back as a live pane, or kill it from the row. Empty by default and invisible when unused.
+
+- **Rename and color-tag attached remote workspaces** (#1086): remote rows in the sidebar now support renaming (right-click → Rename, or double-click) and a color tag, matching local workspace rows. Both are kept locally as aliases on the attachment — the remote host still owns the real name, and a rename made on the host shows up behind your alias.
+
+- **Locale drift advisory in CI** (#1037): a report that lists translation keys whose English source changed after the translation was written — the drift class the coverage lock cannot see. Advisory only: findings are printed for a human to judge and never fail the build. Run locally with `node scripts/locale-drift-report.mjs`.
+
+- **Workspace archive** (#1011): workspaces can now be archived instead of closed — the sidebar quiets down exactly like closing, but the workspace's configuration (name, color, profile, pane arrangement) is kept in a collapsed Archived section. One click restores it as a live workspace with the same setup; a second action deletes the snapshot permanently.
+
+### Changed
+
+- **README now covers the iOS app and the current MCP surface.** Documents the wmux for iOS App Store release (install, approval-first flow, pairing), webhook/ntfy notification sinks, the browser REPL/replay tools, and the corrected tool count with its three profiles. (#1278)
+
+### Fixed
+
+- **First boot no longer stacks the update dialog under the welcome wizard** (#1164): on a fresh install the Automatic Updates consent question now waits for the onboarding wizard to finish before appearing (order: wizard → update consent → UI tour), instead of mounting underneath it where its buttons could not be clicked.
+
+- **IME anchor on current Claude Code** (#1035): the input-line scan now recognizes Claude Code v2.1.246+’s new input chrome (a ❯ or › prompt under a horizontal rule, including an empty input line), restoring composition anchoring by content instead of the caret fallback. Older Claude Code chrome keeps working.
+
+- **Formatted terminal links open in the selected browser.** Clicking a Claude/Codex report link now opens its destination after confirmation instead of failing on a blocked blank popup. External mode uses the OS default browser; embedded routing and modifier-key behavior use the existing terminal URL policy. (#1265)
+
+- **Exit-code segments in a custom pwsh prompt work again.** wmux wraps your
+  `prompt` function to emit its command-boundary markers, and it snapshotted
+  `$?` correctly — but never handed that snapshot to the prompt it wrapped.
+  Roughly ten statements ran in between, and in PowerShell every statement
+  resets `$?` to true, so oh-my-posh's `status` segment (and Starship, and
+  anything else that reads `$?`) reported success after every failed command
+  inside a wmux pane, while the same config coloured correctly in Windows
+  Terminal. The wrapper now re-asserts the real status immediately before
+  delegating, and the local-mode prompt hook — the one used when the daemon is
+  gone — is fixed the same way. (#1268, #1267)
+
+- **Double-clicking a pane divider evens out the split** (#1233, #1277): a real double-click on the divider between two panes collapsed one of them instead of splitting their space evenly. It now gives the pair 50/50 in either direction — anywhere on the divider's grab area, exactly on the line included, and with the wider touch band on touchscreens. In nested or three-plus splits only the pair at that divider changes, and it also works in a multiview tile that is not the active workspace.
+
+- **Pane sizes stay put across splits, closes and layout snaps** (#1277): closing a pane you had just split off could leave its neighbour as a thin sliver, snapping back to a layout with the same two panes could show an old drag's widths instead of the layout's, and closing a pane out of a three-way row could fail to redraw the row. The panes now always render at their saved sizes.
+
+- **Unstashed panes come back with a proper split** (#1277): a pane brought back from the stash now always lands in a split whose sizes add up to 100%, instead of carrying over its share of the old, larger row into the saved session.
+
 ## [3.52.0] — 2026-09-09
 
 ### Added
