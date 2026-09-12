@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
@@ -203,19 +203,123 @@ describe('killVerifiedDaemonPid — execution (#1025/#1028)', () => {
     try { process.kill(pid, 0); return true; } catch { return false; }
   }
 
+  /**
+   * Re-import the module with ONLY the win32 argv probe stubbed, so a refusal
+   * case can stay in the `definitiveOnly: false` mode that `killDaemonByPidFile`
+   * actually uses and still be deterministic.
+   *
+   * #1274: on win32 `getProcessArgv` shells out to PowerShell + Get-CimInstance
+   * with a 5 s timeout and returns null on failure, and a null cmdline under
+   * `definitiveOnly: false` is DOCUMENTED to proceed to SIGKILL — so on a loaded
+   * runner these tests killed their own sleeper. Asserting them under
+   * `definitiveOnly: true` instead would make them tautologies on exactly the
+   * platform that flaked: production returns false on ANY indeterminate probe
+   * before `argvIdentifiesDaemonScript` is ever called, so the #1025
+   * entry-position guard would no longer be exercised there. Replacing just the
+   * CIM call with the sleeper's real command line keeps the matcher in the loop
+   * on every platform. Every other `execFileSync` call — the tasklist / `ps`
+   * image lookup included — passes through to the real implementation, and on
+   * macOS/Linux the argv probe is untouched (it is fast and never flaked).
+   */
+  async function importWithStubbedWin32Cmdline(argv: string[]) {
+    vi.resetModules();
+    vi.doMock('child_process', async () => {
+      const actual = await vi.importActual<typeof import('child_process')>('child_process');
+      const execFileSync = ((file: unknown, args?: unknown, opts?: unknown) => {
+        const isCimProbe = Array.isArray(args)
+          && args.some((a) => typeof a === 'string' && a.includes('Get-CimInstance Win32_Process'));
+        // The CIM string quotes arguments carrying spaces; production
+        // re-tokenizes it quote-aware, so quote every part.
+        if (isCimProbe) return argv.map((part) => `"${part}"`).join(' ');
+        return (actual.execFileSync as (...rest: unknown[]) => unknown)(file, args, opts);
+      }) as typeof actual.execFileSync;
+      return { ...actual, default: { ...actual, execFileSync }, execFileSync };
+    });
+    return import('../daemonLauncherCore');
+  }
+
+  function undoModuleStubs(): void {
+    vi.doUnmock('child_process');
+    vi.doUnmock('fs');
+    vi.resetModules();
+  }
+
+  // #1274: stays in `definitiveOnly: false` — the mode `killDaemonByPidFile`
+  // uses — with the win32 CIM probe stubbed to the sleeper's real command line
+  // (see importWithStubbedWin32Cmdline). The argv gate is therefore the only
+  // thing refusing the kill on every platform, instead of the probe's latency
+  // deciding the outcome.
   it('refuses an unrelated process whose argv merely ends in daemon/index.js (the #1025 repro)', async () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-identity-innocent-'));
     // Somebody else's program, using the same everyday layout. The image
     // matches too (both plain node), so the argv gate is the ONLY thing
     // standing between this process and a SIGKILL.
+    const scriptPath = path.join(tmpDir, 'someone-elses-app', 'daemon', 'index.js');
+    const pid = await spawnSleeper(scriptPath);
+
+    try {
+      const stubbed = await importWithStubbedWin32Cmdline([process.execPath, scriptPath]);
+      expect(stubbed.killVerifiedDaemonPid(pid, { definitiveOnly: false })).toBe(false);
+      expect(stubbed.killVerifiedDaemonPid(pid, {
+        definitiveOnly: false,
+        scriptCandidates: [path.join(tmpDir, 'unrelated', 'daemon-bundle', 'index.js')],
+      })).toBe(false);
+      expect(isAlive(pid)).toBe(true);
+    } finally {
+      undoModuleStubs();
+    }
+    // 15 s: two kill attempts, each paying the real win32 tasklist image
+    // lookup (3 s worst case). The 5 s cmdline probe is stubbed out, so the
+    // old 5 s default was only ever missed by the image lookup plus spawn.
+  }, 15_000);
+
+  // #1274: the other half of the split — the documented indeterminate branch.
+  // When the argv probe cannot resolve and the caller is in the before-quit
+  // mode (`definitiveOnly: false`, what `killDaemonByPidFile` uses), a null
+  // cmdline next to a non-mismatching image is INTENDED to proceed to
+  // SIGKILL. The probe is stubbed (execFileSync throws, /proc reads throw) so
+  // the assertion never waits on the real 5 s WMI timeout.
+  it('proceeds to SIGKILL when the argv probe cannot resolve and definitiveOnly is false', async () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-identity-indeterminate-'));
     const pid = await spawnSleeper(path.join(tmpDir, 'someone-elses-app', 'daemon', 'index.js'));
 
-    expect(killVerifiedDaemonPid(pid, { definitiveOnly: false })).toBe(false);
-    expect(killVerifiedDaemonPid(pid, {
-      definitiveOnly: false,
-      scriptCandidates: [path.join(tmpDir, 'unrelated', 'daemon-bundle', 'index.js')],
-    })).toBe(false);
-    expect(isAlive(pid)).toBe(true);
+    vi.resetModules();
+    // Kill every OS probe the module can use to read an image or a cmdline:
+    // `execFileSync` covers win32 (tasklist / PowerShell) and macOS (`ps`),
+    // and the /proc guard covers Linux. Everything else passes through, so
+    // the real `process.kill` still does the killing.
+    vi.doMock('child_process', async () => {
+      const actual = await vi.importActual<typeof import('child_process')>('child_process');
+      const execFileSync = () => { throw new Error('stubbed probe failure (#1274)'); };
+      return { ...actual, default: { ...actual, execFileSync }, execFileSync };
+    });
+    vi.doMock('fs', async () => {
+      const actual = await vi.importActual<typeof import('fs')>('fs');
+      const readFileSync = ((file: unknown, ...rest: unknown[]) => {
+        if (typeof file === 'string' && file.startsWith('/proc/')) {
+          throw new Error('stubbed /proc failure (#1274)');
+        }
+        return (actual.readFileSync as (...args: unknown[]) => unknown)(file, ...rest);
+      }) as typeof actual.readFileSync;
+      return { ...actual, default: { ...actual, readFileSync }, readFileSync };
+    });
+
+    let survivorPid = 0;
+    try {
+      const stubbed = await import('../daemonLauncherCore');
+      expect(stubbed.killVerifiedDaemonPid(pid, { definitiveOnly: false })).toBe(true);
+      // ...and the same indeterminate reading REFUSES under definitiveOnly.
+      survivorPid = await spawnSleeper(path.join(tmpDir, 'second', 'daemon', 'index.js'));
+      expect(stubbed.killVerifiedDaemonPid(survivorPid, { definitiveOnly: true })).toBe(false);
+      expect(isAlive(survivorPid)).toBe(true);
+    } finally {
+      // afterEach only tracks the LAST spawned child, and a failed expect
+      // above would skip the survivor spawn entirely — reap both by hand so a
+      // red run cannot orphan 30 s sleepers on the runner.
+      try { process.kill(pid, 'SIGKILL'); } catch { /* already gone */ }
+      if (survivorPid) { try { process.kill(survivorPid, 'SIGKILL'); } catch { /* already gone */ } }
+      undoModuleStubs();
+    }
   }, 15_000);
 
   it('requirement 1, executed: our script path as a trailing ARGUMENT does not verify the process', async () => {
@@ -225,11 +329,23 @@ describe('killVerifiedDaemonPid — execution (#1025/#1028)', () => {
     // along as a plain argument (an editor, a build tool, a log grepper).
     const pid = await spawnSleeper(path.join(tmpDir, 'unrelated-entry.js'), [bundlePath]);
 
-    expect(killVerifiedDaemonPid(pid, {
-      definitiveOnly: false,
-      scriptCandidates: [bundlePath],
-    })).toBe(false);
-    expect(isAlive(pid)).toBe(true);
+    // #1274: a refusal assertion, so the win32 cmdline probe is stubbed to
+    // this sleeper's real argv (entry script first, bundlePath as a trailing
+    // argument) and the mode stays `definitiveOnly: false` — the
+    // entry-position guard is what must refuse here, not probe latency.
+    try {
+      const stubbed = await importWithStubbedWin32Cmdline([
+        process.execPath, path.join(tmpDir, 'unrelated-entry.js'), bundlePath,
+      ]);
+      expect(stubbed.killVerifiedDaemonPid(pid, {
+        definitiveOnly: false,
+        scriptCandidates: [bundlePath],
+      })).toBe(false);
+      expect(isAlive(pid)).toBe(true);
+    } finally {
+      undoModuleStubs();
+    }
+    // 15 s: one kill attempt at the real win32 tasklist worst case (3 s).
   }, 15_000);
 
   it('kills a process running exactly one of the supplied candidate scripts', async () => {
@@ -247,14 +363,28 @@ describe('killVerifiedDaemonPid — execution (#1025/#1028)', () => {
 
   it('requirement 3, executed: daemon-bundler/index.js is refused, daemon-bundle/index.js is killed', async () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-identity-shape-'));
-    const bundlerPid = await spawnSleeper(path.join(tmpDir, 'daemon-bundler', 'index.js'));
-    expect(killVerifiedDaemonPid(bundlerPid, { definitiveOnly: false })).toBe(false);
-    expect(isAlive(bundlerPid)).toBe(true);
+    const bundlerScript = path.join(tmpDir, 'daemon-bundler', 'index.js');
+    const bundlerPid = await spawnSleeper(bundlerScript);
+    // #1274: the refusal half runs with the win32 cmdline probe stubbed to
+    // this sleeper's real argv, so the near-miss path shape ("daemon-bundler"
+    // vs "daemon-bundle") is what refuses — in the same
+    // `definitiveOnly: false` mode the kill half below uses.
+    try {
+      const stubbed = await importWithStubbedWin32Cmdline([process.execPath, bundlerScript]);
+      expect(stubbed.killVerifiedDaemonPid(bundlerPid, { definitiveOnly: false })).toBe(false);
+      expect(isAlive(bundlerPid)).toBe(true);
+    } finally {
+      undoModuleStubs();
+    }
     try { process.kill(bundlerPid, 'SIGKILL'); } catch { /* cleanup */ }
 
+    // The kill half keeps the real probe: it must pass the matcher on a real
+    // cmdline read, which is the other half of the #1028 guarantee.
     const exactPid = await spawnSleeper(path.join(tmpDir, 'daemon-bundle', 'index.js'));
     expect(killVerifiedDaemonPid(exactPid, { definitiveOnly: false })).toBe(true);
-  }, 20_000);
+    // 30 s: two spawns plus the kill half's real win32 tasklist (3 s) + WMI
+    // cmdline (5 s) worst case (#1274).
+  }, 30_000);
 });
 
 describe('ensureDaemon — cmdline-mismatch branch refuses instead of cleaning (#1028 requirement 4)', () => {
