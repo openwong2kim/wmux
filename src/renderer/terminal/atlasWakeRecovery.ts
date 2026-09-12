@@ -88,7 +88,6 @@ import { atlasGuard } from './atlasGuard';
  *  milliseconds of each other on a real wake; one rebuild covers both. */
 export const WAKE_RECOVER_THROTTLE_MS = 1_000;
 
-
 export interface AtlasWakeRecoveryDeps {
   /** Subscribe to main's system-resumed push; returns the unsubscribe. */
   onSystemResumed(callback: () => void): () => void;
