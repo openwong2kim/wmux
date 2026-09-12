@@ -6,6 +6,7 @@ import { canStashPaneSurfaces } from '../../../shared/paneStash';
 import { isDaemonModeActive } from '../../daemon/daemonMode';
 import { computePaneAutoName, paneDisplayName } from '../../utils/paneNaming';
 import { MAX_PANES_PER_WORKSPACE } from './paneSlice';
+import { clearRemoteSelection } from './workspaceSlice';
 import { publishPaneStashed, publishPaneFocused } from '../../events/publisher';
 import { saveSessionNow } from '../../utils/sessionSaveBridge';
 import { markRetentionMigrationDone } from '../retentionMigration';
@@ -1428,6 +1429,15 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
     if (state.multiviewIds.length <= 1) {
       state.multiviewIds = [];
     }
+    // #1086 — the grid IS the local viewport, so ANY Ctrl+click on it is a
+    // local-view action even though this one never assigns activeWorkspaceId
+    // (which is why activateLocalWorkspace cannot cover this site). Applied to
+    // the whole action rather than the join branch alone: leaving the grid, and
+    // collapsing it by un-picking the last partner, land the user on the local
+    // active workspace just as much as joining does, and a rule that fires on
+    // some Ctrl+clicks but not others is the drift this PR is removing.
+    // Guarded for stores mounted without the remote slice.
+    clearRemoteSelection(state);
     });
   },
 

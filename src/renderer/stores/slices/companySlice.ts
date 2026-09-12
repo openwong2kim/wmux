@@ -12,7 +12,7 @@ import {
   MAX_INBOX_SIZE,
 } from '../../../shared/types';
 import type { QueuedMessage } from '../../company/MessageQueue';
-import { clearColdParkEntry, clearRemoteSelection, pruneMultiviewMembership } from './workspaceSlice';
+import { activateLocalWorkspace, pruneMultiviewMembership } from './workspaceSlice';
 
 /** Maximum number of pending messages in the queue to prevent memory exhaustion. */
 const MAX_MESSAGE_QUEUE_SIZE = 500;
@@ -125,12 +125,10 @@ export const createCompanySlice: StateCreator<StoreState, [['zustand/immer', nev
     pruneMultiviewMembership(state);
     // If active workspace was a company one, switch to first remaining
     if (!state.workspaces.some((ws) => ws.id === state.activeWorkspaceId)) {
-      state.activeWorkspaceId = state.workspaces[0]?.id || '';
-      clearColdParkEntry(state, state.activeWorkspaceId); // keep promoted ws visible
-      // #1086: every site that assigns activeWorkspaceId must drop the remote
-      // mirror selection too, or WorkspaceCenter keeps showing the mirror while
-      // the sidebar highlights the newly-promoted local workspace.
-      clearRemoteSelection(state);
+      // Promotion goes through the single activation helper: it keeps the
+      // promoted workspace un-parked AND drops any remote mirror selection,
+      // which would otherwise keep covering the newly-promoted workspace.
+      activateLocalWorkspace(state, state.workspaces[0]?.id || '');
     }
     state.company = null;
     state.memberCosts = {};
@@ -173,12 +171,10 @@ export const createCompanySlice: StateCreator<StoreState, [['zustand/immer', nev
     state.workspaces = state.workspaces.filter((ws) => !memberWsIds.has(ws.id));
     pruneMultiviewMembership(state);
     if (!state.workspaces.some((ws) => ws.id === state.activeWorkspaceId)) {
-      state.activeWorkspaceId = state.workspaces[0]?.id || '';
-      clearColdParkEntry(state, state.activeWorkspaceId); // keep promoted ws visible
-      // #1086: every site that assigns activeWorkspaceId must drop the remote
-      // mirror selection too, or WorkspaceCenter keeps showing the mirror while
-      // the sidebar highlights the newly-promoted local workspace.
-      clearRemoteSelection(state);
+      // Promotion goes through the single activation helper: it keeps the
+      // promoted workspace un-parked AND drops any remote mirror selection,
+      // which would otherwise keep covering the newly-promoted workspace.
+      activateLocalWorkspace(state, state.workspaces[0]?.id || '');
     }
     // Remove department
     const idx = state.company.departments.findIndex((d) => d.id === deptId);

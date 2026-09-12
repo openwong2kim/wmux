@@ -14,6 +14,7 @@ import { postPluginCommand } from '../../plugins/pluginFrameRegistry';
 import { runProjectCommand } from '../../utils/projectCommands';
 import { applyProjectLayoutFresh } from '../../utils/projectConfigProbe';
 import { COMPANY_MODE_ENABLED } from '../../../shared/featureFlags';
+import { isRemoteMirrorVisible } from '../../stores/slices/remoteWorkspacesSlice';
 
 // ---------------------------------------------------------------------------
 // SVG Icons (inline, no external dependency)
@@ -296,7 +297,7 @@ export default function CommandPalette() {
           // worktrees in a repo the user is not looking at. Suppressing the
           // toolbar for remote views and then adding an unguarded keyboard
           // route would have reopened the hole from the other side.
-          if (state.activeRemoteKey != null) { setVisible(false); return; }
+          if (isRemoteMirrorVisible(state)) { setVisible(false); return; }
           if (state.activeWorkspaceId) state.openFanOut(state.activeWorkspaceId, null);
           setVisible(false);
         },

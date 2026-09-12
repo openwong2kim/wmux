@@ -7,10 +7,16 @@
 import { useStore } from '../../stores';
 import { WorkspaceViewport } from './WorkspaceViewport';
 import RemoteWorkspaceView from '../Remote/RemoteWorkspaceView';
+import { isRemoteMirrorVisible } from '../../stores/slices/remoteWorkspacesSlice';
 
 export function WorkspaceCenter() {
   const remoteWorkspaces = useStore((s) => s.remoteWorkspaces);
   const activeRemoteKey = useStore((s) => s.activeRemoteKey);
+  // #1086 — one predicate decides the local-vs-remote gate (and a dangling key
+  // reads as "local", never as a blank centre). Selecting a local workspace
+  // drops activeRemoteKey in the store (activateLocalWorkspace), so the local
+  // tree comes back on the FIRST click.
+  const remoteVisible = useStore(isRemoteMirrorVisible);
 
   return (
     <div className="flex-1 min-h-0 relative">
@@ -20,7 +26,7 @@ export function WorkspaceCenter() {
       <div
         className="absolute inset-0 flex flex-col"
         data-pane-grid-wrapper
-        style={{ display: activeRemoteKey ? 'none' : 'flex' }}
+        style={{ display: remoteVisible ? 'none' : 'flex' }}
       >
         <WorkspaceViewport />
       </div>
@@ -32,7 +38,7 @@ export function WorkspaceCenter() {
         <div
           key={rw.key}
           className="absolute inset-0 flex flex-col"
-          style={{ display: rw.key === activeRemoteKey ? 'flex' : 'none' }}
+          style={{ display: remoteVisible && rw.key === activeRemoteKey ? 'flex' : 'none' }}
         >
           <RemoteWorkspaceView workspace={rw} />
         </div>
