@@ -16,6 +16,7 @@ import { createElement, act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { WMUX_KEYMAP } from '../../../../shared/keymap';
 import { useComposeShortcut } from '../useComposeShortcut';
+import { TERMINAL_PTY_ATTR, COMPOSE_OWNER_ATTR } from '../../../terminal/composeChord';
 
 const setToolbarPopover = vi.fn();
 let state: Record<string, unknown>;
@@ -37,10 +38,25 @@ function Probe() {
   return null;
 }
 
-function press(init: KeyboardEventInit): void {
+function press(init: KeyboardEventInit, from?: HTMLElement): void {
   act(() => {
-    document.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, cancelable: true, ...init }));
+    const e = new KeyboardEvent('keydown', { bubbles: true, cancelable: true, ...init });
+    (from ?? document).dispatchEvent(e);
   });
+}
+
+/**
+ * A terminal container as useTerminal stamps it: every terminal carries its
+ * ptyId, only the pane-surface one carries the owner marker.
+ */
+function mountTerminal(ptyId: string, owns: boolean): HTMLElement {
+  const host = document.createElement('div');
+  host.setAttribute(TERMINAL_PTY_ATTR, ptyId);
+  if (owns) host.setAttribute(COMPOSE_OWNER_ATTR, '');
+  const textarea = document.createElement('textarea');
+  host.appendChild(textarea);
+  document.body.appendChild(host);
+  return textarea;
 }
 
 /**
@@ -85,6 +101,7 @@ beforeEach(() => {
 afterEach(() => {
   act(() => { root.unmount(); });
   container.remove();
+  document.querySelectorAll(`[${TERMINAL_PTY_ATTR}]`).forEach((el) => el.remove());
 });
 
 describe('useComposeShortcut modifier matching (#1280)', () => {
@@ -168,6 +185,42 @@ describe('useComposeShortcut modifier matching (#1280)', () => {
     state.inspectModeActive = true;
     press({ key: 'g', code: 'KeyG', ctrlKey: true });
     expect(setToolbarPopover).not.toHaveBeenCalled();
+  });
+
+  describe('ownership — only the active leaf\'s terminal may open the popover', () => {
+    const chord: KeyboardEventInit = { key: 'g', code: 'KeyG', ctrlKey: true };
+
+    it('toggles for a keydown from the owning terminal', () => {
+      press(chord, mountTerminal('pty-1', true));
+      expect(setToolbarPopover).toHaveBeenCalledWith('rich');
+    });
+
+    it('ignores a keydown from the floating pane (no owner marker)', () => {
+      // The live b4135076 failure: Ctrl+` floating pane, Ctrl+G once, popover
+      // opened on the background active leaf while the floating pty got 0
+      // bytes. It is not the active leaf and does not own the chord.
+      press(chord, mountTerminal('daemon-floating', false));
+      expect(setToolbarPopover).not.toHaveBeenCalled();
+    });
+
+    it('ignores a keydown from the Deck brain embed (no owner marker)', () => {
+      press(chord, mountTerminal('deck-brain', false));
+      expect(setToolbarPopover).not.toHaveBeenCalled();
+    });
+
+    it('ignores an owning terminal that is not the active leaf', () => {
+      // A background pane surface: opting in does not make it the pane whose
+      // toolbar renders the popover.
+      press(chord, mountTerminal('pty-other', true));
+      expect(setToolbarPopover).not.toHaveBeenCalled();
+    });
+
+    it('still toggles for a keydown from no terminal at all', () => {
+      // Focus on <body> after a popover closed. The binding never required
+      // terminal focus, so this path is deliberately unchanged.
+      press(chord);
+      expect(setToolbarPopover).toHaveBeenCalledWith('rich');
+    });
   });
 
   describe('macOS', () => {

@@ -1,5 +1,12 @@
+// @vitest-environment jsdom
 import { describe, it, expect } from 'vitest';
-import { isComposeChord, type ComposeChordEventLike } from '../composeChord';
+import {
+  isComposeChord,
+  composeOwnerHost,
+  TERMINAL_PTY_ATTR,
+  COMPOSE_OWNER_ATTR,
+  type ComposeChordEventLike,
+} from '../composeChord';
 import { WMUX_KEYMAP } from '../../../shared/keymap';
 
 /**
@@ -86,6 +93,39 @@ describe('isComposeChord', () => {
           `${entry.combo} on ${platform} must not read as the compose chord`).toBe(false);
       }
     }
+  });
+});
+
+describe('composeOwnerHost', () => {
+  const mount = (ptyId: string | null, owns: boolean): HTMLElement => {
+    const host = document.createElement('div');
+    if (ptyId !== null) host.setAttribute(TERMINAL_PTY_ATTR, ptyId);
+    if (owns) host.setAttribute(COMPOSE_OWNER_ATTR, '');
+    const inner = document.createElement('textarea');
+    host.appendChild(inner);
+    document.body.appendChild(host);
+    return inner;
+  };
+
+  it('reads the ptyId and the owner marker from the enclosing terminal', () => {
+    expect(composeOwnerHost(mount('pty-1', true))).toEqual({ ptyId: 'pty-1', owns: true });
+  });
+
+  it('reports a non-owning terminal (floating pane, brain embed)', () => {
+    // The live b4135076 failure came from here: the document gate had no way
+    // to tell this keydown apart from the active leaf's.
+    expect(composeOwnerHost(mount('daemon-floating', false)))
+      .toEqual({ ptyId: 'daemon-floating', owns: false });
+  });
+
+  it('reports no terminal for an event from elsewhere, and for a null target', () => {
+    // Distinct from a FOREIGN terminal: the caller keeps acting on the active
+    // leaf here, because the binding never required terminal focus.
+    const loose = document.createElement('button');
+    document.body.appendChild(loose);
+    expect(composeOwnerHost(loose)).toEqual({ ptyId: null, owns: false });
+    expect(composeOwnerHost(null)).toEqual({ ptyId: null, owns: false });
+    loose.remove();
   });
 });
 

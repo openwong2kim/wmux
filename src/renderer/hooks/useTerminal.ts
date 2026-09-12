@@ -30,7 +30,7 @@ import { terminalFontFamilyCss } from '../utils/terminalFont';
 import { createPathLinkProvider } from '../terminal/pathLinkProvider';
 import { resolveNewlineKeyByte } from '../terminal/newlineKeys';
 import { resolveCtrlLetterByte } from '../terminal/ctrlLetterKeys';
-import { isComposeChord } from '../terminal/composeChord';
+import { isComposeChord, composeOwnerHost, TERMINAL_PTY_ATTR, COMPOSE_OWNER_ATTR } from '../terminal/composeChord';
 import { foldRemoteKeyboardState, INITIAL_REMOTE_KEYBOARD_STATE, type RemoteKeyboardState } from '../components/Remote/keyboardProtocol';
 import { attachImeAnchor } from '../terminal/imeAnchor';
 import { attachImeResidueGuard } from '../terminal/imeResidueGuard';
@@ -1040,6 +1040,29 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     }
   }, [ptyId, containerRef]);
 
+  // #1280 — publish this terminal's identity and chord ownership on the DOM,
+  // so the document-level Rich Input listener can tell WHICH terminal a
+  // keydown came from. Without it that gate fired for any terminal's keydown
+  // and toggled the popover on the active leaf: pressing Ctrl+G in the
+  // floating pane opened Rich Input over a background pane while the floating
+  // pty got nothing (live dogfood on b4135076).
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+    if (!ptyId) {
+      container.removeAttribute(TERMINAL_PTY_ATTR);
+      container.removeAttribute(COMPOSE_OWNER_ATTR);
+      return;
+    }
+    container.setAttribute(TERMINAL_PTY_ATTR, ptyId);
+    if (ownsComposeShortcut) container.setAttribute(COMPOSE_OWNER_ATTR, '');
+    else container.removeAttribute(COMPOSE_OWNER_ATTR);
+    return () => {
+      container.removeAttribute(TERMINAL_PTY_ATTR);
+      container.removeAttribute(COMPOSE_OWNER_ATTR);
+    };
+  }, [ptyId, ownsComposeShortcut, containerRef]);
+
   useEffect(() => {
     const container = containerRef.current;
     if (!container || !ptyId) return;
@@ -1830,7 +1853,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       // `ownsComposeShortcut` is the other half: the popover gate acts on the
       // active leaf's pty, so a floating pane / brain embed would see the key
       // swallowed here and declined there. Those surfaces keep encoding 0x07.
-      if (ownsComposeShortcut && isComposeChord(e, isMac ? 'darwin' : 'win32')
+      if (composeOwnerHost(e.target).owns && isComposeChord(e, isMac ? 'darwin' : 'win32')
           && !useStore.getState().inspectModeActive) {
         return false; // let DOM bubble to useComposeShortcut
       }

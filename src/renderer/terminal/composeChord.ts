@@ -66,3 +66,50 @@ export function isComposeChord(
   if (!baseModifier) return false;
   return e.key === 'g' || e.key === 'G' || e.code === 'KeyG';
 }
+
+/**
+ * Ownership, the other half of #1280 — and the half the first fix only wired
+ * into ONE of the two gates.
+ *
+ * `useComposeShortcut` toggles Rich Input for the workspace's ACTIVE LEAF pty,
+ * because that is the pane whose toolbar renders the popover. So only that
+ * pane's terminal may fire the chord. Give the key to any other xterm and the
+ * popover opens over the wrong pane: the live dogfood on the floating pane
+ * (Cmd+` / Ctrl+`) hit exactly that — its own pty received 0 bytes while the
+ * popover opened on a background pane, which on Windows is the original
+ * complaint (`^G` in the floating pane AND a popover elsewhere).
+ *
+ * `useTerminal` stamps every terminal container with its ptyId, and adds the
+ * owner marker only where `ownsComposeShortcut` is set (Terminal.tsx, the
+ * pane-surface terminal — not FloatingPane, not Deck's BrainTerminalEmbed).
+ * Both gates then read ownership from the same marker instead of each holding
+ * an opinion.
+ */
+export const TERMINAL_PTY_ATTR = 'data-terminal-pty';
+export const COMPOSE_OWNER_ATTR = 'data-compose-owner';
+
+export interface ComposeOwnerHost {
+  /** ptyId of the terminal the event came from, or null when it came from none. */
+  ptyId: string | null;
+  /** Does that terminal own the chord? Meaningless when `ptyId` is null. */
+  owns: boolean;
+}
+
+/**
+ * Which terminal did this keydown come from, and does it own the chord?
+ *
+ * `{ ptyId: null }` means the event did not originate inside any terminal at
+ * all — focus on <body> after a popover closed, say. That is NOT a foreign
+ * terminal, so the caller keeps its old behaviour there (act on the active
+ * leaf); the point of this helper is to reject a DIFFERENT terminal's keydown,
+ * not to require terminal focus the binding never required.
+ */
+export function composeOwnerHost(target: EventTarget | null): ComposeOwnerHost {
+  const el = target as Element | null;
+  const host = el?.closest?.(`[${TERMINAL_PTY_ATTR}]`) ?? null;
+  if (!host) return { ptyId: null, owns: false };
+  return {
+    ptyId: host.getAttribute(TERMINAL_PTY_ATTR),
+    owns: host.hasAttribute(COMPOSE_OWNER_ATTR),
+  };
+}

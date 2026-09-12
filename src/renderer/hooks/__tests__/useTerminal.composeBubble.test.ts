@@ -49,16 +49,17 @@ describe('the pane gate and the popover gate share one chord predicate (#1280)',
     expect(handlerEnd).toBeGreaterThan(handlerStart);
   });
 
-  it('bubbles on isComposeChord, gated by ownsComposeShortcut', () => {
-    // The one line that wires both halves. Anything more specific than this
-    // is the predicate's own test's job.
-    expect(HANDLER).toMatch(/ownsComposeShortcut && isComposeChord\(e, isMac \? 'darwin' : 'win32'\)/);
+  it('bubbles on isComposeChord, gated by the shared ownership marker', () => {
+    // The one line that wires both halves. Both gates read ownership from
+    // composeOwnerHost, so they cannot disagree about it any more than about
+    // the chord. Anything more specific is the predicates' own tests' job.
+    expect(HANDLER).toMatch(/composeOwnerHost\(e\.target\)\.owns && isComposeChord\(e, isMac \? 'darwin' : 'win32'\)/);
     expect(HANDLER).toMatch(/return false; \/\/ let DOM bubble to useComposeShortcut/);
   });
 
   it('bubbles before the catch-all ctrl encoder, which would write BEL', () => {
     // Order is the whole fix: the catch-all writes 0x07 and returns false.
-    expect(HANDLER.indexOf('ownsComposeShortcut && isComposeChord'))
+    expect(HANDLER.indexOf('composeOwnerHost(e.target).owns && isComposeChord'))
       .toBeLessThan(HANDLER.indexOf('const ctrlByte = resolveCtrlLetterByte(e)'));
   });
 
@@ -89,7 +90,7 @@ describe('the pane gate and the popover gate share one chord predicate (#1280)',
       /const disabledCtrl = resolveCtrlLetterByte\(e\);\s*if \(disabledCtrl\) \{\s*e\.preventDefault\(\);\s*window\.electronAPI\.pty\.write\(ptyId, disabledCtrl\);\s*noteUserKeystroke\(disabledCtrl\);\s*return false;/,
     );
     expect(HANDLER.indexOf(branch?.[0] ?? ''))
-      .toBeLessThan(HANDLER.indexOf('ownsComposeShortcut && isComposeChord'));
+      .toBeLessThan(HANDLER.indexOf('composeOwnerHost(e.target).owns && isComposeChord'));
   });
 });
 
@@ -110,8 +111,17 @@ describe('only the active-leaf terminal owns the chord (#1280 review)', () => {
   });
 
   it('the option defaults to false, so a new embed is dead-key-safe', () => {
-    expect(read('src/renderer/hooks/useTerminal.ts'))
-      .toMatch(/ownsComposeShortcut = false \} = options;/);
+    expect(SRC).toMatch(/ownsComposeShortcut = false \} = options;/);
+  });
+
+  it('the option is published as the DOM marker both gates read', () => {
+    // One source of ownership truth: useTerminal stamps every container with
+    // its ptyId and adds the owner attribute only where the option is set, so
+    // the document-level gate can reject a foreign terminal's keydown.
+    expect(SRC).toMatch(/container\.setAttribute\(TERMINAL_PTY_ATTR, ptyId\);/);
+    expect(SRC).toMatch(/if \(ownsComposeShortcut\) container\.setAttribute\(COMPOSE_OWNER_ATTR, ''\);/);
+    // And removed on unmount, or the stale marker would outlive the terminal.
+    expect(SRC).toMatch(/return \(\) => \{\s*container\.removeAttribute\(TERMINAL_PTY_ATTR\);\s*container\.removeAttribute\(COMPOSE_OWNER_ATTR\);/);
   });
 
   it('a non-owning terminal still encodes Ctrl+G as BEL', () => {

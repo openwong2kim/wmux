@@ -2,7 +2,7 @@ import { useEffect } from 'react';
 import { useStore } from '../../stores';
 import { focusedTerminalPtyId } from '../../utils/focusedSurface';
 import { matchesDisabledShortcut } from '../../../shared/keymap';
-import { isComposeChord } from '../../terminal/composeChord';
+import { isComposeChord, composeOwnerHost } from '../../terminal/composeChord';
 
 /**
  * ⌘G / Ctrl+G toggles Rich Input on the focused terminal.
@@ -61,7 +61,19 @@ export function useComposeShortcut(): void {
       }
       const state = useStore.getState();
       const ws = state.workspaces.find((w) => w.id === state.activeWorkspaceId);
-      if (!focusedTerminalPtyId(ws)) return;
+      const activePtyId = focusedTerminalPtyId(ws);
+      if (!activePtyId) return;
+      // Ownership, checked on THIS gate too (#1280 live dogfood). The popover
+      // belongs to the active leaf's toolbar, so only the active leaf's
+      // terminal may open it. A keydown from another xterm — the floating pane
+      // (Ctrl+`), Deck's brain embed, a background surface — used to toggle
+      // Rich Input over the WRONG pane while its own pty got nothing; opting
+      // those surfaces out of the pane-side bubble stopped them swallowing the
+      // key, but this gate still fired. A keydown from no terminal at all
+      // (focus on <body>) is left alone: the binding never required terminal
+      // focus.
+      const origin = composeOwnerHost(e.target);
+      if (origin.ptyId !== null && (!origin.owns || origin.ptyId !== activePtyId)) return;
       e.preventDefault();
       state.setToolbarPopover(state.toolbarPopover === 'rich' ? null : 'rich');
     };
