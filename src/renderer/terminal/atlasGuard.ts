@@ -600,9 +600,24 @@ export function createAtlasGuard(options: AtlasGuardOptions = {}): AtlasGuard {
     recoverNow(reason: string): void {
       const groups = groupByAtlas();
       if (groups.size === 0) return;
-      console.warn(`[wmux:atlas-guard] recover (${reason}) — atlases=${groups.size}`);
       for (const [atlas, group] of groups) {
-        rebuildGroup(atlas, group);
+        // #1234: `atlases=N` alone could not tell a wipe that did nothing from
+        // a wipe that repacked a full pool. Sample the pool BEFORE the rebuild
+        // (afterwards every page reads idle by construction) so the next field
+        // log is decisive about whether the guard is the repair or the trigger.
+        const pages = atlas.pages;
+        const len = pages && typeof pages.length === 'number' ? pages.length : 0;
+        let used = 0;
+        if (pages) for (let i = 0; i < len; i++) if (pageInUse(pages[i])) used++;
+        const outcome = rebuildGroup(atlas, group);
+        const gen =
+          typeof atlas.clearModelGeneration === 'number'
+            ? `, gen=${atlas.clearModelGeneration}`
+            : '';
+        console.warn(
+          `[wmux:atlas-guard] recover (${reason}) — atlases=${groups.size},` +
+            ` panes=${group.length}, pages=${used}/${len} used, clear=${outcome}${gen}`,
+        );
         // Re-baseline from the post-rebuild pool for the same reason the poll
         // does: a stale snapshot would read the rebuild as a "merge" and fire a
         // redundant one next tick, while dropping it would blind the next poll.

@@ -816,6 +816,9 @@ export default function AppLayout() {
     return initAtlasWakeRecovery({
       onSystemResumed:
         typeof onResumed === 'function' ? onResumed : () => () => {},
+      // #1234: without a resume push, visibility is the only wake signal this
+      // build has, so it must keep recovering unconditionally.
+      hasSystemResumeSignal: typeof onResumed === 'function',
     });
   }, []);
 

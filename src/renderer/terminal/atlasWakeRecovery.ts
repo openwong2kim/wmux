@@ -33,14 +33,32 @@
 // The two triggers routinely fire together on a real wake; the throttle
 // collapses them into one rebuild.
 //
-// ON WINDOWS THE VISIBILITY TRIGGER NEVER FIRES. Measured on Electron 41:
-// `document.visibilityState` stays 'visible' while the window is fully covered
-// by another application, and also while the window is MINIMIZED, with and
-// without Chromium's `CalculateNativeWinOcclusion` feature —
-// `visibilitychange` fires exactly once per window, at teardown. So on Windows
-// `system-resumed` is the only live trigger here. Do not assume the visibility
-// backstop above covers that platform; anything that needs to know whether the
-// window can be seen has to ask main instead (see main/window/windowDisplayed.ts,
+// THE VISIBILITY TRIGGER IS ARMED BY RESUME, NOT FIRED ON ITS OWN (#1234).
+//
+// A previous measurement on Electron 41 concluded that Windows never fires
+// `visibilitychange` while the window is covered or minimized, and the trigger
+// above was written on that assumption — a harmless macOS-only backstop. The
+// #1234 field log falsifies it: on Windows 10.0.19045 the renderer logged
+// `recover (visibility)` 18 times in 15 minutes of ordinary alt-tabbing, 12 of
+// them 13-26 ms after a `[wmux:glyph-repaint] focus`. Chromium's native window
+// occlusion does flip `visibilityState` on that build, so on Windows the
+// visibility trigger IS the window-focus trigger — the one trigger this module
+// deliberately refuses to have, because wiping the shared atlas while output is
+// flowing re-arms xterm's page-merge race (11 of those 18 wipes landed within
+// 1 s of a live output burst).
+//
+// So visibility alone no longer recovers. Its stated job is narrow: cover the
+// unlock-screen gap where main's `resume` lands while the window is still
+// hidden. That job needs a resume to exist. The trigger now fires only when a
+// `system-resumed` push arrived within `RESUME_ARM_MS` — i.e. the machine
+// really did sleep and texture memory really is suspect. Without a resume
+// nothing invalidated the GPU's texture memory, so there is nothing to rebuild
+// and a wipe is pure risk. A build whose main has no resume push at all
+// (`hasSystemResumeSignal: false`) keeps the old unconditional behaviour,
+// because for it visibility is the only wake signal there is.
+//
+// Anything that needs to know whether the window can be seen must still ask
+// main instead of reading `visibilityState` (see main/window/windowDisplayed.ts,
 // which is how the #766 viewer-visibility report gets its answer since #882).
 
 import { atlasGuard } from './atlasGuard';
@@ -49,9 +67,20 @@ import { atlasGuard } from './atlasGuard';
  *  milliseconds of each other on a real wake; one rebuild covers both. */
 export const WAKE_RECOVER_THROTTLE_MS = 1_000;
 
+/** How long a `system-resumed` push keeps the visibility trigger armed. A real
+ *  wake delivers resume and the first `visibilitychange` within milliseconds of
+ *  each other; the unlock-screen gap this backstop exists for can stretch that
+ *  to however long the user takes to type a password. Ten seconds covers the
+ *  gap without leaving the trigger armed for the next alt-tab. */
+export const RESUME_ARM_MS = 10_000;
+
 export interface AtlasWakeRecoveryDeps {
   /** Subscribe to main's system-resumed push; returns the unsubscribe. */
   onSystemResumed(callback: () => void): () => void;
+  /** False when main exposes no resume push (an older build). Visibility is
+   *  then the only wake signal available and recovers unconditionally, as it
+   *  did before #1234. Defaults to true. */
+  hasSystemResumeSignal?: boolean;
   recoverNow?: (reason: string) => void;
   documentRef?: Pick<Document, 'addEventListener' | 'removeEventListener'> & {
     visibilityState: DocumentVisibilityState;
@@ -63,12 +92,14 @@ export interface AtlasWakeRecoveryDeps {
 export function initAtlasWakeRecovery(deps: AtlasWakeRecoveryDeps): () => void {
   const {
     onSystemResumed,
+    hasSystemResumeSignal = true,
     recoverNow = (reason) => atlasGuard.recoverNow(reason),
     documentRef = document,
     now = Date.now,
   } = deps;
 
   let lastRecoverAt = -Infinity;
+  let lastResumeAt = -Infinity;
   const recover = (reason: string): void => {
     const t = now();
     if (t - lastRecoverAt < WAKE_RECOVER_THROTTLE_MS) return;
@@ -76,9 +107,21 @@ export function initAtlasWakeRecovery(deps: AtlasWakeRecoveryDeps): () => void {
     recoverNow(reason);
   };
 
-  const unsubscribeResumed = onSystemResumed(() => recover('system-resumed'));
+  const unsubscribeResumed = onSystemResumed(() => {
+    lastResumeAt = now();
+    recover('system-resumed');
+  });
   const onVisibilityChange = (): void => {
-    if (documentRef.visibilityState === 'visible') recover('visibility');
+    if (documentRef.visibilityState !== 'visible') return;
+    // #1234: on Windows this fires on every alt-tab. Only a recent resume makes
+    // the GPU's texture memory suspect; without one, skip the wipe. Logged at
+    // Verbose so the next field report can tell "the guard never ran" from "the
+    // guard ran and did not repair it".
+    if (hasSystemResumeSignal && now() - lastResumeAt >= RESUME_ARM_MS) {
+      console.debug('[wmux:atlas-wake] visibility ignored — no recent system-resumed');
+      return;
+    }
+    recover('visibility');
   };
   documentRef.addEventListener('visibilitychange', onVisibilityChange);
 
