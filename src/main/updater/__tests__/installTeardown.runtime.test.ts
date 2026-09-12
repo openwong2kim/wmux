@@ -750,6 +750,31 @@ describe.skipIf(!onWindows)('#1264 — the waiter must outlive the app that spaw
     fs.writeFileSync(vbs, '\uFEFF' + (launcher as string), 'utf16le');
   }
 
+  /**
+   * The property CRITICAL 2 actually needs: the stored task has no trigger that
+   * could ever fire it, so a registration that leaks cannot start a waiter on
+   * its own later (a late waiter would open the recorded pids BY NUMBER and
+   * taskkill whatever inherited them).
+   *
+   * Measured on both CI runners (validate and the cross-platform baseline,
+   * identical output): Task Scheduler normalises a trigger-less definition by
+   * storing an EMPTY, self-closing `<Triggers />` — it materialises no trigger
+   * of its own. So a substring match on `<Triggers` is the wrong test; what
+   * must be asserted is the absence of CHILD trigger elements.
+   */
+  function expectNoOwnTrigger(xml: string): void {
+    if (!xml.includes('<Triggers')) return;
+    if (/<Triggers\s*\/>/.test(xml)) return;
+    const block = /<Triggers[^>]*>([\s\S]*?)<\/Triggers>/.exec(xml);
+    expect(block, `could not parse the Triggers element out of:\n${xml}`).not.toBeNull();
+    const inner = (block as RegExpExecArray)[1];
+    const found = [...inner.matchAll(/<([A-Za-z][\w.]*)/g)].map((m) => m[1]);
+    // Listed, not just counted: if the scheduler ever DOES materialise a
+    // trigger, the failure has to name it — that would mean this transport
+    // needs a different guarantee (register disabled, enable only for /Run).
+    expect(found, `the scheduler stored trigger element(s) we never asked for: ${found.join(', ')}\nreadback was:\n${xml}`).toEqual([]);
+  }
+
   /** Poll for `p` for up to `ms`. */
   function waitFor(p: string, ms: number): boolean {
     const deadline = Date.now() + ms;
@@ -809,23 +834,36 @@ describe.skipIf(!onWindows)('#1264 — the waiter must outlive the app that spaw
       `if ($LASTEXITCODE -ne 0) { exit 5 }`,
     ]))) return;
 
-    // #1283 review asked whether the battery settings are PROVABLY applied.
-    // The builder's own test pins what we emit; this pins what the scheduler
-    // actually stored after importing it.
-    const stored = spawnSync(SCHTASKS, ['/Query', '/TN', taskName, '/XML', 'ONE'],
-      { encoding: 'utf-8', windowsHide: true, timeout: 20_000 });
-    const storedXml = (stored.stdout ?? '').replace(/\0/g, '');
-    expect(storedXml).toContain('<DisallowStartIfOnBatteries>false<');
-    expect(storedXml).toContain('<StopIfGoingOnBatteries>false<');
-    expect(storedXml).toContain('<ExecutionTimeLimit>PT0S<');
-    expect(storedXml).toContain('<MultipleInstancesPolicy>IgnoreNew<');
-    // No trigger survived the import either — a leaked task cannot self-fire.
-    expect(storedXml).not.toContain('<Triggers');
-
     expect(fs.existsSync(stamp)).toBe(true);
     // The parent is gone and its job closed with it. The scheduler's child is
     // not a member, so it is still there when the lock clears — and it runs
     // the stub Setup.exe, which is the branch the field never reached.
     expect(waitFor(setupStamp, 40_000)).toBe(true);
+
+    // #1283 review asked whether the battery settings are PROVABLY applied.
+    // The builder's own test pins what we EMIT; this pins what the scheduler
+    // STORED after importing it. Asserted after the survival proof above so a
+    // definition problem can never mask the property this file exists for.
+    const stored = spawnSync(SCHTASKS, ['/Query', '/TN', taskName, '/XML', 'ONE'],
+      { encoding: 'utf-8', windowsHide: true, timeout: 20_000 });
+    const storedXml = (stored.stdout ?? '').replace(/\0/g, '');
+    expect(storedXml, `readback was:\n${storedXml}`).toContain('<DisallowStartIfOnBatteries>false<');
+    expect(storedXml).toContain('<StopIfGoingOnBatteries>false<');
+    expect(storedXml).toContain('<ExecutionTimeLimit>PT0S<');
+    expect(storedXml).toContain('<MultipleInstancesPolicy>IgnoreNew<');
+    expect(storedXml).toContain('<LogonType>InteractiveToken<');
+    // RunLevel: the scheduler omits an element whose value is the default, and
+    // LeastPrivilege IS the default — so "absent" and "LeastPrivilege" are the
+    // same stored state. Anything else would mean the import changed it.
+    const runLevel = /<RunLevel>([^<]*)<\/RunLevel>/.exec(storedXml)?.[1] ?? 'LeastPrivilege';
+    expect(runLevel, `readback was:\n${storedXml}`).toBe('LeastPrivilege');
+    // The guard has to be able to fail, or it proves nothing. Both shapes of
+    // "empty" pass; a materialised trigger does not.
+    expect(() => expectNoOwnTrigger('<Task><Triggers /></Task>')).not.toThrow();
+    expect(() => expectNoOwnTrigger('<Task><Triggers>\n  </Triggers></Task>')).not.toThrow();
+    expect(() => expectNoOwnTrigger(
+      '<Task><Triggers><TimeTrigger><StartBoundary>2026-01-01T23:59:00</StartBoundary></TimeTrigger></Triggers></Task>',
+    )).toThrow(/TimeTrigger/);
+    expectNoOwnTrigger(storedXml);
   }, 180_000);
 });
