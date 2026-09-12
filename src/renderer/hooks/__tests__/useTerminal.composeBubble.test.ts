@@ -67,9 +67,18 @@ describe('useTerminal bubbles Ctrl+G to the Rich Input listener (#1280)', () => 
       .toBeLessThan(HANDLER.indexOf('const ctrlByte = resolveCtrlLetterByte(e)'));
   });
 
-  it('the disabled-shortcut gate still precedes the bubble allowlist', () => {
-    // A user who switches Ctrl+G off in Settings gets the byte, not the popover.
-    expect(HANDLER.indexOf('matchesDisabledShortcut('))
-      .toBeLessThan(HANDLER.indexOf('const bubbleKeys = isMac'));
+  it('the disabled-shortcut gate precedes the bubble allowlist and writes the byte', () => {
+    // The escape hatch: Ctrl+G is an advertised keymap row, so a user can
+    // switch it off in Settings → Shortcuts and hand the key back to the pane
+    // (Claude Code's external editor, readline's abort). That only works if
+    // the disabled gate is reached BEFORE the bubble allowlist and writes the
+    // control byte itself — returning true would let xterm encode it from the
+    // QWERTY keyCode instead (#1227).
+    const gate = HANDLER.indexOf('matchesDisabledShortcut(');
+    expect(gate).toBeGreaterThan(-1);
+    expect(gate).toBeLessThan(HANDLER.indexOf('const bubbleKeys = isMac'));
+    expect(HANDLER).toMatch(
+      /const disabledCtrl = resolveCtrlLetterByte\(e\);\s*if \(disabledCtrl\) \{\s*e\.preventDefault\(\);\s*window\.electronAPI\.pty\.write\(ptyId, disabledCtrl\);/,
+    );
   });
 });

@@ -63,6 +63,14 @@ export const WMUX_KEYMAP: readonly KeymapEntry[] = [
   { combo: 'Ctrl+F', descriptionKey: 'settings.sc.searchTerminal' },
   { combo: 'Ctrl+K', descriptionKey: 'settings.sc.commandPalette' },
   { combo: 'Ctrl+I', descriptionKey: 'settings.sc.toggleNotifications' },
+  // Rich Input. Not bound in useKeyboard's if-chain — the owner is
+  // useComposeShortcut (ToolbarHost), a document-level listener — but it is a
+  // real renderer binding, so it reserves its accelerator and feeds
+  // matchesDisabledShortcut like every other row. Advertised so it can be
+  // switched OFF: turning it off hands Ctrl+G back to the pane (Claude Code's
+  // external editor, readline's abort), which is the escape hatch #1280 asked
+  // for.
+  { combo: 'Ctrl+G', descriptionKey: 'settings.sc.richInput' },
   { combo: 'Ctrl+Shift+X', descriptionKey: 'settings.sc.viCopyMode' },
   { combo: 'Ctrl+Shift+R', descriptionKey: 'settings.sc.renameWorkspace' },
   { combo: 'Ctrl+Shift+H', descriptionKey: 'settings.sc.highlightPane' },
@@ -79,11 +87,6 @@ export const WMUX_KEYMAP: readonly KeymapEntry[] = [
   { combo: 'Ctrl+Shift+U', descriptionKey: null },
   { combo: 'Ctrl+Shift+L', descriptionKey: null },
   { combo: 'Ctrl+Shift+O', descriptionKey: null },
-  // Rich Input toggle. Not bound in useKeyboard's if-chain — it is
-  // useComposeShortcut (ToolbarHost), a document-level listener — but it is
-  // a real renderer binding, so it reserves its accelerator and feeds
-  // matchesDisabledShortcut like every other row (#1280).
-  { combo: 'Ctrl+G', descriptionKey: null },
   { combo: 'Ctrl+Shift+G', descriptionKey: null },
   { combo: 'Ctrl+Shift+]', descriptionKey: null },
   { combo: 'Ctrl+Shift+[', descriptionKey: null },
