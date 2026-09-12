@@ -166,7 +166,9 @@ export interface PaneSlice {
   focusPaneSurface: (workspaceId: string, paneId: string, surfaceId?: string) => boolean;
   focusPaneDirection: (direction: 'up' | 'down' | 'left' | 'right') => void;
   cyclePane: (direction: 'next' | 'prev') => void;
-  updatePaneSizes: (branchId: string, sizes: number[]) => void;
+  /** `workspaceId` defaults to the active workspace; a multiview tile that is
+   *  not active passes its own. */
+  updatePaneSizes: (branchId: string, sizes: number[], workspaceId?: string) => void;
   resizeActivePane: (direction: 'left' | 'right' | 'up' | 'down', amount: number) => void;
   equalizePaneSizes: () => void;
   // Sparse map of per-pane visual notification rings. Missing entry = no ring.
@@ -236,6 +238,16 @@ export interface PaneSlice {
   // Transient — never persisted (buildSessionData allowlist excludes it).
   surfacePendingQuestion: Record<string, string>;
   setSurfacePendingQuestion: (ptyId: string, question: string | null) => void;
+  /**
+   * #1176 — the pendingQuestion text the user has already laid eyes on (they
+   * focused the pane while it was blocked). The dot stays red — the agent IS
+   * still blocked — but the roster drops the animated glow for a seen
+   * question, so across many workspaces triaged and untriaged blocked agents
+   * are distinguishable at a glance. Keyed by text, not a boolean: a NEW
+   * question (agent asked again) is unseen again. Cleared with the question.
+   */
+  surfaceQuestionSeen: Record<string, string>;
+  markSurfaceQuestionSeen: (ptyId: string) => void;
   // Stamp the "running" freshness clock for a pane WITHOUT an activity string —
   // the byte-based per-PTY 'running' broadcast has no tool name. Same 120s-TTL
   // decay as setSurfaceActivity's stamp; lights background dots from bytes.
@@ -525,7 +537,14 @@ function attachBeside(
   const liveTarget = findPane(ws.rootPane, targetLeafId);
   if (!liveTarget) return false;
 
-  const [nodeShare, targetShare] = sizes && sizes.length === 2 ? sizes : [50, 50];
+  // Normalised to sum to 100: origin sizes are the pair's shares of a parent
+  // that may have had more children (two of three thirds is [33.3, 33.3]), and
+  // a branch is persisted — session file, archive snapshots — with whatever
+  // sizes it carries, not the ones the library normalises on screen.
+  const [rawNode, rawTarget] =
+    sizes && sizes.length === 2 && sizes.every((n) => Number.isFinite(n) && n > 0) ? sizes : [50, 50];
+  const nodeShare = (rawNode * 100) / (rawNode + rawTarget);
+  const targetShare = (rawTarget * 100) / (rawNode + rawTarget);
   const branch: PaneBranch = {
     id: generateId('pane'),
     type: 'branch',
@@ -688,6 +707,7 @@ export const createPaneSlice: StateCreator<StoreState, [['zustand/immer', never]
   surfaceActivityAt: {},
   surfaceTurnOpenAt: {},
   surfacePendingQuestion: {},
+  surfaceQuestionSeen: {},
   agentClockMs: Date.now(),
 
   bumpAgentClock: () => set((state: StoreState) => {
@@ -707,6 +727,7 @@ export const createPaneSlice: StateCreator<StoreState, [['zustand/immer', never]
       // "running" and "blocked on a question" at the same time, until the
       // NEXT stop finally clears it.
       delete state.surfacePendingQuestion[ptyId];
+      delete state.surfaceQuestionSeen[ptyId];
       // Stamp the arrival time for the hook-driven 'running' derivation. Always
       // updated (even on a same-string tool repeat) so the freshness window
       // tracks the LATEST tool, not the first.
@@ -722,7 +743,23 @@ export const createPaneSlice: StateCreator<StoreState, [['zustand/immer', never]
     // Main already truncated the text. Empty/null clears — every stop writes
     // this field, so an answered pane drops its question on its next turn end.
     if (question) state.surfacePendingQuestion[ptyId] = question;
-    else delete state.surfacePendingQuestion[ptyId];
+    else {
+      delete state.surfacePendingQuestion[ptyId];
+      // #1176 — the seen marker dies with the question it described; a NEW
+      // question text simply never matches the old marker, so it reads as
+      // unseen with no extra bookkeeping.
+      delete state.surfaceQuestionSeen[ptyId];
+    }
+  }),
+
+  markSurfaceQuestionSeen: (ptyId) => set((state: StoreState) => {
+    if (!ptyId) return;
+    const question = state.surfacePendingQuestion[ptyId];
+    // No-op without a live question: there is nothing to mark seen, and a
+    // stale entry would glow-drop a FUTURE question the user never saw.
+    if (question && state.surfaceQuestionSeen[ptyId] !== question) {
+      state.surfaceQuestionSeen[ptyId] = question;
+    }
   }),
 
   markSurfaceRunning: (ptyId) => set((state: StoreState) => {
@@ -734,6 +771,7 @@ export const createPaneSlice: StateCreator<StoreState, [['zustand/immer', never]
     // question. Same reasoning as setSurfaceActivity; this is the path that
     // covers agents with no tool hooks at all.
     delete state.surfacePendingQuestion[ptyId];
+    delete state.surfaceQuestionSeen[ptyId];
   }),
 
   markSurfaceTurnOpen: (ptyId) => set((state: StoreState) => {
@@ -975,6 +1013,7 @@ export const createPaneSlice: StateCreator<StoreState, [['zustand/immer', never]
             delete state.surfaceAgent[s.ptyId];
             delete state.surfaceActivity[s.ptyId];
             delete state.surfacePendingQuestion[s.ptyId];
+            delete state.surfaceQuestionSeen[s.ptyId];
             delete state.surfaceActivityAt[s.ptyId];
             // A reused ptyId must not inherit a dead pane's open turn — the
             // latch outranks the byte heuristic, so a leaked one would pin the
@@ -1416,8 +1455,8 @@ export const createPaneSlice: StateCreator<StoreState, [['zustand/immer', never]
     return ok;
   },
 
-  updatePaneSizes: (branchId, sizes) => set((state: StoreState) => {
-    const ws = state.workspaces.find((w: Workspace) => w.id === state.activeWorkspaceId);
+  updatePaneSizes: (branchId, sizes, workspaceId) => set((state: StoreState) => {
+    const ws = state.workspaces.find((w: Workspace) => w.id === (workspaceId || state.activeWorkspaceId));
     if (!ws) return;
     const branch = findPane(ws.rootPane, branchId);
     if (branch && branch.type === 'branch') {

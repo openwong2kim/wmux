@@ -1,12 +1,15 @@
 # WSL directories and Claude session recovery
 
-On Windows, choose `C:\Windows\System32\wsl.exe` as the terminal shell and set
-an absolute Linux startup directory, such as `/home/user/project`. `~` and
+On Windows, choose `C:\Windows\System32\wsl.exe` as the terminal shell. Select
+the WSL distribution in Settings, then set an absolute Linux startup directory, such as `/home/user/project`. `~` and
 `~/project` resolve inside WSL. An existing Windows directory is translated with
 `wslpath`. UNC paths are not supported.
 
-wmux validates the directory inside WSL and records the selected distribution
-and Linux user with the pane. After a daemon restart, it restores that target and
+wmux validates the directory inside the distribution resolved by the distro picker and records the actual distribution
+and Linux user with the pane. Saved distro arguments and the captured target come
+from that same resolution. Changing the default affects new panes; existing panes
+keep their captured target. A stale picker choice retains the picker’s fallback
+to the system default, while an unavailable saved recovery target fails visibly. After a daemon restart, it restores that target and
 the last reported Linux directory. A missing directory or unavailable target
 produces an error rather than silently opening a different project. The Windows
 PTY host directory is separate from the Linux working directory.
@@ -66,7 +69,7 @@ runs the real per-launch hook and Windows bridge, without model requests or
 changes to global Claude settings. It checks two distinct IDs in one quoted,
 Unicode Linux path, live detach/reattach, two daemon restarts, exact resume
 commands, pinned distribution/user, Linux home expansion and missing-directory
-failure. Each test cleans up its own fixtures and daemon.
+failure. Set `WMUX_TEST_WSL_DISTRO` to exercise a specific installed distribution. Each test cleans up its own fixtures and daemon.
 
 To exercise Electron's packaged runtime too, set
 `WMUX_TEST_DAEMON_EXECUTABLE` to the built `wmux.exe` and `WMUX_TEST_DAEMON_BUNDLE` to its

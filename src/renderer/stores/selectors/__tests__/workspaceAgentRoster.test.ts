@@ -31,11 +31,13 @@ interface StateOverrides {
   surfaceAgent?: Record<string, { name?: string; status: AgentStatus }>;
   surfaceAgentStatus?: Record<string, AgentStatus>;
   surfacePendingQuestion?: Record<string, string>;
+  surfaceQuestionSeen?: Record<string, string>;
   surfaceActivity?: Record<string, string>;
   surfaceActivityAt?: Record<string, number>;
   surfaceTurnOpenAt?: Record<string, number>;
   paneLabel?: Record<string, string>;
   agentClockMs?: number;
+  remoteWorkspaces?: StoreState['remoteWorkspaces'];
 }
 
 function state(overrides: StateOverrides = {}): StoreState {
@@ -45,11 +47,13 @@ function state(overrides: StateOverrides = {}): StoreState {
     surfaceAgent: {},
     surfaceAgentStatus: {},
     surfacePendingQuestion: {},
+    surfaceQuestionSeen: {},
     surfaceActivity: {},
     surfaceActivityAt: {},
     surfaceTurnOpenAt: {},
     paneLabel: {},
     agentClockMs: NOW,
+    remoteWorkspaces: [],
     ...overrides,
   } as unknown as StoreState;
 }
@@ -58,6 +62,99 @@ describe('selectWorkspaceAgentRoster', () => {
   it('returns an empty projection for an unknown workspace', () => {
     const r = selectWorkspaceAgentRoster(state(), 'nope');
     expect(r).toEqual({ rows: [], agentCount: 0, needsAttentionCount: 0, stashedCount: 0 });
+  });
+
+  // #1163 — remote-terminal surfaces carry ptyId '' by contract; when the
+  // attached mirror reports agent metadata for their session they join the
+  // roster under a synthetic key, counted like any local agent.
+  it('admits remote sessions with agent metadata under the synthetic remote key', () => {
+    const remote = {
+      id: 'rs1',
+      ptyId: '',
+      title: 'rs1',
+      shell: 'ssh',
+      cwd: '/remote',
+      surfaceType: 'remote-terminal' as const,
+      remoteHostId: 'host-1',
+      remoteSessionId: 'rsession-9',
+    };
+    const ws = workspace('ws-1', leaf('p1', [surface('s1', 'pty-1'), remote]), 'p1');
+    const r = selectWorkspaceAgentRoster(
+      state({
+        workspaces: [ws],
+        surfaceAgent: { 'pty-1': { name: 'Claude Code', status: 'running' } },
+        remoteWorkspaces: [
+          {
+            key: 'host-1:rw-1',
+            hostId: 'host-1',
+            hostLabel: 'office-mac',
+            workspaceId: 'rw-1',
+            name: 'proj',
+            panes: [
+              { sessionId: 'rsession-9', shell: 'zsh', agentName: 'Codex', agentStatus: 'awaiting_input' },
+              { sessionId: 'rsession-10', shell: 'zsh' }, // no agent → no row
+            ],
+          },
+        ],
+      }),
+      'ws-1',
+    );
+    expect(r.agentCount).toBe(2); // local + remote both count
+    const remoteRow = r.rows.find((row) => row.remote);
+    expect(remoteRow).toMatchObject({
+      ptyId: 'remote:host-1:rsession-9',
+      agentName: 'Codex',
+      status: 'awaiting_input',
+      needsAttention: true,
+      remote: { hostId: 'host-1', hostLabel: 'office-mac' },
+    });
+    // No event channel from a host snapshot: never an attention row.
+    expect(remoteRow?.hasAttention).toBe(false);
+    // A remote pane the mirror has no metadata for contributes nothing.
+    expect(r.rows.some((row) => row.ptyId.includes('rsession-10'))).toBe(false);
+  });
+
+  it('a remote surface whose host detached renders no row (no stale metadata)', () => {
+    const remote = {
+      id: 'rs1', ptyId: '', title: 'rs1', shell: 'ssh', cwd: '/r',
+      surfaceType: 'remote-terminal' as const,
+      remoteHostId: 'host-gone', remoteSessionId: 'rsession-9',
+    };
+    const ws = workspace('ws-1', leaf('p1', [remote], 'rs1'), 'p1');
+    const r = selectWorkspaceAgentRoster(
+      state({
+        workspaces: [ws],
+        remoteWorkspaces: [], // host detached / never attached
+      }),
+      'ws-1',
+    );
+    expect(r.rows).toEqual([]);
+  });
+
+  it('a STALE host contributes no row: its frozen status must not read as live', () => {
+    const remote = {
+      id: 'rs1', ptyId: '', title: 'rs1', shell: 'ssh', cwd: '/r',
+      surfaceType: 'remote-terminal' as const,
+      remoteHostId: 'host-1', remoteSessionId: 'rsession-9',
+    };
+    const ws = workspace('ws-1', leaf('p1', [remote], 'rs1'), 'p1');
+    const attached = {
+      key: 'host-1:rw-1', hostId: 'host-1', hostLabel: 'office-mac', workspaceId: 'rw-1', name: 'proj',
+      panes: [{ sessionId: 'rsession-9', agentName: 'Codex', agentStatus: 'awaiting_input' as const }],
+    };
+    const stale = selectWorkspaceAgentRoster(
+      state({ workspaces: [ws], remoteWorkspaces: [{ ...attached, stale: true }] }),
+      'ws-1',
+    );
+    expect(stale.rows).toEqual([]);
+    expect(stale.needsAttentionCount).toBe(0);
+    // Reachable again → the row comes back.
+    const live = selectWorkspaceAgentRoster(
+      state({ workspaces: [ws], remoteWorkspaces: [{ ...attached, stale: false }] }),
+      'ws-1',
+    );
+    expect(live.rows).toHaveLength(1);
+    expect(live.needsAttentionCount).toBe(1);
   });
 
   it('lists only surfaces that actually carry a detected agent', () => {
@@ -140,6 +237,40 @@ describe('selectWorkspaceAgentRoster', () => {
       expect(row.status).toBe('awaiting_input');
       expect(row.pendingQuestion).toBe('Shall I merge?');
       expect(row.needsAttention).toBe(true);
+    });
+
+    // #1176 — seen/unseen for BLOCKED agents: the dot stays red either way;
+    // only the roster's animated glow drops for a seen question.
+    it('marks a question seen only when the marker names the SAME question text', () => {
+      const seen = base({
+        surfaceAgent: { 'pty-1': { name: 'A', status: 'idle' } },
+        surfacePendingQuestion: { 'pty-1': 'Shall I merge?' },
+        surfaceQuestionSeen: { 'pty-1': 'Shall I merge?' },
+      });
+      expect(seen.questionSeen).toBe(true);
+      // Still blocked — the red dot and needsAttention are untouched.
+      expect(seen.status).toBe('awaiting_input');
+      expect(seen.needsAttention).toBe(true);
+
+      const unseen = base({
+        surfaceAgent: { 'pty-1': { name: 'A', status: 'idle' } },
+        surfacePendingQuestion: { 'pty-1': 'Delete the repo?' },
+        surfaceQuestionSeen: { 'pty-1': 'Shall I merge?' },
+      });
+      expect(unseen.questionSeen).toBe(false);
+
+      const noMarker = base({
+        surfaceAgent: { 'pty-1': { name: 'A', status: 'idle' } },
+        surfacePendingQuestion: { 'pty-1': 'Shall I merge?' },
+      });
+      expect(noMarker.questionSeen).toBe(false);
+
+      const noQuestion = base({
+        surfaceAgent: { 'pty-1': { name: 'A', status: 'idle' } },
+        surfaceQuestionSeen: { 'pty-1': 'stale marker without a question' },
+      });
+      expect(noQuestion.questionSeen).toBe(false);
+      expect(noQuestion.pendingQuestion).toBeUndefined();
     });
 
     it('an unseen attention state outranks the retained lifecycle state', () => {

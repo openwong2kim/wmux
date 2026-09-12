@@ -32,6 +32,8 @@ interface WorkspaceItemProps {
   onCtrlSelect: (id: string) => void;
   onRename: (id: string, name: string) => void;
   onClose: (id: string) => void;
+  /** #1011 — snapshot-and-close: same teardown as Close, configuration survives. */
+  onArchive: (id: string) => void;
   onCopyInfo: (id: string) => void;
   onDuplicate: (id: string) => void;
   onReorder: (fromIndex: number, toIndex: number) => void;
@@ -278,7 +280,7 @@ function shortenPath(path: string, maxLen = 25): string {
   return `.../${parts.slice(-2).join('/')}`;
 }
 
-function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, onCtrlSelect, onRename, onClose, onCopyInfo, onDuplicate, onReorder }: WorkspaceItemProps) {
+function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, onCtrlSelect, onRename, onClose, onArchive, onCopyInfo, onDuplicate, onReorder }: WorkspaceItemProps) {
   const t = useT();
   // A1: 자기 ws만 구독 — 배경 ws churn/다른 항목 변경에는 리렌더되지 않는다.
   const workspace = useStore(selectWorkspaceById(workspaceId));
@@ -1040,6 +1042,15 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
             onClick={() => { setMenuPos(null); onDuplicate(workspaceId); }}
           >
             {t('workspace.duplicate')}
+          </button>
+          {/* #1011 — the non-destructive exit: same session teardown as Close,
+              but the workspace comes back from the Archived section intact. */}
+          <button
+            className="w-full text-left px-3 py-1.5 text-xs transition-colors hover:bg-[var(--bg-overlay)]"
+            style={{ color: 'var(--text-main)' }}
+            onClick={() => { setMenuPos(null); onArchive(workspaceId); }}
+          >
+            {t('workspace.archive')}
           </button>
           {/* Color tag — hover to reveal the swatch row. A single row of eight
               swatches plus "None" keeps the whole picker one click deep; a

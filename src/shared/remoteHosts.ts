@@ -26,6 +26,51 @@ export interface RemotePaneSummary {
   sessionId: string;     // remote daemon session id — the /api/stream?session= key
   shell?: string;        // basename label, same derivation as /api/sessions
   cwd?: string;
+  /**
+   * #1163 — live agent identity on the remote pane, when the host knows one
+   * (its own AgentDetector / persisted lastDetectedAgent). Optional and
+   * additive: older hosts omit both fields and consumers must degrade, not
+   * guess (protocolVersion.ts additive-field rule).
+   */
+  agentName?: string;
+  /** #1163 — host-side lifecycle snapshot for that agent. Same tolerance rule. */
+  agentStatus?: RemoteAgentStatus;
+}
+
+/**
+ * The agent statuses a host may report over /api/workspaces. Deliberately the
+ * same vocabulary as the local AgentStatus — a remote row renders through the
+ * same dot grammar — but held as its own closed set so an unknown status from
+ * a NEWER host (talking to an older desktop) is DROPPED by the normalizer
+ * rather than smuggled into the local union.
+ */
+export type RemoteAgentStatus =
+  | 'running'
+  | 'idle'
+  | 'complete'
+  | 'waiting'
+  | 'awaiting_input'
+  | 'error';
+
+export const REMOTE_AGENT_STATUSES: ReadonlySet<string> = new Set<RemoteAgentStatus>([
+  'running',
+  'idle',
+  'complete',
+  'waiting',
+  'awaiting_input',
+  'error',
+]);
+
+/** Trust-boundary check: keep only statuses this desktop understands. */
+export function isRemoteAgentStatus(value: unknown): value is RemoteAgentStatus {
+  return typeof value === 'string' && REMOTE_AGENT_STATUSES.has(value);
+}
+
+/** The roster's synthetic identity for a remote session — never a local ptyId
+ *  (remote-terminal surfaces have `ptyId: ''` by contract), so map keys, A2A
+ *  addresses, and PTY-keyed lookups can never collide with it. */
+export function remoteAgentKey(hostId: string, sessionId: string): string {
+  return `remote:${hostId}:${sessionId}`;
 }
 
 /** GET /api/workspaces response body. */
@@ -45,6 +90,14 @@ export interface RemoteAttachmentDescriptor {
   hostLabel: string;     // label snapshot, so a sidebar row can render before the host list loads
   workspaceId: string;
   name: string;          // remote workspace name snapshot ('' possible)
+  /**
+   * #1086 — local-side aliases. The remote host owns the truth (name, panes);
+   * these are what THIS desktop calls the row: a rename that never touches the
+   * host, and a color tag in the same grammar as local workspaces. Optional:
+   * older persisted files predate them.
+   */
+  label?: string;
+  color?: string;        // WorkspaceColorId — validated renderer-side by normalizeWorkspaceColor
 }
 
 /** The ONE place the descriptor key is spelled out. Both the renderer (which

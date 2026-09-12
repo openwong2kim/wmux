@@ -135,6 +135,12 @@ export class PTYManager {
 
   create(options?: {
     shell?: string;
+    /**
+     * #1103 — validated WSL distro selection (`['-d', '<name>']`), prepended
+     * in front of any hook-injection args so wsl.exe parses it as its own
+     * flag. The IPC boundary has already enforced the exact shape.
+     */
+    shellArgs?: string[];
     cwd?: string;
     wslTarget?: WslTarget;
     cols?: number;
@@ -157,7 +163,7 @@ export class PTYManager {
     const shell = options?.shell || this.getDefaultShell();
     // Same reason as the daemon spawn path: a caller-supplied cwd may carry a
     // leading `~` that no shell expanded.
-    const wsl = isWslShell(shell) ? resolveWslCwd(shell, options?.cwd, options?.wslTarget) : undefined;
+    const wsl = isWslShell(shell) ? resolveWslCwd(shell, options?.cwd, options?.wslTarget, undefined, options?.shellArgs) : undefined;
     const cwd = wsl?.cwd ?? (options?.cwd ? expandTilde(options.cwd) : os.homedir());
     const hostCwd = wsl ? os.homedir() : cwd;
 
@@ -221,6 +227,7 @@ export class PTYManager {
     const hookInjection = wsl
       ? buildWslInjection({ target: wsl.target, cwd, env, integrationDir: getWmuxDir(), bashInit: BASH_INIT })
       : this.buildHookInjection(shellType, env);
+    const spawnArgs = hookInjection.args;
 
     // node-pty throws synchronously on a missing/invalid shell binary or an
     // unreadable cwd (common on macOS/Linux where the shell path differs from
@@ -236,7 +243,7 @@ export class PTYManager {
     const useConptyDll = shouldUseBundledConpty(process.platform, parseWindowsBuildNumber(os.release()));
     try {
       ptyProcess = spawnWithConptyPolicy(
-        (useBundled) => pty.spawn(shell, hookInjection.args, {
+        (useBundled) => pty.spawn(shell, spawnArgs, {
           name: 'xterm-256color',
           cols: options?.cols || 80,
           rows: options?.rows || 24,

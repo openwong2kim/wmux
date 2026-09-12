@@ -29,7 +29,7 @@ for line in sys.stdin:
     if line.strip() == 'quit': break
 `;
 
-type Session = { id: string; pid: number; cwd: string; wslTarget: WslTarget; resumeBinding?: ResumeBinding };
+type Session = { args?: string[]; id: string; pid: number; cwd: string; wslTarget: WslTarget; resumeBinding?: ResumeBinding };
 const delay = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 async function until<T>(read: () => T | Promise<T>, predicate: (value: T) => boolean, label: string, timeout = 30_000): Promise<T> {
   const end = Date.now() + timeout;
@@ -46,10 +46,13 @@ describe.runIf(enabled)('WSL exact conversation recovery', () => {
     const linuxRoot = `/tmp/wmux-wsl-test-${tag}`;
     const cwd = `${linuxRoot}/project ' $(literal) 日本語`;
     const wsl = path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'wsl.exe');
+    const distroArgs = process.env.WMUX_TEST_WSL_DISTRO ? ['-d', process.env.WMUX_TEST_WSL_DISTRO] : [];
+    const distro = execFileSync(wsl, [...distroArgs, '--exec', '/bin/sh', '-c', 'printf %s "$WSL_DISTRO_NAME"'], { encoding: 'utf8', timeout: 15_000 }).trim();
+    const selectedArgs = ['-d', distro];
     const bundle = path.resolve(process.env.WMUX_TEST_DAEMON_BUNDLE || 'dist/daemon-bundle/index.js');
     expect(fs.existsSync(bundle)).toBe(true);
     const fixture = path.join(scratch, 'claude'); fs.writeFileSync(fixture, fakeClaude);
-    execFileSync(wsl, ['--exec', '/bin/sh', '-c', 'set -eu; mkdir -p "$1/bin" "$2"; cp "$(wslpath -u "$3")" "$1/bin/claude"; chmod +x "$1/bin/claude"', 'wmux-test', linuxRoot, cwd, fixture], { timeout: 15_000 });
+    execFileSync(wsl, [...selectedArgs, '--exec', '/bin/sh', '-c', 'set -eu; mkdir -p "$1/bin" "$2"; cp "$(wslpath -u "$3")" "$1/bin/claude"; chmod +x "$1/bin/claude"', 'wmux-test', linuxRoot, cwd, fixture], { timeout: 15_000 });
     const processes: ChildProcess[] = [];
     const streams: net.Socket[] = [];
     let token = '';
@@ -121,9 +124,10 @@ describe.runIf(enabled)('WSL exact conversation recovery', () => {
     try {
       await start();
       for (let i = 0; i < ids.length; i++) {
-        const created = await rpc('daemon.createSession', { id: ids[i], cmd: wsl, cwd, cols: 110, rows: 30 }) as Session;
+        const created = await rpc('daemon.createSession', { id: ids[i], cmd: wsl, args: selectedArgs, cwd, cols: 110, rows: 30 }) as Session;
         expect(created.cwd).toBe(cwd);
-        expect(created.wslTarget.distribution).toBeTruthy();
+        expect(created.wslTarget.distribution).toBe(distro);
+        expect(created.args).toEqual(selectedArgs);
         await runClaude(ids[i], `claude --session-id ${conversations[i]}`);
       }
       const captured = await until(list, (sessions) => ids.every((id, i) => sessions.find((s) => s.id === id)?.resumeBinding?.sessionId === conversations[i]), 'distinct captured IDs');
@@ -142,6 +146,7 @@ describe.runIf(enabled)('WSL exact conversation recovery', () => {
           const session = recovered.find((s) => s.id === ids[i])!;
           expect(session.cwd).toBe(cwd);
           expect(session.wslTarget).toEqual(target);
+          expect(session.args).toEqual(selectedArgs);
           expect(session.resumeBinding?.sessionId).toBe(conversations[i]);
           const resume = toResumeCommand('claude', session.resumeBinding, session.cwd);
           expect(resume).toBe(`claude --resume ${conversations[i]}`);
@@ -149,9 +154,11 @@ describe.runIf(enabled)('WSL exact conversation recovery', () => {
         }
       }
       // A non-existent project must fail rather than start in a different cwd.
-      await expect(rpc('daemon.createSession', { id: `wsl-${tag}-missing`, cmd: wsl, cwd: `${linuxRoot}/missing` })).rejects.toThrow();
+      await expect(rpc('daemon.createSession', { id: `wsl-${tag}-missing`, cmd: wsl, args: selectedArgs, cwd: `${linuxRoot}/missing` })).rejects.toThrow();
       // The diagnostic also validates ~ in the pinned distribution.
-      const home = await rpc('daemon.createSession', { id: `wsl-${tag}-home`, cmd: wsl, cwd: '~', wslTarget: target }) as Session;
+      const home = await rpc('daemon.createSession', { id: `wsl-${tag}-home`, cmd: wsl, args: ['-d', 'ChangedDefaultNotInstalled'], cwd: '~', wslTarget: target }) as Session;
+      expect(home.wslTarget).toEqual(target);
+      expect(home.args).toEqual(selectedArgs);
       expect(home.cwd.startsWith('/')).toBe(true);
       expect(home.cwd).not.toContain('~');
     } catch (err) {
@@ -161,7 +168,7 @@ describe.runIf(enabled)('WSL exact conversation recovery', () => {
       await stop().catch(() => undefined);
       streams.forEach((s) => s.destroy());
       for (const child of processes) if (child.exitCode === null) child.kill();
-      execFileSync(wsl, ['--exec', '/bin/rm', '-rf', '--', linuxRoot], { timeout: 15_000 });
+      execFileSync(wsl, [...selectedArgs, '--exec', '/bin/rm', '-rf', '--', linuxRoot], { timeout: 15_000 });
       fs.rmSync(wmuxDir, { recursive: true, force: true });
       fs.rmSync(scratch, { recursive: true, force: true });
     }

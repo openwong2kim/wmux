@@ -1,8 +1,14 @@
 import type { StateCreator } from 'zustand';
 import type { StoreState } from '../index';
 import { setLocale as i18nSetLocale, t, type Locale } from '../../i18n';
-import { collectLeafIds, getWorkspaceLeafPanes } from '../../../shared/paneUtils';
+import { collectLeafIds, findPane, getLeafPanes, getWorkspaceLeafPanes } from '../../../shared/paneUtils';
+import { canStashPaneSurfaces } from '../../../shared/paneStash';
+import { isDaemonModeActive } from '../../daemon/daemonMode';
+import { computePaneAutoName, paneDisplayName } from '../../utils/paneNaming';
 import { MAX_PANES_PER_WORKSPACE } from './paneSlice';
+import { clearRemoteSelection } from './workspaceSlice';
+import { publishPaneStashed, publishPaneFocused } from '../../events/publisher';
+import { saveSessionNow } from '../../utils/sessionSaveBridge';
 import { markRetentionMigrationDone } from '../retentionMigration';
 import { DEFAULT_BROWSER_BACKEND, isBrowserBackend, type BrowserBackend } from '../../../shared/browserBackend';
 import { CHROME_PRESET_VALUES } from '../../../shared/chromePresets';
@@ -182,6 +188,8 @@ export interface UISlice {
   setImagePasteMode: (mode: ImagePasteMode) => void;
 
   defaultShell: string;
+  setDefaultWslDistro: (distro: string | null) => void;
+  defaultWslDistro: string | undefined;
   setDefaultShell: (shell: string) => void;
 
   // Orchestrator (deck brain) model override. '' = the subscription's default
@@ -693,6 +701,7 @@ export interface UISlice {
   saveLayoutTemplate: (name: string) => void;
   deleteLayoutTemplate: (id: string) => void;
   applyLayoutTemplate: (templateId: string, workspaceId?: string) => void;
+  snapToLayoutTemplate: (templateId: string, workspaceId?: string) => void;
 
   // ─── Recent terminal commands ─────────────────────────────────────
   recentCommands: string[];
@@ -703,7 +712,7 @@ export interface UISlice {
 
 // ─── Layout template helpers ───────────────────────────────────────────────
 
-function extractLayout(pane: Pane): LayoutNode {
+export function extractLayout(pane: Pane): LayoutNode {
   if (pane.type === 'leaf') return { type: 'leaf' };
   return {
     type: 'branch',
@@ -713,7 +722,7 @@ function extractLayout(pane: Pane): LayoutNode {
   };
 }
 
-function buildPaneFromLayout(node: LayoutNode): Pane {
+export function buildPaneFromLayout(node: LayoutNode): Pane {
   if (node.type === 'leaf') return createLeafPane();
   const branch: PaneBranch = {
     id: generateId('pane'),
@@ -723,6 +732,11 @@ function buildPaneFromLayout(node: LayoutNode): Pane {
     children: node.children.map(buildPaneFromLayout),
   };
   return branch;
+}
+
+function countLayoutLeaves(node: LayoutNode): number {
+  if (node.type === 'leaf') return 1;
+  return node.children.reduce((n, c) => n + countLayoutLeaves(c), 0);
 }
 
 function collectFirstLeafId(pane: Pane): string {
@@ -997,6 +1011,19 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
 
   setDefaultShell: (shell) => set((state) => {
     state.defaultShell = shell;
+  }),
+
+  /**
+   * #1103 — which WSL distro `wsl.exe -d <name>` boots when the default
+   * terminal is WSL. undefined = the system's default distro (today's
+   * behaviour — usually docker-desktop on Docker machines, which is exactly
+   * the complaint). Pushed to main on change/boot; main injects the flag at
+   * the shell-resolution choke point.
+   */
+  defaultWslDistro: undefined,
+
+  setDefaultWslDistro: (distro) => set((state) => {
+    state.defaultWslDistro = distro ? distro : undefined;
   }),
 
   deckBrainModel: '',
@@ -1402,6 +1429,15 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
     if (state.multiviewIds.length <= 1) {
       state.multiviewIds = [];
     }
+    // #1086 — the grid IS the local viewport, so ANY Ctrl+click on it is a
+    // local-view action even though this one never assigns activeWorkspaceId
+    // (which is why activateLocalWorkspace cannot cover this site). Applied to
+    // the whole action rather than the join branch alone: leaving the grid, and
+    // collapsing it by un-picking the last partner, land the user on the local
+    // active workspace just as much as joining does, and a rule that fires on
+    // some Ctrl+clicks but not others is the drift this PR is removing.
+    // Guarded for stores mounted without the remote slice.
+    clearRemoteSelection(state);
     });
   },
 
@@ -1806,6 +1842,172 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
       get().pushToast({
         message: t('pane.maxLeavesReachedWithStash', { count: cap.count, stashed: cap.stashed }),
         level: 'warn',
+      });
+    }
+  },
+
+  /**
+   * #1237 — snap the EXISTING panes into a template's arrangement.
+   *
+   * `applyLayoutTemplate` replaces the tree with fresh empty leaves (the old
+   * PTYs die); this is its non-destructive counterpart: running sessions keep
+   * their pane identities and merely change position. Existing leaves map onto
+   * the template's slots in tree order (top-left to bottom-right), so the
+   * spatial reading the user has stays put.
+   *
+   * Surplus handling, in tree order — the trailing panes are the surplus:
+   *   - an EMPTY pane is discarded: it holds no session, so there is nothing
+   *     to preserve and nothing the stash could replay;
+   *   - a stashable pane is stashed (same contract as `stashPane`: daemon
+   *     connection required — without the ring its bytes would be lost);
+   *   - anything else (editor/diff/git tabs) refuses the whole snap. Losing
+   *     unsaved edits is exactly what this feature exists not to do.
+   *
+   * Deficit handling: fresh empty leaves, ordinals continuing past the
+   * workspace high-water (the same collision rule #977 gave apply).
+   */
+  snapToLayoutTemplate: (templateId, workspaceId) => {
+    type SnapBlock =
+      | { key: 'cap'; count: number; stashed: number }
+      | { key: 'daemon'; count: number }
+      | { key: 'surface'; name: string; type: string };
+    let blocked: SnapBlock | null = null;
+    let stashedSurplus = 0;
+    // Plain values captured INSIDE the producer for the post-transaction
+    // publishes (drafts must not escape set()).
+    let stashedEvent: { wsId: string; paneIds: string[] } | null = null;
+    let focusedEvent: { wsId: string; newPaneId: string; previousPaneId: string } | null = null;
+    let templateName = '';
+    set((state) => {
+      const targetWsId = workspaceId || state.activeWorkspaceId;
+      const ws = state.workspaces.find((w) => w.id === targetWsId);
+      if (!ws) return;
+      const tmpl = state.layoutTemplates.find((t) => t.id === templateId);
+      if (!tmpl) return;
+      templateName = tmpl.name;
+      const visible = getLeafPanes(ws.rootPane);
+      const slotCount = countLayoutLeaves(tmpl.tree);
+      const surplus = visible.length > slotCount ? visible.slice(slotCount) : [];
+      const toStash = surplus.filter((p) => p.surfaces.length > 0);
+
+      // Cap: every pane the workspace owns afterwards must fit. Surplus panes
+      // that get stashed still count (#977), discarded empties do not.
+      const stashedCount = (ws.stashedPanes ?? []).length;
+      if (slotCount + stashedCount + toStash.length > MAX_PANES_PER_WORKSPACE) {
+        blocked = { key: 'cap', count: MAX_PANES_PER_WORKSPACE, stashed: stashedCount };
+        return;
+      }
+
+      // Refusals BEFORE any mutation — a half-snapped tree would be the one
+      // outcome worse than no snap.
+      if (toStash.length > 0) {
+        if (!isDaemonModeActive()) {
+          blocked = { key: 'daemon', count: toStash.length };
+          return;
+        }
+        for (const p of toStash) {
+          const allowed = canStashPaneSurfaces(p);
+          if (!allowed.ok) {
+            blocked = {
+              key: 'surface',
+              // The name the pane header shows — a renamed pane is not
+              // findable by its auto name.
+              name: paneDisplayName(
+                state.paneLabel[p.id],
+                computePaneAutoName(ws.wsOrdinal ?? 0, p.ordinal ?? 0),
+              ),
+              type: allowed.reason === 'surface' ? allowed.surfaceType : 'empty',
+            };
+            return;
+          }
+        }
+      }
+
+      // Reuse in tree order, then fill any deficit with fresh leaves whose
+      // ordinals continue past the high-water (visible + stashed).
+      const queue = visible.slice(0, Math.min(visible.length, slotCount));
+      const ownedOrdinal = getWorkspaceLeafPanes(ws).reduce((m, l) => Math.max(m, l.ordinal ?? 0), 0);
+      // Never below the monotonic counter splitPane advances: the surviving
+      // panes keep their numbers, so lowering it would let the next new pane
+      // recycle a closed pane's ordinal (and with it its A2A address).
+      let nextOrdinal = Math.max(ws.nextPaneOrdinal ?? 0, ownedOrdinal + 1);
+      const build = (node: LayoutNode): Pane => {
+        if (node.type === 'leaf') {
+          const existing = queue.shift();
+          if (existing) return existing;
+          return createLeafPane(undefined, nextOrdinal++);
+        }
+        const branch: PaneBranch = {
+          id: generateId('pane'),
+          type: 'branch',
+          direction: node.direction,
+          sizes: node.sizes,
+          children: node.children.map(build),
+        };
+        return branch;
+      };
+      const newRoot = build(tmpl.tree);
+      ws.nextPaneOrdinal = nextOrdinal;
+
+      if (toStash.length > 0) {
+        // No `origin`: the topology is being replaced wholesale, so a neighbour
+        // anchor would describe a split that no longer exists. Unstash falls
+        // back to "next to the active pane", which is honest here.
+        if (!ws.stashedPanes) ws.stashedPanes = [];
+        const now = Date.now();
+        for (const p of toStash) ws.stashedPanes.push({ pane: p, stashedAt: now });
+        stashedSurplus = toStash.length;
+        // Captured for the events.poll contract below (stashPane's rule): a
+        // pane leaving the default listing is always explained by an event.
+        stashedEvent = { wsId: ws.id, paneIds: toStash.map((p) => p.id) };
+      }
+
+      if (!collectLeafIds(newRoot).includes(ws.activePaneId)) {
+        focusedEvent = { wsId: ws.id, newPaneId: collectFirstLeafId(newRoot), previousPaneId: ws.activePaneId };
+        ws.activePaneId = focusedEvent.newPaneId;
+      }
+      // A zoom pinned to a pane in the SNAPPED workspace is invalidated by the
+      // re-layout; one pinned elsewhere must survive (another multiview tile, or
+      // the foreground during a background snap). Checked against the OLD tree,
+      // which still holds every pane that was on screen — stashed ones included.
+      if (state.zoomedPaneId !== null && findPane(ws.rootPane, state.zoomedPaneId)) {
+        state.zoomedPaneId = null;
+      }
+      ws.rootPane = newRoot;
+    });
+    if (stashedEvent) {
+      const ev = stashedEvent as { wsId: string; paneIds: string[] };
+      for (const paneId of ev.paneIds) publishPaneStashed(ev.wsId, paneId);
+      // The tree+stash mutation otherwise rides the 5s autosave — a snap
+      // followed by an immediate quit must not come back half-applied.
+      saveSessionNow();
+    }
+    if (focusedEvent) {
+      const ev = focusedEvent as { wsId: string; newPaneId: string; previousPaneId: string };
+      publishPaneFocused(ev.wsId, ev.newPaneId, ev.previousPaneId);
+    }
+    if (blocked) {
+      const b = blocked as SnapBlock;
+      if (b.key === 'cap') {
+        get().pushToast({
+          message: t('pane.maxLeavesReachedWithStash', { count: b.count, stashed: b.stashed }),
+          level: 'warn',
+        });
+      } else if (b.key === 'daemon') {
+        get().pushToast({
+          message: t('pane.snapNoDaemon', { count: b.count }),
+          level: 'warn',
+        });
+      } else {
+        get().pushToast({
+          message: t('pane.snapBlockedSurface', { name: b.name, type: b.type }),
+          level: 'warn',
+        });
+      }
+    } else if (stashedSurplus > 0) {
+      get().pushToast({
+        message: t('pane.snapStashedSurplus', { name: templateName, count: stashedSurplus }),
+        level: 'info',
       });
     }
   },

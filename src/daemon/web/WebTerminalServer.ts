@@ -1,4 +1,6 @@
 import http from 'node:http';
+import type { AgentStatus } from '../../shared/types';
+import { isRemoteAgentStatus } from '../../shared/remoteHosts';
 import https from 'node:https';
 import crypto from 'node:crypto';
 import os from 'node:os';
@@ -455,6 +457,14 @@ interface WebTerminalServerDeps {
    * the same answer as "off".
    */
   gateEnabled?: () => boolean;
+  /**
+   * #1163 — the daemon's CANONICAL per-session agent state (the answer
+   * daemon.getAgentName gives the desktop), for GET /api/workspaces. Resolved
+   * per request: the reader is registered with the RPC handlers, which may run
+   * after this server is built. Absent, or undefined for a session, means the
+   * pane carries no detected-agent fields.
+   */
+  agentState?: (sessionId: string) => { agentName: string | null; agentStatus: AgentStatus } | undefined;
 }
 
 /** Cap a single input POST body so a hostile client cannot exhaust memory. */
@@ -1820,7 +1830,28 @@ export class WebTerminalServer {
         const n = s.env?.[ENV_KEYS.WORKSPACE_NAME];
         if (typeof n === 'string' && n.trim()) entry.name = n.trim();
       }
-      entry.panes.push({ sessionId: s.id, ...shellLabelOf(s.cmd), ...(s.cwd ? { cwd: s.cwd } : {}) });
+      entry.panes.push({
+        sessionId: s.id,
+        ...shellLabelOf(s.cmd),
+        ...(s.cwd ? { cwd: s.cwd } : {}),
+        // #1163 — per-session agent metadata, so the attaching desktop's
+        // roster can count remote agents. The name is creation-time role
+        // metadata, then the daemon's CANONICAL answer (the one
+        // daemon.getAgentName gives the desktop). Never the raw detector
+        // (sticky screen truth after exit) nor the persisted slug (outlives
+        // the agent and every reboot): a remote row must vanish when its agent
+        // exits, exactly as a local one does. Both fields stay absent when
+        // nothing is known — additive-optional.
+        ...(() => {
+          const state = this.deps.agentState?.(s.id);
+          const agentName = s.agent?.displayName ?? state?.agentName ?? null;
+          if (!agentName) return {};
+          return {
+            agentName,
+            ...(state && isRemoteAgentStatus(state.agentStatus) ? { agentStatus: state.agentStatus } : {}),
+          };
+        })(),
+      });
       byId.set(id, entry);
     }
     const workspaces = [...byId.values()]

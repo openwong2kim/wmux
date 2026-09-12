@@ -1,3 +1,4 @@
+import { isWslShellPath, isValidWslDistroName } from './wslDistro';
 /** The Linux execution target is independent of the Windows PTY host cwd. */
 export interface WslTarget {
   distribution: string;
@@ -5,7 +6,7 @@ export interface WslTarget {
 }
 
 export function isWslShell(shell: string | undefined, platform = process.platform): boolean {
-  return platform === 'win32' && (shell ?? '').split(/[\\/]/).pop()?.toLowerCase() === 'wsl.exe';
+  return platform === 'win32' && isWslShellPath(shell);
 }
 
 export function isLinuxCwd(cwd: string | undefined): cwd is string {
@@ -16,7 +17,7 @@ export function isLinuxCwd(cwd: string | undefined): cwd is string {
 export function validWslTarget(value: unknown): value is WslTarget {
   if (!value || typeof value !== 'object') return false;
   const t = value as WslTarget;
-  return [t.distribution, t.user].every((s) => typeof s === 'string' &&
+  return isValidWslDistroName(t.distribution) && [t.distribution, t.user].every((s) => typeof s === 'string' &&
     s.length > 0 && s.length <= 256 && !/[\0\r\n]/.test(s) && !s.startsWith('-'));
 }
 

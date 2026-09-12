@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { create } from 'zustand';
 import { immer } from 'zustand/middleware/immer';
 import { createWorkspaceSlice, type WorkspaceSlice } from '../workspaceSlice';
@@ -52,6 +52,86 @@ describe('remoteWorkspacesSlice', () => {
 
   beforeEach(() => {
     store = createTestStore();
+  });
+
+  // #1086 — rename + color are LOCAL aliases on the attachment descriptor.
+  // The node test env has no `window`, so persistence is untestable here; the
+  // store mutations and the descriptor round-trip are what matter.
+  it('rename sets and clears the local label alias', () => {
+    const remote = makeRemote();
+    store.getState().attachRemoteWorkspace(remote);
+    store.getState().renameRemoteWorkspace(remote.key, 'CTO-mirror');
+    expect(store.getState().remoteWorkspaces[0].label).toBe('CTO-mirror');
+    // A remote-side rename of the real name does not touch the alias.
+    store.getState().setRemoteWorkspacePanes(remote.key, [], 'Renamed on host');
+    expect(store.getState().remoteWorkspaces[0].label).toBe('CTO-mirror');
+    expect(store.getState().remoteWorkspaces[0].name).toBe('Renamed on host');
+    // Empty clears it — the remote snapshot name shows again.
+    store.getState().renameRemoteWorkspace(remote.key, '   ');
+    expect(store.getState().remoteWorkspaces[0].label).toBeUndefined();
+  });
+
+  it('color tag sets and clears like the local workspace grammar', () => {
+    const remote = makeRemote();
+    store.getState().attachRemoteWorkspace(remote);
+    store.getState().setRemoteWorkspaceColor(remote.key, 'rose');
+    expect(store.getState().remoteWorkspaces[0].color).toBe('rose');
+    store.getState().setRemoteWorkspaceColor(remote.key, undefined);
+    expect(store.getState().remoteWorkspaces[0].color).toBeUndefined();
+  });
+
+  it('unknown keys are ignored by both alias actions', () => {
+    store.getState().attachRemoteWorkspace(makeRemote());
+    store.getState().renameRemoteWorkspace('nope', 'x');
+    store.getState().setRemoteWorkspaceColor('nope', 'rose');
+    expect(store.getState().remoteWorkspaces).toHaveLength(1);
+    expect(store.getState().remoteWorkspaces[0].label).toBeUndefined();
+  });
+
+  it('#1086 — a re-attach keeps the user\'s rename and color tag', () => {
+    const remote = makeRemote();
+    store.getState().attachRemoteWorkspace(remote);
+    store.getState().renameRemoteWorkspace(remote.key, 'CTO-mirror');
+    store.getState().setRemoteWorkspaceColor(remote.key, 'rose');
+    // Re-attach the same key with a FRESH snapshot (no aliases on it), as the
+    // attach flow and the bootstrap path both do.
+    store.getState().attachRemoteWorkspace({ ...makeRemote(), panes: [{ sessionId: 's9' }] });
+    const entry = store.getState().remoteWorkspaces[0];
+    expect(entry.label).toBe('CTO-mirror');
+    expect(entry.color).toBe('rose');
+    // But a re-attach that CARRIES a label wins over the old one (forwarded
+    // aliases are not sticky-forever).
+    store.getState().attachRemoteWorkspace({ ...makeRemote(), label: 'new-name' });
+    expect(store.getState().remoteWorkspaces[0].label).toBe('new-name');
+  });
+
+  describe('#1086 — alias persistence', () => {
+    const attachmentsAdd = vi.fn(async () => true);
+    beforeEach(() => {
+      attachmentsAdd.mockClear();
+      vi.stubGlobal('window', { electronAPI: { remote: { attachmentsAdd } } });
+    });
+    afterEach(() => {
+      vi.unstubAllGlobals();
+    });
+
+    it('a re-attach persists the MERGED entry, so the aliases survive a reload', () => {
+      const remote = makeRemote();
+      store.getState().attachRemoteWorkspace(remote);
+      store.getState().renameRemoteWorkspace(remote.key, 'CTO-mirror');
+      store.getState().setRemoteWorkspaceColor(remote.key, 'red');
+      // Fresh snapshot, no aliases — what the attach modal hands over.
+      store.getState().attachRemoteWorkspace(makeRemote());
+      expect(attachmentsAdd).toHaveBeenLastCalledWith({
+        key: remote.key,
+        hostId: remote.hostId,
+        hostLabel: remote.hostLabel,
+        workspaceId: remote.workspaceId,
+        name: remote.name,
+        label: 'CTO-mirror',
+        color: 'red',
+      });
+    });
   });
 
   it('attach dedups by key and sets activeRemoteKey', () => {

@@ -1,3 +1,4 @@
+import { createOsc8LinkHandler } from '../terminal/osc8LinkHandler';
 import { useEffect, useRef, useCallback, useState } from 'react';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
@@ -1112,12 +1113,15 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     // Smart link routing (X3): localhost URLs open in the embedded browser
     // pane, external ones in the system browser; Ctrl/Cmd+click inverts. The
     // ptyId identifies the owning workspace (multiview-safe reverse lookup).
-    const webLinksAddon = new WebLinksAddon((event, uri) => {
+    const activateTerminalUrl = (event: MouseEvent, uri: string) => {
       openTerminalUrl(uri, {
         modifierHeld: event.ctrlKey || event.metaKey,
         ptyId: ptyIdRef.current || undefined,
       });
-    });
+    };
+    // Rebind adopted terminals too, so the callback uses the current pane ref.
+    terminal.options.linkHandler = createOsc8LinkHandler(activateTerminalUrl);
+    const webLinksAddon = new WebLinksAddon(activateTerminalUrl);
     terminal.loadAddon(fitAddon);
     terminal.loadAddon(searchAddon);
     terminal.loadAddon(webLinksAddon);

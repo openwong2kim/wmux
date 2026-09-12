@@ -59,6 +59,14 @@ export interface DaemonSession {
   cmd: string;              // executed command
   wslTarget?: WslTarget;
   /**
+   * #1103 — validated WSL distro selection (`['-d', '<name>']`), persisted so
+   * every replay path (recovery, supervised restart, suspended promote) re-
+   * spawns the SAME distro instead of silently booting the system default.
+   * Absent for every non-wsl session and all pre-#1103 sessions (which had no
+   * distro pinned either — identical behaviour).
+   */
+  args?: string[];
+  /**
    * LIVE working directory. Updated at runtime from the OSC 7 sequences the
    * pane's shell emits, so it follows a `cd` — and so it is whatever any
    * process running in that pane says it is. Fine for a tab tooltip; NOT a

@@ -84,14 +84,14 @@ beforeEach(async () => {
         React.createElement(Profiler, { id: 'item-1', onRender: () => onRender('item-1') },
           React.createElement(WorkspaceItem, {
             workspaceId: 'ws-1', isActive: true, isMultiview: false, index: 0,
-            onSelect: noop, onCtrlSelect: noop, onRename: noop, onClose: noop,
+            onSelect: noop, onCtrlSelect: noop, onRename: noop, onClose: noop, onArchive: noop,
             onCopyInfo: noop, onDuplicate: noop, onReorder: noop,
           }),
         ),
         React.createElement(Profiler, { id: 'item-2', onRender: () => onRender('item-2') },
           React.createElement(WorkspaceItem, {
             workspaceId: 'ws-2', isActive: false, isMultiview: false, index: 1,
-            onSelect: noop, onCtrlSelect: noop, onRename: noop, onClose: noop,
+            onSelect: noop, onCtrlSelect: noop, onRename: noop, onClose: noop, onArchive: noop,
             onCopyInfo: noop, onDuplicate: noop, onReorder: noop,
           }),
         ),

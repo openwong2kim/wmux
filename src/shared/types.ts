@@ -705,9 +705,31 @@ export const DEFAULT_PREFIX_CONFIG: PrefixConfig = {
 };
 
 // === Session: serialized app state ===
+
+/**
+ * #1011 — an archived workspace: the CONFIGURATION snapshot of a workspace
+ * the user put away. Sessions do not survive archiving (closing them is part
+ * of the point — the sidebar goes quiet); what persists is everything it
+ * takes to bring the workspace back: name, color tag, profile, and the pane
+ * arrangement. Restore mints a FRESH workspace id, fresh pane ids and a
+ * fresh ordinal (the LayoutNode snapshot carries none), so a restored
+ * workspace can never collide with live A2A addresses or auto-names — the
+ * name is what the user recognizes, not the w<N> coordinate.
+ */
+export interface ArchivedWorkspace {
+  id: string;                // archived-entry id (NOT the live workspace id restore mints)
+  name: string;
+  color?: string;            // WorkspaceColorId — string-typed like the persisted tag
+  profile?: WorkspaceProfile;
+  tree: LayoutNode;
+  archivedAt: number;        // epoch ms, for the "3d ago" trailer
+}
+
 export interface SessionData {
   workspaces: Workspace[];
   activeWorkspaceId: string;
+  /** #1011 — archived workspace snapshots, oldest first. */
+  archivedWorkspaces?: ArchivedWorkspace[];
   /** P2 — persisted global high-water for Workspace.wsOrdinal (stable
    *  workspace numbers across restart). Optional for pre-P2 sessions. */
   nextWorkspaceOrdinal?: number;
@@ -727,6 +749,8 @@ export interface SessionData {
   /** Image-only clipboard paste route. Absent = 'auto' (#1196). */
   imagePasteMode?: 'auto' | 'native' | 'path';
   defaultShell?: string;
+  /** #1103 — WSL distro for the WSL default terminal. Absent = system default. */
+  defaultWslDistro?: string;
   /** Orchestrator (deck brain) model override — '' / absent = the
    *  subscription's default model. A claude model alias or full id. */
   deckBrainModel?: string;

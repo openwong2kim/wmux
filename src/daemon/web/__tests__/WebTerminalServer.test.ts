@@ -58,11 +58,12 @@ function makeDeps() {
   // and no wmux identity at all.
   type LiveRow = {
     id: string; cwd: string; cols: number; rows: number; state: string;
-    agent: undefined; lastDetectedAgent: undefined; lastActivity: string;
+    agent: { role: string; teamId: string; displayName: string } | undefined;
+    lastDetectedAgent: string | undefined;
+    lastActivity: string;
     env: Record<string, string>; cmd: string;
   };
-  const live: LiveRow[] = [
-    {
+  const live: LiveRow[] = [    {
       id: 's1', cwd: '/x', cols: 80, rows: 24, state: 'detached',
       agent: undefined, lastDetectedAgent: undefined, lastActivity: '2020-01-01T00:00:00.000Z',
       env: { WMUX_WORKSPACE_ID: 'ws-1', WMUX_WORKSPACE_NAME: 'Workspace 1', ANTHROPIC_API_KEY: 'sk-secret' },
@@ -390,9 +391,12 @@ describe('WebTerminalServer', () => {
   let projectorMock: ReturnType<typeof makeDeps>['projectorMock'];
   /** #783 — the daemon's runtime gate flag, which the server only reads/writes. */
   let gateArmed: boolean;
+  /** #1163 — the daemon's canonical agent state per session, as the server reads it. */
+  let agentStates: Record<string, { agentName: string | null; agentStatus: 'idle' | 'running' | 'awaiting_input' }>;
 
   beforeEach(() => {
     gateArmed = true;
+    agentStates = {};
     const deps = makeDeps();
     bridge = deps.bridge;
     write = deps.write;
@@ -429,6 +433,7 @@ describe('WebTerminalServer', () => {
       gateConfig: () => ({ gatedTools: ['Bash'] }),
       gateEnabled: () => gateArmed,
       setGateEnabled: (enabled) => { gateArmed = enabled; },
+      agentState: (id) => agentStates[id],
       log: () => { /* silent in tests */ },
       assetsDir: os.tmpdir(), // no terminal.html needed for the /api/* tests
     });
@@ -4171,6 +4176,66 @@ describe('WebTerminalServer', () => {
       expect(body.workspaces[1].panes).toEqual([{ sessionId: 's2', shell: 'pwsh', cwd: '/y' }]);
       // The env-less session (s3) is omitted entirely.
       expect(body.workspaces.flatMap((w) => w.panes).map((p) => p.sessionId)).not.toContain('s3');
+    });
+
+    // #1163 — per-session agent metadata, so the attaching desktop's roster
+    // can count remote Claude sessions. Additive-optional: panes the host
+    // knows nothing about carry no agent fields at all.
+    it('surfaces per-pane agent name and status, omitting them when unknown', async () => {
+      live.push(
+        {
+          id: 's-agent', cwd: '/a', cols: 80, rows: 24, state: 'detached',
+          agent: undefined,
+          // X6 persisted what USED to run here; the daemon's canonical answer
+          // (below) says nothing runs now. The persisted slug must not
+          // resurrect a ghost roster row.
+          lastDetectedAgent: 'claude',
+          lastActivity: '2020-01-01T00:00:00.000Z',
+          env: { WMUX_WORKSPACE_ID: 'ws-1', WMUX_WORKSPACE_NAME: 'Workspace 1' },
+          cmd: '/usr/bin/bash',
+        },
+        {
+          id: 's-role', cwd: '/b', cols: 80, rows: 24, state: 'detached',
+          // Creation-time role metadata outranks the persisted slug.
+          agent: { role: 'worker', teamId: 't1', displayName: 'Codex' },
+          lastDetectedAgent: 'claude',
+          lastActivity: '2020-01-01T00:00:00.000Z',
+          env: { WMUX_WORKSPACE_ID: 'ws-1', WMUX_WORKSPACE_NAME: 'Workspace 1' },
+          cmd: '/usr/bin/bash',
+        },
+      );
+      // The daemon's canonical reader: s1 runs a live, blocked agent; s-agent's
+      // agent has exited (canonical null); s-role's canonical answer is
+      // outranked by its creation-time role metadata.
+      agentStates = {
+        s1: { agentName: 'Claude Code', agentStatus: 'awaiting_input' },
+        's-agent': { agentName: null, agentStatus: 'idle' },
+        's-role': { agentName: 'Claude Code', agentStatus: 'running' },
+      };
+      const info = await startRO();
+      const read = async () => {
+        const r = await fetch(`${base()}/api/workspaces`, { headers: bearer(info.token as string) });
+        expect(r.status).toBe(200);
+        return (await r.json()) as {
+          workspaces: Array<{ panes: Array<{ sessionId: string; agentName?: string; agentStatus?: string }> }>;
+        };
+      };
+      let body = await read();
+      let byId = new Map(body.workspaces.flatMap((w) => w.panes).map((p) => [p.sessionId, p]));
+      expect(byId.get('s1')).toMatchObject({ agentName: 'Claude Code', agentStatus: 'awaiting_input' });
+      // Role metadata outranks the canonical detector name.
+      expect(byId.get('s-role')).toMatchObject({ agentName: 'Codex', agentStatus: 'running' });
+      // Exited agent: the persisted slug does NOT resurrect a row.
+      expect(byId.get('s-agent')).not.toHaveProperty('agentName');
+      expect(byId.get('s-agent')).not.toHaveProperty('agentStatus');
+      // No canonical state for the session → no agent fields at all.
+      expect(byId.get('s2')).not.toHaveProperty('agentName');
+
+      // The agent in s1 exits → its row disappears on the next poll.
+      agentStates.s1 = { agentName: null, agentStatus: 'idle' };
+      body = await read();
+      byId = new Map(body.workspaces.flatMap((w) => w.panes).map((p) => [p.sessionId, p]));
+      expect(byId.get('s1')).not.toHaveProperty('agentName');
     });
 
     it('groups multiple panes into the same workspace, sorted by sessionId', async () => {

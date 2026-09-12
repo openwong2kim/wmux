@@ -24,6 +24,24 @@ export function findPane(root: Pane, id: string): Pane | null {
   return null;
 }
 
+/**
+ * Find the leaf pane that owns a surface.
+ *
+ * Surfaces know their own id but not which pane holds them, so anything that
+ * needs to ask "is my pane the focused one?" (#1266: the search bar) has to
+ * walk back up from the surface.
+ */
+export function findLeafBySurfaceId(root: Pane, surfaceId: string): PaneLeaf | null {
+  if (root.type === 'leaf') {
+    return root.surfaces?.some((s) => s.id === surfaceId) ? root : null;
+  }
+  for (const child of root.children) {
+    const found = findLeafBySurfaceId(child, surfaceId);
+    if (found) return found;
+  }
+  return null;
+}
+
 /** Find the parent branch of a pane by ID */
 export function findParent(root: Pane, id: string): PaneBranch | null {
   if (root.type === 'branch') {

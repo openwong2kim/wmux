@@ -11,6 +11,7 @@ import { EmptyLeafFunnel } from './EmptyLeafFunnel';
 import { selectProjectCwdSignature } from '../../stores/selectors/appLayout';
 import { selectInboxOwnsApprovals } from '../../stores/selectors/approvalInbox';
 import { shouldShowInstallError, shouldReannounceAfterError, truncateReason } from './updateNoticePolicy';
+import { shouldShowAutoUpdatePrompt, shouldStartOnboarding } from './firstBootSequence';
 import { registerSessionSaver, saveSessionNow } from '../../utils/sessionSaveBridge';
 import { resolveReconcileRebind } from '../../hooks/resolveReconcileRebind';
 import { getLeafPanes, getWorkspaceLeafPanes } from '../../../shared/paneUtils';
@@ -331,6 +332,8 @@ function buildSessionData(dumped: Map<string, boolean>): SessionData {
       stashedPanes: cloneStashedPanes(ws, dumped),
     })),
     activeWorkspaceId: state.activeWorkspaceId,
+    // #1011 — archived snapshots ride the session; restore lists them again.
+    ...(state.archivedWorkspaces.length > 0 ? { archivedWorkspaces: state.archivedWorkspaces } : {}),
     // P2: persist the global workspace-ordinal high-water so wsOrdinals are
     // never recycled across restarts (loadSession reads it back + backfills).
     nextWorkspaceOrdinal: state.nextWorkspaceOrdinal,
@@ -349,6 +352,7 @@ function buildSessionData(dumped: Map<string, boolean>): SessionData {
     terminalCursorStyle: state.terminalCursorStyle,
     imagePasteMode: state.imagePasteMode,
     defaultShell: state.defaultShell,
+    defaultWslDistro: state.defaultWslDistro,
     deckBrainModel: state.deckBrainModel || undefined,
     orchestratorRoleBindings:
       Object.keys(state.orchestratorRoleBindings).length > 0 ? state.orchestratorRoleBindings : undefined,
@@ -807,7 +811,9 @@ export default function AppLayout() {
   // Rationale and trigger choice live in terminal/atlasWakeRecovery.ts.
   useEffect(() => {
     // optional-chain electronAPI — jsdom (tests) has no preload bridge; an
-    // older main without the push degrades to visibility-only recovery.
+    // older main without the push degrades to visibility-only recovery (the
+    // module tracks whether a resume is ever actually DELIVERED, so a platform
+    // where powerMonitor never fires keeps that fallback — see #1234).
     const onResumed = (window as any).electronAPI?.system?.onResumed;
     return initAtlasWakeRecovery({
       onSystemResumed:
@@ -818,8 +824,11 @@ export default function AppLayout() {
   // #882 — one renderer-wide subscription to "is anyone looking at this
   // window" (minimized / hidden to tray / screen locked), which panes fold
   // into their #766 viewer-visibility report. All platforms: the bit is right
-  // everywhere, it is only Windows where `document.visibilityState` could not
-  // supply it. See hooks/useWindowDisplayed.ts.
+  // everywhere, whereas `document.visibilityState` cannot supply it — on
+  // Windows it is occlusion-driven, so it flips on an ordinary alt-tab and says
+  // nothing about whether the window is minimized or the screen is locked
+  // (#1234 corrected the earlier claim that it never flips there at all).
+  // See hooks/useWindowDisplayed.ts.
   useEffect(() => windowDisplayedStore.init(), []);
 
 
@@ -1437,12 +1446,21 @@ export default function AppLayout() {
   // D8: spotlight stays gated behind firstRunCompleted so the wizard always
   // wins the first impression. Once the wizard completes/dismisses, the
   // spotlight tutorial picks up the UI tour for single-workspace users.
+  // #1164: it also waits out a pending auto-update consent — the spotlight's
+  // z-9999 backdrop would cover the prompt's buttons, the same stacked-overlay
+  // pointer-deadness the wizard/prompt pair had. First-boot order: wizard →
+  // consent → spotlight.
   useEffect(() => {
-    if (!sessionLoadedRef.current) return;
-    if (firstRunCompleted && !onboardingCompleted && workspaceCount === 1) {
+    if (shouldStartOnboarding({
+      sessionLoaded: sessionLoadedRef.current,
+      autoUpdatePromptPending: showAutoUpdatePrompt,
+      firstRunCompleted,
+      onboardingCompleted,
+      workspaceCount,
+    })) {
       startOnboarding();
     }
-  }, [firstRunCompleted, onboardingCompleted, workspaceCount, startOnboarding]);
+  }, [firstRunCompleted, onboardingCompleted, workspaceCount, showAutoUpdatePrompt, startOnboarding]);
 
   // Re-reconcile when daemon connects late (respawn/reconnect after the
   // startup reconcile already ran). Gating + abort/timeout/preserve logic
@@ -1919,8 +1937,21 @@ export default function AppLayout() {
         <OnboardingOverlay onComplete={() => { completeOnboarding(); }} />
       )}
 
-      {/* First-run auto-update prompt */}
-      {showAutoUpdatePrompt && (
+      {/* First-run auto-update prompt. #1164 — gated behind the first-run
+          wizard: on a fresh boot both surfaces fire at once (session.load()
+          nulls → prompt, firstRun.check() → wizard), and the wizard's
+          --z-dialog backdrop then covers the prompt's buttons, producing a
+          pointer-dead stack that only the keyboard can escape. Sequencing
+          instead of stacking: the wizard owns the first impression (the same
+          D8 ruling that gates the onboarding spotlight), and the consent
+          question — still pending — appears the moment it closes. It also
+          waits for the wizard probe to settle (firstRunCompleted), or it
+          would flash for a frame before the wizard mounts over it. */}
+      {shouldShowAutoUpdatePrompt({
+        pending: showAutoUpdatePrompt,
+        wizardOpen: showFirstRunWizard !== null,
+        firstRunSettled: firstRunCompleted,
+      }) && (
         <div
           className="fixed inset-0 z-[var(--z-modal)] flex items-center justify-center"
           style={{ backgroundColor: 'var(--backdrop-modal)' }}

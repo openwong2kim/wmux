@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import { isWslDistroSpawnArgs } from './wslDistro';
 import os from 'node:os';
 import { execFileSync } from 'node:child_process';
 
@@ -28,13 +29,17 @@ export function resolveWslCwd(
     encoding: 'utf8', timeout: 15_000, maxBuffer: 16_384, windowsHide: true,
     cwd: os.homedir(), stdio: ['ignore', 'pipe', 'pipe'],
   }),
+  selectionArgs?: string[],
 ): { cwd: string; target: WslTarget } {
   const requested = cwd || '~';
   if (!isLinuxCwd(requested) && !/^[A-Za-z]:[\\/]/.test(requested)) {
     throw new Error('WSL working directory must be an absolute Linux/Windows path or ~/path');
   }
   if (/[\0\r\n]/.test(requested)) throw new Error('Invalid WSL working directory');
-  const output = probe([...wslTargetArgs(target), '--exec', '/bin/sh', '-c', WSL_CWD_PROBE, 'wmux-cwd', requested]);
+  // A recovered pane keeps its target; new panes honor #1245's resolved choice.
+  const targetArgs = target ? wslTargetArgs(target)
+    : isWslDistroSpawnArgs(shell, selectionArgs) ? selectionArgs : [];
+  const output = probe([...targetArgs, '--exec', '/bin/sh', '-c', WSL_CWD_PROBE, 'wmux-cwd', requested]);
   const [distribution, user, canonicalCwd] = output.split('\0');
   const resolvedTarget = { distribution, user };
   if (!validWslTarget(resolvedTarget) || !isLinuxCwd(canonicalCwd) || !canonicalCwd.startsWith('/')) {

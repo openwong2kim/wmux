@@ -13,7 +13,7 @@ import { findPane } from '../../../shared/paneUtils';
 import PaneDragGrip from './PaneDragGrip';
 import { FOCUS_RING } from '../focusRing';
 import { HIT_TARGET_24 } from '../hitArea';
-import { IconSplitRight, IconSplitDown, IconBrowser, IconExternalLink, IconEyeOff, IconPencil } from '../icons';
+import { IconSplitRight, IconSplitDown, IconBrowser, IconExternalLink, IconEyeOff, IconPencil, IconGrid } from '../icons';
 import { displayPath } from '../../utils/displayPath';
 import { workspaceColorHex } from '../../../shared/workspaceColors';
 import PaneActionsMenu, { PANE_ACTIONS_MENU_WIDTH, type PaneActionItem } from './PaneActionsMenu';
@@ -370,6 +370,9 @@ export default function SurfaceTabs({
   // label / THIS pane's active-surface slug (primitives) so unrelated panes'
   // label or agent changes don't re-render this strip.
   const paneLabel = useStore((s) => s.paneLabel[paneId]);
+  // #1237 — snap-to-layout menu entries. Subscribed as the array reference:
+  // template edits are rare (palette save/delete), so identity-equal renders.
+  const layoutTemplates = useStore((s) => s.layoutTemplates);
   const activeSurface = surfaces.find((s) => s.id === activeSurfaceId) ?? surfaces[0];
   const activeSurfacePtyId = activeSurface?.ptyId;
   const activeSlug = useStore((s) =>
@@ -516,10 +519,24 @@ export default function SurfaceTabs({
       separatorBefore: true,
       onSelect: toggleZoom,
     },
+    // #1237 — snap the RUNNING panes into a saved arrangement. Menu-only on
+    // purpose: a sixth cluster button would break the five-button width
+    // contract (PANE_ACTIONS_CLUSTER_WIDTH, two DESIGN.md rulings), and the
+    // verb is workspace-level, not pane-level — the ⋮/right-click menu is the
+    // chrome-free home for it. Non-destructive twin of the palette's
+    // "Layout: X" (applyLayoutTemplate), which replaces panes with empty leaves.
+    ...layoutTemplates.map((tmpl, i) => ({
+      key: `snap-${tmpl.id}`,
+      label: `${t('pane.snapMenuPrefix')}${tmpl.name}`,
+      icon: <IconGrid size={14} />,
+      separatorBefore: i === 0,
+      onSelect: () => { useStore.getState().snapToLayoutTemplate(tmpl.id); },
+    })),
   ], [
     t, onSplitHorizontal, onSplitVertical, onAddBrowser, onAddRemote,
     onSplitHorizontalRemote, onSplitVerticalRemote, startPaneRename,
     stashChord, stashDisabled, stashTooltip, stashThisPane, isZoomed, toggleZoom,
+    layoutTemplates,
   ]);
 
   const commitPaneRename = () => {

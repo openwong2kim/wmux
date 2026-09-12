@@ -14,6 +14,7 @@ import { RingBuffer } from './RingBuffer';
 import { DaemonPTYBridge } from './DaemonPTYBridge';
 import { PromptEventLog } from './PromptEventLog';
 import { buildSpawnInjection, classifyShell, BASH_INIT } from './shell-integration';
+import { isWslDistroSpawnArgs } from '../shared/wslDistro';
 import { expandTilde } from '../shared/expandTilde';
 import { restoreSeam } from '../shared/restoreSeam';
 import { buildExecArgs } from './execWrapper';
@@ -185,6 +186,13 @@ export class DaemonSessionManager extends EventEmitter {
      * `''` — see resolveShellPath.
      */
     cmd?: string;
+    /**
+     * #1103 — validated WSL distro selection (`['-d', '<name>']`), only ever
+     * for a wsl.exe cmd. Prepended IN FRONT of any integration args so
+     * wsl.exe parses it as its own flag. The RPC boundary has already
+     * enforced the exact shape; this is the spawn site.
+     */
+    args?: string[];
     /** Absent means the home directory. */
     cwd?: string;
     /**
@@ -317,7 +325,7 @@ export class DaemonSessionManager extends EventEmitter {
     // stay literal and silently fall back to $HOME (or throw as an unreadable
     // cwd). Single choke point — every caller-supplied cwd converges here.
     let cmd = this.resolveShellPath(params.cmd) || this.getDefaultShell();
-    const wsl = isWslShell(cmd) ? resolveWslCwd(cmd, params.cwd, params.wslTarget) : undefined;
+    const wsl = isWslShell(cmd) ? resolveWslCwd(cmd, params.cwd, params.wslTarget, undefined, params.args) : undefined;
     const cwd = wsl?.cwd ?? (params.cwd ? expandTilde(params.cwd) : os.homedir());
     const hostCwd = wsl ? os.homedir() : cwd;
 
@@ -381,7 +389,7 @@ export class DaemonSessionManager extends EventEmitter {
       env[ENV_KEYS.DATA_SUFFIX] = globalThis.process.env[ENV_KEYS.DATA_SUFFIX] as string;
     }
 
-    let spawnArgs: string[] = [];
+    let spawnArgs: string[] = isWslDistroSpawnArgs(cmd, params.args) ? [...params.args] : [];
     if (wsl) {
       const injection = buildWslInjection({ target: wsl.target, cwd, env,
         integrationDir: getWmuxDir(), bashInit: BASH_INIT,
@@ -514,6 +522,13 @@ export class DaemonSessionManager extends EventEmitter {
     };
     if (params.agent) {
       meta.agent = params.agent;
+    }
+    // #1103 — persist the distro selection so replays (recovery, supervised
+    // restart, promote) re-spawn the same distro. Re-validated here even
+    // though the RPC boundary already checked: createSession has direct
+    // callers too, and this field becomes spawn argv.
+    if (wsl || isWslDistroSpawnArgs(cmd, params.args)) {
+      meta.args = wsl ? ['-d', wsl.target.distribution] : [...params.args!];
     }
     if (params.exec) {
       meta.exec = { command: params.exec.command };

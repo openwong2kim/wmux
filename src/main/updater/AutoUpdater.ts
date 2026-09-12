@@ -33,6 +33,7 @@ import { LocalUpdateFeed } from './LocalUpdateFeed';
 import {
   collectInstallRootProcesses,
   clearAbortMarker,
+  sweepStaleWaiterTasks,
   freeSpaceShortfall,
   INSTALL_ABORT_MARKER,
   INSTALL_READY_MARKER,
@@ -298,6 +299,15 @@ export class AutoUpdater {
       console.log(`[AutoUpdater] In-app updates are not supported on ${process.platform}; skipping auto-check (update via your package manager).`);
       return;
     }
+
+    // #1283 review — sweep waiter task registrations a previous update failed
+    // to clean up (a `/Create` that timed out after the server committed, a
+    // `/Delete` that failed). They carry no trigger so they cannot fire on
+    // their own, but they point at a `%TEMP%` path the installer has since
+    // invalidated and they are litter in the user's task list. Startup is
+    // where this belongs: the quit path is the one place blocking costs the
+    // user something.
+    if (process.platform === 'win32') sweepStaleWaiterTasks();
 
     void this.sweepStaleArtifacts();
 

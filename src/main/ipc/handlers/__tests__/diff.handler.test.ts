@@ -113,7 +113,19 @@ function makeScenario(): {
   };
 }
 
-describe('diff:read — 워킹트리 대조·untracked 합성·스냅샷', () => {
+// #1274: every suite in this file builds temp git repos and shells out to the real
+// `git` binary (init/commit/worktree/diff/apply) per test, so runtime tracks
+// process-spawn cost rather than code speed — and the numbers below are not
+// comparable to each other, so state the conditions. Run alone and serially on
+// macOS the whole file is ~35 s (cold) / ~11 s (warm) and the slowest single
+// test is ~2.4 s cold. On windows-latest `validate`, where the file shares the
+// runner with parallel vitest workers and Git-for-Windows process spawn costs
+// an order of magnitude more, ONE test measured 10.2 s and blew vitest's 5 s
+// per-test default — on a PR that never touched this code. The budget is sized
+// for that CI-parallel worst case, not for the local serial figure.
+const GIT_PROCESS_TIMEOUT_MS = 30_000;
+
+describe('diff:read — 워킹트리 대조·untracked 합성·스냅샷', { timeout: GIT_PROCESS_TIMEOUT_MS }, () => {
   let scn: ReturnType<typeof makeScenario>;
   beforeEach(() => {
     captured.clear();
@@ -143,7 +155,7 @@ describe('diff:read — 워킹트리 대조·untracked 합성·스냅샷', () =>
   });
 });
 
-describe('diff:applyHunks — 채택 all-or-nothing', () => {
+describe('diff:applyHunks — 채택 all-or-nothing', { timeout: GIT_PROCESS_TIMEOUT_MS }, () => {
   let scn: ReturnType<typeof makeScenario>;
   beforeEach(() => {
     captured.clear();
@@ -281,7 +293,7 @@ describe('diff:applyHunks — 채택 all-or-nothing', () => {
 // file with +/- and no hunks, or hunks that cannot be applied. Note neither
 // configured command is ever spawned once the flags are in place — these tests
 // assert the flags took effect, not the tools' behaviour.
-describe('diff:read — external diff drivers cannot replace the patch', () => {
+describe('diff:read — external diff drivers cannot replace the patch', { timeout: GIT_PROCESS_TIMEOUT_MS }, () => {
   let scn: ReturnType<typeof makeScenario>;
   beforeEach(() => {
     captured.clear();
@@ -338,7 +350,7 @@ describe('diff:read — external diff drivers cannot replace the patch', () => {
 // the worktree in between used to be adopted silently — the wrong hunk, or only
 // the part of the selection that still resolved. Every case below must reject
 // the whole request and leave the target byte-identical.
-describe('diff:applyHunks — source integrity gate', () => {
+describe('diff:applyHunks — source integrity gate', { timeout: GIT_PROCESS_TIMEOUT_MS }, () => {
   let scn: ReturnType<typeof makeScenario>;
   const BASE_A = 'a1\na2\na3\na4\na5\n';
   const BASE_B = 'b1\nb2\nb3\n';
@@ -549,7 +561,7 @@ describe('diff:applyHunks — source integrity gate', () => {
 });
 
 // ── F1: quotepath 경로 파싱(공백·한글·따옴표·rename) ─────────────────────────
-describe('diff:read/applyHunks — F1 특수문자 파일명(-z quotepath=false)', () => {
+describe('diff:read/applyHunks — F1 특수문자 파일명(-z quotepath=false)', { timeout: GIT_PROCESS_TIMEOUT_MS }, () => {
   let scn: ReturnType<typeof makeScenario>;
   beforeEach(() => {
     captured.clear();
@@ -598,7 +610,7 @@ describe('diff:read/applyHunks — F1 특수문자 파일명(-z quotepath=false)
 });
 
 // ── F2: 프로브 의미론 — 의존 hunk 결합 성공·alreadyApplied 명시 거부 ──────────
-describe('diff:applyHunks — F2 결합 게이트·alreadyApplied 거부', () => {
+describe('diff:applyHunks — F2 결합 게이트·alreadyApplied 거부', { timeout: GIT_PROCESS_TIMEOUT_MS }, () => {
   let scn: ReturnType<typeof makeScenario>;
   beforeEach(() => {
     captured.clear();
@@ -672,7 +684,7 @@ describe('diff:applyHunks — F2 결합 게이트·alreadyApplied 거부', () =>
 });
 
 // ── F3: untracked symlink 차단 ───────────────────────────────────────────────
-describe('diff:read — F3 symlink untracked는 unsupported(repo 밖 노출 차단)', () => {
+describe('diff:read — F3 symlink untracked는 unsupported(repo 밖 노출 차단)', { timeout: GIT_PROCESS_TIMEOUT_MS }, () => {
   let scn: ReturnType<typeof makeScenario>;
   beforeEach(() => {
     captured.clear();
@@ -711,7 +723,7 @@ describe('diff:read — F3 symlink untracked는 unsupported(repo 밖 노출 차�
 });
 
 // ── F4: delete diff의 dirty 게이트 경로 ──────────────────────────────────────
-describe('diff:applyHunks — F4 delete 파일이 타겟에서 dirty면 거부', () => {
+describe('diff:applyHunks — F4 delete 파일이 타겟에서 dirty면 거부', { timeout: GIT_PROCESS_TIMEOUT_MS }, () => {
   let scn: ReturnType<typeof makeScenario>;
   beforeEach(() => {
     captured.clear();
@@ -748,7 +760,7 @@ describe('diff:applyHunks — F4 delete 파일이 타겟에서 dirty면 거부',
 });
 
 // ── F7: truncated(캡 초과) 파일 채택 차단 ────────────────────────────────────
-describe('diff:read/applyHunks — F7 캡 초과 파일 채택 불가', () => {
+describe('diff:read/applyHunks — F7 캡 초과 파일 채택 불가', { timeout: GIT_PROCESS_TIMEOUT_MS }, () => {
   let scn: ReturnType<typeof makeScenario>;
   beforeEach(() => {
     captured.clear();
@@ -785,7 +797,7 @@ describe('diff:read/applyHunks — F7 캡 초과 파일 채택 불가', () => {
 });
 
 // ── F8: targetHeadOid 인자 가드 ──────────────────────────────────────────────
-describe('diff:read — F8 targetHeadOid 형식 가드', () => {
+describe('diff:read — F8 targetHeadOid 형식 가드', { timeout: GIT_PROCESS_TIMEOUT_MS }, () => {
   let scn: ReturnType<typeof makeScenario>;
   beforeEach(() => {
     captured.clear();
@@ -808,7 +820,7 @@ describe('diff:read — F8 targetHeadOid 형식 가드', () => {
 // ── 워크스페이스 diff 모드 — 일반 repo를 targetHeadOid 미지정으로 읽기 ─────────
 // resolveTargetRepo→repo 자신, merge-base HEAD HEAD=HEAD → `git diff HEAD`
 // (staged+unstaged) + untracked 합성. 백엔드 무변경으로 성립하는 계약을 고정한다.
-describe('diff:read — 워크스페이스 모드(일반 repo, oid 미지정)', () => {
+describe('diff:read — 워크스페이스 모드(일반 repo, oid 미지정)', { timeout: GIT_PROCESS_TIMEOUT_MS }, () => {
   let base: string;
   let repo: string;
 
@@ -918,7 +930,7 @@ describe('diff:read — 워크스페이스 모드(일반 repo, oid 미지정)', 
 });
 
 // ── diff:resolveRepo — 팔레트 진입점의 cwd → worktree toplevel 정규화 ─────────
-describe('diff:resolveRepo — cwd 정규화', () => {
+describe('diff:resolveRepo — cwd 정규화', { timeout: GIT_PROCESS_TIMEOUT_MS }, () => {
   let base: string;
   let repo: string;
 
@@ -978,7 +990,7 @@ describe('diff:resolveRepo — cwd 정규화', () => {
 
 // ── Guards for the README's adoption claim: hunks are picked individually, and
 //    the all-or-nothing part is the apply of that selection (not the whole diff).
-describe('diff:applyHunks — per-hunk selection granularity and selection-wide atomicity', () => {
+describe('diff:applyHunks — per-hunk selection granularity and selection-wide atomicity', { timeout: GIT_PROCESS_TIMEOUT_MS }, () => {
   // Local fixture: two files long enough that two distant edits each land in two
   // hunks. The shared makeScenario files are too short to split. `diff.context`
   // and `diff.interHunkContext` are pinned because the hunk split — and so the

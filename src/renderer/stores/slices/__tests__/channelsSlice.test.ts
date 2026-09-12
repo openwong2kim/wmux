@@ -43,7 +43,7 @@
 // mock global via `setChannelsRpc` to drive the success/failure
 // paths without a real `useRpcBridge` mount.
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeAll } from 'vitest';
 import { create } from 'zustand';
 import { immer } from 'zustand/middleware/immer';
 import {
@@ -649,8 +649,20 @@ describe('channelsSlice — wiring (composed store)', () => {
   // selector. This is the property the plan's U6 verification
   // asserts — the sidebar (U7) and composer (U8) will read these
   // through `useStore((s) => s.channels)` etc.
-  it('is reachable through the composed store via channels selector', async () => {
-    const { useStore } = await import('../../index');
+  //
+  // #1274: the assertions here are instant, but importing the composed store
+  // pulls in — and Vite-transforms — the entire renderer store module graph.
+  // In isolation that costs ~350 ms; inside a full parallel suite run it was
+  // measured at 5022 ms and failed against the 5 s per-test default. Hoisting
+  // the import into a hook moves that one-off cost out of the test body (hooks
+  // get their own budget), so the test is measured on its assertions again
+  // instead of on a module-graph transform.
+  let useStore: Awaited<typeof import('../../index')>['useStore'];
+  beforeAll(async () => {
+    ({ useStore } = await import('../../index'));
+  }, 60_000);
+
+  it('is reachable through the composed store via channels selector', () => {
     // Initial state: every field defaults to its empty value.
     const s = useStore.getState();
     expect(s.channels).toEqual({});

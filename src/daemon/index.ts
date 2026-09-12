@@ -69,6 +69,7 @@ import { PortWatcher } from '../main/pty/portWatch';
 import { initDaemonLogSink, isBrokenPipeError, stdioErrorsConsumed } from './util/logSink';
 import type { DaemonState } from './types';
 import type { DaemonEvent, DaemonCreateSessionParams, DaemonSessionIdParams, DaemonResizeParams, DaemonSetResumeBindingParams } from '../shared/rpc';
+import { isWslDistroSpawnArgs } from '../shared/wslDistro';
 import { randomUUID } from 'node:crypto';
 import { monitorEventLoopDelay, performance as nodePerformance } from 'node:perf_hooks';
 import { DAEMON_EXIT_ALREADY_RUNNING, ENV_KEYS } from '../shared/constants';
@@ -127,6 +128,11 @@ let hookIngest: HookIngest | null = null;
 let webhookSink: WebhookSink | null = null;
 let transcriptProjector: TranscriptProjector | null = null;
 let transcriptDiscovery: TranscriptDiscovery | null = null;
+// #1163 — registerRpcHandlers' canonical agent-state reader (readDaemonAgentState),
+// read by BOTH WebTerminalServer construction sites for /api/workspaces. Module-
+// scoped because the boot-restore site has no agent tracker in scope; a request
+// that arrives before registration simply reports no agent fields.
+let readAgentStateForWeb: ((id: string) => { agentName: string | null; agentStatus: AgentStatus }) | undefined;
 
 // M3 — per-device credentials for `wmux web`. Module-scoped for the same reason
 // as the servers above: both WebTerminalServer construction paths inject it, and
@@ -368,6 +374,9 @@ async function restoreWebServer(sessionManager: DaemonSessionManager): Promise<v
         sessionManager,
         assetsDir: resolveWebAssetsDir(),
         log: (level, msg) => log(level, msg),
+        // #1163 — canonical agent state for /api/workspaces, resolved per
+        // request (registerRpcHandlers registers the reader).
+        agentState: (id) => readAgentStateForWeb?.(id),
         // M3 — without this, /pair degrades to handing out the shared operator
         // token and nothing is individually revocable. Injected at BOTH
         // construction sites: a restored server serves paired phones on their
@@ -1364,6 +1373,7 @@ async function recoverSessions(
               id: session.id,
             cmd: session.cmd,
             wslTarget: session.wslTarget,
+          ...(session.args ? { args: session.args } : {}),
             cwd,
             // Replay the ORIGINAL spawn directory. `cwd` above is the LIVE one
             // (OSC 7-tracked), and letting it re-seed spawnCwd would hand the
@@ -1456,6 +1466,7 @@ async function recoverSessions(
             id: session.id,
             cmd: session.cmd,
             wslTarget: session.wslTarget,
+          ...(session.args ? { args: session.args } : {}),
             cwd,
             // Replay the ORIGINAL spawn directory. `cwd` above is the LIVE one
             // (OSC 7-tracked), and letting it re-seed spawnCwd would hand the
@@ -1507,6 +1518,7 @@ async function recoverSessions(
           id: session.id,
           cmd: session.cmd,
           wslTarget: session.wslTarget,
+          ...(session.args ? { args: session.args } : {}),
           cwd,
           // Replay the ORIGINAL spawn directory. `cwd` above is the LIVE one
           // (OSC 7-tracked), and letting it re-seed spawnCwd would hand the
@@ -1667,6 +1679,7 @@ function restartSupervisedSession(
     id: meta.id,
     cmd: meta.cmd,
     wslTarget: meta.wslTarget,
+    args: meta.args,
     cwd: recoveryCwd(meta),
     // Replay the ORIGINAL spawn directory; `cwd` above is the live, OSC
     // 7-tracked one. See createSession's `spawnCwd`.
@@ -1790,10 +1803,17 @@ function registerRpcHandlers(
     if (typeof p.id !== 'string' || !/^[a-zA-Z0-9_-]{1,64}$/.test(p.id)) {
       throw new Error('Invalid session ID');
     }
+    // #1103 — spawn args over the wire are exactly a validated WSL distro
+    // selection for a wsl shell; anything else is refused (the daemon's spawn
+    // surface is not a shell parser).
+    if (p.args !== undefined && !isWslDistroSpawnArgs(p.cmd, p.args)) {
+      throw new Error('Invalid session args: expected [\'-d\', wsl-distro] for a wsl.exe cmd');
+    }
     const session = sessionManager.createSession({
       id: p.id,
       cmd: p.cmd,
       wslTarget: p.wslTarget,
+      args: p.args,
       cwd: p.cwd,
       env: p.env,
       cols: p.cols,
@@ -2362,6 +2382,7 @@ function registerRpcHandlers(
             id: session.id,
             cmd: session.cmd,
             wslTarget: session.wslTarget,
+          ...(session.args ? { args: session.args } : {}),
             cwd,
             spawnCwd: session.spawnCwd,
             env: session.env,
@@ -2426,6 +2447,8 @@ function registerRpcHandlers(
       sessionManager,
       assetsDir: resolveWebAssetsDir(),
       log: (level, msg) => log(level, msg),
+      // #1163 — canonical agent state for /api/workspaces (see restoreWebServer).
+      agentState: (id) => readAgentStateForWeb?.(id),
       // M3 — see the restore path for why the roster is injected at both sites.
       devices: getDeviceStore(),
       // See the restore path: the lifecycle routes need this and answer 503
@@ -3221,6 +3244,9 @@ function registerRpcHandlers(
     if (screenSlug) return { agentName: null, ...state };
     return { agentName: rawName, ...state };
   };
+  // #1163 — /api/workspaces answers with this same canonical state, so a
+  // remote roster row appears and disappears exactly when a local one would.
+  readAgentStateForWeb = readDaemonAgentState;
 
   // Authoritative detector state bypasses desktop reconnect/event timing.
   pipeServer.onRpc('daemon.getAgentName', async (params) => {

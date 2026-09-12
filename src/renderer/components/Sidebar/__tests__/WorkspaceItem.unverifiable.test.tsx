@@ -37,7 +37,7 @@ async function render(): Promise<void> {
   await act(async () => {
     root.render(createElement(WorkspaceItem, {
       workspaceId: 'ws', isActive: false, isMultiview: false, index: 0,
-      onSelect: noop, onCtrlSelect: noop, onRename: noop, onClose: noop,
+      onSelect: noop, onCtrlSelect: noop, onRename: noop, onClose: noop, onArchive: noop,
       onCopyInfo: noop, onDuplicate: noop, onReorder: noop,
     }));
   });

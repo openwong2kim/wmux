@@ -23,6 +23,20 @@ describe('WSL execution target', () => {
     expect(WSL_CWD_PROBE).not.toContain(requested);
   });
 
+  it('derives the target from the selected distro and keeps a saved target on recovery', () => {
+    const probe = vi.fn((_args: string[]) => 'My Ubuntu\0developer\0/home/developer\0');
+    expect(resolveWslCwd('wsl.exe', '~', undefined, probe, ['-d', 'My Ubuntu']).target)
+      .toEqual({ distribution: 'My Ubuntu', user: 'developer' });
+    expect(probe.mock.calls[0][0].slice(0, 2)).toEqual(['-d', 'My Ubuntu']);
+    resolveWslCwd('wsl.exe', '~', target, probe, ['-d', 'Changed default']);
+    expect(probe.mock.calls[1][0].slice(0, 4)).toEqual(['--distribution', target.distribution, '--user', target.user]);
+    resolveWslCwd('wsl.exe', '~', undefined, probe, ['--exec', 'injected']);
+    expect(probe.mock.calls[2][0][0]).toBe('--exec');
+    expect(probe.mock.calls[2][0]).not.toContain('injected');
+    resolveWslCwd('wsl.exe', '~', undefined, probe);
+    expect(probe.mock.calls[3][0][0]).toBe('--exec');
+  });
+
   it('resolves home in Linux rather than using the Windows home', () => {
     const probe = vi.fn((_args: string[]) => 'Ubuntu-24.04\0developer\0/home/developer/project\0');
     expect(resolveWslCwd('wsl.exe', '~/project', undefined, probe).cwd).toBe('/home/developer/project');

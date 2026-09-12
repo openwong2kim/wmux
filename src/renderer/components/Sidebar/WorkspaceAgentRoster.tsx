@@ -8,7 +8,7 @@ import {
 } from '../../stores/selectors/workspaceAgentRoster';
 import { focusNotificationTarget, focusPaneByPtyId } from '../../hooks/useNotificationListener';
 import { useT } from '../../hooks/useT';
-import { IconEye, IconEyeOff, IconChevron } from '../icons';
+import { IconEye, IconEyeOff, IconChevron, IconExternalLink } from '../icons';
 import { FOCUS_RING } from '../focusRing';
 import { HIT_TARGET_24_ROW } from '../hitArea';
 import { timeAgo } from '../../utils/timeAgo';
@@ -112,7 +112,11 @@ export function rosterSecondaryLabel(
   const showVendor = opts.showVendor ?? true;
   const parts: string[] = [];
   if (showVendor && row.surfaceTitle) parts.push(row.agentName);
-  parts.push(row.paneName);
+  // #1163 — a remote session's local pane coordinate is meaningless (it names
+  // the mirror cell, not the agent); the HOST is the "where" that identifies
+  // the row and marks its origin.
+  if (row.remote) parts.push(`@${row.remote.hostLabel}`);
+  else parts.push(row.paneName);
   if (row.surfaceCount > 1) parts.push(`#${row.surfaceIndex + 1}/${row.surfaceCount}`);
   return parts.join(' · ');
 }
@@ -314,7 +318,13 @@ function WorkspaceAgentRoster({ workspaceId, pulsingPaneId }: WorkspaceAgentRost
             return (
               // Keyed by paneId for stashed rows: an exited pane has no ptyId
               // left, and two of them would collide on the empty string.
-              <div key={row.stashed ? row.paneId : row.ptyId} className="min-w-0">
+              <div
+                // Remote rows key by surfaceId: the synthetic remote:{...}
+                // ptyId collides when two mirror tabs attach to the SAME
+                // remote session (multi-attach is supported).
+                key={row.stashed ? row.paneId : row.remote ? row.surfaceId : row.ptyId}
+                className="min-w-0"
+              >
                 {startsStashedGroup && (
                   <div
                     className="mt-1 flex items-center gap-1.5 border-t border-[var(--border-soft)] pt-1 pr-1 text-[10px] font-mono uppercase tracking-widest text-[var(--text-muted)]"
@@ -352,6 +362,15 @@ function WorkspaceAgentRoster({ workspaceId, pulsingPaneId }: WorkspaceAgentRost
                       });
                       return;
                     }
+                    if (row.remote) {
+                      // #1163 — the synthetic remote:{host}:{session} key is
+                      // not a local ptyId; resolve the mirror's own surface.
+                      focusNotificationTarget(() => useStore.getState(), {
+                        ptyId: null,
+                        surfaceId: row.surfaceId,
+                      });
+                      return;
+                    }
                     focusPaneByPtyId(() => useStore.getState(), row.ptyId);
                   }}
                   onDoubleClick={(event) => event.stopPropagation()}
@@ -368,9 +387,18 @@ function WorkspaceAgentRoster({ workspaceId, pulsingPaneId }: WorkspaceAgentRost
                       the label instead. The one hollow rendition is silence
                       (below): there the ring IS the claim being withdrawn, and
                       it is drawn with a border, which forced-colors keeps. */}
+                  {/* #1176 — a SEEN question drops only the animated glow: the
+                      dot itself stays red because the agent is still blocked;
+                      looking does not answer the question. An attention EVENT
+                      (attentionStatus) keeps its glow — those are unseen by
+                      definition, since focusing clears them. */}
                   <span
                     className={`sidebar-dot h-1.5 w-1.5 flex-none rounded-full ${
-                      unverifiableLabel ? 'sidebar-dot-unverifiable' : statusIcon.glowClass
+                      unverifiableLabel
+                        ? 'sidebar-dot-unverifiable'
+                        : row.questionSeen && !row.attentionStatus
+                          ? ''
+                          : statusIcon.glowClass
                     }`}
                     style={unverifiableLabel ? undefined : { backgroundColor: statusIcon.dotVar }}
                   />
@@ -378,6 +406,15 @@ function WorkspaceAgentRoster({ workspaceId, pulsingPaneId }: WorkspaceAgentRost
                       the coordinate (w85-1 etc.) takes at most 40% before it
                       ellipses too. */}
                   <span className="flex min-w-0 flex-1 items-baseline gap-1">
+                    {row.remote && (
+                      // #1163 — origin glyph: this agent runs on another
+                      // host. Same steel-not-accent rule as the tab strip's
+                      // RemoteSurfaceGlyph (a provenance marker must not read
+                      // as focus); shape carries the meaning.
+                      <span className="flex-none self-center text-[var(--text-muted)]" aria-hidden="true">
+                        <IconExternalLink size={9} />
+                      </span>
+                    )}
                     <span className="min-w-0 flex-1 truncate text-[10px] font-semibold text-[var(--text-main)]">
                       {primary}
                     </span>
