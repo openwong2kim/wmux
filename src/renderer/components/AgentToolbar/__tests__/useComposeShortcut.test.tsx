@@ -23,8 +23,9 @@ let state: Record<string, unknown>;
 vi.mock('../../../stores', () => ({
   useStore: { getState: () => state },
 }));
+let focusedPtyId: string | null = 'pty-1';
 vi.mock('../../../utils/focusedSurface', () => ({
-  focusedTerminalPtyId: () => 'pty-1',
+  focusedTerminalPtyId: () => focusedPtyId,
 }));
 
 
@@ -42,22 +43,38 @@ function press(init: KeyboardEventInit): void {
   });
 }
 
-/** Split a stored combo ('Ctrl+Shift+ArrowUp') into a dispatchable event. */
-function eventForCombo(combo: string): KeyboardEventInit {
+/**
+ * Turn a stored combo ('Ctrl+Shift+ArrowUp') into the event that combo
+ * actually produces on `platform` — ⌘ substituted for Ctrl in the cmdOrCtrl
+ * family under macOS, the way useKeyboard dispatches it, with `code` filled in
+ * from the letter so the physical fallback is exercised too. The first version
+ * of this helper set neither `metaKey` nor `code` and had a dead ternary, so it
+ * only ever tested the win32 literal-Ctrl spelling (review on #1286).
+ */
+function eventForCombo(
+  combo: string,
+  platform: 'win32' | 'darwin',
+  literalCtrl: boolean,
+): KeyboardEventInit {
   const parts = combo.split('+');
   // 'Ctrl+Shift++' → the trailing '+' is the key, not a separator.
   const key = parts.pop() || '+';
+  const wantsCtrl = parts.includes('Ctrl');
+  const useMeta = wantsCtrl && platform === 'darwin' && !literalCtrl;
   return {
-    ctrlKey: parts.includes('Ctrl'),
+    key,
+    code: /^[A-Za-z]$/.test(key) ? `Key${key.toUpperCase()}` : key,
+    ctrlKey: wantsCtrl && !useMeta,
+    metaKey: useMeta,
     shiftKey: parts.includes('Shift'),
     altKey: parts.includes('Alt'),
-    key: key.length === 1 ? key : key,
   };
 }
 
 beforeEach(() => {
   setToolbarPopover.mockClear();
-  state = { workspaces: [], activeWorkspaceId: 'w1', toolbarPopover: null, disabledShortcuts: [], setToolbarPopover };
+  focusedPtyId = 'pty-1';
+  state = { workspaces: [], activeWorkspaceId: 'w1', toolbarPopover: null, disabledShortcuts: [], inspectModeActive: false, setToolbarPopover };
   (window as unknown as { electronAPI?: unknown }).electronAPI = { platform: 'win32' };
   container = document.createElement('div');
   document.body.appendChild(container);
@@ -93,6 +110,16 @@ describe('useComposeShortcut modifier matching (#1280)', () => {
     expect(setToolbarPopover).not.toHaveBeenCalled();
   });
 
+  it('does not open Rich Input when no terminal surface is focused', () => {
+    // A browser / editor / remote surface as the active leaf makes
+    // focusedTerminalPtyId null. The pane gate cannot see that, which is why
+    // only the active-leaf terminal opts into swallowing the key
+    // (ownsComposeShortcut) — elsewhere it stays a pane byte.
+    focusedPtyId = null;
+    press({ key: 'g', code: 'KeyG', ctrlKey: true });
+    expect(setToolbarPopover).not.toHaveBeenCalled();
+  });
+
   it('matches the physical KeyG under an IME (key is "Process")', () => {
     press({ key: 'Process', code: 'KeyG', ctrlKey: true });
     expect(setToolbarPopover).toHaveBeenCalledWith('rich');
@@ -109,17 +136,38 @@ describe('useComposeShortcut modifier matching (#1280)', () => {
     expect(setToolbarPopover).not.toHaveBeenCalled();
   });
 
-  it('no shift-bearing keymap combo reaches Rich Input', () => {
-    // The converse of the Ctrl+Shift+G case, asked of every shifted binding
-    // the renderer owns — the superset bug would have fired on any of them
-    // whose letter happens to be G, and the shape of it on all of them.
+  it('no other keymap combo reaches Rich Input, on either platform', () => {
+    // The converse of the Ctrl+Shift+G case, asked of every binding the
+    // renderer owns — shift-bearing ones first (the superset bug fired on
+    // Ctrl+Shift+G and would have on any shifted G spelling), but the whole
+    // table is cheap and catches the next loose gate too.
     const shifted = WMUX_KEYMAP.filter((k) => k.combo.includes('+Shift+'));
     expect(shifted.length).toBeGreaterThan(10);
-    for (const entry of shifted) {
-      setToolbarPopover.mockClear();
-      press(eventForCombo(entry.combo));
-      expect(setToolbarPopover, `${entry.combo} must not toggle Rich Input`).not.toHaveBeenCalled();
+    for (const platform of ['win32', 'darwin'] as const) {
+      (window as unknown as { electronAPI?: unknown }).electronAPI = { platform };
+      for (const entry of WMUX_KEYMAP) {
+        if (entry.combo === 'Ctrl+G') continue;
+        setToolbarPopover.mockClear();
+        press(eventForCombo(entry.combo, platform, entry.literalCtrl === true));
+        expect(setToolbarPopover, `${entry.combo} on ${platform} must not toggle Rich Input`)
+          .not.toHaveBeenCalled();
+      }
     }
+  });
+
+  it('defers while an IME composition is open', () => {
+    // Hangul preedit: `key` is 'Process' / a jamo and the physical KeyG
+    // fallback would otherwise pop the popover mid-word. Every other
+    // ctrl-letter path defers the same way, and xterm drops the keyCode-229
+    // keydown, so the key is a no-op rather than a byte.
+    press({ key: 'Process', code: 'KeyG', ctrlKey: true, isComposing: true });
+    expect(setToolbarPopover).not.toHaveBeenCalled();
+  });
+
+  it('yields while inspect mode owns the keyboard', () => {
+    state.inspectModeActive = true;
+    press({ key: 'g', code: 'KeyG', ctrlKey: true });
+    expect(setToolbarPopover).not.toHaveBeenCalled();
   });
 
   describe('macOS', () => {

@@ -240,7 +240,13 @@ export default function TerminalComponent({ ptyId: externalPtyId, shell, cwd, on
   // `isActive` for the stacked/tab case (one tab visible at a time).
   const shown = visible ?? isActive;
   const isVisible = isWorkspaceVisible && shown;
-  const { terminal: terminalRef, terminalInstance, findNext, findPrevious, clearSearch } = useTerminal(containerRef, { ptyId, isVisible, scrollbackFile, onFirstData: scrollbackFile ? handleFirstData : undefined, onContextMenu: handleContextMenu });
+  const { terminal: terminalRef, terminalInstance, findNext, findPrevious, clearSearch } = useTerminal(containerRef, { ptyId, isVisible, scrollbackFile, onFirstData: scrollbackFile ? handleFirstData : undefined, onContextMenu: handleContextMenu,
+    // Only the pane-surface terminal owns ⌘G / Ctrl+G: useComposeShortcut
+    // acts on the active leaf's pty, which is what this component renders.
+    // FloatingPane and Deck's BrainTerminalEmbed deliberately do NOT opt in —
+    // there the key stays a pane byte rather than dying between the two
+    // gates (#1280 review).
+    ownsComposeShortcut: true });
 
   // terminalInstance (state, #1256) — not terminalRef.current (a render-time
   // snapshot): the ref is populated after this render ran, so a snapshot read
