@@ -114,6 +114,11 @@ export interface FocusTargetState {
    * tree). Optional for the same reason as `unstashPane`: minimal test
    * fixtures without the remoteWorkspacesSlice mounted stay terse, and a
    * missing field reads as "no remote mirror is showing", the correct default.
+   * Deliberately the raw flag rather than `isRemoteMirrorVisible` (#1282): this
+   * interface is a minimal surface that callers satisfy with hand-built
+   * fixtures, and the predicate needs `remoteWorkspaces` too. The gap only
+   * matters for a key with no entry behind it, which nothing can produce today
+   * — and here it errs the safe way: the jump fires an extra activation.
    */
   activeRemoteKey?: string | null;
 }

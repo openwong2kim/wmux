@@ -12,6 +12,11 @@ import {
   type AttachedRemoteWorkspace,
 } from '../remoteWorkspacesSlice';
 import { createWorkspace, type Workspace } from '../../../../shared/types';
+import {
+  activatePaneTarget,
+  focusNotificationTarget,
+  type FocusTargetState,
+} from '../../../hooks/useNotificationListener';
 
 // #1086 Bug 1 — "returning to a local workspace after visiting a remote one
 // takes two clicks". `activeWorkspaceId` (workspaceSlice) and `activeRemoteKey`
@@ -144,6 +149,46 @@ describe('#1086 — a local selection always drops the remote mirror', () => {
   it('Ctrl+click into the multiview grid clears it', () => {
     store.getState().toggleMultiviewWorkspace(wsB.id);
     expect(store.getState().multiviewIds).toContain(wsB.id);
+    expect(store.getState().activeRemoteKey).toBeNull();
+  });
+
+  // The clear covers the WHOLE action, not just the join branch: un-picking a
+  // member also lands the user on the local grid/workspace, and a rule that
+  // fired on some Ctrl+clicks but not others is the drift this suite pins.
+  it('Ctrl+click OUT of the multiview grid clears it too', () => {
+    store.setState((s) => { s.multiviewIds = [wsA.id, wsB.id]; });
+    store.getState().toggleMultiviewWorkspace(wsB.id);
+    expect(store.getState().multiviewIds).toEqual([]);
+    expect(store.getState().activeRemoteKey).toBeNull();
+  });
+
+  // #1089 / #1138 landed the same invariant in the focus path; pin it here so
+  // the two guards are covered by this suite instead of assumed. Both cases are
+  // "the target workspace is ALREADY active and a mirror is on screen" — the
+  // shape a bare `!==` guard skips.
+  // The real store actions do the mutating; the handful of members this focus
+  // surface needs but the minimal store does not mount are stubbed, exactly as
+  // useNotificationListener's own fixtures do.
+  const focusState = () => ({
+    ...store.getState(),
+    setActiveSurface: vi.fn(),
+    setPaneNotificationRing: vi.fn(),
+    markRead: vi.fn(),
+    notifications: [],
+    zoomedPaneId: null,
+  }) as unknown as FocusTargetState;
+
+  it('a pane-row jump inside the already-active workspace clears it', () => {
+    const paneId = wsA.rootPane.id;
+    const surfaceId = (wsA.rootPane as { surfaces?: Array<{ id: string }> }).surfaces?.[0]?.id ?? 'sf-1';
+    activatePaneTarget(focusState, { workspaceId: wsA.id, paneId, surfaceId });
+    expect(store.getState().activeWorkspaceId).toBe(wsA.id);
+    expect(store.getState().activeRemoteKey).toBeNull();
+  });
+
+  it('an app-level jump to the already-active workspace clears it', () => {
+    const handled = focusNotificationTarget(focusState, { workspaceId: wsA.id });
+    expect(handled).toBe(true);
     expect(store.getState().activeRemoteKey).toBeNull();
   });
 });

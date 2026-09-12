@@ -23,6 +23,7 @@ import { applyRoleBinding, bindingEnforcesModel, type RoleBinding } from '../../
 import { ResumeInfoChipGate } from './ResumeInfoChip';
 import { tokenAttrs } from '../../themes';
 import PaneDecorations from '../../plugins/PaneDecorations';
+import { isRemoteMirrorVisible } from '../../stores/slices/remoteWorkspacesSlice';
 
 interface PaneProps {
   pane: PaneLeaf;
@@ -382,7 +383,7 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
   // hides the local area (WorkspaceCenter, display:none) without touching
   // activeWorkspaceId, so this pane still reports isActive while nobody can
   // see it — a question arriving then must stay unseen.
-  const remoteSelected = useStore((s) => s.activeRemoteKey !== null);
+  const remoteSelected = useStore(isRemoteMirrorVisible);
   useEffect(() => {
     if (isActive && !remoteSelected && activeSurfacePtyId && activePendingQuestion) {
       markSurfaceQuestionSeen(activeSurfacePtyId);

@@ -90,7 +90,7 @@ export function activateLocalWorkspace(
   },
   id: string,
 ): void {
-  state.activeWorkspaceId = id;
+  state.activeWorkspaceId = id; // guard-allow — the one legal assignment (see the guard test)
   clearColdParkEntry(state, id);
   clearRemoteSelection(state);
 }
@@ -644,11 +644,13 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
           const neighbor = i >= 0 ? (mvBefore[i + 1] ?? mvBefore[i - 1]) : undefined;
           next = neighbor && mvNow.includes(neighbor) ? neighbor : mvNow[0];
         }
-        state.activeWorkspaceId =
-          next ?? state.workspaces[Math.min(idx, state.workspaces.length - 1)].id;
-        // Cold-park: the newly-promoted workspace must not stay parked.
-        clearColdParkEntry(state, state.activeWorkspaceId);
-        clearRemoteSelection(state);
+        // Promotion is an activation like any other: the helper un-parks the
+        // promoted workspace and drops any remote mirror selection, so the user
+        // actually lands on it instead of on a mirror that stayed on top.
+        activateLocalWorkspace(
+          state,
+          next ?? state.workspaces[Math.min(idx, state.workspaces.length - 1)].id,
+        );
       }
       // D-teardown: removing a workspace (sidebar X, Ctrl+Shift+W, kill-pane)
       // unmounts the marked-region DOM the inspect overlay queries. setActiveWorkspace
