@@ -622,48 +622,35 @@ describe('DaemonSessionManager', () => {
     expect(managed[0].ptyProcess).toBeDefined();
   });
 
-  // v2.8.1 hotfix: actionable error at MAX_SESSIONS (Bug 1)
+  // v2.8.1 hotfix (Bug 1) + substrate 3.0: the cap is configurable and the
+  // error is actionable. One test, because the two are the same branch.
   //
-  // #1274: this used to spawn 200 mock sessions to reach the *default* cap.
-  // Those 200 sessions' garbage was collected during the NEXT test, which is
-  // why "honours a custom session.maxSessions" — a three-session test that
-  // takes 4 ms in isolation — was measured at 5.4-7.3 s against the 5 s
-  // per-test limit on macos-14. The ceiling is read from config (and the
-  // no-config path falls back to createDefaultConfig, asserted below), so a
+  // #1274: this used to be two tests, the first spawning 200 mock sessions to
+  // reach the *default* cap. Those 200 sessions' garbage was collected during
+  // the next one — which is why "honours a custom session.maxSessions", a
+  // three-session test that takes 4 ms in isolation, was measured at 5.4-7.3 s
+  // against the 5 s per-test limit on macos-14. The ceiling is read from
+  // config (and the no-config path falls back to createDefaultConfig), so a
   // small configured cap exercises the identical branch with 1/50th of the
-  // allocation.
-  it('throws an actionable error when the session cap is reached', () => {
+  // allocation, and the default 200 is pinned by an assertion instead of by
+  // 200 PTY spawns.
+  it('honours session.maxSessions and refuses past it with an actionable error', () => {
     const cfg = createDefaultConfig();
-    // The default ceiling is still 200 — pinned here so lowering it for the
-    // spawn loop below does not lose that contract.
     expect(cfg.session.maxSessions).toBe(200);
-    cfg.session.maxSessions = 4;
-    manager.setConfig(cfg);
-    for (let i = 0; i < 4; i++) {
-      manager.createSession({ id: `cap-${i}`, cmd: 'cmd.exe', cwd: '.' });
-    }
-    // The one past the cap must fail with a message the UI can show verbatim.
-    // The pre-v2.8.1 message was "Maximum session limit (50) reached" which
-    // surfaced as a generic "unknown error" toast in the renderer.
-    expect(() =>
-      manager.createSession({ id: 'cap-overflow', cmd: 'cmd.exe', cwd: '.' }),
-    ).toThrow(
-      /Cannot create new terminal: 4 active sessions already running\. Close some panes/,
-    );
-  });
-
-  // substrate 3.0: the session cap is configurable (was a 200 literal)
-  it('honours a custom session.maxSessions from setConfig', () => {
-    const cfg = createDefaultConfig();
     cfg.session.maxSessions = 3;
     manager.setConfig(cfg);
     for (let i = 0; i < 3; i++) {
       manager.createSession({ id: `cm-${i}`, cmd: 'cmd.exe', cwd: '.' });
     }
-    // The cap is now 3, not the default 200 — and the message echoes it.
+    // The cap is now 3, not the default 200 — and the message echoes it. It
+    // must be showable verbatim in the UI: the pre-v2.8.1 text was "Maximum
+    // session limit (50) reached", which surfaced as a generic "unknown error"
+    // toast in the renderer.
     expect(() =>
       manager.createSession({ id: 'cm-overflow', cmd: 'cmd.exe', cwd: '.' }),
-    ).toThrow(/Cannot create new terminal: 3 active sessions already running/);
+    ).toThrow(
+      /Cannot create new terminal: 3 active sessions already running\. Close some panes/,
+    );
   });
 
   // codex P2: DEAD tombstones must not occupy a cap slot

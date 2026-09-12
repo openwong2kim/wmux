@@ -45,9 +45,15 @@ const pageHtml = `<!doctype html>
   // another 80 ms before reading the screen, so a loaded CI runner whose
   // requestAnimationFrame callback landed later than that read a stale
   // viewport and failed on finalFrameVisible.
-  const nextRender = () => new Promise((resolve) => {
-    const sub = term.onRender(() => { sub.dispose(); resolve(); });
-  });
+  // Returns the promise AND its disposer, so a caller that loses a
+  // Promise.race can drop the listener instead of leaking one per round.
+  const nextRender = () => {
+    let sub;
+    const done = new Promise((resolve) => {
+      sub = term.onRender(() => { sub.dispose(); resolve(); });
+    });
+    return { done, dispose: () => sub.dispose() };
+  };
 
   const visibleText = () => {
     const buffer = term.buffer.active;
@@ -65,7 +71,19 @@ const pageHtml = `<!doctype html>
     const until = Date.now() + deadlineMs;
     while (!visibleText().includes(needle)) {
       if (Date.now() >= until) return false;
-      await Promise.race([nextRender(), new Promise((r) => setTimeout(r, 50))]);
+      const render = nextRender();
+      let timer;
+      try {
+        await Promise.race([
+          render.done,
+          new Promise((r) => { timer = setTimeout(r, 50); }),
+        ]);
+      } finally {
+        // Whichever side won, drop the other: ~200 rounds fit inside the
+        // deadline, and each one used to leave its onRender listener behind.
+        clearTimeout(timer);
+        render.dispose();
+      }
     }
     return true;
   };
@@ -74,7 +92,7 @@ const pageHtml = `<!doctype html>
     const warmedUp = nextRender();
     await write('\\x1b[?2026h' + frameBody(-1));
     await write('\\x1b[?2026l');
-    await warmedUp;
+    await warmedUp.done;
 
     let renders = 0;
     const sub = term.onRender(() => { renders++; });
@@ -114,6 +132,10 @@ it('paints completed synchronized frames while OpenCode-style output remains act
     browser = await chromium.launch({
       channel,
       args: ['--enable-unsafe-swiftshader'],
+      // Bound the one unbounded step. Everything after this — the probe's
+      // waits — is capped at 10 s, so a hung launch should fail here with a
+      // clear Playwright error rather than burn the whole file budget.
+      timeout: 60_000,
     });
     const page = await browser.newPage();
     await page.goto(origin);

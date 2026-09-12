@@ -115,10 +115,14 @@ function makeScenario(): {
 
 // #1274: every suite in this file builds temp git repos and shells out to the real
 // `git` binary (init/commit/worktree/diff/apply) per test, so runtime tracks
-// process-spawn cost rather than code speed. Locally the file is ~35 s with the
-// slowest test ~2.4 s; on a loaded windows-latest validate run it measured 10.2 s
-// and blew vitest's 5 s default on PRs that never touch this code. Explicit
-// generous per-test budget instead of raising the global timeout.
+// process-spawn cost rather than code speed — and the numbers below are not
+// comparable to each other, so state the conditions. Run alone and serially on
+// macOS the whole file is ~35 s (cold) / ~11 s (warm) and the slowest single
+// test is ~2.4 s cold. On windows-latest `validate`, where the file shares the
+// runner with parallel vitest workers and Git-for-Windows process spawn costs
+// an order of magnitude more, ONE test measured 10.2 s and blew vitest's 5 s
+// per-test default — on a PR that never touched this code. The budget is sized
+// for that CI-parallel worst case, not for the local serial figure.
 const GIT_PROCESS_TIMEOUT_MS = 30_000;
 
 describe('diff:read — 워킹트리 대조·untracked 합성·스냅샷', { timeout: GIT_PROCESS_TIMEOUT_MS }, () => {
