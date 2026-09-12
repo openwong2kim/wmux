@@ -63,6 +63,24 @@ export interface RpcRequest {
 export const WMUX_CLI_CLIENT_NAME = 'wmux-cli';
 
 /**
+ * Stable `clientName` reported by the agent lifecycle hook bridges under
+ * `integrations/<agent>/bin/` so the permission enforcer can grant them a
+ * curated one-method allowlist (src/main/mcp/hookBridge.ts) instead of the
+ * envelope-less legacy grandfather that #1111 closes.
+ *
+ * These bridges send `hooks.signal` and nothing else. `hooks.signal` is
+ * `wmux.internal`, which `permissionGrammar` forbids from ever appearing in a
+ * declaration, so the declare/approve flow can never grant it — a
+ * source-qualified, name-recognised lane is the only path, exactly as for the
+ * bundled MCP server (firstParty.ts) and the CLI (internalCli.ts).
+ *
+ * Defined in shared for the same reason as WMUX_CLI_CLIENT_NAME: the bridges
+ * are standalone .mjs scripts, not part of the main build, and must agree on
+ * the exact string without a cross-build import.
+ */
+export const WMUX_HOOK_BRIDGE_CLIENT_NAME = 'wmux-hook-bridge';
+
+/**
  * `clientName` values that must NEVER be promoted to first-party recognition
  * through `mcp.firstPartyClients` in `~/.wmux/config.json` (issue #636).
  * Compared case-insensitively. Enforced by `setConfiguredFirstPartyClients`
@@ -90,6 +108,7 @@ export const NON_IDENTIFYING_CLIENT_NAMES: ReadonlySet<string> = new Set<string>
   'client',
   'default',
   WMUX_CLI_CLIENT_NAME,
+  WMUX_HOOK_BRIDGE_CLIENT_NAME,
 ]);
 
 /**
@@ -319,7 +338,12 @@ export type RpcRejection =
       reason: 'identity-status';
       method: RpcMethod;
       capability: string;
-      status: 'denied' | 'unconfirmed';
+      // 'legacy' (#1111 Stage 3): the caller sent no clientName envelope, or
+      // its trust row is still the grandfathered `legacy` status. The lane
+      // that used to allow this closed on 2026-09-30; there is no approval
+      // path back into it — the caller must send a clientName and declare
+      // permissions.
+      status: 'denied' | 'unconfirmed' | 'legacy';
       pendingApproval?: { promptId: string };
     };
 
