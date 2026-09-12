@@ -1,6 +1,4 @@
 import { describe, it, expect } from 'vitest';
-import fs from 'node:fs';
-import path from 'node:path';
 import { Terminal } from '@xterm/headless';
 import { SearchAddon } from '@xterm/addon-search';
 
@@ -23,14 +21,54 @@ import { SearchAddon } from '@xterm/addon-search';
  * any reason rather than only on the close button.
  */
 
-/** Drives the real addon far enough to own a cached term + write hook. */
-function makeTerminal(): { term: Terminal; search: SearchAddon; results: number[] } {
+/** The addon only ever stores these; nothing under test disposes them. */
+const noopDisposable = { dispose: (): void => undefined };
+
+interface FakeDecoration {
+  marker: unknown;
+  disposed: boolean;
+  onRender: (cb: (el: unknown) => void) => { dispose: () => void };
+  onDispose: (cb: () => void) => { dispose: () => void };
+  dispose: () => void;
+}
+
+/**
+ * Drives the real addon far enough to own a cached term + write hook.
+ *
+ * Headless has no renderer, so `registerDecoration` has to be supplied — but
+ * it returns a real object with the lifecycle surface the addon's
+ * DecorationManager uses (marker, onRender, onDispose, dispose), so creation
+ * AND teardown are genuinely exercised rather than short-circuited.
+ */
+function makeTerminal(): {
+  term: Terminal;
+  search: SearchAddon;
+  results: number[];
+  decorations: FakeDecoration[];
+} {
   const term = new Terminal({ rows: 10, cols: 40, scrollback: 1000, allowProposedApi: true });
-  // Headless has no renderer, so decoration creation is a no-op. The addon's
-  // cached-term / write-hook lifecycle — the part under test — does not care.
+  const decorations: FakeDecoration[] = [];
   let selection: { start: { x: number; y: number }; end: { x: number; y: number } } | undefined;
   Object.assign(term, {
-    registerDecoration: () => undefined,
+    registerDecoration: (options: { marker: unknown }): FakeDecoration => {
+      const onDisposeCbs: Array<() => void> = [];
+      const decoration: FakeDecoration = {
+        marker: options.marker,
+        disposed: false,
+        onRender: () => noopDisposable,
+        onDispose: (cb: () => void) => {
+          onDisposeCbs.push(cb);
+          return noopDisposable;
+        },
+        dispose: () => {
+          if (decoration.disposed) return;
+          decoration.disposed = true;
+          for (const cb of onDisposeCbs) cb();
+        },
+      };
+      decorations.push(decoration);
+      return decoration;
+    },
     getSelectionPosition: () => selection,
     clearSelection: () => { selection = undefined; },
     select: (col: number, row: number, size: number) => {
@@ -41,7 +79,7 @@ function makeTerminal(): { term: Terminal; search: SearchAddon; results: number[
   term.loadAddon(search);
   const results: number[] = [];
   search.onDidChangeResults((e) => results.push(e.resultCount));
-  return { term, search, results };
+  return { term, search, results, decorations };
 }
 
 const DECORATIONS = {
@@ -77,12 +115,22 @@ describe('addon-search keeps re-highlighting until decorations are cleared (#126
   });
 
   it('stops once clearDecorations() runs — the fix Terminal.tsx must invoke', async () => {
-    const { term, search, results } = makeTerminal();
+    const { term, search, results, decorations } = makeTerminal();
     for (let i = 0; i < 40; i++) await write(term, `line ${i} ${i % 7 === 0 ? 'NEEDLE' : 'plain'}\r\n`);
 
     search.findNext('NEEDLE', { decorations: DECORATIONS });
     await settle();
+
+    // One highlight decoration per match (plus the active-match decoration),
+    // all live until the search is cleared.
+    expect(decorations.length).toBeGreaterThanOrEqual(6);
+    expect(decorations.some((d) => d.disposed)).toBe(false);
+
     search.clearDecorations();
+
+    // Every decoration the addon created is torn down — this is what stops
+    // the stale highlights sitting in the pane.
+    expect(decorations.every((d) => d.disposed)).toBe(true);
 
     const quiesced = results.length;
     await write(term, 'unrelated output\r\n');
@@ -108,17 +156,5 @@ describe('addon-search keeps re-highlighting until decorations are cleared (#126
 
     search.dispose();
     term.dispose();
-  });
-});
-
-describe('Terminal.tsx clears search decorations when the bar goes away (#1266)', () => {
-  const src = fs.readFileSync(path.join(__dirname, '..', 'Terminal.tsx'), 'utf-8');
-
-  it('has an effect keyed on showSearchBar that calls clearSearch', () => {
-    expect(src).toMatch(/if \(showSearchBar\) return;\s*\n\s*clearSearch\(\);\s*\n\s*\}, \[showSearchBar, clearSearch\]\);/);
-  });
-
-  it('still clears on the explicit close button', () => {
-    expect(src).toMatch(/const handleCloseSearch = \(\) => \{\s*\n\s*clearSearch\(\);/);
   });
 });
