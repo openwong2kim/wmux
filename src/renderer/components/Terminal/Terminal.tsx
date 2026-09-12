@@ -9,6 +9,7 @@ import { pasteClipboardImage } from '../../utils/imagePaste';
 import { openTerminalUrl } from '../../utils/browserPaneActions';
 import { terminalFontFamilyCss } from '../../utils/terminalFont';
 import { isFileDrag } from '../../../shared/dragDrop';
+import { findLeafBySurfaceId } from '../../../shared/paneUtils';
 import ViCopyMode from './ViCopyMode';
 import SearchBar from './SearchBar';
 import BookmarkIndicator from './BookmarkIndicator';
@@ -245,12 +246,41 @@ export default function TerminalComponent({ ptyId: externalPtyId, shell, cwd, on
   // snapshot): the ref is populated after this render ran, so a snapshot read
   // here sees null until an unrelated re-render happens.
   const showViCopyMode = viCopyModeActive && isActive && terminalInstance !== null;
-  const showSearchBar = searchBarVisible && isActive;
+  // #1266 — `isActive` means "selected tab INSIDE this pane", not "this pane
+  // has focus". `searchBarVisible` is a single global flag, so gating on
+  // `isActive` alone put a search bar in every pane at once and meant the bar
+  // never unmounted when the user moved to another pane: the abandoned pane
+  // kept its cached term and went on re-creating highlight decorations on
+  // every later chunk of output, at coordinates that no longer matched
+  // anything. Gate on real pane focus so exactly one bar is up and leaving a
+  // pane genuinely ends its search.
+  const isPaneFocused = useStore((s) => {
+    if (!ownerSurfaceId) return true;
+    const ws = s.workspaces.find((w) => w.id === (ownerWorkspaceId ?? s.activeWorkspaceId));
+    if (!ws) return true;
+    const leaf = findLeafBySurfaceId(ws.rootPane, ownerSurfaceId);
+    // Surfaces we cannot place (stashed panes, transitional trees) keep the
+    // previous behaviour rather than losing their search bar.
+    return leaf ? leaf.id === ws.activePaneId : true;
+  });
+  const showSearchBar = searchBarVisible && isActive && isPaneFocused;
 
   const handleCloseSearch = () => {
     clearSearch();
     setSearchBarVisible(false);
   };
+
+  // #1266 — the bar can go away without handleCloseSearch ever running:
+  // toggling it off globally, switching to another surface in this pane, or
+  // (with the focus gate above) moving to another pane. In every one of
+  // those the addon would otherwise keep its cached term and its
+  // onWriteParsed hook, re-creating highlight decorations on every later
+  // chunk of output with no UI left to dismiss them. Tear them down whenever
+  // the bar goes away, for any reason.
+  useEffect(() => {
+    if (showSearchBar) return;
+    clearSearch();
+  }, [showSearchBar, clearSearch]);
 
   const handleCopy = useCallback(() => {
     if (ctxMenu?.selectedText) {
