@@ -11,7 +11,7 @@ import { EmptyLeafFunnel } from './EmptyLeafFunnel';
 import { selectProjectCwdSignature } from '../../stores/selectors/appLayout';
 import { selectInboxOwnsApprovals } from '../../stores/selectors/approvalInbox';
 import { shouldShowInstallError, shouldReannounceAfterError, truncateReason } from './updateNoticePolicy';
-import { shouldShowAutoUpdatePrompt, shouldStartOnboarding } from './firstBootSequence';
+import { shouldShowAutoUpdatePrompt, shouldShowCheatSheet, shouldStartOnboarding } from './firstBootSequence';
 import { registerSessionSaver, saveSessionNow } from '../../utils/sessionSaveBridge';
 import { resolveReconcileRebind } from '../../hooks/resolveReconcileRebind';
 import { getLeafPanes, getWorkspaceLeafPanes } from '../../../shared/paneUtils';
@@ -890,6 +890,12 @@ export default function AppLayout() {
   const [isDragging, setIsDragging] = useState(false);
   const dragCounterRef = useRef(0);
   const sessionLoadedRef = useRef(false);
+  // #1276: render-visible mirror of sessionLoadedRef, so the onboarding-start
+  // effect re-runs when the session lands and the cheat-sheet gate reads the
+  // same input. sessionLoadFailed settles the gate when session.load() throws
+  // (the ref intentionally stays false then — see the save guards below).
+  const [sessionLoaded, setSessionLoaded] = useState(false);
+  const [sessionLoadFailed, setSessionLoadFailed] = useState(false);
   // Fix 0: monotonic startup generation counter. Each mount-effect run
   // bumps it; the startup catch only fires clearAllPtyState if its own
   // gen still matches the current ref. Prevents a stale startup from
@@ -1266,6 +1272,7 @@ export default function AppLayout() {
         const saved = await window.electronAPI.session.load();
         if (!saved) {
           sessionLoadedRef.current = true;
+          setSessionLoaded(true);
           // First ever launch — ask about auto-update
           setShowAutoUpdatePrompt(true);
           return;
@@ -1296,6 +1303,7 @@ export default function AppLayout() {
         }
 
         sessionLoadedRef.current = true;
+        setSessionLoaded(true);
 
         if (isFirstAutoUpdateChoice) {
           setShowAutoUpdatePrompt(true);
@@ -1361,6 +1369,7 @@ export default function AppLayout() {
         // consistent blank slate. Generation check prevents a stale startup
         // from wiping state a fresher startup already reconciled correctly.
         console.warn('[AppLayout] startup reconcile failed:', err);
+        if (!sessionLoadedRef.current) setSessionLoadFailed(true);
         abortCtl?.abort();
         if (gen === startupGenRef.current) {
           clearAllPtyState();
@@ -1452,7 +1461,7 @@ export default function AppLayout() {
   // consent → spotlight.
   useEffect(() => {
     if (shouldStartOnboarding({
-      sessionLoaded: sessionLoadedRef.current,
+      sessionLoaded,
       autoUpdatePromptPending: showAutoUpdatePrompt,
       firstRunCompleted,
       onboardingCompleted,
@@ -1460,7 +1469,7 @@ export default function AppLayout() {
     })) {
       startOnboarding();
     }
-  }, [firstRunCompleted, onboardingCompleted, workspaceCount, showAutoUpdatePrompt, startOnboarding]);
+  }, [sessionLoaded, firstRunCompleted, onboardingCompleted, workspaceCount, showAutoUpdatePrompt, startOnboarding]);
 
   // Re-reconcile when daemon connects late (respawn/reconnect after the
   // startup reconcile already ran). Gating + abort/timeout/preserve logic
@@ -1785,8 +1794,8 @@ export default function AppLayout() {
 
   // Wizard close handler (T8a). Mirrors firstRunCompleted into uiSlice (main
   // already wrote the marker via firstRun:complete or :dismiss). The cheat
-  // sheet auto-mounts via the derived condition below as soon as
-  // firstRunCompleted flips true (D11) — no separate reveal flag needed.
+  // sheet auto-mounts via the derived condition below once firstRunCompleted
+  // flips true (D11) and the consent prompt / spotlight have cleared (#1276).
   const handleWizardClose = useCallback(() => {
     setShowFirstRunWizard(null);
     setFirstRunCompleted(true);
@@ -2011,7 +2020,21 @@ export default function AppLayout() {
           the sheet. The component itself is a no-op when dismissed (D11).
           `cheatSheetForceShown` (set by the `?` prefix action) bypasses the
           permanent dismissal so the cheat sheet can always be pulled back up. */}
-      {firstRunCompleted && (!cheatSheetDismissed || cheatSheetForceShown) && <KeyboardCheatSheet />}
+      {/* #1276: waits its turn after the consent prompt and the spotlight tour. */}
+      {shouldShowCheatSheet({
+        firstRunCompleted,
+        sessionSettled: sessionLoaded || sessionLoadFailed,
+        dismissed: cheatSheetDismissed,
+        forceShown: cheatSheetForceShown,
+        autoUpdatePromptPending: showAutoUpdatePrompt,
+        onboardingActiveOrStarting: onboardingActive || shouldStartOnboarding({
+          sessionLoaded,
+          autoUpdatePromptPending: showAutoUpdatePrompt,
+          firstRunCompleted,
+          onboardingCompleted,
+          workspaceCount,
+        }),
+      }) && <KeyboardCheatSheet />}
 
       {companyViewVisible && (
         <CompanyView onClose={() => setCompanyViewVisible(false)} />

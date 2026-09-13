@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useCallback } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, useCallback } from 'react';
 
 export interface TargetRect {
   top: number;
@@ -18,69 +18,86 @@ interface OnboardingHighlightProps {
 const PADDING = 8;
 const TOOLTIP_GAP = 12;
 const TOOLTIP_WIDTH = 320;
+/** Minimum distance between the card and the viewport edge. */
+export const VIEWPORT_MARGIN = 16;
+/** Card height used until the rendered card has been measured. */
+const ESTIMATED_CARD_HEIGHT = 180;
 
-/**
- * Resolves the best placement for the tooltip given available viewport space.
- */
-function resolvePlacement(
-  rect: TargetRect,
-  preferred: 'top' | 'bottom' | 'left' | 'right' | 'auto',
-): TooltipPlacement {
-  if (preferred !== 'auto') return preferred;
-
-  const spaceBelow = window.innerHeight - (rect.top + rect.height);
-  const spaceAbove = rect.top;
-  const spaceRight = window.innerWidth - (rect.left + rect.width);
-  const spaceLeft = rect.left;
-
-  // Prefer below, then above, then right, then left
-  if (spaceBelow >= 160) return 'bottom';
-  if (spaceAbove >= 160) return 'top';
-  if (spaceRight >= TOOLTIP_WIDTH + TOOLTIP_GAP) return 'right';
-  if (spaceLeft >= TOOLTIP_WIDTH + TOOLTIP_GAP) return 'left';
-  return 'bottom';
+export interface ViewportSize {
+  width: number;
+  height: number;
 }
 
+export interface TooltipLayout {
+  placement: TooltipPlacement;
+  style: React.CSSProperties & { top: number; left: number; width: number; maxHeight: number };
+}
+
+const AUTO_ORDER: TooltipPlacement[] = ['bottom', 'top', 'right', 'left'];
+
 /**
- * Computes CSS properties for positioning the tooltip near the target element.
+ * #1275 — resolves the placement and a viewport-clamped position for the
+ * tooltip card. The preferred side (or the auto order) wins when the card
+ * fits there; otherwise the side with the most room is used. Either way the
+ * card is clamped inside the viewport so Skip / Next stay reachable — the old
+ * resolver fell back to 'bottom' unclamped and pushed the card off-screen on
+ * small windows.
  */
-function computeTooltipStyle(
+export function computeTooltipLayout(
   rect: TargetRect,
-  placement: TooltipPlacement,
-): React.CSSProperties {
+  preferred: TooltipPlacement | 'auto',
+  viewport: ViewportSize,
+  cardHeight: number,
+): TooltipLayout {
+  const width = Math.max(0, Math.min(TOOLTIP_WIDTH, viewport.width - VIEWPORT_MARGIN * 2));
+  const maxHeight = Math.max(0, viewport.height - VIEWPORT_MARGIN * 2);
+  const height = Math.min(cardHeight, maxHeight);
+  const rectRight = rect.left + rect.width;
+  const rectBottom = rect.top + rect.height;
+
+  // Room left over on each side once the card (plus gap and margin) is placed there.
+  const slack: Record<TooltipPlacement, number> = {
+    bottom: viewport.height - rectBottom - (PADDING + TOOLTIP_GAP + height + VIEWPORT_MARGIN),
+    top: rect.top - (TOOLTIP_GAP + height + VIEWPORT_MARGIN),
+    right: viewport.width - rectRight - (PADDING + TOOLTIP_GAP + width + VIEWPORT_MARGIN),
+    left: rect.left - (TOOLTIP_GAP + width + VIEWPORT_MARGIN),
+  };
+
+  const order = preferred === 'auto' ? AUTO_ORDER : [preferred, ...AUTO_ORDER.filter((p) => p !== preferred)];
+  const placement = order.find((p) => slack[p] >= 0)
+    ?? order.reduce((best, p) => (slack[p] > slack[best] ? p : best));
+
   const centerX = rect.left + rect.width / 2;
   const centerY = rect.top + rect.height / 2;
-
+  let top: number;
+  let left: number;
   switch (placement) {
     case 'bottom':
-      return {
-        position: 'fixed',
-        top: rect.top + rect.height + PADDING + TOOLTIP_GAP,
-        left: Math.max(16, Math.min(centerX - TOOLTIP_WIDTH / 2, window.innerWidth - TOOLTIP_WIDTH - 16)),
-        width: TOOLTIP_WIDTH,
-      };
+      top = rectBottom + PADDING + TOOLTIP_GAP;
+      left = centerX - width / 2;
+      break;
     case 'top':
-      return {
-        position: 'fixed',
-        bottom: window.innerHeight - rect.top + TOOLTIP_GAP,
-        left: Math.max(16, Math.min(centerX - TOOLTIP_WIDTH / 2, window.innerWidth - TOOLTIP_WIDTH - 16)),
-        width: TOOLTIP_WIDTH,
-      };
+      top = rect.top - TOOLTIP_GAP - height;
+      left = centerX - width / 2;
+      break;
     case 'right':
-      return {
-        position: 'fixed',
-        top: Math.max(16, centerY - 40),
-        left: rect.left + rect.width + PADDING + TOOLTIP_GAP,
-        width: TOOLTIP_WIDTH,
-      };
+      top = centerY - 40;
+      left = rectRight + PADDING + TOOLTIP_GAP;
+      break;
     case 'left':
-      return {
-        position: 'fixed',
-        top: Math.max(16, centerY - 40),
-        right: window.innerWidth - rect.left + TOOLTIP_GAP,
-        width: TOOLTIP_WIDTH,
-      };
+      top = centerY - 40;
+      left = rect.left - TOOLTIP_GAP - width;
+      break;
   }
+
+  const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(value, max));
+  top = clamp(top, VIEWPORT_MARGIN, Math.max(VIEWPORT_MARGIN, viewport.height - VIEWPORT_MARGIN - height));
+  left = clamp(left, VIEWPORT_MARGIN, Math.max(VIEWPORT_MARGIN, viewport.width - VIEWPORT_MARGIN - width));
+
+  return {
+    placement,
+    style: { position: 'fixed', top, left, width, maxHeight, overflowY: 'auto' },
+  };
 }
 
 /**
@@ -98,6 +115,8 @@ export default function OnboardingHighlight({
   const [rect, setRect] = useState<TargetRect | null>(null);
   const observerRef = useRef<ResizeObserver | null>(null);
   const rafRef = useRef<number>(0);
+  const tooltipRef = useRef<HTMLDivElement>(null);
+  const [cardHeight, setCardHeight] = useState(ESTIMATED_CARD_HEIGHT);
 
   const measure = useCallback(() => {
     const el = document.querySelector(targetSelector);
@@ -141,10 +160,24 @@ export default function OnboardingHighlight({
     };
   }, [targetSelector, measure]);
 
+  // Measure the rendered card so the viewport clamp uses its real height
+  // (scrollHeight stays the content height even when maxHeight caps the box).
+  // Re-measured only when the target / step changes, so a placement flip
+  // near zero slack cannot feed back into another measurement.
+  useLayoutEffect(() => {
+    const measured = tooltipRef.current?.scrollHeight;
+    if (measured && Math.abs(measured - cardHeight) > 1) setCardHeight(measured);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- cardHeight is the output, not a trigger
+  }, [rect, targetSelector]);
+
   if (!rect) return null;
 
-  const placement = resolvePlacement(rect, preferredPosition);
-  const tooltipStyle = computeTooltipStyle(rect, placement);
+  const { placement, style: tooltipStyle } = computeTooltipLayout(
+    rect,
+    preferredPosition,
+    { width: window.innerWidth, height: window.innerHeight },
+    cardHeight,
+  );
 
   // Spotlight box-shadow: a huge spread that covers the entire viewport,
   // with an inset "hole" matching the target rect.
@@ -168,7 +201,7 @@ export default function OnboardingHighlight({
         style={spotlightStyle}
         data-testid="onboarding-spotlight"
       />
-      <div style={{ ...tooltipStyle, zIndex: 10001 }} data-testid="onboarding-tooltip">
+      <div ref={tooltipRef} style={{ ...tooltipStyle, zIndex: 10001 }} data-testid="onboarding-tooltip">
         {children(placement, tooltipStyle)}
       </div>
     </>
