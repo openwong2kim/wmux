@@ -1,5 +1,119 @@
 ## [Unreleased]
 
+## [3.54.0] — 2026-09-13
+
+### Added
+
+- **Rich Input's shortcut can be switched off.** Settings → Shortcuts now
+  lists Ctrl+G with the same toggle the other built-ins have. Turn it off and
+  Ctrl+G goes to the pane instead — the agent's external editor, readline's
+  abort — with no other binding changed.
+
+### Changed
+
+- **Only the focused pane shows the search bar, and leaving a pane ends its
+  search.** Previously every pane showed one simultaneously. Moving focus
+  elsewhere now drops that pane's highlights and the addon's cached term;
+  reopening the bar starts from an empty query (the query box was already
+  per-mount state and never survived a pane switch).
+
+### Fixed
+
+- **Search highlights can no longer be stranded in a pane (#1266).** Closing
+  the search bar left every highlight behind with no way to dismiss them —
+  the "artifacts frozen into the pane" in the report. Worse, the bar was
+  shown per *tab* rather than per focused *pane*, so every pane rendered its
+  own bar and moving to another pane never ended the abandoned pane's
+  search: `@xterm/addon-search` treats a search as live until it is
+  explicitly cleared and re-applies its highlights after every subsequent
+  chunk of output, so that pane kept re-highlighting a term nobody was
+  searching for, at coordinates that no longer matched anything — orange
+  marks drifting over neighbouring panes. The search bar now belongs to the
+  focused pane, and its highlights are cleared whenever it goes away.
+
+- **Adopting an orphan session, or Ctrl+clicking the multiview grid, no longer
+  leaves a remote mirror covering the local view.** A remote mirror and the
+  local workspace are two independent selections and the mirror wins the tie, so
+  these two actions changed the local view underneath a mirror that kept
+  covering it — the click looked swallowed and only a second, different
+  selection got you back. Local activation now runs through one place that
+  always drops the mirror selection (#1086).
+
+- Windows: in-app auto-update no longer aborts with a generic "interrupted
+  before it could report an outcome" message. The install waiter was spawned as
+  a child of the app, which on Windows put it inside the app's job object — so
+  it was killed the instant wmux quit, before it could start `Setup.exe`. It is
+  now registered as an on-demand Task Scheduler entry and started by the
+  scheduler, outside the app's job object and outside any process tree the
+  teardown can reach. ([#1264](https://github.com/openwong2kim/wmux/issues/1264))
+
+- Windows: the update install waiter now runs on battery power and is not
+  stopped when a laptop is unplugged mid-install, and it keeps the elevation the
+  app itself was running with.
+
+- Windows: when the install waiter is killed mid-flight, the message on the next
+  start now says the waiter started and was stopped, rather than reading the
+  same as a refused install.
+
+- Terminal rendering no longer risks corruption on every alt-tab on Windows. The shared WebGL glyph atlas rebuild meant for sleep→wake was firing on each window refocus (Chromium's occlusion tracker flips page visibility there), wiping and repacking the atlas mid-stream. It now runs only when the system actually resumed, latched one-shot so a slow unlock still recovers and an alt-tab never does.
+
+- **Ctrl+G opens Rich Input and nothing else.** Since 3.52.0 it did two things
+  at once: the pane got a `^G` (or the agent CLI opened your external editor)
+  *and* the Rich Input popover appeared. Ctrl+Shift+G — which clears a
+  multiview — opened Rich Input as well, because the binding accepted any
+  combination that included Ctrl and the letter G. It now matches exactly, and
+  when it fires the key is consumed instead of being handed to the pane too.
+  Holding the key toggles once rather than repeating, and it stays out of the
+  way while an IME composition is open. In the floating pane (Ctrl+`) and the
+  Deck brain terminal, where Rich Input does not apply, Ctrl+G remains a plain
+  `^G` and no longer opens a popover over whichever pane happens to be active. On macOS the binding is ⌘G, and Ctrl+G stays a plain readline byte.
+
+- **OSC 8 links now open in remote mirror panes.** A mirrored pane built its
+  terminal without the link handler local panes use, so clicking a formatted
+  hyperlink and confirming the prompt did nothing — the fallback tried to open
+  a blank window, which wmux blocks. Mirror panes now ask for confirmation and
+  open the link in your system browser. (#1293)
+
+- **"Attach remote workspace…" is reachable with the sidebar collapsed.** When
+  the sidebar was hidden (Ctrl+B), the **+** at the top of the 48px rail made a
+  blank workspace straight away, and the titlebar **+** that opens the
+  new-workspace menu was clipped out of sight. With no way to open that menu,
+  there was no way to attach a remote workspace either. The rail's **+** now
+  opens the same menu beside the rail, with browse folder, empty workspace,
+  layout presets and "Attach remote workspace…". Ctrl+N still creates a
+  workspace directly. (#1294)
+
+- **The keyboard cheat sheet no longer hides behind the first-boot consent
+  prompt.** On a fresh install, closing the setup wizard mounted the shortcuts
+  panel at the same moment as the auto-update question, underneath its
+  backdrop, where its 30-second countdown ran out unseen. It now waits its
+  turn: wizard, then the auto-update question, then the spotlight tour, then
+  the cheat sheet. Opening it yourself with `?` is unaffected. (#1295)
+
+- **The onboarding tour card stays on screen in small windows.** When the
+  highlighted area left no room beside it, the card was placed below it anyway
+  and could land off-screen (for example at 725×800), leaving Skip and Next
+  unreachable. The card now moves to the side with the most room and is kept
+  inside the window, scrolling if the window is shorter than the card. (#1295)
+
+### Security
+
+- **The OSC 8 confirmation shows the real destination.** The prompt used to
+  print the link exactly as the program in the terminal sent it, so hidden
+  right-to-left control characters, a look-alike international domain, or a
+  fake name placed before an `@` (`https://google.com@evil.com/`) could make
+  one site read as another. The address is now normalized before it is shown —
+  international domains appear in their `xn--` form and invisible or control
+  characters are removed — and the link opens exactly the address the prompt
+  displayed. Addresses that do not parse, or that carry a user name or
+  password, are refused. (#1293)
+
+- **Remote panes cannot aim links at this machine.** A link from a remote
+  mirror pane never opens in a local built-in browser pane, and links to
+  `localhost`, `127.0.0.0/8`, `[::1]` or `0.0.0.0` are refused there: on the
+  remote side those name the remote host, and opening them locally would send
+  requests to services on your own computer. (#1293)
+
 ## [3.53.0] — 2026-09-12
 
 ### Added
