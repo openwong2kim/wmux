@@ -162,11 +162,13 @@ export default function OnboardingHighlight({
 
   // Measure the rendered card so the viewport clamp uses its real height
   // (scrollHeight stays the content height even when maxHeight caps the box).
-  // Re-runs every render; the equality guard stops the update loop.
+  // Re-measured only when the target / step changes, so a placement flip
+  // near zero slack cannot feed back into another measurement.
   useLayoutEffect(() => {
     const measured = tooltipRef.current?.scrollHeight;
     if (measured && Math.abs(measured - cardHeight) > 1) setCardHeight(measured);
-  });
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- cardHeight is the output, not a trigger
+  }, [rect, targetSelector]);
 
   if (!rect) return null;
 
