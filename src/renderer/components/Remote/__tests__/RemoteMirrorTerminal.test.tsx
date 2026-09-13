@@ -201,6 +201,33 @@ describe('RemoteMirrorTerminal', () => {
     unmount();
   });
 
+  // #1271: without a linkHandler xterm falls back to window.open(about:blank),
+  // which Electron denies, so a confirmed OSC 8 click did nothing.
+  it('constructs the terminal with the OSC 8 link handler that opens the URL', () => {
+    const openExternal = vi.fn(() => Promise.resolve());
+    (window as unknown as { electronAPI: { shell: unknown } }).electronAPI.shell = { openExternal };
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    const openSpy = vi.spyOn(window, 'open').mockReturnValue(null);
+    useStore.setState({ browserBackend: 'external' });
+    const { unmount } = render(<RemoteMirrorTerminal attachId="a1" />);
+    try {
+      const handler = termInstances[0].ctorOptions.linkHandler as {
+        allowNonHttpProtocols?: boolean;
+        activate: (event: MouseEvent, uri: string, range: unknown) => void;
+      };
+      expect(handler).toBeDefined();
+      expect(handler.allowNonHttpProtocols).toBe(false);
+      handler.activate(new MouseEvent('click'), 'https://example.com/report', {});
+      expect(confirmSpy).toHaveBeenCalledOnce();
+      expect(openExternal).toHaveBeenCalledExactlyOnceWith('https://example.com/report');
+      expect(openSpy).not.toHaveBeenCalled();
+    } finally {
+      unmount();
+      confirmSpy.mockRestore();
+      openSpy.mockRestore();
+    }
+  });
+
   it('ignores meta/data events for a different attachId', () => {
     const { unmount } = render(<RemoteMirrorTerminal attachId="a1" />);
     const term = termInstances[0];
