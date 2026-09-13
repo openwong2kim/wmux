@@ -44,13 +44,23 @@ export function shouldStartOnboarding(gate: OnboardingStartGate): boolean {
 
 export interface CheatSheetGate {
   firstRunCompleted: boolean;
+  /**
+   * session.load() has resolved or failed. Until then the spotlight's
+   * workspaceCount / onboardingCompleted inputs are not final, and mounting
+   * the sheet early would unmount it again (restarting its countdown).
+   */
+  sessionSettled: boolean;
   /** Permanent "Don't show again" opt-out. */
   dismissed: boolean;
   /** User-initiated open (the `?` prefix action) — never held back. */
   forceShown: boolean;
   /** Pending consent — the prompt's modal backdrop would cover the sheet. */
   autoUpdatePromptPending: boolean;
-  /** The spotlight tour is running, or is about to start (shouldStartOnboarding). */
+  /**
+   * The spotlight tour is running, or shouldStartOnboarding() is true — fed
+   * the same inputs as the start effect, so "starting" always becomes
+   * "running" (or false) rather than hiding the sheet indefinitely.
+   */
   onboardingActiveOrStarting: boolean;
 }
 
@@ -64,5 +74,6 @@ export function shouldShowCheatSheet(gate: CheatSheetGate): boolean {
   if (!gate.firstRunCompleted) return false;
   if (gate.forceShown) return true;
   if (gate.dismissed) return false;
+  if (!gate.sessionSettled) return false;
   return !gate.autoUpdatePromptPending && !gate.onboardingActiveOrStarting;
 }
