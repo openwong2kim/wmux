@@ -14,6 +14,7 @@ import { createRoot } from 'react-dom/client';
 import { act } from 'react';
 import RemoteMirrorTerminal from '../RemoteMirrorTerminal';
 import { useStore } from '../../../stores';
+import { getLeafPanes } from '../../../../shared/paneUtils';
 
 // One shared log so "before open()" is an assertion about the same clock.
 // Two independent counters would compare cleanly and prove nothing.
@@ -203,29 +204,64 @@ describe('RemoteMirrorTerminal', () => {
 
   // #1271: without a linkHandler xterm falls back to window.open(about:blank),
   // which Electron denies, so a confirmed OSC 8 click did nothing.
-  it('constructs the terminal with the OSC 8 link handler that opens the URL', () => {
-    const openExternal = vi.fn(() => Promise.resolve());
-    (window as unknown as { electronAPI: { shell: unknown } }).electronAPI.shell = { openExternal };
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
-    const openSpy = vi.spyOn(window, 'open').mockReturnValue(null);
-    useStore.setState({ browserBackend: 'external' });
-    const { unmount } = render(<RemoteMirrorTerminal attachId="a1" />);
-    try {
-      const handler = termInstances[0].ctorOptions.linkHandler as {
-        allowNonHttpProtocols?: boolean;
-        activate: (event: MouseEvent, uri: string, range: unknown) => void;
-      };
-      expect(handler).toBeDefined();
+  describe('OSC 8 link handler', () => {
+    type LinkHandler = {
+      allowNonHttpProtocols?: boolean;
+      activate: (event: MouseEvent, uri: string, range: unknown) => void;
+    };
+    const browserSurfaceCount = () => useStore.getState().workspaces.flatMap((ws) =>
+      getLeafPanes(ws.rootPane).flatMap((pane) => pane.surfaces)
+        .filter((surface) => surface.surfaceType === 'browser')).length;
+
+    let openExternal: ReturnType<typeof vi.fn>;
+    let prevBackend: ReturnType<typeof useStore.getState>['browserBackend'];
+    beforeEach(() => {
+      openExternal = vi.fn(() => Promise.resolve());
+      (window as unknown as { electronAPI: { shell: unknown } }).electronAPI.shell = { openExternal };
+      vi.spyOn(window, 'confirm').mockReturnValue(true);
+      vi.spyOn(window, 'open').mockReturnValue(null);
+      // Builtin is the mode where a local pane WOULD embed localhost, so it is
+      // the one that proves the mirror never does.
+      prevBackend = useStore.getState().browserBackend;
+      useStore.setState({ browserBackend: 'builtin' });
+    });
+    afterEach(() => {
+      useStore.setState({ browserBackend: prevBackend });
+      vi.restoreAllMocks();
+    });
+
+    function mountHandler(): { handler: LinkHandler; unmount: () => void } {
+      const { unmount } = render(<RemoteMirrorTerminal attachId="a1" />);
+      return { handler: termInstances[0].ctorOptions.linkHandler as LinkHandler, unmount };
+    }
+
+    it('opens a confirmed web link in the system browser, never a local pane', () => {
+      const { handler, unmount } = mountHandler();
+      const panesBefore = browserSurfaceCount();
       expect(handler.allowNonHttpProtocols).toBe(false);
       handler.activate(new MouseEvent('click'), 'https://example.com/report', {});
-      expect(confirmSpy).toHaveBeenCalledOnce();
+      expect(window.confirm).toHaveBeenCalledOnce();
       expect(openExternal).toHaveBeenCalledExactlyOnceWith('https://example.com/report');
-      expect(openSpy).not.toHaveBeenCalled();
-    } finally {
+      expect(window.open).not.toHaveBeenCalled();
+      expect(browserSurfaceCount()).toBe(panesBefore);
       unmount();
-      confirmSpy.mockRestore();
-      openSpy.mockRestore();
-    }
+    });
+
+    it.each([
+      'http://localhost:3000/admin',
+      'http://127.0.0.1:8080/',
+      'http://[::1]:5000/',
+      'http://0.0.0.0:9000/',
+    ])('refuses remote loopback destination %s', (url) => {
+      const { handler, unmount } = mountHandler();
+      const panesBefore = browserSurfaceCount();
+      handler.activate(new MouseEvent('click', { ctrlKey: true }), url, {});
+      expect(window.confirm).not.toHaveBeenCalled();
+      expect(openExternal).not.toHaveBeenCalled();
+      expect(window.open).not.toHaveBeenCalled();
+      expect(browserSurfaceCount()).toBe(panesBefore);
+      unmount();
+    });
   });
 
   it('ignores meta/data events for a different attachId', () => {

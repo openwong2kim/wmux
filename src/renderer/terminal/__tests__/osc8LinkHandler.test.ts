@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Terminal, type ILink, type ILinkProvider } from '@xterm/xterm';
-import { createOsc8LinkHandler, normalizeOsc8Uri } from '../osc8LinkHandler';
+import { createOsc8LinkHandler, isLoopbackHref, normalizeOsc8Uri } from '../osc8LinkHandler';
 import { openTerminalUrl } from '../../utils/browserPaneActions';
 import { useStore } from '../../stores';
 import { getLeafPanes } from '../../../shared/paneUtils';
@@ -96,6 +96,31 @@ describe('OSC 8 destination normalization (#1272)', () => {
       expect(normalizeOsc8Uri(raw)).toBeNull();
     });
 
+  it.each([
+    'https://google.com@evil.com/',
+    'https://google.com:443@evil.com/login',
+    'https://user:pass@example.com/',
+    'https://:secret@example.com/',
+  ])('rejects userinfo that can disguise the host: %j', (raw) => {
+    expect(normalizeOsc8Uri(raw)).toBeNull();
+  });
+
+  it('does not prompt for a userinfo-spoofed destination', () => {
+    const activate = vi.fn();
+    createOsc8LinkHandler(activate).activate(new MouseEvent('click'), 'https://google.com@evil.com/', undefined as never);
+    expect(window.confirm).not.toHaveBeenCalled();
+    expect(activate).not.toHaveBeenCalled();
+  });
+
+  it('skips the prompt and activation when the caller disallows the href', () => {
+    const activate = vi.fn();
+    const isAllowed = vi.fn(() => false);
+    createOsc8LinkHandler(activate, isAllowed).activate(new MouseEvent('click'), 'https://аpple.com/', undefined as never);
+    expect(isAllowed).toHaveBeenCalledExactlyOnceWith('https://xn--pple-43d.com/');
+    expect(window.confirm).not.toHaveBeenCalled();
+    expect(activate).not.toHaveBeenCalled();
+  });
+
   it('confirms and activates the same normalized href', () => {
     const activate = vi.fn();
     const event = new MouseEvent('click');
@@ -112,5 +137,34 @@ describe('OSC 8 destination normalization (#1272)', () => {
     createOsc8LinkHandler(activate).activate(new MouseEvent('click'), 'http://[bad', undefined as never);
     expect(window.confirm).not.toHaveBeenCalled();
     expect(activate).not.toHaveBeenCalled();
+  });
+});
+
+describe('isLoopbackHref', () => {
+  it.each([
+    'http://localhost:3000/',
+    'http://LOCALHOST/',
+    'http://app.localhost/',
+    'http://127.0.0.1/',
+    'http://127.8.9.10:8080/',
+    'http://2130706433/',
+    'http://0.0.0.0:9000/',
+    'http://[::1]:5000/',
+    'http://[::]/',
+    'http://[::ffff:127.0.0.1]/',
+  ])('treats %s as loopback', (raw) => {
+    const href = normalizeOsc8Uri(raw);
+    expect(href).not.toBeNull();
+    expect(isLoopbackHref(href as string)).toBe(true);
+  });
+
+  it.each([
+    'https://example.com/',
+    'http://localhost.example.com/',
+    'http://128.0.0.1/',
+    'http://10.0.0.5/',
+    'http://[::2]/',
+  ])('treats %s as non-loopback', (href) => {
+    expect(isLoopbackHref(href)).toBe(false);
   });
 });
