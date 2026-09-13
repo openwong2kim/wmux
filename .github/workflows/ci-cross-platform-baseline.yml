@@ -124,7 +124,9 @@ jobs:
       # import/no-unresolved on vitest/config and a missing react-hooks
       # plugin). That is too large to clean up mechanically, so a red result
       # here carries no signal on its own; read its output only when auditing
-      # lint debt. The strict step below is the real lint gate. See #1287.
+      # lint debt. The strict step below blocks only on its fixed list of 7
+      # files; lint regressions in any other new or changed file are not
+      # blocked anywhere in this workflow. See #1287.
       - name: ESLint (repo-wide, advisory, non-blocking)
         run: npx eslint --ext .ts,.tsx .
         continue-on-error: true
