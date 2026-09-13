@@ -3,7 +3,41 @@
  * onboarding spotlight, never stacked.
  */
 import { describe, it, expect } from 'vitest';
-import { shouldShowAutoUpdatePrompt, shouldStartOnboarding } from '../firstBootSequence';
+import { shouldShowAutoUpdatePrompt, shouldShowCheatSheet, shouldStartOnboarding } from '../firstBootSequence';
+
+describe('shouldShowCheatSheet (#1276)', () => {
+  const base = {
+    firstRunCompleted: true,
+    dismissed: false,
+    forceShown: false,
+    autoUpdatePromptPending: false,
+    onboardingActiveOrStarting: false,
+  };
+
+  it('fresh boot: stays hidden while the consent prompt is pending after the wizard closes', () => {
+    expect(shouldShowCheatSheet({ ...base, autoUpdatePromptPending: true })).toBe(false);
+  });
+
+  it('waits out the spotlight tour (running or about to start), then shows', () => {
+    expect(shouldShowCheatSheet({ ...base, onboardingActiveOrStarting: true })).toBe(false);
+    expect(shouldShowCheatSheet(base)).toBe(true);
+  });
+
+  it('stays behind the wizard and honours the permanent opt-out', () => {
+    expect(shouldShowCheatSheet({ ...base, firstRunCompleted: false })).toBe(false);
+    expect(shouldShowCheatSheet({ ...base, dismissed: true })).toBe(false);
+  });
+
+  it('a user-initiated `?` open is never gated by the first-boot sequence', () => {
+    expect(shouldShowCheatSheet({
+      ...base,
+      dismissed: true,
+      forceShown: true,
+      autoUpdatePromptPending: true,
+      onboardingActiveOrStarting: true,
+    })).toBe(true);
+  });
+});
 
 describe('shouldShowAutoUpdatePrompt', () => {
   it('fresh boot: holds the prompt while the wizard probe is unresolved and while the wizard is open', () => {

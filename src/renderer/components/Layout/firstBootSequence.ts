@@ -2,7 +2,8 @@
  * #1164 — pure gating for the first-boot overlays, extracted from AppLayout
  * (no jsdom fixture there) so the sequencing is unit-testable.
  *
- * One first-boot surface at a time: wizard → auto-update consent → spotlight.
+ * One first-boot surface at a time: wizard → auto-update consent → spotlight
+ * → keyboard cheat sheet (#1276).
  * Stacking them made the lower one pointer-dead under the upper one's
  * full-screen backdrop.
  */
@@ -39,4 +40,29 @@ export function shouldStartOnboarding(gate: OnboardingStartGate): boolean {
   if (!gate.sessionLoaded) return false;
   if (gate.autoUpdatePromptPending) return false;
   return gate.firstRunCompleted && !gate.onboardingCompleted && gate.workspaceCount === 1;
+}
+
+export interface CheatSheetGate {
+  firstRunCompleted: boolean;
+  /** Permanent "Don't show again" opt-out. */
+  dismissed: boolean;
+  /** User-initiated open (the `?` prefix action) — never held back. */
+  forceShown: boolean;
+  /** Pending consent — the prompt's modal backdrop would cover the sheet. */
+  autoUpdatePromptPending: boolean;
+  /** The spotlight tour is running, or is about to start (shouldStartOnboarding). */
+  onboardingActiveOrStarting: boolean;
+}
+
+/**
+ * #1276 — the keyboard cheat sheet is the last first-boot surface:
+ * wizard → consent → spotlight → cheat sheet. Mounting it earlier renders it
+ * behind the consent prompt / spotlight scrim while its 30s countdown runs
+ * out unseen.
+ */
+export function shouldShowCheatSheet(gate: CheatSheetGate): boolean {
+  if (!gate.firstRunCompleted) return false;
+  if (gate.forceShown) return true;
+  if (gate.dismissed) return false;
+  return !gate.autoUpdatePromptPending && !gate.onboardingActiveOrStarting;
 }

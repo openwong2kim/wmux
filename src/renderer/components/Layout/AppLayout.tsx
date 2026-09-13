@@ -11,7 +11,7 @@ import { EmptyLeafFunnel } from './EmptyLeafFunnel';
 import { selectProjectCwdSignature } from '../../stores/selectors/appLayout';
 import { selectInboxOwnsApprovals } from '../../stores/selectors/approvalInbox';
 import { shouldShowInstallError, shouldReannounceAfterError, truncateReason } from './updateNoticePolicy';
-import { shouldShowAutoUpdatePrompt, shouldStartOnboarding } from './firstBootSequence';
+import { shouldShowAutoUpdatePrompt, shouldShowCheatSheet, shouldStartOnboarding } from './firstBootSequence';
 import { registerSessionSaver, saveSessionNow } from '../../utils/sessionSaveBridge';
 import { resolveReconcileRebind } from '../../hooks/resolveReconcileRebind';
 import { getLeafPanes, getWorkspaceLeafPanes } from '../../../shared/paneUtils';
@@ -1785,8 +1785,8 @@ export default function AppLayout() {
 
   // Wizard close handler (T8a). Mirrors firstRunCompleted into uiSlice (main
   // already wrote the marker via firstRun:complete or :dismiss). The cheat
-  // sheet auto-mounts via the derived condition below as soon as
-  // firstRunCompleted flips true (D11) — no separate reveal flag needed.
+  // sheet auto-mounts via the derived condition below once firstRunCompleted
+  // flips true (D11) and the consent prompt / spotlight have cleared (#1276).
   const handleWizardClose = useCallback(() => {
     setShowFirstRunWizard(null);
     setFirstRunCompleted(true);
@@ -2011,7 +2011,20 @@ export default function AppLayout() {
           the sheet. The component itself is a no-op when dismissed (D11).
           `cheatSheetForceShown` (set by the `?` prefix action) bypasses the
           permanent dismissal so the cheat sheet can always be pulled back up. */}
-      {firstRunCompleted && (!cheatSheetDismissed || cheatSheetForceShown) && <KeyboardCheatSheet />}
+      {/* #1276: waits its turn after the consent prompt and the spotlight tour. */}
+      {shouldShowCheatSheet({
+        firstRunCompleted,
+        dismissed: cheatSheetDismissed,
+        forceShown: cheatSheetForceShown,
+        autoUpdatePromptPending: showAutoUpdatePrompt,
+        onboardingActiveOrStarting: onboardingActive || shouldStartOnboarding({
+          sessionLoaded: sessionLoadedRef.current,
+          autoUpdatePromptPending: showAutoUpdatePrompt,
+          firstRunCompleted,
+          onboardingCompleted,
+          workspaceCount,
+        }),
+      }) && <KeyboardCheatSheet />}
 
       {companyViewVisible && (
         <CompanyView onClose={() => setCompanyViewVisible(false)} />
