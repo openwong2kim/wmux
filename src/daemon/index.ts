@@ -1,3 +1,4 @@
+import { recoveryCwd, isWslShell } from '../shared/wsl';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -727,6 +728,7 @@ function resumeLaunchCommand(
   session: {
     id: string;
     exec?: { command: string };
+    cmd?: string;
     cwd: string;
     resumeBinding?: ResumeBinding;
     supervision?: { restorePermissionMode?: boolean };
@@ -734,7 +736,7 @@ function resumeLaunchCommand(
   spoolBinding?: ResumeBinding,
 ): string | undefined {
   if (!session.exec) return undefined;
-  if (!fs.existsSync(session.cwd)) return undefined; // cwd gone → fresh, not wrong-target resume
+  if (!isWslShell(session.cmd) && !fs.existsSync(session.cwd)) return undefined; // cwd gone → fresh, not wrong-target resume
   // Prefer the persisted binding; fall back to a spool-captured one (the live
   // capture RPC failed, so the exact id only survived in the spool) so an exec
   // agent pane replays as `--resume <id>` instead of an ambiguous `--continue`.
@@ -1345,7 +1347,7 @@ async function recoverSessions(
         );
 
         // Verify cwd still exists; fall back to homedir
-        const cwd = fs.existsSync(session.cwd) ? session.cwd : os.homedir();
+        const cwd = recoveryCwd(session);
 
         // ConPTY on Windows occasionally rejects the first spawn after a
         // daemon restart with ERROR_INVALID_PARAMETER (87) — a known
@@ -1370,6 +1372,7 @@ async function recoverSessions(
             recovered = sessionManager.createSession({
               id: session.id,
             cmd: session.cmd,
+            wslTarget: session.wslTarget,
           ...(session.args ? { args: session.args } : {}),
             cwd,
             // Replay the ORIGINAL spawn directory. `cwd` above is the LIVE one
@@ -1457,11 +1460,12 @@ async function recoverSessions(
       if (fs.existsSync(snapshotPath)) {
         try {
           const scrollbackData = fs.readFileSync(snapshotPath);
-          const cwd = fs.existsSync(session.cwd) ? session.cwd : os.homedir();
+          const cwd = recoveryCwd(session);
 
           const recovered = sessionManager.createSession({
             id: session.id,
             cmd: session.cmd,
+            wslTarget: session.wslTarget,
           ...(session.args ? { args: session.args } : {}),
             cwd,
             // Replay the ORIGINAL spawn directory. `cwd` above is the LIVE one
@@ -1509,10 +1513,11 @@ async function recoverSessions(
       // This handles cases where the daemon was killed before
       // the 30s snapshot interval fired (e.g. immediate reboot).
       try {
-        const cwd = fs.existsSync(session.cwd) ? session.cwd : os.homedir();
+        const cwd = recoveryCwd(session);
         const recovered = sessionManager.createSession({
           id: session.id,
           cmd: session.cmd,
+          wslTarget: session.wslTarget,
           ...(session.args ? { args: session.args } : {}),
           cwd,
           // Replay the ORIGINAL spawn directory. `cwd` above is the LIVE one
@@ -1673,7 +1678,9 @@ function restartSupervisedSession(
   const replay = {
     id: meta.id,
     cmd: meta.cmd,
-    cwd: fs.existsSync(meta.cwd) ? meta.cwd : os.homedir(),
+    wslTarget: meta.wslTarget,
+    args: meta.args,
+    cwd: recoveryCwd(meta),
     // Replay the ORIGINAL spawn directory; `cwd` above is the live, OSC
     // 7-tracked one. See createSession's `spawnCwd`.
     spawnCwd: meta.spawnCwd,
@@ -1805,6 +1812,7 @@ function registerRpcHandlers(
     const session = sessionManager.createSession({
       id: p.id,
       cmd: p.cmd,
+      wslTarget: p.wslTarget,
       args: p.args,
       cwd: p.cwd,
       env: p.env,
@@ -2363,7 +2371,7 @@ function registerRpcHandlers(
       if (session.bufferDumpPath && fs.existsSync(session.bufferDumpPath)) {
         scrollbackData = fs.readFileSync(session.bufferDumpPath);
       }
-      const cwd = fs.existsSync(session.cwd) ? session.cwd : os.homedir();
+      const cwd = recoveryCwd(session);
 
       const PROMOTE_RETRIES = 4;
       let promoted: ReturnType<typeof sessionManager.createSession> | undefined;
@@ -2373,6 +2381,7 @@ function registerRpcHandlers(
           promoted = sessionManager.createSession({
             id: session.id,
             cmd: session.cmd,
+            wslTarget: session.wslTarget,
           ...(session.args ? { args: session.args } : {}),
             cwd,
             spawnCwd: session.spawnCwd,

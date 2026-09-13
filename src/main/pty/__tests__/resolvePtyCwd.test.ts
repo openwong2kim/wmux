@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { resolvePtyCreateCwd, validatePtyCwd } from '../resolvePtyCwd';
+import { resolvePtyCreateCwd, resolvePtyCreateCwdForShell, validatePtyCwd } from '../resolvePtyCwd';
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -80,5 +80,22 @@ describe('resolvePtyCreateCwd', () => {
       safeCwd: 'C:\\profile',
       source: 'requested',
     });
+  });
+});
+
+
+describe.runIf(process.platform === 'win32')('WSL cwd handoff', () => {
+  it('keeps Linux paths for distro-side validation', () => {
+    const stat = vi.spyOn(fs, 'statSync');
+    expect(resolvePtyCreateCwdForShell('/home/user/project', undefined, 'wsl.exe').safeCwd).toBe('/home/user/project');
+    expect(stat).not.toHaveBeenCalled();
+  });
+
+  it('recovers the last Linux cwd instead of the legacy Windows spawn directory', () => {
+    const stat = vi.spyOn(fs, 'statSync');
+    expect(resolvePtyCreateCwdForShell(undefined, {
+      spawnCwd: 'C:\\Users\\user', cwd: '~/project',
+    }, 'wsl.exe')).toEqual({ incomingCwd: '~/project', safeCwd: '~/project', source: 'recovery-cwd' });
+    expect(stat).not.toHaveBeenCalled();
   });
 });

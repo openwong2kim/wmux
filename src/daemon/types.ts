@@ -1,5 +1,6 @@
 // === Daemon-specific type definitions ===
 
+import type { WslTarget } from '../shared/wsl';
 import type { DaemonSupervisionPolicy } from '../shared/rpc';
 import type { AgentSlug } from '../shared/events';
 import type { ResumeBinding } from '../shared/agentResume';
@@ -56,6 +57,7 @@ export interface DaemonSession {
    */
   pidStartTime?: string;
   cmd: string;              // executed command
+  wslTarget?: WslTarget;
   /**
    * #1103 — validated WSL distro selection (`['-d', '<name>']`), persisted so
    * every replay path (recovery, supervised restart, suspended promote) re-

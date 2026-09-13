@@ -177,7 +177,7 @@ export default function TerminalComponent({ ptyId: externalPtyId, shell, cwd, on
       window.electronAPI.pty.create(withWorkspaceProfile(withDefaultShell({
         shell,
         ...(deadPaneRecovery
-          ? { recoveryCwds: { spawnCwd: deadPaneRecovery.spawnCwd, cwd: deadPaneRecovery.cwd } }
+          ? { recoveryCwds: { spawnCwd: deadPaneRecovery.spawnCwd, cwd: deadPaneRecovery.cwd, wslTarget: deadPaneRecovery.wslTarget, args: deadPaneRecovery.args } }
           : { cwd: respawnCwd }),
         cols,
         rows,
