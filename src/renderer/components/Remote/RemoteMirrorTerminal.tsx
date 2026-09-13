@@ -13,6 +13,7 @@ import { pastePtyChunked } from '../../utils/clipboardChunk';
 import { copySelectionWithFeedback } from '../../hooks/useTerminal';
 import { XTERM_THEMES, extractXtermColors, type BuiltinThemeId, type ThemeId } from '../../themes';
 import { resolveMinimumContrastRatio } from '../../tailwindPalette';
+import { createOsc8LinkHandler, isLoopbackHref } from '../../terminal/osc8LinkHandler';
 
 export interface RemoteMirrorTerminalProps {
   /** null while the pane attach is still in flight. */
@@ -361,6 +362,17 @@ export default function RemoteMirrorTerminal({ attachId, error, readOnly, onTitl
       // is the one wrapping the whole main area. One attached remote workspace
       // would take the entire local pane grid down with it.
       allowProposedApi: true,
+      // #1271: without this, OSC 8 links fall back to xterm's window.open()
+      // of about:blank, which the window-open policy denies, so a confirmed
+      // click did nothing. Same confirmation handler as a local pane, but the
+      // destination came from a REMOTE PTY: never open it in a local browser
+      // pane, and refuse loopback hosts outright, since `localhost` there
+      // names the remote machine and here would aim requests at local
+      // services.
+      linkHandler: createOsc8LinkHandler(
+        (_event, href) => { void window.electronAPI?.shell?.openExternal(href); },
+        (href) => !isLoopbackHref(href),
+      ),
     });
     // The width model, BEFORE open() — same order as the local pane.
     //
