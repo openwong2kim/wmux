@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '../../stores';
 import { selectWorkspaceRailSummary } from '../../stores/selectors/workspaceProjections';
@@ -11,6 +11,10 @@ import { expandDirection } from './sidebarGlyphs';
 import { IconPlus, IconChevronDir } from '../icons';
 import { FOCUS_RING } from '../focusRing';
 import { workspaceColorHex } from '../../../shared/workspaceColors';
+import PresetPicker from './PresetPicker';
+
+/** PresetPicker width (w-52), used to keep the flyout on-screen. */
+const PICKER_MENU_WIDTH = 208;
 
 export default function MiniSidebar() {
   const t = useT();
@@ -53,7 +57,30 @@ export default function MiniSidebar() {
     0,
   );
 
-  const addWorkspace = useStore((s) => s.addWorkspace);
+  // #1284 — the rail's + opens the same PresetPicker as the titlebar +. With
+  // the sidebar collapsed the titlebar + is clipped by its 48px segment, so
+  // this is the only way to reach "Attach remote workspace…" (the picker's
+  // last row). The picker flies out beside the 48px rail — measured at open
+  // time, on the side facing the content area, clamped to the window.
+  const plusBtnRef = useRef<HTMLButtonElement | null>(null);
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [pickerAnchor, setPickerAnchor] = useState({ left: 8, top: 8 });
+  const togglePicker = useCallback(() => {
+    setPickerOpen((v) => {
+      if (!v) {
+        const r = plusBtnRef.current?.getBoundingClientRect();
+        if (r) {
+          const desired = sidebarPosition === 'right' ? r.left - PICKER_MENU_WIDTH - 4 : r.right + 4;
+          setPickerAnchor({
+            left: Math.max(8, Math.min(desired, window.innerWidth - PICKER_MENU_WIDTH - 8)),
+            top: Math.max(8, r.top),
+          });
+        }
+      }
+      return !v;
+    });
+  }, [sidebarPosition]);
+  const closePicker = useCallback(() => setPickerOpen(false), []);
 
   // Drag state per render — refs avoid re-render on every dragover tick.
   const dragStartTimeRef = useRef<number>(0);
@@ -64,9 +91,11 @@ export default function MiniSidebar() {
     <div className={`flex flex-col h-full bg-[var(--bg-mantle)] ${sidebarPosition === 'right' ? 'border-l' : 'border-r'} border-[var(--bg-surface)]`} style={{ width: 48, borderColor: 'var(--border-soft)' }} {...tokenAttrs('bgMantle', 'bg')} {...tokenAttrs('bgSurface', 'border')}>
       {/* Header — new workspace button */}
       <button
+        ref={plusBtnRef}
         className={`flex items-center justify-center h-10 text-[var(--text-subtle)] hover:text-[var(--accent-green)] transition-colors duration-150 border-b border-[var(--bg-surface)] font-mono text-lg leading-none ${FOCUS_RING}`}
         style={{ borderColor: 'var(--border-soft)' }}
-        onClick={() => addWorkspace()}
+        onClick={togglePicker}
+        data-mini-add-workspace
         title={t('sidebar.newWorkspaceTooltip')}
         aria-label={t('sidebar.newWorkspaceTooltip')}
         data-onboarding-target="add-workspace"
@@ -76,6 +105,7 @@ export default function MiniSidebar() {
       >
         <IconPlus size={14} />
       </button>
+      {pickerOpen && <PresetPicker onClose={closePicker} anchorStyle={pickerAnchor} />}
 
       {/* Workspace dots */}
       <div className="flex-1 overflow-y-auto py-2 flex flex-col items-center gap-1">

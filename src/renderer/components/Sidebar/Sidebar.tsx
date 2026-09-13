@@ -9,7 +9,6 @@ import RemoteWorkspaceItem from './RemoteWorkspaceItem';
 import OrphanSessions from './OrphanSessions';
 import ArchivedWorkspaces from './ArchivedWorkspaces';
 import MissionsSection from './MissionsSection';
-import PresetPicker from './PresetPicker';
 import type { AgentStatus, Workspace } from '../../../shared/types';
 import { getWorkspacePtyIds } from '../../../shared/paneUtils';
 import { destroyWorkspaceRemoteSessions } from '../../utils/remoteSessionTeardown';
@@ -98,10 +97,6 @@ export default function Sidebar() {
   const setSidebarMode = useStore((s) => s.setSidebarMode);
   const pushToast = useStore((s) => s.pushToast);
 
-  const [pickerOpen, setPickerOpen] = useState(false);
-  const togglePicker = useCallback(() => setPickerOpen((v) => !v), []);
-  const closePicker = useCallback(() => setPickerOpen(false), []);
-
   // Ctrl+F → focus workspace search, but only while focus is already inside
   // the sidebar. A document-level listener would collide with the global
   // Ctrl+F terminal-search shortcut (useKeyboard), so this is scoped to the
@@ -165,8 +160,6 @@ export default function Sidebar() {
       {...tokenAttrs('bgMantle', 'bg')} {...tokenAttrs('bgSurface', 'border')}
       onKeyDown={handleSidebarKeyDown}
     >
-      {pickerOpen && <PresetPicker onClose={closePicker} />}
-
       {/* Workspace search input — only visible when 3+ workspaces */}
       {workspaces.length >= 3 && (
         <div className="px-2 pt-2">
