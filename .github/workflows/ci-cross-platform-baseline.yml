@@ -117,12 +117,15 @@ jobs:
       - name: Typecheck (cross-platform)
         run: npx tsc --noEmit -p tsconfig.json
 
-      # ESLint runs informationally — the codebase has ~124 pre-existing
-      # baseline errors (mostly require() statements and empty-catch blocks)
-      # that we are intentionally NOT cleaning up as part of the cross-
-      # platform port. Continuing past lint failures lets us see the
-      # downstream Vitest results, which are the actual signal we care about.
-      - name: ESLint (cross-platform, informational)
+      # ADVISORY ONLY — this step is expected to fail and never gates the job.
+      # The repo-wide lint carries a pre-existing baseline of 238 errors /
+      # 1745 warnings across ~100 files (measured 2026-09-13: mostly
+      # no-empty-function, no-var-requires and no-useless-escape, plus
+      # import/no-unresolved on vitest/config and a missing react-hooks
+      # plugin). That is too large to clean up mechanically, so a red result
+      # here carries no signal on its own; read its output only when auditing
+      # lint debt. The strict step below is the real lint gate. See #1287.
+      - name: ESLint (repo-wide, advisory, non-blocking)
         run: npx eslint --ext .ts,.tsx .
         continue-on-error: true
 
