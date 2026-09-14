@@ -35,6 +35,14 @@ export const SITE_GUIDE_MAX_HINTS = 2;
 export const SITE_GUIDE_MAX_PATH_CHARS = 200;
 /** URL globs honoured per guide; extras are ignored. */
 export const SITE_GUIDE_MAX_URLS = 8;
+/** A glob path segment longer than this rejects the whole glob. */
+export const SITE_GUIDE_MAX_GLOB_SEGMENT_CHARS = 128;
+/** A glob segment or label with more `*` than this rejects the whole glob. */
+export const SITE_GUIDE_MAX_STARS_PER_SEGMENT = 3;
+/** A page path segment longer than this never matches. */
+export const SITE_GUIDE_MAX_URL_SEGMENT_CHARS = 512;
+/** A page path with more segments than this never matches. */
+export const SITE_GUIDE_MAX_URL_SEGMENTS = 64;
 
 const FILENAME_RE = /^(?=.{1,64}$)[A-Za-z0-9._-]+\.md$/;
 const TITLE_RE = /^[A-Za-z0-9 ._:()-]{1,60}$/;
@@ -214,6 +222,17 @@ export function compileGuideGlob(glob: unknown): CompiledGuideGlob | null {
   if (hostLabels.length !== rawLabels.length) return null;
 
   const pathSegments = pathPart === null ? ['**'] : splitPath(pathPart);
+  // Bounded before any matching: this glob is later run, synchronously in the
+  // main process, against path segments taken from whatever page was landed on.
+  // Rejected rather than truncated, so a guide never matches more than written.
+  if (
+    [...hostLabels, ...pathSegments].some(
+      (part) => part.split('*').length - 1 > SITE_GUIDE_MAX_STARS_PER_SEGMENT,
+    )
+  ) {
+    return null;
+  }
+  if (pathSegments.some((part) => part.length > SITE_GUIDE_MAX_GLOB_SEGMENT_CHARS)) return null;
   const literals = [...hostLabels, ...pathSegments]
     .filter((part) => !part.includes('*'))
     .join('.').length;
@@ -221,12 +240,41 @@ export function compileGuideGlob(glob: unknown): CompiledGuideGlob | null {
   return { hostLabels, pathSegments, specificity: literals - wildcards };
 }
 
+/**
+ * `*`-wildcard match of one segment, with no RegExp.
+ *
+ * Two pointers, backtracking only to the most recent `*`: worst case
+ * O(pattern × text), never exponential. A regex built from the glob could
+ * backtrack exponentially on a page-supplied segment and freeze the main
+ * process on landing. `steps` counts loop iterations for tests.
+ */
+export function wildcardMatch(pattern: string, text: string, steps?: { count: number }): boolean {
+  let p = 0;
+  let t = 0;
+  let star = -1;
+  let mark = 0;
+  while (t < text.length) {
+    if (steps) steps.count++;
+    if (p < pattern.length && pattern[p] === '*') {
+      star = p++;
+      mark = t;
+    } else if (p < pattern.length && pattern[p] === text[t]) {
+      p++;
+      t++;
+    } else if (star >= 0) {
+      p = star + 1;
+      t = ++mark;
+    } else {
+      return false;
+    }
+  }
+  while (p < pattern.length && pattern[p] === '*') p++;
+  return p === pattern.length;
+}
+
 function segmentMatches(pattern: string, segment: string): boolean {
   if (!pattern.includes('*')) return pattern === segment;
-  const re = new RegExp(
-    `^${pattern.split('*').map((part) => part.replace(/[.+?^${}()|[\]\\]/g, '\\$&')).join('[^/]*')}$`,
-  );
-  return re.test(segment);
+  return wildcardMatch(pattern, segment);
 }
 
 function pathMatches(pattern: string[], segments: string[]): boolean {
@@ -268,7 +316,14 @@ export function matchGuideGlob(glob: CompiledGuideGlob, url: unknown): boolean {
   for (let i = 0; i < labels.length; i++) {
     if (glob.hostLabels[i] !== '*' && glob.hostLabels[i] !== labels[i]) return false;
   }
-  return pathMatches(glob.pathSegments, splitPath(parsed.pathname));
+  const segments = splitPath(parsed.pathname);
+  if (
+    segments.length > SITE_GUIDE_MAX_URL_SEGMENTS ||
+    segments.some((segment) => segment.length > SITE_GUIDE_MAX_URL_SEGMENT_CHARS)
+  ) {
+    return false;
+  }
+  return pathMatches(glob.pathSegments, segments);
 }
 
 /** Specificity of the most specific matching glob, or null when none match. */

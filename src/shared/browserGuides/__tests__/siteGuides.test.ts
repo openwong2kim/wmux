@@ -12,6 +12,7 @@ import {
   scoreGuideForUrl,
   selectRenderableGuides,
   staleFailureCount,
+  wildcardMatch,
   type SiteGuideMatch,
 } from '../siteGuides';
 import {
@@ -248,5 +249,69 @@ describe('staleness', () => {
     expect(staleFailureCount(guide({ updated: null }), memory)).toBe(0);
     expect(staleFailureCount(guide(), null)).toBe(0);
     expect(renderGuideHintBlock([guide({ updated: null })], memory)).not.toContain('failure(s)');
+  });
+});
+
+describe('wildcard matching stays linear', () => {
+  // The shape that made a glob-built RegExp backtrack exponentially: many
+  // `*a` groups and a tail that can never match, against a run of 'a's.
+  const adversarialPattern = `${'*a'.repeat(12)}*b`;
+
+  /** The regex construction this matcher replaced, as the semantic reference. */
+  function regexReference(pattern: string, segment: string): boolean {
+    if (!pattern.includes('*')) return pattern === segment;
+    const escaped = pattern
+      .split('*')
+      .map((part) => part.replace(/[.+?^${}()|[\]\\]/g, '\\$&'))
+      .join('[^/]*');
+    return new RegExp(`^${escaped}$`).test(segment);
+  }
+
+  it('agrees with the regex semantics on ordinary segments', () => {
+    const patterns = ['*', 'a*', '*a', 'a*b', '*.md', 'v*-*', 'ab', '', 'a*b*c', '*x*'];
+    const segments = ['', 'a', 'ab', 'abc', 'aXb', 'readme.md', 'v1-2', 'v1', 'axbyc', 'xx', 'ba'];
+    for (const pattern of patterns) {
+      for (const segment of segments) {
+        expect(wildcardMatch(pattern, segment), `${pattern} vs ${segment}`).toBe(
+          regexReference(pattern, segment),
+        );
+      }
+    }
+  });
+
+  it('rejects the adversarial pattern in polynomial steps', () => {
+    for (const n of [24, 28, 40, 400]) {
+      const steps = { count: 0 };
+      expect(wildcardMatch(adversarialPattern, 'a'.repeat(n), steps)).toBe(false);
+      // O(pattern x text) with room to spare; the regex needed ~12x per +4 chars.
+      expect(steps.count, String(n)).toBeLessThanOrEqual(adversarialPattern.length * (n + 1));
+    }
+  });
+
+  it('finishes an adversarial landing quickly end to end', () => {
+    // The 12-star segment is rejected by the glob cap, so drive the same
+    // shape through the most stars a glob segment may carry.
+    const glob = compileGuideGlob('shop.test/*a*a*b');
+    if (!glob) throw new Error('the three-star glob must compile');
+    const started = performance.now();
+    for (let i = 0; i < 100; i++) {
+      matchGuideGlob(glob, `https://shop.test/${'a'.repeat(500)}`);
+    }
+    expect(performance.now() - started).toBeLessThan(50);
+  });
+
+  it('rejects a glob with more than three stars in one segment, or an overlong segment', () => {
+    expect(compileGuideGlob('shop.test/*a*a*a*b')).toBeNull();
+    expect(compileGuideGlob(`shop.test/${adversarialPattern}`)).toBeNull();
+    expect(compileGuideGlob('shop.test/*a*a*b')).not.toBeNull();
+    expect(compileGuideGlob(`shop.test/${'a'.repeat(129)}`)).toBeNull();
+    expect(compileGuideGlob(`shop.test/${'a'.repeat(128)}`)).not.toBeNull();
+  });
+
+  it('never matches a page path with an overlong segment or too many segments', () => {
+    expect(matches('shop.test/**', `https://shop.test/${'a'.repeat(513)}`)).toBe(false);
+    expect(matches('shop.test/**', `https://shop.test/${'a'.repeat(512)}`)).toBe(true);
+    expect(matches('shop.test/**', `https://shop.test/${'s/'.repeat(65)}x`)).toBe(false);
+    expect(matches('shop.test/**', `https://shop.test/${'s/'.repeat(63)}x`)).toBe(true);
   });
 });
