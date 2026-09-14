@@ -189,7 +189,7 @@ const BROWSER_REPL_DESCRIPTION =
   '{text, events} (+ refs:[{ref,param,role,name}] for snapshot/smart_snapshot, diff text, all refs; ' +
   'pass refs[i].ref as the arg named refs[i].param). A failed step throws (catchable). ' +
   `Allowed: ${BROWSER_REPL_TOOLS.join(', ')}. ` +
-  'Args for the steps whose standalone tools are unlisted: navigate_back() hover(ref) drag(sourceRef,targetRef) ' +
+  'Args for the steps whose standalone tools are unlisted: navigate_back() hover(ref) drag(sourceRef,targetRef|path) ' +
   'select(ref,values) scroll_into_view(ref) highlight(ref) dialog(accept,text). ' +
   'Other browser_* tools stay separate calls. Top-level await works; state persists between calls ' +
   'until a timeout kills the runtime, but let/const inside an awaiting snippet do not — assign to ' +

@@ -25,6 +25,7 @@ import {
   pathPoints,
   setLastPointer,
   stepsForDistance,
+  type Point,
 } from '../pointer-path';
 import { hasTouchEmulation, touchDragFor, touchTapFor } from '../touch-input';
 import { describeToolError } from '../toolError';
@@ -50,6 +51,15 @@ const optionalSurfaceId = z
 
 // Module-scope parameter shapes: hoisted out of the per-registration path so
 // every createWmuxServer() instance shares one set of zod schema objects.
+
+// Keys held for the length of a mouse gesture. Validated by the enum only: the
+// array bounds are checked in the handler, since every zod modifier costs bytes
+// in tools/list.
+const modifiersParam = z
+  .array(z.enum(['Alt', 'Control', 'Meta', 'Shift']))
+  .optional()
+  .describe('Keys held during the gesture.');
+
 const BROWSER_CLICK_SHAPE = {
   ref: z.string().optional(),
   x: z
@@ -68,6 +78,7 @@ const BROWSER_CLICK_SHAPE = {
     .boolean()
     .optional()
     .describe('Double-click instead of a single click.'),
+  modifiers: modifiersParam,
   surfaceId: optionalSurfaceId,
 };
 
@@ -124,8 +135,14 @@ const BROWSER_HOVER_SHAPE = {
 const BROWSER_DRAG_SHAPE = {
   sourceRef: z
     .string()
+    .optional()
     .describe('Element to drag from.'),
-  targetRef: z.string().describe('Element to drop onto.'),
+  targetRef: z.string().optional().describe('Element to drop onto.'),
+  path: z
+    .array(z.object({ x: z.number(), y: z.number() }))
+    .optional()
+    .describe('2-50 viewport CSS px points, instead of refs.'),
+  modifiers: modifiersParam,
   surfaceId: optionalSurfaceId,
 };
 
@@ -152,6 +169,8 @@ const BROWSER_SCROLL_SHAPE = {
     .string()
     .optional()
     .describe('Scroll inside this element instead of the page.'),
+  x: z.number().optional().describe('Wheel at viewport CSS px x,y instead.'),
+  y: z.number().optional(),
   surfaceId: optionalSurfaceId,
 };
 
@@ -222,6 +241,138 @@ function dispatchNote(
     return ' (mouse double click — a touchscreen has no double click)';
   }
   return ' (mouse click — touch dispatch was unavailable for this element)';
+}
+
+/**
+ * Why a pointer gesture addressed by coordinates (or holding keys) cannot run
+ * without a live page. One wording for every such gesture, so the RPC lane
+ * refuses them all the way it has always refused a coordinate click.
+ */
+function livePageRequired(what: string, pageError: unknown, instead: string): string {
+  const cause = pageError ? ` (${describeToolError(pageError)})` : '';
+  return `${what} need a live browser page, which this workspace's backend did not provide${cause}. The RPC lane resolves elements by ref only — switch the workspace to the chrome backend, or ${instead}.`;
+}
+
+const TOUCH_MODIFIERS_REFUSAL =
+  'Modifier keys are held for mouse gestures only, and a device preset with a touchscreen is active on this page. Reset the preset with browser_emulate, or drop modifiers.';
+
+/**
+ * The distinct modifier keys asked for, or undefined when none were. Refused
+ * outright where they cannot be honoured — no page to hold keys on, or a
+ * touchscreen preset where the gesture is not a mouse gesture at all — rather
+ * than performing the gesture without them.
+ */
+function modifierKeysFor(
+  modifiers: readonly string[] | undefined,
+  page: Page | null,
+  pageError: unknown,
+  instead: string,
+): string[] | undefined {
+  if (!modifiers || modifiers.length === 0) return undefined;
+  if (!page) throw new Error(livePageRequired('Modifier keys', pageError, instead));
+  if (hasTouchEmulation(page)) throw new Error(TOUCH_MODIFIERS_REFUSAL);
+  return [...new Set(modifiers)];
+}
+
+/**
+ * Run `gesture` with `keys` held down. Every key that went down comes back up
+ * in the finally, so a gesture that throws never leaves the page with a stuck
+ * Shift that turns the next click into a range selection.
+ */
+async function withModifiers<T>(
+  page: Page,
+  keys: readonly string[] | undefined,
+  gesture: () => Promise<T>,
+): Promise<T> {
+  if (!keys) return gesture();
+  const held: string[] = [];
+  try {
+    for (const key of keys) {
+      await page.keyboard.down(key);
+      held.push(key);
+    }
+    return await gesture();
+  } finally {
+    for (const key of held.reverse()) {
+      await page.keyboard.up(key).catch(() => undefined);
+    }
+  }
+}
+
+/** ` with Shift+Meta held`, or nothing. */
+function modifiersNote(keys: readonly string[] | undefined): string {
+  return keys ? ` with ${keys.join('+')} held` : '';
+}
+
+/**
+ * A bounds check for viewport CSS px points on `page`, resolved once so a
+ * 50-point path does not read the viewport 50 times.
+ *
+ * viewportSize() is null for a page reached over connectOverCDP — which is
+ * EVERY page on the chrome backend, i.e. the only backend where coordinate
+ * gestures run at all. Without the innerWidth/innerHeight fallback the bounds
+ * check was dead exactly where it matters (live dogfood: x=99999 reported
+ * success). When neither source reports a size only the negative check applies.
+ */
+async function viewportBoundsCheck(page: Page): Promise<(x: number, y: number) => void> {
+  let viewport = (page as unknown as { viewportSize?: () => { width: number; height: number } | null })
+    .viewportSize?.();
+  if (!viewport) {
+    const size = await evaluateIsolated(
+      page,
+      '[window.innerWidth, window.innerHeight]',
+    ).catch(() => null);
+    if (Array.isArray(size) && typeof size[0] === 'number' && typeof size[1] === 'number') {
+      viewport = { width: size[0], height: size[1] };
+    }
+  }
+  return (x, y) => {
+    if (x < 0 || y < 0) {
+      throw new Error(`Coordinates must be inside the viewport; got (${x}, ${y}).`);
+    }
+    if (viewport && (x > viewport.width || y > viewport.height)) {
+      throw new Error(
+        `Coordinates (${x}, ${y}) are outside the ${viewport.width}x${viewport.height} viewport (CSS px). Scroll the target into view first, or take a fresh screenshot.`,
+      );
+    }
+  };
+}
+
+interface PointerPage {
+  mouse: { move(x: number, y: number): Promise<void> };
+  viewportSize(): { width: number; height: number } | null;
+}
+
+/**
+ * Walk the pointer from `from` (or from wherever it was last left on this page)
+ * to `to` along the shared pointer geometry, and leave the tracker there.
+ */
+async function walkPointer(page: PointerPage, to: Point, from?: Point): Promise<void> {
+  const start = from ?? getLastPointer(page) ?? defaultStartPoint(page.viewportSize() ?? undefined);
+  for (const point of pathPoints(start, to, stepsForDistance(distance(start, to)))) {
+    await page.mouse.move(point.x, point.y);
+  }
+  setLastPointer(page, to);
+}
+
+/**
+ * A mouse drag through `points`: approach the first, press, walk each leg with
+ * the pointer geometry, release. The button comes up in a finally so a move
+ * that throws mid-drag does not leave the page holding a pressed mouse.
+ */
+export async function mouseDragThrough(
+  page: PointerPage & { mouse: { down(): Promise<void>; up(): Promise<void> } },
+  points: readonly Point[],
+): Promise<void> {
+  await walkPointer(page, points[0]);
+  await page.mouse.down();
+  try {
+    for (let i = 1; i < points.length; i++) {
+      await walkPointer(page, points[i], points[i - 1]);
+    }
+  } finally {
+    await page.mouse.up();
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -987,7 +1138,7 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
     'browser_click',
     'Click an element by ref (browser_snapshot) or smartRef (browser_smart_snapshot), or — when neither is available — at x/y. Coordinates are VIEWPORT CSS PIXELS: divide a browser_screenshot pixel by the devicePixelRatio that shot reports. A fullPage or element screenshot is in a different coordinate space and cannot be used for x/y at all. Coordinates need a live page (chrome backend); the RPC lane is ref-only.',
     BROWSER_CLICK_SHAPE,
-    async ({ ref, smartRef, x, y, double, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
+    async ({ ref, smartRef, x, y, double, modifiers, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
       try {
         // Coordinate clicking is an ESCAPE HATCH, not a second addressing mode:
         // a ref survives a re-render and a coordinate does not, so a call that
@@ -1015,40 +1166,20 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
 
         if (hasCoords) {
           if (!page) {
-            const cause = pageError ? ` (${describeToolError(pageError)})` : '';
             throw new Error(
-              `Coordinate clicks need a live browser page, which this workspace's backend did not provide${cause}. The RPC lane resolves elements by ref only — switch the workspace to the chrome backend, or click by ref from browser_snapshot.`,
+              livePageRequired('Coordinate clicks', pageError, 'click by ref from browser_snapshot'),
             );
           }
+        }
+        // A click that holds keys is not recorded on any path: a trace step
+        // carries no modifiers, so a replay would perform a different click
+        // (a plain click where a Ctrl-click multi-selected).
+        const modifierKeys = modifierKeysFor(modifiers, page, pageError, 'click without modifiers');
 
+        if (hasCoords && page) {
           // Refuse a coordinate the viewport does not contain instead of
-          // clicking nothing and reporting success. viewportSize() can be null
-          // on a CDP-attached page; only the negative check applies then.
-          if ((x as number) < 0 || (y as number) < 0) {
-            throw new Error(`Coordinates must be inside the viewport; got (${x}, ${y}).`);
-          }
-          let viewport = (page as unknown as { viewportSize?: () => { width: number; height: number } | null })
-            .viewportSize?.();
-          if (!viewport) {
-            // viewportSize() is null for a page reached over connectOverCDP —
-            // which is EVERY page on the chrome backend, i.e. the only backend
-            // where coordinate clicks run at all. Without this fallback the
-            // bounds check was dead exactly where it matters (live dogfood:
-            // x=99999 reported success). The page's own innerWidth/innerHeight
-            // is the same CSS-pixel space x/y are defined in.
-            const size = await evaluateIsolated(
-              page,
-              '[window.innerWidth, window.innerHeight]',
-            ).catch(() => null);
-            if (Array.isArray(size) && typeof size[0] === 'number' && typeof size[1] === 'number') {
-              viewport = { width: size[0], height: size[1] };
-            }
-          }
-          if (viewport && ((x as number) > viewport.width || (y as number) > viewport.height)) {
-            throw new Error(
-              `Coordinates (${x}, ${y}) are outside the ${viewport.width}x${viewport.height} viewport (CSS px). Scroll the target into view first, or take a fresh screenshot.`,
-            );
-          }
+          // clicking nothing and reporting success.
+          (await viewportBoundsCheck(page))(x as number, y as number);
 
           // Same popup contract as a ref click — a coordinate click on a link
           // with target=_blank opens a popup just as readily.
@@ -1058,9 +1189,11 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
               ? watchForPopup(page as unknown as { on: Function; off: Function })
               : null;
           try {
-            await page.mouse.click(x as number, y as number, {
-              ...(double && { clickCount: 2 }),
-            });
+            await withModifiers(page, modifierKeys, () =>
+              page.mouse.click(x as number, y as number, {
+                ...(double && { clickCount: 2 }),
+              }),
+            );
             // Keep the tracker honest: the next ref click should approach from
             // here, not from wherever the pointer was before this one.
             setLastPointer(page, { x: x as number, y: y as number });
@@ -1073,7 +1206,7 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
               content: [
                 {
                   type: 'text' as const,
-                  text: `Clicked${double ? ' (double)' : ''} at viewport CSS px (${x}, ${y})${note}`,
+                  text: `Clicked${double ? ' (double)' : ''} at viewport CSS px (${x}, ${y})${modifiersNote(modifierKeys)}${note}`,
                 },
               ],
             };
@@ -1108,11 +1241,8 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
               // range. Throws StaleSmartRefError rather than clicking a
               // substitute when the ref no longer names one live element.
               const locator = await resolveSmartRefLocator(page, smartRef);
-              const dispatch = await clickWithApproach(
-                page as unknown as ApproachPage,
-                locator,
-                !!double,
-                tap,
+              const dispatch = await withModifiers(page, modifierKeys, () =>
+                clickWithApproach(page as unknown as ApproachPage, locator, !!double, tap),
               );
               // A ref axis, not the css axis this used to record: the CDP
               // lane's stored "locator" is getByRole SOURCE TEXT, which
@@ -1121,15 +1251,17 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
               // is a real one and stays a css axis.
               const axisEntry = smartRefAxisEntry(smartRef);
               const selector = axisEntry ? undefined : getLocatorByRef(smartRef) ?? undefined;
-              recordAction(deps, {
-                scope,
-                tool: 'browser_click',
-                page,
-                ...(axisEntry ? { refEntry: axisEntry } : { selector }),
-                ...(double && { args: { double: true } }),
-              });
+              if (!modifierKeys) {
+                recordAction(deps, {
+                  scope,
+                  tool: 'browser_click',
+                  page,
+                  ...(axisEntry ? { refEntry: axisEntry } : { selector }),
+                  ...(double && { args: { double: true } }),
+                });
+              }
               return {
-                content: [{ type: 'text' as const, text: `Clicked${double ? ' (double)' : ''} element smartRef=${smartRef}${dispatchNote(!!tapper, double, dispatch)}${await popupNote()}` }],
+                content: [{ type: 'text' as const, text: `Clicked${double ? ' (double)' : ''} element smartRef=${smartRef}${modifiersNote(modifierKeys)}${dispatchNote(!!tapper, double, dispatch)}${await popupNote()}` }],
               };
             }
 
@@ -1137,21 +1269,20 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
 
             const el = await resolveRef(page, ref);
             if (!el) throw new Error(refNotFound(ref, page));
-            const dispatch = await clickWithApproach(
-              page as unknown as ApproachPage,
-              el,
-              !!double,
-              tap,
+            const dispatch = await withModifiers(page, modifierKeys, () =>
+              clickWithApproach(page as unknown as ApproachPage, el, !!double, tap),
             );
-            recordAction(deps, {
-              scope,
-              tool: 'browser_click',
-              page,
-              ref,
-              ...(double && { args: { double: true } }),
-            });
+            if (!modifierKeys) {
+              recordAction(deps, {
+                scope,
+                tool: 'browser_click',
+                page,
+                ref,
+                ...(double && { args: { double: true } }),
+              });
+            }
             return {
-              content: [{ type: 'text' as const, text: `Clicked${double ? ' (double)' : ''} element ref=${ref}${dispatchNote(!!tapper, double, dispatch)}${await popupNote()}` }],
+              content: [{ type: 'text' as const, text: `Clicked${double ? ' (double)' : ''} element ref=${ref}${modifiersNote(modifierKeys)}${dispatchNote(!!tapper, double, dispatch)}${await popupNote()}` }],
             };
           } finally {
             // Every exit — success, a ref that vanished, a click that threw —
@@ -1431,18 +1562,75 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
   // -----------------------------------------------------------------------
   server.tool(
     'browser_drag',
-    'Drag an element from sourceRef to targetRef.',
+    'Drag an element from sourceRef to targetRef, or through path points (chrome backend).',
     BROWSER_DRAG_SHAPE,
-    async ({ sourceRef, targetRef, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
+    async ({ sourceRef, targetRef, path, modifiers, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
       try {
-        const page = await engine.getPageForScope(scope).catch(allowScopedRpcFallback);
+        // Same rule as browser_click's ref-vs-x/y: a path is the escape hatch
+        // for surfaces with nothing to snapshot (a canvas, a slider track, a
+        // crop box), not a second way to address an element that has a ref.
+        if (path !== undefined && (sourceRef !== undefined || targetRef !== undefined)) {
+          throw new Error(
+            'Pass either sourceRef/targetRef or path, not both — a ref survives a re-render and a coordinate does not.',
+          );
+        }
+        if (path === undefined && (sourceRef === undefined || targetRef === undefined)) {
+          throw new Error(
+            'A ref drag needs both sourceRef and targetRef; to drag through viewport CSS px points pass path instead.',
+          );
+        }
+        if (path !== undefined && (path.length < 2 || path.length > 50)) {
+          throw new Error(`path takes 2 to 50 {x, y} points (viewport CSS px); got ${path.length}.`);
+        }
+
+        let pageError: unknown;
+        const page = await engine.getPageForScope(scope).catch((error) => {
+          pageError = error;
+          return allowScopedRpcFallback(error);
+        });
+
+        if (path !== undefined) {
+          if (!page) {
+            throw new Error(
+              livePageRequired('Path drags', pageError, 'drag by sourceRef/targetRef from browser_snapshot'),
+            );
+          }
+          // The emulated touchscreen's drag is a single press-slide-lift
+          // between two points; a multi-point path has no touch equivalent in
+          // this version, and a mouse drag under that identity contradicts it.
+          if (hasTouchEmulation(page)) {
+            throw new Error(
+              'Path drags are mouse-only, and a device preset with a touchscreen is active on this page (its touch drag takes one start and one end point). Drag by sourceRef/targetRef, or reset the preset with browser_emulate.',
+            );
+          }
+          const modifierKeys = modifierKeysFor(modifiers, page, pageError, 'drag without modifiers');
+          const inBounds = await viewportBoundsCheck(page);
+          for (const point of path) inBounds(point.x, point.y);
+
+          await withModifiers(page, modifierKeys, () => mouseDragThrough(page, path));
+          // Path drags are deliberately NOT recorded, for the same reason
+          // coordinate clicks are not: a coordinate does not survive a
+          // re-render, so a replay would drag whatever has moved under it.
+          const first = path[0];
+          const last = path[path.length - 1];
+          return {
+            content: [{
+              type: 'text' as const,
+              text: `Dragged through ${path.length} points from viewport CSS px (${first.x}, ${first.y}) to (${last.x}, ${last.y})${modifiersNote(modifierKeys)}`,
+            }],
+          };
+        }
+
+        const source = sourceRef as string;
+        const target = targetRef as string;
+        const modifierKeys = modifierKeysFor(modifiers, page, pageError, 'drag without modifiers');
         let dragNote = '';
 
         if (page) {
-          const sourceEl = await resolveRef(page, sourceRef);
-          if (!sourceEl) throw new Error(refNotFound(sourceRef, page));
-          const targetEl = await resolveRef(page, targetRef);
-          if (!targetEl) throw new Error(refNotFound(targetRef, page));
+          const sourceEl = await resolveRef(page, source);
+          if (!sourceEl) throw new Error(refNotFound(source, page));
+          const targetEl = await resolveRef(page, target);
+          if (!targetEl) throw new Error(refNotFound(target, page));
 
           const sourceBox = await sourceEl.boundingBox();
           const targetBox = await targetEl.boundingBox();
@@ -1459,6 +1647,7 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
           // glass: press, a bounded run of moves, lift — the same three phases
           // the mouse performs below, on the input the emulated device has.
           // Both endpoints are already measured, so nothing else is needed.
+          // (Modifiers were refused above under a touchscreen preset.)
           const touchDrag = touchDragFor(page);
           let dragged = false;
           if (touchDrag) {
@@ -1474,18 +1663,19 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
           }
 
           if (!dragged) {
-            await page.mouse.move(sourceX, sourceY);
-            await page.mouse.down();
-            await page.mouse.move(targetX, targetY, { steps: 10 });
-            await page.mouse.up();
+            // The shared pointer geometry rather than a straight 10-step line:
+            // the approach starts where the pointer was last left.
+            await withModifiers(page, modifierKeys, () =>
+              mouseDragThrough(page, [{ x: sourceX, y: sourceY }, { x: targetX, y: targetY }]),
+            );
           }
         } else {
           // RPC fallback: press, move, release over CDP Input — the same shape
           // as the Playwright path above. The synthesised DragEvents this
           // replaces were untrusted, and they also never reached anything built
           // on pointer events rather than HTML5 drag-and-drop.
-          const safeSrc = sanitizeRef(sourceRef, scope);
-          const safeTgt = sanitizeRef(targetRef, scope);
+          const safeSrc = sanitizeRef(source, scope);
+          const safeTgt = sanitizeRef(target, scope);
           const res = await sendScopedBrowserRpc<{ dispatch?: string }>('browser.drag.cdp', scope, {
             sourceSelector: `[data-wmux-ref="${safeSrc}"]`,
             targetSelector: `[data-wmux-ref="${safeTgt}"]`,
@@ -1493,10 +1683,14 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
           if (res?.dispatch === 'touch') dragNote = ' (touch drag)';
         }
 
-        recordAction(deps, { scope, tool: 'browser_drag', page, ref: sourceRef, targetRef });
+        // A drag that held keys is not recorded: a trace step carries no
+        // modifiers, so a replay would perform a different drag.
+        if (!modifierKeys) {
+          recordAction(deps, { scope, tool: 'browser_drag', page, ref: source, targetRef: target });
+        }
 
         return {
-          content: [{ type: 'text' as const, text: `Dragged element ref=${sourceRef} to ref=${targetRef}${dragNote}` }],
+          content: [{ type: 'text' as const, text: `Dragged element ref=${source} to ref=${target}${modifiersNote(modifierKeys)}${dragNote}` }],
         };
       } catch (error) {
         const message = describeToolError(error);
@@ -1612,12 +1806,41 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
     'browser_scroll',
     'Scroll the page, or a scrollable element when ref is given.',
     BROWSER_SCROLL_SHAPE,
-    async ({ direction, amount, ref, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
+    async ({ direction, amount, ref, x, y, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
       const px = amount ?? 500;
       const deltaX = direction === 'right' ? px : direction === 'left' ? -px : 0;
       const deltaY = direction === 'down' ? px : direction === 'up' ? -px : 0;
       try {
-        const page = await engine.getPageForScope(scope).catch(allowScopedRpcFallback);
+        const hasPoint = x !== undefined || y !== undefined;
+        if (hasPoint && ref !== undefined) {
+          throw new Error('Pass either ref or x/y, not both — a ref survives a re-render and a coordinate does not.');
+        }
+        if (hasPoint && (x === undefined || y === undefined)) {
+          throw new Error('A wheel at a point needs both x and y (viewport CSS pixels).');
+        }
+
+        let pageError: unknown;
+        const page = await engine.getPageForScope(scope).catch((error) => {
+          pageError = error;
+          return allowScopedRpcFallback(error);
+        });
+
+        if (hasPoint) {
+          // Real wheel events at a point: maps, canvases and virtualized lists
+          // listen for `wheel` under the pointer and ignore scrollBy entirely.
+          if (!page) {
+            throw new Error(
+              livePageRequired('Wheel scrolls at a point', pageError, 'scroll the page or a ref without x/y'),
+            );
+          }
+          (await viewportBoundsCheck(page))(x as number, y as number);
+          await walkPointer(page, { x: x as number, y: y as number });
+          await page.mouse.wheel(deltaX, deltaY);
+          // Not recorded, like a coordinate click: the point is layout.
+          return {
+            content: [{ type: 'text' as const, text: `Scrolled ${direction} by ${px}px with the wheel at viewport CSS px (${x}, ${y})` }],
+          };
+        }
 
         if (page) {
           if (ref) {

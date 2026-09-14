@@ -337,7 +337,7 @@ describe('tools/list diet — browser_repl mitigations', () => {
       const desc = repl?.description ?? '';
       expect(desc).toMatch(/navigate_back\(\)/);
       expect(desc).toMatch(/hover\(ref\)/);
-      expect(desc).toMatch(/drag\(sourceRef,targetRef\)/);
+      expect(desc).toMatch(/drag\(sourceRef,targetRef\|path\)/);
       expect(desc).toMatch(/select\(ref,values\)/);
       expect(desc).toMatch(/scroll_into_view\(ref\)/);
       expect(desc).toMatch(/highlight\(ref\)/);

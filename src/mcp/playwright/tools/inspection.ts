@@ -36,6 +36,7 @@ import {
   type ConsoleEntry,
 } from '../pageCapture';
 import { clampScreenshotCeilingBytes, MAX_SCREENSHOT_MAXBYTES } from '../../resultCap';
+import { formatRefBoxTable, refBoxCandidates } from '../screenshotRefs';
 
 // Optional surfaceId schema reused across tools
 const optionalSurfaceId = z
@@ -95,6 +96,7 @@ const BROWSER_SCREENSHOT_SHAPE = {
     .number()
     .optional()
     .describe('Image base64 ceiling (default 2097152, max 8388608). Over it the image is downscaled, never refused.'),
+  refs: z.boolean().optional().describe('Also list snapshot refs with boxes in the capture.'),
 };
 
 const BROWSER_EVALUATE_SHAPE = {
@@ -601,8 +603,34 @@ export function registerInspectionTools(server: McpServer, deps: BrowserToolDeps
     'browser_screenshot',
     'Screenshot the page or one element as a base64-encoded PNG. Requires browser_open first, even if a browser panel is already visible.',
     BROWSER_SCREENSHOT_SHAPE,
-    async ({ fullPage, ref, surfaceId, maxBytes }) => withAutomationLease(deps, surfaceId, async (scope) => {
+    async ({ fullPage, ref, surfaceId, maxBytes, refs }) => withAutomationLease(deps, surfaceId, async (scope) => {
       const ceiling = clampScreenshotCeilingBytes(maxBytes);
+      /**
+       * The refs table for a page capture, measured AFTER the shot so every box
+       * describes the page as it now is. Read-only: no overlay, no attribute,
+       * nothing written into the page. Rows use the basis the note states —
+       * viewport CSS px, or document CSS px for fullPage.
+       */
+      const refsTable = async (page: Page): Promise<string> => {
+        const size = await evaluateIsolated(
+          page,
+          '[window.innerWidth, window.innerHeight, window.scrollX, window.scrollY, document.documentElement.scrollWidth, document.documentElement.scrollHeight]',
+        ).catch(() => null);
+        const n = Array.isArray(size) && size.every((v) => typeof v === 'number') ? (size as number[]) : null;
+        const viewport = page.viewportSize() ?? (n ? { width: n[0], height: n[1] } : { width: 0, height: 0 });
+        const candidates = refBoxCandidates(page);
+        return fullPage
+          ? formatRefBoxTable(
+            candidates,
+            { x: 0, y: 0, width: n ? n[4] : viewport.width, height: n ? n[5] : viewport.height },
+            { offset: { x: n ? n[2] : 0, y: n ? n[3] : 0 }, basis: 'document CSS px' },
+          )
+          : formatRefBoxTable(
+            candidates,
+            { x: 0, y: 0, width: viewport.width, height: viewport.height },
+            { basis: 'viewport CSS px' },
+          );
+      };
       try {
         // Chrome backend (dogfood P2): browser.screenshot has no chrome lane —
         // whole-page shots go over the resolved Playwright page instead.
@@ -627,7 +655,8 @@ export function registerInspectionTools(server: McpServer, deps: BrowserToolDeps
                 }),
               ),
             );
-            return imageResult(fitted, coordinateBasis(fullPage ? 'fullPage' : 'viewport', dpr));
+            const basis = coordinateBasis(fullPage ? 'fullPage' : 'viewport', dpr);
+            return imageResult(fitted, refs ? `${basis}\n\n${await refsTable(page)}` : basis);
           }
         }
         // Try Playwright for element-level screenshots (ref)
@@ -646,7 +675,11 @@ export function registerInspectionTools(server: McpServer, deps: BrowserToolDeps
                 el.screenshot({ type: 'jpeg', quality: rung.quality }) as Promise<Buffer>,
               ),
             );
-            return imageResult(fitted, coordinateBasis('element', null));
+            const basis = coordinateBasis('element', null);
+            return imageResult(
+              fitted,
+              refs ? `${basis}\n\nrefs:true lists boxes for page captures only; omit ref.` : basis,
+            );
           }
         }
 
@@ -669,7 +702,11 @@ export function registerInspectionTools(server: McpServer, deps: BrowserToolDeps
         });
         // The RPC lane cannot click by coordinate at all, so telling the
         // caller how to convert pixels here would contradict itself.
-        return imageResult(fitted, coordinateBasis(fullPage ? 'fullPage' : 'unsupported', null));
+        const basis = coordinateBasis(fullPage ? 'fullPage' : 'unsupported', null);
+        return imageResult(
+          fitted,
+          refs ? `${basis}\n\nrefs:true needs the chrome backend: this lane has no live page to measure boxes on.` : basis,
+        );
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         return {

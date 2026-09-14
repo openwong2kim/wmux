@@ -20,7 +20,9 @@ vi.mock('../../wmux-client', () => ({
 }));
 
 vi.mock('../PlaywrightEngine', () => ({
-  PlaywrightEngine: { getInstance: () => ({ getPageForScope: getPage }) },
+  PlaywrightEngine: {
+    getInstance: () => ({ getPageForScope: getPage, resolveWorkspaceBackend: async () => 'chrome' }),
+  },
 }));
 
 vi.mock('../snapshot', () => ({
@@ -57,6 +59,9 @@ function collectTools(): Map<string, ToolHandler> {
 const tools = collectTools();
 const fill = tools.get('browser_fill')!;
 const type = tools.get('browser_type')!;
+const click = tools.get('browser_click')!;
+const drag = tools.get('browser_drag')!;
+const scroll = tools.get('browser_scroll')!;
 
 const SECRET = 'hunter2SECRET';
 
@@ -160,5 +165,63 @@ describe('browser_fill recording — the password guarantee', () => {
     const recorded = ring.all();
     expect(JSON.stringify(recorded)).not.toContain(SECRET);
     expect(recorded[0].step.unrecordable).toBe('password');
+  });
+});
+
+describe('pointer gestures and the action ring', () => {
+  /** A page that accepts every mouse and keyboard call. */
+  function pointerPage() {
+    const noop = vi.fn(async () => undefined);
+    return {
+      url: () => 'https://example.com/board',
+      on: vi.fn(),
+      off: vi.fn(),
+      viewportSize: () => ({ width: 1280, height: 800 }),
+      evaluate: vi.fn(async () => undefined),
+      mouse: { move: noop, down: noop, up: noop, click: noop, wheel: noop },
+      keyboard: { down: noop, up: noop, press: noop },
+    };
+  }
+
+  function boxedElement() {
+    return {
+      boundingBox: vi.fn(async () => ({ x: 100, y: 100, width: 40, height: 40 })),
+      scrollIntoViewIfNeeded: vi.fn(async () => undefined),
+      click: vi.fn(async () => undefined),
+      dblclick: vi.fn(async () => undefined),
+    };
+  }
+
+  beforeEach(() => {
+    getPage.mockResolvedValue(pointerPage());
+    resolveRef.mockImplementation(async () => boxedElement());
+  });
+
+  it('a plain ref drag still records, with both refs', async () => {
+    const result = await drag({ sourceRef: '1', targetRef: '2' });
+    expect(result.isError).toBeUndefined();
+
+    const recorded = ring.all();
+    expect(recorded).toHaveLength(1);
+    expect(recorded[0].step.tool).toBe('browser_drag');
+    expect(recorded[0].step.target2).toBeDefined();
+  });
+
+  it('records none of the new gestures', async () => {
+    const results = [
+      await drag({ path: [{ x: 10, y: 10 }, { x: 200, y: 200 }] }),
+      await drag({ sourceRef: '1', targetRef: '2', modifiers: ['Shift'] }),
+      await scroll({ direction: 'down', x: 300, y: 300 }),
+      await click({ ref: '1', modifiers: ['Control'] }),
+      await click({ x: 20, y: 20, modifiers: ['Meta'] }),
+    ];
+    for (const result of results) expect(result.isError).toBeUndefined();
+    expect(ring.all()).toEqual([]);
+  });
+
+  it('while the unmodified click and scroll still record', async () => {
+    await click({ ref: '1' });
+    await scroll({ direction: 'down' });
+    expect(ring.all().map((r) => r.step.tool)).toEqual(['browser_click', 'browser_scroll']);
   });
 });

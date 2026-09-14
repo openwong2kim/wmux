@@ -1,10 +1,18 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { mockSendRpc, getPage, resolveWorkspaceBackend, resolveRefMock } = vi.hoisted(() => ({
+const { mockSendRpc, getPage, resolveWorkspaceBackend, resolveRefMock, listRefEntriesMock, touch } = vi.hoisted(() => ({
   mockSendRpc: vi.fn(),
   getPage: vi.fn(),
   resolveWorkspaceBackend: vi.fn(),
   resolveRefMock: vi.fn(),
+  listRefEntriesMock: vi.fn(),
+  touch: { active: false, drag: vi.fn() },
+}));
+
+vi.mock('../touch-input', () => ({
+  hasTouchEmulation: () => touch.active,
+  touchTapFor: () => undefined,
+  touchDragFor: () => (touch.active ? touch.drag : undefined),
 }));
 
 vi.mock('../../wmux-client', () => ({
@@ -20,7 +28,7 @@ vi.mock('../PlaywrightEngine', () => ({
   },
 }));
 
-vi.mock('../snapshot', () => ({ resolveRef: resolveRefMock, generateSnapshot: vi.fn(), generateScopedSnapshot: vi.fn(), markDomRefsActive: vi.fn() }));
+vi.mock('../snapshot', () => ({ resolveRef: resolveRefMock, listRefEntries: listRefEntriesMock, generateSnapshot: vi.fn(), generateScopedSnapshot: vi.fn(), markDomRefsActive: vi.fn() }));
 
 import { registerInteractionTools } from '../tools/interaction';
 import { registerInspectionTools } from '../tools/inspection';
@@ -44,9 +52,12 @@ function collect(register: (s: never, d: never) => void): Map<string, ToolHandle
   return tools;
 }
 
-const click = collect(registerInteractionTools).get('browser_click');
+const interaction = collect(registerInteractionTools);
+const click = interaction.get('browser_click');
+const drag = interaction.get('browser_drag');
+const scroll = interaction.get('browser_scroll');
 const screenshot = collect(registerInspectionTools).get('browser_screenshot');
-if (!click || !screenshot) throw new Error('tools failed to register');
+if (!click || !drag || !scroll || !screenshot) throw new Error('tools failed to register');
 
 type Handler = (arg: unknown) => void;
 
@@ -60,13 +71,19 @@ function makePage(
 ) {
   const handlers = new Map<string, Set<Handler>>();
   const order: string[] = [];
-  const mouseClick = vi.fn(async () => {
+  /** Mouse and keyboard input, in the order the page received it. */
+  const input: string[] = [];
+  const mouseClick = vi.fn(async (cx: number, cy: number) => {
+    input.push(`click ${cx},${cy}`);
     if (opts.popupUrl !== undefined) {
       for (const fn of handlers.get('popup') ?? []) fn({ url: () => opts.popupUrl });
     }
   });
+  const mouseMove = vi.fn(async (mx: number, my: number) => { input.push(`move ${mx},${my}`); });
   return {
     mouseClick,
+    mouseMove,
+    input,
     order,
     listenerCount: () => handlers.get('popup')?.size ?? 0,
     page: {
@@ -77,14 +94,27 @@ function makePage(
       },
       off: (event: string, fn: Handler) => handlers.get(event)?.delete(fn),
       locator: vi.fn(),
-      mouse: { click: mouseClick },
+      mouse: {
+        click: mouseClick,
+        move: mouseMove,
+        down: vi.fn(async () => { input.push('down'); }),
+        up: vi.fn(async () => { input.push('up'); }),
+        wheel: vi.fn(async (dx: number, dy: number) => { input.push(`wheel ${dx},${dy}`); }),
+      },
+      keyboard: {
+        down: vi.fn(async (key: string) => { input.push(`keydown ${key}`); }),
+        up: vi.fn(async (key: string) => { input.push(`keyup ${key}`); }),
+      },
       viewportSize: () => (opts.viewport === undefined ? { width: 1280, height: 800 } : opts.viewport),
-      evaluate: vi.fn(async (expr: string) => {
+      evaluate: vi.fn(async (expr: string | ((...a: unknown[]) => unknown)) => {
         order.push('evaluate');
         if (expr === 'window.devicePixelRatio') return 2;
         if (expr === '[window.innerWidth, window.innerHeight]') {
           if (opts.innerSize === 'throws') throw new Error('Execution context was destroyed');
           return opts.innerSize ?? [1024, 768];
+        }
+        if (typeof expr === 'string' && expr.startsWith('[window.innerWidth, window.innerHeight, window.scrollX')) {
+          return [1280, 800, 0, 300, 1280, 4000];
         }
         return undefined;
       }),
@@ -103,7 +133,16 @@ beforeEach(() => {
   resolveWorkspaceBackend.mockReset();
   resolveWorkspaceBackend.mockResolvedValue('chrome');
   resolveRefMock.mockReset();
+  listRefEntriesMock.mockReset();
+  listRefEntriesMock.mockReturnValue([]);
+  touch.active = false;
+  touch.drag.mockReset();
 });
+
+/** A resolved element with a fixed box and nothing else. */
+function boxed(box: { x: number; y: number; width: number; height: number }) {
+  return { boundingBox: async () => box };
+}
 
 describe('browser_click coordinates', () => {
   it('clicks at viewport CSS pixels through the mouse API', async () => {
@@ -269,5 +308,311 @@ describe('browser_screenshot coordinate basis', () => {
 
     expect(note).toContain('ELEMENT-relative');
     expect(note).toContain('NOT usable');
+  });
+});
+
+describe('browser_drag path', () => {
+  const PATH = [{ x: 100, y: 100 }, { x: 300, y: 120 }, { x: 320, y: 400 }];
+
+  it('presses at the first point, walks every leg with the pointer geometry, and releases at the last', async () => {
+    const { page, input } = makePage();
+    getPage.mockResolvedValue(page);
+
+    const result = await drag({ path: PATH });
+
+    expect(result.isError).toBeUndefined();
+    expect(result.content[0].text).toBe('Dragged through 3 points from viewport CSS px (100, 100) to (320, 400)');
+    const down = input.indexOf('down');
+    expect(input[down - 1]).toBe('move 100,100');
+    // Every waypoint is visited exactly, with intermediate points between them.
+    expect(input).toContain('move 300,120');
+    expect(input[input.length - 2]).toBe('move 320,400');
+    expect(input[input.length - 1]).toBe('up');
+    expect(input.length - down).toBeGreaterThan(2 * 8);
+  });
+
+  it('refuses a point outside the viewport before pressing anything', async () => {
+    const { page, input } = makePage({ viewport: null, innerSize: [1024, 768] });
+    getPage.mockResolvedValue(page);
+
+    const result = await drag({ path: [{ x: 10, y: 10 }, { x: 2000, y: 10 }] });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('1024x768 viewport');
+    expect(input).toEqual([]);
+  });
+
+  it('refuses refs and a path together', async () => {
+    const result = await drag({ sourceRef: '1', targetRef: '2', path: PATH });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('not both');
+  });
+
+  it('refuses a ref drag with only one ref', async () => {
+    const result = await drag({ sourceRef: '1' });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('needs both sourceRef and targetRef');
+  });
+
+  it('refuses a path outside 2..50 points', async () => {
+    expect((await drag({ path: [{ x: 1, y: 1 }] })).content[0].text).toContain('2 to 50');
+    const long = Array.from({ length: 51 }, (_, i) => ({ x: i, y: i }));
+    expect((await drag({ path: long })).content[0].text).toContain('2 to 50');
+  });
+
+  it('is refused on the RPC lane with the coordinate-click wording', async () => {
+    getPage.mockResolvedValue(null);
+
+    const result = await drag({ path: PATH });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('Path drags need a live browser page');
+    expect(result.content[0].text).toContain('chrome backend');
+    expect(mockSendRpc).not.toHaveBeenCalledWith('browser.drag.cdp', expect.anything(), expect.anything());
+  });
+
+  it('is refused under a touchscreen preset', async () => {
+    const { page, input } = makePage();
+    getPage.mockResolvedValue(page);
+    touch.active = true;
+
+    const result = await drag({ path: PATH });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('mouse-only');
+    expect(input).toEqual([]);
+    expect(touch.drag).not.toHaveBeenCalled();
+  });
+});
+
+describe('browser_drag by ref', () => {
+  it('uses the pointer geometry instead of a straight 10-step move', async () => {
+    const { page, input, mouseMove } = makePage();
+    getPage.mockResolvedValue(page);
+    resolveRefMock.mockImplementation(async (_p: unknown, ref: string) =>
+      boxed(ref === '1' ? { x: 90, y: 90, width: 20, height: 20 } : { x: 490, y: 290, width: 20, height: 20 }),
+    );
+
+    const result = await drag({ sourceRef: '1', targetRef: '2' });
+
+    expect(result.content[0].text).toBe('Dragged element ref=1 to ref=2');
+    // Never Playwright's own interpolation, which is a perfectly straight line.
+    for (const call of mouseMove.mock.calls) expect(call).toHaveLength(2);
+    const down = input.indexOf('down');
+    expect(input[down - 1]).toBe('move 100,100');
+    expect(input[input.length - 2]).toBe('move 500,300');
+    expect(input.length - down - 2).toBeGreaterThanOrEqual(8);
+  });
+
+  it('keeps the touch drag between the two centres under a touchscreen preset', async () => {
+    const { page, input } = makePage();
+    getPage.mockResolvedValue(page);
+    touch.active = true;
+    resolveRefMock.mockImplementation(async (_p: unknown, ref: string) =>
+      boxed(ref === '1' ? { x: 0, y: 0, width: 10, height: 10 } : { x: 100, y: 0, width: 10, height: 10 }),
+    );
+
+    const result = await drag({ sourceRef: '1', targetRef: '2' });
+    expect(result.content[0].text).toContain('(touch drag)');
+    expect(touch.drag).toHaveBeenCalledWith({ x: 5, y: 5 }, { x: 105, y: 5 });
+    expect(input).toEqual([]);
+  });
+});
+
+describe('browser_scroll wheel at a point', () => {
+  it('walks the pointer to the point and sends a real wheel event there', async () => {
+    const { page, input } = makePage();
+    getPage.mockResolvedValue(page);
+
+    const result = await scroll({ direction: 'down', amount: 240, x: 600, y: 350 });
+
+    expect(result.isError).toBeUndefined();
+    expect(result.content[0].text).toBe('Scrolled down by 240px with the wheel at viewport CSS px (600, 350)');
+    expect(input.slice(-2)).toEqual(['move 600,350', 'wheel 0,240']);
+    expect(page.evaluate).not.toHaveBeenCalled();
+  });
+
+  it('refuses x without y', async () => {
+    const result = await scroll({ direction: 'down', x: 10 });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('needs both x and y');
+  });
+
+  it('refuses a point outside the viewport', async () => {
+    const { page, input } = makePage({ viewport: { width: 800, height: 600 } });
+    getPage.mockResolvedValue(page);
+
+    const result = await scroll({ direction: 'up', x: 10, y: 700 });
+    expect(result.content[0].text).toContain('800x600 viewport');
+    expect(input).toEqual([]);
+  });
+
+  it('is refused on the RPC lane with the coordinate-click wording', async () => {
+    getPage.mockResolvedValue(null);
+
+    const result = await scroll({ direction: 'down', x: 10, y: 10 });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('chrome backend');
+    expect(mockSendRpc).not.toHaveBeenCalledWith('browser.evaluate', expect.anything(), expect.anything());
+  });
+
+  it('without x/y still scrolls with scrollBy and sends no pointer input', async () => {
+    const { page, input } = makePage();
+    getPage.mockResolvedValue(page);
+
+    const result = await scroll({ direction: 'down', amount: 100 });
+    expect(result.content[0].text).toBe('Scrolled down by 100px');
+    expect(page.evaluate).toHaveBeenCalled();
+    expect(input).toEqual([]);
+  });
+});
+
+describe('modifier keys', () => {
+  it('holds the keys around a coordinate click and releases them after', async () => {
+    const { page, input } = makePage();
+    getPage.mockResolvedValue(page);
+
+    const result = await click({ x: 50, y: 60, modifiers: ['Control', 'Shift', 'Control'] });
+
+    expect(result.content[0].text).toBe('Clicked at viewport CSS px (50, 60) with Control+Shift held');
+    expect(input).toEqual(['keydown Control', 'keydown Shift', 'click 50,60', 'keyup Shift', 'keyup Control']);
+  });
+
+  it('releases every key that went down when the gesture throws', async () => {
+    const { page, input, mouseClick } = makePage();
+    getPage.mockResolvedValue(page);
+    mouseClick.mockRejectedValueOnce(new Error('Target closed'));
+
+    const result = await click({ x: 50, y: 60, modifiers: ['Meta'] });
+
+    expect(result.isError).toBe(true);
+    expect(input).toEqual(['keydown Meta', 'keyup Meta']);
+  });
+
+  it('releases the keys when a held drag throws mid-path, and the mouse button too', async () => {
+    const { page, input, mouseMove } = makePage();
+    getPage.mockResolvedValue(page);
+    let moves = 0;
+    mouseMove.mockImplementation(async () => {
+      moves++;
+      input.push('move');
+      if (moves === 20) throw new Error('Execution context was destroyed');
+    });
+
+    const result = await drag({ path: [{ x: 10, y: 10 }, { x: 700, y: 500 }], modifiers: ['Alt'] });
+
+    expect(result.isError).toBe(true);
+    expect(input[0]).toBe('keydown Alt');
+    expect(input.slice(-2)).toEqual(['up', 'keyup Alt']);
+  });
+
+  it('holds the keys around a ref drag', async () => {
+    const { page, input } = makePage();
+    getPage.mockResolvedValue(page);
+    resolveRefMock.mockResolvedValue(boxed({ x: 10, y: 10, width: 10, height: 10 }));
+
+    const result = await drag({ sourceRef: '1', targetRef: '2', modifiers: ['Shift'] });
+    expect(result.content[0].text).toBe('Dragged element ref=1 to ref=2 with Shift held');
+    expect(input[0]).toBe('keydown Shift');
+    expect(input[input.length - 1]).toBe('keyup Shift');
+  });
+
+  it('are refused on the RPC lane with the coordinate-click wording', async () => {
+    getPage.mockResolvedValue(null);
+
+    const onClick = await click({ ref: '3', modifiers: ['Shift'] });
+    expect(onClick.isError).toBe(true);
+    expect(onClick.content[0].text).toContain('Modifier keys need a live browser page');
+    expect(onClick.content[0].text).toContain('chrome backend');
+    const onDrag = await drag({ sourceRef: '1', targetRef: '2', modifiers: ['Alt'] });
+    expect(onDrag.content[0].text).toContain('Modifier keys need a live browser page');
+    expect(mockSendRpc).not.toHaveBeenCalledWith('browser.click.cdp', expect.anything(), expect.anything());
+    expect(mockSendRpc).not.toHaveBeenCalledWith('browser.drag.cdp', expect.anything(), expect.anything());
+  });
+
+  it('are refused under a touchscreen preset', async () => {
+    const { page, input } = makePage();
+    getPage.mockResolvedValue(page);
+    touch.active = true;
+    resolveRefMock.mockResolvedValue(boxed({ x: 10, y: 10, width: 10, height: 10 }));
+
+    const onClick = await click({ x: 5, y: 5, modifiers: ['Control'] });
+    expect(onClick.isError).toBe(true);
+    expect(onClick.content[0].text).toContain('touchscreen');
+    const onDrag = await drag({ sourceRef: '1', targetRef: '2', modifiers: ['Control'] });
+    expect(onDrag.content[0].text).toContain('touchscreen');
+    expect(input).toEqual([]);
+    expect(touch.drag).not.toHaveBeenCalled();
+  });
+});
+
+describe('browser_screenshot refs', () => {
+  const ENTRIES = [
+    { ref: 12, role: 'button', name: 'Log in' },
+    { ref: 13, role: 'link', name: 'Far below' },
+  ];
+
+  it('appends a table of refs measured after the capture, without writing into the page', async () => {
+    const watched = makePage();
+    getPage.mockResolvedValue(watched.page);
+    listRefEntriesMock.mockReturnValue(ENTRIES);
+    resolveRefMock.mockImplementation(async (_p: unknown, ref: string) => {
+      watched.order.push(`measure ${ref}`);
+      return boxed(ref === '12' ? { x: 40.4, y: 20, width: 80, height: 30 } : { x: 0, y: 5000, width: 10, height: 10 });
+    });
+
+    const result = await screenshot({ refs: true });
+    const note = result.content.find((c) => c.type === 'text')?.text ?? '';
+
+    expect(note).toContain('devicePixelRatio 2');
+    expect(note).toContain('Refs in this capture (viewport CSS px: x,y,w,h):\nref=12 button "Log in" 40,20,80,30');
+    expect(note).not.toContain('ref=13');
+    expect(note).toContain('1 outside the capture');
+    // Measured after the shot, and every page evaluation is a read.
+    expect(watched.order.indexOf('screenshot')).toBeLessThan(watched.order.indexOf('measure 12'));
+    for (const [expr] of watched.page.evaluate.mock.calls) {
+      expect(String(expr)).toMatch(/^(window\.devicePixelRatio|\[window\.)/);
+    }
+  });
+
+  it('prints fullPage rows in document coordinates', async () => {
+    const { page } = makePage();
+    getPage.mockResolvedValue(page);
+    listRefEntriesMock.mockReturnValue(ENTRIES);
+    resolveRefMock.mockImplementation(async (_p: unknown, ref: string) =>
+      boxed(ref === '12' ? { x: 40, y: 20, width: 80, height: 30 } : { x: 0, y: 3500, width: 10, height: 10 }),
+    );
+
+    const result = await screenshot({ fullPage: true, refs: true });
+    const note = result.content.find((c) => c.type === 'text')?.text ?? '';
+    // scrollY 300 is added; the document is 4000 px tall, so ref 13 is in it.
+    expect(note).toContain('ref=12 button "Log in" 40,320,80,30');
+    expect(note).toContain('ref=13 link "Far below" 0,3800,10,10');
+  });
+
+  it('says to snapshot first when the page has no refs', async () => {
+    const { page } = makePage();
+    getPage.mockResolvedValue(page);
+
+    const result = await screenshot({ refs: true });
+    const note = result.content.find((c) => c.type === 'text')?.text ?? '';
+    expect(note).toContain('call browser_snapshot');
+  });
+
+  it('adds nothing when refs is not asked for', async () => {
+    const { page } = makePage();
+    getPage.mockResolvedValue(page);
+    listRefEntriesMock.mockReturnValue(ENTRIES);
+
+    const result = await screenshot({});
+    const note = result.content.find((c) => c.type === 'text')?.text ?? '';
+    expect(note).not.toContain('Refs in this capture');
+    expect(listRefEntriesMock).not.toHaveBeenCalled();
+  });
+
+  it('notes that the RPC lane cannot measure boxes', async () => {
+    getPage.mockResolvedValue(null);
+
+    const result = await screenshot({ refs: true });
+    const note = result.content.find((c) => c.type === 'text')?.text ?? '';
+    expect(note).toContain('refs:true needs the chrome backend');
   });
 });
