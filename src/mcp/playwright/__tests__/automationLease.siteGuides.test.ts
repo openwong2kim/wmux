@@ -117,9 +117,14 @@ const body = async () => ({
 });
 
 /** Land once and return the hint text ('' when no hint block was prepended). */
-async function land(queue: unknown[], opts: RouterOpts, surface = 's1'): Promise<string> {
+async function land(
+  queue: unknown[],
+  opts: RouterOpts,
+  // null, not undefined: an undefined argument would take the 's1' default.
+  surface: string | null = 's1',
+): Promise<string> {
   mockSendRpc.mockImplementation(router(queue, opts));
-  const result = (await withAutomationLease(deps, surface, body)) as {
+  const result = (await withAutomationLease(deps, surface ?? undefined, body)) as {
     content: Array<{ text?: string; _meta?: Record<string, unknown> }>;
   };
   const first = result.content[0];
@@ -194,6 +199,18 @@ describe('site guide pointers on navigation', () => {
     expect(
       await land([navigated('https://shop.test/cart')], { guides: [guide()] }, 's2'),
     ).toContain('[guide]');
+  });
+
+  it('announces every landing that names no surface, instead of sharing one key', async () => {
+    // Without a surface id the lease resolves whichever tab is active, which
+    // can change between calls; one shared key would silence a landing on a
+    // different tab that happens to match the same guides.
+    const opts = { guides: [guide()] };
+    expect(await land([navigated('https://shop.test/cart')], opts, null)).toContain('[guide]');
+    expect(await land([navigated('https://shop.test/cart')], opts, null)).toContain('[guide]');
+    // And it does not disturb the dedupe of a named surface.
+    expect(await land([navigated('https://shop.test/cart')], opts, 's1')).toContain('[guide]');
+    expect(await land([navigated('https://shop.test/cart')], opts, 's1')).toBe('');
   });
 
   it('marks a guide older than a recorded failure on the same page', async () => {

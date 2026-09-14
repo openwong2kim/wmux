@@ -947,7 +947,7 @@ export const en = {
   'settings.siteMemory': 'Per-site memory',
   'settings.siteMemoryDesc': 'Remember what went wrong on a site — a replay that stopped, a host that would not load — and mention it the next time the browser lands there. Stored per workspace, one file per domain, and forgotten after 60 days without a repeat. Turning this off stops both recording and reminding; anything already recorded can still be deleted.',
   'settings.siteGuides': 'Site guides',
-  'settings.siteGuidesDesc': 'When the browser lands on a page matched by a note in the site-guides folder of the wmux data directory, tell the agent the note exists and where it is. Only the title and path are shared, never the note itself. Off by default.',
+  'settings.siteGuidesDesc': 'When the browser lands on a page matched by a note in the site-guides folder of the wmux data directory, tell the agent the note exists and where it is. Only the title and path are shared, never the note itself. Any tool allowed to read the browser can ask which notes match a URL and learn their titles and paths, though not their contents. Off by default.',
   'settings.updates': 'Updates',
   'settings.wmuxUpdates': 'wmux updates',
   'settings.updateFailed': 'Failed to check for updates',

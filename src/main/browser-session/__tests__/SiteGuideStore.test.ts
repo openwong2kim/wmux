@@ -5,8 +5,26 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { SiteGuideStore, displayGuidePath, getSiteGuidesDir } from '../SiteGuideStore';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+// The fs namespace cannot be spied on under ESM, so realpathSync is wrapped at
+// the module boundary to count how often the store resolves each file.
+const { realpathCalls } = vi.hoisted(() => ({ realpathCalls: [] as string[] }));
+vi.mock('fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('fs')>();
+  const realpathSync = ((p: import('fs').PathLike, ...rest: unknown[]) => {
+    realpathCalls.push(String(p));
+    return (actual.realpathSync as (...args: unknown[]) => string)(p, ...rest);
+  }) as typeof actual.realpathSync;
+  return { ...actual, realpathSync };
+});
+
+import {
+  SITE_GUIDE_LISTING_TTL_MS,
+  SiteGuideStore,
+  displayGuidePath,
+  getSiteGuidesDir,
+} from '../SiteGuideStore';
 
 let home: string;
 let guidesDir: string;
@@ -78,17 +96,49 @@ describe('SiteGuideStore', () => {
     expect(store.match(URL_UPLOAD)).toEqual([]);
   });
 
-  it('re-checks containment on every call, not only when first parsed', () => {
+  it('re-checks containment once the cached resolution is older than the TTL', () => {
+    const t0 = 1_000_000;
     const inside = path.join(guidesDir, 'studio.md');
     fs.writeFileSync(inside, guideFile('studio.example.com/**'));
-    expect(store.match(URL_UPLOAD)).toHaveLength(1);
+    expect(store.match(URL_UPLOAD, t0)).toHaveLength(1);
 
     // Swap the parsed, cached file for a symlink pointing out of the tree.
     const outside = path.join(home, 'outside.md');
     fs.writeFileSync(outside, guideFile('studio.example.com/**'));
     fs.rmSync(inside);
     fs.symlinkSync(outside, inside);
-    expect(store.match(URL_UPLOAD)).toEqual([]);
+    expect(store.match(URL_UPLOAD, t0 + SITE_GUIDE_LISTING_TTL_MS)).toEqual([]);
+  });
+
+  it('re-checks containment right away when the setting is switched on', () => {
+    const t0 = 1_000_000;
+    const inside = path.join(guidesDir, 'studio.md');
+    fs.writeFileSync(inside, guideFile('studio.example.com/**'));
+    expect(store.match(URL_UPLOAD, t0)).toHaveLength(1);
+    const outside = path.join(home, 'outside.md');
+    fs.writeFileSync(outside, guideFile('studio.example.com/**'));
+    fs.rmSync(inside);
+    fs.symlinkSync(outside, inside);
+    store.invalidateListing();
+    expect(store.match(URL_UPLOAD, t0 + 1)).toEqual([]);
+  });
+
+  it('resolves each file once per TTL, however many landings happen', () => {
+    // Main-thread cost per landing: within the TTL the (realpath, stat) of
+    // each guide is reused, so a burst of navigations does no repeated fs work.
+    write('a.md', guideFile('studio.example.com/**', 'First note'));
+    write('b.md', guideFile('studio.example.com/upload', 'Second note'));
+    realpathCalls.length = 0;
+    const t0 = 1_000_000;
+    expect(store.match(URL_UPLOAD, t0)).toHaveLength(2);
+    expect(store.match(URL_UPLOAD, t0 + SITE_GUIDE_LISTING_TTL_MS - 1)).toHaveLength(2);
+    const perFile = (name: string) =>
+      realpathCalls.filter((p) => p === path.join(guidesDir, name)).length;
+    expect(perFile('a.md')).toBe(1);
+    expect(perFile('b.md')).toBe(1);
+
+    store.match(URL_UPLOAD, t0 + SITE_GUIDE_LISTING_TTL_MS);
+    expect(perFile('a.md')).toBe(2);
   });
 
   it('ignores a file larger than the size cap', () => {

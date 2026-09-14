@@ -89,15 +89,27 @@ describe('guide url globs', () => {
     expect(matches('shop.test/**', 'https://shop.test/')).toBe(true);
     // No path at all means any path.
     expect(matches('shop.test', 'https://shop.test/deep/page')).toBe(true);
-    // A pattern ending in a bare slash is the root only.
-    expect(matches('shop.test/', 'https://shop.test/deep')).toBe(false);
+    // A bare trailing slash means this site, the same as no path at all.
+    expect(matches('shop.test/', 'https://shop.test/deep')).toBe(true);
+    expect(matches('shop.test/', 'https://shop.test/')).toBe(true);
+    expect(compileGuideGlob('shop.test/')?.pathSegments).toEqual(['**']);
   });
 
   it('ignores over-broad host patterns', () => {
-    for (const glob of ['*', '**', '*.com', '*.*', 'com']) {
+    for (const glob of ['*', '**', '*.com', '*.*', '*.localhost/**']) {
       expect(compileGuideGlob(glob), glob).toBeNull();
     }
     expect(compileGuideGlob('*.co.uk')).not.toBeNull();
+  });
+
+  it('allows a single-label host without a wildcard', () => {
+    // localhost and bare intranet names name exactly one host; only a
+    // wildcard with too few literal labels is over-broad.
+    expect(matches('localhost:3000/**', 'http://localhost:3000/app')).toBe(true);
+    expect(matches('localhost/**', 'http://localhost:5173/')).toBe(true);
+    expect(matches('intranet/wiki/*', 'https://intranet/wiki/page')).toBe(true);
+    expect(matches('localhost/**', 'http://other/')).toBe(false);
+    expect(matches('localhost/**', 'http://app.localhost/')).toBe(false);
   });
 
   it('compares hosts lowercased and IDNA-normalized', () => {

@@ -51,6 +51,13 @@ export function takeGuideAnnouncement(
   memory: SiteMemoryRecord | null,
 ): string {
   const shown = selectRenderableGuides(guides);
+  // Without a surface id every landing would share one key, whichever tab
+  // the lease actually resolved, and a landing on another tab with the same
+  // guides would stay silent. The resolved surface is not available here, so
+  // such a landing is announced without dedupe.
+  if (surfaceId === undefined) {
+    return shown.length > 0 ? renderGuideHintBlock(shown, memory) : '';
+  }
   const key = guideSetKey(shown);
   const state = getState();
   const surface = snapshotSurfaceKey(workspaceId, surfaceId);

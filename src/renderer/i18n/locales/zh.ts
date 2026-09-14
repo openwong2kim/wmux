@@ -1097,7 +1097,7 @@ export const zh = {
   'settings.siteMemory': '站点记忆',
   'settings.siteMemoryDesc': '记住某个站点上出过什么问题——中断的重放、打不开的主机——并在浏览器下次到达那里时提醒你。按工作区存储，每个域名一个文件，60 天内没有再次出现就会遗忘。关闭后将同时停止记录和提醒；已记录的内容仍可删除。',
   'settings.siteGuides': '站点指南',
-  'settings.siteGuidesDesc': '当浏览器到达与 wmux 数据目录中 site-guides 文件夹里某篇笔记相匹配的页面时，告诉智能体有这篇笔记以及它的位置。只提供标题和路径，从不提供笔记内容。默认关闭。',
+  'settings.siteGuidesDesc': '当浏览器到达与 wmux 数据目录中 site-guides 文件夹里某篇笔记相匹配的页面时，告诉智能体有这篇笔记以及它的位置。只提供标题和路径，从不提供笔记内容。任何有权读取浏览器的工具都可以查询哪些笔记与某个 URL 匹配，并得知它们的标题和路径，但无法得知内容。默认关闭。',
   'settings.fontFamilyPlaceholder': '输入或选择字体…',
   'settings.fontCustom': '自定义字体…',
   'settings.fontCustomPlaceholder': '字体名称（例如 JetBrainsMonoHangul）',

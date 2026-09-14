@@ -12,6 +12,7 @@ import { getActionCacheStore } from '../../browser-session/ActionCacheStore';
 import { getPromotedSkillStore } from '../../browser-session/PromotedSkillStore';
 import { getSiteMemoryStore } from '../../browser-session/SiteMemoryStore';
 import { getSiteGuideStore } from '../../browser-session/SiteGuideStore';
+import { SITE_GUIDE_MAX_URL_CHARS } from '../../../shared/browserGuides/siteGuides';
 import {
   buildFailureEntry,
   buildNoteEntry,
@@ -1192,6 +1193,13 @@ export function registerBrowserRpc(
 
   router.register('browser.siteGuides.match', async (params, ctx) => {
     cacheWorkspace('browser.siteGuides.match', params, ctx);
+    // Titles and home-relative paths of local notes are local-only data, so
+    // the same disclosure gate as the CDP attach info applies: a third-party
+    // wire client or a hosted plugin gets the answer an off setting gives.
+    if (!canDiscloseBrowserAttachInfo(ctx)) return { guides: [] };
+    // Bounded at entry, before the setting read or any matching.
+    const url = typeof params['url'] === 'string' ? params['url'] : '';
+    if (!url || url.length > SITE_GUIDE_MAX_URL_CHARS) return { guides: [] };
     // Default OFF: only an explicit persisted true opts in. Off touches no file.
     if (readSiteGuidesEnabled() !== true) {
       siteGuidesWereOn = false;
@@ -1203,8 +1211,6 @@ export function registerBrowserRpc(
       siteGuides.invalidateListing();
       siteGuidesWereOn = true;
     }
-    const url = typeof params['url'] === 'string' ? params['url'] : '';
-    if (!url) return { guides: [] };
     return { guides: siteGuides.match(url) };
   });
 

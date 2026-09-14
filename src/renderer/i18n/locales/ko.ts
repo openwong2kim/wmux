@@ -476,7 +476,7 @@ export const ko = {
   'settings.siteMemory': '사이트별 기억',
   'settings.siteMemoryDesc': '사이트에서 무엇이 잘못됐는지 — 중단된 리플레이, 열리지 않는 호스트 — 기억해 두었다가 다음에 그곳에 도착하면 알려줍니다. 워크스페이스별로 도메인당 파일 하나에 저장하고, 60일 동안 다시 겪지 않으면 잊습니다. 끄면 기록과 알림이 모두 멈추지만 이미 기록된 것은 그대로 삭제할 수 있습니다.',
   'settings.siteGuides': '사이트 가이드',
-  'settings.siteGuidesDesc': '브라우저가 wmux 데이터 폴더의 site-guides 폴더에 있는 노트와 일치하는 페이지에 도착하면, 그런 노트가 있고 어디에 있는지 에이전트에게 알려줍니다. 제목과 경로만 전달하고 노트 내용은 전달하지 않습니다. 기본값은 꺼짐입니다.',
+  'settings.siteGuidesDesc': '브라우저가 wmux 데이터 폴더의 site-guides 폴더에 있는 노트와 일치하는 페이지에 도착하면, 그런 노트가 있고 어디에 있는지 에이전트에게 알려줍니다. 제목과 경로만 전달하고 노트 내용은 전달하지 않습니다. 브라우저 읽기 권한이 있는 도구는 어떤 URL에 맞는 노트가 있는지 물어 제목과 경로를 알 수 있지만, 내용은 알 수 없습니다. 기본값은 꺼짐입니다.',
   'settings.updates': '업데이트',
   'settings.wmuxUpdates': 'wmux 업데이트',
   'settings.updateFailed': '업데이트 확인 실패',

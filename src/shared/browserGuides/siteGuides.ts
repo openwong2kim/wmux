@@ -25,7 +25,7 @@ import type { SiteMemoryRecord } from '../browserMemory/siteMemory';
 
 export const SITE_GUIDES_DIR_NAME = 'site-guides';
 /** Directory entries considered per listing. */
-export const SITE_GUIDE_MAX_FILES = 200;
+export const SITE_GUIDE_MAX_FILES = 100;
 /** A guide file larger than this is ignored outright. */
 export const SITE_GUIDE_MAX_FILE_BYTES = 64 * 1024;
 /** Frontmatter must close inside this many leading bytes. */
@@ -43,6 +43,8 @@ export const SITE_GUIDE_MAX_STARS_PER_SEGMENT = 3;
 export const SITE_GUIDE_MAX_URL_SEGMENT_CHARS = 512;
 /** A page path with more segments than this never matches. */
 export const SITE_GUIDE_MAX_URL_SEGMENTS = 64;
+/** A match request for a longer URL is answered with no guides. */
+export const SITE_GUIDE_MAX_URL_CHARS = 2048;
 
 const FILENAME_RE = /^(?=.{1,64}$)[A-Za-z0-9._-]+\.md$/;
 const TITLE_RE = /^[A-Za-z0-9 ._:()-]{1,60}$/;
@@ -190,9 +192,11 @@ function splitPath(pathname: string): string[] {
 
 /**
  * Compile `host[/path]`. Null when the glob is malformed or over-broad: a host
- * of `*` / `**`, or fewer than two literal labels (`*.com`), never matches
- * anything, so one careless note cannot attach itself to every site.
- * An omitted path means any path.
+ * of `*` / `**`, or a wildcard host with fewer than two literal labels
+ * (`*.com`), never matches anything, so one careless note cannot attach itself
+ * to every site. A single-label host with no wildcard (`localhost`, a bare
+ * intranet name) names exactly one host and is allowed.
+ * An omitted path, or a path of exactly `/`, means any path.
  */
 export function compileGuideGlob(glob: unknown): CompiledGuideGlob | null {
   if (typeof glob !== 'string') return null;
@@ -209,7 +213,8 @@ export function compileGuideGlob(glob: unknown): CompiledGuideGlob | null {
   if (rawLabels.some((label) => label !== '*' && label.includes('*'))) return null;
   if (rawLabels.includes(STAR_LABEL)) return null;
   const literalLabels = rawLabels.filter((label) => label !== '*');
-  if (literalLabels.length < 2) return null;
+  const hasWildcardLabel = literalLabels.length !== rawLabels.length;
+  if (literalLabels.length < (hasWildcardLabel ? 2 : 1)) return null;
 
   let hostLabels: string[];
   try {
@@ -221,7 +226,9 @@ export function compileGuideGlob(glob: unknown): CompiledGuideGlob | null {
   }
   if (hostLabels.length !== rawLabels.length) return null;
 
-  const pathSegments = pathPart === null ? ['**'] : splitPath(pathPart);
+  // `example.com/` reads as "this site", not "only its root page": the same
+  // meaning as `example.com` with no path at all.
+  const pathSegments = pathPart === null || pathPart === '/' ? ['**'] : splitPath(pathPart);
   // Bounded before any matching: this glob is later run, synchronously in the
   // main process, against path segments taken from whatever page was landed on.
   // Rejected rather than truncated, so a guide never matches more than written.

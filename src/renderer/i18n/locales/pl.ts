@@ -930,7 +930,7 @@ export const pl = {
   'settings.siteMemory': 'Pamięć witryn',
   'settings.siteMemoryDesc': 'Zapamiętuj, co poszło nie tak w danej witrynie — przerwane odtwarzanie, host, który się nie wczytał — i przypominaj o tym, gdy przeglądarka trafi tam następnym razem. Zapisywane per przestrzeń robocza, jeden plik na domenę, zapominane po 60 dniach bez powtórki. Wyłączenie zatrzymuje zarówno zapisywanie, jak i przypominanie; to, co już zapisano, nadal można usunąć.',
   'settings.siteGuides': 'Przewodniki po witrynach',
-  'settings.siteGuidesDesc': 'Gdy przeglądarka trafi na stronę pasującą do notatki w folderze site-guides katalogu danych wmux, poinformuj agenta, że taka notatka istnieje i gdzie się znajduje. Przekazywany jest tylko tytuł i ścieżka, nigdy treść notatki. Domyślnie wyłączone.',
+  'settings.siteGuidesDesc': 'Gdy przeglądarka trafi na stronę pasującą do notatki w folderze site-guides katalogu danych wmux, poinformuj agenta, że taka notatka istnieje i gdzie się znajduje. Przekazywany jest tylko tytuł i ścieżka, nigdy treść notatki. Każde narzędzie z uprawnieniem do odczytu przeglądarki może zapytać, które notatki pasują do adresu URL, i poznać ich tytuły oraz ścieżki, ale nie ich treść. Domyślnie wyłączone.',
   'settings.updates': 'Aktualizacje',
   'settings.wmuxUpdates': 'Aktualizacje wmux',
   'settings.updateFailed': 'Nie udało się sprawdzić aktualizacji',

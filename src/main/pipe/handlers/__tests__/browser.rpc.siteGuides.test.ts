@@ -99,6 +99,27 @@ describe('browser.siteGuides.match RPC', () => {
     expect(res.error).toMatch(/workspace/i);
   });
 
+  it('gives a caller that may not see local data the answer an off setting gives', async () => {
+    // A hosted plugin passes the workspace gate (its workspace is host-derived)
+    // but is not allowed local-only data, so it must not learn which local
+    // notes exist — the same disclosure rule as the CDP attach info.
+    const router = register(true);
+    const spy = vi.spyOn(store, 'match');
+    const res = (await router.dispatch(
+      {
+        id: '1',
+        method: 'browser.siteGuides.match' as never,
+        params: { url: URL_UPLOAD, workspaceId: 'ws-1' },
+        clientName: 'some-plugin',
+      } as never,
+      { firstParty: true, hostedWorkspace: 'ws-1' },
+    )) as { ok: boolean; result?: unknown };
+    expect(res.ok).toBe(true);
+    expect(res.result).toEqual({ guides: [] });
+    expect(spy).not.toHaveBeenCalled();
+    spy.mockRestore();
+  });
+
   it('serves the matching guide when the setting is on', async () => {
     const res = await match(register(true), operatorCtx());
     const guides = res.result?.['guides'] as Array<{ title: string; path: string }>;
@@ -130,6 +151,20 @@ describe('browser.siteGuides.match RPC', () => {
       operatorCtx() as never,
     );
     expect((res as { result?: unknown }).result).toEqual({ guides: [] });
+  });
+
+  it('answers an overlong url with no guides, before any matching', async () => {
+    const router = register(true);
+    const spy = vi.spyOn(store, 'match');
+    const long = `https://studio.example.com/${'a'.repeat(2049 - 'https://studio.example.com/'.length)}`;
+    expect(long).toHaveLength(2049);
+    expect((await match(router, operatorCtx(), long)).result).toEqual({ guides: [] });
+    expect(spy).not.toHaveBeenCalled();
+
+    const atCap = `https://studio.example.com/${'a'.repeat(2048 - 'https://studio.example.com/'.length)}`;
+    await match(router, operatorCtx(), atCap);
+    expect(spy).toHaveBeenCalledTimes(1);
+    spy.mockRestore();
   });
 
   it('re-lists the directory on the first call after the setting turns on', async () => {
