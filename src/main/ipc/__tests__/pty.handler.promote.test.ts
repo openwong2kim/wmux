@@ -127,6 +127,22 @@ describe('daemon.promoteSession — guards', () => {
     expect(promoteRegion()).toMatch(/processMonitor\.watch\(/);
   });
 
+  it('restores a non-WSL cap-skipped session with the same parity as boot recovery', () => {
+    const region = promoteRegion();
+    const createAt = region.indexOf('sessionManager.createSessionAsync(');
+    const armAt = region.indexOf('paneSupervisor.arm(sessionId');
+    const saveAt = region.indexOf('stateWriter.saveImmediate(buildState(sessionManager))');
+    expect(createAt).toBeGreaterThanOrEqual(0);
+    expect(armAt).toBeGreaterThan(createAt);
+    expect(saveAt).toBeGreaterThan(armAt);
+    // Exec units replay `--resume <id>` like boot recovery does.
+    expect(region).toMatch(/execLaunchCommand: resumeLaunchCommand\(session, /);
+    // The resume binding is exposed off-WSL too, gated on a live transcript.
+    expect(region).toMatch(/isWslShell\(session\.cmd\) \|\| bindingTranscriptLives\(session\.resumeBinding\)/);
+    // None of the above is fenced behind a WSL-only branch.
+    expect(region.slice(createAt, saveAt)).not.toMatch(/if \(isWslShell\(session\.cmd\)\)/);
+  });
+
   it('daemon.listSessions appends suspended entries ONLY when asked', () => {
     const start = source.indexOf("pipeServer.onRpc('daemon.listSessions'");
     const region = source.slice(start, source.indexOf("pipeServer.onRpc('daemon.promoteSession'"));
