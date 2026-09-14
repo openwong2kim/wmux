@@ -247,12 +247,12 @@ export default function TerminalComponent({ ptyId: externalPtyId, shell, cwd, on
     if (!ptyId || retryingRecovery) return;
     setRetryingRecovery(true);
     try {
-      const result = await window.electronAPI.pty.reconnect(ptyId);
-      setRecoveryError(result.success ? null : result.error || 'Could not reconnect. Check WSL and retry.');
+      // Reuse the hook's full attach path, including geometry and unmuting.
+      await retryConnection();
     } catch (error) { setRecoveryError(String(error)); }
     finally { setRetryingRecovery(false); }
   };
-  const { terminal: terminalRef, terminalInstance, findNext, findPrevious, clearSearch } = useTerminal(containerRef, { onRecoveryError: setRecoveryError, ptyId, isVisible, scrollbackFile, onFirstData: scrollbackFile ? handleFirstData : undefined, onContextMenu: handleContextMenu,
+  const { retryConnection, terminal: terminalRef, terminalInstance, findNext, findPrevious, clearSearch } = useTerminal(containerRef, { onRecoveryError: setRecoveryError, ptyId, isVisible, scrollbackFile, onFirstData: scrollbackFile ? handleFirstData : undefined, onContextMenu: handleContextMenu,
     // Only the pane-surface terminal owns ⌘G / Ctrl+G: useComposeShortcut
     // acts on the active leaf's pty, which is what this component renders.
     // FloatingPane and Deck's BrainTerminalEmbed deliberately do NOT opt in —

@@ -736,6 +736,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
   // to skip its active-at-mount reconnect: the session pipe never detached, so
   // asking for one only buys the ring-buffer replay adoption exists to avoid.
   const adoptedAtMountRef = useRef(false);
+  const retryReconnectRef = useRef<(() => Promise<void> | undefined) | null>(null);
   const onRecoveryErrorRef = useRef(options.onRecoveryError);
   onRecoveryErrorRef.current = options.onRecoveryError;
   const onFirstDataRef = useRef(onFirstData);
@@ -2877,7 +2878,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       inFlight = true;
       reconnectInFlightRef.current = true;
       console.log(`[useTerminal] daemon reattach ptyId=${id} (${reason})`);
-      void reconnectPtyWithRetry(id, () => ptyIdRef.current === id && terminalRef.current !== null, (message) => onRecoveryErrorRef.current?.(message))
+      return reconnectPtyWithRetry(id, () => ptyIdRef.current === id && terminalRef.current !== null, (message) => onRecoveryErrorRef.current?.(message))
         .then(() => {
           // #882 — the daemon starts every managed session at `viewerVisible:
           // true` and resets to true on detach, so a reattach that lands while
@@ -2897,6 +2898,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         })
         .finally(() => { inFlight = false; reconnectInFlightRef.current = false; });
     };
+    retryReconnectRef.current = () => reattach('manual-retry');
     // Daemon already connected when we mounted: its daemon:connected fired before
     // the renderer could listen, so we reattach now off the module flag (set by
     // AppLayout's serialized startup before the pane gate opens).
@@ -2934,7 +2936,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       }
       reattach('pty:restarted');
     });
-    return () => { if (off) off(); offRestarted(); };
+    return () => { retryReconnectRef.current = null; if (off) off(); offRestarted(); };
   }, [ptyId]);
 
   // Apply font/theme changes at runtime without recreating the terminal instance.
@@ -3178,5 +3180,5 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     terminalRef.current?.scrollToLine(line);
   }, []);
 
-  return { terminal: terminalRef, terminalInstance, fit, searchAddonRef, findNext, findPrevious, clearSearch, getScrollPosition, scrollToLine };
+  return { retryConnection: () => retryReconnectRef.current?.(), terminal: terminalRef, terminalInstance, fit, searchAddonRef, findNext, findPrevious, clearSearch, getScrollPosition, scrollToLine };
 }
