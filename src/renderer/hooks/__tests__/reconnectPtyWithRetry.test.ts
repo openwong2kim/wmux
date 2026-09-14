@@ -88,3 +88,16 @@ describe('reconnectPtyWithRetry (RCA A1 non-destructive contract)', () => {
     expect(clearPtyId).not.toHaveBeenCalled(); // never mutate a torn-down terminal
   });
 });
+
+ it('retains a failed WSL recovery and reports the error until an explicit retry succeeds', async () => {
+   const clearPtyId = vi.fn(); const onRecoveryError = vi.fn();
+   const reconnect = vi.fn().mockResolvedValueOnce({ success: false, recoveryPending: true, error: 'Distro unavailable' }).mockResolvedValueOnce({ success: true });
+   const deps = { reconnect, clearPtyId, onRecoveryError, sleep: noSleep };
+   await reconnectPtyWithRetry('saved-pane', alwaysCurrent, deps);
+   expect(reconnect).toHaveBeenCalledTimes(1);
+   expect(clearPtyId).not.toHaveBeenCalled();
+   expect(onRecoveryError).toHaveBeenLastCalledWith('Distro unavailable');
+   await reconnectPtyWithRetry('saved-pane', alwaysCurrent, deps);
+   expect(onRecoveryError).toHaveBeenLastCalledWith(null);
+   expect(clearPtyId).not.toHaveBeenCalled();
+ });

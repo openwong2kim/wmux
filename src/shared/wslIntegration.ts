@@ -75,7 +75,10 @@ else
   . "$WMUX_WSL_BASHRC.integration"
 fi
 # An explicit workspace directory wins over a cd in the user's startup files.
-builtin cd -- "$WMUX_WSL_CWD" || exit 1
+if [ -z "$WMUX_WSL_CWD" ] || ! builtin cd -- "$WMUX_WSL_CWD"; then
+  printf 'wmux: cannot enter WSL directory "%s"; check the directory and WSLENV transport, then retry.\\n' "$WMUX_WSL_CWD" >&2
+  exit 1
+fi
 # Only wmux panes see the shim. Existing Claude settings/hooks are retained.
 if [ "\${WMUX_SHELL_INTEGRATION:-1}" != 0 ]; then
   export PATH="$WMUX_WSL_BIN:$PATH"
@@ -97,12 +100,17 @@ fi
   ];
   env.WSLENV = mergeWslEnv(env.WSLENV, entries);
   // WSL runs bash explicitly so --rcfile reaches Linux, never wsl.exe. The
-  // existing init sources ~/.bashrc first. Exec units use the same bootstrap.
+  // interactive init sources ~/.bashrc first. Exec units avoid startup output.
   const bootstrap = options.execCommand === undefined
     ? 'exec /bin/bash --rcfile "$WMUX_WSL_BASHRC" -i'
-    : '. "$WMUX_WSL_BASHRC"; eval "$1"';
+    : `if [ -z "$WMUX_WSL_CWD" ] || ! builtin cd -- "$WMUX_WSL_CWD"; then
+  printf 'wmux: cannot enter WSL directory "%s"; check the directory and WSLENV transport, then retry.\\n' "$WMUX_WSL_CWD" >&2
+  exit 1
+fi
+if [ "\${WMUX_SHELL_INTEGRATION:-1}" != 0 ]; then export PATH="$WMUX_WSL_BIN:$PATH"; fi
+eval "$1"`;
   return {
-    args: [...wslTargetArgs(target), '--cd', cwd, '--exec', '/bin/bash', '-c', bootstrap,
+    args: [...wslTargetArgs(target), '--cd', cwd, '--exec', '/bin/bash', '--noprofile', '--norc', '-c', bootstrap,
       'wmux-wsl', ...(options.execCommand === undefined ? [] : [options.execCommand])],
     env,
   };

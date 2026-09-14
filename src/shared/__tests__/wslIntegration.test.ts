@@ -47,4 +47,20 @@ describe('WSL per-launch Claude integration', () => {
     expect(fs.readFileSync(path.join(dir, 'wsl', 'bashrc.integration'), 'utf8')).toContain('# original shell integration');
     expect(fs.readFileSync(path.join(dir, 'wsl', 'bin', 'claude'), 'utf8')).toContain('"$real" --settings "$WMUX_WSL_SETTINGS" "$@"');
   });
+  it.skipIf(process.platform === 'win32')('exec units skip noisy interactive startup files and diagnose missing cwd transport', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-wsl-exec-')); dirs.push(dir);
+    fs.writeFileSync(path.join(dir, '.bashrc'), 'echo UNEXPECTED_BASHRC_OUTPUT\n');
+    const injected = buildWslInjection({ target: { distribution: 'test', user: 'test' }, cwd: dir,
+      env: { HOME: dir, PATH: '/usr/bin:/bin' }, integrationDir: dir, bashInit: BASH_INIT,
+      runtimePath: process.execPath, bridgePath: '/unused', execCommand: 'printf "clean-output"' });
+    const bashArgs = injected.args.slice(injected.args.indexOf('/bin/bash') + 1);
+    expect(execFileSync('/bin/bash', bashArgs, { encoding: 'utf8', env: injected.env })).toBe('clean-output');
+    try {
+      execFileSync('/bin/bash', bashArgs, { env: { ...injected.env, WMUX_WSL_CWD: '' }, stdio: 'pipe' });
+      throw new Error('expected failure');
+    } catch (error) {
+      expect(String((error as { stderr?: Buffer }).stderr)).toContain('check the directory and WSLENV transport');
+    }
+  });
+
 });

@@ -58,6 +58,8 @@ export interface DaemonSession {
   pidStartTime?: string;
   cmd: string;              // executed command
   wslTarget?: WslTarget;
+  /** Recoverable WSL launch failure; preserve identity and scrollback until retry. */
+  recoveryError?: string;
   /**
    * #1103 — validated WSL distro selection (`['-d', '<name>']`), persisted so
    * every replay path (recovery, supervised restart, suspended promote) re-

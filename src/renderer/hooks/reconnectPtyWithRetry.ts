@@ -27,6 +27,7 @@ export interface ReconnectResult {
   success: boolean;
   error?: string;
   transient?: boolean;
+  recoveryPending?: boolean;
   recovery?: DeadPaneRecovery;
 }
 
@@ -34,6 +35,7 @@ export interface ReconnectDeps {
   /** Invoke the pty.reconnect RPC. */
   reconnect: (id: string) => Promise<ReconnectResult>;
   /** Clear the surface's ptyId so the next mount self-creates. */
+  onRecoveryError?: (message: string | null) => void;
   clearPtyId: (id: string, recovery?: DeadPaneRecovery) => void;
   /** Sleep between retries. Injectable so tests don't wait real time. */
   sleep?: (ms: number) => Promise<void>;
@@ -66,7 +68,11 @@ export async function reconnectPtyWithRetry(
       lastErr = err instanceof Error ? err.message : String(err);
       result = { success: false, transient: true, error: lastErr };
     }
-    if (result?.success) return;
+    if (result?.success) { if (isCurrent()) deps.onRecoveryError?.(null); return; }
+    if (result?.recoveryPending) {
+      if (isCurrent()) deps.onRecoveryError?.(result.error || 'WSL recovery failed. Check the target and retry.');
+      return; // Keep the original id, binding and scrollback. Retry is explicit.
+    }
     lastErr = result?.error ?? '<no error>';
     // Permanent failure (daemon says the session is dead): clear now, no retry.
     if (result?.transient === false) {

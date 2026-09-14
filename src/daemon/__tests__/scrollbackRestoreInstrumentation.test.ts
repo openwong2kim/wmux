@@ -36,7 +36,7 @@ describe('scrollback restore — chain instrumentation', () => {
     expect(recoveryLogMatch).toBeGreaterThan(readMatch);
 
     const createSessionAfter = daemonIndexSrc.indexOf(
-      'sessionManager.createSession(',
+      'sessionManager.createSessionAsync(',
       recoveryLogMatch,
     );
     expect(createSessionAfter).toBeGreaterThan(recoveryLogMatch);

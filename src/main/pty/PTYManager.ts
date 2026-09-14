@@ -1,4 +1,4 @@
-import { isWslShell, resolveWslCwd, type WslTarget } from '../../shared/wsl';
+import { isWslShell, resolveWslCwd, type WslTarget, type ResolvedWslCwd } from '../../shared/wsl';
 import { buildWslInjection } from '../../shared/wslIntegration';
 import { BASH_INIT } from '../../daemon/shell-integration';
 import { getWmuxDir } from '../../daemon/config';
@@ -133,7 +133,23 @@ export class PTYManager {
     return { args, env };
   }
 
-  create(options?: {
+  private createGeneration = 0;
+
+  create(options?: Parameters<PTYManager['spawnPrepared']>[0]): PTYInstance {
+    if (isWslShell(options?.shell || this.getDefaultShell())) throw new Error('WSL creation requires createAsync');
+    return this.spawnPrepared(options);
+  }
+
+  async createAsync(options?: Parameters<PTYManager['spawnPrepared']>[0]): Promise<PTYInstance> {
+    const shell = options?.shell || this.getDefaultShell();
+    if (!isWslShell(shell)) return this.create(options);
+    const generation = this.createGeneration;
+    const wsl = await resolveWslCwd(shell, options?.cwd, options?.wslTarget, undefined, options?.shellArgs);
+    if (generation !== this.createGeneration) throw new Error('PTY creation cancelled');
+    return this.spawnPrepared({ ...options, shell }, wsl);
+  }
+
+  private spawnPrepared(options?: {
     shell?: string;
     /**
      * #1103 — validated WSL distro selection (`['-d', '<name>']`), prepended
@@ -155,7 +171,7 @@ export class PTYManager {
      * 'user-shell'만 env 투과, 나머지·미지정은 fail-closed로 gated.
      */
     spawnKind?: SpawnKind;
-  }): PTYInstance {
+  }, wsl?: ResolvedWslCwd): PTYInstance {
     if (this.instances.size >= MAX_PTY_INSTANCES) {
       throw new Error('Maximum PTY instances reached');
     }
@@ -163,7 +179,6 @@ export class PTYManager {
     const shell = options?.shell || this.getDefaultShell();
     // Same reason as the daemon spawn path: a caller-supplied cwd may carry a
     // leading `~` that no shell expanded.
-    const wsl = isWslShell(shell) ? resolveWslCwd(shell, options?.cwd, options?.wslTarget, undefined, options?.shellArgs) : undefined;
     const cwd = wsl?.cwd ?? (options?.cwd ? expandTilde(options.cwd) : os.homedir());
     const hostCwd = wsl ? os.homedir() : cwd;
 
@@ -227,7 +242,7 @@ export class PTYManager {
     const hookInjection = wsl
       ? buildWslInjection({ target: wsl.target, cwd, env, integrationDir: getWmuxDir(), bashInit: BASH_INIT })
       : this.buildHookInjection(shellType, env);
-    const spawnArgs = hookInjection.args;
+    const spawnArgs = wsl ? hookInjection.args : [...(options?.shellArgs ?? []), ...hookInjection.args];
 
     // node-pty throws synchronously on a missing/invalid shell binary or an
     // unreadable cwd (common on macOS/Linux where the shell path differs from
@@ -355,6 +370,7 @@ export class PTYManager {
   }
 
   disposeAll(): void {
+    this.createGeneration++;
     for (const id of Array.from(this.instances.keys())) {
       this.dispose(id);
     }

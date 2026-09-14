@@ -14,46 +14,46 @@ describe('WSL execution target', () => {
     expect(isWslShell('powershell.exe', 'win32')).toBe(false);
   });
 
-  it('keeps the requested path and pinned target out of shell source', () => {
+  it('keeps the requested path and pinned target out of shell source', async () => {
     const requested = "/home/developer/project ' $(not-a-command) ; 日本語";
     const probe = vi.fn((_args: string[]) => `Ubuntu-24.04\0developer\0${requested}\0`);
-    expect(resolveWslCwd('wsl.exe', requested, target, probe)).toEqual({ cwd: requested, target });
+    expect(await resolveWslCwd('wsl.exe', requested, target, probe)).toEqual({ cwd: requested, target });
     const args = probe.mock.calls[0][0];
     expect(args).toEqual(['--distribution', 'Ubuntu-24.04', '--user', 'developer', '--exec', '/bin/sh', '-c', WSL_CWD_PROBE, 'wmux-cwd', requested]);
     expect(WSL_CWD_PROBE).not.toContain(requested);
   });
 
-  it('derives the target from the selected distro and keeps a saved target on recovery', () => {
+  it('derives the target from the selected distro and keeps a saved target on recovery', async () => {
     const probe = vi.fn((_args: string[]) => 'My Ubuntu\0developer\0/home/developer\0');
-    expect(resolveWslCwd('wsl.exe', '~', undefined, probe, ['-d', 'My Ubuntu']).target)
+    expect((await resolveWslCwd('wsl.exe', '~', undefined, probe, ['-d', 'My Ubuntu'])).target)
       .toEqual({ distribution: 'My Ubuntu', user: 'developer' });
     expect(probe.mock.calls[0][0].slice(0, 2)).toEqual(['-d', 'My Ubuntu']);
-    resolveWslCwd('wsl.exe', '~', target, probe, ['-d', 'Changed default']);
+    await resolveWslCwd('wsl.exe', '~', target, probe, ['-d', 'Changed default']);
     expect(probe.mock.calls[1][0].slice(0, 4)).toEqual(['--distribution', target.distribution, '--user', target.user]);
-    resolveWslCwd('wsl.exe', '~', undefined, probe, ['--exec', 'injected']);
+    await resolveWslCwd('wsl.exe', '~', undefined, probe, ['--exec', 'injected']);
     expect(probe.mock.calls[2][0][0]).toBe('--exec');
     expect(probe.mock.calls[2][0]).not.toContain('injected');
-    resolveWslCwd('wsl.exe', '~', undefined, probe);
+    await resolveWslCwd('wsl.exe', '~', undefined, probe);
     expect(probe.mock.calls[3][0][0]).toBe('--exec');
   });
 
-  it('resolves home in Linux rather than using the Windows home', () => {
+  it('resolves home in Linux rather than using the Windows home', async () => {
     const probe = vi.fn((_args: string[]) => 'Ubuntu-24.04\0developer\0/home/developer/project\0');
-    expect(resolveWslCwd('wsl.exe', '~/project', undefined, probe).cwd).toBe('/home/developer/project');
+    expect((await resolveWslCwd('wsl.exe', '~/project', undefined, probe)).cwd).toBe('/home/developer/project');
     expect(probe.mock.calls[0][0].at(-1)).toBe('~/project');
-    expect(resolveWslCwd('wsl.exe', undefined, undefined, probe).target).toEqual(target);
+    expect((await resolveWslCwd('wsl.exe', undefined, undefined, probe)).target).toEqual(target);
     expect(probe.mock.calls[1][0].at(-1)).toBe('~');
   });
 
-  it('refuses invalid paths/targets and fails visibly when Linux rejects the directory', () => {
+  it('refuses invalid paths/targets and fails visibly when Linux rejects the directory', async () => {
     const probe = vi.fn((_args: string[]) => 'malformed');
-    for (const cwd of ['relative', '\\\\server\\share', '/home/x\ncommand', '/x\0y']) {
-      expect(() => resolveWslCwd('wsl.exe', cwd, undefined, probe)).toThrow();
+    for (const cwd of ['relative', '\\\\server\\share', '/home/x\ncommand', '/x\0y', '/project"quoted']) {
+      await expect(resolveWslCwd('wsl.exe', cwd, undefined, probe)).rejects.toThrow();
     }
     expect(probe).not.toHaveBeenCalled();
     expect(() => wslTargetArgs({ ...target, distribution: '--help' })).toThrow();
-    expect(() => resolveWslCwd('wsl.exe', '/missing', target, () => { throw new Error('directory missing'); })).toThrow('directory missing');
-    expect(() => resolveWslCwd('wsl.exe', '/home', target, probe)).toThrow('valid distribution');
+    await expect(resolveWslCwd('wsl.exe', '/missing', target, () => { throw new Error('directory missing'); })).rejects.toThrow('directory missing');
+    await expect(resolveWslCwd('wsl.exe', '/home', target, probe)).rejects.toThrow('valid distribution');
   });
 
   it('restores Linux directories without Windows stat and retains native home fallback', () => {

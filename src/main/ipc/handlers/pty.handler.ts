@@ -1,3 +1,4 @@
+import { WSL_RPC_TIMEOUT_MS } from '../../../shared/wsl';
 import { ipcMain, BrowserWindow } from 'electron';
 import path from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
@@ -103,7 +104,7 @@ type PtyCreateOptions = {
   cwd?: string;
   /** Dead-session replacement candidates. WSL validates inside its distro;
    * neither value is trusted merely because it came from the renderer. */
-  recoveryCwds?: Pick<DeadPaneRecovery, 'spawnCwd' | 'cwd' | 'wslTarget' | 'args'>;
+  recoveryCwds?: Pick<DeadPaneRecovery, 'spawnCwd' | 'cwd' | 'wslTarget' | 'args' | 'sourceSessionId'>;
   cols?: number;
   rows?: number;
   workspaceId?: string;
@@ -380,8 +381,15 @@ export function registerPTYHandlers(
       // #1103 — the renderer's WSL distro choice, applied at the one place
       // the effective shell is known. Non-wsl shells and no-choice both yield
       // undefined (today's behaviour).
-      const wslArgs = isWslDistroSpawnArgs(shell, options?.recoveryCwds?.args)
-        ? [...options.recoveryCwds.args]
+      // A renderer may name a dead session, but cannot supply its distro/user.
+      // Ordinary new panes always use the settings picker.
+      const recoveryId = options?.recoveryCwds?.sourceSessionId;
+      const recoverySessions = recoveryId
+        ? await daemonClient.rpc('daemon.listSessions', {}) as Array<{ id: string; state: string; cmd: string; args?: string[]; wslTarget?: WslTarget }>
+        : [];
+      const trustedRecovery = recoverySessions.find(s => s.id === recoveryId && s.state === 'dead' && isWslShell(s.cmd));
+      const wslArgs = isWslDistroSpawnArgs(shell, trustedRecovery?.args)
+        ? [...trustedRecovery.args]
         : wslDistroArgs(shell, getDefaultWslDistro());
 
       // Generate a unique session ID
@@ -500,13 +508,13 @@ export function registerPTYHandlers(
         cmd: shell,
         ...(wslArgs ? { args: wslArgs } : {}),
         cwd: effectiveCwd,
-        wslTarget: options?.recoveryCwds?.wslTarget,
+        wslTarget: trustedRecovery?.wslTarget,
         cols: options?.cols || 80,
         rows: options?.rows || 24,
         env: resolvedEnv,
         ...(execCommand !== undefined ? { exec: { command: execCommand } } : {}),
         ...(supervisionPolicy !== undefined ? { supervision: supervisionPolicy } : {}),
-      });
+      }, isWslShell(shell) ? { timeoutMs: WSL_RPC_TIMEOUT_MS } : undefined);
 
       const createdCwd = (result as { cwd?: string })?.cwd;
       if (isWslShell(shell) && createdCwd) effectiveCwd = createdCwd;
@@ -575,7 +583,7 @@ export function registerPTYHandlers(
       return { id: sessionId, shell, cwd: effectiveCwd };
     }));
   } else {
-    ipcMain.handle(IPC.PTY_CREATE, wrapHandler(IPC.PTY_CREATE, (_event: Electron.IpcMainInvokeEvent, options?: PtyCreateOptions) => {
+    ipcMain.handle(IPC.PTY_CREATE, wrapHandler(IPC.PTY_CREATE, async (_event: Electron.IpcMainInvokeEvent, options?: PtyCreateOptions) => {
       if (options?.shell !== undefined && !isAllowedShell(options.shell)) {
         throw new Error(`PTY_CREATE: shell not allowed: ${options.shell}`);
       }
@@ -617,10 +625,8 @@ export function registerPTYHandlers(
       const { initialCommand, cols, rows, workspaceId, surfaceId, env, spawnKind } = options ?? {};
       // #1103 — same distro injection as the daemon branch, so both modes
       // boot the same WSL distro for the same setting.
-      const wslArgs = isWslDistroSpawnArgs(shell, options?.recoveryCwds?.args)
-        ? [...options.recoveryCwds.args]
-        : wslDistroArgs(shell, getDefaultWslDistro());
-      const instance = ptyManager.create({ shell, ...(wslArgs ? { shellArgs: wslArgs } : {}), cols, rows, workspaceId, surfaceId, env, cwd: effectiveCwd, spawnKind, wslTarget: options?.recoveryCwds?.wslTarget });
+      const wslArgs = wslDistroArgs(shell, getDefaultWslDistro());
+      const instance = await ptyManager.createAsync({ shell, ...(wslArgs ? { shellArgs: wslArgs } : {}), cols, rows, workspaceId, surfaceId, env, cwd: effectiveCwd, spawnKind });
       logCwdResolution(instance.id, cwdResolution.incomingCwd, safeCwd, cwdResolution.source);
       ptyBridge.setupDataForwarding(instance.id);
       const actualCwd = instance.cwd || effectiveCwd || require('os').homedir();
@@ -1058,7 +1064,7 @@ export function registerPTYHandlers(
     ipcMain.removeHandler(IPC.PTY_PROMOTE);
     ipcMain.handle(IPC.PTY_PROMOTE, wrapHandler(IPC.PTY_PROMOTE, async (_event: Electron.IpcMainInvokeEvent, id: string) => {
       if (!id) return { success: false, error: 'id is required' };
-      const res = await daemonClient.rpc('daemon.promoteSession', { id }) as { ok: boolean; error?: { message: string } };
+      const res = await daemonClient.rpc('daemon.promoteSession', { id }, { timeoutMs: WSL_RPC_TIMEOUT_MS }) as { ok: boolean; error?: { message: string } };
       if (res.ok) return { success: true };
       return { success: false, error: res.error?.message ?? 'promote failed' };
     }));
@@ -1077,7 +1083,7 @@ export function registerPTYHandlers(
           wslTarget?: WslTarget;
           resumeBinding?: ResumeBinding;
         }>;
-        const session = sessions.find(s => s.id === id);
+        let session = sessions.find(s => s.id === id);
         if (!session || session.state === 'dead') {
           // RCA A1 — permanent failure: the daemon authoritatively reports the
           // session as absent or dead. Safe for the renderer to clear the
@@ -1090,6 +1096,17 @@ export function registerPTYHandlers(
             transient: false,
             ...(session ? { recovery: createDeadPaneRecovery(session) } : {}),
           };
+        }
+
+        if (session.state === 'suspended') {
+          try {
+            const result = await daemonClient.rpc('daemon.promoteSession', { id }, { timeoutMs: WSL_RPC_TIMEOUT_MS }) as { ok: boolean; error?: { message: string } };
+            if (!result.ok) return { success: false, recoveryPending: true, error: result.error?.message || 'WSL recovery failed. Check the target and retry.' };
+            const refreshed = await daemonClient.rpc('daemon.listSessions', {}) as typeof sessions;
+            session = refreshed.find(s => s.id === id) ?? session;
+          } catch (err) {
+            return { success: false, recoveryPending: true, error: err instanceof Error ? err.message : String(err) };
+          }
         }
 
         // 재접속 시 cwd를 즉시 복원한다(owner-reported: 앱 재시작 후 워크스페이스

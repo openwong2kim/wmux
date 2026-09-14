@@ -7,7 +7,7 @@ export interface PtyCreateOptions {
   cwd?: string;
   /** Known-dead session cwd candidates. Main validates them in order and
    * falls back to home; ordinary blank-surface creates leave this absent. */
-  recoveryCwds?: Pick<DeadPaneRecovery, 'spawnCwd' | 'cwd' | 'wslTarget' | 'args'>;
+  recoveryCwds?: Pick<DeadPaneRecovery, 'spawnCwd' | 'cwd' | 'wslTarget' | 'args' | 'sourceSessionId'>;
   cols?: number;
   rows?: number;
   workspaceId?: string;
@@ -53,7 +53,7 @@ export interface PtyCreateOptions {
 export interface SurfaceCwdHealInput {
   spawnedCwd?: string;
   requestedCwd?: string;
-  recoveryCwds?: Pick<DeadPaneRecovery, 'spawnCwd' | 'cwd' | 'wslTarget' | 'args'>;
+  recoveryCwds?: Pick<DeadPaneRecovery, 'spawnCwd' | 'cwd' | 'wslTarget' | 'args' | 'sourceSessionId'>;
 }
 
 import type { WorkspaceProfile } from '../../shared/types';

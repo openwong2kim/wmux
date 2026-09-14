@@ -18,7 +18,7 @@ export function validWslTarget(value: unknown): value is WslTarget {
   if (!value || typeof value !== 'object') return false;
   const t = value as WslTarget;
   return isValidWslDistroName(t.distribution) && [t.distribution, t.user].every((s) => typeof s === 'string' &&
-    s.length > 0 && s.length <= 256 && !/[\0\r\n]/.test(s) && !s.startsWith('-'));
+    s.length > 0 && s.length <= 256 && !/[\0\r\n"]/.test(s) && !s.startsWith('-'));
 }
 
 export function wslTargetArgs(target?: WslTarget): string[] {

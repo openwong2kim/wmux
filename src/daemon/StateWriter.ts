@@ -408,6 +408,9 @@ export class StateWriter {
         if (sinceMs >= hardCapMs) return false;
         return typeof s.pid === 'number' && isPidAlive(s.pid);
       }
+      // A failed WSL recovery is awaiting an explicit user retry/close. Aging
+      // it out would discard the only saved conversation and buffer reference.
+      if (s.state === 'suspended' && s.recoveryError) return true;
       if (s.state === 'suspended') {
         return sinceMs < this.suspendedTtlHours * 60 * 60 * 1000;
       }

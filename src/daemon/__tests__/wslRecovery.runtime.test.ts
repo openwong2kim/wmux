@@ -141,6 +141,7 @@ describe.runIf(enabled)('WSL exact conversation recovery', () => {
       for (const id of ids) await attach(id);
       for (let restart = 0; restart < 2; restart++) {
         await stop(); await start();
+        await Promise.all(ids.map((id) => rpc('daemon.promoteSession', { id })));
         const recovered = await list();
         for (let i = 0; i < ids.length; i++) {
           const session = recovered.find((s) => s.id === ids[i])!;
@@ -153,6 +154,34 @@ describe.runIf(enabled)('WSL exact conversation recovery', () => {
           await runClaude(ids[i], resume);
         }
       }
+      // A removed directory keeps the same pane and buffer across failed
+      // retries AND another daemon restart. Restoring it makes Retry succeed.
+      await stop();
+      execFileSync(wsl, [...selectedArgs, '--exec', '/bin/mv', '--', cwd, cwd + '.away']);
+      await start();
+      const pending = await list();
+      expect(pending.filter((s) => ids.includes(s.id)).map((s) => s.id).sort()).toEqual([...ids].sort());
+      const failures = await Promise.all(ids.map((id) => rpc('daemon.promoteSession', { id }))) as { ok: boolean }[];
+      expect(failures.every((r) => !r.ok)).toBe(true);
+      await rpc('daemon.ping'); // failed recovery leaves control RPC responsive
+      const saved = JSON.parse(fs.readFileSync(path.join(wmuxDir, 'sessions.json'), 'utf8'));
+      for (const id of ids) {
+        const s = saved.sessions.find((s: { id: string }) => s.id === id);
+        expect(s.state).toBe('suspended');
+        expect(s.recoveryError).toContain('WSL could not open');
+        expect(fs.existsSync(s.bufferDumpPath)).toBe(true);
+        expect(fs.readFileSync(s.bufferDumpPath, 'utf8')).toContain('WMUX_FAKE_CLAUDE_READY');
+      }
+      await stop(); await start();
+      expect((await list()).filter((s) => ids.includes(s.id))).toHaveLength(2);
+      execFileSync(wsl, [...selectedArgs, '--exec', '/bin/mv', '--', cwd + '.away', cwd]);
+      const retried = await Promise.all(ids.map((id) => rpc('daemon.promoteSession', { id }))) as { ok: boolean }[];
+      expect(retried.every((r) => r.ok)).toBe(true);
+      const afterRetry = await list();
+      for (let i = 0; i < ids.length; i++) {
+        expect(afterRetry.find((s) => s.id === ids[i])?.resumeBinding?.sessionId).toBe(conversations[i]);
+      }
+      await expect(rpc('daemon.createSession', { id: `wsl-${tag}-quoted`, cmd: wsl, cwd: '/tmp/double"quote' })).rejects.toThrow('double quotes');
       // A non-existent project must fail rather than start in a different cwd.
       await expect(rpc('daemon.createSession', { id: `wsl-${tag}-missing`, cmd: wsl, args: selectedArgs, cwd: `${linuxRoot}/missing` })).rejects.toThrow();
       // The diagnostic also validates ~ in the pinned distribution.

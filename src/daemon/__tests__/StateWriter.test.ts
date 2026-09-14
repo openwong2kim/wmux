@@ -792,3 +792,10 @@ describe('StateWriter', () => {
     });
   });
 });
+
+it('keeps a failed WSL recovery past suspended TTL so retry cannot lose its snapshot', () => {
+  const pending = makeSession({ state: 'suspended', cmd: 'wsl.exe', lastActivity: '2000-01-01T00:00:00.000Z',
+    recoveryError: 'WSL distro unavailable', bufferDumpPath: '/saved/pane.buf' });
+  writer.saveImmediate(makeState([pending]));
+  expect(writer.load().sessions).toMatchObject([{ id: pending.id, recoveryError: pending.recoveryError, bufferDumpPath: pending.bufferDumpPath }]);
+});

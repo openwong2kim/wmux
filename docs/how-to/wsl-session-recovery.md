@@ -3,7 +3,8 @@
 On Windows, choose `C:\Windows\System32\wsl.exe` as the terminal shell. Select
 the WSL distribution in Settings, then set an absolute Linux startup directory, such as `/home/user/project`. `~` and
 `~/project` resolve inside WSL. An existing Windows directory is translated with
-`wslpath`. UNC paths are not supported.
+`wslpath`. UNC paths and paths containing double quotes are not supported;
+wmux rejects them before spawning WSL rather than risk splitting ConPTY argv.
 
 wmux validates the directory inside the distribution resolved by the distro picker and records the actual distribution
 and Linux user with the pane. Saved distro arguments and the captured target come
@@ -13,6 +14,19 @@ to the system default, while an unavailable saved recovery target fails visibly.
 the last reported Linux directory. A missing directory or unavailable target
 produces an error rather than silently opening a different project. The Windows
 PTY host directory is separate from the Linux working directory.
+
+WSL recovery is deferred until a pane reconnects. The daemon becomes available
+without waiting for cold distributions. Probes run asynchronously with a 60-second
+budget; simultaneous requests for the same target and directory share the pending
+probe. Completed results are not cached, so a deleted directory or changed Linux
+user is detected on the next attempt.
+
+If recovery fails, the pane shows the error and **Retry connection**. The original
+pane ID, conversation binding and buffer remain saved across further restarts,
+without expiring while recovery is pending. Fix the distro/directory and retry;
+closing the pane explicitly discards the pending recovery. A missing exec-session
+directory also keeps the pane pending instead of running `--resume` in another
+project.
 
 ## Claude resume
 
@@ -44,6 +58,9 @@ the updated daemon to receive the integration.
   loads `~/.bashrc`, then restores the requested directory even if that file
   contains `cd ~`. Custom login shells such as zsh and fish are not selected by
   this WSL integration.
+- Exec units skip interactive startup files to keep output free of banners and
+  prompt markers. Their commands must use the non-interactive Linux PATH (or set
+  PATH explicitly); interactive panes still source `~/.bashrc`.
 - Claude must be installed on the Linux PATH. The integration uses a pane-local
   PATH shim. An alias/function or absolute path that bypasses that shim, or a
   later explicit `--settings` override, can bypass these hooks.
@@ -69,7 +86,9 @@ runs the real per-launch hook and Windows bridge, without model requests or
 changes to global Claude settings. It checks two distinct IDs in one quoted,
 Unicode Linux path, live detach/reattach, two daemon restarts, exact resume
 commands, pinned distribution/user, Linux home expansion and missing-directory
-failure. Set `WMUX_TEST_WSL_DISTRO` to exercise a specific installed distribution. Each test cleans up its own fixtures and daemon.
+failure. It also removes the project directory, verifies that failed retries and
+another restart retain both pane IDs and scrollback, restores the directory,
+and retries the same conversations. Set `WMUX_TEST_WSL_DISTRO` to exercise a specific installed distribution. Each test cleans up its own fixtures and daemon.
 
 To exercise Electron's packaged runtime too, set
 `WMUX_TEST_DAEMON_EXECUTABLE` to the built `wmux.exe` and `WMUX_TEST_DAEMON_BUNDLE` to its

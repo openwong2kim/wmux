@@ -1,4 +1,4 @@
-import { isWslShell, resolveWslCwd, type WslTarget } from '../shared/wsl';
+import { isWslShell, resolveWslCwd, type WslTarget, type ResolvedWslCwd } from '../shared/wsl';
 import { buildWslInjection } from '../shared/wslIntegration';
 import { getWmuxDir } from './config';
 import { EventEmitter } from 'node:events';
@@ -176,7 +176,44 @@ export class DaemonSessionManager extends EventEmitter {
     this.config = config;
   }
 
-  createSession(params: {
+  private pendingRecovery = new Map<string, DaemonSession>();
+  private pendingCreates = new Map<string, symbol>();
+
+  cancelPendingCreates(): void { this.pendingCreates.clear(); }
+
+  keepPendingRecovery(session: DaemonSession, error: string): void {
+    this.pendingRecovery.set(session.id, { ...session, state: 'suspended', recoveryError: error });
+  }
+
+  getPendingRecovery(id: string): DaemonSession | undefined {
+    return this.pendingRecovery.get(id);
+  }
+
+  /** Synchronous native-shell API. Production callers use createSessionAsync. */
+  createSession(params: Parameters<DaemonSessionManager['spawnSession']>[0]): DaemonSession {
+    const cmd = this.resolveShellPath(params.cmd) || this.getDefaultShell();
+    if (isWslShell(cmd)) throw new Error('WSL creation requires createSessionAsync');
+    return this.spawnSession({ ...params, cmd });
+  }
+
+  async createSessionAsync(params: Parameters<DaemonSessionManager['spawnSession']>[0]): Promise<DaemonSession> {
+    const cmd = this.resolveShellPath(params.cmd) || this.getDefaultShell();
+    if (!isWslShell(cmd)) return this.createSession({ ...params, cmd });
+    if (this.pendingCreates.has(params.id)) throw new Error(`Session '${params.id}' creation is already pending`);
+    const token = Symbol(params.id);
+    this.pendingCreates.set(params.id, token);
+    try {
+      const wsl = await resolveWslCwd(cmd, params.cwd, params.wslTarget, undefined, params.args);
+      if (this.pendingCreates.get(params.id) !== token) throw new Error('Session creation cancelled');
+      const created = this.spawnSession({ ...params, cmd }, wsl);
+      this.pendingRecovery.delete(params.id);
+      return created;
+    } finally {
+      if (this.pendingCreates.get(params.id) === token) this.pendingCreates.delete(params.id);
+    }
+  }
+
+  private spawnSession(params: {
     id: string;
     /**
      * The command to run as the pane's root process. OPTIONAL: absent means
@@ -275,7 +312,7 @@ export class DaemonSessionManager extends EventEmitter {
      * runaway-guard 'stopped' survives reboots.
      */
     supervision?: DaemonSessionSupervision;
-  }): DaemonSession {
+  }, wsl?: ResolvedWslCwd): DaemonSession {
     // Validate session ID to prevent path traversal, injection, or oversized keys
     if (!/^[a-zA-Z0-9_-]{1,64}$/.test(params.id)) {
       throw new Error(`Invalid session ID: must be 1-64 chars of [a-zA-Z0-9_-]`);
@@ -325,7 +362,6 @@ export class DaemonSessionManager extends EventEmitter {
     // stay literal and silently fall back to $HOME (or throw as an unreadable
     // cwd). Single choke point — every caller-supplied cwd converges here.
     let cmd = this.resolveShellPath(params.cmd) || this.getDefaultShell();
-    const wsl = isWslShell(cmd) ? resolveWslCwd(cmd, params.cwd, params.wslTarget, undefined, params.args) : undefined;
     const cwd = wsl?.cwd ?? (params.cwd ? expandTilde(params.cwd) : os.homedir());
     const hostCwd = wsl ? os.homedir() : cwd;
 
@@ -746,6 +782,9 @@ export class DaemonSessionManager extends EventEmitter {
   }
 
   destroySession(id: string): void {
+    this.pendingCreates.delete(id);
+    const pending = this.pendingRecovery.delete(id);
+    if (pending) this.emit('session:destroyed', { id });
     const managed = this.sessions.get(id);
     if (!managed) return;
 
@@ -881,7 +920,7 @@ export class DaemonSessionManager extends EventEmitter {
   }
 
   listSessions(): DaemonSession[] {
-    return Array.from(this.sessions.values()).map((m) => ({ ...m.meta }));
+    return [...Array.from(this.sessions.values()).map((m) => ({ ...m.meta })), ...Array.from(this.pendingRecovery.values()).map((s) => ({ ...s }))];
   }
 
   /**
@@ -912,6 +951,7 @@ export class DaemonSessionManager extends EventEmitter {
   }
 
   disposeAll(): void {
+    this.pendingCreates.clear();
     for (const id of Array.from(this.sessions.keys())) {
       this.destroySession(id);
     }
