@@ -7,6 +7,7 @@ import {
 } from './browserScope';
 
 import { hintBlockMeta } from './hintBlock';
+import { takeGuideAnnouncement } from './guideAnnounce';
 import { redactPasswordParams } from './redact';
 import { invalidateSnapshotBaseline, invalidateSnapshotBaselineIfStale } from './snapshotCache';
 import { PlaywrightEngine } from './PlaywrightEngine';
@@ -24,6 +25,7 @@ import {
   renderSiteMemoryBlock,
   type SiteMemoryRecord,
 } from '../../shared/browserMemory/siteMemory';
+import type { SiteGuideMatch } from '../../shared/browserGuides/siteGuides';
 
 // Renew well inside main's 30s RPC-lease TTL so a long-running tool op
 // (browser_wait_for, slow page interactions) never lapses mid-flight.
@@ -193,7 +195,23 @@ async function prependReplayHints<T>(
     // its recording, so consulting only the cache would go silent on exactly
     // the flows the user chose to keep.
     const domain = domainFromUrl(landed.url);
-    const [res, promotedRes, siteRes] = await Promise.all([
+    // Guide loading is isolated in its own try/catch, not only a `.catch`:
+    // null means "unknown" (older main, transport failure, a synchronous
+    // throw) and must neither break the other hints nor reset what this
+    // surface last announced.
+    const guidesLoad = (async (): Promise<SiteGuideMatch[] | null> => {
+      try {
+        const r = await sendScopedBrowserRpc<{ guides?: SiteGuideMatch[] }>(
+          'browser.siteGuides.match',
+          scope,
+          { url: urlKey },
+        );
+        return Array.isArray(r?.guides) ? r.guides : [];
+      } catch {
+        return null;
+      }
+    })();
+    const [res, promotedRes, siteRes, guides] = await Promise.all([
       sendScopedBrowserRpc<{ traces?: TraceRecord[] }>('browser.actionCache.list', scope, {
         urlKey,
       }),
@@ -213,6 +231,7 @@ async function prependReplayHints<T>(
             { domain },
           ).catch(() => ({ memory: null }))
         : Promise.resolve({ memory: null }),
+      guidesLoad,
     ]);
     const promoted = promotedRes?.promoted ?? [];
     const promotedNames = new Set(promoted.map((r) => r.name));
@@ -241,12 +260,27 @@ async function prependReplayHints<T>(
     // main scenario for this feature is a domain with NO recorded flows —
     // failure memory and nothing else — and checking only the other two would
     // mean the block never appears on exactly those pages.
-    if (!promotedBlock && !replayBlock && !siteBlock) return result;
+    // Guide rendering is isolated too: any exception yields no guide lines and
+    // the blocks above are still assembled.
+    let guideBlock = '';
+    try {
+      if (guides !== null) {
+        guideBlock = takeGuideAnnouncement(
+          scope.workspaceId,
+          scope.surfaceId,
+          guides,
+          siteRes?.memory ?? null,
+        );
+      }
+    } catch {
+      guideBlock = '';
+    }
+    if (!promotedBlock && !replayBlock && !siteBlock && !guideBlock) return result;
     // Marked, not just prefixed: browser_repl separates hints from tool output
     // by this marker, and a page must not be able to forge one. See hintBlock.ts.
     shaped.content.unshift({
       type: 'text',
-      text: `${siteBlock}${promotedBlock}${replayBlock}`,
+      text: `${siteBlock}${guideBlock}${promotedBlock}${replayBlock}`,
       _meta: hintBlockMeta(),
     });
   } catch {

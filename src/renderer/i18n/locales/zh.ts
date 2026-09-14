@@ -1096,6 +1096,8 @@ export const zh = {
   'settings.browserDiscardDesc': '浏览器面板保持不可见 5 分钟后，将其整体卸载以回收内存。返回时页面会重新加载（滚动位置和未保存的表单输入会丢失）。播放音频的面板永不被丢弃；自动化会自动唤醒被丢弃的面板。',
   'settings.siteMemory': '站点记忆',
   'settings.siteMemoryDesc': '记住某个站点上出过什么问题——中断的重放、打不开的主机——并在浏览器下次到达那里时提醒你。按工作区存储，每个域名一个文件，60 天内没有再次出现就会遗忘。关闭后将同时停止记录和提醒；已记录的内容仍可删除。',
+  'settings.siteGuides': '站点指南',
+  'settings.siteGuidesDesc': '当浏览器到达与 wmux 数据目录中 site-guides 文件夹里某篇笔记相匹配的页面时，告诉智能体有这篇笔记以及它的位置。只提供标题和路径，从不提供笔记内容。默认关闭。',
   'settings.fontFamilyPlaceholder': '输入或选择字体…',
   'settings.fontCustom': '自定义字体…',
   'settings.fontCustomPlaceholder': '字体名称（例如 JetBrainsMonoHangul）',

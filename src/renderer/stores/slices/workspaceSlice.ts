@@ -1225,6 +1225,10 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       if (typeof data.siteMemoryEnabled === 'boolean') {
         state.siteMemoryEnabled = data.siteMemoryEnabled;
       }
+      // Default OFF; only an explicit persisted true opts in.
+      if (typeof data.siteGuidesEnabled === 'boolean') {
+        state.siteGuidesEnabled = data.siteGuidesEnabled;
+      }
       let retentionMigrationApplied = false;
       if (typeof data.hiddenPaneRetentionEnabled === 'boolean') {
         if (data.hiddenPaneRetentionEnabled === false && !retentionMigrationDone()) {

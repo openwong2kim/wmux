@@ -311,6 +311,11 @@ export interface UISlice {
   siteMemoryEnabled: boolean;
   setSiteMemoryEnabled: (enabled: boolean) => void;
 
+  // Site guide pointers (default OFF). On a landing, local notes under
+  // <wmuxDir>/site-guides/ that match the page are named by path.
+  siteGuidesEnabled: boolean;
+  setSiteGuidesEnabled: (enabled: boolean) => void;
+
   // #517 backend choice (default 'builtin'). NON-PERSISTED renderer mirror:
   // main owns the authoritative value (userData JSON, read synchronously at
   // boot) and Settings writes it back via IPC. This field exists only so the
@@ -1163,6 +1168,13 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
 
   setSiteMemoryEnabled: (enabled) => set((state) => {
     state.siteMemoryEnabled = enabled;
+  }),
+
+  // Default OFF: it reads user files on every landing, so it is opt-in.
+  siteGuidesEnabled: false,
+
+  setSiteGuidesEnabled: (enabled) => set((state) => {
+    state.siteGuidesEnabled = enabled;
   }),
 
   // #517 backend choice — mirror of main's authoritative value. Read

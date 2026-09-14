@@ -2258,6 +2258,8 @@ function TabTerminal() {
   const setBrowserDiscardHidden = useStore((s) => s.setBrowserDiscardHidden);
   const siteMemoryEnabled = useStore((s) => s.siteMemoryEnabled);
   const setSiteMemoryEnabled = useStore((s) => s.setSiteMemoryEnabled);
+  const siteGuidesEnabled = useStore((s) => s.siteGuidesEnabled);
+  const setSiteGuidesEnabled = useStore((s) => s.setSiteGuidesEnabled);
   const browserBackend = useStore((s) => s.browserBackend);
   const setBrowserBackend = useStore((s) => s.setBrowserBackend);
   const browserBackendHydrated = useStore((s) => s.browserBackendHydrated);
@@ -2420,6 +2422,13 @@ function TabTerminal() {
             checked={siteMemoryEnabled}
             onChange={setSiteMemoryEnabled}
             label={t('settings.siteMemory')}
+          />
+        </SettingRow>
+        <SettingRow id="siteguides" label={t('settings.siteGuides')} description={t('settings.siteGuidesDesc')}>
+          <Toggle
+            checked={siteGuidesEnabled}
+            onChange={setSiteGuidesEnabled}
+            label={t('settings.siteGuides')}
           />
         </SettingRow>
         <SettingRow id="scrollback" label={t('settings.scrollbackLines')} description={t('settings.scrollbackDesc')}>

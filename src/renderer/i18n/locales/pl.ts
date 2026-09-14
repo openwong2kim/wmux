@@ -929,6 +929,8 @@ export const pl = {
   'settings.browserDiscardDesc': 'Gdy panel przeglądarki pozostaje niewidoczny przez 5 minut, wyładuj go całkowicie, aby odzyskać pamięć. Strona wczytuje się ponownie po powrocie (pozycja przewijania i niezapisane dane formularza są tracone). Panele odtwarzające dźwięk nigdy nie są odrzucane; automatyzacja budzi odrzucony panel automatycznie.',
   'settings.siteMemory': 'Pamięć witryn',
   'settings.siteMemoryDesc': 'Zapamiętuj, co poszło nie tak w danej witrynie — przerwane odtwarzanie, host, który się nie wczytał — i przypominaj o tym, gdy przeglądarka trafi tam następnym razem. Zapisywane per przestrzeń robocza, jeden plik na domenę, zapominane po 60 dniach bez powtórki. Wyłączenie zatrzymuje zarówno zapisywanie, jak i przypominanie; to, co już zapisano, nadal można usunąć.',
+  'settings.siteGuides': 'Przewodniki po witrynach',
+  'settings.siteGuidesDesc': 'Gdy przeglądarka trafi na stronę pasującą do notatki w folderze site-guides katalogu danych wmux, poinformuj agenta, że taka notatka istnieje i gdzie się znajduje. Przekazywany jest tylko tytuł i ścieżka, nigdy treść notatki. Domyślnie wyłączone.',
   'settings.updates': 'Aktualizacje',
   'settings.wmuxUpdates': 'Aktualizacje wmux',
   'settings.updateFailed': 'Nie udało się sprawdzić aktualizacji',

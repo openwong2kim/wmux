@@ -78,6 +78,12 @@ export interface ConnectionScope {
    * the cast.
    */
   browserRepl?: unknown;
+  /**
+   * Site guide announcements (surface key → set of guide paths last announced),
+   * per connection so one agent's landing never silences another's. Typed as
+   * unknown to avoid an import cycle; guideAnnounce owns the cast.
+   */
+  siteGuideAnnounce?: unknown;
 }
 
 const storage = new AsyncLocalStorage<ConnectionScope>();

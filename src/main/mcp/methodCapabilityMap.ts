@@ -341,6 +341,9 @@ export const METHOD_CAPABILITY: Record<RpcMethod, RequiredCapability> = {
   'browser.siteMemory.list':   { capability: 'browser.read',  riskClass: 'browser' },
   'browser.siteMemory.record': { capability: 'browser.click', riskClass: 'browser' },
   'browser.siteMemory.forget': { capability: 'browser.click', riskClass: 'browser' },
+  // Site guide pointers: read-only, answers with titles and paths of local
+  // notes that match a page.
+  'browser.siteGuides.match':  { capability: 'browser.read',  riskClass: 'browser' },
 
   // Lease methods pin a guest at full speed (or strip that exemption from a
   // real automation op), i.e. they mutate the app's resource policy — a

@@ -11,6 +11,7 @@ import { PortAllocator } from '../../browser-session/PortAllocator';
 import { getActionCacheStore } from '../../browser-session/ActionCacheStore';
 import { getPromotedSkillStore } from '../../browser-session/PromotedSkillStore';
 import { getSiteMemoryStore } from '../../browser-session/SiteMemoryStore';
+import { getSiteGuideStore } from '../../browser-session/SiteGuideStore';
 import {
   buildFailureEntry,
   buildNoteEntry,
@@ -716,6 +717,9 @@ export function registerBrowserRpc(
   // the ONE place the flag is judged. Absent hook or null value means the
   // default, which is ON.
   readSiteMemoryEnabled: () => boolean | null = () => null,
+  // The persisted `siteGuidesEnabled` toggle, same lazy read. Absent hook or
+  // null value means the default, which is OFF.
+  readSiteGuidesEnabled: () => boolean | null = () => null,
 ): void {
   const getActivePartition = (): string => profileManager.getActiveProfile().partition;
 
@@ -1174,6 +1178,34 @@ export function registerBrowserRpc(
     const domain = typeof params['domain'] === 'string' ? params['domain'] : undefined;
     if (!domain) return { records: siteMemory.list(workspaceId), memory: null };
     return { records: [], memory: siteMemory.get(workspaceId, domain) };
+  });
+
+  // ── Site guide pointers ─────────────────────────────────────────────────
+  //
+  // Read here rather than in the MCP process so a remote MCP host still reads
+  // this app's own wmuxDir. The guides directory is not per-workspace, but the
+  // call still goes through the fail-closed workspace gate: an unverified
+  // caller learns nothing about which local notes exist.
+
+  const siteGuides = getSiteGuideStore();
+  let siteGuidesWereOn = false;
+
+  router.register('browser.siteGuides.match', async (params, ctx) => {
+    cacheWorkspace('browser.siteGuides.match', params, ctx);
+    // Default OFF: only an explicit persisted true opts in. Off touches no file.
+    if (readSiteGuidesEnabled() !== true) {
+      siteGuidesWereOn = false;
+      return { guides: [] };
+    }
+    // Just turned on: a listing cached before the user wrote their first
+    // note must not hide it for the rest of the TTL.
+    if (!siteGuidesWereOn) {
+      siteGuides.invalidateListing();
+      siteGuidesWereOn = true;
+    }
+    const url = typeof params['url'] === 'string' ? params['url'] : '';
+    if (!url) return { guides: [] };
+    return { guides: siteGuides.match(url) };
   });
 
   router.register('browser.siteMemory.record', async (params, ctx) => {

@@ -843,6 +843,12 @@ export interface SessionData {
    */
   siteMemoryEnabled?: boolean;
   /**
+   * Site guide pointers: on a landing, name local notes under
+   * `<wmuxDir>/site-guides/` whose frontmatter matches the page.
+   * Default OFF — absent is read as disabled, only an explicit true opts in.
+   */
+  siteGuidesEnabled?: boolean;
+  /**
    * Issue #175: global default starting directory for new terminals.
    * Empty/unset → os.homedir(). Per-workspace profile.startupCwd overrides.
    */

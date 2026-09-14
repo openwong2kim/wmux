@@ -259,6 +259,8 @@ export const FIRST_PARTY_METHODS: ReadonlySet<RpcMethod> = new Set<RpcMethod>([
   'browser.siteMemory.list',
   'browser.siteMemory.record',
   'browser.siteMemory.forget',
+  // Site guide pointers, registered for the same packaged-build reason.
+  'browser.siteGuides.match',
   // agent-to-agent
   'a2a.resolve.identity',
   'a2a.whoami',

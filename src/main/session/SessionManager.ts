@@ -305,6 +305,22 @@ export class SessionManager {
     }
   }
 
+  /**
+   * The persisted site guide pointer toggle, as a targeted read. Same shape as
+   * readSiteMemoryEnabled, but null is read by the caller as OFF: this feature
+   * reads files from disk on every landing and is opt-in.
+   */
+  readSiteGuidesEnabled(): boolean | null {
+    try {
+      const loaded = atomicReadJSONSync<SessionData>(this.filePath, {
+        validate: SessionManager.isSessionData,
+      });
+      return loaded?.siteGuidesEnabled ?? null;
+    } catch {
+      return null;
+    }
+  }
+
   load(): SessionData | null {
     // v2 RCA fix (adversarial review): distinguish "no session file" (true
     // first launch → null) from "file exists but unreadable" (transient AV/

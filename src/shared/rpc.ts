@@ -407,6 +407,7 @@ export type RpcMethod =
   | 'browser.siteMemory.list'
   | 'browser.siteMemory.record'
   | 'browser.siteMemory.forget'
+  | 'browser.siteGuides.match'
   | 'browser.lease.acquire'
   | 'browser.lease.renew'
   | 'browser.lease.release'
@@ -624,6 +625,7 @@ export const ALL_RPC_METHODS = [
   'browser.siteMemory.list',
   'browser.siteMemory.record',
   'browser.siteMemory.forget',
+  'browser.siteGuides.match',
   'browser.lease.acquire',
   'browser.lease.renew',
   'browser.lease.release',

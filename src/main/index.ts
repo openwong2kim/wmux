@@ -874,6 +874,8 @@ registerBrowserRpc(
   // Per-site memory's on/off switch, judged in the RPC handler because the
   // MCP process cannot read session settings. Targeted read, lazy per call.
   () => sessionManager.readSiteMemoryEnabled(),
+  // Site guide pointers' switch (default OFF), judged in the same place.
+  () => sessionManager.readSiteGuidesEnabled(),
 );
 registerA2aRpc(rpcRouter, () => mainWindow, claudeWorker, { getDaemonClient: () => daemonClient });
 registerA2aChannelRpc(rpcRouter, () => daemonClient, () => mainWindow);
