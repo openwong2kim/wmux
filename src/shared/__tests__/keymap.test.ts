@@ -151,3 +151,45 @@ describe('matchesDisabledShortcut (#1152)', () => {
     expect(matchesDisabledShortcut([], ev({}), 'win32')).toBe(false);
   });
 });
+
+/**
+ * #1280 — Ctrl+G (Rich Input) is an ADVERTISED row, which is what makes the
+ * escape hatch reachable: advertised rows are the ones SettingsPanel renders
+ * with a disable toggle, and a disabled row hands its key back to the pane
+ * (Claude Code's external editor, readline's abort).
+ */
+describe('Ctrl+G Rich Input row (#1280)', () => {
+  it('is advertised, so the Settings shortcut list renders it with a toggle', () => {
+    // ADVERTISED_SHORTCUTS is the exact list SettingsPanel maps over.
+    const row = ADVERTISED_SHORTCUTS.find((e) => e.combo === 'Ctrl+G');
+    expect(row).toBeDefined();
+    expect(row?.descriptionKey).toBe('settings.sc.richInput');
+    // Not literalCtrl: on macOS the binding is ⌘G, and Ctrl+G there stays a
+    // readline byte (useTerminal's mac bubble list excludes 'g').
+    expect(row?.literalCtrl).toBe(false);
+  });
+
+  it('reserves its accelerator so the app menu can never claim Ctrl+G', () => {
+    expect(builtinCombosFor('win32').has('Ctrl+G')).toBe(true);
+  });
+
+  it('disabling it matches a real Ctrl+G keydown — the byte reaches the pane', () => {
+    // Both gates read this one function: useComposeShortcut yields (no
+    // popover) and useTerminal's disabled branch writes the control byte.
+    const g = { key: 'g', code: 'KeyG', ctrlKey: true, metaKey: false, shiftKey: false, altKey: false };
+    expect(matchesDisabledShortcut(['Ctrl+G'], g, 'win32')).toBe(true);
+    // Under a Hangul IME `key` is a jamo / 'Process' — the physical code path.
+    expect(matchesDisabledShortcut(['Ctrl+G'], { ...g, key: 'ㅎ' }, 'win32')).toBe(true);
+    // Enabled (empty list) is the normal case: the binding owns the key.
+    expect(matchesDisabledShortcut([], g, 'win32')).toBe(false);
+    // Ctrl+Shift+G is a DIFFERENT combo (clearMultiview) and must not be
+    // silenced by disabling Ctrl+G.
+    expect(matchesDisabledShortcut(['Ctrl+G'], { ...g, key: 'G', shiftKey: true }, 'win32')).toBe(false);
+  });
+
+  it('macOS: disabling it matches ⌘G, not literal Ctrl+G', () => {
+    const base = { key: 'g', code: 'KeyG', shiftKey: false, altKey: false };
+    expect(matchesDisabledShortcut(['Ctrl+G'], { ...base, ctrlKey: false, metaKey: true }, 'darwin')).toBe(true);
+    expect(matchesDisabledShortcut(['Ctrl+G'], { ...base, ctrlKey: true, metaKey: false }, 'darwin')).toBe(false);
+  });
+});

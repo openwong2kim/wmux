@@ -1039,6 +1039,7 @@ export const en = {
   'settings.sc.searchTerminal': 'Search in terminal',
   'settings.sc.commandPalette': 'Command palette',
   'settings.sc.toggleNotifications': 'Toggle notification panel',
+  'settings.sc.richInput': 'Toggle Rich Input',
   'settings.sc.viCopyMode': 'Vi copy mode',
   'settings.sc.renameWorkspace': 'Rename workspace',
   'settings.sc.highlightPane': 'Highlight active pane',
