@@ -1334,7 +1334,9 @@ async function recoverSessions(
       }
       session.state = 'suspended';
       session.bufferDumpPath ??= stateWriter.getBufferDumpPath(session.id);
-      sessionManager.keepPendingRecovery(session, session.recoveryError || 'WSL session is waiting to reconnect.');
+      // Waiting (including recovery-cap skips) is not a failure: only a real
+      // promotion error should exempt the saved pane from suspended expiry.
+      sessionManager.keepPendingRecovery(session, session.recoveryError);
       changed = true;
       continue;
     }

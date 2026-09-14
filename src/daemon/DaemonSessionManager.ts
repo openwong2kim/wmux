@@ -181,8 +181,14 @@ export class DaemonSessionManager extends EventEmitter {
 
   cancelPendingCreates(): void { this.pendingCreates.clear(); }
 
-  keepPendingRecovery(session: DaemonSession, error: string): void {
-    this.pendingRecovery.set(session.id, { ...session, state: 'suspended', recoveryError: error });
+  /** Preserve retry state; unattempted placeholders retain normal suspended expiry. */
+  keepPendingRecovery(session: DaemonSession, error?: string): void {
+    const pending: DaemonSession = { ...session, state: 'suspended' };
+    // Older snapshots used this status text as an error even without a probe.
+    // Clear that exact marker so existing placeholders can age out as well.
+    if (error !== undefined && error !== 'WSL session is waiting to reconnect.') pending.recoveryError = error;
+    else delete pending.recoveryError;
+    this.pendingRecovery.set(session.id, pending);
   }
 
   getPendingRecovery(id: string): DaemonSession | undefined {

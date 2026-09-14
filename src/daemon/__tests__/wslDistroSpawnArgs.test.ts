@@ -1,15 +1,18 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { EventEmitter } from 'node:events';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 
 // Exercise the Windows launch path on every CI platform without requiring a
 // WSL installation or writing integration files into the runner's home.
 class MockPty extends EventEmitter {
   pid = 4242;
-  onData() { return { dispose() {} }; }
-  onExit() { return { dispose() {} }; }
-  write(_data: string): void {}
-  resize(_cols: number, _rows: number): void {}
-  kill(): void {}
+  onData() { return { dispose() { /* No listener is registered by this mock. */ } }; }
+  onExit() { return { dispose() { /* No listener is registered by this mock. */ } }; }
+  write(_data: string): void { /* No real PTY input. */ }
+  resize(_cols: number, _rows: number): void { /* No real PTY geometry. */ }
+  kill(): void { /* No child process to terminate. */ }
 }
 const { spawnMock, probeMock } = vi.hoisted(() => ({
   spawnMock: vi.fn(),
@@ -36,6 +39,7 @@ vi.mock('../../shared/wslIntegration', async () => {
   }) };
 });
 import { DaemonSessionManager } from '../DaemonSessionManager';
+import { StateWriter } from '../StateWriter';
 
 describe('createSession — WSL distro selection and recovery target', () => {
   let manager: DaemonSessionManager;
@@ -98,6 +102,46 @@ describe('createSession — WSL distro selection and recovery target', () => {
     expect(manager.listSessions()).toMatchObject([{ id: 'saved', state: 'suspended', bufferDumpPath: '/saved/buffer', recoveryError: 'Distro unavailable' }]);
     manager.destroySession('saved');
     expect(manager.listSessions()).toHaveLength(0);
+  });
+
+  it('expires unattempted recovery after the suspended TTL but retains genuine failures across saves', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-pending-expiry-'));
+    const writer = new StateWriter(tmpDir, 24);
+    const now = Date.now();
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(now);
+    try {
+      const meta = await manager.createSessionAsync({ id: 'saved', cmd: 'wsl.exe', cwd: '~' });
+      manager.destroySession(meta.id);
+      for (const [id, recoveryError] of [
+        ['unattempted', undefined],
+        ['legacy-placeholder', 'WSL session is waiting to reconnect.'],
+        ['failed', 'WSL distro unavailable'],
+      ] as const) {
+        manager.keepPendingRecovery({ ...meta, id, env: {}, recoveryError,
+          lastActivity: new Date(now).toISOString(), bufferDumpPath: path.join(tmpDir, `${id}.buf`),
+        }, recoveryError);
+      }
+      expect(manager.getPendingRecovery('unattempted')).not.toHaveProperty('recoveryError');
+      expect(manager.listLiveSessions()).toHaveLength(0);
+      writer.saveImmediate({ version: 1, sessions: manager.listSessions() });
+      expect(writer.load().sessions.map(s => s.id)).toEqual(['unattempted', 'legacy-placeholder', 'failed']);
+
+      // A subsequent boot preserves the distinction and the original activity
+      // time. Merely saving a placeholder must not renew its retention period.
+      for (const session of writer.load().sessions) {
+        manager.keepPendingRecovery(session, session.recoveryError);
+      }
+      writer.saveImmediate({ version: 1, sessions: manager.listSessions() });
+      clock.mockReturnValue(now + 25 * 60 * 60 * 1000);
+      expect(writer.load().sessions).toMatchObject([{
+        id: 'failed', state: 'suspended', recoveryError: 'WSL distro unavailable',
+        bufferDumpPath: path.join(tmpDir, 'failed.buf'),
+      }]);
+    } finally {
+      clock.mockRestore();
+      writer.dispose();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
   });
 
 });

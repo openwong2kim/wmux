@@ -1,6 +1,7 @@
 import { WSL_RPC_TIMEOUT_MS } from '../../../shared/wsl';
 import { ipcMain, BrowserWindow } from 'electron';
 import path from 'node:path';
+import { homedir } from 'node:os';
 import { StringDecoder } from 'node:string_decoder';
 import { PTYManager } from '../../pty/PTYManager';
 import { PTYBridge } from '../../pty/PTYBridge';
@@ -377,7 +378,7 @@ export function registerPTYHandlers(
       const shell = options?.shell || (process.platform === 'win32' ? new ShellDetector().getDefault() : (process.env.SHELL || '/bin/bash'));
       const cwdResolution = resolvePtyCreateCwdForShell(options?.cwd, options?.recoveryCwds, shell);
       const safeCwd = cwdResolution.safeCwd;
-      let effectiveCwd = safeCwd ?? (isWslShell(shell) ? '~' : require('os').homedir());
+      let effectiveCwd = safeCwd ?? (isWslShell(shell) ? '~' : homedir());
       // #1103 — the renderer's WSL distro choice, applied at the one place
       // the effective shell is known. Non-wsl shells and no-choice both yield
       // undefined (today's behaviour).
@@ -631,7 +632,7 @@ export function registerPTYHandlers(
       const instance = await ptyManager.createAsync({ shell, ...(wslArgs ? { shellArgs: wslArgs } : {}), cols, rows, workspaceId, surfaceId, env, cwd: effectiveCwd, spawnKind });
       logCwdResolution(instance.id, cwdResolution.incomingCwd, safeCwd, cwdResolution.source);
       ptyBridge.setupDataForwarding(instance.id);
-      const actualCwd = instance.cwd || effectiveCwd || require('os').homedir();
+      const actualCwd = instance.cwd || effectiveCwd || homedir();
       updateCwd(instance.id, actualCwd);
       // Startup command: gate on the shell's first output (one-shot onData)
       // so it lands at a ready prompt, mirroring the daemon path. ptyManager
