@@ -810,6 +810,23 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
     }),
 
     loadSession: (data: SessionData) => set((state: StoreState) => {
+      // Site guides are restored ahead of the empty-workspace return below:
+      // that return would otherwise skip the saved marker while the session
+      // still counts as loaded, and the Chrome auto-enable would override a
+      // user who turned guides off.
+      // Default OFF; only an explicit persisted true opts in.
+      if (typeof data.siteGuidesEnabled === 'boolean') {
+        state.siteGuidesEnabled = data.siteGuidesEnabled;
+      }
+      if (typeof data.siteGuidesAutoEnabled === 'boolean') {
+        state.siteGuidesAutoEnabled = data.siteGuidesAutoEnabled;
+      }
+      // The saved values just replaced the store's. If the backend boot read
+      // already landed, run the Chrome auto-enable now; otherwise
+      // hydrateBrowserBackend runs it when it arrives.
+      state.sessionSettingsLoaded = true;
+      if (state.browserBackendHydrated) Object.assign(state, siteGuidesAutoEnablePatch(state));
+
       if (!data.workspaces || data.workspaces.length === 0) return;
 
       // Cold-park is renderer-only and non-persisted. loadSession replaces the
@@ -1225,18 +1242,6 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       if (typeof data.siteMemoryEnabled === 'boolean') {
         state.siteMemoryEnabled = data.siteMemoryEnabled;
       }
-      // Default OFF; only an explicit persisted true opts in.
-      if (typeof data.siteGuidesEnabled === 'boolean') {
-        state.siteGuidesEnabled = data.siteGuidesEnabled;
-      }
-      if (typeof data.siteGuidesAutoEnabled === 'boolean') {
-        state.siteGuidesAutoEnabled = data.siteGuidesAutoEnabled;
-      }
-      // The saved values just replaced the store's. If the backend boot read
-      // already landed, run the Chrome auto-enable now; otherwise
-      // hydrateBrowserBackend runs it when it arrives.
-      state.sessionSettingsLoaded = true;
-      if (state.browserBackendHydrated) Object.assign(state, siteGuidesAutoEnablePatch(state));
       let retentionMigrationApplied = false;
       if (typeof data.hiddenPaneRetentionEnabled === 'boolean') {
         if (data.hiddenPaneRetentionEnabled === false && !retentionMigrationDone()) {

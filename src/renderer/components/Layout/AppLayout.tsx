@@ -1287,9 +1287,6 @@ export default function AppLayout() {
         const isFirstAutoUpdateChoice = saved.autoUpdateEnabled == null;
 
         useStore.getState().loadSession(saved);
-        // loadSession returns early for a session with no workspaces, before it
-        // records that settings were applied; mark it here too (idempotent).
-        useStore.getState().markSessionSettingsLoaded();
 
         // Sanitize stale per-workspace agent state. agentStatus/agentName
         // describe a live PTY's current state; carrying them across an app

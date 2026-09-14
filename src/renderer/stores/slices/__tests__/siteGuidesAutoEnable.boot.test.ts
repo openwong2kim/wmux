@@ -49,11 +49,11 @@ function createTestStore() {
   );
 }
 
-function session(fields: Partial<SessionData>): SessionData {
+function session(fields: Partial<SessionData>, { empty = false } = {}): SessionData {
   const ws = createWorkspace('A');
   return {
-    workspaces: [ws],
-    activeWorkspaceId: ws.id,
+    workspaces: empty ? [] : [ws],
+    activeWorkspaceId: empty ? '' : ws.id,
     sidebarVisible: true,
     ...fields,
   } as SessionData;
@@ -62,10 +62,10 @@ function session(fields: Partial<SessionData>): SessionData {
 type Order = 'hydration-then-session' | 'session-then-hydration';
 const ORDERS: Order[] = ['hydration-then-session', 'session-then-hydration'];
 
-function boot(order: Order, backend: BrowserBackend, saved: Partial<SessionData>) {
+function boot(order: Order, backend: BrowserBackend, saved: Partial<SessionData>, opts: { empty?: boolean } = {}) {
   const store = createTestStore();
   const hydrate = () => store.getState().hydrateBrowserBackend(backend);
-  const load = () => store.getState().loadSession(session(saved));
+  const load = () => store.getState().loadSession(session(saved, opts));
   if (order === 'hydration-then-session') {
     hydrate();
     load();
@@ -86,6 +86,14 @@ describe('site guides auto-enable — boot ordering', () => {
 
     it(`keeps guides off for a chrome user who already has the marker (${order})`, () => {
       const s = boot(order, 'chrome', { siteGuidesEnabled: false, siteGuidesAutoEnabled: true });
+      expect(s.siteGuidesEnabled).toBe(false);
+      expect(s.siteGuidesAutoEnabled).toBe(true);
+    });
+
+    // loadSession returns early for a session with no workspaces; the saved
+    // marker must still be honoured, or guides the user turned off come back.
+    it(`keeps guides off for a chrome user with the marker in an empty-workspace session (${order})`, () => {
+      const s = boot(order, 'chrome', { siteGuidesEnabled: false, siteGuidesAutoEnabled: true }, { empty: true });
       expect(s.siteGuidesEnabled).toBe(false);
       expect(s.siteGuidesAutoEnabled).toBe(true);
     });
