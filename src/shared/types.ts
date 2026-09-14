@@ -849,6 +849,11 @@ export interface SessionData {
    */
   siteGuidesEnabled?: boolean;
   /**
+   * Site guides were already turned on automatically once because the Chrome
+   * agent browser was chosen. Set, it stops that from ever happening again.
+   */
+  siteGuidesAutoEnabled?: boolean;
+  /**
    * Issue #175: global default starting directory for new terminals.
    * Empty/unset → os.homedir(). Per-workspace profile.startupCwd overrides.
    */

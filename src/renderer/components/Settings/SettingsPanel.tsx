@@ -42,7 +42,7 @@ import { IntegrationSetupSectionContainer } from './IntegrationSetupSection';
 import { AccountsSection } from './AccountsSection';
 import { terminalFontFamilyCss } from '../../utils/terminalFont';
 import { hasBareFunctionKeyBinding } from '../../utils/functionKeyBinding';
-import { Icon, IconX, IconCheck, IconChevron, IconExternalLink } from '../icons';
+import { Icon, IconX, IconCheck, IconChevron, IconExternalLink, IconBrowser } from '../icons';
 import { FOCUS_RING } from '../focusRing';
 import { SETTINGS_CATALOG, SETTINGS_NAV_GROUPS, type SettingsTabId } from '../../settings/catalog';
 import { matchSettings, tabHitCount } from '../../settings/searchSettings';
@@ -2252,17 +2252,6 @@ function TabTerminal() {
   const setHiddenPaneRetentionEnabled = useStore((s) => s.setHiddenPaneRetentionEnabled);
   const coldParkEnabled = useStore((s) => s.coldParkEnabled);
   const setColdParkEnabled = useStore((s) => s.setColdParkEnabled);
-  const browserLightweightMode = useStore((s) => s.browserLightweightMode);
-  const setBrowserLightweightMode = useStore((s) => s.setBrowserLightweightMode);
-  const browserDiscardHidden = useStore((s) => s.browserDiscardHidden);
-  const setBrowserDiscardHidden = useStore((s) => s.setBrowserDiscardHidden);
-  const siteMemoryEnabled = useStore((s) => s.siteMemoryEnabled);
-  const setSiteMemoryEnabled = useStore((s) => s.setSiteMemoryEnabled);
-  const siteGuidesEnabled = useStore((s) => s.siteGuidesEnabled);
-  const setSiteGuidesEnabled = useStore((s) => s.setSiteGuidesEnabled);
-  const browserBackend = useStore((s) => s.browserBackend);
-  const setBrowserBackend = useStore((s) => s.setBrowserBackend);
-  const browserBackendHydrated = useStore((s) => s.browserBackendHydrated);
   const startupDirectory = useStore((s) => s.startupDirectory);
   const setStartupDirectory = useStore((s) => s.setStartupDirectory);
   const [detectedShells, setDetectedShells] = useState<ShellInfo[]>([]);
@@ -2381,6 +2370,49 @@ function TabTerminal() {
             label={t('settings.coldPark')}
           />
         </SettingRow>
+        <SettingRow id="scrollback" label={t('settings.scrollbackLines')} description={t('settings.scrollbackDesc')}>
+          <SettingNumberInput
+            label={t('settings.scrollbackLines')}
+            value={scrollbackLines}
+            onChange={setScrollbackLines}
+            min={1000}
+            max={100000}
+          />
+        </SettingRow>
+        <SettingRow id="restore" label={t('settings.scrollbackRestore')} description={t('settings.scrollbackRestoreDesc')}>
+          <Toggle
+            checked={scrollbackRestoreEnabled}
+            onChange={setScrollbackRestoreEnabled}
+            label={t('settings.scrollbackRestore')}
+          />
+        </SettingRow>
+        <SettingRow id="imagepaste" label={t('settings.imagePaste')} description={t('settings.imagePasteDesc')}>
+          <ImagePasteModeView value={imagePasteMode} onChange={setImagePasteMode} t={t} />
+        </SettingRow>
+      </div>
+    </div>
+  );
+}
+
+// ─── Browser tab — agent browser runtime and what agents learn about sites ───
+function TabBrowser() {
+  const t = useT();
+  const browserLightweightMode = useStore((s) => s.browserLightweightMode);
+  const setBrowserLightweightMode = useStore((s) => s.setBrowserLightweightMode);
+  const browserDiscardHidden = useStore((s) => s.browserDiscardHidden);
+  const setBrowserDiscardHidden = useStore((s) => s.setBrowserDiscardHidden);
+  const siteMemoryEnabled = useStore((s) => s.siteMemoryEnabled);
+  const setSiteMemoryEnabled = useStore((s) => s.setSiteMemoryEnabled);
+  const siteGuidesEnabled = useStore((s) => s.siteGuidesEnabled);
+  const setSiteGuidesEnabled = useStore((s) => s.setSiteGuidesEnabled);
+  const browserBackend = useStore((s) => s.browserBackend);
+  const setBrowserBackend = useStore((s) => s.setBrowserBackend);
+  const browserBackendHydrated = useStore((s) => s.browserBackendHydrated);
+
+  return (
+    <div className="flex flex-col gap-4">
+      <div className="flex flex-col gap-2">
+        <SectionLabel label={t('settings.browserSectionRuntime')} />
         <SettingRow id="browserbackend" label={t('settings.browserBackend')} description={t('settings.browserBackendDesc')}>
           <SettingSelect
             label={t('settings.browserBackend')}
@@ -2417,6 +2449,9 @@ function TabTerminal() {
             />
           </SettingRow>
         )}
+      </div>
+      <div className="flex flex-col gap-2">
+        <SectionLabel label={t('settings.browserSectionKnowledge')} />
         <SettingRow id="sitememory" label={t('settings.siteMemory')} description={t('settings.siteMemoryDesc')}>
           <Toggle
             checked={siteMemoryEnabled}
@@ -2430,25 +2465,6 @@ function TabTerminal() {
             onChange={setSiteGuidesEnabled}
             label={t('settings.siteGuides')}
           />
-        </SettingRow>
-        <SettingRow id="scrollback" label={t('settings.scrollbackLines')} description={t('settings.scrollbackDesc')}>
-          <SettingNumberInput
-            label={t('settings.scrollbackLines')}
-            value={scrollbackLines}
-            onChange={setScrollbackLines}
-            min={1000}
-            max={100000}
-          />
-        </SettingRow>
-        <SettingRow id="restore" label={t('settings.scrollbackRestore')} description={t('settings.scrollbackRestoreDesc')}>
-          <Toggle
-            checked={scrollbackRestoreEnabled}
-            onChange={setScrollbackRestoreEnabled}
-            label={t('settings.scrollbackRestore')}
-          />
-        </SettingRow>
-        <SettingRow id="imagepaste" label={t('settings.imagePaste')} description={t('settings.imagePasteDesc')}>
-          <ImagePasteModeView value={imagePasteMode} onChange={setImagePasteMode} t={t} />
         </SettingRow>
       </div>
     </div>
@@ -5099,6 +5115,7 @@ export default function SettingsPanel() {
     shortcuts:          { label: t('settings.tabShortcuts'),    icon: <IconShortcuts /> },
     'claude-integration': { label: t('settings.tabAccounts'),   icon: <IconClaude /> },
     agents:             { label: t('settings.tabAgents'),      icon: <IconAgents /> },
+    browser:            { label: t('settings.tabBrowser'),     icon: <IconBrowser /> },
     lanlink:            { label: t('settings.tabNetwork'),     icon: <IconLanLink /> },
     about:              { label: t('settings.tabAbout'),       icon: <IconAbout /> },
   };
@@ -5293,6 +5310,7 @@ export default function SettingsPanel() {
                   {activeTab === 'shortcuts'          && <TabShortcuts />}
                   {activeTab === 'claude-integration' && <><IntegrationSetupSectionContainer /><ClaudeIntegrationSection /><AccountsSection /></>}
                   {activeTab === 'agents'             && <TabAgents />}
+                  {activeTab === 'browser'            && <TabBrowser />}
                   {activeTab === 'lanlink'            && <><LanLinkSection /><LanLinkPairingSection /></>}
                   {activeTab === 'about'              && <><TabAbout /><TabFirstRunSetup /></>}
                 </>

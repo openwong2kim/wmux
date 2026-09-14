@@ -8,6 +8,7 @@ export type SettingsTabId =
   | 'shortcuts'
   | 'claude-integration'
   | 'agents'
+  | 'browser'
   | 'lanlink'
   | 'about';
 
@@ -35,7 +36,7 @@ export const SETTINGS_NAV_GROUPS: {
   {
     id: 'agents',
     labelKey: 'settings.navGroupAgents',
-    tabs: ['claude-integration', 'agents'],
+    tabs: ['claude-integration', 'agents', 'browser'],
   },
   {
     id: 'system',
@@ -64,8 +65,6 @@ export const SETTINGS_CATALOG: SettingsCatalogEntry[] = [
   { id: 'ime', tab: 'terminal', labelKey: 'settings.imeResidueGuard', descKey: 'settings.imeResidueGuardDesc', synonyms: 'ime korean cjk hangul 한글 입력' },
   { id: 'retention', tab: 'terminal', labelKey: 'settings.hiddenPaneRetention', descKey: 'settings.hiddenPaneRetentionDesc', synonyms: 'hidden render cpu park' },
   { id: 'coldpark', tab: 'terminal', labelKey: 'settings.coldPark', descKey: 'settings.coldParkDesc', synonyms: 'memory ram park idle unmount' },
-  { id: 'browserbackend', tab: 'terminal', labelKey: 'settings.browserBackend', descKey: 'settings.browserBackendDesc', synonyms: 'browser chrome chromium external builtin' },
-  { id: 'browserlight', tab: 'terminal', labelKey: 'settings.browserLightweight', descKey: 'settings.browserLightweightDesc', synonyms: 'browser throttle cpu lightweight' },
   { id: 'scrollback', tab: 'terminal', labelKey: 'settings.scrollbackLines', descKey: 'settings.scrollbackDesc', synonyms: 'history buffer lines scroll' },
   { id: 'restore', tab: 'terminal', labelKey: 'settings.scrollbackRestore', descKey: 'settings.scrollbackRestoreDesc', synonyms: 'restore persist reboot' },
   { id: 'imagepaste', tab: 'terminal', labelKey: 'settings.imagePaste', descKey: 'settings.imagePasteDesc', synonyms: 'image paste screenshot clipboard png inline native wsl 이미지 붙여넣기 스크린샷 클립보드' },
@@ -104,6 +103,11 @@ export const SETTINGS_CATALOG: SettingsCatalogEntry[] = [
   { id: 'a2a', tab: 'agents', labelKey: 'settings.a2aAutoApproveExecute', descKey: 'settings.a2aAutoApproveExecuteDesc', synonyms: 'a2a execute approve' },
   { id: 'mcp', tab: 'agents', labelKey: 'settings.mcpServers', synonyms: 'mcp plugin tools broker register' },
   { id: 'toolbar', tab: 'agents', labelKey: 'settings.agentToolbarShow', descKey: 'settings.agentToolbarShowDesc', synonyms: 'toolbar compose new chat' },
+
+  { id: 'browserbackend', tab: 'browser', labelKey: 'settings.browserBackend', descKey: 'settings.browserBackendDesc', synonyms: 'browser chrome chromium external builtin' },
+  { id: 'browserlight', tab: 'browser', labelKey: 'settings.browserLightweight', descKey: 'settings.browserLightweightDesc', synonyms: 'browser throttle cpu lightweight' },
+  { id: 'sitememory', tab: 'browser', labelKey: 'settings.siteMemory', descKey: 'settings.siteMemoryDesc', synonyms: 'browser site memory domain replay failure remember' },
+  { id: 'siteguides', tab: 'browser', labelKey: 'settings.siteGuides', descKey: 'settings.siteGuidesDesc', synonyms: 'browser site guides notes chrome agent' },
 
   { id: 'lanenable', tab: 'lanlink', labelKey: 'settings.lanlinkEnable', descKey: 'settings.lanlinkEnableDesc', synonyms: 'lan link network peer remote pair' },
   { id: 'lannic', tab: 'lanlink', labelKey: 'settings.lanlinkNic', descKey: 'settings.lanlinkNicDesc', synonyms: 'nic interface ethernet wifi mac' },

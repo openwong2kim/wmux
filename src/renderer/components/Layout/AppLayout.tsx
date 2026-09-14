@@ -376,6 +376,7 @@ function buildSessionData(dumped: Map<string, boolean>): SessionData {
     browserDiscardHidden: state.browserDiscardHidden,
     siteMemoryEnabled: state.siteMemoryEnabled,
     siteGuidesEnabled: state.siteGuidesEnabled,
+    siteGuidesAutoEnabled: state.siteGuidesAutoEnabled,
     startupDirectory: state.startupDirectory || undefined,
     scrollbackLines: state.scrollbackLines,
     scrollbackRestoreEnabled: state.scrollbackRestoreEnabled,
@@ -1273,6 +1274,8 @@ export default function AppLayout() {
       try {
         const saved = await window.electronAPI.session.load();
         if (!saved) {
+          // Nothing to restore; let the boot site-guides auto-enable proceed.
+          useStore.getState().markSessionSettingsLoaded();
           sessionLoadedRef.current = true;
           setSessionLoaded(true);
           // First ever launch — ask about auto-update
@@ -1284,6 +1287,9 @@ export default function AppLayout() {
         const isFirstAutoUpdateChoice = saved.autoUpdateEnabled == null;
 
         useStore.getState().loadSession(saved);
+        // loadSession returns early for a session with no workspaces, before it
+        // records that settings were applied; mark it here too (idempotent).
+        useStore.getState().markSessionSettingsLoaded();
 
         // Sanitize stale per-workspace agent state. agentStatus/agentName
         // describe a live PTY's current state; carrying them across an app

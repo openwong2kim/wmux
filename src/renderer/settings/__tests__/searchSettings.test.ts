@@ -56,6 +56,17 @@ describe('matchSettings', () => {
     expect(hits.map((h) => h.entry.id)).toContain('autoupdate');
   });
 
+  // The browser rows left the Terminal tab; a search hit must jump to where
+  // they render now, or the jump switches to a tab that no longer has them.
+  it('sends a "site guides" search to the browser tab', () => {
+    const label = (key: string) => (key === 'settings.siteGuides' ? 'Site guides' : key);
+    const hits = matchSettings('site guides', label, SETTINGS_CATALOG);
+    const hit = hits.find((h) => h.entry.id === 'siteguides');
+    expect(hit?.entry.tab).toBe('browser');
+    expect(tabHitCount('browser', hits)).toBeGreaterThan(0);
+    expect(tabHitCount('terminal', hits)).toBe(0);
+  });
+
   it('requires every term, in any order', () => {
     const both = matchSettings('shape cursor', t);
     expect(both.map((h) => h.entry.id)).toContain('cursorshape');

@@ -31,6 +31,21 @@ function readInitialBrowserBackend(): { backend: BrowserBackend; hydrated: boole
   return { backend: DEFAULT_BROWSER_BACKEND, hydrated: false };
 }
 const INITIAL_BROWSER_BACKEND = readInitialBrowserBackend();
+
+/**
+ * One-time auto-enable of site guides for the Chrome agent browser. Returns the
+ * fields to write, or null when nothing changes. It only ever turns guides ON,
+ * and only while the marker is unset — the saved default cannot tell "never
+ * touched" from "turned off", so the marker is what lets a user who switches
+ * guides off afterwards stay off, even when they pick Chrome again later.
+ */
+export function siteGuidesAutoEnablePatch(input: {
+  browserBackend: BrowserBackend;
+  siteGuidesAutoEnabled: boolean;
+}): { siteGuidesEnabled: true; siteGuidesAutoEnabled: true } | null {
+  if (input.browserBackend !== 'chrome' || input.siteGuidesAutoEnabled) return null;
+  return { siteGuidesEnabled: true, siteGuidesAutoEnabled: true };
+}
 import type { FleetSortMode } from '../selectors/fleet';
 import { multiviewColumnCount, type MultiviewArrangement } from '../../utils/multiviewGrid';
 import {
@@ -315,6 +330,16 @@ export interface UISlice {
   // <wmuxDir>/site-guides/ that match the page are named by path.
   siteGuidesEnabled: boolean;
   setSiteGuidesEnabled: (enabled: boolean) => void;
+  // Persisted marker: site guides were already auto-enabled once for the
+  // Chrome backend (siteGuidesAutoEnablePatch), so it never happens again.
+  siteGuidesAutoEnabled: boolean;
+  setSiteGuidesAutoEnabled: (done: boolean) => void;
+  // Non-persisted: the saved session's settings have been applied (or there
+  // was no saved session). The boot auto-enable waits for this AND
+  // browserBackendHydrated, whichever lands second, so a late session load
+  // cannot overwrite the auto-enabled value with the saved one.
+  sessionSettingsLoaded: boolean;
+  markSessionSettingsLoaded: () => void;
 
   // #517 backend choice (default 'builtin'). NON-PERSISTED renderer mirror:
   // main owns the authoritative value (userData JSON, read synchronously at
@@ -1177,6 +1202,19 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
     state.siteGuidesEnabled = enabled;
   }),
 
+  siteGuidesAutoEnabled: false,
+
+  setSiteGuidesAutoEnabled: (done) => set((state) => {
+    state.siteGuidesAutoEnabled = done;
+  }),
+
+  sessionSettingsLoaded: false,
+
+  markSessionSettingsLoaded: () => set((state) => {
+    state.sessionSettingsLoaded = true;
+    if (state.browserBackendHydrated) Object.assign(state, siteGuidesAutoEnablePatch(state));
+  }),
+
   // #517 backend choice — mirror of main's authoritative value. Read
   // synchronously at module load (readInitialBrowserBackend) so it is correct
   // before the first render; AppLayout's async hydration is a fallback/refresh.
@@ -1184,6 +1222,7 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
 
   setBrowserBackend: (backend) => set((state) => {
     state.browserBackend = backend;
+    if (backend === 'chrome') Object.assign(state, siteGuidesAutoEnablePatch(state));
   }),
 
   browserBackendHydrated: INITIAL_BROWSER_BACKEND.hydrated,
@@ -1193,6 +1232,7 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
   hydrateBrowserBackend: (backend) => set((state) => {
     if (backend !== null) state.browserBackend = backend;
     state.browserBackendHydrated = true;
+    if (state.sessionSettingsLoaded) Object.assign(state, siteGuidesAutoEnablePatch(state));
   }),
 
   startupDirectory: '',

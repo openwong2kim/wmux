@@ -8,7 +8,7 @@ import { normalizeRoleBindings } from '../../../shared/orchestratorRole';
 import { getPresetById } from '../../../shared/layoutPresets';
 import { setLocale as i18nSetLocale, t as i18nT, detectSupportedLocale, type Locale } from '../../i18n';
 import { applyCustomCssVars, migrateThemeId, migrateCustomThemeColors } from '../../themes';
-import { resetInspectState, extractLayout, buildPaneFromLayout } from './uiSlice';
+import { resetInspectState, extractLayout, buildPaneFromLayout, siteGuidesAutoEnablePatch } from './uiSlice';
 import { sanitizeFontFamily } from '../../utils/terminalFont';
 import { sanitizeTerminalCursorStyle } from '../../../shared/terminalCursor';
 import { sanitizeImagePasteMode } from '../../../shared/imagePaste';
@@ -1229,6 +1229,14 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       if (typeof data.siteGuidesEnabled === 'boolean') {
         state.siteGuidesEnabled = data.siteGuidesEnabled;
       }
+      if (typeof data.siteGuidesAutoEnabled === 'boolean') {
+        state.siteGuidesAutoEnabled = data.siteGuidesAutoEnabled;
+      }
+      // The saved values just replaced the store's. If the backend boot read
+      // already landed, run the Chrome auto-enable now; otherwise
+      // hydrateBrowserBackend runs it when it arrives.
+      state.sessionSettingsLoaded = true;
+      if (state.browserBackendHydrated) Object.assign(state, siteGuidesAutoEnablePatch(state));
       let retentionMigrationApplied = false;
       if (typeof data.hiddenPaneRetentionEnabled === 'boolean') {
         if (data.hiddenPaneRetentionEnabled === false && !retentionMigrationDone()) {

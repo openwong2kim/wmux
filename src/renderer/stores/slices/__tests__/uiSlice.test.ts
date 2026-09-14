@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { create } from 'zustand';
 import { immer } from 'zustand/middleware/immer';
-import { createUISlice, type UISlice } from '../uiSlice';
+import { createUISlice, siteGuidesAutoEnablePatch, type UISlice } from '../uiSlice';
 
 // Mock browser APIs that uiSlice touches
 vi.mock('../../../i18n', () => ({
@@ -734,6 +734,54 @@ describe('UISlice — browser backend mirror (#517)', () => {
     store.getState().hydrateBrowserBackend(null);
     expect(store.getState().browserBackend).toBe('builtin');
     expect(store.getState().browserBackendHydrated).toBe(true);
+  });
+});
+
+describe('UISlice — site guides auto-enable with the Chrome backend', () => {
+  let store: ReturnType<typeof createTestStore>;
+
+  beforeEach(() => {
+    store = createTestStore();
+  });
+
+  it('siteGuidesAutoEnablePatch only fires for chrome without the marker', () => {
+    expect(siteGuidesAutoEnablePatch({ browserBackend: 'chrome', siteGuidesAutoEnabled: false }))
+      .toEqual({ siteGuidesEnabled: true, siteGuidesAutoEnabled: true });
+    expect(siteGuidesAutoEnablePatch({ browserBackend: 'chrome', siteGuidesAutoEnabled: true })).toBeNull();
+    expect(siteGuidesAutoEnablePatch({ browserBackend: 'builtin', siteGuidesAutoEnabled: false })).toBeNull();
+    expect(siteGuidesAutoEnablePatch({ browserBackend: 'external', siteGuidesAutoEnabled: false })).toBeNull();
+  });
+
+  it('choosing chrome turns guides on once and sets the marker', () => {
+    expect(store.getState().siteGuidesEnabled).toBe(false);
+    expect(store.getState().siteGuidesAutoEnabled).toBe(false);
+    store.getState().setBrowserBackend('chrome');
+    expect(store.getState().siteGuidesEnabled).toBe(true);
+    expect(store.getState().siteGuidesAutoEnabled).toBe(true);
+  });
+
+  it('choosing builtin or external does not turn guides on', () => {
+    store.getState().setBrowserBackend('external');
+    store.getState().setBrowserBackend('builtin');
+    expect(store.getState().siteGuidesEnabled).toBe(false);
+    expect(store.getState().siteGuidesAutoEnabled).toBe(false);
+  });
+
+  it('guides turned off after the auto-enable stay off when chrome is chosen again', () => {
+    store.getState().setBrowserBackend('chrome');
+    store.getState().setSiteGuidesEnabled(false);
+    store.getState().setBrowserBackend('builtin');
+    store.getState().setBrowserBackend('chrome');
+    expect(store.getState().siteGuidesEnabled).toBe(false);
+    expect(store.getState().siteGuidesAutoEnabled).toBe(true);
+  });
+
+  it('switching away from chrome does not turn guides off', () => {
+    store.getState().setBrowserBackend('chrome');
+    store.getState().setBrowserBackend('external');
+    expect(store.getState().siteGuidesEnabled).toBe(true);
+    store.getState().setBrowserBackend('builtin');
+    expect(store.getState().siteGuidesEnabled).toBe(true);
   });
 });
 
