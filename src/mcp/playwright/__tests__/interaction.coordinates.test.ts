@@ -67,6 +67,8 @@ function makePage(
     popupUrl?: string;
     /** What window.innerWidth/innerHeight reports, or 'throws'. */
     innerSize?: [number, number] | 'throws';
+    /** Whether the refs table's size-and-scroll read throws. */
+    pageSizeThrows?: boolean;
   } = {},
 ) {
   const handlers = new Map<string, Set<Handler>>();
@@ -114,6 +116,7 @@ function makePage(
           return opts.innerSize ?? [1024, 768];
         }
         if (typeof expr === 'string' && expr.startsWith('[window.innerWidth, window.innerHeight, window.scrollX')) {
+          if (opts.pageSizeThrows) throw new Error('Execution context was destroyed');
           return [1280, 800, 0, 300, 1280, 4000];
         }
         return undefined;
@@ -141,7 +144,7 @@ beforeEach(() => {
 
 /** A resolved element with a fixed box and nothing else. */
 function boxed(box: { x: number; y: number; width: number; height: number }) {
-  return { boundingBox: async () => box };
+  return { boundingBox: async () => box, dispose: async () => undefined };
 }
 
 describe('browser_click coordinates', () => {
@@ -331,6 +334,26 @@ describe('browser_drag path', () => {
     expect(input.length - down).toBeGreaterThan(2 * 8);
   });
 
+  it('keeps every pressed leg on the straight line between the agent\'s waypoints', async () => {
+    const { page, input } = makePage();
+    getPage.mockResolvedValue(page);
+
+    await drag({ path: PATH });
+
+    const pressed = input
+      .slice(input.indexOf('down') + 1, input.indexOf('up'))
+      .map((entry) => entry.slice('move '.length).split(',').map(Number));
+    let leg = 0;
+    for (const [px, py] of pressed) {
+      const a = PATH[leg];
+      const b = PATH[leg + 1];
+      const cross = (b.x - a.x) * (py - a.y) - (b.y - a.y) * (px - a.x);
+      expect(Math.abs(cross)).toBeLessThan(1e-6);
+      if (px === b.x && py === b.y) leg++;
+    }
+    expect(leg).toBe(PATH.length - 1);
+  });
+
   it('refuses a point outside the viewport before pressing anything', async () => {
     const { page, input } = makePage({ viewport: null, innerSize: [1024, 768] });
     getPage.mockResolvedValue(page);
@@ -430,6 +453,17 @@ describe('browser_scroll wheel at a point', () => {
     expect(page.evaluate).not.toHaveBeenCalled();
   });
 
+  it('is refused under a touchscreen preset', async () => {
+    const { page, input } = makePage();
+    getPage.mockResolvedValue(page);
+    touch.active = true;
+
+    const result = await scroll({ direction: 'down', x: 10, y: 10 });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('mouse-only');
+    expect(input).toEqual([]);
+  });
+
   it('refuses x without y', async () => {
     const result = await scroll({ direction: 'down', x: 10 });
     expect(result.isError).toBe(true);
@@ -485,6 +519,31 @@ describe('modifier keys', () => {
 
     expect(result.isError).toBe(true);
     expect(input).toEqual(['keydown Meta', 'keyup Meta']);
+  });
+
+  it('reports a release that failed after a successful gesture, still releasing the other keys', async () => {
+    const { page, input } = makePage();
+    getPage.mockResolvedValue(page);
+    page.keyboard.up.mockImplementationOnce(async () => { throw new Error('Shift release failed'); });
+
+    const result = await click({ x: 50, y: 60, modifiers: ['Control', 'Shift'] });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('Shift release failed');
+    expect(input).toEqual(['keydown Control', 'keydown Shift', 'click 50,60', 'keyup Control']);
+  });
+
+  it('keeps the gesture\'s own error when a release fails on top of it', async () => {
+    const { page, mouseClick } = makePage();
+    getPage.mockResolvedValue(page);
+    mouseClick.mockRejectedValueOnce(new Error('Target closed'));
+    page.keyboard.up.mockImplementationOnce(async () => { throw new Error('release failed'); });
+
+    const result = await click({ x: 50, y: 60, modifiers: ['Meta'] });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('Target closed');
+    expect(result.content[0].text).not.toContain('release failed');
   });
 
   it('releases the keys when a held drag throws mid-path, and the mouse button too', async () => {
@@ -609,10 +668,47 @@ describe('browser_screenshot refs', () => {
   });
 
   it('notes that the RPC lane cannot measure boxes', async () => {
+    resolveWorkspaceBackend.mockResolvedValue('builtin');
     getPage.mockResolvedValue(null);
 
     const result = await screenshot({ refs: true });
     const note = result.content.find((c) => c.type === 'text')?.text ?? '';
     expect(note).toContain('refs:true needs the chrome backend');
+  });
+
+  it('does not blame the backend when the chrome backend gave no page', async () => {
+    getPage.mockResolvedValue(null);
+
+    const result = await screenshot({ refs: true });
+    const note = result.content.find((c) => c.type === 'text')?.text ?? '';
+    expect(note).toContain('the chrome backend did not provide one');
+    expect(note).not.toContain('needs the chrome backend');
+  });
+
+  it('lists boxes unfiltered, and says so, when the viewport size cannot be read', async () => {
+    const { page } = makePage({ viewport: null, pageSizeThrows: true });
+    getPage.mockResolvedValue(page);
+    listRefEntriesMock.mockReturnValue(ENTRIES);
+    resolveRefMock.mockImplementation(async (_p: unknown, ref: string) =>
+      boxed(ref === '12' ? { x: 40, y: 20, width: 80, height: 30 } : { x: 0, y: 5000, width: 10, height: 10 }),
+    );
+
+    const result = await screenshot({ refs: true });
+    const note = result.content.find((c) => c.type === 'text')?.text ?? '';
+    expect(note).toContain('viewport size could not be read');
+    expect(note).toContain('ref=12 button "Log in" 40,20,80,30');
+    expect(note).toContain('ref=13 link "Far below" 0,5000,10,10');
+  });
+
+  it('omits a fullPage table rather than mislabel viewport coordinates as document ones', async () => {
+    const { page } = makePage({ pageSizeThrows: true });
+    getPage.mockResolvedValue(page);
+    listRefEntriesMock.mockReturnValue(ENTRIES);
+    resolveRefMock.mockResolvedValue(boxed({ x: 40, y: 20, width: 80, height: 30 }));
+
+    const result = await screenshot({ fullPage: true, refs: true });
+    const note = result.content.find((c) => c.type === 'text')?.text ?? '';
+    expect(note).toContain('Ref boxes omitted');
+    expect(note).not.toContain('ref=12');
   });
 });

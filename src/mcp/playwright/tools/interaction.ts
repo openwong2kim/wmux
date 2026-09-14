@@ -275,9 +275,14 @@ function modifierKeysFor(
 }
 
 /**
- * Run `gesture` with `keys` held down. Every key that went down comes back up
- * in the finally, so a gesture that throws never leaves the page with a stuck
- * Shift that turns the next click into a range selection.
+ * Run `gesture` with `keys` held down. Every key that went down gets its
+ * release attempt, whatever happened, so a gesture that throws never leaves
+ * the page with a stuck Shift that turns the next click into a range selection.
+ *
+ * A release that fails after a SUCCESSFUL gesture is reported: the gesture
+ * happened, but the page may still be holding that key, and saying "done"
+ * would hide it. When the gesture itself threw, that error is the one worth
+ * reporting and a release failure on top of it is dropped.
  */
 async function withModifiers<T>(
   page: Page,
@@ -286,17 +291,31 @@ async function withModifiers<T>(
 ): Promise<T> {
   if (!keys) return gesture();
   const held: string[] = [];
+  const releaseAll = async (): Promise<{ failed: boolean; error?: unknown }> => {
+    let outcome: { failed: boolean; error?: unknown } = { failed: false };
+    for (const key of held.reverse()) {
+      try {
+        await page.keyboard.up(key);
+      } catch (error) {
+        if (!outcome.failed) outcome = { failed: true, error };
+      }
+    }
+    return outcome;
+  };
+  let result: T;
   try {
     for (const key of keys) {
       await page.keyboard.down(key);
       held.push(key);
     }
-    return await gesture();
-  } finally {
-    for (const key of held.reverse()) {
-      await page.keyboard.up(key).catch(() => undefined);
-    }
+    result = await gesture();
+  } catch (error) {
+    await releaseAll();
+    throw error;
   }
+  const release = await releaseAll();
+  if (release.failed) throw release.error;
+  return result;
 }
 
 /** ` with Shift+Meta held`, or nothing. */
@@ -346,10 +365,16 @@ interface PointerPage {
 /**
  * Walk the pointer from `from` (or from wherever it was last left on this page)
  * to `to` along the shared pointer geometry, and leave the tracker there.
+ * `rng` is pathPoints' jitter source; a constant 0.5 yields zero jitter.
  */
-async function walkPointer(page: PointerPage, to: Point, from?: Point): Promise<void> {
+async function walkPointer(
+  page: PointerPage,
+  to: Point,
+  from?: Point,
+  rng?: () => number,
+): Promise<void> {
   const start = from ?? getLastPointer(page) ?? defaultStartPoint(page.viewportSize() ?? undefined);
-  for (const point of pathPoints(start, to, stepsForDistance(distance(start, to)))) {
+  for (const point of pathPoints(start, to, stepsForDistance(distance(start, to)), rng)) {
     await page.mouse.move(point.x, point.y);
   }
   setLastPointer(page, to);
@@ -359,16 +384,21 @@ async function walkPointer(page: PointerPage, to: Point, from?: Point): Promise<
  * A mouse drag through `points`: approach the first, press, walk each leg with
  * the pointer geometry, release. The button comes up in a finally so a move
  * that throws mid-drag does not leave the page holding a pressed mouse.
+ *
+ * `straightLegs` is for an explicit path: the agent chose those waypoints (a
+ * stroke on a canvas, a slider track), so the pressed legs between them are
+ * straight lines. The approach before the press keeps its jitter either way.
  */
 export async function mouseDragThrough(
   page: PointerPage & { mouse: { down(): Promise<void>; up(): Promise<void> } },
   points: readonly Point[],
+  straightLegs = false,
 ): Promise<void> {
   await walkPointer(page, points[0]);
   await page.mouse.down();
   try {
     for (let i = 1; i < points.length; i++) {
-      await walkPointer(page, points[i], points[i - 1]);
+      await walkPointer(page, points[i], points[i - 1], straightLegs ? () => 0.5 : undefined);
     }
   } finally {
     await page.mouse.up();
@@ -1607,7 +1637,7 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
           const inBounds = await viewportBoundsCheck(page);
           for (const point of path) inBounds(point.x, point.y);
 
-          await withModifiers(page, modifierKeys, () => mouseDragThrough(page, path));
+          await withModifiers(page, modifierKeys, () => mouseDragThrough(page, path, true));
           // Path drags are deliberately NOT recorded, for the same reason
           // coordinate clicks are not: a coordinate does not survive a
           // re-render, so a replay would drag whatever has moved under it.
@@ -1831,6 +1861,13 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
           if (!page) {
             throw new Error(
               livePageRequired('Wheel scrolls at a point', pageError, 'scroll the page or a ref without x/y'),
+            );
+          }
+          // Same identity reason as path drags and modifiers: a mouse move and
+          // a wheel are input the emulated touchscreen device does not have.
+          if (hasTouchEmulation(page)) {
+            throw new Error(
+              'Wheel scrolls at a point are mouse-only, and a device preset with a touchscreen is active on this page. Scroll without x/y, or reset the preset with browser_emulate.',
             );
           }
           (await viewportBoundsCheck(page))(x as number, y as number);

@@ -617,19 +617,28 @@ export function registerInspectionTools(server: McpServer, deps: BrowserToolDeps
           '[window.innerWidth, window.innerHeight, window.scrollX, window.scrollY, document.documentElement.scrollWidth, document.documentElement.scrollHeight]',
         ).catch(() => null);
         const n = Array.isArray(size) && size.every((v) => typeof v === 'number') ? (size as number[]) : null;
-        const viewport = page.viewportSize() ?? (n ? { width: n[0], height: n[1] } : { width: 0, height: 0 });
-        const candidates = refBoxCandidates(page);
-        return fullPage
-          ? formatRefBoxTable(
-            candidates,
-            { x: 0, y: 0, width: n ? n[4] : viewport.width, height: n ? n[5] : viewport.height },
-            { offset: { x: n ? n[2] : 0, y: n ? n[3] : 0 }, basis: 'document CSS px' },
-          )
-          : formatRefBoxTable(
-            candidates,
-            { x: 0, y: 0, width: viewport.width, height: viewport.height },
-            { basis: 'viewport CSS px' },
+        if (fullPage) {
+          // Without the scroll offset and document size a row could only be
+          // printed in viewport coordinates under a document-coordinates
+          // label, so the table is left out instead.
+          if (!n) {
+            return 'Ref boxes omitted: the document size and scroll offset could not be read, so document coordinates are unknown.';
+          }
+          return formatRefBoxTable(
+            refBoxCandidates(page),
+            { x: 0, y: 0, width: n[4], height: n[5] },
+            { offset: { x: n[2], y: n[3] }, basis: 'document CSS px' },
           );
+        }
+        // viewportSize() is null on every connectOverCDP page; when the page
+        // cannot report its size either, the area is unknown and the table
+        // says so rather than filtering against a 0x0 box.
+        const viewport = page.viewportSize() ?? (n ? { width: n[0], height: n[1] } : null);
+        return formatRefBoxTable(
+          refBoxCandidates(page),
+          viewport ? { x: 0, y: 0, width: viewport.width, height: viewport.height } : null,
+          { basis: 'viewport CSS px' },
+        );
       };
       try {
         // Chrome backend (dogfood P2): browser.screenshot has no chrome lane —
@@ -703,9 +712,14 @@ export function registerInspectionTools(server: McpServer, deps: BrowserToolDeps
         // The RPC lane cannot click by coordinate at all, so telling the
         // caller how to convert pixels here would contradict itself.
         const basis = coordinateBasis(fullPage ? 'fullPage' : 'unsupported', null);
+        if (!refs) return imageResult(fitted, basis);
+        const onChrome =
+          (await engine.resolveWorkspaceBackend(scope.workspaceId).catch(() => undefined)) === 'chrome';
         return imageResult(
           fitted,
-          refs ? `${basis}\n\nrefs:true needs the chrome backend: this lane has no live page to measure boxes on.` : basis,
+          onChrome
+            ? `${basis}\n\nrefs:true needs a live page to measure boxes on, and the chrome backend did not provide one for this capture.`
+            : `${basis}\n\nrefs:true needs the chrome backend: this lane has no live page to measure boxes on.`,
         );
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);

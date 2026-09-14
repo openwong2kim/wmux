@@ -194,7 +194,7 @@ const BROWSER_REPL_DESCRIPTION =
   'Other browser_* tools stay separate calls. Top-level await works; state persists between calls ' +
   'until a timeout kills the runtime, but let/const inside an awaiting snippet do not — assign to ' +
   'globalThis to keep a value. console.log is captured; sleep(ms) is available. ' +
-  'Every step still records to the action trace for browser_replay.';
+  'Steps record to the action trace for browser_replay, except path drags, point wheels and modifier gestures.';
 
 // Per-call text-result cap, honoured by the dispatch-layer guard
 // (src/mcp/resultCap.ts). Plain z.number(): the guard floors and clamps the

@@ -2305,6 +2305,12 @@ export interface ResolveRefOptions {
    * that lane takes the false rejections in exchange.
    */
   strictCount?: boolean;
+  /**
+   * Upper bound, in ms, on each element-handle wait. Omitted = Playwright's
+   * default. A caller measuring many refs under one budget passes what is left
+   * of it, so a detached node cannot hold a CDP wait open after the call.
+   */
+  timeout?: number;
 }
 
 /**
@@ -2328,7 +2334,7 @@ export async function resolveRef(
   options?: ResolveRefOptions,
 ): Promise<ElementHandle | null> {
   // Primary: the a11y refMap from the last generateSnapshot() on this page.
-  const primary = await resolveRefViaAxMap(page, ref, options?.strictCount === true);
+  const primary = await resolveRefViaAxMap(page, ref, options?.strictCount === true, options?.timeout);
   if (primary) return primary;
 
   // Fallback: DOM snapshots (the RPC fallback + the root-only fallthrough) tag
@@ -2346,7 +2352,7 @@ export async function resolveRef(
   // outcome that resolves to a confidently wrong element, so it is named and
   // refused rather than left to depend on that branch staying as it is.
   if (isFrameRef(page, ref)) throw new StaleRefError(frameRefFallbackMessage(ref));
-  return resolveRefViaDataAttr(page, ref);
+  return resolveRefViaDataAttr(page, ref, options?.timeout);
 }
 
 /**
@@ -2381,6 +2387,7 @@ async function resolveFrameRoot(
   page: Page,
   path: FrameHop[],
   ref: string,
+  timeout?: number,
 ): Promise<Page | Frame> {
   if (path.length === 0) return page;
 
@@ -2404,7 +2411,7 @@ async function resolveFrameRoot(
     // URL re-read below is the whole point of the hop.
     const handle: ElementHandle | null = await frames
       .nth(hop.hostIndex)
-      .elementHandle()
+      .elementHandle(timeout === undefined ? undefined : { timeout })
       .catch(() => null);
     const child: Frame | null = handle
       ? await handle.contentFrame().catch(() => null)
@@ -2449,6 +2456,7 @@ async function resolveRefViaAxMap(
   page: Page,
   ref: string,
   strictCount = false,
+  timeout?: number,
 ): Promise<ElementHandle | null> {
   const wanted = refNumber(ref);
   if (wanted === null) return null;
@@ -2504,7 +2512,7 @@ async function resolveRefViaAxMap(
     );
   }
 
-  const frameRoot = await resolveFrameRoot(page, target.framePath, ref);
+  const frameRoot = await resolveFrameRoot(page, target.framePath, ref, timeout);
 
   let count: number;
   let locator: ReturnType<Page['getByRole']>;
@@ -2553,7 +2561,7 @@ async function resolveRefViaAxMap(
 
   try {
     const nth = Math.min(target.sameNameIndex, count - 1);
-    return await locator.nth(nth).elementHandle();
+    return await locator.nth(nth).elementHandle(timeout === undefined ? undefined : { timeout });
   } catch {
     return null;
   }
@@ -2568,12 +2576,13 @@ const REF_ATTR_PATTERN = /^\d+$/;
 async function resolveRefViaDataAttr(
   page: Page,
   ref: string,
+  timeout?: number,
 ): Promise<ElementHandle | null> {
   if (!REF_ATTR_PATTERN.test(ref)) return null;
   try {
     const locator = page.locator(`[data-wmux-ref="${ref}"]`);
     if ((await locator.count()) === 0) return null;
-    return await locator.first().elementHandle();
+    return await locator.first().elementHandle(timeout === undefined ? undefined : { timeout });
   } catch {
     return null;
   }
