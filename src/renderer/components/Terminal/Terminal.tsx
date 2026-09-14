@@ -252,7 +252,7 @@ export default function TerminalComponent({ ptyId: externalPtyId, shell, cwd, on
     } catch (error) { setRecoveryError(String(error)); }
     finally { setRetryingRecovery(false); }
   };
-  const { retryConnection, terminal: terminalRef, terminalInstance, findNext, findPrevious, clearSearch } = useTerminal(containerRef, { onRecoveryError: setRecoveryError, ptyId, isVisible, scrollbackFile, onFirstData: scrollbackFile ? handleFirstData : undefined, onContextMenu: handleContextMenu,
+  const { terminal: terminalRef, terminalInstance, findNext, findPrevious, clearSearch, retryConnection } = useTerminal(containerRef, { onRecoveryError: setRecoveryError, ptyId, isVisible, scrollbackFile, onFirstData: scrollbackFile ? handleFirstData : undefined, onContextMenu: handleContextMenu,
     // Only the pane-surface terminal owns ⌘G / Ctrl+G: useComposeShortcut
     // acts on the active leaf's pty, which is what this component renders.
     // FloatingPane and Deck's BrainTerminalEmbed deliberately do NOT opt in —

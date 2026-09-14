@@ -15,8 +15,10 @@ the last reported Linux directory. A missing directory or unavailable target
 produces an error rather than silently opening a different project. The Windows
 PTY host directory is separate from the Linux working directory.
 
-WSL recovery is deferred until a pane reconnects. The daemon becomes available
-without waiting for cold distributions. Probes run asynchronously with a 60-second
+The daemon publishes WSL panes as pending, then starts recovery concurrently
+without waiting for cold distributions during startup. Panes beyond the startup
+recovery cap retry when they reconnect. Exec units can recover in the background
+without a GUI. Probes run asynchronously with a 60-second
 budget; simultaneous requests for the same target and directory share the pending
 probe. Completed results are not cached, so a deleted directory or changed Linux
 user is detected on the next attempt.

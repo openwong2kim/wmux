@@ -49,7 +49,7 @@ describe('#882 — a daemon reattach cannot silently revert the report', () => {
     // detach, and this pane's visibility will not change just because the
     // daemon respawned — so without a replay the desk would go back to owning
     // the size for a pane nobody can see.
-    const start = hookSrc.indexOf('void reconnectPtyWithRetry(id,');
+    const start = hookSrc.indexOf('return reconnectPtyWithRetry(id,');
     expect(start).toBeGreaterThan(-1);
     const block = hookSrc.slice(start, hookSrc.indexOf('.finally(', start));
     expect(block).toMatch(/reportViewerVisibility\(id, viewerVisibleRef\.current\)/);

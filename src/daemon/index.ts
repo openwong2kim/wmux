@@ -1323,15 +1323,12 @@ async function recoverSessions(
       }
       continue;
     }
-    // Cap-skipped: leave session untouched in state.sessions. It will be
-    // re-evaluated on the next launch.
-    if (!recoverableIds.has(session.id)) continue;
-
-    // WSL recovery is demand-driven. Boot must publish RPC/panes without
+    // Publish every WSL placeholder, including cap-skipped panes. Boot must
+    // publish RPC/panes without
     // waiting for a cold distro, and one unavailable target must not lose its
     // identity, binding or snapshot. Attach/promote retries asynchronously.
     if (isWslShell(session.cmd)) {
-      if (!rebooted && session.state !== 'suspended') {
+      if (!rebooted && session.state !== 'suspended' && recoverableIds.has(session.id)) {
         await reapIfIdentityConfirmed({ pid: session.pid, cmd: session.cmd,
           storedStartTime: session.pidStartTime, reason: `WSL recovery of ${session.id}` });
       }
@@ -1341,6 +1338,10 @@ async function recoverSessions(
       changed = true;
       continue;
     }
+
+    // Cap-skipped: leave session untouched in state.sessions. It will be
+    // re-evaluated on the next launch.
+    if (!recoverableIds.has(session.id)) continue;
 
     if (session.state === 'suspended' && session.bufferDumpPath) {
       // Attempt to recover suspended session
@@ -2482,6 +2483,18 @@ function registerRpcHandlers(
     return operation;
   };
   pipeServer.onRpc('daemon.promoteSession', (params) => promoteOnce(String(params?.id ?? '')));
+  // Defer cold WSL starts until RPC registration/event wiring can finish.
+  // Independent panes recover concurrently; foreground attach shares the same
+  // in-flight promotion. Exec units also resume when no GUI is attached.
+  setImmediate(() => {
+    if (shuttingDown) return;
+    const pending = sessionManager.listSessions().filter(s => sessionManager.getPendingRecovery(s.id));
+    const selected = selectRecoverableSessions(pending, Math.min(loadConfig().session.maxSessions, MAX_RECOVER_SESSIONS));
+    for (const session of pending.filter(s => selected.recoverableIds.has(s.id))) {
+      void promoteOnce(session.id).catch(err => log('error', `WSL background recovery ${session.id}:`, err));
+    }
+  });
+
 
   // wmux web (read-only-by-default browser terminal). Lives in the daemon so it
   // can tee the NON-exclusive DaemonPTYBridge without contending with the GUI's

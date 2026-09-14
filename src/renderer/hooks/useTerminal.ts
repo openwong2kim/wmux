@@ -3180,5 +3180,5 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     terminalRef.current?.scrollToLine(line);
   }, []);
 
-  return { retryConnection: () => retryReconnectRef.current?.(), terminal: terminalRef, terminalInstance, fit, searchAddonRef, findNext, findPrevious, clearSearch, getScrollPosition, scrollToLine };
+  return { terminal: terminalRef, terminalInstance, fit, searchAddonRef, findNext, findPrevious, clearSearch, getScrollPosition, scrollToLine, retryConnection: () => retryReconnectRef.current?.() };
 }
