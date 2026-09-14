@@ -33,6 +33,7 @@ import type { BridgeCall } from '../browser-repl/bridge';
 import {
   RunHintCollector,
   RunImageCollector,
+  lateCallRefusal,
   type RunImage,
 } from '../browser-repl/runCollect';
 import { buildRunnerBootstrap } from './replRunnerSource';
@@ -179,6 +180,11 @@ function delay(ms: number): Promise<void> {
 export interface ReplSessionOptions {
   readonly name: string;
   readonly cwd: string;
+  /**
+   * Where browser calls left running by a finished run are tracked. The
+   * registry passes one set per connection so they outlive this session.
+   */
+  readonly browserStragglers?: Set<Promise<unknown>>;
 }
 
 export class ReplSession {
@@ -202,12 +208,13 @@ export class ReplSession {
   /** Browser state of the eval in flight, if it was given a binding. */
   private browserRun: BrowserRun | null = null;
   /** Browser calls started by an eval that is over; the next run waits for them. */
-  private readonly stragglingBrowserCalls = new Set<Promise<unknown>>();
+  private readonly stragglingBrowserCalls: Set<Promise<unknown>>;
   private readonly ready: Promise<void>;
 
   constructor(options: ReplSessionOptions) {
     this.name = options.name;
     this.cwd = options.cwd;
+    this.stragglingBrowserCalls = options.browserStragglers ?? new Set();
 
     // Validated before spawn so a bad cwd reads as a bad cwd, not as an opaque
     // ENOENT from a process that never started.
@@ -292,6 +299,9 @@ export class ReplSession {
       // the same test.
       if (message?.id === undefined || message.id !== this.pendingId) return;
       this.pendingId = null;
+      // The run is over the moment its result arrives, not after the output
+      // drain: a timer firing in that window must not pass as this run's call.
+      this.endBrowserRun();
       const settle = this.pending;
       this.pending = null;
       settle?.(message);
@@ -349,13 +359,7 @@ export class ReplSession {
     };
     const run = this.browserRun;
     if (!run || message.runId !== run.id) {
-      reply({
-        ok: false,
-        error:
-          `browser.${name}: refused — this call does not belong to the repl_run call in flight ` +
-          '(a timer or un-awaited promise from an earlier run, or a forged run id). ' +
-          'Await every browser call inside the run that makes it.',
-      });
+      reply({ ok: false, error: lateCallRefusal(name, 'repl_run') });
       return;
     }
     if (!run.binding.call) {
@@ -397,17 +401,24 @@ export class ReplSession {
     void pending.finally(() => run.inFlight.delete(pending));
   }
 
-  /** Hand this run's unfinished browser calls to the next run to wait on. */
-  private endBrowserRun(): ReplBrowserReport | undefined {
+  /**
+   * Close the binding: later calls are refused, and this run's unfinished
+   * browser calls go to the straggler set the next run waits on. Idempotent.
+   */
+  private endBrowserRun(): void {
     const run = this.browserRun;
     this.browserRun = null;
-    if (!run) return undefined;
+    if (!run) return;
     run.images.close();
+    const stragglers = this.stragglingBrowserCalls;
     for (const pending of run.inFlight) {
-      this.stragglingBrowserCalls.add(pending);
-      void pending.finally(() => this.stragglingBrowserCalls.delete(pending));
+      stragglers.add(pending);
+      void pending.finally(() => stragglers.delete(pending));
     }
-    if (run.calls === 0) return undefined;
+  }
+
+  private static browserReport(run: BrowserRun | null): ReplBrowserReport | undefined {
+    if (!run || run.calls === 0) return undefined;
     return {
       calls: run.calls,
       hints: run.hints.lines,
@@ -421,6 +432,7 @@ export class ReplSession {
     if (this.state === 'dead') return;
     this.state = 'dead';
     this.deathReason = reason;
+    this.endBrowserRun();
     const settle = this.pending;
     this.pending = null;
     this.pendingId = null;
@@ -490,30 +502,36 @@ export class ReplSession {
     // makes a scripted flow unreproducible. Bounded by this run's own timeout,
     // or a handler that never settles would pin every later run.
     if (this.stragglingBrowserCalls.size > 0) {
+      const waitedOn = [...this.stragglingBrowserCalls];
       let waitTimer: NodeJS.Timeout | undefined;
       const landed = await Promise.race([
-        Promise.allSettled([...this.stragglingBrowserCalls]).then(() => true),
+        Promise.allSettled(waitedOn).then(() => true),
         new Promise<boolean>((resolve) => {
           waitTimer = setTimeout(() => resolve(false), timeoutMs);
         }),
       ]);
       clearTimeout(waitTimer);
       if (!landed) {
+        // A call that never settles cannot be cancelled either. Waiting on it
+        // again would fail every later run the same way, so this run pays for
+        // it once and the calls are no longer tracked.
+        for (const pending of waitedOn) this.stragglingBrowserCalls.delete(pending);
         this.state = 'idle';
         const empty = new OutputBuffer(OUTPUT_CAP_BYTES).render();
         return {
           ok: false,
           error:
-            `a browser call started by an earlier run is still running after ${timeoutMs}ms; ` +
-            'this run did not start — retry once it finishes',
+            `a browser call started by an earlier run did not finish within ${timeoutMs}ms and was ` +
+            'abandoned (it cannot be cancelled and may still land later); this run did not start — run it again',
           stdout: empty,
           stderr: empty,
           elapsedMs: Date.now() - started,
         };
       }
     }
+    let browserRun: BrowserRun | null = null;
     if (browserBinding) {
-      this.browserRun = {
+      browserRun = this.browserRun = {
         id,
         binding: browserBinding,
         hints: new RunHintCollector(),
@@ -567,7 +585,8 @@ export class ReplSession {
 
     await this.drain();
     const { stdout, stderr } = this.takeOutput();
-    const browser = this.endBrowserRun();
+    this.endBrowserRun();
+    const browser = ReplSession.browserReport(browserRun);
     const elapsedMs = Date.now() - started;
     const backgroundText =
       [background.stdout.text, background.stderr.text].filter(Boolean).join('') || undefined;

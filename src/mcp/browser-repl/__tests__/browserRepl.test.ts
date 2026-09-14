@@ -519,7 +519,7 @@ describe('browser_repl session', () => {
     );
     await new Promise((r) => setTimeout(r, 80));
     const out = await session.run('await globalThis.late', 10_000, bridge);
-    expect(out.result?.text).toContain('called after its browser_repl run finished');
+    expect(out.result?.text).toContain('refused — made after its browser_repl run finished');
     expect(h.calls).toHaveLength(0);
   });
 
@@ -833,5 +833,68 @@ describe('browser bridge allowed set and action recording', () => {
     const quiet = recordingHarness();
     await createBrowserBridge(quiet.tools, { record: false })('click', { ref: '3' });
     expect(quiet.ring.all()).toEqual([]);
+  });
+});
+
+describe('browser_repl run binding', () => {
+  it('refuses a call a timer from the previous run makes during the next run, and never records it', async () => {
+    const h = harness();
+    const bridge = createBrowserBridge(h.tools, {});
+    const session = newSession();
+    await session.run(
+      'setTimeout(() => browser.click({ ref: "late" }).then(() => { globalThis.lateResult = "ran"; }, (e) => { globalThis.lateResult = e.message; }), 100); 0',
+      10_000,
+      bridge,
+    );
+    // Run 2 is active when run 1's timer fires; before the run id, the click
+    // ran here as run 2's step and went into its trace.
+    const out = await session.run('await browser.wait({ ms: 400 });\nglobalThis.lateResult', 10_000, bridge);
+    expect(out.result?.text).toContain('browser.click: refused — made after its browser_repl run finished');
+    expect(h.calls.map((c) => c.name)).toEqual(['wait']);
+  });
+
+  it('refuses a snippet posting protocol messages on the worker port itself', async () => {
+    const h = harness();
+    const bridge = createBrowserBridge(h.tools, {});
+    const session = newSession();
+    const out = await session.run(
+      [
+        'const port = process.getBuiltinModule("worker_threads").parentPort;',
+        'const forged = { type: "call", callId: 77, runId: 1, name: "click", args: { ref: "x" } };',
+        'const errors = [];',
+        'try { port.postMessage(forged); } catch (e) { errors.push(e.message); }',
+        'try { Object.getPrototypeOf(port).postMessage.call(port, forged); } catch (e) { errors.push(e.message); }',
+        'errors',
+      ].join('\n'),
+      10_000,
+      bridge,
+    );
+    expect(out.ok).toBe(true);
+    expect(out.result?.text.match(/"call" messages are reserved/g)).toHaveLength(2);
+    expect(h.calls).toHaveLength(0);
+  });
+
+  it('names every image block of a call that returned several, attached or not', async () => {
+    const two: CallToolResult = {
+      content: [
+        { type: 'image', data: 'AAAA', mimeType: 'image/png' },
+        { type: 'image', data: 'BBBB', mimeType: 'image/png' },
+      ],
+    };
+    const h = harness({ screenshot: async () => two });
+    const bridge = createBrowserBridge(h.tools, {});
+    const session = newSession();
+    const out = await session.run(
+      'const a = await browser.screenshot();\nconst b = await browser.screenshot();\nconst c = await browser.screenshot();\nJSON.stringify([a.image, a.images, c.note, c.images])',
+      10_000,
+      bridge,
+    );
+    expect(out.images?.map((img) => img.id)).toEqual(['img-1', 'img-2', 'img-3', 'img-4']);
+    expect(JSON.parse(out.result?.text ?? 'null')).toEqual([
+      'img-1',
+      ['img-1', 'img-2'],
+      IMAGE_CAP_NOTE,
+      [IMAGE_CAP_NOTE, IMAGE_CAP_NOTE],
+    ]);
   });
 });

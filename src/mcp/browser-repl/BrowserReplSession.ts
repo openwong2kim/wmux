@@ -21,6 +21,7 @@ import type { BridgeCall } from './bridge';
 import {
   RunHintCollector,
   RunImageCollector,
+  lateCallRefusal,
   type RunImage,
 } from './runCollect';
 import { BROWSER_REPL_WORKER_SOURCE } from './workerSource';
@@ -74,6 +75,8 @@ interface WorkerMessage {
   type: string;
   id?: number;
   callId?: number;
+  /** Id of the run whose evaluation made the call, set by the worker. */
+  runId?: number;
   name?: string;
   args?: Record<string, unknown>;
   ok?: boolean;
@@ -196,7 +199,7 @@ export class BrowserReplSession {
         type: 'callResult',
         callId: msg.callId,
         ok: false,
-        error: `browser.${typeof msg.name === 'string' ? msg.name : '?'}: called after its browser_repl run finished — await every browser call inside the run`,
+        error: lateCallRefusal(typeof msg.name === 'string' ? msg.name : '?', 'browser_repl'),
       });
     });
     return { worker, ready: this.ready, fresh: true };
@@ -306,6 +309,13 @@ export class BrowserReplSession {
           case 'call': {
             const callId = msg.callId;
             const name = typeof msg.name === 'string' ? msg.name : '';
+            // A timer left by an earlier run fires during this one carrying its
+            // own run's id. Executing it here would drive the page between this
+            // run's steps and record it into this run's action trace.
+            if (msg.runId !== id) {
+              worker.postMessage({ type: 'callResult', callId, ok: false, error: lateCallRefusal(name || '?', 'browser_repl') });
+              return;
+            }
             const args = msg.args && typeof msg.args === 'object' ? msg.args : {};
             const reply = (message: Record<string, unknown>) => {
               // After a timeout the worker is gone; the handler ran to

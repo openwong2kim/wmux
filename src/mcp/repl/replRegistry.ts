@@ -117,6 +117,13 @@ export function idleSweepTimerForTest(): NodeJS.Timeout | null {
 
 export class ReplRegistry {
   private readonly sessions = new Map<string, ReplSession>();
+  /**
+   * Browser calls a finished run left running, shared by every session of this
+   * connection. They drive the connection's one browser, so a session that
+   * replaces a killed one — or any other session name — must wait for them too;
+   * a set owned by the dead session would die with it.
+   */
+  private readonly browserStragglers = new Set<Promise<unknown>>();
 
   constructor() {
     liveRegistries.add(this);
@@ -183,7 +190,7 @@ export class ReplRegistry {
       );
     }
 
-    const session = new ReplSession({ name, cwd });
+    const session = new ReplSession({ name, cwd, browserStragglers: this.browserStragglers });
     this.sessions.set(name, session);
     // Re-assert membership rather than relying on the constructor's: a registry
     // that was disposed and then used again would otherwise hold a child no

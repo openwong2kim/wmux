@@ -125,6 +125,8 @@ export interface BridgeValue {
   readonly image?: string;
   /** Why an image the call returned is not in the result. */
   readonly note?: string;
+  /** Per image block, when the call returned several: its id or why it was left out. */
+  readonly images?: readonly string[];
 }
 
 export type BridgeOutcome =

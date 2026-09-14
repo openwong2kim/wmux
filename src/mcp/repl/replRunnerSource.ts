@@ -50,7 +50,24 @@ const { AsyncLocalStorage } = require('async_hooks');
 // Capture everything the runner needs BEFORE user code runs. User code shares
 // this global context and may reassign process, console, or require; binding
 // early means a script that clobbers a global breaks only itself.
-const send = process.send.bind(process);
+// User code may not post a browserCall itself (its run id must come from the
+// eval): process.send and _send refuse that type unless this send calls them.
+const send = (() => {
+  const raw = process.send.bind(process);
+  let internal = false;
+  const guard = (fn) => function (msg) {
+    if (!internal && msg && msg.type === 'browserCall') {
+      throw new TypeError('process.send: "browserCall" messages are reserved; use browser.X(args)');
+    }
+    return fn.apply(process, arguments);
+  };
+  if (typeof process._send === 'function') process._send = guard(process._send);
+  process.send = guard(process.send);
+  return (msg) => {
+    internal = true;
+    try { return raw(msg); } finally { internal = false; }
+  };
+})();
 const stderrWrite = process.stderr.write.bind(process.stderr);
 
 // require() is module-scoped, so a script evaluated in the global context does
@@ -215,11 +232,8 @@ function fail(id, error, timeoutMs) {
   send({ id: id, ok: false, error: trimStack(error), kind: classify(error, timeoutMs) });
 }
 
-// ── browser.* bridge ──────────────────────────────────────────────────────
-// Every call carries the id of the eval it was made from (the store is entered
-// around the eval, so continuations inherit it), which is how the parent tells
-// a running eval's call from one a leftover timer made. The parent re-checks
-// that id, the tool name, and the args on every message regardless.
+// browser.*: a call carries the id of the eval it came from (continuations
+// inherit the store), so a leftover timer can only carry an old id.
 const runStore = new AsyncLocalStorage();
 const browserCalls = new Map();
 let nextBrowserCall = 1;
@@ -232,12 +246,16 @@ function browserCall(name, args) {
   const runId = runStore.getStore();
   return new Promise((resolve, reject) => {
     browserCalls.set(callId, { resolve: resolve, reject: reject, name: name });
-    send({ type: 'browserCall', callId: callId, runId: runId, name: name, args: args || {} });
+    try {
+      send({ type: 'browserCall', callId: callId, runId: runId, name: name, args: args || {} });
+    } catch (_) {
+      browserCalls.delete(callId);
+      reject(new TypeError('browser.' + name + '(args): args must be JSON-serializable'));
+    }
   });
 }
 
-// Writable and configurable on purpose: REPL code legitimately names its own
-// client "browser", and a locked global would break "let browser = ...".
+// Configurable so REPL code can still declare its own "let browser".
 function installBrowser(names) {
   if (Object.prototype.hasOwnProperty.call(globalThis, 'browser')) return;
   const browser = {};

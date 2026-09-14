@@ -96,8 +96,23 @@ export interface RunImage extends BridgeImage {
 
 /** What the script's value gains for a call that returned image blocks. */
 export interface ImageMark {
+  /** Id of the first attached image. */
   readonly image?: string;
+  /** Why the first image left out was not attached. */
   readonly note?: string;
+  /**
+   * Only when the call returned more than one image: one entry per block, in
+   * order — its id when attached, otherwise the reason it was left out.
+   */
+  readonly images?: readonly string[];
+}
+
+/** The refusal a browser call gets when it does not belong to the run in flight. */
+export function lateCallRefusal(name: string, tool: string): string {
+  return (
+    `browser.${name}: refused — made after its ${tool} run finished (a timer or un-awaited ` +
+    'promise from an earlier run). Await every browser call inside the run that makes it.'
+  );
 }
 
 export const IMAGE_CAP_NOTE = 'image not attached (cap)';
@@ -127,9 +142,11 @@ export class RunImageCollector {
     if (!blocks || blocks.length === 0) return {};
     let first: string | undefined;
     let note: string | undefined;
+    const perBlock: string[] = [];
     for (const block of blocks) {
       if (this.closed) {
-        note = IMAGE_LATE_NOTE;
+        note ??= IMAGE_LATE_NOTE;
+        perBlock.push(IMAGE_LATE_NOTE);
         continue;
       }
       const size = block.data.length;
@@ -139,15 +156,21 @@ export class RunImageCollector {
         this.bytes + size > RUN_IMAGE_TOTAL_BYTES
       ) {
         this.elidedCount++;
-        note = IMAGE_CAP_NOTE;
+        note ??= IMAGE_CAP_NOTE;
+        perBlock.push(IMAGE_CAP_NOTE);
         continue;
       }
       const id = `img-${this.images.length + 1}`;
       this.bytes += size;
       this.images.push({ id, callIndex, data: block.data, mimeType: block.mimeType });
       first ??= id;
+      perBlock.push(id);
     }
-    return { ...(first && { image: first }), ...(note && { note }) };
+    return {
+      ...(first && { image: first }),
+      ...(note && { note }),
+      ...(blocks.length > 1 && { images: perBlock }),
+    };
   }
 }
 

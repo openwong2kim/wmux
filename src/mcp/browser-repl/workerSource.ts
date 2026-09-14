@@ -22,15 +22,41 @@
  *   main → worker  { type: 'run', id, code }
  *   worker → main  { type: 'ready' }
  *   worker → main  { type: 'console', text }            captured console.*
- *   worker → main  { type: 'call', callId, name, args }  browser.<name>(args)
+ *   worker → main  { type: 'call', callId, runId, name, args }  browser.<name>(args)
  *   main → worker  { type: 'callResult', callId, ok, value | error }
  *   worker → main  { type: 'result', id, ok, result | error }
  */
 export const BROWSER_REPL_WORKER_SOURCE = String.raw`
 'use strict';
-const { parentPort } = require('worker_threads');
+const { parentPort, MessagePort } = require('worker_threads');
+const { AsyncLocalStorage } = require('async_hooks');
 const vm = require('vm');
 const util = require('util');
+
+// Snippet code can reach this port (process.getBuiltinModule hands out the
+// same parentPort), so the messages the main thread acts on — a browser call,
+// a run result — must only ever come from this file. Both the instance and the
+// prototype method refuse those types unless the post below is the caller.
+const post = (() => {
+  const raw = MessagePort.prototype.postMessage;
+  const RESERVED = ['call', 'result'];
+  let internal = false;
+  const guarded = function (msg) {
+    if (!internal && this === parentPort && msg && RESERVED.indexOf(msg.type) !== -1) {
+      throw new TypeError('postMessage: "' + msg.type + '" messages are reserved; call browser.X(args) instead');
+    }
+    return raw.apply(this, arguments);
+  };
+  MessagePort.prototype.postMessage = guarded;
+  parentPort.postMessage = guarded;
+  return (msg) => {
+    internal = true;
+    try { return raw.call(parentPort, msg); } finally { internal = false; }
+  };
+})();
+// A call carries the id of the run it came from (continuations inherit the
+// store), so a timer left by run N can only ever say N.
+const runStore = new AsyncLocalStorage();
 
 const RESULT_CAP = 64 * 1024;
 
@@ -91,7 +117,7 @@ function callTool(name, args) {
   const callId = nextCallId++;
   return new Promise((resolve, reject) => {
     pending.set(callId, { resolve, reject, name });
-    parentPort.postMessage({ type: 'call', callId, name, args: args || {} });
+    post({ type: 'call', callId, runId: runStore.getStore(), name, args: args || {} });
   });
 }
 
@@ -105,7 +131,7 @@ function installBrowser(tools) {
 }
 
 function emit(text) {
-  parentPort.postMessage({ type: 'console', text: text + '\n' });
+  post({ type: 'console', text: text + '\n' });
 }
 const captured = {};
 for (const level of ['log', 'info', 'debug', 'warn', 'error', 'trace', 'dir']) {
@@ -122,7 +148,7 @@ parentPort.on('message', (msg) => {
   if (!msg || typeof msg !== 'object') return;
   if (msg.type === 'init') {
     installBrowser(Array.isArray(msg.tools) ? msg.tools : []);
-    parentPort.postMessage({ type: 'ready' });
+    post({ type: 'ready' });
     return;
   }
   if (msg.type === 'callResult') {
@@ -151,19 +177,19 @@ parentPort.on('message', (msg) => {
       if (error instanceof SyntaxError && /has already been declared/.test(String(error.message))) {
         rendered += '\n(hint: this runtime keeps top-level declarations between browser_repl calls — reuse the name without let/const, pick another, or assign to globalThis)';
       }
-      parentPort.postMessage({ type: 'result', id, ok: false, error: rendered });
+      post({ type: 'result', id, ok: false, error: rendered });
     };
     let value;
     try {
-      value = vm.runInThisContext(msg.code, options);
+      value = runStore.run(id, () => vm.runInThisContext(msg.code, options));
     } catch (err) {
       const text = String(err && err.message || err);
       if (err instanceof SyntaxError && text.indexOf('await is only valid in') !== -1) {
-        try { value = vm.runInThisContext(wrapAsync(msg.code), options); } catch (retryErr) { fail(retryErr); return; }
+        try { value = runStore.run(id, () => vm.runInThisContext(wrapAsync(msg.code), options)); } catch (retryErr) { fail(retryErr); return; }
       } else { fail(err); return; }
     }
     Promise.resolve(value).then(
-      (resolved) => parentPort.postMessage({ type: 'result', id, ok: true, result: describe(resolved) }),
+      (resolved) => post({ type: 'result', id, ok: true, result: describe(resolved) }),
       fail,
     );
   }

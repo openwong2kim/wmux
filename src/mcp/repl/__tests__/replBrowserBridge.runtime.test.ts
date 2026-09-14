@@ -12,6 +12,7 @@ import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { ActionRing, recordAction, type ActionRingDeps } from '../../browser-replay/actionRing';
 import { hintBlockMeta } from '../../playwright/hintBlock';
 import type { CollectedTool } from '../../playwright/toolCollector';
+import { ReplRegistry } from '../replRegistry';
 import { ReplSession } from '../ReplSession';
 import { REPL_BROWSER_PROFILE_REFUSAL, formatOutcome, resolveReplBrowser } from '../tools';
 
@@ -63,6 +64,7 @@ function fakeBrowser(): Fake {
       ],
     };
   });
+  add('navigate', { url: z.string() }, () => ({ content: [{ type: 'text', text: 'navigated' }] }));
   add('screenshot', { maxBytes: z.number().optional() }, () => ({
     content: [
       { type: 'image', data: 'iVBORw0KGgo=', mimeType: 'image/png' },
@@ -105,44 +107,135 @@ describe('repl_run browser bridge (real child)', () => {
     expect(formatOutcome('browser-test', outcome, [])).toContain('img-1: call 1 (image/png');
   });
 
-  it('refuses a non-whitelisted name even when the message is forged past the browser object', async () => {
+  it('refuses a browserCall that user code posts itself, with the current run id, and sends nothing', async () => {
     const fake = fakeBrowser();
     const session = makeSession();
     const outcome = await session.run(
       [
         'const seen = typeof browser.storage;',
-        'const reply = new Promise((resolve) => process.on("message", (m) => { if (m && m.callId === 9001) resolve(m); }));',
         // The first eval of a fresh session has id 1: the forgery carries the
-        // CORRECT run id, so only the name check can stop it.
-        'process.send({ type: "browserCall", callId: 9001, runId: 1, name: "storage", args: {} });',
-        'const m = await reply;',
-        '[seen, m.ok, m.error]',
+        // CORRECT run id, which is exactly what must not help.
+        'const forged = { type: "browserCall", callId: 9001, runId: 1, name: "navigate", args: { url: "https://x.test" } };',
+        'const errors = [];',
+        'try { process.send(forged); } catch (e) { errors.push(e.name + ": " + e.message); }',
+        'try { process._send(forged); } catch (e) { errors.push(e.name + ": " + e.message); }',
+        'await new Promise((r) => setTimeout(r, 200));',
+        'const real = await browser.click({ ref: "3" });',
+        '[seen, errors, real.text]',
       ].join('\n'),
       10_000,
       resolveReplBrowser({ tools: fake.tools, profile: 'full' }, undefined),
     );
     expect(outcome.ok).toBe(true);
     expect(outcome.result?.text).toContain("'undefined'");
-    expect(outcome.result?.text).toContain('false');
-    expect(outcome.result?.text).toContain('browser.storage is not available inside repl_run');
+    expect(outcome.result?.text.match(/TypeError: process\.send: "browserCall" messages are reserved/g)).toHaveLength(2);
+    expect(outcome.result?.text).toContain('use browser.X(args)');
+    // Normal in-run calls still work, and the parent never saw the forgery.
+    expect(outcome.result?.text).toContain("'Clicked 3'");
+    expect(fake.called.map((c) => c.name)).toEqual(['click']);
+    expect(outcome.browser?.calls).toBe(1);
+  });
+
+  it('refuses a call a timer from run N makes while run N+1 is in flight', async () => {
+    const fake = fakeBrowser();
+    const session = makeSession();
+    const binding = resolveReplBrowser({ tools: fake.tools, profile: 'full' }, undefined);
+    await session.run(
+      'setTimeout(() => browser.navigate({ url: "https://x.test" }).then(() => { globalThis.lateResult = "ran"; }, (e) => { globalThis.lateResult = e.message; }), 150); 0',
+      10_000,
+      binding,
+    );
+    const second = await session.run(
+      'await new Promise((r) => setTimeout(r, 400));\nconst own = await browser.click({ ref: "4" });\n[globalThis.lateResult, own.text]',
+      10_000,
+      binding,
+    );
+    expect(second.result?.text).toContain('browser.navigate: refused — made after its repl_run run finished');
+    expect(second.result?.text).toContain("'Clicked 4'");
+    expect(fake.called.map((c) => c.name)).toEqual(['click']);
+  });
+
+  it('closes the binding when the result arrives, before the output drain', async () => {
+    const fake = fakeBrowser();
+    const session = makeSession();
+    const binding = resolveReplBrowser({ tools: fake.tools, profile: 'full' }, undefined);
+    await session.run(
+      'setTimeout(() => browser.navigate({ url: "https://x.test" }).then(() => { globalThis.zeroResult = "ran"; }, (e) => { globalThis.zeroResult = e.message; }), 0); 1',
+      10_000,
+      binding,
+    );
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    const second = await session.run('globalThis.zeroResult', 10_000, binding);
+    expect(second.result?.text).toContain('browser.navigate: refused');
     expect(fake.called).toEqual([]);
   });
 
-  it('refuses a call carrying a forged run id', async () => {
+  it('rejects args that cannot cross IPC without leaving the call pending', async () => {
     const fake = fakeBrowser();
     const session = makeSession();
     const outcome = await session.run(
-      [
-        'const reply = new Promise((resolve) => process.on("message", (m) => { if (m && m.callId === 9002) resolve(m); }));',
-        'process.send({ type: "browserCall", callId: 9002, runId: 999, name: "click", args: { ref: "1" } });',
-        'const m = await reply;',
-        '[m.ok, m.error]',
-      ].join('\n'),
+      'let msg = "ran";\ntry { await browser.click({ ref: 1n }); } catch (e) { msg = e.message; }\nmsg',
       10_000,
       resolveReplBrowser({ tools: fake.tools, profile: 'full' }, undefined),
     );
-    expect(outcome.result?.text).toContain('does not belong to the repl_run call in flight');
+    expect(outcome.result?.text).toBe("'browser.click(args): args must be JSON-serializable'");
     expect(fake.called).toEqual([]);
+  });
+
+  it('makes a replacement session wait for browser calls its killed predecessor left running', async () => {
+    let landedAt = 0;
+    const tools = new Map<string, CollectedTool>();
+    tools.set('browser_navigate', {
+      name: 'browser_navigate',
+      shape: { url: z.string() },
+      handler: async () => {
+        await new Promise((resolve) => setTimeout(resolve, 3_000));
+        landedAt = Date.now();
+        return { content: [{ type: 'text', text: 'navigated' }] };
+      },
+    });
+    const binding = resolveReplBrowser({ tools, profile: 'full' }, undefined);
+    const registry = new ReplRegistry();
+    try {
+      const first = registry.acquire('slow', os.tmpdir());
+      // A promise that never settles: only the hard deadline ends this run,
+      // and it destroys the session while navigate is still running.
+      const killed = await first.session.run(
+        'browser.navigate({ url: "https://x.test" });\nawait new Promise(() => {})',
+        100,
+        binding,
+      );
+      expect(killed.fatal).toBeTruthy();
+      expect(landedAt).toBe(0);
+
+      const second = registry.acquire('slow', os.tmpdir());
+      expect(second.created).toBe(true);
+      const outcome = await second.session.run('Date.now()', 10_000, binding);
+      expect(outcome.ok).toBe(true);
+      expect(landedAt).toBeGreaterThan(0);
+      expect(Number(outcome.result?.text)).toBeGreaterThanOrEqual(landedAt);
+    } finally {
+      registry.disposeAll();
+    }
+  }, 20_000);
+
+  it('abandons a browser call that never settles after blocking exactly one run', async () => {
+    const tools = new Map<string, CollectedTool>();
+    tools.set('browser_click', {
+      name: 'browser_click',
+      shape: { ref: z.string() },
+      handler: () => new Promise<CallToolResult>(() => { /* never settles */ }),
+    });
+    const binding = resolveReplBrowser({ tools, profile: 'full' }, undefined);
+    const session = makeSession();
+    const first = await session.run('browser.click({ ref: "1" }); 1', 10_000, binding);
+    expect(first.ok).toBe(true);
+    const blocked = await session.run('2', 300, binding);
+    expect(blocked.ok).toBe(false);
+    expect(blocked.error).toContain('was abandoned');
+    const next = await session.run('3', 300, binding);
+    expect(next.ok).toBe(true);
+    expect(next.result?.text).toBe('3');
   });
 
   it('refuses a call a timer makes after its run reported back', async () => {
