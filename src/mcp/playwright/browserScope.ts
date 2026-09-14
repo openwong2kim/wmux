@@ -68,12 +68,13 @@ export interface BrowserTargetScope {
    */
   readonly noSurface?: true;
   /**
-   * …and at least one of those surfaces belongs to somebody else. This is the
-   * case where sending an unnamed RPC is not merely vague but wrong: main
-   * resolves it to the workspace's first live session, which is another
-   * connection's tab.
+   * …and this many of those surfaces belong to somebody else. Any number above
+   * zero is the case where sending an unnamed RPC is not merely vague but
+   * wrong: main resolves it to the workspace's first live session, which is
+   * another connection's tab. The count is carried so a refusal can say what
+   * the caller is up against rather than "nothing is open".
    */
-  readonly foreignSurfaces?: true;
+  readonly foreignSurfaces?: number;
 }
 
 /** Runtime guard for scopes created outside requireBrowserTargetScope(). */
@@ -133,7 +134,7 @@ export async function requireBrowserTargetScope(
   return Object.freeze({
     workspaceId,
     noSurface: true as const,
-    ...(resolved.foreignSurfaces && { foreignSurfaces: true as const }),
+    ...(resolved.foreignSurfaces > 0 && { foreignSurfaces: resolved.foreignSurfaces }),
   });
 }
 
@@ -203,7 +204,7 @@ async function surfaceForScopedRpc(
   if (WORKSPACE_LEVEL_BROWSER_METHODS.has(method)) return undefined;
   let opened: string | null = null;
   try {
-    opened = await openSurfaceForConnection(scope.workspaceId);
+    opened = await openSurfaceForConnection(scope.workspaceId, { awaitReady: true });
   } catch (err) {
     console.error(
       `[browserScope] ${method}: could not open a surface for this caller:`,
@@ -217,15 +218,24 @@ async function surfaceForScopedRpc(
   // instead. (A workspace with no surface at all has nothing to land on, so
   // the older "no target" error is the honest answer there and is left to
   // main.)
-  if (scope.foreignSurfaces) throw noOwnSurfaceError();
+  if (scope.foreignSurfaces) throw noOwnSurfaceError(scope.foreignSurfaces);
   return undefined;
 }
 
-function noOwnSurfaceError(): Error {
+/**
+ * Says what is actually true, which "no browser surface is open in this
+ * workspace" was not: surfaces ARE open here — they belong to other agents,
+ * and this connection may not be pointed at one implicitly.
+ */
+function noOwnSurfaceError(foreignSurfaces = 0): Error {
+  const others =
+    foreignSurfaces > 0
+      ? `${foreignSurfaces} browser surface(s) in this workspace belong to other agents and are never targeted implicitly. `
+      : '';
   return new Error(
-    'BROWSER_NO_OWN_SURFACE: this workspace has no browser surface you opened, and a new one ' +
-      'could not be opened for you. Other agents\' surfaces are never targeted implicitly — open ' +
-      'your own with browser_open, or pass a surfaceId from browser_tabs list.',
+    'BROWSER_NO_OWN_SURFACE: you have no browser surface of your own here, and one could not be ' +
+      `opened for you. ${others}Open yours with browser_open, or pass a surfaceId from ` +
+      'browser_tabs list to act on a specific surface.',
   );
 }
 
@@ -271,8 +281,8 @@ export async function ensureOwnSurfaceScope(
   if (scope.surfaceId) return scope;
   const pinned = pinnedSurfaceFor(scope.workspaceId);
   if (pinned) return Object.freeze({ workspaceId: scope.workspaceId, surfaceId: pinned });
-  const opened = await openSurfaceForConnection(scope.workspaceId);
-  if (!opened) throw noOwnSurfaceError();
+  const opened = await openSurfaceForConnection(scope.workspaceId, { awaitReady: true });
+  if (!opened) throw noOwnSurfaceError(scope.foreignSurfaces);
   return Object.freeze({ workspaceId: scope.workspaceId, surfaceId: opened });
 }
 
@@ -298,7 +308,7 @@ export async function leaseSurfaceScope(scope: BrowserTargetScope): Promise<Brow
   if (pinned) return Object.freeze({ workspaceId: scope.workspaceId, surfaceId: pinned });
   if (!scope.foreignSurfaces) return scope;
   try {
-    const opened = await openSurfaceForConnection(scope.workspaceId);
+    const opened = await openSurfaceForConnection(scope.workspaceId, { awaitReady: true });
     if (opened) return Object.freeze({ workspaceId: scope.workspaceId, surfaceId: opened });
   } catch (err) {
     console.error(

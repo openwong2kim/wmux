@@ -214,8 +214,10 @@ describe('resolveDefaultSurface over the transport', () => {
     // B has opened nothing, and the one live surface is A's: B opens its own
     // rather than taking over the tab A is working in.
     await expect(runInConnectionScope(b, () => resolveDefaultSurface(WS))).resolves.toEqual({
+      // The count, not a flag: a refusal can then say what the caller is up
+      // against instead of "nothing is open here".
       kind: 'none',
-      foreignSurfaces: true,
+      foreignSurfaces: 1,
     });
   });
 
@@ -314,7 +316,7 @@ describe('resolveDefaultSurface over the transport', () => {
         : Promise.resolve({ ok: true, action: 'list', tabs: [{ surfaceId: 'user-tab' }] }),
     );
 
-    await expect(resolveDefaultSurface(WS)).resolves.toEqual({ kind: 'none', foreignSurfaces: false });
+    await expect(resolveDefaultSurface(WS)).resolves.toEqual({ kind: 'none', foreignSurfaces: 0 });
     expect(mockSendRpc.mock.calls.filter((c) => c[0] === 'browser.tabs')).toHaveLength(0);
   });
 

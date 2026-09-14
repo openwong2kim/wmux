@@ -312,11 +312,53 @@ async function adoptSurface(workspaceId: string, surfaceId: string): Promise<voi
  * end of the attempt: retrying through the other method would open a second
  * one.
  */
-export async function openSurfaceForConnection(workspaceId: string): Promise<string | null> {
+export async function openSurfaceForConnection(
+  workspaceId: string,
+  opts: { awaitReady?: boolean } = {},
+): Promise<string | null> {
   if (!workspaceId) return null;
   const opened = await openSurface(workspaceId);
-  if (opened) noteOpenedSurface(workspaceId, opened);
+  if (!opened) return null;
+  noteOpenedSurface(workspaceId, opened);
+  // The RPC lane asks to wait, because main answers a call naming a surface
+  // whose guest has not REGISTERED yet with "no browser surface is open in
+  // this workspace" — the pane is there, its target is not. Live dogfood:
+  // browser_navigate opened its own pane and was refused a millisecond later.
+  // (The page lane does its own settling after an auto-open, so it does not
+  // ask and does not pay for this twice.)
+  if (opts.awaitReady) await awaitSurfaceRegistered(workspaceId, opened);
   return opened;
+}
+
+/** How long to wait for a freshly opened surface to become addressable. */
+const SURFACE_READY_TIMEOUT_MS = 6_000;
+const SURFACE_READY_POLL_MS = 150;
+
+/**
+ * Wait until main lists the surface among the caller's targets.
+ *
+ * That listing is exactly the condition every target-addressing handler
+ * checks, so it is the honest readiness signal rather than a fixed sleep. A
+ * timeout is not an error: the call proceeds and main answers for itself —
+ * waiting longer would turn a slow guest into a hung tool.
+ */
+async function awaitSurfaceRegistered(workspaceId: string, surfaceId: string): Promise<void> {
+  const deadline = Date.now() + SURFACE_READY_TIMEOUT_MS;
+  for (;;) {
+    try {
+      const info = (await sendRpc('browser.cdp.info', {
+        workspaceId,
+        openerKey: getOpenerKey(),
+      })) as RoutableCdpInfo;
+      if (Array.isArray(info?.targets) && info.targets.some((t) => t.surfaceId === surfaceId)) {
+        return;
+      }
+    } catch {
+      return; // cannot ask — let the call itself report whatever happens
+    }
+    if (Date.now() >= deadline) return;
+    await new Promise((resolve) => setTimeout(resolve, SURFACE_READY_POLL_MS));
+  }
 }
 
 async function openSurface(workspaceId: string): Promise<string | null> {
@@ -368,7 +410,7 @@ export async function resolveDefaultSurface(
   /** `foreignSurfaces`: live surfaces exist here, they just all belong to
    *  other connections — the case where an unnamed call is not vague but
    *  wrong, because main would resolve it to one of them. */
-  | { kind: 'none'; foreignSurfaces: boolean }
+  | { kind: 'none'; foreignSurfaces: number }
 > {
   if (!workspaceId) {
     throw new WorkspaceScopeUnresolvedError('workspace identity resolved to an empty id');
@@ -420,5 +462,5 @@ export async function resolveDefaultSurface(
     await adoptSurface(workspaceId, pane);
     return { kind: 'surface', surfaceId: pane };
   }
-  return { kind: 'none', foreignSurfaces: scoped.length > 0 };
+  return { kind: 'none', foreignSurfaces: scoped.length };
 }

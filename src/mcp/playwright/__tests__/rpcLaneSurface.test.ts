@@ -56,8 +56,18 @@ function tools(): Map<string, ToolHandler> {
  * A builtin main holding surfaces owned by `owners` (surfaceId → opener key),
  * which mints `newSurfaceId` when asked for a new tab. Records every call.
  */
-function mainWith(owners: Record<string, string | undefined>, newSurfaceId = 'surf-new') {
+function mainWith(
+  owners: Record<string, string | undefined>,
+  newSurfaceId = 'surf-new',
+  // How many cdp.info answers a freshly opened surface stays INVISIBLE for.
+  // A builtin pane registers its CDP target a moment after it is created, and
+  // main refuses a call naming a surface it cannot see yet — the live dogfood
+  // failure — so the lane has to wait for the registration rather than fire
+  // into the gap.
+  registerAfter = 0,
+) {
   const calls: Array<{ method: string; params: Record<string, unknown> }> = [];
+  const pending = new Map<string, number>();
   mockSendRpc.mockImplementation((method: string, params: Record<string, unknown> = {}) => {
     calls.push({ method, params });
     if (method === 'browser.cdp.info') {
@@ -65,10 +75,18 @@ function mainWith(owners: Record<string, string | undefined>, newSurfaceId = 'su
       return Promise.resolve({
         targetsScoped: true,
         workspaceBackend: 'builtin',
-        targets: Object.entries(owners).map(([surfaceId, owner]) => ({
-          surfaceId,
-          ...(owner !== undefined && { opener: owner === callerKey ? 'mine' : 'other' }),
-        })),
+        targets: Object.entries(owners)
+          .filter(([surfaceId]) => {
+            const left = pending.get(surfaceId);
+            if (left === undefined) return true;
+            if (left <= 0) { pending.delete(surfaceId); return true; }
+            pending.set(surfaceId, left - 1);
+            return false;
+          })
+          .map(([surfaceId, owner]) => ({
+            surfaceId,
+            ...(owner !== undefined && { opener: owner === callerKey ? 'mine' : 'other' }),
+          })),
       });
     }
     if (method === 'browser.tabs' && params.action === 'list') {
@@ -87,6 +105,7 @@ function mainWith(owners: Record<string, string | undefined>, newSurfaceId = 'su
     }
     if (method === 'browser.tabs' && params.action === 'new') {
       owners[newSurfaceId] = params.openerKey as string;
+      if (registerAfter > 0) pending.set(newSurfaceId, registerAfter);
       return Promise.resolve({
         ok: true,
         action: 'new',
@@ -197,5 +216,63 @@ describe('another RPC-lane tool', () => {
       expect(drain.params.surfaceId).not.toBe('surf-a');
       expect(drain.params.surfaceId).toBeDefined();
     }
+  });
+});
+
+describe('a surface that is not addressable yet', () => {
+  it('waits for the new pane to register before naming it', async () => {
+    // The live dogfood failure: the pane is created, the navigate fires a
+    // millisecond later, and main answers "no browser surface is open in this
+    // workspace" because the guest has not registered its target yet.
+    const calls = mainWith({}, 'surf-new', 2);
+
+    const result = await tools().get('browser_navigate')!({ url: 'https://a.test/' });
+
+    expect(result.isError).toBeUndefined();
+    const navigate = calls.find((c) => c.method === 'browser.navigate');
+    expect(navigate?.params.surfaceId).toBe('surf-new');
+    // It asked again rather than firing into the gap.
+    const infoAfterOpen = calls
+      .slice(calls.findIndex((c) => c.method === 'browser.tabs' && c.params.action === 'new'))
+      .filter((c) => c.method === 'browser.cdp.info');
+    expect(infoAfterOpen.length).toBeGreaterThan(1);
+  });
+
+  it('refuses with what is actually true when no surface can be opened', async () => {
+    const a = createConnectionScope();
+    const openerA = runInConnectionScope(a, () => getOpenerKey());
+    mockSendRpc.mockImplementation((method: string, params: Record<string, unknown> = {}) => {
+      if (method === 'browser.cdp.info') {
+        return Promise.resolve({
+          targetsScoped: true,
+          workspaceBackend: 'builtin',
+          targets: [
+            { surfaceId: 'surf-a1', opener: params.openerKey === openerA ? 'mine' : 'other' },
+            { surfaceId: 'surf-a2', opener: params.openerKey === openerA ? 'mine' : 'other' },
+          ],
+        });
+      }
+      if (method === 'browser.tabs' && params.action === 'list') {
+        return Promise.resolve({ ok: true, action: 'list', tabs: [{ surfaceId: 'surf-a1', opener: 'other' }] });
+      }
+      // Nothing can be created: the workspace is at its pane cap.
+      if (method === 'browser.tabs') return Promise.resolve({ ok: false, error: { code: 'BROWSER_TAB_CREATE_FAILED', message: 'pane cap' } });
+      if (method === 'browser.lease.acquire') return Promise.resolve({ token: null });
+      if (method === 'browser.lifecycle.get') return Promise.resolve({ entries: [] });
+      return Promise.resolve({});
+    });
+
+    const b = createConnectionScope();
+    const result = await runInConnectionScope(b, () =>
+      tools().get('browser_navigate')!({ url: 'https://b.test/' }),
+    );
+
+    expect(result.isError).toBe(true);
+    const text = result.content[0].text;
+    expect(text).toContain('BROWSER_NO_OWN_SURFACE');
+    // Not "nothing is open here": surfaces ARE open, they are other agents'.
+    expect(text).toContain('2 browser surface(s) in this workspace belong to other agents');
+    expect(text).toContain('browser_tabs list');
+    expect(text).not.toContain('no browser surface is open in this workspace');
   });
 });

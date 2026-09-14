@@ -112,7 +112,7 @@ describe('requireBrowserTargetScope default resolution', () => {
     // other connections' tabs, which is what makes an unnamed RPC wrong rather
     // than vague. The lanes read them — the page lane to skip re-asking, the
     // RPC lane to open its own surface or refuse.
-    expect(scope).toEqual({ workspaceId: 'ws-1', noSurface: true, foreignSurfaces: true });
+    expect(scope).toEqual({ workspaceId: 'ws-1', noSurface: true, foreignSurfaces: 1 });
   });
 
   it('uses this connection\'s pin when routing cannot reach main', async () => {
