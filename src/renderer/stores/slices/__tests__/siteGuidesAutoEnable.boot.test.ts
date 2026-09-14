@@ -97,6 +97,19 @@ describe('site guides auto-enable — boot ordering', () => {
     });
   }
 
+  // The backend is read synchronously at startup, so the select can be used
+  // before the session load lands. Patching then would be overwritten by the
+  // saved guides=false while the marker stayed set, losing the auto-enable.
+  it('keeps the auto-enable when chrome is chosen before the session lands', () => {
+    const store = createTestStore();
+    store.getState().hydrateBrowserBackend('builtin');
+    store.getState().setBrowserBackend('chrome');
+    expect(store.getState().siteGuidesAutoEnabled).toBe(false);
+    store.getState().loadSession(session({ siteGuidesEnabled: false }));
+    expect(store.getState().siteGuidesEnabled).toBe(true);
+    expect(store.getState().siteGuidesAutoEnabled).toBe(true);
+  });
+
   it('does not run before the session has landed', () => {
     const store = createTestStore();
     store.getState().hydrateBrowserBackend('chrome');

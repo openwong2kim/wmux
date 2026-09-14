@@ -742,6 +742,8 @@ describe('UISlice — site guides auto-enable with the Chrome backend', () => {
 
   beforeEach(() => {
     store = createTestStore();
+    // A settings change after boot: the saved session has already landed.
+    store.getState().markSessionSettingsLoaded();
   });
 
   it('siteGuidesAutoEnablePatch only fires for chrome without the marker', () => {

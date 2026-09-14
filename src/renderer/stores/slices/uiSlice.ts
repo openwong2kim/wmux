@@ -1222,7 +1222,11 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
 
   setBrowserBackend: (backend) => set((state) => {
     state.browserBackend = backend;
-    if (backend === 'chrome') Object.assign(state, siteGuidesAutoEnablePatch(state));
+    // Before the session lands, loadSession would overwrite the patched values
+    // with the saved ones; it runs the rule itself once it has applied them.
+    if (backend === 'chrome' && state.sessionSettingsLoaded) {
+      Object.assign(state, siteGuidesAutoEnablePatch(state));
+    }
   }),
 
   browserBackendHydrated: INITIAL_BROWSER_BACKEND.hydrated,
