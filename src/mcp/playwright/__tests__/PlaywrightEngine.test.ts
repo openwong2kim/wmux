@@ -596,11 +596,16 @@ describe('PlaywrightEngine auto-open workspace routing (#190)', () => {
     expect(mockSendRpc.mock.calls.filter((c) => c[0] === 'browser.open')).toHaveLength(0);
   });
 
-  it('falls back to browser.open on a main too old for browser.tabs', async () => {
+  it.each([
+    ['a main too old for the method', 'Unknown method: browser.tabs'],
+    // browser.tabs can close surfaces, so the commander lane denies the whole
+    // method. browser.open is allowed there and carries the opener key too.
+    ['a lane that denies the method', 'COMMANDER_TEARDOWN_DENY: browser.tabs'],
+  ])('falls back to browser.open against %s', async (_case, message) => {
     const engine = PlaywrightEngine.getInstance();
     autoOpen(engine).setWorkspaceIdResolver(async () => 'ws-caller-1');
     mockSendRpc.mockImplementation((method: string) => {
-      if (method === 'browser.tabs') return Promise.reject(new Error('Unknown method: browser.tabs'));
+      if (method === 'browser.tabs') return Promise.reject(new Error(message));
       return Promise.resolve({ ok: true, surfaceId: 'surf-legacy' });
     });
 
@@ -610,6 +615,23 @@ describe('PlaywrightEngine auto-open workspace routing (#190)', () => {
       workspaceId: 'ws-caller-1',
       openerKey: expect.any(String),
     });
+  });
+
+  it('does not fall back when the method answered with a refusal', async () => {
+    // `ok:false` is a main that understands `new` and said no (pane cap, a
+    // backend with nothing to create). Retrying through the reuse-shaped open
+    // would walk straight into another agent's surface.
+    const engine = PlaywrightEngine.getInstance();
+    autoOpen(engine).setWorkspaceIdResolver(async () => 'ws-caller-1');
+    mockSendRpc.mockImplementation((method: string) =>
+      method === 'browser.tabs'
+        ? Promise.resolve({ ok: false, error: { code: 'BROWSER_TAB_CREATE_FAILED', message: 'pane cap' } })
+        : Promise.resolve({ ok: true, surfaceId: 'surf-other' }),
+    );
+
+    await expect(autoOpen(engine).attemptAutoOpen()).resolves.toEqual({});
+
+    expect(mockSendRpc.mock.calls.filter((c) => c[0] === 'browser.open')).toHaveLength(0);
   });
 
   it('fails closed — no open RPC — when the resolver throws', async () => {

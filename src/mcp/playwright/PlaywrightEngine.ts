@@ -1013,8 +1013,16 @@ export class PlaywrightEngine {
       // try the reuse-shaped open behind its back.
       if (created?.ok === false) return null;
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      if (!/Unknown method:\s*browser\.tabs/i.test(message)) throw err;
+      // A THROW is the method not being available to this caller at all: a
+      // main too old to know it, or a lane that denies it (`browser.tabs` can
+      // close surfaces, so the commander lane refuses the whole method). Fall
+      // back to `browser.open`, which those lanes do allow — it carries the
+      // opener key too, and main applies the same "never reuse another
+      // connection's surface" rule to it.
+      console.error(
+        '[PlaywrightEngine] browser.tabs new unavailable, falling back to browser.open:',
+        err instanceof Error ? err.message : String(err),
+      );
     }
     const reply = (await sendRpc('browser.open', {
       workspaceId,
