@@ -2,6 +2,7 @@ import type { Page } from 'playwright-core';
 import { browserScopeKey, getRefEntry, listRefEntries } from '../playwright/snapshot';
 import type { BrowserTargetScope, BrowserToolDeps } from '../playwright/browserScope';
 import { redactPasswordParams } from '../playwright/redact';
+import { isActionRecordingSuppressed } from './recordingSuppression';
 import {
   ACTION_RING_CAPACITY,
   NO_AXIS,
@@ -221,7 +222,7 @@ function pageUrl(page: Page | null): string {
 export function recordAction(deps: BrowserToolDeps, input: RecordActionInput): void {
   try {
     const ring = ringFor(deps);
-    if (!ring) return;
+    if (!ring || isActionRecordingSuppressed()) return;
     const resolved = axisFor(input.page, input.ref, input.selector, input.refEntry);
     const target = input.targetRef === undefined
       ? undefined

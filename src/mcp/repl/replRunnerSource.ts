@@ -35,8 +35,9 @@
 
 /**
  * Child program source. Kept dependency-free and small enough to travel as a
- * command-line argument on every platform (Windows caps a command line at
- * 32767 characters; this is well under 8 KB even base64-encoded).
+ * command-line argument on every platform: Windows caps a command line at
+ * 32767 characters, and a test pins the base64 form at 17,600 or less so an
+ * addition here cannot quietly spend that headroom.
  */
 export const REPL_RUNNER_SOURCE = String.raw`
 'use strict';
@@ -44,6 +45,7 @@ const vm = require('vm');
 const util = require('util');
 const path = require('path');
 const { createRequire } = require('module');
+const { AsyncLocalStorage } = require('async_hooks');
 
 // Capture everything the runner needs BEFORE user code runs. User code shares
 // this global context and may reassign process, console, or require; binding
@@ -213,8 +215,69 @@ function fail(id, error, timeoutMs) {
   send({ id: id, ok: false, error: trimStack(error), kind: classify(error, timeoutMs) });
 }
 
+// ── browser.* bridge ──────────────────────────────────────────────────────
+// Every call carries the id of the eval it was made from (the store is entered
+// around the eval, so continuations inherit it), which is how the parent tells
+// a running eval's call from one a leftover timer made. The parent re-checks
+// that id, the tool name, and the args on every message regardless.
+const runStore = new AsyncLocalStorage();
+const browserCalls = new Map();
+let nextBrowserCall = 1;
+
+function browserCall(name, args) {
+  if (args !== undefined && (typeof args !== 'object' || args === null || Array.isArray(args))) {
+    return Promise.reject(new TypeError('browser.' + name + '(args): args must be a plain object'));
+  }
+  const callId = nextBrowserCall++;
+  const runId = runStore.getStore();
+  return new Promise((resolve, reject) => {
+    browserCalls.set(callId, { resolve: resolve, reject: reject, name: name });
+    send({ type: 'browserCall', callId: callId, runId: runId, name: name, args: args || {} });
+  });
+}
+
+// Writable and configurable on purpose: REPL code legitimately names its own
+// client "browser", and a locked global would break "let browser = ...".
+function installBrowser(names) {
+  if (Object.prototype.hasOwnProperty.call(globalThis, 'browser')) return;
+  const browser = {};
+  for (const name of names) {
+    if (typeof name !== 'string') continue;
+    browser[name] = (args) => browserCall(name, args);
+  }
+  Object.defineProperty(globalThis, 'browser', {
+    value: Object.freeze(browser),
+    writable: true,
+    configurable: true,
+    enumerable: true,
+  });
+}
+
+function settleBrowserCall(msg) {
+  const entry = browserCalls.get(msg.callId);
+  if (!entry) return;
+  browserCalls.delete(msg.callId);
+  if (msg.ok) {
+    entry.resolve(msg.value);
+    return;
+  }
+  const error = new Error(String(msg.error));
+  error.name = 'BrowserToolError';
+  error.tool = entry.name;
+  entry.reject(error);
+}
+
 process.on('message', (msg) => {
+  if (msg && msg.type === 'browserResult') {
+    settleBrowserCall(msg);
+    return;
+  }
   if (!msg || typeof msg.code !== 'string') return;
+  if (Array.isArray(msg.browser)) installBrowser(msg.browser);
+  runStore.run(msg.id, () => evaluate(msg));
+});
+
+function evaluate(msg) {
   const id = msg.id;
   // The vm timeout is a watchdog on SYNCHRONOUS execution only. It is the layer
   // that stops a runaway loop WITHOUT losing session state; the parent's hard
@@ -250,7 +313,7 @@ process.on('message', (msg) => {
     return;
   }
   send({ id: id, ok: true, result: describe(value) });
-});
+}
 
 send({ ready: true });
 `;

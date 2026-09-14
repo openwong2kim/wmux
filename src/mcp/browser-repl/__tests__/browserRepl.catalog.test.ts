@@ -28,8 +28,14 @@ describe('browser_repl catalog', () => {
     expect(description).toContain('Other browser_* tools stay separate calls');
     // Evaluate is the one an agent would most expect; it must be absent.
     expect(BROWSER_REPL_TOOLS).not.toContain('evaluate');
-    expect(BROWSER_REPL_TOOLS).not.toContain('screenshot');
     expect(BROWSER_REPL_TOOLS).not.toContain('replay');
+    // Screenshot reads the page only, and its image now rides back with the
+    // run's result, so it is in — everything that reaches state outside the
+    // page still stays a separate call.
+    expect(BROWSER_REPL_TOOLS).toContain('screenshot');
+    for (const outside of ['storage', 'download', 'pdf', 'trace', 'response_body']) {
+      expect(BROWSER_REPL_TOOLS).not.toContain(outside);
+    }
   });
 
   it('rejects an unknown option and names the ones that would have worked', () => {

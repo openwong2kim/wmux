@@ -265,3 +265,23 @@ describe('wrapHandlerWithResultCap', () => {
     await expect(wrapped({})).rejects.toThrow('boom');
   });
 });
+
+describe('capToolResultText with several images', () => {
+  it('caps the text and passes every image block through untouched, in order', () => {
+    // A browser_repl / repl_run result: one text block, then up to four images.
+    const images = [1, 2, 3, 4].map((n) => ({
+      type: 'image' as const,
+      data: String(n).repeat(MIB),
+      mimeType: n % 2 === 0 ? 'image/jpeg' : 'image/png',
+    }));
+    const result = { content: [{ type: 'text' as const, text: 'x'.repeat(2 * MIB) }, ...images] };
+    const capped = capToolResultText(result, DEFAULT_RESULT_CAP_BYTES);
+    expect(capped.content).toHaveLength(5);
+    expect(Buffer.byteLength((capped.content[0] as { text: string }).text)).toBeLessThanOrEqual(
+      DEFAULT_RESULT_CAP_BYTES,
+    );
+    for (let i = 0; i < images.length; i += 1) {
+      expect(capped.content[i + 1]).toBe(images[i]);
+    }
+  });
+});

@@ -12,10 +12,15 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
+import { REPL_RUN_BROWSER_TOOLS, createBrowserBridge } from '../browser-repl/bridge';
+import { renderImageLegend, textWithImages } from '../browser-repl/runCollect';
+import { getConnectionScope } from '../connectionScope';
+import type { CollectedTool } from '../playwright/toolCollector';
 import {
   defineWmuxTool,
   registerWmuxTools,
   type RegisterWmuxToolsOptions,
+  type WmuxToolProfile,
   type WmuxToolSpec,
 } from '../toolCatalog';
 import {
@@ -26,7 +31,7 @@ import {
   getReplRegistry,
   isValidSessionName,
 } from './replRegistry';
-import type { ReplEvalOutcome } from './ReplSession';
+import type { ReplBrowserBinding, ReplEvalOutcome } from './ReplSession';
 
 export const DEFAULT_TIMEOUT_MS = 30_000;
 export const MIN_TIMEOUT_MS = 100;
@@ -40,6 +45,52 @@ export function clampTimeout(requested: number | undefined): number {
 
 function text(body: string, isError = false): CallToolResult {
   return { content: [{ type: 'text' as const, text: body }], isError: isError || undefined };
+}
+
+/** The browser handlers a repl_run `browser` object would call, and the profile. */
+export interface ReplBrowserAccess {
+  /** The collector sink (full `browser_*` names). */
+  readonly tools: ReadonlyMap<string, CollectedTool>;
+  readonly profile: WmuxToolProfile;
+}
+
+export const REPL_BROWSER_PROFILE_REFUSAL = 'browser tools are not part of this profile';
+
+/**
+ * The `browser` binding for one repl_run call.
+ *
+ * The gate is the PROFILE, never "does the sink hold browser handlers": the
+ * collecting view records a handler into the sink before delegating, so under
+ * `--core` (where the surface filter skips the registration) the sink still
+ * holds every browser handler. Reading the sink would therefore hand a core
+ * server the whole browser surface through a tool that IS on the core
+ * surface. The names are installed in the child either way, so a refusal says
+ * "not in this profile" instead of "browser.click is not a function".
+ *
+ * `scope` is the connection scope captured at dispatch: IPC messages from the
+ * child arrive outside that AsyncLocalStorage context, and without re-entering
+ * it the handlers would fall back to process globals — another agent's engine
+ * and refs under the broker.
+ */
+export function resolveReplBrowser(
+  access: ReplBrowserAccess | undefined,
+  scope: ReturnType<typeof getConnectionScope>,
+): ReplBrowserBinding {
+  if (!access || access.profile !== 'full') {
+    return { tools: REPL_RUN_BROWSER_TOOLS, call: null, refusal: REPL_BROWSER_PROFILE_REFUSAL };
+  }
+  return {
+    tools: REPL_RUN_BROWSER_TOOLS,
+    // record:false — a scripted call's arguments can come from a file, a
+    // network response, or a secret, so replaying the browser half alone
+    // would be a different run wearing this one's clothes.
+    call: createBrowserBridge(
+      access.tools,
+      { scope, record: false, label: 'repl_run' },
+      REPL_RUN_BROWSER_TOOLS,
+    ),
+    refusal: REPL_BROWSER_PROFILE_REFUSAL,
+  };
 }
 
 function formatDuration(ms: number): string {
@@ -84,6 +135,15 @@ export function formatOutcome(
       lines.push(`(stderr truncated: ${outcome.stderr.totalBytes} bytes total)`);
     }
   }
+  if (outcome.browser && outcome.browser.hints.length > 0) {
+    lines.push('', '--- hints ---', ...outcome.browser.hints);
+    if (outcome.browser.hintsElided > 0) {
+      lines.push(`(${outcome.browser.hintsElided} more hint line(s) not shown)`);
+    }
+  }
+  if (outcome.browser) {
+    lines.push(...renderImageLegend(outcome.browser.images, outcome.browser.imagesElided));
+  }
   if (outcome.ok && outcome.result) {
     lines.push('', '--- result ---', outcome.result.text);
     if (outcome.result.truncated) {
@@ -118,7 +178,8 @@ const REPL_RUN_DESCRIPTION =
   'modules, and open handles are still there next call. Top-level await works, but ' +
   'declarations inside an awaiting snippet do not persist — assign to a global ' +
   '(x = await f()). Full fs/net/require access, NO sandbox. Lives only as long as your ' +
-  'MCP connection: no wmux restart, no sharing with other panes or workspaces.';
+  'MCP connection: no wmux restart, no sharing with other panes or workspaces. ' +
+  'await browser.X(args) drives the browser like browser_repl (full profile only).';
 
 const REPL_RESET_DESCRIPTION =
   'Throw away a REPL session and its state; the next repl_run starts a fresh runtime.';
@@ -126,7 +187,9 @@ const REPL_RESET_DESCRIPTION =
 const REPL_SESSIONS_DESCRIPTION =
   'List this connection\'s REPL sessions: cwd, pid, age, and current state.';
 
-export function createReplToolCatalog(): readonly WmuxToolSpec[] {
+export function createReplToolCatalog(
+  browserAccess?: ReplBrowserAccess,
+): readonly WmuxToolSpec[] {
   const replRun = defineWmuxTool({
     name: 'repl_run',
     description: REPL_RUN_DESCRIPTION,
@@ -184,8 +247,15 @@ export function createReplToolCatalog(): readonly WmuxToolSpec[] {
       }
 
       try {
-        const outcome = await acquired.session.run(code, clampTimeout(timeout));
-        return text(formatOutcome(name, outcome, notes), !outcome.ok);
+        // Captured HERE, inside the MCP dispatch: the child's browserCall
+        // messages arrive outside this AsyncLocalStorage context.
+        const browser = resolveReplBrowser(browserAccess, getConnectionScope());
+        const outcome = await acquired.session.run(code, clampTimeout(timeout), browser);
+        return textWithImages(
+          formatOutcome(name, outcome, notes),
+          outcome.browser?.images ?? [],
+          !outcome.ok,
+        );
       } catch (error) {
         return text(
           `session ${name}: ${String(error instanceof Error ? error.message : error)}`,
@@ -266,6 +336,16 @@ export function createReplToolCatalog(): readonly WmuxToolSpec[] {
 }
 
 /** Register the REPL catalog through the wire-neutral current-SDK adapter. */
-export function registerReplTools(server: McpServer, options: RegisterWmuxToolsOptions): void {
-  registerWmuxTools(server, createReplToolCatalog(), options);
+export function registerReplTools(
+  server: McpServer,
+  options: RegisterWmuxToolsOptions,
+  browserTools?: ReadonlyMap<string, CollectedTool>,
+): void {
+  registerWmuxTools(
+    server,
+    createReplToolCatalog(
+      browserTools && { tools: browserTools, profile: options.profile },
+    ),
+    options,
+  );
 }

@@ -1770,7 +1770,12 @@ registerPaneLifecycleTools(
 // nothing here touches the substrate, so there is nothing for the daemon to
 // authorize. The authority ceiling is unchanged — a caller holding
 // `terminal_send` already drives an arbitrary shell in its own pane as the user.
-registerReplTools(server, MCP_CATALOG_OPTIONS);
+// `browserTools` is the same collector sink browser_repl calls through, so a
+// repl_run script's `browser.X` goes through the real handler (lease,
+// redaction, frame-aware refs). Only the full profile actually gets the
+// binding — the gate is in resolveReplBrowser, because the sink holds browser
+// handlers even on a profile whose tools/list omits them.
+registerReplTools(server, MCP_CATALOG_OPTIONS, browserTools);
 
 // === Commander-only registration lane ===
 // Tools that exist ONLY under --commander. They bypass the manifest filter on

@@ -29,6 +29,12 @@ import { spawn, type ChildProcess } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import { buildGatedAutomationEnv, withheldCredentialNames } from '../../shared/envFilter';
+import type { BridgeCall } from '../browser-repl/bridge';
+import {
+  RunHintCollector,
+  RunImageCollector,
+  type RunImage,
+} from '../browser-repl/runCollect';
 import { buildRunnerBootstrap } from './replRunnerSource';
 import { OutputBuffer, truncateText, type TruncatedText } from './truncate';
 
@@ -79,6 +85,49 @@ export interface ReplEvalOutcome {
    * another eval's output as its own code's doing.
    */
   readonly background?: string;
+  /** Present when the run made `browser.*` calls, or tried to. */
+  readonly browser?: ReplBrowserReport;
+}
+
+/**
+ * The `browser` object one run gets.
+ *
+ * `call` null means the tool is installed in the child (so `browser.X` exists
+ * and the error is about authority, not a typo) while every call is refused
+ * with `refusal` — the shape the non-full profiles take.
+ */
+export interface ReplBrowserBinding {
+  /** Names installed on the child's `browser` object. */
+  readonly tools: readonly string[];
+  readonly call: BridgeCall | null;
+  readonly refusal: string;
+}
+
+export interface ReplBrowserReport {
+  /** Browser calls the run's own eval made, refusals included. */
+  readonly calls: number;
+  readonly hints: readonly string[];
+  readonly hintsElided: number;
+  readonly images: readonly RunImage[];
+  readonly imagesElided: number;
+}
+
+/** One run's browser state: the binding plus what its calls collected. */
+interface BrowserRun {
+  readonly id: number;
+  readonly binding: ReplBrowserBinding;
+  readonly hints: RunHintCollector;
+  readonly images: RunImageCollector;
+  readonly inFlight: Set<Promise<unknown>>;
+  calls: number;
+}
+
+interface BrowserCallMessage {
+  readonly type: 'browserCall';
+  readonly callId?: unknown;
+  readonly runId?: unknown;
+  readonly name?: unknown;
+  readonly args?: unknown;
 }
 
 interface RunnerMessage {
@@ -150,6 +199,10 @@ export class ReplSession {
   private pending: ((message: RunnerMessage) => void) | null = null;
   /** Id of the eval in flight; only a reply carrying it may settle. */
   private pendingId: number | null = null;
+  /** Browser state of the eval in flight, if it was given a binding. */
+  private browserRun: BrowserRun | null = null;
+  /** Browser calls started by an eval that is over; the next run waits for them. */
+  private readonly stragglingBrowserCalls = new Set<Promise<unknown>>();
   private readonly ready: Promise<void>;
 
   constructor(options: ReplSessionOptions) {
@@ -226,6 +279,10 @@ export class ReplSession {
     this.ready.catch(() => { /* surfaced by run() */ });
 
     child.on('message', (raw: unknown) => {
+      if ((raw as BrowserCallMessage | null)?.type === 'browserCall') {
+        this.onBrowserCall(raw as BrowserCallMessage);
+        return;
+      }
       const message = raw as RunnerMessage;
       // Match the id of the eval actually in flight. User code shares this
       // process's global scope and therefore its `process.send`, so without the
@@ -268,6 +325,96 @@ export class ReplSession {
   /** Why the session died, for the message the caller reads. */
   get diedBecause(): string | null {
     return this.deathReason;
+  }
+
+  /**
+   * Execute one `browser.X(args)` the child asked for.
+   *
+   * Everything here treats the message as forgeable: user code shares the
+   * child's `process.send`, so the run id, the tool name, and the args are all
+   * re-checked on arrival rather than trusted because the child sent them. A
+   * call that does not belong to the eval in flight is REFUSED with a reason
+   * rather than dropped — a dropped reply is a promise that never settles.
+   */
+  private onBrowserCall(message: BrowserCallMessage): void {
+    const callId = message.callId;
+    if (typeof callId !== 'number') return;
+    const name = typeof message.name === 'string' ? message.name : '?';
+    const reply = (body: { ok: boolean; value?: unknown; error?: string }): void => {
+      try {
+        this.child?.send({ type: 'browserResult', callId, ...body });
+      } catch {
+        /* the child is gone; its promise dies with it */
+      }
+    };
+    const run = this.browserRun;
+    if (!run || message.runId !== run.id) {
+      reply({
+        ok: false,
+        error:
+          `browser.${name}: refused — this call does not belong to the repl_run call in flight ` +
+          '(a timer or un-awaited promise from an earlier run, or a forged run id). ' +
+          'Await every browser call inside the run that makes it.',
+      });
+      return;
+    }
+    if (!run.binding.call) {
+      reply({ ok: false, error: `browser.${name}: ${run.binding.refusal}` });
+      return;
+    }
+    if (!run.binding.tools.includes(name)) {
+      reply({ ok: false, error: `browser.${name} is not available inside repl_run` });
+      return;
+    }
+    const args =
+      message.args !== null && typeof message.args === 'object' && !Array.isArray(message.args)
+        ? (message.args as Record<string, unknown>)
+        : {};
+    run.calls += 1;
+    const index = run.calls;
+    const pending = run.binding.call(name, args).then(
+      (outcome) => {
+        if (!outcome.ok) {
+          reply({ ok: false, error: outcome.error });
+          return;
+        }
+        // Only while this run still owns the result: a hint or an image id
+        // collected afterwards would name nothing the caller ever reads.
+        if (this.browserRun === run) run.hints.record(outcome.hints, index);
+        const mark = run.images.offer(outcome.images, index);
+        reply({ ok: true, value: { ...outcome.value, ...mark } });
+      },
+      (error: unknown) => {
+        // The bridge reports tool failures as outcomes; a rejection is a bug in
+        // the bridge itself. Still answer, or the script hangs.
+        reply({
+          ok: false,
+          error: `browser.${name}: bridge failure: ${error instanceof Error ? error.message : String(error)}`,
+        });
+      },
+    );
+    run.inFlight.add(pending);
+    void pending.finally(() => run.inFlight.delete(pending));
+  }
+
+  /** Hand this run's unfinished browser calls to the next run to wait on. */
+  private endBrowserRun(): ReplBrowserReport | undefined {
+    const run = this.browserRun;
+    this.browserRun = null;
+    if (!run) return undefined;
+    run.images.close();
+    for (const pending of run.inFlight) {
+      this.stragglingBrowserCalls.add(pending);
+      void pending.finally(() => this.stragglingBrowserCalls.delete(pending));
+    }
+    if (run.calls === 0) return undefined;
+    return {
+      calls: run.calls,
+      hints: run.hints.lines,
+      hintsElided: run.hints.elided,
+      images: run.images.images,
+      imagesElided: run.images.elided,
+    };
   }
 
   private markDead(reason: string): void {
@@ -318,7 +465,11 @@ export class ReplSession {
     return { stdout, stderr };
   }
 
-  async run(code: string, timeoutMs: number): Promise<ReplEvalOutcome> {
+  async run(
+    code: string,
+    timeoutMs: number,
+    browserBinding?: ReplBrowserBinding,
+  ): Promise<ReplEvalOutcome> {
     const started = Date.now();
     await this.ready;
     if (this.state === 'dead') {
@@ -332,6 +483,45 @@ export class ReplSession {
     this.evalCount += 1;
     this.lastUsedAt = Date.now();
     const id = this.nextEvalId++;
+
+    // A browser call an earlier run left running cannot be cancelled, only
+    // waited for: letting it land mid-way through THIS run's steps is exactly
+    // the interleaving (its click between this run's snapshot and click) that
+    // makes a scripted flow unreproducible. Bounded by this run's own timeout,
+    // or a handler that never settles would pin every later run.
+    if (this.stragglingBrowserCalls.size > 0) {
+      let waitTimer: NodeJS.Timeout | undefined;
+      const landed = await Promise.race([
+        Promise.allSettled([...this.stragglingBrowserCalls]).then(() => true),
+        new Promise<boolean>((resolve) => {
+          waitTimer = setTimeout(() => resolve(false), timeoutMs);
+        }),
+      ]);
+      clearTimeout(waitTimer);
+      if (!landed) {
+        this.state = 'idle';
+        const empty = new OutputBuffer(OUTPUT_CAP_BYTES).render();
+        return {
+          ok: false,
+          error:
+            `a browser call started by an earlier run is still running after ${timeoutMs}ms; ` +
+            'this run did not start — retry once it finishes',
+          stdout: empty,
+          stderr: empty,
+          elapsedMs: Date.now() - started,
+        };
+      }
+    }
+    if (browserBinding) {
+      this.browserRun = {
+        id,
+        binding: browserBinding,
+        hints: new RunHintCollector(),
+        images: new RunImageCollector(),
+        inFlight: new Set(),
+        calls: 0,
+      };
+    }
 
     // Anything buffered before this call came from a timer or handle left
     // running by an EARLIER eval. Take it now so it is reported as background
@@ -363,7 +553,12 @@ export class ReplSession {
         settle?.(msg);
       };
       try {
-        this.child?.send({ id, code, timeoutMs });
+        this.child?.send({
+          id,
+          code,
+          timeoutMs,
+          ...(browserBinding && { browser: browserBinding.tools }),
+        });
       } catch (error) {
         clearTimeout(hard);
         this.destroy(`the REPL process could not be reached: ${String(error)}`);
@@ -372,6 +567,7 @@ export class ReplSession {
 
     await this.drain();
     const { stdout, stderr } = this.takeOutput();
+    const browser = this.endBrowserRun();
     const elapsedMs = Date.now() - started;
     const backgroundText =
       [background.stdout.text, background.stderr.text].filter(Boolean).join('') || undefined;
@@ -388,6 +584,7 @@ export class ReplSession {
         stderr,
         background: backgroundText,
         elapsedMs,
+        browser,
       };
     }
 
@@ -402,6 +599,7 @@ export class ReplSession {
         stderr,
         background: backgroundText,
         elapsedMs,
+        browser,
       };
     }
 
@@ -413,6 +611,7 @@ export class ReplSession {
       stderr,
       background: backgroundText,
       elapsedMs,
+      browser,
       // Trust the runner's classification, never a substring of `error`: that
       // text is whatever the caller's own code threw, so sniffing it lets a
       // script make the tool announce a watchdog stop that never happened.

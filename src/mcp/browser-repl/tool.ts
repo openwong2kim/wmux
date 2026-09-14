@@ -21,6 +21,7 @@ import {
   type WmuxToolSpec,
 } from '../toolCatalog';
 import { BROWSER_REPL_TOOLS, createBrowserBridge } from './bridge';
+import { renderImageLegend, textWithImages } from './runCollect';
 import { BrowserReplSession, type BrowserReplRunOutcome } from './BrowserReplSession';
 
 /** Longer than repl_run's 30s: a script here waits on real pages. */
@@ -166,6 +167,7 @@ export function formatBrowserReplOutcome(outcome: BrowserReplRunOutcome): string
     lines.push('', '--- hints ---', ...outcome.hints);
     if (outcome.hintsElided) lines.push(`(${outcome.hintsElided} more hint line(s) not shown)`);
   }
+  lines.push(...renderImageLegend(outcome.images ?? [], outcome.imagesElided ?? 0));
   if (outcome.ok && outcome.result && outcome.result.text !== 'undefined') {
     lines.push('', '--- result ---', outcome.result.text);
     if (outcome.result.truncated) {
@@ -188,6 +190,7 @@ const BROWSER_REPL_DESCRIPTION =
   'Each allowed browser_X tool is `await browser.X(args)` with the same args, resolving to ' +
   '{text, events} (+ refs:[{ref,param,role,name}] for snapshot/smart_snapshot, diff text, all refs; ' +
   'pass refs[i].ref as the arg named refs[i].param). A failed step throws (catchable). ' +
+  'screenshot resolves to image:"img-N" and the image rides back with this result (4 per run). ' +
   `Allowed: ${BROWSER_REPL_TOOLS.join(', ')}. ` +
   'Args for the steps whose standalone tools are unlisted: navigate_back() hover(ref) drag(sourceRef,targetRef|path) ' +
   'select(ref,values) scroll_into_view(ref) highlight(ref) dialog(accept,text). ' +
@@ -232,7 +235,11 @@ export function createBrowserReplCatalog(
       const session = getSession(() => new BrowserReplSession(BROWSER_REPL_TOOLS));
       try {
         const outcome = await session.run(code, clampTimeout(timeout), bridge);
-        return text(formatBrowserReplOutcome(outcome), !outcome.ok);
+        return textWithImages(
+          formatBrowserReplOutcome(outcome),
+          outcome.images ?? [],
+          !outcome.ok,
+        );
       } catch (error) {
         return text(`browser_repl: ${error instanceof Error ? error.message : String(error)}`, true);
       }

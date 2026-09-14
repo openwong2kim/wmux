@@ -23,7 +23,10 @@ import {
   HINT_LINE_MAX_BYTES,
   HINT_MAX_LINES,
 } from '../BrowserReplSession';
-import { formatBrowserReplOutcome } from '../tool';
+import { createBrowserReplCatalog, disposeBrowserRepl, formatBrowserReplOutcome } from '../tool';
+import { IMAGE_CAP_NOTE, RUN_IMAGE_TOTAL_BYTES } from '../runCollect';
+import { MAX_SCREENSHOT_BASE64_BYTES } from '../../resultCap';
+import { ActionRing, recordAction, type ActionRingDeps } from '../../browser-replay/actionRing';
 
 function ok(text: string, extraBlocks: string[] = []): CallToolResult {
   return {
@@ -136,7 +139,22 @@ function harness(overrides: Partial<Record<string, (args: Record<string, unknown
     return ok('waited');
   });
   add('cookies', { action: z.string() }, async () => ok('cookies'));
+  add(
+    'screenshot',
+    { fullPage: z.boolean().optional(), ref: z.string().optional(), maxBytes: z.number().optional() },
+    async () => image('AAAA'),
+  );
   return { tools, calls };
+}
+
+/** What the screenshot handler returns: the image first, then its basis text. */
+function image(data: string, mimeType = 'image/png'): CallToolResult {
+  return {
+    content: [
+      { type: 'image' as const, data, mimeType },
+      { type: 'text' as const, text: 'This is a viewport capture at devicePixelRatio 2.' },
+    ],
+  };
 }
 
 const sessions: BrowserReplSession[] = [];
@@ -266,9 +284,16 @@ describe('browser_repl bridge', () => {
     expect(shaped.hints).toEqual([
       '[skill] login — 3 steps — browser_replay {action:"run", name:"login"}\n[replay] 1 recorded flow(s) for this page: login — x',
     ]);
-    // An image block is noted, never handed to the script.
+    // An image block leaves the value and goes to the run, which attaches it;
+    // any other non-text block is still only noted in the text.
     const img = shapeResult({ content: [{ type: 'image', data: 'AAAA', mimeType: 'image/png' }] }, 'click');
-    expect(img.value.text).toBe('[image content omitted]');
+    expect(img.value.text).toBe('');
+    expect(img.images).toEqual([{ data: 'AAAA', mimeType: 'image/png' }]);
+    const audio = shapeResult(
+      { content: [{ type: 'audio', data: 'AAAA', mimeType: 'audio/wav' }] },
+      'click',
+    );
+    expect(audio.value.text).toBe('[audio content omitted]');
   });
 
   it('turns an isError result into a failed outcome carrying the tool text, not the event block', async () => {
@@ -669,5 +694,144 @@ describe('formatBrowserReplOutcome', () => {
         "'done'",
       ].join('\n'),
     );
+  });
+});
+
+describe('browser_repl images', () => {
+  it('attaches a scripted screenshot and names it in the script value', async () => {
+    const h = harness();
+    const bridge = createBrowserBridge(h.tools, {});
+    const session = newSession();
+    const out = await session.run(
+      'const shot = await browser.screenshot(); [shot.image, shot.text.slice(0, 7)]',
+      10_000,
+      bridge,
+    );
+    expect(out.ok).toBe(true);
+    expect(out.result?.text).toContain("'img-1'");
+    // The basis text the handler returned is still the script's text.
+    expect(out.result?.text).toContain('This is');
+    expect(out.images).toEqual([
+      { id: 'img-1', callIndex: 1, data: 'AAAA', mimeType: 'image/png' },
+    ]);
+    expect(out.imagesElided).toBe(0);
+  });
+
+  it('attaches at most four images per run and tells the script which was dropped', async () => {
+    const h = harness({ screenshot: async () => image('AAAA') });
+    const bridge = createBrowserBridge(h.tools, {});
+    const session = newSession();
+    const out = await session.run(
+      [
+        'const first = await browser.screenshot();',
+        'const marks = [first];',
+        'for (let i = 0; i < 4; i++) { const shot = await browser.screenshot(); marks.push(shot); }',
+        'marks.map((m) => m.image || m.note)',
+      ].join('\n'),
+      10_000,
+      bridge,
+    );
+    expect(out.error).toBeUndefined();
+    expect(out.ok).toBe(true);
+    expect(out.images?.map((img) => img.id)).toEqual(['img-1', 'img-2', 'img-3', 'img-4']);
+    expect(out.imagesElided).toBe(1);
+    expect(out.result?.text).toContain(IMAGE_CAP_NOTE);
+    // Never a dangling id: the fifth call's value carries the note instead.
+    expect(out.result?.text.match(/img-/g)).toHaveLength(4);
+  });
+
+  it('stops at the per-run byte total, counting what did not fit', async () => {
+    const big = 'A'.repeat(Math.floor(RUN_IMAGE_TOTAL_BYTES * 0.6));
+    const h = harness({ screenshot: async () => image(big) });
+    const bridge = createBrowserBridge(h.tools, {});
+    const session = newSession();
+    const out = await session.run(
+      'const a = await browser.screenshot(); const b = await browser.screenshot(); [a.image, b.note]',
+      10_000,
+      bridge,
+    );
+    expect(out.images).toHaveLength(1);
+    expect(out.imagesElided).toBe(1);
+    expect(out.result?.text).toContain(IMAGE_CAP_NOTE);
+  });
+
+  it('clamps a scripted screenshot to the default ceiling, whatever maxBytes it asks for', async () => {
+    const h = harness();
+    const bridge = createBrowserBridge(h.tools, {});
+    const session = newSession();
+    await session.run(
+      'await browser.screenshot({ maxBytes: 8 * 1024 * 1024 }); await browser.screenshot();',
+      10_000,
+      bridge,
+    );
+    expect(h.calls.map((c) => c.args.maxBytes)).toEqual([
+      MAX_SCREENSHOT_BASE64_BYTES,
+      MAX_SCREENSHOT_BASE64_BYTES,
+    ]);
+  });
+
+  it('renders the image legend and puts the images in the tool result after the text', async () => {
+    const h = harness();
+    const result = await createBrowserReplCatalog(h.tools)[0].invoke(
+      { code: 'await browser.screenshot(); 1' },
+      { principal: { kind: 'unattributed' } },
+    );
+    const parts = result.content as Array<{ type: string; text?: string; data?: string }>;
+    expect(parts[0].type).toBe('text');
+    expect(parts[0].text).toContain('--- images ---');
+    expect(parts[0].text).toContain('img-1: call 1 (image/png');
+    expect(parts.slice(1)).toEqual([{ type: 'image', data: 'AAAA', mimeType: 'image/png' }]);
+    disposeBrowserRepl();
+  });
+});
+
+describe('browser bridge allowed set and action recording', () => {
+  /** A handler that records to a real ring, the way the browser tools do. */
+  function recordingHarness(): { tools: Map<string, CollectedTool>; ring: ActionRing } {
+    const ring = new ActionRing();
+    const tools = new Map<string, CollectedTool>();
+    tools.set('browser_click', {
+      name: 'browser_click',
+      shape: { ref: z.string() },
+      handler: async (args) => {
+        const deps: ActionRingDeps = { resolveWorkspaceId: async () => 'w1', actionRing: ring };
+        recordAction(deps, {
+          tool: 'browser_click',
+          scope: { workspaceId: 'w1' },
+          page: null,
+          ref: String(args.ref),
+        });
+        return ok('Clicked');
+      },
+    });
+    return { tools, ring };
+  }
+
+  it('honours a custom allowed set and keeps the default at BROWSER_REPL_TOOLS', async () => {
+    const h = harness();
+    const narrow = createBrowserBridge(h.tools, {}, ['click']);
+    await expect(narrow('navigate', { url: 'https://x.test' })).resolves.toMatchObject({
+      ok: false,
+      error: 'browser.navigate is not available inside browser_repl — call the browser_navigate tool directly',
+    });
+    const labelled = createBrowserBridge(h.tools, { label: 'repl_run' }, ['click']);
+    await expect(labelled('navigate', { url: 'https://x.test' })).resolves.toMatchObject({
+      ok: false,
+      error: 'browser.navigate is not available inside repl_run — call the browser_navigate tool directly',
+    });
+    // The default is unchanged, so browser_repl still reaches its whole set.
+    const wide = createBrowserBridge(h.tools, {});
+    await expect(wide('navigate', { url: 'https://x.test' })).resolves.toMatchObject({ ok: true });
+    expect(h.calls).toHaveLength(1);
+  });
+
+  it('records browser_repl steps to the action ring and repl_run steps to nothing', async () => {
+    const recording = recordingHarness();
+    await createBrowserBridge(recording.tools, {})('click', { ref: '3' });
+    expect(recording.ring.all()).toHaveLength(1);
+
+    const quiet = recordingHarness();
+    await createBrowserBridge(quiet.tools, { record: false })('click', { ref: '3' });
+    expect(quiet.ring.all()).toEqual([]);
   });
 });
