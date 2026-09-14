@@ -19,7 +19,9 @@ import type { SiteMemoryRecord } from '../../shared/browserMemory/siteMemory';
 //
 // Stored per connection (broker) with a module fallback (single child), keyed
 // the way snapshot baselines are, so two agents on one surface never silence
-// each other.
+// each other. A call that names no surface is keyed by workspace: on a backend
+// where the browser is not a wmux surface, no caller can name one, and skipping
+// the dedupe there would repeat the line on every landing.
 // ---------------------------------------------------------------------------
 
 const MAX_SURFACES = 64;
@@ -51,13 +53,6 @@ export function takeGuideAnnouncement(
   memory: SiteMemoryRecord | null,
 ): string {
   const shown = selectRenderableGuides(guides);
-  // Without a surface id every landing would share one key, whichever tab
-  // the lease actually resolved, and a landing on another tab with the same
-  // guides would stay silent. The resolved surface is not available here, so
-  // such a landing is announced without dedupe.
-  if (surfaceId === undefined) {
-    return shown.length > 0 ? renderGuideHintBlock(shown, memory) : '';
-  }
   const key = guideSetKey(shown);
   const state = getState();
   const surface = snapshotSurfaceKey(workspaceId, surfaceId);

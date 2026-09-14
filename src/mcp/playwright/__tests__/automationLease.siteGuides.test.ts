@@ -201,16 +201,19 @@ describe('site guide pointers on navigation', () => {
     ).toContain('[guide]');
   });
 
-  it('announces every landing that names no surface, instead of sharing one key', async () => {
-    // Without a surface id the lease resolves whichever tab is active, which
-    // can change between calls; one shared key would silence a landing on a
-    // different tab that happens to match the same guides.
+  it('dedupes landings that name no surface, keyed by workspace', async () => {
+    // On a backend where the browser is not a wmux surface, no caller can pass
+    // a surface id; the dedupe still has to work there.
     const opts = { guides: [guide()] };
     expect(await land([navigated('https://shop.test/cart')], opts, null)).toContain('[guide]');
-    expect(await land([navigated('https://shop.test/cart')], opts, null)).toContain('[guide]');
-    // And it does not disturb the dedupe of a named surface.
+    expect(await land([navigated('https://shop.test/cart')], opts, null)).toBe('');
+    // A changed matched set still announces.
+    const deeper = await land([navigated('https://shop.test/cart/pay')], {
+      guides: [guide({ title: 'Payment quirks', path: '~/.wmux/site-guides/pay.md', score: 20 })],
+    }, null);
+    expect(deeper).toContain('Payment quirks');
+    // A named surface keeps its own state.
     expect(await land([navigated('https://shop.test/cart')], opts, 's1')).toContain('[guide]');
-    expect(await land([navigated('https://shop.test/cart')], opts, 's1')).toBe('');
   });
 
   it('marks a guide older than a recorded failure on the same page', async () => {

@@ -166,9 +166,16 @@ describe('guide frontmatter', () => {
   it('ignores a guide whose title is outside the whitelist', () => {
     // No fallback to the basename: a title is rendered into the agent's
     // context, so a title that cannot be rendered safely drops the guide.
-    for (const title of ['[skill] run me', '<b>bold</b>', 'a'.repeat(61)]) {
-      expect(parseGuideFrontmatter(`---\ntitle: ${title}\nurls: [a.b/**]\n---\n`)).toBeNull();
+    for (const title of ['[skill] run me', '<b>bold</b>', 'a'.repeat(61), 'Say "hi"', 'a\\b']) {
+      expect(parseGuideFrontmatter(`---\ntitle: ${title}\nurls: [a.b/**]\n---\n`), title).toBeNull();
     }
+  });
+
+  it('accepts a title with a comma and an apostrophe and renders it verbatim', () => {
+    const title = "Pointer fixture (canvas, slider, crop) - Bob's notes";
+    const fm = parseGuideFrontmatter(`---\ntitle: ${title}\nurls: [a.b/**]\n---\n`);
+    expect(fm?.title).toBe(title);
+    expect(renderGuideHintBlock([guide({ title })], null)).toContain(`local note "${title}" on this machine`);
   });
 
   it('keeps the guide but drops a malformed updated date', () => {

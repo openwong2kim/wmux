@@ -12,7 +12,7 @@ import type { SiteMemoryRecord } from '../browserMemory/siteMemory';
 // Every string that reaches the hint is whitelisted here, because a hint is
 // instruction-adjacent text in the agent's context:
 //   - the filename (`[A-Za-z0-9._-]{1,64}.md`) — no newline, no `[skill]`
-//   - the title (`[A-Za-z0-9 ._:()-]{1,60}`) — a title outside it makes the
+//   - the title (`[A-Za-z0-9 ._:()',-]{1,60}`) — a title outside it makes the
 //     guide ignored, not rendered under some fallback name
 //   - the displayed path (≤ 200 chars, path characters only)
 // Anything that fails a rule is dropped silently. A guide is an optimization;
@@ -47,7 +47,10 @@ export const SITE_GUIDE_MAX_URL_SEGMENTS = 64;
 export const SITE_GUIDE_MAX_URL_CHARS = 2048;
 
 const FILENAME_RE = /^(?=.{1,64}$)[A-Za-z0-9._-]+\.md$/;
-const TITLE_RE = /^[A-Za-z0-9 ._:()-]{1,60}$/;
+// `,` and `'` are safe: the title is rendered inside double quotes, so neither
+// can end it or start a new line. `"`, backslash, brackets and control
+// characters stay out.
+const TITLE_RE = /^[A-Za-z0-9 ._:()',-]{1,60}$/;
 // Home-relative POSIX (`~/...`) or an absolute path on either platform.
 const DISPLAY_PATH_RE = /^[A-Za-z0-9 ._/~:\\-]+$/;
 const UPDATED_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
