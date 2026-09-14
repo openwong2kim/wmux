@@ -139,6 +139,15 @@ describe('FIRST_PARTY_METHODS source invariant', () => {
       // create, focus and close; ownership is rechecked renderer-side and the
       // whole RPC is commander-teardown-denied because it can close a surface.
       'browser.tabs',
+      // Browser-surface OWNERSHIP bookkeeping: the bundled server claims a
+      // surface nobody owns so an unsaid browser call stays on the calling
+      // agent's own tab. Reviewed as a grant: it claims only an UNCLAIMED
+      // surface and never transfers one, it has no lifecycle effect (nothing
+      // opens, closes, navigates or is disclosed), and the same claim is
+      // already available to any caller through browser.open / browser.tabs
+      // new — so the name-recognition bypass buys an impersonator nothing it
+      // could not do by opening a tab.
+      'browser.surface.adopt',
       // issue #285 — supervisor pane/surface lifecycle (reserved wmux.internal)
       'surface.new',
       'surface.close',

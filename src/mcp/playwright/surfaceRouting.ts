@@ -17,19 +17,22 @@ import { WorkspaceScopeUnresolvedError } from './browserScope';
  *   1. the surface this connection last OPENED (its pin), while it still exists
  *   2. otherwise the newest surface this connection opened
  *   3. otherwise the newest surface NOBODY claims — restored after a restart,
- *      opened by a person, or opened before this shipped
+ *      opened by a person, or opened before this shipped — which this
+ *      connection then ADOPTS, so the next connection does not take it too
  *   4. otherwise nothing: the caller opens (and pins) its own rather than
  *      taking over a surface another connection opened
  *
  * The opener key is a random id minted once per connection and sent with every
- * open, so main can record who asked for a surface. It is memory only, never
- * persisted — a surface that outlives the app comes back ownerless and is
- * reachable again through step 3.
+ * open, so main can record who asked for a surface. Main answers only with a
+ * verdict — mine, another's, or unclaimed — never with anyone's key, so no
+ * caller can learn another connection's identity from wmux.
  *
- * None of this is a permission boundary: an explicit surfaceId still reaches
- * any surface in the workspace, including another connection's. It decides
- * where an UNSAID target lands, which is the only place a wrong guess is
- * silent.
+ * It is an identity HINT, not a credential, and cannot be anything stronger
+ * here: `sendRpc` opens a fresh socket per call (wmux-client), so main has no
+ * transport-level connection to bind the identity to. Nothing rests on it that
+ * would not already be true without it — ownership decides only where an
+ * UNSAID target lands, and an explicit surfaceId still reaches any surface in
+ * the workspace, including another connection's.
  */
 
 /** A surface pinned to one connection: the last surface it opened. */
@@ -38,17 +41,21 @@ export interface SurfacePin {
   surfaceId: string;
 }
 
+/** Main's verdict about who opened a surface; absent = nobody claims it. */
+export type OpenerVerdict = 'mine' | 'other';
+
 /** The target fields routing needs; `browser.cdp.info` returns a superset. */
 export interface RoutableTarget {
   surfaceId: string;
   workspaceId?: string;
-  /** The connection that opened this surface, when main knows it. */
-  openerKey?: string;
+  /** Main's verdict for THIS caller. Absent means the surface is unclaimed. */
+  opener?: OpenerVerdict;
 }
 
 export interface RoutableCdpInfo {
   targets: readonly RoutableTarget[];
   targetsScoped?: boolean;
+  workspaceBackend?: string;
 }
 
 /** Module fallback for the single-child stdio server (no broker scope). */
@@ -89,7 +96,8 @@ function writePin(pin: SurfacePin | null): void {
 }
 
 /**
- * Record a surface this connection just opened as its default target.
+ * Record a surface this connection just opened (or adopted) as its default
+ * target.
  *
  * Only OPENING moves the pin. Passing an explicit surfaceId to a tool does
  * not: that call says where it wants to go once, and silently re-aiming every
@@ -103,6 +111,12 @@ export function noteOpenedSurface(workspaceId: string, surfaceId: string): void 
 /** The pin, for tests and for the resolver below. */
 export function getPinnedSurface(): SurfacePin | null {
   return readPin();
+}
+
+/** The pinned surface of this workspace, or undefined. */
+export function pinnedSurfaceFor(workspaceId: string): string | undefined {
+  const pin = readPin();
+  return pin && pin.workspaceId === workspaceId ? pin.surfaceId : undefined;
 }
 
 export function clearPinnedSurface(): void {
@@ -133,8 +147,8 @@ function newestWhere(
 
 /** What `pickDefaultSurface` decided, and why the caller may need to act. */
 export type DefaultSurfacePick =
-  /** Use this surface. */
-  | { kind: 'surface'; surfaceId: string }
+  /** Use this surface; `adopt` means claim it first — nobody owns it yet. */
+  | { kind: 'surface'; surfaceId: string; adopt?: true }
   /** The pin names a surface no target list mentions — confirm before dropping it. */
   | { kind: 'pin-unlisted'; surfaceId: string }
   /** Nothing this connection may take: open its own. */
@@ -147,24 +161,26 @@ export type DefaultSurfacePick =
 export function pickDefaultSurface(
   targets: readonly RoutableTarget[],
   workspaceId: string,
-  openerKey: string,
   pin: SurfacePin | null,
 ): DefaultSurfacePick {
   if (pin && pin.workspaceId === workspaceId) {
     if (targets.some((t) => t.surfaceId === pin.surfaceId)) {
       return { kind: 'surface', surfaceId: pin.surfaceId };
     }
-    // A surface can exist without a live CDP target — a pane that was just
-    // created has not registered one yet — so an absence here is not proof the
-    // pin is gone. The caller confirms against the control plane before
-    // dropping it; guessing instead would hand this call to somebody else's
-    // tab at exactly the moment the agent opened its own.
+    // A surface can exist before its CDP target registers — a pane that was
+    // just created has not registered one yet — so an absence here is not
+    // proof the pin is gone. The caller confirms against the control plane
+    // before dropping it; guessing instead would hand this call to somebody
+    // else's tab at exactly the moment the agent opened its own.
     return { kind: 'pin-unlisted', surfaceId: pin.surfaceId };
   }
-  const mine = newestWhere(targets, (t) => t.openerKey === openerKey);
+  const mine = newestWhere(targets, (t) => t.opener === 'mine');
   if (mine) return { kind: 'surface', surfaceId: mine.surfaceId };
-  const ownerless = newestWhere(targets, (t) => t.openerKey === undefined);
-  if (ownerless) return { kind: 'surface', surfaceId: ownerless.surfaceId };
+  const unclaimed = newestWhere(targets, (t) => t.opener === undefined);
+  // Adopted, not merely used: without recording the claim, every connection
+  // that has opened nothing converges on the same restored or human-opened tab
+  // — the bug this routing exists to prevent, one level down.
+  if (unclaimed) return { kind: 'surface', surfaceId: unclaimed.surfaceId, adopt: true };
   return { kind: 'none' };
 }
 
@@ -197,19 +213,139 @@ export function scopeTargets(
   return info.targets.filter((t) => t.workspaceId === workspaceId);
 }
 
-/** Does the control plane still know this surface? Unknown answers are "no". */
-async function surfaceStillListed(workspaceId: string, surfaceId: string): Promise<boolean> {
+/**
+ * Does the control plane still know this surface?
+ *
+ * Three answers, not two: a refused or failed `browser.tabs` means "cannot
+ * check", and treating that as "gone" would drop the pin on every lane that
+ * does not allow the method (the commander lane refuses it outright) — the
+ * connection would lose its tab on the first miss and start adopting others'.
+ */
+async function surfaceListing(
+  workspaceId: string,
+): Promise<{ status: 'listed'; surfaceIds: string[] } | { status: 'unknown' }> {
   try {
     const result = (await sendRpc('browser.tabs', { action: 'list', workspaceId })) as
-      | { ok?: unknown; action?: unknown; tabs?: Array<{ surfaceId?: unknown }> }
+      | { ok?: unknown; action?: unknown; tabs?: Array<{ surfaceId?: unknown; opener?: unknown }> }
       | undefined;
     if (result?.ok !== true || result.action !== 'list' || !Array.isArray(result.tabs)) {
-      return false;
+      return { status: 'unknown' };
     }
-    return result.tabs.some((tab) => tab?.surfaceId === surfaceId);
+    return {
+      status: 'listed',
+      surfaceIds: result.tabs
+        .map((tab) => tab?.surfaceId)
+        .filter((id): id is string => typeof id === 'string'),
+    };
   } catch {
-    return false;
+    return { status: 'unknown' };
   }
+}
+
+/**
+ * A surface in the pane tree that nobody claims and no CDP target mentions.
+ *
+ * The case is a browser pane a person opened seconds ago: it exists, but its
+ * guest has not registered a target yet, so `cdp.info` cannot see it and the
+ * caller would split a SECOND pane beside it. Builtin only — on a live-Chrome
+ * attach the tab list is every tab the person has open, and adopting one of
+ * those as an agent's default is exactly what that backend must never do.
+ */
+async function unclaimedPaneSurface(
+  workspaceId: string,
+  backend: string | undefined,
+): Promise<string | undefined> {
+  if (backend !== undefined && backend !== 'builtin') return undefined;
+  try {
+    const result = (await sendRpc('browser.tabs', { action: 'list', workspaceId })) as
+      | { ok?: unknown; action?: unknown; tabs?: Array<{ surfaceId?: unknown; opener?: unknown }> }
+      | undefined;
+    if (result?.ok !== true || result.action !== 'list' || !Array.isArray(result.tabs)) {
+      return undefined;
+    }
+    for (let i = result.tabs.length - 1; i >= 0; i--) {
+      const tab = result.tabs[i];
+      if (typeof tab?.surfaceId === 'string' && tab.opener === undefined) return tab.surfaceId;
+    }
+    return undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Claim an unclaimed surface for this connection, and pin it. */
+async function adoptSurface(workspaceId: string, surfaceId: string): Promise<void> {
+  noteOpenedSurface(workspaceId, surfaceId);
+  try {
+    await sendRpc('browser.surface.adopt', {
+      workspaceId,
+      surfaceId,
+      openerKey: getOpenerKey(),
+    });
+  } catch (err) {
+    // An older main without the method, or a lane that refuses it: the pin
+    // still holds for THIS connection, so the adoption is local-only and the
+    // surface stays adoptable by others. Worth a line, never worth failing on.
+    console.error(
+      '[surfaceRouting] could not record the adoption of this surface:',
+      err instanceof Error ? err.message : String(err),
+    );
+  }
+}
+
+/**
+ * Open a surface for THIS connection and pin it. Returns its id, or null when
+ * the open was refused or produced no addressable surface.
+ *
+ * `browser.tabs new`, not `browser.open`: on the builtin backend an open
+ * REUSES the workspace's first browser surface when one exists, which is how a
+ * surface opened for one agent used to be another agent's tab. `new` always
+ * creates, on every backend.
+ *
+ * A THROW from that method means it is not available to this caller at all — a
+ * main too old to know it, or a lane that denies it (`browser.tabs` can close
+ * surfaces, so the commander lane refuses the whole method). The fallback is
+ * `browser.open`, which those lanes do allow; it carries the opener key too,
+ * and main applies the same "never reuse another connection's surface" rule to
+ * it. Any ANSWER — including the external backend's `{ok:true}` with no tab,
+ * which opened a tab in the OS browser that wmux holds no handle on — is the
+ * end of the attempt: retrying through the other method would open a second
+ * one.
+ */
+export async function openSurfaceForConnection(workspaceId: string): Promise<string | null> {
+  if (!workspaceId) return null;
+  const opened = await openSurface(workspaceId);
+  if (opened) noteOpenedSurface(workspaceId, opened);
+  return opened;
+}
+
+async function openSurface(workspaceId: string): Promise<string | null> {
+  try {
+    const created = (await sendRpc('browser.tabs', {
+      action: 'new',
+      workspaceId,
+      openerKey: getOpenerKey(),
+    })) as { ok?: unknown; action?: unknown; tab?: { surfaceId?: unknown } } | undefined;
+    if (created?.ok === true) {
+      return typeof created.tab?.surfaceId === 'string' && created.tab.surfaceId
+        ? created.tab.surfaceId
+        : null;
+    }
+    // An `ok:false` result is a real refusal from a main that understands the
+    // method (pane cap, a backend with nothing to create) — not a reason to
+    // try the reuse-shaped open behind its back.
+    if (created?.ok === false) return null;
+  } catch (err) {
+    console.error(
+      '[surfaceRouting] browser.tabs new unavailable, falling back to browser.open:',
+      err instanceof Error ? err.message : String(err),
+    );
+  }
+  const reply = (await sendRpc('browser.open', {
+    workspaceId,
+    openerKey: getOpenerKey(),
+  })) as { surfaceId?: unknown } | undefined;
+  return typeof reply?.surfaceId === 'string' && reply.surfaceId ? reply.surfaceId : null;
 }
 
 export interface ResolveDefaultSurfaceOptions {
@@ -227,7 +363,13 @@ export interface ResolveDefaultSurfaceOptions {
 export async function resolveDefaultSurface(
   workspaceId: string,
   opts: ResolveDefaultSurfaceOptions = {},
-): Promise<{ kind: 'surface'; surfaceId: string } | { kind: 'none' }> {
+): Promise<
+  | { kind: 'surface'; surfaceId: string }
+  /** `foreignSurfaces`: live surfaces exist here, they just all belong to
+   *  other connections — the case where an unnamed call is not vague but
+   *  wrong, because main would resolve it to one of them. */
+  | { kind: 'none'; foreignSurfaces: boolean }
+> {
   if (!workspaceId) {
     throw new WorkspaceScopeUnresolvedError('workspace identity resolved to an empty id');
   }
@@ -235,7 +377,12 @@ export async function resolveDefaultSurface(
   try {
     // Pass the resolved workspace so main filters `targets` server-side; the
     // response then carries only our own targets (#580, Option 1).
-    info = (await sendRpc('browser.cdp.info', { workspaceId })) as RoutableCdpInfo;
+    info = (await sendRpc('browser.cdp.info', {
+      workspaceId,
+      // So main can answer "is this one yours?" per target without ever
+      // returning anyone's key.
+      openerKey: getOpenerKey(),
+    })) as RoutableCdpInfo;
   } catch (err) {
     throw new WorkspaceScopeUnresolvedError(
       `browser.cdp.info unavailable: ${err instanceof Error ? err.message : String(err)}`,
@@ -243,17 +390,35 @@ export async function resolveDefaultSurface(
   }
   opts.onInfo?.(info);
   const scoped = scopeTargets(info, workspaceId);
-  const pick = pickDefaultSurface(scoped, workspaceId, getOpenerKey(), readPin());
-  if (pick.kind === 'surface') return pick;
+  let pick = pickDefaultSurface(scoped, workspaceId, readPin());
+
   if (pick.kind === 'pin-unlisted') {
-    if (await surfaceStillListed(workspaceId, pick.surfaceId)) {
+    const listing = await surfaceListing(workspaceId);
+    if (listing.status === 'unknown' || listing.surfaceIds.includes(pick.surfaceId)) {
+      // Still there, or unverifiable — either way the pin is the best answer
+      // this connection has, and dropping it would send the call to a surface
+      // somebody else is working in.
       return { kind: 'surface', surfaceId: pick.surfaceId };
     }
     clearPinnedSurface();
-    // The pin was the only reason the other steps were skipped, so run them now
-    // that it is gone — against the targets already in hand.
-    const afterPin = pickDefaultSurface(scoped, workspaceId, getOpenerKey(), null);
-    if (afterPin.kind === 'surface') return afterPin;
+    // The pin was the only reason the other steps were skipped, so run them
+    // now that it is gone — against the targets already in hand.
+    pick = pickDefaultSurface(scoped, workspaceId, null);
   }
-  return { kind: 'none' };
+
+  if (pick.kind === 'surface') {
+    if (pick.adopt) await adoptSurface(workspaceId, pick.surfaceId);
+    else noteOpenedSurface(workspaceId, pick.surfaceId);
+    return { kind: 'surface', surfaceId: pick.surfaceId };
+  }
+
+  // Nothing in the target list. A pane whose guest has not registered yet is
+  // invisible there, and splitting a second pane beside it is a worse answer
+  // than adopting it.
+  const pane = await unclaimedPaneSurface(workspaceId, info.workspaceBackend);
+  if (pane) {
+    await adoptSurface(workspaceId, pane);
+    return { kind: 'surface', surfaceId: pane };
+  }
+  return { kind: 'none', foreignSurfaces: scoped.length > 0 };
 }

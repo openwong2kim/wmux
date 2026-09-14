@@ -33,7 +33,7 @@ import {
 const deps = { resolveWorkspaceId: async () => 'ws-1' };
 
 /** A main that reports these targets to every caller of the workspace. */
-function mainWith(targets: Array<{ surfaceId: string; openerKey?: string }>) {
+function mainWith(targets: Array<{ surfaceId: string; opener?: 'mine' | 'other' }>) {
   mockSendRpc.mockImplementation((method: string) =>
     method === 'browser.cdp.info'
       ? Promise.resolve({ targetsScoped: true, targets })
@@ -49,9 +49,8 @@ beforeEach(() => {
 describe('requireBrowserTargetScope default resolution', () => {
   it('pins the resolved surface into the scope every lane reads', async () => {
     const connection = createConnectionScope();
-    const opener = runInConnectionScope(connection, () => getOpenerKey());
     runInConnectionScope(connection, () => noteOpenedSurface('ws-1', 'surf-mine'));
-    mainWith([{ surfaceId: 'surf-theirs', openerKey: 'someone-else' }, { surfaceId: 'surf-mine', openerKey: opener }]);
+    mainWith([{ surfaceId: 'surf-theirs', opener: 'other' }, { surfaceId: 'surf-mine', opener: 'mine' }]);
 
     const scope = await runInConnectionScope(connection, () => requireBrowserTargetScope(deps));
 
@@ -76,11 +75,9 @@ describe('requireBrowserTargetScope default resolution', () => {
   it('gives two connections on two tabs different cache and dedupe keys', async () => {
     const a = createConnectionScope();
     const b = createConnectionScope();
-    const openerA = runInConnectionScope(a, () => getOpenerKey());
-    const openerB = runInConnectionScope(b, () => getOpenerKey());
     runInConnectionScope(a, () => noteOpenedSurface('ws-1', 'surf-a'));
     runInConnectionScope(b, () => noteOpenedSurface('ws-1', 'surf-b'));
-    mainWith([{ surfaceId: 'surf-a', openerKey: openerA }, { surfaceId: 'surf-b', openerKey: openerB }]);
+    mainWith([{ surfaceId: 'surf-a', opener: 'mine' }, { surfaceId: 'surf-b', opener: 'mine' }]);
 
     const scopeA = await runInConnectionScope(a, () => requireBrowserTargetScope(deps));
     const scopeB = await runInConnectionScope(b, () => requireBrowserTargetScope(deps));
@@ -106,15 +103,33 @@ describe('requireBrowserTargetScope default resolution', () => {
     expect(mockSendRpc).not.toHaveBeenCalled();
   });
 
-  it('stays unpinned when nothing may be adopted, so the engine opens its own', async () => {
-    mainWith([{ surfaceId: 'surf-theirs', openerKey: 'someone-else' }]);
+  it('marks the scope when every live surface belongs to somebody else', async () => {
+    mainWith([{ surfaceId: 'surf-theirs', opener: 'other' }]);
 
     const scope = await requireBrowserTargetScope(deps);
 
-    expect(scope).toEqual({ workspaceId: 'ws-1' });
+    // Not merely "no surface": the markers say routing RAN and found only
+    // other connections' tabs, which is what makes an unnamed RPC wrong rather
+    // than vague. The lanes read them — the page lane to skip re-asking, the
+    // RPC lane to open its own surface or refuse.
+    expect(scope).toEqual({ workspaceId: 'ws-1', noSurface: true, foreignSurfaces: true });
   });
 
-  it('stays unpinned — never refuses — when routing cannot reach main', async () => {
+  it('uses this connection\'s pin when routing cannot reach main', async () => {
+    // Swallowing a routing failure into "no surface" would silently restore
+    // the pre-fix behavior — permanently, on a build with CDP disabled. The
+    // pin is what this connection already knows, so it answers instead, and
+    // the replay ring's scope key stays continuous across the hiccup.
+    const connection = createConnectionScope();
+    runInConnectionScope(connection, () => noteOpenedSurface('ws-1', 'surf-mine'));
+    mockSendRpc.mockRejectedValue(new Error('pipe closed'));
+
+    await expect(
+      runInConnectionScope(connection, () => requireBrowserTargetScope(deps)),
+    ).resolves.toEqual({ workspaceId: 'ws-1', surfaceId: 'surf-mine' });
+  });
+
+  it('stays unpinned — never refuses — when routing cannot reach main and it has no pin', async () => {
     // Resolution is routing, not a gate: tools that never needed a live
     // surface (browser_replay note, promote, demote) must not start failing
     // because the control plane hiccuped. The engine's own selection, which

@@ -252,20 +252,29 @@ describe('builtin browser.open reuse, by opener', () => {
 });
 
 describe('opener reporting', () => {
-  it('marks list rows with the opener main recorded', async () => {
+  it('marks list rows with a verdict, never with anyone\'s key', async () => {
     const router = register();
     rendererWith(['surf-a', 'surf-b']);
     surfaceOpeners.note('surf-a', OPENER_A);
 
-    const listed = (await dispatch(router, 'browser.tabs', {
+    const asOwner = (await dispatch(router, 'browser.tabs', {
       action: 'list',
       workspaceId: 'ws-1',
-    })) as { tabs: Array<{ surfaceId: string; openerKey?: string }> };
+      openerKey: OPENER_A,
+    })) as { tabs: Array<{ surfaceId: string; opener?: string }> };
+    const asOther = (await dispatch(router, 'browser.tabs', {
+      action: 'list',
+      workspaceId: 'ws-1',
+      openerKey: OPENER_B,
+    })) as { tabs: Array<{ surfaceId: string; opener?: string }> };
 
-    expect(listed.tabs).toHaveLength(2);
-    expect(listed.tabs[0].openerKey).toBe(OPENER_A);
+    expect(asOwner.tabs[0].opener).toBe('mine');
+    expect(asOther.tabs[0].opener).toBe('other');
     // Unclaimed stays unclaimed: absent, never guessed.
-    expect(listed.tabs[1].openerKey).toBeUndefined();
+    expect(asOwner.tabs[1].opener).toBeUndefined();
+    // The identity itself never leaves main — a caller cannot learn, or
+    // replay, another connection's key.
+    expect(JSON.stringify(asOther)).not.toContain(OPENER_A);
   });
 
   it('records the opener of a tab browser_tabs new created', async () => {
@@ -276,13 +285,13 @@ describe('opener reporting', () => {
       action: 'new',
       workspaceId: 'ws-1',
       openerKey: OPENER_B,
-    })) as { tab: { surfaceId: string; openerKey?: string } };
+    })) as { tab: { surfaceId: string; opener?: string } };
 
-    expect(created.tab.openerKey).toBe(OPENER_B);
+    expect(created.tab.opener).toBe('mine');
     expect(surfaceOpeners.get(created.tab.surfaceId)).toBe(OPENER_B);
   });
 
-  it('reports the opener on cdp.info targets so page selection can use it', async () => {
+  it('reports an opener VERDICT on cdp.info targets so page selection can use it', async () => {
     const router = new RpcRouter();
     const cdp = {
       getTarget: vi.fn(() => null),
@@ -307,12 +316,19 @@ describe('opener reporting', () => {
     );
     surfaceOpeners.note('surf-a', OPENER_A);
 
-    const info = (await dispatch(router, 'browser.cdp.info', { workspaceId: 'ws-1' })) as {
-      targets: Array<{ surfaceId: string; openerKey?: string }>;
-    };
+    const info = (await dispatch(router, 'browser.cdp.info', {
+      workspaceId: 'ws-1',
+      openerKey: OPENER_A,
+    })) as { targets: Array<{ surfaceId: string; opener?: string }> };
+    const asOther = (await dispatch(router, 'browser.cdp.info', {
+      workspaceId: 'ws-1',
+      openerKey: OPENER_B,
+    })) as { targets: Array<{ surfaceId: string; opener?: string }> };
 
-    expect(info.targets[0]).toMatchObject({ surfaceId: 'surf-a', openerKey: OPENER_A });
-    expect(info.targets[1].openerKey).toBeUndefined();
+    expect(info.targets[0]).toMatchObject({ surfaceId: 'surf-a', opener: 'mine' });
+    expect(info.targets[1].opener).toBeUndefined();
+    expect(asOther.targets[0].opener).toBe('other');
+    expect(JSON.stringify(asOther)).not.toContain(OPENER_A);
   });
 
   it('forgets the opener of a closed surface', async () => {
@@ -343,21 +359,116 @@ describe('chrome backend openers', () => {
       workspaceId: 'ws-1',
       url: 'https://b.test/',
       openerKey: OPENER_B,
-    })) as { tab: { surfaceId: string; openerKey?: string } };
+    })) as { tab: { surfaceId: string; opener?: string } };
 
     expect(surfaceOpeners.get(a.surfaceId)).toBe(OPENER_A);
-    expect(b.tab.openerKey).toBe(OPENER_B);
+    expect(b.tab.opener).toBe('mine');
 
-    const info = (await dispatch(router, 'browser.cdp.info', { workspaceId: 'ws-1' })) as {
-      targets: Array<{ surfaceId: string; openerKey?: string }>;
-    };
+    const info = (await dispatch(router, 'browser.cdp.info', {
+      workspaceId: 'ws-1',
+      openerKey: OPENER_A,
+    })) as { targets: Array<{ surfaceId: string; opener?: string }> };
     expect(info.targets).toEqual([
-      expect.objectContaining({ surfaceId: a.surfaceId, openerKey: OPENER_A }),
-      expect.objectContaining({ surfaceId: b.tab.surfaceId, openerKey: OPENER_B }),
+      expect.objectContaining({ surfaceId: a.surfaceId, opener: 'mine' }),
+      expect.objectContaining({ surfaceId: b.tab.surfaceId, opener: 'other' }),
     ]);
 
     // Closing retires the ownership with the tab.
     await dispatch(router, 'browser.tabs', { action: 'close', workspaceId: 'ws-1', surfaceId: a.surfaceId });
     expect(surfaceOpeners.get(a.surfaceId)).toBeUndefined();
+  });
+});
+
+describe('reuse guard details', () => {
+  it('reuses MY surface even when it is not the first pane', async () => {
+    // The renderer's own open always takes the first surface, so a caller
+    // whose tab sits second used to be handed a third pane on every open.
+    const router = register();
+    rendererWith(['surf-theirs', 'surf-mine']);
+    surfaceOpeners.note('surf-theirs', OPENER_A);
+    surfaceOpeners.note('surf-mine', OPENER_B);
+
+    const opened = (await dispatch(router, 'browser.open', {
+      workspaceId: 'ws-1',
+      url: 'https://b.test/',
+      openerKey: OPENER_B,
+    })) as { surfaceId: string; reused?: boolean };
+
+    expect(opened.surfaceId).toBe('surf-mine');
+    expect(opened.reused).toBe(true);
+    // Driven directly, because the renderer's open cannot address it.
+    expect(rendererCalls()).toEqual(['browser.tabs:list', 'browser.navigate']);
+  });
+
+  it('fails closed when the tab list cannot be read', async () => {
+    // Falling through to a plain open here would navigate whatever pane
+    // happens to be first — the exact hijack this guard exists to prevent.
+    const router = register();
+    let created = 0;
+    sendToRendererMock.mockImplementation(async (_w: unknown, method: string) => {
+      if (method === 'browser.tabs') {
+        if (created++ === 0) throw new Error('RPC timeout: browser.tabs');
+        return { ok: true, action: 'new', tab: { surfaceId: 'surf-fresh', paneId: 'p', url: '', title: '', selected: false } };
+      }
+      return { ok: true, surfaceId: 'surf-first', url: '', reused: true };
+    });
+
+    const opened = (await dispatch(router, 'browser.open', {
+      workspaceId: 'ws-1',
+      openerKey: OPENER_B,
+    })) as { surfaceId?: string };
+
+    expect(opened.surfaceId).toBe('surf-fresh');
+    expect(rendererCalls()).toEqual(['browser.tabs:list', 'browser.tabs:new']);
+  });
+
+  it('never re-stamps ownership onto a surface somebody else already owns', async () => {
+    // The list and the open are two round trips; another connection can claim
+    // the surface in between. The late stamp must not steal it.
+    const router = register();
+    rendererWith(['surf-a']);
+    sendToRendererMock.mockImplementation(async (_w: unknown, method: string) => {
+      if (method === 'browser.tabs') return { ok: true, action: 'list', tabs: [{ surfaceId: 'surf-a', paneId: 'p', url: '', title: '', selected: false }] };
+      // Between the list and this reply, A claimed the surface.
+      surfaceOpeners.note('surf-a', OPENER_A);
+      return { ok: true, surfaceId: 'surf-a', url: '', reused: true };
+    });
+
+    await dispatch(router, 'browser.open', { workspaceId: 'ws-1', openerKey: OPENER_B });
+
+    expect(surfaceOpeners.get('surf-a')).toBe(OPENER_A);
+  });
+});
+
+describe('browser.surface.adopt', () => {
+  it('claims an unowned surface, and refuses to transfer an owned one', async () => {
+    const router = register();
+    rendererWith(['surf-restored']);
+
+    const first = await dispatch(router, 'browser.surface.adopt', {
+      workspaceId: 'ws-1',
+      surfaceId: 'surf-restored',
+      openerKey: OPENER_A,
+    });
+    const second = await dispatch(router, 'browser.surface.adopt', {
+      workspaceId: 'ws-1',
+      surfaceId: 'surf-restored',
+      openerKey: OPENER_B,
+    });
+
+    expect(first).toEqual({ ok: true, owner: 'mine' });
+    // First claim wins: an adoption is a claim on something free, never a
+    // transfer, so B is told the surface is taken and opens its own.
+    expect(second).toEqual({ ok: true, owner: 'other' });
+    expect(surfaceOpeners.get('surf-restored')).toBe(OPENER_A);
+  });
+
+  it('requires all three arguments', async () => {
+    const router = register();
+    const result = (await dispatch(router, 'browser.surface.adopt', {
+      workspaceId: 'ws-1',
+      openerKey: OPENER_A,
+    })) as { error?: string };
+    expect(result.error).toContain('surfaceId');
   });
 });

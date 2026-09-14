@@ -15,6 +15,7 @@ vi.mock('../../wmux-client', () => ({
 }));
 
 import { withAutomationLease } from '../automationLease';
+import { __resetSurfaceRoutingForTesting } from '../surfaceRouting';
 import { getSnapshotBaseline, setSnapshotBaseline, snapshotSurfaceKey } from '../snapshotCache';
 
 const deps = { resolveWorkspaceId: vi.fn(async () => 'ws-test') };
@@ -23,6 +24,19 @@ const deps = { resolveWorkspaceId: vi.fn(async () => 'ws-test') };
 function queueRouter(queue: unknown[], drainError?: Error) {
   return (method: string) => {
     if (method === 'browser.lease.acquire') return Promise.resolve({ token: 'lease-1' });
+    // Surface routing runs first: a call that names no surfaceId resolves one
+    // (this main reports a single unclaimed surface, which the caller adopts)
+    // so the lease, the lifecycle drain and the hints all speak about the same
+    // page instead of whatever main would have picked.
+    if (method === 'browser.cdp.info') {
+      return Promise.resolve({
+        targetsScoped: true,
+        workspaceBackend: 'builtin',
+        targets: [{ surfaceId: 'auto-1' }],
+      });
+    }
+    if (method === 'browser.surface.adopt') return Promise.resolve({ ok: true, owner: 'mine' });
+
     if (method === 'browser.lifecycle.get') {
       if (drainError) return Promise.reject(drainError);
       return Promise.resolve({ entries: queue.splice(0) });
@@ -32,6 +46,9 @@ function queueRouter(queue: unknown[], drainError?: Error) {
 }
 
 beforeEach(() => {
+  // Per-connection pin: no broker scope here, so it lives in the module
+  // fallback and would leak between cases.
+  __resetSurfaceRoutingForTesting();
   mockSendRpc.mockReset();
   deps.resolveWorkspaceId.mockReset();
   deps.resolveWorkspaceId.mockResolvedValue('ws-test');

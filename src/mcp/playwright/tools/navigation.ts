@@ -4,6 +4,7 @@ import { validateNavigationUrl } from '../../../shared/types';
 import { sendRpc } from '../../wmux-client';
 import { PlaywrightEngine } from '../PlaywrightEngine';
 import {
+  ensureOwnSurfaceScope,
   requireBrowserTargetScope,
   sendScopedBrowserRpc,
   type BrowserToolDeps,
@@ -178,12 +179,12 @@ function tabsToolError(result: BrowserTabsErrorResult) {
  * The opener key itself is dropped here: it answers exactly one question, and
  * that answer is this field.
  */
-function mineFlag(tab: BrowserTabDescriptor, openerKey: string): boolean | 'unknown' {
-  if (tab.openerKey === undefined) return 'unknown';
-  return tab.openerKey === openerKey;
+function mineFlag(tab: BrowserTabDescriptor): boolean | 'unknown' {
+  if (tab.opener === undefined) return 'unknown';
+  return tab.opener === 'mine';
 }
 
-function publicTab(tab: BrowserTabDescriptor, openerKey: string) {
+function publicTab(tab: BrowserTabDescriptor) {
   return {
     surfaceId: tab.surfaceId,
     paneId: tab.paneId,
@@ -193,15 +194,15 @@ function publicTab(tab: BrowserTabDescriptor, openerKey: string) {
     url: redactPasswordParams(tab.url),
     title: tab.title,
     selected: tab.selected,
-    mine: mineFlag(tab, openerKey),
+    mine: mineFlag(tab),
   };
 }
 
-function tabsToolSuccess(result: BrowserTabsSuccessResult, openerKey: string) {
+function tabsToolSuccess(result: BrowserTabsSuccessResult) {
   let payload: Record<string, unknown>;
   switch (result.action) {
     case 'list':
-      payload = { action: result.action, tabs: result.tabs.map((tab) => publicTab(tab, openerKey)) };
+      payload = { action: result.action, tabs: result.tabs.map(publicTab) };
       break;
     case 'new':
       // #517 external backend: the tab opened in the OS default browser and
@@ -209,13 +210,13 @@ function tabsToolSuccess(result: BrowserTabsSuccessResult, openerKey: string) {
       // inventing a descriptor.
       payload = 'backend' in result
         ? { action: result.action, backend: result.backend, opened: result.opened, url: redactPasswordParams(result.url) }
-        : { action: result.action, tab: publicTab(result.tab, openerKey) };
+        : { action: result.action, tab: publicTab(result.tab) };
       break;
     case 'select':
-      payload = { action: result.action, tab: publicTab(result.tab, openerKey) };
+      payload = { action: result.action, tab: publicTab(result.tab) };
       break;
     case 'close':
-      payload = { action: result.action, closed: publicTab(result.closed, openerKey) };
+      payload = { action: result.action, closed: publicTab(result.closed) };
       break;
   }
   return {
@@ -327,8 +328,16 @@ export function registerNavigationTools(server: McpServer, deps: BrowserToolDeps
                 ],
               };
             }
+            // Builtin RPC lane: settle WHICH surface first. This lane never
+            // asks for a Page, so nothing else in the call would resolve the
+            // caller's surface, and main answers an unnamed navigate with the
+            // workspace's first live session — another agent's tab as often as
+            // this one's (live dogfood: agent B's navigate landed on agent A's
+            // page). Resolving here also means the recorded action and the
+            // baseline keys below describe the surface actually navigated.
+            const target = await ensureOwnSurfaceScope(scope);
             // Use RPC for fast, reliable navigation (bypasses Playwright CDP discovery)
-            await sendScopedBrowserRpc('browser.navigate', scope, { url });
+            await sendScopedBrowserRpc('browser.navigate', target, { url });
             // The RPC resolves on commit (#756); the CDP Page.frameNavigated
             // that feeds the lifecycle ring races it. A short settle lets the
             // post-body drain catch this call's own events — a miss is only a
@@ -339,11 +348,11 @@ export function registerNavigationTools(server: McpServer, deps: BrowserToolDeps
             // pattern): on a redirect the requested URL is not the final one,
             // and the self-echo match needs the final URL to fire. Fall back
             // to the requested URL when the read fails mid-load.
-            finalUrl = await sendScopedBrowserRpc<{ value: string }>('browser.evaluate', scope, {
+            finalUrl = await sendScopedBrowserRpc<{ value: string }>('browser.evaluate', target, {
               expression: 'location.href',
             }).then((r) => r?.value || url).catch(() => url);
             recordAction(deps, {
-              scope,
+              scope: target,
               tool: 'browser_navigate',
               page: null,
               args: { url },
@@ -400,12 +409,16 @@ export function registerNavigationTools(server: McpServer, deps: BrowserToolDeps
                 content: [{ type: 'text' as const, text: `Went back. Current URL: ${redactPasswordParams(finalUrl)}` }],
               };
             }
-            await sendScopedBrowserRpc('browser.goBack', scope);
+            // Same reason as browser_navigate's builtin lane: this one never
+            // asks for a Page, so the surface is settled here rather than left
+            // for main to guess.
+            const target = await ensureOwnSurfaceScope(scope);
+            await sendScopedBrowserRpc('browser.goBack', target);
 
             await new Promise((resolve) => setTimeout(resolve, 300));
 
             // Get current URL
-            const urlResult = await sendScopedBrowserRpc<{ value: string }>('browser.evaluate', scope, {
+            const urlResult = await sendScopedBrowserRpc<{ value: string }>('browser.evaluate', target, {
               expression: 'location.href',
             });
 
@@ -492,15 +505,15 @@ export function registerNavigationTools(server: McpServer, deps: BrowserToolDeps
           );
         }
 
-        const openerKey = getOpenerKey();
         const result = await sendRpc('browser.tabs', {
           action: resolvedAction,
           workspaceId,
           ...(surfaceId && { surfaceId }),
           ...(url !== undefined && { url }),
           // Only `new` opens something, but the key rides along on every action
-          // so main can answer "is this one mine?" per row on `list`.
-          openerKey,
+          // so main can answer "is this one mine?" per row on `list` — as a
+          // verdict; the key itself never comes back.
+          openerKey: getOpenerKey(),
         });
         if (!isBrowserTabsResult(result)) {
           throw new Error('Invalid browser.tabs response from wmux main.');
@@ -511,7 +524,7 @@ export function registerNavigationTools(server: McpServer, deps: BrowserToolDeps
         if (result.ok && result.action === 'new' && 'tab' in result) {
           noteOpenedSurface(workspaceId, result.tab.surfaceId);
         }
-        return result.ok ? tabsToolSuccess(result, openerKey) : tabsToolError(result);
+        return result.ok ? tabsToolSuccess(result) : tabsToolError(result);
       } catch (error) {
         const message = describeToolError(error);
         if (/Unknown method:\s*browser\.tabs/i.test(message)) {

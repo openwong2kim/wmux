@@ -20,8 +20,11 @@ vi.mock('../../wmux-client', () => ({
     typeof method === 'string'
     && (method.startsWith('browser.lease.')
       || method === 'browser.lifecycle.get'
-      || method === 'browser.cdp.info')
-      ? Promise.resolve({ token: null, targets: [] })
+      || method === 'browser.cdp.info'
+      || method === 'browser.tabs'
+      || method === 'browser.surface.adopt'
+      || method === 'browser.open')
+      ? Promise.resolve({ token: null, targets: [], ok: false })
       : mockSendRpc(method, ...args),
 }));
 
@@ -32,6 +35,7 @@ vi.mock('../PlaywrightEngine', () => ({
 }));
 
 import { registerStateTools } from '../tools/state';
+import { __resetSurfaceRoutingForTesting } from '../surfaceRouting';
 
 const browserToolDeps = { resolveWorkspaceId: vi.fn(async () => 'ws-test') };
 
@@ -59,6 +63,9 @@ const emulate = tools.get('browser_emulate')!;
 const resize = tools.get('browser_resize')!;
 
 beforeEach(() => {
+  // Per-connection pin: no broker scope here, so it lives in the module
+  // fallback and would leak between cases.
+  __resetSurfaceRoutingForTesting();
   browserToolDeps.resolveWorkspaceId.mockClear();
   browserToolDeps.resolveWorkspaceId.mockResolvedValue('ws-test');
   mockSendRpc.mockReset();

@@ -3,7 +3,11 @@ import { sendRpc } from '../wmux-client';
 // Cycle-safe: surfaceRouting imports the refusal type from here, and both
 // sides touch the other only from inside function bodies, never at module
 // evaluation time.
-import { resolveDefaultSurface } from './surfaceRouting';
+import {
+  openSurfaceForConnection,
+  pinnedSurfaceFor,
+  resolveDefaultSurface,
+} from './surfaceRouting';
 
 /** Stable error code for browser operations whose caller cannot be scoped. */
 export const WORKSPACE_SCOPE_UNRESOLVED_CODE = 'WORKSPACE_SCOPE_UNRESOLVED';
@@ -52,6 +56,24 @@ export interface BrowserToolDeps {
 export interface BrowserTargetScope {
   readonly workspaceId: string;
   readonly surfaceId?: string;
+  /**
+   * Routing ran and this connection may drive NOTHING that exists: every live
+   * surface belongs to another connection, or there are none at all.
+   *
+   * Distinct from a plain absent `surfaceId`, which also covers "routing could
+   * not run" (transport down, a main too old to scope). The difference decides
+   * behavior: a known-empty answer lets the page lane skip re-asking and the
+   * RPC lane open its own surface, while an unknown one leaves both to their
+   * existing fail-closed paths.
+   */
+  readonly noSurface?: true;
+  /**
+   * …and at least one of those surfaces belongs to somebody else. This is the
+   * case where sending an unnamed RPC is not merely vague but wrong: main
+   * resolves it to the workspace's first live session, which is another
+   * connection's tab.
+   */
+  readonly foreignSurfaces?: true;
 }
 
 /** Runtime guard for scopes created outside requireBrowserTargetScope(). */
@@ -93,11 +115,117 @@ export async function requireBrowserTargetScope(
     );
   }
   if (surfaceId) return Object.freeze({ workspaceId, surfaceId });
-  const resolved = await resolveDefaultSurface(workspaceId).catch(() => ({ kind: 'none' as const }));
+  let resolved: Awaited<ReturnType<typeof resolveDefaultSurface>> | null = null;
+  try {
+    resolved = await resolveDefaultSurface(workspaceId);
+  } catch {
+    // Routing failed rather than answered. Swallowing this into "no surface"
+    // would silently restore the pre-fix behavior — permanently, on a build
+    // with CDP disabled — so the connection's own pin answers instead, and
+    // when it has none the scope stays UNKNOWN: the RPC lane then opens its
+    // own surface or refuses, never falls back to the workspace default.
+    const pinned = pinnedSurfaceFor(workspaceId);
+    return Object.freeze({ workspaceId, ...(pinned && { surfaceId: pinned }) });
+  }
+  if (resolved.kind === 'surface') {
+    return Object.freeze({ workspaceId, surfaceId: resolved.surfaceId });
+  }
   return Object.freeze({
     workspaceId,
-    ...(resolved.kind === 'surface' && { surfaceId: resolved.surfaceId }),
+    noSurface: true as const,
+    ...(resolved.foreignSurfaces && { foreignSurfaces: true as const }),
   });
+}
+
+/**
+ * Browser RPCs that act on the WORKSPACE, not on one surface.
+ *
+ * They are the exception to the rule below: a call that names no surface must
+ * not cause a browser surface to be opened just to read a recorded flow, a
+ * site note, or the backend marker. Everything else in the `browser.*` family
+ * drives or reads a page, and main resolves an unnamed surface to the
+ * workspace's first live session — another connection's tab as often as the
+ * caller's.
+ */
+const WORKSPACE_LEVEL_BROWSER_METHODS: ReadonlySet<string> = new Set<string>([
+  'browser.open',
+  'browser.close',
+  'browser.tabs',
+  'browser.cdp.info',
+  'browser.cdp.target',
+  'browser.lifecycle.get',
+  'browser.lease.acquire',
+  'browser.lease.renew',
+  'browser.lease.release',
+  'browser.actionCache.list',
+  'browser.actionCache.get',
+  'browser.actionCache.put',
+  'browser.actionCache.stats',
+  'browser.actionCache.forget',
+  'browser.actionCache.promote',
+  'browser.actionCache.demote',
+  'browser.actionCache.promoted',
+  'browser.siteMemory.list',
+  'browser.siteMemory.record',
+  'browser.siteMemory.forget',
+  'browser.siteGuides.match',
+  'browser.session.start',
+  'browser.session.stop',
+  'browser.session.status',
+  'browser.session.list',
+  'browser.session.applyProfile',
+  'browser.backend.get',
+  'browser.backend.set',
+]);
+
+/**
+ * The surface this RPC should name when the scope pinned none.
+ *
+ * Two lanes drive a browser: the Playwright page and these RPCs. The page lane
+ * resolves an unnamed surface per connection; this one used to send no
+ * surfaceId at all, and main then picked the workspace's first live session —
+ * so on a build where no Page can be had (CDP off, packaged guest) one agent's
+ * `browser_navigate` landed in another agent's tab. Live dogfood caught
+ * exactly that.
+ *
+ * So: the connection's pin if it has one, otherwise — for a surface-acting
+ * method — its own newly opened surface, which is fallback (d). Only an open
+ * that cannot happen at all leaves the call unnamed, and that is the case
+ * where main has nothing else to pick either.
+ */
+async function surfaceForScopedRpc(
+  method: RpcMethod,
+  scope: BrowserTargetScope,
+): Promise<string | undefined> {
+  const pinned = pinnedSurfaceFor(scope.workspaceId);
+  if (pinned) return pinned;
+  if (WORKSPACE_LEVEL_BROWSER_METHODS.has(method)) return undefined;
+  let opened: string | null = null;
+  try {
+    opened = await openSurfaceForConnection(scope.workspaceId);
+  } catch (err) {
+    console.error(
+      `[browserScope] ${method}: could not open a surface for this caller:`,
+      err instanceof Error ? err.message : String(err),
+    );
+  }
+  if (opened) return opened;
+  // Nothing of this caller's to drive, and no way to make one. Sending the
+  // call unnamed would hand it to main's workspace default, which is another
+  // connection's tab whenever one exists — so it is refused with the remedy
+  // instead. (A workspace with no surface at all has nothing to land on, so
+  // the older "no target" error is the honest answer there and is left to
+  // main.)
+  if (scope.foreignSurfaces) throw noOwnSurfaceError();
+  return undefined;
+}
+
+function noOwnSurfaceError(): Error {
+  return new Error(
+    'BROWSER_NO_OWN_SURFACE: this workspace has no browser surface you opened, and a new one ' +
+      'could not be opened for you. Other agents\' surfaces are never targeted implicitly — open ' +
+      'your own with browser_open, or pass a surfaceId from browser_tabs list.',
+  );
 }
 
 /**
@@ -118,7 +246,64 @@ export async function sendScopedBrowserRpc<T = unknown>(
   // The operation scope is authoritative for both routing dimensions. When
   // no surface is pinned, a caller cannot smuggle one through params that the
   // automation lease did not cover.
-  if (scope.surfaceId) scopedParams.surfaceId = scope.surfaceId;
+  const surfaceId = scope.surfaceId ?? (await surfaceForScopedRpc(method, scope));
+  if (surfaceId) scopedParams.surfaceId = surfaceId;
   else delete scopedParams.surfaceId;
   return sendRpc(method, scopedParams) as Promise<T>;
+}
+
+/**
+ * A scope that names a surface this connection may drive, opening one if it
+ * has none.
+ *
+ * For the tools that reach the RPC lane without ever asking for a Page —
+ * `browser_navigate` and `browser_navigate_back` on the builtin backend — so
+ * that the surface is settled BEFORE the call, and the keys derived from the
+ * scope (the replay ring, the snapshot baseline) describe the surface the call
+ * actually used. Throws rather than proceeding unnamed: an unnamed navigate is
+ * the one that lands on somebody else's page.
+ */
+export async function ensureOwnSurfaceScope(
+  scope: BrowserTargetScope,
+): Promise<BrowserTargetScope> {
+  assertBrowserTargetScope(scope);
+  if (scope.surfaceId) return scope;
+  const pinned = pinnedSurfaceFor(scope.workspaceId);
+  if (pinned) return Object.freeze({ workspaceId: scope.workspaceId, surfaceId: pinned });
+  const opened = await openSurfaceForConnection(scope.workspaceId);
+  if (!opened) throw noOwnSurfaceError();
+  return Object.freeze({ workspaceId: scope.workspaceId, surfaceId: opened });
+}
+
+/**
+ * The surface this operation should hold its automation lease on, or undefined
+ * when the caller has none and none can be opened.
+ *
+ * Used before the lease is acquired rather than after: an unnamed
+ * `browser.lease.acquire` resolves to the workspace's first live session, so a
+ * lightweight-mode lease was being held on ANOTHER connection's guest while
+ * Playwright drove the surface this call actually opened — the wrong guest
+ * stayed unthrottled and the right one stayed throttled.
+ *
+ * Opening happens only when there is something to be wrong about: a workspace
+ * whose surfaces all belong to other connections. An empty workspace has
+ * nothing to lease and nothing to mistarget, so the body is left to open what
+ * it needs (and the lease helper's late-acquire loop picks the new surface up
+ * through the pin).
+ */
+export async function leaseSurfaceScope(scope: BrowserTargetScope): Promise<BrowserTargetScope> {
+  if (scope.surfaceId) return scope;
+  const pinned = pinnedSurfaceFor(scope.workspaceId);
+  if (pinned) return Object.freeze({ workspaceId: scope.workspaceId, surfaceId: pinned });
+  if (!scope.foreignSurfaces) return scope;
+  try {
+    const opened = await openSurfaceForConnection(scope.workspaceId);
+    if (opened) return Object.freeze({ workspaceId: scope.workspaceId, surfaceId: opened });
+  } catch (err) {
+    console.error(
+      '[browserScope] could not open a surface to lease for this caller:',
+      err instanceof Error ? err.message : String(err),
+    );
+  }
+  return scope;
 }

@@ -16,15 +16,15 @@ export interface BrowserTabDescriptor {
    *  workspace regardless. Always false on the chrome backend (#1082). */
   selected: boolean;
   /**
-   * The MCP connection that opened this surface, as main recorded it. Absent
-   * when nobody claims the surface: restored after a restart, opened by a
+   * Whether the CALLING connection opened this surface, as main recorded it.
+   * Absent when nobody claims it: restored after a restart, opened by a
    * person, or opened before openers were recorded.
    *
-   * Main-to-MCP only. The tool layer turns it into the `mine` flag an agent
-   * reads and never renders the key itself — it identifies a connection, and
-   * one agent has no use for another's.
+   * A verdict, never an identity: main compares against what it recorded and
+   * reports only the answer, so no caller can learn — or replay — another
+   * connection's opener key.
    */
-  openerKey?: string;
+  opener?: 'mine' | 'other';
 }
 
 export const BROWSER_TABS_ERROR_CODES = [

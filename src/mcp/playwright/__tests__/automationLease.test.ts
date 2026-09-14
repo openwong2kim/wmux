@@ -6,11 +6,15 @@ vi.mock('../../wmux-client', () => ({
 }));
 
 import { withAutomationLease } from '../automationLease';
+import { __resetSurfaceRoutingForTesting } from '../surfaceRouting';
 
 const deps = { resolveWorkspaceId: vi.fn(async () => 'ws-test') };
 
 beforeEach(() => {
   mockSendRpc.mockReset();
+  // The pin is per connection and this suite has no broker scope, so it lives
+  // in the module fallback and would otherwise leak between cases.
+  __resetSurfaceRoutingForTesting();
   deps.resolveWorkspaceId.mockReset();
   deps.resolveWorkspaceId.mockResolvedValue('ws-test');
 });
@@ -74,14 +78,18 @@ describe('automation lease workspace scope', () => {
     expect(body).not.toHaveBeenCalled();
   });
 
-  it('includes the same workspaceId in every late-acquire retry', async () => {
+  it('leases only BY NAME, and keeps the workspace on every late retry', async () => {
+    // The operation starts with no surface of this caller's, so the opening
+    // acquire is skipped entirely: an unnamed lease resolves to the
+    // workspace's first live session, and holding one on another connection's
+    // guest exempts THEIR page from lightweight mode while this caller's own
+    // stays throttled. The late-acquire loop takes over as soon as the body
+    // has a surface to name.
     vi.useFakeTimers();
-    let acquireCount = 0;
     mockSendRpc.mockImplementation((method: string) => {
-      if (method === 'browser.lease.acquire') {
-        acquireCount++;
-        return Promise.resolve({ token: acquireCount === 1 ? null : 'lease-late' });
-      }
+      if (method === 'browser.lease.acquire') return Promise.resolve({ token: 'lease-late' });
+      if (method === 'browser.cdp.info') return Promise.resolve({ targetsScoped: true, targets: [] });
+      if (method === 'browser.tabs') return Promise.resolve({ ok: false });
       return Promise.resolve({});
     });
 
@@ -94,7 +102,6 @@ describe('automation lease workspace scope', () => {
 
     await vi.advanceTimersByTimeAsync(2_000);
     expect(mockSendRpc.mock.calls.filter(([method]) => method === 'browser.lease.acquire')).toEqual([
-      ['browser.lease.acquire', { workspaceId: 'ws-test' }],
       ['browser.lease.acquire', { workspaceId: 'ws-test' }],
     ]);
 

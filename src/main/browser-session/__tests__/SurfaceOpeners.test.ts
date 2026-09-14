@@ -64,4 +64,17 @@ describe('SurfaceOpeners', () => {
     expect(surfaceOpeners.get('surf-0')).toBeUndefined();
     expect(surfaceOpeners.get('surf-599')).toBe('opener-a');
   });
+
+  it('keeps a surface that is still being asked about', () => {
+    // Eviction is the dangerous direction: a LIVE surface whose entry is
+    // dropped reads as unclaimed, and the next connection with nothing of its
+    // own adopts it — the tab-sharing defect, one level down. Being asked
+    // about is proof of life, so a read moves the entry to the young end.
+    surfaceOpeners.note('surf-live', 'opener-a');
+    for (let i = 0; i < 600; i++) {
+      surfaceOpeners.note(`surf-${i}`, 'opener-b');
+      expect(surfaceOpeners.get('surf-live')).toBe('opener-a');
+    }
+    expect(surfaceOpeners.get('surf-live')).toBe('opener-a');
+  });
 });

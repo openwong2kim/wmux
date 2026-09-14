@@ -25,7 +25,16 @@
  * marks as yours.
  */
 
-/** Generous: a working set of browser surfaces, not a history. */
+/**
+ * Generous: a working set of browser surfaces, not a history.
+ *
+ * Eviction is the dangerous direction — a LIVE surface whose entry is dropped
+ * reads as unclaimed, and the next connection with no surface of its own
+ * adopts it — so the order is refreshed on every read as well as every write.
+ * Anything still being used is therefore near the young end, and what falls off
+ * is what nothing has asked about for hundreds of surfaces. Closing a surface
+ * removes its entry outright, which is what keeps the map near the live count.
+ */
 const MAX_ENTRIES = 512;
 
 export class SurfaceOpeners {
@@ -46,7 +55,13 @@ export class SurfaceOpeners {
   }
 
   get(surfaceId: string): string | undefined {
-    return this.bySurface.get(surfaceId);
+    const openerKey = this.bySurface.get(surfaceId);
+    if (openerKey === undefined) return undefined;
+    // Touch: being asked about is proof this surface is still in play, and an
+    // evicted entry would silently make it adoptable by another connection.
+    this.bySurface.delete(surfaceId);
+    this.bySurface.set(surfaceId, openerKey);
+    return openerKey;
   }
 
   /** Called when a surface is closed, so a recycled id cannot inherit an owner. */

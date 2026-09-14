@@ -10,6 +10,7 @@ vi.mock('../../wmux-client', () => ({
 }));
 
 import { withAutomationLease } from '../automationLease';
+import { __resetSurfaceRoutingForTesting } from '../surfaceRouting';
 import {
   SITE_HINT_HEADER,
   SITE_HINT_MAX_BYTES,
@@ -54,6 +55,19 @@ interface RouterOpts {
 function router(queue: unknown[], opts: RouterOpts = {}) {
   return (method: string, params: Record<string, unknown>) => {
     if (method === 'browser.lease.acquire') return Promise.resolve({ token: 'lease-1' });
+    // Surface routing runs first: a call that names no surfaceId resolves one
+    // (this main reports a single unclaimed surface, which the caller adopts)
+    // so the lease, the lifecycle drain and the hints all speak about the same
+    // page instead of whatever main would have picked.
+    if (method === 'browser.cdp.info') {
+      return Promise.resolve({
+        targetsScoped: true,
+        workspaceBackend: 'builtin',
+        targets: [{ surfaceId: 'auto-1' }],
+      });
+    }
+    if (method === 'browser.surface.adopt') return Promise.resolve({ ok: true, owner: 'mine' });
+
     if (method === 'browser.lifecycle.get') return Promise.resolve({ entries: queue.splice(0) });
     if (method === 'browser.actionCache.list') return Promise.resolve({ traces: opts.traces ?? [] });
     if (method === 'browser.actionCache.promoted') return Promise.resolve({ promoted: [] });
@@ -85,6 +99,9 @@ const navigated = (url: string) => ({ type: 'navigated', url, ts: Date.now() });
 const body = async () => ({ content: [{ type: 'text', text: 'Navigated to https://shop.test/cart' }] });
 
 beforeEach(() => {
+  // Per-connection pin: no broker scope here, so it lives in the module
+  // fallback and would leak between cases.
+  __resetSurfaceRoutingForTesting();
   mockSendRpc.mockReset();
   deps.resolveWorkspaceId.mockReset();
   deps.resolveWorkspaceId.mockResolvedValue('ws-test');

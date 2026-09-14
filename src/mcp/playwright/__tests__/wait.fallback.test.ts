@@ -24,7 +24,10 @@ vi.mock('../../wmux-client', () => ({
     typeof method === 'string'
     && (method.startsWith('browser.lease.')
       || method === 'browser.lifecycle.get'
-      || method === 'browser.cdp.info')
+      || method === 'browser.cdp.info'
+      || method === 'browser.tabs'
+      || method === 'browser.surface.adopt'
+      || method === 'browser.open')
       ? mockLeaseRpc(method, ...args)
       : mockSendRpc(method, ...args),
 }));
@@ -38,6 +41,7 @@ import {
   registerWaitTools,
 } from '../tools/wait';
 import type { WmuxToolProfile } from '../../toolCatalog';
+import { __resetSurfaceRoutingForTesting } from '../surfaceRouting';
 import { ActionRing } from '../../browser-replay/actionRing';
 import {
   expectCommanderCatalogLockstep,
@@ -81,6 +85,9 @@ function evalRouter(map: Record<string, unknown>, fallback: unknown = false) {
 }
 
 beforeEach(() => {
+  // Per-connection pin: no broker scope here, so it lives in the module
+  // fallback and would leak between cases.
+  __resetSurfaceRoutingForTesting();
   browserToolDeps.resolveWorkspaceId.mockClear();
   mockSendRpc.mockReset();
   mockLeaseRpc.mockReset();
@@ -269,7 +276,9 @@ describe('browser_wait RPC fallback', () => {
     getPage.mockResolvedValue({ waitForSelector });
     const res = await wait({ selector: '#app' });
     expect(waitForSelector).toHaveBeenCalledWith('#app', { timeout: 30000 });
-    expect(getPage).toHaveBeenCalledWith({ workspaceId: 'ws-test' });
+    // `noSurface` is routing's answer, carried on the scope so the page lane
+    // does not repeat the lookup that just came back empty.
+    expect(getPage).toHaveBeenCalledWith({ workspaceId: 'ws-test', noSurface: true });
     expect(mockSendRpc).not.toHaveBeenCalled();
     expect(res.content[0].text).toContain('selector "#app" found');
   });

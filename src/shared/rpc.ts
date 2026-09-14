@@ -372,6 +372,7 @@ export type RpcMethod =
   | 'deck.resolveDecision'
   | 'browser.tabs'
   | 'browser.open'
+  | 'browser.surface.adopt'
   | 'browser.navigate'
   | 'browser.goBack'
   | 'browser.close'
@@ -590,6 +591,7 @@ export const ALL_RPC_METHODS = [
   'deck.resolveDecision',
   'browser.tabs',
   'browser.open',
+  'browser.surface.adopt',
   'browser.navigate',
   'browser.goBack',
   'browser.close',

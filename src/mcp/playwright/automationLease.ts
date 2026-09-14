@@ -1,5 +1,6 @@
 import { sendRpc } from '../wmux-client';
 import {
+  leaseSurfaceScope,
   requireBrowserTargetScope,
   sendScopedBrowserRpc,
   type BrowserTargetScope,
@@ -60,6 +61,10 @@ interface LifecycleEventWire {
 }
 
 async function collectLifecycleEvents(scope: BrowserTargetScope): Promise<LifecycleEventWire[]> {
+  // No surface of this caller's to drain. An unnamed drain is DESTRUCTIVE on
+  // main's workspace default — another connection's ring — so the events would
+  // be removed from that agent's next result and reported in this one.
+  if (!scope.surfaceId) return [];
   const res = await sendScopedBrowserRpc<{ entries?: LifecycleEventWire[] }>(
     'browser.lifecycle.get',
     scope,
@@ -348,16 +353,28 @@ export async function withAutomationLease<T>(
   fn: (scope: BrowserTargetScope) => Promise<T>,
   opts?: AutomationLeaseOpts<T>,
 ): Promise<T> {
-  const scope = await requireBrowserTargetScope(deps, surfaceId);
+  // Settle the surface BEFORE the lease: an unnamed browser.lease.acquire
+  // resolves to the workspace's first live session, so under lightweight mode
+  // the lease kept ANOTHER connection's guest unthrottled while Playwright
+  // drove this caller's own.
+  const scope = await leaseSurfaceScope(await requireBrowserTargetScope(deps, surfaceId));
   let token: string | null = null;
-  try {
-    const res = await sendScopedBrowserRpc<{ token: string | null }>(
-      'browser.lease.acquire',
-      scope,
-    );
-    token = res?.token ?? null;
-  } catch {
-    /* lease unavailable — proceed unleased */
+  // Only ever leased BY NAME. Without a surface to name, the acquire would be
+  // answered with the workspace's first live session, and holding a lease on
+  // somebody else's guest is worse than holding none: it exempts their page
+  // from lightweight mode and leaves this caller's own page throttled. The
+  // late-acquire loop below covers the body that opens its own surface — it
+  // picks up the pin as soon as there is one.
+  if (scope.surfaceId) {
+    try {
+      const res = await sendScopedBrowserRpc<{ token: string | null }>(
+        'browser.lease.acquire',
+        scope,
+      );
+      token = res?.token ?? null;
+    } catch {
+      /* lease unavailable — proceed unleased */
+    }
   }
 
   if (!token) {

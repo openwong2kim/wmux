@@ -282,6 +282,7 @@ export const METHOD_CAPABILITY: Record<RpcMethod, RequiredCapability> = {
   // MCP server. Keep it reserved until the pipe can bind ordinary plugin
   // requests to a verified workspace instead of trusting a supplied id.
   'browser.tabs':              { capability: 'wmux.internal' },
+  'browser.surface.adopt':     { capability: 'wmux.internal' },
   'browser.open':              { capability: 'browser.navigate', riskClass: 'browser' },
   'browser.navigate':          { capability: 'browser.navigate', riskClass: 'browser' },
   'browser.goBack':            { capability: 'browser.navigate', riskClass: 'browser' },

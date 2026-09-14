@@ -27,6 +27,7 @@ vi.mock('../guideAnnounce', async (importOriginal) => {
 });
 
 import { withAutomationLease } from '../automationLease';
+import { __resetSurfaceRoutingForTesting } from '../surfaceRouting';
 import { __resetGuideAnnounceForTesting } from '../guideAnnounce';
 import type { SiteGuideMatch } from '../../../shared/browserGuides/siteGuides';
 import {
@@ -96,6 +97,19 @@ interface RouterOpts {
 function router(queue: unknown[], opts: RouterOpts = {}) {
   return (method: string, params: Record<string, unknown>) => {
     if (method === 'browser.lease.acquire') return Promise.resolve({ token: 'lease-1' });
+    // Surface routing runs first: a call that names no surfaceId resolves one
+    // (this main reports a single unclaimed surface, which the caller adopts)
+    // so the lease, the lifecycle drain and the hints all speak about the same
+    // page instead of whatever main would have picked.
+    if (method === 'browser.cdp.info') {
+      return Promise.resolve({
+        targetsScoped: true,
+        workspaceBackend: 'builtin',
+        targets: [{ surfaceId: 'auto-1' }],
+      });
+    }
+    if (method === 'browser.surface.adopt') return Promise.resolve({ ok: true, owner: 'mine' });
+
     if (method === 'browser.lifecycle.get') return Promise.resolve({ entries: queue.splice(0) });
     if (method === 'browser.actionCache.list') return Promise.resolve({ traces: opts.traces ?? [] });
     if (method === 'browser.actionCache.promoted') return Promise.resolve({ promoted: [] });
@@ -132,6 +146,9 @@ async function land(
 }
 
 beforeEach(() => {
+  // Per-connection pin: no broker scope here, so it lives in the module
+  // fallback and would leak between cases.
+  __resetSurfaceRoutingForTesting();
   mockSendRpc.mockReset();
   deps.resolveWorkspaceId.mockReset();
   deps.resolveWorkspaceId.mockResolvedValue('ws-test');
@@ -201,9 +218,10 @@ describe('site guide pointers on navigation', () => {
     ).toContain('[guide]');
   });
 
-  it('dedupes landings that name no surface, keyed by workspace', async () => {
-    // On a backend where the browser is not a wmux surface, no caller can pass
-    // a surface id; the dedupe still has to work there.
+  it('dedupes landings that name no surface, keyed by the surface routing found', async () => {
+    // The caller passes no surface id; routing resolves one for it, and the
+    // dedupe keys on THAT — so two agents landing on one page each keep their
+    // own announcement state instead of silencing each other.
     const opts = { guides: [guide()] };
     expect(await land([navigated('https://shop.test/cart')], opts, null)).toContain('[guide]');
     expect(await land([navigated('https://shop.test/cart')], opts, null)).toBe('');

@@ -212,6 +212,7 @@ export const FIRST_PARTY_METHODS: ReadonlySet<RpcMethod> = new Set<RpcMethod>([
   // browser (Playwright + packaged CDP/RPC fallbacks)
   'browser.tabs',
   'browser.open',
+  'browser.surface.adopt',
   'browser.navigate',
   'browser.goBack',
   'browser.close',

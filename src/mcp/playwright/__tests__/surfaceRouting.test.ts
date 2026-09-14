@@ -23,6 +23,7 @@ import {
   getOpenerKey,
   getPinnedSurface,
   noteOpenedSurface,
+  openSurfaceForConnection,
   pickDefaultSurface,
   resolveDefaultSurface,
   scopeTargets,
@@ -78,26 +79,23 @@ describe('opener key identity', () => {
 });
 
 describe('pickDefaultSurface fallback order', () => {
-  const mine = 'opener-mine';
-  const theirs = 'opener-theirs';
-
   it('a — the pin wins while its surface is still listed', () => {
     const targets: RoutableTarget[] = [
-      { surfaceId: 'surf-new', openerKey: mine },
-      { surfaceId: 'surf-pinned', openerKey: mine },
+      { surfaceId: 'surf-new', opener: 'mine' as const },
+      { surfaceId: 'surf-pinned', opener: 'mine' as const },
     ];
     expect(
-      pickDefaultSurface(targets, WS, mine, { workspaceId: WS, surfaceId: 'surf-pinned' }),
+      pickDefaultSurface(targets, WS, { workspaceId: WS, surfaceId: 'surf-pinned' }),
     ).toEqual({ kind: 'surface', surfaceId: 'surf-pinned' });
   });
 
   it('b — without a pin, my newest surface, not the workspace\'s newest', () => {
     const targets: RoutableTarget[] = [
-      { surfaceId: 'surf-mine-old', openerKey: mine },
-      { surfaceId: 'surf-mine', openerKey: mine },
-      { surfaceId: 'surf-theirs', openerKey: theirs },
+      { surfaceId: 'surf-mine-old', opener: 'mine' as const },
+      { surfaceId: 'surf-mine', opener: 'mine' as const },
+      { surfaceId: 'surf-theirs', opener: 'other' as const },
     ];
-    expect(pickDefaultSurface(targets, WS, mine, null)).toEqual({
+    expect(pickDefaultSurface(targets, WS, null)).toEqual({
       kind: 'surface',
       surfaceId: 'surf-mine',
     });
@@ -107,17 +105,20 @@ describe('pickDefaultSurface fallback order', () => {
     const targets: RoutableTarget[] = [
       { surfaceId: 'surf-restored-old' },
       { surfaceId: 'surf-restored' },
-      { surfaceId: 'surf-theirs', openerKey: theirs },
+      { surfaceId: 'surf-theirs', opener: 'other' as const },
     ];
-    expect(pickDefaultSurface(targets, WS, mine, null)).toEqual({
+    expect(pickDefaultSurface(targets, WS, null)).toEqual({
       kind: 'surface',
       surfaceId: 'surf-restored',
+      // Claimed on the way past, so the next connection with nothing of its
+      // own does not land on the same tab.
+      adopt: true,
     });
   });
 
   it('d — never another connection\'s surface, even as the only one', () => {
-    const targets: RoutableTarget[] = [{ surfaceId: 'surf-theirs', openerKey: theirs }];
-    expect(pickDefaultSurface(targets, WS, mine, null)).toEqual({ kind: 'none' });
+    const targets: RoutableTarget[] = [{ surfaceId: 'surf-theirs', opener: 'other' as const }];
+    expect(pickDefaultSurface(targets, WS, null)).toEqual({ kind: 'none' });
   });
 
   it('reports an unlisted pin instead of silently picking somebody else\'s tab', () => {
@@ -126,15 +127,15 @@ describe('pickDefaultSurface fallback order', () => {
     // the moment the agent opened its own.
     const targets: RoutableTarget[] = [{ surfaceId: 'surf-restored' }];
     expect(
-      pickDefaultSurface(targets, WS, mine, { workspaceId: WS, surfaceId: 'surf-fresh' }),
+      pickDefaultSurface(targets, WS, { workspaceId: WS, surfaceId: 'surf-fresh' }),
     ).toEqual({ kind: 'pin-unlisted', surfaceId: 'surf-fresh' });
   });
 
   it('ignores a pin from another workspace', () => {
     const targets: RoutableTarget[] = [{ surfaceId: 'surf-restored' }];
     expect(
-      pickDefaultSurface(targets, WS, mine, { workspaceId: 'ws-other', surfaceId: 'surf-elsewhere' }),
-    ).toEqual({ kind: 'surface', surfaceId: 'surf-restored' });
+      pickDefaultSurface(targets, WS, { workspaceId: 'ws-other', surfaceId: 'surf-elsewhere' }),
+    ).toEqual({ kind: 'surface', surfaceId: 'surf-restored', adopt: true });
   });
 });
 
@@ -183,9 +184,28 @@ describe('resolveDefaultSurface over the transport', () => {
     const a = createConnectionScope();
     const b = createConnectionScope();
     const openerA = runInConnectionScope(a, () => getOpenerKey());
-    // A opened the only surface in the workspace and pinned it.
+    // A opened the only surface in the workspace and pinned it. Main answers
+    // each caller with a VERDICT about that surface, never with A's key.
     runInConnectionScope(a, () => noteOpenedSurface(WS, 'surf-a'));
-    mainWith([{ surfaceId: 'surf-a', openerKey: openerA }]);
+    mockSendRpc.mockImplementation((method: string, params?: { openerKey?: string }) => {
+      if (method === 'browser.cdp.info') {
+        return Promise.resolve({
+          targetsScoped: true,
+          workspaceBackend: 'builtin',
+          targets: [
+            { surfaceId: 'surf-a', opener: params?.openerKey === openerA ? 'mine' : 'other' },
+          ],
+        });
+      }
+      if (method === 'browser.tabs') {
+        return Promise.resolve({
+          ok: true,
+          action: 'list',
+          tabs: [{ surfaceId: 'surf-a', opener: 'other' }],
+        });
+      }
+      return Promise.resolve({});
+    });
 
     await expect(runInConnectionScope(a, () => resolveDefaultSurface(WS))).resolves.toEqual({
       kind: 'surface',
@@ -195,6 +215,7 @@ describe('resolveDefaultSurface over the transport', () => {
     // rather than taking over the tab A is working in.
     await expect(runInConnectionScope(b, () => resolveDefaultSurface(WS))).resolves.toEqual({
       kind: 'none',
+      foreignSurfaces: true,
     });
   });
 
@@ -226,7 +247,90 @@ describe('resolveDefaultSurface over the transport', () => {
       kind: 'surface',
       surfaceId: 'surf-restored',
     });
-    expect(getPinnedSurface()).toBeNull();
+    // The dead pin is replaced by the adopted surface, not merely dropped.
+    expect(getPinnedSurface()).toEqual({ workspaceId: WS, surfaceId: 'surf-restored' });
+  });
+
+  it('keeps the pin when the control plane cannot be asked', async () => {
+    // A lane that refuses browser.tabs (the commander lane does) answers with
+    // an error, not with "gone". Treating that as gone would retire the pin on
+    // the first miss and send the connection adopting other agents' tabs.
+    noteOpenedSurface(WS, 'surf-fresh');
+    mockSendRpc.mockImplementation((method: string) => {
+      if (method === 'browser.cdp.info') {
+        return Promise.resolve({ targetsScoped: true, targets: [{ surfaceId: 'surf-restored' }] });
+      }
+      return Promise.reject(new Error('COMMANDER_TEARDOWN_DENY: browser.tabs'));
+    });
+
+    await expect(resolveDefaultSurface(WS)).resolves.toEqual({
+      kind: 'surface',
+      surfaceId: 'surf-fresh',
+    });
+    expect(getPinnedSurface()).toEqual({ workspaceId: WS, surfaceId: 'surf-fresh' });
+  });
+
+  it('records the adoption of an unclaimed surface, and pins it', async () => {
+    mainWith([{ surfaceId: 'surf-restored' }]);
+
+    await resolveDefaultSurface(WS);
+
+    expect(getPinnedSurface()).toEqual({ workspaceId: WS, surfaceId: 'surf-restored' });
+    expect(mockSendRpc).toHaveBeenCalledWith('browser.surface.adopt', {
+      workspaceId: WS,
+      surfaceId: 'surf-restored',
+      openerKey: expect.any(String),
+    });
+  });
+
+  it('adopts a pane whose guest has not registered a target yet', async () => {
+    // A browser pane a person opened seconds ago is invisible to cdp.info.
+    // Splitting a second pane beside it is a worse answer than taking it.
+    mockSendRpc.mockImplementation((method: string, params?: { action?: string }) => {
+      if (method === 'browser.cdp.info') {
+        return Promise.resolve({ targetsScoped: true, workspaceBackend: 'builtin', targets: [] });
+      }
+      if (method === 'browser.tabs' && params?.action === 'list') {
+        return Promise.resolve({ ok: true, action: 'list', tabs: [{ surfaceId: 'surf-human' }] });
+      }
+      return Promise.resolve({ ok: true });
+    });
+
+    await expect(resolveDefaultSurface(WS)).resolves.toEqual({
+      kind: 'surface',
+      surfaceId: 'surf-human',
+    });
+    expect(mockSendRpc).toHaveBeenCalledWith('browser.surface.adopt', expect.objectContaining({
+      surfaceId: 'surf-human',
+    }));
+  });
+
+  it('never sweeps the pane list on a live-Chrome attach', async () => {
+    // There the list is every tab the PERSON has open, and adopting one as an
+    // agent's default is what that backend exists to avoid.
+    mockSendRpc.mockImplementation((method: string) =>
+      method === 'browser.cdp.info'
+        ? Promise.resolve({ targetsScoped: true, workspaceBackend: 'chrome', targets: [] })
+        : Promise.resolve({ ok: true, action: 'list', tabs: [{ surfaceId: 'user-tab' }] }),
+    );
+
+    await expect(resolveDefaultSurface(WS)).resolves.toEqual({ kind: 'none', foreignSurfaces: false });
+    expect(mockSendRpc.mock.calls.filter((c) => c[0] === 'browser.tabs')).toHaveLength(0);
+  });
+
+  it('treats an answered open as done, even when it names no surface', async () => {
+    // The external backend hands the url to the OS browser and holds no
+    // handle: `{ok:true}` with no tab. Retrying through browser.open there
+    // would open the page a SECOND time.
+    mockSendRpc.mockImplementation((method: string, params?: { action?: string }) => {
+      if (method === 'browser.tabs' && params?.action === 'new') {
+        return Promise.resolve({ ok: true, action: 'new', backend: 'external', opened: true, url: 'https://a.test/' });
+      }
+      return Promise.resolve({});
+    });
+
+    await expect(openSurfaceForConnection(WS)).resolves.toBeNull();
+    expect(mockSendRpc.mock.calls.filter((c) => c[0] === 'browser.open')).toHaveLength(0);
   });
 
   it('refuses when cdp.info is unavailable rather than guessing a surface', async () => {

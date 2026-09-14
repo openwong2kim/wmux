@@ -6,6 +6,7 @@ import {
   evalFunctionOrRpc,
 } from '../page-eval';
 import { WorkspaceScopeUnresolvedError } from '../browserScope';
+import { __resetSurfaceRoutingForTesting } from '../surfaceRouting';
 
 // Mock the RPC transport. Path is relative to THIS test file:
 // __tests__/ -> playwright/ -> mcp/, so ../../wmux-client === src/mcp/wmux-client.
@@ -22,6 +23,9 @@ describe('page-eval', () => {
   const surfaceScope = { workspaceId: 'ws-test', surfaceId: 'surface-1' };
 
   beforeEach(() => {
+    // Per-connection pin: no broker scope here, so it lives in the module
+    // fallback and would leak between cases.
+    __resetSurfaceRoutingForTesting();
     mockSendRpc.mockReset();
   });
 
@@ -143,7 +147,12 @@ describe('page-eval', () => {
         { fieldNames: ['"); globalThis.hacked = 1; ("'] },
         workspaceScope,
       );
-      const expr = mockSendRpc.mock.calls[0][1].expression as string;
+      // By method, not by position: a call that names no surface resolves one
+      // first, so the evaluate is no longer the first RPC of the operation.
+      const evaluateCall = mockSendRpc.mock.calls.find(
+        (call: unknown[]) => call[0] === 'browser.evaluate',
+      ) as [string, { expression: string }];
+      const expr = evaluateCall[1].expression;
       // The dangerous payload is a JSON string literal, never bare code.
       expect(expr).toContain('globalThis.hacked = 1');
       expect(expr).toContain('\\"); globalThis.hacked = 1; (\\"');
