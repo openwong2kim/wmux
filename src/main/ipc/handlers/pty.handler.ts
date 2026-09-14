@@ -384,7 +384,9 @@ export function registerPTYHandlers(
       // A renderer may name a dead session, but cannot supply its distro/user.
       // Ordinary new panes always use the settings picker.
       const recoveryId = options?.recoveryCwds?.sourceSessionId;
-      const recoverySessions = recoveryId
+      // WSL-only: non-WSL replacements never read distro/user from the dead
+      // session, so they must not pay for (or fail on) this lookup.
+      const recoverySessions = recoveryId && isWslShell(shell)
         ? await daemonClient.rpc('daemon.listSessions', {}) as Array<{ id: string; state: string; cmd: string; args?: string[]; wslTarget?: WslTarget }>
         : [];
       const trustedRecovery = recoverySessions.find(s => s.id === recoveryId && s.state === 'dead' && isWslShell(s.cmd));
