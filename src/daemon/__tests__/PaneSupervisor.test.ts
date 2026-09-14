@@ -211,6 +211,61 @@ describe('PaneSupervisor', () => {
       // counter path: died(1) → throw(2) → throw(3) → throw(4) → throw(5=burst) → trip.
       expect(deps.restartSession).toHaveBeenCalledTimes(4);
     });
+
+    const restartedEvents = (deps: ReturnType<typeof makeHarness>['deps']) =>
+      deps.broadcast.mock.calls.filter((c) => (c[0] as { type: string }).type === 'session.restarted');
+
+    it('routes an async restartSession rejection through the same failure path', async () => {
+      const { sup, deps, advance } = makeHarness();
+      deps.restartSession.mockImplementationOnce(() => Promise.reject(new Error('WSL probe timed out')));
+      sup.arm('s', POLICY);
+      sup.onSessionDied({ id: 's', exitCode: 1 }); // counter 1
+      advance(1_000); // fire → promise rejects
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(sup.getRuntime('s')?.consecutiveFailures).toBe(2);
+      expect(sup.getRuntime('s')?.nextRestartAt).toBeDefined(); // backoff rescheduled
+      expect(restartedEvents(deps)).toHaveLength(0);
+      expect(deps.log).toHaveBeenCalledWith('error', expect.stringContaining('WSL probe timed out'));
+    });
+
+    it('broadcasts session.restarted only after an async restartSession resolves', async () => {
+      const { sup, deps, advance } = makeHarness();
+      let resolve!: () => void;
+      deps.restartSession.mockImplementationOnce(() => new Promise<void>((r) => { resolve = r; }));
+      sup.arm('s', POLICY);
+      sup.onSessionDied({ id: 's', exitCode: 1 });
+      advance(1_000);
+      expect(deps.restartSession).toHaveBeenCalledOnce();
+      expect(restartedEvents(deps)).toHaveLength(0);
+      resolve();
+      await Promise.resolve();
+      expect(restartedEvents(deps)).toHaveLength(1);
+      expect(sup.getRuntime('s')?.restartCount).toBe(1);
+    });
+
+    it('stays silent when the pane is closed while an async restart is in flight', async () => {
+      const { sup, deps, advance } = makeHarness();
+      let resolve!: () => void;
+      let reject!: (err: Error) => void;
+      deps.restartSession
+        .mockImplementationOnce(() => new Promise<void>((r) => { resolve = r; }))
+        .mockImplementationOnce(() => new Promise<void>((_r, j) => { reject = j; }));
+      sup.arm('a', POLICY);
+      sup.onSessionDied({ id: 'a', exitCode: 1 });
+      sup.arm('b', POLICY);
+      sup.onSessionDied({ id: 'b', exitCode: 1 });
+      advance(1_000);
+      sup.disarm('a');
+      sup.disarm('b');
+      resolve();
+      reject(new Error('spawn failed'));
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(restartedEvents(deps)).toHaveLength(0);
+      expect(sup.getRuntime('a')).toBeUndefined();
+      expect(sup.getRuntime('b')).toBeUndefined();
+    });
   });
 
   describe('races and lifecycle', () => {

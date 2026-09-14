@@ -34,10 +34,11 @@ export interface PaneSupervisorDeps {
   /**
    * Re-create the SAME session id with a fresh PTY (tombstone removal +
    * createSession replay of meta incl. exec + processMonitor re-watch +
-   * persist). Owned by daemon/index.ts. May throw on spawn failure — the
-   * supervisor treats a throw as a failed (short) start and backs off.
+   * persist). Owned by daemon/index.ts. May throw (or return a promise that
+   * rejects) on spawn failure — the supervisor treats either as a failed
+   * (short) start and backs off.
    */
-  restartSession(id: string): void;
+  restartSession(id: string): void | Promise<void>;
   /** True when the session currently holds no live PTY (dead tombstone or gone). */
   isSessionDead(id: string): boolean;
   /** pipeServer.broadcast — supervision events for main/renderer surfaces. */
@@ -232,18 +233,36 @@ export class PaneSupervisor {
   private fireRestart(id: string, entry: SupervisedEntry): void {
     entry.restartCount++;
     entry.startedAt = this.now();
-    try {
-      this.deps.restartSession(id);
-    } catch (err) {
+    const fail = (err: unknown): void => {
       // Spawn failure (e.g. transient ConPTY error 87) — a failed start in
       // the start-limit sense. Re-enter the death path with a synthetic
       // failure so the same backoff/guard machinery applies.
       const msg = err instanceof Error ? err.message : String(err);
       this.deps.log('error', `[supervisor] restart of ${id} failed: ${msg}`);
+      // An async restart can settle after the pane was closed or re-armed;
+      // its failure must not be charged to a different (or no) entry.
+      if (this.entries.get(id) !== entry) return;
       // startedAt was just stamped → uptime 0 → counts as a short run.
       this.onSessionDied({ id, exitCode: null });
+    };
+    let pending: void | Promise<void>;
+    try {
+      pending = this.deps.restartSession(id);
+    } catch (err) {
+      fail(err);
       return;
     }
+    if (pending instanceof Promise) {
+      pending.then(() => this.restartSucceeded(id, entry), fail);
+      return;
+    }
+    this.restartSucceeded(id, entry);
+  }
+
+  private restartSucceeded(id: string, entry: SupervisedEntry): void {
+    // Closed (disarm) or re-armed while an async restart was in flight: the
+    // id is no longer supervised by this entry, so announce nothing.
+    if (this.entries.get(id) !== entry) return;
     this.deps.broadcast({
       type: 'session.restarted',
       sessionId: id,
