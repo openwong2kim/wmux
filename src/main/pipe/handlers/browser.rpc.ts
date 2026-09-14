@@ -1734,11 +1734,17 @@ export function registerBrowserRpc(
         if (reusable.kind === 'mine') {
           surfaceOpeners.note(reusable.surfaceId, openerKey);
           if (url) {
-            await sendToRenderer(getWindow, 'browser.navigate', {
+            const navigated = await sendToRenderer(getWindow, 'browser.navigate', {
               url,
               workspaceId,
               surfaceId: reusable.surfaceId,
             });
+            // Reported, not swallowed: the pane may have been closed or
+            // unmounted between the list and this call, and answering `ok`
+            // with a url the surface never loaded is the kind of quiet lie
+            // that costs an agent a whole flow.
+            const failure = (navigated as { error?: unknown } | null | undefined)?.error;
+            if (typeof failure === 'string') return { error: failure };
           }
           return { ok: true, surfaceId: reusable.surfaceId, url: url ?? reusable.url, reused: true };
         }

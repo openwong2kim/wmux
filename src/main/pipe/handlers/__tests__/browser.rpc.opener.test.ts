@@ -400,6 +400,37 @@ describe('reuse guard details', () => {
     expect(rendererCalls()).toEqual(['browser.tabs:list', 'browser.navigate']);
   });
 
+  it('reports a failed navigation of my own pane instead of claiming success', async () => {
+    // The pane can be closed between the list and the navigate; answering ok
+    // with a url it never loaded would cost the agent a whole flow.
+    const router = register();
+    sendToRendererMock.mockImplementation(async (_w: unknown, method: string, params: Record<string, unknown>) => {
+      if (method === 'browser.tabs' && params.action === 'list') {
+        return {
+          ok: true,
+          action: 'list',
+          tabs: [
+            { surfaceId: 'surf-theirs', paneId: 'p1', url: '', title: '', selected: false },
+            { surfaceId: 'surf-mine', paneId: 'p2', url: '', title: '', selected: false },
+          ],
+        };
+      }
+      if (method === 'browser.navigate') return { error: 'browser.navigate: no browser surface found' };
+      return { ok: true };
+    });
+    surfaceOpeners.note('surf-theirs', OPENER_A);
+    surfaceOpeners.note('surf-mine', OPENER_B);
+
+    const result = (await dispatch(router, 'browser.open', {
+      workspaceId: 'ws-1',
+      url: 'https://b.test/',
+      openerKey: OPENER_B,
+    })) as { error?: string; surfaceId?: string };
+
+    expect(result.surfaceId).toBeUndefined();
+    expect(result.error).toContain('no browser surface found');
+  });
+
   it('fails closed when the tab list cannot be read', async () => {
     // Falling through to a plain open here would navigate whatever pane
     // happens to be first — the exact hijack this guard exists to prevent.

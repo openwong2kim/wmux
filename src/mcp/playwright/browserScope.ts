@@ -173,9 +173,10 @@ const WORKSPACE_LEVEL_BROWSER_METHODS: ReadonlySet<string> = new Set<string>([
   'browser.session.stop',
   'browser.session.status',
   'browser.session.list',
-  'browser.session.applyProfile',
-  'browser.backend.get',
-  'browser.backend.set',
+  // Ownership bookkeeping, always sent with the surface it claims — and sent
+  // outside this helper. Listed so it can never be the reason a surface is
+  // opened.
+  'browser.surface.adopt',
 ]);
 
 /**
