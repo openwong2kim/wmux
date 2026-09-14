@@ -144,10 +144,21 @@ export class PTYManager {
     const shell = options?.shell || this.getDefaultShell();
     if (!isWslShell(shell)) return this.create(options);
     const generation = this.createGeneration;
-    const wsl = await resolveWslCwd(shell, options?.cwd, options?.wslTarget, undefined, options?.shellArgs);
-    if (generation !== this.createGeneration) throw new Error('PTY creation cancelled');
-    return this.spawnPrepared({ ...options, shell }, wsl);
+    // Reserve the id before the (slow) WSL probe so dispose(id) inside the
+    // pending window cancels the spawn instead of leaving an orphan PTY.
+    const id = `pty-${++this.nextId}`;
+    this.pendingCreates.add(id);
+    try {
+      const wsl = await resolveWslCwd(shell, options?.cwd, options?.wslTarget, undefined, options?.shellArgs);
+      if (generation !== this.createGeneration || !this.pendingCreates.has(id)) throw new Error('PTY creation cancelled');
+      return this.spawnPrepared({ ...options, shell }, wsl, id);
+    } finally {
+      this.pendingCreates.delete(id);
+    }
   }
+
+  /** Ids reserved by createAsync whose WSL probe has not finished yet. */
+  private pendingCreates = new Set<string>();
 
   private spawnPrepared(options?: {
     shell?: string;
@@ -171,11 +182,11 @@ export class PTYManager {
      * 'user-shell'만 env 투과, 나머지·미지정은 fail-closed로 gated.
      */
     spawnKind?: SpawnKind;
-  }, wsl?: ResolvedWslCwd): PTYInstance {
+  }, wsl?: ResolvedWslCwd, reservedId?: string): PTYInstance {
     if (this.instances.size >= MAX_PTY_INSTANCES) {
       throw new Error('Maximum PTY instances reached');
     }
-    const id = `pty-${++this.nextId}`;
+    const id = reservedId ?? `pty-${++this.nextId}`;
     const shell = options?.shell || this.getDefaultShell();
     // Same reason as the daemon spawn path: a caller-supplied cwd may carry a
     // leading `~` that no shell expanded.
@@ -331,6 +342,7 @@ export class PTYManager {
   }
 
   dispose(id: string): void {
+    this.pendingCreates.delete(id);
     const instance = this.instances.get(id);
     if (instance) {
       this.removePidMap(instance.process.pid);
