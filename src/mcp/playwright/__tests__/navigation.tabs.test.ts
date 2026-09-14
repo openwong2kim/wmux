@@ -194,6 +194,7 @@ describe('browser navigation MCP workspace contract', () => {
     expect(mockSendRpc).toHaveBeenCalledWith('browser.tabs', {
       action: 'list',
       workspaceId: 'ws-caller',
+      openerKey: expect.any(String),
     });
     expect(JSON.parse(result.content[0].text)).toEqual({
       action: 'list',
@@ -204,6 +205,9 @@ describe('browser navigation MCP workspace contract', () => {
           url: 'https://a.example/',
           title: 'Browser',
           selected: true,
+          // Nobody claims this surface, so it stays available as the fallback
+          // default target for a caller that has opened nothing.
+          mine: 'unknown',
         },
       ],
     });
@@ -244,6 +248,7 @@ describe('browser navigation MCP workspace contract', () => {
       action: 'select',
       workspaceId: 'ws-caller',
       surfaceId: 'surface-a',
+      openerKey: expect.any(String),
     });
   });
 

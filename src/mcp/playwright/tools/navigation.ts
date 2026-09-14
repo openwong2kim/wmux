@@ -16,6 +16,7 @@ import { redactPasswordParams } from '../redact';
 import { recordAction } from '../../browser-replay/actionRing';
 import { refererFor } from '../../../shared/referer';
 import { NavigationNotCommittedError, navigateFromPage } from '../link-navigation';
+import { getOpenerKey, noteOpenedSurface } from '../surfaceRouting';
 import {
   browserTabsError,
   isBrowserTabsResult,
@@ -29,7 +30,7 @@ import {
 const optionalSurfaceId = z
   .string()
   .optional()
-  .describe('Omit for the active surface.');
+  .describe('Omit for the surface you opened last.');
 
 // Module-scope parameter shapes: hoisted out of the per-registration path so
 // every createWmuxServer() instance shares one set of zod schema objects
@@ -164,7 +165,25 @@ function tabsToolError(result: BrowserTabsErrorResult) {
   };
 }
 
-function publicTab(tab: BrowserTabDescriptor): BrowserTabDescriptor {
+/**
+ * Who opened this tab, from the caller's point of view.
+ *
+ * `true` — this connection opened it, so it is where an omitted surfaceId
+ * lands. `false` — another connection opened it: still reachable by passing
+ * its surfaceId (ownership is not a permission boundary), just never the
+ * silent default. `"unknown"` — nobody claims it (restored after a restart,
+ * opened by a person, or opened before openers were recorded), which makes it
+ * the fallback default when this connection has opened nothing.
+ *
+ * The opener key itself is dropped here: it answers exactly one question, and
+ * that answer is this field.
+ */
+function mineFlag(tab: BrowserTabDescriptor, openerKey: string): boolean | 'unknown' {
+  if (tab.openerKey === undefined) return 'unknown';
+  return tab.openerKey === openerKey;
+}
+
+function publicTab(tab: BrowserTabDescriptor, openerKey: string) {
   return {
     surfaceId: tab.surfaceId,
     paneId: tab.paneId,
@@ -174,14 +193,15 @@ function publicTab(tab: BrowserTabDescriptor): BrowserTabDescriptor {
     url: redactPasswordParams(tab.url),
     title: tab.title,
     selected: tab.selected,
+    mine: mineFlag(tab, openerKey),
   };
 }
 
-function tabsToolSuccess(result: BrowserTabsSuccessResult) {
+function tabsToolSuccess(result: BrowserTabsSuccessResult, openerKey: string) {
   let payload: Record<string, unknown>;
   switch (result.action) {
     case 'list':
-      payload = { action: result.action, tabs: result.tabs.map(publicTab) };
+      payload = { action: result.action, tabs: result.tabs.map((tab) => publicTab(tab, openerKey)) };
       break;
     case 'new':
       // #517 external backend: the tab opened in the OS default browser and
@@ -189,13 +209,13 @@ function tabsToolSuccess(result: BrowserTabsSuccessResult) {
       // inventing a descriptor.
       payload = 'backend' in result
         ? { action: result.action, backend: result.backend, opened: result.opened, url: redactPasswordParams(result.url) }
-        : { action: result.action, tab: publicTab(result.tab) };
+        : { action: result.action, tab: publicTab(result.tab, openerKey) };
       break;
     case 'select':
-      payload = { action: result.action, tab: publicTab(result.tab) };
+      payload = { action: result.action, tab: publicTab(result.tab, openerKey) };
       break;
     case 'close':
-      payload = { action: result.action, closed: publicTab(result.closed) };
+      payload = { action: result.action, closed: publicTab(result.closed, openerKey) };
       break;
   }
   return {
@@ -411,7 +431,7 @@ export function registerNavigationTools(server: McpServer, deps: BrowserToolDeps
   // -----------------------------------------------------------------------
   server.tool(
     'browser_tabs',
-    'Manage browser surfaces in the calling workspace. Address one only by the opaque surfaceId from list or new, never by list position. select moves UI focus only and does NOT retarget the other browser tools, so pass surfaceId explicitly on follow-up calls. selected likewise reports UI focus (always false on the chrome backend), not tool targeting. Omitting surfaceId targets your MOST RECENTLY opened surface — a just-created new tab, or browser_open, becomes that default — so to act on any earlier tab pass its surfaceId explicitly.',
+    'Manage browser surfaces in the calling workspace. Address one only by the opaque surfaceId from list or new, never by list position. select moves UI focus only and does NOT retarget the other browser tools, so pass surfaceId explicitly on follow-up calls. selected likewise reports UI focus (always false on the chrome backend), not tool targeting. list rows carry mine: true (you opened it), false (another agent did), or "unknown" (nobody claims it). Omitting surfaceId targets the surface YOU most recently opened; if you opened none, one no other agent opened, or a new one — so to act on any earlier tab pass its surfaceId explicitly.',
     BROWSER_TABS_SHAPE,
     async ({ action, surfaceId, url }) => {
       const resolvedAction: BrowserTabsAction = action ?? 'list';
@@ -472,16 +492,26 @@ export function registerNavigationTools(server: McpServer, deps: BrowserToolDeps
           );
         }
 
+        const openerKey = getOpenerKey();
         const result = await sendRpc('browser.tabs', {
           action: resolvedAction,
           workspaceId,
           ...(surfaceId && { surfaceId }),
           ...(url !== undefined && { url }),
+          // Only `new` opens something, but the key rides along on every action
+          // so main can answer "is this one mine?" per row on `list`.
+          openerKey,
         });
         if (!isBrowserTabsResult(result)) {
           throw new Error('Invalid browser.tabs response from wmux main.');
         }
-        return result.ok ? tabsToolSuccess(result) : tabsToolError(result);
+        // A tab this call created becomes this connection's default target,
+        // the same promise browser_open makes. Only creation moves it: select
+        // is UI focus, and close leaves the pin to be re-resolved.
+        if (result.ok && result.action === 'new' && 'tab' in result) {
+          noteOpenedSurface(workspaceId, result.tab.surfaceId);
+        }
+        return result.ok ? tabsToolSuccess(result, openerKey) : tabsToolError(result);
       } catch (error) {
         const message = describeToolError(error);
         if (/Unknown method:\s*browser\.tabs/i.test(message)) {

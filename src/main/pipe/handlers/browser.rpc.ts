@@ -25,6 +25,7 @@ import {
 } from '../../../shared/browserReplay/promotedSkill';
 import { normalizeUrlKey, stepsFingerprint } from '../../../shared/browserReplay/actionTrace';
 import { HumanBehavior } from '../../browser-session/HumanBehavior';
+import { surfaceOpeners } from '../../browser-session/SurfaceOpeners';
 import { approachPath, defaultStartPoint, type Point } from '../../../shared/pointerPath';
 import {
   dispatchTouchDrag,
@@ -752,6 +753,95 @@ export function registerBrowserRpc(
     return chromeRegistry.forWorkspace(workspaceId);
   };
 
+  /** The recorded opener of a surface, as a spreadable fragment. */
+  const withOpener = (surfaceId: string): { openerKey?: string } => {
+    const openerKey = surfaceOpeners.get(surfaceId);
+    return openerKey ? { openerKey } : {};
+  };
+
+  /**
+   * The calling connection's opener key, when it sent one.
+   *
+   * Bounded and typed here rather than trusted: it is an opaque id from the
+   * MCP process that only ever gets compared for equality, so anything that is
+   * not a plausible id is simply "no key" — which degrades to the pre-opener
+   * behavior instead of refusing a working call. It says which CONNECTION is
+   * calling, never which workspace: routing stays `scopeFor`'s job.
+   */
+  const openerKeyOf = (params: Record<string, unknown>): string | undefined => {
+    const raw = params['openerKey'];
+    return typeof raw === 'string' && raw.length > 0 && raw.length <= 128 ? raw : undefined;
+  };
+
+  /**
+   * Stamp openers onto a builtin `browser.tabs` reply, and record the opener of
+   * a tab this call created.
+   *
+   * The renderer answers from the pane tree and knows nothing about MCP
+   * connections, so ownership is attached here rather than threaded through
+   * IPC. Anything that is not a recognized success shape passes through
+   * untouched — an error result, or a renderer too old to answer in this shape,
+   * must not be rewritten on its way to the caller.
+   */
+  const applyBuiltinOpeners = (reply: unknown, openerKey: string | undefined): unknown => {
+    const result = reply as
+      | { ok?: unknown; action?: unknown; tabs?: unknown; tab?: unknown; closed?: unknown }
+      | null
+      | undefined;
+    if (!result || result.ok !== true) return reply;
+    const stamp = (tab: unknown) => {
+      const descriptor = tab as { surfaceId?: unknown } | null | undefined;
+      if (!descriptor || typeof descriptor.surfaceId !== 'string') return tab;
+      return { ...(descriptor as object), ...withOpener(descriptor.surfaceId) };
+    };
+    if (result.action === 'list' && Array.isArray(result.tabs)) {
+      return { ...result, tabs: result.tabs.map(stamp) };
+    }
+    if (result.action === 'new') {
+      const created = result.tab as { surfaceId?: unknown } | undefined;
+      if (openerKey && typeof created?.surfaceId === 'string') {
+        surfaceOpeners.note(created.surfaceId, openerKey);
+      }
+      return { ...result, tab: stamp(result.tab) };
+    }
+    if (result.action === 'select') return { ...result, tab: stamp(result.tab) };
+    if (result.action === 'close') {
+      const closed = stamp(result.closed);
+      const gone = result.closed as { surfaceId?: unknown } | undefined;
+      if (typeof gone?.surfaceId === 'string') surfaceOpeners.forget(gone.surfaceId);
+      return { ...result, closed };
+    }
+    return reply;
+  };
+
+  /**
+   * The builtin surface a `browser.open` would REUSE in this workspace, or
+   * undefined when it would create one.
+   *
+   * The renderer reuses the first browser surface in pane-tree order and lists
+   * tabs in that same order (both walk `getLeafPanes`), so the first listed tab
+   * IS the reuse candidate. Asking rather than guessing keeps the two in step:
+   * the pane tree lives in the renderer and only it can answer.
+   *
+   * A failure answers "none". The caller then takes the ordinary open path,
+   * which is what would have happened without openers at all.
+   */
+  const firstBuiltinSurface = async (workspaceId: string): Promise<string | undefined> => {
+    try {
+      const listed = (await sendToRenderer(getWindow, 'browser.tabs', {
+        action: 'list',
+        workspaceId,
+      })) as { ok?: unknown; action?: unknown; tabs?: Array<{ surfaceId?: unknown }> } | undefined;
+      if (listed?.ok !== true || listed.action !== 'list' || !Array.isArray(listed.tabs)) {
+        return undefined;
+      }
+      const first = listed.tabs[0];
+      return typeof first?.surfaceId === 'string' ? first.surfaceId : undefined;
+    } catch {
+      return undefined;
+    }
+  };
+
   /** BrowserTabDescriptor for a chrome tab — paneId is synthetic (no pane).
    *  surfaceId is the launcher's STABLE id, never the CDP targetId (which
    *  Chrome may swap under the tab at any time). */
@@ -761,6 +851,7 @@ export function registerBrowserRpc(
     url: t.url,
     title: t.title ?? '',
     selected: false,
+    ...withOpener(t.surfaceId),
   });
 
   const delegateExternal = async (url: string, method: string): Promise<ExternalOpenResult> => {
@@ -1385,6 +1476,10 @@ export function registerBrowserRpc(
         }
         try {
           const opened = await launcher.openTab(url ?? 'about:blank', workspaceId);
+          // Before the descriptor is built, so the reply already reports this
+          // caller as the opener of the tab it just asked for.
+          const openerKey = openerKeyOf(params);
+          if (openerKey) surfaceOpeners.note(opened.surfaceId, openerKey);
           return { ok: true, action: 'new', tab: chromeTabDescriptor(opened) };
         } catch (error) {
           return browserTabsError(
@@ -1420,7 +1515,11 @@ export function registerBrowserRpc(
       if (!closed) {
         return browserTabsError('BROWSER_TABS_UNAVAILABLE', 'browser_tabs close: Chrome did not close the tab.');
       }
-      return { ok: true, action: 'close', closed: chromeTabDescriptor(match) };
+      // Descriptor first, then forget: the reply still reports who owned the
+      // tab, and no later surface can inherit the ownership of a dead id.
+      const closedTab = chromeTabDescriptor(match);
+      surfaceOpeners.forget(match.surfaceId);
+      return { ok: true, action: 'close', closed: closedTab };
     }
 
     // #517 backend fork: 'new' is an open-shaped action, so external mode
@@ -1469,13 +1568,17 @@ export function registerBrowserRpc(
       }
     }
 
-    return sendToRenderer(getWindow, 'browser.tabs', {
+    const rendered = await sendToRenderer(getWindow, 'browser.tabs', {
       action,
       workspaceId,
       ...(surfaceId && { surfaceId }),
       ...(url !== undefined && { url }),
       ...(action === 'new' && { partition: getActivePartition() }),
     });
+    // The renderer owns the pane tree; main owns who opened what. Stamping the
+    // opener on the way back is what lets `browser_tabs list` mark a row as the
+    // caller's own — and records the tab a `new` just created as theirs.
+    return applyBuiltinOpeners(rendered, openerKeyOf(params));
   });
 
   /**
@@ -1504,12 +1607,15 @@ export function registerBrowserRpc(
     // workspaceId out of the body" invariant open.
     const workspaceId =
       backend() === 'external' ? undefined : scopeFor('browser.open', params, ctx);
+    const openerKey = openerKeyOf(params);
     if (backend() === 'chrome') {
       // Dedicated-Chrome open: a tracked tab with a real handle — unlike
-      // 'external', about:blank is a valid open here (auto-open path).
+      // 'external', about:blank is a valid open here (auto-open path). Always a
+      // NEW tab, so there is no reuse question to answer on this backend.
       const launcher = requireChrome('browser.open', workspaceId);
       if (url) await validateUrl(url, 'browser.open');
       const opened = await launcher.openTab(url ?? 'about:blank', workspaceId);
+      if (openerKey) surfaceOpeners.note(opened.surfaceId, openerKey);
       // The launcher's stable surfaceId keeps the engine's auto-open→pin
       // contract AND survives Chrome swapping the target behind the tab.
       return { ok: true, backend: 'chrome', surfaceId: opened.surfaceId, url: opened.url };
@@ -1526,7 +1632,44 @@ export function registerBrowserRpc(
       return delegateExternal(url, 'browser.open');
     }
     if (url) await validateUrl(url, 'browser.open');
-    return sendToRenderer(getWindow, 'browser.open', {
+    // Builtin reuse, re-decided now that main knows who opened what.
+    //
+    // The renderer reuses the workspace's FIRST browser surface in pane-tree
+    // order whenever one exists. That is right for one agent and wrong for two:
+    // agent B's browser_open navigated agent A's pane and handed B A's
+    // surfaceId, so every later unsaid call of B's landed there too. So a
+    // surface another connection opened is left alone and B gets its own pane;
+    // a surface nobody claims is still reused — and ADOPTED, the same rule the
+    // unsaid-target fallback uses — and so is one this connection opened. A
+    // caller with no opener key (the CLI, a person's pane button) keeps the
+    // old behavior exactly.
+    if (openerKey && workspaceId) {
+      const reusable = await firstBuiltinSurface(workspaceId);
+      const owner = reusable ? surfaceOpeners.get(reusable) : undefined;
+      if (reusable && owner && owner !== openerKey) {
+        const created = await sendToRenderer(getWindow, 'browser.tabs', {
+          action: 'new',
+          workspaceId,
+          ...(url !== undefined && { url }),
+          partition: getActivePartition(),
+        });
+        const tab = (created as { ok?: unknown; tab?: { surfaceId?: unknown; url?: unknown } })?.ok === true
+          ? (created as { tab?: { surfaceId?: unknown; url?: unknown } }).tab
+          : undefined;
+        if (typeof tab?.surfaceId !== 'string') {
+          // Falling through to the reuse path here would open the very surface
+          // this branch exists to protect, so the failure is reported instead.
+          return {
+            error:
+              'browser.open: could not create a browser surface for this caller ' +
+              '(the workspace already holds another agent\'s browser and a new pane could not be opened).',
+          };
+        }
+        surfaceOpeners.note(tab.surfaceId, openerKey);
+        return { ok: true, surfaceId: tab.surfaceId, url: typeof tab.url === 'string' ? tab.url : url };
+      }
+    }
+    const opened = await sendToRenderer(getWindow, 'browser.open', {
       partition: getActivePartition(),
       ...(url && { url }),
       // The workspace now comes from `scopeFor` above, not straight from the
@@ -1538,6 +1681,13 @@ export function registerBrowserRpc(
       // unchanged, so the rollback lever still restores the previous behaviour.
       ...(workspaceId && { workspaceId }),
     });
+    // Whatever came back — a fresh surface, or the ownerless one just adopted —
+    // now belongs to this caller, so its unsaid calls stay on it.
+    const openedSurfaceId = (opened as { surfaceId?: unknown } | null | undefined)?.surfaceId;
+    if (openerKey && typeof openedSurfaceId === 'string' && openedSurfaceId) {
+      surfaceOpeners.note(openedSurfaceId, openerKey);
+    }
+    return opened;
   });
 
   /**
@@ -1577,6 +1727,7 @@ export function registerBrowserRpc(
           // before stable surface ids; map it once. Remove next release.
           own.find((t) => t.targetId === surfaceId);
         if (match && (await launcher.closeSurface(match.surfaceId))) {
+          surfaceOpeners.forget(match.surfaceId);
           return { ok: true, backend: 'chrome', closed: true, surfaceId: match.surfaceId };
         }
         // Second chance: the surface may belong to another PROFILE's launcher
@@ -1589,6 +1740,7 @@ export function registerBrowserRpc(
         // gives it — so an unbound/stale handle stays retirable there too.
         if (owner && (scope === undefined || (owner.workspaceId !== undefined && owner.workspaceId === scope))) {
           if (await owner.client.closeSurface(surfaceId)) {
+            surfaceOpeners.forget(surfaceId);
             return { ok: true, backend: 'chrome', closed: true, surfaceId };
           }
         }
@@ -1606,9 +1758,10 @@ export function registerBrowserRpc(
         throw new Error('browser.close: this workspace has no open wmux Chrome tab to close.');
       }
       await launcher.closeSurface(newest.surfaceId);
+      surfaceOpeners.forget(newest.surfaceId);
       return { ok: true, backend: 'chrome', closed: true, surfaceId: newest.surfaceId };
     }
-    return sendToRenderer(getWindow, 'browser.close', {
+    const closeResult = await sendToRenderer(getWindow, 'browser.close', {
       ...(surfaceId && { surfaceId }),
       // Same caller-workspace routing contract as browser.open above, and now
       // the same source: the decided scope rather than the raw request field.
@@ -1616,6 +1769,14 @@ export function registerBrowserRpc(
       // which under enforce means the table allowed an unscoped caller.
       ...(workspaceId && { workspaceId }),
     });
+    // A closed surface has no opener to report. Only the by-id shape names one
+    // here; the "close this workspace's browser pane" shape resolves the
+    // surface renderer-side, and a leftover entry there is inert — surface ids
+    // are minted, never recycled, and the registry is capped.
+    if (surfaceId && (closeResult as { ok?: unknown } | undefined)?.ok === true) {
+      surfaceOpeners.forget(surfaceId);
+    }
+    return closeResult;
   });
 
   /**
@@ -2050,6 +2211,9 @@ export function registerBrowserRpc(
           surfaceId: t.surfaceId,
           targetId: t.targetId,
           ...(t.workspaceId && { workspaceId: t.workspaceId }),
+          // Which connection opened it, so a caller that names no surfaceId
+          // resolves to its OWN tab instead of the workspace's newest.
+          ...withOpener(t.surfaceId),
         })),
       };
     }
@@ -2124,6 +2288,9 @@ export function registerBrowserRpc(
         // Owning workspace (#554) — lets the read path scope page selection to
         // the calling session's workspace instead of the first surface globally.
         ...(t.workspaceId && { workspaceId: t.workspaceId }),
+        // Opening connection — lets it scope further, to the calling agent's
+        // own surface instead of the workspace's newest.
+        ...withOpener(t.surfaceId),
       })),
     };
   });

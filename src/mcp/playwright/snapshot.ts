@@ -11,6 +11,7 @@ import { peekRecentPendingRequests } from './pageCapture';
 import { evaluateIsolated, isolatedProbeTarget } from './isolated-eval';
 import { ancestorContext } from '../../shared/browserReplay/actionTrace';
 import { emptyDomFacts, getDomFacts } from './ownAttributes';
+import { getConnectionScope } from '../connectionScope';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -845,9 +846,28 @@ export function browserScopeKey(scope: {
  * Entries are replaced on every snapshot of that scope and deleted the moment
  * one mints no frame refs, so the map holds at most one entry per live browser
  * surface; the cap is a backstop for a session that churns surfaces.
+ *
+ * Stored per connection (broker) with a module fallback (single child), the
+ * snapshotCache idiom: the guard answers "did MY last snapshot mint this ref
+ * inside an iframe", and two agents can be on one surface — one having
+ * snapshotted frames, the other having tagged the main document — where a
+ * shared map refuses the second agent's perfectly good DOM ref.
  */
 const FRAME_REF_SCOPE_CAP = 64;
-const frameRefsByScope = new Map<string, Set<number>>();
+let moduleFrameRefs: Map<string, Set<number>> | undefined;
+
+function frameRefStore(): Map<string, Set<number>> {
+  const scope = getConnectionScope();
+  if (scope) {
+    const existing = scope.frameRefs as Map<string, Set<number>> | undefined;
+    if (existing) return existing;
+    const fresh = new Map<string, Set<number>>();
+    scope.frameRefs = fresh;
+    return fresh;
+  }
+  if (!moduleFrameRefs) moduleFrameRefs = new Map();
+  return moduleFrameRefs;
+}
 
 /**
  * Record what the snapshot just taken for `scopeKey` minted, so the RPC lane
@@ -858,17 +878,18 @@ const frameRefsByScope = new Map<string, Set<number>>();
  * data-wmux-ref tags ARE the current truth and must stay resolvable.
  */
 export function noteFrameRefsForScope(scopeKey: string, page: Page | null): void {
+  const store = frameRefStore();
   const numbers = new Set<number>();
   for (const entry of (page && pageRefMaps.get(page)) || []) {
     if (entry.frameKey !== MAIN_FRAME.key) numbers.add(entry.ref);
   }
-  frameRefsByScope.delete(scopeKey);
+  store.delete(scopeKey);
   if (numbers.size === 0) return;
-  frameRefsByScope.set(scopeKey, numbers);
-  while (frameRefsByScope.size > FRAME_REF_SCOPE_CAP) {
-    const oldest = frameRefsByScope.keys().next().value;
+  store.set(scopeKey, numbers);
+  while (store.size > FRAME_REF_SCOPE_CAP) {
+    const oldest = store.keys().next().value;
     if (oldest === undefined) break;
-    frameRefsByScope.delete(oldest);
+    store.delete(oldest);
   }
 }
 
@@ -917,7 +938,7 @@ function refNumber(ref: string): number | null {
 export function isOutstandingFrameRef(scopeKey: string, ref: string): boolean {
   const wanted = refNumber(ref);
   if (wanted === null) return false;
-  return frameRefsByScope.get(scopeKey)?.has(wanted) === true;
+  return frameRefStore().get(scopeKey)?.has(wanted) === true;
 }
 
 /** The message both guards raise, so the agent reads one explanation. */

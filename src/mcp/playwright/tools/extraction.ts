@@ -15,7 +15,7 @@ import { describeToolError } from '../toolError';
 const optionalSurfaceId = z
   .string()
   .optional()
-  .describe('Omit for the active surface.');
+  .describe('Omit for the surface you opened last.');
 
 // Per-call text-result cap, honoured by the dispatch-layer guard
 // (src/mcp/resultCap.ts) on tools whose output size the caller does not

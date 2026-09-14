@@ -1,5 +1,9 @@
 import type { RpcMethod } from '../../shared/rpc';
 import { sendRpc } from '../wmux-client';
+// Cycle-safe: surfaceRouting imports the refusal type from here, and both
+// sides touch the other only from inside function bodies, never at module
+// evaluation time.
+import { resolveDefaultSurface } from './surfaceRouting';
 
 /** Stable error code for browser operations whose caller cannot be scoped. */
 export const WORKSPACE_SCOPE_UNRESOLVED_CODE = 'WORKSPACE_SCOPE_UNRESOLVED';
@@ -65,6 +69,18 @@ export function assertBrowserTargetScope(
  * Resolve browser routing once, before any lease or browser RPC is issued.
  * An empty identity is a refusal: omitting it would restore main's legacy
  * first-live-target behavior and could cross workspace boundaries (#695).
+ *
+ * A call that names no surface gets one resolved HERE, per connection (see
+ * surfaceRouting), so every lane of the operation agrees on which surface it
+ * is: the automation lease, the scoped RPC fallback, the Playwright page, the
+ * snapshot baseline / guide / frame-ref keys, and the replay ring. They used to
+ * decide separately and disagreed — the engine took the workspace's NEWEST
+ * surface while main's lease and RPC default took its OLDEST live session — so
+ * one call could lease one tab and drive another.
+ *
+ * Resolution failure is not a refusal: it leaves the scope unpinned, exactly as
+ * before, and the engine's own (fail-closed) selection then decides. Making
+ * this a gate would newly refuse tools that never needed a live surface.
  */
 export async function requireBrowserTargetScope(
   deps: BrowserToolDeps,
@@ -76,7 +92,12 @@ export async function requireBrowserTargetScope(
       'browser tool workspace identity resolved to an empty id.',
     );
   }
-  return Object.freeze({ workspaceId, ...(surfaceId && { surfaceId }) });
+  if (surfaceId) return Object.freeze({ workspaceId, surfaceId });
+  const resolved = await resolveDefaultSurface(workspaceId).catch(() => ({ kind: 'none' as const }));
+  return Object.freeze({
+    workspaceId,
+    ...(resolved.kind === 'surface' && { surfaceId: resolved.surfaceId }),
+  });
 }
 
 /**

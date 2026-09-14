@@ -15,6 +15,11 @@ import {
 } from './browserScope';
 import { attachPageCapture } from './pageCapture';
 import { reassertUserAgentEmulation } from './ua-emulation';
+import {
+  getOpenerKey,
+  noteOpenedSurface,
+  resolveDefaultSurface,
+} from './surfaceRouting';
 
 export { WORKSPACE_SCOPE_UNRESOLVED_CODE } from './browserScope';
 
@@ -28,6 +33,13 @@ interface CdpTargetInfo {
    * page. See resolveCallerSurface().
    */
   workspaceId?: string;
+  /**
+   * The MCP connection that opened this surface, when main knows it. Absent
+   * for a surface restored after a restart, opened by a person, or opened
+   * before openers were recorded. Used by surfaceRouting to keep an unsaid
+   * target on the calling connection's own surface.
+   */
+  openerKey?: string;
 }
 
 interface CdpInfoResponse {
@@ -691,58 +703,41 @@ export class PlaywrightEngine {
     }
     if (!workspaceId) throw workspaceScopeUnresolved('workspace identity resolved to an empty id');
 
-    let info: CdpInfoResponse;
+    // One router for both entry points (surfaceRouting): the tool layer
+    // resolves the default before it takes a lease, and a direct engine call
+    // lands here — they must not be able to disagree about which surface a
+    // caller that named none is on.
+    let resolved: { kind: 'surface'; surfaceId: string } | { kind: 'none' };
     try {
-      // Pass our resolved workspace so main filters `targets` server-side
-      // (#580, Option 1). The response then carries only our own targets.
-      info = (await sendRpc('browser.cdp.info', { workspaceId })) as CdpInfoResponse;
+      resolved = await resolveDefaultSurface(workspaceId, {
+        // The response is the only place shellUrl and the backend marker
+        // arrive, so the router hands it back rather than making this a second
+        // round trip.
+        onInfo: (info) => this.cacheShellUrl(info as CdpInfoResponse),
+      });
     } catch (err) {
-      throw workspaceScopeUnresolved(
-        `browser.cdp.info unavailable: ${err instanceof Error ? err.message : String(err)}`,
-      );
+      // Re-raise the router's refusal in this engine's own words: the message
+      // carries the remedy an agent reads, and it is logged on the way out.
+      if (isWorkspaceScopeUnresolvedError(err)) {
+        const reason = (err as Error).message.replace(
+          new RegExp(`^${WORKSPACE_SCOPE_UNRESOLVED_CODE}:\\s*`),
+          '',
+        );
+        throw workspaceScopeUnresolved(reason);
+      }
+      throw err;
     }
-    this.cacheShellUrl(info);
-
-    // A main that honored the scope request marks the response `targetsScoped`.
-    // Then an empty list unambiguously means "we own no live target" (kind:
-    // 'none'), and a present one is already ours — no client-side filter needed.
-    if (info.targetsScoped) {
-      const own = this.newestTarget(info.targets);
-      return own
-        ? { kind: 'surface', surfaceId: own.surfaceId, workspaceId }
-        : { kind: 'none', workspaceId };
-    }
-
-    // Legacy path: an older main ignored the param and returned every target.
-    //
-    // An EMPTY list from such a main is unambiguous no matter who it belongs to
-    // — there is no live guest anywhere — so it is 'none' (auto-open our own),
-    // which is what the old leniency was really protecting: a single-workspace
-    // setup with nothing to cross into.
-    if (info.targets.length === 0) return { kind: 'none', workspaceId };
-
-    // Targets exist but if NONE carry a workspaceId we cannot scope at all —
-    // and an unscopeable selection is a cross-workspace selection, so refuse.
-    // Matches how browser_tabs reports a main too old to scope
-    // (BROWSER_TABS_UNSUPPORTED) rather than falling back to something
-    // workspace-blind.
-    const anyTagged = info.targets.some(
-      (t) => typeof t.workspaceId === 'string' && t.workspaceId.length > 0,
-    );
-    if (!anyTagged) {
-      throw workspaceScopeUnresolved(
-        'the connected wmux main does not tag browser targets with a workspace',
-      );
-    }
-
-    const own = this.newestTarget(info.targets, workspaceId);
-    if (own) return { kind: 'surface', surfaceId: own.surfaceId, workspaceId };
-    return { kind: 'none', workspaceId };
+    return resolved.kind === 'surface'
+      ? { kind: 'surface', surfaceId: resolved.surfaceId, workspaceId }
+      : { kind: 'none', workspaceId };
   }
 
   /**
-   * The DEFAULT target when the caller pins no surfaceId: its MOST RECENTLY
-   * opened surface, never the oldest. listTargets() on both backends preserves
+   * The MOST RECENTLY opened surface of a target list, never the oldest.
+   * Still the tie-breaker inside selectRegisteredTarget; the default target of
+   * a call that named no surfaceId is decided one level up, per connection
+   * (surfaceRouting), because "newest in the workspace" is another agent's tab
+   * as often as it is the caller's. listTargets() on both backends preserves
    * creation order — the managers iterate their surface Map in insertion order —
    * so the last entry a workspace owns is the newest. Picking targets[0] (the
    * oldest) silently drove a leftover tab from a previous run: `browser_tabs new`
@@ -956,19 +951,25 @@ export class PlaywrightEngine {
   }
 
   /**
-   * Issue the auto-open browser.open RPC, pinned to the calling session's
-   * workspace. Fails closed: when no resolver is wired or identity cannot be
-   * resolved, NO RPC is sent (returns false) — a workspace-less browser.open
-   * would let the renderer fall back to the UI-active workspace (#190). The
-   * caller then proceeds to the normal "no page" retry/error path, surfacing
-   * the existing "Call browser_open first" guidance to the user.
-   */
-  /**
+   * Open a surface for the caller, pinned to the calling session's workspace.
+   * Fails closed: when no resolver is wired or identity cannot be resolved, NO
+   * RPC is sent (returns null) — a workspace-less open would let the renderer
+   * fall back to the UI-active workspace (#190). The caller then proceeds to
+   * the normal "no page" retry/error path, surfacing the existing "Call
+   * browser_open first" guidance to the user.
+   *
+   * `browser.tabs new`, not `browser.open`: on the builtin backend an open
+   * REUSES the workspace's first browser surface when one exists, which is how
+   * an auto-open for agent B used to hand back agent A's tab. `new` always
+   * creates, on every backend, so the surface this returns is the caller's own.
+   * An older main without the tabs method falls back to the open path.
+   *
    * @returns the surface that was opened (`surfaceId` absent if the reply did
    *   not name one), or null when the attempt was skipped fail-closed.
    *
    * The surfaceId matters: it is the ONE selection this engine can make without
-   * having to prove anything, because we are the ones who just asked for it.
+   * having to prove anything, because we are the ones who just asked for it —
+   * and it becomes this connection's pin, so the calls that follow stay on it.
    */
   private async attemptAutoOpen(resolvedWorkspaceId?: string): Promise<{ surfaceId?: string } | null> {
     let workspaceId = resolvedWorkspaceId;
@@ -991,9 +992,35 @@ export class PlaywrightEngine {
       console.error('[PlaywrightEngine] Auto-open skipped: empty workspace id');
       return null;
     }
-    const reply = (await sendRpc('browser.open', { workspaceId })) as { surfaceId?: unknown } | undefined;
-    const surfaceId = typeof reply?.surfaceId === 'string' && reply.surfaceId ? reply.surfaceId : undefined;
+    const surfaceId = (await this.openOwnSurface(workspaceId)) ?? undefined;
+    if (surfaceId) noteOpenedSurface(workspaceId, surfaceId);
     return surfaceId ? { surfaceId } : {};
+  }
+
+  /** The always-new open, with the legacy fallback. Null = no id was named. */
+  private async openOwnSurface(workspaceId: string): Promise<string | null> {
+    try {
+      const created = (await sendRpc('browser.tabs', {
+        action: 'new',
+        workspaceId,
+        openerKey: getOpenerKey(),
+      })) as { ok?: unknown; action?: unknown; tab?: { surfaceId?: unknown } } | undefined;
+      if (created?.ok === true && created.action === 'new' && typeof created.tab?.surfaceId === 'string') {
+        return created.tab.surfaceId || null;
+      }
+      // An `ok:false` result is a real refusal from a main that understands the
+      // method (pane cap, a backend with nothing to create) — not a reason to
+      // try the reuse-shaped open behind its back.
+      if (created?.ok === false) return null;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (!/Unknown method:\s*browser\.tabs/i.test(message)) throw err;
+    }
+    const reply = (await sendRpc('browser.open', {
+      workspaceId,
+      openerKey: getOpenerKey(),
+    })) as { surfaceId?: unknown } | undefined;
+    return typeof reply?.surfaceId === 'string' && reply.surfaceId ? reply.surfaceId : null;
   }
 
   /**

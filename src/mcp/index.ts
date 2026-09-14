@@ -14,6 +14,7 @@ import {
 import { resolveTerminalRoute, resolveCommanderRoute, type PidMapLookup } from './terminalRouting';
 import { classifyWorkspaceListResult, type WorkspaceLiveness } from './workspaceIdentity';
 import { PlaywrightEngine } from './playwright/PlaywrightEngine';
+import { getOpenerKey, noteOpenedSurface } from './playwright/surfaceRouting';
 import { registerNavigationTools } from './playwright/tools/navigation';
 import { registerInteractionTools } from './playwright/tools/interaction';
 import { registerInspectionTools } from './playwright/tools/inspection';
@@ -585,6 +586,10 @@ async function callRpc(
   method: RpcMethod,
   params: Record<string, unknown> = {},
   timeoutMs?: number,
+  // Lets a caller read the raw reply it is about to render — browser_open uses
+  // it to learn which surface it got — without giving up the stale-route
+  // handling every tool gets from this helper.
+  onResult?: (result: unknown) => void,
 ): Promise<{ content: { type: 'text'; text: string }[] }> {
   const pinnedRouteAtDispatch = getPinnedRoute();
   try {
@@ -592,6 +597,7 @@ async function callRpc(
       ? await sendRpc(method, params)
       : await sendRpc(method, params, timeoutMs);
     if (isStaleIdentityResult(result)) invalidateStaleRoute(pinnedRouteAtDispatch);
+    onResult?.(result);
     const text = typeof result === 'string' ? result : JSON.stringify(result, null, 2);
     return { content: [{ type: 'text', text }] };
   } catch (err) {
@@ -981,7 +987,7 @@ async function resolveTerminalRouteBound(explicitPtyId?: string) {
 
 server.tool(
   'browser_open',
-  'Open a browser panel in the active pane when no browser surface exists yet. The opened surface becomes the default target for browser tools called without a surfaceId (the most recently opened surface wins).',
+  'Open a browser panel in the active pane when no browser surface exists yet. The opened surface becomes the default target for browser tools you call without a surfaceId. A surface another agent opened is never reused — you get your own.',
   BROWSER_OPEN_SHAPE,
   async ({ url }) => {
     // requireWorkspaceId (NOT the weak resolveWorkspaceId) so a failed identity
@@ -990,7 +996,21 @@ server.tool(
     // store.activeWorkspaceId and open the browser in the wrong (UI-active)
     // workspace. Matches every other workspace-routed tool.
     const workspaceId = await requireWorkspaceId();
-    return callRpc('browser.open', { ...(url && { url }), workspaceId });
+    // The opener key says who is asking. Main reuses an existing surface only
+    // when this connection opened it or nobody claims it, and records the
+    // opener on what comes back, so the surface this tool reports is one the
+    // caller may keep driving without naming it again.
+    return callRpc(
+      'browser.open',
+      { ...(url && { url }), workspaceId, openerKey: getOpenerKey() },
+      undefined,
+      (result) => {
+        const surfaceId = (result as { surfaceId?: unknown } | null | undefined)?.surfaceId;
+        if (typeof surfaceId === 'string' && surfaceId) {
+          noteOpenedSurface(workspaceId, surfaceId);
+        }
+      },
+    );
   },
 );
 

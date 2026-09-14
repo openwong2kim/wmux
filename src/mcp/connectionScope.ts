@@ -84,6 +84,27 @@ export interface ConnectionScope {
    * unknown to avoid an import cycle; guideAnnounce owns the cast.
    */
   siteGuideAnnounce?: unknown;
+  /**
+   * Frame refs minted by this connection's last snapshot of a surface, per
+   * connection for the same reason as snapshotCache: the guard answers "did
+   * *I* mint this ref inside an iframe", and a shared map let one agent's
+   * snapshot refuse another agent's perfectly good DOM ref. Typed as unknown
+   * to avoid an import cycle; snapshot.ts owns the cast.
+   */
+  frameRefs?: unknown;
+  /**
+   * Random id identifying this connection as the OPENER of a browser surface.
+   * Sent with every open so main can record who asked for a surface, and the
+   * default target of a call that names none stays on this connection's own
+   * tab. Minted on first use by surfaceRouting, which owns the semantics.
+   */
+  browserOpenerKey?: string;
+  /**
+   * The surface this connection last opened: its default target while it
+   * exists. Typed as unknown to avoid an import cycle (surfaceRouting imports
+   * this module); it owns the cast.
+   */
+  browserPin?: unknown;
 }
 
 const storage = new AsyncLocalStorage<ConnectionScope>();

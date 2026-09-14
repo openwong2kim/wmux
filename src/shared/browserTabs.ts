@@ -15,6 +15,16 @@ export interface BrowserTabDescriptor {
    *  targeting — a browser tool with no surfaceId resolves a surface in the
    *  workspace regardless. Always false on the chrome backend (#1082). */
   selected: boolean;
+  /**
+   * The MCP connection that opened this surface, as main recorded it. Absent
+   * when nobody claims the surface: restored after a restart, opened by a
+   * person, or opened before openers were recorded.
+   *
+   * Main-to-MCP only. The tool layer turns it into the `mine` flag an agent
+   * reads and never renders the key itself — it identifies a connection, and
+   * one agent has no use for another's.
+   */
+  openerKey?: string;
 }
 
 export const BROWSER_TABS_ERROR_CODES = [

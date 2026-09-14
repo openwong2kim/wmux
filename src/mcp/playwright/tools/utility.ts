@@ -12,7 +12,7 @@ import { describeToolError } from '../toolError';
 const optionalSurfaceId = z
   .string()
   .optional()
-  .describe('Omit for the active surface.');
+  .describe('Omit for the surface you opened last.');
 
 // Module-scope parameter shapes: hoisted out of the per-registration path so
 // every createWmuxServer() instance shares one set of zod schema objects.

@@ -78,7 +78,7 @@ const BROWSER_REPLAY_SHAPE = {
   surfaceId: z
     .string()
     .optional()
-    .describe('Omit for the active surface.'),
+    .describe('Omit for the surface you opened last.'),
 };
 
 /**
