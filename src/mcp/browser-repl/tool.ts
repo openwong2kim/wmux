@@ -190,7 +190,7 @@ const BROWSER_REPL_DESCRIPTION =
   'Each allowed browser_X tool is `await browser.X(args)` with the same args, resolving to ' +
   '{text, events} (+ refs:[{ref,param,role,name}] for snapshot/smart_snapshot, diff text, all refs; ' +
   'pass refs[i].ref as the arg named refs[i].param). A failed step throws (catchable). ' +
-  'screenshot resolves to image:"img-N" and the image rides back with this result (4 per run). ' +
+  'screenshot adds image:"img-N" (attached below). ' +
   `Allowed: ${BROWSER_REPL_TOOLS.join(', ')}. ` +
   'Args for the steps whose standalone tools are unlisted: navigate_back() hover(ref) drag(sourceRef,targetRef|path) ' +
   'select(ref,values) scroll_into_view(ref) highlight(ref) dialog(accept,text). ' +

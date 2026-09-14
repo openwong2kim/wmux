@@ -141,7 +141,12 @@ function harness(overrides: Partial<Record<string, (args: Record<string, unknown
   add('cookies', { action: z.string() }, async () => ok('cookies'));
   add(
     'screenshot',
-    { fullPage: z.boolean().optional(), ref: z.string().optional(), maxBytes: z.number().optional() },
+    {
+      fullPage: z.boolean().optional(),
+      ref: z.string().optional(),
+      maxBytes: z.number().optional(),
+      refs: z.boolean().optional(),
+    },
     async () => image('AAAA'),
   );
   return { tools, calls };
@@ -896,5 +901,35 @@ describe('browser_repl run binding', () => {
       IMAGE_CAP_NOTE,
       [IMAGE_CAP_NOTE, IMAGE_CAP_NOTE],
     ]);
+  });
+});
+
+describe('browser_repl screenshot with refs', () => {
+  it('attaches the image and keeps the refs table in the value text', async () => {
+    const table = 'Refs in this capture (viewport CSS px: x,y,w,h):\nref=12 button "Log in" 40,20,80,30';
+    const h = harness({
+      screenshot: async (args) => ({
+        content: [
+          { type: 'image', data: 'AAAA', mimeType: 'image/png' },
+          {
+            type: 'text',
+            text: `This is a viewport capture at devicePixelRatio 2.${args.refs === true ? `\n\n${table}` : ''}`,
+          },
+        ],
+      }),
+    });
+    const bridge = createBrowserBridge(h.tools, {});
+    const session = newSession();
+    const out = await session.run(
+      'const shot = await browser.screenshot({ refs: true });\nJSON.stringify({ image: shot.image, text: shot.text })',
+      10_000,
+      bridge,
+    );
+    expect(out.ok).toBe(true);
+    expect(h.calls[0].args.refs).toBe(true);
+    const value = JSON.parse(out.result?.text ?? 'null') as { image: string; text: string };
+    expect(value.image).toBe('img-1');
+    expect(value.text).toContain(table);
+    expect(out.images?.map((img) => img.id)).toEqual(['img-1']);
   });
 });

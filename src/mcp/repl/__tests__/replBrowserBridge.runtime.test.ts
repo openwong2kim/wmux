@@ -28,6 +28,9 @@ function makeSession(): ReplSession {
   return session;
 }
 
+/** The refs table browser_screenshot {refs:true} appends to its basis text. */
+const REFS_TABLE = 'Refs in this capture (viewport CSS px: x,y,w,h):\nref=12 button "Log in" 40,20,80,30';
+
 interface Fake {
   tools: Map<string, CollectedTool>;
   called: Array<{ name: string; args: Record<string, unknown> }>;
@@ -65,10 +68,13 @@ function fakeBrowser(): Fake {
     };
   });
   add('navigate', { url: z.string() }, () => ({ content: [{ type: 'text', text: 'navigated' }] }));
-  add('screenshot', { maxBytes: z.number().optional() }, () => ({
+  add('screenshot', { maxBytes: z.number().optional(), refs: z.boolean().optional() }, (args) => ({
     content: [
       { type: 'image', data: 'iVBORw0KGgo=', mimeType: 'image/png' },
-      { type: 'text', text: 'This is a viewport capture at devicePixelRatio 1.' },
+      {
+        type: 'text',
+        text: `This is a viewport capture at devicePixelRatio 1.${args.refs === true ? `\n\n${REFS_TABLE}` : ''}`,
+      },
     ],
   }));
   add('storage', { action: z.string().optional() }, () => ({ content: [{ type: 'text', text: 'storage entries' }] }));
@@ -105,6 +111,22 @@ describe('repl_run browser bridge (real child)', () => {
       { id: 'img-1', callIndex: 1, data: 'iVBORw0KGgo=', mimeType: 'image/png' },
     ]);
     expect(formatOutcome('browser-test', outcome, [])).toContain('img-1: call 1 (image/png');
+  });
+
+  it('keeps the refs table in the value text when a screenshot with refs:true attaches its image', async () => {
+    const fake = fakeBrowser();
+    const session = makeSession();
+    // Checked inside the snippet: repl_run renders strings through inspect,
+    // so the table's quotes and newline would be escaped in the result text.
+    const outcome = await session.run(
+      `const shot = await browser.screenshot({ refs: true });\n[shot.image, shot.text.includes(${JSON.stringify(REFS_TABLE)})]`,
+      10_000,
+      resolveReplBrowser({ tools: fake.tools, profile: 'full' }, undefined),
+    );
+    expect(outcome.ok).toBe(true);
+    expect(fake.called[0].args.refs).toBe(true);
+    expect(outcome.result?.text).toBe("[ 'img-1', true ]");
+    expect(outcome.browser?.images.map((img) => img.id)).toEqual(['img-1']);
   });
 
   it('refuses a browserCall that user code posts itself, with the current run id, and sends nothing', async () => {
