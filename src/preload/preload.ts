@@ -1439,6 +1439,10 @@ document.addEventListener('DOMContentLoaded', () => {
   paneWrite: (attachId: string, data: string) => {
     ipcRenderer.send(IPC.REMOTE_PANE_WRITE, attachId, data);
   },
+  paneResize: (attachId: string, cols: number, rows: number) =>
+    ipcRenderer.invoke(IPC.REMOTE_PANE_RESIZE_REQUEST, attachId, cols, rows) as Promise<
+      { ok: true; cols: number; rows: number } | { ok: false; reason: string }
+    >,
   onPaneMeta: (callback: (e: { attachId: string; cols: number; rows: number; snapshotB64: string; truncated?: boolean; omittedBytes?: number }) => void) => {
     const listener = (_event: unknown, payload: { attachId: string; cols: number; rows: number; snapshotB64: string; truncated?: boolean; omittedBytes?: number }) => callback(payload);
     ipcRenderer.on(IPC.REMOTE_PANE_META, listener);

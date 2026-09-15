@@ -605,6 +605,13 @@ export const IPC = {
   REMOTE_PANE_ATTACH: 'remote:pane:attach',
   REMOTE_PANE_DETACH: 'remote:pane:detach',
   REMOTE_PANE_WRITE: 'remote:pane:write',
+  // renderer → main invoke (#1322): ask the remote daemon to resize the PTY
+  // behind `attachId` via `RemoteHostClient.resizeSession` — the same
+  // `POST /api/sessions/:id/resize` route the phone uses (#766). A GRANT
+  // arrives back through REMOTE_PANE_RESIZE below (the daemon's own SSE
+  // broadcast of the applied geometry), not as this invoke's return value;
+  // the return value only says whether the ROUTE accepted the request.
+  REMOTE_PANE_RESIZE_REQUEST: 'remote:pane:resize-request',
   REMOTE_PANE_DATA: 'remote:pane:data',      // main → renderer push
   REMOTE_PANE_META: 'remote:pane:meta',      // main → renderer push (cols/rows/snapshot)
   // main → renderer push (cols/rows only). A resize on the machine that owns

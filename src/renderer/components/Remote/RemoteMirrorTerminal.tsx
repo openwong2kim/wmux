@@ -3,7 +3,7 @@ import { Terminal } from '@xterm/xterm';
 import { useT } from '../../hooks/useT';
 import { sanitizeTitle } from '../../../main/pty/titleDetect';
 import { applyUnicodeWidthModel } from '../../../shared/terminalUnicode';
-import { computeMirrorFontSize, mirrorFitKey, MAX_FIT_PASSES } from './mirrorFit';
+import { computeMirrorFontSize, computeMirrorGeometry, mirrorFitKey, MAX_FIT_PASSES } from './mirrorFit';
 import { decideMirrorKeyWithRepeat } from './mirrorInput';
 import { foldRemoteKeyboardState, INITIAL_REMOTE_KEYBOARD_STATE } from './keyboardProtocol';
 import { useStore } from '../../stores';
@@ -87,13 +87,30 @@ export function isDeviceReply(data: string): boolean {
  *  clears xterm's width cache, once per mirror, six mirrors deep. */
 const FIT_DEBOUNCE_MS = 150;
 
+/** Mirrors `WebTerminalServer`'s own floor for `POST /api/sessions/:id/resize`
+ *  (`MIN_REQUESTED_COLS`/`MIN_REQUESTED_ROWS`) — asking for less only earns a
+ *  400 the daemon would otherwise have to spend a round trip explaining. */
+const MIN_REMOTE_RESIZE_COLS = 40;
+const MIN_REMOTE_RESIZE_ROWS = 8;
+
 /**
- * One @xterm/xterm mirror of a single remote pane. Read-mostly: the remote's
- * own geometry events (meta on attach, resize afterwards) are the ONLY thing
- * that drives `term.resize()` — this component never calls a resize API back
- * toward the remote (geometry has a single owner, the remote daemon). A
- * container/remote aspect mismatch is letterboxed by the parent's CSS, not by
- * resizing the terminal.
+ * One @xterm/xterm mirror of a single remote pane.
+ *
+ * Geometry has a single WRITER — `term.resize()` is only ever called from the
+ * remote's own events (meta on attach, resize afterwards), never predicted
+ * locally — but, since #1322, this component is no longer read-only about
+ * geometry: `runFit` also asks the remote daemon to resize its PTY to fill the
+ * box, through the same `POST /api/sessions/:id/resize` route the phone
+ * companion already uses (#766, `RemoteHostClient.resizeSession`). That
+ * request can be refused (`409 desk-owns-size` — a desk viewer on the REMOTE
+ * host currently owns the size) or simply fail (host offline); either way this
+ * component falls back to the original behaviour, `computeMirrorFontSize`
+ * shrinking (never growing past) the local font until the remote's ACTUAL
+ * grid fits the box, letterboxed by the parent's CSS for whatever residue is
+ * left. So a container/remote aspect mismatch is resolved by a real PTY
+ * resize when the daemon grants one, and by local font-shrink + letterbox
+ * when it does not — the fallback is not a regression, it is what made this
+ * safe to ship without a protocol bump.
  */
 export default function RemoteMirrorTerminal({ attachId, error, readOnly, onTitleChange }: RemoteMirrorTerminalProps) {
   const t = useT();
@@ -212,6 +229,34 @@ export default function RemoteMirrorTerminal({ attachId, error, readOnly, onTitl
   const maxFontSizeRef = useRef(terminalFontSize);
   maxFontSizeRef.current = terminalFontSize;
 
+  /** `${cols}x${rows}` this component last POSTed to `/resize`, so a box that
+   *  keeps re-triggering `runFit` at the SAME size (e.g. font-shrink passes
+   *  for the same box) does not repost an identical, already-answered
+   *  request. Cleared on a genuine box-size change (new `boxKey`), which is
+   *  exactly when asking again might get a different answer. */
+  const lastRequestedGeometryRef = useRef<string | null>(null);
+
+  /**
+   * Ask the remote daemon to resize the PTY to `cols × rows` — the preferred
+   * fix for a box/grid mismatch, tried before falling back to font-shrink.
+   * Fire-and-forget from the caller's point of view: a grant arrives back
+   * through `onPaneResize` (this mirror's own SSE stream, see the attach
+   * effect below), not through this function's return value, so there is
+   * nothing here to await into a render. A refusal or a transport failure is
+   * silently swallowed — `runFit`'s existing font-shrink math is what handles
+   * that box on this pass regardless.
+   */
+  const requestRemoteResize = useCallback((cols: number, rows: number) => {
+    const id = attachIdRef.current;
+    if (!id) return;
+    if (cols < MIN_REMOTE_RESIZE_COLS || rows < MIN_REMOTE_RESIZE_ROWS) return;
+    const key = `${cols}x${rows}`;
+    if (lastRequestedGeometryRef.current === key) return;
+    lastRequestedGeometryRef.current = key;
+    window.electronAPI?.remote?.paneResize(id, cols, rows)
+      .catch(() => { /* see doc comment above — font-shrink is the fallback */ });
+  }, []);
+
   /**
    * One measure→decide→apply pass, run from an animation frame so it lands
    * after layout rather than in the middle of an observer callback. It is NOT
@@ -244,6 +289,25 @@ export default function RemoteMirrorTerminal({ attachId, error, readOnly, onTitl
       state.boxKey = boxKey;
       state.settled = undefined;
       state.passes = 0;
+      // A genuinely new box size: worth asking the remote for again, even if
+      // an earlier box already tried (and was refused for) this exact grid.
+      lastRequestedGeometryRef.current = null;
+      const ideal = computeMirrorGeometry({
+        boxWidth,
+        boxHeight,
+        cols: term.cols,
+        rows: term.rows,
+        renderedWidth: screen.offsetWidth,
+        renderedHeight: screen.offsetHeight,
+        currentFontSize: term.options.fontSize ?? maxFontSizeRef.current,
+        maxFontSize: maxFontSizeRef.current,
+      });
+      // Only worth a round trip when it would actually change something — a
+      // box whose ideal grid already matches the remote's current one gains
+      // nothing from asking, win or lose.
+      if (ideal && (ideal.cols !== term.cols || ideal.rows !== term.rows)) {
+        requestRemoteResize(ideal.cols, ideal.rows);
+      }
     } else if (state.passes >= MAX_FIT_PASSES) {
       return;
     }
@@ -541,6 +605,10 @@ export default function RemoteMirrorTerminal({ attachId, error, readOnly, onTitl
     if (!attachId) return;
     setExited(false);
     setDisconnected(false);
+    // A fresh attachId is a different session (or a reconnect to the same
+    // one) — either way, whatever this component last asked THAT session's
+    // daemon to resize to says nothing about this one.
+    lastRequestedGeometryRef.current = null;
     const remote = window.electronAPI?.remote;
     if (!remote) return;
 

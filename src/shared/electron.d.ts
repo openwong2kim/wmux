@@ -251,6 +251,18 @@ declare global {
         >;
         paneDetach: (attachId: string) => Promise<void>;
         paneWrite: (attachId: string, data: string) => void;
+        /** #1322 — ask the remote daemon to resize the PTY behind `attachId`
+         *  via the same `POST /api/sessions/:id/resize` route the phone uses
+         *  (#766). `{ ok: true }` only means the route accepted the request;
+         *  the applied geometry (which can differ, floored) arrives through
+         *  `onPaneResize` like any other resize on the remote. `{ ok: false }`
+         *  covers both an expected refusal (`409 desk-owns-size` — a desk
+         *  viewer on the remote host owns the size right now) and a transport
+         *  failure; the caller's remedy is the same either way: try again
+         *  next time the box changes. Never rejects. */
+        paneResize: (attachId: string, cols: number, rows: number) => Promise<
+          { ok: true; cols: number; rows: number } | { ok: false; reason: string }
+        >;
         onPaneMeta: (
           callback: (e: { attachId: string; cols: number; rows: number; snapshotB64: string; truncated?: boolean; omittedBytes?: number }) => void,
         ) => () => void;

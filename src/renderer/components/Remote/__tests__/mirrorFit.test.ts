@@ -8,7 +8,7 @@
 // prompt. Every case below is one of the ways that fit can go wrong.
 
 import { describe, it, expect } from 'vitest';
-import { computeMirrorFontSize, mirrorFitKey, MIN_MIRROR_FONT_SIZE, type MirrorFitInput } from '../mirrorFit';
+import { computeMirrorFontSize, computeMirrorGeometry, mirrorFitKey, MIN_MIRROR_FONT_SIZE, type MirrorFitInput } from '../mirrorFit';
 
 /** A 80×24 remote grid rendered at 14px into a box that comfortably holds it. */
 function fitting(over: Partial<MirrorFitInput> = {}): MirrorFitInput {
@@ -135,6 +135,61 @@ describe('computeMirrorFontSize', () => {
       settledFontSize: 7,
     }));
     expect(second.fontSize).toBeLessThan(7);
+  });
+});
+
+// #1322 — the geometry a real PTY resize should target, as opposed to the
+// font-shrink `computeMirrorFontSize` falls back to when the daemon refuses
+// (or a request cannot be made at all). Same 80×24-at-14px baseline as above,
+// but the box is pinned to the RENDERED size (700×400 — `fitting()`'s default
+// 1000×600 box is deliberately roomier, which is exactly what
+// `computeMirrorFontSize`'s own tests exploit; pinning it here isolates cols
+// from rows in each case): renderedWidth 700 / 80 cols = 8.75px/cell,
+// renderedHeight 400 / 24 rows = 16.667px/cell.
+describe('computeMirrorGeometry', () => {
+  it('answers the current grid when the box already matches its natural render size', () => {
+    const geometry = computeMirrorGeometry(fitting({ boxWidth: 700, boxHeight: 400 }));
+    expect(geometry).toEqual({ cols: 80, rows: 24 });
+  });
+
+  it('grows past the current grid when the box has more room than the grid uses', () => {
+    // Width doubled: 1400 / 8.75 = 160.
+    const geometry = computeMirrorGeometry(fitting({ boxWidth: 1400, boxHeight: 400 }));
+    expect(geometry).toEqual({ cols: 160, rows: 24 });
+  });
+
+  it('shrinks the TARGET GRID (not the font) when the box is smaller than the remote grid', () => {
+    // 350 / 8.75 = 40.
+    const geometry = computeMirrorGeometry(fitting({ boxWidth: 350, boxHeight: 400 }));
+    expect(geometry).toEqual({ cols: 40, rows: 24 });
+  });
+
+  it('extrapolates cell size to maxFontSize, not to the current (already-shrunk) font', () => {
+    // Rendered at a shrunk 7px (half the 14px baseline cell), so cells here are
+    // half as large — extrapolating to maxFontSize=14 should land back on the
+    // same per-cell size as the unshrunk baseline.
+    const geometry = computeMirrorGeometry(fitting({
+      boxWidth: 700,
+      boxHeight: 400,
+      renderedWidth: 350,
+      renderedHeight: 200,
+      currentFontSize: 7,
+      maxFontSize: 14,
+    }));
+    expect(geometry).toEqual({ cols: 80, rows: 24 });
+  });
+
+  it('declines when the box cannot fit even one cell', () => {
+    expect(computeMirrorGeometry(fitting({ boxWidth: 5, boxHeight: 400 }))).toBeNull();
+  });
+
+  it.each([
+    ['hidden box', { boxWidth: 0, boxHeight: 0 }],
+    ['unrendered terminal', { renderedWidth: 0, renderedHeight: 0 }],
+    ['degenerate grid', { cols: 0 }],
+    ['no current font size', { currentFontSize: 0 }],
+  ] as Array<[string, Partial<MirrorFitInput>]>)('declines to decide: %s', (_label, over) => {
+    expect(computeMirrorGeometry(fitting(over))).toBeNull();
   });
 });
 

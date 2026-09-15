@@ -153,3 +153,64 @@ export function computeMirrorFontSize(input: MirrorFitInput): MirrorFitResult {
 function quantise(size: number): number {
   return Math.floor(size / FONT_STEP) * FONT_STEP;
 }
+
+/**
+ * The grid (cols × rows) that would fill the box AT THE USER'S OWN FONT SIZE
+ * — i.e. without the font-shrink `computeMirrorFontSize` performs.
+ *
+ * The two functions answer different halves of the same problem. Font-shrink
+ * is the fallback: it never touches the remote and always works, but a
+ * grid smaller than the box stays small (letterboxed) and a grid bigger than
+ * the box renders unreadably tiny. This function is the input to the
+ * PREFERRED fix (#1322): ask the remote daemon to resize its PTY to a grid
+ * that actually fills the box (`RemoteMirrorTerminal`'s `requestRemoteResize`),
+ * so the remote reflows its own output at the new width instead of this
+ * mirror silently misrepresenting a still-differently-sized session through a
+ * shrunk or oversized font.
+ *
+ * Same extrapolation `computeMirrorFontSize` uses (px per font unit, measured
+ * from the CURRENT render, not assumed) — just solved for cell counts at
+ * `maxFontSize` instead of for a font size at fixed cell counts. Deliberately
+ * has no `settledFontSize`-style "never grow" guard: unlike a font-size
+ * staircase, asking the remote for a bigger grid than the box last got has
+ * exactly one failure mode (the daemon says no), not an oscillation, because
+ * the daemon's applied geometry — not this calculation — is what the mirror
+ * ever actually renders at.
+ */
+export function computeMirrorGeometry(input: {
+  boxWidth: number;
+  boxHeight: number;
+  cols: number;
+  rows: number;
+  renderedWidth: number;
+  renderedHeight: number;
+  currentFontSize: number;
+  maxFontSize: number;
+}): { cols: number; rows: number } | null {
+  const {
+    boxWidth, boxHeight, cols, rows,
+    renderedWidth, renderedHeight, currentFontSize, maxFontSize,
+  } = input;
+
+  const measurable =
+    boxWidth > 0 && boxHeight > 0 &&
+    renderedWidth > 0 && renderedHeight > 0 &&
+    cols > 0 && rows > 0 && currentFontSize > 0 &&
+    Number.isFinite(boxWidth) && Number.isFinite(boxHeight) &&
+    Number.isFinite(renderedWidth) && Number.isFinite(renderedHeight);
+  if (!measurable) return null;
+
+  const ceiling = Math.max(MIN_MIRROR_FONT_SIZE, Number.isFinite(maxFontSize) ? maxFontSize : 0);
+
+  // Cell size at the CURRENT font size, extrapolated to the ceiling — the same
+  // "very nearly proportional to font size" approximation computeMirrorFontSize
+  // relies on for its own pass-1 prediction.
+  const cellWidthAtCeiling = (renderedWidth / currentFontSize) * (ceiling / cols);
+  const cellHeightAtCeiling = (renderedHeight / currentFontSize) * (ceiling / rows);
+  if (!(cellWidthAtCeiling > 0) || !(cellHeightAtCeiling > 0)) return null;
+
+  const idealCols = Math.floor(boxWidth / cellWidthAtCeiling);
+  const idealRows = Math.floor(boxHeight / cellHeightAtCeiling);
+  if (idealCols <= 0 || idealRows <= 0) return null;
+  return { cols: idealCols, rows: idealRows };
+}

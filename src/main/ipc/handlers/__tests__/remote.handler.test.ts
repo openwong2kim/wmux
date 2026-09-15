@@ -111,6 +111,7 @@ function fakeClient(host: RemoteHost) {
     listWorkspaces: vi.fn(async (): Promise<RemoteWorkspacesResponse> => ({ workspaces: [] })),
     createWorkspace: vi.fn(async (): Promise<{ sessionId: string }> => ({ sessionId: 'web-1' })),
     closeSession: vi.fn(async (): Promise<void> => undefined),
+    resizeSession: vi.fn(async (): Promise<{ ok: true; cols: number; rows: number }> => ({ ok: true, cols: 100, rows: 30 })),
     onMeta: vi.fn((cb: (e: RemoteMetaEvent) => void) => { metaCbs.push(cb); }),
     onResize: vi.fn((cb: (e: RemoteResizeEvent) => void) => { resizeCbs.push(cb); }),
     onData: vi.fn((cb: (e: RemoteDataEvent) => void) => { dataCbs.push(cb); }),
@@ -129,6 +130,7 @@ function fakeClient(host: RemoteHost) {
     listWorkspaces: ReturnType<typeof vi.fn>;
     createWorkspace: ReturnType<typeof vi.fn>;
     closeSession: ReturnType<typeof vi.fn>;
+    resizeSession: ReturnType<typeof vi.fn>;
     emitMeta: (e: RemoteMetaEvent) => void;
     emitResize: (e: RemoteResizeEvent) => void;
     emitData: (e: RemoteDataEvent) => void;
@@ -876,6 +878,77 @@ describe('remote.handler — pane attach/detach/write push routing', () => {
 
     expect(client.detach).toHaveBeenCalledTimes(1);
     expect(client.detach).not.toHaveBeenCalledWith(bAttach.attachId);
+  });
+});
+
+describe('remote.handler — pane resize request (#1322)', () => {
+  const host: RemoteHost = { id: 'h1', label: 'box', origin: 'https://box:9600', token: 't', addedAt: 0 };
+
+  it('resolves the attachId to its (host, session) and forwards to resizeSession', async () => {
+    const store = fakeStore([host]);
+    const client = fakeClient(host);
+    registerRemoteHandlers({ store: store as never, attachments: fakeAttachments() as never, clientFactory: () => client });
+
+    const sender = fakeSender(201);
+    const { attachId } = await getHandler(IPC.REMOTE_PANE_ATTACH)({ sender }, 'h1', 'session-1') as { attachId: string };
+
+    const res = await getHandler(IPC.REMOTE_PANE_RESIZE_REQUEST)({}, attachId, 100, 30);
+
+    expect(client.resizeSession).toHaveBeenCalledWith('session-1', 100, 30);
+    expect(res).toEqual({ ok: true, cols: 100, rows: 30 });
+  });
+
+  it('passes through a refusal (e.g. desk-owns-size) rather than throwing', async () => {
+    const store = fakeStore([host]);
+    const client = fakeClient(host);
+    client.resizeSession.mockResolvedValue({ ok: false, reason: 'desk-owns-size' });
+    registerRemoteHandlers({ store: store as never, attachments: fakeAttachments() as never, clientFactory: () => client });
+
+    const sender = fakeSender(202);
+    const { attachId } = await getHandler(IPC.REMOTE_PANE_ATTACH)({ sender }, 'h1', 'session-1') as { attachId: string };
+
+    const res = await getHandler(IPC.REMOTE_PANE_RESIZE_REQUEST)({}, attachId, 100, 30);
+
+    expect(res).toEqual({ ok: false, reason: 'desk-owns-size' });
+  });
+
+  it('resolves ok:false for an unknown attachId instead of throwing', async () => {
+    const store = fakeStore([host]);
+    const client = fakeClient(host);
+    registerRemoteHandlers({ store: store as never, attachments: fakeAttachments() as never, clientFactory: () => client });
+
+    const res = await getHandler(IPC.REMOTE_PANE_RESIZE_REQUEST)({}, 'never-attached', 100, 30);
+
+    expect(res).toEqual({ ok: false, reason: 'unknown attach' });
+    expect(client.resizeSession).not.toHaveBeenCalled();
+  });
+
+  it('resolves ok:false when cols/rows are not numbers, without calling the client', async () => {
+    const store = fakeStore([host]);
+    const client = fakeClient(host);
+    registerRemoteHandlers({ store: store as never, attachments: fakeAttachments() as never, clientFactory: () => client });
+
+    const sender = fakeSender(203);
+    const { attachId } = await getHandler(IPC.REMOTE_PANE_ATTACH)({ sender }, 'h1', 'session-1') as { attachId: string };
+
+    const res = await getHandler(IPC.REMOTE_PANE_RESIZE_REQUEST)({}, attachId, '100', 30);
+
+    expect(res).toEqual({ ok: false, reason: 'cols and rows must be numbers' });
+    expect(client.resizeSession).not.toHaveBeenCalled();
+  });
+
+  it('resolves ok:false rather than throwing when resizeSession itself throws', async () => {
+    const store = fakeStore([host]);
+    const client = fakeClient(host);
+    client.resizeSession.mockRejectedValue(new Error('network blip'));
+    registerRemoteHandlers({ store: store as never, attachments: fakeAttachments() as never, clientFactory: () => client });
+
+    const sender = fakeSender(204);
+    const { attachId } = await getHandler(IPC.REMOTE_PANE_ATTACH)({ sender }, 'h1', 'session-1') as { attachId: string };
+
+    const res = await getHandler(IPC.REMOTE_PANE_RESIZE_REQUEST)({}, attachId, 100, 30);
+
+    expect(res).toEqual({ ok: false, reason: 'network blip' });
   });
 });
 

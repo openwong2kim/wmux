@@ -671,4 +671,106 @@ describe('RemoteHostClient', () => {
       expect(fetchImpl.mock.calls.length).toBe(callsAtGiveUp); // no further retries after giving up
     });
   });
+
+  describe('resizeSession (#1322, reuses #766)', () => {
+    it('POSTs cols/rows to /api/sessions/:id/resize with the Bearer token', async () => {
+      const fetchImpl = vi.fn(async () => ({
+        ok: true,
+        status: 200,
+        json: async () => ({ cols: 100, rows: 30, owner: 'phone' }),
+      }) as unknown as Response);
+      const client = new RemoteHostClient(host, fetchImpl as unknown as typeof fetch);
+
+      const result = await client.resizeSession('web-1', 100, 30);
+
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+      const [url, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+      expect(url).toBe(`${host.origin}/api/sessions/web-1/resize`);
+      expect(init.method).toBe('POST');
+      expect((init.headers as Record<string, string>)?.Authorization).toBe(`Bearer ${host.token}`);
+      expect(init.redirect).toBe('error');
+      expect(init.signal).toBeInstanceOf(AbortSignal);
+      expect(JSON.parse(init.body as string)).toEqual({ cols: 100, rows: 30 });
+      expect(result).toEqual({ ok: true, cols: 100, rows: 30 });
+    });
+
+    it('percent-encodes the session id into the path', async () => {
+      const fetchImpl = vi.fn(async () => ({
+        ok: true,
+        status: 200,
+        json: async () => ({ cols: 80, rows: 24 }),
+      }) as unknown as Response);
+      const client = new RemoteHostClient(host, fetchImpl as unknown as typeof fetch);
+
+      await client.resizeSession('a/../b', 80, 24);
+
+      expect((fetchImpl.mock.calls[0] as unknown as [string])[0])
+        .toBe(`${host.origin}/api/sessions/a%2F..%2Fb/resize`);
+    });
+
+    // The ownership rule this method is on the receiving end of
+    // (WebTerminalServer.ts's handleSessionResize): a desk viewer on the
+    // remote host owns the size right now. An EXPECTED refusal, not a
+    // transport failure — resolves `{ ok: false }` rather than throwing.
+    it('resolves ok:false, not a throw, on 409 desk-owns-size', async () => {
+      const fetchImpl = vi.fn(async () => ({
+        ok: false,
+        status: 409,
+        json: async () => ({ error: 'desk-owns-size', cols: 151, rows: 47, owner: 'desk' }),
+      }) as unknown as Response);
+      const client = new RemoteHostClient(host, fetchImpl as unknown as typeof fetch);
+
+      const result = await client.resizeSession('web-1', 100, 30);
+
+      expect(result).toEqual({ ok: false, reason: 'desk-owns-size' });
+    });
+
+    it('resolves ok:false on a rate-limited (429) response', async () => {
+      const fetchImpl = vi.fn(async () => ({
+        ok: false,
+        status: 429,
+        json: async () => ({ error: 'resize-too-often', cols: 80, rows: 24, retryAfterMs: 100 }),
+      }) as unknown as Response);
+      const client = new RemoteHostClient(host, fetchImpl as unknown as typeof fetch);
+
+      const result = await client.resizeSession('web-1', 100, 30);
+
+      expect(result).toEqual({ ok: false, reason: 'resize-too-often' });
+    });
+
+    it('resolves ok:false with a generic HTTP status when the error body is not JSON', async () => {
+      const fetchImpl = vi.fn(async () => ({
+        ok: false,
+        status: 500,
+        json: async () => { throw new Error('not json'); },
+      }) as unknown as Response);
+      const client = new RemoteHostClient(host, fetchImpl as unknown as typeof fetch);
+
+      const result = await client.resizeSession('web-1', 100, 30);
+
+      expect(result).toEqual({ ok: false, reason: 'HTTP 500' });
+    });
+
+    it('resolves ok:false rather than throwing when fetch itself rejects (host unreachable)', async () => {
+      const fetchImpl = vi.fn(async () => { throw new Error('ECONNREFUSED'); });
+      const client = new RemoteHostClient(host, fetchImpl as unknown as typeof fetch);
+
+      const result = await client.resizeSession('web-1', 100, 30);
+
+      expect(result).toEqual({ ok: false, reason: 'ECONNREFUSED' });
+    });
+
+    it('resolves ok:false when the 200 body carries no geometry', async () => {
+      const fetchImpl = vi.fn(async () => ({
+        ok: true,
+        status: 200,
+        json: async () => ({}),
+      }) as unknown as Response);
+      const client = new RemoteHostClient(host, fetchImpl as unknown as typeof fetch);
+
+      const result = await client.resizeSession('web-1', 100, 30);
+
+      expect(result.ok).toBe(false);
+    });
+  });
 });

@@ -13,6 +13,13 @@
 // workspace row the daemon derives from it) running forever. Nothing else
 // here deletes anything on the remote; `detach`/`detachAll` are LOCAL stream
 // teardown and leave the remote session untouched, on purpose.
+//
+// `resizeSession` (#1322) is neither observe, input, nor destructive — it
+// changes two numbers on a struct via the same `POST /api/sessions/:id/resize`
+// route the phone already uses (#766). Reused, not reinvented: the route's
+// ownership rule already grants a resize to whoever asks when no desk viewer
+// on the remote host is looking at the pane, which is normally true of every
+// session this client mints (see the method's own doc comment).
 
 import * as crypto from 'crypto';
 import type {
@@ -295,6 +302,62 @@ export class RemoteHostClient implements RemotePaneEvents {
       /* body wasn't JSON — fall back to the generic message */
     }
     throw new Error(message);
+  }
+
+  /**
+   * `POST /api/sessions/:id/resize` (#766, reused for #1322) — asks the
+   * remote daemon to change the PTY's geometry, exactly the way a paired
+   * phone already does. Nothing here is phone-specific: `handleSessionResize`
+   * grants the request whenever the underlying session is `detached` or
+   * `attached` without a visible desk viewer, which is what a session this
+   * client itself minted via {@link createWorkspace} normally is — nothing on
+   * the remote host ever calls `daemon.attachSession` for it, so it never
+   * becomes `attached` in the first place. See `WebTerminalServer.ts:1966-2007`
+   * for the ownership rule this method is on the receiving end of.
+   *
+   * Returns the APPLIED geometry on success (the manager floors cols/rows, so
+   * this can differ from what was asked for) or `{ ok: false }` when a desk
+   * viewer on the remote host owns the size right now (`409 desk-owns-size`) —
+   * that is an expected, non-exceptional outcome, not a transport failure, so
+   * it resolves rather than throws. A resize request racing the pane's own
+   * teardown (404) is folded into the same `{ ok: false }` shape: by the time
+   * the answer arrives there is nothing left to have asked for.
+   */
+  async resizeSession(
+    sessionId: string,
+    cols: number,
+    rows: number,
+  ): Promise<{ ok: true; cols: number; rows: number } | { ok: false; reason: string }> {
+    let res: Response;
+    try {
+      res = await this.fetchImpl(
+        `${this.host.origin}/api/sessions/${encodeURIComponent(sessionId)}/resize`,
+        {
+          method: 'POST',
+          headers: { ...this.authHeaders(), 'Content-Type': 'application/json' },
+          body: JSON.stringify({ cols, rows }),
+          redirect: 'error',
+          signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+        },
+      );
+    } catch (err) {
+      return { ok: false, reason: err instanceof Error ? err.message : String(err) };
+    }
+    let body: unknown;
+    try {
+      body = await res.json();
+    } catch {
+      body = null;
+    }
+    if (!res.ok) {
+      const parsed = body as { error?: string; detail?: string } | null;
+      return { ok: false, reason: parsed?.error ?? parsed?.detail ?? `HTTP ${res.status}` };
+    }
+    const parsed = body as { cols?: unknown; rows?: unknown } | null;
+    if (typeof parsed?.cols !== 'number' || typeof parsed?.rows !== 'number') {
+      return { ok: false, reason: 'resizeSession: response carried no geometry' };
+    }
+    return { ok: true, cols: parsed.cols, rows: parsed.rows };
   }
 
   async listWorkspaces(): Promise<RemoteWorkspacesResponse> {

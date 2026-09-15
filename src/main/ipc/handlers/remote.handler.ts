@@ -632,6 +632,39 @@ export function registerRemoteHandlers(deps: RegisterRemoteHandlersDeps): () => 
     client.write(attachId, data).catch(() => { /* see doc comment above */ });
   });
 
+  // #1322 — a remote-terminal mirror's own fit-to-box request, resolved
+  // through the attachId the way write is: the record it was minted with
+  // (REMOTE_PANE_ATTACH) is the only place this handler learns which host and
+  // session `attachId` names. An unknown attachId (raced a detach, or a stale
+  // renderer reference) resolves `{ ok: false }` rather than throwing — the
+  // caller's remedy either way is "wait for the next box-size change", not a
+  // crash. The actual applied geometry, if granted, reaches this same mirror
+  // through its own SSE stream (REMOTE_PANE_RESIZE below), fired by the
+  // daemon for every attached viewer of that session — this invoke's answer
+  // only says whether the route accepted the request at all.
+  ipcMain.removeHandler(IPC.REMOTE_PANE_RESIZE_REQUEST);
+  ipcMain.handle(IPC.REMOTE_PANE_RESIZE_REQUEST, wrapHandler(IPC.REMOTE_PANE_RESIZE_REQUEST,
+    async (
+      _e: IpcMainInvokeEvent,
+      attachId: unknown,
+      cols: unknown,
+      rows: unknown,
+    ): Promise<{ ok: true; cols: number; rows: number } | { ok: false; reason: string }> => {
+      const id = assertString(attachId, 'attachId');
+      if (typeof cols !== 'number' || typeof rows !== 'number') {
+        return { ok: false, reason: 'cols and rows must be numbers' };
+      }
+      const record = attachRecords.get(id);
+      if (!record) return { ok: false, reason: 'unknown attach' };
+      const client = clients.get(record.hostId);
+      if (!client) return { ok: false, reason: 'unknown host' };
+      try {
+        return await client.resizeSession(record.sessionId, cols, rows);
+      } catch (err) {
+        return { ok: false, reason: err instanceof Error ? err.message : String(err) };
+      }
+    }));
+
   const onWillQuit = (): void => {
     for (const client of clients.values()) client.detachAll();
   };
@@ -651,6 +684,7 @@ export function registerRemoteHandlers(deps: RegisterRemoteHandlersDeps): () => 
     ipcMain.removeHandler(IPC.REMOTE_PANE_ATTACH);
     ipcMain.removeHandler(IPC.REMOTE_PANE_DETACH);
     ipcMain.removeAllListeners(IPC.REMOTE_PANE_WRITE);
+    ipcMain.removeHandler(IPC.REMOTE_PANE_RESIZE_REQUEST);
     app.removeListener('will-quit', onWillQuit);
   };
 }
