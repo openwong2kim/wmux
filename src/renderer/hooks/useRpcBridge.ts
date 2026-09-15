@@ -35,6 +35,7 @@ import { publishA2aTask } from '../events/publisher';
 import { resolvePaneAddress, activePaneTerminalPty, decideSameWsSend, decideReplyDelivery, REPLY_SUPPRESS_HINTS, countRoundTrips, maxSideMessages, REPLY_ROUND_CAP, isTerminalPtyInLeaves, resolveSelfPaneIdentity, resolveSenderPaneAddress, resolvePaneRole, findLeafPanes, type PaneAddress } from './a2aAddressing';
 import { resolveWorkspaceTarget } from './workspaceTargeting';
 import { destroyRemoteSessions, destroySurfaceRemoteSession, destroyWorkspaceRemoteSessions } from '../utils/remoteSessionTeardown';
+import { remoteAgentKey } from '../../shared/remoteHosts';
 import { collectPaneTreeRemoteSessions } from '../../shared/paneUtils';
 import { findActivePtyId, buildWorkspaceListEntries } from './workspaceMirrorSnapshot';
 
@@ -1257,7 +1258,39 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
         // Part A: per-surface agent labels for this leaf. A split pane can hold
         // more than one terminal surface; each detected agent is listed so the
         // pane is individually addressable (gaps 1/8).
+        //
+        // #1322 — a remote-terminal surface always has ptyId '' (createRemoteSurface,
+        // shared/types.ts), so it can never match store.surfaceAgent, which is
+        // keyed exclusively by LOCAL ptyIds. Left unhandled, this tool reports
+        // agents: [] for a remote pane no matter how long a real agent has been
+        // running on the host — the exact gap the sidebar's WorkspaceAgentRoster
+        // already closed for its own listing (#1163, selectors/workspaceAgentRoster.ts)
+        // by reading state.remoteWorkspaces instead of the ptyId map. This mirrors
+        // that same lookup here so pane_list (the MCP-facing read) sees what the
+        // sidebar already sees, instead of silently disagreeing with it.
         agents: l.surfaces.flatMap((s) => {
+          if (s.surfaceType === 'remote-terminal') {
+            const hostId = s.remoteHostId;
+            const sessionId = s.remoteSessionId;
+            if (!hostId || !sessionId) return [];
+            // A stale entry (host unreachable) keeps its last snapshot for the
+            // mirror but its agent status is frozen — same "no live metadata, no
+            // row" rule as the roster, so a disconnected host cannot be reported
+            // as a live or blocked agent indefinitely.
+            const attached = store.remoteWorkspaces.find(
+              (r) => r.hostId === hostId && !r.stale && r.panes.some((p) => p.sessionId === sessionId),
+            );
+            const pane = attached?.panes.find((p) => p.sessionId === sessionId);
+            if (!pane?.agentName) return [];
+            return [{
+              ptyId: remoteAgentKey(hostId, sessionId),
+              surfaceId: s.id,
+              agentName: pane.agentName,
+              agentStatus: pane.agentStatus ?? 'idle',
+              // The host snapshot has no event channel: no transcript-derived
+              // pending question, same as the roster's remote branch.
+            }];
+          }
           const a = store.surfaceAgent[s.ptyId];
           // pendingQuestion answers "is this pane blocked on me?" — a status of
           // 'waiting' alone can't, and reading the terminal to find out is what

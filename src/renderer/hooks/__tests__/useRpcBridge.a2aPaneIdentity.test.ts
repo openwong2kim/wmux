@@ -63,6 +63,25 @@ describe('useRpcBridge — pane-level A2A identity wiring', () => {
     expect(mapBody).toMatch(/agentStatus: a\?\.status \?\? null/);
   });
 
+  /**
+   * #1322 — a remote-terminal surface's ptyId is always '' (createRemoteSurface,
+   * shared/types.ts), so `store.surfaceAgent[s.ptyId]` can never match it: this
+   * tool reported `agents: []` for every remote pane regardless of what agent
+   * actually ran on the host, even though the sidebar's WorkspaceAgentRoster
+   * already solved the identical problem (#1163) by reading
+   * state.remoteWorkspaces instead. This locks pane.list consulting the same
+   * source for remote-terminal surfaces, so the MCP-facing read agrees with
+   * what the sidebar already shows.
+   */
+  it('pane.list resolves remote-terminal agents from remoteWorkspaces, not surfaceAgent', () => {
+    const mapBody = region("method === 'pane\\.list'", 'pane\\.focus');
+    expect(mapBody).toMatch(/s\.surfaceType === 'remote-terminal'/);
+    expect(mapBody).toMatch(/store\.remoteWorkspaces\.find/);
+    expect(mapBody).toMatch(/!r\.stale/);
+    expect(mapBody).toMatch(/remoteAgentKey\(hostId, sessionId\)/);
+    expect(mapBody).toMatch(/if \(!pane\?\.agentName\) return \[\]/);
+  });
+
   it('a2a.discover returns per-pane addressable entries', () => {
     const block = region("method === 'a2a\\.discover'", "method === 'a2a\\.task\\.send'");
     expect(block).toMatch(/panes/);
