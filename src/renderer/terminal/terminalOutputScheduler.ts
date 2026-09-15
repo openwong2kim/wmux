@@ -41,6 +41,8 @@
 // the authoritative bytes — which is why the option is only set for
 // daemon-backed panes (see useTerminal).
 
+import { splitIncompleteEscape } from '../../shared/incompleteEscape';
+
 /** Minimal surface the scheduler needs — keeps the module xterm-agnostic and
  *  unit-testable with plain fakes. */
 export interface SchedulableTerminal {
@@ -149,7 +151,9 @@ const SYNC_OUTPUT_BEGIN = '\x1b[?2026h';
 const SYNC_OUTPUT_END = '\x1b[?2026l';
 // If the END marker never lands (ConPTY can split it across PTY deliveries, or
 // an agent can simply misbehave) the hold is released anyway after a bounded
-// safety window so a pane can never wedge mid-frame.
+// safety window so a pane can never wedge mid-frame. A PTY read can also split
+// a CUP (`ESC[row;colH`) at that same boundary; the release peels the
+// unfinished CSI into `escapeCarry` so the synthetic END cannot abort it.
 const SYNC_HOLD_SAFETY_MS = 250;
 // A frame opened right after a keystroke is echo / input-driven redraw the user
 // is waiting on. Release it on a near-frame deadline so typing and IME
@@ -178,6 +182,11 @@ interface SyncFrameState {
   safetyTimer: ReturnType<typeof setTimeout> | null;
 }
 const syncFrames = new Map<SchedulableTerminal, SyncFrameState>();
+/** Unfinished ESC/CSI/OSC peeled off a held 2026 frame before a synthetic END
+ *  is injected, then prepended to the next write so xterm never sees END's ESC
+ *  abort a pending CUP. Keyed by terminal, not the queue entry — the safety
+ *  drain deletes the entry. */
+const escapeCarry = new Map<SchedulableTerminal, string>();
 let drainTimer: ReturnType<typeof setTimeout> | null = null;
 let drainDelayMs: number | null = null;
 /** One-shot diagnostic latch — see the retention branch in writeTerminalOutput. */
@@ -423,13 +432,17 @@ function drainQueuedOutput(): void {
 /** Resolve a terminal's DEC 2026 frame state after one foreground chunk.
  *  Multiple markers in a chunk are resolved by honoring the LAST one.
  *
- *  Split-marker behavior (both benign, neither corrupts output):
+ *  Split-marker behavior:
  *  - A BEGIN split across a chunk boundary is not matched here, so the frame
  *    never engages the hold and that frame simply renders un-coalesced — the
  *    pre-feature behavior, no worse than today.
  *  - An END split while a frame is open is likewise not matched, but the hold
  *    is bounded by the absolute safety deadline (armed at open, never pushed
- *    back), so the pane is released regardless. */
+ *    back), so the pane is released regardless.
+ *  - A CUP/OSC split at that same deadline is NOT benign: injecting END while
+ *    the hold ends on `ESC[` aborts the CSI and paints `12;6H` as glyphs.
+ *    `closeHeldFrameWithSyntheticEnd` peels the unfinished tail into
+ *    `escapeCarry` and prepends it to the next write. */
 function resolveSyncOpen(prevOpen: boolean, data: string): boolean {
   const lastBegin = data.lastIndexOf(SYNC_OUTPUT_BEGIN);
   const lastEnd = data.lastIndexOf(SYNC_OUTPUT_END);
@@ -445,21 +458,40 @@ function clearSyncFrame(terminal: SchedulableTerminal): void {
   syncFrames.delete(terminal);
 }
 
-/** Release a held frame that has NO END in the stream (safety timeout or
- *  overflow). The held bytes carry an unmatched BEGIN; xterm.js honors DEC 2026
- *  natively, so without a close it would stay in its own synchronized-output
- *  hold and never present the frame — defeating the whole point of the safety
- *  release. Append the matching close so the partial frame paints, then drain.
- *  A later real END arriving as an unmatched close is a harmless no-op. */
+/** Concat remaining queued bytes, peel a trailing unfinished escape into
+ *  `escapeCarry`, and leave only the complete prefix in the entry. */
+function peelIncompleteEscape(terminal: SchedulableTerminal, entry: QueueEntry): boolean {
+  let data = '';
+  let customWrite = false;
+  for (let i = entry.chunkIndex; i < entry.chunks.length; i++) {
+    customWrite = entry.chunks[i].customWrite;
+    data += entry.chunks[i].data;
+  }
+  const { complete, pending } = splitIncompleteEscape(data);
+  if (pending) {
+    const prev = escapeCarry.get(terminal) ?? '';
+    escapeCarry.set(terminal, prev + pending);
+  }
+  entry.chunks = complete ? [{ data: complete, customWrite }] : [];
+  entry.chunkIndex = 0;
+  entry.queuedChars = complete.length;
+  return customWrite;
+}
+
+/** Close xterm's native 2026 hold with a synthetic END. A later real END is a
+ *  harmless no-op. The unfinished CSI tail (if any) is carried, not written
+ *  before END — otherwise END's ESC aborts it and the CUP body paints as text. */
+function closeHeldFrameWithSyntheticEnd(terminal: SchedulableTerminal, entry: QueueEntry): void {
+  const customWrite = peelIncompleteEscape(terminal, entry);
+  entry.chunks.push({ data: SYNC_OUTPUT_END, customWrite });
+  entry.queuedChars += SYNC_OUTPUT_END.length;
+}
+
 function releaseHeldWithSyntheticEnd(terminal: SchedulableTerminal, entry: QueueEntry): void {
   clearSyncFrame(terminal);
   entry.heldForSync = false;
   entry.priority = true;
-  entry.chunks.push({
-    data: SYNC_OUTPUT_END,
-    customWrite: entry.chunks[entry.chunks.length - 1]?.customWrite ?? false,
-  });
-  entry.queuedChars += SYNC_OUTPUT_END.length;
+  closeHeldFrameWithSyntheticEnd(terminal, entry);
   scheduleDrain(0);
 }
 
@@ -552,6 +584,11 @@ export function writeTerminalOutput(
   data: string,
   options: WriteOptions,
 ): void {
+  const carried = escapeCarry.get(terminal);
+  if (carried) {
+    data = carried + data;
+    escapeCarry.delete(terminal);
+  }
   if (!data) return;
 
   // Phase 3 retention: hidden bytes are queued for ordering but never drained
@@ -690,12 +727,9 @@ export function flushTerminalOutput(terminal: SchedulableTerminal): void {
   entry.heldForSync = false;
   if (hadOpenFrame) {
     // The held bytes carry an unmatched BEGIN; close xterm's sync mode so the
-    // handed-over frame paints (twin of the safety-timeout release).
-    entry.chunks.push({
-      data: SYNC_OUTPUT_END,
-      customWrite: entry.chunks[entry.chunks.length - 1]?.customWrite ?? false,
-    });
-    entry.queuedChars += SYNC_OUTPUT_END.length;
+    // handed-over frame paints (twin of the safety-timeout release). Peel a
+    // trailing unfinished CSI first so END's ESC cannot abort it.
+    closeHeldFrameWithSyntheticEnd(terminal, entry);
   }
   queue.delete(terminal);
   while (hasQueuedChunks(entry)) {
@@ -727,6 +761,7 @@ export function discardTerminalOutput(terminal: SchedulableTerminal): void {
   queue.delete(terminal);
   dirtyTerminals.delete(terminal);
   lastInputAt.delete(terminal);
+  escapeCarry.delete(terminal);
 }
 
 /** Phase 3: true when this terminal's retained backlog overflowed and was
@@ -759,6 +794,7 @@ export function markTerminalDirty(terminal: SchedulableTerminal): void {
   clearSyncFrame(terminal);
   queue.delete(terminal);
   dirtyTerminals.add(terminal);
+  escapeCarry.delete(terminal);
 }
 
 /** Phase 3: the owner finished re-synchronizing this terminal's screen state
@@ -786,5 +822,6 @@ export function __resetTerminalOutputSchedulerForTests(): void {
   queue.clear();
   dirtyTerminals.clear();
   lastInputAt.clear();
+  escapeCarry.clear();
   retentionEngagedLogged = false;
 }

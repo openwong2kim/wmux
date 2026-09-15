@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { Terminal } from '@xterm/headless';
 import {
   writeTerminalOutput,
   flushTerminalOutput,
@@ -161,5 +162,55 @@ describe('terminalOutputScheduler — DEC 2026 synchronized output', () => {
     expect(t.writes).toEqual([]); // still held past the interactive deadline
     vi.runAllTimers();
     expect(joined(t)).toBe(`${BEGIN}flood${END}`);
+  });
+
+  // PTY reads split arbitrarily. A Grok/Claude TUI frame is a torrent of
+  // CUP sequences (`ESC[row;colH`). If the safety timeout injects a
+  // synthetic END while the hold ends on `ESC[` (or `ESC[12;6`), that
+  // ESC aborts the pending CSI and the continuation (`12;6H…`) is parsed
+  // as printable text — the "6;36" / "12;6H" glyphs in Korean agent panes.
+  it('safety-timeout END does not abort a CUP split across the next PTY chunk', () => {
+    const t = makeTerminal();
+    writeTerminalOutput(t, `${BEGIN}hello\x1b[`, { foreground: true });
+    vi.runAllTimers(); // 250ms safety → synthetic END
+    writeTerminalOutput(t, `12;6Hworld${END}`, { foreground: true });
+    vi.runAllTimers();
+    // The `ESC[` prefix must be reunited with `12;6H` AFTER the synthetic
+    // END, never sandwiched so xterm sees END's ESC abort the CSI.
+    expect(joined(t)).toBe(`${BEGIN}hello${END}\x1b[12;6Hworld${END}`);
+  });
+
+  it('flushTerminalOutput also reunites a pending CSI instead of injecting END into it', () => {
+    const t = makeTerminal();
+    writeTerminalOutput(t, `${BEGIN}hello\x1b[12;6`, { foreground: true });
+    flushTerminalOutput(t);
+    writeTerminalOutput(t, `Hworld${END}`, { foreground: true });
+    vi.runAllTimers();
+    expect(joined(t)).toBe(`${BEGIN}hello${END}\x1b[12;6Hworld${END}`);
+  });
+
+  it('xterm stores the CUP target, not the CSI body, after a split-and-timeout', async () => {
+    const t = makeTerminal();
+    writeTerminalOutput(t, `${BEGIN}hello\x1b[`, { foreground: true });
+    vi.runAllTimers();
+    writeTerminalOutput(t, `12;6Hworld${END}`, { foreground: true });
+    vi.runAllTimers();
+    const bytes = joined(t);
+    // xterm's write callback is a real async parse — fake timers would hang it.
+    vi.useRealTimers();
+
+    const term = new Terminal({ cols: 80, rows: 24, allowProposedApi: true, logLevel: 'off' });
+    try {
+      await new Promise<void>((resolve) => term.write(bytes, resolve));
+      const rows: string[] = [];
+      for (let i = 0; i < 24; i++) {
+        rows.push(term.buffer.active.getLine(i)?.translateToString(true) ?? '');
+      }
+      const screen = rows.join('\n');
+      expect(screen).not.toMatch(/12;6H/);
+      expect(rows[11]).toContain('world');
+    } finally {
+      term.dispose();
+    }
   });
 });
