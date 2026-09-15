@@ -876,6 +876,9 @@ export interface SessionData {
   sidebarPosition?: 'left' | 'right';
   /** Whether the sidebar lifts needs-you workspaces to the top. Default false. */
   sidebarAttentionFirst?: boolean;
+  /** #1326 — whether the agent roster's muted trailer shows the auto `w<ws>-<pane>`
+   *  coordinate for unlabeled panes. Default true. */
+  sidebarShowPaneCoordinates?: boolean;
   /** How the multiview grid arranges its tiles (#746). Whitelisted on load. */
   multiviewArrangement?: 'auto' | 'columns' | 'rows';
   notificationSoundEnabled?: boolean;

@@ -383,6 +383,7 @@ function buildSessionData(dumped: Map<string, boolean>): SessionData {
     a2aAutoApproveExecute: state.a2aAutoApproveExecute,
     sidebarPosition: state.sidebarPosition,
     sidebarAttentionFirst: state.sidebarAttentionFirst,
+    sidebarShowPaneCoordinates: state.sidebarShowPaneCoordinates,
     multiviewArrangement: state.multiviewArrangement,
     notificationSoundEnabled: state.notificationSoundEnabled,
     toastEnabled: state.toastEnabled,

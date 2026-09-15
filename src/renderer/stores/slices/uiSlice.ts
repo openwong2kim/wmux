@@ -426,6 +426,13 @@ export interface UISlice {
   sidebarAttentionFirst: boolean;
   setSidebarAttentionFirst: (enabled: boolean) => void;
 
+  /** #1326 — show the auto-generated `w<ws>-<pane>` coordinate in the agent
+   *  roster's muted trailer for panes that have no explicit label. On by
+   *  default so nobody's roster changes without them touching the setting; a
+   *  user-set pane label is unaffected either way and always shows. */
+  sidebarShowPaneCoordinates: boolean;
+  setSidebarShowPaneCoordinates: (enabled: boolean) => void;
+
   // ─── Toast / ring notification UI ────────────────────────────────────────
   toastEnabled: boolean;
   setToastEnabled: (enabled: boolean) => void;
@@ -1347,6 +1354,12 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
 
   setSidebarAttentionFirst: (enabled) => set((state) => {
     state.sidebarAttentionFirst = enabled;
+  }),
+
+  sidebarShowPaneCoordinates: true,
+
+  setSidebarShowPaneCoordinates: (enabled) => set((state) => {
+    state.sidebarShowPaneCoordinates = enabled;
   }),
 
   // ─── Toast / ring notification UI ────────────────────────────────────────

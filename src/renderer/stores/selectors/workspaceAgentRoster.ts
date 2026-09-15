@@ -87,11 +87,17 @@ export function selectWorkspaceAgentRoster(
   const workspace = state.workspaces.find((candidate) => candidate.id === workspaceId);
   if (!workspace) return { rows: [], agentCount: 0, needsAttentionCount: 0, stashedCount: 0 };
 
+  // #1326 — default true (undefined in tests/older sessions must behave like
+  // the setting was never touched): the coordinate is withheld from the
+  // trailer only for panes that have no explicit label, never for one the
+  // user actually set.
+  const showCoordinates = state.sidebarShowPaneCoordinates !== false;
+
   const rows: WorkspaceAgentRosterRow[] = [];
   for (const leaf of getLeafPanes(workspace.rootPane)) {
     const paneName = paneDisplayName(
       state.paneLabel[leaf.id],
-      computePaneAutoName(workspace.wsOrdinal ?? 0, leaf.ordinal ?? 0),
+      showCoordinates ? computePaneAutoName(workspace.wsOrdinal ?? 0, leaf.ordinal ?? 0) : '',
     );
 
     leaf.surfaces.forEach((surface, surfaceIndex) => {
@@ -278,7 +284,7 @@ export function selectWorkspaceAgentRoster(
       agentName: agent?.name ?? '',
       paneName: paneDisplayName(
         state.paneLabel[leaf.id],
-        computePaneAutoName(workspace.wsOrdinal ?? 0, leaf.ordinal ?? 0),
+        showCoordinates ? computePaneAutoName(workspace.wsOrdinal ?? 0, leaf.ordinal ?? 0) : '',
       ),
       surfaceTitle: nonEmpty(surface.title),
       surfaceIndex: Math.max(0, leaf.surfaces.findIndex((s) => s.id === surface.id)),

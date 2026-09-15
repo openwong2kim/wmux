@@ -3726,6 +3726,8 @@ function TabAppearance() {
   const sidebarPosition = useStore((s) => s.sidebarPosition);
   const sidebarAttentionFirst = useStore((s) => s.sidebarAttentionFirst);
   const setSidebarAttentionFirst = useStore((s) => s.setSidebarAttentionFirst);
+  const sidebarShowPaneCoordinates = useStore((s) => s.sidebarShowPaneCoordinates);
+  const setSidebarShowPaneCoordinates = useStore((s) => s.setSidebarShowPaneCoordinates);
   const setSidebarPosition = useStore((s) => s.setSidebarPosition);
   const multiviewArrangement = useStore((s) => s.multiviewArrangement);
   const setMultiviewArrangement = useStore((s) => s.setMultiviewArrangement);
@@ -3863,6 +3865,19 @@ function TabAppearance() {
             checked={sidebarAttentionFirst}
             onChange={setSidebarAttentionFirst}
             label={t('settings.sidebarAttentionFirst')}
+          />
+        </SettingRow>
+        {/* #1326 — on by default: turning it off is an explicit opt-out, not a
+            behavior change nobody asked for. */}
+        <SettingRow
+          id="sidebarpanecoordinates"
+          label={t('settings.sidebarShowPaneCoordinates')}
+          description={t('settings.sidebarShowPaneCoordinatesDesc')}
+        >
+          <Toggle
+            checked={sidebarShowPaneCoordinates}
+            onChange={setSidebarShowPaneCoordinates}
+            label={t('settings.sidebarShowPaneCoordinates')}
           />
         </SettingRow>
         <SettingRow

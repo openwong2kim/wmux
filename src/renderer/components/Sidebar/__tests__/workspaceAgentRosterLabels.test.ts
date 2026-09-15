@@ -112,4 +112,30 @@ describe('roster row labels', () => {
       expect(rosterSecondaryLabel(row({ surfaceTitle: 'Zwroty' }))).toBe('Claude Code · w2-127');
     });
   });
+
+  // #1326 — the roster selector withholds paneName (empty string) rather than
+  // the coordinate string itself when sidebarShowPaneCoordinates is off and
+  // the pane has no label. rosterSecondaryLabel must not print a dangling
+  // separator for that empty value.
+  describe('pane coordinate withheld (#1326)', () => {
+    it('drops entirely for a titleless, single-surface pane with no coordinate and no label', () => {
+      const r = row({ paneName: '' });
+      expect(rosterSecondaryLabel(r)).toBe('');
+    });
+
+    it('a titled pane with the coordinate withheld falls back to just the vendor', () => {
+      const r = row({ paneName: '', surfaceTitle: 'Zwroty' });
+      expect(rosterSecondaryLabel(r)).toBe('Claude Code');
+    });
+
+    it('keeps the tab position even when the coordinate is withheld', () => {
+      const r = row({ paneName: '', surfaceIndex: 1, surfaceCount: 3 });
+      expect(rosterSecondaryLabel(r)).toBe('#2/3');
+    });
+
+    it('a real user label is never withheld, regardless of the setting', () => {
+      const r = row({ paneName: 'api' });
+      expect(rosterSecondaryLabel(r)).toBe('api');
+    });
+  });
 });

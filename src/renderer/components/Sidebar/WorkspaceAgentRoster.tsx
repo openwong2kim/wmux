@@ -116,7 +116,11 @@ export function rosterSecondaryLabel(
   // the mirror cell, not the agent); the HOST is the "where" that identifies
   // the row and marks its origin.
   if (row.remote) parts.push(`@${row.remote.hostLabel}`);
-  else parts.push(row.paneName);
+  // #1326 — the roster selector already withholds `paneName` when the
+  // sidebarShowPaneCoordinates setting is off AND the pane has no explicit
+  // label (empty string, never the coordinate). A real label still comes
+  // through here unaffected by the setting.
+  else if (row.paneName) parts.push(row.paneName);
   if (row.surfaceCount > 1) parts.push(`#${row.surfaceIndex + 1}/${row.surfaceCount}`);
   return parts.join(' · ');
 }
@@ -418,10 +422,17 @@ function WorkspaceAgentRoster({ workspaceId, pulsingPaneId }: WorkspaceAgentRost
                     <span className="min-w-0 flex-1 truncate text-[10px] font-semibold text-[var(--text-main)]">
                       {primary}
                     </span>
-                    <span className="flex-none text-[10px] text-[var(--text-muted)]">·</span>
-                    <span className="max-w-[40%] flex-none truncate text-[10px] font-mono text-[var(--text-muted)]">
-                      {secondary}
-                    </span>
+                    {/* #1326 — secondary can be empty now (coordinate hidden,
+                        no title, no label): drop the "·" too, or a titleless,
+                        coordinate-hidden row would end in a dangling dot. */}
+                    {secondary && (
+                      <>
+                        <span className="flex-none text-[10px] text-[var(--text-muted)]">·</span>
+                        <span className="max-w-[40%] flex-none truncate text-[10px] font-mono text-[var(--text-muted)]">
+                          {secondary}
+                        </span>
+                      </>
+                    )}
                   </span>
                   {row.stashed && (
                     // The ICON is the verb slot: eye-off at rest ("not on your

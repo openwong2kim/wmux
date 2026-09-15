@@ -979,6 +979,8 @@ export const en = {
   'settings.sidebarPositionDesc': 'Left or right of the terminal area',
   'settings.sidebarAttentionFirst': 'Needs-you rows first',
   'settings.sidebarAttentionFirstDesc': 'Pin workspaces whose agent is waiting on you to the top of the sidebar. Off by default: rows stay where you dragged them. While on, drag-to-reorder is paused.',
+  'settings.sidebarShowPaneCoordinates': 'Show pane coordinates',
+  'settings.sidebarShowPaneCoordinatesDesc': 'Show the auto-generated w1-2 style coordinate in the agent roster for panes you have not labeled. On by default. A pane you rename always shows its label either way.',
   'settings.sidebarLeft': 'Left',
   'settings.sidebarRight': 'Right',
   'settings.multiviewArrangement': 'Multiview arrangement',

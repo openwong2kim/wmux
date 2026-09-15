@@ -462,6 +462,80 @@ describe('selectWorkspaceAgentRoster', () => {
       surfaceCount: 2,
     });
   });
+
+  // #1326 — a global toggle to stop the roster from filling up with
+  // `w<ws>-<pane>` coordinates when several panes have no label.
+  describe('sidebarShowPaneCoordinates (#1326)', () => {
+    function pane1Workspace() {
+      return workspace('ws-1', leaf('p1', [surface('s1', 'pty-1')]), 'p1');
+    }
+
+    it('shows the auto coordinate by default (setting unset, like a fresh/older session)', () => {
+      const r = selectWorkspaceAgentRoster(
+        state({ workspaces: [pane1Workspace()], surfaceAgent: { 'pty-1': { name: 'A', status: 'idle' } } }),
+        'ws-1',
+      );
+      expect(r.rows[0].paneName).toBe('w0-0');
+    });
+
+    it('shows the auto coordinate when the setting is explicitly on', () => {
+      const r = selectWorkspaceAgentRoster(
+        state({
+          workspaces: [pane1Workspace()],
+          surfaceAgent: { 'pty-1': { name: 'A', status: 'idle' } },
+          sidebarShowPaneCoordinates: true,
+        } as StateOverrides & { sidebarShowPaneCoordinates: boolean }),
+        'ws-1',
+      );
+      expect(r.rows[0].paneName).toBe('w0-0');
+    });
+
+    it('withholds the coordinate for an unlabeled pane when the setting is off', () => {
+      const r = selectWorkspaceAgentRoster(
+        state({
+          workspaces: [pane1Workspace()],
+          surfaceAgent: { 'pty-1': { name: 'A', status: 'idle' } },
+          sidebarShowPaneCoordinates: false,
+        } as StateOverrides & { sidebarShowPaneCoordinates: boolean }),
+        'ws-1',
+      );
+      expect(r.rows[0].paneName).toBe('');
+    });
+
+    it('still shows a user-set label when the setting is off — only the auto name is withheld', () => {
+      const r = selectWorkspaceAgentRoster(
+        state({
+          workspaces: [pane1Workspace()],
+          paneLabel: { p1: 'api' },
+          surfaceAgent: { 'pty-1': { name: 'A', status: 'idle' } },
+          sidebarShowPaneCoordinates: false,
+        } as StateOverrides & { sidebarShowPaneCoordinates: boolean }),
+        'ws-1',
+      );
+      expect(r.rows[0].paneName).toBe('api');
+    });
+
+    it('withholds the coordinate for a stashed, unlabeled pane too', () => {
+      const stashedLeaf = leaf('p1', [surface('s1', 'pty-1')]);
+      const ws = {
+        ...workspace('ws-1', leaf('p2', [surface('s2', 'pty-2')]), 'p2'),
+        stashedPanes: [stashed(stashedLeaf)],
+      };
+      const r = selectWorkspaceAgentRoster(
+        state({
+          workspaces: [ws],
+          surfaceAgent: {
+            'pty-1': { name: 'A', status: 'idle' },
+            'pty-2': { name: 'B', status: 'idle' },
+          },
+          sidebarShowPaneCoordinates: false,
+        } as StateOverrides & { sidebarShowPaneCoordinates: boolean }),
+        'ws-1',
+      );
+      const stashedRow = r.rows.find((row) => row.stashed);
+      expect(stashedRow?.paneName).toBe('');
+    });
+  });
 });
 
 describe('createWorkspaceAgentRosterSelector memoization', () => {

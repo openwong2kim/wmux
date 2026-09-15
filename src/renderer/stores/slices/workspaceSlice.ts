@@ -1304,6 +1304,9 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       if (typeof data.sidebarAttentionFirst === 'boolean') {
         state.sidebarAttentionFirst = data.sidebarAttentionFirst;
       }
+      if (typeof data.sidebarShowPaneCoordinates === 'boolean') {
+        state.sidebarShowPaneCoordinates = data.sidebarShowPaneCoordinates;
+      }
       // Whitelisted, not a bare truthiness check: a forward-version session file
       // that names a fourth arrangement must not park an unknown string in the
       // store, where the settings control would render with nothing selected.
