@@ -26,6 +26,8 @@
  * resting cell is the truthful one" reading applied to rendering.
  */
 
+import { splitIncompleteEscape } from '../../shared/incompleteEscape';
+
 export const RESTING_DELAY_MS = 32;
 export const CURSOR_HIDE = '\x1b[?25l';
 export const CURSOR_SHOW = '\x1b[?25h';
@@ -38,6 +40,9 @@ const DECTCEM = /\x1b\[\?25([hl])/g;
 export class RestingCursorGuard {
   /** The application's own DECTCEM intent — the state restored at rest. */
   private appCursorVisible = true;
+  /** Unfinished ESC/CSI/OSC tail of the previous chunk, held back so our own
+   *  hide/show can never abort it. Prepended to the next chunk. */
+  private tail = '';
   private timer: ReturnType<typeof setTimeout> | null = null;
   private disposed = false;
 
@@ -53,6 +58,10 @@ export class RestingCursorGuard {
    * Chunks without a `?2026` marker pass through untouched.
    */
   process(data: string): string {
+    if (this.tail) {
+      data = this.tail + data;
+      this.tail = '';
+    }
     // Track the app's own show/hide intent BEFORE appending anything of ours,
     // so an injected hide is never mistaken for the app's.
     DECTCEM.lastIndex = 0;
@@ -63,7 +72,15 @@ export class RestingCursorGuard {
 
     if (this.disposed || !SYNC_MARK.test(data)) return data;
     this.arm();
-    return data + CURSOR_HIDE;
+    // A PTY read can end mid-CSI (`ESC[` and `12;6H` arriving as two reads).
+    // Appending our hide — or the timer's show, 32 ms later — behind that
+    // unfinished sequence aborts it in xterm's parser and the remainder paints
+    // as glyphs. That is the same defect the 2026 safety END had; here the
+    // guard is upstream of the scheduler, so it must hold the tail back itself
+    // and let it lead the next chunk.
+    const { complete, pending } = splitIncompleteEscape(data);
+    this.tail = pending;
+    return complete + CURSOR_HIDE;
   }
 
   private arm(): void {

@@ -91,4 +91,21 @@ describe('RestingCursorGuard', () => {
     const chunk = `${SYNC_ON}b${SYNC_OFF}`;
     expect(guard.process(chunk)).toBe(chunk);
   });
+
+  it('holds an unfinished CSI back so the injected hide cannot abort it', () => {
+    const inject = vi.fn();
+    const guard = new RestingCursorGuard(inject);
+    // PTY read ends mid-CUP: `ESC[` now, `12;6H` on the next read (#1320).
+    const first = guard.process(`${SYNC_ON}\x1b[1`);
+    expect(first).toBe(`${SYNC_ON}${CURSOR_HIDE}`);
+    // The tail leads the next chunk, so xterm still sees one whole CUP.
+    expect(guard.process('2;6Hhere')).toBe('\x1b[12;6Hhere');
+  });
+
+  it('carries the held tail even when the next chunk has no sync marker', () => {
+    const inject = vi.fn();
+    const guard = new RestingCursorGuard(inject);
+    guard.process(`${SYNC_ON}\x1b[`);
+    expect(guard.process('3;1Hx')).toBe('\x1b[3;1Hx');
+  });
 });
