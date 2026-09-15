@@ -66,8 +66,32 @@ describe('resolveNewlineKeyByte — Ctrl+J', () => {
 });
 
 describe('resolveNewlineKeyByte — Shift+Enter (preserved behavior)', () => {
-  it('emits CSI u for Shift+Enter on a local pane (default fallback)', () => {
-    expect(resolveNewlineKeyByte(ev({ key: 'Enter', shiftKey: true }))).toBe('\x1b[13;2u');
+  it('emits LF for Shift+Enter on a local pane (default fallback, #1152)', () => {
+    expect(resolveNewlineKeyByte(ev({ key: 'Enter', code: 'Enter', shiftKey: true }))).toBe('\n');
+  });
+
+  it('emits LF even when an IME mangles key to "Process"', () => {
+    expect(
+      resolveNewlineKeyByte(ev({ key: 'Process', code: 'Enter', shiftKey: true })),
+    ).toBe('\n');
+  });
+
+  it('emits LF for Shift+NumpadEnter', () => {
+    expect(
+      resolveNewlineKeyByte(ev({ key: 'Enter', code: 'NumpadEnter', shiftKey: true })),
+    ).toBe('\n');
+  });
+
+  it('defers during an active IME composition so a preedit is not split', () => {
+    expect(
+      resolveNewlineKeyByte(ev({ key: 'Enter', code: 'Enter', shiftKey: true, isComposing: true })),
+    ).toBeNull();
+  });
+
+  it('still emits CSI-u when the caller opts into that fallback', () => {
+    expect(
+      resolveNewlineKeyByte(ev({ key: 'Enter', shiftKey: true }), { shiftEnterFallback: 'csi-u' }),
+    ).toBe('\x1b[13;2u');
   });
 
   it('emits the win32-input-mode pair when the pane negotiated ?9001h (#1152)', () => {
@@ -109,11 +133,25 @@ describe('resolveNewlineKeyByte — Shift+Enter (preserved behavior)', () => {
   it('ignores Ctrl+Shift+Enter', () => {
     expect(resolveNewlineKeyByte(ev({ key: 'Enter', shiftKey: true, ctrlKey: true }))).toBeNull();
   });
+
+  it('emits modifyOtherKeys mode 2 when that is what the pane asked for', () => {
+    expect(
+      resolveNewlineKeyByte(ev({ key: 'Enter', shiftKey: true }), {
+        protocol: { modifyOtherKeys: 2 },
+      }),
+    ).toBe('\x1b[27;2;13~');
+  });
 });
 
 describe('resolveNewlineKeyByte — Ctrl+Enter', () => {
   it('emits LF for Ctrl+Enter so an in-pane TUI inserts a newline instead of submitting', () => {
     expect(resolveNewlineKeyByte(ev({ key: 'Enter', code: 'Enter', ctrlKey: true }))).toBe('\n');
+  });
+
+  it('emits LF for Ctrl+Enter even when an IME mangles key to "Process"', () => {
+    expect(
+      resolveNewlineKeyByte(ev({ key: 'Process', code: 'Enter', ctrlKey: true })),
+    ).toBe('\n');
   });
 
   it('emits LF for Ctrl+Enter on the numeric keypad (NumpadEnter still reports key "Enter")', () => {

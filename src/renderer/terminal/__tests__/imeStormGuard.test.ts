@@ -95,6 +95,14 @@ describe('attachImeStormGuard', () => {
     expect(recoveries).toHaveLength(0);
   });
 
+  it('a mashed Escape still recovers — it is the interrupt key (#1152)', () => {
+    attach();
+    stormKeys(IME_STORM_THRESHOLD, ['Escape']);
+    expect(recoveries).toHaveLength(1);
+    expect(recoveries[0].codes).toEqual(['Escape']);
+    expect(ta.calls).toEqual(['blur', 'focus']);
+  });
+
   it('a normal keydown resets the counter', () => {
     attach();
     stormKeys(IME_STORM_THRESHOLD - 1, ['KeyA', 'KeyS']);

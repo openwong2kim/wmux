@@ -29,6 +29,7 @@ import {
 import { terminalFontFamilyCss } from '../utils/terminalFont';
 import { createPathLinkProvider } from '../terminal/pathLinkProvider';
 import { resolveNewlineKeyByte } from '../terminal/newlineKeys';
+import { encodeEscape, isBareEscape } from '../terminal/escapeKeys';
 import { resolveCtrlLetterByte } from '../terminal/ctrlLetterKeys';
 import { isComposeChord, composeOwnerHost, TERMINAL_PTY_ATTR, COMPOSE_OWNER_ATTR } from '../terminal/composeChord';
 import { foldRemoteKeyboardState, INITIAL_REMOTE_KEYBOARD_STATE, type RemoteKeyboardState } from '../components/Remote/keyboardProtocol';
@@ -1712,10 +1713,11 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     });
 
     // Keyboard-protocol negotiation folded from this pane's own output
-    // (kitty / win32-input-mode / modifyOtherKeys). Shift+Enter encoding
-    // reads it; unknown = the historical local CSI-u default. An adopted
-    // terminal keeps the state its previous mount parked (#1228 review:
-    // otherwise a workspace switch makes a live Codex fall back to CSI-u) —
+    // (kitty / win32-input-mode / modifyOtherKeys). Shift+Enter / Escape
+    // encoding reads it; unknown = local LF for Shift+Enter, bare ESC for
+    // Escape. An adopted terminal keeps the state its previous mount parked
+    // (#1228 review: otherwise a workspace switch makes a live Codex fall
+    // back to LF / bare ESC instead of win32-input-mode) —
     // unless the pane's foreground command died while it was parked: the
     // alive→dead edge can fire inside the park→adopt window where no
     // subscription observes it, so the seed refuses the same liveness the
@@ -1779,10 +1781,10 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
           (kb) => kb.key === 'Ctrl+J',
         ),
         protocol: keyboardRef.current,
-        // Local pane: Claude Code never emits a kitty push but understands
-        // CSI-u. Keep sending it unless the pane asked for win32-input-mode
-        // (Codex on Windows, #1152).
-        shiftEnterFallback: 'csi-u',
+        // Local pane: un-negotiated Shift+Enter is LF (Ctrl+J), not CSI-u.
+        // Claude Code inside wmux never pushes kitty, so the historical CSI-u
+        // default was Escape + garbage and the prompt submitted (#1152).
+        shiftEnterFallback: 'lf',
       });
       if (newlineByte !== null) {
         e.preventDefault();
@@ -1791,22 +1793,20 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         return false;
       }
 
-      // IME-safe Escape (same class of bug as the Ctrl+J newline above).
-      // When a CJK IME is active, Windows/Chromium delivers the Escape
-      // keydown with `keyCode === 229` ("Process"). xterm's CompositionHelper
-      // drops EVERY keyCode-229 keydown (it returns false, so `_keyDown` bails
-      // before emitting), so no `\x1b` ever reaches the PTY — Esc silently does
-      // nothing inside in-pane TUIs (Claude Code's /status dialog, fzf, less, …)
-      // while Tab still works (Tab is keyCode 9, which the IME doesn't claim).
-      // We emit the ESC byte ourselves and bypass xterm. `keyCode === 229` is
-      // exactly the set xterm drops, so this never double-sends on the normal
-      // keyCode-27 path. `!isComposing` defers to the IME while a candidate
-      // window / preedit is open, where Escape legitimately cancels the
-      // composition rather than the foreground app (mirrors newlineKeys).
-      if (e.code === 'Escape' && !e.isComposing && e.keyCode === 229) {
+      // Escape. Written here — not left to xterm — for two reasons:
+      //   1. IME / TSF: xterm's CompositionHelper drops every keyCode-229
+      //      keydown, so a CJK IME (or a desynced TSF context while a TUI
+      //      streams) swallows Escape. Tab still works because it is keyCode 9.
+      //   2. Protocol: a pane that asked for kitty / win32-input-mode will
+      //      wait for CSI-u / a KEY_EVENT_RECORD if we send a bare ESC, and
+      //      Escape then does nothing for the rest of the turn (#1152).
+      // `!isComposing` (inside isBareEscape) defers to the IME while a
+      // candidate window is open, where Escape cancels the preedit.
+      if (isBareEscape(e)) {
+        const escapeByte = encodeEscape(keyboardRef.current);
         e.preventDefault();
-        window.electronAPI.pty.write(ptyId, '\x1b');
-        noteUserKeystroke('\x1b');
+        window.electronAPI.pty.write(ptyId, escapeByte);
+        noteUserKeystroke(escapeByte);
         return false;
       }
 

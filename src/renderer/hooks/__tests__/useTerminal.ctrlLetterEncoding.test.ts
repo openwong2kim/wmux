@@ -8,12 +8,12 @@ import path from 'node:path';
  * C1 — keyboard-protocol negotiation state is liveness-scoped and survives
  * pane park/re-adoption. A terminal adopted after a restructure must seed
  * `keyboardRef` from the state its previous mount parked (else a live Codex
- * falls back to CSI-u, #1152), and the state must reset when process-truth /
+ * falls back to LF, #1152), and the state must reset when process-truth /
  * OSC 133 says the foreground command died (else a Codex that armed win32
  * input mode without resetting it leaves junk encoding for the next app,
  * same staleness class as #1210).
  *
- * C2 — every directly-written control byte (newline, IME Escape, disabled
+ * C2 — every directly-written control byte (newline, Escape, disabled
  * shortcut ctrl, catch-all ctrl) feeds `noteUserKeystroke`, so the interrupt
  * observer, resume-hint retraction, and input scheduler all see it. Before
  * this, direct writes fed only the dead-input watchdog and a directly-written
@@ -69,14 +69,25 @@ describe('useTerminal ctrl-letter encoding + keyboard-state lifecycle (source-le
 
   it('all four direct-write sites feed noteUserKeystroke (C2)', () => {
     // Helper definition lives before attachCustomKeyEventHandler, so exactly
-    // the four call sites (newline, IME Escape, disabled ctrl, catch-all
+    // the four call sites (newline, Escape, disabled ctrl, catch-all
     // ctrl) are inside the handler slice.
     const calls = HANDLER.match(/noteUserKeystroke\(/g) ?? [];
     expect(calls.length).toBe(4);
     expect(HANDLER).toMatch(/noteUserKeystroke\(newlineByte\);/);
-    expect(HANDLER).toMatch(/noteUserKeystroke\('\\x1b'\);/);
+    expect(HANDLER).toMatch(/noteUserKeystroke\(escapeByte\);/);
     expect(HANDLER).toMatch(/noteUserKeystroke\(disabledCtrl\);/);
     expect(HANDLER).toMatch(/noteUserKeystroke\(ctrlByte\);/);
+  });
+
+  it('Shift+Enter falls back to LF when the pane never negotiated a protocol (#1152)', () => {
+    expect(HANDLER).toMatch(/shiftEnterFallback:\s*'lf'/);
+    expect(HANDLER).not.toMatch(/shiftEnterFallback:\s*'csi-u'/);
+  });
+
+  it('Escape is encoded from keyboard protocol and written directly, not only on IME 229 (#1152)', () => {
+    expect(HANDLER).toMatch(/isBareEscape\(e\)/);
+    expect(HANDLER).toMatch(/encodeEscape\(keyboardRef\.current\)/);
+    expect(HANDLER).not.toMatch(/e\.keyCode === 229/);
   });
 
   it('an adopted terminal seeds keyboard state from the parked WeakMap (C1)', () => {

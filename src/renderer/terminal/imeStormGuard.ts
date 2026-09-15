@@ -97,7 +97,12 @@ export function attachImeStormGuard(
     if (ev.keyCode === 229 && ev.isComposing !== true) {
       count += 1;
       if (ev.code) codes.add(ev.code);
-      if (count >= threshold && codes.size >= minDistinctCodes && now() - lastRecoveryAt >= cooldownMs) {
+      // Escape is the interrupt key. Users mash it alone when a TUI ignores
+      // them (#1152), so a single distinct code must still recover — the
+      // held-letter guard would otherwise leave input dead for the rest of
+      // the turn. A held letter that is not Escape still needs two codes.
+      const distinctEnough = codes.size >= minDistinctCodes || ev.code === 'Escape';
+      if (count >= threshold && distinctEnough && now() - lastRecoveryAt >= cooldownMs) {
         lastRecoveryAt = now();
         const info: ImeStormRecoveryInfo = { count, codes: [...codes] };
         reset();

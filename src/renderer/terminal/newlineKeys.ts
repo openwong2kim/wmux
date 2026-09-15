@@ -19,8 +19,11 @@
  *
  * Returned byte:
  *   - Shift+Enter → protocol-aware (see encodeShiftEnter): kitty CSI-u,
- *     win32-input-mode (`?9001h`, Codex on Windows — #1152), or xterm's
- *     own encoding when the caller says the app never negotiated.
+ *     win32-input-mode (`?9001h`, Codex on Windows — #1152), modifyOtherKeys,
+ *     or LF when the local pane never negotiated. CSI-u without a kitty push
+ *     is Escape + `[13;2u` to Claude Code inside wmux (TERM_PROGRAM=wmux is
+ *     not on Claude's kitty whitelist), which is why Shift+Enter submitted
+ *     after #1228 (#1152 follow-up). LF is the same byte Ctrl+J already sends.
  *   - Ctrl+Enter → LF (`\n`): same intent as Ctrl+J. With no extended keyboard
  *     protocol enabled, xterm sends a bare CR for Ctrl+Enter — byte-identical
  *     to plain Enter — so an in-pane TUI submits instead of inserting a
@@ -59,13 +62,15 @@ export interface KeyboardProtocolHint {
 }
 
 /**
- * When no keyboard protocol is negotiated, a local pane still sends CSI-u
- * (Claude Code never emits a kitty push, yet understands the byte — the
- * historical newlineKeys behaviour). A mirror / web viewer must not: the
- * app on the other side never negotiated with this xterm, so CSI-u is
- * Escape + garbage. Those callers pass `'xterm'` and we return null.
+ * When no keyboard protocol is negotiated:
+ *   - `'lf'` — local pane. Send the same newline byte as Ctrl+J. Claude Code
+ *     inside wmux never pushes kitty (`TERM_PROGRAM=wmux` is not on its
+ *     whitelist) and does not treat unsolicited CSI-u as newline.
+ *   - `'csi-u'` — opt into the historical kitty byte even without a push.
+ *   - `'xterm'` — mirror / web viewer. Return null so xterm encodes the
+ *     legacy CR. CSI-u without a push is Escape + garbage on the far side.
  */
-export type ShiftEnterFallback = 'csi-u' | 'xterm';
+export type ShiftEnterFallback = 'lf' | 'csi-u' | 'xterm';
 
 export interface NewlineKeyOptions {
   /**
@@ -80,13 +85,16 @@ export interface NewlineKeyOptions {
   protocol?: KeyboardProtocolHint;
   /**
    * What to send for Shift+Enter when `protocol` names no encoding.
-   * Defaults to `'csi-u'` (local pane). Remote/web pass `'xterm'`.
+   * Defaults to `'lf'` (local pane). Remote/web pass `'xterm'`.
    */
   shiftEnterFallback?: ShiftEnterFallback;
 }
 
-/** Kitty CSI-u Shift+Enter. Claude Code inserts a newline instead of submitting. */
+/** Kitty CSI-u Shift+Enter. Only meaningful after the pane pushed kitty. */
 export const SHIFT_ENTER_CSI_U = '\x1b[13;2u';
+
+/** Bare LF. Claude Code / readline "insert newline, do not submit" (Ctrl+J). */
+export const SHIFT_ENTER_LF = '\n';
 
 /**
  * win32-input-mode Shift+Enter (`CSI Vk;Sc;Uc;Kd;Cs;Rc _`).
@@ -116,7 +124,14 @@ export function encodeShiftEnter(
   if (protocol?.win32Input) return SHIFT_ENTER_WIN32;
   if (protocol?.kitty) return SHIFT_ENTER_CSI_U;
   if (protocol?.modifyOtherKeys === 2) return SHIFT_ENTER_MODIFY_OTHER_KEYS;
-  return fallback === 'csi-u' ? SHIFT_ENTER_CSI_U : null;
+  if (fallback === 'csi-u') return SHIFT_ENTER_CSI_U;
+  if (fallback === 'lf') return SHIFT_ENTER_LF;
+  return null;
+}
+
+/** Enter / NumpadEnter, including an IME that mangled `key` to 'Process'. */
+function isEnterKey(e: NewlineKeyEventLike): boolean {
+  return e.key === 'Enter' || e.code === 'Enter' || e.code === 'NumpadEnter';
 }
 
 export function resolveNewlineKeyByte(
@@ -124,10 +139,19 @@ export function resolveNewlineKeyByte(
   opts?: NewlineKeyOptions,
 ): string | null {
   // Shift+Enter. Encoding depends on what the pane negotiated (kitty CSI-u,
-  // win32-input-mode, modifyOtherKeys). metaKey is intentionally not
-  // constrained — preserves the original inline handler's exact predicate.
-  if (e.key === 'Enter' && e.shiftKey && !e.ctrlKey && !e.altKey) {
-    return encodeShiftEnter(opts?.protocol, opts?.shiftEnterFallback ?? 'csi-u');
+  // win32-input-mode, modifyOtherKeys). Match physical `code` so a CJK IME
+  // that reports `key === 'Process'` still takes this path — otherwise xterm
+  // encodes a bare CR and the TUI submits (#1152). metaKey is intentionally
+  // not constrained — preserves the original inline handler's exact predicate.
+  // `!isComposing` defers to an open IME preedit, same as Ctrl+J / Ctrl+Enter.
+  if (
+    isEnterKey(e) &&
+    e.shiftKey &&
+    !e.ctrlKey &&
+    !e.altKey &&
+    !e.isComposing
+  ) {
+    return encodeShiftEnter(opts?.protocol, opts?.shiftEnterFallback ?? 'lf');
   }
 
   // Ctrl+Enter → LF, same intent as Ctrl+J: insert a newline without
@@ -135,12 +159,11 @@ export function resolveNewlineKeyByte(
   // bare CR (\r) for Ctrl+Enter — indistinguishable from plain Enter — and an
   // in-pane TUI (Claude Code, codex) submits instead of adding a line. Emitting
   // LF ourselves gives the editor the "newline, don't submit" byte it expects.
-  // Keyed on `key === 'Enter'` to mirror the Shift+Enter predicate above
-  // (NumpadEnter also reports key 'Enter'). The other modifiers are excluded so
-  // only the pure Ctrl+Enter chord matches, and `!isComposing` defers to an
-  // active IME preedit exactly like the Ctrl+J path below.
+  // Keyed on Enter / NumpadEnter (and physical `code` under an IME). The other
+  // modifiers are excluded so only the pure Ctrl+Enter chord matches, and
+  // `!isComposing` defers to an active IME preedit exactly like Ctrl+J.
   if (
-    e.key === 'Enter' &&
+    isEnterKey(e) &&
     e.ctrlKey &&
     !e.shiftKey &&
     !e.altKey &&

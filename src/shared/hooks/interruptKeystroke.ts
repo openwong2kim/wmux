@@ -16,15 +16,24 @@ export const DOUBLE_ESC_WINDOW_MS = 500;
 
 const CTRL_C = '\x03';
 const ESC = '\x1b';
+// Keep in lockstep with src/renderer/terminal/escapeKeys.ts. A pane that
+// negotiated kitty / win32-input-mode writes these instead of a bare ESC,
+// and they must still settle the turn latch (#1152).
+const ESCAPE_CSI_U = '\x1b[27u';
+const ESCAPE_WIN32 = '\x1b[27;1;27;1;0;1_\x1b[27;1;0;0;0;1_';
+
+function isEscapeChunk(data: string): boolean {
+  return data === ESC || data === ESCAPE_CSI_U || data === ESCAPE_WIN32;
+}
 
 /**
  * Which written chunks mean "the operator interrupted this pane's agent".
  *
  * Deliberately narrow, because a false positive settles a pane that is still
  * working: the byte 0x03 anywhere in a chunk, the exact chunk `ESC ESC`, or two
- * consecutive chunks that are each exactly one ESC within DOUBLE_ESC_WINDOW_MS.
- * A LONE ESC is never enough on its own — every arrow key and CSI sequence
- * starts with one.
+ * consecutive chunks that are each an Escape encoding (bare ESC, kitty CSI-u,
+ * or a win32-input-mode pair) within DOUBLE_ESC_WINDOW_MS. A LONE Escape is
+ * never enough on its own — every arrow key and CSI sequence starts with one.
  *
  * State is per-pty and tiny (one timestamp per pane mid-double-tap); `forget`
  * drops it on pane disposal.
@@ -45,7 +54,7 @@ export class InterruptKeystrokeDetector {
       this.pendingEscAt.delete(ptyId);
       return true;
     }
-    if (data === ESC) {
+    if (isEscapeChunk(data)) {
       const previous = this.pendingEscAt.get(ptyId);
       const at = this.now();
       if (previous !== undefined && at - previous <= DOUBLE_ESC_WINDOW_MS) {

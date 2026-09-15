@@ -74,4 +74,24 @@ describe('InterruptKeystrokeDetector', () => {
     expect(d.observe('p1', '')).toBe(false);
     expect(d.observe('', '\x03')).toBe(false);
   });
+
+  it('treats kitty CSI-u Escape the same as a bare ESC (#1152)', () => {
+    const d = new InterruptKeystrokeDetector();
+    expect(d.observe('p1', '\x1b[27u')).toBe(false);
+    expect(d.observe('p1', '\x1b[27u')).toBe(true);
+  });
+
+  it('treats a win32-input-mode Escape pair the same as a bare ESC (#1152)', () => {
+    const d = new InterruptKeystrokeDetector();
+    const win32 = '\x1b[27;1;27;1;0;1_\x1b[27;1;0;0;0;1_';
+    expect(d.observe('p1', win32)).toBe(false);
+    expect(d.observe('p1', win32)).toBe(true);
+  });
+
+  it('does not treat Shift+Enter CSI-u as an Escape tap', () => {
+    const d = new InterruptKeystrokeDetector();
+    expect(d.observe('p1', '\x1b')).toBe(false);
+    expect(d.observe('p1', '\x1b[13;2u')).toBe(false);
+    expect(d.observe('p1', '\x1b')).toBe(false);
+  });
 });
