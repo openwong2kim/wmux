@@ -44,13 +44,15 @@
 //            with no rate limit. Corruption is visible for at most one poll
 //            interval instead of indefinitely.
 //
-//            A coherent atlas that just wiped or merged already bumped
-//            `clearModelGeneration` and each GlyphRenderer rebuilt on its
-//            next beginFrame. That same collapse looks like count-drop /
-//            page-identity / page-removed to this poll. When generation
-//            advanced since the last tick, consume the latch, re-baseline,
-//            and skip — the atlas invalidated itself. Unpatched addons
-//            omit the field and still get every CURE.
+//            A coherent atlas that wipes or merges itself bumps
+//            `clearModelGeneration`, and that collapse also reads as
+//            count-drop / page-identity / page-removed to this poll. The
+//            generation advance used to consume the latch and skip, trusting
+//            the patched addon (I3) to rebuild its owners. It does not hold
+//            under CJK load — a Hangul flood self-evicts every ~2s and paints
+//            scrambled glyphs with the guard silent — so a generation advance
+//            now runs the same coherent rebuild, once per bump, no cooldown.
+//            Unpatched addons omit the field and still get every CURE.
 //
 //            Three signals feed it, strongest first — a page-removal EVENT, a
 //            page-count drop, and a page-identity change. Count alone is not
@@ -539,8 +541,34 @@ export function createAtlasGuard(options: AtlasGuardOptions = {}): AtlasGuard {
         const lastGen = prevGeneration.get(atlas as object);
         prevGeneration.set(atlas as object, gen);
         if (lastGen !== undefined && gen !== lastGen) {
-          // Atlas wiped or merged itself. Owners already rebuild via I3.
-          // The collapse would otherwise look like CURE with no cooldown.
+          // The atlas wiped or merged itself. Its I3 contract says every owner
+          // rebuilds on the next beginFrame, and this branch used to trust that
+          // and skip. Measured on macOS 3.55.0 with a Hangul flood (11,172
+          // syllables x 200 colours, one visible pane): the atlas self-evicts
+          // every ~2s under that load (generation 0 -> 29 in two minutes, pool
+          // parked at 5 pages, nowhere near the 16-page merge trigger) and the
+          // pane renders scrambled glyphs the whole time, with zero guard
+          // events because of this skip. Dropping only the owners' render
+          // models on the bump did NOT repair it; the coherent rebuild
+          // (texture wipe first, then models) did — clean across two floods
+          // where every unfixed run corrupted.
+          //
+          // So a generation advance is a CURE trigger, not a reason to stand
+          // down. No cooldown: the bump is a real invalidation event, not a
+          // speculative reading of pool pressure.
+          const outcome = rebuildGroup(atlas, group);
+          console.warn(
+            `[wmux:atlas-guard] cure (self-eviction: gen ${lastGen}->${gen}) — ` +
+              `pages=${used}/${len}, panes=${group.length}, clear=${outcome}`,
+          );
+          // Re-baseline from the POST-rebuild atlas. Our own wipe bumps the
+          // generation, so recording the pre-wipe value here would read as a
+          // fresh self-eviction on the very next poll and rebuild forever —
+          // the 2s re-raster treadmill this module already paid for once.
+          if (typeof atlas.clearModelGeneration === 'number') {
+            prevGeneration.set(atlas as object, atlas.clearModelGeneration);
+          }
+          prevPageTags.set(atlas as object, snapshotTags(atlas));
           continue;
         }
       }
