@@ -975,6 +975,42 @@ export class WebTerminalServer {
    */
   private inFlightUploads = 0;
 
+  /**
+   * When an authenticated `/api/*` call last landed here (#1316).
+   *
+   * The daemon's idle-shutdown clock used to be anchored to the CONTROL PIPE
+   * alone (`DaemonPipeServer.getLastDisconnectAt`), on the assumption that a
+   * daemon with no desktop client attached and no live PTY is a daemon nobody
+   * is using. A phone breaks that assumption: it holds no pipe connection at
+   * all, so a person answering approvals and reading panes from
+   * `wmux-ios` for an hour looked exactly like an abandoned daemon, and the
+   * five-minute idle timer took the server out from under them.
+   *
+   * Stamped for EVERY authenticated route — not just the ones that change
+   * something — because polling `/api/approvals` or `/api/workspaces` is what
+   * a phone in someone's hand actually does. Unauthenticated traffic is
+   * deliberately excluded: `/api/pair` and the static shell are reachable by
+   * anything that can open the port, and "a stranger can keep my daemon alive"
+   * is not a property worth having.
+   *
+   * This is a TIMESTAMP, not a connection count, and that is the whole scope
+   * of the fix: an SSE viewer that sits silent still does NOT hold the daemon
+   * up, which is the decision already recorded beside `pendingApprovals` in
+   * the daemon's `onIdleCheck`. It does not have to — a phone watching a live
+   * pane is watching a live PTY, and `sessions` already covers that case.
+   */
+  private lastApiActivityAt: number | null = null;
+
+  /**
+   * Newest authenticated-request timestamp, or `null` if none has arrived.
+   *
+   * Read by the daemon's `onIdleCheck` and folded into the same idle anchor as
+   * the pipe's `lastDisconnectAt` — see `src/daemon/index.ts`.
+   */
+  getLastActivityAt(): number | null {
+    return this.lastApiActivityAt;
+  }
+
   constructor(private readonly deps: WebTerminalServerDeps) {}
 
   get isRunning(): boolean {
@@ -1630,6 +1666,10 @@ export class WebTerminalServer {
       return this.json(res, 401, { error: 'unauthorized', reason: auth.reason });
     }
     const principal = auth.principal;
+    // #1316 — one stamp for the whole authenticated surface. Placed after the
+    // gate and before the route table so no route can forget it, and so a
+    // failed credential never counts as someone using the daemon.
+    this.lastApiActivityAt = this.now();
     if (req.method === 'GET' && p === '/api/config') {
       // The handshake rides HERE rather than on a route of its own: this is
       // already the first call a client makes after pairing, so a dedicated

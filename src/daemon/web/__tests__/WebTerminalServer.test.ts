@@ -476,6 +476,33 @@ describe('WebTerminalServer', () => {
     expect(await ok.json()).toMatchObject({ allowInput: false, allowUpload: false });
   });
 
+  // #1316 — the phone's half of the daemon's idle clock. The daemon folds this
+  // timestamp into the same anchor as the pipe's lastDisconnectAt, so a phone
+  // that is being used is no longer indistinguishable from an abandoned daemon.
+  it('stamps idle-clock activity for authenticated /api/* calls, and only those', async () => {
+    const info = await startRO();
+    const token = info.token as string;
+
+    expect(server.getLastActivityAt()).toBeNull();
+
+    // A refused credential is not somebody using the daemon.
+    const noAuth = await fetch(`${base()}/api/config`);
+    expect(noAuth.status).toBe(401);
+    expect(server.getLastActivityAt()).toBeNull();
+
+    // Neither is the one unauthenticated API route: anything that can open the
+    // port can call it, and a stranger must not be able to keep the daemon up.
+    await fetch(`${base()}/api/pair?code=ZZZZZZZZ`);
+    expect(server.getLastActivityAt()).toBeNull();
+
+    const before = Date.now();
+    const ok = await fetch(`${base()}/api/sessions`, { headers: bearer(token) });
+    expect(ok.status).toBe(200);
+    const stamped = server.getLastActivityAt();
+    expect(stamped).not.toBeNull();
+    expect(stamped as number).toBeGreaterThanOrEqual(before);
+  });
+
   it('★ /api/config carries the phone protocol handshake', async () => {
     // A shipped native client cannot be updated by the daemon, so the daemon
     // has to say which contract it is speaking. This is the route the client

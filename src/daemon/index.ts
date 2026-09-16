@@ -67,6 +67,7 @@ import { RingBuffer } from './RingBuffer';
 import { GitContextWatcher } from '../main/pty/gitContextWatch';
 import { PortWatcher } from '../main/pty/portWatch';
 import { initDaemonLogSink, isBrokenPipeError, stdioErrorsConsumed } from './util/logSink';
+import { newerTimestamp } from './util/idleAnchor';
 import type { DaemonState } from './types';
 import type { DaemonEvent, DaemonCreateSessionParams, DaemonSessionIdParams, DaemonResizeParams, DaemonSetResumeBindingParams } from '../shared/rpc';
 import { isWslDistroSpawnArgs } from '../shared/wslDistro';
@@ -6262,10 +6263,21 @@ async function main(): Promise<void> {
     // state. It is wired anyway so the invariant is enforced here instead
     // of being an accident of who happens to expire what, and so the phone
     // surface cannot regress it later.
+    //
+    // #1316 — the idle anchor is the NEWER of "the last pipe client let go"
+    // and "an authenticated phone request last landed". The pipe alone was
+    // wrong for phone-only use: wmux-ios holds no pipe connection, so a
+    // person answering approvals and reading channels from it for an hour
+    // was indistinguishable from an abandoned daemon, and the five-minute
+    // timer shut the server out from under them. Both are "when was somebody
+    // last here", so they belong in the same max, not in two clocks.
     onIdleCheck: () => ({
       connections: pipeServer.getConnectionCount(),
       sessions: sessionManager.listLiveSessions().length,
-      lastDisconnectAt: pipeServer.getLastDisconnectAt(),
+      lastDisconnectAt: newerTimestamp(
+        pipeServer.getLastDisconnectAt(),
+        webTerminalServer?.getLastActivityAt() ?? null,
+      ),
       pendingApprovals: approvalRegistry?.pendingCount() ?? 0,
     }),
     // Idle self-terminate. Routes through the same shutdown() path used
