@@ -185,6 +185,16 @@ export type CdpProbeResult =
  * HTTP server rather than any socket that happens to accept a connection —
  * WebviewCdpManager already talks to `/json` on this same port, so this is the
  * same surface the feature depends on, not a proxy for it.
+ *
+ * Known residual, found while dogfooding this: the probe asks whether ANYTHING
+ * is listening, not whether it is OURS. If another wmux held the port and we
+ * failed to bind, its CDP would answer 200 and we would report "listening"
+ * about a browser that is not ours. The claim above is what covers that case —
+ * a live wmux's port is never drawn — so the two together are only defeated by
+ * a claim file deleted out from under a running instance. Distinguishing the
+ * two CDP servers from the outside needs socket-to-pid ownership (netstat /
+ * GetExtendedTcpTable per boot), which is a great deal of machinery for a case
+ * the claim already prevents.
  */
 export async function probeCdpEndpoint(
   port: number,
