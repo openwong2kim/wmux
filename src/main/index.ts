@@ -32,7 +32,6 @@ process.on('uncaughtException', (err) => {
 // the main process runs). Moving it below another import skews every boot
 // phase measurement by that import's eval cost.
 import { markBoot, emitBootSummary } from './util/bootTrace';
-import * as crypto from 'crypto';
 import * as path from 'path';
 import { app, BrowserWindow, dialog, ipcMain, powerMonitor } from 'electron';
 import { checkUserDataIsolation } from './dataIsolation';
@@ -108,6 +107,7 @@ import { readDaemonPid } from './updater/installTeardown';
 import { McpRegistrar } from './mcp/McpRegistrar';
 import { BrokerSupervisor, isMcpBrokerEnabled } from './mcp/BrokerSupervisor';
 import { WebviewCdpManager } from './browser-session/WebviewCdpManager';
+import { claimCdpPort, probeCdpEndpoint } from './browser-session/cdpPort';
 import { BrowserBackendStore } from './browser-session/BrowserBackendStore';
 import { ChromeLauncherRegistry } from './browser-session/ChromeLauncher';
 import { ChromeProfileStore } from './browser-session/ChromeProfileStore';
@@ -380,12 +380,37 @@ const cdpEnabled =
   loadConfig().browser?.cdp?.enabled !== false;
 let cdpPort = 0;
 if (cdpEnabled) {
-  // Randomize port within range to prevent predictable scanning
-  const basePort = 18800;
-  const range = 100;
-  cdpPort = basePort + crypto.randomInt(range);
+  // The port is still drawn at random within the range, to keep it
+  // unpredictable to a scanner — but it is CLAIMED rather than merely drawn
+  // (#1331). A bare draw collided with a second wmux instance about once in a
+  // hundred launches; Chromium then failed to bind, came up with no listening
+  // CDP port at all, and the line below still said "enabled". Every browser
+  // tool was dead with nothing anywhere to say why.
+  const claim = claimCdpPort();
+  cdpPort = claim.port;
   app.commandLine.appendSwitch('remote-debugging-port', cdpPort.toString());
-  console.log(`[WinMux] CDP enabled on port ${cdpPort}`);
+  // REQUESTED, not enabled. Whether it is enabled is not knowable yet: the
+  // switch is a request to Chromium, which has not started. The truth is
+  // logged by the probe below, once there is a fact to log.
+  console.log(
+    `[WinMux] CDP requested on port ${cdpPort}` +
+      (claim.claimed ? '' : ' (port not claimed exclusively — every port in the range is held)'),
+  );
+  // After ready, ask the port itself. A failure here is the diagnosis the
+  // original report had to reconstruct by hand with lsof.
+  void app.whenReady().then(async () => {
+    const probe = await probeCdpEndpoint(cdpPort);
+    if (probe.ok) {
+      console.log(`[WinMux] CDP listening on port ${cdpPort} (${probe.browser})`);
+    } else {
+      console.error(
+        `[WinMux] CDP is NOT listening on port ${cdpPort} (${probe.reason}). Chromium was ` +
+          'asked for this port and did not get it — most often another process, commonly a ' +
+          'second wmux instance, already holds it. Browser automation (MCP browser tools, ' +
+          'screenshots, DOM snapshots) will be unavailable until wmux is restarted.',
+      );
+    }
+  });
 } else {
   console.log('[WinMux] CDP disabled — browser automation will be unavailable (enable via ~/.wmux/config.json browser.cdp.enabled)');
 }
