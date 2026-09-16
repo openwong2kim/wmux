@@ -280,11 +280,15 @@ async function matchRefAxis(page: Page, axis: RefAxis): Promise<{ ref: string } 
   // recorded index would otherwise report only "no element at that position"
   // and never say that the count is what changed.
   //
-  // Unnamed axes are exempt, exactly as resolveRef's own count check is, and
-  // for a sharper reason here: their stored total is not a same-name count at
-  // all. smartRefAxisEntry (dom-intelligence) records roleIndex/roleTotal in
-  // these two fields for an element with no accessible name, so the number
-  // would not even be a same-name count to compare.
+  // Unnamed axes used to be exempt here, because smartRefAxisEntry recorded
+  // roleIndex/roleTotal in these two fields for an element with no accessible
+  // name — a role-space number that was not a same-name count to compare. That
+  // exemption was the hole in #1300: with no count to disagree, an unnamed
+  // step whose element had been REMOVED still resolved, through the index
+  // lookup below, to whichever unnamed element of the same role now sat at
+  // that position, acted on it, and reported ok. Both lanes now record the
+  // same-name pair, so every axis gets the same guard and there is nothing
+  // left to exempt.
   //
   // The comparison is otherwise between two DIFFERENT enumerations whenever
   // the axis was minted by the smart lane: that lane walks the whole
@@ -296,7 +300,7 @@ async function matchRefAxis(page: Page, axis: RefAxis): Promise<{ ref: string } 
   // WHICH lane minted it (`via`), and a disagreement is put to that lane's own
   // count before it is treated as a change. Only a disagreement, so the
   // ordinary path costs nothing extra.
-  if (axis.name !== '' && population.length !== axis.sameNameTotal) {
+  if (population.length !== axis.sameNameTotal) {
     if (axis.via === 'smart') {
       const smartCount = await countSmartNamedPopulation(page, axis.role, axis.name);
       // Same measurement on both sides now. Equal means the page did not

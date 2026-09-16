@@ -1134,12 +1134,29 @@ export function smartRefAxisEntry(ref: number): {
 } | null {
   const element = getSmartElementByRef(ref);
   if (!element || element.locator.startsWith('[data-wmux-ref=')) return null;
-  const named = element.name.length > 0;
   return {
     role: element.role,
     name: element.name,
-    sameNameIndex: named ? element.sameNameIndex : element.roleIndex,
-    sameNameTotal: named ? element.sameNameTotal : element.roleTotal,
+    // ALWAYS the same-name pair, including for an element with no accessible
+    // name (#1300).
+    //
+    // These fields used to fall back to roleIndex/roleTotal when the name was
+    // empty, borrowed from `resolveSmartRefLocator` a few lines up — which is
+    // right for IT, because it locates through `getByRole(role)` with no name
+    // filter and therefore counts every same-role element. It is wrong here.
+    // The only consumer of this axis is the replay runner, whose live
+    // population is filtered by role AND name, so a role-space index arriving
+    // in a name-space lookup picks out whichever unnamed element happens to
+    // sit at that position — and the recorded one being GONE does not stop it,
+    // because the count that would have disagreed was exempted for exactly
+    // this substitution. A replay then typed into a different field and
+    // reported ok.
+    //
+    // finalizeSmartPopulations keys its name population on `role\0name`, so
+    // the unnamed case is a real population (same role, no name) and not a
+    // degenerate one — there is nothing to fall back FROM.
+    sameNameIndex: element.sameNameIndex,
+    sameNameTotal: element.sameNameTotal,
     // Always the main frame: this walk never leaves it (see SmartRefIdentity).
     frameKey: '',
     // The nearest named ancestor, so a smartRef-recorded step gets the same

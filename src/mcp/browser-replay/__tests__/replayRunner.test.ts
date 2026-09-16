@@ -327,11 +327,17 @@ describe('replayTrace — resolution on the 4-tuple axis', () => {
     expect(clicks).toEqual([]);
   });
 
-  it('does not count-check an UNNAMED axis, whose stored total is a role count', async () => {
-    // smartRefAxisEntry stores roleIndex/roleTotal in the sameName fields for an
-    // element with no accessible name, measured over a different walk from the
-    // snapshot ref map counted here. Demanding equality would stop flows on
-    // pages that never changed.
+  it('count-checks an UNNAMED axis too — the count is all the evidence there is', async () => {
+    // This used to be exempt, because smartRefAxisEntry stored roleIndex/
+    // roleTotal in the sameName fields for an element with no accessible name
+    // and those numbers were not a same-name count to compare. Both lanes now
+    // record the same-name pair, and #1300 is what the exemption cost: with no
+    // count to disagree, a removed element's position was handed to whichever
+    // unnamed element had taken it.
+    //
+    // The escape hatch for the two lanes' genuinely different enumerations is
+    // still there, and is still the smart lane's own recount — see the
+    // unnamed smart-lane cases below.
     refEntries = [
       { role: 'button', name: '', sameNameIndex: 0, sameNameTotal: 1, frameKey: '', ref: 7 },
     ];
@@ -342,8 +348,9 @@ describe('replayTrace — resolution on the 4-tuple axis', () => {
       axis: { kind: 'ref', role: 'button', name: '', sameNameIndex: 0, sameNameTotal: 4, frameKey: '' },
     });
     const result = await replayTrace(page, trace([step]), undefined);
-    expect(result.ok).toBe(true);
-    expect(clicks).toEqual(['unnamed']);
+    expect(result.ok).toBe(false);
+    expect(result.inconclusive).toBe(true);
+    expect(clicks).toEqual([]);
   });
 
   it('does not match an entry in a different frame', async () => {
@@ -708,6 +715,64 @@ describe('replayTrace — provenance, so the count compares like with like', () 
     expect(result.inconclusive).toBe(true);
     expect(result.steps[0].detail).toContain('element(s) with that role and name');
     expect(clicks).toEqual([]);
+  });
+
+  // #1300 — an UNNAMED axis used to skip the population check entirely, so a
+  // step whose element had been removed still resolved, by position, to
+  // whichever unnamed element of the same role now sat there, typed into it,
+  // and reported ok. The count is the only evidence available for an element
+  // with no name, so it has to count.
+  it('STOPS an unnamed step whose population no longer matches the recording', async () => {
+    // The recording saw three unnamed textboxes and typed into the second.
+    // One of them — the recorded one — is gone, and position 1 now belongs to
+    // a different field.
+    refEntries = [
+      { role: 'textbox', name: '', sameNameIndex: 0, sameNameTotal: 2, frameKey: '', ref: 1 },
+      { role: 'textbox', name: '', sameNameIndex: 1, sameNameTotal: 2, frameKey: '', ref: 2 },
+    ];
+    smartCount = null;
+    const mod = await import('../../playwright/snapshot');
+    vi.spyOn(mod, 'resolveRef').mockResolvedValue(element('stranger'));
+
+    const step = refStep({
+      tool: 'browser_type',
+      args: { text: 'hunter2' },
+      axis: {
+        kind: 'ref', role: 'textbox', name: '', sameNameIndex: 1, sameNameTotal: 3,
+        frameKey: '', via: 'smart',
+      },
+    });
+    const result = await replayTrace(page, trace([step]), undefined);
+    expect(result.ok).toBe(false);
+    expect(result.inconclusive).toBe(true);
+    expect(clicks).toEqual([]);
+    // The second opinion is asked for the unnamed population too — the empty
+    // name is a real population key, not a missing one.
+    expect(smartCountCalls).toEqual([['textbox', '']]);
+  });
+
+  it('lets an unnamed step run when the smart lane confirms its own count', async () => {
+    refEntries = [
+      { role: 'textbox', name: '', sameNameIndex: 0, sameNameTotal: 2, frameKey: '', ref: 1 },
+      { role: 'textbox', name: '', sameNameIndex: 1, sameNameTotal: 2, frameKey: '', ref: 2 },
+    ];
+    // Nothing changed on the page; the depth-capped ref map simply lists fewer
+    // than the uncapped smart walk the step was recorded against.
+    smartCount = 3;
+    const mod = await import('../../playwright/snapshot');
+    vi.spyOn(mod, 'resolveRef').mockResolvedValue(element('field'));
+
+    const step = refStep({
+      tool: 'browser_type',
+      args: { text: 'hunter2' },
+      axis: {
+        kind: 'ref', role: 'textbox', name: '', sameNameIndex: 1, sameNameTotal: 3,
+        frameKey: '', via: 'smart',
+      },
+    });
+    const result = await replayTrace(page, trace([step]), undefined);
+    expect(result.ok).toBe(true);
+    expect(clicks).toEqual(['field:fill=hunter2']);
   });
 
   it('keeps the stop when the smart walk cannot answer', async () => {

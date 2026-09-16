@@ -544,6 +544,37 @@ describe('replay axis for a smart ref', () => {
     expect(smartRefAxisEntry(1)).not.toHaveProperty('context');
   });
 
+  // #1300 — the axis is consumed by the replay runner, which filters the live
+  // population by role AND name. A role-space index handed to that lookup
+  // picks out whichever unnamed element happens to sit at that position, and
+  // the recorded one being gone does not stop it.
+  it('records the SAME-NAME pair for an unnamed element, not the role pair', async () => {
+    clearElementCache();
+    // One named button, then three unnamed ones. In role space the second
+    // unnamed button is index 2 of 4; in name space it is index 1 of 3, and
+    // name space is the only one the replay lookup counts.
+    await getSmartSnapshot(
+      makePage(
+        tree([
+          { backendId: 10, role: 'button', name: 'Save' },
+          { backendId: 11, role: 'button', name: '' },
+          { backendId: 12, role: 'button', name: '' },
+          { backendId: 13, role: 'button', name: '' },
+        ]),
+      ),
+    );
+
+    const target = getSmartElementByRef(3);
+    expect(target).toMatchObject({ role: 'button', name: '', roleIndex: 2, roleTotal: 4 });
+    expect(smartRefAxisEntry(3)).toMatchObject({
+      role: 'button',
+      name: '',
+      sameNameIndex: 1,
+      sameNameTotal: 3,
+      via: 'smart',
+    });
+  });
+
   it('has no ref axis on the RPC lane, whose selector is a real one', async () => {
     clearElementCache();
     const evaluate = async () => ({
