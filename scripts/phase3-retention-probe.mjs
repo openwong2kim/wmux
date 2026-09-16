@@ -134,7 +134,8 @@ async function main() {
     const onChunk = (b) => {
       if (cdpPort !== null) return;
       stdoutBuf += b.toString('utf8');
-      const m = stdoutBuf.match(/CDP enabled on port (\d+)/);
+      // "requested" since #1331; "enabled" stays matchable for older builds.
+      const m = stdoutBuf.match(/CDP (?:requested|listening|enabled) on port (\d+)/);
       if (m) { cdpPort = Number(m[1]); resolve(cdpPort); }
     };
     proc.stdout.on('data', onChunk);

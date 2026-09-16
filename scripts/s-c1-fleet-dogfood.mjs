@@ -1,7 +1,7 @@
 // S-C1 Fleet View — real GUI dogfood over the dev CDP endpoint.
 //
 // dev wmux exposes CDP on a RANDOM port in [18800,18900) and prints
-// "[WinMux] CDP enabled on port <port>". We scan that range, connect
+// "[WinMux] CDP requested on port <port>". We scan that range, connect
 // playwright-core, and exercise the cockpit end-to-end against the LIVE
 // renderer + daemon:
 //

@@ -470,7 +470,11 @@ function spawnInstance(inst) {
     const onChunk = (b) => {
       if (inst.cdpPort !== null) return; // already matched — don't re-stamp on later chunks
       stdoutBuf += b.toString('utf8');
-      const m = stdoutBuf.match(/CDP enabled on port (\d+)/);
+      // "requested" since #1331: the boot line no longer claims the port is
+      // enabled before Chromium has had a chance to bind it (a second wmux
+      // instance could be holding it). "enabled" stays matchable so this
+      // harness still drives a pre-#1331 build.
+      const m = stdoutBuf.match(/CDP (?:requested|listening|enabled) on port (\d+)/);
       if (m) {
         inst.cdpPort = Number(m[1]);
         // NOTE: the app prints this line BEFORE Chromium binds the port, so

@@ -178,7 +178,8 @@ function spawnApp() {
   let stdoutBuf = '';
   proc.stdout.on('data', (b) => {
     stdoutBuf += b.toString('utf8');
-    const m = stdoutBuf.match(/CDP enabled on port (\d+)/);
+    // "requested" since #1331; "enabled" stays matchable for older builds.
+    const m = stdoutBuf.match(/CDP (?:requested|listening|enabled) on port (\d+)/);
     if (m && cdpPort === null) { cdpPort = Number(m[1]); for (const w of cdpWaiters.splice(0)) w(cdpPort); }
     if (stdoutBuf.length > 65536) stdoutBuf = stdoutBuf.slice(-4096);
   });
