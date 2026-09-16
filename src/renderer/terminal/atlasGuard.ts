@@ -137,6 +137,10 @@ export const FALLBACK_MAX_PAGES = 16;
  *  on the next poll, so without this the guard wipes the atlas every `pollMs`
  *  for the whole duration of a CJK-heavy stream. CURE is exempt. */
 export const GUARD_PREVENT_COOLDOWN_MS = 30_000;
+/** Consecutive generation-bump rebuilds before the cooldown starts applying to
+ *  that path too. Three back-to-back polls mean the rebuild is not settling
+ *  the atlas, so the fourth waits instead of re-rastering every 2s. */
+export const GEN_CURE_STREAK_LIMIT = 3;
 
 /** One registered pane: how to reach its WebGL addon and repaint it. */
 export interface AtlasGuardEntry {
@@ -417,6 +421,13 @@ export function createAtlasGuard(options: AtlasGuardOptions = {}): AtlasGuard {
   // first sight; never unsubscribed, because the listener cannot outlive the
   // emitter it lives on (both die with the atlas).
   const removalLatch = new WeakMap<object, { fired: boolean }>();
+  // Consecutive polls that rebuilt because the atlas bumped its generation,
+  // and when the last of those ran. A rebuild re-rasters the viewport, which
+  // re-mints every visible glyph — under a CJK flood that can itself push the
+  // atlas back to its eviction budget, so the repair can feed itself. The
+  // streak turns that from an unbounded 2s treadmill into a bounded one.
+  const genCureStreak = new WeakMap<object, number>();
+  const lastGenCureAt = new WeakMap<object, number>();
   // Last speculative (PREVENT) rebuild per atlas, for the cooldown in tick().
   const lastPreventAt = new WeakMap<object, number>();
   let timer: ReturnType<typeof setInterval> | null = null;
@@ -460,6 +471,15 @@ export function createAtlasGuard(options: AtlasGuardOptions = {}): AtlasGuard {
   // Both halves are load-bearing, and the ORDER is too. Wipe the shared pool
   // once, then drop each owner's render model: a model dropped before the wipe
   // would repopulate from the doomed atlas and be stale again immediately.
+  /** Record the atlas's CURRENT generation as the baseline. Called after a
+   *  rebuild of ours, whose wipe bumps the generation itself — reading the
+   *  pre-wipe value back would make the next poll see a phantom eviction. */
+  function rebaselineGeneration(atlas: AtlasLike): void {
+    if (typeof atlas.clearModelGeneration === 'number') {
+      prevGeneration.set(atlas as object, atlas.clearModelGeneration);
+    }
+  }
+
   function rebuildGroup(atlas: AtlasLike, group: AtlasGuardEntry[]): string {
     // shared — one call empties it for every owner. Goes through
     // clearAtlasTexture so upstream's page-0-only "already clean" probe cannot
@@ -540,6 +560,7 @@ export function createAtlasGuard(options: AtlasGuardOptions = {}): AtlasGuard {
         const gen = atlas.clearModelGeneration as number;
         const lastGen = prevGeneration.get(atlas as object);
         prevGeneration.set(atlas as object, gen);
+        if (lastGen === gen) genCureStreak.delete(atlas as object);
         if (lastGen !== undefined && gen !== lastGen) {
           // The atlas wiped or merged itself. Its I3 contract says every owner
           // rebuilds on the next beginFrame, and this branch used to trust that
@@ -556,19 +577,44 @@ export function createAtlasGuard(options: AtlasGuardOptions = {}): AtlasGuard {
           // So a generation advance is a CURE trigger, not a reason to stand
           // down. No cooldown: the bump is a real invalidation event, not a
           // speculative reading of pool pressure.
+          const key = atlas as object;
+          const streak = genCureStreak.get(key) ?? 0;
+          if (streak >= GEN_CURE_STREAK_LIMIT) {
+            // Every poll since GEN_CURE_STREAK_LIMIT rebuilds ago has bumped
+            // again. Either the workload is minting faster than the budget or
+            // our own re-raster is feeding the eviction; either way another
+            // immediate wipe buys nothing and costs a full re-raster. Absorb
+            // the bump and let the cooldown decide.
+            const last = lastGenCureAt.get(key) ?? -Infinity;
+            if (nowMs() - last < preventCooldownMs) {
+              rebaselineGeneration(atlas);
+              prevPageTags.set(key, tags);
+              continue;
+            }
+          }
+
           const outcome = rebuildGroup(atlas, group);
+          genCureStreak.set(key, streak + 1);
+          lastGenCureAt.set(key, nowMs());
           console.warn(
-            `[wmux:atlas-guard] cure (self-eviction: gen ${lastGen}->${gen}) — ` +
+            `[wmux:atlas-guard] cure (${removed ? 'merge' : 'self-eviction'}: gen ${lastGen}->${gen}) — ` +
               `pages=${used}/${len}, panes=${group.length}, clear=${outcome}`,
           );
           // Re-baseline from the POST-rebuild atlas. Our own wipe bumps the
           // generation, so recording the pre-wipe value here would read as a
           // fresh self-eviction on the very next poll and rebuild forever —
           // the 2s re-raster treadmill this module already paid for once.
-          if (typeof atlas.clearModelGeneration === 'number') {
-            prevGeneration.set(atlas as object, atlas.clearModelGeneration);
+          //
+          // A wipe that did NOT take effect is the exception: nothing was
+          // repaired, so consuming the bump would leave the pane scrambled
+          // until the atlas happens to evict again — which on a quiet pane is
+          // never. Keep the old baseline there and let the next poll retry.
+          if (outcome === 'failed') {
+            prevGeneration.set(key, lastGen);
+          } else {
+            rebaselineGeneration(atlas);
           }
-          prevPageTags.set(atlas as object, snapshotTags(atlas));
+          prevPageTags.set(key, snapshotTags(atlas));
           continue;
         }
       }
@@ -660,7 +706,11 @@ export function createAtlasGuard(options: AtlasGuardOptions = {}): AtlasGuard {
         // Re-baseline from the post-rebuild pool for the same reason the poll
         // does: a stale snapshot would read the rebuild as a "merge" and fire a
         // redundant one next tick, while dropping it would blind the next poll.
+        // The generation needs the same treatment now that a bump triggers a
+        // rebuild — this wipe bumps it, and the next poll would otherwise read
+        // our own recovery as a fresh self-eviction and rebuild again.
         prevPageTags.set(atlas as object, snapshotTags(atlas));
+        if (outcome !== 'failed') rebaselineGeneration(atlas);
       }
     },
   };

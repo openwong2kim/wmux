@@ -7,6 +7,8 @@ import {
   extractAtlas,
   GUARD_POLL_MS,
   GUARD_MARGIN_PAGES,
+  GUARD_PREVENT_COOLDOWN_MS,
+  GEN_CURE_STREAK_LIMIT,
   FALLBACK_MAX_PAGES,
 } from '../atlasGuard';
 
@@ -919,6 +921,124 @@ describe('atlasGuard', () => {
       // Three quiet polls: generation unchanged, no further rebuilds.
       vi.advanceTimersByTime(GUARD_POLL_MS * 3);
       expect(pane.refreshes()).toBe(1);
+      expect(atlas.clearCalls).toBe(1);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('collapses two evictions inside one poll gap into a single rebuild', () => {
+    const atlas = new CoherentFakeAtlas(CoherentFakeAtlas.maxAtlasPages);
+    atlas.occupyAll();
+
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const guard = createAtlasGuard();
+      const pane = makePane(atlas);
+      guard.register(pane.entry);
+      vi.advanceTimersByTime(GUARD_POLL_MS);
+
+      // Two self-evictions land between polls: generation jumps by 2.
+      atlas.growBy(CoherentFakeAtlas.maxAtlasPages + 1);
+      atlas.occupyAll();
+      atlas.growBy(CoherentFakeAtlas.maxAtlasPages + 1);
+      vi.advanceTimersByTime(GUARD_POLL_MS);
+
+      expect(pane.refreshes()).toBe(1);
+      expect(atlas.clearCalls).toBe(1);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('keeps the generation baseline when the wipe did not take, and retries', () => {
+    // A rebuild that could not clear repaired nothing. Consuming the bump
+    // there would leave the pane scrambled until the atlas happens to evict
+    // again — on a quiet pane, never.
+    const atlas = new CoherentFakeAtlas(CoherentFakeAtlas.maxAtlasPages);
+    atlas.occupyAll();
+    // clearTexture that counts but never changes the pool: clearAtlasTexture's
+    // postcondition fails, so rebuildGroup reports 'failed'.
+    atlas.clearTexture = function (this: CoherentFakeAtlas) { this.clearCalls++; };
+
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const guard = createAtlasGuard();
+      const pane = makePane(atlas);
+      guard.register(pane.entry);
+      vi.advanceTimersByTime(GUARD_POLL_MS);
+
+      atlas.growBy(1); // self-eviction → generation bump
+      // Refill: by the time the poll runs, the stream has repacked the pool,
+      // so the wipe has real work to do — and fails to do it.
+      atlas.setPages(8, true);
+      atlas.occupyAll();
+      vi.advanceTimersByTime(GUARD_POLL_MS);
+      expect(atlas.clearCalls).toBe(1);
+
+      // Baseline was NOT consumed: the very next poll tries again.
+      atlas.occupyAll();
+      vi.advanceTimersByTime(GUARD_POLL_MS);
+      expect(atlas.clearCalls).toBe(2);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('backs off once the rebuild stops settling the atlas', () => {
+    // Worst case: every re-raster re-mints enough glyphs to evict again. The
+    // repair must not become a 2s wipe treadmill for as long as output flows.
+    const atlas = new CoherentFakeAtlas(CoherentFakeAtlas.maxAtlasPages);
+    atlas.occupyAll();
+
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const guard = createAtlasGuard();
+      const pane = makePane(atlas);
+      guard.register(pane.entry);
+      vi.advanceTimersByTime(GUARD_POLL_MS);
+
+      for (let i = 0; i < GEN_CURE_STREAK_LIMIT + 4; i++) {
+        atlas.setPages(CoherentFakeAtlas.maxAtlasPages, true);
+        atlas.occupyAll();
+        atlas.growBy(1); // bump again, every single poll
+        vi.advanceTimersByTime(GUARD_POLL_MS);
+      }
+
+      expect(pane.refreshes()).toBe(GEN_CURE_STREAK_LIMIT);
+
+      // After the cooldown the repair is available again.
+      vi.advanceTimersByTime(GUARD_PREVENT_COOLDOWN_MS);
+      atlas.setPages(CoherentFakeAtlas.maxAtlasPages, true);
+      atlas.occupyAll();
+      atlas.growBy(1);
+      vi.advanceTimersByTime(GUARD_POLL_MS);
+      expect(pane.refreshes()).toBe(GEN_CURE_STREAK_LIMIT + 1);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('does not rebuild again on the poll after recoverNow wiped a coherent atlas', () => {
+    // recoverNow's own wipe bumps the generation. Without re-baselining there,
+    // every sleep/wake recovery would be followed 2s later by a second full
+    // re-raster, logged as a self-eviction that never happened.
+    const atlas = new CoherentFakeAtlas(8);
+    atlas.occupyAll();
+
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const guard = createAtlasGuard();
+      const pane = makePane(atlas);
+      guard.register(pane.entry);
+      vi.advanceTimersByTime(GUARD_POLL_MS);
+
+      guard.recoverNow('wake');
+      const afterRecover = pane.refreshes();
+      expect(afterRecover).toBe(1);
+
+      vi.advanceTimersByTime(GUARD_POLL_MS * 2);
+      expect(pane.refreshes()).toBe(afterRecover);
       expect(atlas.clearCalls).toBe(1);
     } finally {
       warn.mockRestore();
