@@ -1,5 +1,133 @@
 ## [Unreleased]
 
+## [3.56.0] — 2026-09-17
+
+### Added
+
+- **Browser automation can draw, pan, zoom and multi-select.** `browser_drag`
+  now also takes a `path` of 2 to 50 viewport points, for canvases, slider
+  tracks, crop boxes and maps that have no element to aim at. `browser_scroll`
+  takes an `x`/`y` point and sends a real mouse wheel there, the only scroll
+  maps and virtualized lists react to. Clicks and drags take `modifiers`
+  (Alt, Control, Meta, Shift), held for the gesture and always released, even
+  when it fails. Before this, drags only went from one element's centre to
+  another's in a straight line, scrolling only called `scrollBy`, and no key
+  could be held down during a click. Gestures placed by coordinates or holding
+  keys are not recorded for `browser_replay`, the same rule coordinate clicks
+  already follow. Plain element-to-element drags record as before. (#1309)
+
+- **`browser_screenshot { refs: true }` lists the refs visible in the shot.**
+  Next to the image it prints `ref=12 button "Log in" x,y,w,h` for up to 60
+  elements from the latest snapshot that fall inside the captured area. Boxes
+  are measured right after the capture, using the coordinates the screenshot
+  note already describes. Nothing is drawn into the page. (#1309)
+
+- **The browser tools can point an agent at your own notes about a site.**
+  Put a markdown file under `site-guides/` in the wmux data directory, with
+  `title` and `urls` frontmatter, and turn on **Site guides** in Settings. When
+  the browser lands on a matching page, the agent is told that a local note
+  exists and where it is, with at most two lines and never the note itself.
+  The line also says when failures were recorded on the site after the note's
+  `updated` date. Before, an agent arriving on a site with no recorded flow
+  had no way to learn that you had already written down how the site works.
+  The setting is off by default. Hosts match label by label (`*.example.com`
+  never matches `example.com.evil.com`), over-broad patterns are ignored, and
+  notes that link outside the folder or have unsafe names or titles are
+  skipped. (#1310)
+
+- **`browser_repl` scripts can take screenshots and see them.** `await browser.screenshot()` now works inside a `browser_repl` snippet: it resolves to `{text, events, image: "img-N"}`, and the image is attached to the tool result after the text, with an `--- images ---` legend naming the call that took it. Previously screenshot was not callable from a script, and any image a call returned was dropped as `[image content omitted]`. A run attaches at most 4 images and 2 MiB in total. Each scripted screenshot is held to the default 2 MiB ceiling, and an image that does not fit is reported as `note: "image not attached (cap)"` in the script's value instead of an id. (#1311)
+
+- **`repl_run` can drive the browser.** On the full profile, a `repl_run` snippet gets a `browser` object with the same calls as `browser_repl` plus screenshot (`await browser.navigate({url})`, `await browser.snapshot()`, `await browser.click({ref})`, ...), so one snippet can mix files, network, and page steps. Calls go through the regular browser tool handlers, and their hints and images are reported with the `browser_repl` caps. Before, a script had no supported way to reach the browser. Tools that reach state outside the page, evaluate, and session/replay management remain separate tool calls. On the core and commander profiles, every `browser.X` call fails with "browser tools are not part of this profile". A call made after its run finished (from a leftover timer or promise) is refused with an explicit error. Calls made from `repl_run` are not recorded for `browser_replay save`. An existing script that defines its own `browser` variable keeps working. (#1311)
+
+- **Browser settings have their own tab.** The browser backend, lightweight mode, per-site memory and site guides settings moved from the bottom of the Terminal tab into a new Browser tab in the Agents group, split into "Browser runtime" and "Agent site knowledge". Settings search now jumps straight to all four. (#1312)
+
+### Changed
+
+- **Site guides turn on when you choose the Chrome agent browser.** The first time Chrome is selected as the browser backend, site guides switch on automatically. It happens only once: if you turn guides off afterwards they stay off, including when you pick Chrome again later, and switching to another backend never turns them off. (#1312)
+
+### Fixed
+
+- **WSL recovery placeholders expire normally.** Panes waiting for recovery, including those skipped by the startup recovery limit, no longer receive a synthetic failure that prevents suspended-session cleanup. The old saved waiting marker is also cleared. Genuine recovery failures keep their saved state for Retry or explicit close. (#1308)
+
+- **Two agents in one workspace no longer drive each other's browser tab.** A browser call that named no surfaceId used to resolve to the newest browser surface in the workspace, which is the same surface for every agent in it: the second agent's `browser_navigate` drove the first agent's tab, and from then on each kept overwriting the other's page. The default is now per agent — the surface you last opened, else one you opened, else one nobody claims (restored after a restart, opened by hand, or opened before this release), else a new one of your own. Every lane of a call agrees on it: the page, the RPC fallback, the automation lease and the recorded flow. Passing a surfaceId still reaches any tab in the workspace, including another agent's, and `browser_tabs list` now says which tabs are yours. (#1313)
+
+- **Opening a browser no longer takes over another agent's pane.** On the builtin backend `browser_open` reused the workspace's first browser pane, so a second agent's open navigated the first agent's page and handed back its surface id. An agent now gets its own pane when the reusable one belongs to another agent, and reuses its own pane even when that is not the first one; a pane nobody claims is still reused. Opening from the CLI, the pane button or the command palette is unchanged. (#1313)
+
+- **A browser call with nothing open now opens a browser.** `browser_navigate` on the builtin backend failed with "no browser surface is open in this workspace" while the other tools quietly opened one. It opens one too. (#1313)
+
+- **Scheduled prompts no longer run as shell commands after the agent exits.** A schedule was delivered whenever the pane was still named as an agent, even after the agent had exited, been suspended with Ctrl+Z, or exited before the daemon's process poll noticed, so the prompt ran in the shell. Delivery now requires a live agent process attributed to the pane, checks it again before the paste and before Enter, and refuses when the shell is back at its prompt. Panes whose agent can't be attributed (tmux, containers, WSL) can't be scheduled. (#1314)
+
+- **CJK agent TUI frames no longer leak cursor-address sequences as glyphs.**
+  A 250ms synchronized-output timeout could close a Grok/Claude redraw while a
+  CUP was still split across PTY reads, so `12;6H` and similar fragments
+  painted as text and Korean syllables overlapped. The unfinished escape is
+  carried onto the next write instead. (#1320) The
+  resting-cursor guard (#929), which appends `?25l` to every frame chunk, now
+  holds that unfinished tail back too — on macOS it was the sequence that
+  actually aborted the CUP, one layer above the safety END.
+
+- **Shift+Enter inserts a newline in Claude Code again, and Escape
+  reaches the app during a long turn (#1321).** Local panes no longer
+  send kitty CSI-u for Shift+Enter unless the pane actually negotiated
+  kitty. Claude Code inside wmux never does (`TERM_PROGRAM=wmux` is not
+  on its whitelist), so `\x1b[13;2u` was read as Escape plus leftover
+  bytes and the prompt submitted. Un-negotiated Shift+Enter now sends
+  LF — the same byte as Ctrl+J. Escape is written to the PTY directly
+  and encoded for the protocol the pane asked for (bare ESC, CSI-u, or
+  win32-input-mode), so a streaming TUI cannot swallow it for the rest
+  of the turn. The IME storm guard also recovers when Escape is mashed
+  alone.
+
+- **Korean and other CJK panes stop scrambling their glyphs under heavy
+  output.** The WebGL glyph atlas evicts itself while a CJK stream is minting
+  new syllables, and the renderer kept drawing from the coordinates it had
+  cached before that wipe, so syllables came out shredded and overlapping
+  until a resize. The atlas guard used to stand down on exactly that event,
+  trusting the addon to rebuild its owners, and logged nothing while the
+  screen was visibly wrong. It now runs its own coherent rebuild once per
+  eviction. (#1330)
+
+- **The daemon no longer shuts down under a phone that is being used.** The
+  idle-shutdown timer measured "is anyone here?" from the desktop control pipe
+  alone, and a phone never touches it — so reading channels and answering
+  approvals from wmux-ios for five minutes, with the desktop app closed, looked
+  exactly like an abandoned daemon and the daemon exited. Authenticated requests
+  from the phone now count as somebody being here. An unauthenticated caller
+  still cannot hold the daemon up. (#1332)
+
+- **A replayed step no longer types into the wrong field when its element is
+  gone.** A flow step recorded through `browser_smart_snapshot` on an element
+  with no accessible name was re-found by position in a population counted a
+  different way, so removing that element handed its slot to a neighbour: the
+  step acted on the stranger and reported success, and the per-site memory
+  counted the run as proof the flow still worked. Such a step now stops the
+  replay and says the page moved under it, which is what already happened for
+  every named element. A flow recorded before this fix may stop once on its
+  next replay; finishing it live re-records it. (#1333)
+
+- **Two wmux instances no longer fight over the debugging port in silence.** The
+  port behind browser automation was picked at random with no check, so a second
+  instance — a dogfood build next to your real one — drew the same number about
+  once in a hundred launches, Chromium failed to bind it, and wmux came up with
+  browser tools, screenshots and DOM snapshots dead while the log still said the
+  port was enabled. wmux now claims the port against other running instances,
+  and only reports it as enabled once the port itself answers; when it does not,
+  the log says so and says why. (#1334)
+
+- **A failed PowerShell command is reported as failed again.** wmux read the
+  exit code from `$LASTEXITCODE`, which only external programs ever set and
+  nothing ever clears — so once a session had run one external program, every
+  cmdlet that failed afterwards was recorded as having succeeded. wmux now works
+  out which of the two sources describes the command that just ran, so a failing
+  cmdlet reads as a failure and a succeeding one is no longer tagged with the
+  previous program's exit code. (#1335)
+
+- **wmux no longer overwrites your `$LASTEXITCODE`.** The PowerShell prompt hook
+  runs `git` on every prompt render and left its exit code behind, so after
+  `cmd /c exit 7` your own shell reported 0 — or 128 outside a git repository —
+  and a prompt theme reading that value showed wmux's number instead of yours.
+  (#1335)
+
 ## [3.55.0] — 2026-09-14
 
 ### Added
