@@ -36,4 +36,26 @@ describe('PowerShell terminal hook', () => {
     // one — the swap looks harmless and is not.
     expect(hook).not.toMatch(/Write-Error [^\n]*-ErrorAction SilentlyContinue/);
   });
+
+  // Issue #1269. The hook runs `git rev-parse` on every prompt render and
+  // never put $LASTEXITCODE back, so after `cmd /c exit 7` the user's own
+  // shell read 0 — or 128 outside a git repo. #1267 made this worse rather
+  // than harmless: now that the wrapped prompt correctly sees $? = $false, a
+  // prompt engine that falls back to $LASTEXITCODE renders wmux's git exit
+  // code as the user's.
+  it('puts $LASTEXITCODE back the way the user left it', () => {
+    const hookPath = path.resolve(process.cwd(), 'src/main/pty/shell-hooks/pwsh.ps1');
+    const hook = fs.readFileSync(hookPath, 'utf8');
+
+    // Snapshotted beside $?, before anything in the function can touch it.
+    expect(hook).toMatch(
+      /\$__wmux_ok = \$\?(?:\s*#[^\n]*\n)*\s*\$__wmux_le = \$LASTEXITCODE/,
+    );
+
+    // Restored as the last statement before the return — anything after it
+    // could set it again, which is the whole defect.
+    expect(hook).toMatch(
+      /\$global:LASTEXITCODE = \$__wmux_le\s*\r?\n\s*\r?\n?\s*return \$oscPrefix/,
+    );
+  });
 });

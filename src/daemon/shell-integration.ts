@@ -45,7 +45,15 @@ import { isMac } from '../shared/platform';
 // $? to true. So oh-my-posh, Starship, and anything else that reads $? to
 // colour an exit-code segment saw "success" after every failed command, while
 // the same config in Windows Terminal was correct.
-const INTEGRATION_VERSION = 10;
+// v11: decide the exit code from whether $LASTEXITCODE MOVED (issue #1270). It
+// is set only by native commands and never cleared, so preferring it whenever
+// it was non-null meant that from a session's first native command onward every
+// failing cmdlet reported D;0 — the value agent.lifecycle.exitCode is built
+// from. Preferring $? instead trades the bug for its mirror image, marking a
+// successful cmdlet failed with the previous native command's code. Movement
+// since the last prompt is what separates "this number describes the command
+// that just ran" from "this number is left over".
+const INTEGRATION_VERSION = 11;
 const VERSION_FILE = '.version';
 
 // -----------------------------------------------------------------------
@@ -70,6 +78,11 @@ if ($ExecutionContext.SessionState.LanguageMode -ne 'FullLanguage') { return }
 
 $global:__wmux_last_exit = 0
 
+# The $LASTEXITCODE the LAST prompt render saw (#1270). It is the only way to
+# tell "a native command just ran and set this" from "this is left over from
+# some native command earlier in the session" — see the prompt function.
+$global:__wmux_prev_le = $LASTEXITCODE
+
 # Stash the user's existing prompt function so we can wrap it instead of
 # clobbering any customization (oh-my-posh, Starship, etc.).
 if (-not (Get-Variable -Name '__wmux_prev_prompt' -Scope Global -ErrorAction SilentlyContinue)) {
@@ -85,7 +98,34 @@ function global:prompt {
     # is to snapshot both variables before doing anything else.
     $__wmux_ok = $?
     $__wmux_le = $LASTEXITCODE
-    $ec = if ($null -ne $__wmux_le) { $__wmux_le } elseif ($__wmux_ok) { 0 } else { 1 }
+
+    # Which of the two snapshots actually describes the command that just ran
+    # (#1270).
+    #
+    # $LASTEXITCODE is set ONLY by native commands, and it is never cleared. So
+    # from the first native command onward it is non-null for the rest of the
+    # session, and preferring it unconditionally — which is what this line used
+    # to do — meant every cmdlet afterwards reported a stale number.
+    # 'Get-Item Q:\\nope-xyz' after any earlier native command emitted D;0, and
+    # that value feeds agent.lifecycle.exitCode.
+    #
+    # The other direction is just as wrong and is why '$? first, always' is not
+    # the answer either: after 'cmd /c exit 7', a SUCCEEDING cmdlet leaves
+    # $LASTEXITCODE at 7, so reporting it would mark a successful command failed.
+    #
+    # What separates the two cases is whether $LASTEXITCODE MOVED since the last
+    # prompt. It did → a native command ran and that number is its exit code.
+    # It did not → the last command was a cmdlet, the number is stale, and $?
+    # is the only thing that knows how it went.
+    #
+    # The residual case: two native commands in a row exiting with the SAME
+    # code. The second one's number has not moved, so its failure is reported as
+    # 1 rather than its own code. Both are non-zero, the consumer is a
+    # failed/succeeded signal, and exit 1 — far and away the most common failure
+    # code — reports as exactly itself.
+    $__wmux_le_moved = $__wmux_le -ne $global:__wmux_prev_le
+    $ec = if ($__wmux_le_moved) { $__wmux_le } elseif ($__wmux_ok) { 0 } else { 1 }
+    $global:__wmux_prev_le = $__wmux_le
 
     $esc = [char]27
     $bel = [char]7

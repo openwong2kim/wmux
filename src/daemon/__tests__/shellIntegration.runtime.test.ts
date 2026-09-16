@@ -248,6 +248,90 @@ describe.runIf(hasPowerShell)('OSC 133 runtime — powershell.exe', () => {
     );
     expect(afterSuccess[1]).toBe('True');
   }, EVENT_TIMEOUT_MS + 2000);
+
+  // Issue #1270. $LASTEXITCODE is set only by NATIVE commands and is never
+  // cleared, so from the session's first native command onward it is non-null
+  // for good — and the exit code was taken from it whenever it was. Every
+  // failing cmdlet after that point reported 0, which is what
+  // agent.lifecycle.exitCode was fed.
+  it('reports a failing cmdlet after a native command as non-zero', async () => {
+    manager = new DaemonSessionManager();
+    const id = `rt-pwsh-cmdlet-fail-${Date.now()}`;
+    manager.createSession({ id, cmd: POWERSHELL, cwd: path.resolve(process.cwd()) });
+
+    const managed = manager.getSession(id)!;
+    const baseline = managed.promptLog.size;
+
+    // A native command first — this is what puts a number in $LASTEXITCODE
+    // and arms the bug. Anchored on its own command_start: the startup prompt
+    // render emits a D;0 of its own, and matching that instead would leave the
+    // assertion below reading the wrong command's exit code.
+    managed.ptyProcess.write(`& "${CMD_EXE}" /c exit 0\r`);
+    const nativeStart = await waitForEventAfter(
+      managed,
+      baseline,
+      (e) => e.type === 'command_start',
+      'command_start for the native command',
+    );
+    await waitForEventAfter(
+      managed,
+      baseline,
+      (e) => e.type === 'command_end' && e.byteOffset >= nativeStart.byteOffset,
+      'command_end for the native command',
+    );
+
+    const afterNative = managed.promptLog.size;
+    managed.ptyProcess.write('Get-Item Q:\\nope-xyz\r');
+    const cmdletStart = await waitForEventAfter(
+      managed,
+      afterNative,
+      (e) => e.type === 'command_start',
+      'command_start for the failing cmdlet',
+    );
+    const cmdEnd = await waitForEventAfter(
+      managed,
+      afterNative,
+      (e) => e.type === 'command_end' && e.byteOffset >= cmdletStart.byteOffset,
+      'command_end for the failing cmdlet',
+    );
+    expect(cmdEnd.exitCode).toBe(1);
+  }, EVENT_TIMEOUT_MS + 2000);
+
+  // The other direction, and the reason "$? first, always" is not the fix
+  // either: $LASTEXITCODE is still 7 after a cmdlet that succeeded, so
+  // reporting it would mark a successful command failed.
+  it('reports a succeeding cmdlet after a failing native command as zero', async () => {
+    manager = new DaemonSessionManager();
+    const id = `rt-pwsh-cmdlet-ok-${Date.now()}`;
+    manager.createSession({ id, cmd: POWERSHELL, cwd: path.resolve(process.cwd()) });
+
+    const managed = manager.getSession(id)!;
+    const baseline = managed.promptLog.size;
+
+    managed.ptyProcess.write(`& "${CMD_EXE}" /c exit 7\r`);
+    await waitForEventAfter(
+      managed,
+      baseline,
+      (e) => e.type === 'command_end' && e.exitCode === 7,
+      'command_end with exitCode 7',
+    );
+
+    const afterNative = managed.promptLog.size;
+    managed.ptyProcess.write('Get-Location | Out-Null\r');
+    const cmdletStart = await waitForEventAfter(
+      managed,
+      afterNative,
+      (e) => e.type === 'command_start',
+      'command_start for the succeeding cmdlet',
+    );
+    const cmdEnd = await waitForEventAfter(
+      managed,
+      afterNative,
+      (e) => e.type === 'command_end' && e.byteOffset >= cmdletStart.byteOffset,
+      'command_end for the succeeding cmdlet',
+    );
+    expect(cmdEnd.exitCode).toBe(0);
+  }, EVENT_TIMEOUT_MS + 2000);
 });
 
 describe.runIf(hasGitBash)('OSC 133 runtime — bash.exe (Git Bash)', () => {

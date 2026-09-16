@@ -26,6 +26,15 @@ function prompt {
     # branch cannot mistake it for a real failure and report 1 over the true
     # exit code.
     $__wmux_ok = $?
+    # Snapshot $LASTEXITCODE beside $? and put it back before returning (#1269).
+    # The 'git rev-parse' below runs on every prompt render and overwrites it,
+    # so after 'cmd /c exit 7' the user saw $LASTEXITCODE = 0 — or 128 outside a
+    # git repo — instead of their own exit code. Since #1267 the wrapped prompt
+    # correctly sees $? = $false, which makes this worse rather than harmless:
+    # a prompt engine that falls back to $LASTEXITCODE when no $Error record
+    # matches now renders wmux's git exit code as the user's. The daemon-mode
+    # wrapper in src/daemon/shell-integration.ts does the same thing.
+    $__wmux_le = $LASTEXITCODE
     $body = if (Test-Path Function:\__wmux_original_prompt) {
         if (-not $__wmux_ok) { Write-Error -Message 'wmux: last command failed' -ErrorAction Ignore }
         __wmux_original_prompt
@@ -70,6 +79,10 @@ function prompt {
             $script:__wmux_skip_osc = $true
         }
     }
+
+    # Hand $LASTEXITCODE back exactly as the user's last command left it (#1269).
+    # Last statement before the return: anything after it could set it again.
+    $global:LASTEXITCODE = $__wmux_le
 
     return $oscPrefix + [string]$body
 }
