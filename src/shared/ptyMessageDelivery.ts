@@ -43,23 +43,29 @@ export function isMultilinePtyPayload(text: string): boolean {
 //
 // MEASURED, not reasoned. codex-cli 0.154.0, driven through a real ConPTY on
 // Windows, fed the exact bytes this function writes (bracketed paste, wait,
-// CR), screen read back with a headless terminal:
+// CR), screen read back with a headless terminal and scored on the COMPOSER:
+// a composer showing its placeholder took the draft, a composer still holding
+// the nudge did not.
 //
-//     gap     idle composer
-//     0 ms    submitted (1 run)
-//     100 ms  STRANDED in 5 of 6 runs   <- the old global default
-//     250 ms  STRANDED in 3 of 5 runs
-//     300 ms  submitted (1 of 1)
-//     350 ms  submitted (1 of 1)
-//     400 ms  submitted (3 of 3)
-//     500 ms  submitted (5 of 5)
-//     600 / 800 / 1000 / 2000 ms  submitted (1 of 1 each)
+//     gap     paste had reached the composer    nudge stranded
+//             by the time the CR was written
+//     100 ms  5 of 20 runs                      2 of 20 runs
+//     500 ms  10 of 10 runs                     0 of 10 runs
 //
-// Nothing at or above 300 ms was ever stranded: 14 idle runs out of 14, plus 2
-// mid-turn runs at 500 ms (a mid-turn Codex QUEUES the message, which is a real
-// wake, not a stranding). The value below is 500 ms: double the last observed
-// failure, and still well under the point where an asynchronous nudge feels
-// delayed.
+// The RACE is the durable finding, not the rate. At 100 ms the Enter is
+// usually written into a composer that has not received the paste yet, and the
+// nudge is then intermittently lost. At 500 ms the paste had landed first,
+// every time. The stranding itself is bursty — both failures above fell in one
+// batch of ten, and a second machine running the same binary and probe saw 12
+// of 12 submit at 100 ms — so a short clean run does not disprove it and a
+// short bad run does not size it.
+//
+// Do not trust any "stranded" count taken before this scorer existed: the
+// earlier one keyed on the "Working" footer, which disappears as soon as the
+// turn fails, so it miscounted submitted runs as stranded. It could not
+// produce the opposite error, so its "submitted" observations still stand —
+// which is why 300, 350, 400, 600, 800, 1000 and 2000 ms are all still known
+// to submit.
 //
 // Two facts are keyed off the same signal, so they live in one table rather
 // than two parallel ones that can drift:
@@ -96,7 +102,9 @@ export const DEFAULT_SUBMIT_DELAY_MS = 100;
 
 /**
  * The gap for agents that run a paste-burst heuristic on their input. See the
- * measurement table above for where this number comes from.
+ * measurement table above for where this number comes from. It is sized to
+ * close a race, not to beat an exact threshold: 500 ms is where the paste was
+ * observed to have reached the composer before the Enter in every run.
  *
  * The tradeoff being accepted: a wider gap is also a wider window in which a
  * human can type into the same composer before our Enter lands, submitting a
