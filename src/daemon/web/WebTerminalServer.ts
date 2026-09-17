@@ -140,6 +140,9 @@ function decodeTurnCursor(
  *   DELETE /api/sessions/:id   close a pane — 403 unless `--allow-input`
  *   GET  /api/sessions/:id/diff  what this pane's repo has changed (read-only git)
  *   GET  /api/sessions/:id/commands  slash commands + skills this pane can run
+ *   GET  /api/sessions/:id/turns/image?path=  one image the transcript named,
+ *                              from the pane's spawn cwd or the uploads dir —
+ *                              403 unless `--allow-transcript`
  *   POST /api/stream-ticket    device → short-lived `?ticket=` capability
  *   GET  /api/stream?session=  SSE pane bytes (`?token=`/`?ticket=` — EventSource)
  *   GET  /api/events           attention + approval channel; SSE (`?token=`
@@ -606,6 +609,15 @@ const MAX_JSON_BODY_BYTES = 8 * 1024;
  * (2-MODEL review).
  */
 const MAX_BLOCK_BODY_BYTES = 256 * 1024;
+/**
+ * Ceiling on ONE image served to a phone by `/turns/image`.
+ *
+ * Generous next to the block cap because an image is not truncatable: a head is
+ * not a smaller picture, it is a corrupt file. Over the cap the route refuses
+ * with 413 and the phone shows the filename chip instead, which is the same
+ * fallback it already has for every other refusal on this route.
+ */
+const MAX_TURN_IMAGE_BYTES = 8 * 1024 * 1024;
 /**
  * Who the registry records as having answered, for anything resolved over HTTP.
  *
@@ -1790,6 +1802,13 @@ export class WebTerminalServer {
         allowInput: this.mayInput(principal),
         allowUpload: this.opts?.allowUpload === true,
         allowTranscript: this.opts?.allowTranscript === true,
+        // Whether `/api/sessions/:id/turns/image` exists on this daemon, so the
+        // phone decides ONCE instead of learning it from a 404 per thumbnail.
+        // Only alongside the grant that opens the route: a client that reads
+        // this as "images available" and then meets a 403 on every fetch is
+        // worse off than one that never tried. A daemon predating the route
+        // omits the key entirely, which a phone reads as false.
+        ...(this.opts?.allowTranscript === true ? { turnImages: true } : {}),
         // #783 — the gated-tools list so the phone can say "this Bash call is
         // waiting because Bash is in the gate list". Absent gateConfig → empty
         // array (a daemon that predates the gate or did not wire it).
@@ -1829,6 +1848,9 @@ export class WebTerminalServer {
       }
       if (req.method === 'GET' && rest.endsWith('/commands')) {
         return this.handleSessionCommands(res, rest.slice(0, -'/commands'.length));
+      }
+      if (req.method === 'GET' && rest.endsWith('/turns/image')) {
+        return void this.handleSessionTurnImage(req, res, rest.slice(0, -'/turns/image'.length));
       }
       if (req.method === 'GET' && rest.endsWith('/turns/block')) {
         return this.handleSessionTurnBlock(req, res, rest.slice(0, -'/turns/block'.length));
@@ -2587,6 +2609,150 @@ export class WebTerminalServer {
       return;
     }
     this.json(res, 200, { body: found.body, bytes });
+  }
+
+  /**
+   * `GET /api/sessions/:id/turns/image?path=<absolute>` — the BYTES behind an
+   * image path the transcript named (a Read/Write tool input, or a photo the
+   * phone itself uploaded), so a turn view can render a thumbnail instead of a
+   * filename.
+   *
+   * Same gate, same tag as `/turns` and `/turns/block`: `--allow-transcript`
+   * already grants "file contents the agent read", and a separate flag would
+   * make the operator arm the same reading twice.
+   *
+   * The boundary is `meta.spawnCwd` ∪ `deps.uploadsDir`, and IT IS
+   * `meta.spawnCwd`, NOT `meta.cwd`, for the reason spelled out on
+   * handleSessionDiff: `meta.cwd` follows OSC 7, so any process inside the pane
+   * can move it with three bytes of terminal output and aim this route at the
+   * whole home directory. A record with no `spawnCwd` leaves the uploads
+   * directory as the only root; with neither there is nothing to serve.
+   *
+   * Everything a caller could use to map the disk answers 404 `image not
+   * found` — outside the boundary, missing, a directory, unreadable. A 403 for
+   * "outside" would confirm the path exists.
+   */
+  private async handleSessionTurnImage(
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+    sessionId: string,
+  ): Promise<void> {
+    res.setHeader('Cache-Control', 'no-store');
+    if (this.opts?.allowTranscript !== true) {
+      this.json(res, 403, {
+        error: 'transcript-disabled: server started without --allow-transcript',
+        detail: 'restart with: wmux web --allow-transcript <your other flags>',
+      });
+      return;
+    }
+    const managed = this.readableSession(sessionId);
+    if (!managed) {
+      this.json(res, 404, { error: 'session not found' });
+      return;
+    }
+
+    const url = new URL(req.url ?? '/', 'http://localhost');
+    const raw = url.searchParams.get('path');
+    // Absolute only, and a NUL is refused rather than truncated: Node throws on
+    // one anyway, and refusing here keeps "what this route accepts" readable.
+    if (raw === null || raw.trim() === '' || raw.includes('\0') || !path.isAbsolute(raw)) {
+      this.json(res, 400, {
+        error: 'bad-image-ref',
+        detail: 'path must be an absolute filesystem path',
+      });
+      return;
+    }
+
+    const roots = [managed.meta.spawnCwd, this.deps.uploadsDir].filter(
+      (dir): dir is string => typeof dir === 'string' && dir.length > 0,
+    );
+    if (roots.length === 0) {
+      this.json(res, 404, { error: 'image not found' });
+      return;
+    }
+
+    let real: string;
+    try {
+      real = await fs.promises.realpath(raw);
+    } catch {
+      // Missing, or a link that does not resolve — indistinguishable from
+      // "outside the boundary" on purpose.
+      this.json(res, 404, { error: 'image not found' });
+      return;
+    }
+    // BOTH sides resolved: `/tmp` is a symlink to `/private/tmp` on macOS, so a
+    // raw root would reject every file under it. And the containment test is
+    // `path.relative`, never a string prefix — `/a/b` is not a prefix test away
+    // from swallowing `/a/bc`.
+    let contained = false;
+    for (const root of roots) {
+      let realRoot: string;
+      try {
+        realRoot = await fs.promises.realpath(root);
+      } catch {
+        continue;
+      }
+      const rel = path.relative(realRoot, real);
+      if (rel === '..' || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel)) continue;
+      contained = true;
+      break;
+    }
+    if (!contained) {
+      this.json(res, 404, { error: 'image not found' });
+      return;
+    }
+
+    // Past the boundary check, everything else reads through ONE handle. A
+    // second path lookup here is a window in which the file under an allowed
+    // path becomes a symlink to somewhere else, or a small file becomes a large
+    // one after the size gate has passed.
+    let handle: fs.promises.FileHandle;
+    try {
+      handle = await fs.promises.open(real, 'r');
+    } catch {
+      this.json(res, 404, { error: 'image not found' });
+      return;
+    }
+    try {
+      const stat = await handle.stat();
+      if (!stat.isFile()) {
+        this.json(res, 404, { error: 'image not found' });
+        return;
+      }
+      if (stat.size > MAX_TURN_IMAGE_BYTES) {
+        this.json(res, 413, {
+          error: 'image-too-large',
+          detail: `image is ${stat.size} bytes; the cap is ${MAX_TURN_IMAGE_BYTES}`,
+        });
+        return;
+      }
+      const head = Buffer.alloc(IMAGE_MAGIC_BYTES);
+      const { bytesRead } = await handle.read(head, 0, IMAGE_MAGIC_BYTES, 0);
+      // The BYTES decide, never the extension: a phone asked to render a text
+      // file named `.png` shows a broken thumbnail, and `nosniff` plus a wrong
+      // Content-Type is how a non-image gets a chance to be something else.
+      const contentType = sniffImageContentType(head.subarray(0, bytesRead));
+      if (!contentType) {
+        this.json(res, 415, {
+          error: 'not-an-image',
+          detail: 'leading bytes are not PNG, JPEG, GIF or WebP',
+        });
+        return;
+      }
+      const body = await handle.readFile();
+      res.writeHead(200, {
+        'Content-Type': contentType,
+        ...this.securityHeaders(),
+        'Content-Length': String(body.length),
+      });
+      res.end(body);
+    } catch {
+      // A read that fails after the handle opened (permissions, a device that
+      // went away) is the same answer as a file that was never there.
+      this.json(res, 404, { error: 'image not found' });
+    } finally {
+      await handle.close().catch(() => { /* already gone — nothing to release */ });
+    }
   }
 
   private handleSessionResize(
@@ -4731,6 +4897,41 @@ function sniffImageExt(body: Buffer): 'jpg' | 'png' | null {
   if (body.length < PNG_SIGNATURE.length) return null;
   if (body[0] === 0xff && body[1] === 0xd8 && body[2] === 0xff) return 'jpg';
   if (body.subarray(0, PNG_SIGNATURE.length).equals(PNG_SIGNATURE)) return 'png';
+  return null;
+}
+
+/** How many leading bytes `sniffImageContentType` needs — WebP's marker ends at 12. */
+const IMAGE_MAGIC_BYTES = 16;
+
+/**
+ * The `Content-Type` for a blob `/turns/image` is about to serve, by its
+ * leading bytes — or null for anything that is not one of the four formats a
+ * phone can render.
+ *
+ * Separate from `sniffImageExt`, which answers a different question (what
+ * extension do we WRITE for an upload) over a deliberately narrower set. Widening
+ * that one to GIF and WebP would start writing extensions the upload route's
+ * deletion predicate does not recognise.
+ */
+function sniffImageContentType(head: Buffer): string | null {
+  if (head.length >= 3 && head[0] === 0xff && head[1] === 0xd8 && head[2] === 0xff) {
+    return 'image/jpeg';
+  }
+  if (head.length >= PNG_SIGNATURE.length && head.subarray(0, PNG_SIGNATURE.length).equals(PNG_SIGNATURE)) {
+    return 'image/png';
+  }
+  if (head.length >= 6) {
+    const gif = head.subarray(0, 6).toString('latin1');
+    if (gif === 'GIF87a' || gif === 'GIF89a') return 'image/gif';
+  }
+  // RIFF containers carry the real format at byte 8; only the WEBP one is an image.
+  if (
+    head.length >= 12 &&
+    head.subarray(0, 4).toString('latin1') === 'RIFF' &&
+    head.subarray(8, 12).toString('latin1') === 'WEBP'
+  ) {
+    return 'image/webp';
+  }
   return null;
 }
 
