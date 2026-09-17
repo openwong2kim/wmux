@@ -3604,6 +3604,27 @@ export class WebTerminalServer {
    */
   private broadcastEvent(kind: 'critical' | 'notify', payload: { sessionId: string; event?: unknown }): void {
     if (!payload || typeof payload !== 'object') return;
+    // #1402 — the same gate `emitAgentLiveness` takes, and for the same reason.
+    // `DaemonSessionManager` re-emits `session:critical` / `session:notification`
+    // for EVERY pty, the brain included, and this fan-out is not keyed by pane:
+    // it writes to every open stream and records the entry in the replayable
+    // `attentionLog` that `/api/events` serves. So a brain pane's events reached
+    // every paired phone carrying both the pane id AND pane-authored content —
+    // the critical detector's `matchedLine`, an OSC 9/777 title and body. That
+    // is the channel through which a device learns the id the per-pane routes
+    // (#1401) now refuse; refusing it there while handing out fresh ids here
+    // closed the door and left the sign up. It has to be refused at the
+    // producer: the log behind `/api/events` is shared and its backlog route
+    // takes no principal, so a delivery-side filter would still leave brain
+    // content in the replay window.
+    //
+    // FLAT, like the liveness gate: the desk drives the brain over RPC, not this
+    // fan-out, and the pane is absent from `/api/sessions` anyway. A BRAIN
+    // filter, not `readableSession`'s brain-or-unknown one: an id the manager no
+    // longer knows is a pane that closed while its event was in flight, and
+    // dropping those would lose real signals.
+    const named = this.deps.sessionManager.getSession(payload.sessionId);
+    if (isBrainPty({ id: payload.sessionId, env: named?.meta.env })) return;
     const event = payload.event && typeof payload.event === 'object' ? (payload.event as Record<string, unknown>) : {};
     const entry = this.publish(kind, { sessionId: payload.sessionId, ...event });
 

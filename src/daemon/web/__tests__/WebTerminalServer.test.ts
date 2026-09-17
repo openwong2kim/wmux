@@ -843,6 +843,65 @@ describe('WebTerminalServer', () => {
   });
 
   // ── critical / notify SSE tee ──────────────────────────────────────────────
+  it('★ #1402 withholds the brain pane\'s critical/notify events from the fan-out and the replay log', async () => {
+    // Both brain marks, on separate panes: the env marker, and the id prefix
+    // for a listing that omits env. A pane the manager no longer knows must
+    // still get through — that is a closed pane's in-flight event, not a
+    // brain pane.
+    live.push({
+      id: 'pty-orchestrator', cwd: '/x', cols: 80, rows: 24, state: 'detached',
+      agent: undefined, lastDetectedAgent: undefined, lastActivity: '2020-01-01T00:00:00.000Z',
+      env: { WMUX_BRAIN_PTY: '1' }, cmd: '/usr/bin/claude',
+    });
+    const info = await startRO();
+    const token = info.token as string;
+    const ac = new AbortController();
+    const sse = await fetch(
+      `${base()}/api/stream?session=s1&token=${encodeURIComponent(token)}`,
+      { signal: ac.signal },
+    );
+    expect(sse.status).toBe(200);
+    await new Promise((r) => setTimeout(r, 30));
+
+    const em = sessionManager as unknown as EventEmitter;
+    em.emit('session:critical', {
+      sessionId: 'pty-orchestrator',
+      event: { action: 'delete files', riskLevel: 'critical', matchedLine: '$ rm -rf orchestrator-secrets' },
+    });
+    em.emit('session:notification', {
+      sessionId: 'brain-ws-9',
+      event: { source: 'osc9', title: null, body: 'orchestrator notification', ts: 1 },
+    });
+    em.emit('session:notification', {
+      sessionId: 'gone-worker',
+      event: { source: 'osc9', title: null, body: 'closed pane still speaks', ts: 2 },
+    });
+
+    const reader = (sse.body as ReadableStream<Uint8Array>).getReader();
+    let text = '';
+    const deadline = Date.now() + 500;
+    while (Date.now() < deadline && !text.includes('closed pane still speaks')) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      if (value) text += Buffer.from(value).toString('utf8');
+    }
+    ac.abort();
+
+    expect(text).toContain('"sessionId":"gone-worker"');
+    expect(text).not.toContain('pty-orchestrator');
+    expect(text).not.toContain('orchestrator-secrets');
+    expect(text).not.toContain('brain-ws-9');
+    expect(text).not.toContain('orchestrator notification');
+
+    // The replayable backlog behind /api/events never held them either.
+    const backlog = await fetch(`${base()}/api/events`, { headers: bearer(token) });
+    expect(backlog.status).toBe(200);
+    const body = await backlog.text();
+    expect(body).toContain('gone-worker');
+    expect(body).not.toContain('pty-orchestrator');
+    expect(body).not.toContain('brain-ws-9');
+  });
+
   it('tees session:critical and session:notification to every SSE client', async () => {
     const info = await startRO();
     const token = info.token as string;
