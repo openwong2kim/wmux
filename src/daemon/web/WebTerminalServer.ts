@@ -2640,7 +2640,7 @@ export class WebTerminalServer {
       // Re-read rather than trusting the lookup above: the body arrives over
       // however many TCP segments it takes, and a pane can die or be attached
       // by the desk in between.
-      const current = this.deps.sessionManager.getSession(id);
+      const current = this.attachableSession(principal, id);
       if (!current) return this.json(res, 404, { error: 'session not found' });
       if (current.meta.state === 'attached' && current.viewerVisible) {
         return this.json(res, 409, {
