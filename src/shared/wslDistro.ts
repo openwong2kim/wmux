@@ -118,6 +118,8 @@ export function decodeWslOutput(raw: string | Buffer): string {
  * Docker-owned distros (`docker-desktop`, `docker-desktop-data`) sort LAST:
  * they are infrastructure, not workspaces (#1103's whole complaint).
  */
+const WSL_DISTRO_COLLATOR = new Intl.Collator('en');
+
 export function parseWslDistros(raw: string | Buffer): string[] {
   const names = decodeWslOutput(raw)
     .split(/\r?\n/)
@@ -128,6 +130,10 @@ export function parseWslDistros(raw: string | Buffer): string[] {
     const aDocker = a.toLowerCase().startsWith('docker-desktop');
     const bDocker = b.toLowerCase().startsWith('docker-desktop');
     if (aDocker !== bDocker) return aDocker ? 1 : -1;
-    return a.localeCompare(b);
+    // Locale-independent (#1395): a bare `localeCompare` follows the process
+    // locale, and on a ko-KR box Hangul sorts before Latin, so the same
+    // distro list came out in a different order per machine — and the tests
+    // failed on exactly the boxes that need WSL distro names most.
+    return WSL_DISTRO_COLLATOR.compare(a, b);
   });
 }
