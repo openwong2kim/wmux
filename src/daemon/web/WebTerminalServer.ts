@@ -1825,10 +1825,10 @@ export class WebTerminalServer {
     if (p.startsWith('/api/sessions/')) {
       const rest = p.slice('/api/sessions/'.length);
       if (req.method === 'GET' && rest.endsWith('/diff')) {
-        return this.handleSessionDiff(res, rest.slice(0, -'/diff'.length));
+        return this.handleSessionDiff(res, rest.slice(0, -'/diff'.length), principal);
       }
       if (req.method === 'GET' && rest.endsWith('/commands')) {
-        return this.handleSessionCommands(res, rest.slice(0, -'/commands'.length));
+        return this.handleSessionCommands(res, rest.slice(0, -'/commands'.length), principal);
       }
       if (req.method === 'GET' && rest.endsWith('/turns/block')) {
         return this.handleSessionTurnBlock(req, res, rest.slice(0, -'/turns/block'.length));
@@ -1837,7 +1837,7 @@ export class WebTerminalServer {
         return this.handleSessionTurns(req, res, rest.slice(0, -'/turns'.length), principal);
       }
       if (req.method === 'POST' && rest.endsWith('/resize')) {
-        return this.handleSessionResize(req, res, rest.slice(0, -'/resize'.length));
+        return this.handleSessionResize(req, res, rest.slice(0, -'/resize'.length), principal);
       }
       if (req.method === 'DELETE') {
         return this.handleSessionDelete(res, rest, principal);
@@ -2238,10 +2238,10 @@ export class WebTerminalServer {
    * `not-a-git-repo` is a 409, not a 500: a pane running in `~` is completely
    * normal and the phone should say "no repository here", not "something broke".
    */
-  private async handleSessionDiff(res: http.ServerResponse, rawId: string): Promise<void> {
+  private async handleSessionDiff(res: http.ServerResponse, rawId: string, principal: WebPrincipal): Promise<void> {
     const id = decodePathSegment(rawId);
     if (id === null) return this.json(res, 404, { error: 'session not found' });
-    const managed = this.deps.sessionManager.getSession(id);
+    const managed = this.attachableSession(principal, id);
     if (!managed) return this.json(res, 404, { error: 'session not found' });
 
     // Absent only for a session record written before spawnCwd existed. Every
@@ -2319,10 +2319,10 @@ export class WebTerminalServer {
    * an empty list rather than a refusal — "this pane has no commands" is a
    * usable answer for a composer, "409" is not.
    */
-  private handleSessionCommands(res: http.ServerResponse, rawId: string): void {
+  private handleSessionCommands(res: http.ServerResponse, rawId: string, principal: WebPrincipal): void {
     const id = decodePathSegment(rawId);
     if (id === null) return this.json(res, 404, { error: 'session not found' });
-    const managed = this.deps.sessionManager.getSession(id);
+    const managed = this.attachableSession(principal, id);
     if (!managed) return this.json(res, 404, { error: 'session not found' });
 
     const cwd = managed.meta.spawnCwd;
@@ -2509,7 +2509,9 @@ export class WebTerminalServer {
    * not simply be added to `handleStream`: the operator token legitimately
    * streams every pane, brain included (the desktop's own remote mirror rides
    * this route). So the gate follows the credential class — a device gets
-   * `readableSession`'s answer, the operator keeps `getSession`'s.
+   * `readableSession`'s answer, the operator keeps `getSession`'s. Every
+   * per-pane route a device can reach (stream, input, resize, delete, diff,
+   * commands) resolves through here, so the 404 is the same on all of them.
    */
   private attachableSession(
     principal: WebPrincipal,
@@ -2614,10 +2616,11 @@ export class WebTerminalServer {
     req: http.IncomingMessage,
     res: http.ServerResponse,
     rawId: string,
+    principal: WebPrincipal,
   ): void {
     const id = decodePathSegment(rawId);
     if (id === null) return this.json(res, 404, { error: 'session not found' });
-    const managed = this.deps.sessionManager.getSession(id);
+    const managed = this.attachableSession(principal, id);
     if (!managed) return this.json(res, 404, { error: 'session not found' });
 
     this.readJsonBody(req, res, (body) => {
@@ -2881,7 +2884,7 @@ export class WebTerminalServer {
 
     const id = decodePathSegment(rawId);
     if (id === null) return this.json(res, 404, { error: 'session not found' });
-    if (!this.deps.sessionManager.getSession(id)) {
+    if (!this.attachableSession(principal, id)) {
       return this.json(res, 404, { error: 'session not found' });
     }
     lifecycle

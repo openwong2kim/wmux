@@ -4581,6 +4581,22 @@ describe('WebTerminalServer', () => {
         });
         expect(typed.status).toBe(404);
 
+        // Every other per-pane route a device can reach answers the same way,
+        // so none of them confirms the id (review: resize/delete/diff/commands
+        // had the identical bare lookup).
+        const resized = await fetch(`${base()}/api/sessions/brain-abc/resize`, {
+          method: 'POST', headers: { ...asDevice, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ cols: 100, rows: 30 }),
+        });
+        expect(resized.status).toBe(404);
+        const deleted = await fetch(`${base()}/api/sessions/brain-abc`, { method: 'DELETE', headers: asDevice });
+        expect(deleted.status).toBe(404);
+        const diffed = await fetch(`${base()}/api/sessions/brain-abc/diff`, { headers: asDevice });
+        expect(diffed.status).toBe(404);
+        const commands = await fetch(`${base()}/api/sessions/brain-abc/commands`, { headers: asDevice });
+        expect(commands.status).toBe(404);
+        expect(live.find((s) => s.id === 'brain-abc')).toBeDefined();
+
         ac.abort();
         await Promise.all([panePump.done, brainPump.done]);
       } finally {
