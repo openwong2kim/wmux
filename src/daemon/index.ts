@@ -3350,12 +3350,15 @@ function registerRpcHandlers(
     // `Claude Code / running` for good. The renderer already clears its own
     // label on this exact OSC 133 signal (#1210), so answering from it here
     // keeps every reader of this state on one source of truth for "gone".
-    if (shellAtPrompt) {
+    // A verified live process outranks the marker: a wrapper or nested shell
+    // can emit a prompt-end while the agent it launched is still running, and
+    // process truth is the stronger of the two signals (review, #1400).
+    const liveProcess =
+      !!canonical && provesLiveAgent(agentProcessTracker.identityFor(id), canonical.slug);
+    if (shellAtPrompt && !liveProcess) {
       return { agentName: null, agentVerified: false, ...state, agentStatus: 'idle' };
     }
-    const agentVerified =
-      !!canonical &&
-      provesLiveAgent(agentProcessTracker.identityFor(id), canonical.slug);
+    const agentVerified = liveProcess;
     return {
       agentName: reportedAgentName({ rawName, screenSlug, canonical }),
       agentVerified,

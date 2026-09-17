@@ -22,7 +22,11 @@ describe('AgentDetector', () => {
     // `shift+tab to cycle` footer, so the compound gate's prompt signal never
     // arrives. The launch splash (logo glyphs + `Claude Code v…` on one row)
     // is product chrome that stands in for both signals.
-    const SPLASH = ' \u2590\u259b\u2588\u2588\u2588\u259b\u2588   Claude Code v2.1.274\n';
+    // The row as Claude Code 2.1.274 actually paints it (captured from a live
+    // pane's PTY buffer): OSC title, cursor-home, colour, the logo glyphs, a
+    // CHA move (`ESC[12G`) instead of spaces, bold, the name, another CHA,
+    // then the version. No whitespace survives the ANSI strip.
+    const SPLASH = "\r\n\u001b7\u001b[r\u001b8\u001b[?25h\u001b[?25l\u001b[?2004h\u001b[?2031h\u001b[?1004h\u001b[>0q\u001b[?u\u001b[c\u001b[>4m\u001b[<u\u001b[?1004l\u001b[?2031l\u001b[?2004l\u001b[?2004h\u001b[?2031h\u001b[?1004h\u001b[?1049h\u001b[2J\u001b[H\u001b[?1000h\u001b[?1002h\u001b[?1003h\u001b[?1006h\u001b[?25l\u001b]0;\u2733 Claude Code\u0007\u001b[H\r\u001b[1B\u001b[38;2;215;119;87m \u2590\u001b[48;2;0;0;0m\u259b\u2588\u2588\u2588\u259b\u2588\u001b[12G\u001b[39m\u001b[49m\u001b[1mClaude Code\u001b[24G\u001b[22m\u001b[38;2;153;153;153mv2.1.274" + '\n';
 
     it('splash line alone activates Claude Code', () => {
       const det = new AgentDetector();
@@ -33,9 +37,9 @@ describe('AgentDetector', () => {
       expect(cb.mock.calls.map((c: unknown[]) => (c[0] as { status: string }).status)).toContain('running');
     });
 
-    it('splash wrapped in ANSI colour still counts', () => {
+    it('a plainly spaced splash (older builds / other terminals) counts too', () => {
       const det = new AgentDetector();
-      det.feed('\x1b[38;5;208m \u2590\u259b\u2588\u2588\u2588\u259b\u2588\x1b[0m   \x1b[1mClaude Code\x1b[0m v2.1.274\n');
+      det.feed(' \u2590\u259b\u2588\u2588\u2588\u259b\u2588   Claude Code v2.1.172\n');
       expect(det.getLastAgent()).toBe('Claude Code');
     });
 

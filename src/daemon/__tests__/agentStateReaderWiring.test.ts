@@ -98,7 +98,7 @@ describe('readDaemonAgentState wiring (#1303)', () => {
   it('#1392 — answers no agent / idle once OSC 133 says the shell is back at its prompt', () => {
     const body = readerBody();
     const promptIdx = body.indexOf('const shellAtPrompt = ');
-    const guardIdx = body.indexOf('if (shellAtPrompt) {');
+    const guardIdx = body.indexOf('if (shellAtPrompt && !liveProcess) {');
     expect(promptIdx).toBeGreaterThan(-1);
     expect(guardIdx).toBeGreaterThan(promptIdx);
     // The prompt-return guard must sit AFTER canonical identity (the #1303

@@ -450,11 +450,17 @@ function isClaudeBannerChrome(line: string): boolean {
  * from source, and which #850's tests feed as banner-only — from opening the
  * gate on its own.
  */
-const CLAUDE_SPLASH_RE = /[\u2590\u259b\u259c\u259d\u2580\u2588]+\s+Claude\s*Code\s*v\d+\.\d+/;
+// Whitespace is dropped before the test, not made optional: Claude Code paints
+// the row with cursor moves (` ▐ ESC[48;2;0;0;0m ▛███▛█ ESC[12G ESC[1m Claude
+// Code ESC[24G v2.1.274` on 2.1.274), so after the ANSI strip the glyphs and
+// the name may touch with no space at all.
+// The whole Block Elements range, not the six glyphs of one build: a future
+// logo drawn with other shades must not reopen this gap.
+const CLAUDE_SPLASH_RE = /[\u2580-\u259f]+ClaudeCodev\d+\.\d+/;
 function isClaudeSplashLine(line: string): boolean {
   const stripped = stripAnsi(line);
-  if (!CLAUDE_SPLASH_RE.test(stripped)) return false;
-  return !SOURCE_LINE_RE.test(stripped);
+  if (SOURCE_LINE_RE.test(stripped)) return false;
+  return CLAUDE_SPLASH_RE.test(stripped.replace(/\s+/g, ''));
 }
 
 /** Idle-footer fragment that is not a source/comment/regex dump of that fragment. */
@@ -681,7 +687,7 @@ export class AgentDetector {
       // isClaudeSplashLine). Its own prefilter, because the banner one is
       // switched off once an OSC title has named the pane, and the prompt one
       // only looks for footer words the default permission mode never draws.
-      const mayContainSplash = !this.claudePromptSeen && probe.includes('Claude Code v');
+      const mayContainSplash = !this.claudePromptSeen && probe.includes('Claude');
 
       if (mayContainBanner || mayContainPrompt || mayContainSplash) {
         for (const line of candidateLines(probe)) {
