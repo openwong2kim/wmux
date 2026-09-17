@@ -32,7 +32,7 @@ import {
 } from '../utils/searchEngine';
 import { submitBracketedPasteToPty } from '../utils/ptyMessageDelivery';
 import { publishA2aTask } from '../events/publisher';
-import { resolvePaneAddress, activePaneTerminalPty, resolveUnaddressedDelivery, describeAmbiguousDelivery, NO_AGENT_PANE_HINT, decideSameWsSend, decideReplyDelivery, REPLY_SUPPRESS_HINTS, submitReceiptFields, countRoundTrips, maxSideMessages, REPLY_ROUND_CAP, isTerminalPtyInLeaves, resolveSelfPaneIdentity, resolveSenderPaneAddress, resolvePaneRole, findLeafPanes, type PaneAddress } from './a2aAddressing';
+import { resolvePaneAddress, activePaneTerminalPty, resolveUnaddressedDelivery, describeAmbiguousDelivery, wsMetadataMayStandIn, NO_AGENT_PANE_HINT, decideSameWsSend, decideReplyDelivery, REPLY_SUPPRESS_HINTS, submitReceiptFields, countRoundTrips, maxSideMessages, REPLY_ROUND_CAP, isTerminalPtyInLeaves, resolveSelfPaneIdentity, resolveSenderPaneAddress, resolvePaneRole, findLeafPanes, type PaneAddress } from './a2aAddressing';
 import { resolveWorkspaceTarget } from './workspaceTargeting';
 import { destroyRemoteSessions, destroySurfaceRemoteSession, destroyWorkspaceRemoteSessions } from '../utils/remoteSessionTeardown';
 import { remoteAgentKey } from '../../shared/remoteHosts';
@@ -2423,7 +2423,9 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
             // Same ws-level-metadata fallback as the create path: a target
             // evidenced only at workspace level still gets its nudge.
             const replyNoAgentTarget =
-              !replyHasAgent && !isLiveTuiAgent(targetWs.metadata) && params.silent !== false;
+              !replyHasAgent
+              && !(isLiveTuiAgent(targetWs.metadata) && wsMetadataMayStandIn(findLeafPanes(targetWs.rootPane)))
+              && params.silent !== false;
             if (decision.sameWs) {
               // Same-ws sibling: pointer-only nudge (no full-body injection).
               wrotePty = deliverPtyNudge(targetWs, buildA2aNudge(taskId, senderName), replyPty);
@@ -2649,7 +2651,12 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
       // "no agent" would silently stop delivering to a real agent. An explicit
       // silent:false is the documented "paste it loudly anyway" override and
       // still wins; that is a caller asking for the old behavior by name.
-      const wsLevelAgent = isLiveTuiAgent(target.metadata);
+      // ...but only where "the active pane" and "the pane the metadata
+      // describes" cannot be different panes (CodeRabbit, Major): with two
+      // terminals the fallback writes to whichever is focused, which is
+      // exactly the shell paste this change removes.
+      const wsLevelAgent =
+        isLiveTuiAgent(target.metadata) && wsMetadataMayStandIn(findLeafPanes(target.rootPane));
       // `silent` is normalized to `params.silent === true`, so it is `false`
       // for an OMITTED flag too — the override must read the raw param.
       const noAgentTarget = !fallbackHasAgent && !wsLevelAgent && params.silent !== false;
@@ -2896,7 +2903,9 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
               else updateHasAgent = false;
             }
             const liveMeta = deliveryLiveMeta(store.surfaceAgent, updatePty, targetWs.metadata);
-            if (!updateHasAgent && !isLiveTuiAgent(targetWs.metadata)) {
+            const updateWsStandIn =
+              isLiveTuiAgent(targetWs.metadata) && wsMetadataMayStandIn(findLeafPanes(targetWs.rootPane));
+            if (!updateHasAgent && !updateWsStandIn) {
               // Write nothing; the receiver follows the EventBus pointer.
             } else if (isLiveTuiAgent(liveMeta)) {
               deliverPtyNudge(targetWs, buildA2aNudge(taskId, callerName), updatePty);
@@ -2992,16 +3001,21 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
         agentAlive: store.agentAliveByPtyId,
         commandRunning: store.commandRunningByPtyId,
       });
-      const ptyId = pick.kind === 'agent'
-        ? pick.address.ptyId
+      // Several agent panes: write to ALL of them rather than picking one
+      // arbitrarily (CodeRabbit, Major) — an announcement addressed to nobody
+      // in particular belongs to every agent in the workspace, and dropping it
+      // would silence the broadcast for exactly the busiest workspaces.
+      // `sent` still counts WORKSPACES reached, so its meaning is unchanged.
+      const ptyIds = pick.kind === 'agent'
+        ? [pick.address.ptyId]
         : pick.kind === 'ambiguous'
-          ? pick.candidates[0].ptyId
-          : undefined;
-      if (!ptyId) {
+          ? pick.candidates.map((c) => c.ptyId)
+          : [];
+      if (ptyIds.length === 0) {
         skipped++;
         continue;
       }
-      submitToPty(ptyId, formatA2aBroadcast(fromName, message));
+      for (const ptyId of ptyIds) submitToPty(ptyId, formatA2aBroadcast(fromName, message));
       sent++;
     }
     // `skipped` counts workspaces with no detected agent pane — previously

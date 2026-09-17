@@ -332,7 +332,7 @@ const A2A_SET_SKILLS_SHAPE = {
 // send_message / a2a_task_send share this shape (identical param contract).
 const SEND_MESSAGE_SHAPE = {
   to: z.string().optional().describe('Target: workspace number (1, 2, 3), name ("Workspace 1"), or ID'),
-  pane_id: z.string().optional().describe('Deliver to a specific pane in the target workspace (paneId from pane_list / a2a_discover). REQUIRED when the target runs more than one agent — an unaddressed send there is REFUSED (it names the candidate panes) rather than delivered to whichever pane is focused. Must belong to "to".'),
+  pane_id: z.string().optional().describe('Deliver to a specific pane in the target workspace (paneId from pane_list / a2a_discover). Required (or surface_id) when the target runs more than one agent — an unaddressed send there is REFUSED (it names the candidate panes) rather than delivered to whichever pane is focused. Must belong to "to".'),
   surface_id: z.string().optional().describe('Deliver to a specific surface in the target workspace (surfaceId from surface_list / a2a_discover). Narrower than pane_id; if both are given they must agree. Must belong to "to".'),
   title: z.string().optional().describe('Short title for the message'),
   task_id: z.string().optional().describe('Reply to existing task ID'),

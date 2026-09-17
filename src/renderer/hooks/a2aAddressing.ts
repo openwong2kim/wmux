@@ -563,6 +563,9 @@ export function describeAmbiguousDelivery(
   targetName: string,
   candidates: ReadonlyArray<AgentPaneCandidate>,
 ): string {
+  // The workspace name is user-set and neither normalized nor capped at its
+  // source, so it gets the same treatment as the pane-chosen text below.
+  const target = sanitizePaneTitle(targetName);
   const paneCounts = new Map<string, number>();
   for (const c of candidates) paneCounts.set(c.paneId, (paneCounts.get(c.paneId) ?? 0) + 1);
   const shown = candidates.slice(0, AMBIGUOUS_LIST_CAP);
@@ -581,10 +584,34 @@ export function describeAmbiguousDelivery(
     ? ` (+${candidates.length - shown.length} more — call a2a_discover for the full list)`
     : '';
   return (
-    `target "${targetName}" runs ${candidates.length} agent panes and no pane_id/surface_id was given. ` +
+    `target "${target}" runs ${candidates.length} agent panes and no pane_id/surface_id was given. ` +
     `Re-send addressing one of: ${list}${more}. (Delivering to whichever pane is focused could paste the ` +
     'message into the wrong agent — or into a plain shell, which would run it as commands.)'
   );
+}
+
+/**
+ * May workspace-level agent metadata stand in for a failed per-pane resolution?
+ *
+ * Only when there is exactly ONE terminal pane to write to. That is the case
+ * the ws-metadata fallback exists for — detection has not landed per pane (or
+ * the pane is remote), and "the active pane" and "the pane the metadata
+ * describes" are necessarily the same pane. With two or more panes they are
+ * not, and "workspace metadata says an agent lives here somewhere" is no
+ * evidence at all about the pane that happens to be focused: that is how a
+ * plain shell gets written to, which is the whole of #1336.
+ */
+export function wsMetadataMayStandIn(visibleLeaves: PaneLeaf[]): boolean {
+  let terminals = 0;
+  for (const leaf of visibleLeaves) {
+    for (const s of leaf.surfaces) {
+      if (s.surfaceType === 'browser' || !s.ptyId) continue;
+      if (isBrainPtyId(s.ptyId)) continue;
+      terminals++;
+      if (terminals > 1) return false;
+    }
+  }
+  return terminals === 1;
 }
 
 /** `delivery.hint` for a target whose visible panes carry no detected agent. */
