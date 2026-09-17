@@ -19,7 +19,15 @@ import type { ApprovalEvent, ApprovalRegistryApi, ApprovalRequest } from '../app
 import type { TranscriptProjector } from '../transcript/TranscriptProjector';
 // Type only — the projection from hook envelope to header state lives in the
 // hooks layer (see agentLiveness.ts). This module only fans the result out.
-import { isTerminalLiveness, type AgentLivenessBody } from '../hooks/agentLiveness';
+import {
+  isTerminalLiveness,
+  type AgentLivenessBody,
+  type AgentLivenessState,
+} from '../hooks/agentLiveness';
+// Value import from main, the same precedent HookIngest sets (it imports
+// AgentDetector): this is a pure, dependency-free reader of a transcript file,
+// not a piece of the Electron main process.
+import { readLastAssistantMessage } from '../../main/claude/lastAssistantMessage';
 import { ENV_KEYS, isBrainPty } from '../../shared/constants';
 import { webHostIsLoopback, type PairRefusal, type WebTlsConfig } from '../../shared/web';
 import type { RemotePaneSummary } from '../../shared/remoteHosts';
@@ -545,6 +553,26 @@ const TRANSCRIPT_NUDGE_COALESCE_MS = 1000;
  * states skip the window entirely (`isTerminalLiveness`).
  */
 const AGENT_LIVENESS_COALESCE_MS = 1000;
+/**
+ * How long a WORKING liveness state stays believable in the `/api/sessions`
+ * snapshot. The SSE header is a live channel — it gets a new state whenever one
+ * happens — but the list is a poll, and the last state it kept may be the one a
+ * pane was in when its agent crashed, lost its hooks, or was killed by a signal
+ * no hook reports. Past this age a `busy`/`tool` row is omitted rather than
+ * rendered as a pane that has been "running Bash" for an hour.
+ *
+ * Only the working states expire. `idle` and `awaiting_*` are RESTING states:
+ * an agent that stopped an hour ago is still stopped, and aging those out would
+ * blank the one part of the list a user is scanning for.
+ */
+const LIVENESS_SNAPSHOT_STALE_MS = 300_000;
+/**
+ * Grapheme budget for `lastAssistantText` in `/api/sessions`. A list row shows
+ * a line or two; the full message is one `/turns` call away for a device that
+ * opened the pane. Counted in graphemes, not code units, so a Hangul or emoji
+ * line is cut where a reader would see 140 characters.
+ */
+const LAST_ASSISTANT_GRAPHEMES = 140;
 /** A decision body is two fields; anything larger is not one of ours. */
 const MAX_JSON_BODY_BYTES = 8 * 1024;
 /**
@@ -851,6 +879,33 @@ export class WebTerminalServer {
   private readonly livenessTimers = new Map<string, ReturnType<typeof setTimeout>>();
   /** Latest liveness state per pane, held for the open coalescing window. */
   private readonly pendingLiveness = new Map<string, AgentLivenessBody>();
+  /**
+   * Last liveness state seen per pane, for the `/api/sessions` snapshot.
+   *
+   * DELIBERATE WIDENING (and the reason this map exists at all): until now
+   * liveness was watcher-only — it reached a device's SSE channel only for
+   * panes whose turn view that device had opened. The list field publishes the
+   * same state to any bearer-authenticated device BEFORE it has read any pane,
+   * because a fleet list that cannot say which panes are working is a list you
+   * have to open every row of to use. What is widened is the STATE only: the
+   * tool name never rides along (see `livenessSummary`), so the list still says
+   * "working", not what it is working on.
+   *
+   * Recorded only for sessions the daemon actually knows — see
+   * `emitAgentLiveness` — and dropped on delete.
+   */
+  private readonly latestLiveness = new Map<string, { state: AgentLivenessState; at: number }>();
+  /**
+   * Memoized `lastAssistantText` per pane, keyed by (path, size, mtime).
+   *
+   * `/api/sessions` is polled, and re-reading every pane's transcript tail on
+   * every poll would put a 256 KB read per pane on a route that answers in
+   * microseconds today. The key is the projector's own change signal, so an
+   * appended transcript invalidates itself. A null text is cached too —
+   * otherwise a pane whose transcript holds no assistant message (a fresh
+   * session, a tool-only turn) would be re-read on every single poll.
+   */
+  private readonly lastAssistantCache = new Map<string, { key: string; text: string | null }>();
 
   /**
    * Attention replay state.
@@ -1827,6 +1882,22 @@ export class WebTerminalServer {
     workspace?: string;
     /** Short program name (`pwsh`, `bash`) — what to call a pane with no agent. */
     shell?: string;
+    /**
+     * What the pane's agent is doing, when the daemon has seen a liveness
+     * signal for it recently enough to believe. ADDITIVE and OPTIONAL: absent
+     * means "not known", never "idle".
+     *
+     * See `latestLiveness` for why this is a deliberate widening of a
+     * watcher-only channel, and `livenessSummary` for what is withheld.
+     */
+    liveness?: { state: AgentLivenessState; at: number };
+    /**
+     * The agent's last message to the human, flattened to one line and cut to
+     * `LAST_ASSISTANT_GRAPHEMES`. Present only on a server started with
+     * `--allow-transcript` — it is conversation content, and it rides the same
+     * grant `/api/sessions/:id/turns` does.
+     */
+    lastAssistantText?: string;
   }> {
     return this.deps.sessionManager.listLiveSessions()
       // The orchestrator brain's own TUI is not a worker pane: it must not show
@@ -1844,7 +1915,60 @@ export class WebTerminalServer {
         lastActivity: s.lastActivity,
         ...workspaceLabelOf(s.env),
         ...shellLabelOf(s.cmd),
+        ...this.livenessSummary(s.id),
+        ...this.lastAssistantSummary(s.id),
       }));
+  }
+
+  /**
+   * The list row's view of a pane's liveness, or nothing.
+   *
+   * `tool` — the name of the tool the agent is running — is deliberately NOT
+   * carried. It is agent-authored text off the hook pipe, and the SSE channel
+   * that does carry it only ever reaches a device that already opened the
+   * pane's turn view. Widening the STATE to every paired device is the point of
+   * the field; widening what the pane is typing is not.
+   */
+  private livenessSummary(sessionId: string): { liveness?: { state: AgentLivenessState; at: number } } {
+    const seen = this.latestLiveness.get(sessionId);
+    if (!seen) return {};
+    const working = seen.state === 'busy' || seen.state === 'tool';
+    if (working && this.now() - seen.at > LIVENESS_SNAPSHOT_STALE_MS) return {};
+    return { liveness: { state: seen.state, at: seen.at } };
+  }
+
+  /**
+   * The list row's one-line summary of the agent's last message, or nothing.
+   *
+   * Gated on `--allow-transcript`, the same grant `/api/sessions/:id/turns`
+   * refuses without (`transcript-disabled:`) — this is a shorter serving of
+   * exactly the same content, so it cannot be readable where that route is not.
+   * A daemon with no projector wired has no path to read and returns nothing,
+   * matching that route's 503 rather than inventing a fallback.
+   */
+  private lastAssistantSummary(sessionId: string): { lastAssistantText?: string } {
+    if (this.opts?.allowTranscript !== true) return {};
+    const projector = this.deps.projector?.() ?? null;
+    if (!projector) return {};
+    const status = projector.status(sessionId);
+    // No size/mtime means no cache key, and re-reading a transcript on every
+    // poll of a polled route is not a trade worth making for a field this small.
+    if (!status.available || status.sizeBytes === undefined || status.mtimeMs === undefined) {
+      return {};
+    }
+    const transcriptPath = projector.transcriptPath(sessionId);
+    if (!transcriptPath) return {};
+    const key = `${transcriptPath} ${status.sizeBytes} ${status.mtimeMs}`;
+    const cached = this.lastAssistantCache.get(sessionId);
+    if (cached?.key === key) {
+      return cached.text === null ? {} : { lastAssistantText: cached.text };
+    }
+    // Bounded (256 KB tail) and null on every failure — see
+    // lastAssistantMessage.ts, including why it lstats before it opens.
+    const message = readLastAssistantMessage(transcriptPath);
+    const text = message ? assistantPreview(message.text) : null;
+    this.lastAssistantCache.set(sessionId, { key, text });
+    return text === null ? {} : { lastAssistantText: text };
   }
 
   /**
@@ -2538,6 +2662,17 @@ export class WebTerminalServer {
           this.livenessTimers.delete(id);
         }
         this.pendingLiveness.delete(id);
+        // ...and the two `/api/sessions` snapshot caches for the same pane.
+        //
+        // This is the only removal point: the web server does not observe PTY
+        // exit (it subscribes to `session:critical` / `session:notification`
+        // only, neither of which is a death). A pane that dies on its own
+        // therefore leaves an entry behind — harmless, because `listSessions`
+        // maps over LIVE sessions and never consults either map for an id that
+        // is gone, and `emitAgentLiveness` refuses to record for an id the
+        // manager no longer has.
+        this.latestLiveness.delete(id);
+        this.lastAssistantCache.delete(id);
         res.writeHead(204, this.securityHeaders());
         res.end();
       })
@@ -3345,8 +3480,21 @@ export class WebTerminalServer {
    * open window, so "waiting for you" never queues behind a stale tool name.
    */
   emitAgentLiveness(body: AgentLivenessBody): void {
-    if (this.eventClients.size === 0) return;
     const { sessionId } = body;
+    // Record BEFORE the no-subscribers bail and before coalescing: the list
+    // snapshot must be right for a phone that polls `/api/sessions` without
+    // ever holding an SSE stream open, and it wants the newest state, not the
+    // one a coalescing window happened to deliver.
+    //
+    // Gated on a session the daemon actually has. `sessionId` arrives from the
+    // hook pipe, which is not a trusted producer — a pane can write anything
+    // into it — and an ungated `set` would let a loop of invented ids grow this
+    // map for the daemon's life. A pane the manager does not know is also a
+    // pane `listSessions` would never render.
+    if (this.deps.sessionManager.getSession(sessionId)) {
+      this.latestLiveness.set(sessionId, { state: body.state, at: body.at });
+    }
+    if (this.eventClients.size === 0) return;
     if (isTerminalLiveness(body.state)) {
       const timer = this.livenessTimers.get(sessionId);
       if (timer) {
@@ -4059,6 +4207,35 @@ function workspaceLabelOf(env: Record<string, string> | undefined): { workspace?
   const value = env?.[ENV_KEYS.WORKSPACE_NAME];
   const workspace = typeof value === 'string' ? value.trim() : '';
   return workspace ? { workspace } : {};
+}
+
+/**
+ * One list row's worth of an agent's last message, or null when there is
+ * nothing left to show.
+ *
+ * The input is AGENT-AUTHORED TEXT — the same trust class as `screenTail` — so
+ * it is flattened before it goes anywhere: C0/C1 control codes (which carry the
+ * escape byte, and with it cursor moves and OSC sequences) become spaces, then
+ * every whitespace run collapses to one. A list row is a single line; newlines
+ * in it are noise at best and terminal control at worst.
+ *
+ * Cut by GRAPHEME, not by code unit or code point: slicing a string at 140
+ * UTF-16 units can land inside a surrogate pair or between a Hangul jamo
+ * sequence's parts, and the row then ends in a replacement character.
+ */
+function assistantPreview(raw: string): string | null {
+  const flattened = raw.replace(/\p{Cc}/gu, ' ').replace(/\s+/g, ' ').trim();
+  if (!flattened) return null;
+  const segmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
+  const kept: string[] = [];
+  for (const { segment } of segmenter.segment(flattened)) {
+    kept.push(segment);
+    // One past the budget is enough to know it overflowed — no reason to
+    // segment the rest of the message.
+    if (kept.length > LAST_ASSISTANT_GRAPHEMES) break;
+  }
+  if (kept.length <= LAST_ASSISTANT_GRAPHEMES) return flattened;
+  return `${kept.slice(0, LAST_ASSISTANT_GRAPHEMES).join('')}…`;
 }
 
 /**

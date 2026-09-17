@@ -168,6 +168,21 @@ export class TranscriptProjector {
   }
 
   /**
+   * The resolved, containment-checked transcript path for a pane, or null when
+   * there is none (no binding, not Claude, refused path).
+   *
+   * Exposed because `/api/sessions` summarizes the pane's last assistant line
+   * through `readLastAssistantMessage(path)`, which takes a path rather than a
+   * projector cursor. `TranscriptStatus` deliberately carries only the basename
+   * — it goes on the wire — so the full path needs its own accessor. It still
+   * goes through `resolvePath`, so a refused path stays refused here too.
+   */
+  transcriptPath(sessionId: string): string | null {
+    const resolved = this.resolvePath(sessionId);
+    return resolved.ok ? resolved.transcriptPath : null;
+  }
+
+  /**
    * A page of the conversation: the tail by default, or the window ending at
    * `before` (a previous `cursor.headOffset`) when paging backward.
    */

@@ -206,6 +206,9 @@ function makeDeps() {
   // mockReturnValue on the same object.
   const projectorMock = {
     status: vi.fn<(id: string) => TranscriptStatus>(() => ({ available: false, reason: 'no-hook' })),
+    // `/api/sessions`'s lastAssistantText reads the file itself, so it needs the
+    // full path status() deliberately withholds from the wire.
+    transcriptPath: vi.fn<(id: string) => string | null>(() => null),
     snapshot: vi.fn((): unknown => null),
     delta: vi.fn((): unknown => null),
     codeBlock: vi.fn((): unknown => null),
@@ -4180,6 +4183,121 @@ describe('WebTerminalServer', () => {
       } finally {
         ac.abort();
         await pump;
+      }
+    });
+
+    it('★ /api/sessions carries liveness state (never the tool) with no stream or watcher', async () => {
+      const info = await startRO();
+      // No SSE client, no turn-view watcher: the whole point of the list field
+      // is that a phone which only polls still knows which panes are working.
+      server.emitAgentLiveness({
+        sessionId: 's1',
+        state: 'busy',
+        tool: 'Bash',
+        agent: 'Claude Code',
+        at: Date.now(),
+      });
+
+      const res = await fetch(`${base()}/api/sessions`, { headers: bearer(info.token as string) });
+      const body = (await res.json()) as {
+        sessions: Array<{ id: string; liveness?: { state: string; tool?: string; at: number } }>;
+      };
+      const s1 = body.sessions.find((s) => s.id === 's1');
+      expect(s1?.liveness?.state).toBe('busy');
+      // The tool name is watcher-only and must not have been widened with the state.
+      expect(s1?.liveness).not.toHaveProperty('tool');
+      expect(JSON.stringify(body)).not.toContain('Bash');
+      // A pane with no liveness signal carries no field at all — absent means
+      // "not known", not "idle".
+      expect(body.sessions.find((s) => s.id === 's2')).not.toHaveProperty('liveness');
+    });
+
+    it('★ a stale working state drops out of /api/sessions; a resting one does not', async () => {
+      const info = await startRO();
+      const old = Date.now() - 301_000;
+      server.emitAgentLiveness({ sessionId: 's1', state: 'busy', agent: 'Claude Code', at: old });
+      server.emitAgentLiveness({ sessionId: 's2', state: 'idle', agent: 'Claude Code', at: old });
+
+      const res = await fetch(`${base()}/api/sessions`, { headers: bearer(info.token as string) });
+      const body = (await res.json()) as {
+        sessions: Array<{ id: string; liveness?: { state: string } }>;
+      };
+      // "Running Bash" from five minutes ago is a crashed agent, not a busy one.
+      expect(body.sessions.find((s) => s.id === 's1')).not.toHaveProperty('liveness');
+      // An agent that stopped five minutes ago is still stopped.
+      expect(body.sessions.find((s) => s.id === 's2')?.liveness?.state).toBe('idle');
+    });
+
+    it('★ liveness is not recorded for a sessionId the daemon does not have', async () => {
+      const info = await startRO();
+      // The hook pipe is not a trusted producer; an invented id must not enter
+      // the map (which nothing else would ever evict).
+      server.emitAgentLiveness({ sessionId: 'no-such-pane', state: 'busy', agent: 'Claude Code', at: Date.now() });
+
+      const res = await fetch(`${base()}/api/sessions`, { headers: bearer(info.token as string) });
+      const body = (await res.json()) as { sessions: Array<{ id: string }> };
+      expect(body.sessions.map((s) => s.id)).toEqual(['s1', 's2', 's3']);
+      expect(JSON.stringify(body)).not.toContain('no-such-pane');
+    });
+
+    it('★ lastAssistantText rides --allow-transcript and is cut to 140 graphemes', async () => {
+      // A real transcript on disk: the reader lstats and tail-reads the file, so
+      // a mock would test nothing that ships.
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-web-transcript-'));
+      const transcript = path.join(dir, 'session.jsonl');
+      // Newlines on purpose — a list row is one line, and the flattening is part
+      // of the contract.
+      const said = Array.from({ length: 60 }, (_, i) => `줄${i}`).join('\n');
+      expect(said.length).toBeGreaterThan(200);
+      fs.writeFileSync(
+        transcript,
+        `${JSON.stringify({
+          type: 'assistant',
+          message: { role: 'assistant', content: [{ type: 'text', text: said }] },
+        })}\n`,
+      );
+      const stat = fs.statSync(transcript);
+      projectorMock.status.mockReturnValue({
+        available: true,
+        reason: 'ok',
+        transcriptBasename: 'session.jsonl',
+        sizeBytes: stat.size,
+        mtimeMs: stat.mtimeMs,
+      });
+      projectorMock.transcriptPath.mockReturnValue(transcript);
+
+      try {
+        // Transcript grant OFF → conversation content stays off the list, even
+        // though the projector would happily answer.
+        const ro = await startRO();
+        const off = (await (
+          await fetch(`${base()}/api/sessions`, { headers: bearer(ro.token as string) })
+        ).json()) as { sessions: Array<{ id: string; lastAssistantText?: string }> };
+        expect(off.sessions.every((s) => s.lastAssistantText === undefined)).toBe(true);
+        await server.stop();
+
+        const on = await startWithTranscript();
+        const body = (await (
+          await fetch(`${base()}/api/sessions`, { headers: bearer(on.token as string) })
+        ).json()) as { sessions: Array<{ id: string; lastAssistantText?: string }> };
+        const text = body.sessions.find((s) => s.id === 's1')?.lastAssistantText;
+        expect(text).toBeDefined();
+        expect(text).not.toContain('\n');
+        expect(text?.startsWith('줄0 줄1 줄2')).toBe(true);
+        expect(text?.endsWith('…')).toBe(true);
+        const segmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
+        expect([...segmenter.segment(text as string)].length).toBe(141); // 140 + the ellipsis
+
+        // Same (path, size, mtime) → served from the memo, not re-read. Deleting
+        // the file is the only way to prove the second poll never touched it:
+        // a re-read would find nothing and drop the field.
+        fs.rmSync(transcript);
+        const again = (await (
+          await fetch(`${base()}/api/sessions`, { headers: bearer(on.token as string) })
+        ).json()) as { sessions: Array<{ id: string; lastAssistantText?: string }> };
+        expect(again.sessions.find((s) => s.id === 's1')?.lastAssistantText).toBe(text);
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
       }
     });
   });
