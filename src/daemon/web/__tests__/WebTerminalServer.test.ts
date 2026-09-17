@@ -3272,6 +3272,94 @@ describe('WebTerminalServer', () => {
     expect(((await res.json()) as { files: unknown[] }).files).toHaveLength(2);
   });
 
+  // ── pane slash commands + skills ──────────────────────────────────────────
+
+  const getCommands = (id: string, cred: string) =>
+    fetch(`${base()}/api/sessions/${encodeURIComponent(id)}/commands`, { headers: bearer(cred) });
+  type CommandRow = { name: string; description: string; source: string; kind: string };
+  const commandRows = async (res: Response): Promise<CommandRow[]> =>
+    ((await res.json()) as { commands: CommandRow[] }).commands;
+
+  /**
+   * A pane whose spawn cwd is a real directory on disk, so the route's scan has
+   * something to find. Returns the directory so the test can add files to it
+   * mid-flight — which is how the cache is observed.
+   */
+  const paneWithCatalog = (id: string): string => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-web-commands-'));
+    fs.mkdirSync(path.join(dir, '.claude', 'commands'), { recursive: true });
+    fs.mkdirSync(path.join(dir, '.claude', 'skills', 'bar'), { recursive: true });
+    fs.writeFileSync(path.join(dir, '.claude', 'commands', 'foo.md'), 'run the foo\n');
+    fs.writeFileSync(
+      path.join(dir, '.claude', 'skills', 'bar', 'SKILL.md'),
+      '---\nname: bar\ndescription: does the bar thing\n---\n\nbody\n',
+    );
+    live.push({
+      id, cwd: dir, cols: 80, rows: 24, state: 'detached',
+      agent: undefined, lastDetectedAgent: undefined,
+      lastActivity: '2020-01-01T00:00:00.000Z',
+      env: {}, cmd: '/bin/zsh',
+    });
+    return dir;
+  };
+
+  it('gates the commands route on the Bearer token', async () => {
+    const info = await startRO();
+    const token = info.token as string;
+    expect((await fetch(`${base()}/api/sessions/s1/commands`)).status).toBe(401);
+    // Same grade as /api/sessions: a query token is not a Bearer header here
+    // either, and the route answers once a real credential arrives.
+    expect(
+      (await fetch(`${base()}/api/sessions/s1/commands?token=${encodeURIComponent(token)}`)).status,
+    ).toBe(401);
+    expect((await getCommands('s1', token)).status).toBe(200);
+  });
+
+  it('404s an unknown session id', async () => {
+    const info = await startRO();
+    const token = info.token as string;
+    expect((await getCommands('nope', token)).status).toBe(404);
+    expect((await getCommands('a/b', token)).status).toBe(404);
+  });
+
+  it("★ lists the pane cwd's own commands and skills, each with its kind and source", async () => {
+    const dir = paneWithCatalog('sk1');
+    try {
+      const info = await startRO();
+      const rows = await commandRows(await getCommands('sk1', info.token as string));
+      // Containment, not equality: the scan also reads the operator's
+      // user-global catalog, which no test may assume the shape of.
+      expect(rows).toContainEqual({
+        name: 'foo', description: '', source: 'project', kind: 'command',
+      });
+      expect(rows).toContainEqual({
+        name: 'bar', description: 'does the bar thing', source: 'project', kind: 'skill',
+      });
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('★ serves the second call from cache instead of walking the directory again', async () => {
+    // The phone asks for this every time someone types `/`. Without the TTL a
+    // fast typist turns a directory walk into a poll.
+    const dir = paneWithCatalog('sk1');
+    try {
+      const info = await startRO();
+      const token = info.token as string;
+      const first = await commandRows(await getCommands('sk1', token));
+      expect(first.map((c) => c.name)).toContain('foo');
+
+      fs.writeFileSync(path.join(dir, '.claude', 'commands', 'baz.md'), 'added after\n');
+      const second = await commandRows(await getCommands('sk1', token));
+      // A route that re-read the disk would have picked `baz` up.
+      expect(second.map((c) => c.name)).not.toContain('baz');
+      expect(second).toEqual(first);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   // ── pane lifecycle (POST / DELETE /api/sessions) ───────────────────────────
 
   const postSession = (cred: string, body?: unknown) =>

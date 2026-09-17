@@ -28,6 +28,14 @@ import {
 // AgentDetector): this is a pure, dependency-free reader of a transcript file,
 // not a piece of the Electron main process.
 import { readLastAssistantMessageAsync } from '../../main/claude/lastAssistantMessage';
+// Same precedent, same reasoning: a pure, dependency-free disk reader that
+// happens to live under main/. It owns the CLI's on-disk convention for
+// `.claude/skills` and `.claude/commands`, and duplicating it here would be a
+// second answer to "what can this pane run".
+import {
+  scanSkillCatalog,
+  type SkillCatalogEntry,
+} from '../../main/deck/skillCatalogScan';
 import { ENV_KEYS, isBrainPty } from '../../shared/constants';
 import { webHostIsLoopback, type PairRefusal, type WebTlsConfig } from '../../shared/web';
 import type { RemotePaneSummary } from '../../shared/remoteHosts';
@@ -131,6 +139,7 @@ function decodeTurnCursor(
  *   POST /api/sessions         spawn a pane — 403 unless `--allow-input`
  *   DELETE /api/sessions/:id   close a pane — 403 unless `--allow-input`
  *   GET  /api/sessions/:id/diff  what this pane's repo has changed (read-only git)
+ *   GET  /api/sessions/:id/commands  slash commands + skills this pane can run
  *   POST /api/stream-ticket    device → short-lived `?ticket=` capability
  *   GET  /api/stream?session=  SSE pane bytes (`?token=`/`?ticket=` — EventSource)
  *   GET  /api/events           attention + approval channel; SSE (`?token=`
@@ -676,6 +685,16 @@ let activeDiffs = 0;
 const inFlightDiffs = new Map<string, Promise<SessionDiffResult>>();
 
 /**
+ * How long a scanned skill/command catalog stays fresh.
+ *
+ * The phone asks for this list every time someone types `/`, so without a cache
+ * a fast typist turns a directory walk into a poll. Thirty seconds is the
+ * trade: a skill file added while the composer is open shows up on the next
+ * `/`, and nobody edits `.claude/commands` faster than they notice.
+ */
+const SKILL_CATALOG_TTL_MS = 30_000;
+
+/**
  * Widest geometry `POST /api/sessions/:id/resize` will forward to a PTY.
  *
  * The session manager floors cols and rows (a zsh SIGBUS guard) but caps
@@ -1030,6 +1049,17 @@ export class WebTerminalServer {
 
   /** Lazily-built git runner for `/api/sessions/:id/diff` (see that handler). */
   private git: GitRunner | null = null;
+
+  /**
+   * Skill/command catalogs already scanned, keyed by the directory scanned.
+   * Keyed by cwd rather than by session id because the catalog is a property of
+   * the directory: two panes in the same repo share one answer.
+   *
+   * Per server, like `lastResizeAt` and unlike the diff concurrency counter:
+   * this bounds disk reads for sessions THIS server can see, and a test that
+   * starts two servers must not have one inherit the other's cache.
+   */
+  private skillCatalogCache = new Map<string, { at: number; entries: SkillCatalogEntry[] }>();
 
   /**
    * When each session was last resized through `/api/sessions/:id/resize`.
@@ -1797,6 +1827,9 @@ export class WebTerminalServer {
       if (req.method === 'GET' && rest.endsWith('/diff')) {
         return this.handleSessionDiff(res, rest.slice(0, -'/diff'.length));
       }
+      if (req.method === 'GET' && rest.endsWith('/commands')) {
+        return this.handleSessionCommands(res, rest.slice(0, -'/commands'.length));
+      }
       if (req.method === 'GET' && rest.endsWith('/turns/block')) {
         return this.handleSessionTurnBlock(req, res, rest.slice(0, -'/turns/block'.length));
       }
@@ -2218,6 +2251,51 @@ export class WebTerminalServer {
     // patch under today's prompt is the exact failure this route exists to
     // prevent.
     return this.json(res, 200, result.diff, { 'Cache-Control': 'no-store' });
+  }
+
+  // --- pane slash commands + skills ----------------------------------------
+
+  /**
+   * `GET /api/sessions/:id/commands` — what can this pane's agent be asked to
+   * run? The phone shows this the moment someone types `/` in the composer.
+   *
+   * The catalog is the CLI's own on-disk convention, read by
+   * `scanSkillCatalog`: `.claude/skills/<name>/SKILL.md` and
+   * `.claude/commands/<name>.md`, project entries shadowing user-global ones by
+   * name. Only a NAME and a description leave the machine — no file contents,
+   * no paths — which is why this takes the same Bearer gate as `/api/sessions`
+   * and no new grant: the credential that reads this already reads the pane's
+   * whole scrollback, so a list of filenames is strictly less than it has.
+   *
+   * IT IS `meta.spawnCwd`, NOT `meta.cwd`, for the reason spelled out on
+   * handleSessionDiff: `meta.cwd` follows OSC 7, so any process inside a pane
+   * could aim this scan at a directory an operator never chose. A session
+   * record with no `spawnCwd` (written before the field existed) answers with
+   * an empty list rather than a refusal — "this pane has no commands" is a
+   * usable answer for a composer, "409" is not.
+   */
+  private handleSessionCommands(res: http.ServerResponse, rawId: string): void {
+    const id = decodePathSegment(rawId);
+    if (id === null) return this.json(res, 404, { error: 'session not found' });
+    const managed = this.deps.sessionManager.getSession(id);
+    if (!managed) return this.json(res, 404, { error: 'session not found' });
+
+    const cwd = managed.meta.spawnCwd;
+    if (!cwd) return this.json(res, 200, { commands: [] });
+
+    const hit = this.skillCatalogCache.get(cwd);
+    const now = Date.now();
+    if (hit && now - hit.at < SKILL_CATALOG_TTL_MS) {
+      return this.json(res, 200, { commands: hit.entries });
+    }
+    // `scanSkillCatalog` is SYNCHRONOUS, so this readdir walk runs on the event
+    // loop — which is why it may only happen on a cache miss. It is bounded
+    // (200 entries, 4 KB read per file, a 12-level walk up for the project
+    // root) and fail-soft, so a miss costs a small fixed number of stats rather
+    // than a directory tree of unknown size.
+    const entries = scanSkillCatalog(cwd);
+    this.skillCatalogCache.set(cwd, { at: now, entries });
+    return this.json(res, 200, { commands: entries });
   }
 
   // --- pane geometry -------------------------------------------------------
