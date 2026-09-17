@@ -47,18 +47,28 @@ export function isMultilinePtyPayload(text: string): boolean {
 // a composer showing its placeholder took the draft, a composer still holding
 // the nudge did not.
 //
-//     gap     paste had reached the composer    nudge stranded
+// Two machines, same binary and probe, pooled:
+//
+//     gap     paste PAINTED in the composer     nudge stranded
 //             by the time the CR was written
-//     100 ms  5 of 20 runs                      2 of 20 runs
-//     500 ms  10 of 10 runs                     0 of 10 runs
+//     100 ms  7 of 40 runs                      2 of 40 runs
+//     500 ms  20 of 20 runs                     0 of 20 runs
 //
 // The RACE is the durable finding, not the rate. At 100 ms the Enter is
-// usually written into a composer that has not received the paste yet, and the
-// nudge is then intermittently lost. At 500 ms the paste had landed first,
-// every time. The stranding itself is bursty — both failures above fell in one
-// batch of ten, and a second machine running the same binary and probe saw 12
-// of 12 submit at 100 ms — so a short clean run does not disprove it and a
-// short bad run does not size it.
+// usually written before the paste is even on screen; at 500 ms it never was.
+// That ordering reproduced on both machines (5 of 20 and 2 of 20 painted at
+// 100 ms, 10 of 10 each at 500 ms). The stranding is bursty and rare — both
+// failures fell in one batch of ten, and the second machine saw 0 in 20 — so
+// a short clean run does not disprove it and a short bad run does not size it.
+// Roughly 5% here; do not quote it as a rate.
+//
+// WHAT THE ORDERING SIGNAL ACTUALLY IS, since the last table got over-read:
+// it is read off the RENDERED SCREEN, so it says the paste had not been
+// PAINTED yet, not that Codex's input buffer had not received it. The
+// mechanism is an inference from render timing plus correlation (both stranded
+// runs sat in the not-yet-painted group, and every 500 ms run was painted
+// first), not a direct observation of the buffer. It is enough to size a
+// conservative default. It is not proof of what the burst logic did.
 //
 // Do not trust any "stranded" count taken before this scorer existed: the
 // earlier one keyed on the "Working" footer, which disappears as soon as the
