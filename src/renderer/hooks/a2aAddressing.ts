@@ -441,3 +441,156 @@ export function submitReceiptFields(
     ? { submit: assurance }
     : { submit: assurance, hint: UNVERIFIED_SUBMIT_HINT };
 }
+
+// ---------------------------------------------------------------------------
+// Unaddressed delivery target (#1336)
+// ---------------------------------------------------------------------------
+//
+// A send with no pane_id/surface_id used to fall straight through to
+// `activePaneTerminalPty` — "whatever pane is active". In a workspace running
+// an agent next to a plain shell that is not merely the wrong tab: the body is
+// bracket-pasted AND submitted, so a natural-language task is handed to a shell
+// prompt, which runs it line by line as commands. The reporter's PowerShell
+// only threw a parser error, but the mechanism is "arbitrary text executed as
+// shell input in the wrong place".
+//
+// So an unaddressed send resolves against the DETECTED AGENTS instead:
+//   - exactly one agent pane  → deliver there, wherever focus happens to be
+//   - more than one           → refuse, and name the candidates (the caller
+//                               picks one; a2a_discover carries the same list)
+//   - none                    → 'no_agent'; the caller writes NOTHING to that
+//                               workspace (see the no-paste rule below)
+// An explicit pane_id/surface_id is unaffected — it never reaches this.
+//
+// Why 'no_agent' means "write nothing" rather than "paste without Enter":
+// a body left sitting in a shell's input buffer is the same hazard deferred,
+// not removed — the next Enter a human presses in that pane (or the one after
+// several parked messages have piled up) runs exactly the natural-language
+// text this change exists to keep out of a shell. And "no Enter" is not even
+// a guarantee: a shell that does not enable bracketed-paste mode executes
+// embedded newlines as they arrive. The task is still stored and teed onto the
+// EventBus, so nothing is lost — only the blind write is.
+
+/** Candidate scan input. `agentAlive`/`commandRunning` are the process-truth
+ *  maps (#1210): `false` means the TUI is known GONE, and the detected-agent
+ *  entry that has not been cleared yet is stale. Without this a pane whose
+ *  agent exited seconds ago is picked as "the one agent pane" and handed a
+ *  submitted body — #1336 again, now with the focus safety net removed. */
+export type PaneLivenessMaps = {
+  agentAlive?: Record<string, boolean>;
+  commandRunning?: Record<string, boolean>;
+};
+
+export type AgentPaneCandidate = {
+  paneId: string;
+  surfaceId: string;
+  ptyId: string;
+  agentName: string;
+  paneTitle: string | null;
+};
+
+export type UnaddressedDelivery =
+  /** Exactly one detected agent pane — deliver (and submit) there. */
+  | { kind: 'agent'; address: PaneAddress }
+  /** Several agent panes and no address: the caller must choose. */
+  | { kind: 'ambiguous'; candidates: AgentPaneCandidate[] }
+  /** No detected agent: nothing may be written to this workspace's panes. */
+  | { kind: 'no_agent' };
+
+/**
+ * @param visibleLeaves the target's VISIBLE pane tree (getLeafPanes(rootPane)),
+ * never the workspace-wide list. A stashed pane is off-screen: counting it
+ * would turn a workspace with one visible agent into an ambiguous refusal, and
+ * picking it would deliver where nobody is looking.
+ */
+export function resolveUnaddressedDelivery(
+  visibleLeaves: PaneLeaf[],
+  surfaceAgent: Record<string, { name: string; status: string } | undefined>,
+  liveness: PaneLivenessMaps = {},
+): UnaddressedDelivery {
+  const candidates: AgentPaneCandidate[] = [];
+  for (const leaf of visibleLeaves) {
+    for (const s of leaf.surfaces) {
+      if (s.surfaceType === 'browser' || !s.ptyId) continue;
+      // A brain pty is not a pane a human or agent can be addressed at; see the
+      // same guard in decideReplyDelivery.
+      if (isBrainPtyId(s.ptyId)) continue;
+      const agentName = surfaceAgent[s.ptyId]?.name;
+      if (!agentName) continue;
+      if (liveness.agentAlive?.[s.ptyId] === false) continue;
+      if (liveness.commandRunning?.[s.ptyId] === false) continue;
+      candidates.push({
+        paneId: leaf.id,
+        surfaceId: s.id,
+        ptyId: s.ptyId,
+        agentName,
+        // Same source as a2a_discover's `paneTitle` (#1018) — untrusted
+        // pane-chosen text; sanitized at render time, see describeAmbiguousDelivery.
+        paneTitle: s.title?.trim() || null,
+      });
+    }
+  }
+  if (candidates.length === 1) {
+    const c = candidates[0];
+    return { kind: 'agent', address: { ptyId: c.ptyId, paneId: c.paneId, surfaceId: c.surfaceId } };
+  }
+  if (candidates.length > 1) return { kind: 'ambiguous', candidates };
+  return { kind: 'no_agent' };
+}
+
+/** Candidates named in a refusal before it is summarized. A workspace can hold
+ *  far more agent panes than a caller can act on, and every name in the list is
+ *  pane-chosen text arriving in the CALLER's context. */
+const AMBIGUOUS_LIST_CAP = 8;
+const PANE_TITLE_CAP = 40;
+
+/** Pane-chosen text, made safe to hand back to the calling agent: control
+ *  characters (newlines included, which could forge a new instruction line) are
+ *  dropped and the rest is truncated. Same defensive posture as the nudge's
+ *  sanitizeA2aName — the title is DATA, and a long one must not be able to
+ *  inflate an error payload either. */
+function sanitizePaneTitle(title: string): string {
+  // eslint-disable-next-line no-control-regex
+  const flat = title.replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim();
+  return flat.length > PANE_TITLE_CAP ? `${flat.slice(0, PANE_TITLE_CAP - 1)}…` : flat;
+}
+
+/** Refusal text for an unaddressed send into a multi-agent workspace. Names
+ *  the candidates so the caller can re-send addressed without a round trip
+ *  through a2a_discover. When one pane holds two agent surfaces, pane_id alone
+ *  cannot separate them, so those candidates are named by surface_id too. */
+export function describeAmbiguousDelivery(
+  targetName: string,
+  candidates: ReadonlyArray<AgentPaneCandidate>,
+): string {
+  const paneCounts = new Map<string, number>();
+  for (const c of candidates) paneCounts.set(c.paneId, (paneCounts.get(c.paneId) ?? 0) + 1);
+  const shown = candidates.slice(0, AMBIGUOUS_LIST_CAP);
+  const list = shown
+    .map((c) => {
+      const title = c.paneTitle ? ` — "${sanitizePaneTitle(c.paneTitle)}"` : '';
+      // Two agent surfaces in one pane: pane_id would resolve to whichever is
+      // that pane's active surface, i.e. a coin flip between two agents.
+      const addr = (paneCounts.get(c.paneId) ?? 0) > 1
+        ? `pane_id=${c.paneId} surface_id=${c.surfaceId}`
+        : `pane_id=${c.paneId}`;
+      return `${addr} (${sanitizePaneTitle(c.agentName)}${title})`;
+    })
+    .join(', ');
+  const more = candidates.length > shown.length
+    ? ` (+${candidates.length - shown.length} more — call a2a_discover for the full list)`
+    : '';
+  return (
+    `target "${targetName}" runs ${candidates.length} agent panes and no pane_id/surface_id was given. ` +
+    `Re-send addressing one of: ${list}${more}. (Delivering to whichever pane is focused could paste the ` +
+    'message into the wrong agent — or into a plain shell, which would run it as commands.)'
+  );
+}
+
+/** `delivery.hint` for a target whose visible panes carry no detected agent. */
+export const NO_AGENT_PANE_HINT =
+  'Nothing was written to the target: none of its visible panes is running a detected agent, and pasting a ' +
+  'message body into a plain shell prompt is how it ends up executed as commands. The task is stored and on ' +
+  'the event bus — the receiver can still find it with a2a_task_query. If an agent IS running there, ' +
+  'detection may not have landed yet (or the pane is stashed): address it explicitly with pane_id/surface_id ' +
+  'from a2a_discover, or re-send once it is detected.';

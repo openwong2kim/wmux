@@ -41,3 +41,4 @@ export function submitBracketedPasteToPty(
     write(ptyId, isMultiLine ? '\r\r' : '\r');
   }, submitProfileForAgent(options.agent).submitDelayMs);
 }
+

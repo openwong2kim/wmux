@@ -32,7 +32,7 @@ import {
 } from '../utils/searchEngine';
 import { submitBracketedPasteToPty } from '../utils/ptyMessageDelivery';
 import { publishA2aTask } from '../events/publisher';
-import { resolvePaneAddress, activePaneTerminalPty, decideSameWsSend, decideReplyDelivery, REPLY_SUPPRESS_HINTS, submitReceiptFields, countRoundTrips, maxSideMessages, REPLY_ROUND_CAP, isTerminalPtyInLeaves, resolveSelfPaneIdentity, resolveSenderPaneAddress, resolvePaneRole, findLeafPanes, type PaneAddress } from './a2aAddressing';
+import { resolvePaneAddress, activePaneTerminalPty, resolveUnaddressedDelivery, describeAmbiguousDelivery, NO_AGENT_PANE_HINT, decideSameWsSend, decideReplyDelivery, REPLY_SUPPRESS_HINTS, submitReceiptFields, countRoundTrips, maxSideMessages, REPLY_ROUND_CAP, isTerminalPtyInLeaves, resolveSelfPaneIdentity, resolveSenderPaneAddress, resolvePaneRole, findLeafPanes, type PaneAddress } from './a2aAddressing';
 import { resolveWorkspaceTarget } from './workspaceTargeting';
 import { destroyRemoteSessions, destroySurfaceRemoteSession, destroyWorkspaceRemoteSessions } from '../utils/remoteSessionTeardown';
 import { remoteAgentKey } from '../../shared/remoteHosts';
@@ -2378,23 +2378,71 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
               hint: REPLY_SUPPRESS_HINTS[decision.reason],
             };
           } else {
+            // #1336 — same unaddressed-target rule as the create path: a reply
+            // with no pinned anchor picks the lone agent pane, refuses when the
+            // choice is ambiguous, and never presses Enter on a pane with no
+            // detected agent. A same-ws reply always has an anchor (an
+            // anchorless one is suppressed above), so only the cross-ws
+            // active-pane fallback reaches this.
+            let replyPty = explicitPty;
+            let replyHasAgent = true;
+            let ambiguous = false;
+            if (!replyPty) {
+              const pick = resolveUnaddressedDelivery(findLeafPanes(targetWs.rootPane), store.surfaceAgent, {
+                agentAlive: store.agentAliveByPtyId,
+                commandRunning: store.commandRunningByPtyId,
+              });
+              if (pick.kind === 'ambiguous') ambiguous = true;
+              else if (pick.kind === 'agent') replyPty = pick.address.ptyId;
+              else replyHasAgent = false;
+            }
+            if (ambiguous) {
+              // The reply is already stored on the task (addTaskMessage above),
+              // so this is a delivery outcome, not an error. The hint does NOT
+              // tell the sender to re-send with pane_id: the reply branch is
+              // keyed by task_id and never reads pane_id/surface_id, so that
+              // advice would be a loop. The honest next step is the receiver's
+              // own poll.
+              delivery = {
+                stored: true,
+                notified: false,
+                reason: 'ambiguous_target_pane',
+                hint:
+                  'The reply is stored but was not pushed: this task has no pinned receiver pane and the ' +
+                  'target workspace runs several agent panes, so there is no non-arbitrary pane to write to ' +
+                  '(a reply cannot be re-addressed — pane_id applies to NEW tasks only). The receiver will ' +
+                  'find it with a2a_task_query; open a new addressed task if it must be pushed.',
+              };
+            } else {
             // `notified` comes from the delivery helpers' actual outcome — they
             // resolve a pty at write time and are a no-op when none exists (e.g.
             // the cross-ws active pane is a browser surface). Assuming success
             // here would recreate the exact false receipt this change removes.
             let wrotePty: string | null;
-            let mode: 'nudge' | 'notification' = 'nudge';
-            const liveMeta = deliveryLiveMeta(store.surfaceAgent, explicitPty, targetWs.metadata);
+            let mode: 'nudge' | 'notification' | 'no-agent-pane' = 'nudge';
+            // Same ws-level-metadata fallback as the create path: a target
+            // evidenced only at workspace level still gets its nudge.
+            const replyNoAgentTarget =
+              !replyHasAgent && !isLiveTuiAgent(targetWs.metadata) && params.silent !== false;
             if (decision.sameWs) {
               // Same-ws sibling: pointer-only nudge (no full-body injection).
-              wrotePty = deliverPtyNudge(targetWs, buildA2aNudge(taskId, senderName), explicitPty);
-            } else if (!silentExplicit && isLiveTuiAgent(liveMeta)) {
-              wrotePty = deliverPtyNudge(targetWs, buildA2aNudge(taskId, senderName), explicitPty);
+              wrotePty = deliverPtyNudge(targetWs, buildA2aNudge(taskId, senderName), replyPty);
+            } else if (replyNoAgentTarget) {
+              // Nothing written — see NO_AGENT_PANE_HINT.
+              wrotePty = null;
+              mode = 'no-agent-pane';
             } else {
-              wrotePty = deliverPtyNotification(targetWs, senderName, message, explicitPty);
-              mode = 'notification';
+              const liveMeta = deliveryLiveMeta(store.surfaceAgent, replyPty, targetWs.metadata);
+              if (!silentExplicit && isLiveTuiAgent(liveMeta)) {
+                wrotePty = deliverPtyNudge(targetWs, buildA2aNudge(taskId, senderName), replyPty);
+              } else {
+                wrotePty = deliverPtyNotification(targetWs, senderName, message, replyPty);
+                mode = 'notification';
+              }
             }
-            delivery = wrotePty
+            delivery = mode === 'no-agent-pane'
+              ? { stored: true, notified: false, mode, reason: 'no_agent_pane', hint: NO_AGENT_PANE_HINT }
+              : wrotePty
               ? { stored: true, notified: true, mode, ...submitReceiptFields(ptyAgent(wrotePty)) }
               : {
                   stored: true,
@@ -2404,6 +2452,7 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
                     'The target workspace has no terminal pane to write to (its active pane may ' +
                     'be a browser surface). The reply is stored; the receiver must poll a2a_task_query.',
                 };
+            }
           }
         }
       }
@@ -2497,11 +2546,40 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
     const sameWsDecision = decideSameWsSend(target.id === workspaceId, resolvedAddr?.ptyId, senderPtyId);
     if (sameWsDecision.kind === 'reject') return { error: `a2a.task.send: ${sameWsDecision.error}` };
 
+    // #1336 — an UNADDRESSED send no longer degrades to "whatever pane is
+    // active". Resolved here, BEFORE the task is created, because an ambiguous
+    // target is a refusal and a refusal must not leave a task behind. An
+    // explicit pane_id/surface_id (resolvedAddr) skips this entirely.
+    // Only the VISIBLE tree is scanned (a stashed agent pane must neither
+    // create an ambiguity nor become the delivery target — nobody is looking at
+    // it), and a pane whose agent is known gone is not a candidate.
+    let resolvedFallback: PaneAddress | undefined;
+    let fallbackHasAgent = true;
+    if (!silent && !sameWsDecision.suppressPaste && !resolvedAddr) {
+      const pick = resolveUnaddressedDelivery(findLeafPanes(target.rootPane), store.surfaceAgent, {
+        agentAlive: store.agentAliveByPtyId,
+        commandRunning: store.commandRunningByPtyId,
+      });
+      if (pick.kind === 'ambiguous') {
+        return { error: `a2a.task.send: ${describeAmbiguousDelivery(target.name, pick.candidates)}` };
+      }
+      if (pick.kind === 'agent') resolvedFallback = pick.address;
+      // 'no_agent' keeps fallbackHasAgent false: no pane is written to at all,
+      // unless the workspace-level metadata still evidences a live TUI agent
+      // (detection sources differ — see the delivery block) or the caller
+      // explicitly asked for the loud paste with silent:false.
+      else fallbackHasAgent = false;
+    }
+
     // S-C2: capture the sender's pane anchor (symmetric with `to`) so a reply can
     // return to THIS exact pane and the stored history role is computed per-pane.
     // senderPtyId is already validated against the sender's own tree above, so an
     // absent/forged value resolves to null → `from` stays ws-only (no regression).
     const senderAddr = resolveSenderPaneAddress(senderLeaves, senderPtyId);
+
+    // Explicit address first, then the agent pane resolved from an unaddressed
+    // send — both are pinned on the task identically (see `to` below).
+    const toAnchor = resolvedAddr ?? resolvedFallback;
 
     const initialMessage: Message = { kind: 'message', messageId: generateId('msg'), role: 'user', parts };
     const newTaskId = generateId('task');
@@ -2531,7 +2609,11 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
       to: {
         workspaceId: target.id,
         name: target.name,
-        ...(resolvedAddr && { paneId: resolvedAddr.paneId, surfaceId: resolvedAddr.surfaceId }),
+        // The agent pane resolved from an unaddressed send is pinned exactly
+        // like an explicitly addressed one: every later message on this task
+        // (reply, status update) follows the anchor, instead of falling back to
+        // "whatever pane is active" and landing the follow-up in a shell.
+        ...(toAnchor && { paneId: toAnchor.paneId, surfaceId: toAnchor.surfaceId }),
       },
       history: [initialMessage],
       artifacts: [],
@@ -2553,19 +2635,41 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
     // silently while the response looked identical to a delivered one.
     let delivery: Record<string, unknown>;
     if (!suppressPaste) {
-      const explicitPty = resolvedAddr?.ptyId;
+      // The resolved single agent pane (#1336) is as explicit as an addressed
+      // one for every decision below — liveness, nudge-vs-paste, and the write
+      // itself must all see the pane we actually chose.
+      const explicitPty = resolvedAddr?.ptyId ?? resolvedFallback?.ptyId;
       // Liveness for the nudge-vs-paste choice must reflect the ADDRESSED pane's
       // agent (a workspace can host >1 agent), not ws-level metadata.
       const liveMeta = deliveryLiveMeta(store.surfaceAgent, explicitPty, target.metadata);
+      // Two independent agent sources exist: the per-pty surfaceAgent map the
+      // candidate scan reads, and the workspace-level metadata this path has
+      // always trusted. A target that only has the latter (detection not landed
+      // per-pane, remote panes) must keep waking up as before — dropping it to
+      // "no agent" would silently stop delivering to a real agent. An explicit
+      // silent:false is the documented "paste it loudly anyway" override and
+      // still wins; that is a caller asking for the old behavior by name.
+      const wsLevelAgent = isLiveTuiAgent(target.metadata);
+      // `silent` is normalized to `params.silent === true`, so it is `false`
+      // for an OMITTED flag too — the override must read the raw param.
+      const noAgentTarget = !fallbackHasAgent && !wsLevelAgent && params.silent !== false;
       let wrotePty: string | null;
-      let mode: 'nudge' | 'notification' = 'nudge';
-      if (!silentExplicit && isLiveTuiAgent(liveMeta)) {
+      let mode: 'nudge' | 'notification' | 'no-agent-pane' = 'nudge';
+      if (noAgentTarget) {
+        // Nothing is written: a body pasted into a shell prompt is the #1336
+        // hazard whether or not we press Enter. The task is stored and teed
+        // onto the EventBus below, so the receiver can still poll it.
+        wrotePty = null;
+        mode = 'no-agent-pane';
+      } else if (!silentExplicit && isLiveTuiAgent(liveMeta)) {
         wrotePty = deliverPtyNudge(target, buildA2aNudge(newTaskId, fromName), explicitPty);
       } else {
         wrotePty = deliverPtyNotification(target, fromName, message, explicitPty);
         mode = 'notification';
       }
-      delivery = wrotePty
+      delivery = mode === 'no-agent-pane'
+        ? { stored: true, notified: false, mode, reason: 'no_agent_pane', hint: NO_AGENT_PANE_HINT }
+        : wrotePty
         ? { stored: true, notified: true, mode, ...submitReceiptFields(ptyAgent(wrotePty)) }
         : {
             stored: true,
@@ -2770,11 +2874,35 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
         // caller's own pane (mirror of the reply branch + decideSameWsSend).
         const sameWsUnverified = sameWsTask && !callerPtyIdUpdate;
         if (!pinnedAddressLost && !sameWsNoAnchor && !selfLoop && !sameWsUnverified) {
-          const liveMeta = deliveryLiveMeta(store.surfaceAgent, explicitPty, targetWs.metadata);
-          if (sameWsTask || isLiveTuiAgent(liveMeta)) {
+          if (sameWsTask) {
             deliverPtyNudge(targetWs, buildA2aNudge(taskId, callerName), explicitPty);
           } else {
-            deliverPtyNotification(targetWs, callerName, message, explicitPty);
+            // #1336 — the same unaddressed rule as send/reply. Without it the
+            // status-update message on a pin-less task still pasted its body
+            // into whatever pane was focused, so the very bug the other two
+            // paths now refuse survived on the third one.
+            let updatePty = explicitPty;
+            let updateHasAgent = true;
+            if (!updatePty) {
+              const pick = resolveUnaddressedDelivery(findLeafPanes(targetWs.rootPane), store.surfaceAgent, {
+                agentAlive: store.agentAliveByPtyId,
+                commandRunning: store.commandRunningByPtyId,
+              });
+              if (pick.kind === 'agent') updatePty = pick.address.ptyId;
+              // Ambiguous is treated like no-agent here: this delivery is a
+              // side-effect of a status change (the transition is already
+              // committed and teed onto the bus), so an arbitrary pick is the
+              // only thing worth refusing.
+              else updateHasAgent = false;
+            }
+            const liveMeta = deliveryLiveMeta(store.surfaceAgent, updatePty, targetWs.metadata);
+            if (!updateHasAgent && !isLiveTuiAgent(targetWs.metadata)) {
+              // Write nothing; the receiver follows the EventBus pointer.
+            } else if (isLiveTuiAgent(liveMeta)) {
+              deliverPtyNudge(targetWs, buildA2aNudge(taskId, callerName), updatePty);
+            } else {
+              deliverPtyNotification(targetWs, callerName, message, updatePty);
+            }
           }
         }
       }
@@ -2849,24 +2977,36 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
     const sender = store.workspaces.find((w) => w.id === workspaceId);
     const fromName = sender?.name ?? workspaceId.substring(0, 8);
 
-    // Deliver to all other workspaces via PTY paste
+    // Deliver to all other workspaces via PTY paste. A broadcast is
+    // unaddressed BY DEFINITION, so it carried the #1336 hazard at the widest
+    // possible blast radius: it pasted the body plus Enter into each
+    // workspace's first terminal leaf — brain ptys and plain shells included —
+    // and counted every one of them as `sent`. It now writes only to a pane
+    // with a detected agent (the first one, keeping the historical
+    // one-pane-per-workspace volume), and the counts say what really happened.
     let sent = 0;
+    let skipped = 0;
     for (const ws of store.workspaces) {
       if (ws.id === workspaceId) continue;
-      // Workspace-wide (#977) — visible leaves first, so a broadcast still
-      // lands on an on-screen terminal when there is one.
-      const leaves = getWorkspaceLeafPanes(ws);
-      for (const leaf of leaves) {
-        const termSurface = leaf.surfaces.find((s) => s.surfaceType !== 'browser' && s.ptyId);
-        if (termSurface) {
-          const formatted = formatA2aBroadcast(fromName, message);
-          submitToPty(termSurface.ptyId, formatted);
-          break;
-        }
+      const pick = resolveUnaddressedDelivery(findLeafPanes(ws.rootPane), store.surfaceAgent, {
+        agentAlive: store.agentAliveByPtyId,
+        commandRunning: store.commandRunningByPtyId,
+      });
+      const ptyId = pick.kind === 'agent'
+        ? pick.address.ptyId
+        : pick.kind === 'ambiguous'
+          ? pick.candidates[0].ptyId
+          : undefined;
+      if (!ptyId) {
+        skipped++;
+        continue;
       }
+      submitToPty(ptyId, formatA2aBroadcast(fromName, message));
       sent++;
     }
-    return { ok: true, sent };
+    // `skipped` counts workspaces with no detected agent pane — previously
+    // these were counted as delivered while their shells got the paste.
+    return { ok: true, sent, skipped };
   }
 
   if (method === 'meta.setSkills') {
