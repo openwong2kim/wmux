@@ -4538,9 +4538,11 @@ describe('WebTerminalServer', () => {
     it('★ #1315 pane-stream liveness refuses the brain pane and an invented session id', async () => {
       // `sessionId` arrives from the hook pipe, which is not a trusted producer,
       // and the orchestrator brain is not a worker pane a phone may learn
-      // anything about. `handleStream` itself still resolves with a bare
-      // getSession, so the delivery side takes the gate the transcript routes
-      // take rather than inheriting that pane route's older, looser check.
+      // anything about. #1388 has since given `handleStream` its own gate, but
+      // only for DEVICE credentials - this test drives it on the operator token,
+      // which still streams a brain pane. So the delivery gate below is the one
+      // thing standing between a hook-pipe id and that operator's stream, and it
+      // stays independent of whatever the pane route decides about the caller.
       live.push({
         id: 'brain-abc', cwd: '/b', cols: 80, rows: 24, state: 'attached',
         agent: undefined, lastDetectedAgent: undefined, lastActivity: '2020-01-01T00:00:00.000Z',
@@ -5198,5 +5200,392 @@ describe('WebTerminalServer', () => {
         expect(bridge.listenerCount('resize')).toBe(0);
       }, 15000);
     });
+  });
+
+  /**
+   * #1388 — the brain-pane exclusion, applied per credential class.
+   *
+   * `/api/sessions` and the transcript routes already refused the orchestrator
+   * brain. The routes that take a pane id in a query string or a path segment did
+   * not: they resolved with a bare `getSession`, which answers existence and
+   * nothing else. A paired phone that learned a brain id could stream its raw
+   * bytes, type into it, read its diff, and close it.
+   *
+   * The gate cannot be flat. The operator drives every one of these routes against
+   * a brain pane from their own desk, and the ★ #1315 test above depends on it.
+   * So the refusal keys on the credential class, and each half needs its own
+   * proof: the device is refused, the operator is not.
+   */
+  describe('#1388 — a device may not address the orchestrator brain pane by id', () => {
+    /**
+     * Both marks, on separate panes — `isBrainPty` checks the env marker first and
+     * falls back to the id prefix, so a daemon build that omits `env` from a
+     * session listing must still be caught. One pane per mark keeps them
+     * independent, exactly as the ★ transcript test does.
+     */
+    const BRAIN_BY_ID = 'brain-ws-1';
+    const BRAIN_BY_ENV = 'pty-orchestrator';
+    const pushBrains = () => {
+      live.push({
+        id: BRAIN_BY_ID, cwd: '/x', cols: 80, rows: 24, state: 'detached',
+        agent: undefined, lastDetectedAgent: undefined, lastActivity: '2020-01-01T00:00:00.000Z',
+        env: {}, cmd: '/usr/bin/claude',
+      });
+      live.push({
+        id: BRAIN_BY_ENV, cwd: '/x', cols: 80, rows: 24, state: 'detached',
+        agent: undefined, lastDetectedAgent: undefined, lastActivity: '2020-01-01T00:00:00.000Z',
+        env: { WMUX_BRAIN_PTY: '1' }, cmd: '/usr/bin/claude',
+      });
+    };
+
+    /**
+     * The six routes #1388 wired to `addressableSession`, as request factories.
+     *
+     * Table-driven so one regression reports as a full row rather than a single
+     * assertion, and so adding a route to the gate is one line here. It is NOT
+     * self-enforcing: a future route that forgets the gate also forgets this
+     * table and nothing fails, so this list is a record of what is covered, not
+     * a guarantee that everything id-taking is. `/turns` and `/turns/block` are
+     * deliberately absent — they take the FLAT `readableSession`, which refuses
+     * the operator too, and are covered by their own tests.
+     */
+    const paneRoutes = (id: string, headers: Record<string, string>) => [
+      {
+        name: 'GET /api/stream',
+        send: () => fetch(`${base()}/api/stream?session=${encodeURIComponent(id)}`, { headers }),
+      },
+      {
+        name: 'POST /api/input',
+        send: () => fetch(`${base()}/api/input?session=${encodeURIComponent(id)}`, {
+          method: 'POST', headers, body: 'rm -rf /',
+        }),
+      },
+      {
+        name: 'GET /api/sessions/:id/diff',
+        send: () => fetch(`${base()}/api/sessions/${encodeURIComponent(id)}/diff`, { headers }),
+      },
+      {
+        name: 'GET /api/sessions/:id/commands',
+        send: () => fetch(`${base()}/api/sessions/${encodeURIComponent(id)}/commands`, { headers }),
+      },
+      {
+        name: 'POST /api/sessions/:id/resize',
+        send: () => fetch(`${base()}/api/sessions/${encodeURIComponent(id)}/resize`, {
+          method: 'POST',
+          headers: { ...headers, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ cols: 100, rows: 30 }),
+        }),
+      },
+      {
+        name: 'DELETE /api/sessions/:id',
+        send: () => fetch(`${base()}/api/sessions/${encodeURIComponent(id)}`, {
+          method: 'DELETE', headers,
+        }),
+      },
+    ];
+
+    /**
+     * Read an SSE body until `want` shows up, or the deadline passes.
+     *
+     * The READ is raced against the deadline, not just the loop condition. A
+     * stream that opens and then goes quiet parks on a pending `read()` that no
+     * loop check can interrupt, so the intended bounded failure would instead be
+     * vitest's own test timeout — which unwinds the test WITHOUT running the
+     * `finally` that aborts the socket, leaving the stream for `server.stop()`.
+     * On a loaded Windows runner that is the difference between a readable
+     * failure and a hung file.
+     */
+    type SseChunk = { done: boolean; value?: Uint8Array };
+    const drainUntil = async (
+      res: Awaited<ReturnType<typeof fetch>>,
+      want: string,
+      ms = 4000,
+    ): Promise<string> => {
+      const reader = (res.body as ReadableStream<Uint8Array>).getReader();
+      const deadline = Date.now() + ms;
+      let wire = '';
+      try {
+        for (;;) {
+          const left = deadline - Date.now();
+          if (left <= 0) return wire;
+          let timer: ReturnType<typeof setTimeout> | undefined;
+          const expiry = new Promise<SseChunk>((resolve) => {
+            timer = setTimeout(() => resolve({ done: true }), left);
+          });
+          const chunk = await Promise.race([reader.read() as Promise<SseChunk>, expiry]);
+          if (timer) clearTimeout(timer);
+          if (chunk.done) return wire;
+          if (chunk.value) wire += Buffer.from(chunk.value).toString('utf8');
+          if (wire.includes(want)) return wire;
+        }
+      } catch {
+        /* aborted at the end of the test */
+        return wire;
+      }
+    };
+
+    it('★ a paired device is refused on every pane route, for both brain marks', async () => {
+      // `startRW` + an input-GRANTED device on purpose: a read-only device would
+      // be refused by `mayInput` with a 403 on the write routes, and the test
+      // would prove nothing about the pane gate. 404 here means the request got
+      // all the way to the pane lookup and the lookup refused it.
+      await startRW();
+      pushBrains();
+      try {
+        const phone = await pairDevice('iPhone', true);
+        const h = bearer(phone.token);
+        // Collected, then asserted as one table. Asserting inside the loop would
+        // abort the run on the first bad route, so a partial regression would
+        // report as a single line and the side-effect checks below — the ones
+        // that prove the refusal was real — would never execute at all.
+        const rows: string[] = [];
+        for (const id of [BRAIN_BY_ID, BRAIN_BY_ENV]) {
+          for (const route of paneRoutes(id, h)) {
+            const res = await route.send();
+            // Read the body ONLY when it is the bounded JSON one. The failure
+            // this test exists to catch is `/api/stream` answering 200, and a
+            // 200 there is a LIVE SSE stream whose body never ends — so a bare
+            // `res.json()` would park until vitest's own timeout and report a
+            // five-second hang instead of the row that is actually wrong. The
+            // content-type goes in the row instead, which fails instantly and
+            // says what happened.
+            const ct = res.headers.get('content-type') ?? 'none';
+            let body: string;
+            if (ct.includes('application/json')) {
+              body = JSON.stringify(await res.json());
+            } else {
+              body = `<${ct}>`;
+              await res.body?.cancel().catch(() => { /* already closed */ });
+            }
+            // The expected body is the same `session not found` a MISSING pane
+            // answers with. A distinct error would confirm the id, which is the
+            // thing being withheld.
+            rows.push(`${route.name} ${id} -> ${res.status} ${body}`);
+          }
+        }
+        expect(rows).toEqual(
+          [BRAIN_BY_ID, BRAIN_BY_ENV].flatMap((id) =>
+            paneRoutes(id, h).map(
+              (route) => `${route.name} ${id} -> 404 {"error":"session not found"}`,
+            ),
+          ),
+        );
+        // Status alone is not the assertion. A route that did the work and THEN
+        // answered 404 would pass every check above, so the side effects get
+        // their own proof that they never happened.
+        expect(write).not.toHaveBeenCalled();          // nothing reached a pty
+        expect(resizeCalls).toEqual([]);               // no SIGWINCH
+        expect(lifecycleCalls).toEqual([]);            // the brain still exists
+        expect(gitCalls).toEqual([]);                  // its working copy unread
+        // ...and `/api/stream` registered no SSE client for this device, so it
+        // refused before subscribing to the brain's bridge rather than attaching
+        // and then answering 404. `disconnectDevice` counts exactly those.
+        expect(server.disconnectDevice(phone.deviceId)).toBe(0);
+        // `/api/sessions/:id/commands` is the one route with no spy of its own —
+        // its side effect is a catalog walk the fixture does not record. Its
+        // refusal is proven by the 404 row above and nothing more.
+      } finally {
+        live.length = 3;
+      }
+    }, 15000);
+
+    it('★ the operator still streams a brain pane — the gate is the caller, not the pane', async () => {
+      // The reason this fix is not a one-liner. `wmux web` runs on the machine
+      // that owns the orchestrator, and the desk attaches to the brain's TUI
+      // through this exact route.
+      const info = await startRO();
+      pushBrains();
+      const ac = new AbortController();
+      try {
+        const token = encodeURIComponent(info.token as string);
+        for (const id of [BRAIN_BY_ID, BRAIN_BY_ENV]) {
+          const res = await fetch(`${base()}/api/stream?session=${id}&token=${token}`, {
+            signal: ac.signal,
+          });
+          expect(res.status).toBe(200);
+          // 200 with an empty body would be a hollow pass: assert the operator
+          // actually receives the pane's bytes.
+          expect(await drainUntil(res, 'event: snapshot')).toContain('event: snapshot');
+        }
+      } finally {
+        ac.abort();
+        live.length = 3;
+      }
+      // Explicit budget, like the SSE suites above. `drainUntil` is called once
+      // per brain mark at 4 s each, which can outrun vitest's 5 s default — and
+      // a test killed by THAT timeout unwinds without running the `finally`
+      // that aborts the socket, which is the exact failure drainUntil exists to
+      // avoid.
+    }, 15000);
+
+    it('the operator still drives the other pane routes on a brain id', async () => {
+      const info = await startRW();
+      pushBrains();
+      try {
+        const h = bearer(info.token as string);
+        const commands = await fetch(`${base()}/api/sessions/${BRAIN_BY_ENV}/commands`, { headers: h });
+        expect(commands.status).toBe(200);
+
+        const resize = await fetch(`${base()}/api/sessions/${BRAIN_BY_ENV}/resize`, {
+          method: 'POST',
+          headers: { ...h, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ cols: 100, rows: 30 }),
+        });
+        expect(resize.status).toBe(200);
+        expect(resizeCalls).toEqual([{ id: BRAIN_BY_ENV, cols: 100, rows: 30 }]);
+
+        // Typing into the brain from the desk is the operator's whole workflow
+        // with the orchestrator, so it needs its own proof, not just the stream.
+        const typed = await fetch(`${base()}/api/input?session=${BRAIN_BY_ENV}`, {
+          method: 'POST', headers: h, body: 'echo hi\r',
+        });
+        expect(typed.status).toBe(204);
+        expect(write).toHaveBeenCalledWith('echo hi\r');
+
+        const diff = await fetch(`${base()}/api/sessions/${BRAIN_BY_ENV}/diff`, { headers: h });
+        expect(diff.status).toBe(200);
+        expect(gitCalls.length).toBeGreaterThan(0);
+
+        const closed = await fetch(`${base()}/api/sessions/${BRAIN_BY_ID}`, {
+          method: 'DELETE', headers: h,
+        });
+        expect(closed.status).toBe(204);
+        expect(lifecycleCalls).toEqual([{ op: 'destroy', arg: BRAIN_BY_ID }]);
+      } finally {
+        live.length = 3;
+      }
+    });
+
+    it('a device still streams and types into an ordinary worker pane', async () => {
+      // The guard is pane identity, not a blanket device refusal. Without this
+      // the fix could be "refuse devices everywhere" and still go green.
+      await startRW();
+      const ac = new AbortController();
+      try {
+        const phone = await pairDevice('iPhone', true);
+        const h = bearer(phone.token);
+        const res = await fetch(`${base()}/api/stream?session=s1`, { headers: h, signal: ac.signal });
+        expect(res.status).toBe(200);
+        const wire = await drainUntil(res, 'event: snapshot');
+        expect(wire).toContain('event: meta');
+        expect(wire).toContain('event: snapshot');
+
+        const typed = await fetch(`${base()}/api/input?session=s1`, {
+          method: 'POST', headers: h, body: 'ls\r',
+        });
+        expect(typed.status).toBe(204);
+        expect(write).toHaveBeenCalledWith('ls\r');
+
+        // Every route the gate touches needs a device POSITIVE control, or an
+        // over-broad gate scoped to one route ships green — a phone silently
+        // losing its slash-command catalog, with nothing to catch it.
+        const commands = await fetch(`${base()}/api/sessions/s1/commands`, { headers: h });
+        expect(commands.status).toBe(200);
+        const diff = await fetch(`${base()}/api/sessions/s1/diff`, { headers: h });
+        expect(diff.status).toBe(200);
+        const resized = await fetch(`${base()}/api/sessions/s1/resize`, {
+          method: 'POST',
+          headers: { ...h, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ cols: 100, rows: 30 }),
+        });
+        expect(resized.status).toBe(200);
+      } finally {
+        ac.abort();
+      }
+    });
+
+    it('★ a brain pane raises no attention event on any wire', async () => {
+      // The other half of the id leak. `addressableSession` refuses a brain id a
+      // phone presents; this is the daemon refusing to HAND one over. Without it
+      // the fix closes the door and leaves the sign up — and worse, a phone that
+      // tapped the toast would reach the new 404 on a dead EventSource that does
+      // not retry, so the hole becomes an unexplained dead tile.
+      await startRW();
+      pushBrains();
+      const ac = new AbortController();
+      try {
+        const phone = await pairDevice('iPhone', true);
+        const events = await fetch(`${base()}/api/events`, {
+          headers: { ...bearer(phone.token), Accept: 'text/event-stream' },
+          signal: ac.signal,
+        });
+        expect(events.status).toBe(200);
+        const pane = await fetch(`${base()}/api/stream?session=s1`, {
+          headers: bearer(phone.token), signal: ac.signal,
+        });
+        expect(pane.status).toBe(200);
+
+        // `matchedLine` and an OSC 9/777 title/body are pane-authored text: the
+        // brain's own words. Neither may appear on any wire.
+        sessionManager.emit('session:critical', {
+          sessionId: BRAIN_BY_ENV,
+          event: { action: 'rm -rf', riskLevel: 'high', matchedLine: 'BRAIN-SECRET-LINE' },
+        });
+        sessionManager.emit('session:notification', {
+          sessionId: BRAIN_BY_ID,
+          event: { source: 'osc9', title: 'BRAIN-SECRET-TITLE', body: 'x', ts: 1 },
+        });
+        // A real worker pane on the same server still raises, so this is the
+        // pane's identity and not a blanket mute.
+        sessionManager.emit('session:critical', {
+          sessionId: 's1',
+          event: { action: 'ls', riskLevel: 'low', matchedLine: 'ORDINARY-PANE-LINE' },
+        });
+
+        const wire = await drainUntil(pane, 'ORDINARY-PANE-LINE');
+        expect(wire).toContain('ORDINARY-PANE-LINE');
+        expect(wire).not.toContain('BRAIN-SECRET');
+        expect(wire).not.toContain(BRAIN_BY_ENV);
+        expect(wire).not.toContain(BRAIN_BY_ID);
+
+        // ...and the REPLAY window too, not just the live wire: the backlog
+        // route takes no principal, so anything recorded here is readable by
+        // every device that reconnects.
+        const backlog = await fetch(`${base()}/api/events`, { headers: bearer(phone.token) });
+        const body = JSON.stringify(await backlog.json());
+        expect(body).toContain('ORDINARY-PANE-LINE');
+        expect(body).not.toContain('BRAIN-SECRET');
+        expect(body).not.toContain(BRAIN_BY_ENV);
+        expect(body).not.toContain(BRAIN_BY_ID);
+      } finally {
+        ac.abort();
+        live.length = 3;
+      }
+    }, 15000);
+
+    it('a stream ticket is refused on a brain pane too', async () => {
+      // A ticket is the capability an EventSource uses because it cannot set
+      // headers. `resolveStreamTicket` hands back a DEVICE principal, so the
+      // ticket path takes the device arm of the gate with no code of its own —
+      // this is the test that keeps that true.
+      await startRW();
+      pushBrains();
+      const ac = new AbortController();
+      try {
+        const phone = await pairDevice('iPhone', true);
+        const issued = await fetch(`${base()}/api/stream-ticket`, {
+          method: 'POST', headers: bearer(phone.token),
+        });
+        expect(issued.status).toBe(200);
+        const { ticket } = (await issued.json()) as { ticket: string };
+        const q = encodeURIComponent(ticket);
+
+        for (const id of [BRAIN_BY_ID, BRAIN_BY_ENV]) {
+          const refused = await fetch(`${base()}/api/stream?session=${id}&ticket=${q}`);
+          expect(refused.status).toBe(404);
+          expect(await refused.json()).toEqual({ error: 'session not found' });
+        }
+        // ...and the same ticket still opens an ordinary pane, so the refusal is
+        // the pane's identity rather than a ticket that stopped working.
+        const ok = await fetch(`${base()}/api/stream?session=s1&ticket=${q}`, { signal: ac.signal });
+        expect(ok.status).toBe(200);
+        // Same standard the operator test holds itself to: 200 with an empty
+        // body would be a hollow control.
+        expect(await drainUntil(ok, 'event: snapshot')).toContain('event: snapshot');
+      } finally {
+        ac.abort();
+        live.length = 3;
+      }
+    }, 15000);
   });
 });

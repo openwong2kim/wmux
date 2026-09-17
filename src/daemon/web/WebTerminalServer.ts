@@ -1733,10 +1733,16 @@ export class WebTerminalServer {
    * Everything under `/api/*`: authenticate, then route.
    *
    * Both credential forms are accepted here (operator token, device
-   * credential), and the ROUTES do not care which — a paired phone can list
-   * panes, watch a stream and answer an approval exactly as the operator can.
-   * What differs is only what a revoke can take away, which is why the
-   * principal is carried into the two SSE handlers and nowhere else.
+   * credential), and for most of what a route does they are equivalent — a
+   * paired phone lists panes, watches a stream and answers an approval exactly
+   * as the operator does, and what differs is only what a revoke can take away.
+   *
+   * TWO THINGS key on the class itself, so the principal is threaded into every
+   * handler that needs either: `mayInput` (a device's per-device grant narrows
+   * within `--allow-input`), and `addressableSession` (#1388 — a device may not
+   * address the orchestrator brain's pane by id, while the operator may). Read
+   * `addressableSession` before adding a route that takes a caller-supplied
+   * session id; it carries the table of which gate each route takes.
    */
   private async handleApi(
     req: http.IncomingMessage,
@@ -1825,10 +1831,10 @@ export class WebTerminalServer {
     if (p.startsWith('/api/sessions/')) {
       const rest = p.slice('/api/sessions/'.length);
       if (req.method === 'GET' && rest.endsWith('/diff')) {
-        return this.handleSessionDiff(res, rest.slice(0, -'/diff'.length));
+        return this.handleSessionDiff(res, rest.slice(0, -'/diff'.length), principal);
       }
       if (req.method === 'GET' && rest.endsWith('/commands')) {
-        return this.handleSessionCommands(res, rest.slice(0, -'/commands'.length));
+        return this.handleSessionCommands(res, rest.slice(0, -'/commands'.length), principal);
       }
       if (req.method === 'GET' && rest.endsWith('/turns/block')) {
         return this.handleSessionTurnBlock(req, res, rest.slice(0, -'/turns/block'.length));
@@ -1837,7 +1843,7 @@ export class WebTerminalServer {
         return this.handleSessionTurns(req, res, rest.slice(0, -'/turns'.length), principal);
       }
       if (req.method === 'POST' && rest.endsWith('/resize')) {
-        return this.handleSessionResize(req, res, rest.slice(0, -'/resize'.length));
+        return this.handleSessionResize(req, res, rest.slice(0, -'/resize'.length), principal);
       }
       if (req.method === 'DELETE') {
         return this.handleSessionDelete(res, rest, principal);
@@ -2238,10 +2244,16 @@ export class WebTerminalServer {
    * `not-a-git-repo` is a 409, not a 500: a pane running in `~` is completely
    * normal and the phone should say "no repository here", not "something broke".
    */
-  private async handleSessionDiff(res: http.ServerResponse, rawId: string): Promise<void> {
+  private async handleSessionDiff(
+    res: http.ServerResponse,
+    rawId: string,
+    principal: WebPrincipal,
+  ): Promise<void> {
     const id = decodePathSegment(rawId);
     if (id === null) return this.json(res, 404, { error: 'session not found' });
-    const managed = this.deps.sessionManager.getSession(id);
+    // #1388 — refused for a device before any subprocess is spawned, so the
+    // brain's working copy is never inspected on a phone's behalf.
+    const managed = this.addressableSession(id, principal);
     if (!managed) return this.json(res, 404, { error: 'session not found' });
 
     // Absent only for a session record written before spawnCwd existed. Every
@@ -2319,10 +2331,16 @@ export class WebTerminalServer {
    * an empty list rather than a refusal — "this pane has no commands" is a
    * usable answer for a composer, "409" is not.
    */
-  private handleSessionCommands(res: http.ServerResponse, rawId: string): void {
+  private handleSessionCommands(
+    res: http.ServerResponse,
+    rawId: string,
+    principal: WebPrincipal,
+  ): void {
     const id = decodePathSegment(rawId);
     if (id === null) return this.json(res, 404, { error: 'session not found' });
-    const managed = this.deps.sessionManager.getSession(id);
+    // #1388 — refused for a device before the catalog walk, so the brain's
+    // project skills and commands are never scanned for a phone.
+    const managed = this.addressableSession(id, principal);
     if (!managed) return this.json(res, 404, { error: 'session not found' });
 
     const cwd = managed.meta.spawnCwd;
@@ -2492,11 +2510,62 @@ export class WebTerminalServer {
    * can carry one) could read the orchestrator's whole conversation. Same 404 as
    * a missing pane on purpose: "not yours to read" and "gone" are one answer
    * here, and a distinct error would confirm the id.
+   *
+   * FLAT: this refuses the operator too, which is right for a transcript but
+   * wrong for a pane route the operator drives from their own desk. Those take
+   * `addressableSession` instead.
    */
   private readableSession(sessionId: string): ReturnType<DaemonSessionManager['getSession']> {
     const managed = this.deps.sessionManager.getSession(sessionId);
     if (!managed) return undefined;
     return isBrainPty({ id: sessionId, env: managed.meta.env }) ? undefined : managed;
+  }
+
+  /**
+   * The pane THIS CALLER may address by id, or undefined (#1388).
+   *
+   * Every route that takes a session id from the caller resolved it with a bare
+   * `getSession` — existence, and nothing else. `readableSession` (the brain-pane
+   * exclusion) existed but was flat, so wiring it into a pane route would have cut
+   * the operator off from their own orchestrator; the routes took no gate at all
+   * instead, and a paired phone that learned a brain id (the prefix is guessable,
+   * and an approval or notify event can carry one) could open
+   * `GET /api/stream?session=<brain-id>` and read the orchestrator's raw bytes.
+   *
+   * The gate has to key on the CREDENTIAL CLASS, which is what this adds:
+   *
+   *                                          operator        device / ticket
+   *   /api/stream, /api/input                  full          brain refused
+   *   /api/sessions/:id/{diff,commands,resize} full          brain refused
+   *   DELETE /api/sessions/:id                 full          brain refused
+   *   /api/sessions/:id/turns[/block]      brain refused     brain refused  (flat)
+   *   /api/sessions, /api/workspaces        brain hidden     brain hidden   (list)
+   *
+   * A new route that resolves a caller-supplied pane id belongs in one of those
+   * rows. Picking none is what #1388 was.
+   *
+   * The operator arm is the exact call that was there before, so operator
+   * behaviour is unchanged on every route below — including streaming a brain
+   * pane, which the desk legitimately does.
+   *
+   * Which lookups take it: every one that still has a side effect AHEAD of it.
+   * `handleSessionResize` re-reads the pane after the request body has arrived,
+   * which can be many TCP segments later, and that re-read gates too — the
+   * authorization is re-checked immediately before the pane is acted on rather
+   * than trusted from whenever the headers landed.
+   *
+   * A read-back AFTER the side effect does not, and must not: the applied
+   * geometry read at the end of `handleSessionResize` and the resize debounce
+   * inside an already-open `handleStream` stay a bare `getSession`. Gating those
+   * would answer 404 for work that had already happened, which is a lie about
+   * state rather than a refusal.
+   */
+  private addressableSession(
+    sessionId: string,
+    principal: WebPrincipal,
+  ): ReturnType<DaemonSessionManager['getSession']> {
+    if (principal.kind === 'operator') return this.deps.sessionManager.getSession(sessionId);
+    return this.readableSession(sessionId);
   }
 
   /**
@@ -2593,10 +2662,12 @@ export class WebTerminalServer {
     req: http.IncomingMessage,
     res: http.ServerResponse,
     rawId: string,
+    principal: WebPrincipal,
   ): void {
     const id = decodePathSegment(rawId);
     if (id === null) return this.json(res, 404, { error: 'session not found' });
-    const managed = this.deps.sessionManager.getSession(id);
+    // #1388 — a device may not SIGWINCH the orchestrator brain's pane.
+    const managed = this.addressableSession(id, principal);
     if (!managed) return this.json(res, 404, { error: 'session not found' });
 
     this.readJsonBody(req, res, (body) => {
@@ -2616,7 +2687,7 @@ export class WebTerminalServer {
       // Re-read rather than trusting the lookup above: the body arrives over
       // however many TCP segments it takes, and a pane can die or be attached
       // by the desk in between.
-      const current = this.deps.sessionManager.getSession(id);
+      const current = this.addressableSession(id, principal);
       if (!current) return this.json(res, 404, { error: 'session not found' });
       if (current.meta.state === 'attached' && current.viewerVisible) {
         return this.json(res, 409, {
@@ -2860,7 +2931,9 @@ export class WebTerminalServer {
 
     const id = decodePathSegment(rawId);
     if (id === null) return this.json(res, 404, { error: 'session not found' });
-    if (!this.deps.sessionManager.getSession(id)) {
+    // #1388 — a device with an input grant may not destroy the orchestrator
+    // brain's pane. Refused before `lifecycle.destroy` is ever reached.
+    if (!this.addressableSession(id, principal)) {
       return this.json(res, 404, { error: 'session not found' });
     }
     lifecycle
@@ -2905,7 +2978,10 @@ export class WebTerminalServer {
     principal: WebPrincipal,
   ): void {
     const sessionId = url.searchParams.get('session') ?? '';
-    const managed = this.deps.sessionManager.getSession(sessionId);
+    // #1388 — a device may not stream the orchestrator brain's pane. Resolved
+    // BEFORE any header goes out, so the refusal is still an ordinary 404 body
+    // rather than a dead event-stream. See addressableSession.
+    const managed = this.addressableSession(sessionId, principal);
     if (!managed) {
       return this.json(res, 404, { error: 'session not found' });
     }
@@ -3067,7 +3143,9 @@ export class WebTerminalServer {
       return this.refuseInput(res, principal, 'typing runs commands on this machine');
     }
     const sessionId = url.searchParams.get('session') ?? '';
-    const managed = this.deps.sessionManager.getSession(sessionId);
+    // #1388 — and a device may not TYPE into it either, which is the half of
+    // that hole that writes. Before the body is read, so nothing reaches a pty.
+    const managed = this.addressableSession(sessionId, principal);
     if (!managed) {
       return this.json(res, 404, { error: 'session not found' });
     }
@@ -3578,6 +3656,35 @@ export class WebTerminalServer {
    */
   private broadcastEvent(kind: 'critical' | 'notify', payload: { sessionId: string; event?: unknown }): void {
     if (!payload || typeof payload !== 'object') return;
+    // #1388 — the same gate `emitAgentLiveness` takes, and for the same reason.
+    // `DaemonSessionManager` re-emits `session:critical` / `session:notification`
+    // for EVERY pty, the brain included, and this fan-out is not keyed by pane:
+    // it writes to every open stream and records the entry in the replayable
+    // `attentionLog` that `/api/events` serves. So a brain pane's events reached
+    // every paired phone carrying both the pane id AND pane-authored content —
+    // the critical detector's `matchedLine`, an OSC 9/777 title and body.
+    //
+    // That was the channel `addressableSession` names as the way an id leaks
+    // ("an approval or notify event can carry one"), so refusing the id at the
+    // pane routes while the daemon kept handing out fresh ones would have closed
+    // the door and left the sign up. It also has to be refused HERE, at the
+    // producer, rather than per client: the log behind `/api/events` is shared
+    // and its backlog route takes no principal, so a delivery-side filter would
+    // still leave brain content in the replay window.
+    //
+    // FLAT, like the liveness gate: the desk drives the brain over RPC, not over
+    // this fan-out, and the pane is absent from `/api/sessions` anyway — so an
+    // operator's browser could only render a toast for a pane it cannot name.
+    //
+    // A BRAIN filter, not `readableSession`'s brain-or-unknown one. These events
+    // come from the manager re-emitting for a live pty, not off the hook pipe,
+    // so an id it no longer knows is a pane that closed while its event was in
+    // flight — a race, not an invention, and dropping those would lose real
+    // signals. So the env marker is checked when the session is still known and
+    // the id prefix always, which refuses every brain pane without turning this
+    // into an existence check.
+    const named = this.deps.sessionManager.getSession(payload.sessionId);
+    if (isBrainPty({ id: payload.sessionId, env: named?.meta.env })) return;
     const event = payload.event && typeof payload.event === 'object' ? (payload.event as Record<string, unknown>) : {};
     const entry = this.publish(kind, { sessionId: payload.sessionId, ...event });
 
