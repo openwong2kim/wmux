@@ -4535,6 +4535,59 @@ describe('WebTerminalServer', () => {
       expect(server.disconnectDevice(phone.deviceId)).toBe(0);
     });
 
+    it('★ #1388 a paired device cannot stream or type into the brain pane; the operator still can', async () => {
+      live.push({
+        id: 'brain-abc', cwd: '/b', cols: 80, rows: 24, state: 'attached',
+        agent: undefined, lastDetectedAgent: undefined, lastActivity: '2020-01-01T00:00:00.000Z',
+        env: { WMUX_BRAIN_PTY: '1' }, cmd: '/usr/local/bin/claude',
+      });
+      const ac = new AbortController();
+      try {
+        const info = await startRW();
+        // A device credential, exactly as a phone gets one.
+        const paired = await fetch(`${base()}/api/pair?code=${info.pairCode as string}`);
+        expect(paired.status).toBe(200);
+        const deviceToken = ((await paired.json()) as { token: string }).token;
+        const operatorToken = encodeURIComponent(info.token as string);
+        // A device carries its credential in the Authorization header (an
+        // EventSource would use a stream ticket; the class gate is the same).
+        const asDevice = { Authorization: `Bearer ${deviceToken}` };
+
+        // Device: the brain id answers exactly like a missing pane (no
+        // confirmation that the id exists), a worker pane still streams.
+        const brainAsDevice = await fetch(`${base()}/api/stream?session=brain-abc`, {
+          headers: asDevice, signal: ac.signal,
+        });
+        expect(brainAsDevice.status).toBe(404);
+        const paneAsDevice = await fetch(`${base()}/api/stream?session=s1`, {
+          headers: asDevice, signal: ac.signal,
+        });
+        expect(paneAsDevice.status).toBe(200);
+        const panePump = pumpSse(paneAsDevice);
+
+        // Operator: unchanged — the desktop's own mirror streams the brain.
+        const brainAsOperator = await fetch(`${base()}/api/stream?session=brain-abc&token=${operatorToken}`, {
+          signal: ac.signal,
+        });
+        expect(brainAsOperator.status).toBe(200);
+        const brainPump = pumpSse(brainAsOperator);
+
+        // Device input into the brain pane is refused the same way; nothing
+        // reaches the pty. (404, not 403: "not yours" and "gone" are one answer.)
+        const typed = await fetch(`${base()}/api/input?session=brain-abc`, {
+          method: 'POST',
+          headers: { ...asDevice, 'Content-Type': 'text/plain' },
+          body: 'rm -rf /\r',
+        });
+        expect(typed.status).toBe(404);
+
+        ac.abort();
+        await Promise.all([panePump.done, brainPump.done]);
+      } finally {
+        ac.abort();
+      }
+    });
+
     it('★ #1315 pane-stream liveness refuses the brain pane and an invented session id', async () => {
       // `sessionId` arrives from the hook pipe, which is not a trusted producer,
       // and the orchestrator brain is not a worker pane a phone may learn

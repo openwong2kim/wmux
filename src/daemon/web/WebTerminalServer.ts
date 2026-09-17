@@ -2500,6 +2500,27 @@ export class WebTerminalServer {
   }
 
   /**
+   * The pane THIS caller may attach to (stream bytes from, type into), or null.
+   *
+   * #1388 — the byte routes resolved their pane with a bare `getSession`, so
+   * a paired device that learned a brain id could open `/api/stream?session=`
+   * on it and read the orchestrator's raw terminal, while `/api/sessions` and
+   * the transcript routes had long refused the same id. The exclusion could
+   * not simply be added to `handleStream`: the operator token legitimately
+   * streams every pane, brain included (the desktop's own remote mirror rides
+   * this route). So the gate follows the credential class — a device gets
+   * `readableSession`'s answer, the operator keeps `getSession`'s.
+   */
+  private attachableSession(
+    principal: WebPrincipal,
+    sessionId: string,
+  ): ReturnType<DaemonSessionManager['getSession']> {
+    return principal.kind === 'operator'
+      ? this.deps.sessionManager.getSession(sessionId)
+      : this.readableSession(sessionId);
+  }
+
+  /**
    * `GET /api/sessions/:id/turns/block?srcOffset=&n=&eventId=` — the body behind
    * a code-block or tool-body chip, the phone's half of what the desktop does
    * over `daemon.transcript.codeBlock`.
@@ -2905,7 +2926,7 @@ export class WebTerminalServer {
     principal: WebPrincipal,
   ): void {
     const sessionId = url.searchParams.get('session') ?? '';
-    const managed = this.deps.sessionManager.getSession(sessionId);
+    const managed = this.attachableSession(principal, sessionId);
     if (!managed) {
       return this.json(res, 404, { error: 'session not found' });
     }
@@ -3067,7 +3088,9 @@ export class WebTerminalServer {
       return this.refuseInput(res, principal, 'typing runs commands on this machine');
     }
     const sessionId = url.searchParams.get('session') ?? '';
-    const managed = this.deps.sessionManager.getSession(sessionId);
+    // Same class gate as the stream (#1388): a device must not be able to
+    // type into the orchestrator's pane either.
+    const managed = this.attachableSession(principal, sessionId);
     if (!managed) {
       return this.json(res, 404, { error: 'session not found' });
     }
