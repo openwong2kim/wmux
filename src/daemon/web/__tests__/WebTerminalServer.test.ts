@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { execFileSync } from 'node:child_process';
 import os from 'node:os';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -4933,10 +4934,55 @@ describe('WebTerminalServer', () => {
       managed.meta.spawnCwd = tmpTree();
       const photo = path.join(uploadsDir, 'photo.png');
       fs.writeFileSync(photo, PNG_1X1);
+      try {
+        const info = await startWithTranscript();
+        const res = await fetch(imageUrl('s1', photo), { headers: bearer(info.token as string) });
+        expect(res.status).toBe(200);
+        expect(res.headers.get('content-type')).toBe('image/png');
+      } finally {
+        // uploadsDir is shared across describes; the tree cleanup does not cover it.
+        fs.rmSync(photo, { force: true });
+      }
+    });
+
+    it('404 for a FIFO inside the boundary instead of hanging on open', async () => {
+      const dir = tmpTree();
+      const fifo = path.join(dir, 'pipe.png');
+      execFileSync('mkfifo', [fifo]);
+      managed.meta.spawnCwd = dir;
       const info = await startWithTranscript();
-      const res = await fetch(imageUrl('s1', photo), { headers: bearer(info.token as string) });
-      expect(res.status).toBe(200);
-      expect(res.headers.get('content-type')).toBe('image/png');
+      const res = await fetch(imageUrl('s1', fifo), { headers: bearer(info.token as string) });
+      expect(res.status).toBe(404);
+    });
+
+    it('413 when the file grew past the size the gate approved', async () => {
+      // The route reads exactly the size it measured and probes one byte past
+      // it. A file that is already over the cap is the 413 the gate catches;
+      // this pins the second gate — the probe — by handing it a file whose
+      // stat and contents disagree the way a growing file would.
+      const dir = tmpTree();
+      const file = path.join(dir, 'grow.png');
+      fs.writeFileSync(file, PNG_1X1);
+      managed.meta.spawnCwd = dir;
+      const statSpy = vi.spyOn(fs.promises, 'open');
+      const info = await startWithTranscript();
+      statSpy.mockImplementationOnce(async (...args: Parameters<typeof fs.promises.open>) => {
+        const handle = await fs.promises.open(...args);
+        const realStat = handle.stat.bind(handle);
+        handle.stat = (async () => {
+          const st = await realStat();
+          return Object.assign(st, { size: st.size - 1 });
+        }) as typeof handle.stat;
+        return handle;
+      });
+      try {
+        const res = await fetch(imageUrl('s1', file), { headers: bearer(info.token as string) });
+        expect(res.status).toBe(413);
+        const body = await res.json();
+        expect(body.detail).not.toMatch(/image is/);
+      } finally {
+        statSpy.mockRestore();
+      }
     });
 
     it('serves the pane cwd on a daemon with no uploads directory wired', async () => {

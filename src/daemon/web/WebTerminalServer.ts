@@ -1850,7 +1850,7 @@ export class WebTerminalServer {
         return this.handleSessionCommands(res, rest.slice(0, -'/commands'.length));
       }
       if (req.method === 'GET' && rest.endsWith('/turns/image')) {
-        return void this.handleSessionTurnImage(req, res, rest.slice(0, -'/turns/image'.length));
+        return this.handleSessionTurnImage(req, res, rest.slice(0, -'/turns/image'.length));
       }
       if (req.method === 'GET' && rest.endsWith('/turns/block')) {
         return this.handleSessionTurnBlock(req, res, rest.slice(0, -'/turns/block'.length));
@@ -2706,9 +2706,17 @@ export class WebTerminalServer {
     // second path lookup here is a window in which the file under an allowed
     // path becomes a symlink to somewhere else, or a small file becomes a large
     // one after the size gate has passed.
+    // `real` came back from realpath with every link resolved, so the ONLY way
+    // its last component is a symlink now is that it was swapped in between —
+    // O_NOFOLLOW turns that swap into ELOOP → 404 instead of a follow. And
+    // O_NONBLOCK: a FIFO inside the boundary would otherwise park this request
+    // (and its handle) until a writer shows up, which may be never.
     let handle: fs.promises.FileHandle;
     try {
-      handle = await fs.promises.open(real, 'r');
+      handle = await fs.promises.open(
+        real,
+        fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK,
+      );
     } catch {
       this.json(res, 404, { error: 'image not found' });
       return;
@@ -2720,9 +2728,11 @@ export class WebTerminalServer {
         return;
       }
       if (stat.size > MAX_TURN_IMAGE_BYTES) {
+        // No exact size in the answer: the cap is the only number a caller
+        // learns, never how big the thing behind the path really is.
         this.json(res, 413, {
           error: 'image-too-large',
-          detail: `image is ${stat.size} bytes; the cap is ${MAX_TURN_IMAGE_BYTES}`,
+          detail: `the cap is ${MAX_TURN_IMAGE_BYTES} bytes`,
         });
         return;
       }
@@ -2739,7 +2749,31 @@ export class WebTerminalServer {
         });
         return;
       }
-      const body = await handle.readFile();
+      // Bounded by the size the gate saw, never "to EOF": holding the handle
+      // does not freeze the file, and a pane process appending to it between
+      // the stat and here would otherwise be buffered whole. One extra byte
+      // probed past that size says whether it grew — then it is over the cap
+      // by definition of what the gate approved.
+      const body = Buffer.allocUnsafe(stat.size);
+      let filled = 0;
+      while (filled < body.length) {
+        const { bytesRead } = await handle.read(body, filled, body.length - filled, filled);
+        if (bytesRead === 0) break;
+        filled += bytesRead;
+      }
+      const probe = await handle.read(Buffer.alloc(1), 0, 1, body.length);
+      if (probe.bytesRead > 0) {
+        this.json(res, 413, {
+          error: 'image-too-large',
+          detail: `the cap is ${MAX_TURN_IMAGE_BYTES} bytes`,
+        });
+        return;
+      }
+      if (filled < body.length) {
+        // Shrank under us — what the gate approved is not what is there.
+        this.json(res, 404, { error: 'image not found' });
+        return;
+      }
       res.writeHead(200, {
         'Content-Type': contentType,
         ...this.securityHeaders(),
@@ -2748,8 +2782,14 @@ export class WebTerminalServer {
       res.end(body);
     } catch {
       // A read that fails after the handle opened (permissions, a device that
-      // went away) is the same answer as a file that was never there.
-      this.json(res, 404, { error: 'image not found' });
+      // went away) is the same answer as a file that was never there. Unless
+      // the 200 was already on the wire — then a JSON body would throw
+      // ERR_HTTP_HEADERS_SENT on top, and the honest end is to cut the socket.
+      if (res.headersSent) {
+        res.destroy();
+      } else {
+        this.json(res, 404, { error: 'image not found' });
+      }
     } finally {
       await handle.close().catch(() => { /* already gone — nothing to release */ });
     }
