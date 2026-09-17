@@ -134,6 +134,54 @@ export function readLastAssistantMessage(transcriptPath: string): LastAssistantM
     return null;
   }
 
+  return parseLastAssistantMessage(raw);
+}
+
+/**
+ * The same read, off the event loop.
+ *
+ * Exists for `WebTerminalServer`: `/api/sessions` is a polled route that
+ * answers in microseconds, and one synchronous 256 KB read per pane on it would
+ * stall the daemon's whole HTTP surface — every other request, every SSE frame,
+ * every approval — behind a disk that is slow or a home directory that is on a
+ * network mount. Same bounds, same guards, same parser as the sync reader: the
+ * only difference is which call blocks.
+ */
+export async function readLastAssistantMessageAsync(
+  transcriptPath: string,
+): Promise<LastAssistantMessage | null> {
+  let raw: string;
+  try {
+    // Same FIFO guard, and for the same reason: a promise-based open on a FIFO
+    // does not block the loop, but it never settles either, and the handle
+    // leaks for the daemon's life.
+    const st = await fs.promises.lstat(transcriptPath);
+    if (!st.isFile()) return null;
+    const start = Math.max(0, st.size - TAIL_BYTES);
+    const handle = await fs.promises.open(transcriptPath, 'r');
+    try {
+      const buf = Buffer.alloc(st.size - start);
+      const { bytesRead } = await handle.read(buf, 0, buf.length, start);
+      raw = buf.subarray(0, bytesRead).toString('utf8');
+    } finally {
+      await handle.close();
+    }
+  } catch {
+    return null;
+  }
+
+  return parseLastAssistantMessage(raw);
+}
+
+/**
+ * Walk a transcript tail backward to the last assistant message.
+ *
+ * Pure, and split out so the sync and async readers cannot drift: the rules
+ * below (the human-turn boundary, tool-only turns, a partial first line) are
+ * the whole substance of this module, and having them in one place is what
+ * makes the two readers interchangeable.
+ */
+export function parseLastAssistantMessage(raw: string): LastAssistantMessage | null {
   const lines = raw.split('\n');
   // A partial first line is expected whenever we seeked into the middle of the
   // file; JSON.parse rejects it and the loop moves on.

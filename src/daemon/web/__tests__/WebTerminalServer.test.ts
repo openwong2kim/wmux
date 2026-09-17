@@ -4240,62 +4240,128 @@ describe('WebTerminalServer', () => {
       expect(JSON.stringify(body)).not.toContain('no-such-pane');
     });
 
-    it('★ lastAssistantText rides --allow-transcript and is cut to 140 graphemes', async () => {
+    it('★ a liveness `at` is clamped forward and never walks backward', async () => {
+      const info = await startRO();
+      // A pane whose clock runs an hour fast would otherwise sit at "0s" for an
+      // hour AND outlive the staleness cutoff however long it had been dead.
+      const future = Date.now() + 3_600_000;
+      server.emitAgentLiveness({ sessionId: 's1', state: 'busy', agent: 'Claude Code', at: future });
+      // Hook delivery is not ordered: an older state arriving late must not
+      // resurrect itself over the newer one.
+      server.emitAgentLiveness({ sessionId: 's1', state: 'idle', agent: 'Claude Code', at: 1_000 });
+      // Not a number at all → refused; the believable entry survives.
+      server.emitAgentLiveness({
+        sessionId: 's1', state: 'idle', agent: 'Claude Code',
+        at: Number.NaN,
+      });
+
+      const body = (await (
+        await fetch(`${base()}/api/sessions`, { headers: bearer(info.token as string) })
+      ).json()) as { sessions: Array<{ id: string; liveness?: { state: string; at: number } }> };
+      const liveness = body.sessions.find((s) => s.id === 's1')?.liveness;
+      expect(liveness?.state).toBe('busy');
+      expect(liveness?.at).toBeLessThan(future);
+      expect(liveness?.at).toBeGreaterThan(Date.now() - 10_000);
+    });
+
+    it('★ /api/sessions sweeps snapshot state for panes that died without a DELETE', async () => {
+      const info = await startRO();
+      const h = bearer(info.token as string);
+      server.emitAgentLiveness({ sessionId: 's2', state: 'idle', agent: 'Claude Code', at: Date.now() });
+      const first = (await (await fetch(`${base()}/api/sessions`, { headers: h })).json()) as {
+        sessions: Array<{ id: string; liveness?: { state: string } }>;
+      };
+      expect(first.sessions.find((s) => s.id === 's2')?.liveness?.state).toBe('idle');
+
+      // s2's process exits. Nothing tells the web server — it subscribes to no
+      // death event — so the sweep on the next list is the only thing that can
+      // drop the entry.
+      const [dead] = live.splice(1, 1);
+      await fetch(`${base()}/api/sessions`, { headers: h });
+      // Put an identically-named pane back. A leaked entry would show up here as
+      // a brand-new pane that is somehow already idle.
+      live.splice(1, 0, dead);
+      const after = (await (await fetch(`${base()}/api/sessions`, { headers: h })).json()) as {
+        sessions: Array<{ id: string; liveness?: { state: string } }>;
+      };
+      expect(after.sessions.find((s) => s.id === 's2')).not.toHaveProperty('liveness');
+    });
+
+    it('★ lastAssistantText rides --allow-transcript, is tail-cut to 140 graphemes, and is read off the loop', async () => {
       // A real transcript on disk: the reader lstats and tail-reads the file, so
       // a mock would test nothing that ships.
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-web-transcript-'));
       const transcript = path.join(dir, 'session.jsonl');
-      // Newlines on purpose — a list row is one line, and the flattening is part
-      // of the contract.
-      const said = Array.from({ length: 60 }, (_, i) => `줄${i}`).join('\n');
-      expect(said.length).toBeGreaterThan(200);
-      fs.writeFileSync(
-        transcript,
+      // Over 600 characters, so `condense()` in the reader keeps the TAIL and
+      // the preview is cutting an already-cut string. Newlines on purpose — a
+      // list row is one line, and the flattening is part of the contract.
+      // U+200B and the RLO are the invisibles that must not survive; the ZWJ in
+      // the emoji must, or one grapheme shatters into three.
+      const said = `${Array.from({ length: 400 }, (_, i) => `줄${i}`).join('\n')}\n\u200b\u202e끝 👩\u200d💻`;
+      expect(said.length).toBeGreaterThan(600);
+      const entry = (text: string) =>
         `${JSON.stringify({
           type: 'assistant',
-          message: { role: 'assistant', content: [{ type: 'text', text: said }] },
-        })}\n`,
-      );
-      const stat = fs.statSync(transcript);
-      projectorMock.status.mockReturnValue({
-        available: true,
-        reason: 'ok',
-        transcriptBasename: 'session.jsonl',
-        sizeBytes: stat.size,
-        mtimeMs: stat.mtimeMs,
-      });
+          message: { role: 'assistant', content: [{ type: 'text', text }] },
+        })}\n`;
+      fs.writeFileSync(transcript, entry(said));
+      // Pin mtime to a whole millisecond so the (path, size, mtime) cache key can
+      // be reproduced exactly below — a natural mtime carries sub-ms precision
+      // that `utimesSync` cannot round-trip.
+      const pinned = new Date(1_700_000_000_000);
+      fs.utimesSync(transcript, pinned, pinned);
       projectorMock.transcriptPath.mockReturnValue(transcript);
 
       try {
         // Transcript grant OFF → conversation content stays off the list, even
-        // though the projector would happily answer.
+        // though the projector would happily hand over the path.
         const ro = await startRO();
         const off = (await (
           await fetch(`${base()}/api/sessions`, { headers: bearer(ro.token as string) })
         ).json()) as { sessions: Array<{ id: string; lastAssistantText?: string }> };
         expect(off.sessions.every((s) => s.lastAssistantText === undefined)).toBe(true);
+        // The path is the projector's ONE resolve per row; status() is not part
+        // of this path at all (it would re-walk the same binding for a size this
+        // stats for itself).
+        expect(projectorMock.status).not.toHaveBeenCalled();
         await server.stop();
 
         const on = await startWithTranscript();
-        const body = (await (
-          await fetch(`${base()}/api/sessions`, { headers: bearer(on.token as string) })
-        ).json()) as { sessions: Array<{ id: string; lastAssistantText?: string }> };
-        const text = body.sessions.find((s) => s.id === 's1')?.lastAssistantText;
-        expect(text).toBeDefined();
-        expect(text).not.toContain('\n');
-        expect(text?.startsWith('줄0 줄1 줄2')).toBe(true);
-        expect(text?.endsWith('…')).toBe(true);
-        const segmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
-        expect([...segmenter.segment(text as string)].length).toBe(141); // 140 + the ellipsis
+        const h = bearer(on.token as string);
+        const poll = async () => {
+          const body = (await (await fetch(`${base()}/api/sessions`, { headers: h })).json()) as {
+            sessions: Array<{ id: string; lastAssistantText?: string }>;
+          };
+          return body.sessions.find((s) => s.id === 's1')?.lastAssistantText;
+        };
 
-        // Same (path, size, mtime) → served from the memo, not re-read. Deleting
-        // the file is the only way to prove the second poll never touched it:
-        // a re-read would find nothing and drop the field.
-        fs.rmSync(transcript);
-        const again = (await (
-          await fetch(`${base()}/api/sessions`, { headers: bearer(on.token as string) })
-        ).json()) as { sessions: Array<{ id: string; lastAssistantText?: string }> };
-        expect(again.sessions.find((s) => s.id === 's1')?.lastAssistantText).toBe(text);
+        // The FIRST poll answers with no field: the 256 KB read is started in
+        // the background, never on the request's own thread.
+        expect(await poll()).toBeUndefined();
+
+        let text: string | undefined;
+        await vi.waitFor(async () => {
+          text = await poll();
+          expect(text).toBeDefined();
+        });
+
+        expect(text).not.toContain('\n');
+        // Cut from the END: an agent's ask is the last thing it wrote.
+        expect(text?.startsWith('…')).toBe(true);
+        expect(text?.endsWith('끝 👩\u200d💻')).toBe(true);
+        expect(text).not.toContain('\u200b');
+        expect(text).not.toContain('\u202e');
+        const segmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
+        // 140 INCLUDING the ellipsis — the truncated row is never the wider one.
+        expect([...segmenter.segment(text as string)].length).toBe(140);
+
+        // Same (path, size, mtime) → served from the memo. Rewriting the file
+        // with a byte-identical, content-different message and restoring the
+        // pinned mtime is the only way to prove the second poll never re-read:
+        // a re-read would answer with the new ending.
+        fs.writeFileSync(transcript, entry(said.replace('끝', '꾰')));
+        fs.utimesSync(transcript, pinned, pinned);
+        expect(await poll()).toBe(text);
       } finally {
         fs.rmSync(dir, { recursive: true, force: true });
       }
