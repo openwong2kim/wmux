@@ -22,7 +22,7 @@ import { wrapHandler } from '../wrapHandler';
 import { RemoteHostClient } from '../../remote/RemoteHostClient';
 import type { RemoteHostsStore } from '../../remote/RemoteHostsStore';
 import type { RemoteAttachmentsStore } from '../../remote/RemoteAttachmentsStore';
-import { parseRemoteAttachmentKey, parseWebUrl, remoteAttachmentKey } from '../../../shared/remoteHosts';
+import { parseRemoteAttachmentKey, parseWebUrl, remoteAttachmentKey, REMOTE_POLL_INTERVAL_MS } from '../../../shared/remoteHosts';
 import { normalizeWorkspaceColor } from '../../../shared/workspaceColors';
 import type {
   PairFailureReason,
@@ -221,6 +221,31 @@ export function registerRemoteHandlers(deps: RegisterRemoteHandlersDeps): () => 
   const attachRecords = new Map<string, AttachRecord>(); // attachId -> record
   const trackedSenders = new Set<number>();
 
+  // #1391 — the liveness-poll tick. Keyed by WebContents id so a renderer that
+  // subscribes twice gets ONE tick per round, never two.
+  //
+  // REFCOUNTED, and that is load-bearing. The renderer's subscribe is an async
+  // invoke inside a React effect keyed on "is anything attached", so detaching
+  // and re-attaching faster than one IPC round trip — the last mirror closed
+  // and another opened, a workspace switch that empties and refills the row set
+  // — interleaves as: subscribe(A) → subscribe(B) → the LATE unsubscribe from
+  // A. A plain membership set would drop the whole entry on that unsubscribe,
+  // disarm the timer, and leave the renderer holding a live listener it
+  // believes is subscribed — polling silently dead for the rest of the session.
+  // Counting makes the pair balance: B survives A's teardown. (This renderer
+  // does not mount under React StrictMode, whose double-invoked effects would
+  // produce the same order on every single mount.)
+  //
+  // A WebContents teardown deletes the entry outright, count and all, so a
+  // reload can never strand a positive count.
+  interface PollSubscriber {
+    sender: WebContents;
+    /** Outstanding subscribes from this renderer, not tick recipients. */
+    count: number;
+  }
+  const pollSubscribers = new Map<number, PollSubscriber>();
+  let pollTimer: ReturnType<typeof setInterval> | null = null;
+
   function attachKey(senderId: number, hostId: string, sessionId: string): string {
     return `${senderId}:${hostId}:${sessionId}`;
   }
@@ -230,6 +255,86 @@ export function registerRemoteHandlers(deps: RegisterRemoteHandlersDeps): () => 
     if (!record) return;
     if (record.sender.isDestroyed()) return;
     record.sender.send(channel, payload);
+  }
+
+  /**
+   * #1391 — arm the tick on the FIRST subscriber, disarm it on the last.
+   *
+   *   renderer has ≥1 attached remote workspace
+   *          │  REMOTE_POLL_SUBSCRIBE
+   *          ▼
+   *   pollSubscribers ──first──▶ setInterval(REMOTE_POLL_INTERVAL_MS)
+   *          │                          │ every tick
+   *          │                          ▼
+   *          │                   send REMOTE_POLL_TICK to each live subscriber
+   *          │  UNSUBSCRIBE / reload / crash / destroy
+   *          ▼
+   *   pollSubscribers ──last──▶ clearInterval
+   *
+   * An app with no remote workspaces attached therefore runs no periodic timer
+   * at all — the property the old renderer-side `hasAttachments` gate had, kept.
+   */
+  function syncPollTimer(): void {
+    if (pollSubscribers.size > 0) {
+      if (pollTimer) return;
+      pollTimer = setInterval(() => {
+        for (const [id, { sender }] of [...pollSubscribers]) {
+          // A destroyed WebContents throws on send(). Drop it here rather than
+          // waiting for a lifecycle event that may never come.
+          if (sender.isDestroyed()) {
+            pollSubscribers.delete(id);
+            continue;
+          }
+          try {
+            sender.send(IPC.REMOTE_POLL_TICK);
+          } catch {
+            // Renderer mid-reload — it re-subscribes on the next mount, and
+            // one missed tick costs one poll interval, never correctness.
+          }
+        }
+        // A round that found every subscriber dead must not keep ticking.
+        if (pollSubscribers.size === 0) syncPollTimer();
+      }, REMOTE_POLL_INTERVAL_MS);
+      // Never hold the app open for a poll tick.
+      pollTimer.unref?.();
+      return;
+    }
+    if (pollTimer) {
+      clearInterval(pollTimer);
+      pollTimer = null;
+    }
+  }
+
+  function addPollSubscriber(sender: WebContents): void {
+    const entry = pollSubscribers.get(sender.id);
+    // Re-seat `sender` on every subscribe: after a reload the id is the same
+    // object here, but taking the live one costs nothing and cannot go stale.
+    if (entry) {
+      entry.sender = sender;
+      entry.count += 1;
+    } else {
+      pollSubscribers.set(sender.id, { sender, count: 1 });
+    }
+    syncPollTimer();
+  }
+
+  /** One unsubscribe. The entry survives while other subscribes are still
+   *  outstanding — see the refcount rationale on `pollSubscribers`. */
+  function releasePollSubscriber(senderId: number): void {
+    const entry = pollSubscribers.get(senderId);
+    if (!entry) return;
+    entry.count -= 1;
+    if (entry.count > 0) return;
+    pollSubscribers.delete(senderId);
+    syncPollTimer();
+  }
+
+  /** The renderer is GONE (destroyed, crashed, navigated away). Drops the
+   *  whole entry regardless of count — a teardown must never leave a positive
+   *  refcount holding the timer open for a renderer that no longer exists. */
+  function dropPollSubscriber(senderId: number): void {
+    if (!pollSubscribers.delete(senderId)) return;
+    syncPollTimer();
   }
 
   function getOrCreateClient(hostId: string): RemoteHostClient | null {
@@ -267,7 +372,9 @@ export function registerRemoteHandlers(deps: RegisterRemoteHandlersDeps): () => 
 
   /** Reload/crash cleanup (once per sender): a renderer reload never runs
    *  React unmount cleanup, so without this every Cmd+R leaks a live SSE
-   *  connection against the remote daemon. A PLAIN reload (Cmd+R) fires
+   *  connection against the remote daemon — and, since #1391, a poll-tick
+   *  subscription that would keep main's interval armed for a renderer that no
+   *  longer exists. A PLAIN reload (Cmd+R) fires
    *  neither 'destroyed' nor 'render-process-gone' in Electron — it's a
    *  same-WebContents in-place navigation, not a teardown — so
    *  'did-start-navigation' is the only event that observes it; a
@@ -280,6 +387,7 @@ export function registerRemoteHandlers(deps: RegisterRemoteHandlersDeps): () => 
       for (const [attachId, record] of [...attachRecords.entries()]) {
         if (record.senderId === sender.id) detachAttach(attachId);
       }
+      dropPollSubscriber(sender.id);
       trackedSenders.delete(sender.id);
       // A plain reload (Cmd+R) does NOT destroy the WebContents — it's the
       // same sender re-entering installSenderCleanup on the next
@@ -665,8 +773,31 @@ export function registerRemoteHandlers(deps: RegisterRemoteHandlersDeps): () => 
       }
     }));
 
+  // #1391 — the renderer asks for the unthrottled cadence while (and only
+  // while) it has something attached. One tick per WebContents per round
+  // however many times it subscribed; the count only decides when the LAST
+  // unsubscribe lands (see `pollSubscribers`).
+  ipcMain.removeHandler(IPC.REMOTE_POLL_SUBSCRIBE);
+  ipcMain.handle(IPC.REMOTE_POLL_SUBSCRIBE, wrapHandler(IPC.REMOTE_POLL_SUBSCRIBE,
+    async (e: IpcMainInvokeEvent): Promise<boolean> => {
+      // Shared with the pane attaches: one listener set per sender covers
+      // reload/crash/destroy for both the SSE attaches and this subscription.
+      installSenderCleanup(e.sender);
+      addPollSubscriber(e.sender);
+      return true;
+    }));
+
+  ipcMain.removeHandler(IPC.REMOTE_POLL_UNSUBSCRIBE);
+  ipcMain.handle(IPC.REMOTE_POLL_UNSUBSCRIBE, wrapHandler(IPC.REMOTE_POLL_UNSUBSCRIBE,
+    async (e: IpcMainInvokeEvent): Promise<boolean> => {
+      releasePollSubscriber(e.sender.id);
+      return true;
+    }));
+
   const onWillQuit = (): void => {
     for (const client of clients.values()) client.detachAll();
+    pollSubscribers.clear();
+    syncPollTimer();
   };
   app.on('will-quit', onWillQuit);
 
@@ -685,6 +816,17 @@ export function registerRemoteHandlers(deps: RegisterRemoteHandlersDeps): () => 
     ipcMain.removeHandler(IPC.REMOTE_PANE_DETACH);
     ipcMain.removeAllListeners(IPC.REMOTE_PANE_WRITE);
     ipcMain.removeHandler(IPC.REMOTE_PANE_RESIZE_REQUEST);
+    ipcMain.removeHandler(IPC.REMOTE_POLL_SUBSCRIBE);
+    ipcMain.removeHandler(IPC.REMOTE_POLL_UNSUBSCRIBE);
+    // #1391 — the timer is the one thing here that outlives `removeHandler`.
+    // Every other resource above is reachable only through a route that has
+    // just been unregistered; an interval keeps firing on its own, against
+    // renderers whose subscribe can no longer be re-answered. (`src/main/index.ts`
+    // discards this disposer today, so in production this runs only under test —
+    // but the contract a disposer states must be true, or the first caller that
+    // does keep it inherits a live timer.)
+    pollSubscribers.clear();
+    syncPollTimer();
     app.removeListener('will-quit', onWillQuit);
   };
 }

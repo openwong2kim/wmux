@@ -620,6 +620,17 @@ export const IPC = {
   REMOTE_PANE_RESIZE: 'remote:pane:resize',
   REMOTE_PANE_EXIT: 'remote:pane:exit',      // main → renderer push
   REMOTE_PANE_ERROR: 'remote:pane:error',    // main → renderer push (reconnect gave up)
+  // #1391 — the CADENCE of the per-host `/api/workspaces` liveness poll, moved
+  // out of the renderer. A renderer `setInterval` is throttled by Chromium once
+  // the window is hidden or occluded (measured: 10s → 17s → 60s), so a user
+  // watching a remote agent from a background window saw minute-old status.
+  // Main's timers are never throttled. Subscribe/unsubscribe are refcounted per
+  // WebContents so a window with nothing attached costs no periodic anything,
+  // and TICK carries no payload: it means only "poll now", leaving every bit of
+  // polling policy (host set, backoff, dedup) in the renderer where #1385 put it.
+  REMOTE_POLL_SUBSCRIBE: 'remote:poll:subscribe',
+  REMOTE_POLL_UNSUBSCRIBE: 'remote:poll:unsubscribe',
+  REMOTE_POLL_TICK: 'remote:poll:tick',      // main → renderer push
 } as const;
 
 // Daemon process exit codes. A spawned daemon that finds the canonical control

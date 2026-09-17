@@ -1468,6 +1468,28 @@ document.addEventListener('DOMContentLoaded', () => {
     ipcRenderer.on(IPC.REMOTE_PANE_ERROR, listener);
     return () => { ipcRenderer.removeListener(IPC.REMOTE_PANE_ERROR, listener); };
   },
+  // #1391 — ask main for the liveness-poll cadence. Main's timers are not
+  // throttled when the window is backgrounded; a renderer `setInterval` is, and
+  // that is what made remote agent status go a minute stale.
+  //
+  // RESOLVES to the unsubscribe, and REJECTS if the subscribe did not land (no
+  // handler registered — main disposed, or a main bundle reloaded under a live
+  // window). Swallowing that would leave the caller believing it is subscribed
+  // and polling nothing at all, which is worse than the throttle this replaces;
+  // the caller arms its own interval instead. The tick carries no payload.
+  pollSubscribe: async () => {
+    await ipcRenderer.invoke(IPC.REMOTE_POLL_SUBSCRIBE);
+    return () => {
+      // A failed unsubscribe means main already forgot us (disposed, or the
+      // WebContents teardown path got there first) — the desired state either way.
+      void ipcRenderer.invoke(IPC.REMOTE_POLL_UNSUBSCRIBE).catch(() => undefined);
+    };
+  },
+  onPollTick: (callback: () => void) => {
+    const listener = () => callback();
+    ipcRenderer.on(IPC.REMOTE_POLL_TICK, listener);
+    return () => { ipcRenderer.removeListener(IPC.REMOTE_POLL_TICK, listener); };
+  },
 };
 
 contextBridge.exposeInMainWorld('electronAPI', electronAPI);

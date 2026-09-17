@@ -276,6 +276,19 @@ declare global {
         /** Fires once reconnection gives up after too many consecutive
          *  failures — the stream is dead until a fresh attach. */
         onPaneError: (callback: (e: { attachId: string; message: string }) => void) => () => void;
+        /**
+         * #1391 — ask MAIN to drive the `/api/workspaces` liveness cadence.
+         *
+         * RESOLVES to the unsubscribe; REJECTS when the subscribe did not land
+         * (no handler registered). Optional on top of that, because a renderer
+         * running against an older preload bundle has no such member at all.
+         * Both failures mean the same thing to the caller: drive the poll from
+         * its own (throttled) interval rather than stop polling altogether.
+         */
+        pollSubscribe?: () => Promise<() => void>;
+        /** Fires once per main-side poll round. No payload: it means only
+         *  "poll now" — every bit of polling policy stays in the renderer. */
+        onPollTick?: (callback: () => void) => () => void;
       };
     };
     clipboardAPI: {

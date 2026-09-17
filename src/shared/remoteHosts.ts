@@ -1,3 +1,14 @@
+/**
+ * How often the per-host `/api/workspaces` liveness feed is refreshed (#1391).
+ *
+ * SHARED on purpose. Main owns the tick that drives the cadence
+ * (IPC.REMOTE_POLL_TICK — a renderer timer is throttled in a background
+ * window), while the renderer's per-host backoff is expressed in multiples of
+ * one poll interval. Two copies of the number would silently decouple "how
+ * often we ask" from "how long a dead host is skipped for".
+ */
+export const REMOTE_POLL_INTERVAL_MS = 10_000;
+
 /** A registered remote wmux web server. The token NEVER crosses into this
  * shape's renderer-facing projection — see RemoteHostPublic. */
 export interface RemoteHost {
