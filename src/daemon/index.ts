@@ -3343,10 +3343,19 @@ function registerRpcHandlers(
     // stricter than the display name: hook/screen naming has no death
     // edge, and an OSC 133 prompt means the foreground command returned.
     const shellAtPrompt = session.promptLog.size > 0 && !session.promptLog.isCommandRunning();
+    // #1392 — the shell is back at its prompt, so whatever agent this pane ran
+    // has returned. The screen tier is sticky by design and the process
+    // tracker's death edge needs an attributed process — on Windows that
+    // attribution can fail outright, and the pane then reads
+    // `Claude Code / running` for good. The renderer already clears its own
+    // label on this exact OSC 133 signal (#1210), so answering from it here
+    // keeps every reader of this state on one source of truth for "gone".
+    if (shellAtPrompt) {
+      return { agentName: null, agentVerified: false, ...state, agentStatus: 'idle' };
+    }
     const agentVerified =
       !!canonical &&
-      provesLiveAgent(agentProcessTracker.identityFor(id), canonical.slug) &&
-      !shellAtPrompt;
+      provesLiveAgent(agentProcessTracker.identityFor(id), canonical.slug);
     return {
       agentName: reportedAgentName({ rawName, screenSlug, canonical }),
       agentVerified,

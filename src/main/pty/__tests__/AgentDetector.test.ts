@@ -17,6 +17,42 @@ describe('AgentDetector', () => {
     return { det, cb };
   }
 
+  describe('#1392 — versioned splash opens the gate without a permission footer', () => {
+    // `claude --permission-mode default` draws no `bypass permissions on` /
+    // `shift+tab to cycle` footer, so the compound gate's prompt signal never
+    // arrives. The launch splash (logo glyphs + `Claude Code v…` on one row)
+    // is product chrome that stands in for both signals.
+    const SPLASH = ' \u2590\u259b\u2588\u2588\u2588\u259b\u2588   Claude Code v2.1.274\n';
+
+    it('splash line alone activates Claude Code', () => {
+      const det = new AgentDetector();
+      const cb = vi.fn();
+      det.onEvent(cb);
+      det.feed(SPLASH);
+      expect(det.getLastAgent()).toBe('Claude Code');
+      expect(cb.mock.calls.map((c: unknown[]) => (c[0] as { status: string }).status)).toContain('running');
+    });
+
+    it('splash wrapped in ANSI colour still counts', () => {
+      const det = new AgentDetector();
+      det.feed('\x1b[38;5;208m \u2590\u259b\u2588\u2588\u2588\u259b\u2588\x1b[0m   \x1b[1mClaude Code\x1b[0m v2.1.274\n');
+      expect(det.getLastAgent()).toBe('Claude Code');
+    });
+
+    it('a versioned banner WITHOUT the logo glyphs stays banner-only (#850 contract)', () => {
+      const det = new AgentDetector();
+      det.feed('Claude Code v2.1.274\n');          // a README / changelog / cat line
+      det.feed('# Claude Code v2.1.274 release\n');
+      expect(det.getLastAgent()).toBeNull();
+    });
+
+    it('a source line quoting the splash does not open the gate', () => {
+      const det = new AgentDetector();
+      det.feed("const SPLASH = ' \u2590\u259b\u2588 Claude Code v2.1.274';\n");
+      expect(det.getLastAgent()).toBeNull();
+    });
+  });
+
   describe('agent status emission', () => {
     it('compound gate: banner + prompt together emit running then waiting', () => {
       const det = new AgentDetector();

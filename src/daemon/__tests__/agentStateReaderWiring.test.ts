@@ -94,4 +94,20 @@ describe('readDaemonAgentState wiring (#1303)', () => {
     expect(body).toMatch(/agentProcessTracker\.verifyLive\(id, agentSlug\)/);
     expect(body).toMatch(/ProcessMonitor\.isRunning\(pid\)/);
   });
+
+  it('#1392 — answers no agent / idle once OSC 133 says the shell is back at its prompt', () => {
+    const body = readerBody();
+    const promptIdx = body.indexOf('const shellAtPrompt = ');
+    const guardIdx = body.indexOf('if (shellAtPrompt) {');
+    expect(promptIdx).toBeGreaterThan(-1);
+    expect(guardIdx).toBeGreaterThan(promptIdx);
+    // The prompt-return guard must sit AFTER canonical identity (the #1303
+    // contract above) and answer idle with no name — the same signal the
+    // renderer's #1210 clear uses, so the two readers cannot disagree.
+    const canonicalIdx = body.indexOf('canonicalIdentityFor(agentProcessTracker, id, screenSlug)');
+    expect(guardIdx).toBeGreaterThan(canonicalIdx);
+    const guard = body.slice(guardIdx, body.indexOf('}', guardIdx));
+    expect(guard).toMatch(/agentName: null/);
+    expect(guard).toMatch(/agentStatus: 'idle'/);
+  });
 });

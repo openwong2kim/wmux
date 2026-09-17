@@ -435,6 +435,28 @@ function isClaudeBannerChrome(line: string): boolean {
   return /^Claude\s*Code\b/i.test(v);
 }
 
+/**
+ * The splash line Claude Code draws at launch: its logo glyphs and the
+ * versioned product name on ONE row (` ▐▛███▛█   Claude Code v2.1.274`).
+ *
+ * #1392 — the compound gate's prompt signal is the permission footer
+ * (`bypass permissions on` / `shift+tab to cycle`), which a pane started with
+ * `--permission-mode default` never draws, so such a pane was never detected
+ * at all. The splash is product chrome no other source prints in this shape:
+ * a btop row has no logo, a README or changelog line quoting the version has
+ * no logo, and `claude --version` prints `2.1.274 (Claude Code)`. It therefore
+ * stands in for both signals. The glyph requirement is what keeps the plain
+ * `Claude Code v2.1.172` banner line — which agents working this repo print
+ * from source, and which #850's tests feed as banner-only — from opening the
+ * gate on its own.
+ */
+const CLAUDE_SPLASH_RE = /[\u2590\u259b\u259c\u259d\u2580\u2588]+\s+Claude\s*Code\s*v\d+\.\d+/;
+function isClaudeSplashLine(line: string): boolean {
+  const stripped = stripAnsi(line);
+  if (!CLAUDE_SPLASH_RE.test(stripped)) return false;
+  return !SOURCE_LINE_RE.test(stripped);
+}
+
 /** Idle-footer fragment that is not a source/comment/regex dump of that fragment. */
 function isClaudePromptChrome(line: string): boolean {
   const stripped = stripAnsi(line);
@@ -655,9 +677,19 @@ export class AgentDetector {
         // this prefilter runs on the stripped probe as well as the raw one.
         probe.includes('bypass permissions') || probe.includes('bypasspermissions') || probe.includes('shift+tab')
       );
+      // #1392 — the versioned splash satisfies both signals (see
+      // isClaudeSplashLine). Its own prefilter, because the banner one is
+      // switched off once an OSC title has named the pane, and the prompt one
+      // only looks for footer words the default permission mode never draws.
+      const mayContainSplash = !this.claudePromptSeen && probe.includes('Claude Code v');
 
-      if (mayContainBanner || mayContainPrompt) {
+      if (mayContainBanner || mayContainPrompt || mayContainSplash) {
         for (const line of candidateLines(probe)) {
+          if (mayContainSplash && !this.claudePromptSeen && isClaudeSplashLine(line)) {
+            this.claudeBannerSeen = true;
+            this.claudePromptSeen = true;
+            continue;
+          }
           if (mayContainBanner && !this.claudeBannerSeen && isClaudeBannerChrome(line)) {
             this.claudeBannerSeen = true;
           }
