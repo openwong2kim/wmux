@@ -1,0 +1,67 @@
+# AI code review for OUTSIDE contributors only.
+#
+# Why pull_request_target: fork PRs get no secrets under `pull_request`, and the
+# LLM token lives in a secret. The action is fork-safe by construction — it
+# checks out the TRUSTED base, fetches the PR head as bare git objects, and
+# reviews the diff without ever materializing or executing untrusted PR files.
+# Nothing here runs code from the pull request. Keep it that way: never add a
+# build, install, or test step to this workflow.
+name: AI code review
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+# Least privilege: comment on the PR, read the base repo. Nothing else.
+permissions:
+  contents: read
+  pull-requests: write
+
+# A new push supersedes the review still running for the same PR.
+concurrency:
+  group: ai-code-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    name: Review outside contribution
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    # Outside contributors only. OWNER / MEMBER / COLLABORATOR PRs are skipped —
+    # those get the deliberate 3-way review instead. Bots (dependabot) skipped.
+    if: >-
+      github.event.pull_request.draft == false &&
+      github.event.pull_request.user.type != 'Bot' &&
+      contains(
+        fromJSON('["CONTRIBUTOR","FIRST_TIME_CONTRIBUTOR","FIRST_TIMER","NONE"]'),
+        github.event.pull_request.author_association
+      )
+    steps:
+      # Pinned to the v1.12.5 commit. A tag can be moved; a SHA cannot. Bump it
+      # deliberately after reading the diff — this action sees a repo secret.
+      - name: Open Code Review
+        uses: alibaba/open-code-review@189be5b024d3309dd10fdc8cd8ee31b2530c210b # v1.12.5
+        with:
+          # Z.ai coding plan speaks the Anthropic Messages protocol.
+          llm_url: https://api.z.ai/api/anthropic
+          llm_auth_token: ${{ secrets.GLM_API_KEY }}
+          llm_model: glm-5.3
+          llm_use_anthropic: 'true'
+
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+
+          # Outside contributions are usually small; medium is the useful floor.
+          effort: medium
+          language: English
+
+          # Repeat pushes: update the one summary, skip comments that overlap a
+          # previous run, and close threads whose lines no longer exist.
+          sticky_summary: 'true'
+          incremental: 'true'
+          resolve_outdated: 'true'
+
+          # Hard ceiling per run so a huge PR cannot drain the coding plan.
+          max_tokens_budget: '1500000'
+
+          # Keep the inline lane for real defects; minor notes go to the summary.
+          route_severity_below: 'medium'
