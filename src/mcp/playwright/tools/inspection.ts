@@ -837,8 +837,11 @@ export function registerInspectionTools(server: McpServer, deps: BrowserToolDeps
         // the answer says which world it actually came from.
         let worldNote = '';
 
-        // Try Playwright first for gesture-aware evaluation
-        const page = await engine.getPageForScope(scope).catch(allowScopedRpcFallback);
+        // Try Playwright first for gesture-aware evaluation. A WRITE: running
+        // arbitrary JS in a page is the broadest one there is, and on Live Chrome
+        // this lane is the only one that can reach a Chrome tab at all (main's
+        // browser.evaluate drives builtin webviews).
+        const page = await engine.getPageForScope(scope, { intent: 'write' }).catch(allowScopedRpcFallback);
         if (page) {
           // Isolated world by default: the page can neither see the script nor
           // hand it doctored built-ins. mainWorld:true opts back into the

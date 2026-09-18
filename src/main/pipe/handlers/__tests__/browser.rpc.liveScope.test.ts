@@ -528,6 +528,48 @@ describe('browser_tabs borrow / return', () => {
     expect((await first).result).toMatchObject({ ok: true, action: 'borrow' });
   });
 
+  it("under the 'all' opt-out nothing is asked: the tab is already writable", async () => {
+    // A prompt here would ask permission the operator already granted in the
+    // settings file, which trains the user to click Approve.
+    const borrow = vi.fn(async () => 'approved' as BorrowApprovalOutcome);
+    const { router } = register({ borrow, writeScopeSetting: 'all' });
+    const { result } = await dispatch(router, 'browser.tabs', {
+      action: 'borrow',
+      surfaceId: 'user-tab',
+      workspaceId: 'ws-1',
+    });
+    expect(result).toMatchObject({ ok: true, action: 'borrow', result: 'borrowed' });
+    expect(borrow).not.toHaveBeenCalled();
+  });
+
+  it("under the 'all' opt-out scope:'agent' hides nothing — everything is writable", async () => {
+    const { router } = register({ writeScopeSetting: 'all' });
+    const { result } = await dispatch(router, 'browser.tabs', {
+      action: 'list',
+      scope: 'agent',
+      workspaceId: 'ws-1',
+    });
+    // The labels still report who opened what; the FILTER would otherwise
+    // announce a narrower write set than the policy actually grants.
+    expect((result as { tabs: Array<{ surfaceId: string }> }).tabs.map((t) => t.surfaceId)).toEqual([
+      'agent-tab',
+      'lent-tab',
+      'user-tab',
+      'other-ws-tab',
+    ]);
+  });
+
+  it("under the 'all' opt-out browser_tabs close is not refused", async () => {
+    const { router, live } = register({ writeScopeSetting: 'all' });
+    const { result } = await dispatch(router, 'browser.tabs', {
+      action: 'close',
+      surfaceId: 'user-tab',
+      workspaceId: 'ws-1',
+    });
+    expect(result).toMatchObject({ ok: true, action: 'close' });
+    expect(live.closeSurface).toHaveBeenCalledWith('user-tab');
+  });
+
   it('borrowing a tab the workspace already owns asks nobody', async () => {
     const borrow = vi.fn(async () => 'approved' as BorrowApprovalOutcome);
     const { router } = register({ borrow });

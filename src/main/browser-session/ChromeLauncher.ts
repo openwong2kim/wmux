@@ -1127,6 +1127,22 @@ export class ChromeLauncherRegistry {
     return null;
   }
 
+  /**
+   * Drop one workspace's live borrow grants.
+   *
+   * Called when its Chrome-profile binding changes, in either direction: the
+   * grants were consent for THIS workspace driving the user's own browser, and a
+   * workspace that has been unbound (or pointed at a dedicated profile) is not
+   * that any more. Without this the grants outlived the binding, because the live
+   * client is a process-lifetime singleton and re-binding later found them still
+   * in place.
+   *
+   * A no-op when no live client has ever been created.
+   */
+  clearLiveBorrows(workspaceId: string): void {
+    this.live?.writeScope.clearBorrows(workspaceId);
+  }
+
   disposeAll(): void {
     for (const launcher of this.launchers.values()) launcher.dispose();
     this.launchers.clear();

@@ -1,8 +1,9 @@
 import type { ApprovalQueue } from '../mcp/ApprovalQueue';
-import type {
-  BorrowApprovalOutcome,
-  BorrowApprovalRequest,
-  BorrowApprovalRequester,
+import {
+  BORROW_APPROVAL_DEADLINE_MS,
+  type BorrowApprovalOutcome,
+  type BorrowApprovalRequest,
+  type BorrowApprovalRequester,
 } from '../../shared/liveWriteScope';
 
 // ---------------------------------------------------------------------------
@@ -15,15 +16,11 @@ import type {
 // only the wording and the deadline.
 // ---------------------------------------------------------------------------
 
-/**
- * How long a borrow request stays on screen.
- *
- * Long enough to notice and read (the prompt names a tab by title, which takes a
- * moment to place), short enough that an agent blocked on it is not blocked for
- * the rest of the session. The timeout is a DENY: an unanswered question about
- * handing over a logged-in tab must never resolve as yes.
- */
-export const BORROW_APPROVAL_DEADLINE_MS = 60_000;
+// The deadline itself lives in shared/liveWriteScope: the MCP client has to give
+// its RPC a longer one, so the two cannot be allowed to drift apart. Long enough
+// to notice and read a prompt, short enough that an agent blocked on it is not
+// blocked for the session — and a timeout is a DENY, because an unanswered
+// question about handing over a logged-in tab must never resolve as yes.
 
 /** The sentence the human reads. Names the workspace, the tab and its origin —
  *  a title alone is not enough to tell two logged-in tabs apart. */

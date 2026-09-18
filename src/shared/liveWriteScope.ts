@@ -111,6 +111,24 @@ export const LIVE_WRITE_RPC_METHODS: ReadonlySet<string> = new Set([
   'browser.close',
 ]);
 
+/**
+ * How long a borrow request stays on screen before it auto-denies.
+ *
+ * Shared because both ends of the call need it: main runs the deadline, and the
+ * MCP client has to give the `browser.tabs` RPC a longer one than this. Its
+ * default is 10 s, which silently capped the human's answer at 10 s — the prompt
+ * stayed up, the tool call had already failed, and a retry inside the window
+ * came back `borrow_pending`.
+ */
+export const BORROW_APPROVAL_DEADLINE_MS = 60_000;
+
+/**
+ * Deadline for the `browser.tabs borrow` RPC itself. Strictly longer than the
+ * prompt's, so the transport never gives up on a question the user is still
+ * looking at; main answers on its own deadline well before this fires.
+ */
+export const BORROW_RPC_TIMEOUT_MS = BORROW_APPROVAL_DEADLINE_MS + 15_000;
+
 /** Outcome of asking the human to lend a tab. `timeout` is a DENY that says so. */
 export type BorrowApprovalOutcome = 'approved' | 'denied' | 'timeout';
 

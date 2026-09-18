@@ -208,6 +208,25 @@ describe('LiveChromeClient write scope (agent window)', () => {
     expect(scope.ownerOf('user-tab', 'ws-a')).toBe('user');
   });
 
+  it('a Chrome RESTART (endpoint moved) clears every borrow too', async () => {
+    respondWithWindow(7);
+    const client = new LiveChromeClient(dir);
+    const scope = writeScopeOf(client);
+    await client.openTab('https://a.test/', 'ws-a');
+    scope.beginBorrow('user-tab', 'ws-a');
+    scope.settleBorrow('user-tab', 'ws-a', true);
+
+    // Chrome restarted: the DevToolsActivePort file now names a different secret
+    // path, so the next send replaces the socket rather than reusing it. This
+    // path tears the old socket down from the inside (detach), where the socket's
+    // own close listener no longer applies — the grants must still go.
+    writeFileSync(join(dir, 'DevToolsActivePort'), '9444\n/devtools/browser/def\n');
+    await client.listTargets();
+
+    expect(scope.ownerOf('user-tab', 'ws-a')).toBe('user');
+    expect(ScriptedWebSocket.instances).toHaveLength(2);
+  });
+
   it('closing an agent tab drops its ownership and any grant on that id', async () => {
     respondWithWindow(7);
     const client = new LiveChromeClient(dir);

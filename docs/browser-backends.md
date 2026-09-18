@@ -86,11 +86,18 @@ distinguishable to the agent, because its next move differs: `user_denied:`,
 screen — a second cannot be stacked on you).
 
 A grant covers one tab, for one workspace, for as long as the session lasts.
-`browser_tabs action:"return"` hands it back; unbinding the workspace from Live
-Chrome, quitting wmux, or Chrome disconnecting clears every grant. Teardown
-closes nothing on this backend — not a tab you lent, and not the agent's own
-tabs either, because on Live Chrome those are windows on your desktop. (An agent
-can still close a tab it owns, or one you lent it, by asking.)
+`browser_tabs action:"return"` hands it back; changing that workspace's Chrome
+profile binding, quitting wmux, or Chrome disconnecting clears every grant.
+Teardown closes nothing on this backend — not a tab you lent, and not the
+agent's own tabs either, because on Live Chrome those are windows on your
+desktop. (An agent can still close a tab it owns, or one you lent it, by asking.)
+
+**You lend a tab, not a site.** The prompt names the origin so you know what you
+are handing over, but the grant follows the TAB: an agent that navigates a lent
+tab somewhere else keeps writing to it, which is usually the point (that is how
+a flow proceeds through a site). Return it when the job is done rather than
+leaving it lent, and prefer lending a tab you opened for the task over one that
+also holds something you care about.
 
 `browser_tabs list` labels every row `agent` (wmux opened it for this
 workspace), `borrowed` (you lent it) or `user` (everything else), and

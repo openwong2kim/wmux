@@ -19,6 +19,7 @@ import { recordAction } from '../../browser-replay/actionRing';
 import { refererFor } from '../../../shared/referer';
 import { NavigationNotCommittedError, navigateFromPage } from '../link-navigation';
 import { getOpenerKey, noteOpenedSurface } from '../surfaceRouting';
+import { BORROW_RPC_TIMEOUT_MS } from '../../../shared/liveWriteScope';
 import {
   browserTabsError,
   isBrowserTabsResult,
@@ -547,7 +548,7 @@ export function registerNavigationTools(server: McpServer, deps: BrowserToolDeps
           );
         }
 
-        const result = await sendRpc('browser.tabs', {
+        const tabsParams = {
           action: resolvedAction,
           workspaceId,
           ...(surfaceId && { surfaceId }),
@@ -557,7 +558,17 @@ export function registerNavigationTools(server: McpServer, deps: BrowserToolDeps
           // so main can answer "is this one mine?" per row on `list` — as a
           // verdict; the key itself never comes back.
           openerKey: getOpenerKey(),
-        });
+        };
+        // `borrow` blocks on a human, so it cannot share the 10 s default: that
+        // capped the user's 60 s answer window at ten seconds and reported a
+        // prompt still on screen as "temporarily unavailable". Every other action
+        // keeps the default.
+        // Spread rather than a ternary over two calls: only borrow carries a
+        // timeout argument at all, and every other action reaches sendRpc with
+        // exactly the arguments it had before.
+        const tabsArgs: [typeof tabsParams, number?] =
+          resolvedAction === 'borrow' ? [tabsParams, BORROW_RPC_TIMEOUT_MS] : [tabsParams];
+        const result = await sendRpc('browser.tabs', ...tabsArgs);
         if (!isBrowserTabsResult(result)) {
           throw new Error('Invalid browser.tabs response from wmux main.');
         }

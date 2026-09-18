@@ -11,6 +11,7 @@ import {
   registerNavigationTools,
 } from '../tools/navigation';
 import type { BrowserToolDeps } from '../browserScope';
+import { BORROW_APPROVAL_DEADLINE_MS } from '../../../shared/liveWriteScope';
 
 type ToolResult = {
   content: { type: 'text'; text: string }[];
@@ -448,6 +449,39 @@ describe('browser navigation MCP workspace contract', () => {
 
     expect(result.content[0].text).toContain('[BROWSER_TABS_INVALID_ARGUMENT]');
     expect(mockSendRpc).not.toHaveBeenCalled();
+  });
+
+  it('gives borrow a deadline longer than the prompt it is waiting on', async () => {
+    // sendRpc's 10 s default would have expired while the user was still reading
+    // a 60 s prompt: the tool reported "temporarily unavailable" for a question
+    // still on screen, and a retry inside the window came back borrow_pending.
+    mockSendRpc.mockResolvedValue({
+      ok: true,
+      action: 'borrow',
+      result: 'borrowed',
+      tab: {
+        surfaceId: 'user-tab',
+        paneId: 'chrome:user-tab',
+        url: 'https://mail.example.com/',
+        title: 'Inbox',
+        selected: false,
+        owner: 'borrowed',
+      },
+    });
+
+    await browserTabs({ action: 'borrow', surfaceId: 'user-tab' });
+
+    const [, , timeoutMs] = mockSendRpc.mock.calls[0] as [string, unknown, number];
+    expect(timeoutMs).toBeGreaterThan(BORROW_APPROVAL_DEADLINE_MS);
+  });
+
+  it('every other action keeps the default deadline, argument for argument', async () => {
+    mockSendRpc.mockResolvedValue({ ok: true, action: 'list', tabs: [] });
+
+    await browserTabs({ action: 'list' });
+
+    // Not "passes undefined": the call shape itself is unchanged.
+    expect(mockSendRpc.mock.calls[0]).toHaveLength(2);
   });
 
   it('renders a granted borrow with the tab now marked borrowed', async () => {

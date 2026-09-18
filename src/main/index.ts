@@ -1288,6 +1288,10 @@ ipcMain.handle(
     if (!workspaceId || profileName === undefined) return { ok: false, error: 'invalid payload' };
     try {
       await chromeProfileStore.setBinding(workspaceId, profileName);
+      // Any binding change ends the consent that lent this workspace tabs in the
+      // user's own Chrome — including a re-bind to live, which is a new decision
+      // and not a resumption of the old one.
+      chromeRegistry.clearLiveBorrows(workspaceId);
       return { ok: true };
     } catch (err) {
       return { ok: false, error: err instanceof Error ? err.message : String(err) };

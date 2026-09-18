@@ -661,6 +661,14 @@ export class PlaywrightEngine {
    * Only ever runs on live (the marker is absent elsewhere), and only for a
    * write. A failure to READ the answer is a refusal: an ownership check that
    * cannot be made is not a check.
+   *
+   * Cost, accepted rather than hidden: one cdp.info round trip plus a throwaway
+   * CDP session per gated write (and main answers it with a Target.getTargets of
+   * its own). A cached owned-id set would remove that, and would then have to be
+   * invalidated on every borrow, return, open and close, in a process that does
+   * not see most of them — a cache that goes stale in the permissive direction
+   * here hands an agent a tab the user took back. Measured need first, cache
+   * second.
    */
   private async assertLiveWriteAllowed(page: Page, scope: BrowserTargetScope): Promise<void> {
     if (this.liveWriteScope !== 'agent') return;

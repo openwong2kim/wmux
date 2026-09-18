@@ -791,7 +791,10 @@ export function registerBrowserRpc(
   // drives fill/select/upload over CDP without passing through main at all).
   // Neither is a substitute for the other.
 
-  /** The operator setting, read lazily per call like every other one here. */
+  /** The operator setting, read lazily per call like every other one here. The
+   *  method call stays optional because an older wiring (and several test
+   *  harnesses) hand in a store that only knows about the backend; absent means
+   *  the default, which is the narrow grant. */
   const liveWriteScopeSetting = () => backendStore?.liveWriteScope?.() ?? DEFAULT_LIVE_WRITE_SCOPE;
 
   /**
@@ -1680,6 +1683,11 @@ export function registerBrowserRpc(
       const targets = await launcher.listTargets(workspaceId);
       // The label every row carries on live, and what borrow/return act on.
       const ownerOf = (id: string) => liveOwnerOf(launcher, id, workspaceId);
+      // Is the write gate actually in force? Labels are reported either way -
+      // they are facts about who opened a tab — but a FILTER whose meaning is
+      // "what you may write to" reports the wrong set under the 'all' opt-out,
+      // where the answer is everything.
+      const gated = !!liveWritePolicy(workspaceId);
       if (action === 'list') {
         const rows = targets.map((t) => ({
           ...t,
@@ -1689,7 +1697,7 @@ export function registerBrowserRpc(
           ...(launcher.writeScope && { owner: ownerOf(t.surfaceId) }),
         }));
         const filtered =
-          listScope === 'all' || !launcher.writeScope
+          listScope === 'all' || !gated
             ? rows
             : rows.filter((t) =>
                 listScope === 'agent' ? t.owner !== 'user' : t.owner === 'user',
@@ -1725,9 +1733,12 @@ export function registerBrowserRpc(
           const returned = scopeApi.returnBorrow(match.surfaceId, workspaceId);
           return { ok: true, action: 'return', surfaceId: match.surfaceId, returned };
         }
-        // Already ours: answer with the grant rather than asking the user a
-        // question whose answer cannot change anything.
-        if (ownerOf(match.surfaceId) !== 'user') {
+        // Already writable: answer with the grant rather than asking the user a
+        // question whose answer cannot change anything. Two ways that happens -
+        // the tab is already ours or lent to us, or the operator turned the gate
+        // off entirely, in which case a prompt would train them to click Approve
+        // for permission they had already granted in the settings file.
+        if (!gated || ownerOf(match.surfaceId) !== 'user') {
           return {
             ok: true,
             action: 'borrow',
@@ -1800,7 +1811,7 @@ export function registerBrowserRpc(
       // same gate the leased write RPCs do — browser_tabs must not be the way
       // round the policy.
       const closeOwner = ownerOf(match.surfaceId);
-      if (launcher.writeScope && liveWritePolicy(workspaceId) && closeOwner === 'user') {
+      if (gated && closeOwner === 'user') {
         return browserTabsError(
           'BROWSER_TABS_SCOPE_REFUSED',
           agentWindowScopeMessage('browser_tabs close', match.surfaceId),

@@ -4,6 +4,10 @@ import {
   borrowPromptTitle,
   createBorrowApprovalRequester,
 } from '../liveBorrowApproval';
+import {
+  BORROW_APPROVAL_DEADLINE_MS,
+  BORROW_RPC_TIMEOUT_MS,
+} from '../../../shared/liveWriteScope';
 
 // Asking the human to lend a live Chrome tab. Every path that is not an explicit
 // approve must come back a refusal, and the three refusals have to stay tellable
@@ -72,6 +76,15 @@ describe('borrowPromptTitle', () => {
     expect(borrowPromptTitle('Docs', { title: '   ', origin: '' })).toBe(
       'Agent in workspace Docs wants to control tab "untitled"',
     );
+  });
+});
+
+describe('the two deadlines', () => {
+  it('the RPC deadline outlives the prompt one, so the transport never gives up first', () => {
+    // They used to be independent: sendRpc's 10 s default against a 60 s prompt,
+    // which capped the human's answer at ten seconds and reported a question
+    // still on screen as "temporarily unavailable".
+    expect(BORROW_RPC_TIMEOUT_MS).toBeGreaterThan(BORROW_APPROVAL_DEADLINE_MS);
   });
 });
 
