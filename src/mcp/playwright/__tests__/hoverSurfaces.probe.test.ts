@@ -9,10 +9,10 @@ import {
 import { defaultStartPoint } from '../../../shared/pointerPath';
 
 // Phase 2 moves a real pointer over real CDP, so the bounds ARE the feature:
-// six triggers, 2500 ms all in, 300 ms per reveal, pointer restored and the
-// close verified, everything dropped if the page navigated under it. None of
-// that is observable from the output of a successful probe, so it is pinned
-// here against a fake CDP client that records every call.
+// six triggers, one wall-clock ceiling for everything, 300 ms per reveal, a
+// pointer restored and the close verified, everything dropped if the page
+// navigated under it. None of that is observable from the output of a
+// successful probe, so it is pinned here against a fake CDP client.
 
 const URL_A = 'https://x.test/nav';
 const URL_B = 'https://x.test/elsewhere';
@@ -166,7 +166,7 @@ function candidates(count: number): HoverCandidate[] {
   }));
 }
 
-/** Virtual clock, so a 2500 ms budget can be exhausted in a millisecond. */
+/** Virtual clock, so the probe budget can be exhausted in a millisecond. */
 let clock = 0;
 let url = URL_A;
 
@@ -232,7 +232,9 @@ describe('probeHoverSurfaces: the happy path', () => {
       candidates(1),
       ctx({ onPointerMoved: (point) => seen.push(point) }),
     );
-    expect(seen).toEqual([{ x: 140, y: 110 }, NEUTRAL]);
+    // Park first (the approach always starts from a point that is not on a
+    // trigger), then the trigger, then park again.
+    expect(seen).toEqual([NEUTRAL, { x: 140, y: 110 }, NEUTRAL]);
   });
 
   it('reports a truncated item list rather than a silently short one', async () => {
@@ -358,7 +360,50 @@ describe('probeHoverSurfaces: the bounds', () => {
     expect(HOVER_PROBE_LIMITS.REVEAL_WAIT_MS).toBe(300);
     expect(
       HOVER_PROBE_LIMITS.TOTAL_BUDGET_MS + HOVER_PROBE_LIMITS.RESTORE_GRACE_MS,
-    ).toBeLessThanOrEqual(2500);
+    ).toBeLessThanOrEqual(5000);
+  });
+
+  it('[CRITICAL] gives a later trigger its turn even when an earlier one is slow', async () => {
+    // The shipped defect, and the one CI is red on: on a slow renderer the FIRST
+    // trigger simply spent the whole budget, and the nav submenu below the
+    // account menu was cut at the top of the loop — no hover, no line, nothing
+    // said. Each trigger now gets its own share of what is left.
+    useVirtualClock();
+    const fake = makeFake({
+      // Trigger 0 is pathologically slow; trigger 1 is ordinary.
+      msPerSend: 0,
+      afterQueue: () => [{ names: ['Docs', 'API'], revealed: 2 }],
+    });
+    const slowFirst = {
+      send: async (method: string, params?: unknown) => {
+        const args = (params ?? {}) as Record<string, unknown>;
+        if (String(args['objectId'] ?? '').includes('-0')) clock += 400;
+        else clock += 10;
+        return fake.client.send(method, params);
+      },
+    };
+    const outcome = await probeHoverSurfaces(slowFirst, candidates(2), ctx());
+
+    expect(outcome.probed).toBe(2);
+    expect(outcome.revealed.has(101)).toBe(true);
+    expect(clock - startClock).toBeLessThanOrEqual(
+      HOVER_PROBE_LIMITS.TOTAL_BUDGET_MS + HOVER_PROBE_LIMITS.RESTORE_GRACE_MS,
+    );
+  });
+
+  it('reports the triggers it could not answer for', async () => {
+    useVirtualClock();
+    // Every read expires, so nothing is learned about either trigger.
+    const client = {
+      send: async (method: string) => {
+        clock += 3000;
+        if (method === 'Input.dispatchMouseEvent') return {};
+        return null;
+      },
+    };
+    const outcome = await probeHoverSurfaces(client, candidates(2), ctx());
+    expect(outcome.revealed.size).toBe(0);
+    expect(outcome.unanswered).toBe(2);
   });
 
   it('[CRITICAL] does not let one trigger spend the budget the rest need', async () => {
@@ -378,8 +423,12 @@ describe('probeHoverSurfaces: the bounds', () => {
   it('walks a short path, so the pointer cost cannot dominate the budget', async () => {
     const fake = makeFake();
     await probeHoverSurfaces(fake.client, candidates(1), ctx());
-    // Two moves per trigger at POINTER_STEPS points each, and nothing more.
-    expect(fake.moves.length).toBe(HOVER_PROBE_LIMITS.POINTER_STEPS * 2);
+    // One approach, then a departure: the park is not an interaction and does
+    // not need a click's path. At ~100 ms per dispatch in a headed window this
+    // is the difference between fitting two triggers in the budget and one.
+    expect(fake.moves.length).toBe(
+      HOVER_PROBE_LIMITS.DEPARTURE_STEPS * 2 + HOVER_PROBE_LIMITS.POINTER_STEPS,
+    );
   });
 });
 
@@ -473,8 +522,10 @@ describe('probeHoverSurfaces: the pointer has to actually land', () => {
     // pointer is genuinely on the anchor.
     expect(fake.steps.filter((s) => s.mode === 'after').length).toBeGreaterThanOrEqual(2);
     expect(outcome.revealed.get(100)?.items).toEqual(['Docs', 'API']);
-    // Two approaches plus the restore, all at the probe's step count.
-    expect(fake.moves.length).toBe(HOVER_PROBE_LIMITS.POINTER_STEPS * 4);
+    // The first approach, then the park + hop back + park, all as departures.
+    expect(fake.moves.length).toBe(
+      HOVER_PROBE_LIMITS.POINTER_STEPS + HOVER_PROBE_LIMITS.DEPARTURE_STEPS * 4,
+    );
   });
 
   it('does not believe a reveal read while the pointer is off the anchor', async () => {

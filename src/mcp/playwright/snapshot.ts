@@ -20,6 +20,7 @@ import {
   countHasSubmenuMarkers,
   formatHoverItems,
   hoverMenusNote,
+  hoverProbeShortfallNote,
   phaseOneMark,
   probeHoverSurfaces,
   type HoverCandidate,
@@ -2306,16 +2307,27 @@ async function occlusionFor(page: Page, fallback: CdpClient): Promise<OcclusionI
  * Returns null — not an empty map — when there is nothing to mark, so the
  * common case allocates nothing and serialisation skips the lookup entirely.
  */
+/** What phase 1 marked, and what phase 2 could not answer for. */
+interface HoverSurfaces {
+  /** Null when nothing was marked, so serialisation skips the lookup entirely. */
+  marks: HoverSurfaceMarks | null;
+  /** Marked triggers the probe has no items for. Always 0 without `probe`. */
+  unanswered: number;
+}
+
+const NO_HOVER_SURFACES: HoverSurfaces = { marks: null, unanswered: 0 };
+
 async function hoverSurfacesFor(
   page: Page,
   fallback: CdpClient,
   occlusion: OcclusionInfo | null,
   probe: boolean,
-): Promise<HoverSurfaceMarks | null> {
+): Promise<HoverSurfaces> {
   const isolated = await isolatedProbeTarget(page).catch(() => null);
   const client = isolated?.client ?? fallback;
   const collection = await collectHoverTriggers(client, isolated?.contextId).catch(() => null);
-  if (!collection) return null;
+  if (!collection) return NO_HOVER_SURFACES;
+  let unanswered = 0;
   try {
     // An overlay covers the page by the occlusion gate's own definition, so a
     // trigger behind it cannot be hovered and its menu cannot be reached. The
@@ -2326,7 +2338,7 @@ async function hoverSurfacesFor(
           (c) => c.backendNodeId !== undefined && occlusion.reachable.has(c.backendNodeId),
         )
       : collection.candidates.filter((c) => c.backendNodeId !== undefined);
-    if (eligible.length === 0) return null;
+    if (eligible.length === 0) return NO_HOVER_SURFACES;
 
     const marks: HoverSurfaceMarks = new Map();
     for (const candidate of eligible) {
@@ -2349,8 +2361,11 @@ async function hoverSurfacesFor(
       for (const [backendNodeId, mark] of outcome?.revealed ?? []) {
         marks.set(backendNodeId, mark);
       }
+      // A trigger the probe could not answer for reads exactly like one whose
+      // menu is empty. Carry the count so the snapshot can say which it was.
+      unanswered = outcome?.unanswered ?? eligible.length;
     }
-    return marks;
+    return { marks, unanswered };
   } finally {
     await collection.release().catch(() => undefined);
   }
@@ -2360,8 +2375,8 @@ async function hoverSurfacesFor(
 interface SnapshotSource {
   tree: AXNode | null;
   occlusion: OcclusionInfo | null;
-  /** Null when no hover trigger was found, which is the common case. */
-  hoverSurfaces: HoverSurfaceMarks | null;
+  /** Phase-1 marks plus the probe's shortfall. See HoverSurfaces. */
+  hover: HoverSurfaces;
   /** See SerializeCtx.ownLabels / editableRoots. Empty when `wantDomFacts` was false. */
   ownLabels: Map<number, string>;
   editableRoots: Set<number>;
@@ -2413,10 +2428,10 @@ async function getAccessibilityTree(
           // Phase 1 is always on: it never touches the page, and a nav item
           // whose submenu only exists on :hover reads as a nav item with
           // nothing behind it (hoverSurfaces.ts).
-          hoverSurfaces: await hoverSurfacesFor(page, client, occlusion, probeHover),
+          hover: await hoverSurfacesFor(page, client, occlusion, probeHover),
         };
       },
-      { tree: null, occlusion: null, hoverSurfaces: null, ...emptyDomFacts() },
+      { tree: null, occlusion: null, hover: NO_HOVER_SURFACES, ...emptyDomFacts() },
     );
   } finally {
     for (const extra of extraSessions) {
@@ -2452,7 +2467,7 @@ export async function generateSnapshot(
   // fallthroughs below — stamps the same generation onto the page.
   const identity = beginRefGeneration(page);
 
-  const { tree, occlusion, hoverSurfaces, ownLabels, editableRoots } = await getAccessibilityTree(
+  const { tree, occlusion, hover, ownLabels, editableRoots } = await getAccessibilityTree(
     page,
     format === 'ai',
     options?.q,
@@ -2497,7 +2512,7 @@ export async function generateSnapshot(
       // on its own two DOM-listing branches: a full listing returned to a
       // caller who asked a question reads as the answer to that question.
       if (options?.q) domSnapshot = `${DOM_LISTING_Q_NOTE}\n${domSnapshot}`;
-      // Same reason, for the flag that costs the caller ~2.5 s of budget.
+      // Same reason, for the flag that costs the caller ~5 s of budget.
       if (options?.probeHover) {
         domSnapshot = `${DOM_LISTING_PROBE_HOVER_NOTE}\n${domSnapshot}`;
       }
@@ -2560,7 +2575,7 @@ export async function generateSnapshot(
     refs,
     identity,
     occlusion,
-    hoverSurfaces,
+    hoverSurfaces: hover.marks,
     ownLabels,
     editableRoots,
     frameBudgetRemaining: Math.floor(maxLength * FRAME_BUDGET_SHARE),
@@ -2619,8 +2634,15 @@ export async function generateSnapshot(
   // strip marked lines, so the map's size would promise triggers the tree does
   // not show. Joined with the other leading notes rather than appended, so it
   // survives windowing on a long page — see hoverMenusNote.
+  //
+  // With the probe requested the offer would be noise — the items are on the
+  // lines below — but a trigger it could not answer for is exactly the case the
+  // agent cannot see: a marked line with nothing after it reads as an empty
+  // menu. So that lane says what it does not know instead.
   const hoverNote =
-    options?.probeHover === true ? '' : hoverMenusNote(countHasSubmenuMarkers(output));
+    options?.probeHover === true
+      ? hoverProbeShortfallNote(hover.unanswered)
+      : hoverMenusNote(countHasSubmenuMarkers(output));
 
   const notes = [queryNote, filterNote, hoverNote].filter((n) => n.length > 0);
   return notes.length > 0 ? `${notes.join('\n')}\n${output}` : output;
@@ -2665,7 +2687,7 @@ export async function generateScopedSnapshot(
   const found = await withCdpSession<{
     forest: AXNode[] | null;
     occlusion: OcclusionInfo | null;
-    hoverSurfaces: HoverSurfaceMarks | null;
+    hover: HoverSurfaces;
     ownLabels: Map<number, string>;
     editableRoots: Set<number>;
   }>(
@@ -2675,7 +2697,7 @@ export async function generateScopedSnapshot(
       // listing, which owns the user-facing "No element matches selector:" error.
       const backendId = await resolveSelectorBackendId(client, selector);
       if (backendId === null) {
-        return { forest: null, occlusion: null, hoverSurfaces: null, ...emptyDomFacts() };
+        return { forest: null, occlusion: null, hover: NO_HOVER_SURFACES, ...emptyDomFacts() };
       }
 
       // The subtree first, the whole document only if that route abstains
@@ -2684,7 +2706,7 @@ export async function generateScopedSnapshot(
       const built =
         (await fetchScopedTree(client, backendId)) ?? (await fetchAccessibilityTree(client));
       if (!built || isRootOnly(built.root)) {
-        return { forest: null, occlusion: null, hoverSurfaces: null, ...emptyDomFacts() };
+        return { forest: null, occlusion: null, hover: NO_HOVER_SURFACES, ...emptyDomFacts() };
       }
 
       // Same DOM facts the page-level path reads, and for the same reason: a
@@ -2706,13 +2728,13 @@ export async function generateScopedSnapshot(
         // Same reasoning as occlusion: a `selector: "nav"` snapshot is exactly
         // where a hover-only submenu is what the caller came for. The marks are
         // keyed by backendDOMNodeId, so only the ones inside the scope render.
-        hoverSurfaces: await hoverSurfacesFor(page, client, occlusion, probeHover),
+        hover: await hoverSurfacesFor(page, client, occlusion, probeHover),
       };
     },
-    { forest: null, occlusion: null, hoverSurfaces: null, ...emptyDomFacts() },
+    { forest: null, occlusion: null, hover: NO_HOVER_SURFACES, ...emptyDomFacts() },
   );
 
-  const { forest, occlusion, hoverSurfaces, ownLabels, editableRoots } = found;
+  const { forest, occlusion, hover, ownLabels, editableRoots } = found;
   if (!forest || forest.length === 0) return null;
 
   // Same order as the page-level path: the caller's question narrows the tree
@@ -2755,7 +2777,7 @@ export async function generateScopedSnapshot(
     refs,
     identity,
     occlusion,
-    hoverSurfaces,
+    hoverSurfaces: hover.marks,
     ownLabels,
     editableRoots,
     frameBudgetRemaining: Math.floor(maxLength * FRAME_BUDGET_SHARE),

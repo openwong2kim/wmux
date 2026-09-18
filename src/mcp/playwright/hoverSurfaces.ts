@@ -67,8 +67,16 @@ export const HOVER_SCAN_LIMITS = {
    * budget above covers the scan; this covers the evaluate + getProperties +
    * describeNode chain that turns its handles into backendNodeIds, which is
    * what a slow-but-alive renderer actually stalls on (occlusion.ts's lesson).
+   *
+   * Generous on purpose. This is the ALWAYS-ON path, and expiring here does not
+   * degrade the snapshot gracefully — it removes every marker from it, silently.
+   * 800 ms was enough on a warm developer machine and not on a loaded CI runner,
+   * where the whole suite came back with zero candidates and no way to tell that
+   * from a page with no hover menus (CI, 2026-09-18). The in-page scan is still
+   * capped at SCAN_BUDGET_MS, so this buys tolerance for slow round trips, not
+   * for slow pages.
    */
-  COLLECT_BUDGET_MS: 800,
+  COLLECT_BUDGET_MS: 2500,
   /** Cleanup gets its own budget so a used-up collection still releases. */
   CLEANUP_BUDGET_MS: 500,
 } as const;
@@ -86,8 +94,18 @@ export const HOVER_PROBE_LIMITS = {
    * for two triggers against a promise of ~2.5 s, and the overrun ate the second
    * trigger's turn so its menu was never listed at all (dogfood, 2026-09-18).
    * The only thing allowed past this line now is RESTORE_GRACE_MS.
+   *
+   * 2.5 s was a number this module invented, and measurement says the shipped
+   * lane cannot keep it. What a probe costs is set by the renderer, not by this
+   * code: on a 1500-element page in a HEADED window that is not the focused one
+   * — which is what wmux's chrome backend drives — the first `before` alone is
+   * ~1.0 s, because it forces the layout that a throttled compositor has not
+   * done yet, and each `Input.dispatchMouseEvent` is ~107 ms against ~30 ms
+   * headless. Two triggers measured ~3.0 s. Rather than keep a promise the code
+   * misses (and silently drop the second menu), the ceiling is the number the
+   * measured worst case needs, and `browser_snapshot`'s description says it.
    */
-  TOTAL_BUDGET_MS: 2200,
+  TOTAL_BUDGET_MS: 4700,
   /** How long one trigger is given to reveal something. */
   REVEAL_WAIT_MS: 300,
   /** How often the reveal is re-checked inside that wait. */
@@ -108,16 +126,27 @@ export const HOVER_PROBE_LIMITS = {
    */
   RESTORE_GRACE_MS: 300,
   /**
-   * Intermediate points per pointer move.
+   * Intermediate points on the approach to a trigger.
    *
    * `stepsForDistance` asks for 8–25, which is right for a click: the jittered
    * path is what keeps one separable from a synthetic one. A probe pays that per
-   * point in CDP round trips, twice per trigger, and measured live it was the
-   * dominant cost of the whole probe — enough to starve the second trigger out
-   * of the budget entirely. Four points is still a walk along the same geometry
-   * (pathPoints, ending exactly on target) at a fifth of the traffic.
+   * point in CDP round trips, and one `Input.dispatchMouseEvent` costs about
+   * 100 ms in a HEADED window that is not the focused one — measured on Chrome
+   * 153, against ~15 ms headless, with the first move of a run paying ~370 ms of
+   * compositor wake-up on top. At 8–25 points per move that is the whole probe
+   * budget for one trigger, which is why the shipped headed lane listed the
+   * account menu and never reached the nav submenu below it.
    */
   POINTER_STEPS: 4,
+  /**
+   * Points on a move that is not an approach.
+   *
+   * Two moves per trigger are not interactions and do not need a click's path:
+   * the hop back onto a trigger after parking (the intruder is already closed —
+   * only the arrival matters) and the park itself, which is a DEPARTURE. Halving
+   * those is ~200 ms per trigger back in a headed window.
+   */
+  DEPARTURE_STEPS: 2,
   /** Accessible names listed per trigger. */
   MAX_ITEMS: 12,
 } as const;
@@ -785,15 +814,25 @@ export interface HoverCandidate {
 
 export interface HoverTriggerCollection {
   candidates: HoverCandidate[];
+  /**
+   * Why the scan came back with nothing — `'found'` when it did not.
+   *
+   * An empty result has several very different causes and they used to look
+   * identical from outside: a page with no hover menus, a budget that expired on
+   * a slow machine, a renderer that refused the evaluate, a payload we could not
+   * read back. A whole CI suite came back with zero candidates and the log could
+   * not say which (CI, 2026-09-18). The marker still fails open either way; this
+   * only makes the silence diagnosable.
+   */
+  note: 'found' | 'none-found' | 'evaluate-failed' | 'payload-unreadable' | 'budget-expired' | 'threw';
   /** Drop the remote handles. Safe to call more than once. */
   release: () => Promise<void>;
 }
 
 /** Nothing found (or nothing readable) — the shape every failure returns. */
-const NO_TRIGGERS: HoverTriggerCollection = {
-  candidates: [],
-  release: () => Promise.resolve(),
-};
+function noTriggers(note: HoverTriggerCollection['note']): HoverTriggerCollection {
+  return { candidates: [], note, release: () => Promise.resolve() };
+}
 
 /** Ceiling on the page-built meta payload, before it is parsed. */
 const MAX_META_CHARS = 16_384;
@@ -859,7 +898,9 @@ export async function collectHoverTriggers(
     )) as { result?: { objectId?: string } } | null;
 
     const rootId = evaluated?.result?.objectId;
-    if (!rootId) return NO_TRIGGERS;
+    // Null covers both halves of the race: the renderer refused the evaluate, or
+    // the shared budget ran out before it answered.
+    if (!rootId) return noTriggers(Date.now() >= deadline ? 'budget-expired' : 'evaluate-failed');
     acquired = true;
 
     const rootProps = (await bounded(
@@ -868,7 +909,7 @@ export async function collectHoverTriggers(
     const props = rootProps?.result;
     if (!props) {
       await release();
-      return NO_TRIGGERS;
+      return noTriggers(Date.now() >= deadline ? 'budget-expired' : 'payload-unreadable');
     }
 
     const rawMeta = propOf(props, 'meta')?.value;
@@ -883,7 +924,7 @@ export async function collectHoverTriggers(
     // have, which saves the array walk and every describeNode behind it.
     if (Number(propOf(props, 'count')?.value ?? 0) <= 0) {
       await release();
-      return NO_TRIGGERS;
+      return noTriggers('none-found');
     }
 
     /** The index slots of one of the payload's element arrays. */
@@ -911,7 +952,7 @@ export async function collectHoverTriggers(
     const [objectIds, anchorIds] = await Promise.all([handlesOf('els'), handlesOf('anchors')]);
     if (objectIds.length === 0 || anchorIds.length !== objectIds.length) {
       await release();
-      return NO_TRIGGERS;
+      return noTriggers(Date.now() >= deadline ? 'budget-expired' : 'payload-unreadable');
     }
 
     // The ANCHOR's id, because that is the line the marker goes on. One round
@@ -936,11 +977,11 @@ export async function collectHoverTriggers(
       };
     });
 
-    return { candidates, release };
+    return { candidates, note: 'found', release };
   } catch {
     // No Runtime domain / detached target / hostile page — see fail-open above.
     await release().catch(() => undefined);
-    return NO_TRIGGERS;
+    return noTriggers('threw');
   }
 }
 
@@ -1024,6 +1065,23 @@ export function hoverMenusNote(triggerCount: number): string {
 }
 
 /**
+ * What the probe could NOT answer, said out loud.
+ *
+ * A trigger the probe never reached looks exactly like a trigger whose menu is
+ * empty: a `has-submenu` line with no items after it. The first reading is
+ * right far more often, and the second is the one that sends an agent away
+ * believing a menu it can see marked has nothing in it. The probe is bounded by
+ * a wall clock it does not control — one read measured 18 ms headless and
+ * 479 ms in a headed window that was not focused — so running out is a normal
+ * outcome and has to be a reported one.
+ */
+export function hoverProbeShortfallNote(unanswered: number): string {
+  if (unanswered <= 0) return '';
+  const plural = unanswered === 1 ? 'trigger' : 'triggers';
+  return `hover probe: no items for ${unanswered} marked ${plural} within the time budget — hover one with browser_hover and re-snapshot to see its menu`;
+}
+
+/**
  * How many `has-submenu` markers a rendered snapshot actually carries.
  *
  * The footer's count is taken from the OUTPUT rather than from the mark map,
@@ -1087,23 +1145,29 @@ export function hoverProbeStep(
   const MAX_MATCHES_PER_SELECTOR = 40;
   const MAX_NAME_CHARS = 60;
 
+  /**
+   * Is this element on screen right now?
+   *
+   * `checkVisibility` ONLY, and deliberately no `getBoundingClientRect`. A box
+   * read forces layout, and forcing layout once per pool element is what made
+   * this probe unaffordable in the mode wmux ships: on a 1500-element page in a
+   * headed window that is not the focused one, the call carrying that sweep
+   * measured ~1.0 s against ~20 ms headless, which was the whole probe budget
+   * for one trigger (dogfood + CI, 2026-09-18). Style is cheap; layout is not.
+   *
+   * What that gives up: a panel hidden by `max-height: 0` with `overflow:
+   * hidden`, or by a `clip`/`clip-path` inset, is laid out and passes this test,
+   * so such a menu is not seen as opening. What it keeps is `display: none`,
+   * `visibility: hidden`, `opacity: 0` and `content-visibility` — which is what
+   * hover menus are actually built from, including both shapes on the dogfood
+   * page. A feature that works on the common case within a bounded time beats
+   * one that covers a rare case and times out on the shipped lane.
+   */
   const isShowing = (node: unknown): boolean => {
-    const n = node as {
-      checkVisibility?: (o?: unknown) => boolean;
-      getBoundingClientRect?: () => { width: number; height: number };
-    } | null;
-    if (!n || typeof n.getBoundingClientRect !== 'function') return false;
-    if (
-      typeof n.checkVisibility === 'function' &&
-      !n.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true })
-    ) {
-      return false;
-    }
-    // A zero box is the other half of "hidden": `max-height: 0` with
-    // `overflow: hidden`, and `clip`/`clip-path` insets, both leave
-    // checkVisibility perfectly happy while nothing is on screen.
-    const rect = n.getBoundingClientRect();
-    return rect.width > 0 && rect.height > 0;
+    const n = node as { checkVisibility?: (o?: unknown) => boolean } | null;
+    if (!n) return false;
+    if (typeof n.checkVisibility !== 'function') return true;
+    return n.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true }) !== false;
   };
 
   /** The anchor's box and the viewport, as flat numbers. */
@@ -1236,21 +1300,39 @@ export function hoverProbeStep(
       }
     }
     // 4. The trigger's siblings — where a JS-mounted menu most often lives.
+    //    `harvest` only, deliberately: it takes a sibling that IS a menu-ish
+    //    surface and any interactive content inside one, and leaves every other
+    //    hidden sibling alone. Pushing them all made anything that happened to
+    //    become visible during the 300 ms window read as this trigger's menu —
+    //    a `transition: opacity 6s` paragraph two siblings down was reported as
+    //    a surface that would not close (`stays open`), on a page whose menus
+    //    were behaving perfectly (dogfood, 2026-09-18).
     for (
       let sibling = el.nextElementSibling as { nextElementSibling?: unknown } | null, n = 0;
       sibling && n < MAX_MATCHES_PER_SELECTOR;
       sibling = sibling.nextElementSibling as { nextElementSibling?: unknown } | null, n++
     ) {
-      push(sibling);
       harvest(sibling);
     }
-    // 5. Anything else in the document that is hidden right now. Last because a
-    //    reveal here is the weakest attribution — but a bounded 300 ms window
-    //    over one hover is quiet enough that it is still worth watching, and
-    //    without it a menu mounted at the end of <body> is invisible.
+    // 5. Menu-ish containers anywhere in the document — a library that mounts
+    //    its dropdown at the end of <body> is the case this exists for.
+    //
+    //    SURFACE only, NOT every interactive element. Each pool candidate costs
+    //    a checkVisibility and a getBoundingClientRect, which is a forced style
+    //    and layout read; on a page with 1500 links that is 1500 of them, and a
+    //    HEADED window that is not the focused one services a forced layout at
+    //    whatever priority Chrome gives a throttled compositor. Measured on
+    //    Chrome 153: this one call went from 18 ms headless to 479 ms headed,
+    //    which by itself spent the whole probe budget on the first trigger and
+    //    left the second unlisted (dogfood, 2026-09-18). A page has a handful of
+    //    role="menu" containers and thousands of links.
     try {
-      const rest = document.querySelectorAll(INTERACTIVE + ',' + SURFACE);
-      for (let i = 0; i < rest.length && pool.length < MAX_POOL; i++) push(rest[i]);
+      const surfaces = document.querySelectorAll(SURFACE);
+      const limit = Math.min(surfaces.length, MAX_MATCHES_PER_SELECTOR);
+      for (let i = 0; i < limit; i++) {
+        push(surfaces[i]);
+        harvest(surfaces[i]);
+      }
     } catch (e) { /* unusable selector on this engine */ }
 
     // The box is returned as flat numbers, not as an object: the payload comes
@@ -1331,6 +1413,18 @@ export interface HoverProbeOutcome {
   cancelled: boolean;
   /** Triggers actually hovered. */
   probed: number;
+  /**
+   * Marked triggers the probe never got to, or hovered without learning
+   * anything.
+   *
+   * How long a hover costs is not something this code controls: the same read
+   * measured 18 ms headless and 479 ms in a headed window that was not the
+   * focused one. A bounded probe on a slow renderer therefore cannot promise an
+   * answer for every trigger — so it says how many it has no answer for, rather
+   * than leaving lines silently bare and letting the agent read that as
+   * "this menu is empty".
+   */
+  unanswered: number;
 }
 
 /**
@@ -1461,6 +1555,8 @@ export async function probeHoverSurfaces(
   const startUrl = ctx.currentUrl();
   const started = Date.now();
   const deadline = started + HOVER_PROBE_LIMITS.TOTAL_BUDGET_MS;
+  /** The one allowance past the deadline, for un-hovering. Not per trigger. */
+  const graceDeadline = deadline + HOVER_PROBE_LIMITS.RESTORE_GRACE_MS;
   const step = String(hoverProbeStep);
   let pointer = ctx.pointerStart;
   let probed = 0;
@@ -1476,13 +1572,21 @@ export async function probeHoverSurfaces(
    * Walk the pointer to `to` along the same geometry browser_hover uses, at the
    * probe's own step count — see HOVER_PROBE_LIMITS.POINTER_STEPS.
    */
-  const movePointer = async (to: Point, until: number): Promise<void> => {
-    for (const point of pathPoints(pointer, to, HOVER_PROBE_LIMITS.POINTER_STEPS, ctx.rng)) {
+  const movePointer = async (
+    to: Point,
+    until: number,
+    steps: number = HOVER_PROBE_LIMITS.POINTER_STEPS,
+  ): Promise<void> => {
+    for (const point of pathPoints(pointer, to, steps, ctx.rng)) {
       await send(until, 'Input.dispatchMouseEvent', { type: 'mouseMoved', x: point.x, y: point.y });
     }
     pointer = to;
     ctx.onPointerMoved(to);
   };
+
+  /** A park or a hop back — not an interaction. See DEPARTURE_STEPS. */
+  const hopPointer = (to: Point, until: number): Promise<void> =>
+    movePointer(to, until, HOVER_PROBE_LIMITS.DEPARTURE_STEPS);
 
   /**
    * Read what is showing, and whether the pointer is on the anchor, in one call.
@@ -1512,17 +1616,39 @@ export async function probeHoverSurfaces(
       }),
     );
 
+  const queue = candidates.slice(0, HOVER_PROBE_LIMITS.MAX_TRIGGERS);
+  /**
+   * Each trigger's own share of the budget.
+   *
+   * A single shared deadline is not enough, and this is the bug that made a nav
+   * submenu invisible on the shipped lane: the FIRST trigger simply spent
+   * everything, and every one after it was cut at the top of the loop with no
+   * hover and nothing said. How long a hover costs is not something this code
+   * controls — the same call measured 18 ms headless and 479 ms in a headed
+   * window that was not the focused one — so the only way the second trigger
+   * ever gets a turn is to reserve it one.
+   *
+   * A trigger that finishes early gives the rest its remainder, because the
+   * slice is recomputed from what is actually left each time round.
+   */
+  const sliceFor = (remaining: number): number =>
+    Math.max(0, Math.floor((deadline - Date.now()) / Math.max(1, remaining)));
+
   try {
-    for (const candidate of candidates.slice(0, HOVER_PROBE_LIMITS.MAX_TRIGGERS)) {
+    for (let index = 0; index < queue.length; index += 1) {
+      const candidate = queue[index];
       if (Date.now() >= deadline) break;
       if (candidate.backendNodeId === undefined) continue;
+      // Never past the shared deadline, and never more than this trigger's share
+      // of what is left.
+      const slice = Math.min(deadline, Date.now() + sliceFor(queue.length - index));
 
       // --- before -------------------------------------------------------
       // `this` is the trigger, so the reveal watch is scoped from the element
       // the rule hangs off — for `nav li:hover > ul.sub` that is the `li`, whose
       // submenu is a SIBLING of the link the marker sits on. The anchor rides
       // along only as the box to aim at.
-      const before = (await send(deadline, 'Runtime.callFunctionOn', {
+      const before = (await send(slice, 'Runtime.callFunctionOn', {
         functionDeclaration: step,
         objectId: candidate.objectId,
         arguments: [
@@ -1536,7 +1662,7 @@ export async function probeHoverSurfaces(
       const beforeId = before?.result?.objectId;
       if (!beforeId) continue;
 
-      const beforeProps = (await send(deadline, 'Runtime.getProperties', {
+      const beforeProps = (await send(slice, 'Runtime.getProperties', {
         objectId: beforeId,
         ownProperties: true,
       })) as { result?: RemoteProp[] } | null;
@@ -1579,12 +1705,21 @@ export async function probeHoverSurfaces(
       // --- hover, then restore no matter what ---------------------------
       let reading: AfterReading | null = null;
       try {
-        await movePointer(target, deadline);
+        // Approach from the neutral point, always. The path crosses whatever
+        // lies between, and crossing another trigger opens ITS menu over the
+        // one we are walking to — which then costs a park, a second approach
+        // and a second read to recover from. Measured headed, that recovery was
+        // 1.5 s, more than half the whole budget, and it is avoidable: the
+        // neutral point is by construction not on a trigger.
+        if (pointer.x !== neutral.x || pointer.y !== neutral.y) {
+          await hopPointer(neutral, slice);
+        }
+        await movePointer(target, slice);
         probed += 1;
 
-        const waitUntil = Math.min(Date.now() + HOVER_PROBE_LIMITS.REVEAL_WAIT_MS, deadline);
+        const waitUntil = Math.min(Date.now() + HOVER_PROBE_LIMITS.REVEAL_WAIT_MS, slice);
         for (;;) {
-          reading = await read(candidate, hiddenId, target, HOVER_PROBE_LIMITS.MAX_ITEMS, deadline);
+          reading = await read(candidate, hiddenId, target, HOVER_PROBE_LIMITS.MAX_ITEMS, slice);
           if (!reading) break;
           if (!sameHoverDocument(reading.url, startUrl)) return cancelled(probed);
           if (!reading.ok) {
@@ -1597,9 +1732,9 @@ export async function probeHoverSurfaces(
               neutral = neutralPointFor(reading.box, viewport);
               target = pointIn(reading.box);
             }
-            await movePointer(neutral, deadline);
-            await movePointer(target, deadline);
-            reading = await read(candidate, hiddenId, target, HOVER_PROBE_LIMITS.MAX_ITEMS, deadline);
+            await hopPointer(neutral, slice);
+            await hopPointer(target, slice);
+            reading = await read(candidate, hiddenId, target, HOVER_PROBE_LIMITS.MAX_ITEMS, slice);
             if (!reading) break;
             if (!sameHoverDocument(reading.url, startUrl)) return cancelled(probed);
             // Still covered: report nothing rather than whatever is on screen.
@@ -1613,19 +1748,31 @@ export async function probeHoverSurfaces(
         }
       } finally {
         // The one allowance past the shared deadline, and only for un-hovering.
-        await movePointer(neutral, Date.now() + HOVER_PROBE_LIMITS.RESTORE_GRACE_MS);
+        // Bounded by the grace from HERE, and never past the one global grace: a
+        // trigger whose slice already expired must not be able to spend the rest
+        // of the probe's ceiling on its own un-hover.
+        await hopPointer(
+          neutral,
+          Math.min(graceDeadline, Date.now() + HOVER_PROBE_LIMITS.RESTORE_GRACE_MS),
+        );
       }
       if (!reading) continue;
 
       // --- did it close again? -----------------------------------------
       let staysOpen = false;
       if (reading.revealed > 0) {
-        const closeUntil = Math.min(Date.now() + HOVER_PROBE_LIMITS.CLOSE_WAIT_MS, deadline);
+        // Bounded by this trigger's slice, and never past the one global grace:
+        // a per-trigger grace would multiply by MAX_TRIGGERS and put the worst
+        // case well outside the number the tool description promises.
+        const closeUntil = Math.min(Date.now() + HOVER_PROBE_LIMITS.CLOSE_WAIT_MS, graceDeadline);
         for (;;) {
-          const closed = await read(candidate, hiddenId, neutral, 1, deadline);
+          const closed = await read(candidate, hiddenId, neutral, 1, closeUntil);
           if (!closed) break;
           if (!sameHoverDocument(closed.url, startUrl)) return cancelled(probed);
-          staysOpen = closed.revealed > 0;
+          // The ITEMS, not the reveal count: the note qualifies the names on the
+          // line, and a container that is still laid out while its contents are
+          // gone is not a menu the agent can still use.
+          staysOpen = closed.named > 0;
           if (!staysOpen || Date.now() >= closeUntil) break;
           await sleep(Math.min(HOVER_PROBE_LIMITS.REVEAL_POLL_MS, Math.max(0, closeUntil - Date.now())));
         }
@@ -1652,9 +1799,19 @@ export async function probeHoverSurfaces(
   // a navigation that completed after the last step's own `url` read would
   // otherwise leave stale names attached to a tree that is about to be rebuilt.
   if (!sameHoverDocument(ctx.currentUrl(), startUrl)) return cancelled(probed);
-  return { revealed, cancelled: false, probed };
+  // Every marked trigger the caller handed us that has no line to show for it —
+  // never got a turn, or was hovered and revealed nothing readable.
+  const answerable = candidates.filter((c) => c.backendNodeId !== undefined).length;
+  return {
+    revealed,
+    cancelled: false,
+    probed,
+    unanswered: Math.max(0, answerable - revealed.size),
+  };
 }
 
 function cancelled(probed: number): HoverProbeOutcome {
-  return { revealed: new Map(), cancelled: true, probed };
+  // A cancelled probe has no answers at all, but the caller already knows why —
+  // that is what `cancelled` says — so nothing is reported as merely unanswered.
+  return { revealed: new Map(), cancelled: true, probed, unanswered: 0 };
 }

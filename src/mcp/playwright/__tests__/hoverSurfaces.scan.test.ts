@@ -29,6 +29,15 @@ function mount(html: string, pointerSelector = '[data-pointer]'): void {
       return { left: 10, top: 10, width, height, right: 10 + width, bottom: 10 + height };
     },
   });
+  // The probe step reads visibility through `checkVisibility` alone — a box read
+  // forces layout, which is what made it unaffordable in a headed window — and
+  // jsdom implements neither, so both stubs answer from the same marker.
+  Object.defineProperty(Element.prototype, 'checkVisibility', {
+    configurable: true,
+    value(this: Element) {
+      return this.getAttribute('data-zero-box') === null;
+    },
+  });
 
   const realComputed = window.getComputedStyle.bind(window);
   window.getComputedStyle = ((el: Element) => {

@@ -119,7 +119,7 @@ const BROWSER_SNAPSHOT_SHAPE = {
     .boolean()
     .optional()
     .describe(
-      'Hover each "has-submenu" trigger and list what it reveals — costs up to ~2.5 s and moves the pointer.',
+      'Hover each "has-submenu" trigger and list what it reveals — costs up to ~5 s and moves the pointer.',
     ),
   surfaceId: optionalSurfaceId,
 };

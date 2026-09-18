@@ -19,13 +19,14 @@ vi.mock('../hoverSurfaces', async (importOriginal) => {
     ...actual,
     collectHoverTriggers: async () => ({
       candidates: scanned,
+      note: 'found' as const,
       release: async () => {
         released += 1;
       },
     }),
     probeHoverSurfaces: async (_client: unknown, candidates: readonly HoverCandidate[]) => {
       probedWith = candidates.slice();
-      return probeOutcome ?? { revealed: new Map(), cancelled: false, probed: 0 };
+      return probeOutcome ?? { revealed: new Map(), cancelled: false, probed: 0, unanswered: 0 };
     },
   };
 });
@@ -222,6 +223,7 @@ describe('snapshot: the probe on the line', () => {
       revealed: new Map([[2, mark(['Docs', 'API', 'Pricing'])]]),
       cancelled: false,
       probed: 1,
+      unanswered: 0,
     };
     const out = await generateSnapshot(makePage(navTree()) as never, {
       format: 'ai',
@@ -238,7 +240,7 @@ describe('snapshot: the probe on the line', () => {
     // tree as this node's children, so pointing at it would send the agent
     // hovering for what it can read.
     scanned = [trigger(3)];
-    probeOutcome = { revealed: new Map([[3, mark(['Docs'])]]), cancelled: false, probed: 1 };
+    probeOutcome = { revealed: new Map([[3, mark(['Docs'])]]), cancelled: false, probed: 1, unanswered: 0 };
     const out = await generateSnapshot(makePage(navTree()) as never, {
       format: 'ai',
       probeHover: true,
@@ -252,7 +254,7 @@ describe('snapshot: the probe on the line', () => {
 
   it('keeps the marker and adds nothing when the probe revealed nothing', async () => {
     scanned = [trigger(2)];
-    probeOutcome = { revealed: new Map(), cancelled: false, probed: 1 };
+    probeOutcome = { revealed: new Map(), cancelled: false, probed: 1, unanswered: 0 };
     const out = await generateSnapshot(makePage(navTree()) as never, {
       format: 'ai',
       probeHover: true,
@@ -260,6 +262,41 @@ describe('snapshot: the probe on the line', () => {
 
     expect(out).toContain('has-submenu');
     expect(out).not.toContain('hover first');
+  });
+
+  it('[CRITICAL] says which triggers it has no items for, rather than leaving them bare', async () => {
+    // A marked line with nothing after it reads as an empty menu. The probe is
+    // bounded by a wall clock it does not control, so running out is normal —
+    // and has to be said.
+    scanned = [trigger(2), trigger(4)];
+    probeOutcome = {
+      revealed: new Map([[2, mark(['Docs'])]]),
+      cancelled: false,
+      probed: 1,
+      unanswered: 1,
+    };
+    const out = await generateSnapshot(makePage(navTree()) as never, {
+      format: 'ai',
+      probeHover: true,
+    });
+
+    expect(out.split('\n')[0]).toContain('no items for 1 marked trigger within the time budget');
+    expect(out).toContain('[hover first: Docs]');
+  });
+
+  it('stays quiet when the probe answered for every trigger', async () => {
+    scanned = [trigger(2)];
+    probeOutcome = {
+      revealed: new Map([[2, mark(['Docs'])]]),
+      cancelled: false,
+      probed: 1,
+      unanswered: 0,
+    };
+    const out = await generateSnapshot(makePage(navTree()) as never, {
+      format: 'ai',
+      probeHover: true,
+    });
+    expect(out).not.toContain('hover probe:');
   });
 
   it('does not probe unless asked', async () => {
@@ -291,7 +328,7 @@ describe('snapshot: the hover footer line', () => {
 
   it('stays quiet once the probe has run — the items are on the lines above', async () => {
     scanned = [trigger(2)];
-    probeOutcome = { revealed: new Map([[2, mark(['Docs'])]]), cancelled: false, probed: 1 };
+    probeOutcome = { revealed: new Map([[2, mark(['Docs'])]]), cancelled: false, probed: 1, unanswered: 0 };
     const out = await generateSnapshot(makePage(navTree()) as never, {
       format: 'ai',
       probeHover: true,
