@@ -1282,7 +1282,7 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
         // "no page" is reported to the caller, and "the page navigated away" or
         // "the browser crashed" must not be dressed up as a backend limitation.
         let pageError: unknown;
-        const page = await engine.getPageForScope(scope).catch((error) => {
+        const page = await engine.getPageForScope(scope, { intent: 'write' }).catch((error) => {
           pageError = error;
           return allowScopedRpcFallback(error);
         });
@@ -1473,7 +1473,7 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
         };
         requireOneTarget(addr, 'browser_type', ['ref', 'smartRef', 'selector']);
         const newlineKey = newlineKeyFor(newline);
-        const page = await engine.getPageForScope(scope).catch(allowScopedRpcFallback);
+        const page = await engine.getPageForScope(scope, { intent: 'write' }).catch(allowScopedRpcFallback);
 
         // Decided BEFORE typing: the field is addressable now, and a submit can
         // navigate the page out from under a later lookup.
@@ -1565,7 +1565,7 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
     BROWSER_FILL_SHAPE,
     async ({ fields, surfaceId }) => leasedMutation(deps, surfaceId, async (scope, effect) => {
       try {
-        const page = await engine.getPageForScope(scope).catch(allowScopedRpcFallback);
+        const page = await engine.getPageForScope(scope, { intent: 'write' }).catch(allowScopedRpcFallback);
 
         let filled = 0;
         const errors: string[] = [];
@@ -1664,7 +1664,7 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
     BROWSER_PRESS_KEY_SHAPE,
     async ({ key, surfaceId }) => leasedMutation(deps, surfaceId, async (scope, effect) => {
       try {
-        const page = await engine.getPageForScope(scope).catch(allowScopedRpcFallback);
+        const page = await engine.getPageForScope(scope, { intent: 'write' }).catch(allowScopedRpcFallback);
 
         if (page) {
           await effect.dispatch(() => page.keyboard.press(key));
@@ -1700,7 +1700,7 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
     BROWSER_HOVER_SHAPE,
     async ({ ref, surfaceId }) => leasedMutation(deps, surfaceId, async (scope, effect) => {
       try {
-        const page = await engine.getPageForScope(scope).catch(allowScopedRpcFallback);
+        const page = await engine.getPageForScope(scope, { intent: 'write' }).catch(allowScopedRpcFallback);
         let touchNote = '';
 
         if (page) {
@@ -1768,7 +1768,7 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
         }
 
         let pageError: unknown;
-        const page = await engine.getPageForScope(scope).catch((error) => {
+        const page = await engine.getPageForScope(scope, { intent: 'write' }).catch((error) => {
           pageError = error;
           return allowScopedRpcFallback(error);
         });
@@ -1917,7 +1917,7 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
     BROWSER_SELECT_SHAPE,
     async ({ ref, values, surfaceId }) => leasedMutation(deps, surfaceId, async (scope, effect) => {
       try {
-        const page = await engine.getPageForScope(scope).catch(allowScopedRpcFallback);
+        const page = await engine.getPageForScope(scope, { intent: 'write' }).catch(allowScopedRpcFallback);
 
         if (page) {
           const el = await resolveRef(page, ref);
@@ -1998,7 +1998,7 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
     BROWSER_SCROLL_INTO_VIEW_SHAPE,
     async ({ ref, surfaceId }) => leasedMutation(deps, surfaceId, async (scope, effect) => {
       try {
-        const page = await engine.getPageForScope(scope).catch(allowScopedRpcFallback);
+        const page = await engine.getPageForScope(scope, { intent: 'write' }).catch(allowScopedRpcFallback);
 
         if (page) {
           const el = await resolveRef(page, ref);
@@ -2056,7 +2056,7 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
         }
 
         let pageError: unknown;
-        const page = await engine.getPageForScope(scope).catch((error) => {
+        const page = await engine.getPageForScope(scope, { intent: 'write' }).catch((error) => {
           pageError = error;
           return allowScopedRpcFallback(error);
         });

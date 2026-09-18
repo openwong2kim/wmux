@@ -307,3 +307,106 @@ describe('ApprovalQueue removal-push (closePrompt)', () => {
     expect(closePrompt).toHaveBeenCalledWith(handle.promptId);
   });
 });
+
+// ── requestConsent: a one-off question that grants nothing durable ───────────
+//
+// The live-Chrome tab borrow prompt rides this queue so it appears in both of
+// the queue's renditions (the modal and the Fleet approvals inbox) without any
+// new UI. What it must NOT do is write the plugin trust DB: "lend this agent
+// that tab" says nothing about whether a CLIENT is trusted, and recording it
+// there would mark one on the strength of a question about a browser tab.
+describe('ApprovalQueue.requestConsent', () => {
+  it('opens a prompt carrying the kind, the question and the deadline', () => {
+    const queue = makeQueue();
+    const handle = queue.requestConsent({
+      kind: 'browser-borrow',
+      dedupeKey: 'ws-1::tab-9',
+      clientName: 'Docs',
+      title: 'Agent in workspace Docs wants to control tab "Inbox" (https://mail.example.com)',
+      deadlineAt: 1_700_000_000_000,
+    });
+
+    expect(handle.promptId).toBe('prompt-1');
+    expect(opened[0]).toEqual({
+      promptId: 'prompt-1',
+      clientName: 'Docs',
+      declaredCapabilities: [],
+      kind: 'browser-borrow',
+      title: 'Agent in workspace Docs wants to control tab "Inbox" (https://mail.example.com)',
+      deadlineAt: 1_700_000_000_000,
+    });
+  });
+
+  it('resolves its waiters WITHOUT recording a client decision', async () => {
+    const queue = makeQueue();
+    const handle = queue.requestConsent({
+      kind: 'browser-borrow',
+      dedupeKey: 'ws-1::tab-9',
+      clientName: 'Docs',
+      title: 'lend a tab?',
+    });
+
+    await queue.resolvePrompt(handle.promptId, true);
+
+    const result = await handle.resolution;
+    expect(result.approved).toBe(true);
+    // No trust record: the prompt was about a tab, not about a client.
+    expect(await store.get('Docs')).toBeUndefined();
+  });
+
+  it('a denial is likewise not recorded against the client', async () => {
+    const queue = makeQueue();
+    const handle = queue.requestConsent({
+      kind: 'browser-borrow',
+      dedupeKey: 'ws-1::tab-9',
+      clientName: 'Docs',
+      title: 'lend a tab?',
+    });
+
+    await queue.resolvePrompt(handle.promptId, false);
+
+    expect((await handle.resolution).approved).toBe(false);
+    expect(await store.get('Docs')).toBeUndefined();
+  });
+
+  it('coalesces on the caller dedupe key, and two tabs are two questions', () => {
+    const queue = makeQueue();
+    const first = queue.requestConsent({
+      kind: 'browser-borrow',
+      dedupeKey: 'ws-1::tab-9',
+      clientName: 'Docs',
+      title: 'lend tab 9?',
+    });
+    const again = queue.requestConsent({
+      kind: 'browser-borrow',
+      dedupeKey: 'ws-1::tab-9',
+      clientName: 'Docs',
+      title: 'lend tab 9?',
+    });
+    const other = queue.requestConsent({
+      kind: 'browser-borrow',
+      dedupeKey: 'ws-1::tab-10',
+      clientName: 'Docs',
+      title: 'lend tab 10?',
+    });
+
+    expect(again.promptId).toBe(first.promptId);
+    expect(other.promptId).not.toBe(first.promptId);
+    expect(opened).toHaveLength(2);
+  });
+
+  it('cancelling rejects every waiter (a withdrawn prompt was not approved)', async () => {
+    const queue = makeQueue();
+    const handle = queue.requestConsent({
+      kind: 'browser-borrow',
+      dedupeKey: 'ws-1::tab-9',
+      clientName: 'Docs',
+      title: 'lend a tab?',
+    });
+
+    queue.cancelPrompt(handle.promptId, 'borrow request expired');
+
+    await expect(handle.resolution).rejects.toThrow('borrow request expired');
+    expect(queue.inflightCount()).toBe(0);
+  });
+});

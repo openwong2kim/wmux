@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { ORPHAN_TTL_MS, RECORD_TTL_MS, type ChromeSurfaceRecord, type ChromeSurfaceStore } from './ChromeSurfaceStore';
 import { CdpSocket } from './CdpSocket';
+import type { LiveTabOwner } from '../../shared/liveWriteScope';
 
 // ---------------------------------------------------------------------------
 // 'chrome' backend (Phase 2): launch the user's installed Chrome with a
@@ -58,6 +59,12 @@ export interface ChromeTargetInfo {
   workspaceId?: string;
   url: string;
   title: string;
+  /**
+   * Who may write to this tab, from the ASKING workspace's point of view (live
+   * attach only — see LiveWriteScopeApi). Absent on dedicated instances, where
+   * every addressable tab is one wmux opened and therefore agent-owned.
+   */
+  owner?: LiveTabOwner;
 }
 
 /** What browser.cdp.info reports for a chrome-family client. Exactly one of
@@ -73,6 +80,30 @@ export interface ChromeBackendEndpoint {
  * ChromeLauncher (dedicated spawned instance) and LiveChromeClient (attach to
  * the user's live Chrome — Phase 3).
  */
+/**
+ * The live-attach write-scope surface (the agent-window policy).
+ *
+ * Present ONLY on LiveChromeClient, and its presence is how browser.rpc tells
+ * the two chrome clients apart: a dedicated instance can address nothing but
+ * tabs wmux opened, so there is no user tab there to protect. Every method is
+ * synchronous bookkeeping over in-memory maps — asking the human is the RPC
+ * layer's job, and the answer arrives back here through settleBorrow.
+ */
+export interface LiveWriteScopeApi {
+  /** Exact ownership: 'agent' only for the workspace recorded against the tab. */
+  ownerOf(surfaceId: string, workspaceId: string | undefined): LiveTabOwner;
+  /** Reserve the prompt slot for one tab. false = one is already pending. */
+  beginBorrow(surfaceId: string, workspaceId: string): boolean;
+  /** Release the slot, recording the grant when the user allowed it. */
+  settleBorrow(surfaceId: string, workspaceId: string, granted: boolean): void;
+  /** Hand a lent tab back. false when this workspace held no grant on it. */
+  returnBorrow(surfaceId: string, workspaceId: string): boolean;
+  /** Drop one workspace's grants, or every grant when called with nothing. */
+  clearBorrows(workspaceId?: string): void;
+  /** The Chrome window this workspace's tabs were last seen in. Advisory. */
+  agentWindowFor(workspaceId: string | undefined): number | undefined;
+}
+
 export interface ChromeBackendClient {
   endpoint(): Promise<ChromeBackendEndpoint>;
   /** Targets reported through browser.cdp.info (page-selection seed). Live
@@ -85,6 +116,8 @@ export interface ChromeBackendClient {
   /** Real tab focus where the backend supports it (live attach). */
   selectSurface?(surfaceId: string): Promise<boolean>;
   hasSurface(surfaceId: string): boolean;
+  /** Live attach only: the agent-window write policy. Absent = dedicated. */
+  readonly writeScope?: LiveWriteScopeApi;
   dispose(): void;
 }
 
@@ -1092,6 +1125,22 @@ export class ChromeLauncherRegistry {
       return { ...(workspaceId !== undefined && { workspaceId }), client: launcher };
     }
     return null;
+  }
+
+  /**
+   * Drop one workspace's live borrow grants.
+   *
+   * Called when its Chrome-profile binding changes, in either direction: the
+   * grants were consent for THIS workspace driving the user's own browser, and a
+   * workspace that has been unbound (or pointed at a dedicated profile) is not
+   * that any more. Without this the grants outlived the binding, because the live
+   * client is a process-lifetime singleton and re-binding later found them still
+   * in place.
+   *
+   * A no-op when no live client has ever been created.
+   */
+  clearLiveBorrows(workspaceId: string): void {
+    this.live?.writeScope.clearBorrows(workspaceId);
   }
 
   disposeAll(): void {

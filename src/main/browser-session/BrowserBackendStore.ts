@@ -5,6 +5,11 @@ import {
   DEFAULT_BROWSER_BACKEND,
   isBrowserBackend,
 } from '../../shared/browserBackend';
+import {
+  DEFAULT_LIVE_WRITE_SCOPE,
+  isLiveWriteScope,
+  type LiveWriteScope,
+} from '../../shared/liveWriteScope';
 
 /**
  * Main-owned persistence for the browser backend setting (#517).
@@ -19,13 +24,26 @@ import {
 export class BrowserBackendStore {
   private readonly filePath: string;
   private backend: BrowserBackend = DEFAULT_BROWSER_BACKEND;
+  /**
+   * How far an agent may WRITE on the live backend (the agent-window policy).
+   *
+   * Operator-only, and deliberately not in the Settings UI: 'all' is the larger
+   * grant, and a switch that hands an agent every logged-in tab in the user's
+   * browser should cost an edit to this file rather than one click.
+   */
+  private liveScope: LiveWriteScope = DEFAULT_LIVE_WRITE_SCOPE;
 
   constructor(userDataDir: string) {
     this.filePath = join(userDataDir, 'browser-backend.json');
     try {
       const parsed: unknown = JSON.parse(readFileSync(this.filePath, 'utf8'));
-      const value = (parsed as { backend?: unknown } | null)?.backend;
+      const record = parsed as { backend?: unknown; liveWriteScope?: unknown } | null;
+      const value = record?.backend;
       if (isBrowserBackend(value)) this.backend = value;
+      // Same fail-safe direction as the backend: anything unrecognized leaves
+      // the DEFAULT in place, and the default here is the narrow grant.
+      const scope = record?.liveWriteScope;
+      if (isLiveWriteScope(scope)) this.liveScope = scope;
       // Unknown/corrupt content falls through to the builtin default — the
       // safe direction: worst case a pane spawns, never a broken toolset.
     } catch {
@@ -37,15 +55,39 @@ export class BrowserBackendStore {
     return this.backend;
   }
 
+  /** The live write scope as persisted. Read lazily per RPC, like the backend. */
+  liveWriteScope(): LiveWriteScope {
+    return this.liveScope;
+  }
+
+  setLiveWriteScope(scope: LiveWriteScope): void {
+    this.liveScope = scope;
+    this.persist();
+  }
+
   set(backend: BrowserBackend): void {
     this.backend = backend;
+    this.persist();
+  }
+
+  private persist(): void {
     try {
       mkdirSync(dirname(this.filePath), { recursive: true });
       // Atomic write (tmp + rename): a crash mid-write must not leave a
       // truncated file that silently rolls an 'external' user back to builtin
       // on the next boot.
       const tmpPath = `${this.filePath}.tmp`;
-      writeFileSync(tmpPath, JSON.stringify({ backend }), 'utf8');
+      // The scope field is written only once it differs from the default, so a
+      // file this app has never been asked to scope keeps exactly the shape it
+      // had — nothing downstream has to learn a key that carries no decision.
+      writeFileSync(
+        tmpPath,
+        JSON.stringify({
+          backend: this.backend,
+          ...(this.liveScope !== DEFAULT_LIVE_WRITE_SCOPE && { liveWriteScope: this.liveScope }),
+        }),
+        'utf8',
+      );
       renameSync(tmpPath, this.filePath);
     } catch (err) {
       // In-memory value still applies for this session; persistence is
