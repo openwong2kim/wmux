@@ -38,7 +38,8 @@ import {
 } from '../../main/deck/skillCatalogScan';
 import { ENV_KEYS, isBrainPty } from '../../shared/constants';
 import { webHostIsLoopback, type PairRefusal, type WebTlsConfig } from '../../shared/web';
-import type { RemotePaneSummary } from '../../shared/remoteHosts';
+import type { RemotePaneSummary, RemoteResumeInfo } from '../../shared/remoteHosts';
+import { normalizeResumeCwd, type ResumeBinding } from '../../shared/agentResume';
 import { capSnapshot } from './snapshotWindow';
 import {
   collectSessionDiff,
@@ -485,6 +486,19 @@ interface WebTerminalServerDeps {
    * pane carries no detected-agent fields.
    */
   agentState?: (sessionId: string) => { agentName: string | null; agentStatus: AgentStatus } | undefined;
+  /**
+   * #1342 — the daemon's resume state for a session, for GET /api/workspaces:
+   * the captured conversation binding (already transcript-probed, so a purged
+   * conversation is never offered) plus the two liveness signals the desktop's
+   * resume chip gates on. Resolved per request for the same reason
+   * `agentState` is. Absent, or undefined for a session, means the pane
+   * carries no resume block.
+   */
+  resumeState?: (sessionId: string) => {
+    binding?: ResumeBinding;
+    commandRunning?: boolean;
+    agentProcessAlive?: boolean;
+  } | undefined;
 }
 
 /** Cap a single input POST body so a hostile client cannot exhaust memory. */
@@ -2201,6 +2215,24 @@ export class WebTerminalServer {
         // the agent and every reboot): a remote row must vanish when its agent
         // exits, exactly as a local one does. Both fields stay absent when
         // nothing is known — additive-optional.
+        // #1342 — the resume half of local/remote parity. The host decides the
+        // cwd question (the desktop cannot compare a path on another machine)
+        // and the transcript path NEVER leaves this process: it is a host-local
+        // filesystem path with no meaning to the attaching desktop, and the
+        // binding's existence probe has already used it here.
+        ...(() => {
+          const resume = this.deps.resumeState?.(s.id);
+          if (!resume) return {};
+          return {
+            ...(resume.binding ? { resume: resumeInfoOf(resume.binding, s.cwd) } : {}),
+            ...(typeof resume.commandRunning === 'boolean'
+              ? { commandRunning: resume.commandRunning }
+              : {}),
+            ...(typeof resume.agentProcessAlive === 'boolean'
+              ? { agentProcessAlive: resume.agentProcessAlive }
+              : {}),
+          };
+        })(),
         ...(() => {
           const state = this.deps.agentState?.(s.id);
           const agentName = s.agent?.displayName ?? state?.agentName ?? null;
@@ -4926,6 +4958,27 @@ function createTransportServer(
   } catch (error) {
     throw new Error(`TLS certificate/key could not be loaded: ${errMsg(error)}`);
   }
+}
+
+/**
+ * #1342 — project a host-local {@link ResumeBinding} onto the wire.
+ *
+ * Two fields are deliberately transformed rather than copied:
+ *   - `transcriptPath` is DROPPED. It is an absolute path on this machine; the
+ *     attaching desktop can do nothing with it but display or leak it, and the
+ *     staleness probe it exists for has already run host-side.
+ *   - `cwd` becomes the boolean `cwdMatches`. `--resume` is cwd-scoped, and
+ *     only this host can compare its own paths, so it answers the question
+ *     instead of shipping the path for the desktop to guess with.
+ */
+function resumeInfoOf(binding: ResumeBinding, paneCwd: string | undefined): RemoteResumeInfo {
+  return {
+    agent: binding.agent,
+    sessionId: binding.sessionId,
+    cwdMatches:
+      !!paneCwd && !!binding.cwd && normalizeResumeCwd(binding.cwd) === normalizeResumeCwd(paneCwd),
+    ...(binding.permissionMode ? { permissionMode: binding.permissionMode } : {}),
+  };
 }
 
 function readTlsPem(kind: 'certificate' | 'private key', filePath: string): Buffer {

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import RemoteMirrorTerminal from './RemoteMirrorTerminal';
+import RemoteResumeChip from './RemoteResumeChip';
 
 export interface RemotePaneSurfaceProps {
   hostId: string;
@@ -86,7 +87,15 @@ export default function RemotePaneSurface({ hostId, sessionId, surfaceId, shell,
           {cwd ? ` — ${cwd}` : ''}
         </div>
       )}
-      <div className="flex-1 min-h-0">
+      {/* #1342 — `position: relative` so the absolutely-positioned resume chip
+          anchors to the mirror, not over the shell/cwd header above it. */}
+      <div className="flex-1 min-h-0" style={{ position: 'relative' }}>
+        <RemoteResumeChip
+          hostId={hostId}
+          sessionId={sessionId}
+          attachId={attachId}
+          readOnly={allowInput === false}
+        />
         <RemoteMirrorTerminal
           attachId={attachId}
           error={error}

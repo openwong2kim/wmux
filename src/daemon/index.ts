@@ -134,6 +134,14 @@ let transcriptDiscovery: TranscriptDiscovery | null = null;
 // scoped because the boot-restore site has no agent tracker in scope; a request
 // that arrives before registration simply reports no agent fields.
 let readAgentStateForWeb: ((id: string) => { agentName: string | null; agentStatus: AgentStatus }) | undefined;
+// #1342 — registerRpcHandlers' resume-state reader, read by BOTH
+// WebTerminalServer construction sites for /api/workspaces. Module-scoped for
+// the same reason readAgentStateForWeb is: the boot-restore site has neither
+// the session manager's prompt logs nor the agent process tracker in scope, and
+// a request that arrives before registration simply reports no resume block.
+let readResumeStateForWeb:
+  | ((id: string) => { binding?: ResumeBinding; commandRunning?: boolean; agentProcessAlive?: boolean } | undefined)
+  | undefined;
 
 // M3 — per-device credentials for `wmux web`. Module-scoped for the same reason
 // as the servers above: both WebTerminalServer construction paths inject it, and
@@ -378,6 +386,8 @@ async function restoreWebServer(sessionManager: DaemonSessionManager): Promise<v
         // #1163 — canonical agent state for /api/workspaces, resolved per
         // request (registerRpcHandlers registers the reader).
         agentState: (id) => readAgentStateForWeb?.(id),
+        // #1342 — resume state for the same route, same lazy indirection.
+        resumeState: (id) => readResumeStateForWeb?.(id),
         // M3 — without this, /pair degrades to handing out the shared operator
         // token and nothing is individually revocable. Injected at BOTH
         // construction sites: a restored server serves paired phones on their
@@ -2545,6 +2555,8 @@ function registerRpcHandlers(
       log: (level, msg) => log(level, msg),
       // #1163 — canonical agent state for /api/workspaces (see restoreWebServer).
       agentState: (id) => readAgentStateForWeb?.(id),
+      // #1342 — see the restore path.
+      resumeState: (id) => readResumeStateForWeb?.(id),
       // M3 — see the restore path for why the roster is injected at both sites.
       devices: getDeviceStore(),
       // See the restore path: the lifecycle routes need this and answer 503
@@ -3368,6 +3380,30 @@ function registerRpcHandlers(
   // #1163 — /api/workspaces answers with this same canonical state, so a
   // remote roster row appears and disappears exactly when a local one would.
   readAgentStateForWeb = readDaemonAgentState;
+
+  // #1342 — /api/workspaces answers with the SAME resume facts `pty.list` gives
+  // the local renderer: the durable binding re-probed for transcript existence
+  // (D5 — a purged conversation must not surface a dead `--resume`), plus the
+  // two gate signals. The cwd guard (F7) is NOT applied here either; the web
+  // serialiser turns the recorded cwd into its own `cwdMatches` verdict.
+  readResumeStateForWeb = (id) => {
+    const managed = sessionManager.getSession(id);
+    if (!managed) return undefined;
+    const durable = managed.meta.resumeBinding;
+    const binding = durable && bindingTranscriptLives(durable) ? durable : undefined;
+    const commandRunning = managed.promptLog.size > 0 ? managed.promptLog.isCommandRunning() : undefined;
+    // Same three-state derivation as pty.list: an exec unit IS its agent
+    // process, a tracked pane answers from the tracker, and anything else stays
+    // undecided so the desktop keeps its own heuristic.
+    const agentProcessAlive = managed.meta.exec
+      ? (managed.meta.state === 'attached' || managed.meta.state === 'detached' ? true : undefined)
+      : agentProcessTracker.statusFor(id);
+    return {
+      ...(binding ? { binding } : {}),
+      ...(commandRunning !== undefined ? { commandRunning } : {}),
+      ...(agentProcessAlive !== undefined ? { agentProcessAlive } : {}),
+    };
+  };
 
   // Authoritative detector state bypasses desktop reconnect/event timing.
   pipeServer.onRpc('daemon.getAgentName', async (params) => {

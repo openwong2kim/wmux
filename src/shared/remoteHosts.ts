@@ -1,3 +1,5 @@
+import type { PermissionMode } from './agentResume';
+
 /**
  * How often the per-host `/api/workspaces` liveness feed is refreshed (#1391).
  *
@@ -46,6 +48,75 @@ export interface RemotePaneSummary {
   agentName?: string;
   /** #1163 — host-side lifecycle snapshot for that agent. Same tolerance rule. */
   agentStatus?: RemoteAgentStatus;
+  /**
+   * #1342 — what the host knows about resuming this pane's agent conversation.
+   * Additive-optional, like the agent fields above: an older host omits it and
+   * the desktop simply offers no resume chip for that pane.
+   */
+  resume?: RemoteResumeInfo;
+  /**
+   * #1342 — OSC 133 shell state on the host (true = a foreground command owns
+   * the PTY). Absent when the host's shell emits no markers. Feeds the chip's
+   * "never type into a live agent" gate, exactly like the local map.
+   */
+  commandRunning?: boolean;
+  /**
+   * #1342 — host-side process truth for the pane's agent (true = observed
+   * alive, false = observed and gone, absent = never attributed). Second tier
+   * of the same gate.
+   */
+  agentProcessAlive?: boolean;
+}
+
+/**
+ * #1342 — the resume half of local/remote parity, as the host publishes it.
+ *
+ * Deliberately NOT a `ResumeBinding`: the binding's `transcriptPath` is a
+ * host-local filesystem path and must never cross the API, and `cwd` is
+ * replaced by the host's own verdict — the desktop cannot compare a path on
+ * another machine, so the host answers "does the recorded cwd still match this
+ * pane?" instead of shipping the path for the desktop to guess with.
+ */
+export interface RemoteResumeInfo {
+  /** Agent launcher slug ('claude' / 'codex') — the resume grammar's key. */
+  agent: string;
+  /** The conversation id the resume command would carry. */
+  sessionId: string;
+  /** Host verdict: the recorded origin cwd still matches the pane's cwd, so an
+   *  EXACT `--resume <id>` is safe. False → the cwd-relative fallback. */
+  cwdMatches: boolean;
+  /** Last-observed permission mode, when the host recorded one. */
+  permissionMode?: PermissionMode;
+}
+
+/** Trust-boundary parse for {@link RemoteResumeInfo}. Returns undefined for
+ *  anything that is not a complete, usable resume offer — a half-formed one
+ *  would render a chip that types a broken command. */
+export function parseRemoteResumeInfo(value: unknown): RemoteResumeInfo | undefined {
+  if (typeof value !== 'object' || value === null) return undefined;
+  const raw = value as Record<string, unknown>;
+  const agent = typeof raw.agent === 'string' ? raw.agent : '';
+  const sessionId = typeof raw.sessionId === 'string' ? raw.sessionId : '';
+  if (!agent || !sessionId) return undefined;
+  // Capped for the same reason agentName is: another machine's output flows
+  // into rendered text and into a command preview.
+  return {
+    agent: agent.slice(0, 64),
+    sessionId: sessionId.slice(0, 256),
+    cwdMatches: raw.cwdMatches === true,
+    ...(isPermissionMode(raw.permissionMode) ? { permissionMode: raw.permissionMode } : {}),
+  };
+}
+
+const PERMISSION_MODES: ReadonlySet<string> = new Set<PermissionMode>([
+  'bypassPermissions',
+  'acceptEdits',
+  'plan',
+  'default',
+]);
+
+function isPermissionMode(value: unknown): value is PermissionMode {
+  return typeof value === 'string' && PERMISSION_MODES.has(value);
 }
 
 /**

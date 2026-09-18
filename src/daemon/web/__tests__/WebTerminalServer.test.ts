@@ -8,6 +8,7 @@ import { EventEmitter } from 'node:events';
 import { request as httpReq } from 'node:http';
 import { WebTerminalServer, type WebDeviceResolver } from '../WebTerminalServer';
 import type { TranscriptProjector } from '../../transcript/TranscriptProjector';
+import type { ResumeBinding } from '../../../shared/agentResume';
 import type { TranscriptStatus } from '../../../shared/transcript/turnEvents';
 import { GIT_HARDENING_CONFIG, type GitRunner } from '../sessionDiff';
 import { MIN_PHONE_PROTOCOL_VERSION, PHONE_PROTOCOL_VERSION } from '../protocolVersion';
@@ -397,10 +398,13 @@ describe('WebTerminalServer', () => {
   let gateArmed: boolean;
   /** #1163 — the daemon's canonical agent state per session, as the server reads it. */
   let agentStates: Record<string, { agentName: string | null; agentStatus: 'idle' | 'running' | 'awaiting_input' }>;
+  /** #1342 — the daemon's resume state per session, as the server reads it. */
+  let resumeStates: Record<string, { binding?: ResumeBinding; commandRunning?: boolean; agentProcessAlive?: boolean }>;
 
   beforeEach(() => {
     gateArmed = true;
     agentStates = {};
+    resumeStates = {};
     const deps = makeDeps();
     bridge = deps.bridge;
     write = deps.write;
@@ -438,6 +442,7 @@ describe('WebTerminalServer', () => {
       gateEnabled: () => gateArmed,
       setGateEnabled: (enabled) => { gateArmed = enabled; },
       agentState: (id) => agentStates[id],
+      resumeState: (id) => resumeStates[id],
       log: () => { /* silent in tests */ },
       assetsDir: os.tmpdir(), // no terminal.html needed for the /api/* tests
     });
@@ -5283,6 +5288,54 @@ describe('WebTerminalServer', () => {
       body = await read();
       byId = new Map(body.workspaces.flatMap((w) => w.panes).map((p) => [p.sessionId, p]));
       expect(byId.get('s1')).not.toHaveProperty('agentName');
+    });
+
+    // #1342 — the resume block for a remote resume chip. Additive-optional, and
+    // the host-local transcript path is structurally absent from the wire.
+    it('surfaces the resume block with a cwd verdict and never the transcript path', async () => {
+      resumeStates = {
+        s1: {
+          binding: {
+            agent: 'claude',
+            sessionId: 'conv-1',
+            // Matches the fixture's cwd for s1 ('/x') → an EXACT resume is safe.
+            cwd: '/x',
+            permissionMode: 'bypassPermissions',
+            transcriptPath: '/home/host/.claude/projects/x/conv-1.jsonl',
+            ts: 1,
+          },
+          commandRunning: false,
+          agentProcessAlive: false,
+        },
+        s2: {
+          binding: {
+            // Recorded elsewhere than the pane's live cwd ('/y') → fallback only.
+            agent: 'claude', sessionId: 'conv-2', cwd: '/elsewhere', ts: 1,
+          },
+        },
+      };
+      const info = await startRO();
+      const r = await fetch(`${base()}/api/workspaces`, { headers: bearer(info.token as string) });
+      expect(r.status).toBe(200);
+      const raw = await r.text();
+      const body = JSON.parse(raw) as {
+        workspaces: Array<{ panes: Array<{ sessionId: string; resume?: Record<string, unknown>; commandRunning?: boolean; agentProcessAlive?: boolean }> }>;
+      };
+      const byId = new Map(body.workspaces.flatMap((w) => w.panes).map((p) => [p.sessionId, p]));
+      expect(byId.get('s1')?.resume).toEqual({
+        agent: 'claude',
+        sessionId: 'conv-1',
+        cwdMatches: true,
+        permissionMode: 'bypassPermissions',
+      });
+      expect(byId.get('s1')).toMatchObject({ commandRunning: false, agentProcessAlive: false });
+      // Recorded cwd no longer matches → the host says so; no mode was captured.
+      expect(byId.get('s2')?.resume).toEqual({ agent: 'claude', sessionId: 'conv-2', cwdMatches: false });
+      // A session the daemon reports nothing for carries no resume fields at all.
+      expect(byId.get('s2')).not.toHaveProperty('commandRunning');
+      // The host-local transcript path never crosses the API, under any key.
+      expect(raw).not.toContain('.jsonl');
+      expect(raw).not.toContain('transcriptPath');
     });
 
     it('groups multiple panes into the same workspace, sorted by sessionId', async () => {

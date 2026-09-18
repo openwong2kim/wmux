@@ -306,6 +306,55 @@ describe('RemoteHostClient', () => {
           }],
         });
       });
+
+      // #1342 — the resume block follows the same additive-optional rule: an
+      // older host omits it entirely, a half-formed one is dropped rather than
+      // half-read, and the two gate signals are kept only when boolean.
+      it('keeps a complete resume block, drops a half-formed one, tolerates an older host', async () => {
+        const body = {
+          workspaces: [
+            {
+              id: 'w1',
+              name: 'proj',
+              panes: [
+                {
+                  sessionId: 's1',
+                  resume: { agent: 'claude', sessionId: 'conv-1', cwdMatches: true, permissionMode: 'bypassPermissions' },
+                  commandRunning: false,
+                  agentProcessAlive: false,
+                },
+                // No conversation id → not a usable offer.
+                { sessionId: 's2', resume: { agent: 'claude', cwdMatches: true } },
+                // A NEWER host's unknown permission mode degrades to no mode.
+                { sessionId: 's3', resume: { agent: 'claude', sessionId: 'conv-3', permissionMode: 'telepathy' } },
+                // Non-boolean gate signals are not smuggled through.
+                { sessionId: 's4', commandRunning: 'yes', agentProcessAlive: 1 },
+                // An older host: no resume fields at all.
+                { sessionId: 's5' },
+              ],
+            },
+          ],
+        };
+        await expect(clientFor(body).listWorkspaces()).resolves.toEqual({
+          workspaces: [{
+            id: 'w1',
+            name: 'proj',
+            panes: [
+              {
+                sessionId: 's1',
+                resume: { agent: 'claude', sessionId: 'conv-1', cwdMatches: true, permissionMode: 'bypassPermissions' },
+                commandRunning: false,
+                agentProcessAlive: false,
+              },
+              { sessionId: 's2' },
+              // Absent cwdMatches reads as false — never guess an exact resume.
+              { sessionId: 's3', resume: { agent: 'claude', sessionId: 'conv-3', cwdMatches: false } },
+              { sessionId: 's4' },
+              { sessionId: 's5' },
+            ],
+          }],
+        });
+      });
     });
   });
 
