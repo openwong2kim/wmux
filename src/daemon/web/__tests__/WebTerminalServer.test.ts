@@ -240,6 +240,9 @@ function makeDevices() {
   const mintCalls: Array<{ name?: string; allowInput?: boolean }> = [];
   const touchCalls: string[] = [];
   const pushRegistrations: Array<{ deviceId: string; apnsToken: string; publicKey: string }> = [];
+  const liveActivityRegistrations: Array<{ deviceId: string } & Record<string, unknown>> = [];
+  /** Forces the store's answer, so the route's status mapping can be exercised. */
+  const liveActivityBox: { reason: string } = { reason: '' };
   const box = { mintThrows: false };
   let seq = 0;
   const devices: WebDeviceResolver = {
@@ -290,9 +293,35 @@ function makeDevices() {
       }
       return { ok: true };
     },
+    // Mirrors the real store closely enough that the route's own mapping is
+    // exercised: MERGE semantics, `null` removes, and the same two refusals.
+    registerLiveActivity(deviceId, input) {
+      liveActivityRegistrations.push({ deviceId, ...input });
+      if (liveActivityBox.reason) return { ok: false, reason: liveActivityBox.reason };
+      const rec = roster.get(deviceId);
+      if (!rec) return { ok: false, reason: 'not-found' };
+      if (rec.revoked) return { ok: false, reason: 'revoked' };
+      for (const key of ['pushToStartToken', 'activityToken'] as const) {
+        const raw = input[key];
+        if (raw === undefined || raw === null) continue;
+        if (typeof raw !== 'string' || !/^[0-9a-f]{64,200}$/.test(raw)) {
+          return { ok: false, reason: 'bad-token' };
+        }
+      }
+      if (
+        input.apnsEnvironment !== undefined &&
+        input.apnsEnvironment !== 'development' &&
+        input.apnsEnvironment !== 'production'
+      ) {
+        return { ok: false, reason: 'bad-apns-environment' };
+      }
+      return { ok: true };
+    },
   };
   return {
     devices,
+    liveActivityRegistrations,
+    liveActivityBox,
     deviceRoster: roster,
     deviceResolveCalls: resolveCalls,
     deviceMintCalls: mintCalls,
@@ -372,6 +401,8 @@ describe('WebTerminalServer', () => {
   let deviceRoster: Map<string, { secret: string; name?: string; revoked: boolean }>;
   let deviceMintCalls: Array<{ name?: string }>;
   let pushRegistrations: Array<{ deviceId: string; apnsToken: string; publicKey: string }>;
+  let liveActivityRegistrations: Array<{ deviceId: string } & Record<string, unknown>>;
+  let liveActivityBox: { reason: string };
   let deviceTouchCalls: string[];
   let deviceBox: { mintThrows: boolean };
   let resizeCalls: Array<{ id: string; cols: number; rows: number }>;
@@ -412,6 +443,8 @@ describe('WebTerminalServer', () => {
     deviceRoster = deps.deviceRoster;
     deviceMintCalls = deps.deviceMintCalls;
     pushRegistrations = deps.pushRegistrations;
+    liveActivityRegistrations = deps.liveActivityRegistrations;
+    liveActivityBox = deps.liveActivityBox;
     deviceTouchCalls = deps.deviceTouchCalls;
     deviceBox = deps.deviceBox;
     resizeCalls = deps.resizeCalls;
@@ -2418,6 +2451,93 @@ describe('WebTerminalServer', () => {
     const badKey = await post({ apnsToken: 'a'.repeat(64), publicKey: 'nope' });
     expect(badKey.status).toBe(400);
     expect((await badKey.json()).error).toBe('bad-key');
+  });
+
+  it('★ a device registers its Live Activity tokens; the operator token cannot', async () => {
+    const info = await startRO();
+    const { token } = await pairDevice('Phone');
+    const pushToStartToken = 'a'.repeat(64);
+    const activityToken = 'b'.repeat(64);
+    const post = (auth: string, body: unknown) =>
+      fetch(`${base()}/api/live-activity-registration`, {
+        method: 'POST',
+        headers: { ...bearer(auth), 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+
+    const ok = await post(token, { pushToStartToken, apnsEnvironment: 'development' });
+    expect(ok.status).toBe(200);
+    expect(liveActivityRegistrations.at(-1)).toEqual({
+      deviceId: 'dev-1',
+      pushToStartToken,
+      apnsEnvironment: 'development',
+    });
+
+    // ★ The activity token arrives LATER, in its own call. What reaches the
+    // store must carry only that field — an omitted one means "leave it", and
+    // the store is the thing that merges.
+    expect((await post(token, { activityToken })).status).toBe(200);
+    expect(liveActivityRegistrations.at(-1)).toEqual({ deviceId: 'dev-1', activityToken });
+
+    // ★ `null` is NOT absence on this route: it is "the activity is over".
+    expect((await post(token, { activityToken: null })).status).toBe(200);
+    expect(liveActivityRegistrations.at(-1)).toEqual({ deviceId: 'dev-1', activityToken: null });
+
+    // The operator token names no device, so there is no activity to register.
+    const asOperator = await post(info.token as string, { pushToStartToken });
+    expect(asOperator.status).toBe(403);
+    expect((await asOperator.json()).error).toBe('push-is-for-devices');
+  });
+
+  it('refuses a malformed activity token and an unknown APNs stage with 400', async () => {
+    await startRO();
+    const { token } = await pairDevice('Phone');
+    const post = (body: unknown) =>
+      fetch(`${base()}/api/live-activity-registration`, {
+        method: 'POST',
+        headers: { ...bearer(token), 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+
+    const badToken = await post({ activityToken: 'nope' });
+    expect(badToken.status).toBe(400);
+    expect((await badToken.json()).error).toBe('bad-token');
+
+    const badStage = await post({ pushToStartToken: 'a'.repeat(64), apnsEnvironment: 'staging' });
+    expect(badStage.status).toBe(400);
+    expect((await badStage.json()).error).toBe('bad-apns-environment');
+  });
+
+  it('★ the store refusals that are not the caller fault come back as 409', async () => {
+    await startRO();
+    const { token } = await pairDevice('Phone');
+    const post = () =>
+      fetch(`${base()}/api/live-activity-registration`, {
+        method: 'POST',
+        headers: { ...bearer(token), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pushToStartToken: 'a'.repeat(64) }),
+      });
+
+    // A device revoked between the auth check and the write, a record that
+    // vanished, and a roster that could not be written are all 409: the request
+    // was fine, the daemon could not honour it.
+    for (const reason of ['revoked', 'not-found', 'persist-failed']) {
+      liveActivityBox.reason = reason;
+      const res = await post();
+      expect(res.status, reason).toBe(409);
+      expect((await res.json()).error).toBe(reason);
+    }
+    liveActivityBox.reason = '';
+    expect((await post()).status).toBe(200);
+  });
+
+  it('★ /api/config says this daemon can drive a Live Activity', async () => {
+    await startRO();
+    const { token } = await pairDevice('Phone');
+    const cfg = await (await fetch(`${base()}/api/config`, { headers: bearer(token) })).json();
+    // The phone hands the daemon the start decision only on this flag; a
+    // daemon that omits it keeps the app starting the activity locally.
+    expect(cfg.liveActivityPush).toBe(true);
   });
 
   it('★ authenticates the routes a phone actually uses with a device credential', async () => {
