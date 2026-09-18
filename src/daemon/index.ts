@@ -5482,25 +5482,39 @@ async function main(): Promise<void> {
   // phone's own heuristics cannot see the approval registry, and the registry
   // is the only authority on what is actually blocking somebody.
   //
-  // The denominator matches the app's: `runningAgents` is every AGENT pane (a
-  // plain shell is not an agent), and `working`/`idle` split the ones that are
-  // not blocked — so running == working + idle + blocked agent rows, which is
-  // the arithmetic the Fleet header already assumes.
+  // The denominator matches the app's: `runningAgents` is every LIVE agent pane
+  // (a plain shell is not an agent, and an agent that finished or died is not
+  // running), and `working`/`idle` split the ones that are not blocked — so
+  //
+  //     runningAgents == workingAgents + idleAgents + awaiting_input panes
+  //
+  // which is the arithmetic the Fleet header already assumes.
+  //
+  // `blockedPanes` IS NOT THAT THIRD TERM. It is a different source: the
+  // approval registry, which is the only authority on what is blocking somebody
+  // right now. `awaiting_input` is the pane's own reading of its screen, and the
+  // two disagree routinely — a y/N prompt with no approval record raises
+  // awaiting_input and no blockedPane. Never fold one into the other.
   const liveActivityCounts = (): LiveActivityCounts => {
     const pending = approvalRegistry?.list().pending ?? [];
     const blockedPanes = new Set(pending.map((r) => r.sessionId)).size;
     const oldestCreatedAt = pending.length > 0 ? Math.min(...pending.map((r) => r.createdAt)) : null;
     let runningAgents = 0;
     let workingAgents = 0;
-    let idleAgents = 0;
+    let awaitingInput = 0;
     for (const session of sessionManager.listLiveSessions()) {
       const state = readAgentStateForWeb?.(session.id);
       // No agent name means a shell, and a shell is nobody's agent count.
       if (!state?.agentName) continue;
+      // A finished or failed agent is not a running one. Counting it would make
+      // `runningAgents` a census of panes that once held an agent, and the
+      // number the lock screen shows is meant to be "how much is live here".
+      if (state.agentStatus === 'complete' || state.agentStatus === 'error') continue;
       runningAgents += 1;
       if (state.agentStatus === 'running') workingAgents += 1;
-      else if (state.agentStatus !== 'awaiting_input') idleAgents += 1;
+      else if (state.agentStatus === 'awaiting_input') awaitingInput += 1;
     }
+    const idleAgents = runningAgents - workingAgents - awaitingInput;
     return {
       pendingApprovals: pending.length,
       runningAgents,
