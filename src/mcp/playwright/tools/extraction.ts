@@ -7,6 +7,7 @@ import { extractMarkdown, extractStructuredDataWithNotes } from '../markdown-ext
 import { resolveEvaluator, rpcEvaluator } from '../page-eval';
 import { formatSnapshotResult } from '../snapshotDiff';
 import { getSnapshotBaseline, setSnapshotBaseline, snapshotSurfaceKey } from '../snapshotCache';
+import { continueSnapshotCapture, cursorIgnoredNote, windowSnapshotText } from '../snapshotCursor';
 import { captureSnapshotListing } from '../snapshotListing';
 import { allowScopedRpcFallback, type BrowserToolDeps } from '../browserScope';
 import { describeToolError } from '../toolError';
@@ -41,6 +42,12 @@ const BROWSER_SMART_SNAPSHOT_SHAPE = {
     .optional()
     .describe('Content summary cap in characters (default 3000, max 100000).'),
   full: z.boolean().optional().describe('Force the complete tree instead of a diff.'),
+  cursor: z
+    .string()
+    .optional()
+    .describe(
+      'Continuation token from a truncated snapshot: returns the next lines of that same capture without re-reading the page (refs stay valid). Other parameters are ignored with a cursor.',
+    ),
   surfaceId: optionalSurfaceId,
   maxBytes: maxBytesParam,
 };
@@ -91,8 +98,26 @@ export function registerExtractionTools(server: McpServer, deps: BrowserToolDeps
     'browser_smart_snapshot',
     'Indexed interactive elements plus clean page text. Pass a returned ref to browser_click as smartRef. On the chrome backend a repeat call returns a diff (full:true forces the whole listing); the packaged RPC lane numbers refs by position, so it returns the full listing every time and says so.',
     BROWSER_SMART_SNAPSHOT_SHAPE,
-    async ({ maxContentLength, full, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
+    async ({ maxContentLength, full, cursor, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
       try {
+        // Continuation: the next window of a capture already stored for this
+        // surface, served before anything touches the page. No re-read means no
+        // new smart-ref numbering, so the refs in this window are the ones the
+        // capture listed and browser_click({smartRef}) still resolves them. Not
+        // diffed either — the baseline is neither read nor written here.
+        if (cursor) {
+          const continued = continueSnapshotCapture(cursor);
+          const ignored = [
+            maxContentLength !== undefined && 'maxContentLength',
+            full !== undefined && 'full',
+          ].filter((name): name is string => typeof name === 'string');
+          const note = continued.isError ? '' : cursorIgnoredNote(ignored);
+          return {
+            content: [{ type: 'text' as const, text: note + continued.text }],
+            ...(continued.isError && { isError: true }),
+          };
+        }
+
         // Playwright path uses the CDP accessibility tree; when no Page is
         // available (packaged builds, issue #105) fall back to a DOM-based
         // snapshot over the RPC channel.
@@ -174,8 +199,19 @@ export function registerExtractionTools(server: McpServer, deps: BrowserToolDeps
           note += '\n(no diff on this backend: refs here are numbered by walk position, so a single insertion renumbers the listing and a diff would be noise. The chrome backend diffs.)';
         }
 
+        // Truncation, last: the listing plus its notes is what the agent reads,
+        // so that is the text a cursor walks. Keyed on the BARE surface key, not
+        // the tool-namespaced diff key — a capture is one frozen view of a
+        // surface, and the next snapshot of it from either tool retires this one.
+        const captureKey = snapshotSurfaceKey(scope.workspaceId, scope.surfaceId);
+        const windowed = windowSnapshotText(
+          captureKey,
+          rendered.text + note,
+          snapshot.url || undefined,
+        );
+
         return {
-          content: [{ type: 'text' as const, text: rendered.text + note }],
+          content: [{ type: 'text' as const, text: windowed }],
         };
       } catch (error) {
         const message = describeToolError(error);

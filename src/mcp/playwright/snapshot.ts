@@ -37,6 +37,21 @@ export interface SnapshotOptions {
   filter?: 'interactive';
   /** Keep only nodes matching this text, plus their ancestors. See queryMatcher. */
   q?: string;
+  /**
+   * Hand back the whole assembled text instead of cutting it at `maxLength`.
+   *
+   * Set only by the snapshot TOOLS, which store an overflowing result as a
+   * continuation capture and then serve it in `maxLength`-sized line windows
+   * themselves (snapshotCursor.ts). The cut has to happen once, after assembly,
+   * where the window offsets are counted — two cuts would mean the capture a
+   * cursor pages through is already missing the tail it exists to reach. Every
+   * other caller keeps the hard cut and the `... (truncated)` marker.
+   *
+   * The text is not unbounded: the capture store cuts it at MAX_CAPTURE_CHARS
+   * (snapshotCache.ts) and says so in the last window, and the whole a11y tree
+   * this is serialized from was already in memory to produce it.
+   */
+  deferTruncation?: boolean;
 }
 
 /**
@@ -2476,8 +2491,9 @@ export async function generateSnapshot(
     }
   }
 
-  // Hard-truncate as a last resort
-  if (output.length > budget) {
+  // Hard-truncate as a last resort — unless the caller owns the cut (see
+  // deferTruncation), in which case it gets the whole text and windows it.
+  if (output.length > budget && !options?.deferTruncation) {
     output = output.slice(0, budget) + '\n... (truncated)';
   }
 
@@ -2636,7 +2652,9 @@ export async function generateScopedSnapshot(
     }
   }
 
-  if (output.length > budget) {
+  // Same deferral as the page-level path: the tool layer stores the overflow as
+  // a continuation capture rather than dropping it.
+  if (output.length > budget && !options?.deferTruncation) {
     output = output.slice(0, budget) + '\n... (truncated)';
   }
 
