@@ -46,6 +46,13 @@ jobs:
     # Comment lane: `/review` at the start of a PR comment, maintainers only,
     # so outsiders cannot spend the token budget. Manual lane: anyone who can
     # dispatch already has write access — no extra gate needed.
+    # Fallback lane: CodeRabbit ran out of its free-tier budget on an OUTSIDE
+    # contributor's PR, so nobody has looked at it yet. Owner PRs are excluded
+    # here for the same reason the automatic lane excludes them — they get the
+    # deliberate 3-way review, and waiting out CodeRabbit's window costs the
+    # owner nothing. Its status stays `success` when it gives up (only the
+    # description changes to "Review rate limited"), so the trigger is the
+    # marker CodeRabbit embeds in its own comment.
     if: >-
       (
         github.event_name == 'pull_request_target' &&
@@ -62,6 +69,17 @@ jobs:
         contains(
           fromJSON('["OWNER","MEMBER","COLLABORATOR"]'),
           github.event.comment.author_association
+        )
+      ) || (
+        github.event_name == 'issue_comment' &&
+        github.event.issue.pull_request &&
+        github.event.issue.state == 'open' &&
+        github.event.comment.user.login == 'coderabbitai[bot]' &&
+        contains(github.event.comment.body, 'rate limited by coderabbit.ai') &&
+        github.event.issue.user.type != 'Bot' &&
+        contains(
+          fromJSON('["CONTRIBUTOR","FIRST_TIME_CONTRIBUTOR","FIRST_TIMER","NONE"]'),
+          github.event.issue.author_association
         )
       ) || github.event_name == 'workflow_dispatch'
     steps:
