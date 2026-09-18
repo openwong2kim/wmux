@@ -1,22 +1,31 @@
-# AI code review — three ways in, one job.
+# AI code review — two ways in, one job. Both are REQUESTED; nothing here
+# reviews a PR nobody asked about.
 #
-#   1. Automatic: outside-contributor PRs (pull_request_target).
-#   2. Comment:   a maintainer writes `/review` on any PR, including their own.
-#   3. Manual:    `gh workflow run ai-code-review.yml -f pr_number=N`
-#                 (once this file is on main, `--ref <branch>` runs a branch's
-#                 edition of it — GitHub only registers workflows from main).
+#   1. Comment: a maintainer writes `/review` on any PR, including their own.
+#   2. Manual:  `gh workflow run ai-code-review.yml -f pr_number=N`
+#               (once this file is on main, `--ref <branch>` runs a branch's
+#               edition of it — GitHub only registers workflows from main).
 #
-# Why pull_request_target: fork PRs get no secrets under `pull_request`, and the
-# LLM token lives in a secret. The action is fork-safe by construction — it
-# checks out the TRUSTED base, fetches the PR head as bare git objects, and
-# reviews the diff without ever materializing or executing untrusted PR files.
-# Nothing here runs code from the pull request. Keep it that way: never add a
-# build, install, or test step to this workflow.
+# There was a third lane: outside-contributor PRs reviewed automatically on
+# `pull_request_target`. It was removed after measuring it. Across the first
+# five runs (#1411, #1421, #1424, #1425, #1139) 21 findings were checked
+# against the code: 28% worth acting on, 17% plainly wrong, 55% true but not
+# worth the line, and 0 of 3 `high` findings correct. The clearest case was
+# #1425 — the review asked the contributor to rewrite a config helper that
+# already worked and already had a test proving it, and missed the real
+# defect, a failing macOS CI leg visible in the PR's own checks. A maintainer
+# can discount that; a first-time contributor cannot. An unrequested review
+# that is wrong 17% of the time spends someone else's afternoon, so it now
+# takes a person deciding a second opinion is worth having.
+#
+# The action reviews an untrusted diff. It checks out the TRUSTED base and
+# fetches the PR head as bare git objects, so nothing from the pull request is
+# ever materialized or executed — and both lanes run this file from main, not
+# from the PR. Keep it that way: never add a build, install, or test step to
+# this workflow.
 name: AI code review
 
 on:
-  pull_request_target:
-    types: [opened, synchronize, reopened, ready_for_review]
   issue_comment:
     types: [created]
   workflow_dispatch:
@@ -33,7 +42,7 @@ permissions:
 
 # A new trigger supersedes the review still running for the same PR.
 concurrency:
-  group: ai-code-review-${{ format('{0}', github.event.pull_request.number || github.event.issue.number || inputs.pr_number) }}
+  group: ai-code-review-${{ format('{0}', github.event.issue.number || inputs.pr_number) }}
   cancel-in-progress: true
 
 jobs:
@@ -41,21 +50,11 @@ jobs:
     name: Review
     runs-on: ubuntu-latest
     timeout-minutes: 25
-    # Automatic lane: outside contributors only. OWNER / MEMBER / COLLABORATOR
-    # PRs are skipped — those get the deliberate 3-way review, or `/review`.
     # Comment lane: `/review` at the start of a PR comment, maintainers only,
     # so outsiders cannot spend the token budget. Manual lane: anyone who can
     # dispatch already has write access — no extra gate needed.
     if: >-
       (
-        github.event_name == 'pull_request_target' &&
-        github.event.pull_request.draft == false &&
-        github.event.pull_request.user.type != 'Bot' &&
-        contains(
-          fromJSON('["CONTRIBUTOR","FIRST_TIME_CONTRIBUTOR","FIRST_TIMER","NONE"]'),
-          github.event.pull_request.author_association
-        )
-      ) || (
         github.event_name == 'issue_comment' &&
         github.event.issue.pull_request &&
         startsWith(github.event.comment.body, '/review') &&
@@ -65,12 +64,9 @@ jobs:
         )
       ) || github.event_name == 'workflow_dispatch'
     steps:
-      # Comment and dispatch payloads carry no PR refs, so look them up. The
-      # action falls back to the event payload when these outputs are empty,
-      # which is what happens on the pull_request_target lane.
-      - name: Resolve PR refs (comment / manual lanes)
+      # Neither payload carries the PR's refs, so look them up.
+      - name: Resolve PR refs
         id: pr
-        if: github.event_name != 'pull_request_target'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -97,13 +93,14 @@ jobs:
 
           github_token: ${{ secrets.GITHUB_TOKEN }}
 
-          # Outside contributions are usually small; medium is the useful floor.
+          # medium is the useful floor. Whether a higher effort earns its cost
+          # is untested — the numbers above are all from `medium`.
           effort: medium
           language: English
 
-          # A requested review looks at the whole PR; the automatic lane stays
-          # incremental across pushes via checkpoints.
-          full_review: ${{ github.event_name != 'pull_request_target' && 'true' || 'false' }}
+          # Every remaining lane is a requested review, so always look at the
+          # whole PR rather than resuming from a checkpoint.
+          full_review: 'true'
 
           # Repeat runs: update the one summary, skip comments that overlap a
           # previous run, and close threads whose lines no longer exist.
