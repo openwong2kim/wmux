@@ -429,12 +429,11 @@ export function selectFleetPanes(state: FleetSelectorState): FleetPane[] {
       // as an anonymous idle card. Resolve it against the attached host mirror
       // instead, with the same rules the sidebar roster uses.
       //
-      // Keyed on the leaf's ACTIVE surface, like every other field on this row:
-      // this pass is one row per leaf, the roster is one row per surface. A
-      // remote session sitting on a BACKGROUND tab of a mixed leaf therefore
-      // reaches the roster but not this card, exactly as a background local
-      // agent's identity does. Only attention statuses are scanned across tabs,
-      // and a host snapshot carries none.
+      // IDENTITY is keyed on the leaf's ACTIVE surface, like every other field
+      // on this row: this pass is one row per leaf, the roster is one row per
+      // surface, so a background tab's agent NAME does not reach the card —
+      // exactly as it does not for a background local agent. Its STATUS does,
+      // through the rollup below.
       const remoteAgent =
         surf?.surfaceType === 'remote-terminal'
           ? resolveRemoteAgent(state.remoteWorkspaces, surf.remoteHostId, surf.remoteSessionId)
@@ -452,8 +451,28 @@ export function selectFleetPanes(state: FleetSelectorState): FleetPane[] {
       // is idle), so a multi-tab pane that needs the user is never silently
       // shown as idle. The card otherwise stays keyed on the active surface.
       let attention: AgentStatus | undefined;
+      // #1343 — the same rollup over the leaf's REMOTE tabs, tracked separately
+      // so a remote row is never given a local agent's status (and vice versa)
+      // while both still reach the workspace dot and the vitals chip.
+      let remoteAttention: AgentStatus | undefined;
       for (const s of leaf.surfaces) {
-        if (!s.ptyId) continue;
+        if (!s.ptyId) {
+          // A remote tab has no ptyId, so the PTY-keyed scan below can never
+          // see it. Without this a remote agent asking for the user from a
+          // BACKGROUND tab is visible in the sidebar roster (which is per
+          // surface) and nowhere else — the exact split this issue exists to
+          // close, just one tab deeper.
+          const rs = s.surfaceType === 'remote-terminal'
+            ? resolveRemoteAgent(state.remoteWorkspaces, s.remoteHostId, s.remoteSessionId)?.status
+            : undefined;
+          if (rs && (remoteAttention === undefined || STATUS_RANK[rs] < STATUS_RANK[remoteAttention])) {
+            remoteAttention = rs;
+          }
+          if (rs && (attention === undefined || STATUS_RANK[rs] < STATUS_RANK[attention])) {
+            attention = rs;
+          }
+          continue;
+        }
         // #1168 — a transcript-derived pending question outranks whatever the
         // stop payload settled this surface to, exactly as it does in
         // workspaceAgentRoster. Without it a payload carrying `complete`
@@ -569,9 +588,10 @@ export function selectFleetPanes(state: FleetSelectorState): FleetPane[] {
         // so the PTY-keyed reads below still all miss — which is correct: the
         // host snapshot has no hooks, no activity line, no supervision.
         ptyId: remoteAgent ? remoteAgentKey(surf?.remoteHostId ?? '', surf?.remoteSessionId ?? '') : ptyId,
-        // The host poll IS the whole signal for a remote agent: no attention
-        // scan, no latch, no metadata inheritance can apply to it.
-        agentStatus: remoteAgent ? remoteAgent.status : status,
+        // The host poll IS the whole signal for a remote agent: no latch and no
+        // workspace-metadata inheritance apply to it, only the rollup over this
+        // leaf's own remote tabs.
+        agentStatus: remoteAgent ? (remoteAttention ?? remoteAgent.status) : status,
         agentName: remoteAgent
           ? remoteAgent.agentName
           : isActivePane && metaMatchesPane ? wsMeta?.agentName : undefined,

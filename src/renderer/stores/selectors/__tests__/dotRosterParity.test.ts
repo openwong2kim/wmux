@@ -286,6 +286,26 @@ describe('#1343 — remote agents reach the fleet pass too', () => {
     expectDotCoversRoster(s, 'ws-1');
   });
 
+  it("a BACKGROUND remote tab's needs-you still reaches the fleet rollup", () => {
+    // The roster is per surface, this pass is per leaf. Without the rollup over
+    // remote tabs, a remote agent asking for the user from a background tab is
+    // in the sidebar and nowhere else — the very split #1343 closes, one tab
+    // deeper. Identity still follows the ACTIVE surface, as it does locally.
+    const s = state({
+      workspaces: [workspace(
+        'ws-1',
+        leaf('p1', [remoteSurface('rsession-9'), surface('s-fg', 'pty-fg')], 's-fg'),
+        'p1',
+      )],
+      surfaceAgent: { 'pty-fg': { name: 'Claude Code', status: 'idle' } },
+      remoteWorkspaces: attachedHost('awaiting_input'),
+    });
+
+    expect(selectWorkspaceAgentRoster(s, 'ws-1').rows.some((r) => r.remote && r.needsAttention)).toBe(true);
+    expect(selectFleetPanes(s)[0].agentStatus).toBe('awaiting_input');
+    expectDotCoversRoster(s, 'ws-1');
+  });
+
   it('a stale host is absent from BOTH: a frozen status is not a live agent', () => {
     const s = state({
       workspaces: [workspace('ws-1', leaf('p1', [remoteSurface('rsession-9')], 'rs-rsession-9'), 'p1')],
