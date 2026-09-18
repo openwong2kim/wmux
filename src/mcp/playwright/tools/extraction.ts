@@ -116,7 +116,11 @@ export function registerExtractionTools(server: McpServer, deps: BrowserToolDeps
         // capture listed and browser_click({smartRef}) still resolves them. Not
         // diffed either — the baseline is neither read nor written here.
         if (cursor) {
-          const continued = continueSnapshotCapture(cursor, budget);
+          const continued = continueSnapshotCapture(
+            cursor,
+            budget,
+            scope.surfaceId ? snapshotSurfaceKey(scope.workspaceId, scope.surfaceId) : undefined,
+          );
           const ignored = [
             maxContentLength !== undefined && 'maxContentLength',
             full !== undefined && 'full',

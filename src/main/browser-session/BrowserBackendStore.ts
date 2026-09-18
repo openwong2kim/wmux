@@ -55,8 +55,22 @@ export class BrowserBackendStore {
     return this.backend;
   }
 
-  /** The live write scope as persisted. Read lazily per RPC, like the backend. */
+  /**
+   * The live write scope as persisted. Re-read from the file on every call:
+   * this setting is operator-only and lives in the file precisely so that
+   * widening it costs an edit, and that edit has to take effect without a
+   * restart — and must not be silently reverted by the next backend write,
+   * which persists whatever this field holds. An unreadable or unrecognised
+   * value keeps the last good one (the narrow grant on a fresh store).
+   */
   liveWriteScope(): LiveWriteScope {
+    try {
+      const parsed: unknown = JSON.parse(readFileSync(this.filePath, 'utf8'));
+      const scope = (parsed as { liveWriteScope?: unknown } | null)?.liveWriteScope;
+      this.liveScope = isLiveWriteScope(scope) ? scope : DEFAULT_LIVE_WRITE_SCOPE;
+    } catch {
+      /* missing or unreadable file → keep the in-memory value */
+    }
     return this.liveScope;
   }
 
@@ -67,6 +81,9 @@ export class BrowserBackendStore {
 
   set(backend: BrowserBackend): void {
     this.backend = backend;
+    // persist() writes the scope field too, so pick up an operator's file edit
+    // first rather than overwriting it with a stale in-memory value.
+    this.liveWriteScope();
     this.persist();
   }
 

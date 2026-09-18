@@ -28,10 +28,13 @@ vi.mock('../../wmux-client', () => ({
       : mockSendRpc(method, ...args),
 }));
 
-// Mock PlaywrightEngine so getPage() is controllable per test.
+// Mock PlaywrightEngine so getPage() is controllable per test. The live
+// agent-window answer defaults to "not confined" so the packaged/builtin cases
+// below are untouched by the profile-wide cookie refusal.
 const getPage = vi.fn();
+const isLiveWriteConfined = vi.fn(async () => false);
 vi.mock('../PlaywrightEngine', () => ({
-  PlaywrightEngine: { getInstance: () => ({ getPageForScope: getPage }) },
+  PlaywrightEngine: { getInstance: () => ({ getPageForScope: getPage, isLiveWriteConfined }) },
 }));
 
 import { registerStateTools } from '../tools/state';
@@ -144,6 +147,30 @@ describe('browser_cookies RPC fallback', () => {
     await cookies({ action: 'clear' });
     expect(clearCookies).toHaveBeenCalledTimes(1);
     expect(mockSendRpc).not.toHaveBeenCalled();
+  });
+
+  it('refuses set/clear on Live Chrome under the agent-window policy — the mutation is profile-wide', async () => {
+    // page.context() on Live Chrome is the user's whole profile: clearCookies
+    // logs them out of every site, addCookies plants cookies every tab sends.
+    // Owning THIS tab proves nothing about that, so the write is refused.
+    const clearCookies = vi.fn().mockResolvedValue(undefined);
+    const addCookies = vi.fn().mockResolvedValue(undefined);
+    getPage.mockResolvedValue({ url: () => 'https://agent.test/', context: () => ({ clearCookies, addCookies }) });
+    isLiveWriteConfined.mockResolvedValueOnce(true).mockResolvedValueOnce(true);
+
+    const cleared = await cookies({ action: 'clear' });
+    expect(cleared.isError).toBe(true);
+    expect(cleared.content[0].text).toMatch(/^agent_window_scope: browser_cookies clear on Live Chrome/);
+    expect(clearCookies).not.toHaveBeenCalled();
+
+    const set = await cookies({ action: 'set', cookies: [{ name: 'sid', value: '1' }] });
+    expect(set.isError).toBe(true);
+    expect(set.content[0].text).toMatch(/^agent_window_scope: browser_cookies set on Live Chrome/);
+    expect(addCookies).not.toHaveBeenCalled();
+    // A read is untouched: the live binding is that consent.
+    getPage.mockResolvedValue({ context: () => ({ cookies: vi.fn().mockResolvedValue([]) }) });
+    const got = await cookies({ action: 'get' });
+    expect(got.isError).toBeUndefined();
   });
 });
 

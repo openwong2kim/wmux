@@ -182,6 +182,26 @@ describe('windowSnapshotText', () => {
       expect(dead.text.startsWith(CURSOR_EXPIRED_PREFIX)).toBe(true);
     });
   });
+
+  it('refuses to page a capture from a call aimed at a different surface', () => {
+    runInConnectionScope(createConnectionScope(), () => {
+      const long = Array.from({ length: 40 }, (_, i) => `[ref=${i}] item`).join('\n');
+      const budget = tiny(60);
+      const token = /cursor:"([^"]+)"/.exec(windowSnapshotText(KEY, long, undefined, budget))?.[1] as string;
+
+      // Tab B's refs are not tab A's: a cursor minted on one surface must not
+      // be served to a call that named another, or ref=N clicks the wrong thing.
+      const other = snapshotSurfaceKey('ws-1', 'surface-other');
+      const refused = continueSnapshotCapture(token, budget, other);
+      expect(refused.isError).toBe(true);
+      expect(refused.text.startsWith(CURSOR_EXPIRED_PREFIX)).toBe(true);
+      expect(refused.text).toContain('different surface');
+
+      // The surface it was taken on, and a call that named no surface, both page it.
+      expect(continueSnapshotCapture(token, budget, KEY).isError).toBe(false);
+      expect(continueSnapshotCapture(token, budget).isError).toBe(false);
+    });
+  });
 });
 
 describe('capCaptureText', () => {

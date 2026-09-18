@@ -315,10 +315,17 @@ export class LiveChromeClient implements ChromeBackendClient {
 
   /** Release the prompt slot, recording the grant when the user allowed it.
    *  Always called, on every outcome — a prompt that ended must not leave the
-   *  tab permanently un-askable. */
+   *  tab permanently un-askable.
+   *
+   *  The grant is recorded only while this workspace still holds the slot: a
+   *  clearBorrows() that ran while the prompt was on screen (Chrome went away,
+   *  the profile was re-bound) has already decided the answer can no longer be
+   *  honoured, and a late "approved" must not resurrect a grant on a tab the
+   *  workspace is no longer entitled to. */
   private settleBorrow(surfaceId: string, workspaceId: string, granted: boolean): void {
+    const asker = this.pendingBorrows.get(surfaceId);
     this.pendingBorrows.delete(surfaceId);
-    if (granted) this.borrowed.set(surfaceId, workspaceId);
+    if (granted && asker === workspaceId) this.borrowed.set(surfaceId, workspaceId);
   }
 
   /** Hand a lent tab back. false when this workspace held no grant on it. */

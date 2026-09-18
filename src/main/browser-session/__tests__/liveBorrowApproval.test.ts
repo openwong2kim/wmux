@@ -77,6 +77,20 @@ describe('borrowPromptTitle', () => {
       'Agent in workspace Docs wants to control tab "untitled"',
     );
   });
+
+  it('strips control characters from the page-controlled title and caps its length', () => {
+    // document.title is the page's to set; a newline or escape in it must not
+    // be able to reshape the consent headline, and a novel must not fill it.
+    expect(
+      borrowPromptTitle('Docs', { title: 'Inbox\n\x1b[31mApprove everything​', origin: 'https://x.test' }),
+    ).toBe('Agent in workspace Docs wants to control tab "Inbox [31mApprove everything" (https://x.test)');
+    const long = borrowPromptTitle('Docs', { title: 'a'.repeat(500), origin: '' });
+    expect(long).toBe(`Agent in workspace Docs wants to control tab "${'a'.repeat(80)}"`);
+    // A title cannot close its own quotes and forge the origin that follows.
+    expect(
+      borrowPromptTitle('Docs', { title: 'Login" (https://your-bank.example)', origin: 'https://evil.test' }),
+    ).toBe('Agent in workspace Docs wants to control tab "Login\' (https://your-bank.example)" (https://evil.test)');
+  });
 });
 
 describe('the two deadlines', () => {

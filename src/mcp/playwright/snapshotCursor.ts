@@ -197,10 +197,26 @@ export function windowSnapshotText(
 export function continueSnapshotCapture(
   token: string,
   budget: WindowBudget = windowBudget(),
+  /**
+   * The bare surface key of the call that carries the cursor, when that call
+   * named a surface. A cursor is a handle into one frozen view of ONE surface;
+   * paging it from a call aimed at a different surface would hand the agent
+   * tab A's refs while it believes it is looking at tab B. Undefined (the
+   * caller named no surface) skips the check rather than guessing a key.
+   */
+  expectedSurfaceKey?: string,
 ): { text: string; isError: boolean } {
   const parsed = decodeSnapshotCursor(token);
   const capture = parsed ? getSnapshotCapture(parsed.captureId) : null;
   if (!parsed || !capture) return { text: CURSOR_EXPIRED_TEXT, isError: true };
+  if (expectedSurfaceKey !== undefined && capture.surfaceKey !== expectedSurfaceKey) {
+    return {
+      text:
+        `${CURSOR_EXPIRED_PREFIX} that cursor continues a capture of a different surface, so it ` +
+        'cannot be paged from this one. Snapshot this surface, or pass the surfaceId the capture was taken on.',
+      isError: true,
+    };
+  }
   const window = takeLineWindow(capture.text, parsed.lineOffset, budget);
   if (window.from >= window.total) {
     return { text: END_OF_CAPTURE_NOTE, isError: false };

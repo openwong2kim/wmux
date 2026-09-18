@@ -218,7 +218,10 @@ export function effectTagOf(error: unknown): EffectTag | undefined {
  */
 const MESSAGE_CODES: ReadonlyArray<readonly [RegExp, ToolErrorCode]> = [
   [
-    /WORKSPACE_SCOPE_UNRESOLVED|BROWSER_SCOPE_REFUSED|BROWSER_NO_OWN_SURFACE|BROWSER_SURFACE_NOT_REGISTERED/,
+    // `agent_window_scope` is the Live Chrome write refusal (AgentWindowScopeError):
+    // a refusal to write to a tab this workspace does not own is a scope
+    // refusal like the others, and the one an agent most needs to branch on.
+    /WORKSPACE_SCOPE_UNRESOLVED|BROWSER_SCOPE_REFUSED|BROWSER_NO_OWN_SURFACE|BROWSER_SURFACE_NOT_REGISTERED|agent_window_scope/,
     'scope_refused',
   ],
   [
@@ -234,7 +237,14 @@ const MESSAGE_CODES: ReadonlyArray<readonly [RegExp, ToolErrorCode]> = [
     /No browser page available|need a live browser page|cannot be used on this transport|Unknown method|does not support|mouse-only|Modifier keys are held for mouse gestures only/,
     'not_supported',
   ],
-  [/ref=|Could not resolve ref|No file input found at or near/, 'ref_not_found'],
+  // Anchored to the wording of a ref that did not resolve. A bare `ref=` would
+  // also match "is not visible: [data-wmux-ref=…]" and "ref=7 is not a native
+  // <select>" — element-state failures on a ref that resolved fine — and send
+  // the agent back to re-snapshot for nothing.
+  [
+    /Could not resolve ref|Element with ref=\S+ not found|ref=\S+ (?:is stale|was minted)|is not a browser_snapshot ref|No file input found at or near/,
+    'ref_not_found',
+  ],
   [/No element matches selector|No file input element/, 'selector_not_found'],
   [/dialog/i, 'dialog_blocked'],
   [/not visible/i, 'element_not_visible'],

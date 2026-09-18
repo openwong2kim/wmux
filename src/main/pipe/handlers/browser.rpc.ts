@@ -1444,9 +1444,20 @@ export function registerBrowserRpc(
     surfaceId: string | undefined,
     prompt: string,
   ): Promise<void> => {
+    // The surfaceId is caller-supplied and the request store never resolves it,
+    // so it is checked here against what the workspace can be PROVEN to hold
+    // before anything is focused or raised: a help request must not become the
+    // one path by which an agent brings another workspace's pane — or, on
+    // live, any of the user's own Chrome tabs — to the front. A surface that
+    // does not check out is simply not revealed; the row, the inbox entry and
+    // the notification still carry the ask.
     if (backend() === 'builtin') {
       if (!surfaceId) return;
       try {
+        const owned =
+          webviewCdpManager.getTarget(surfaceId, workspaceId) ??
+          (await webviewCdpManager.ensureAwake(surfaceId, workspaceId));
+        if (!owned) return;
         await sendToRenderer(getWindow, 'surface.focus', { id: surfaceId }, {
           timeoutMs: HELP_REVEAL_TIMEOUT_MS,
         });
@@ -1458,7 +1469,12 @@ export function registerBrowserRpc(
     if (surfaceId) {
       try {
         const launcher = chromeRegistry?.forWorkspace(workspaceId);
-        if (launcher?.selectSurface) {
+        const reachable = launcher
+          ? (await launcher.cdpInfoTargets(workspaceId)).some(
+              (t) => t.surfaceId === surfaceId || t.targetId === surfaceId,
+            )
+          : false;
+        if (reachable && launcher?.selectSurface) {
           // Bounded like every other page-touching call here: a live-Chrome
           // endpoint that stops answering must not hold the RPC reply.
           await Promise.race([
@@ -1507,6 +1523,23 @@ export function registerBrowserRpc(
       );
     }
     const surfaceId = typeof params['surfaceId'] === 'string' ? params['surfaceId'] : undefined;
+    // On builtin every surface is a pane some workspace owns, so a surface this
+    // workspace cannot be proven to own is another workspace's pane — and a
+    // request against it would paint the Done/Cancel bar on THEIR pane and let
+    // their click settle this agent's wait. Refused at the door. (Live is
+    // different on purpose: asking the human to act on a tab the agent cannot
+    // write to is the feature; that lane only never raises such a tab.)
+    if (backend() === 'builtin' && surfaceId) {
+      const owned =
+        webviewCdpManager.getTarget(surfaceId, workspaceId) ??
+        (await webviewCdpManager.ensureAwake(surfaceId, workspaceId));
+      if (!owned) {
+        throw new Error(
+          `browser.help.request: BROWSER_SURFACE_NOT_REGISTERED: surface "${surfaceId}" is not a ` +
+            'browser pane of this workspace. Pass one of your own surfaces, or omit surfaceId.',
+        );
+      }
+    }
     const rawRef = params['ref'];
     const refRequested = typeof rawRef === 'string' && rawRef.length > 0;
     const ref = isHelpRef(rawRef) ? rawRef : undefined;

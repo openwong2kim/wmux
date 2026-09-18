@@ -497,7 +497,11 @@ export function registerInspectionTools(server: McpServer, deps: BrowserToolDeps
         // is part-way through is not a new observation to compare, so the diff
         // baseline is neither read nor written here.
         if (cursor) {
-          const continued = continueSnapshotCapture(cursor);
+          const continued = continueSnapshotCapture(
+            cursor,
+            undefined,
+            scope.surfaceId ? snapshotSurfaceKey(scope.workspaceId, scope.surfaceId) : undefined,
+          );
           const ignored = [
             format !== undefined && 'format',
             selector !== undefined && 'selector',

@@ -5,6 +5,11 @@ import {
   type BorrowApprovalRequest,
   type BorrowApprovalRequester,
 } from '../../shared/liveWriteScope';
+import { sanitizeHelpPrompt } from '../../shared/browserHelp';
+
+/** A tab title is page-controlled (document.title); this is as much of it as
+ *  the consent headline will carry. */
+const BORROW_TITLE_MAX_CHARS = 80;
 
 // ---------------------------------------------------------------------------
 // Asking the human to lend an agent one live Chrome tab.
@@ -28,7 +33,15 @@ export function borrowPromptTitle(
   workspaceName: string,
   request: Pick<BorrowApprovalRequest, 'title' | 'origin'>,
 ): string {
-  const tab = request.title.trim().length > 0 ? request.title.trim() : 'untitled';
+  // The title is whatever the page put in document.title, and it lands in the
+  // approval modal headline and the Fleet approvals row — so it gets the same
+  // control-character strip and a length cap that an agent-authored help
+  // prompt gets, rather than being interpolated raw.
+  // Double quotes are the title's own delimiter below: a title that closes
+  // the quote and appends its own "(origin)" would forge the one part of the
+  // headline the page does not control.
+  const cleaned = sanitizeHelpPrompt(request.title).replace(/"/g, "'").slice(0, BORROW_TITLE_MAX_CHARS);
+  const tab = cleaned.length > 0 ? cleaned : 'untitled';
   const where = request.origin.length > 0 ? ` (${request.origin})` : '';
   return `Agent in workspace ${workspaceName} wants to control tab "${tab}"${where}`;
 }

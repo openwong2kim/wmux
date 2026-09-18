@@ -124,6 +124,16 @@ describe('toolErrorCodeFor', () => {
     ['No browser page available. Call browser_open with a URL first', 'not_supported'],
     ['Unknown method: browser.hover.cdp', 'not_supported'],
     ['Element with ref=12 not found.', 'ref_not_found'],
+    ['Could not resolve ref="9" to an element.', 'ref_not_found'],
+    ['ref=3 is stale — the page navigated since snapshot #2', 'ref_not_found'],
+    // The Live Chrome write refusal is a scope refusal, and the one an agent
+    // most needs to branch on.
+    ['agent_window_scope: this tool call writes to a live Chrome tab this workspace does not own.', 'scope_refused'],
+    // A ref that RESOLVED but is in the wrong state is not a lost ref — the RPC
+    // lane names elements by their ref selector, and a bare `ref=` match used
+    // to send the agent back to re-snapshot for nothing.
+    ['Element is not visible: [data-wmux-ref="e5"]', 'element_not_visible'],
+    ['ref=7 is not a native <select>; click the trigger then the option.', 'element_not_interactable'],
     ['No element matches selector: .nope', 'selector_not_found'],
     ['Cannot accept dialog which is already handled!', 'dialog_blocked'],
     ['Element is not visible', 'element_not_visible'],

@@ -465,10 +465,34 @@ export function registerNavigationTools(server: McpServer, deps: BrowserToolDeps
                   'browser_navigate_back: no chrome page resolved for this scope.',
                 );
               }
-              await effect.dispatch(() =>
-                page.goBack({ waitUntil: 'domcontentloaded' }).catch(() => null),
-              );
+              // Playwright resolves null when there is no history entry to go
+              // back to: nothing moved, and the trailer must say `none` rather
+              // than assert an effect that did not happen. A goBack that
+              // REJECTED (the wait timed out, the navigation was blocked) is
+              // different — the page may or may not have moved — so that one
+              // goes out as a failure, which the probe classifies as `unknown`.
+              let wentBack: unknown;
+              try {
+                wentBack = await effect.dispatch(() => page.goBack({ waitUntil: 'domcontentloaded' }));
+              } catch (error) {
+                finalUrl = page.url();
+                return withEffectTrailer(
+                  {
+                    content: [{ type: 'text' as const, text: `Go back did not complete: ${describeToolError(error)} Current URL: ${redactPasswordParams(finalUrl)}` }],
+                    isError: true,
+                  },
+                  effect.failure(error),
+                );
+              }
               finalUrl = page.url();
+              if (wentBack === null) {
+                return withEffectTrailer(
+                  {
+                    content: [{ type: 'text' as const, text: `Did not go back: no history entry to return to. Current URL: ${redactPasswordParams(finalUrl)}` }],
+                  },
+                  { effect: 'none' },
+                );
+              }
               return withEffectTrailer(
                 {
                   content: [{ type: 'text' as const, text: `Went back. Current URL: ${redactPasswordParams(finalUrl)}` }],

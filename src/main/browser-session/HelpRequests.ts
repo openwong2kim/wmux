@@ -164,6 +164,15 @@ function normalizeCompletion(raw: BrowserHelpCompletion | undefined): BrowserHel
  */
 const MAX_RETAINED_RECORDS = 64;
 
+/**
+ * Ceiling on PENDING requests per workspace. The one-open-per-surface rule is
+ * keyed on a caller-supplied surfaceId, so without this an agent looping
+ * browser.help.request with fresh ids would arm an unbounded number of deadline
+ * timers, inbox rows and (on live) OS notifications. Well above what one agent
+ * can legitimately be waiting on at once.
+ */
+const MAX_PENDING_PER_WORKSPACE = 8;
+
 export class HelpRequests {
   private readonly records = new Map<string, HelpRecord>();
   /** surfaceKey → requestId of the PENDING request holding that slot. */
@@ -200,6 +209,16 @@ export class HelpRequests {
         void this.settle(held, 'timed_out');
       }
       if (this.bySurface.get(key) === holder) throw new HelpAlreadyPendingError(holder);
+    }
+    let pendingHere = 0;
+    for (const record of this.records.values()) {
+      if (record.state === 'pending' && record.workspaceId === args.workspaceId) pendingHere += 1;
+    }
+    if (pendingHere >= MAX_PENDING_PER_WORKSPACE) {
+      throw new Error(
+        `browser.help.request: this workspace already has ${pendingHere} help requests open; ` +
+          'cancel or wait for one before asking again.',
+      );
     }
     this.prune();
 

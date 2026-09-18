@@ -177,6 +177,27 @@ describe('LiveChromeClient write scope (agent window)', () => {
     expect(scope.ownerOf('tab-b', 'ws-b')).toBe('borrowed');
   });
 
+  it('an approve that lands after clearBorrows grants nothing (revoked consent stays revoked)', async () => {
+    respondWithWindow(7);
+    const client = new LiveChromeClient(dir);
+    const scope = writeScopeOf(client);
+
+    // The prompt is on screen when Chrome goes away / the profile is re-bound:
+    // clearBorrows drops the pending slot because the answer can no longer be
+    // honoured. The user's late "Approve" must not resurrect the grant.
+    expect(scope.beginBorrow('user-tab', 'ws-a')).toBe(true);
+    scope.clearBorrows();
+    scope.settleBorrow('user-tab', 'ws-a', true);
+    expect(scope.ownerOf('user-tab', 'ws-a')).toBe('user');
+
+    // Same for a per-workspace clear, and the slot is free for a fresh ask.
+    expect(scope.beginBorrow('user-tab', 'ws-a')).toBe(true);
+    scope.clearBorrows('ws-a');
+    scope.settleBorrow('user-tab', 'ws-a', true);
+    expect(scope.ownerOf('user-tab', 'ws-a')).toBe('user');
+    expect(scope.beginBorrow('user-tab', 'ws-a')).toBe(true);
+  });
+
   it('dispose clears every borrow and closes NO tab', async () => {
     respondWithWindow(7);
     const client = new LiveChromeClient(dir);

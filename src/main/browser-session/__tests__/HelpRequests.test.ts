@@ -87,6 +87,22 @@ describe('HelpRequests.create', () => {
     expect(() => h.store.create({ ...base, surfaceId: 'surf-2' })).not.toThrow();
   });
 
+  it('caps PENDING requests per workspace — a loop over fresh surface ids cannot arm timers without bound', async () => {
+    const h = harness();
+    // The per-surface slot is keyed on a caller-supplied id, so distinct ids
+    // would otherwise open distinct pending rows forever.
+    for (let i = 0; i < 8; i++) {
+      h.store.create({ ...base, surfaceId: `surf-${i}` });
+    }
+    expect(() => h.store.create({ ...base, surfaceId: 'surf-overflow' })).toThrow(/already has 8 help requests open/);
+    expect(h.opened).toHaveLength(8);
+    // Another workspace is not throttled by this one.
+    expect(() => h.store.create({ ...base, workspaceId: 'ws-2', surfaceId: 'surf-x' })).not.toThrow();
+    // Settling one frees a slot.
+    await h.store.cancel(h.opened[0].requestId, 'ws-1');
+    expect(() => h.store.create({ ...base, surfaceId: 'surf-overflow' })).not.toThrow();
+  });
+
   it('reclaims the slot of a holder whose deadline already passed', async () => {
     const h = harness(0);
     const stale = h.store.create({ ...base, timeoutMs: 1_000 });

@@ -331,6 +331,26 @@ export class PlaywrightEngine {
   private liveWriteScope: 'agent' | 'all' | undefined;
 
   /**
+   * Is this workspace on Live Chrome with writes confined to the agent window?
+   *
+   * For a tool whose mutation is not per-tab at all — a cookie write lands on
+   * the whole browser profile, every tab and site — the per-tab ownership gate
+   * proves nothing, so the tool asks this instead and refuses outright. Asked
+   * fresh (one cdp.info round trip) because the policy is the operator's and
+   * can have moved since it was cached; an unreachable main keeps the last
+   * answer, which on a fresh engine is "not live".
+   */
+  async isLiveWriteConfined(workspaceId: string): Promise<boolean> {
+    try {
+      const info = (await sendRpc('browser.cdp.info', { workspaceId })) as CdpInfoResponse;
+      this.cacheShellUrl(info);
+    } catch {
+      /* keep the cached answer */
+    }
+    return this.liveWriteScope === 'agent';
+  }
+
+  /**
    * Returns true if `url` is the wmux app shell (the main renderer window),
    * which must never be returned as the page-to-drive.
    *
