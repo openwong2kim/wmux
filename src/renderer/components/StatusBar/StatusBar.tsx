@@ -9,7 +9,7 @@ import { selectActiveWorkspaceSummary } from '../../stores/selectors/workspacePr
 import { tokenAttrs } from '../../themes';
 import { HIT_TARGET_24 } from '../hitArea';
 import { IconGear } from '../icons';
-import { selectFleetPanes, sortFleetPanes, countNeedsAttention } from '../../stores/selectors/fleet';
+import { selectFleetPanes, sortFleetPanes, countNeedsAttention, type FleetPane } from '../../stores/selectors/fleet';
 import PluginStatusBarWidgets from '../../plugins/PluginStatusBarWidgets';
 import { COMPANY_MODE_ENABLED } from '../../../shared/featureFlags';
 import DeckToggle from '../Deck/DeckToggle';
@@ -87,6 +87,19 @@ export function NotificationBellBadgeView({ unreadCount, onActivate }: Notificat
   );
 }
 
+/**
+ * Rows the vitals chip counts as agents.
+ *
+ * A local row needs a spawned PTY on a terminal surface. #1343 — a remote row
+ * has neither: `surfaceType` is 'remote-terminal' and its ptyId is the
+ * synthetic remote key, so it is admitted on `remote` alone. The chip is a
+ * fleet-wide READOUT (and a jump target), not a command surface, which is why
+ * remote agents belong here but not in DeckFleet.
+ */
+function isFleetAgentRow(p: FleetPane): boolean {
+  return p.remote ? true : p.ptyId !== '' && p.surfaceType === 'terminal';
+}
+
 export default function StatusBar() {
   const t = useT();
   // A1: 통트리 구독 해체. StatusBar는 활성 ws의 name/branch 요약과 unreadCount
@@ -114,7 +127,8 @@ export default function StatusBar() {
         surfaceActivity: s.surfaceActivity,
         surfaceAgent: s.surfaceAgent,
         surfacePendingQuestion: s.surfacePendingQuestion,
-      }).filter((p) => p.ptyId !== '' && p.surfaceType === 'terminal');
+        remoteWorkspaces: s.remoteWorkspaces,
+      }).filter(isFleetAgentRow);
       return {
         running: panes.filter((p) => p.agentStatus === 'running').length,
         needsYou: countNeedsAttention(panes),
@@ -131,7 +145,8 @@ export default function StatusBar() {
         surfaceActivity: s.surfaceActivity,
         surfaceAgent: s.surfaceAgent,
         surfacePendingQuestion: s.surfacePendingQuestion,
-      }).filter((p) => p.ptyId !== '' && p.surfaceType === 'terminal'),
+        remoteWorkspaces: s.remoteWorkspaces,
+      }).filter(isFleetAgentRow),
       'attention',
     );
     const target = panes[0];

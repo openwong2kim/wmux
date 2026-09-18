@@ -120,6 +120,12 @@ export default function DeckFleet({
     // deck is this workspace's orchestrator, so its roster is this
     // workspace's agents — the fleet-wide view lives in the titlebar vitals).
     // Browser/editor/diff surfaces and not-yet-spawned panes are not agents.
+    // #1343 — remote agents are deliberately NOT here, though Fleet View and
+    // the titlebar vitals chip show them. This roster is COMMANDABLE: every row
+    // drives the local input path, and a remote pane can only be driven through
+    // its own host's input API. Excluded twice over — `remoteWorkspaces` is
+    // never passed to the selector above, and a remote row keeps
+    // `surfaceType: 'remote-terminal'`, which this filter rejects.
     return sortFleetPanes(
       all.filter(
         (p) =>
