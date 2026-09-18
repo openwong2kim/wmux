@@ -143,3 +143,150 @@ export function exceedsDeclaredBodyLimit(contentLength: string | null): boolean 
   const n = Number(contentLength);
   return Number.isFinite(n) && n > MAX_BODY_BYTES;
 }
+
+/**
+ * The Live Activity route, which is a DIFFERENT KIND OF REQUEST and gets its own
+ * validator rather than a flag on the one above.
+ *
+ * `/push` forwards an opaque sealed blob. This one cannot: a Live Activity push
+ * never runs the Notification Service Extension, so there is nowhere on-device
+ * to decrypt an envelope, and the content-state travels in the clear. The
+ * allowlist below is therefore the relay's promise about what it is willing to
+ * carry in the clear — six integers, named, typed, and NOTHING ELSE. An unknown
+ * key is a 400, not a passthrough: the moment this accepts a field it does not
+ * understand, a daemon bug can put a pane name or a question on the wire.
+ */
+export const ALLOWED_LIVE_EVENTS = ['start', 'update', 'end'] as const;
+export type LiveActivityEvent = (typeof ALLOWED_LIVE_EVENTS)[number];
+
+/**
+ * The two the app decodes with `decode`, not `decodeIfPresent`. A payload
+ * missing either fails to decode on-device, and a Live Activity that cannot
+ * decode its content-state freezes on the numbers it already had — a silent
+ * failure with no signal anywhere.
+ */
+const REQUIRED_COUNTS = ['pendingApprovals', 'runningAgents'] as const;
+/** Present or absent; the app defaults them. */
+const OPTIONAL_COUNTS = ['workingAgents', 'idleAgents', 'blockedPanes'] as const;
+/** Optional AND nullable: null is "nothing is blocked", which is not zero. */
+const NULLABLE_COUNTS = ['oldestBlockedMinutes'] as const;
+
+export interface LiveActivityRequest {
+  apnsToken: string;
+  apnsEnvironment?: ApnsEnvironment;
+  event: LiveActivityEvent;
+  contentState: Record<string, number | null>;
+  attributes?: { daemonName?: string };
+  staleDate?: number;
+  dismissalDate?: number;
+  timestamp: number;
+}
+
+export type LiveValidationResult =
+  | { ok: true; value: LiveActivityRequest }
+  | { ok: false; error: ValidationFailure };
+
+function isEpochSeconds(value: unknown): value is number {
+  // Bounded as well as integral: an absurd date is a header APNs rejects, and
+  // catching it here turns a remote 400 into a local one.
+  return typeof value === 'number' && Number.isInteger(value) && value > 0 && value < 1e11;
+}
+
+/** Validate the decoded JSON body of `POST /live`. */
+export function validateLiveRequest(body: unknown): LiveValidationResult {
+  if (body === null || typeof body !== 'object' || Array.isArray(body)) {
+    return { ok: false, error: { status: 400, reason: 'body-not-object' } };
+  }
+  const raw = body as Record<string, unknown>;
+
+  const token = raw.apnsToken;
+  if (typeof token !== 'string' || !DEVICE_TOKEN_PATTERN.test(token)) {
+    return { ok: false, error: { status: 400, reason: 'bad-device-token' } };
+  }
+
+  const event = raw.event;
+  if (!ALLOWED_LIVE_EVENTS.includes(event as LiveActivityEvent)) {
+    return { ok: false, error: { status: 400, reason: 'bad-event' } };
+  }
+
+  const state = raw.contentState;
+  if (state === null || typeof state !== 'object' || Array.isArray(state)) {
+    return { ok: false, error: { status: 400, reason: 'bad-content-state' } };
+  }
+  const contentState: Record<string, number | null> = {};
+  const known = new Set<string>([...REQUIRED_COUNTS, ...OPTIONAL_COUNTS, ...NULLABLE_COUNTS]);
+  for (const key of Object.keys(state as Record<string, unknown>)) {
+    if (!known.has(key)) return { ok: false, error: { status: 400, reason: 'bad-content-state' } };
+  }
+  const counts = state as Record<string, unknown>;
+  for (const key of REQUIRED_COUNTS) {
+    if (!Number.isInteger(counts[key])) {
+      return { ok: false, error: { status: 400, reason: 'bad-content-state' } };
+    }
+    contentState[key] = counts[key] as number;
+  }
+  for (const key of OPTIONAL_COUNTS) {
+    if (counts[key] === undefined) continue;
+    if (!Number.isInteger(counts[key])) {
+      return { ok: false, error: { status: 400, reason: 'bad-content-state' } };
+    }
+    contentState[key] = counts[key] as number;
+  }
+  for (const key of NULLABLE_COUNTS) {
+    if (counts[key] === undefined) continue;
+    if (counts[key] !== null && !Number.isInteger(counts[key])) {
+      return { ok: false, error: { status: 400, reason: 'bad-content-state' } };
+    }
+    contentState[key] = counts[key] as number | null;
+  }
+
+  let attributes: { daemonName?: string } | undefined;
+  if (raw.attributes !== undefined) {
+    const a = raw.attributes;
+    if (a === null || typeof a !== 'object' || Array.isArray(a)) {
+      return { ok: false, error: { status: 400, reason: 'bad-attributes' } };
+    }
+    for (const key of Object.keys(a as Record<string, unknown>)) {
+      if (key !== 'daemonName') {
+        return { ok: false, error: { status: 400, reason: 'bad-attributes' } };
+      }
+    }
+    const daemonName = (a as Record<string, unknown>).daemonName;
+    if (daemonName !== undefined && (typeof daemonName !== 'string' || daemonName.length > 64)) {
+      return { ok: false, error: { status: 400, reason: 'bad-attributes' } };
+    }
+    attributes = daemonName === undefined ? {} : { daemonName };
+  }
+
+  if (!isEpochSeconds(raw.timestamp)) {
+    return { ok: false, error: { status: 400, reason: 'bad-timestamp' } };
+  }
+  if (raw.staleDate !== undefined && !isEpochSeconds(raw.staleDate)) {
+    return { ok: false, error: { status: 400, reason: 'bad-stale-date' } };
+  }
+  if (raw.dismissalDate !== undefined && !isEpochSeconds(raw.dismissalDate)) {
+    return { ok: false, error: { status: 400, reason: 'bad-dismissal-date' } };
+  }
+
+  let apnsEnvironment: ApnsEnvironment | undefined;
+  if (raw.apnsEnvironment !== undefined) {
+    if (!ALLOWED_APNS_ENVIRONMENTS.includes(raw.apnsEnvironment as ApnsEnvironment)) {
+      return { ok: false, error: { status: 400, reason: 'bad-apns-environment' } };
+    }
+    apnsEnvironment = raw.apnsEnvironment as ApnsEnvironment;
+  }
+
+  return {
+    ok: true,
+    value: {
+      apnsToken: token,
+      event: event as LiveActivityEvent,
+      contentState,
+      timestamp: raw.timestamp,
+      ...(attributes !== undefined ? { attributes } : {}),
+      ...(raw.staleDate !== undefined ? { staleDate: raw.staleDate as number } : {}),
+      ...(raw.dismissalDate !== undefined ? { dismissalDate: raw.dismissalDate as number } : {}),
+      ...(apnsEnvironment !== undefined ? { apnsEnvironment } : {}),
+    },
+  };
+}

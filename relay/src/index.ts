@@ -21,13 +21,29 @@
  * The visible alert the relay sends is a fixed placeholder; the iOS Notification
  * Service Extension decrypts and rewrites it on-device.
  *
+ * THE ONE EXCEPTION, AND IT IS NOT A NOTIFICATION BODY
+ * `POST /live` carries Live Activity content-state, which CANNOT be sealed: a
+ * Live Activity push never runs the Notification Service Extension, so there is
+ * nowhere on-device to decrypt an envelope. What it carries is six named
+ * integers — counts of pending approvals, blocked panes, agents — validated
+ * against a closed allowlist in validate.ts so an unknown field can never ride
+ * along. No pane name, no workspace, no question text, no preview. The claim
+ * above stands for every notification BODY; on this route the relay can read a
+ * set of counters.
+ *
  * STATE
  * One cached APNs provider JWT per isolate (apnsJwt.ts). No KV, no D1, no
  * database, no accounts, no queue.
  */
 
 import { createApnsTokenProvider, type ApnsTokenProvider } from './apnsJwt';
-import { exceedsDeclaredBodyLimit, MAX_BODY_BYTES, validatePushRequest } from './validate';
+import {
+  exceedsDeclaredBodyLimit,
+  MAX_BODY_BYTES,
+  validateLiveRequest,
+  validatePushRequest,
+  type LiveActivityRequest,
+} from './validate';
 
 export interface RelayEnv {
   /** Contents of the AuthKey_XXXXXXXXXX.p8 file (secret). */
@@ -292,10 +308,96 @@ async function forwardToApns(
   };
 }
 
-async function handlePush(req: Request, env: RelayEnv, startedAt: number): Promise<Response> {
+/**
+ * Live Activity updates expire in two minutes, not five.
+ *
+ * These are counters, and a counter delivered late is WRONG rather than merely
+ * old: APNs retrying a queued update after the numbers moved would overwrite the
+ * current lock screen with a stale one. Two minutes is long enough to survive a
+ * phone in a tunnel and short enough that nothing Apple redelivers can lose to
+ * a fresher push.
+ */
+const LIVE_EXPIRATION_SECONDS = 120;
+
+/**
+ * The APNs topic suffix Apple requires for Live Activity pushes.
+ *
+ * Appended HERE rather than stored in `APNS_TOPIC`, so the secret stays the
+ * plain bundle id that `/push` needs and adding this route changed no
+ * deployment configuration.
+ */
+const LIVE_TOPIC_SUFFIX = '.push-type.liveactivity';
+
+/**
+ * Apple orders competing activities by this. One constant: wmux shows one
+ * activity per daemon, so there is nothing here to rank against.
+ */
+const LIVE_RELEVANCE_SCORE = 100;
+
+async function forwardLiveToApns(
+  env: RelayEnv,
+  token: string,
+  request: LiveActivityRequest,
+  nowMs: number,
+): Promise<{ status: number; reason?: string; apnsId?: string }> {
+  const host = apnsHost(request.apnsEnvironment, env.APNS_ENV);
+  const headers: Record<string, string> = {
+    authorization: `bearer ${token}`,
+    'apns-topic': `${env.APNS_TOPIC}${LIVE_TOPIC_SUFFIX}`,
+    'apns-push-type': 'liveactivity',
+    // Always 10. A Live Activity update at priority 5 can be held by the system
+    // until it feels like delivering it, which for "someone is blocked on you"
+    // is the same as not sending it.
+    'apns-priority': '10',
+    'apns-expiration': String(Math.floor(nowMs / 1000) + LIVE_EXPIRATION_SECONDS),
+    'content-type': 'application/json',
+  };
+
+  const aps: Record<string, unknown> = {
+    timestamp: request.timestamp,
+    event: request.event,
+    'content-state': request.contentState,
+    'relevance-score': LIVE_RELEVANCE_SCORE,
+  };
+  if (request.staleDate !== undefined) aps['stale-date'] = request.staleDate;
+  if (request.dismissalDate !== undefined) aps['dismissal-date'] = request.dismissalDate;
+  if (request.event === 'start') {
+    aps['attributes-type'] = 'FleetActivityAttributes';
+    aps['attributes'] = request.attributes ?? {};
+  }
+  // NO `alert`. Apple makes it optional on a start, and the same approval
+  // already sends a sealed notification through `/push` — adding one here would
+  // put two banners on the lock screen for one event.
+
+  const res = await fetch(`${host}/3/device/${request.apnsToken}`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ aps }),
+    redirect: 'manual',
+    signal: AbortSignal.timeout(APNS_TIMEOUT_MS),
+  });
+
+  const text = await res.text();
+  return {
+    status: res.status,
+    reason: extractApnsReason(text),
+    apnsId: res.headers.get('apns-id') ?? undefined,
+  };
+}
+
+/**
+ * Everything both routes do before they know what they are forwarding: the size
+ * cap, the configuration check, the bearer comparison, the bounded read and the
+ * JSON parse — in that order, because a stranger must not be able to make the
+ * isolate buffer anything or reach the code that spends our provider key.
+ */
+async function authorizeAndParse(
+  req: Request,
+  env: RelayEnv,
+): Promise<{ ok: true; body: unknown } | { ok: false; res: Response }> {
   if (exceedsDeclaredBodyLimit(req.headers.get('content-length'))) {
     logEvent({ event: 'reject', status: 413, reason: 'body-too-large' });
-    return json(413, { ok: false, reason: 'body-too-large' }, 'relay');
+    return { ok: false, res: json(413, { ok: false, reason: 'body-too-large' }, 'relay') };
   }
 
   // Configuration is checked BEFORE the caller is judged: an unconfigured relay
@@ -305,32 +407,87 @@ async function handlePush(req: Request, env: RelayEnv, startedAt: number): Promi
   if (missing !== null) {
     // Name the variable in the log for the operator, never in the response.
     logEvent({ event: 'error', status: 500, reason: `missing-${missing}` });
-    return json(500, { ok: false, reason: 'relay-misconfigured' }, 'relay');
+    return { ok: false, res: json(500, { ok: false, reason: 'relay-misconfigured' }, 'relay') };
   }
 
-  // Authenticate before reading a single byte of body. This ordering is the
-  // point: a stranger must not be able to make the isolate buffer anything, and
-  // must not reach the code that spends our APNs provider key.
   if (!(await secretsMatch(bearer(req), env.RELAY_SHARED_SECRET))) {
     logEvent({ event: 'reject', status: 401, reason: 'unauthorized' });
-    return json(401, { ok: false, reason: 'unauthorized' }, 'relay');
+    return { ok: false, res: json(401, { ok: false, reason: 'unauthorized' }, 'relay') };
   }
 
   const raw = await readBoundedBody(req, MAX_BODY_BYTES);
   if (raw === null) {
     logEvent({ event: 'reject', status: 413, reason: 'body-too-large' });
-    return json(413, { ok: false, reason: 'body-too-large' }, 'relay');
+    return { ok: false, res: json(413, { ok: false, reason: 'body-too-large' }, 'relay') };
   }
 
-  let parsed: unknown;
   try {
-    parsed = JSON.parse(new TextDecoder().decode(raw));
+    return { ok: true, body: JSON.parse(new TextDecoder().decode(raw)) };
   } catch {
     logEvent({ event: 'reject', status: 400, reason: 'bad-json' });
-    return json(400, { ok: false, reason: 'bad-json' }, 'relay');
+    return { ok: false, res: json(400, { ok: false, reason: 'bad-json' }, 'relay') };
+  }
+}
+
+async function handleLive(req: Request, env: RelayEnv, startedAt: number): Promise<Response> {
+  const gate = await authorizeAndParse(req, env);
+  if (!gate.ok) return gate.res;
+
+  const validated = validateLiveRequest(gate.body);
+  if (!validated.ok) {
+    // `reason` names a field, never a value — see validate.ts.
+    logEvent({ event: 'reject', status: validated.error.status, reason: validated.error.reason });
+    return json(validated.error.status, { ok: false, reason: validated.error.reason }, 'relay');
   }
 
-  const validated = validatePushRequest(parsed);
+  const tokenProvider = getProvider(env);
+  const now = Date.now();
+
+  let result: { status: number; reason?: string; apnsId?: string };
+  try {
+    result = await forwardLiveToApns(env, await tokenProvider.getToken(now), validated.value, now);
+    if (result.status === 403 && result.reason !== undefined && TOKEN_RETRY_REASONS.has(result.reason)) {
+      tokenProvider.invalidate();
+      result = await forwardLiveToApns(env, await tokenProvider.getToken(now), validated.value, now);
+    }
+  } catch (err) {
+    const reason = err instanceof Error && err.name === 'TimeoutError' ? 'apns-timeout' : 'apns-unreachable';
+    logEvent({ event: 'error', status: 502, reason, ms: Date.now() - startedAt });
+    return json(502, { ok: false, reason }, 'relay');
+  }
+
+  logEvent({
+    event: 'push',
+    status: result.status,
+    apnsStatus: result.status,
+    reason: result.reason,
+    ms: Date.now() - startedAt,
+  });
+
+  // Apple's status, untouched. 410 is load-bearing here too, but it means
+  // something NARROWER than on /push: the daemon forgets the one token this
+  // request used, never the device's push registration.
+  return json(
+    result.status,
+    {
+      ok: result.status === 200,
+      apnsStatus: result.status,
+      ...(result.reason !== undefined ? { reason: result.reason } : {}),
+      ...(result.apnsId !== undefined ? { apnsId: result.apnsId } : {}),
+    },
+    'apns',
+  );
+}
+
+async function handlePush(req: Request, env: RelayEnv, startedAt: number): Promise<Response> {
+  // Size cap, configuration, bearer, bounded read, parse — shared with /live,
+  // and the ordering is the point: a stranger must not be able to make the
+  // isolate buffer anything, and must not reach the code that spends our APNs
+  // provider key.
+  const gate = await authorizeAndParse(req, env);
+  if (!gate.ok) return gate.res;
+
+  const validated = validatePushRequest(gate.body);
   if (!validated.ok) {
     // `reason` names a field, never a value — see validate.ts.
     logEvent({ event: 'reject', status: validated.error.status, reason: validated.error.reason });
@@ -392,7 +549,7 @@ export default {
       return json(200, { ok: true }, 'relay');
     }
 
-    if (pathname !== '/push') {
+    if (pathname !== '/push' && pathname !== '/live') {
       return json(404, { ok: false, reason: 'not-found' }, 'relay');
     }
     if (req.method !== 'POST') {
@@ -400,7 +557,9 @@ export default {
     }
 
     try {
-      return await handlePush(req, env, startedAt);
+      return pathname === '/live'
+        ? await handleLive(req, env, startedAt)
+        : await handlePush(req, env, startedAt);
     } catch {
       // Never let an exception message reach the client: it could quote a
       // header or a body fragment.
