@@ -1109,3 +1109,30 @@ describe('navigation watch (#1193)', () => {
     mockedResolve.mockRestore();
   });
 });
+
+describe('the mutating tools’ effect trailer does not reach a replay', () => {
+  it('reads each step’s outcome off the page, not out of a tool result', async () => {
+    const mod = await import('../../playwright/snapshot');
+    vi.spyOn(mod, 'resolveRef').mockResolvedValue(element('sign-in'));
+
+    const result = await replayTrace(page, trace([refStep()]), undefined);
+
+    // The runner drives Playwright itself: it never calls browser_click, so the
+    // `effect_state:` lines the live tools now append cannot end up in a step
+    // detail, a warning, or the rendered run.
+    expect(result.ok).toBe(true);
+    expect(result.steps[0].detail).toBe('clicked button "Sign in"');
+    expect(JSON.stringify(result)).not.toContain('effect_state');
+    expect(JSON.stringify(result)).not.toContain('error_code');
+  });
+
+  it('reports a step that could not be resolved in its own words', async () => {
+    refEntries = [];
+
+    const result = await replayTrace(page, trace([refStep()]), undefined);
+
+    expect(result.ok).toBe(false);
+    expect(result.steps[0].detail).toContain('no button "Sign in" on the page any more');
+    expect(JSON.stringify(result)).not.toContain('effect_state');
+  });
+});

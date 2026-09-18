@@ -1,3 +1,4 @@
+import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { sendRpc } from '../wmux-client';
 import {
   leaseSurfaceScope,
@@ -8,6 +9,8 @@ import {
 } from './browserScope';
 
 import { hintBlockMeta } from './hintBlock';
+import { describeToolError } from './toolError';
+import { createEffectProbe, withEffectTrailer, type EffectProbe } from './resultTrailer';
 import { takeGuideAnnouncement } from './guideAnnounce';
 import { redactPasswordParams } from './redact';
 import { invalidateSnapshotBaseline, invalidateSnapshotBaselineIfStale } from './snapshotCache';
@@ -456,5 +459,40 @@ export async function withAutomationLease<T>(
     sendRpc('browser.lease.release', { token: heldToken }).catch(() => {
       /* TTL expiry cleans up */
     });
+  }
+}
+
+/**
+ * withAutomationLease for a MUTATING tool: the effect trailer covers whatever
+ * escapes the lease, not only what the body catches itself.
+ *
+ * The lease settles the workspace scope BEFORE it calls the body — that is the
+ * whole point of requireBrowserTargetScope — so a scope refusal, or a surface
+ * that was opened and never became addressable, rejects outside the body's own
+ * try/catch. Those were the one failure shape reaching the agent with no
+ * `effect_state` at all, while the tool's description promises one on every
+ * result. They are `none` as reliably as any refusal: nothing can have been
+ * dispatched before the scope exists.
+ *
+ * The probe is created here and handed to the body, so both catch sites read the
+ * same dispatch flag.
+ */
+export async function leasedMutation<T extends CallToolResult>(
+  deps: BrowserToolDeps,
+  surfaceId: string | undefined,
+  body: (scope: BrowserTargetScope, effect: EffectProbe) => Promise<T>,
+  opts?: AutomationLeaseOpts<T>,
+): Promise<T | CallToolResult> {
+  const effect = createEffectProbe();
+  try {
+    return await withAutomationLease(deps, surfaceId, (scope) => body(scope, effect), opts);
+  } catch (error) {
+    return withEffectTrailer(
+      {
+        content: [{ type: 'text' as const, text: describeToolError(error) }],
+        isError: true,
+      },
+      effect.failure(error),
+    );
   }
 }
