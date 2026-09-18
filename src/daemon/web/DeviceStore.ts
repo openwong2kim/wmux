@@ -238,6 +238,37 @@ export interface DevicePushRegistration {
   apnsEnvironment?: 'development' | 'production';
 }
 
+/**
+ * What a device registers so the daemon can drive its Live Activity.
+ *
+ * TWO TOKENS, ARRIVING AT DIFFERENT TIMES, which is the whole reason this is a
+ * record of its own and not more fields on `DevicePushRegistration`. iOS hands
+ * the app a push-to-start token at launch and an activity token only once an
+ * activity actually exists — so the route that writes this MERGES (see
+ * `registerLiveActivity`), while `registerPush` replaces wholesale.
+ *
+ * Neither is a secret, for the same reason the push registration's fields are
+ * not: they are APNs routing handles Apple mints and rotates.
+ */
+export interface DeviceLiveActivityRegistration {
+  /** Starts an activity the app has not created yet. Lowercase hex. */
+  pushToStartToken?: string;
+  /** Updates the activity that is running now. Lowercase hex. Dies with it. */
+  activityToken?: string;
+  /**
+   * Which APNs stage minted these, read from the app's own provisioning
+   * profile.
+   *
+   * REGISTERED HERE, not borrowed from the push registration. A phone that
+   * refused notification permission has no push registration at all — Live
+   * Activities are a separate permission — and a push registration replaces
+   * wholesale, so a stage learned there can vanish under this one's feet.
+   */
+  apnsEnvironment?: 'development' | 'production';
+  /** When the device last told us any of these. */
+  registeredAt: number;
+}
+
 interface DeviceRecord {
   deviceId: string;
   name: string;
@@ -264,6 +295,7 @@ interface DeviceRecord {
    */
   allowInput?: boolean;
   push?: DevicePushRegistration;
+  liveActivity?: DeviceLiveActivityRegistration;
 }
 
 /** Resolve a record's grant, applying the grandfather rule in one place. */
@@ -671,6 +703,149 @@ export class DeviceStore {
     return true;
   }
 
+  // --- live activity --------------------------------------------------------
+
+  /**
+   * Record where to reach this device's Live Activity. MERGES.
+   *
+   * The two tokens do not arrive together: iOS issues the push-to-start token at
+   * launch, and the activity token only after an activity exists — which, when
+   * the daemon is the one starting it, is a round trip later. A wholesale
+   * replace (what `registerPush` does) would mean each call erased whichever
+   * token was not in hand, so the daemon would never hold both at once.
+   *
+   * So: an OMITTED field is left alone, and an explicit `null` REMOVES one.
+   * `activityToken: null` is how the app says the activity is over — it ended
+   * it, or the person swiped it away — and the alternative to hearing that is
+   * pushing at a token until Apple answers 410.
+   *
+   * Refuses on an unknown or revoked device, for the same reason `registerPush`
+   * does: a revoked phone must not be able to keep itself reachable.
+   */
+  registerLiveActivity(
+    deviceId: string,
+    input: {
+      pushToStartToken?: unknown;
+      activityToken?: unknown;
+      apnsEnvironment?: unknown;
+    },
+  ): {
+    ok: boolean;
+    reason?: 'not-found' | 'revoked' | 'bad-token' | 'bad-apns-environment' | 'persist-failed';
+  } {
+    const record = this.devices.get(deviceId);
+    if (!record) return { ok: false, reason: 'not-found' };
+    if (record.revokedAt !== undefined) return { ok: false, reason: 'revoked' };
+
+    // `undefined` = leave it, `null` = drop it, a string = set it. Anything
+    // else is a client bug and is said out loud rather than dropped, the same
+    // way a bad stage is: a silently ignored token is a lock screen that never
+    // updates and nothing to trace it to.
+    const readToken = (raw: unknown): string | null | undefined | 'bad' => {
+      if (raw === undefined) return undefined;
+      if (raw === null) return null;
+      if (typeof raw !== 'string') return 'bad';
+      const token = raw.trim().toLowerCase();
+      return APNS_TOKEN_PATTERN.test(token) ? token : 'bad';
+    };
+
+    const pushToStart = readToken(input?.pushToStartToken);
+    const activity = readToken(input?.activityToken);
+    if (pushToStart === 'bad' || activity === 'bad') return { ok: false, reason: 'bad-token' };
+
+    // Same allowlist as `registerPush`, handed over raw by the route so a
+    // present-but-unreadable value cannot be coerced into absence.
+    const rawEnv = input?.apnsEnvironment;
+    if (rawEnv !== undefined && rawEnv !== 'development' && rawEnv !== 'production') {
+      return { ok: false, reason: 'bad-apns-environment' };
+    }
+
+    const previous = record.liveActivity;
+    const merged: DeviceLiveActivityRegistration = {
+      ...(previous ?? {}),
+      registeredAt: this.now(),
+    };
+    if (pushToStart === null) delete merged.pushToStartToken;
+    else if (pushToStart !== undefined) merged.pushToStartToken = pushToStart;
+    if (activity === null) delete merged.activityToken;
+    else if (activity !== undefined) merged.activityToken = activity;
+    if (rawEnv !== undefined) merged.apnsEnvironment = rawEnv;
+    record.liveActivity = merged;
+
+    if (!this.persist()) {
+      // Roll back rather than report a registration a restart forgets — the
+      // app would believe the daemon is driving its activity and watch the lock
+      // screen go stale instead.
+      if (previous) record.liveActivity = previous;
+      else delete record.liveActivity;
+      return { ok: false, reason: 'persist-failed' };
+    }
+    return { ok: true };
+  }
+
+  /** Every device whose Live Activity the daemon can currently reach. */
+  liveActivityTargets(): Array<{
+    deviceId: string;
+    name: string;
+    liveActivity: DeviceLiveActivityRegistration;
+  }> {
+    const out: Array<{
+      deviceId: string;
+      name: string;
+      liveActivity: DeviceLiveActivityRegistration;
+    }> = [];
+    for (const record of this.devices.values()) {
+      if (record.revokedAt !== undefined || !record.liveActivity) continue;
+      out.push({
+        deviceId: record.deviceId,
+        name: record.name,
+        liveActivity: { ...record.liveActivity },
+      });
+    }
+    return out;
+  }
+
+  /**
+   * Drop the ACTIVITY token only — what a 410 on an update means.
+   *
+   * Deliberately not `forgetPush`. An activity token dies every time an
+   * activity ends, which is routine and frequent; treating that as "this device
+   * is gone" would switch the device's approval notifications off several times
+   * a day. The push-to-start token survives too, so the next pending approval
+   * can start a fresh activity.
+   */
+  forgetLiveActivityToken(deviceId: string): boolean {
+    const record = this.devices.get(deviceId);
+    if (!record?.liveActivity?.activityToken) return false;
+    const previous = record.liveActivity;
+    record.liveActivity = { ...previous };
+    delete record.liveActivity.activityToken;
+    if (!this.persist()) {
+      record.liveActivity = previous;
+      this.log('error', `[web] could not persist the dead activity-token removal for ${deviceId}`);
+      return false;
+    }
+    return true;
+  }
+
+  /** Drop the PUSH-TO-START token only — what a 410 on a start means. */
+  forgetPushToStartToken(deviceId: string): boolean {
+    const record = this.devices.get(deviceId);
+    if (!record?.liveActivity?.pushToStartToken) return false;
+    const previous = record.liveActivity;
+    record.liveActivity = { ...previous };
+    delete record.liveActivity.pushToStartToken;
+    if (!this.persist()) {
+      record.liveActivity = previous;
+      this.log(
+        'error',
+        `[web] could not persist the dead push-to-start-token removal for ${deviceId}`,
+      );
+      return false;
+    }
+    return true;
+  }
+
   // --- authentication -------------------------------------------------------
 
   /**
@@ -1025,6 +1200,10 @@ function coerceDevice(raw: unknown): DeviceRecord | null {
   // phone may not hold and deliver a notification it cannot open.
   const push = coercePush(o['push']);
   if (push) record.push = push;
+  // Absent on every record written before Live Activity push existed, which is
+  // simply "this device has not registered one" — the app registers on launch.
+  const liveActivity = coerceLiveActivity(o['liveActivity']);
+  if (liveActivity) record.liveActivity = liveActivity;
   // ABSENT and MALFORMED are different, and only the first grandfathers.
   //
   // Absent marks a record written before per-device grants existed, whose
@@ -1077,6 +1256,43 @@ function coercePush(raw: unknown): DevicePushRegistration | null {
   const rawEnv = o['apnsEnvironment'];
   const apnsEnvironment = rawEnv === 'development' || rawEnv === 'production' ? rawEnv : undefined;
   return { apnsToken, publicKey, registeredAt, ...(apnsEnvironment ? { apnsEnvironment } : {}) };
+}
+
+/**
+ * Restore a Live Activity registration.
+ *
+ * PER TOKEN, not all-or-nothing. The two tokens are independent handles with
+ * independent lifetimes, so a half-written or hand-edited record keeps the half
+ * that still parses instead of losing both — the same reasoning that made the
+ * write path a merge. A record with neither token left is nothing to hold.
+ *
+ * A malformed stage is IGNORED rather than fatal, matching `coercePush`: "stage
+ * unknown" is a state the relay already handles, and `registerLiveActivity` is
+ * where a live client hears that its value was wrong.
+ */
+function coerceLiveActivity(raw: unknown): DeviceLiveActivityRegistration | null {
+  if (typeof raw !== 'object' || raw === null) return null;
+  const o = raw as Record<string, unknown>;
+  const readToken = (value: unknown): string | undefined => {
+    if (typeof value !== 'string') return undefined;
+    const token = value.toLowerCase();
+    return APNS_TOKEN_PATTERN.test(token) ? token : undefined;
+  };
+  const pushToStartToken = readToken(o['pushToStartToken']);
+  const activityToken = readToken(o['activityToken']);
+  if (!pushToStartToken && !activityToken) return null;
+  const registeredAt =
+    typeof o['registeredAt'] === 'number' && Number.isFinite(o['registeredAt'])
+      ? o['registeredAt']
+      : 0;
+  const rawEnv = o['apnsEnvironment'];
+  const apnsEnvironment = rawEnv === 'development' || rawEnv === 'production' ? rawEnv : undefined;
+  return {
+    ...(pushToStartToken ? { pushToStartToken } : {}),
+    ...(activityToken ? { activityToken } : {}),
+    ...(apnsEnvironment ? { apnsEnvironment } : {}),
+    registeredAt,
+  };
 }
 
 function coerceKdf(raw: unknown): DeviceKdfParams | null {
