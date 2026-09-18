@@ -23,6 +23,13 @@ type ToolHandler = (args: Record<string, unknown>) => Promise<{
   isError?: boolean;
 }>;
 
+/**
+ * The trailer every mutating browser result now ends with (resultTrailer.ts).
+ * Spelled out here rather than imported: these assertions are exact on purpose,
+ * and the trailer is part of what they pin.
+ */
+const COMMITTED = '\n\neffect_state: committed';
+
 const browserToolDeps = { resolveWorkspaceId: vi.fn(async () => 'ws-test') };
 
 function collectTools(): Map<string, ToolHandler> {
@@ -95,7 +102,7 @@ describe('browser_fill RPC fallback workspace scope', () => {
       }],
     ]);
     expect(result.isError).toBeUndefined();
-    expect(result.content[0].text).toBe('Filled 1/1 field(s).');
+    expect(result.content[0].text).toBe('Filled 1/1 field(s).' + COMMITTED);
   });
 
   it('types nothing when the click did not take focus, instead of overwriting another field', async () => {

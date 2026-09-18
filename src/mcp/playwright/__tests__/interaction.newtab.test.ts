@@ -37,6 +37,13 @@ type ToolHandler = (args: Record<string, unknown>) => Promise<{
   isError?: boolean;
 }>;
 
+/**
+ * The trailer every mutating browser result now ends with (resultTrailer.ts).
+ * Spelled out here rather than imported: these assertions are exact on purpose,
+ * and the trailer is part of what they pin.
+ */
+const COMMITTED = '\n\neffect_state: committed';
+
 const browserToolDeps = { resolveWorkspaceId: vi.fn(async () => 'ws-test') };
 
 function collectTools(): Map<string, ToolHandler> {
@@ -129,7 +136,7 @@ describe('browser_click new-tab detection', () => {
     resolveRefMock.mockResolvedValue(el);
 
     const result = await click({ ref: '3' });
-    expect(result.content[0].text).toBe('Clicked element ref=3');
+    expect(result.content[0].text).toBe('Clicked element ref=3' + COMMITTED);
   });
 
   it('detaches the listener after the click', async () => {
@@ -149,7 +156,7 @@ describe('browser_click new-tab detection', () => {
     resolveRefMock.mockResolvedValue(watched.el);
 
     const result = await click({ ref: '3' });
-    expect(result.content[0].text).toBe('Clicked element ref=3');
+    expect(result.content[0].text).toBe('Clicked element ref=3' + COMMITTED);
     expect(watched.listenerCount()).toBe(0);
   });
 
@@ -216,7 +223,7 @@ describe('browser_click new-tab detection', () => {
     resolveWorkspaceBackend.mockResolvedValue('chrome');
 
     const result = await click({ ref: '3' });
-    expect(result.content[0].text).toBe('Clicked element ref=3');
+    expect(result.content[0].text).toBe('Clicked element ref=3' + COMMITTED);
     expect(mockSendRpc).toHaveBeenCalledWith('browser.click.cdp', expect.anything());
   });
 });
