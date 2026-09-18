@@ -675,8 +675,9 @@ export function useKeyboard() {
         return;
       }
 
-      // Ctrl+Shift+]: Next surface
-      if (cmdOrCtrl && shift && !alt && key === ']') {
+      // Ctrl+Shift+]: Next surface. Shift changes e.key to "}" on Windows,
+      // so prefer the layout-stable physical code and keep key as a fallback.
+      if (cmdOrCtrl && shift && !alt && (e.code === 'BracketRight' || key === ']')) {
         e.preventDefault();
         const state = store.getState();
         const ws = state.workspaces.find((w) => w.id === state.activeWorkspaceId);
@@ -684,8 +685,8 @@ export function useKeyboard() {
         return;
       }
 
-      // Ctrl+Shift+[: Previous surface
-      if (cmdOrCtrl && shift && !alt && key === '[') {
+      // Ctrl+Shift+[: Previous surface. Shift changes e.key to "{" on Windows.
+      if (cmdOrCtrl && shift && !alt && (e.code === 'BracketLeft' || key === '[')) {
         e.preventDefault();
         const state = store.getState();
         const ws = state.workspaces.find((w) => w.id === state.activeWorkspaceId);
