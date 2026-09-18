@@ -16,7 +16,7 @@
 // endpoint (RemoteHostClient itself never exposes one either).
 
 import { app, ipcMain } from 'electron';
-import type { BrowserWindow, IpcMainInvokeEvent, WebContents } from 'electron';
+import type { IpcMainInvokeEvent, WebContents } from 'electron';
 import { IPC } from '../../../shared/constants';
 import { wrapHandler } from '../wrapHandler';
 import { RemoteHostClient } from '../../remote/RemoteHostClient';
@@ -24,7 +24,8 @@ import type { RemoteHostsStore } from '../../remote/RemoteHostsStore';
 import type { RemoteAttachmentsStore } from '../../remote/RemoteAttachmentsStore';
 import { RemoteAttentionSubscriber } from '../../remote/RemoteAttentionSubscriber';
 import type { RemoteAttentionNotification } from '../../remote/remoteAttention';
-import { dispatchNotification } from '../../notification/dispatchNotification';
+import { isCategoryMuted } from '../../notification/mutedCategories';
+import { toastManager } from '../../notification/ToastManager';
 import { parseRemoteAttachmentKey, parseWebUrl, remoteAttachmentKey, REMOTE_POLL_INTERVAL_MS } from '../../../shared/remoteHosts';
 import { normalizeWorkspaceColor } from '../../../shared/workspaceColors';
 import type {
@@ -59,10 +60,6 @@ type ProbeResult =
 
 export interface RegisterRemoteHandlersDeps {
   store: RemoteHostsStore;
-  /** Owner of the desktop notification surface. Null/absent means no window
-   *  yet (early boot, closed to the tray) — `dispatchNotification` falls back
-   *  to a direct OS toast, exactly as it does for local events. */
-  getWindow?: () => BrowserWindow | null;
   /** Persisted attach descriptors — what makes an attachment survive a
    *  renderer reload and an app restart. */
   attachments: RemoteAttachmentsStore;
@@ -220,7 +217,6 @@ async function exchangePairCode(
 
 export function registerRemoteHandlers(deps: RegisterRemoteHandlersDeps): () => void {
   const { store, attachments } = deps;
-  const getWindow = deps.getWindow ?? (() => null);
   const makeAttentionSubscriber =
     deps.attentionSubscriberFactory ??
     ((host: RemoteHost, onNotification: (hostLabel: string, n: RemoteAttentionNotification) => void) =>
@@ -276,15 +272,18 @@ export function registerRemoteHandlers(deps: RegisterRemoteHandlersDeps): () => 
 
   function onRemoteAttention(hostLabel: string, n: RemoteAttentionNotification): void {
     const label = hostLabel || 'Remote';
-    dispatchNotification(
-      getWindow(),
-      // No local pty and no local workspace: the event names a REMOTE session
-      // id, and handing it over as either would make the toast click jump to
-      // whatever local surface happened to share the id.
-      null,
-      { type: n.type, title: `${label} · ${n.title}`, body: n.body, category: n.category },
-      { ptyId: null, workspaceId: null },
-    );
+    // NOT `dispatchNotification`: its renderer leg resolves a notification with
+    // no ptyId and no workspaceId onto the ACTIVE LOCAL workspace
+    // (resolveNotificationTarget's last fallback), and a remote event has
+    // neither — it names a remote session id that no local surface owns. That
+    // fallback would flash an unrelated local pane, jump there on click, and
+    // let that workspace's `notificationsMuted` silence a remote host it has
+    // nothing to do with. So the remote path takes the two gates main owns
+    // outright and skips the local-surface machinery it cannot honestly feed:
+    // the mirrored per-category mute, and ToastManager (which applies the
+    // `toastEnabled` setting and stays quiet while a window has OS focus).
+    if (isCategoryMuted(n.category)) return;
+    toastManager.show(`${label} · ${n.title}`, n.body, { ptyId: null, workspaceId: null });
   }
 
   /** Reconcile live subscriptions against the attach roster. Idempotent. */
@@ -874,7 +873,12 @@ export function registerRemoteHandlers(deps: RegisterRemoteHandlersDeps): () => 
   // Restore after an app restart: the attach roster is on disk, so the
   // subscriptions must come back with it rather than waiting for the user to
   // re-attach something.
-  syncAttentionSubs();
+  try {
+    syncAttentionSubs();
+  } catch {
+    // Never let a notification subscription take the app down on boot — the
+    // roster is restored, the alerts are not, and the next attach retries.
+  }
 
   return () => {
     ipcMain.removeHandler(IPC.REMOTE_HOSTS_LIST);
