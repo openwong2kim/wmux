@@ -1,10 +1,20 @@
-import { app, BrowserWindow, powerMonitor, shell } from 'electron';
+import { app, BrowserWindow, powerMonitor, screen, shell } from 'electron';
 import path from 'node:path';
 import { platformChoice } from '../../shared/platform';
 import { IPC } from '../../shared/constants';
 import { PLUGIN_PROTOCOL_SCHEME } from '../../shared/pluginHost';
 import { attachFlashFrameAutoClear } from './flashFrame';
 import { windowDisplayedReporter } from './windowDisplayed';
+import {
+  DEFAULT_WINDOW_SIZE,
+  MIN_WINDOW_SIZE,
+  loadWindowState,
+  planRestore,
+  saveWindowState,
+  saveWindowStateSync,
+  type RestorePlan,
+  type WindowState,
+} from './windowState';
 
 // OS-aware window-icon extension. Mirrors tray.ts so the same generated asset
 // set (icon.ico / icon.icns / icon.png) is used in both places.
@@ -85,12 +95,72 @@ export function loadMainRenderer(mainWindow: BrowserWindow): void {
  * leaves `deferLoad` unset because the daemon is already healthy by the
  * time activate fires.
  */
+/** How long the window must sit still before its placement is written (#1362).
+ *  Drag and resize fire continuously; one write per gesture is enough. */
+const WINDOW_STATE_SAVE_DEBOUNCE_MS = 300;
+
+/**
+ * Record the window's placement on move/resize (debounced) and on close.
+ *
+ * `getNormalBounds()` — never `getBounds()` — so a window closed while
+ * maximized or fullscreen still remembers the size to restore down to.
+ */
+function attachWindowStatePersistence(win: BrowserWindow): void {
+  const snapshot = (): WindowState => ({
+    bounds: win.getNormalBounds(),
+    maximized: win.isMaximized(),
+    fullScreen: win.isFullScreen(),
+  });
+
+  let timer: NodeJS.Timeout | null = null;
+  const schedule = (): void => {
+    if (timer) clearTimeout(timer);
+    timer = setTimeout(() => {
+      timer = null;
+      if (win.isDestroyed()) return;
+      void saveWindowState(snapshot()).catch(() => {
+        // Placement is a convenience; a failed write must not surface.
+      });
+    }, WINDOW_STATE_SAVE_DEBOUNCE_MS);
+  };
+
+  win.on('resize', schedule);
+  win.on('move', schedule);
+  win.on('maximize', schedule);
+  win.on('unmaximize', schedule);
+
+  win.on('close', () => {
+    if (timer) {
+      clearTimeout(timer);
+      timer = null;
+    }
+    try {
+      saveWindowStateSync(snapshot());
+    } catch {
+      // Never block the close on a placement write.
+    }
+  });
+}
+
 export function createWindow(opts: { deferLoad?: boolean } = {}): BrowserWindow {
+  // #1362 — restore the placement the user left the window in. Off-screen or
+  // corrupt saved state yields an empty plan and the 1280x800 default.
+  let plan: RestorePlan = { maximized: false, fullScreen: false };
+  try {
+    plan = planRestore(
+      loadWindowState(),
+      screen.getAllDisplays().map((d) => d.workArea),
+    );
+  } catch {
+    // Placement is a convenience; never let it block the window from opening.
+  }
+
   const mainWindow = new BrowserWindow({
-    width: 1280,
-    height: 800,
-    minWidth: 800,
-    minHeight: 600,
+    width: plan.bounds?.width ?? DEFAULT_WINDOW_SIZE.width,
+    height: plan.bounds?.height ?? DEFAULT_WINDOW_SIZE.height,
+    ...(plan.bounds ? { x: plan.bounds.x, y: plan.bounds.y } : {}),
+    minWidth: MIN_WINDOW_SIZE.width,
+    minHeight: MIN_WINDOW_SIZE.height,
     title: 'wmux',
     // Resolve via app.isPackaged (mirrors tray.ts) — not NODE_ENV, which isn't
     // reliably set and could send an unpackaged build to the packaged path.
@@ -138,6 +208,13 @@ export function createWindow(opts: { deferLoad?: boolean } = {}): BrowserWindow 
       webviewTag: true,
     },
   });
+
+  if (plan.fullScreen) {
+    mainWindow.setFullScreen(true);
+  } else if (plan.maximized) {
+    mainWindow.maximize();
+  }
+  attachWindowStatePersistence(mainWindow);
 
   // macOS: native fullscreen hides the traffic lights, so the renderer's
   // titlebar must drop its 72px left reserve (and restore it on exit) — the
