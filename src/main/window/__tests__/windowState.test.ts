@@ -66,6 +66,16 @@ describe('planRestore', () => {
     });
   });
 
+  it('never clamps below the window minimums, even on a tiny work area', () => {
+    const tiny: Rect = { x: 0, y: 0, width: 640, height: 480 };
+    expect(clampToWorkArea({ x: 10, y: 10, width: 1200, height: 900 }, tiny)).toEqual({
+      x: 0,
+      y: 0,
+      width: MIN_WINDOW_SIZE.width,
+      height: MIN_WINDOW_SIZE.height,
+    });
+  });
+
   it('picks the display the window mostly sits on', () => {
     const plan = planRestore(state({ bounds: { x: 2000, y: 40, width: 1200, height: 800 } }), [
       PRIMARY,

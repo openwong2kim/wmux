@@ -124,16 +124,19 @@ function bestWorkArea(bounds: Rect, workAreas: Rect[]): Rect | null {
 /** Clamp to minWidth/minHeight and to the work area it lands on, then pull a
  *  rectangle hanging off an edge back inside that work area. */
 export function clampToWorkArea(bounds: Rect, workArea: Rect): Rect {
-  const width = Math.max(
-    Math.min(bounds.width, workArea.width),
-    Math.min(MIN_WINDOW_SIZE.width, workArea.width),
+  // The minimum wins over the work area: BrowserWindow enforces
+  // minWidth/minHeight anyway, so clamping below them would only produce a
+  // position computed for a size the window will never have.
+  const width = Math.max(Math.min(bounds.width, workArea.width), MIN_WINDOW_SIZE.width);
+  const height = Math.max(Math.min(bounds.height, workArea.height), MIN_WINDOW_SIZE.height);
+  const x = Math.max(
+    Math.min(Math.max(bounds.x, workArea.x), workArea.x + workArea.width - width),
+    workArea.x,
   );
-  const height = Math.max(
-    Math.min(bounds.height, workArea.height),
-    Math.min(MIN_WINDOW_SIZE.height, workArea.height),
+  const y = Math.max(
+    Math.min(Math.max(bounds.y, workArea.y), workArea.y + workArea.height - height),
+    workArea.y,
   );
-  const x = Math.min(Math.max(bounds.x, workArea.x), workArea.x + workArea.width - width);
-  const y = Math.min(Math.max(bounds.y, workArea.y), workArea.y + workArea.height - height);
   return { x, y, width, height };
 }
 

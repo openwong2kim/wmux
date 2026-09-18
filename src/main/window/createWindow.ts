@@ -113,11 +113,25 @@ function attachWindowStatePersistence(win: BrowserWindow): void {
   });
 
   let timer: NodeJS.Timeout | null = null;
+  // Once the close snapshot is written it is final: a debounced write that
+  // fires afterwards would resurrect a stale placement.
+  let sealed = false;
+  const stop = (): void => {
+    if (timer) {
+      clearTimeout(timer);
+      timer = null;
+    }
+  };
   const schedule = (): void => {
-    if (timer) clearTimeout(timer);
+    if (sealed) return;
+    // A minimized window reports isMaximized() === false and a normal-looking
+    // rectangle on Windows/Linux — saving then silently forgets that the user
+    // left it maximized. Keep the last good snapshot instead.
+    if (win.isMinimized()) return;
+    stop();
     timer = setTimeout(() => {
       timer = null;
-      if (win.isDestroyed()) return;
+      if (sealed || win.isDestroyed() || win.isMinimized()) return;
       void saveWindowState(snapshot()).catch(() => {
         // Placement is a convenience; a failed write must not surface.
       });
@@ -128,18 +142,23 @@ function attachWindowStatePersistence(win: BrowserWindow): void {
   win.on('move', schedule);
   win.on('maximize', schedule);
   win.on('unmaximize', schedule);
+  // Restoring fullscreen flips isFullScreen() only once the transition lands,
+  // so the flag has to be re-read when these fire, not just on resize.
+  win.on('enter-full-screen', schedule);
+  win.on('leave-full-screen', schedule);
 
   win.on('close', () => {
-    if (timer) {
-      clearTimeout(timer);
-      timer = null;
-    }
+    stop();
+    sealed = true;
     try {
       saveWindowStateSync(snapshot());
     } catch {
       // Never block the close on a placement write.
     }
   });
+  // A window destroyed without a `close` (renderer crash, forced teardown)
+  // must not leave the debounce timer holding the event loop.
+  win.on('closed', stop);
 }
 
 export function createWindow(opts: { deferLoad?: boolean } = {}): BrowserWindow {
@@ -159,6 +178,7 @@ export function createWindow(opts: { deferLoad?: boolean } = {}): BrowserWindow 
     width: plan.bounds?.width ?? DEFAULT_WINDOW_SIZE.width,
     height: plan.bounds?.height ?? DEFAULT_WINDOW_SIZE.height,
     ...(plan.bounds ? { x: plan.bounds.x, y: plan.bounds.y } : {}),
+    ...(plan.fullScreen ? { fullscreen: true } : {}),
     minWidth: MIN_WINDOW_SIZE.width,
     minHeight: MIN_WINDOW_SIZE.height,
     title: 'wmux',
@@ -209,9 +229,10 @@ export function createWindow(opts: { deferLoad?: boolean } = {}): BrowserWindow 
     },
   });
 
-  if (plan.fullScreen) {
-    mainWindow.setFullScreen(true);
-  } else if (plan.maximized) {
+  // Fullscreen is requested through the constructor (above) — calling
+  // setFullScreen() on a window that has not been shown yet is unreliable
+  // across platforms. Maximize has no constructor option and is safe here.
+  if (!plan.fullScreen && plan.maximized) {
     mainWindow.maximize();
   }
   attachWindowStatePersistence(mainWindow);
