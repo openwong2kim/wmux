@@ -234,25 +234,44 @@ interface BeforePayload {
 
 interface AfterPayload {
   url: string;
+  ok: boolean;
   names: string[];
   revealed: number;
   named: number;
 }
 
 /** The same source string CDP is handed, evaluated here instead. */
-const step = new Function(`return (${String(hoverProbeStep)})`)() as (
+const rawStep = new Function(`return (${String(hoverProbeStep)})`)() as (
   this: unknown,
   mode: string,
   arg: unknown,
-  maxItems?: number,
+  extra?: unknown,
+  aimJson?: unknown,
 ) => unknown;
+
+const step = {
+  /** `this` = the trigger, `anchor` = what would be hovered. */
+  before(trigger: Element, targets: string[], anchor?: Element): BeforePayload {
+    return rawStep.call(trigger, 'before', JSON.stringify(targets), anchor) as BeforePayload;
+  },
+  /** jsdom has no hit testing, so the point is only ever read back as `ok`. */
+  after(trigger: Element, hidden: unknown, cap: number, anchor?: Element): AfterPayload {
+    return rawStep.call(
+      trigger,
+      'after',
+      hidden,
+      anchor ?? trigger,
+      JSON.stringify({ x: 0, y: 0, cap }),
+    ) as AfterPayload;
+  },
+};
 
 describe('the probe step in a DOM', () => {
   it('records the trigger box and the interactive elements that are hidden', () => {
     mount('<nav id="t"><ul id="sub" data-zero-box><li><a href="/a" data-zero-box>A</a></li></ul><a href="/b">B</a></nav>');
     const trigger = document.getElementById('t')!;
 
-    const before = step.call(trigger, 'before', JSON.stringify(['#sub'])) as BeforePayload;
+    const before = step.before(trigger, ['#sub']);
     expect(before.bw).toBe(80);
     expect(before.hidden.map((el) => el.getAttribute('href') ?? el.id)).toEqual(['/a', 'sub']);
     // The link that was already on screen is not in the hidden set, so it can
@@ -263,14 +282,14 @@ describe('the probe step in a DOM', () => {
   it('reports only the hidden elements that are showing now, with their names', () => {
     mount('<nav id="t"><ul id="sub" data-zero-box><li><a href="/a" data-zero-box>Docs</a><a href="/b" data-zero-box aria-label="API ref">x</a></li></ul></nav>');
     const trigger = document.getElementById('t')!;
-    const before = step.call(trigger, 'before', JSON.stringify(['#sub'])) as BeforePayload;
+    const before = step.before(trigger, ['#sub']);
 
     // Nothing has changed yet: the hover has not happened.
-    expect((step.call(trigger, 'after', before.hidden, 12) as AfterPayload).revealed).toBe(0);
+    expect((step.after(trigger, before.hidden, 12)).revealed).toBe(0);
 
     // The menu opens.
     document.querySelectorAll('[data-zero-box]').forEach((el) => el.removeAttribute('data-zero-box'));
-    const after = step.call(trigger, 'after', before.hidden, 12) as AfterPayload;
+    const after = step.after(trigger, before.hidden, 12);
     // The panel counts as a reveal — that is how "something opened" is known —
     // but it is not an item: its own textContent is every label run together.
     expect(after.revealed).toBe(3);
@@ -284,10 +303,10 @@ describe('the probe step in a DOM', () => {
     const trigger = document.getElementById('t')!;
     // Hidden to begin with...
     document.querySelectorAll('#sub a').forEach((el) => el.setAttribute('data-zero-box', ''));
-    const before = step.call(trigger, 'before', JSON.stringify(['#sub'])) as BeforePayload;
+    const before = step.before(trigger, ['#sub']);
     document.querySelectorAll('#sub a').forEach((el) => el.removeAttribute('data-zero-box'));
 
-    const after = step.call(trigger, 'after', before.hidden, 2) as AfterPayload;
+    const after = step.after(trigger, before.hidden, 2);
     expect(after.names.length).toBe(2);
     // The count is what tells the caller the list was truncated.
     expect(after.revealed).toBe(5);
@@ -296,14 +315,14 @@ describe('the probe step in a DOM', () => {
   it('survives a target selector that will not parse', () => {
     mount('<nav id="t"><a href="/a">A</a></nav>');
     const trigger = document.getElementById('t')!;
-    const before = step.call(trigger, 'before', JSON.stringify(['>>> not a selector'])) as BeforePayload;
+    const before = step.before(trigger, ['>>> not a selector']);
     expect(Array.isArray(before.hidden)).toBe(true);
   });
 
   it('survives target selectors that are not even JSON', () => {
     mount('<nav id="t"><a href="/a">A</a></nav>');
     const trigger = document.getElementById('t')!;
-    expect(() => step.call(trigger, 'before', 'not json')).not.toThrow();
+    expect(() => rawStep.call(trigger, 'before', 'not json')).not.toThrow();
   });
 });
 

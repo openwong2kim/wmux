@@ -33,9 +33,9 @@
  */
 
 import {
-  approachPath,
   clickPointInBox,
   defaultStartPoint,
+  pathPoints,
   type Box,
   type Point,
 } from '../../shared/pointerPath';
@@ -77,8 +77,17 @@ export const HOVER_SCAN_LIMITS = {
 export const HOVER_PROBE_LIMITS = {
   /** Triggers hovered, highest-scoring first. */
   MAX_TRIGGERS: 6,
-  /** Wall-clock budget for the whole probe, every trigger together. */
-  TOTAL_BUDGET_MS: 2500,
+  /**
+   * Wall-clock ceiling on the WHOLE probe — every trigger, every settle wait,
+   * every restore and every close check inside it.
+   *
+   * It used to bound only the per-trigger reads, with the restore and the close
+   * check given budgets of their own on top; measured live that came to 5.2 s
+   * for two triggers against a promise of ~2.5 s, and the overrun ate the second
+   * trigger's turn so its menu was never listed at all (dogfood, 2026-09-18).
+   * The only thing allowed past this line now is RESTORE_GRACE_MS.
+   */
+  TOTAL_BUDGET_MS: 2200,
   /** How long one trigger is given to reveal something. */
   REVEAL_WAIT_MS: 300,
   /** How often the reveal is re-checked inside that wait. */
@@ -91,12 +100,24 @@ export const HOVER_PROBE_LIMITS = {
    */
   CLOSE_WAIT_MS: 300,
   /**
-   * The restore's own budget, deliberately outside TOTAL_BUDGET_MS. A probe
-   * that spent every millisecond it had still has to take its pointer off the
-   * page's menu — leaving one open changes what every later snapshot and click
-   * on that page sees. Same split as occlusion.ts's CLEANUP_BUDGET_MS.
+   * The ONLY thing allowed past TOTAL_BUDGET_MS, and only for taking the pointer
+   * off the page: a probe that spent every millisecond it had still has to
+   * un-hover, because leaving a menu open changes what every later snapshot and
+   * click on that page sees. Same split as occlusion.ts's CLEANUP_BUDGET_MS, and
+   * the two together are the number the tool description promises.
    */
-  RESTORE_BUDGET_MS: 600,
+  RESTORE_GRACE_MS: 300,
+  /**
+   * Intermediate points per pointer move.
+   *
+   * `stepsForDistance` asks for 8–25, which is right for a click: the jittered
+   * path is what keeps one separable from a synthetic one. A probe pays that per
+   * point in CDP round trips, twice per trigger, and measured live it was the
+   * dominant cost of the whole probe — enough to starve the second trigger out
+   * of the budget entirely. Four points is still a walk along the same geometry
+   * (pathPoints, ending exactly on target) at a fifth of the traffic.
+   */
+  POINTER_STEPS: 4,
   /** Accessible names listed per trigger. */
   MAX_ITEMS: 12,
 } as const;
@@ -1027,20 +1048,26 @@ export function countHasSubmenuMarkers(rendered: string): number {
  * those exact elements is now showing, and the two must agree character for
  * character or the probe reports a reveal that never happened.
  *
- *   before(targetsJson, anchor) -> { url, vw, vh, b*, hidden }  (hidden = handles)
- *   aim(pointJson, anchor)      -> { url, ok, vw, vh, b* }
- *   after(hiddenArray, maxItems) -> { url, names, revealed, named }
+ *   before(targetsJson, anchor)             -> { url, vw, vh, b*, hidden }
+ *   after(hiddenArray, anchor, aimJson)     -> { url, ok, names, revealed, named, vw, vh, b* }
  *
- * `hidden` comes back as live element handles, which is what lets `after` ask
- * about the same elements without re-querying: a re-query after the hover
- * would also pick up whatever the hover ADDED, and could not tell the two
- * apart.
+ * `before`'s `hidden` comes back as live element handles; `after` is handed that
+ * same array, so it asks about the same elements without re-querying — a
+ * re-query after the hover would also pick up whatever the hover ADDED and could
+ * not tell the two apart. `aimJson` carries `{x, y, cap}`: where the pointer was
+ * put, and how many names to return.
  *
  * The box is the ANCHOR's, not the trigger's: the anchor is what the agent is
  * told to hover, and it is the element the hover is aimed at. Scoping still
  * comes from the trigger, because that is what the `:hover` rule hangs off.
  */
-export function hoverProbeStep(this: unknown, mode: string, arg: unknown, extra?: unknown): unknown {
+export function hoverProbeStep(
+  this: unknown,
+  mode: string,
+  arg: unknown,
+  extra?: unknown,
+  aimJson?: unknown,
+): unknown {
   const el = this as {
     querySelectorAll: (s: string) => ArrayLike<unknown>;
     getAttribute?: (n: string) => string | null;
@@ -1098,38 +1125,36 @@ export function hoverProbeStep(this: unknown, mode: string, arg: unknown, extra?
     };
   };
 
-  if (mode === 'aim') {
-    // Did the pointer actually land on the element we aimed at?
-    //
-    // It routinely does not, and the reason is this feature's own doing: the
-    // approach path crosses the page, and crossing ANOTHER trigger opens its
-    // menu, which is absolutely positioned and can be painted straight over the
-    // element we were walking to. The hover then never happens and the read
-    // reports the other menu's items under this trigger's name (live dogfood,
-    // 2026-09-18: the nav submenu covered the account button below it).
-    //
-    // Same contract as browser.rpc.ts's approachElement: verify, let the caller
-    // re-approach once, and refuse rather than report what happens to be there.
-    const aimed = (extra || el) as { contains?: (n: unknown) => boolean };
-    let point = { x: 0, y: 0 };
-    try {
-      point = JSON.parse(String(arg));
-    } catch (e) {
-      point = { x: 0, y: 0 };
-    }
+  /**
+   * Did the pointer land on the element we aimed at?
+   *
+   * It routinely does not, and the reason is this feature's own doing: the
+   * approach path crosses the page, and crossing ANOTHER trigger opens its menu,
+   * which is absolutely positioned and can be painted straight over the element
+   * we were walking to. The hover then never happens and the read reports the
+   * other menu's items under this trigger's name (live dogfood, 2026-09-18: the
+   * nav submenu covered the account button below it).
+   *
+   * Same contract as browser.rpc.ts's approachElement: verify, let the caller
+   * re-approach once, and refuse rather than report what happens to be there.
+   * Answered by the SAME call that reads the reveal, so the two describe one
+   * layout state and the check costs no round trip of its own.
+   */
+  const landedOn = (aimed: unknown, point: { x: number; y: number } | null): boolean => {
+    if (!aimed || !point) return false;
+    const host = aimed as { contains?: (n: Node) => boolean };
     let hit: unknown = null;
     try {
       hit = document.elementFromPoint(point.x, point.y);
     } catch (e) {
       hit = null;
     }
-    const target = aimed as unknown as Node;
-    const ok = !!hit
-      && (hit === aimed
-        || (typeof aimed.contains === 'function' && aimed.contains(hit as Node))
-        || (hit as Node).contains?.(target) === true);
-    return { url: location.href, ok: ok, ...geometry(extra || el) };
-  }
+    if (!hit) return false;
+    if (hit === aimed) return true;
+    if (typeof host.contains === 'function' && host.contains(hit as Node)) return true;
+    const contains = (hit as { contains?: (n: Node) => boolean }).contains;
+    return typeof contains === 'function' && contains.call(hit, aimed as Node);
+  };
 
   if (mode === 'before') {
     // Containers worth watching even when they hold nothing interactive: a
@@ -1235,7 +1260,13 @@ export function hoverProbeStep(this: unknown, mode: string, arg: unknown, extra?
   }
 
   const hidden = (Array.isArray(arg) ? arg : []) as unknown[];
-  const cap = typeof extra === 'number' && extra > 0 ? extra : 12;
+  let aim: { x: number; y: number; cap?: number } | null = null;
+  try {
+    aim = JSON.parse(String(aimJson));
+  } catch (e) {
+    aim = null;
+  }
+  const cap = typeof aim?.cap === 'number' && aim.cap > 0 ? aim.cap : 12;
   /** Names worth collecting past the cap, so `named` can be exact. */
   const MAX_NAMES_SEEN = 64;
   const unique: string[] = [];
@@ -1271,9 +1302,13 @@ export function hoverProbeStep(this: unknown, mode: string, arg: unknown, extra?
   }
   return {
     url: location.href,
+    // The landing check rides along: one round trip, and one layout state for
+    // both answers — see landedOn.
+    ok: landedOn(extra || el, aim),
     names: unique.slice(0, cap),
     revealed: revealed,
     named: unique.length,
+    ...geometry(extra || el),
   };
 }
 
@@ -1350,22 +1385,46 @@ function sleep(ms: number): Promise<void> {
 /** What one `after` step reported, or null when it could not be read. */
 interface AfterReading {
   url: string;
+  /** The pointer is on the anchor — see hoverProbeStep's landedOn. */
+  ok: boolean;
   names: string[];
   revealed: number;
   named: number;
+  /** The anchor's box as of this read, for a re-approach after a bad landing. */
+  box: Box | null;
 }
 
 function readAfter(reply: unknown): AfterReading | null {
   const value = (reply as { result?: { value?: unknown } } | null)?.result?.value as
-    | { url?: unknown; names?: unknown; revealed?: unknown; named?: unknown }
+    | {
+        url?: unknown;
+        ok?: unknown;
+        names?: unknown;
+        revealed?: unknown;
+        named?: unknown;
+        bx?: unknown;
+        by?: unknown;
+        bw?: unknown;
+        bh?: unknown;
+      }
     | undefined;
   if (!value || typeof value.url !== 'string') return null;
   const revealed = Number(value.revealed ?? 0);
+  const width = Number(value.bw ?? 0);
+  const height = Number(value.bh ?? 0);
   return {
     url: value.url,
+    // A reply that predates the merged landing check (a fake, an older page
+    // script) says nothing about where the pointer is; treat that as landed
+    // rather than refusing every trigger.
+    ok: value.ok !== false,
     names: Array.isArray(value.names) ? value.names.filter((n): n is string => typeof n === 'string') : [],
     revealed,
     named: Number(value.named ?? revealed),
+    box:
+      width > 0 && height > 0
+        ? { x: Number(value.bx ?? 0), y: Number(value.by ?? 0), width, height }
+        : null,
   };
 }
 
@@ -1400,7 +1459,8 @@ export async function probeHoverSurfaces(
 ): Promise<HoverProbeOutcome> {
   const revealed: HoverSurfaceMarks = new Map();
   const startUrl = ctx.currentUrl();
-  const deadline = Date.now() + HOVER_PROBE_LIMITS.TOTAL_BUDGET_MS;
+  const started = Date.now();
+  const deadline = started + HOVER_PROBE_LIMITS.TOTAL_BUDGET_MS;
   const step = String(hoverProbeStep);
   let pointer = ctx.pointerStart;
   let probed = 0;
@@ -1412,55 +1472,45 @@ export async function probeHoverSurfaces(
       new Promise<null>((resolve) => setTimeout(() => resolve(null), Math.max(0, until - Date.now()))),
     ]);
 
-  /** Walk the pointer to `to` with the same geometry browser_hover uses. */
+  /**
+   * Walk the pointer to `to` along the same geometry browser_hover uses, at the
+   * probe's own step count — see HOVER_PROBE_LIMITS.POINTER_STEPS.
+   */
   const movePointer = async (to: Point, until: number): Promise<void> => {
-    for (const point of approachPath(pointer, to, ctx.rng)) {
+    for (const point of pathPoints(pointer, to, HOVER_PROBE_LIMITS.POINTER_STEPS, ctx.rng)) {
       await send(until, 'Input.dispatchMouseEvent', { type: 'mouseMoved', x: point.x, y: point.y });
     }
     pointer = to;
     ctx.onPointerMoved(to);
   };
 
-  const after = (objectId: string, hiddenId: string, cap: number, until: number) =>
-    send(until, 'Runtime.callFunctionOn', {
-      functionDeclaration: step,
-      objectId,
-      arguments: [{ value: 'after' }, { objectId: hiddenId }, { value: cap }],
-      returnByValue: true,
-      awaitPromise: false,
-    });
-
-  /** Is `point` on the candidate's anchor, and where is that anchor now? */
-  const aimedAt = async (
+  /**
+   * Read what is showing, and whether the pointer is on the anchor, in one call.
+   *
+   * `cap` of 1 makes it a yes/no about the surface rather than a second list,
+   * which is all the close check needs.
+   */
+  const read = async (
     candidate: HoverCandidate,
+    hiddenId: string,
     point: Point,
+    cap: number,
     until: number,
-  ): Promise<{ ok: boolean; box: Box | null } | null> => {
-    const reply = (await send(until, 'Runtime.callFunctionOn', {
-      functionDeclaration: step,
-      objectId: candidate.objectId,
-      arguments: [
-        { value: 'aim' },
-        { value: JSON.stringify(point) },
-        { objectId: candidate.anchorObjectId },
-      ],
-      returnByValue: true,
-      awaitPromise: false,
-    })) as { result?: { value?: unknown } } | null;
-    const value = reply?.result?.value as
-      | { url?: unknown; ok?: unknown; bx?: unknown; by?: unknown; bw?: unknown; bh?: unknown }
-      | undefined;
-    if (!value || typeof value.url !== 'string') return null;
-    const width = Number(value.bw ?? 0);
-    const height = Number(value.bh ?? 0);
-    return {
-      ok: value.ok === true,
-      box:
-        width > 0 && height > 0
-          ? { x: Number(value.bx ?? 0), y: Number(value.by ?? 0), width, height }
-          : null,
-    };
-  };
+  ): Promise<AfterReading | null> =>
+    readAfter(
+      await send(until, 'Runtime.callFunctionOn', {
+        functionDeclaration: step,
+        objectId: candidate.objectId,
+        arguments: [
+          { value: 'after' },
+          { objectId: hiddenId },
+          { objectId: candidate.anchorObjectId },
+          { value: JSON.stringify({ x: point.x, y: point.y, cap }) },
+        ],
+        returnByValue: true,
+        awaitPromise: false,
+      }),
+    );
 
   try {
     for (const candidate of candidates.slice(0, HOVER_PROBE_LIMITS.MAX_TRIGGERS)) {
@@ -1469,7 +1519,9 @@ export async function probeHoverSurfaces(
 
       // --- before -------------------------------------------------------
       // `this` is the trigger, so the reveal watch is scoped from the element
-      // the rule hangs off; the anchor rides along as the box to aim at.
+      // the rule hangs off — for `nav li:hover > ul.sub` that is the `li`, whose
+      // submenu is a SIBLING of the link the marker sits on. The anchor rides
+      // along only as the box to aim at.
       const before = (await send(deadline, 'Runtime.callFunctionOn', {
         functionDeclaration: step,
         objectId: candidate.objectId,
@@ -1526,54 +1578,51 @@ export async function probeHoverSurfaces(
 
       // --- hover, then restore no matter what ---------------------------
       let reading: AfterReading | null = null;
-      let restoreUntil = deadline;
       try {
         await movePointer(target, deadline);
         probed += 1;
 
-        // Did it land? The approach path crosses the page, and crossing another
-        // trigger opens ITS menu, which is positioned and can be painted over
-        // the element we were walking to. One re-approach, from the neutral
-        // point so whatever the first pass opened is closed first — the same
-        // recompute-once contract browser.rpc.ts's approachElement has.
-        let landed = await aimedAt(candidate, target, deadline);
-        if (landed && !landed.ok) {
-          await movePointer(neutral, deadline);
-          const fresh = await aimedAt(candidate, target, deadline);
-          if (fresh && fresh.box) {
-            neutral = neutralPointFor(fresh.box, viewport);
-            target = pointIn(fresh.box);
-          }
-          await movePointer(target, deadline);
-          landed = await aimedAt(candidate, target, deadline);
-        }
-        // Still covered, or the check itself could not be taken: report nothing
-        // rather than whatever happens to be on screen.
-        if (!landed || !landed.ok) continue;
-
         const waitUntil = Math.min(Date.now() + HOVER_PROBE_LIMITS.REVEAL_WAIT_MS, deadline);
         for (;;) {
-          reading = readAfter(await after(candidate.objectId, hiddenId, HOVER_PROBE_LIMITS.MAX_ITEMS, deadline));
+          reading = await read(candidate, hiddenId, target, HOVER_PROBE_LIMITS.MAX_ITEMS, deadline);
           if (!reading) break;
           if (!sameHoverDocument(reading.url, startUrl)) return cancelled(probed);
+          if (!reading.ok) {
+            // Something is covering the point we aimed at — almost always a menu
+            // an earlier leg of the approach opened. One re-approach, from the
+            // neutral point so that menu closes first, with the anchor's box
+            // re-read in case it moved: the same recompute-once contract
+            // browser.rpc.ts's approachElement has.
+            if (reading.box) {
+              neutral = neutralPointFor(reading.box, viewport);
+              target = pointIn(reading.box);
+            }
+            await movePointer(neutral, deadline);
+            await movePointer(target, deadline);
+            reading = await read(candidate, hiddenId, target, HOVER_PROBE_LIMITS.MAX_ITEMS, deadline);
+            if (!reading) break;
+            if (!sameHoverDocument(reading.url, startUrl)) return cancelled(probed);
+            // Still covered: report nothing rather than whatever is on screen.
+            if (!reading.ok) {
+              reading = null;
+              break;
+            }
+          }
           if (reading.revealed > 0 || Date.now() >= waitUntil) break;
           await sleep(Math.min(HOVER_PROBE_LIMITS.REVEAL_POLL_MS, Math.max(0, waitUntil - Date.now())));
         }
       } finally {
-        // Its own budget, past the shared deadline: a probe that used every
-        // millisecond still has to take its pointer off the page's menu.
-        restoreUntil = Date.now() + HOVER_PROBE_LIMITS.RESTORE_BUDGET_MS;
-        await movePointer(neutral, restoreUntil);
+        // The one allowance past the shared deadline, and only for un-hovering.
+        await movePointer(neutral, Date.now() + HOVER_PROBE_LIMITS.RESTORE_GRACE_MS);
       }
       if (!reading) continue;
 
       // --- did it close again? -----------------------------------------
       let staysOpen = false;
       if (reading.revealed > 0) {
-        const closeUntil = Math.min(Date.now() + HOVER_PROBE_LIMITS.CLOSE_WAIT_MS, restoreUntil);
+        const closeUntil = Math.min(Date.now() + HOVER_PROBE_LIMITS.CLOSE_WAIT_MS, deadline);
         for (;;) {
-          // cap 1: this read is a yes/no about the surface, not a second list.
-          const closed = readAfter(await after(candidate.objectId, hiddenId, 1, restoreUntil));
+          const closed = await read(candidate, hiddenId, neutral, 1, deadline);
           if (!closed) break;
           if (!sameHoverDocument(closed.url, startUrl)) return cancelled(probed);
           staysOpen = closed.revealed > 0;
