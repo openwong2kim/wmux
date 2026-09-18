@@ -85,20 +85,28 @@ function makeFake(options: FakeOptions = {}): Fake {
         expect(list[2]?.objectId).toBe(`anchor-${index}`);
         return { result: { objectId: `before-${index}` } };
       }
-      if (mode === 'aim') {
-        const tries = (aimsUsed.get(objectId) ?? 0) + 1;
-        aimsUsed.set(objectId, tries);
-        const ok = options.aimOk ? options.aimOk(index, tries) : true;
-        return {
-          result: {
-            value: { url: URL_A, ok, vw: VIEWPORT.width, vh: VIEWPORT.height, bx: 100, by: 100, bw: 80, bh: 20 },
-          },
-        };
-      }
       // Every `after` call must address the SAME hidden-element handle the
       // `before` call produced: a re-query would also pick up whatever the
-      // hover ADDED and could not tell the two apart.
+      // hover ADDED and could not tell the two apart. The anchor and the point
+      // ride along so the landing check costs no round trip of its own.
       expect(list[1]?.objectId).toBe(`hidden-${index}`);
+      expect(list[2]?.objectId).toBe(`anchor-${index}`);
+      const aim = JSON.parse(String(list[3]?.value)) as { x: number; y: number; cap: number };
+      const tries = (aimsUsed.get(objectId) ?? 0) + 1;
+      aimsUsed.set(objectId, tries);
+      const landed = options.aimOk ? options.aimOk(index, tries) : true;
+      const geometry = {
+        ok: landed,
+        vw: VIEWPORT.width,
+        vh: VIEWPORT.height,
+        bx: 100,
+        by: 100,
+        bw: 80,
+        bh: 20,
+      };
+      // A read taken while the pointer is NOT on the anchor tells the driver
+      // nothing about the reveal, so the queue is not consumed for it.
+      if (!landed) return { result: { value: { url: URL_A, names: [], revealed: 0, named: 0, ...geometry } } };
       const queue = options.afterQueue?.(index) ?? [{ names: ['Docs', 'API'], revealed: 2 }];
       const used = pollsUsed.get(objectId) ?? 0;
       // The last reply in the queue is the reveal; anything after it is the
@@ -110,15 +118,20 @@ function makeFake(options: FakeOptions = {}): Fake {
           result: {
             value: {
               url: reply.url ?? URL_A,
-              names: reply.names ?? [],
+              names: (reply.names ?? []).slice(0, aim.cap),
               revealed: reply.revealed ?? 0,
               named: reply.named ?? reply.revealed ?? 0,
+              ...geometry,
             },
           },
         };
       }
       const closed = options.closeReply?.(index) ?? { revealed: 0 };
-      return { result: { value: { url: closed.url ?? URL_A, names: [], revealed: closed.revealed ?? 0 } } };
+      return {
+        result: {
+          value: { url: closed.url ?? URL_A, names: [], revealed: closed.revealed ?? 0, ...geometry },
+        },
+      };
     }
 
     if (method === 'Runtime.getProperties') {
@@ -175,9 +188,13 @@ afterEach(() => {
   url = URL_A;
 });
 
+/** Where the virtual clock started, so a span can be measured against it. */
+let startClock = 0;
+
 /** Install the virtual clock; only the tests that need to advance time do. */
 function useVirtualClock(): void {
   clock = 1_000_000;
+  startClock = clock;
   vi.spyOn(Date, 'now').mockImplementation(() => clock);
 }
 
@@ -332,13 +349,37 @@ describe('probeHoverSurfaces: the bounds', () => {
     expect(fake.moves[fake.moves.length - 1]).toEqual(NEUTRAL);
   });
 
-  it('keeps the published budgets inside what a snapshot can afford', () => {
+  it('[CRITICAL] keeps the worst case inside the ~2.5 s the tool promises', () => {
+    // The tool description is a promise about wall clock, and the code has to be
+    // able to keep it: the only thing outside the shared ceiling is the restore,
+    // so the two together ARE the advertised number. Measured live at 5.2 s
+    // before the restore and close checks were folded in (dogfood, 2026-09-18).
     expect(HOVER_PROBE_LIMITS.MAX_TRIGGERS).toBe(6);
-    expect(HOVER_PROBE_LIMITS.TOTAL_BUDGET_MS).toBe(2500);
     expect(HOVER_PROBE_LIMITS.REVEAL_WAIT_MS).toBe(300);
-    // The restore is outside the shared budget on purpose, but still small
-    // enough that the worst case stays inside what a snapshot can wait for.
-    expect(HOVER_PROBE_LIMITS.RESTORE_BUDGET_MS).toBeLessThanOrEqual(1000);
+    expect(
+      HOVER_PROBE_LIMITS.TOTAL_BUDGET_MS + HOVER_PROBE_LIMITS.RESTORE_GRACE_MS,
+    ).toBeLessThanOrEqual(2500);
+  });
+
+  it('[CRITICAL] does not let one trigger spend the budget the rest need', async () => {
+    // The live symptom of an unbounded per-trigger cost: the account menu was
+    // listed and the nav submenu below it never got a turn.
+    useVirtualClock();
+    const fake = makeFake({ msPerSend: 40 });
+    const outcome = await probeHoverSurfaces(fake.client, candidates(2), ctx());
+    expect(outcome.probed).toBe(2);
+    expect(outcome.revealed.size).toBe(2);
+    // The whole span, restore grace included, inside the promise.
+    expect(clock - startClock).toBeLessThanOrEqual(
+      HOVER_PROBE_LIMITS.TOTAL_BUDGET_MS + HOVER_PROBE_LIMITS.RESTORE_GRACE_MS,
+    );
+  });
+
+  it('walks a short path, so the pointer cost cannot dominate the budget', async () => {
+    const fake = makeFake();
+    await probeHoverSurfaces(fake.client, candidates(1), ctx());
+    // Two moves per trigger at POINTER_STEPS points each, and nothing more.
+    expect(fake.moves.length).toBe(HOVER_PROBE_LIMITS.POINTER_STEPS * 2);
   });
 });
 
@@ -423,19 +464,27 @@ describe('probeHoverSurfaces: the pointer has to actually land', () => {
   });
 
   it('re-approaches once from the neutral point, which closes the intruder', async () => {
-    const fake = makeFake({ aimOk: (_i, attempt) => attempt >= 3 });
+    // Covered on the first read, clear on the second: exactly one re-approach,
+    // the same recompute-once contract approachElement has.
+    const fake = makeFake({ aimOk: (_i, attempt) => attempt >= 2 });
     const outcome = await probeHoverSurfaces(fake.client, candidates(1), ctx());
 
-    // Aim, park + re-aim, re-approach + aim: three checks, and the reveal is
-    // only read once the pointer is genuinely on the anchor.
-    expect(fake.steps.filter((s) => s.mode === 'aim').length).toBe(3);
+    // Read, park + re-approach, read again: the reveal is only believed once the
+    // pointer is genuinely on the anchor.
+    expect(fake.steps.filter((s) => s.mode === 'after').length).toBeGreaterThanOrEqual(2);
     expect(outcome.revealed.get(100)?.items).toEqual(['Docs', 'API']);
+    // Two approaches plus the restore, all at the probe's step count.
+    expect(fake.moves.length).toBe(HOVER_PROBE_LIMITS.POINTER_STEPS * 4);
   });
 
-  it('does not read a reveal before the aim check passes', async () => {
-    const fake = makeFake({ aimOk: () => false });
-    await probeHoverSurfaces(fake.client, candidates(1), ctx());
-    expect(fake.steps.some((s) => s.mode === 'after')).toBe(false);
+  it('does not believe a reveal read while the pointer is off the anchor', async () => {
+    const fake = makeFake({
+      // Never lands, but the page has a menu open the whole time.
+      aimOk: () => false,
+      afterQueue: () => [{ names: ['Wrong menu'], revealed: 3 }],
+    });
+    const outcome = await probeHoverSurfaces(fake.client, candidates(1), ctx());
+    expect(outcome.revealed.size).toBe(0);
   });
 });
 

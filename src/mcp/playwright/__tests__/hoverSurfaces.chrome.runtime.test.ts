@@ -2,6 +2,7 @@ import { createServer, type Server } from 'node:http';
 import { existsSync } from 'node:fs';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
+  HOVER_PROBE_LIMITS,
   collectHoverTriggers,
   formatHoverItems,
   probeHoverSurfaces,
@@ -74,20 +75,20 @@ const FIXTURE = `<!doctype html>
 </script>
 </body></html>`;
 
-const CHROME = 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
+/** Fast pre-check only — the launch attempt below is the real gate. */
+const WINDOWS_CHROME = 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
 
-/** Chrome, and a Playwright to drive it with. Null means "skip these tests". */
-async function loadChromium(): Promise<{ launch: (o: unknown) => Promise<unknown> } | null> {
-  if (process.platform === 'win32' && !existsSync(CHROME)) return null;
-  try {
-    const playwright = (await import('playwright-core')) as {
-      chromium?: { launch: (o: unknown) => Promise<unknown> };
-    };
-    return playwright.chromium ?? null;
-  } catch {
-    return null;
-  }
-}
+/**
+ * Upper bound on the launch attempt.
+ *
+ * A machine without Google Chrome is the ordinary case — every Linux and macOS
+ * runner that has not installed it — and `launch({ channel: 'chrome' })` does
+ * not always answer that by throwing: it can sit there. A `beforeAll` that
+ * merely catches would then fail the suite on its own timeout, which is exactly
+ * how the cross-platform Baseline job went red on this branch. So the attempt is
+ * bounded, and anything but a prompt success means "skip", never "fail".
+ */
+const LAUNCH_TIMEOUT_MS = 30_000;
 
 interface CdpSession {
   send: (method: string, params?: unknown) => Promise<unknown>;
@@ -102,30 +103,103 @@ interface Snap {
   url: () => string;
 }
 
-let browser: { newPage: () => Promise<unknown>; close: () => Promise<void> } | null = null;
+type Browser = { newPage: () => Promise<unknown>; close: () => Promise<void> };
+
+let browser: Browser | null = null;
 let server: Server | null = null;
 let origin = '';
-let available = false;
+/** Null when Chrome is here and usable; otherwise why the suite is skipped. */
+let skipReason: string | null = null;
 
-beforeAll(async () => {
-  const chromium = await loadChromium();
-  if (!chromium) return;
+function reason(error: unknown): string {
+  return error instanceof Error ? error.message.split('\n')[0] : String(error);
+}
+
+/**
+ * Launch Chrome, or say why not.
+ *
+ * Never throws and never hangs, so the suite cannot go red for want of a
+ * browser; every test then asks `skipUnlessChrome` to mark itself SKIPPED with
+ * the reason, rather than passing vacuously and reporting green for work it did
+ * not do.
+ */
+async function setUpChrome(): Promise<void> {
+  if (process.platform === 'win32' && !existsSync(WINDOWS_CHROME)) {
+    skipReason = `Google Chrome is not installed at ${WINDOWS_CHROME}`;
+    return;
+  }
+
+  let chromium: { launch: (o: unknown) => Promise<unknown> } | undefined;
+  try {
+    ({ chromium } = (await import('playwright-core')) as {
+      chromium?: { launch: (o: unknown) => Promise<unknown> };
+    });
+  } catch (error) {
+    skipReason = `playwright-core is not resolvable here: ${reason(error)}`;
+    return;
+  }
+  if (!chromium) {
+    skipReason = 'playwright-core exposes no chromium';
+    return;
+  }
+
+  const launching = chromium.launch({ channel: 'chrome', headless: true });
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    browser = (await Promise.race([
+      launching,
+      new Promise<never>((_resolve, rejectRace) => {
+        timer = setTimeout(
+          () => rejectRace(new Error(`launch did not answer within ${LAUNCH_TIMEOUT_MS} ms`)),
+          LAUNCH_TIMEOUT_MS,
+        );
+      }),
+    ])) as Browser;
+  } catch (error) {
+    skipReason = `Google Chrome would not launch: ${reason(error)}`;
+    // A launch that only LOST the race is still going to produce a browser;
+    // close it rather than leave the process behind.
+    void launching.then((late) => (late as Browser | null)?.close?.()).catch(() => undefined);
+    return;
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+
   server = createServer((_req, res) => {
     res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
     res.end(FIXTURE);
   });
   await new Promise<void>((resolve) => server!.listen(0, '127.0.0.1', resolve));
   const address = server.address();
-  if (!address || typeof address === 'string') return;
-  origin = `http://127.0.0.1:${address.port}/`;
-  try {
-    browser = (await chromium.launch({ channel: 'chrome', headless: true })) as typeof browser;
-  } catch {
-    browser = null;
+  if (!address || typeof address === 'string') {
+    skipReason = 'could not bind a loopback port for the fixture';
     return;
   }
-  available = true;
-}, 120_000);
+  origin = `http://127.0.0.1:${address.port}/`;
+}
+
+beforeAll(async () => {
+  await setUpChrome();
+  if (skipReason) {
+    // eslint-disable-next-line no-console
+    console.log(`[hoverSurfaces.chrome] skipping: ${skipReason}`);
+  }
+}, LAUNCH_TIMEOUT_MS + 30_000);
+
+/**
+ * Mark the running test skipped when there is no Chrome.
+ *
+ * `describe.skipIf` cannot serve here: the verdict is only known after the
+ * launch attempt, which is `beforeAll`, and a skipIf condition is read at
+ * collection time. Skipping from inside the test is what keeps a runner without
+ * Chrome honest — SKIPPED with a reason, never a green tick for an assertion
+ * that never ran.
+ */
+function skipUnlessChrome(ctx: { skip: (note?: string) => void }): boolean {
+  if (!skipReason) return false;
+  ctx.skip(skipReason);
+  return true;
+}
 
 afterAll(async () => {
   await browser?.close().catch(() => undefined);
@@ -165,8 +239,8 @@ async function openAndScan(): Promise<Snap> {
 }
 
 describe('phase 1 against real Chrome', () => {
-  it('marks only the nav item that has a submenu, on its link', async () => {
-    if (!available) return;
+  it('marks only the nav item that has a submenu, on its link', async (ctx) => {
+    if (skipUnlessChrome(ctx)) return;
     const snap = await openAndScan();
     try {
       const marked = [...snap.label.values()].sort();
@@ -181,8 +255,8 @@ describe('phase 1 against real Chrome', () => {
     }
   }, 60_000);
 
-  it('marks the aria-haspopup button, and no form field', async () => {
-    if (!available) return;
+  it('marks the aria-haspopup button, and no form field', async (ctx) => {
+    if (skipUnlessChrome(ctx)) return;
     const snap = await openAndScan();
     try {
       const marked = [...snap.label.values()];
@@ -196,8 +270,8 @@ describe('phase 1 against real Chrome', () => {
 });
 
 describe('phase 2 against real Chrome', () => {
-  it('lists a CSS-revealed submenu and a JS-revealed sibling menu', async () => {
-    if (!available) return;
+  it('lists a CSS-revealed submenu and a JS-revealed sibling menu', async (ctx) => {
+    if (skipUnlessChrome(ctx)) return;
     const snap = await openAndScan();
     try {
       let pointer = { x: 20, y: 20 };
@@ -218,7 +292,11 @@ describe('phase 2 against real Chrome', () => {
       // eslint-disable-next-line no-console
       console.log('[real-chrome probe]', JSON.stringify([...lines], null, 2));
 
-      // The CSS case: hovering the Products LINK triggers the `li:hover` rule.
+      // The CSS case, and the exact shape it failed on live: the rule is
+      // `nav li:hover > ul.sub`, so the hovered element is the `li` while the
+      // marker — and the hover point — sit on the LINK inside it, and the
+      // submenu is the link's SIBLING, not its descendant. Hovering the link
+      // puts the `li` in `:hover`, and the reveal watch is scoped from the `li`.
       expect(lines.get('a#nav-products')).toBe(' [hover first: Shoes | Bags | Hats]');
       // The JS case, which returned nothing live: the revealed menu is a
       // SIBLING of the button, so a trigger-descendants-only watch saw nothing.
@@ -231,8 +309,8 @@ describe('phase 2 against real Chrome', () => {
     }
   }, 120_000);
 
-  it('closes both surfaces again, so no line says "stays open"', async () => {
-    if (!available) return;
+  it('closes both surfaces again, so no line says "stays open"', async (ctx) => {
+    if (skipUnlessChrome(ctx)) return;
     const snap = await openAndScan();
     try {
       let pointer = { x: 20, y: 20 };
@@ -259,8 +337,8 @@ describe('phase 2 against real Chrome', () => {
     }
   }, 120_000);
 
-  it('produces the whole snapshot the agent reads, marks and items included', async () => {
-    if (!available) return;
+  it('produces the whole snapshot the agent reads, marks and items included', async (ctx) => {
+    if (skipUnlessChrome(ctx)) return;
     const page = (await browser!.newPage()) as {
       goto: (u: string, o?: unknown) => Promise<unknown>;
       close: () => Promise<void>;
@@ -303,19 +381,34 @@ describe('phase 2 against real Chrome', () => {
     }
   }, 120_000);
 
-  it('stays inside its budget on a real renderer', async () => {
-    if (!available) return;
+  it('[CRITICAL] spends no more wall clock than the tool description promises', async (ctx) => {
+    if (skipUnlessChrome(ctx)) return;
     const snap = await openAndScan();
     try {
       const started = Date.now();
-      await probeHoverSurfaces(snap.client, snap.candidates, {
+      const outcome = await probeHoverSurfaces(snap.client, snap.candidates, {
         currentUrl: () => snap.url(),
         pointerStart: { x: 20, y: 20 },
         onPointerMoved: () => undefined,
       });
-      // TOTAL_BUDGET_MS plus the restore's own budget, with room for the round
-      // trips a cold renderer adds.
-      expect(Date.now() - started).toBeLessThan(6_000);
+      const span = Date.now() - started;
+      // eslint-disable-next-line no-console
+      console.log(`[real-chrome probe span] ${span} ms for ${outcome.probed} trigger(s)`);
+
+      // The promise in browser_snapshot's description, and the ceiling the code
+      // now actually enforces: TOTAL_BUDGET_MS + RESTORE_GRACE_MS. Measured live
+      // at 5.2 s before the restore and close checks were folded into it.
+      const ceiling =
+        HOVER_PROBE_LIMITS.TOTAL_BUDGET_MS + HOVER_PROBE_LIMITS.RESTORE_GRACE_MS;
+      expect(ceiling).toBeLessThanOrEqual(2500);
+      // One CDP round trip of slack past the ceiling: the race is checked
+      // between calls, so the call in flight when the budget runs out still has
+      // to come back.
+      expect(span).toBeLessThan(ceiling + 500);
+      // ...and it still got through both triggers. A budget kept by starving the
+      // second trigger is the defect, not the fix.
+      expect(outcome.probed).toBe(2);
+      expect(outcome.revealed.size).toBe(2);
     } finally {
       await snap.release();
     }
