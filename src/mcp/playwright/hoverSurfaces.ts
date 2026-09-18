@@ -1,0 +1,1287 @@
+/**
+ * "Is there a menu behind this nav item?" for browser_snapshot.
+ *
+ * A snapshot lists `link "Products"` and nothing under it, because the
+ * submenu the site puts there only exists while the pointer is on the link:
+ * a `:hover` rule flips a panel from `display:none`, or a framework mounts it
+ * on `mouseenter`. The tree is telling the truth about the page as it stands,
+ * and the agent reads it as "this site has no Products menu" — then goes
+ * looking for a search box, or reports the feature missing. Mega-menus, avatar
+ * / account menus and "more" (…) buttons are all this same shape, and
+ * snapshot.ts had no notion of them at all.
+ *
+ * Two phases, because the cheap one is the one worth always paying for:
+ *
+ *   Phase 1 reads the page's OWN stylesheets and ARIA and marks the triggers
+ *   it can prove are triggers (`has-submenu`). It never touches the page — no
+ *   pointer, no DOM write — so it is on for every snapshot.
+ *
+ *   Phase 2 (`probeHover:true`) actually hovers the top few and lists what
+ *   appeared. That moves the real pointer, so it is opt-in, hard-bounded, and
+ *   restores the pointer afterwards.
+ *
+ * Precision is the constraint, same as occlusion.ts: a missing marker leaves
+ * the agent exactly where it is today, a WRONG marker sends it hovering a
+ * plain link and waiting for a menu that was never there. So every bound here
+ * fails open — a stylesheet that throws, a scan that runs out of time, a
+ * selector that will not parse, all produce "nothing to say" rather than a
+ * guess — and the scorer needs corroboration (a CSS rule, an ARIA promise, a
+ * native disclosure) before anything is marked.
+ *
+ * Mechanism credit: hover-revealed submenu detection was observed in
+ * Tencent/BrowserSkill (MIT), referenced as prior art. No code copied.
+ */
+
+import {
+  approachPath,
+  clickPointInBox,
+  defaultStartPoint,
+  type Box,
+  type Point,
+} from '../../shared/pointerPath';
+
+// ---------------------------------------------------------------------------
+// Bounds
+// ---------------------------------------------------------------------------
+
+/**
+ * Bounds on the always-on phase-1 scan.
+ *
+ * The rule budget and the wall clock are BOTH needed: a design-system page
+ * ships tens of thousands of rules that are individually cheap, and a page
+ * with a handful of rules can still hand each of them a selector that costs a
+ * full-document `querySelectorAll`. Whichever runs out first stops the scan,
+ * and a stopped scan reports the triggers it already found — never a partial
+ * verdict dressed up as a complete one, since the marker's meaning ("there is
+ * a menu here") does not depend on having seen every rule.
+ */
+export const HOVER_SCAN_LIMITS = {
+  /** Style rules examined per scan, across all sheets and nested groups. */
+  MAX_CSS_RULES: 4000,
+  /** Wall-clock budget for the in-page scan. */
+  SCAN_BUDGET_MS: 60,
+  /** Triggers whose handles are kept for phase 2 / marked in the tree. */
+  MAX_TRACKED_TRIGGERS: 24,
+  /**
+   * Upper bound on the WHOLE collection, round trips included. The in-page
+   * budget above covers the scan; this covers the evaluate + getProperties +
+   * describeNode chain that turns its handles into backendNodeIds, which is
+   * what a slow-but-alive renderer actually stalls on (occlusion.ts's lesson).
+   */
+  COLLECT_BUDGET_MS: 800,
+  /** Cleanup gets its own budget so a used-up collection still releases. */
+  CLEANUP_BUDGET_MS: 500,
+} as const;
+
+/** Bounds on the opt-in phase-2 probe. */
+export const HOVER_PROBE_LIMITS = {
+  /** Triggers hovered, highest-scoring first. */
+  MAX_TRIGGERS: 6,
+  /** Wall-clock budget for the whole probe, every trigger together. */
+  TOTAL_BUDGET_MS: 2500,
+  /** How long one trigger is given to reveal something. */
+  REVEAL_WAIT_MS: 300,
+  /** How often the reveal is re-checked inside that wait. */
+  REVEAL_POLL_MS: 60,
+  /**
+   * How long the surface is given to close again once the pointer has left.
+   * The mirror of REVEAL_WAIT_MS, and needed for the same reason: a panel with
+   * `transition: opacity .2s` still has a box the instant the pointer moves,
+   * and checking immediately reported every transitioned menu as stuck open.
+   */
+  CLOSE_WAIT_MS: 300,
+  /**
+   * The restore's own budget, deliberately outside TOTAL_BUDGET_MS. A probe
+   * that spent every millisecond it had still has to take its pointer off the
+   * page's menu — leaving one open changes what every later snapshot and click
+   * on that page sees. Same split as occlusion.ts's CLEANUP_BUDGET_MS.
+   */
+  RESTORE_BUDGET_MS: 600,
+  /** Accessible names listed per trigger. */
+  MAX_ITEMS: 12,
+} as const;
+
+/**
+ * Score at or above which a candidate is marked.
+ *
+ * 2 is "one strong signal, or two weak ones": a `:hover` rule that reveals
+ * another element, an `aria-haspopup`, a `<summary>`, or a named-like
+ * (`.dropdown-toggle`) element that is also `cursor:pointer`. An
+ * `aria-expanded` alone does not reach it — plenty of accordions and toggle
+ * buttons carry one and reveal nothing menu-shaped.
+ */
+export const HOVER_TRIGGER_SCORE_THRESHOLD = 2;
+
+/**
+ * Names that suggest a popup opener, matched against class / id /
+ * data-testid / aria-label. Corroboration only — worth one point, never
+ * enough on its own (see HOVER_TRIGGER_SCORE_THRESHOLD).
+ */
+export const HOVER_TRIGGER_NAME_HINT =
+  /(menu|dropdown|popover|popup|avatar|profile|account|more|ellipsis|caret)/i;
+
+/** The marker a phase-1 trigger earns in the a11y lane. */
+export const HAS_SUBMENU_MARKER = 'has-submenu';
+
+/** The same marker, as the DOM interactive listing spells it. */
+export const HAS_SUBMENU_DOM_MARKER = ' [has-submenu]';
+
+// ---------------------------------------------------------------------------
+// Pure rules — shared with the page
+// ---------------------------------------------------------------------------
+//
+// The functions below are deliberately self-contained: no imports, no module
+// closure, no shared helpers. Each one is stringified into a page script, so a
+// free identifier would resolve to nothing in the page (and the bundler is
+// free to rename it on this side). Everything a function needs is declared
+// inside it. Same rule, and the same reason, as redact.ts's
+// PASSWORD_FIELD_PREDICATE_JS and pageFacts.ts's isReportableScrollable.
+
+/**
+ * Has the scan used up either half of its budget?
+ *
+ * Its own function so the bound is pinned by a unit test rather than only
+ * observable against a live page, and so the page and this side cannot
+ * disagree about where the line is.
+ */
+export function scanBudgetExhausted(rulesSeen: number, elapsedMs: number): boolean {
+  return rulesSeen >= 4000 || elapsedMs >= 60;
+}
+
+/** One `:hover` rule, split into who is hovered and what that reveals. */
+export interface HoverRuleMatch {
+  /** Selector for the element the pointer has to be on. */
+  trigger: string;
+  /** Selector for what the rule then shows — the whole rule minus `:hover`. */
+  target: string;
+}
+
+/**
+ * Does this style rule reveal a DIFFERENT element on hover, and if so, which
+ * element has to be hovered?
+ *
+ * `.nav li:hover > .submenu { display: block }` is the shape that matters:
+ * a `:hover` on one element changing a property that can hide or show
+ * ANOTHER. Three things have to hold, and each one is a precision guard:
+ *
+ *   1. A revealing property is set. `a:hover { color: red }` is a hover rule
+ *      about nothing an agent can act on.
+ *   2. A combinator follows the `:hover`. `button:hover { opacity: 1 }`
+ *      restyles the hovered element itself — there is no submenu.
+ *   3. The `:hover` is at the top level of the selector. Inside `:not(...)` or
+ *      `:has(...)` it describes a condition, not the element being hovered,
+ *      and treating it as one would mark whatever the enclosing selector
+ *      happened to match.
+ *
+ * Returns one match per comma-separated part that qualifies, and an empty
+ * array for everything else — including anything it cannot parse confidently.
+ */
+export function classifyHoverRule(
+  selectorText: string,
+  declaredProperties: readonly string[],
+): HoverRuleMatch[] {
+  const HOVER = ':hover';
+  const REVEAL = [
+    'display',
+    'visibility',
+    'opacity',
+    'max-height',
+    'height',
+    'transform',
+    'pointer-events',
+    'clip',
+    'clip-path',
+  ];
+  /** Page-authored selector text; a pathological one is not worth running. */
+  const MAX_SELECTOR_CHARS = 200;
+
+  const text = typeof selectorText === 'string' ? selectorText : '';
+  if (text.length === 0) return [];
+
+  // ASCII-only lowercase, character for character, so an index into the
+  // lowered copy is an index into the original. `toLowerCase()` is not
+  // length-preserving for every input, and these are page-authored strings.
+  const lowerAscii = (s: string): string => {
+    let out = '';
+    for (let i = 0; i < s.length; i++) {
+      const code = s.charCodeAt(i);
+      out += code >= 65 && code <= 90 ? String.fromCharCode(code + 32) : s.charAt(i);
+    }
+    return out;
+  };
+
+  // Pseudo-classes and property names are both ASCII case-insensitive, and
+  // `cssRules` hands back whatever the author wrote on some engines.
+  if (lowerAscii(text).indexOf(HOVER) < 0) return [];
+
+  let reveals = false;
+  const props = declaredProperties || [];
+  for (let i = 0; i < props.length; i++) {
+    if (REVEAL.indexOf(lowerAscii(String(props[i]))) >= 0) {
+      reveals = true;
+      break;
+    }
+  }
+  if (!reveals) return [];
+
+  /**
+   * Nesting depth per character: anything inside `(...)`, `[...]` or a quoted
+   * string is above depth 0. The brackets themselves sit at the outer depth,
+   * so a `~` in `[a~="b"]` never reads as a sibling combinator.
+   */
+  const depthsOf = (s: string): number[] => {
+    const depths: number[] = [];
+    let depth = 0;
+    let quote = '';
+    for (let i = 0; i < s.length; i++) {
+      const ch = s.charAt(i);
+      if (quote !== '') {
+        depths.push(depth + 1);
+        if (ch === quote && s.charAt(i - 1) !== '\\') quote = '';
+        continue;
+      }
+      if (ch === '"' || ch === "'") {
+        quote = ch;
+        depths.push(depth + 1);
+        continue;
+      }
+      if (ch === '(' || ch === '[') {
+        depths.push(depth);
+        depth += 1;
+        continue;
+      }
+      if (ch === ')' || ch === ']') {
+        depth = depth > 0 ? depth - 1 : 0;
+        depths.push(depth);
+        continue;
+      }
+      depths.push(depth);
+    }
+    return depths;
+  };
+
+  const classifyPart = (rawPart: string): HoverRuleMatch | null => {
+    const part = rawPart.trim();
+    if (part.length === 0 || part.length > MAX_SELECTOR_CHARS) return null;
+    const lower = lowerAscii(part);
+    const depths = depthsOf(part);
+
+    // Top-level `:hover` occurrences, in order.
+    const hits: number[] = [];
+    for (let i = lower.indexOf(HOVER); i >= 0; i = lower.indexOf(HOVER, i + 1)) {
+      if (depths[i] !== 0) continue;
+      // `::hover` is not a thing, and `:hover-card` / `:hovered` are other
+      // pseudo-classes entirely.
+      if (i > 0 && part.charAt(i - 1) === ':') continue;
+      const after = lower.charAt(i + HOVER.length);
+      if (after !== '' && /[a-z0-9_-]/.test(after)) continue;
+      hits.push(i);
+    }
+    if (hits.length === 0) return null;
+
+    // The LAST top-level `:hover` is the one a combinator has to follow: in
+    // `.a:hover .b:hover .c` the revealed element hangs off `.b`.
+    const last = hits[hits.length - 1];
+    const afterHover = last + HOVER.length;
+    let combinator = -1;
+    for (let i = afterHover; i < part.length; i++) {
+      if (depths[i] !== 0) continue;
+      const ch = part.charAt(i);
+      if (ch === ' ' || ch === '\t' || ch === '\n' || ch === '>' || ch === '+' || ch === '~') {
+        combinator = i;
+        break;
+      }
+    }
+    // No combinator: the rule restyles the hovered element itself.
+    if (combinator < 0) return null;
+    const revealed = part.slice(combinator).replace(/^[\s>+~]+/, '');
+    if (revealed.length === 0) return null;
+
+    /** The same text with every top-level `:hover` cut out of it. */
+    const withoutHover = (upTo: number): string => {
+      let out = '';
+      let cursor = 0;
+      for (let i = 0; i < hits.length; i++) {
+        if (hits[i] >= upTo) break;
+        out += part.slice(cursor, hits[i]);
+        cursor = hits[i] + HOVER.length;
+      }
+      return (out + part.slice(cursor, upTo)).trim();
+    };
+
+    const trigger = withoutHover(combinator);
+    const target = withoutHover(part.length);
+    // A bare `:hover .menu` names no element to hover, and `.a > :hover .menu`
+    // leaves a dangling combinator. A pseudo-ELEMENT cannot be hovered at all.
+    if (trigger.length === 0 || /[>+~]$/.test(trigger) || trigger.indexOf('::') >= 0) return null;
+    if (target.length === 0) return null;
+    return { trigger: trigger, target: target };
+  };
+
+  // Split the selector list on top-level commas only — a comma inside
+  // `:is(a, b)` does not start a new selector.
+  const listDepths = depthsOf(text);
+  const out: HoverRuleMatch[] = [];
+  let start = 0;
+  for (let i = 0; i <= text.length; i++) {
+    if (i < text.length && !(text.charAt(i) === ',' && listDepths[i] === 0)) continue;
+    const match = classifyPart(text.slice(start, i));
+    if (match) out.push(match);
+    start = i + 1;
+  }
+  return out;
+}
+
+/** What a candidate element is, as far as the exclusion rules care. */
+export interface HoverTriggerElementFacts {
+  tagName: string;
+  disabled: boolean;
+  ariaDisabled: boolean;
+  inert: boolean;
+  contentEditable: boolean;
+}
+
+/**
+ * May this element be marked at all?
+ *
+ * A form field is never a submenu trigger — a `<select>` DOES open a popup,
+ * but it is the browser's own, `browser_select` already drives it, and
+ * `has-submenu` on a text input would be nonsense. A disabled or `inert`
+ * element opens nothing whatever its stylesheet says, and marking it would
+ * send the agent hovering something that cannot respond.
+ */
+export function isHoverTriggerEligible(el: HoverTriggerElementFacts): boolean {
+  const tag = String(el.tagName).toLowerCase();
+  if (tag === 'input' || tag === 'textarea' || tag === 'select' || tag === 'option') return false;
+  return !(el.disabled || el.ariaDisabled || el.inert || el.contentEditable);
+}
+
+/** Everything the scorer weighs, all of it read in the page. */
+export interface HoverTriggerSignals {
+  /** A phase-1 `:hover` rule reveals something from this element. */
+  cssRule: boolean;
+  /** `aria-haspopup` promising a menu, listbox or dialog. */
+  ariaHaspopup: boolean;
+  /** `aria-expanded` is present (either value). */
+  ariaExpanded: boolean;
+  /** A `<summary>` — the platform's own disclosure trigger. */
+  nativeDisclosure: boolean;
+  /** class / id / data-testid / aria-label matches HOVER_TRIGGER_NAME_HINT. */
+  nameHint: boolean;
+  cursorPointer: boolean;
+  visible: boolean;
+  hasArea: boolean;
+}
+
+/**
+ * How strongly does this element look like a hover trigger?
+ *
+ * The three structural signals are worth the threshold on their own because
+ * each is the page ASSERTING a popup: a stylesheet that reveals another
+ * element, an ARIA promise, a native `<summary>`. The name and the cursor are
+ * corroboration — every card in a grid is `cursor:pointer`, and `.more` is a
+ * class name on plenty of plain links.
+ *
+ * Each penalty is deliberately bigger than every positive weight put together,
+ * so it VETOES rather than merely discounts: an element that is not on screen
+ * is not one the agent can put a pointer on, and no stack of hints should be
+ * able to carry it over the line.
+ */
+export function scoreHoverTrigger(signals: HoverTriggerSignals): number {
+  let score = 0;
+  if (signals.cssRule) score += 2;
+  if (signals.ariaHaspopup) score += 2;
+  if (signals.nativeDisclosure) score += 2;
+  if (signals.ariaExpanded) score += 1;
+  if (signals.nameHint) score += 1;
+  if (signals.cursorPointer) score += 1;
+  if (!signals.visible) score -= 10;
+  if (!signals.hasArea) score -= 10;
+  return score;
+}
+
+// ---------------------------------------------------------------------------
+// Phase 1 — the in-page scan
+// ---------------------------------------------------------------------------
+
+/**
+ * The phase-1 scan, as source text.
+ *
+ * Built as a string so the SAME scan runs over both transports: snapshot.ts
+ * evaluates it for remote handles (which resolve to the backendNodeIds the
+ * a11y tree is indexed by), and dom-intelligence.ts inlines it into the DOM
+ * interactive listing, where the result is only ever an in-page `Set`.
+ *
+ * `elementsOnly` drops the meta payload and returns the bare element array,
+ * which is all the DOM listing can use: it has no way to hold a handle, and
+ * no phase 2 to feed.
+ */
+export function buildHoverTriggerScanExpression(opts?: { elementsOnly?: boolean }): string {
+  const elementsOnly = opts?.elementsOnly === true;
+  return `(() => {
+  const started = Date.now();
+  const exhausted = ${String(scanBudgetExhausted)};
+  const classify = ${String(classifyHoverRule)};
+  const eligible = ${String(isHoverTriggerEligible)};
+  const score = ${String(scoreHoverTrigger)};
+  const THRESHOLD = ${JSON.stringify(HOVER_TRIGGER_SCORE_THRESHOLD)};
+  const MAX_TRACKED = ${JSON.stringify(HOVER_SCAN_LIMITS.MAX_TRACKED_TRIGGERS)};
+  const NAME_HINT = ${String(HOVER_TRIGGER_NAME_HINT)};
+  // Per-trigger cap on the reveal selectors carried to phase 2, and on how
+  // many elements one selector may nominate: a rule whose hovered part is
+  // \`div\` must not turn the scan into a whole-document crawl.
+  const MAX_TARGETS = 4;
+  const MAX_MATCHES_PER_SELECTOR = 200;
+  const MAX_SELECTOR_CHARS = 200;
+  // Ceiling on the elements the scoring pass touches. Each one costs a style
+  // recalc and a layout read, so an uncapped candidate set turns the 60 ms
+  // budget into whatever the page's rule count makes it.
+  const MAX_CANDIDATES = 400;
+
+  /** Not on screen right now: no box, or nothing painted. */
+  const isHiddenNow = (el) => {
+    try {
+      if (typeof el.checkVisibility === 'function'
+          && !el.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true })) return true;
+      const r = el.getBoundingClientRect();
+      return !(r.width > 0) || !(r.height > 0);
+    } catch (e) {
+      return false;
+    }
+  };
+
+  // --- stylesheet scan -----------------------------------------------------
+  // Element -> reveal selectors. A cross-origin sheet throws on cssRules and
+  // is skipped; there is no way to read it and no way to fake it.
+  const cssTargets = new Map();
+  let rules = 0;
+  const queue = [];
+  const sheets = document.styleSheets || [];
+  for (let i = 0; i < sheets.length; i++) {
+    try { if (sheets[i].cssRules) queue.push(sheets[i].cssRules); } catch (e) { /* cross-origin */ }
+  }
+  while (queue.length > 0) {
+    const list = queue.shift();
+    for (let i = 0; i < list.length; i++) {
+      rules++;
+      // A scan that ran out reports the triggers it already found and says
+      // nothing about having stopped: a missing marker leaves the agent exactly
+      // where it is today, so there is no verdict here worth qualifying.
+      if (exhausted(rules, Date.now() - started)) { queue.length = 0; break; }
+      const rule = list[i];
+      let nested = null;
+      try { nested = rule.cssRules; } catch (e) { nested = null; }
+      // @media / @supports / @layer wrap the rules that matter on a modern
+      // site — most \`:hover\` menus live inside \`@media (hover: hover)\`.
+      if (nested && nested.length > 0) queue.push(nested);
+      const selectorText = typeof rule.selectorText === 'string' ? rule.selectorText : '';
+      if (selectorText === '' || selectorText.indexOf(':hover') < 0) continue;
+      const style = rule.style;
+      if (!style || typeof style.length !== 'number') continue;
+      const props = [];
+      for (let p = 0; p < style.length; p++) props.push(style[p]);
+      const matches = classify(selectorText, props);
+      for (let m = 0; m < matches.length; m++) {
+        // The REVEALED element has to be hidden right now, and this is the
+        // single most important precision gate in the scan. Without it the
+        // near-universal hover micro-interaction —
+        // \`a:hover svg { transform: translateX(2px) }\` — reads as a reveal, and
+        // \`querySelectorAll('a')\` then nominates every link on the page. A
+        // submenu that only exists on :hover is, by definition, not on screen
+        // in the snapshot the agent is holding; a nudged icon is.
+        let shown = null;
+        try { shown = document.querySelectorAll(matches[m].target); } catch (e) { continue; }
+        const shownLimit = Math.min(shown.length, MAX_MATCHES_PER_SELECTOR);
+        let anyHidden = false;
+        for (let s = 0; s < shownLimit; s++) {
+          if (isHiddenNow(shown[s])) { anyHidden = true; break; }
+        }
+        if (!anyHidden) continue;
+
+        let found = null;
+        try { found = document.querySelectorAll(matches[m].trigger); } catch (e) { continue; }
+        const limit = Math.min(found.length, MAX_MATCHES_PER_SELECTOR);
+        for (let f = 0; f < limit; f++) {
+          const el = found[f];
+          let targets = cssTargets.get(el);
+          if (!targets) {
+            if (cssTargets.size >= MAX_CANDIDATES) break;
+            targets = [];
+            cssTargets.set(el, targets);
+          }
+          const target = matches[m].target.slice(0, MAX_SELECTOR_CHARS);
+          if (targets.length < MAX_TARGETS && targets.indexOf(target) < 0) targets.push(target);
+        }
+      }
+    }
+  }
+
+  // --- candidate set -------------------------------------------------------
+  const candidates = [];
+  const seen = new Set();
+  const add = (el) => {
+    if (el && !seen.has(el) && candidates.length < MAX_CANDIDATES) {
+      seen.add(el);
+      candidates.push(el);
+    }
+  };
+  for (const el of cssTargets.keys()) add(el);
+  // \`details\` itself is deliberately not a candidate: the thing you interact
+  // with is its \`<summary>\`, and marking both would put two has-submenu lines
+  // on one disclosure.
+  let declared = [];
+  try {
+    declared = document.querySelectorAll(
+      '[aria-haspopup], [aria-expanded], summary'
+    );
+  } catch (e) { declared = []; }
+  for (let i = 0; i < declared.length; i++) add(declared[i]);
+
+  // --- score ---------------------------------------------------------------
+  const scored = [];
+  for (let i = 0; i < candidates.length; i++) {
+    // The same budget as the rule walk, because this pass is the expensive one:
+    // getComputedStyle + getBoundingClientRect per candidate forces a style
+    // recalc and a layout. The rule count no longer moves here, so it is the
+    // wall clock that stops this loop.
+    if (exhausted(rules, Date.now() - started)) break;
+    const el = candidates[i];
+    const tag = String(el.tagName || '').toLowerCase();
+    let inert = false;
+    try { inert = el.closest('[inert]') !== null; } catch (e) { inert = false; }
+    if (!eligible({
+      tagName: tag,
+      disabled: el.hasAttribute('disabled') || el.disabled === true,
+      ariaDisabled: (el.getAttribute('aria-disabled') || '').toLowerCase() === 'true',
+      inert: inert,
+      // The attribute as well as the property: \`isContentEditable\` is what
+      // catches an INHERITED editing host, and not every engine exposes it.
+      contentEditable: el.isContentEditable === true
+        || (el.getAttribute('contenteditable') || '').toLowerCase() === 'true',
+    })) continue;
+
+    let cursor = '';
+    try { cursor = getComputedStyle(el).cursor || ''; } catch (e) { cursor = ''; }
+    const rect = el.getBoundingClientRect();
+    const haspopup = (el.getAttribute('aria-haspopup') || '').toLowerCase();
+    // className is an SVGAnimatedString on SVG elements, not a string.
+    const classes = typeof el.className === 'string' ? el.className : '';
+    const hintText = classes + ' ' + (el.id || '') + ' '
+      + (el.getAttribute('data-testid') || '') + ' '
+      + (el.getAttribute('aria-label') || '');
+    const targets = cssTargets.get(el) || [];
+    const value = score({
+      cssRule: targets.length > 0,
+      ariaHaspopup: haspopup === 'true' || haspopup === 'menu'
+        || haspopup === 'listbox' || haspopup === 'dialog',
+      ariaExpanded: el.hasAttribute('aria-expanded'),
+      nativeDisclosure: tag === 'summary',
+      nameHint: NAME_HINT.test(hintText),
+      cursorPointer: cursor === 'pointer',
+      visible: typeof el.checkVisibility === 'function'
+        ? el.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true })
+        : true,
+      hasArea: rect.width > 0 && rect.height > 0,
+    });
+    if (value < THRESHOLD) continue;
+    scored.push({ el: el, score: value, targets: targets });
+  }
+  // Highest score first: phase 2 only gets to hover a few, and they should be
+  // the ones the page asserted hardest about.
+  scored.sort((a, b) => b.score - a.score);
+  const picked = scored.slice(0, MAX_TRACKED);
+${
+  elementsOnly
+    ? '  return picked.map((c) => c.el);'
+    : `  return {
+    els: picked.map((c) => c.el),
+    meta: JSON.stringify(picked.map((c) => ({ s: c.score, t: c.targets }))),
+    count: picked.length,
+  };`
+}
+})()`;
+}
+
+// ---------------------------------------------------------------------------
+// Phase 1 — collection over CDP
+// ---------------------------------------------------------------------------
+
+/** The subset of a CDP session this module needs (also what fakes implement). */
+export interface HoverCdpSender {
+  send: (method: string, params?: unknown) => Promise<unknown>;
+}
+
+/** One trigger the scan found, with the handle phase 2 hovers. */
+export interface HoverCandidate {
+  /** Remote handle, valid until the collection's `release()` runs. */
+  objectId: string;
+  /** Index into the a11y tree; absent when the element has no a11y node. */
+  backendNodeId?: number;
+  score: number;
+  /** Selectors the phase-1 rules reveal from this trigger. */
+  targets: string[];
+}
+
+export interface HoverTriggerCollection {
+  candidates: HoverCandidate[];
+  /** Drop the remote handles. Safe to call more than once. */
+  release: () => Promise<void>;
+}
+
+/** Nothing found (or nothing readable) — the shape every failure returns. */
+const NO_TRIGGERS: HoverTriggerCollection = {
+  candidates: [],
+  release: () => Promise.resolve(),
+};
+
+/** Ceiling on the page-built meta payload, before it is parsed. */
+const MAX_META_CHARS = 16_384;
+
+type RemoteProp = { name: string; value?: { value?: unknown; objectId?: string } };
+
+function propOf(props: RemoteProp[], name: string): RemoteProp['value'] {
+  return props.find((p) => p.name === name)?.value;
+}
+
+/**
+ * Run the phase-1 scan and resolve its triggers to backendNodeIds.
+ *
+ * Shaped exactly like collectOcclusion: `returnByValue: false`, because the
+ * payload carries live Elements and the whole point of keeping them as remote
+ * handles is that `DOM.describeNode` turns each one into the backendNodeId the
+ * a11y tree is indexed by — and that phase 2 can hover them without having to
+ * re-find them by selector.
+ *
+ * Every failure returns an empty collection rather than throwing: this is an
+ * annotation on top of a snapshot, and a snapshot without it is exactly the
+ * snapshot that shipped before this module existed.
+ */
+export async function collectHoverTriggers(
+  client: HoverCdpSender,
+  /** Isolated-world context to scan in; omitted (or null) means main world. */
+  contextId?: number | null,
+): Promise<HoverTriggerCollection> {
+  const objectGroup = 'wmux-hover';
+  const deadline = Date.now() + HOVER_SCAN_LIMITS.COLLECT_BUDGET_MS;
+
+  /** Resolve, or give up when the shared budget runs out. */
+  const bounded = <T>(p: Promise<T>): Promise<T | null> =>
+    Promise.race([
+      p.catch(() => null),
+      new Promise<null>((resolve) =>
+        setTimeout(() => resolve(null), Math.max(0, deadline - Date.now())),
+      ),
+    ]);
+
+  let acquired = false;
+  const release = async (): Promise<void> => {
+    if (!acquired) return;
+    acquired = false;
+    await Promise.race([
+      client.send('Runtime.releaseObjectGroup', { objectGroup }).catch(() => null),
+      new Promise((resolve) => setTimeout(resolve, HOVER_SCAN_LIMITS.CLEANUP_BUDGET_MS)),
+    ]);
+  };
+
+  try {
+    const evaluated = (await bounded(
+      client.send('Runtime.evaluate', {
+        expression: buildHoverTriggerScanExpression(),
+        returnByValue: false,
+        objectGroup,
+        timeout: HOVER_SCAN_LIMITS.COLLECT_BUDGET_MS,
+        // The scan reads stylesheets, attributes and layout, all of which the
+        // isolated world shares — so the page can neither see the scan nor
+        // hook the methods it uses.
+        ...(typeof contextId === 'number' ? { contextId } : {}),
+      }),
+    )) as { result?: { objectId?: string } } | null;
+
+    const rootId = evaluated?.result?.objectId;
+    if (!rootId) return NO_TRIGGERS;
+    acquired = true;
+
+    const rootProps = (await bounded(
+      client.send('Runtime.getProperties', { objectId: rootId, ownProperties: true }),
+    )) as { result?: RemoteProp[] } | null;
+    const props = rootProps?.result;
+    if (!props) {
+      await release();
+      return NO_TRIGGERS;
+    }
+
+    const rawMeta = propOf(props, 'meta')?.value;
+    // The meta is built by our own isolated-world code, but its CONTENT is
+    // page text (selectors lifted out of the page's stylesheets), so it is
+    // capped on THIS side of the wire: a hostile page can patch
+    // String.prototype.slice, and in the main-world fallback that patch runs.
+    const meta = parseHoverMeta(typeof rawMeta === 'string' ? rawMeta : '');
+
+    // The common case is a page with no hover-only menus at all, and it should
+    // cost as little as possible: the count says so in the payload we already
+    // have, which saves the array walk and every describeNode behind it.
+    if (Number(propOf(props, 'count')?.value ?? 0) <= 0) {
+      await release();
+      return NO_TRIGGERS;
+    }
+
+    const arrayId = propOf(props, 'els')?.objectId;
+    const objectIds: string[] = [];
+    if (arrayId) {
+      const items = (await bounded(
+        client.send('Runtime.getProperties', { objectId: arrayId, ownProperties: true }),
+      )) as { result?: RemoteProp[] } | null;
+      for (const item of items?.result ?? []) {
+        // Own properties of an array include `length`; only the index slots
+        // hold elements. The cap is re-applied here rather than trusted from
+        // the page's own count, for the reason above.
+        if (objectIds.length >= HOVER_SCAN_LIMITS.MAX_TRACKED_TRIGGERS) break;
+        if (!/^\d+$/.test(item.name)) continue;
+        const objectId = item.value?.objectId;
+        if (objectId) objectIds.push(objectId);
+      }
+    }
+    if (objectIds.length === 0) {
+      await release();
+      return NO_TRIGGERS;
+    }
+
+    // One round trip each, but issued together: sequentially these are the
+    // dominant cost of the whole collection.
+    const described = await Promise.all(
+      objectIds.map((objectId) =>
+        bounded(client.send('DOM.describeNode', { objectId })) as Promise<{
+          node?: { backendNodeId?: number };
+        } | null>,
+      ),
+    );
+
+    const candidates: HoverCandidate[] = objectIds.map((objectId, index) => {
+      const backendNodeId = described[index]?.node?.backendNodeId;
+      return {
+        objectId,
+        ...(backendNodeId !== undefined && { backendNodeId }),
+        score: meta[index]?.score ?? 0,
+        targets: meta[index]?.targets ?? [],
+      };
+    });
+
+    return { candidates, release };
+  } catch {
+    // No Runtime domain / detached target / hostile page — see fail-open above.
+    await release().catch(() => undefined);
+    return NO_TRIGGERS;
+  }
+}
+
+/** The per-trigger meta, re-capped on this side. Never throws. */
+function parseHoverMeta(raw: string): { score: number; targets: string[] }[] {
+  if (raw === '' || raw.length > MAX_META_CHARS) return [];
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(parsed)) return [];
+  return parsed.slice(0, HOVER_SCAN_LIMITS.MAX_TRACKED_TRIGGERS).map((entry) => {
+    const row = (entry ?? {}) as { s?: unknown; t?: unknown };
+    const targets = Array.isArray(row.t) ? row.t : [];
+    return {
+      score: typeof row.s === 'number' && Number.isFinite(row.s) ? row.s : 0,
+      targets: targets
+        .filter((t): t is string => typeof t === 'string')
+        .slice(0, 4)
+        .map((t) => t.slice(0, 200)),
+    };
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Rendering
+// ---------------------------------------------------------------------------
+
+/** What one trigger earns on its snapshot line. */
+export interface HoverSurfaceMark {
+  /** Accessible names the probe saw appear. Empty on a phase-1-only mark. */
+  items: string[];
+  /** More appeared than `items` lists. */
+  truncated: boolean;
+  /** The surface was still open after the pointer was moved away. */
+  staysOpen: boolean;
+}
+
+/** backendNodeId → its mark. */
+export type HoverSurfaceMarks = Map<number, HoverSurfaceMark>;
+
+/** A phase-1-only mark: we know it is a trigger, not what is behind it. */
+export function phaseOneMark(): HoverSurfaceMark {
+  return { items: [], truncated: false, staysOpen: false };
+}
+
+/**
+ * The probe's part of a trigger's line, or '' when there is nothing to add.
+ *
+ * `stays open` is only ever said alongside items, because it is a caveat about
+ * THEM: a hover that revealed nothing has nothing left open, and reporting
+ * that a page "stays open" would describe a state that does not exist.
+ */
+export function formatHoverItems(mark: HoverSurfaceMark | undefined): string {
+  if (!mark || mark.items.length === 0) return '';
+  const parts = mark.items.slice();
+  if (mark.truncated) parts.push('…');
+  if (mark.staysOpen) parts.push('stays open');
+  return ` [hover first: ${parts.join(' | ')}]`;
+}
+
+/**
+ * The footer line, appended beside the page facts.
+ *
+ * Only earned when phase 1 found something AND the caller did not ask for the
+ * probe: with `probeHover:true` the items are already on the lines above, and
+ * telling the agent to pass a flag it just passed is noise.
+ */
+export function hoverMenusFooterLine(triggerCount: number): string {
+  if (triggerCount <= 0) return '';
+  return `\nhover menus: ${triggerCount} triggers marked ${HAS_SUBMENU_MARKER}; pass probeHover:true to list their items`;
+}
+
+/**
+ * How many `has-submenu` markers a rendered snapshot actually carries.
+ *
+ * The footer's count is taken from the OUTPUT rather than from the mark map,
+ * because the two legitimately disagree: serialisation suppresses the marker on
+ * an already-expanded node, and the length cap can strip marked lines entirely.
+ * A footer that promised five triggers over a tree showing none would be the
+ * same footer-contradicts-the-tree failure `hasFrameContent` exists to fix.
+ */
+export function countHasSubmenuMarkers(rendered: string): number {
+  return rendered.split(` ${HAS_SUBMENU_MARKER}`).length - 1;
+}
+
+// ---------------------------------------------------------------------------
+// Phase 2 — the hover probe
+// ---------------------------------------------------------------------------
+
+/**
+ * One step of the probe, run in the page with the trigger as `this`.
+ *
+ * Two modes rather than two functions so the "is it showing?" predicate has a
+ * single definition: `before` records what is hidden, `after` asks which of
+ * those exact elements is now showing, and the two must agree character for
+ * character or the probe reports a reveal that never happened.
+ *
+ *   before(targetsJson) -> { url, vw, vh, box, hidden }   (hidden = handles)
+ *   after(hiddenArray, maxItems) -> { url, names, revealed }
+ *
+ * `hidden` comes back as live element handles, which is what lets `after` ask
+ * about the same elements without re-querying: a re-query after the hover
+ * would also pick up whatever the hover ADDED, and could not tell the two
+ * apart.
+ */
+export function hoverProbeStep(this: unknown, mode: string, arg: unknown, maxItems?: number): unknown {
+  const el = this as {
+    querySelectorAll: (s: string) => ArrayLike<unknown>;
+    getBoundingClientRect: () => { left: number; top: number; width: number; height: number };
+  };
+  // `[tabindex="-1"]` is deliberately excluded: a dropdown panel routinely
+  // carries one for focus management, and including it made the PANEL itself a
+  // nameable item whose label is every entry run together.
+  const INTERACTIVE =
+    'a[href],button,[role="menuitem"],[role="menuitemcheckbox"],[role="menuitemradio"],' +
+    '[role="option"],[role="link"],[role="button"],[role="tab"],summary,' +
+    '[tabindex]:not([tabindex="-1"])';
+  /** Elements one probe will consider, across the trigger and every target. */
+  const MAX_POOL = 400;
+  const MAX_MATCHES_PER_SELECTOR = 40;
+  const MAX_NAME_CHARS = 60;
+
+  const isShowing = (node: unknown): boolean => {
+    const n = node as {
+      checkVisibility?: (o?: unknown) => boolean;
+      getBoundingClientRect?: () => { width: number; height: number };
+    } | null;
+    if (!n || typeof n.getBoundingClientRect !== 'function') return false;
+    if (
+      typeof n.checkVisibility === 'function' &&
+      !n.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true })
+    ) {
+      return false;
+    }
+    // A zero box is the other half of "hidden": `max-height: 0` with
+    // `overflow: hidden`, and `clip`/`clip-path` insets, both leave
+    // checkVisibility perfectly happy while nothing is on screen.
+    const rect = n.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0;
+  };
+
+  if (mode === 'before') {
+    const pool: unknown[] = [];
+    const push = (node: unknown): void => {
+      if (node && pool.length < MAX_POOL && pool.indexOf(node) < 0) pool.push(node);
+    };
+    const scan = (root: unknown): void => {
+      const host = root as { querySelectorAll?: (s: string) => ArrayLike<unknown> };
+      if (!host || typeof host.querySelectorAll !== 'function') return;
+      let found: ArrayLike<unknown> = [];
+      try {
+        found = host.querySelectorAll(INTERACTIVE);
+      } catch (e) {
+        return;
+      }
+      for (let i = 0; i < found.length; i++) push(found[i]);
+    };
+
+    scan(el);
+    let targets: unknown = [];
+    try {
+      targets = JSON.parse(String(arg));
+    } catch (e) {
+      targets = [];
+    }
+    const list = Array.isArray(targets) ? targets : [];
+    for (let i = 0; i < list.length; i++) {
+      let matched: ArrayLike<unknown> = [];
+      try {
+        matched = document.querySelectorAll(String(list[i]));
+      } catch (e) {
+        continue;
+      }
+      const limit = Math.min(matched.length, MAX_MATCHES_PER_SELECTOR);
+      for (let m = 0; m < limit; m++) {
+        push(matched[m]);
+        scan(matched[m]);
+      }
+    }
+
+    const hidden: unknown[] = [];
+    for (let i = 0; i < pool.length; i++) if (!isShowing(pool[i])) hidden.push(pool[i]);
+    const rect = el.getBoundingClientRect();
+    // The box is returned as four flat numbers, not as an object: the payload
+    // comes back as a remote handle (it has to, for `hidden`), and a nested
+    // object would be one more handle to resolve with one more round trip.
+    return {
+      url: location.href,
+      vw: innerWidth,
+      vh: innerHeight,
+      bx: rect.left,
+      by: rect.top,
+      bw: rect.width,
+      bh: rect.height,
+      hidden: hidden,
+    };
+  }
+
+  const hidden = (Array.isArray(arg) ? arg : []) as unknown[];
+  const cap = typeof maxItems === 'number' && maxItems > 0 ? maxItems : 12;
+  /** Names worth collecting past the cap, so `named` can be exact. */
+  const MAX_NAMES_SEEN = 64;
+  const unique: string[] = [];
+  let revealed = 0;
+  for (let i = 0; i < hidden.length; i++) {
+    const node = hidden[i] as {
+      getAttribute?: (n: string) => string | null;
+      matches?: (s: string) => boolean;
+      textContent?: string | null;
+    };
+    if (!isShowing(node)) continue;
+    // Counted whatever it is: the panel ELEMENT appearing is how "something
+    // opened" is known, and it is what the close check re-measures.
+    revealed += 1;
+    // ...but only the controls inside it are worth naming. A panel's own
+    // textContent is every item's label run together ("DocsAPIPricing"), which
+    // is not an item and not something the agent can act on.
+    if (typeof node.matches !== 'function' || !node.matches(INTERACTIVE)) continue;
+    if (unique.length >= MAX_NAMES_SEEN) continue;
+    const attr = (name: string): string =>
+      (typeof node.getAttribute === 'function' ? node.getAttribute(name) : null) || '';
+    const raw = (
+      attr('aria-label') ||
+      String(node.textContent || '').replace(/\s+/g, ' ').trim() ||
+      attr('title') ||
+      attr('alt') ||
+      attr('placeholder')
+    ).slice(0, MAX_NAME_CHARS);
+    // Counted only once it has survived the empty-and-duplicate filters, so
+    // `named > names.length` means the list really was cut short — an icon-only
+    // button with no label, or a second "Learn more", is not a missing item.
+    if (raw !== '' && unique.indexOf(raw) < 0) unique.push(raw);
+  }
+  return {
+    url: location.href,
+    names: unique.slice(0, cap),
+    revealed: revealed,
+    named: unique.length,
+  };
+}
+
+/** Everything the probe needs from the lane it is running in. */
+export interface HoverProbeContext {
+  /** The surface's current top-level URL, read before and after each trigger. */
+  currentUrl: () => string | undefined;
+  /** Where the pointer was last left on this surface. */
+  pointerStart: Point;
+  /** Called with the pointer's new resting place, so the lane stays in step. */
+  onPointerMoved: (point: Point) => void;
+  /** pathPoints' jitter source. A constant 0.5 yields a straight path. */
+  rng?: () => number;
+}
+
+export interface HoverProbeOutcome {
+  /** backendNodeId → what hovering it revealed. Empty when cancelled. */
+  revealed: HoverSurfaceMarks;
+  /** The page navigated mid-probe, so every result was dropped. */
+  cancelled: boolean;
+  /** Triggers actually hovered. */
+  probed: number;
+}
+
+/**
+ * Are these two URLs the same document?
+ *
+ * The fragment is ignored on purpose. A nav bar — the exact thing this feature
+ * exists for — updates `location.hash` while you scroll past its sections, and
+ * scroll-spy highlighting does it with `history.replaceState`. Treating that as
+ * a navigation would throw away every result the probe had collected, on the
+ * pages most likely to have hover menus at all. A path or query that changed
+ * IS treated as a navigation: an SPA route swaps the content the names came
+ * from, even without a document load.
+ */
+export function sameHoverDocument(a: string | undefined, b: string | undefined): boolean {
+  if (typeof a !== 'string' || typeof b !== 'string') return false;
+  const strip = (url: string): string => {
+    const hash = url.indexOf('#');
+    return hash < 0 ? url : url.slice(0, hash);
+  };
+  return strip(a) === strip(b);
+}
+
+/**
+ * Where to park the pointer to let a surface close again.
+ *
+ * Not (0, 0): this position is written back into the lane's pointer tracker, so
+ * it becomes the start of the NEXT click's approach path, and the viewport
+ * origin is the one place `shared/pointerPath` says a real pointer never rests.
+ * The tracker's own idea of "somewhere plausible" is reused instead, and only
+ * displaced when the trigger happens to sit on top of it.
+ */
+export function neutralPointFor(box: Box, viewport: { width: number; height: number }): Point {
+  const home = defaultStartPoint(viewport);
+  const inside =
+    home.x >= box.x &&
+    home.x <= box.x + box.width &&
+    home.y >= box.y &&
+    home.y <= box.y + box.height;
+  if (!inside) return home;
+  // The trigger covers the usual resting place; park diagonally opposite it.
+  const clamp = (value: number, max: number): number => Math.min(Math.max(value, 0), Math.max(0, max));
+  return {
+    x: clamp(viewport.width - 1 - home.x, viewport.width - 1),
+    y: clamp(viewport.height - 1 - home.y, viewport.height - 1),
+  };
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** What one `after` step reported, or null when it could not be read. */
+interface AfterReading {
+  url: string;
+  names: string[];
+  revealed: number;
+  named: number;
+}
+
+function readAfter(reply: unknown): AfterReading | null {
+  const value = (reply as { result?: { value?: unknown } } | null)?.result?.value as
+    | { url?: unknown; names?: unknown; revealed?: unknown; named?: unknown }
+    | undefined;
+  if (!value || typeof value.url !== 'string') return null;
+  const revealed = Number(value.revealed ?? 0);
+  return {
+    url: value.url,
+    names: Array.isArray(value.names) ? value.names.filter((n): n is string => typeof n === 'string') : [],
+    revealed,
+    named: Number(value.named ?? revealed),
+  };
+}
+
+/**
+ * Hover the top candidates and list what appears.
+ *
+ * Bounded four ways and every one of them matters: MAX_TRIGGERS, because each
+ * hover is real input a real site reacts to; TOTAL_BUDGET_MS, because a
+ * snapshot the agent is waiting on must not become a five-second crawl;
+ * REVEAL_WAIT_MS per trigger, because a CSS transition that has not finished in
+ * 300 ms is not what the agent is blocked on; and every single round trip is
+ * raced against the shared deadline, because a page running a long task answers
+ * `Runtime.callFunctionOn` whenever it feels like it and there is no CDP
+ * timeout parameter to lean on (occlusion.ts's lesson, phase 1's `bounded`).
+ *
+ * The pointer is restored in a `finally`, so a handle the page invalidated
+ * mid-trigger cannot leave a mega-menu open for every later snapshot and click
+ * on that page, and the restore gets its own budget past the deadline for the
+ * same reason cleanup does in occlusion.ts. The close is then VERIFIED rather
+ * than assumed, with the same patience the open was given — a panel with a
+ * close transition is not a panel that stayed open — and only a surface that is
+ * genuinely still up earns `stays open`.
+ *
+ * A navigation mid-probe drops everything: the names were collected from a
+ * document that is gone, and reporting them against the new page's tree would
+ * be worse than reporting nothing.
+ */
+export async function probeHoverSurfaces(
+  client: HoverCdpSender,
+  candidates: readonly HoverCandidate[],
+  ctx: HoverProbeContext,
+): Promise<HoverProbeOutcome> {
+  const revealed: HoverSurfaceMarks = new Map();
+  const startUrl = ctx.currentUrl();
+  const deadline = Date.now() + HOVER_PROBE_LIMITS.TOTAL_BUDGET_MS;
+  const step = String(hoverProbeStep);
+  let pointer = ctx.pointerStart;
+  let probed = 0;
+
+  /** One round trip, raced against `until`. Null on failure or expiry. */
+  const send = (until: number, method: string, params: unknown): Promise<unknown | null> =>
+    Promise.race([
+      client.send(method, params).catch(() => null),
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), Math.max(0, until - Date.now()))),
+    ]);
+
+  /** Walk the pointer to `to` with the same geometry browser_hover uses. */
+  const movePointer = async (to: Point, until: number): Promise<void> => {
+    for (const point of approachPath(pointer, to, ctx.rng)) {
+      await send(until, 'Input.dispatchMouseEvent', { type: 'mouseMoved', x: point.x, y: point.y });
+    }
+    pointer = to;
+    ctx.onPointerMoved(to);
+  };
+
+  const after = (objectId: string, hiddenId: string, cap: number, until: number) =>
+    send(until, 'Runtime.callFunctionOn', {
+      functionDeclaration: step,
+      objectId,
+      arguments: [{ value: 'after' }, { objectId: hiddenId }, { value: cap }],
+      returnByValue: true,
+      awaitPromise: false,
+    });
+
+  try {
+    for (const candidate of candidates.slice(0, HOVER_PROBE_LIMITS.MAX_TRIGGERS)) {
+      if (Date.now() >= deadline) break;
+      if (candidate.backendNodeId === undefined) continue;
+
+      // --- before -------------------------------------------------------
+      const before = (await send(deadline, 'Runtime.callFunctionOn', {
+        functionDeclaration: step,
+        objectId: candidate.objectId,
+        arguments: [{ value: 'before' }, { value: JSON.stringify(candidate.targets) }],
+        returnByValue: false,
+        awaitPromise: false,
+      })) as { result?: { objectId?: string } } | null;
+      const beforeId = before?.result?.objectId;
+      if (!beforeId) continue;
+
+      const beforeProps = (await send(deadline, 'Runtime.getProperties', {
+        objectId: beforeId,
+        ownProperties: true,
+      })) as { result?: RemoteProp[] } | null;
+      const props = beforeProps?.result;
+      if (!props) continue;
+
+      const beforeUrl = propOf(props, 'url')?.value;
+      // A reading we could not take is not evidence of a navigation — the step
+      // threw, or the round trip expired. That costs this trigger, not the
+      // whole probe.
+      if (typeof beforeUrl !== 'string') continue;
+      if (!sameHoverDocument(beforeUrl, startUrl)) return cancelled(probed);
+
+      const hiddenId = propOf(props, 'hidden')?.objectId;
+      const vw = Number(propOf(props, 'vw')?.value ?? 0);
+      const vh = Number(propOf(props, 'vh')?.value ?? 0);
+      const box: Box = {
+        x: Number(propOf(props, 'bx')?.value ?? 0),
+        y: Number(propOf(props, 'by')?.value ?? 0),
+        width: Number(propOf(props, 'bw')?.value ?? 0),
+        height: Number(propOf(props, 'bh')?.value ?? 0),
+      };
+      if (!hiddenId || !(vw > 0) || !(vh > 0)) continue;
+      // Off-screen, or no box to aim at. Scrolling it into view would change
+      // the page the snapshot just described, so it is skipped instead.
+      if (!(box.width > 0) || !(box.height > 0)) continue;
+      if (box.y + box.height <= 0 || box.y >= vh || box.x + box.width <= 0 || box.x >= vw) continue;
+
+      const aim = clickPointInBox(box, ctx.rng);
+      const target: Point = {
+        x: Math.min(Math.max(aim.x, 0), vw - 1),
+        y: Math.min(Math.max(aim.y, 0), vh - 1),
+      };
+      const neutral = neutralPointFor(box, { width: vw, height: vh });
+
+      // --- hover, then restore no matter what ---------------------------
+      let reading: AfterReading | null = null;
+      let restoreUntil = deadline;
+      try {
+        await movePointer(target, deadline);
+        probed += 1;
+
+        const waitUntil = Math.min(Date.now() + HOVER_PROBE_LIMITS.REVEAL_WAIT_MS, deadline);
+        for (;;) {
+          reading = readAfter(await after(candidate.objectId, hiddenId, HOVER_PROBE_LIMITS.MAX_ITEMS, deadline));
+          if (!reading) break;
+          if (!sameHoverDocument(reading.url, startUrl)) return cancelled(probed);
+          if (reading.revealed > 0 || Date.now() >= waitUntil) break;
+          await sleep(Math.min(HOVER_PROBE_LIMITS.REVEAL_POLL_MS, Math.max(0, waitUntil - Date.now())));
+        }
+      } finally {
+        // Its own budget, past the shared deadline: a probe that used every
+        // millisecond still has to take its pointer off the page's menu.
+        restoreUntil = Date.now() + HOVER_PROBE_LIMITS.RESTORE_BUDGET_MS;
+        await movePointer(neutral, restoreUntil);
+      }
+      if (!reading) continue;
+
+      // --- did it close again? -----------------------------------------
+      let staysOpen = false;
+      if (reading.revealed > 0) {
+        const closeUntil = Math.min(Date.now() + HOVER_PROBE_LIMITS.CLOSE_WAIT_MS, restoreUntil);
+        for (;;) {
+          // cap 1: this read is a yes/no about the surface, not a second list.
+          const closed = readAfter(await after(candidate.objectId, hiddenId, 1, restoreUntil));
+          if (!closed) break;
+          if (!sameHoverDocument(closed.url, startUrl)) return cancelled(probed);
+          staysOpen = closed.revealed > 0;
+          if (!staysOpen || Date.now() >= closeUntil) break;
+          await sleep(Math.min(HOVER_PROBE_LIMITS.REVEAL_POLL_MS, Math.max(0, closeUntil - Date.now())));
+        }
+      }
+
+      if (reading.names.length > 0) {
+        revealed.set(candidate.backendNodeId, {
+          items: reading.names,
+          // Against the NAMEABLE count, not everything that appeared: the
+          // panel element itself is counted as a reveal and is not an item, so
+          // comparing with that would print a `…` on a complete list.
+          truncated: reading.named > reading.names.length,
+          staysOpen,
+        });
+      }
+    }
+  } catch {
+    // A detached target, a handle the page invalidated, a CDP domain that went
+    // away: keep whatever was already collected for THIS document rather than
+    // failing the snapshot the caller actually asked for.
+  }
+
+  // The lifecycle check on the way out, from the lane rather than the page:
+  // a navigation that completed after the last step's own `url` read would
+  // otherwise leave stale names attached to a tree that is about to be rebuilt.
+  if (!sameHoverDocument(ctx.currentUrl(), startUrl)) return cancelled(probed);
+  return { revealed, cancelled: false, probed };
+}
+
+function cancelled(probed: number): HoverProbeOutcome {
+  return { revealed: new Map(), cancelled: true, probed };
+}
