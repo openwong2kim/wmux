@@ -41,10 +41,16 @@ export interface LiveActivityPusherDeps {
   targets: () => LiveActivityTarget[];
   /** The current numbers, as the daemon judges them. */
   counts: () => LiveActivityCounts;
-  /** 410 on an update: this activity is gone. NEVER the push registration. */
-  forgetLiveActivityToken: (deviceId: string) => void;
-  /** 410 on a start: this push-to-start token is gone. */
-  forgetPushToStartToken: (deviceId: string) => void;
+  /**
+   * 410 on an update: this activity is gone. NEVER the push registration.
+   *
+   * The TOKEN is named, not just the device: a registration can land while the
+   * refused request was in flight, and dropping whatever is stored now would
+   * throw away a token Apple never refused.
+   */
+  forgetLiveActivityToken: (deviceId: string, token: string) => void;
+  /** 410 on a start: this push-to-start token is gone. Named, as above. */
+  forgetPushToStartToken: (deviceId: string, token: string) => void;
   /** Shown on the activity when the daemon starts it. Optional. */
   daemonName?: () => string | undefined;
   log?: (level: 'info' | 'warn' | 'error', message: string) => void;
@@ -252,7 +258,7 @@ export class LiveActivityPusher {
       if (event === 'end') {
         // The activity this token addressed no longer exists.
         this.lastSent.delete(deviceId);
-        this.deps.forgetLiveActivityToken(deviceId);
+        this.deps.forgetLiveActivityToken(deviceId, apnsToken);
         return;
       }
       this.lastSent.set(deviceId, {
@@ -271,8 +277,8 @@ export class LiveActivityPusher {
       // a day, from a signal that means nothing of the sort.
       this.lastSent.delete(deviceId);
       this.startSentAt.delete(deviceId);
-      if (event === 'start') this.deps.forgetPushToStartToken(deviceId);
-      else this.deps.forgetLiveActivityToken(deviceId);
+      if (event === 'start') this.deps.forgetPushToStartToken(deviceId, apnsToken);
+      else this.deps.forgetLiveActivityToken(deviceId, apnsToken);
       return;
     }
 

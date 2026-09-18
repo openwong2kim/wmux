@@ -189,7 +189,7 @@ describe('DeviceStore — forgetting one token at a time', () => {
     s.registerPush(id, { apnsToken: START, publicKey: PUSH_KEY });
     s.registerLiveActivity(id, { pushToStartToken: START, activityToken: ACTIVITY });
 
-    expect(s.forgetLiveActivityToken(id)).toBe(true);
+    expect(s.forgetLiveActivityToken(id, ACTIVITY)).toBe(true);
 
     const [target] = s.liveActivityTargets();
     expect(target.liveActivity.activityToken).toBeUndefined();
@@ -205,7 +205,7 @@ describe('DeviceStore — forgetting one token at a time', () => {
     s.registerPush(id, { apnsToken: START, publicKey: PUSH_KEY });
     s.registerLiveActivity(id, { pushToStartToken: START, activityToken: ACTIVITY });
 
-    expect(s.forgetPushToStartToken(id)).toBe(true);
+    expect(s.forgetPushToStartToken(id, START)).toBe(true);
 
     const [target] = s.liveActivityTargets();
     expect(target.liveActivity.pushToStartToken).toBeUndefined();
@@ -216,8 +216,28 @@ describe('DeviceStore — forgetting one token at a time', () => {
   it('forgetting a token nobody registered is a no-op, not an error', async () => {
     const s = store();
     const id = await paired(s);
-    expect(s.forgetLiveActivityToken(id)).toBe(false);
-    expect(s.forgetPushToStartToken('nobody')).toBe(false);
+    expect(s.forgetLiveActivityToken(id, ACTIVITY)).toBe(false);
+    expect(s.forgetPushToStartToken('nobody', START)).toBe(false);
+  });
+
+  it('★ a 410 naming an OLD token leaves the one that replaced it alone', async () => {
+    const s = store();
+    const id = await paired(s);
+    s.registerLiveActivity(id, { pushToStartToken: START, activityToken: ACTIVITY });
+    // The app rotated its activity while the refused push was in flight. The
+    // 410 is about the token the request CARRIED, not about whatever is stored
+    // now — dropping the new one would leave the daemon unable to update an
+    // activity that is perfectly alive.
+    s.registerLiveActivity(id, { activityToken: ACTIVITY_2 });
+
+    expect(s.forgetLiveActivityToken(id, ACTIVITY)).toBe(false);
+    expect(s.liveActivityTargets()[0].liveActivity.activityToken).toBe(ACTIVITY_2);
+
+    // The same rule on the other token, and the matching one still deletes.
+    expect(s.forgetPushToStartToken(id, ACTIVITY_2)).toBe(false);
+    expect(s.liveActivityTargets()[0].liveActivity.pushToStartToken).toBe(START);
+    expect(s.forgetLiveActivityToken(id, ACTIVITY_2)).toBe(true);
+    expect(s.liveActivityTargets()[0].liveActivity.activityToken).toBeUndefined();
   });
 
   it('a re-registered activity token replaces the previous one', async () => {

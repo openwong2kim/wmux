@@ -5529,11 +5529,11 @@ async function main(): Promise<void> {
     }),
     targets: () => getDeviceStore().liveActivityTargets(),
     counts: () => liveActivityCounts(),
-    forgetLiveActivityToken: (deviceId) => {
-      getDeviceStore().forgetLiveActivityToken(deviceId);
+    forgetLiveActivityToken: (deviceId, token) => {
+      getDeviceStore().forgetLiveActivityToken(deviceId, token);
     },
-    forgetPushToStartToken: (deviceId) => {
-      getDeviceStore().forgetPushToStartToken(deviceId);
+    forgetPushToStartToken: (deviceId, token) => {
+      getDeviceStore().forgetPushToStartToken(deviceId, token);
     },
     daemonName: () => os.hostname() || undefined,
     log: (level, msg) => log(level, msg),

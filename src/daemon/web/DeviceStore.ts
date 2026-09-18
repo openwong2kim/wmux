@@ -814,9 +814,15 @@ export class DeviceStore {
    * a day. The push-to-start token survives too, so the next pending approval
    * can start a fresh activity.
    */
-  forgetLiveActivityToken(deviceId: string): boolean {
+  forgetLiveActivityToken(deviceId: string, token: string): boolean {
     const record = this.devices.get(deviceId);
     if (!record?.liveActivity?.activityToken) return false;
+    // COMPARE-AND-DELETE. The 410 names the token the request was sent WITH,
+    // and a registration can land while that request is in flight — the app
+    // rotates its activity constantly. Deleting whatever is stored now would
+    // throw away a token that was never refused, and the daemon would sit there
+    // unable to update an activity that is alive.
+    if (record.liveActivity.activityToken !== token.trim().toLowerCase()) return false;
     const previous = record.liveActivity;
     record.liveActivity = { ...previous };
     delete record.liveActivity.activityToken;
@@ -829,9 +835,11 @@ export class DeviceStore {
   }
 
   /** Drop the PUSH-TO-START token only — what a 410 on a start means. */
-  forgetPushToStartToken(deviceId: string): boolean {
+  forgetPushToStartToken(deviceId: string, token: string): boolean {
     const record = this.devices.get(deviceId);
     if (!record?.liveActivity?.pushToStartToken) return false;
+    // Compare-and-delete, for the reason spelled out above.
+    if (record.liveActivity.pushToStartToken !== token.trim().toLowerCase()) return false;
     const previous = record.liveActivity;
     record.liveActivity = { ...previous };
     delete record.liveActivity.pushToStartToken;
