@@ -375,6 +375,8 @@ export const zh = {
   'settings.sidebarPositionDesc': '终端区域的左侧或右侧',
   'settings.sidebarAttentionFirst': '需要你的行置顶',
   'settings.sidebarAttentionFirstDesc': '将代理正在等待你响应的工作区固定到侧边栏顶部。默认关闭：行保持在你拖放的位置。 开启期间，拖动排序会暂停。',
+  'settings.sidebarShowPaneCoordinates': '显示窗格坐标',
+  'settings.sidebarShowPaneCoordinatesDesc': '为未命名的窗格在代理列表中显示自动生成的 w1-2 形式坐标。默认开启。已重命名的窗格无论此设置如何都始终显示其名称。',
   'settings.sidebarLeft': '左',
   'settings.sidebarRight': '右',
   'settings.currentVersion': '当前版本',

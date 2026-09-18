@@ -181,6 +181,8 @@ export const ar = {
   'settings.sidebarPositionDesc': 'يسار أو يمين منطقة الطرفية',
   'settings.sidebarAttentionFirst': 'الصفوف التي تنتظرك أولاً',
   'settings.sidebarAttentionFirstDesc': 'ثبّت مساحات العمل التي ينتظر وكيلها ردك في أعلى الشريط الجانبي. معطّل افتراضيًا: تبقى الصفوف حيث سحبتها. أثناء التفعيل، يتوقف إعادة الترتيب بالسحب.',
+  'settings.sidebarShowPaneCoordinates': 'إظهار إحداثيات الأجزاء',
+  'settings.sidebarShowPaneCoordinatesDesc': 'إظهار الإحداثي المولَّد تلقائيًا بنمط w1-2 في قائمة الوكلاء للأجزاء التي لم تسمّها. مفعّل افتراضيًا. الجزء الذي أعدت تسميته يعرض اسمه دائمًا في كل الأحوال.',
   'settings.sidebarLeft': 'يسار',
   'settings.sidebarRight': 'يمين',
   'settings.updateReady': 'التحديث جاهز',

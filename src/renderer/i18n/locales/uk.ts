@@ -181,6 +181,8 @@ export const uk = {
   'settings.sidebarPositionDesc': 'Зліва або справа від області термінала',
   'settings.sidebarAttentionFirst': 'Рядки, що чекають на вас, угорі',
   'settings.sidebarAttentionFirstDesc': 'Закріплювати вгорі бічної панелі робочі простори, агент яких чекає на вас. Типово вимкнено: рядки лишаються там, куди ви їх перетягнули. Поки увімкнено, перетягування для зміни порядку призупинено.',
+  'settings.sidebarShowPaneCoordinates': 'Показувати координати панелей',
+  'settings.sidebarShowPaneCoordinatesDesc': 'Показувати у списку агентів автоматично створену координату вигляду w1-2 для панелей без заданої назви. Типово увімкнено. Перейменована панель у будь-якому разі показує свою назву.',
   'settings.sidebarLeft': 'Ліворуч',
   'settings.sidebarRight': 'Праворуч',
   'settings.updateReady': 'Оновлення готове',

@@ -181,6 +181,8 @@ export const id = {
   'settings.sidebarPositionDesc': 'Kiri atau kanan area terminal',
   'settings.sidebarAttentionFirst': 'Baris yang menunggu Anda di atas',
   'settings.sidebarAttentionFirstDesc': 'Sematkan ruang kerja yang agennya sedang menunggu Anda di bagian atas bilah sisi. Nonaktif secara bawaan: baris tetap di tempat Anda menyeretnya. Selama aktif, pengurutan ulang dengan seret dijeda.',
+  'settings.sidebarShowPaneCoordinates': 'Tampilkan koordinat panel',
+  'settings.sidebarShowPaneCoordinatesDesc': 'Tampilkan koordinat bergaya w1-2 yang dibuat otomatis di daftar agen untuk panel yang belum Anda beri nama. Aktif secara bawaan. Panel yang Anda ganti namanya selalu menampilkan namanya, apa pun pengaturannya.',
   'settings.sidebarLeft': 'Kiri',
   'settings.sidebarRight': 'Kanan',
   'settings.updateReady': 'Pembaruan siap',

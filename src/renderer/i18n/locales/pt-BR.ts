@@ -181,6 +181,8 @@ export const ptBR = {
   'settings.sidebarPositionDesc': 'Esquerda ou direita da área do terminal',
   'settings.sidebarAttentionFirst': 'Linhas que esperam por você primeiro',
   'settings.sidebarAttentionFirstDesc': 'Fixe no topo da barra lateral os espaços de trabalho cujo agente está esperando por você. Desativado por padrão: as linhas ficam onde você as arrastou. Enquanto ativado, a reordenação por arrastar fica pausada.',
+  'settings.sidebarShowPaneCoordinates': 'Mostrar coordenadas do painel',
+  'settings.sidebarShowPaneCoordinatesDesc': 'Mostra na lista de agentes a coordenada gerada automaticamente, no estilo w1-2, para os painéis que você não nomeou. Ativado por padrão. Um painel renomeado sempre mostra seu nome de qualquer forma.',
   'settings.sidebarLeft': 'Esquerda',
   'settings.sidebarRight': 'Direita',
   'settings.updateReady': 'Atualização pronta',
