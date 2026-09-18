@@ -85,6 +85,8 @@ import { checkTranscriptPath } from './hooks/transcriptPathGuard';
 import { TranscriptProjector } from './transcript/TranscriptProjector';
 import { TranscriptDiscovery, DISCOVERABLE_AGENT } from './transcript/TranscriptDiscovery';
 import { PushSender } from './push/PushSender';
+import { RelayTransport } from './push/RelayTransport';
+import { LiveActivityPusher, type LiveActivityCounts } from './push/LiveActivityPusher';
 import { approvalPushCollapseId, buildApprovalPushPayload } from './push/approvalPushPayload';
 import { WebhookSink } from './push/WebhookSink';
 import { buildApprovalNotifyPayload, buildAttentionNotifyPayload } from './push/notifyPayload';
@@ -5463,7 +5465,70 @@ async function main(): Promise<void> {
     staleAfterMs: () => presenceConfig().staleAfterMs,
     log: (level, msg) => log(level, msg),
   });
+  // What the lock screen shows, judged HERE rather than on the phone. The
+  // phone's own heuristics cannot see the approval registry, and the registry
+  // is the only authority on what is actually blocking somebody.
+  //
+  // The denominator matches the app's: `runningAgents` is every AGENT pane (a
+  // plain shell is not an agent), and `working`/`idle` split the ones that are
+  // not blocked — so running == working + idle + blocked agent rows, which is
+  // the arithmetic the Fleet header already assumes.
+  const liveActivityCounts = (): LiveActivityCounts => {
+    const pending = approvalRegistry?.list().pending ?? [];
+    const blockedPanes = new Set(pending.map((r) => r.sessionId)).size;
+    const oldestCreatedAt = pending.length > 0 ? Math.min(...pending.map((r) => r.createdAt)) : null;
+    let runningAgents = 0;
+    let workingAgents = 0;
+    let idleAgents = 0;
+    for (const session of sessionManager.listLiveSessions()) {
+      const state = readAgentStateForWeb?.(session.id);
+      // No agent name means a shell, and a shell is nobody's agent count.
+      if (!state?.agentName) continue;
+      runningAgents += 1;
+      if (state.agentStatus === 'running') workingAgents += 1;
+      else if (state.agentStatus !== 'awaiting_input') idleAgents += 1;
+    }
+    return {
+      pendingApprovals: pending.length,
+      runningAgents,
+      workingAgents,
+      idleAgents,
+      blockedPanes,
+      oldestBlockedMinutes:
+        oldestCreatedAt === null
+          ? null
+          : Math.max(0, Math.floor((Date.now() - oldestCreatedAt) / 60_000)),
+    };
+  };
+  // Live Activity. Same relay, same secret, a different route — and a strictly
+  // narrower payload: six integers, no sealed envelope, because a Live Activity
+  // push does not run the Notification Service Extension and has nowhere to
+  // decrypt one. Inert on the same terms push is.
+  const liveActivityPusher = new LiveActivityPusher({
+    transport: new RelayTransport({
+      ...(process.env.WMUX_PUSH_RELAY_URL ? { relayUrl: process.env.WMUX_PUSH_RELAY_URL } : {}),
+      ...(process.env.WMUX_PUSH_RELAY_SECRET
+        ? { relaySecret: process.env.WMUX_PUSH_RELAY_SECRET }
+        : {}),
+      log: (level, msg) => log(level, msg),
+      tag: '[live-activity]',
+      noun: 'update',
+    }),
+    targets: () => getDeviceStore().liveActivityTargets(),
+    counts: () => liveActivityCounts(),
+    forgetLiveActivityToken: (deviceId) => {
+      getDeviceStore().forgetLiveActivityToken(deviceId);
+    },
+    forgetPushToStartToken: (deviceId) => {
+      getDeviceStore().forgetPushToStartToken(deviceId);
+    },
+    daemonName: () => os.hostname() || undefined,
+    log: (level, msg) => log(level, msg),
+  });
   approvalRegistry.onEvent((event) => {
+    // Every transition moves at least one of the three numbers the lock screen
+    // fires on, so this is subscribed to all of them, not just `create`.
+    liveActivityPusher.onApprovalsChanged();
     // A resolve/expire/supersede is the thing the notification was asking for.
     // If one is still parked, it is now moot — drop it rather than buzzing a
     // phone about a question that has already been answered.
