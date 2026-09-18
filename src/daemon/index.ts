@@ -212,6 +212,13 @@ function revokeAllWebDevices(
 // both webTerminalServer construction paths need it available.
 let approvalRegistry: ApprovalRegistry | null = null;
 
+// The Live Activity pusher, module-scoped for the same reason the registry is —
+// but with an extra twist: both web servers are constructed BEFORE main() builds
+// the pusher, so `/api/config` cannot capture a reference. It captures a closure
+// over this binding instead and resolves whatever is here per request, which is
+// null (→ the key is omitted) until the pusher exists.
+let liveActivityPusher: LiveActivityPusher | null = null;
+
 // The press-scope fact table main pushes down (see approvals/workspaceFacts.ts).
 // Module-scoped for the same reason the registry is: the RPC handler writes it,
 // the registry reads it through a closure, and the client-close sweep drops it.
@@ -406,6 +413,10 @@ async function restoreWebServer(sessionManager: DaemonSessionManager): Promise<v
         // Read side of the same flag, so `/api/config` can answer "is the gate
         // armed?" instead of leaving a client's toggle to guess.
         gateEnabled: () => !gateRuntimeOff,
+        // Whether a Live Activity push can actually leave this machine. Lazy:
+        // the pusher is built later in main(), so this reads the module binding
+        // per request rather than capturing a null forever.
+        liveActivityPush: () => liveActivityPusher?.enabled === true,
         setGateEnabled: (enabled) => {
           gateRuntimeOff = !enabled;
           log('info', `[gate] runtime escape: gate ${enabled ? 'on' : 'off'}`);
@@ -2563,6 +2574,8 @@ function registerRpcHandlers(
       gateConfig: () => coerceGate(loadConfig().gate),
       // See the restore path — the read side of the runtime escape hatch.
       gateEnabled: () => !gateRuntimeOff,
+      // See the restore path — lazy, because the pusher is built after this.
+      liveActivityPush: () => liveActivityPusher?.enabled === true,
       setGateEnabled: (enabled) => {
         gateRuntimeOff = !enabled;
         log('info', `[gate] runtime escape: gate ${enabled ? 'on' : 'off'}`);
@@ -5504,7 +5517,7 @@ async function main(): Promise<void> {
   // narrower payload: six integers, no sealed envelope, because a Live Activity
   // push does not run the Notification Service Extension and has nowhere to
   // decrypt one. Inert on the same terms push is.
-  const liveActivityPusher = new LiveActivityPusher({
+  liveActivityPusher = new LiveActivityPusher({
     transport: new RelayTransport({
       ...(process.env.WMUX_PUSH_RELAY_URL ? { relayUrl: process.env.WMUX_PUSH_RELAY_URL } : {}),
       ...(process.env.WMUX_PUSH_RELAY_SECRET
@@ -5528,7 +5541,7 @@ async function main(): Promise<void> {
   approvalRegistry.onEvent((event) => {
     // Every transition moves at least one of the three numbers the lock screen
     // fires on, so this is subscribed to all of them, not just `create`.
-    liveActivityPusher.onApprovalsChanged();
+    liveActivityPusher?.onApprovalsChanged();
     // A resolve/expire/supersede is the thing the notification was asking for.
     // If one is still parked, it is now moot — drop it rather than buzzing a
     // phone about a question that has already been answered.

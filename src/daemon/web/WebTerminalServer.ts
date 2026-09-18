@@ -486,6 +486,18 @@ interface WebTerminalServerDeps {
    */
   gateEnabled?: () => boolean;
   /**
+   * Whether this daemon can actually push a Live Activity — i.e. whether the
+   * relay transport behind the pusher is configured. A GETTER for the same
+   * reason `projector` is one: the server is built before the pusher, so the
+   * daemon wires a closure that resolves the live instance per request.
+   *
+   * Optional, and absent (or false) means `/api/config` OMITS the key rather
+   * than reporting `false`. A phone reads a missing key exactly as an older
+   * daemon's missing key — "start the activity locally" — so the two cases are
+   * the same answer and should be the same shape on the wire.
+   */
+  liveActivityPush?: () => boolean;
+  /**
    * #1163 — the daemon's CANONICAL per-session agent state (the answer
    * daemon.getAgentName gives the desktop), for GET /api/workspaces. Resolved
    * per request: the reader is registered with the RPC handlers, which may run
@@ -1805,7 +1817,11 @@ export class WebTerminalServer {
         // sees it true registers a push-to-start token and lets the daemon
         // start the activity; a phone talking to a daemon that omits the key
         // keeps starting it locally, which is what every build did before this.
-        liveActivityPush: true,
+        //
+        // OMITTED, not `false`, when the pusher is inert (no relay configured)
+        // or the getter was never wired — the same shape an older daemon
+        // serves, because it is the same instruction to the phone.
+        ...(this.deps.liveActivityPush?.() === true ? { liveActivityPush: true } : {}),
         // #783 — the gated-tools list so the phone can say "this Bash call is
         // waiting because Bash is in the gate list". Absent gateConfig → empty
         // array (a daemon that predates the gate or did not wire it).

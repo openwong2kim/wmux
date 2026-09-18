@@ -425,11 +425,14 @@ describe('WebTerminalServer', () => {
   let projectorMock: ReturnType<typeof makeDeps>['projectorMock'];
   /** #783 — the daemon's runtime gate flag, which the server only reads/writes. */
   let gateArmed: boolean;
+  /** Whether the daemon's Live Activity pusher reports itself enabled. */
+  let liveActivityPushEnabled: boolean;
   /** #1163 — the daemon's canonical agent state per session, as the server reads it. */
   let agentStates: Record<string, { agentName: string | null; agentStatus: 'idle' | 'running' | 'awaiting_input' }>;
 
   beforeEach(() => {
     gateArmed = true;
+    liveActivityPushEnabled = true;
     agentStates = {};
     const deps = makeDeps();
     bridge = deps.bridge;
@@ -468,6 +471,7 @@ describe('WebTerminalServer', () => {
       projector: () => projectorMock as unknown as TranscriptProjector,
       gateConfig: () => ({ gatedTools: ['Bash'] }),
       gateEnabled: () => gateArmed,
+      liveActivityPush: () => liveActivityPushEnabled,
       setGateEnabled: (enabled) => { gateArmed = enabled; },
       agentState: (id) => agentStates[id],
       log: () => { /* silent in tests */ },
@@ -2538,6 +2542,21 @@ describe('WebTerminalServer', () => {
     // The phone hands the daemon the start decision only on this flag; a
     // daemon that omits it keeps the app starting the activity locally.
     expect(cfg.liveActivityPush).toBe(true);
+  });
+
+  it('★ …and OMITS the key when the pusher is inert, exactly as an old daemon does', async () => {
+    // No relay configured → the pusher can send nothing. Reporting `true` here
+    // would tell the phone to stop starting the activity itself and wait for a
+    // push that is never coming — a lock screen that simply goes quiet.
+    liveActivityPushEnabled = false;
+    await startRO();
+    const { token } = await pairDevice('Phone');
+    const res = await fetch(`${base()}/api/config`, { headers: bearer(token) });
+    const wire = await res.text();
+    // The KEY is gone, not set to false: a daemon that predates the feature
+    // answers the same shape, and the phone must read the two identically.
+    expect(wire).not.toContain('liveActivityPush');
+    expect('liveActivityPush' in JSON.parse(wire)).toBe(false);
   });
 
   it('★ authenticates the routes a phone actually uses with a device credential', async () => {
