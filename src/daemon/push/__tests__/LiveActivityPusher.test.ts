@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 
 import {
+  LIVE_ACTIVITY_DAEMON_NAME_MAX,
   LIVE_ACTIVITY_DEBOUNCE_MAX_WAIT_MS,
   LIVE_ACTIVITY_DEBOUNCE_MS,
   LIVE_ACTIVITY_START_STALE_SEC,
@@ -233,6 +234,25 @@ describe('LiveActivityPusher — which event', () => {
     // retire the activity itself rather than sit on a number nobody refreshed.
     expect(body.staleDate).toBe(Math.floor(NOW / 1000) + LIVE_ACTIVITY_START_STALE_SEC);
     expect(body.dismissalDate).toBeUndefined();
+  });
+
+  it('★ cuts a long daemon name rather than losing the start to a 400', async () => {
+    const long = `${'host-'.repeat(20)}end`;
+    expect(long.length).toBeGreaterThan(LIVE_ACTIVITY_DAEMON_NAME_MAX);
+    const h = harness({
+      targets: [{ deviceId: 'dev-1', liveActivity: { pushToStartToken: START } }],
+      daemonName: long,
+    });
+    h.setCounts(counts({ pendingApprovals: 1 }));
+    h.pusher.onApprovalsChanged();
+    await h.tick();
+
+    // Over 64 the relay answers `400 bad-attributes` — and it is the START that
+    // would be refused, the one event there is no second chance at. A cut
+    // machine name is a worse label; no activity at all is no lock screen.
+    const name = h.calls[0].body.attributes.daemonName as string;
+    expect(name).toBe(long.slice(0, LIVE_ACTIVITY_DAEMON_NAME_MAX));
+    expect(name.length).toBe(LIVE_ACTIVITY_DAEMON_NAME_MAX);
   });
 
   it('does not start when nothing is pending', async () => {

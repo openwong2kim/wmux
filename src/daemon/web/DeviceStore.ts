@@ -1272,7 +1272,8 @@ function coercePush(raw: unknown): DevicePushRegistration | null {
  * PER TOKEN, not all-or-nothing. The two tokens are independent handles with
  * independent lifetimes, so a half-written or hand-edited record keeps the half
  * that still parses instead of losing both — the same reasoning that made the
- * write path a merge. A record with neither token left is nothing to hold.
+ * write path a merge. A record with nothing left in it at all — no token, no
+ * stage — is nothing to hold.
  *
  * A malformed stage is IGNORED rather than fatal, matching `coercePush`: "stage
  * unknown" is a state the relay already handles, and `registerLiveActivity` is
@@ -1288,13 +1289,18 @@ function coerceLiveActivity(raw: unknown): DeviceLiveActivityRegistration | null
   };
   const pushToStartToken = readToken(o['pushToStartToken']);
   const activityToken = readToken(o['activityToken']);
-  if (!pushToStartToken && !activityToken) return null;
   const registeredAt =
     typeof o['registeredAt'] === 'number' && Number.isFinite(o['registeredAt'])
       ? o['registeredAt']
       : 0;
   const rawEnv = o['apnsEnvironment'];
   const apnsEnvironment = rawEnv === 'development' || rawEnv === 'production' ? rawEnv : undefined;
+  // A stage with no tokens is still worth keeping. `registerLiveActivity`
+  // MERGES, and the stage arrives on its own call — a phone that reports its
+  // APNs environment before iOS has issued either token would have that answer
+  // dropped on the next daemon restart and then never send it again, because
+  // from the app's side it already told us. Nothing at all, though, is nothing.
+  if (!pushToStartToken && !activityToken && !apnsEnvironment) return null;
   return {
     ...(pushToStartToken ? { pushToStartToken } : {}),
     ...(activityToken ? { activityToken } : {}),

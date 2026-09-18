@@ -162,7 +162,7 @@ describe('DeviceStore — live activity persistence', () => {
     expect(state.devices[0].liveActivity).toEqual({ pushToStartToken: START, registeredAt: 9 });
   });
 
-  it('a record with no readable token at all is dropped entirely', () => {
+  it('a record with no readable token and no stage is dropped entirely', () => {
     const state = coerceDeviceState({
       version: 1,
       devices: [
@@ -179,6 +179,35 @@ describe('DeviceStore — live activity persistence', () => {
       ],
     });
     expect(state.devices[0].liveActivity).toBeUndefined();
+  });
+});
+
+describe('DeviceStore — a stage-only registration', () => {
+  it('★ a record carrying only the APNs stage survives the round trip', () => {
+    // Reachable because `registerLiveActivity` MERGES and the stage arrives on
+    // its own call: a phone reported its environment before iOS had issued
+    // either token. Dropping it on restore loses the answer for good — from the
+    // app's side it already told us, so it never says it again, and the daemon
+    // falls back to the relay's single `APNS_ENV` for that device.
+    const state = coerceDeviceState({
+      version: 1,
+      devices: [
+        {
+          deviceId: 'stage-only',
+          name: 'iPhone',
+          secretHash: 'ab'.repeat(16),
+          salt: 'cd'.repeat(16),
+          kdf: { algo: 'scrypt', N: 16384, r: 8, p: 1, keylen: 32 },
+          createdAt: 1,
+          lastSeenAt: 2,
+          liveActivity: { apnsEnvironment: 'development', registeredAt: 9 },
+        },
+      ],
+    });
+    expect(state.devices[0].liveActivity).toEqual({
+      apnsEnvironment: 'development',
+      registeredAt: 9,
+    });
   });
 });
 

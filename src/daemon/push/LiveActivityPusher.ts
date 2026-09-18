@@ -88,6 +88,12 @@ export const LIVE_ACTIVITY_DEBOUNCE_MAX_WAIT_MS = 10_000;
  */
 export const LIVE_ACTIVITY_START_STALE_SEC = 300;
 
+/**
+ * The relay's cap on `attributes.daemonName`, mirrored here so the daemon cuts
+ * rather than earning a `400 bad-attributes` on a start it cannot re-send.
+ */
+export const LIVE_ACTIVITY_DAEMON_NAME_MAX = 64;
+
 /** An updated activity is trusted for twenty minutes, matching the app's own. */
 export const LIVE_ACTIVITY_UPDATE_STALE_SEC = 1_200;
 
@@ -291,7 +297,13 @@ export class LiveActivityPusher {
 
   private startAttributes(): Record<string, unknown> {
     const daemonName = this.deps.daemonName?.();
-    return daemonName ? { daemonName } : {};
+    if (!daemonName) return {};
+    // CUT TO THE RELAY'S CAP. This is a hostname, which nobody promised to keep
+    // short, and the relay answers `400 bad-attributes` over 64 characters —
+    // which would fail the START, the one event that cannot be retried into
+    // existence later. A truncated machine name on the lock screen is a worse
+    // label; no activity at all is no lock screen.
+    return { daemonName: daemonName.slice(0, LIVE_ACTIVITY_DAEMON_NAME_MAX) };
   }
 }
 
