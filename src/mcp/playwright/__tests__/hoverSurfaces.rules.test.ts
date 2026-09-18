@@ -5,7 +5,7 @@ import {
   buildHoverTriggerScanExpression,
   classifyHoverRule,
   formatHoverItems,
-  hoverMenusFooterLine,
+  hoverMenusNote,
   isHoverTriggerEligible,
   scanBudgetExhausted,
   scoreHoverTrigger,
@@ -24,6 +24,26 @@ import {
 function pairs(selectorText: string, props: string[]): string[] {
   return classifyHoverRule(selectorText, props).map((m) => `${m.trigger}>${m.target}`);
 }
+
+describe('classifyHoverRule: the combinator', () => {
+  // It is what ties a revealed element back to its OWN trigger, so reading it
+  // wrong sends hoverTriggerForRevealed looking in the wrong place.
+  const TABLE: [string, string][] = [
+    ['.a:hover > .b', '>'],
+    ['.a:hover>.b', '>'],
+    ['.a:hover + .b', '+'],
+    ['.a:hover ~ .b', '~'],
+    ['.a:hover .b', ' '],
+    ['.a:hover\t.b', ' '],
+    // Whitespace around an explicit combinator is not the combinator.
+    ['.a:hover   >   .b', '>'],
+  ];
+  for (const [selector, combinator] of TABLE) {
+    it(`reads ${JSON.stringify(selector)} as ${JSON.stringify(combinator)}`, () => {
+      expect(classifyHoverRule(selector, ['display'])[0]?.combinator).toBe(combinator);
+    });
+  }
+});
 
 describe('classifyHoverRule: what counts as a hover-revealed submenu', () => {
   const REVEALS: [string, string[], string[]][] = [
@@ -257,15 +277,17 @@ describe('formatHoverItems', () => {
   });
 });
 
-describe('hoverMenusFooterLine', () => {
+describe('hoverMenusNote', () => {
   it('is empty when nothing was marked', () => {
-    expect(hoverMenusFooterLine(0)).toBe('');
-    expect(hoverMenusFooterLine(-1)).toBe('');
+    expect(hoverMenusNote(0)).toBe('');
+    expect(hoverMenusNote(-1)).toBe('');
   });
 
   it('names the count and the flag that lists the items', () => {
-    expect(hoverMenusFooterLine(3)).toBe(
-      '\nhover menus: 3 triggers marked has-submenu; pass probeHover:true to list their items',
+    // No leading newline: it joins the snapshot's leading-note block, which
+    // does its own separating.
+    expect(hoverMenusNote(3)).toBe(
+      'hover menus: 3 triggers marked has-submenu; pass probeHover:true to list their items',
     );
   });
 });
@@ -275,6 +297,17 @@ describe('hoverMenusFooterLine', () => {
 // ---------------------------------------------------------------------------
 
 describe('buildHoverTriggerScanExpression', () => {
+  it('marks the anchor and hovers the trigger, and says which is which', () => {
+    const expr = buildHoverTriggerScanExpression();
+    expect(expr).toContain('els:');
+    expect(expr).toContain('anchors:');
+    // The DOM listing can only use the elements it is about to list, so it gets
+    // the anchors.
+    expect(buildHoverTriggerScanExpression({ elementsOnly: true })).toContain(
+      'picked.map((c) => c.anchor)',
+    );
+  });
+
   it('is a syntactically valid, self-contained expression in both shapes', () => {
     // A stringified helper that referenced a module-scope name would throw
     // here as a ReferenceError only when it RAN; a parse check at least pins

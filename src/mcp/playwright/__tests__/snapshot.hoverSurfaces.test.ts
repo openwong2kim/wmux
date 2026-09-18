@@ -110,7 +110,13 @@ function makePage(nodes: CdpNode[], scopeBackendId = 1) {
 }
 
 function trigger(backendNodeId: number, score = 5): HoverCandidate {
-  return { objectId: `o-${backendNodeId}`, backendNodeId, score, targets: [] };
+  return {
+    objectId: `o-${backendNodeId}`,
+    anchorObjectId: `a-${backendNodeId}`,
+    backendNodeId,
+    score,
+    targets: [],
+  };
 }
 
 function mark(items: string[], over: Partial<HoverSurfaceMark> = {}): HoverSurfaceMark {
@@ -299,13 +305,26 @@ describe('snapshot: the hover footer line', () => {
     expect(out).not.toContain('hover menus:');
   });
 
-  it('[CRITICAL] is charged against maxLength like the rest of the footer', async () => {
+  it('[fix] leads the result, so windowing a long page cannot lose it', async () => {
+    // It was a trailer first, and on a 3030-line page it landed in the last
+    // cursor window — an agent reading the top of the tree never saw it (live
+    // dogfood, 2026-09-18). It now sits with the other leading notes.
     scanned = [trigger(2), trigger(4)];
-    const maxLength = 200;
+    const out = await generateSnapshot(makePage(navTree()) as never, { format: 'ai' });
+    expect(out.split('\n')[0]).toBe(
+      'hover menus: 2 triggers marked has-submenu; pass probeHover:true to list their items',
+    );
+  });
+
+  it('[CRITICAL] survives a truncating maxLength, and does not blow the tree budget', async () => {
+    scanned = [trigger(2), trigger(4)];
+    const maxLength = 120;
     const out = await generateSnapshot(makePage(navTree()) as never, { format: 'ai', maxLength });
-    expect(out.length).toBeLessThanOrEqual(maxLength + '\n... (truncated)'.length);
-    // The line itself survives truncation — it is the part that says a flag
-    // exists at all.
-    expect(out).toContain('hover menus:');
+    const note = out.split('\n')[0];
+    expect(note).toContain('hover menus:');
+    // Leading notes sit outside the caller's budget — the same contract `q` and
+    // `filter` already have — and the tree below still honours it.
+    const body = out.slice(note.length + 1);
+    expect(body.length).toBeLessThanOrEqual(maxLength + '\n... (truncated)'.length);
   });
 });

@@ -64,6 +64,50 @@ describe('the phase-1 scan in a DOM', () => {
     expect(scan().map((el) => el.id)).toEqual(['products']);
   });
 
+  it('[fix] marks only the nav item that actually HAS a submenu', () => {
+    // The live-dogfood defect: the hovered selector (`nav li`) matches all three
+    // items, and testing it on its own marked About and Contact too. The walk
+    // now starts from the hidden `ul.sub` and climbs to ITS parent.
+    mount(
+      '<nav><ul>' +
+        '<li id="li-products"><a href="#p" id="nav-products">Products</a>' +
+        '<ul class="sub" data-zero-box><li><a href="#s">Shoes</a></li></ul></li>' +
+        '<li id="li-about"><a href="#a" id="nav-about">About</a></li>' +
+        '<li id="li-contact"><a href="#c" id="nav-contact">Contact</a></li>' +
+        '</ul></nav>',
+    );
+    style('nav li > ul.sub { display: none } nav li:hover > ul.sub { display: block }');
+
+    // ...and the mark lands on the link, not the listitem: the listitem has no
+    // ref, and disappears under filter:"interactive".
+    expect(scan().map((el) => el.id)).toEqual(['nav-products']);
+  });
+
+  it('[fix] resolves a descendant rule to the NEAREST matching ancestor', () => {
+    mount(
+      '<div class="menu" id="outer"><div class="menu" id="inner">' +
+        '<button id="opener">Open</button><div class="panel" data-zero-box><a href="#x">X</a></div>' +
+        '</div></div>',
+    );
+    style('.menu:hover .panel { display: block }');
+
+    // #inner is the nearest `.menu` above the panel; #outer also matches the
+    // selector but is not the element a person hovers to open that panel.
+    expect(scan().map((el) => el.id)).toEqual(['opener']);
+  });
+
+  it('[fix] resolves a sibling rule backwards from the revealed element', () => {
+    mount(
+      '<div><button id="b1">One</button><div id="p1" data-zero-box><a href="#1">a</a></div>' +
+        '<button id="b2">Two</button><div id="p2" data-zero-box><a href="#2">b</a></div></div>',
+    );
+    style('button:hover + div { display: block }');
+
+    // Each button owns the panel immediately after it, and neither owns the
+    // other's.
+    expect(scan().map((el) => el.id).sort()).toEqual(['b1', 'b2']);
+  });
+
   it('[precision] ignores a hover rule whose target is already on screen', () => {
     // The near-universal hover micro-interaction. Without the "is the revealed
     // element actually hidden?" gate this marked every link on the page.
@@ -78,6 +122,34 @@ describe('the phase-1 scan in a DOM', () => {
     style('#products:hover { color: red; opacity: 1 }');
 
     expect(scan()).toEqual([]);
+  });
+
+  it('keeps the marker on the trigger when it has no interactive descendant', () => {
+    mount('<div id="wrap"><span>label</span><div class="pop" data-zero-box>hi</div></div>');
+    style('#wrap:hover > .pop { display: block }');
+    expect(scan().map((el) => el.id)).toEqual(['wrap']);
+  });
+
+  it('never picks an anchor from inside the panel it is about to reveal', () => {
+    // The submenu's links come FIRST in document order here, and they are
+    // hidden — the visible label is what the agent hovers. (A real browser gives
+    // a child of a `display:none` parent a zero box on its own; jsdom has no
+    // layout, so the marker has to be put on the descendant too. The inherited
+    // case is covered against real Chrome in hoverSurfaces.chrome.runtime.test.ts.)
+    mount(
+      '<li id="li"><ul class="sub" data-zero-box><li><a href="#s" id="sub-link" data-zero-box>Shoes</a></li></ul>' +
+        '<a href="#p" id="label">Products</a></li>',
+    );
+    style('li:hover > ul.sub { display: block }');
+    expect(scan().map((el) => el.id)).toEqual(['label']);
+  });
+
+  it('marks one line once when a wrapper and its label are both triggers', () => {
+    mount(
+      '<div id="wrap" aria-haspopup="menu"><a href="#a" id="lbl" aria-haspopup="menu">Account</a>' +
+        '<div class="pop" data-zero-box>x</div></div>',
+    );
+    expect(scan().map((el) => el.id)).toEqual(['lbl']);
   });
 
   it('takes an aria-haspopup element on the promise alone', () => {
