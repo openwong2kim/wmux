@@ -17,6 +17,12 @@ import { nextRefFor, priorRefDescriptors, recordRefGeneration } from '../refDesc
 import { pageEvaluator, rpcEvaluator } from '../page-eval';
 import { formatSnapshotResult } from '../snapshotDiff';
 import { getSnapshotBaseline, setSnapshotBaseline, snapshotSurfaceKey } from '../snapshotCache';
+import {
+  capCaptureText,
+  continueSnapshotCapture,
+  cursorIgnoredNote,
+  windowSnapshotText,
+} from '../snapshotCursor';
 import { captureSnapshotListing } from '../snapshotListing';
 import { evaluateWithGesture } from '../user-gesture';
 import { evaluateIsolated } from '../isolated-eval';
@@ -126,6 +132,12 @@ const BROWSER_SNAPSHOT_SHAPE = {
       'Text filter: keep only nodes matching this text (or /regex/), plus their ancestors. Literal text is searched in the page and costs about as little as a selector scope; a /regex/, or a page with iframes, still reads the whole tree first — prefer selector when you know where to look.',
     ),
   full: z.boolean().optional().describe('Force the complete tree instead of a diff.'),
+  cursor: z
+    .string()
+    .optional()
+    .describe(
+      'Continuation token from a truncated snapshot: returns the next lines of that same capture without re-reading the page (refs stay valid). Other parameters are ignored with a cursor.',
+    ),
   surfaceId: optionalSurfaceId,
 };
 
@@ -475,8 +487,32 @@ export function registerInspectionTools(server: McpServer, deps: BrowserToolDeps
     'browser_snapshot',
     'Accessibility-tree snapshot of the page, with interactive elements annotated with ref numbers. A repeat snapshot of the same page returns a diff against the previous one when that is smaller — pass full:true for the complete tree. Line markers: "focused" on the focused node; while an overlay covers the page, a note names the layer, "overlay" marks it in the tree, and "clickable" marks the only controls still reachable behind it; an iframe line is a boundary — its contents are a separate document, not in this snapshot. Password field values read as "[redacted:password]" (the field is still listed and fillable); an empty field has no value at all, so a redacted one means it IS filled. "ai" drops the duplicate StaticText/InlineTextBox lines Chrome stacks under every piece of text; "aria" keeps them.',
     BROWSER_SNAPSHOT_SHAPE,
-    async ({ format, selector, filter, q, full, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
+    async ({ format, selector, filter, q, full, cursor, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
       try {
+        // Continuation: the next window of a capture this connection already
+        // took. Returns before anything touches the page, which is the whole
+        // point — no re-read, no new ref generation, so the refs in this window
+        // are still the ones the capture minted and still resolve for
+        // browser_click. It is also never diffed: a window of a tree the caller
+        // is part-way through is not a new observation to compare, so the diff
+        // baseline is neither read nor written here.
+        if (cursor) {
+          const continued = continueSnapshotCapture(cursor);
+          const ignored = [
+            format !== undefined && 'format',
+            selector !== undefined && 'selector',
+            filter !== undefined && 'filter',
+            q !== undefined && 'q',
+            full !== undefined && 'full',
+          ].filter((name): name is string => typeof name === 'string');
+          // Nothing is ignored on an expired cursor — that result is the error.
+          const note = continued.isError ? '' : cursorIgnoredNote(ignored);
+          return {
+            content: [{ type: 'text' as const, text: note + continued.text }],
+            ...(continued.isError && { isError: true }),
+          };
+        }
+
         let text: string;
         // Which route served a SCOPED snapshot. Part of the diff key: an a11y
         // subtree and a DOM listing of the same selector are different
@@ -497,6 +533,7 @@ export function registerInspectionTools(server: McpServer, deps: BrowserToolDeps
                 format: format ?? 'ai',
                 ...(filter && { filter }),
                 ...(q && { q }),
+                deferTruncation: true,
               }).catch(() => null)
             : null;
 
@@ -549,6 +586,9 @@ export function registerInspectionTools(server: McpServer, deps: BrowserToolDeps
             format: format ?? 'ai',
             ...(filter && { filter }),
             ...(q && { q }),
+            // The overflow becomes a continuation capture below rather than
+            // being dropped at the 50 000-character budget.
+            deferTruncation: true,
           });
         } else {
           // Fallback: extract page structure via RPC evaluation. Tags interactive
@@ -581,6 +621,14 @@ export function registerInspectionTools(server: McpServer, deps: BrowserToolDeps
         // A route that mints no frame refs clears the surface, which is what
         // keeps a later DOM snapshot's tags resolvable.
         noteFrameRefsForScope(browserScopeKey(scope), page ?? null);
+
+        // Bound what everything downstream retains. deferTruncation hands back
+        // the whole assembled tree, and the aria lane has no interactive strip to
+        // shrink it, so without this cut the diff baseline and the repl listing
+        // would hold a very large document's tree per surface for the baseline
+        // TTL — they used to be bounded at maxLength. The cut leaves a line
+        // saying what it dropped, so the last window is honest about it.
+        text = capCaptureText(text);
 
         // Auto-diff: a repeat snapshot with the same attributes returns a diff
         // against the previous one when that is genuinely smaller (D1). The
@@ -615,8 +663,15 @@ export function registerInspectionTools(server: McpServer, deps: BrowserToolDeps
         // instead of forcing full:true (snapshotListing.ts).
         captureSnapshotListing(text);
 
+        // Truncation, last: the result the agent reads is the unit a cursor
+        // walks, so the window is cut after the diff has decided what that
+        // result is, at line granularity. A result that fits retires whatever
+        // capture this surface had, so a cursor can never outlive the snapshot
+        // it described.
+        const windowed = windowSnapshotText(key, rendered.text, currentUrl);
+
         return {
-          content: [{ type: 'text' as const, text: rendered.text }],
+          content: [{ type: 'text' as const, text: windowed }],
         };
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
