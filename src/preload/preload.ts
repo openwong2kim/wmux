@@ -11,6 +11,7 @@ import type { NotificationCategory } from '../shared/types';
 import type { ResumeBinding } from '../shared/agentResume';
 import type { DeadPaneRecovery } from '../shared/ptyRecovery';
 import type { AgentSlug } from '../shared/events';
+import type { BrowserHelpOutcome, BrowserHelpRequestInfo } from '../shared/browserHelp';
 import type {
   RemoteInboxItem,
   LanLinkStatus,
@@ -1328,6 +1329,35 @@ document.addEventListener('DOMContentLoaded', () => {
     ipcRenderer.on(IPC.PERMISSION_PROMPT_CLOSED, listener);
     return () => {
       ipcRenderer.removeListener(IPC.PERMISSION_PROMPT_CLOSED, listener);
+    };
+  },
+};
+
+// browser_request_help — main pushes an open help request over
+// BROWSER_HELP_OPEN, the renderer answers Done / Cancel over
+// BROWSER_HELP_RESOLVE, and BROWSER_HELP_CLOSED clears the row whatever settled
+// it (the human, the page condition, or main's deadline). Same three-channel
+// shape as permissionPrompt above, for the same reason: the payload is an
+// agent-authored string with a two-button answer, so it never touches the
+// RPC_COMMAND path.
+(electronAPI as Record<string, unknown>).browserHelp = {
+  onOpen: (callback: (info: BrowserHelpRequestInfo) => void) => {
+    const listener = (_event: unknown, info: BrowserHelpRequestInfo) => callback(info);
+    ipcRenderer.on(IPC.BROWSER_HELP_OPEN, listener);
+    return () => {
+      ipcRenderer.removeListener(IPC.BROWSER_HELP_OPEN, listener);
+    };
+  },
+  resolve: (requestId: string, outcome: BrowserHelpOutcome) =>
+    ipcRenderer.invoke(IPC.BROWSER_HELP_RESOLVE, { requestId, outcome }) as Promise<{
+      ok: boolean;
+      error?: string;
+    }>,
+  onClosed: (callback: (payload: { requestId: string }) => void) => {
+    const listener = (_event: unknown, payload: { requestId: string }) => callback(payload);
+    ipcRenderer.on(IPC.BROWSER_HELP_CLOSED, listener);
+    return () => {
+      ipcRenderer.removeListener(IPC.BROWSER_HELP_CLOSED, listener);
     };
   },
 };

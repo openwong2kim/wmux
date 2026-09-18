@@ -412,6 +412,12 @@ export type RpcMethod =
   | 'browser.lease.acquire'
   | 'browser.lease.renew'
   | 'browser.lease.release'
+  // browser_request_help — hand one blocked step (login / CAPTCHA / OTP /
+  // payment confirmation) to the operator and wait. `request` opens; `status`
+  // is what the tool polls on its ~1s cadence; `cancel` withdraws.
+  | 'browser.help.request'
+  | 'browser.help.status'
+  | 'browser.help.cancel'
   | 'daemon.createSession'
   | 'daemon.destroySession'
   | 'daemon.attachSession'
@@ -631,6 +637,9 @@ export const ALL_RPC_METHODS = [
   'browser.lease.acquire',
   'browser.lease.renew',
   'browser.lease.release',
+  'browser.help.request',
+  'browser.help.status',
+  'browser.help.cancel',
   'daemon.createSession',
   'daemon.destroySession',
   'daemon.attachSession',

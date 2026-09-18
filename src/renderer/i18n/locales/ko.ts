@@ -181,6 +181,9 @@ export const ko = {
   'fleet.approvals.delDeny': '거부',
   'fleet.approvals.autoRejected': '자동 거부됨: {name}',
   'fleet.approvals.autoRejectedLog': '최근 자동 거부된 승인',
+  'fleet.help.title': '브라우저가 사용자를 기다립니다',
+  'fleet.help.timesOutIn': '{seconds}초 후 만료',
+  'fleet.help.jump': '이 브라우저 페인으로 이동',
 
   // Project config (X5 wmux.json)
   'project.dialogTitle': '프로젝트 설정 (wmux.json)',
@@ -255,6 +258,9 @@ export const ko = {
   'browser.devToolsTooltip': '개발자 도구 열기 (F12)',
   'browser.title': '브라우저',
   'browser.discarded': '메모리 절약을 위해 내려갔습니다 — 클릭하면 다시 로드됩니다',
+  'browser.help.barLabel': '에이전트가 이 페이지에서 한 단계를 마쳐 달라고 요청했습니다',
+  'browser.help.done': '완료',
+  'browser.help.cancel': '취소',
 
   // VI copy mode
   'viCopy.mode': '-- 복사 모드 --',

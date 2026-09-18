@@ -1,7 +1,17 @@
 import type { BrowserWindow, WebContents } from 'electron';
-import { nativeImage, shell, webContents } from 'electron';
+import { Notification, nativeImage, shell, webContents } from 'electron';
 import type { RpcRouter } from '../RpcRouter';
 import { sendToRenderer } from './_bridge';
+import { IPC } from '../../../shared/constants';
+import { HelpRequests } from '../../browser-session/HelpRequests';
+import {
+  buildHelpHighlightExpression,
+  buildHelpProbeExpression,
+  buildHelpUnhighlightExpression,
+  isHelpRef,
+  type BrowserHelpCompletion,
+  type BrowserHelpProbe,
+} from '../../../shared/browserHelp';
 import {
   ProfileManager,
   isSelectableBrowserProfile,
@@ -662,6 +672,16 @@ function reencodeCapture(
 // captures (a healthy one returns in <100ms) while keeping the worst case far
 // under callers' RPC timeouts.
 const CDP_SCREENSHOT_TIMEOUT_MS = 2_500;
+// Bound for every page read browser.help.* makes (the URL/condition probe, the
+// outline, the un-outline). Deliberately short: the request's own RPC reply
+// waits on one of these and the MCP client's request timeout is 10s, so a slow
+// guest must cost the caller a missing `url`, never a dropped reply.
+const HELP_EVALUATE_TIMEOUT_MS = 2_000;
+// Bound for raising the surface. `sendToRenderer`'s own default is 5s, which
+// plus the outline read would leave the reply uncomfortably close to the
+// client's 10s ceiling — and a focus that has not landed in two seconds is not
+// going to.
+const HELP_REVEAL_TIMEOUT_MS = 2_000;
 // Bound for the capturePage fallback — it can hang on exactly the same guests.
 const CAPTURE_PAGE_TIMEOUT_MS = 1_500;
 
@@ -737,7 +757,12 @@ export function registerBrowserRpc(
   // The persisted `siteGuidesEnabled` toggle, same lazy read. Absent hook or
   // null value means the default, which is OFF.
   readSiteGuidesEnabled: () => boolean | null = () => null,
-): void {
+  // Returns the HelpRequests store (browser_request_help) so main/index.ts can
+  // wire the renderer's Done/Cancel IPC to the same instance the RPC handlers
+  // below opened the request on. A store hung off module scope could not see
+  // `getWindow` or the CDP manager, and a second instance would answer for
+  // requests it never created.
+): HelpRequests {
   const getActivePartition = (): string => profileManager.getActiveProfile().partition;
 
   // ── #517 backend fork ────────────────────────────────────────────────────
@@ -1158,6 +1183,287 @@ export function registerBrowserRpc(
       return webviewCdpManager.withAutomationLease(resolved, () => handler(params, scope, ctx));
     });
   };
+
+  // ── browser_request_help (browser.help.*) ───────────────────────────────
+  //
+  // Login walls, CAPTCHAs, OTP fields, payment confirmations and consent
+  // screens end a browser flow with nothing the agent can do. These three
+  // methods are the hand-off: `request` opens one row, focuses the surface and
+  // returns immediately; `status` is what the tool polls on its ~1s cadence
+  // (the client RPC timeout is 10s, so a single long-held call could never
+  // carry a five-minute wait); `cancel` withdraws.
+  //
+  // The DEADLINE lives here, in main, not in the renderer and not in the
+  // agent: a renderer that reloads or is never looked at must not be able to
+  // leave a request open forever, and the tool's own timeout is a client-side
+  // guess about a process it does not own.
+
+  /**
+   * Which workspace a help request belongs to, resolved fail-closed in BOTH
+   * enforcement modes — the same call `cacheWorkspace` makes, for the same
+   * reason. `scopeFor` deliberately falls back to the caller-supplied
+   * workspaceId while `mcp.mode` is 'shadow', which is the right trade for the
+   * browser methods that already work that way. It is the wrong trade here:
+   * this store is brand new, so there is no working behaviour to preserve, and
+   * the fallback would let an unidentified caller read — or cancel — another
+   * workspace's open help request just by naming it.
+   */
+  const helpWorkspace = (
+    method: RpcMethod,
+    params: Record<string, unknown>,
+    ctx?: RpcContext,
+  ): string => {
+    const decision = callerScope(ctx, params);
+    const workspaceId =
+      decision.kind === 'scoped'
+        ? decision.workspaceId
+        : decision.kind === 'allowed' && decision.lane === 'operator'
+          ? decision.workspaceId
+          : undefined;
+    if (!workspaceId) {
+      throw new Error(
+        `${method}: a help request belongs to one workspace and this caller's workspace ` +
+          'could not be verified. Send the workspaceId of the workspace you are calling from.',
+      );
+    }
+    return workspaceId;
+  };
+
+  /**
+   * Run one expression in the guest that backs a help request.
+   *
+   * Mirrors `browser.evaluate`'s mechanism (CDP `Runtime.evaluate`, falling
+   * back to `executeJavaScript`) rather than calling it: that handler is
+   * registered through `registerLeased` and is not reachable as a function, and
+   * the help probes must not take a second automation lease — the tool already
+   * holds one for the whole wait.
+   *
+   * Returns null whenever the page cannot be read at all: a non-builtin backend
+   * has no guest webview, and a departed WebContents has no page. Null is not a
+   * failure of the request — Done, Cancel and the deadline all still work; only
+   * `url` and the completion condition go unanswered.
+   */
+  const evaluateForHelp = async (
+    route: { workspaceId: string; surfaceId: string | undefined },
+    expression: string,
+  ): Promise<unknown> => {
+    if (backend() !== 'builtin') return null;
+    const target = webviewCdpManager.getTarget(route.surfaceId, route.workspaceId);
+    if (!target) return null;
+    const wc = webContents.fromId(target.webContentsId);
+    if (!wc || wc.isDestroyed()) return null;
+    // Bounded, for the same reason browser.screenshot bounds its CDP call
+    // (#529): a command sent to a guest whose main thread is wedged can wait
+    // forever. Two things hang off this — the request's own RPC reply (the MCP
+    // client gives up after 10s) and the row's removal at settle — so an
+    // unbounded read would strand both.
+    const run = async (): Promise<unknown> => {
+      try {
+        const cdpResult = (await wc.debugger.sendCommand('Runtime.evaluate', {
+          expression,
+          returnByValue: true,
+          awaitPromise: true,
+        })) as { result?: { value?: unknown }; exceptionDetails?: unknown };
+        if (cdpResult.exceptionDetails) return null;
+        return cdpResult.result?.value ?? null;
+      } catch {
+        try {
+          return await wc.executeJavaScript(expression);
+        } catch {
+          return null;
+        }
+      }
+    };
+    return Promise.race([
+      run(),
+      new Promise<null>((resolve) => {
+        const timer = setTimeout(() => resolve(null), HELP_EVALUATE_TIMEOUT_MS);
+        (timer as { unref?: () => void }).unref?.();
+      }),
+    ]);
+  };
+
+  const helpRequests = new HelpRequests({
+    open: (info) => {
+      const win = getWindow();
+      if (!win || win.isDestroyed()) return;
+      try {
+        win.webContents.send(IPC.BROWSER_HELP_OPEN, info);
+      } catch {
+        /* renderer might be mid-reload — the deadline still settles the row */
+      }
+    },
+    close: (requestId) => {
+      const win = getWindow();
+      if (!win || win.isDestroyed()) return;
+      try {
+        win.webContents.send(IPC.BROWSER_HELP_CLOSED, { requestId });
+      } catch {
+        /* see open() */
+      }
+    },
+    probe: async (record) => {
+      const value = await evaluateForHelp(record, buildHelpProbeExpression(record.completion));
+      if (!value || typeof value !== 'object') return null;
+      const shaped = value as BrowserHelpProbe;
+      return {
+        ...(typeof shaped.url === 'string' && { url: shaped.url }),
+        matched: shaped.matched === true,
+      };
+    },
+    clearHighlight: async (record) => {
+      if (record.ref === undefined) return;
+      await evaluateForHelp(record, buildHelpUnhighlightExpression(record.ref));
+    },
+  });
+
+  /**
+   * Put the surface the human has to act on in front of them.
+   *
+   * On `builtin` that is the pane: `surface.focus` sets the owning workspace's
+   * active pane and surface (and is non-yank, so it does not steal another
+   * workspace's screen). On `chrome`/`live` there is no in-window webview at
+   * all, so the Chrome tab is raised where the backend can do it, and an OS
+   * notification carries the ask — the pane the operator is looking at has
+   * nothing to show. Both are best-effort: a focus that did not land must not
+   * fail a request whose row is already up.
+   */
+  const revealHelpSurface = async (
+    workspaceId: string,
+    surfaceId: string | undefined,
+    prompt: string,
+  ): Promise<void> => {
+    if (backend() === 'builtin') {
+      if (!surfaceId) return;
+      try {
+        await sendToRenderer(getWindow, 'surface.focus', { id: surfaceId }, {
+          timeoutMs: HELP_REVEAL_TIMEOUT_MS,
+        });
+      } catch {
+        /* the row and the Fleet inbox still carry the ask */
+      }
+      return;
+    }
+    if (surfaceId) {
+      try {
+        const launcher = chromeRegistry?.forWorkspace(workspaceId);
+        if (launcher?.selectSurface) {
+          // Bounded like every other page-touching call here: a live-Chrome
+          // endpoint that stops answering must not hold the RPC reply.
+          await Promise.race([
+            launcher.selectSurface(surfaceId),
+            new Promise<void>((resolve) => {
+              const timer = setTimeout(resolve, HELP_REVEAL_TIMEOUT_MS);
+              (timer as { unref?: () => void }).unref?.();
+            }),
+          ]);
+        }
+      } catch {
+        /* the tab may be gone; the notification below is the fallback */
+      }
+    }
+    try {
+      if (!Notification.isSupported()) return;
+      new Notification({
+        title: 'wmux — the browser needs you',
+        body: prompt,
+        silent: false,
+      }).show();
+    } catch {
+      /* notifications are unavailable on some Linux desktops */
+    }
+  };
+
+  /**
+   * browser.help.request — open one help request for the caller's surface.
+   * params: { workspaceId, surfaceId?, prompt, ref?, timeoutMs?, completion? }
+   * returns: { requestId, deadlineAt, highlighted: boolean | null }
+   *
+   * `highlighted` is tri-state on purpose: null means no ref was asked for,
+   * false means one was and could not be resolved. The tool says so in its
+   * result rather than silently dropping the pointer the agent meant to give
+   * the human.
+   */
+  router.register('browser.help.request', async (params, ctx) => {
+    const workspaceId = helpWorkspace('browser.help.request', params, ctx);
+    // 'external' delegates every open to the OS browser, so there is no surface
+    // to focus, no page to read and nothing this feature can point at. Permanent
+    // by definition — the same contract the other tools state (#517).
+    if (backend() === 'external') {
+      throw new Error(
+        'browser.help.request: not_supported: this workspace delegates browser opens to the ' +
+          'OS browser, so wmux cannot show a help request against a page it does not host.',
+      );
+    }
+    const surfaceId = typeof params['surfaceId'] === 'string' ? params['surfaceId'] : undefined;
+    const rawRef = params['ref'];
+    const refRequested = typeof rawRef === 'string' && rawRef.length > 0;
+    const ref = isHelpRef(rawRef) ? rawRef : undefined;
+    const rawCompletion = params['completion'];
+    const completion =
+      rawCompletion && typeof rawCompletion === 'object' && !Array.isArray(rawCompletion)
+        ? (rawCompletion as BrowserHelpCompletion)
+        : undefined;
+
+    // The outline goes on BEFORE the record exists, so every settle path is
+    // guaranteed to run against an outline that is already there. The other
+    // order has a real hole: `create` arms the deadline timer, and a request
+    // that settles while this read is in flight would clear an outline that has
+    // not been drawn yet — leaving a permanent red box on the page.
+    const route = { workspaceId, surfaceId };
+    let highlighted: boolean | null = refRequested ? false : null;
+    if (ref !== undefined) {
+      highlighted = (await evaluateForHelp(route, buildHelpHighlightExpression(ref))) === 'ok';
+    }
+
+    let info;
+    try {
+      info = helpRequests.create({
+        workspaceId,
+        ...(surfaceId !== undefined && { surfaceId }),
+        prompt: typeof params['prompt'] === 'string' ? params['prompt'] : '',
+        ...(ref !== undefined && { ref }),
+        ...(typeof params['timeoutMs'] === 'number' && { timeoutMs: params['timeoutMs'] }),
+        ...(completion !== undefined && { completion }),
+      });
+    } catch (err) {
+      // A refusal (already pending, unusable prompt) means nothing will ever
+      // settle this request, so the outline just drawn has no owner. Take it
+      // back before the refusal leaves.
+      if (ref !== undefined && highlighted) {
+        await evaluateForHelp(route, buildHelpUnhighlightExpression(ref));
+      }
+      throw err;
+    }
+
+    await revealHelpSurface(workspaceId, surfaceId, info.prompt);
+    return { requestId: info.requestId, deadlineAt: info.deadlineAt, highlighted };
+  });
+
+  /**
+   * browser.help.status — the tool's poll. params: { workspaceId, requestId }
+   * returns: { state, url? }
+   */
+  router.register('browser.help.status', async (params, ctx) => {
+    const workspaceId = helpWorkspace('browser.help.status', params, ctx);
+    const requestId = typeof params['requestId'] === 'string' ? params['requestId'] : '';
+    if (!requestId) throw new Error('browser.help.status: missing required param "requestId".');
+    const status = await helpRequests.status(requestId, workspaceId);
+    // An id that belongs to another workspace is answered exactly as an unknown
+    // one, so this cannot be used to probe for other workspaces' requests.
+    if (!status) throw new Error(`browser.help.status: no help request ${requestId} in this workspace.`);
+    return status;
+  });
+
+  /** browser.help.cancel — withdraw the ask. params: { workspaceId, requestId } */
+  router.register('browser.help.cancel', async (params, ctx) => {
+    const workspaceId = helpWorkspace('browser.help.cancel', params, ctx);
+    const requestId = typeof params['requestId'] === 'string' ? params['requestId'] : '';
+    if (!requestId) throw new Error('browser.help.cancel: missing required param "requestId".');
+    const status = await helpRequests.cancel(requestId, workspaceId);
+    if (!status) throw new Error(`browser.help.cancel: no help request ${requestId} in this workspace.`);
+    return status;
+  });
 
   // ── Browser action cache RPC (browser_replay) ───────────────────────────
   //
@@ -3240,4 +3546,6 @@ export function registerBrowserRpc(
 
     return { applied };
   });
+
+  return helpRequests;
 }

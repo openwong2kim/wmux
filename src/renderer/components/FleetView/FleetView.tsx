@@ -105,15 +105,25 @@ export default function FleetView() {
     [panes],
   );
 
-  // S-C2 approval inbox — pure derivation of the two pending-approval sources
-  // (A2A-first, then MCP). Mirrors the fleet selector's narrow subscription.
+  // S-C2 approval inbox — pure derivation of the pending-approval sources
+  // (A2A-first, then browser help requests, then MCP). Mirrors the fleet
+  // selector's narrow subscription.
   const mcpPrompts = useStore((s) => s.mcpPrompts);
   const mcpPromptOrder = useStore((s) => s.mcpPromptOrder);
   const pendingExecuteApprovals = useStore((s) => s.pendingExecuteApprovals);
   const pendingExecuteApprovalOrder = useStore((s) => s.pendingExecuteApprovalOrder);
+  const browserHelpRequests = useStore((s) => s.browserHelpRequests);
+  const browserHelpOrder = useStore((s) => s.browserHelpOrder);
   const inbox = useMemo(
-    () => selectApprovalInbox({ mcpPrompts, mcpPromptOrder, pendingExecuteApprovals, pendingExecuteApprovalOrder }),
-    [mcpPrompts, mcpPromptOrder, pendingExecuteApprovals, pendingExecuteApprovalOrder],
+    () => selectApprovalInbox({
+      mcpPrompts,
+      mcpPromptOrder,
+      pendingExecuteApprovals,
+      pendingExecuteApprovalOrder,
+      browserHelpRequests,
+      browserHelpOrder,
+    }),
+    [mcpPrompts, mcpPromptOrder, pendingExecuteApprovals, pendingExecuteApprovalOrder, browserHelpRequests, browserHelpOrder],
   );
 
   // LanLink PR-5 remote inbox — pure derivation of off-machine peer messages
