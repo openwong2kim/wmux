@@ -11,6 +11,11 @@
 // bounded, and dropped oldest-first under pressure rather than allowed to grow.
 // An approval prompt that arrives late is useless anyway — the whole point is a
 // human answering something that is currently blocking an agent.
+//
+// The queue, the one retry, the timeout and the log-on-change rule all live in
+// `RelayTransport`, which a second sender (LiveActivityPusher) shares. What is
+// left here is the part that is about NOTIFICATIONS: sealing per device, and
+// what a 410 means for a push registration.
 
 import {
   PushEnvelopeError,
@@ -18,6 +23,13 @@ import {
   sealPushEnvelope,
   type PushPayload,
 } from '../../shared/push/pushEnvelope';
+import {
+  RELAY_QUEUE_CAP,
+  RELAY_RETRY_BASE_MS,
+  RELAY_RETRY_JITTER_MS,
+  RELAY_TIMEOUT_MS,
+  RelayTransport,
+} from './RelayTransport';
 
 /** One device that has told us where to reach it. */
 export interface PushTarget {
@@ -53,22 +65,11 @@ export interface PushSenderDeps {
   sleep?: (ms: number) => Promise<void>;
 }
 
-/**
- * How many notifications wait when the relay is slow or down.
- *
- * Small on purpose. These are "someone is blocked on you right now" events; a
- * backlog of them is not a backlog worth delivering, it is a sign the phone
- * already missed the moment. Drop-oldest keeps the newest, which is the one
- * still worth answering.
- */
-export const PUSH_QUEUE_CAP = 32;
-
-/** Give up on the relay rather than hold a slot indefinitely. */
-export const PUSH_TIMEOUT_MS = 5_000;
-
-/** One retry, jittered, for a transport blip or a 5xx. Never more. */
-export const PUSH_RETRY_BASE_MS = 400;
-export const PUSH_RETRY_JITTER_MS = 400;
+/** Re-exported under their original names: these are this module's contract. */
+export const PUSH_QUEUE_CAP = RELAY_QUEUE_CAP;
+export const PUSH_TIMEOUT_MS = RELAY_TIMEOUT_MS;
+export const PUSH_RETRY_BASE_MS = RELAY_RETRY_BASE_MS;
+export const PUSH_RETRY_JITTER_MS = RELAY_RETRY_JITTER_MS;
 
 /** APNs priorities the relay accepts. 10 = deliver now. */
 const PRIORITY_IMMEDIATE = 10;
@@ -92,24 +93,21 @@ export interface PushSendOutcome {
 export class PushSender {
   private readonly deps: PushSenderDeps;
   private readonly now: () => number;
-  private readonly fetchImpl: typeof fetch;
-  private readonly sleep: (ms: number) => Promise<void>;
-  private readonly queue: QueuedPush[] = [];
-  /**
-   * The in-flight drain, or null. A boolean flag was not enough: `flush()`
-   * would see "already draining" and return immediately, so it awaited nothing
-   * and every test that inspected the result raced the sends it was checking.
-   */
-  private drainPromise: Promise<void> | null = null;
-  private dropped = 0;
-  /** Last terminal failure status, so a steady outage logs once, not per send. */
-  private lastFailureStatus: number | null | undefined = undefined;
+  private readonly transport: RelayTransport;
 
   constructor(deps: PushSenderDeps) {
     this.deps = deps;
     this.now = deps.now ?? Date.now;
-    this.fetchImpl = deps.fetchImpl ?? globalThis.fetch;
-    this.sleep = deps.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
+    this.transport = new RelayTransport({
+      ...(deps.relayUrl !== undefined ? { relayUrl: deps.relayUrl } : {}),
+      ...(deps.relaySecret !== undefined ? { relaySecret: deps.relaySecret } : {}),
+      ...(deps.log ? { log: deps.log } : {}),
+      ...(deps.now ? { now: deps.now } : {}),
+      ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}),
+      ...(deps.sleep ? { sleep: deps.sleep } : {}),
+      tag: '[push]',
+      noun: 'notification',
+    });
   }
 
   /**
@@ -121,8 +119,7 @@ export class PushSender {
    * notification because of it.
    */
   get enabled(): boolean {
-    if (process.env.WMUX_PUSH === '0') return false;
-    return Boolean(this.deps.relayUrl && this.deps.relaySecret);
+    return this.transport.enabled;
   }
 
   /**
@@ -132,46 +129,16 @@ export class PushSender {
    */
   notify(payload: PushPayload, opts: { collapseId?: string } = {}): void {
     if (!this.enabled) return;
-    if (this.queue.length >= PUSH_QUEUE_CAP) {
-      this.queue.shift();
-      this.dropped += 1;
-      // One line per burst, not per drop: a relay outage would otherwise write
-      // the log it is preventing us from delivering.
-      if (this.dropped === 1 || this.dropped % 25 === 0) {
-        this.deps.log?.('warn', `[push] queue full, dropped ${this.dropped} notification(s)`);
-      }
-    }
-    this.queue.push({ payload, ...(opts.collapseId ? { collapseId: opts.collapseId } : {}) });
-    void this.drain();
+    const item: QueuedPush = {
+      payload,
+      ...(opts.collapseId ? { collapseId: opts.collapseId } : {}),
+    };
+    this.transport.enqueue(() => this.send(item).then(() => undefined));
   }
 
   /** Test seam: wait for the queue to empty. */
   async flush(): Promise<void> {
-    await this.drain();
-  }
-
-  /** Join the in-flight drain, or start one. Never runs two at once. */
-  private drain(): Promise<void> {
-    if (!this.drainPromise) {
-      this.drainPromise = this.runDrain().finally(() => {
-        this.drainPromise = null;
-      });
-    }
-    return this.drainPromise;
-  }
-
-  private async runDrain(): Promise<void> {
-    while (this.queue.length > 0) {
-      const next = this.queue.shift();
-      if (!next) break;
-      try {
-        await this.send(next);
-      } catch (err) {
-        // A send that throws must not wedge the queue — the next notification
-        // is a fresh attempt against a possibly-recovered relay.
-        this.deps.log?.('warn', `[push] send failed: ${errMsg(err)}`);
-      }
-    }
+    await this.transport.flush();
   }
 
   private async send(item: QueuedPush): Promise<PushSendOutcome> {
@@ -205,7 +172,7 @@ export class PushSender {
         continue;
       }
 
-      const status = await this.postWithOneRetry({
+      const status = await this.transport.post('/push', {
         apnsDeviceToken: target.push.apnsToken,
         ciphertext: blob,
         priority: PRIORITY_IMMEDIATE,
@@ -221,10 +188,7 @@ export class PushSender {
 
       if (status === 200) {
         outcome.delivered += 1;
-        if (this.lastFailureStatus !== undefined) {
-          this.deps.log?.('info', '[push] relay is answering again');
-          this.lastFailureStatus = undefined;
-        }
+        this.transport.noteDelivered();
       } else if (status === 410) {
         // Apple's word that this token is gone. Continuing to send to it is
         // exactly the traffic that gets a provider throttled.
@@ -239,7 +203,7 @@ export class PushSender {
         // relay; the payload is never mentioned.
         outcome.failed += 1;
         outcome.lastStatus = status;
-        this.noteFailure(target.deviceId, status);
+        this.transport.noteFailure(target.deviceId, status);
       }
     }
     if (outcome.failed > 0) {
@@ -251,73 +215,4 @@ export class PushSender {
     }
     return outcome;
   }
-
-  /**
-   * Remember the last terminal failure, and log a distinct one only when it
-   * CHANGES.
-   *
-   * A relay that is down fails identically for every notification, and one line
-   * per attempt would bury the change that matters — a 401 turning into a 200,
-   * or a 500 turning into a 429. The per-send summary above still counts them
-   * all.
-   */
-  private noteFailure(deviceId: string, status: number | null): void {
-    if (status === this.lastFailureStatus) return;
-    this.lastFailureStatus = status;
-    this.deps.log?.(
-      'warn',
-      status === null
-        ? `[push] no response from the relay for ${deviceId} (after one retry)`
-        : `[push] relay answered ${status} for ${deviceId}`,
-    );
-  }
-
-  /**
-   * POST once, retry once on a transport failure or a 5xx.
-   *
-   * Not retried: 4xx. A rejected token or a refused secret does not get better
-   * by being sent again, and hammering the relay with it is the behaviour the
-   * rate limit exists to stop.
-   */
-  private async postWithOneRetry(body: Record<string, unknown>): Promise<number | null> {
-    const first = await this.postOnce(body);
-    if (first !== null && first < 500) return first;
-    await this.sleep(PUSH_RETRY_BASE_MS + Math.floor(jitterSeed(this.now()) * PUSH_RETRY_JITTER_MS));
-    return this.postOnce(body);
-  }
-
-  /** One attempt. Returns the HTTP status, or null when it never got an answer. */
-  private async postOnce(body: Record<string, unknown>): Promise<number | null> {
-    const url = `${String(this.deps.relayUrl).replace(/\/+$/, '')}/push`;
-    try {
-      const res = await this.fetchImpl(url, {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          authorization: `Bearer ${String(this.deps.relaySecret)}`,
-        },
-        body: JSON.stringify(body),
-        // A redirect off the pinned host would carry the bearer secret with it.
-        redirect: 'manual',
-        signal: AbortSignal.timeout(PUSH_TIMEOUT_MS),
-      });
-      return res.status;
-    } catch {
-      // Never log the body or the URL's query — there is none, but the habit is
-      // what keeps this module's blindness claim true.
-      return null;
-    }
-  }
-}
-
-/**
- * Jitter without `Math.random`, so a test can pin it through the injected clock
- * and a retry storm still spreads out in production.
- */
-function jitterSeed(now: number): number {
-  return ((now % 1000) + 1) / 1001;
-}
-
-function errMsg(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
 }
