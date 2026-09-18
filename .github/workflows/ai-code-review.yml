@@ -3,7 +3,8 @@
 #   1. Automatic: outside-contributor PRs (pull_request_target).
 #   2. Comment:   a maintainer writes `/review` on any PR, including their own.
 #   3. Manual:    `gh workflow run ai-code-review.yml -f pr_number=N`
-#                 (add `--ref <branch>` to try the workflow before it is merged).
+#                 (once this file is on main, `--ref <branch>` runs a branch's
+#                 edition of it — GitHub only registers workflows from main).
 #
 # Why pull_request_target: fork PRs get no secrets under `pull_request`, and the
 # LLM token lives in a secret. The action is fork-safe by construction — it
