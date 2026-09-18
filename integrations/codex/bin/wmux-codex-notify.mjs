@@ -58,6 +58,15 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // Keep these formulas in lockstep with src/shared/constants.ts. A non-empty
 // suffix is an instance boundary: this bridge never probes production paths as
 // a fallback when its selected namespace is suffixed.
+// #1111: the envelope-less `legacy` grandfather these hook RPCs used to ride
+// closes in the first release on or after 2026-09-30. `hooks.signal` on the
+// MAIN pipe is `wmux.internal`, so no declaration can ever grant it; the
+// enforcer instead recognises this exact clientName and allows that ONE method
+// (src/main/mcp/hookBridge.ts). Keep it in lockstep with
+// WMUX_HOOK_BRIDGE_CLIENT_NAME in src/shared/rpc.ts. Harmless on the daemon
+// control pipe, which has no enforcer and ignores the extra envelope field.
+const WMUX_CLIENT_NAME = 'wmux-hook-bridge';
+
 function dataSuffix() {
   return process.env.WMUX_DATA_SUFFIX || '';
 }
@@ -396,6 +405,7 @@ async function main() {
     method: t.method,
     params: envelope,
     token: t.token,
+    clientName: WMUX_CLIENT_NAME,
   }));
   const outerOk = rpcResult && rpcResult.ok === true;
   const innerOk = outerOk && rpcResult.result && rpcResult.result.ok === true;
