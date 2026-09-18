@@ -153,7 +153,15 @@ export function buildFleetSnapshots(state: FleetSnapshotState, ts: number): Flee
   // Pane-level derived row per leaf (active-surface ptyId, agentName, cwd,
   // isActivePane) — the canonical selector, keyed by paneId.
   const derivedByPane = new Map<string, FleetPane>();
-  for (const p of selectFleetPanes(state)) derivedByPane.set(p.paneId, p);
+  // #1343 — the mirror is the DECK's view, and the deck commands what it sees:
+  // a remote pane is drivable only through its own host's input API, so an
+  // `input.send` or an approval aimed at one would go nowhere and the
+  // completion gate would wait on a session this desktop cannot end. The
+  // callers hand this function the whole live store, so withholding
+  // `remoteWorkspaces` has to be explicit — a type that merely omits the field
+  // does not strip it at runtime.
+  const localOnly = { ...state, remoteWorkspaces: undefined };
+  for (const p of selectFleetPanes(localOnly)) derivedByPane.set(p.paneId, p);
   // Attention-stripped base status per leaf: the same selector with no retained
   // attention statuses collapses each pane to running/idle (its non-attention
   // derivation). This is what the active surface carries when the attention
@@ -162,7 +170,7 @@ export function buildFleetSnapshots(state: FleetSnapshotState, ts: number): Flee
   // #1168 — the pending-question map is a SECOND attention source inside the
   // selector, so stripping only `surfaceAgentStatus` would leave a blocked pane
   // reporting `awaiting_input` as its non-attention base status. Both go.
-  for (const p of selectFleetPanes({ ...state, surfaceAgentStatus: {}, surfacePendingQuestion: {} })) {
+  for (const p of selectFleetPanes({ ...localOnly, surfaceAgentStatus: {}, surfacePendingQuestion: {} })) {
     baseByPane.set(p.paneId, p.agentStatus);
   }
 

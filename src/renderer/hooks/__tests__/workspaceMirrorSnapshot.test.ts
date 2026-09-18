@@ -135,6 +135,37 @@ describe('buildFleetSnapshots', () => {
   });
 });
 
+// #1343 — remote agents reach Fleet View and the vitals chip, but never the
+// deck. The mirror is the deck's view and the deck COMMANDS what it sees; a
+// remote pane is drivable only through its own host's input API. The callers
+// hand this builder the whole live store, so the exclusion has to be an
+// explicit runtime strip, not a narrower type.
+describe('buildFleetSnapshots — remote agents stay out of the deck mirror', () => {
+  it('never emits an agent resolved from the attached remote host mirror', () => {
+    const remote: Surface = {
+      id: 'rs1', ptyId: '', title: 'rs1', shell: 'ssh', cwd: '/remote',
+      surfaceType: 'remote-terminal', remoteHostId: 'host-1', remoteSessionId: 'rsession-9',
+    };
+    const ws = workspace('ws-r', 'remote-ws', leaf('pr', [remote], 'rs1'), 'pr');
+    const fleets = buildFleetSnapshots({
+      workspaces: [ws],
+      surfaceAgentStatus: {},
+      surfaceActivity: {},
+      // The live store always carries this; the builder must drop it anyway.
+      remoteWorkspaces: [{
+        key: 'host-1:rw-1', hostId: 'host-1', hostLabel: 'office-mac',
+        workspaceId: 'rw-1', name: 'proj',
+        panes: [{ sessionId: 'rsession-9', agentName: 'Codex', agentStatus: 'awaiting_input' }],
+      }],
+    } as unknown as FleetSnapshotState, 7777);
+
+    const rows = fleets.flatMap((f) => f.panes);
+    expect(rows.some((r) => r.ptyId.startsWith('remote:'))).toBe(false);
+    expect(rows.some((r) => r.agentName === 'Codex')).toBe(false);
+    expect(rows.some((r) => r.agentStatus === 'awaiting_input')).toBe(false);
+  });
+});
+
 describe('buildFleetSnapshots — single-surface byte-identical pin', () => {
   // Single-surface panes must serialize EXACTLY as the pre-surface-accuracy
   // build did (attention row when a status is retained, base row otherwise).

@@ -177,10 +177,14 @@ export const ko = {
   'fleet.approvals.from': '보낸 쪽',
   'fleet.approvals.to': '받는 쪽',
   'fleet.approvals.plugin': '플러그인',
+  'fleet.approvals.workspace': '워크스페이스',
   'fleet.approvals.enterApprove': '승인',
   'fleet.approvals.delDeny': '거부',
   'fleet.approvals.autoRejected': '자동 거부됨: {name}',
   'fleet.approvals.autoRejectedLog': '최근 자동 거부된 승인',
+  'fleet.help.title': '브라우저가 사용자를 기다립니다',
+  'fleet.help.timesOutIn': '{seconds}초 후 만료',
+  'fleet.help.jump': '이 브라우저 페인으로 이동',
 
   // Project config (X5 wmux.json)
   'project.dialogTitle': '프로젝트 설정 (wmux.json)',
@@ -255,6 +259,9 @@ export const ko = {
   'browser.devToolsTooltip': '개발자 도구 열기 (F12)',
   'browser.title': '브라우저',
   'browser.discarded': '메모리 절약을 위해 내려갔습니다 — 클릭하면 다시 로드됩니다',
+  'browser.help.barLabel': '에이전트가 이 페이지에서 한 단계를 마쳐 달라고 요청했습니다',
+  'browser.help.done': '완료',
+  'browser.help.cancel': '취소',
 
   // VI copy mode
   'viCopy.mode': '-- 복사 모드 --',
@@ -508,6 +515,8 @@ export const ko = {
   'settings.sidebarPositionDesc': '터미널 영역의 좌측 또는 우측',
   'settings.sidebarAttentionFirst': '응답 필요 행을 위로',
   'settings.sidebarAttentionFirstDesc': '에이전트가 응답을 기다리는 워크스페이스를 사이드바 맨 위에 고정합니다. 기본은 꺼짐: 행은 드래그한 자리에 그대로 있습니다. 켜져 있는 동안 드래그 정렬은 멈춥니다.',
+  'settings.sidebarShowPaneCoordinates': '판 좌표 표시',
+  'settings.sidebarShowPaneCoordinatesDesc': '이름을 지정하지 않은 판에 대해 에이전트 목록에 자동 생성된 w1-2 형식의 좌표를 표시합니다. 기본은 켜짐. 이름을 바꾼 판은 이 설정과 무관하게 항상 자신의 이름을 표시합니다.',
   'settings.sidebarLeft': '왼쪽',
   'settings.sidebarRight': '오른쪽',
   'settings.titlebarClock': '타이틀바 시계',

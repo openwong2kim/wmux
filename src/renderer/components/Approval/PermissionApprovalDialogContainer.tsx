@@ -40,6 +40,8 @@ export default function PermissionApprovalDialogContainer() {
       clientName={pending.clientName}
       declaredCapabilities={pending.declaredCapabilities}
       rationale={pending.rationale}
+      {...(pending.title !== undefined && { title: pending.title })}
+      {...(pending.kind !== undefined && { kind: pending.kind })}
       onApprove={() => respond(true)}
       onDeny={() => respond(false)}
     />

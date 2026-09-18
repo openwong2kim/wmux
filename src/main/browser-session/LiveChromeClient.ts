@@ -2,8 +2,14 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { createConnection } from 'node:net';
-import type { ChromeBackendClient, ChromeBackendEndpoint, ChromeTargetInfo } from './ChromeLauncher';
+import type {
+  ChromeBackendClient,
+  ChromeBackendEndpoint,
+  ChromeTargetInfo,
+  LiveWriteScopeApi,
+} from './ChromeLauncher';
 import { CdpSocket, type CdpConnectFailure } from './CdpSocket';
+import type { LiveTabOwner } from '../../shared/liveWriteScope';
 
 // ---------------------------------------------------------------------------
 // Live-Chrome attach (Phase 3): drive the user's REAL daily Chrome via the
@@ -223,6 +229,10 @@ export class LiveChromeClient implements ChromeBackendClient {
       );
     },
     connectErrorFor: (reason, endpoint) => describeLiveConnectFailure(reason, endpoint),
+    // A Chrome that quit (or moved its endpoint) took every window with it, so
+    // the tab a user lent is gone. Keeping the grant would hand the agent write
+    // access to whatever target id Chrome reuses next.
+    onDisconnect: () => this.clearBorrows(),
   });
 
   constructor(private readonly userDataDir?: string) {}
@@ -235,6 +245,105 @@ export class LiveChromeClient implements ChromeBackendClient {
   /** wmux-opened tabs: targetId → owning workspace (ChromeLauncher mirror). */
   private readonly tabOwners = new Map<string, string | undefined>();
 
+  /** Tabs the USER lent a workspace: targetId → borrowing workspace. Separate
+   *  from tabOwners on purpose — a returned borrow must not leave a tab looking
+   *  like one wmux opened, and a lent tab is never closed on teardown. */
+  private readonly borrowed = new Map<string, string>();
+
+  /** Borrow requests currently on screen: targetId → asking workspace. A second
+   *  request for the same tab is refused rather than queued, so an agent cannot
+   *  stack prompts on the user until one is answered by accident. */
+  private readonly pendingBorrows = new Map<string, string>();
+
+  /**
+   * Best-effort window grouping: workspace → the Chrome window id its agent
+   * tabs were last observed in.
+   *
+   * Advisory ONLY. CDP has no command that moves an existing tab between
+   * windows (there is no Target/Browser method for it), so a tab Chrome decided
+   * to place elsewhere stays elsewhere — and this map records where it actually
+   * landed rather than where we wanted it. Ownership is never read from here:
+   * a grouping miss must not widen or narrow what an agent may write to.
+   */
+  private readonly agentWindows = new Map<string, number>();
+
+  /** One key for the ownership maps — an unbound caller (shadow mode) is its
+   *  own bucket rather than sharing every other workspace's. */
+  private static key(workspaceId: string | undefined): string {
+    return workspaceId ?? '';
+  }
+
+  /**
+   * The write-scope surface browser.rpc feature-detects to tell a live client
+   * from a dedicated one. Its presence IS the "this is Live Chrome" signal:
+   * dedicated instances address only tabs wmux opened, so every tab they can
+   * reach is already agent-owned and needs no gate.
+   */
+  readonly writeScope: LiveWriteScopeApi = {
+    ownerOf: (surfaceId, workspaceId) => this.ownerOf(surfaceId, workspaceId),
+    beginBorrow: (surfaceId, workspaceId) => this.beginBorrow(surfaceId, workspaceId),
+    settleBorrow: (surfaceId, workspaceId, granted) =>
+      this.settleBorrow(surfaceId, workspaceId, granted),
+    returnBorrow: (surfaceId, workspaceId) => this.returnBorrow(surfaceId, workspaceId),
+    clearBorrows: (workspaceId) => this.clearBorrows(workspaceId),
+    agentWindowFor: (workspaceId) => this.agentWindows.get(LiveChromeClient.key(workspaceId)),
+  };
+
+  /**
+   * Ownership is EXACT: a tab belongs to the workspace recorded against it, and
+   * to no other. A tab wmux opened for workspace A is a `user` tab from B's
+   * point of view — the same answer a stranger's tab gets, because from B's
+   * side that is what it is.
+   */
+  private ownerOf(surfaceId: string, workspaceId: string | undefined): LiveTabOwner {
+    if (this.tabOwners.has(surfaceId) && this.tabOwners.get(surfaceId) === workspaceId) {
+      return 'agent';
+    }
+    if (workspaceId !== undefined && this.borrowed.get(surfaceId) === workspaceId) {
+      return 'borrowed';
+    }
+    return 'user';
+  }
+
+  /** Reserve the prompt slot for one tab. false = a request is already pending
+   *  for it (by any workspace); the caller reports borrow_pending. */
+  private beginBorrow(surfaceId: string, workspaceId: string): boolean {
+    if (this.pendingBorrows.has(surfaceId)) return false;
+    this.pendingBorrows.set(surfaceId, workspaceId);
+    return true;
+  }
+
+  /** Release the prompt slot, recording the grant when the user allowed it.
+   *  Always called, on every outcome — a prompt that ended must not leave the
+   *  tab permanently un-askable. */
+  private settleBorrow(surfaceId: string, workspaceId: string, granted: boolean): void {
+    this.pendingBorrows.delete(surfaceId);
+    if (granted) this.borrowed.set(surfaceId, workspaceId);
+  }
+
+  /** Hand a lent tab back. false when this workspace held no grant on it. */
+  private returnBorrow(surfaceId: string, workspaceId: string): boolean {
+    if (this.borrowed.get(surfaceId) !== workspaceId) return false;
+    this.borrowed.delete(surfaceId);
+    return true;
+  }
+
+  /** Drop every grant (no argument) or one workspace's grants. Pending requests
+   *  go too: the prompt they are waiting on can no longer be honoured. */
+  private clearBorrows(workspaceId?: string): void {
+    if (workspaceId === undefined) {
+      this.borrowed.clear();
+      this.pendingBorrows.clear();
+      return;
+    }
+    for (const [targetId, owner] of [...this.borrowed]) {
+      if (owner === workspaceId) this.borrowed.delete(targetId);
+    }
+    for (const [targetId, asker] of [...this.pendingBorrows]) {
+      if (asker === workspaceId) this.pendingBorrows.delete(targetId);
+    }
+  }
+
   /**
    * Seed page selection with the tabs WMUX opened (dogfood P1 on #1064:
    * seeding nothing left the engine unable to match ANY pinned surface — its
@@ -245,9 +354,10 @@ export class LiveChromeClient implements ChromeBackendClient {
    * direct match. Dead targetIds are pruned as a side effect.
    */
   async cdpInfoTargets(workspaceId?: string): Promise<ChromeTargetInfo[]> {
-    // No wmux-opened tabs → nothing to seed. Return without touching the
-    // socket so a mere cdp.info (backend probe) never dials the user's Chrome.
-    if (this.tabOwners.size === 0) return [];
+    // No wmux-opened and no lent tabs → nothing to seed. Return without
+    // touching the socket so a mere cdp.info (backend probe) never dials the
+    // user's Chrome.
+    if (this.tabOwners.size === 0 && this.borrowed.size === 0) return [];
     let live: ChromeTargetInfo[];
     try {
       live = await this.listTargets();
@@ -263,7 +373,34 @@ export class LiveChromeClient implements ChromeBackendClient {
         continue;
       }
       if (workspaceId !== undefined && owner !== undefined && owner !== workspaceId) continue;
-      out.push({ surfaceId: targetId, targetId, workspaceId: owner, url: t.url, title: t.title });
+      out.push({
+        surfaceId: targetId,
+        targetId,
+        workspaceId: owner,
+        url: t.url,
+        title: t.title,
+        owner: 'agent',
+      });
+    }
+    // A LENT tab is seeded too, and has to be: it is a tab this workspace may
+    // write to, so the MCP lane's ownership check reads it from here. Leaving it
+    // out would make a just-borrowed tab unwritable — the grant would have
+    // bought the agent nothing.
+    for (const [targetId, borrower] of [...this.borrowed]) {
+      const t = liveById.get(targetId);
+      if (!t) {
+        this.borrowed.delete(targetId);
+        continue;
+      }
+      if (workspaceId !== undefined && borrower !== workspaceId) continue;
+      out.push({
+        surfaceId: targetId,
+        targetId,
+        workspaceId: borrower,
+        url: t.url,
+        title: t.title,
+        owner: 'borrowed',
+      });
     }
     return out;
   }
@@ -278,10 +415,63 @@ export class LiveChromeClient implements ChromeBackendClient {
    * addressable tab is one wmux opened.
    */
   async openTab(url: string, workspaceId?: string): Promise<{ surfaceId: string; targetId: string; url: string }> {
-    const res = (await this.send('Target.createTarget', { url })) as { targetId?: string };
+    // Window grouping, best-effort (see agentWindows). The FIRST tab a workspace
+    // opens asks Chrome for its own window; later ones activate a tab the
+    // workspace already owns first, because Chrome places a new tab in whichever
+    // window is active. There is no CDP command that MOVES a tab between
+    // windows, so when that placement misses, the tab simply lives in another
+    // window — it is still this workspace's tab, and still the only kind it may
+    // write to.
+    const anchor = this.newestOwnTab(workspaceId);
+    if (anchor) {
+      try {
+        await this.send('Target.activateTarget', { targetId: anchor });
+      } catch {
+        /* the anchor may have been closed since — Chrome picks the window */
+      }
+    }
+    const res = (await this.createTarget(url, anchor === undefined)) as { targetId?: string };
     if (!res?.targetId) throw new Error('LiveChromeClient: Target.createTarget returned no targetId');
     this.tabOwners.set(res.targetId, workspaceId);
+    await this.recordAgentWindow(res.targetId, workspaceId);
     return { surfaceId: res.targetId, targetId: res.targetId, url };
+  }
+
+  /** The most recent live-tab id this workspace owns, or undefined when it owns
+   *  none. Insertion order makes the last match the newest. */
+  private newestOwnTab(workspaceId: string | undefined): string | undefined {
+    let found: string | undefined;
+    for (const [targetId, owner] of this.tabOwners) {
+      if (owner === workspaceId) found = targetId;
+    }
+    return found;
+  }
+
+  /** createTarget, asking for a new window on a workspace's first tab. Some
+   *  Chromium builds reject the newWindow parameter; a rejection must cost a
+   *  window, never the tab, so it retries without it. */
+  private async createTarget(url: string, newWindow: boolean): Promise<unknown> {
+    if (!newWindow) return this.send('Target.createTarget', { url });
+    try {
+      return await this.send('Target.createTarget', { url, newWindow: true });
+    } catch {
+      return this.send('Target.createTarget', { url });
+    }
+  }
+
+  /** Record where the tab ACTUALLY landed. Never fails an open: the window id is
+   *  advisory, and a Chrome that will not answer this still opened the tab. */
+  private async recordAgentWindow(targetId: string, workspaceId: string | undefined): Promise<void> {
+    try {
+      const res = (await this.send('Browser.getWindowForTarget', { targetId })) as {
+        windowId?: number;
+      };
+      if (typeof res?.windowId === 'number') {
+        this.agentWindows.set(LiveChromeClient.key(workspaceId), res.windowId);
+      }
+    } catch {
+      /* grouping is advisory — see agentWindows */
+    }
   }
 
   /** Full exposure by design (consent model): ALL live page tabs, regardless
@@ -297,6 +487,9 @@ export class LiveChromeClient implements ChromeBackendClient {
     try {
       await this.send('Target.closeTarget', { targetId: surfaceId });
       this.tabOwners.delete(surfaceId);
+      // A closed tab cannot stay lent: the id is Chrome's to reuse.
+      this.borrowed.delete(surfaceId);
+      this.pendingBorrows.delete(surfaceId);
       return true;
     } catch {
       return false;
@@ -312,11 +505,12 @@ export class LiveChromeClient implements ChromeBackendClient {
     }
   }
 
-  /** Every live tab is addressable — the workspace binding IS the ownership,
+  /** Every live tab is ADDRESSABLE — the workspace binding IS the read grant,
    *  so this answers true for ids this client never opened. The parameter is
    *  named for the interface, not consulted: the alternative (checking
    *  tabOwners) would hide the user's own pre-existing tabs, which live mode
-   *  exists to reach. */
+   *  exists to reach. Addressable is not writable: `writeScope.ownerOf` is
+   *  what decides that, and it is exact. */
   // The ignored parameter is the point: it keeps this signature readable
   // against the ChromeBackendClient contract instead of silently taking zero
   // arguments.
@@ -325,8 +519,16 @@ export class LiveChromeClient implements ChromeBackendClient {
     return true;
   }
 
-  /** Close our socket only. Never touch the user's Chrome process. */
+  /**
+   * Close our socket only. Never touch the user's Chrome process — and never
+   * close a tab: an agent-owned live tab is a window on the user's desktop, and
+   * a lent tab was never wmux's to begin with.
+   *
+   * Every borrow grant goes, though. A grant is consent for one live session, so
+   * it must not outlive the connection that carried it.
+   */
   dispose(): void {
+    this.clearBorrows();
     this.socket.close();
   }
 

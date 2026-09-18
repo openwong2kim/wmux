@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import RemoteMirrorTerminal from './RemoteMirrorTerminal';
+import RemoteResumeChip from './RemoteResumeChip';
 
 export interface RemotePaneSurfaceProps {
   hostId: string;
@@ -86,7 +87,20 @@ export default function RemotePaneSurface({ hostId, sessionId, surfaceId, shell,
           {cwd ? ` — ${cwd}` : ''}
         </div>
       )}
-      <div className="flex-1 min-h-0">
+      {/* #1342 — `position: relative` so the absolutely-positioned resume chip
+          anchors to the mirror, not over the shell/cwd header above it. */}
+      <div className="flex-1 min-h-0" style={{ position: 'relative' }}>
+        <RemoteResumeChip
+          hostId={hostId}
+          sessionId={sessionId}
+          attachId={attachId}
+          // Stricter than the mirror's own read-only rule below, deliberately:
+          // the mirror renders either way and a refused keystroke is visible,
+          // but a chip is an OFFER. Until the probe has answered `true`, this
+          // desktop does not know the host takes input, and an offer whose
+          // click is silently dropped is worse than no offer.
+          readOnly={allowInput !== true}
+        />
         <RemoteMirrorTerminal
           attachId={attachId}
           error={error}

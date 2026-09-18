@@ -178,7 +178,11 @@ export function registerUtilityTools(server: McpServer, deps: BrowserToolDeps): 
     BROWSER_TRACE_SHAPE,
     async ({ action, path: outputPath, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
       try {
-        const page = await engine.getPageForScope(scope);
+        // Tracing is a control operation, not a read: it turns capture on over
+        // the page's whole browser context, which on Live Chrome is the user's
+        // own browser. browser_pdf above stays a read — it renders what is
+        // already on screen and changes nothing.
+        const page = await engine.getPageForScope(scope, { intent: 'write' });
         if (!page) {
           throw new Error('No browser page available. Call browser_open with a URL first to establish a CDP connection (required even if a browser panel is already visible).');
         }

@@ -355,6 +355,15 @@ export const METHOD_CAPABILITY: Record<RpcMethod, RequiredCapability> = {
   'browser.lease.renew':       { capability: 'browser.evaluate', riskClass: 'browser' },
   'browser.lease.release':     { capability: 'browser.evaluate', riskClass: 'browser' },
 
+  // browser_request_help. Opening a request puts a row on the operator's screen
+  // and outlines an element in the page, so it is gated on `browser.click` —
+  // the tier for clients that already act on a page — rather than minting a
+  // capability for one tool. Reading a request the caller itself opened is
+  // `browser.read`; cancelling it is the same act as opening, so it matches.
+  'browser.help.request':      { capability: 'browser.click', riskClass: 'browser' },
+  'browser.help.status':       { capability: 'browser.read',  riskClass: 'browser' },
+  'browser.help.cancel':       { capability: 'browser.click', riskClass: 'browser' },
+
   // --- Daemon control. Internal-only; reserved capability.
   'daemon.createSession':    { capability: 'wmux.internal' },
   'daemon.destroySession':   { capability: 'wmux.internal' },

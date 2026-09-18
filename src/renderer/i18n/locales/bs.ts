@@ -181,6 +181,8 @@ export const bs = {
   'settings.sidebarPositionDesc': 'Lijevo ili desno od područja terminala',
   'settings.sidebarAttentionFirst': 'Redovi koji te čekaju na vrh',
   'settings.sidebarAttentionFirstDesc': 'Zakači na vrh bočne trake radne prostore čiji agent čeka na tebe. Podrazumijevano isključeno: redovi ostaju gdje si ih povukao. Dok je uključeno, preraspoređivanje povlačenjem je pauzirano.',
+  'settings.sidebarShowPaneCoordinates': 'Prikaži koordinate okna',
+  'settings.sidebarShowPaneCoordinatesDesc': 'Prikazuje automatski generisanu koordinatu u stilu w1-2 na listi agenata za okna kojima niste dali ime. Uključeno po zadanom. Okno koje ste preimenovali uvijek prikazuje svoje ime, bez obzira na ovu postavku.',
   'settings.sidebarLeft': 'Lijevo',
   'settings.sidebarRight': 'Desno',
   'settings.updateReady': 'Ažuriranje spremno',

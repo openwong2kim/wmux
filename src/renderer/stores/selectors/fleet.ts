@@ -2,6 +2,8 @@ import type { AgentStatus, Task, PaneLeaf, Surface } from '../../../shared/types
 import { getLeafPanes, getWorkspaceLeafPanes } from '../../../shared/paneUtils';
 import { stashedPaneLiveness } from '../../../shared/paneStash';
 import { isBrainPtyId } from '../../../shared/constants';
+import { remoteAgentKey } from '../../../shared/remoteHosts';
+import type { AttachedRemoteWorkspace } from '../slices/remoteWorkspacesSlice';
 import type { StoreState } from '../index';
 
 // ─── S-C1 Fleet View — derived "all agents, all workspaces" model ────────────
@@ -70,6 +72,20 @@ export interface FleetPane {
   /** Milliseconds since this pane's last activity stamp. Only set when
    *  `unverifiable` — it is that state's evidence, and its label. */
   staleForMs?: number;
+  /**
+   * #1343 — this row is an agent session running on a REMOTE host, mirrored in
+   * as a remote-terminal surface. Present only when the caller supplied
+   * `remoteWorkspaces` AND a live (non-stale) host entry carries agent
+   * metadata for the session. `ptyId` is then the synthetic
+   * `remote:{hostId}:{sessionId}` key, never a local ptyId.
+   *
+   * Consumers that COMMAND panes (DeckFleet) must not list these: a remote
+   * pane is only drivable through the host's own input API, not the local
+   * input path. They already exclude them twice over — by not passing
+   * `remoteWorkspaces` at all, and by filtering on `surfaceType === 'terminal'`
+   * (a remote row keeps `surfaceType: 'remote-terminal'`).
+   */
+  remote?: { hostId: string; hostLabel: string };
 }
 
 /** Minimal store surface the selector reads — keeps the fixture trivial and the
@@ -123,7 +139,47 @@ export type FleetSelectorState = Pick<StoreState, 'workspaces' | 'surfaceAgentSt
    * selector derives it inline from the clock, exactly as before.
    */
   hookRunningByPtyId?: Record<string, boolean>;
+  /**
+   * #1343 — attached remote-host mirrors. Supplied ONLY by consumers that
+   * should see remote agents (Fleet View, the titlebar vitals chip). Left out,
+   * remote-terminal surfaces derive exactly as before: an anonymous idle row
+   * with an empty ptyId. See FleetPane.remote.
+   */
+  remoteWorkspaces?: AttachedRemoteWorkspace[];
 };
+
+/**
+ * The agent metadata a remote-terminal surface can claim, or undefined.
+ *
+ * Shared by the sidebar roster (#1163) and the fleet pass (#1343) so the two
+ * can never disagree about which remote sessions count as agents.
+ *
+ * Two rules, both load-bearing:
+ *   - Search EVERY entry on the host, not just the first: multiple attached
+ *     workspaces per host are supported (the dedup key is hostId:workspaceId),
+ *     so a session in the host's second workspace must still resolve.
+ *   - A STALE entry (host unreachable) keeps its last pane snapshot for the
+ *     mirror, but its agent status is frozen at the last successful poll —
+ *     counting it would report a disconnected agent as live (or as needing
+ *     you) indefinitely. No live metadata, no agent.
+ */
+export function resolveRemoteAgent(
+  remoteWorkspaces: AttachedRemoteWorkspace[] | undefined,
+  hostId: string | undefined,
+  sessionId: string | undefined,
+): { agentName: string; status: AgentStatus; hostLabel: string } | undefined {
+  if (!remoteWorkspaces || !hostId || !sessionId) return undefined;
+  const attached = remoteWorkspaces.find(
+    (r) => r.hostId === hostId && !r.stale && r.panes.some((p) => p.sessionId === sessionId),
+  );
+  const pane = attached?.panes.find((p) => p.sessionId === sessionId);
+  if (!pane?.agentName) return undefined;
+  return {
+    agentName: pane.agentName,
+    status: pane.agentStatus ?? 'idle',
+    hostLabel: attached?.hostLabel ?? hostId,
+  };
+}
 
 /**
  * How long after a pane's last PostToolUse hook it still counts as 'running'
@@ -368,6 +424,20 @@ export function selectFleetPanes(state: FleetSelectorState): FleetPane[] {
         ? pickStashedRepresentativeSurface(leaf, state.surfaceAgent ?? {})
         : leaf.surfaces.find((s) => s.id === leaf.activeSurfaceId) ?? leaf.surfaces[0];
       const ptyId = surf?.ptyId ?? '';
+      // #1343 — a remote-terminal surface has ptyId '' by contract and is
+      // invisible to every local PTY-keyed map below, so without this it lands
+      // as an anonymous idle card. Resolve it against the attached host mirror
+      // instead, with the same rules the sidebar roster uses.
+      //
+      // IDENTITY is keyed on the leaf's ACTIVE surface, like every other field
+      // on this row: this pass is one row per leaf, the roster is one row per
+      // surface, so a background tab's agent NAME does not reach the card —
+      // exactly as it does not for a background local agent. Its STATUS does,
+      // through the rollup below.
+      const remoteAgent =
+        surf?.surfaceType === 'remote-terminal'
+          ? resolveRemoteAgent(state.remoteWorkspaces, surf.remoteHostId, surf.remoteSessionId)
+          : undefined;
       // The orchestrator's own brain pty is never a fleet member. It should
       // never reach a surface at all (pty.list filters it), so this is the
       // belt to that braces: every roster in the app — DeckFleet, FleetView,
@@ -381,8 +451,28 @@ export function selectFleetPanes(state: FleetSelectorState): FleetPane[] {
       // is idle), so a multi-tab pane that needs the user is never silently
       // shown as idle. The card otherwise stays keyed on the active surface.
       let attention: AgentStatus | undefined;
+      // #1343 — the same rollup over the leaf's REMOTE tabs, tracked separately
+      // so a remote row is never given a local agent's status (and vice versa)
+      // while both still reach the workspace dot and the vitals chip.
+      let remoteAttention: AgentStatus | undefined;
       for (const s of leaf.surfaces) {
-        if (!s.ptyId) continue;
+        if (!s.ptyId) {
+          // A remote tab has no ptyId, so the PTY-keyed scan below can never
+          // see it. Without this a remote agent asking for the user from a
+          // BACKGROUND tab is visible in the sidebar roster (which is per
+          // surface) and nowhere else — the exact split this issue exists to
+          // close, just one tab deeper.
+          const rs = s.surfaceType === 'remote-terminal'
+            ? resolveRemoteAgent(state.remoteWorkspaces, s.remoteHostId, s.remoteSessionId)?.status
+            : undefined;
+          if (rs && (remoteAttention === undefined || STATUS_RANK[rs] < STATUS_RANK[remoteAttention])) {
+            remoteAttention = rs;
+          }
+          if (rs && (attention === undefined || STATUS_RANK[rs] < STATUS_RANK[attention])) {
+            attention = rs;
+          }
+          continue;
+        }
         // #1168 — a transcript-derived pending question outranks whatever the
         // stop payload settled this surface to, exactly as it does in
         // workspaceAgentRoster. Without it a payload carrying `complete`
@@ -493,9 +583,18 @@ export function selectFleetPanes(state: FleetSelectorState): FleetPane[] {
         workspaceName: ws.name,
         paneId: leaf.id,
         surfaceId: surf?.id ?? '',
-        ptyId,
-        agentStatus: status,
-        agentName: isActivePane && metaMatchesPane ? wsMeta?.agentName : undefined,
+        // The synthetic remote key, so a remote row has a stable non-empty
+        // identity for consumers that key on ptyId. It is never a local ptyId,
+        // so the PTY-keyed reads below still all miss — which is correct: the
+        // host snapshot has no hooks, no activity line, no supervision.
+        ptyId: remoteAgent ? remoteAgentKey(surf?.remoteHostId ?? '', surf?.remoteSessionId ?? '') : ptyId,
+        // The host poll IS the whole signal for a remote agent: no latch and no
+        // workspace-metadata inheritance apply to it, only the rollup over this
+        // leaf's own remote tabs.
+        agentStatus: remoteAgent ? (remoteAttention ?? remoteAgent.status) : status,
+        agentName: remoteAgent
+          ? remoteAgent.agentName
+          : isActivePane && metaMatchesPane ? wsMeta?.agentName : undefined,
         paneLabel: state.paneLabel?.[leaf.id],
         cwd: surf?.cwd,
         title: surf?.title ?? '',
@@ -512,6 +611,9 @@ export function selectFleetPanes(state: FleetSelectorState): FleetPane[] {
         unverifiable,
         ...(unverifiable ? { staleForMs } : {}),
         ...(stashed ? { stashed: true } : {}),
+        ...(remoteAgent
+          ? { remote: { hostId: surf?.remoteHostId ?? '', hostLabel: remoteAgent.hostLabel } }
+          : {}),
       });
     }
   }

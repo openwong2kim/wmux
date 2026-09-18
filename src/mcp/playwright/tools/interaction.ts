@@ -2,7 +2,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { Page } from 'playwright-core';
 import { z } from 'zod';
 import { PlaywrightEngine } from '../PlaywrightEngine';
-import { withAutomationLease } from '../automationLease';
+import { leasedMutation } from '../automationLease';
 import {
   browserScopeKey,
   frameRefFallbackMessage,
@@ -29,6 +29,12 @@ import {
 } from '../pointer-path';
 import { hasTouchEmulation, touchDragFor, touchTapFor } from '../touch-input';
 import { describeToolError } from '../toolError';
+import {
+  EFFECT_TRAILER_NOTE,
+  taggedFailure,
+  withEffectTrailer,
+  type EffectState,
+} from '../resultTrailer';
 import {
   PASSWORD_FIELD_PREDICATE_JS,
   REDACTED_PASSWORD,
@@ -217,6 +223,20 @@ function refNotFound(ref: string, page: Page | null): string {
 }
 
 /**
+ * A parameter refusal: the arguments are the fix, and nothing reached the page.
+ * Tagged so the result's `error_code` is the branch's own verdict rather than a
+ * guess read off wording that may be reworded tomorrow (see resultTrailer.ts).
+ */
+function badArgs(message: string): Error {
+  return taggedFailure('invalid_params', message);
+}
+
+/** A `ref` that resolved to nothing, worded by refNotFound. */
+function refMissing(ref: string, page: Page | null, effect?: EffectState): Error {
+  return taggedFailure('ref_not_found', refNotFound(ref, page), effect);
+}
+
+/**
  * What browser_select says about an element that is not a native `<select>`.
  *
  * Custom dropdowns — a `div` with `role=combobox` over a `role=listbox` — are
@@ -304,8 +324,10 @@ function modifierKeysFor(
   instead: string,
 ): string[] | undefined {
   if (!modifiers || modifiers.length === 0) return undefined;
-  if (!page) throw new Error(livePageRequired('Modifier keys', pageError, instead));
-  if (hasTouchEmulation(page)) throw new Error(TOUCH_MODIFIERS_REFUSAL);
+  if (!page) {
+    throw taggedFailure('not_supported', livePageRequired('Modifier keys', pageError, instead));
+  }
+  if (hasTouchEmulation(page)) throw taggedFailure('not_supported', TOUCH_MODIFIERS_REFUSAL);
   return [...new Set(modifiers)];
 }
 
@@ -382,10 +404,10 @@ async function viewportBoundsCheck(page: Page): Promise<(x: number, y: number) =
   }
   return (x, y) => {
     if (x < 0 || y < 0) {
-      throw new Error(`Coordinates must be inside the viewport; got (${x}, ${y}).`);
+      throw badArgs(`Coordinates must be inside the viewport; got (${x}, ${y}).`);
     }
     if (viewport && (x > viewport.width || y > viewport.height)) {
-      throw new Error(
+      throw badArgs(
         `Coordinates (${x}, ${y}) are outside the ${viewport.width}x${viewport.height} viewport (CSS px). Scroll the target into view first, or take a fresh screenshot.`,
       );
     }
@@ -458,7 +480,7 @@ async function rpcEval(expression: string, scope: BrowserTargetScope): Promise<s
  * (e.g. browser_highlight in inspection.ts) reuse the same guard.
  */
 export function sanitizeRef(ref: string, scope: BrowserTargetScope): string {
-  if (!/^[a-zA-Z0-9_-]+$/.test(ref)) throw new Error(`Invalid ref: "${ref}"`);
+  if (!/^[a-zA-Z0-9_-]+$/.test(ref)) throw badArgs(`Invalid ref: "${ref}"`);
   // Every `[data-wmux-ref]` resolution in the tool layer — RPC click, fill,
   // hover, drag, select, scroll, scroll-into-view, the password probe, and
   // browser_highlight — passes through here first, which makes this the one
@@ -471,7 +493,7 @@ export function sanitizeRef(ref: string, scope: BrowserTargetScope): string {
   // about this one's numbering, and refusing on them would block a good DOM
   // ref here for as long as some unrelated page held that number.
   if (isOutstandingFrameRef(browserScopeKey(scope), ref)) {
-    throw new Error(frameRefFallbackMessage(ref));
+    throw taggedFailure('ref_not_found', frameRefFallbackMessage(ref));
   }
   return ref;
 }
@@ -650,9 +672,11 @@ async function rpcFill(selector: string, value: string, scope: BrowserTargetScop
   // that a caller can pass its own selector, that has to be checked. `unknown`
   // (a transport that cannot answer) proceeds, exactly as it always did.
   if ((await rpcCaretState(selector, scope)) === 'lost') {
-    throw new Error(
+    throw taggedFailure(
+      'element_not_interactable',
       `The element matching "${selector}" did not take focus, so typing would have gone into ` +
-        'whatever else the page has focused. Nothing was typed. Name a focusable field.',
+        'whatever else the page has focused. Nothing was typed — though the click that was ' +
+        'meant to focus it did reach the page. Name a focusable field.',
     );
   }
   // Select all existing text
@@ -718,12 +742,12 @@ function requireOneTarget(addr: RefAddress, tool: string, accepts: readonly Addr
   const given = accepts.filter((mode) => addr[mode] !== undefined);
   if (given.length === 0) {
     const help = accepts.map((mode) => ADDRESS_MODE_HELP[mode]);
-    throw new Error(
+    throw badArgs(
       `${tool} needs ${help.slice(0, -1).join(', ')} or ${help[help.length - 1]}.`,
     );
   }
   if (given.length > 1) {
-    throw new Error(
+    throw badArgs(
       `${tool} takes ${given.join(' or ')}, not both — they name one element more than one way.`,
     );
   }
@@ -741,7 +765,7 @@ function requireOneTarget(addr: RefAddress, tool: string, accepts: readonly Addr
  */
 function requireCssSelector(selector: string): void {
   const bad = (why: string): never => {
-    throw new Error(`selector must be a CSS selector — ${why}. Got: ${selector}`);
+    throw badArgs(`selector must be a CSS selector — ${why}. Got: ${selector}`);
   };
   const trimmed = selector.trim();
   if (selector.includes('>>')) bad('">>" chains Playwright engines, which CSS has no equivalent for');
@@ -760,9 +784,11 @@ function requireCssSelector(selector: string): void {
  * uniqueness rule a ref carries.
  */
 function requireSingleMatch(selector: string, count: number): void {
-  if (count === 0) throw new Error(`No element matches selector: ${selector}`);
+  if (count === 0) {
+    throw taggedFailure('selector_not_found', `No element matches selector: ${selector}`);
+  }
   if (count > 1) {
-    throw new Error(
+    throw badArgs(
       `selector "${selector}" matches ${count} elements — it must match exactly one. ` +
         'Narrow it, or use a ref from browser_snapshot.',
     );
@@ -793,7 +819,7 @@ async function resolveTypeTarget(
     return page.locator(addr.selector).first() as unknown as TypeTarget;
   }
   const el = await resolveRef(page, addr.ref as string);
-  if (!el) throw new Error(refNotFound(addr.ref as string, page));
+  if (!el) throw refMissing(addr.ref as string, page);
   return el as unknown as TypeTarget;
 }
 
@@ -817,7 +843,8 @@ function rpcSelectorFor(addr: RefAddress, scope: BrowserTargetScope): string {
     return addr.selector;
   }
   if (addr.ref === undefined) {
-    throw new Error(
+    throw taggedFailure(
+      'not_supported',
       `smartRef=${addr.smartRef} cannot be used on this transport: browser_smart_snapshot refs ` +
         'are not tagged into the page, and this surface has no live Chrome page to resolve them ' +
         'against. Use a ref from browser_snapshot, or a CSS selector.',
@@ -900,7 +927,8 @@ async function caretStillOnTarget(el: TypeTarget): Promise<CaretState> {
 
 /** Thrown when a multi-line type stopped early, carrying how far it got. */
 function partialLinesError(done: number, total: number, key: string): Error {
-  return new Error(
+  return taggedFailure(
+    'navigation_interrupted',
     `Typed ${done} of ${total} lines, then stopped: the field lost focus after the ${key} ` +
       '(a submit or a navigation is the usual cause). The remaining lines were NOT typed — ' +
       'they would have gone into whatever the page focused next.',
@@ -1208,9 +1236,9 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
   // -----------------------------------------------------------------------
   server.tool(
     'browser_click',
-    'Click an element by ref (browser_snapshot) or smartRef (browser_smart_snapshot), or — when neither is available — at x/y. x/y are VIEWPORT CSS PIXELS; to click something you can see in a screenshot pass imageX/imageY instead and the pixels are divided by that capture\'s reported scale for you. A fullPage or element screenshot is in a different coordinate space and cannot be used for coordinates at all. Coordinates need a live page (chrome backend); the RPC lane is ref-only.',
+    'Click an element by ref (browser_snapshot) or smartRef (browser_smart_snapshot), or — when neither is available — at x/y. x/y are VIEWPORT CSS PIXELS; to click something you can see in a screenshot pass imageX/imageY instead and the pixels are divided by that capture\'s reported scale for you. A fullPage or element screenshot is in a different coordinate space and cannot be used for coordinates at all. Coordinates need a live page (chrome backend); the RPC lane is ref-only.' + EFFECT_TRAILER_NOTE,
     BROWSER_CLICK_SHAPE,
-    async ({ ref, smartRef, x, y, imageX, imageY, double, modifiers, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
+    async ({ ref, smartRef, x, y, imageX, imageY, double, modifiers, surfaceId }) => leasedMutation(deps, surfaceId, async (scope, effect) => {
       try {
         // Image-space coordinates are viewport coordinates once divided by the
         // scale the last viewport screenshot of this surface reported (#1358).
@@ -1220,14 +1248,14 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
         let imageNote = '';
         if (imageX !== undefined || imageY !== undefined) {
           if (ref !== undefined || smartRef !== undefined || x !== undefined || y !== undefined) {
-            throw new Error('Pass imageX/imageY alone — not with ref, smartRef, x or y.');
+            throw badArgs('Pass imageX/imageY alone — not with ref, smartRef, x or y.');
           }
           if (imageX === undefined || imageY === undefined) {
-            throw new Error('Image-space clicks need both imageX and imageY.');
+            throw badArgs('Image-space clicks need both imageX and imageY.');
           }
           const known = getScreenshotScale(browserScopeKey(scope));
           if (!known) {
-            throw new Error(
+            throw badArgs(
               'No screenshot scale is known for this surface: take a viewport browser_screenshot first (fullPage and element captures set no scale), then pass imageX/imageY.',
             );
           }
@@ -1242,26 +1270,27 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
         // mirrors browser-use tools/service.py coordinate clicking (set_coordinate_clicking)
         const hasCoords = clickX !== undefined || clickY !== undefined;
         if (hasCoords && (ref !== undefined || smartRef !== undefined)) {
-          throw new Error(
+          throw badArgs(
             'Pass either ref/smartRef or x/y, not both — a ref survives a re-render and a coordinate does not.',
           );
         }
         if (hasCoords && (clickX === undefined || clickY === undefined)) {
-          throw new Error('Coordinate clicks need both x and y (viewport CSS pixels).');
+          throw badArgs('Coordinate clicks need both x and y (viewport CSS pixels).');
         }
 
         // Try Playwright first. The rejection is kept: on the coordinate path
         // "no page" is reported to the caller, and "the page navigated away" or
         // "the browser crashed" must not be dressed up as a backend limitation.
         let pageError: unknown;
-        const page = await engine.getPageForScope(scope).catch((error) => {
+        const page = await engine.getPageForScope(scope, { intent: 'write' }).catch((error) => {
           pageError = error;
           return allowScopedRpcFallback(error);
         });
 
         if (hasCoords) {
           if (!page) {
-            throw new Error(
+            throw taggedFailure(
+              'not_supported',
               livePageRequired('Coordinate clicks', pageError, 'click by ref from browser_snapshot'),
             );
           }
@@ -1284,10 +1313,12 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
               ? watchForPopup(page as unknown as { on: Function; off: Function })
               : null;
           try {
-            await withModifiers(page, modifierKeys, () =>
-              page.mouse.click(clickX as number, clickY as number, {
-                ...(double && { clickCount: 2 }),
-              }),
+            await effect.dispatch(() =>
+              withModifiers(page, modifierKeys, () =>
+                page.mouse.click(clickX as number, clickY as number, {
+                  ...(double && { clickCount: 2 }),
+                }),
+              ),
             );
             // Keep the tracker honest: the next ref click should approach from
             // here, not from wherever the pointer was before this one.
@@ -1297,14 +1328,17 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
             // does not survive a re-render, so a trace built on one replays a
             // click into whatever has moved under it. The escape hatch stays
             // an escape hatch.
-            return {
-              content: [
-                {
-                  type: 'text' as const,
-                  text: `Clicked${double ? ' (double)' : ''} at viewport CSS px (${clickX}, ${clickY})${imageNote}${modifiersNote(modifierKeys)}${note}`,
-                },
-              ],
-            };
+            return withEffectTrailer(
+              {
+                content: [
+                  {
+                    type: 'text' as const,
+                    text: `Clicked${double ? ' (double)' : ''} at viewport CSS px (${clickX}, ${clickY})${imageNote}${modifiersNote(modifierKeys)}${note}`,
+                  },
+                ],
+              },
+              effect.success(),
+            );
           } finally {
             coordWatch?.dispose();
           }
@@ -1339,8 +1373,10 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
               // element resolves through its descriptor and says so (#1355).
               const refNotes: string[] = [];
               const locator = await resolveSmartRefLocator(page, smartRef, { notes: refNotes });
-              const dispatch = await withModifiers(page, modifierKeys, () =>
-                clickWithApproach(page as unknown as ApproachPage, locator, !!double, tap),
+              const dispatch = await effect.dispatch(() =>
+                withModifiers(page, modifierKeys, () =>
+                  clickWithApproach(page as unknown as ApproachPage, locator, !!double, tap),
+                ),
               );
               // A ref axis, not the css axis this used to record: the CDP
               // lane's stored "locator" is getByRole SOURCE TEXT, which
@@ -1358,17 +1394,22 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
                   ...(double && { args: { double: true } }),
                 });
               }
-              return {
-                content: [{ type: 'text' as const, text: `Clicked${double ? ' (double)' : ''} element smartRef=${smartRef}${modifiersNote(modifierKeys)}${dispatchNote(!!tapper, double, dispatch)}${refNotes.map((n) => `\n${n}`).join('')}${await popupNote()}` }],
-              };
+              return withEffectTrailer(
+                {
+                  content: [{ type: 'text' as const, text: `Clicked${double ? ' (double)' : ''} element smartRef=${smartRef}${modifiersNote(modifierKeys)}${dispatchNote(!!tapper, double, dispatch)}${refNotes.map((n) => `\n${n}`).join('')}${await popupNote()}` }],
+                },
+                effect.success(),
+              );
             }
 
-            if (!ref) throw new Error('Either ref or smartRef must be provided.');
+            if (!ref) throw badArgs('Either ref or smartRef must be provided.');
 
             const el = await resolveRef(page, ref);
-            if (!el) throw new Error(refNotFound(ref, page));
-            const dispatch = await withModifiers(page, modifierKeys, () =>
-              clickWithApproach(page as unknown as ApproachPage, el, !!double, tap),
+            if (!el) throw refMissing(ref, page);
+            const dispatch = await effect.dispatch(() =>
+              withModifiers(page, modifierKeys, () =>
+                clickWithApproach(page as unknown as ApproachPage, el, !!double, tap),
+              ),
             );
             if (!modifierKeys) {
               recordAction(deps, {
@@ -1379,9 +1420,12 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
                 ...(double && { args: { double: true } }),
               });
             }
-            return {
-              content: [{ type: 'text' as const, text: `Clicked${double ? ' (double)' : ''} element ref=${ref}${modifiersNote(modifierKeys)}${dispatchNote(!!tapper, double, dispatch)}${await popupNote()}` }],
-            };
+            return withEffectTrailer(
+              {
+                content: [{ type: 'text' as const, text: `Clicked${double ? ' (double)' : ''} element ref=${ref}${modifiersNote(modifierKeys)}${dispatchNote(!!tapper, double, dispatch)}${await popupNote()}` }],
+              },
+              effect.success(),
+            );
           } finally {
             // Every exit — success, a ref that vanished, a click that threw —
             // detaches the listener.
@@ -1390,19 +1434,25 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
         }
 
         // RPC fallback
-        if (!ref && smartRef === undefined) throw new Error('Either ref or smartRef must be provided.');
+        if (!ref && smartRef === undefined) throw badArgs('Either ref or smartRef must be provided.');
         const resolvedRef = ref ?? String(smartRef);
-        const rpcDispatch = await rpcClick(resolvedRef, scope, double);
+        const rpcDispatch = await effect.dispatch(() => rpcClick(resolvedRef, scope, double));
         recordAction(deps, { scope, tool: 'browser_click', page: null, ref: resolvedRef });
-        return {
-          content: [{ type: 'text' as const, text: `Clicked${double ? ' (double)' : ''} element ref=${resolvedRef}${rpcDispatch === 'touch' ? ' (touch tap)' : ''}` }],
-        };
+        return withEffectTrailer(
+          {
+            content: [{ type: 'text' as const, text: `Clicked${double ? ' (double)' : ''} element ref=${resolvedRef}${rpcDispatch === 'touch' ? ' (touch tap)' : ''}` }],
+          },
+          effect.success(),
+        );
       } catch (error) {
         const message = describeToolError(error);
-        return {
-          content: [{ type: 'text' as const, text: message }],
-          isError: true,
-        };
+        return withEffectTrailer(
+          {
+            content: [{ type: 'text' as const, text: message }],
+            isError: true,
+          },
+          effect.failure(error),
+        );
       }
     }),
   );
@@ -1412,9 +1462,9 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
   // -----------------------------------------------------------------------
   server.tool(
     'browser_type',
-    'Type text into an element by ref, smartRef or CSS selector, replacing any existing value. Typing into a password field echoes "[redacted:password]" back — the text still went in.',
+    'Type text into an element by ref, smartRef or CSS selector, replacing any existing value. Typing into a password field echoes "[redacted:password]" back — the text still went in.' + EFFECT_TRAILER_NOTE,
     BROWSER_TYPE_SHAPE,
-    async ({ ref, smartRef, selector, text, newline, submit, humanlike, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
+    async ({ ref, smartRef, selector, text, newline, submit, humanlike, surfaceId }) => leasedMutation(deps, surfaceId, async (scope, effect) => {
       try {
         const addr: RefAddress = {
           ...(ref !== undefined && { ref }),
@@ -1423,7 +1473,7 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
         };
         requireOneTarget(addr, 'browser_type', ['ref', 'smartRef', 'selector']);
         const newlineKey = newlineKeyFor(newline);
-        const page = await engine.getPageForScope(scope).catch(allowScopedRpcFallback);
+        const page = await engine.getPageForScope(scope, { intent: 'write' }).catch(allowScopedRpcFallback);
 
         // Decided BEFORE typing: the field is addressable now, and a submit can
         // navigate the page out from under a later lookup.
@@ -1434,7 +1484,9 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
         if (page) {
           const el = await resolveTypeTarget(page, addr, refNotes);
           isPassword = await isPasswordElement(el);
-          segments = await typeIntoTarget(page, el, text, { humanlike, newlineKey });
+          segments = await effect.dispatch(() =>
+            typeIntoTarget(page, el, text, { humanlike, newlineKey }),
+          );
           if (submit) await page.keyboard.press('Enter');
         } else {
           // RPC fallback
@@ -1446,7 +1498,9 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
             requireSingleMatch(rpcSelector, await rpcMatchCount(rpcSelector, scope));
           }
           isPassword = await rpcIsPasswordElement(rpcSelector, scope);
-          segments = await rpcTypeInto(rpcSelector, text, scope, newlineKey);
+          segments = await effect.dispatch(() =>
+            rpcTypeInto(rpcSelector, text, scope, newlineKey),
+          );
           if (submit) await rpcPressKey('Enter', scope);
         }
 
@@ -1478,20 +1532,26 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
           ...(isPassword && { unrecordable: 'password' as const }),
         });
 
-        return {
-          content: [
-            {
-              type: 'text' as const,
-              text: `Typed "${echoed}" into element ${describeAddress(addr)}${lineNote}${submit ? ' and submitted' : ''}${refNotes.map((n) => `\n${n}`).join('')}`,
-            },
-          ],
-        };
+        return withEffectTrailer(
+          {
+            content: [
+              {
+                type: 'text' as const,
+                text: `Typed "${echoed}" into element ${describeAddress(addr)}${lineNote}${submit ? ' and submitted' : ''}${refNotes.map((n) => `\n${n}`).join('')}`,
+              },
+            ],
+          },
+          effect.success(),
+        );
       } catch (error) {
         const message = describeToolError(error);
-        return {
-          content: [{ type: 'text' as const, text: message }],
-          isError: true,
-        };
+        return withEffectTrailer(
+          {
+            content: [{ type: 'text' as const, text: message }],
+            isError: true,
+          },
+          effect.failure(error),
+        );
       }
     }),
   );
@@ -1501,14 +1561,18 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
   // -----------------------------------------------------------------------
   server.tool(
     'browser_fill',
-    'Fill multiple form fields at once, each by ref or smartRef.',
+    'Fill multiple form fields at once, each by ref or smartRef.' + EFFECT_TRAILER_NOTE,
     BROWSER_FILL_SHAPE,
-    async ({ fields, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
+    async ({ fields, surfaceId }) => leasedMutation(deps, surfaceId, async (scope, effect) => {
       try {
-        const page = await engine.getPageForScope(scope).catch(allowScopedRpcFallback);
+        const page = await engine.getPageForScope(scope, { intent: 'write' }).catch(allowScopedRpcFallback);
 
         let filled = 0;
         const errors: string[] = [];
+        // Kept as the error it was, not only as its text: the trailer's code is
+        // read off the failure object (resultTrailer.ts), and the first field to
+        // fail is the one the caller has to fix.
+        let firstError: unknown;
         // Which fields were credentials. Decided per field BEFORE the fill, the
         // same rule and the same predicate browser_type uses: a form filled in
         // one call may well be a login form, and recording it wholesale would
@@ -1528,14 +1592,15 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
             if (page) {
               const el = await resolveTypeTarget(page, addr);
               isPassword[i] = await isPasswordElement(el);
-              await el.fill(field.value);
+              await effect.dispatch(() => el.fill(field.value));
             } else {
               const rpcSelector = rpcSelectorFor(addr, scope);
               isPassword[i] = await rpcIsPasswordElement(rpcSelector, scope);
-              await rpcFill(rpcSelector, field.value, scope);
+              await effect.dispatch(() => rpcFill(rpcSelector, field.value, scope));
             }
             filled++;
           } catch (err) {
+            if (firstError === undefined) firstError = err;
             errors.push(describeToolError(err));
           }
         }
@@ -1564,16 +1629,28 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
           resultText += '\nErrors:\n' + errors.join('\n');
         }
 
-        return {
-          content: [{ type: 'text' as const, text: resultText }],
-          ...(errors.length > 0 && filled === 0 ? { isError: true } : {}),
-        };
+        // A form that took SOME of its fields dispatched; only one that took
+        // none of them can promise the page is untouched. So a partial fill
+        // reads `committed`, and the "Filled 2/3" count plus the Errors block
+        // stay the per-field truth — the trailer has three states and none of
+        // them is "partly".
+        const filledNothing = errors.length > 0 && filled === 0;
+        return withEffectTrailer(
+          {
+            content: [{ type: 'text' as const, text: resultText }],
+            ...(filledNothing ? { isError: true } : {}),
+          },
+          filledNothing ? effect.failure(firstError) : effect.success(),
+        );
       } catch (error) {
         const message = describeToolError(error);
-        return {
-          content: [{ type: 'text' as const, text: message }],
-          isError: true,
-        };
+        return withEffectTrailer(
+          {
+            content: [{ type: 'text' as const, text: message }],
+            isError: true,
+          },
+          effect.failure(error),
+        );
       }
     }),
   );
@@ -1583,29 +1660,33 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
   // -----------------------------------------------------------------------
   server.tool(
     'browser_press_key',
-    'Press a keyboard key.',
+    'Press a keyboard key.' + EFFECT_TRAILER_NOTE,
     BROWSER_PRESS_KEY_SHAPE,
-    async ({ key, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
+    async ({ key, surfaceId }) => leasedMutation(deps, surfaceId, async (scope, effect) => {
       try {
-        const page = await engine.getPageForScope(scope).catch(allowScopedRpcFallback);
+        const page = await engine.getPageForScope(scope, { intent: 'write' }).catch(allowScopedRpcFallback);
 
         if (page) {
-          await page.keyboard.press(key);
+          await effect.dispatch(() => page.keyboard.press(key));
         } else {
-          await rpcPressKey(key, scope);
+          await effect.dispatch(() => rpcPressKey(key, scope));
         }
 
         recordAction(deps, { scope, tool: 'browser_press_key', page, args: { key } });
 
-        return {
-          content: [{ type: 'text' as const, text: `Pressed key: ${key}` }],
-        };
+        return withEffectTrailer(
+          { content: [{ type: 'text' as const, text: `Pressed key: ${key}` }] },
+          effect.success(),
+        );
       } catch (error) {
         const message = describeToolError(error);
-        return {
-          content: [{ type: 'text' as const, text: message }],
-          isError: true,
-        };
+        return withEffectTrailer(
+          {
+            content: [{ type: 'text' as const, text: message }],
+            isError: true,
+          },
+          effect.failure(error),
+        );
       }
     }),
   );
@@ -1615,43 +1696,47 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
   // -----------------------------------------------------------------------
   server.tool(
     'browser_hover',
-    'Hover over an element by ref.',
+    'Hover over an element by ref.' + EFFECT_TRAILER_NOTE,
     BROWSER_HOVER_SHAPE,
-    async ({ ref, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
+    async ({ ref, surfaceId }) => leasedMutation(deps, surfaceId, async (scope, effect) => {
       try {
-        const page = await engine.getPageForScope(scope).catch(allowScopedRpcFallback);
+        const page = await engine.getPageForScope(scope, { intent: 'write' }).catch(allowScopedRpcFallback);
         let touchNote = '';
 
         if (page) {
           const el = await resolveRef(page, ref);
-          if (!el) throw new Error(refNotFound(ref, page));
+          if (!el) throw refMissing(ref, page);
           if (hasTouchEmulation(page)) touchNote = TOUCH_HOVER_NOTE;
-          await el.hover();
+          await effect.dispatch(() => el.hover());
         } else {
           // RPC fallback: real pointer movement over CDP Input. The synthetic
           // MouseEvent this replaces arrived with isTrusted === false, which any
           // handler on the page can read — a single boolean separating our
           // hover from every hover a person performs.
           const safeRef = sanitizeRef(ref, scope);
-          const res = await sendScopedBrowserRpc<{ touchPreset?: boolean }>(
-            'browser.hover.cdp',
-            scope,
-            { selector: `[data-wmux-ref="${safeRef}"]` },
+          const res = await effect.dispatch(() =>
+            sendScopedBrowserRpc<{ touchPreset?: boolean }>('browser.hover.cdp', scope, {
+              selector: `[data-wmux-ref="${safeRef}"]`,
+            }),
           );
           if (res?.touchPreset) touchNote = TOUCH_HOVER_NOTE;
         }
 
         recordAction(deps, { scope, tool: 'browser_hover', page, ref });
 
-        return {
-          content: [{ type: 'text' as const, text: `Hovered over element ref=${ref}${touchNote}` }],
-        };
+        return withEffectTrailer(
+          { content: [{ type: 'text' as const, text: `Hovered over element ref=${ref}${touchNote}` }] },
+          effect.success(),
+        );
       } catch (error) {
         const message = describeToolError(error);
-        return {
-          content: [{ type: 'text' as const, text: message }],
-          isError: true,
-        };
+        return withEffectTrailer(
+          {
+            content: [{ type: 'text' as const, text: message }],
+            isError: true,
+          },
+          effect.failure(error),
+        );
       }
     }),
   );
@@ -1661,36 +1746,37 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
   // -----------------------------------------------------------------------
   server.tool(
     'browser_drag',
-    'Drag an element from sourceRef to targetRef, or through path points (chrome backend).',
+    'Drag an element from sourceRef to targetRef, or through path points (chrome backend).' + EFFECT_TRAILER_NOTE,
     BROWSER_DRAG_SHAPE,
-    async ({ sourceRef, targetRef, path, modifiers, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
+    async ({ sourceRef, targetRef, path, modifiers, surfaceId }) => leasedMutation(deps, surfaceId, async (scope, effect) => {
       try {
         // Same rule as browser_click's ref-vs-x/y: a path is the escape hatch
         // for surfaces with nothing to snapshot (a canvas, a slider track, a
         // crop box), not a second way to address an element that has a ref.
         if (path !== undefined && (sourceRef !== undefined || targetRef !== undefined)) {
-          throw new Error(
+          throw badArgs(
             'Pass either sourceRef/targetRef or path, not both — a ref survives a re-render and a coordinate does not.',
           );
         }
         if (path === undefined && (sourceRef === undefined || targetRef === undefined)) {
-          throw new Error(
+          throw badArgs(
             'A ref drag needs both sourceRef and targetRef; to drag through viewport CSS px points pass path instead.',
           );
         }
         if (path !== undefined && (path.length < 2 || path.length > 50)) {
-          throw new Error(`path takes 2 to 50 {x, y} points (viewport CSS px); got ${path.length}.`);
+          throw badArgs(`path takes 2 to 50 {x, y} points (viewport CSS px); got ${path.length}.`);
         }
 
         let pageError: unknown;
-        const page = await engine.getPageForScope(scope).catch((error) => {
+        const page = await engine.getPageForScope(scope, { intent: 'write' }).catch((error) => {
           pageError = error;
           return allowScopedRpcFallback(error);
         });
 
         if (path !== undefined) {
           if (!page) {
-            throw new Error(
+            throw taggedFailure(
+              'not_supported',
               livePageRequired('Path drags', pageError, 'drag by sourceRef/targetRef from browser_snapshot'),
             );
           }
@@ -1698,7 +1784,8 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
           // between two points; a multi-point path has no touch equivalent in
           // this version, and a mouse drag under that identity contradicts it.
           if (hasTouchEmulation(page)) {
-            throw new Error(
+            throw taggedFailure(
+              'not_supported',
               'Path drags are mouse-only, and a device preset with a touchscreen is active on this page (its touch drag takes one start and one end point). Drag by sourceRef/targetRef, or reset the preset with browser_emulate.',
             );
           }
@@ -1706,18 +1793,23 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
           const inBounds = await viewportBoundsCheck(page);
           for (const point of path) inBounds(point.x, point.y);
 
-          await withModifiers(page, modifierKeys, () => mouseDragThrough(page, path, true));
+          await effect.dispatch(() =>
+            withModifiers(page, modifierKeys, () => mouseDragThrough(page, path, true)),
+          );
           // Path drags are deliberately NOT recorded, for the same reason
           // coordinate clicks are not: a coordinate does not survive a
           // re-render, so a replay would drag whatever has moved under it.
           const first = path[0];
           const last = path[path.length - 1];
-          return {
-            content: [{
-              type: 'text' as const,
-              text: `Dragged through ${path.length} points from viewport CSS px (${first.x}, ${first.y}) to (${last.x}, ${last.y})${modifiersNote(modifierKeys)}`,
-            }],
-          };
+          return withEffectTrailer(
+            {
+              content: [{
+                type: 'text' as const,
+                text: `Dragged through ${path.length} points from viewport CSS px (${first.x}, ${first.y}) to (${last.x}, ${last.y})${modifiersNote(modifierKeys)}`,
+              }],
+            },
+            effect.success(),
+          );
         }
 
         const source = sourceRef as string;
@@ -1727,14 +1819,17 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
 
         if (page) {
           const sourceEl = await resolveRef(page, source);
-          if (!sourceEl) throw new Error(refNotFound(source, page));
+          if (!sourceEl) throw refMissing(source, page);
           const targetEl = await resolveRef(page, target);
-          if (!targetEl) throw new Error(refNotFound(target, page));
+          if (!targetEl) throw refMissing(target, page);
 
           const sourceBox = await sourceEl.boundingBox();
           const targetBox = await targetEl.boundingBox();
           if (!sourceBox || !targetBox) {
-            throw new Error('Could not determine bounding box for source or target element.');
+            throw taggedFailure(
+              'element_not_visible',
+              'Could not determine bounding box for source or target element.',
+            );
           }
 
           const sourceX = sourceBox.x + sourceBox.width / 2;
@@ -1751,7 +1846,9 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
           let dragged = false;
           if (touchDrag) {
             try {
-              await touchDrag({ x: sourceX, y: sourceY }, { x: targetX, y: targetY });
+              await effect.dispatch(() =>
+                touchDrag({ x: sourceX, y: sourceY }, { x: targetX, y: targetY }),
+              );
               dragged = true;
               dragNote = ' (touch drag)';
             } catch {
@@ -1764,8 +1861,10 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
           if (!dragged) {
             // The shared pointer geometry rather than a straight 10-step line:
             // the approach starts where the pointer was last left.
-            await withModifiers(page, modifierKeys, () =>
-              mouseDragThrough(page, [{ x: sourceX, y: sourceY }, { x: targetX, y: targetY }]),
+            await effect.dispatch(() =>
+              withModifiers(page, modifierKeys, () =>
+                mouseDragThrough(page, [{ x: sourceX, y: sourceY }, { x: targetX, y: targetY }]),
+              ),
             );
           }
         } else {
@@ -1775,10 +1874,12 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
           // on pointer events rather than HTML5 drag-and-drop.
           const safeSrc = sanitizeRef(source, scope);
           const safeTgt = sanitizeRef(target, scope);
-          const res = await sendScopedBrowserRpc<{ dispatch?: string }>('browser.drag.cdp', scope, {
-            sourceSelector: `[data-wmux-ref="${safeSrc}"]`,
-            targetSelector: `[data-wmux-ref="${safeTgt}"]`,
-          });
+          const res = await effect.dispatch(() =>
+            sendScopedBrowserRpc<{ dispatch?: string }>('browser.drag.cdp', scope, {
+              sourceSelector: `[data-wmux-ref="${safeSrc}"]`,
+              targetSelector: `[data-wmux-ref="${safeTgt}"]`,
+            }),
+          );
           if (res?.dispatch === 'touch') dragNote = ' (touch drag)';
         }
 
@@ -1788,15 +1889,21 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
           recordAction(deps, { scope, tool: 'browser_drag', page, ref: source, targetRef: target });
         }
 
-        return {
-          content: [{ type: 'text' as const, text: `Dragged element ref=${source} to ref=${target}${modifiersNote(modifierKeys)}${dragNote}` }],
-        };
+        return withEffectTrailer(
+          {
+            content: [{ type: 'text' as const, text: `Dragged element ref=${source} to ref=${target}${modifiersNote(modifierKeys)}${dragNote}` }],
+          },
+          effect.success(),
+        );
       } catch (error) {
         const message = describeToolError(error);
-        return {
-          content: [{ type: 'text' as const, text: message }],
-          isError: true,
-        };
+        return withEffectTrailer(
+          {
+            content: [{ type: 'text' as const, text: message }],
+            isError: true,
+          },
+          effect.failure(error),
+        );
       }
     }),
   );
@@ -1806,23 +1913,25 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
   // -----------------------------------------------------------------------
   server.tool(
     'browser_select',
-    'Select option(s) in a native <select> element by value. A custom dropdown (div/listbox) is not supported here — click its trigger, then click the option.',
+    'Select option(s) in a native <select> element by value. A custom dropdown (div/listbox) is not supported here — click its trigger, then click the option.' + EFFECT_TRAILER_NOTE,
     BROWSER_SELECT_SHAPE,
-    async ({ ref, values, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
+    async ({ ref, values, surfaceId }) => leasedMutation(deps, surfaceId, async (scope, effect) => {
       try {
-        const page = await engine.getPageForScope(scope).catch(allowScopedRpcFallback);
+        const page = await engine.getPageForScope(scope, { intent: 'write' }).catch(allowScopedRpcFallback);
 
         if (page) {
           const el = await resolveRef(page, ref);
-          if (!el) throw new Error(refNotFound(ref, page));
+          if (!el) throw refMissing(ref, page);
           try {
-            await el.selectOption(values);
+            await effect.dispatch(() => el.selectOption(values));
           } catch (error) {
             // Playwright's own message is "Element is not a <select> element",
             // which tells the caller what the element is NOT and leaves them
             // retrying the same tool (#1360). The workaround is two clicks, so
             // say that instead.
-            if (notASelectElement(error)) throw new Error(notNativeSelect(ref));
+            if (notASelectElement(error)) {
+              throw taggedFailure('element_not_interactable', notNativeSelect(ref));
+            }
             throw error;
           }
         } else {
@@ -1834,7 +1943,7 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
           // the trade-off is that the change event carries isTrusted === false.
           const safeRef = sanitizeRef(ref, scope);
           const escapedValues = JSON.stringify(values);
-          const val = await rpcEval(`(() => {
+          const val = await effect.dispatch(() => rpcEval(`(() => {
             const el = document.querySelector('[data-wmux-ref="${safeRef}"]');
             if (!el) return 'not_found';
             // Distinguished from a miss (#1360): "the ref is gone" and "the ref
@@ -1844,9 +1953,13 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
             [...el.options].forEach(o => { o.selected = vals.includes(o.value); });
             el.dispatchEvent(new Event('change', { bubbles: true }));
             return 'ok';
-          })()`, scope);
-          if (val === 'not_select') throw new Error(notNativeSelect(ref));
-          if (val === 'not_found') throw new Error(refNotFound(ref, page));
+          })()`, scope));
+          // The evaluation reached the page, read the element and changed
+          // nothing — a state the dispatch probe cannot know, so it is declared.
+          if (val === 'not_select') {
+            throw taggedFailure('element_not_interactable', notNativeSelect(ref), 'none');
+          }
+          if (val === 'not_found') throw refMissing(ref, page, 'none');
         }
 
         recordAction(deps, {
@@ -1857,15 +1970,21 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
           args: { values: values.join('\u0000') },
         });
 
-        return {
-          content: [{ type: 'text' as const, text: `Selected value(s) [${values.join(', ')}] in element ref=${ref}` }],
-        };
+        return withEffectTrailer(
+          {
+            content: [{ type: 'text' as const, text: `Selected value(s) [${values.join(', ')}] in element ref=${ref}` }],
+          },
+          effect.success(),
+        );
       } catch (error) {
         const message = describeToolError(error);
-        return {
-          content: [{ type: 'text' as const, text: message }],
-          isError: true,
-        };
+        return withEffectTrailer(
+          {
+            content: [{ type: 'text' as const, text: message }],
+            isError: true,
+          },
+          effect.failure(error),
+        );
       }
     }),
   );
@@ -1875,38 +1994,43 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
   // -----------------------------------------------------------------------
   server.tool(
     'browser_scroll_into_view',
-    'Scroll an element into the visible viewport.',
+    'Scroll an element into the visible viewport.' + EFFECT_TRAILER_NOTE,
     BROWSER_SCROLL_INTO_VIEW_SHAPE,
-    async ({ ref, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
+    async ({ ref, surfaceId }) => leasedMutation(deps, surfaceId, async (scope, effect) => {
       try {
-        const page = await engine.getPageForScope(scope).catch(allowScopedRpcFallback);
+        const page = await engine.getPageForScope(scope, { intent: 'write' }).catch(allowScopedRpcFallback);
 
         if (page) {
           const el = await resolveRef(page, ref);
-          if (!el) throw new Error(refNotFound(ref, page));
-          await el.scrollIntoViewIfNeeded();
+          if (!el) throw refMissing(ref, page);
+          await effect.dispatch(() => el.scrollIntoViewIfNeeded());
         } else {
           const safeRef = sanitizeRef(ref, scope);
-          const val = await rpcEval(`(() => {
+          const val = await effect.dispatch(() => rpcEval(`(() => {
             const el = document.querySelector('[data-wmux-ref="${safeRef}"]');
             if (!el) return 'not_found';
             el.scrollIntoView({ block: 'center', behavior: 'smooth' });
             return 'ok';
-          })()`, scope);
-          if (val === 'not_found') throw new Error(refNotFound(ref, page));
+          })()`, scope));
+          // Read and rejected by the page itself: nothing was scrolled.
+          if (val === 'not_found') throw refMissing(ref, page, 'none');
         }
 
         recordAction(deps, { scope, tool: 'browser_scroll_into_view', page, ref });
 
-        return {
-          content: [{ type: 'text' as const, text: `Scrolled element ref=${ref} into view` }],
-        };
+        return withEffectTrailer(
+          { content: [{ type: 'text' as const, text: `Scrolled element ref=${ref} into view` }] },
+          effect.success(),
+        );
       } catch (error) {
         const message = describeToolError(error);
-        return {
-          content: [{ type: 'text' as const, text: message }],
-          isError: true,
-        };
+        return withEffectTrailer(
+          {
+            content: [{ type: 'text' as const, text: message }],
+            isError: true,
+          },
+          effect.failure(error),
+        );
       }
     }),
   );
@@ -1916,23 +2040,23 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
   // -----------------------------------------------------------------------
   server.tool(
     'browser_scroll',
-    'Scroll the page, or a scrollable element when ref is given.',
+    'Scroll the page, or a scrollable element when ref is given.' + EFFECT_TRAILER_NOTE,
     BROWSER_SCROLL_SHAPE,
-    async ({ direction, amount, ref, x, y, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
+    async ({ direction, amount, ref, x, y, surfaceId }) => leasedMutation(deps, surfaceId, async (scope, effect) => {
       const px = amount ?? 500;
       const deltaX = direction === 'right' ? px : direction === 'left' ? -px : 0;
       const deltaY = direction === 'down' ? px : direction === 'up' ? -px : 0;
       try {
         const hasPoint = x !== undefined || y !== undefined;
         if (hasPoint && ref !== undefined) {
-          throw new Error('Pass either ref or x/y, not both — a ref survives a re-render and a coordinate does not.');
+          throw badArgs('Pass either ref or x/y, not both — a ref survives a re-render and a coordinate does not.');
         }
         if (hasPoint && (x === undefined || y === undefined)) {
-          throw new Error('A wheel at a point needs both x and y (viewport CSS pixels).');
+          throw badArgs('A wheel at a point needs both x and y (viewport CSS pixels).');
         }
 
         let pageError: unknown;
-        const page = await engine.getPageForScope(scope).catch((error) => {
+        const page = await engine.getPageForScope(scope, { intent: 'write' }).catch((error) => {
           pageError = error;
           return allowScopedRpcFallback(error);
         });
@@ -1941,58 +2065,74 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
           // Real wheel events at a point: maps, canvases and virtualized lists
           // listen for `wheel` under the pointer and ignore scrollBy entirely.
           if (!page) {
-            throw new Error(
+            throw taggedFailure(
+              'not_supported',
               livePageRequired('Wheel scrolls at a point', pageError, 'scroll the page or a ref without x/y'),
             );
           }
           // Same identity reason as path drags and modifiers: a mouse move and
           // a wheel are input the emulated touchscreen device does not have.
           if (hasTouchEmulation(page)) {
-            throw new Error(
+            throw taggedFailure(
+              'not_supported',
               'Wheel scrolls at a point are mouse-only, and a device preset with a touchscreen is active on this page. Scroll without x/y, or reset the preset with browser_emulate.',
             );
           }
           (await viewportBoundsCheck(page))(x as number, y as number);
+          // The approach is already input on the page, so the dispatch starts
+          // here rather than at the wheel.
+          effect.begin();
           await walkPointer(page, { x: x as number, y: y as number });
           await page.mouse.wheel(deltaX, deltaY);
           // Not recorded, like a coordinate click: the point is layout.
-          return {
-            content: [{ type: 'text' as const, text: `Scrolled ${direction} by ${px}px with the wheel at viewport CSS px (${x}, ${y})` }],
-          };
+          return withEffectTrailer(
+            {
+              content: [{ type: 'text' as const, text: `Scrolled ${direction} by ${px}px with the wheel at viewport CSS px (${x}, ${y})` }],
+            },
+            effect.success(),
+          );
         }
 
         if (page) {
           if (ref) {
             const el = await resolveRef(page, ref);
-            if (!el) throw new Error(refNotFound(ref, page));
+            if (!el) throw refMissing(ref, page);
             // Main world, deliberately: element-scoped, and an ElementHandle
             // cannot be adopted into an isolated context (see isolated-eval.ts).
-            await el.evaluate(
-              (node, [dx, dy]) => { (node as Element).scrollBy(dx, dy); },
-              [deltaX, deltaY] as [number, number],
+            await effect.dispatch(() =>
+              el.evaluate(
+                (node, [dx, dy]) => { (node as Element).scrollBy(dx, dy); },
+                [deltaX, deltaY] as [number, number],
+              ),
             );
           } else {
-            await evaluateIsolated<void, [number, number]>(
-              page,
-              ([dx, dy]) => { window.scrollBy(dx, dy); },
-              [deltaX, deltaY],
+            await effect.dispatch(() =>
+              evaluateIsolated<void, [number, number]>(
+                page,
+                ([dx, dy]) => { window.scrollBy(dx, dy); },
+                [deltaX, deltaY],
+              ),
             );
           }
         } else {
           // RPC fallback
           if (ref) {
             const safeRef = sanitizeRef(ref, scope);
-            await rpcEval(`(() => {
+            const val = await effect.dispatch(() => rpcEval(`(() => {
               const el = document.querySelector('[data-wmux-ref="${safeRef}"]');
               if (!el) return 'not_found';
               el.scrollBy(${deltaX}, ${deltaY});
               return 'ok';
-            })()`, scope);
+            })()`, scope));
+            // The answer was already there and was being dropped: without this
+            // the tool reported "Scrolled down by 500px (element ref=7)" for a
+            // ref the page no longer has — and now would call it committed.
+            if (val === 'not_found') throw refMissing(ref, page, 'none');
           } else {
-            await rpcEval(`(() => {
+            await effect.dispatch(() => rpcEval(`(() => {
               window.scrollBy(${deltaX}, ${deltaY});
               return 'ok';
-            })()`, scope);
+            })()`, scope));
           }
         }
 
@@ -2004,15 +2144,21 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
           args: { direction, amount: px },
         });
 
-        return {
-          content: [{ type: 'text' as const, text: `Scrolled ${direction} by ${px}px${ref ? ` (element ref=${ref})` : ''}` }],
-        };
+        return withEffectTrailer(
+          {
+            content: [{ type: 'text' as const, text: `Scrolled ${direction} by ${px}px${ref ? ` (element ref=${ref})` : ''}` }],
+          },
+          effect.success(),
+        );
       } catch (error) {
         const message = describeToolError(error);
-        return {
-          content: [{ type: 'text' as const, text: message }],
-          isError: true,
-        };
+        return withEffectTrailer(
+          {
+            content: [{ type: 'text' as const, text: message }],
+            isError: true,
+          },
+          effect.failure(error),
+        );
       }
     }),
   );

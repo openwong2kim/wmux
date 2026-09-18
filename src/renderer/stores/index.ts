@@ -7,6 +7,7 @@ import { createUISlice, type UISlice } from './slices/uiSlice';
 import { createNotificationSlice, type NotificationSlice } from './slices/notificationSlice';
 import { createA2aSlice, type A2aSlice } from './slices/a2aSlice';
 import { createApprovalInboxSlice, type ApprovalInboxSlice } from './slices/approvalInboxSlice';
+import { createBrowserHelpSlice, type BrowserHelpSlice } from './slices/browserHelpSlice';
 import { createCompanySlice, type CompanySlice } from './slices/companySlice';
 import { createToastSlice, type ToastSlice } from './slices/toastSlice';
 import { createSearchSlice, type SearchSlice } from './slices/searchSlice';
@@ -22,7 +23,7 @@ import { createDeckSlice, type DeckSlice } from './slices/deckSlice';
 import { createRemoteWorkspacesSlice, type RemoteWorkspacesSlice } from './slices/remoteWorkspacesSlice';
 import { createOrphanSessionsSlice, type OrphanSessionsSlice } from './slices/orphanSessionsSlice';
 
-export type StoreState = WorkspaceSlice & PaneSlice & SurfaceSlice & UISlice & NotificationSlice & A2aSlice & ApprovalInboxSlice & CompanySlice & ToastSlice & SearchSlice & ProjectConfigSlice & SupervisionSlice & ResumeSlice & AgentToolbarSlice & ChromePresetSlice & RemoteInboxSlice & ChannelsSlice & WorkTaskSlice & DeckSlice & RemoteWorkspacesSlice & OrphanSessionsSlice;
+export type StoreState = WorkspaceSlice & PaneSlice & SurfaceSlice & UISlice & NotificationSlice & A2aSlice & ApprovalInboxSlice & BrowserHelpSlice & CompanySlice & ToastSlice & SearchSlice & ProjectConfigSlice & SupervisionSlice & ResumeSlice & AgentToolbarSlice & ChromePresetSlice & RemoteInboxSlice & ChannelsSlice & WorkTaskSlice & DeckSlice & RemoteWorkspacesSlice & OrphanSessionsSlice;
 
 export const useStore = create<StoreState>()(
   immer((...args) => ({
@@ -33,6 +34,7 @@ export const useStore = create<StoreState>()(
     ...createNotificationSlice(...args),
     ...createA2aSlice(...args),
     ...createApprovalInboxSlice(...args),
+    ...createBrowserHelpSlice(...args),
     ...createCompanySlice(...args),
     ...createToastSlice(...args),
     ...createSearchSlice(...args),

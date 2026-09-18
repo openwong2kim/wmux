@@ -7,6 +7,7 @@ import { groupCapabilities } from '../Approval/PermissionApprovalDialog';
 import type { RiskClassCopy } from '../../../main/mcp/methodCapabilityMap';
 import type { InboxItem } from '../../stores/selectors/approvalInbox';
 import { deadlineForItem, remainingSeconds } from './approvalCountdown';
+import { focusNotificationTarget } from '../../hooks/useNotificationListener';
 
 // gpui button recipes (theme-safe). Approve = primary warm CTA; deny = danger
 // tinted. The row still carries the critical/attention border + countdown, so
@@ -15,6 +16,11 @@ const BTN_PRIMARY_WARM =
   'rounded-[5px] font-semibold bg-[var(--accent)] text-[var(--bg-base)] shadow-[inset_0_1px_0_color-mix(in_srgb,var(--surface-highlight)_22%,transparent),0_1px_2px_rgba(0,0,0,0.3)] hover:bg-[color-mix(in_srgb,var(--accent)_88%,var(--text-main))] transition-colors';
 const BTN_DANGER_TINTED =
   'rounded-[5px] border transition-colors bg-[color-mix(in_srgb,var(--accent-red)_15%,transparent)] border-[color-mix(in_srgb,var(--accent-red)_32%,transparent)] text-[color-mix(in_srgb,var(--accent-red)_70%,var(--text-main))] hover:bg-[color-mix(in_srgb,var(--accent-red)_22%,transparent)]';
+// Raised neutral — DESIGN.md "Secondary = raised neutral". Cancelling a help
+// request abandons one step, not the flow, so it is NOT the destructive
+// treatment the approval rows' Deny wears.
+const BTN_SECONDARY_RAISED =
+  'rounded-[5px] border transition-colors bg-[color-mix(in_srgb,var(--text-main)_6%,transparent)] border-[color-mix(in_srgb,var(--text-main)_10%,transparent)] text-[var(--text-sub)] shadow-[inset_0_1px_0_color-mix(in_srgb,var(--text-main)_6%,transparent)] hover:bg-[color-mix(in_srgb,var(--text-main)_10%,transparent)]';
 
 // ─── S-C2 Approval Inbox list ─────────────────────────────────────────────────
 //
@@ -77,6 +83,16 @@ export default function ApprovalInboxList({ items, focusedIdx, onResolve }: Appr
     const tick = setInterval(() => setNow(Date.now()), 250);
     return () => clearInterval(tick);
   }, [hasDeadline]);
+
+  // Jump to the browser pane a help request is about, then step out of the way.
+  // Reuses focusNotificationTarget — the existing, race-tested jump (workspace
+  // switch, pane + surface activation, zoom coherence) FleetView's own rows go
+  // through — rather than a second focus path. Closing the cockpit matches what
+  // FleetView's card jump does: the operator asked to be taken to the pane.
+  const jumpToHelpSurface = (surfaceId: string) => {
+    focusNotificationTarget(() => useStore.getState(), { surfaceId });
+    useStore.getState().setFleetViewVisible(false);
+  };
 
   // C-3 (review fix): the log is the STORE's, written at the removal point.
   // Inferring it here from "row vanished, deadline past" mislabelled rows a
@@ -188,6 +204,83 @@ export default function ApprovalInboxList({ items, focusedIdx, onResolve }: Appr
           );
         }
 
+        if (item.source === 'browserHelp') {
+          // Second rendition of ONE event (DESIGN.md attention grammar, max
+          // two): the in-pane bar is the first, this row is the second, and
+          // there is deliberately no titlebar chip and no modal. Red dot =
+          // needs input, the one vocabulary the dots share.
+          const deadline = deadlineForItem(item);
+          return (
+            <div
+              key={item.key}
+              {...optionProps}
+              className="flex flex-col gap-2 p-3 rounded-[7px] outline-none"
+              style={{
+                backgroundColor: 'var(--bg-surface)',
+                border: `1px solid ${focused ? 'var(--accent-blue)' : 'var(--accent-red)'}`,
+                boxShadow: focused ? '0 0 0 1px var(--accent-blue)' : undefined,
+              }}
+            >
+              <div className="flex items-center gap-2 min-w-0">
+                <span
+                  aria-hidden="true"
+                  className="shrink-0 rounded-full"
+                  style={{ width: 6, height: 6, backgroundColor: 'var(--accent-red)' }}
+                />
+                <span className="text-sm font-semibold truncate" style={{ color: 'var(--text-main)' }}>
+                  {t('fleet.help.title')}
+                </span>
+                <div className="flex-1" />
+                {deadline !== undefined && (
+                  <span className="text-[10px] font-mono" style={{ color: 'var(--text-subtle)' }}>
+                    {t('fleet.help.timesOutIn', { seconds: remainingSeconds(deadline, now) })}
+                  </span>
+                )}
+              </div>
+              {/* Sans, not mono: this is the agent talking to the operator, not
+                  machine evidence (DESIGN.md typography rule). Rendered as a
+                  text child, so an agent-authored prompt can never be markup. */}
+              <p
+                className="text-xs whitespace-pre-wrap break-words"
+                style={{ color: 'var(--text-sub)' }}
+                data-browser-help-prompt
+              >
+                {item.prompt}
+              </p>
+              <div className="flex items-center justify-end gap-2">
+                {/* Every claim one click from its evidence: the page the human
+                    has to act on is one jump away. */}
+                {item.surfaceId !== undefined && (
+                  <button
+                    type="button"
+                    onClick={(e) => { stop(e); jumpToHelpSurface(item.surfaceId as string); }}
+                    title={t('fleet.help.jump')}
+                    aria-label={t('fleet.help.jump')}
+                    className="px-2 py-1.5 text-xs rounded-[5px] transition-colors"
+                    style={{ color: 'var(--accent-blue)', minWidth: 24, minHeight: 24 }}
+                  >
+                    →
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={(e) => { stop(e); onResolve(item, false); }}
+                  className={`px-4 py-1.5 text-xs font-medium ${BTN_SECONDARY_RAISED}`}
+                >
+                  {t('browser.help.cancel')}
+                </button>
+                <button
+                  type="button"
+                  onClick={(e) => { stop(e); onResolve(item, true); }}
+                  className={`px-4 py-1.5 text-xs ${BTN_PRIMARY_WARM}`}
+                >
+                  {t('browser.help.done')}
+                </button>
+              </div>
+            </div>
+          );
+        }
+
         // MCP row. Highest-severity group is groups[0] — groupCapabilities
         // returns them in critical-first GROUP_RENDER_ORDER.
         const groups = groupCapabilities(item.declaredCapabilities);
@@ -208,7 +301,11 @@ export default function ApprovalInboxList({ items, focusedIdx, onResolve }: Appr
           >
             <div className="flex items-center gap-2 min-w-0">
               <span className="text-xs font-mono truncate" style={{ color: 'var(--text-main)' }}>
-                <span style={{ color: 'var(--text-subtle)' }}>{t('fleet.approvals.plugin')}: </span>
+                {/* A tab-borrow prompt comes from a workspace's agent, not from a
+                    plugin; labelling it one would misattribute the request. */}
+                <span style={{ color: 'var(--text-subtle)' }}>
+                  {t(item.kind === 'browser-borrow' ? 'fleet.approvals.workspace' : 'fleet.approvals.plugin')}:{' '}
+                </span>
                 {item.clientName}
               </span>
               <div className="flex-1" />
@@ -239,6 +336,15 @@ export default function ApprovalInboxList({ items, focusedIdx, onResolve }: Appr
                 </span>
               )}
             </div>
+
+            {/* The question itself, for a prompt that carries one. A borrow
+                declares no capabilities, so without this the row would say who
+                is asking and never what for. */}
+            {item.title && (
+              <div className="text-xs font-medium" style={{ color: 'var(--text-main)' }}>
+                {item.title}
+              </div>
+            )}
 
             {top && (
               <div className="text-xs font-medium" style={{ color: accent }}>

@@ -147,14 +147,20 @@ describe('buildPaneResumeCommand', () => {
       'claude --model haiku --dangerously-skip-permissions --resume a1b2c3d4-0000-0000-0000-9f8e7d6c5b4a',
     );
   });
+  // #1342 — a remote pane's cwds live on another machine, so the host answers
+  // the cwd question and its verdict overrides the local comparison entirely.
+  it('honours the host cwd verdict over the local comparison (remote panes)', () => {
+    const binding: ResumeBinding = { agent: 'claude', sessionId: 'conv-1', cwd: '', ts: 0 };
+    // No local cwd matches '' — the host says the recorded cwd still holds.
+    expect(buildPaneResumeCommand(binding, [], true, undefined, true)?.command)
+      .toBe('claude --dangerously-skip-permissions --resume conv-1');
+    // Host says it no longer matches → the cwd-relative fallback, even though
+    // a naive local compare of two empty strings would have said "exact".
+    expect(buildPaneResumeCommand(binding, [''], true, undefined, false)?.command)
+      .toBe('claude --dangerously-skip-permissions --continue');
+  });
 });
 
-// ─── Render smoke test ───────────────────────────────────────────────────────
-// vitest runs node-env (no jsdom); renderToStaticMarkup renders the collapsed
-// chip — proves the component mounts without throwing (valid hooks, no undefined
-// access during render) and surfaces the trigger. The popover contents live
-// behind local `open` state, which static markup can't toggle; their inputs
-// (the UUID + the command string) are covered by buildPaneResumeCommand above.
 describe('ResumeInfoChip render smoke', () => {
   const binding: ResumeBinding = {
     agent: 'claude',

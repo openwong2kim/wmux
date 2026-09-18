@@ -7,6 +7,13 @@ import { extractMarkdown, extractStructuredDataWithNotes } from '../markdown-ext
 import { resolveEvaluator, rpcEvaluator } from '../page-eval';
 import { formatSnapshotResult } from '../snapshotDiff';
 import { getSnapshotBaseline, setSnapshotBaseline, snapshotSurfaceKey } from '../snapshotCache';
+import {
+  capCaptureText,
+  continueSnapshotCapture,
+  cursorIgnoredNote,
+  windowBudgetForMaxBytes,
+  windowSnapshotText,
+} from '../snapshotCursor';
 import { captureSnapshotListing } from '../snapshotListing';
 import { allowScopedRpcFallback, type BrowserToolDeps } from '../browserScope';
 import { describeToolError } from '../toolError';
@@ -41,6 +48,12 @@ const BROWSER_SMART_SNAPSHOT_SHAPE = {
     .optional()
     .describe('Content summary cap in characters (default 3000, max 100000).'),
   full: z.boolean().optional().describe('Force the complete tree instead of a diff.'),
+  cursor: z
+    .string()
+    .optional()
+    .describe(
+      'Continuation token from a truncated snapshot: returns the next lines of that same capture without re-reading the page (refs stay valid). Other parameters are ignored with a cursor.',
+    ),
   surfaceId: optionalSurfaceId,
   maxBytes: maxBytesParam,
 };
@@ -91,8 +104,30 @@ export function registerExtractionTools(server: McpServer, deps: BrowserToolDeps
     'browser_smart_snapshot',
     'Indexed interactive elements plus clean page text. Pass a returned ref to browser_click as smartRef. On the chrome backend a repeat call returns a diff (full:true forces the whole listing); the packaged RPC lane numbers refs by position, so it returns the full listing every time and says so.',
     BROWSER_SMART_SNAPSHOT_SHAPE,
-    async ({ maxContentLength, full, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
+    async ({ maxContentLength, full, cursor, maxBytes, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
       try {
+        // This tool declares maxBytes, so its windows are sized to the ceiling
+        // the CALLER asked for rather than the default — raising maxBytes buys
+        // bigger windows instead of being silently overridden by a fixed one.
+        const budget = windowBudgetForMaxBytes(maxBytes);
+        // Continuation: the next window of a capture already stored for this
+        // surface, served before anything touches the page. No re-read means no
+        // new smart-ref numbering, so the refs in this window are the ones the
+        // capture listed and browser_click({smartRef}) still resolves them. Not
+        // diffed either — the baseline is neither read nor written here.
+        if (cursor) {
+          const continued = continueSnapshotCapture(cursor, budget);
+          const ignored = [
+            maxContentLength !== undefined && 'maxContentLength',
+            full !== undefined && 'full',
+          ].filter((name): name is string => typeof name === 'string');
+          const note = continued.isError ? '' : cursorIgnoredNote(ignored);
+          return {
+            content: [{ type: 'text' as const, text: note + continued.text }],
+            ...(continued.isError && { isError: true }),
+          };
+        }
+
         // Playwright path uses the CDP accessibility tree; when no Page is
         // available (packaged builds, issue #105) fall back to a DOM-based
         // snapshot over the RPC channel.
@@ -125,7 +160,9 @@ export function registerExtractionTools(server: McpServer, deps: BrowserToolDeps
           lines.push(snapshot.content);
         }
 
-        const text = lines.join('\n');
+        // Bound what the diff baseline and the repl listing retain, the same cut
+        // browser_snapshot makes, leaving a line naming what it dropped.
+        const text = capCaptureText(lines.join('\n'));
 
         // Auto-diff, same machinery and same 50%/800-line fallback as
         // browser_snapshot (snapshotDiff.ts): a repeat call with the same
@@ -159,23 +196,42 @@ export function registerExtractionTools(server: McpServer, deps: BrowserToolDeps
         // it is handed a diff (snapshotListing.ts).
         captureSnapshotListing(text);
 
+        const notes: string[] = [];
         // The content summary is cut at maxContentLength, so a diff — "(no
         // changes)" most of all — speaks only for what fits (review 10).
         const truncated = snapshot.content.endsWith('... (truncated)');
-        let note =
-          rendered.usedDiff && truncated
-            ? `\n(page text is capped at ${capLength} characters; anything past the cut is not compared)`
-            : '';
+        if (rendered.usedDiff && truncated) {
+          notes.push(`(page text is capped at ${capLength} characters; anything past the cut is not compared)`);
+        }
         // #1360: "a repeat call returns a diff" is true only where refs are
         // keyed on DOM identity. On this lane they are positional, so the tool
         // silently returned the full tree every time and looked broken. Say
         // which it is instead of leaving the caller to infer it.
         if (!page && !full) {
-          note += '\n(no diff on this backend: refs here are numbered by walk position, so a single insertion renumbers the listing and a diff would be noise. The chrome backend diffs.)';
+          notes.push('(no diff on this backend: refs here are numbered by walk position, so a single insertion renumbers the listing and a diff would be noise. The chrome backend diffs.)');
         }
 
+        // The caveats go directly UNDER the header line rather than at the end.
+        // The header's contract is to be the first line, but a windowed result's
+        // tail only reaches the LAST window — and "(page text is capped…)" is
+        // exactly what the agent needs while reading the first one.
+        const [header, ...body] = rendered.text.split('\n');
+        const annotated = [header, ...notes, ...body].join('\n');
+
+        // Truncation, last: the listing plus its notes is what the agent reads,
+        // so that is the text a cursor walks. Keyed on the BARE surface key, not
+        // the tool-namespaced diff key — a capture is one frozen view of a
+        // surface, and the next snapshot of it from either tool retires this one.
+        const captureKey = snapshotSurfaceKey(scope.workspaceId, scope.surfaceId);
+        const windowed = windowSnapshotText(
+          captureKey,
+          annotated,
+          snapshot.url || undefined,
+          budget,
+        );
+
         return {
-          content: [{ type: 'text' as const, text: rendered.text + note }],
+          content: [{ type: 'text' as const, text: windowed }],
         };
       } catch (error) {
         const message = describeToolError(error);

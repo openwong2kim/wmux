@@ -181,6 +181,8 @@ export const es = {
   'settings.sidebarPositionDesc': 'Izquierda o derecha del área del terminal',
   'settings.sidebarAttentionFirst': 'Filas que te esperan primero',
   'settings.sidebarAttentionFirstDesc': 'Fija en la parte superior de la barra lateral los espacios de trabajo cuyo agente te está esperando. Desactivado por defecto: las filas se quedan donde las arrastraste. Mientras está activado, el reordenamiento por arrastre está en pausa.',
+  'settings.sidebarShowPaneCoordinates': 'Mostrar coordenadas de panel',
+  'settings.sidebarShowPaneCoordinatesDesc': 'Muestra en la lista de agentes la coordenada generada automáticamente, al estilo w1-2, para los paneles que no has etiquetado. Activado de forma predeterminada. Un panel renombrado siempre muestra su etiqueta en cualquier caso.',
   'settings.sidebarLeft': 'Izquierda',
   'settings.sidebarRight': 'Derecha',
   'settings.updateReady': 'Actualización lista',

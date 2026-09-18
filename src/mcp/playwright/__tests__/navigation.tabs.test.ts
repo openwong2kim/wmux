@@ -11,12 +11,20 @@ import {
   registerNavigationTools,
 } from '../tools/navigation';
 import type { BrowserToolDeps } from '../browserScope';
+import { BORROW_APPROVAL_DEADLINE_MS } from '../../../shared/liveWriteScope';
 
 type ToolResult = {
   content: { type: 'text'; text: string }[];
   isError?: boolean;
 };
 type ToolHandler = (args: Record<string, unknown>) => Promise<ToolResult>;
+
+/**
+ * The trailer every mutating browser result now ends with (resultTrailer.ts).
+ * Spelled out here rather than imported: these assertions are exact on purpose,
+ * and the trailer is part of what they pin.
+ */
+const COMMITTED = '\n\neffect_state: committed';
 
 function collectTools(deps: BrowserToolDeps): Map<string, ToolHandler> {
   const tools = new Map<string, ToolHandler>();
@@ -138,7 +146,7 @@ describe('browser navigation MCP workspace contract', () => {
     expect(result.content[0].text).toContain('[browser events]');
     expect(result.content[0].text).toContain('https://example.com/redirect-hop');
     expect(result.content[0].text).not.toContain('- navigated: https://example.com/ (');
-    expect(result.content[1].text).toBe('Navigated to https://example.com/');
+    expect(result.content[1].text).toBe('Navigated to https://example.com/' + COMMITTED);
   });
 
   it('a plain navigation carries no events block — the lone self-echo is suppressed', async () => {
@@ -158,7 +166,7 @@ describe('browser navigation MCP workspace contract', () => {
 
     expect(result.isError).toBeUndefined();
     expect(result.content).toHaveLength(1);
-    expect(result.content[0].text).toBe('Navigated to https://example.com/');
+    expect(result.content[0].text).toBe('Navigated to https://example.com/' + COMMITTED);
   });
 
   it('does not issue a navigation RPC when workspace identity fails', async () => {
@@ -389,6 +397,169 @@ describe('browser navigation MCP workspace contract', () => {
     expect(newWithSurface.content[0].text).toContain('[BROWSER_TABS_INVALID_ARGUMENT]');
     expect(mockSendRpc).not.toHaveBeenCalled();
   });
+
+  // ── Live-Chrome agent window: borrow / return / scope ────────────────────
+  //
+  // The policy is enforced in main (and again in the Playwright lane); what the
+  // tool owns is the argument contract and rendering the answer, including the
+  // owner label a row now carries.
+
+  it('a list row reports who may WRITE to the tab, not only who opened it', async () => {
+    mockSendRpc.mockResolvedValue({
+      ok: true,
+      action: 'list',
+      tabs: [
+        {
+          surfaceId: 'user-tab',
+          paneId: 'chrome:user-tab',
+          url: 'https://mail.example.com/',
+          title: 'Inbox',
+          selected: false,
+          owner: 'user',
+        },
+      ],
+    });
+
+    const result = await browserTabs({ action: 'list' });
+
+    expect(JSON.parse(result.content[0].text)).toEqual({
+      action: 'list',
+      tabs: [
+        {
+          surfaceId: 'user-tab',
+          paneId: 'chrome:user-tab',
+          url: 'https://mail.example.com/',
+          title: 'Inbox',
+          selected: false,
+          owner: 'user',
+          mine: 'unknown',
+        },
+      ],
+    });
+  });
+
+  it('passes the list scope through to main', async () => {
+    mockSendRpc.mockResolvedValue({ ok: true, action: 'list', tabs: [] });
+
+    await browserTabs({ action: 'list', scope: 'agent' });
+
+    expect(mockSendRpc).toHaveBeenCalledWith('browser.tabs', {
+      action: 'list',
+      workspaceId: 'ws-caller',
+      scope: 'agent',
+      openerKey: expect.any(String),
+    });
+  });
+
+  it('scope belongs to list alone, and is refused before the RPC elsewhere', async () => {
+    const result = await browserTabs({ action: 'close', surfaceId: 'surface-a', scope: 'agent' });
+
+    expect(result.content[0].text).toContain('[BROWSER_TABS_INVALID_ARGUMENT]');
+    expect(mockSendRpc).not.toHaveBeenCalled();
+  });
+
+  it('gives borrow a deadline longer than the prompt it is waiting on', async () => {
+    // sendRpc's 10 s default would have expired while the user was still reading
+    // a 60 s prompt: the tool reported "temporarily unavailable" for a question
+    // still on screen, and a retry inside the window came back borrow_pending.
+    mockSendRpc.mockResolvedValue({
+      ok: true,
+      action: 'borrow',
+      result: 'borrowed',
+      tab: {
+        surfaceId: 'user-tab',
+        paneId: 'chrome:user-tab',
+        url: 'https://mail.example.com/',
+        title: 'Inbox',
+        selected: false,
+        owner: 'borrowed',
+      },
+    });
+
+    await browserTabs({ action: 'borrow', surfaceId: 'user-tab' });
+
+    const [, , timeoutMs] = mockSendRpc.mock.calls[0] as [string, unknown, number];
+    expect(timeoutMs).toBeGreaterThan(BORROW_APPROVAL_DEADLINE_MS);
+  });
+
+  it('every other action keeps the default deadline, argument for argument', async () => {
+    mockSendRpc.mockResolvedValue({ ok: true, action: 'list', tabs: [] });
+
+    await browserTabs({ action: 'list' });
+
+    // Not "passes undefined": the call shape itself is unchanged.
+    expect(mockSendRpc.mock.calls[0]).toHaveLength(2);
+  });
+
+  it('renders a granted borrow with the tab now marked borrowed', async () => {
+    mockSendRpc.mockResolvedValue({
+      ok: true,
+      action: 'borrow',
+      result: 'borrowed',
+      tab: {
+        surfaceId: 'user-tab',
+        paneId: 'chrome:user-tab',
+        url: 'https://mail.example.com/',
+        title: 'Inbox',
+        selected: false,
+        owner: 'borrowed',
+      },
+    });
+
+    const result = await browserTabs({ action: 'borrow', surfaceId: 'user-tab' });
+
+    expect(result.isError).toBeUndefined();
+    expect(JSON.parse(result.content[0].text)).toMatchObject({
+      action: 'borrow',
+      result: 'borrowed',
+      tab: { surfaceId: 'user-tab', owner: 'borrowed' },
+    });
+  });
+
+  it.each([
+    ['user_denied', 'user_denied: the user did not lend "user-tab".'],
+    ['borrow_timeout', 'borrow_timeout: nobody answered within the deadline.'],
+    ['borrow_pending', 'borrow_pending: the user is already being asked about "user-tab".'],
+  ])('surfaces a %s refusal verbatim, so the agent can tell them apart', async (_kind, message) => {
+    mockSendRpc.mockResolvedValue({
+      ok: false,
+      error: { code: 'BROWSER_TAB_BORROW_REFUSED', message },
+    });
+
+    const result = await browserTabs({ action: 'borrow', surfaceId: 'user-tab' });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('[BROWSER_TAB_BORROW_REFUSED]');
+    expect(result.content[0].text).toContain(message);
+  });
+
+  it('renders a return, including the no-op case', async () => {
+    mockSendRpc.mockResolvedValue({
+      ok: true,
+      action: 'return',
+      surfaceId: 'user-tab',
+      returned: false,
+    });
+
+    const result = await browserTabs({ action: 'return', surfaceId: 'user-tab' });
+
+    expect(result.isError).toBeUndefined();
+    expect(JSON.parse(result.content[0].text)).toEqual({
+      action: 'return',
+      surfaceId: 'user-tab',
+      returned: false,
+    });
+  });
+
+  it.each([['borrow'], ['return']])(
+    '%s without a surfaceId is refused before the RPC',
+    async (action) => {
+      const result = await browserTabs({ action });
+
+      expect(result.content[0].text).toContain('[BROWSER_TABS_INVALID_ARGUMENT]');
+      expect(mockSendRpc).not.toHaveBeenCalled();
+    },
+  );
 
   // #922 PR-C — the scope refusal must survive the catch-all.
   //

@@ -35,6 +35,13 @@ type ToolHandler = (args: Record<string, unknown>) => Promise<{
   isError?: boolean;
 }>;
 
+/**
+ * The trailer every mutating browser result now ends with (resultTrailer.ts).
+ * Spelled out here rather than imported: these assertions are exact on purpose,
+ * and the trailer is part of what they pin.
+ */
+const COMMITTED = '\n\neffect_state: committed';
+
 const browserToolDeps = { resolveWorkspaceId: vi.fn(async () => 'ws-test') };
 
 function collectTools(): Map<string, ToolHandler> {
@@ -84,7 +91,7 @@ describe('browser_type result echo — Playwright transport', () => {
 
     expect(result.content[0].text).not.toContain('hunter2SECRET');
     expect(result.content[0].text).toBe(
-      `Typed "${REDACTED_PASSWORD}" into element ref=3`,
+      `Typed "${REDACTED_PASSWORD}" into element ref=3` + COMMITTED,
     );
   });
 
@@ -95,7 +102,7 @@ describe('browser_type result echo — Playwright transport', () => {
     const result = await type({ ref: '4', text: 'newpassSECRET', submit: true });
 
     expect(result.content[0].text).toBe(
-      `Typed "${REDACTED_PASSWORD}" into element ref=4 and submitted`,
+      `Typed "${REDACTED_PASSWORD}" into element ref=4 and submitted` + COMMITTED,
     );
   });
 
@@ -105,7 +112,7 @@ describe('browser_type result echo — Playwright transport', () => {
 
     const result = await type({ ref: '2', text: 'alice@example.com' });
 
-    expect(result.content[0].text).toBe('Typed "alice@example.com" into element ref=2');
+    expect(result.content[0].text).toBe('Typed "alice@example.com" into element ref=2' + COMMITTED);
   });
 
   it('echoes rather than failing when the element cannot answer', async () => {
@@ -117,7 +124,7 @@ describe('browser_type result echo — Playwright transport', () => {
     const result = await type({ ref: '2', text: 'plain text' });
 
     expect(result.isError).toBeUndefined();
-    expect(result.content[0].text).toBe('Typed "plain text" into element ref=2');
+    expect(result.content[0].text).toBe('Typed "plain text" into element ref=2' + COMMITTED);
   });
 });
 
@@ -136,7 +143,7 @@ describe('browser_type result echo — RPC transport', () => {
         String((params as { expression: string }).expression).includes('data-wmux-ref="3"'),
     );
     expect(probe).toBeDefined();
-    expect(result.content[0].text).toBe(`Typed "${REDACTED_PASSWORD}" into element ref=3`);
+    expect(result.content[0].text).toBe(`Typed "${REDACTED_PASSWORD}" into element ref=3` + COMMITTED);
   });
 
   it('echoes an ordinary field unchanged', async () => {
@@ -147,7 +154,7 @@ describe('browser_type result echo — RPC transport', () => {
 
     const result = await type({ ref: '2', text: 'alice@example.com' });
 
-    expect(result.content[0].text).toBe('Typed "alice@example.com" into element ref=2');
+    expect(result.content[0].text).toBe('Typed "alice@example.com" into element ref=2' + COMMITTED);
   });
 });
 

@@ -332,6 +332,41 @@ describe('remoteWorkspacesSlice — live pane membership', () => {
     expect(store.getState().remoteWorkspaces[0].panes).toBe(before);
   });
 
+  // #1342 — this equality check decides whether a poll result is stored at all.
+  // The resume offer and its two liveness signals must be part of it: without
+  // them the chip's busy gate would answer from the FIRST snapshot forever and
+  // never learn that the agent came back.
+  it('setRemoteWorkspacePanes stores a change in the resume block or its liveness signals', () => {
+    const resume = { agent: 'claude', sessionId: 'conv-1', cwdMatches: true };
+    store.getState().setRemoteWorkspacePanes('host-1:ws-1', [
+      { sessionId: 'a', resume, commandRunning: false },
+      { sessionId: 'b' },
+    ]);
+    expect(store.getState().remoteWorkspaces[0].panes[0]).toMatchObject({ resume, commandRunning: false });
+
+    // The agent came back: only the liveness signal moved.
+    store.getState().setRemoteWorkspacePanes('host-1:ws-1', [
+      { sessionId: 'a', resume, commandRunning: true },
+      { sessionId: 'b' },
+    ]);
+    expect(store.getState().remoteWorkspaces[0].panes[0].commandRunning).toBe(true);
+
+    // A new conversation on the same pane.
+    store.getState().setRemoteWorkspacePanes('host-1:ws-1', [
+      { sessionId: 'a', resume: { ...resume, sessionId: 'conv-2' }, commandRunning: true },
+      { sessionId: 'b' },
+    ]);
+    expect(store.getState().remoteWorkspaces[0].panes[0].resume?.sessionId).toBe('conv-2');
+
+    // Identical snapshot still does not churn the array.
+    const before = store.getState().remoteWorkspaces[0].panes;
+    store.getState().setRemoteWorkspacePanes('host-1:ws-1', [
+      { sessionId: 'a', resume: { ...resume, sessionId: 'conv-2' }, commandRunning: true },
+      { sessionId: 'b' },
+    ]);
+    expect(store.getState().remoteWorkspaces[0].panes).toBe(before);
+  });
+
   it('setRemoteWorkspacePanes ignores an unknown key', () => {
     store.getState().setRemoteWorkspacePanes('host-1:gone', [{ sessionId: 'z' }]);
     expect(store.getState().remoteWorkspaces).toHaveLength(1);

@@ -59,6 +59,13 @@ type ToolResult = {
 };
 type ToolHandler = (args: Record<string, unknown>) => Promise<ToolResult>;
 
+/**
+ * The trailer every mutating browser result now ends with (resultTrailer.ts).
+ * Spelled out here rather than imported: these assertions are exact on purpose,
+ * and the trailer is part of what they pin.
+ */
+const COMMITTED = '\n\neffect_state: committed';
+
 const deps = { resolveWorkspaceId: vi.fn(async () => 'ws-test') };
 
 function collect(register: (s: never, d: never) => void): Map<string, ToolHandler> {
@@ -347,7 +354,7 @@ describe('browser_drag path', () => {
     const result = await drag({ path: PATH });
 
     expect(result.isError).toBeUndefined();
-    expect(result.content[0].text).toBe('Dragged through 3 points from viewport CSS px (100, 100) to (320, 400)');
+    expect(result.content[0].text).toBe('Dragged through 3 points from viewport CSS px (100, 100) to (320, 400)' + COMMITTED);
     const down = input.indexOf('down');
     expect(input[down - 1]).toBe('move 100,100');
     // Every waypoint is visited exactly, with intermediate points between them.
@@ -439,7 +446,7 @@ describe('browser_drag by ref', () => {
 
     const result = await drag({ sourceRef: '1', targetRef: '2' });
 
-    expect(result.content[0].text).toBe('Dragged element ref=1 to ref=2');
+    expect(result.content[0].text).toBe('Dragged element ref=1 to ref=2' + COMMITTED);
     // Never Playwright's own interpolation, which is a perfectly straight line.
     for (const call of mouseMove.mock.calls) expect(call).toHaveLength(2);
     const down = input.indexOf('down');
@@ -471,7 +478,7 @@ describe('browser_scroll wheel at a point', () => {
     const result = await scroll({ direction: 'down', amount: 240, x: 600, y: 350 });
 
     expect(result.isError).toBeUndefined();
-    expect(result.content[0].text).toBe('Scrolled down by 240px with the wheel at viewport CSS px (600, 350)');
+    expect(result.content[0].text).toBe('Scrolled down by 240px with the wheel at viewport CSS px (600, 350)' + COMMITTED);
     expect(input.slice(-2)).toEqual(['move 600,350', 'wheel 0,240']);
     expect(page.evaluate).not.toHaveBeenCalled();
   });
@@ -516,7 +523,7 @@ describe('browser_scroll wheel at a point', () => {
     getPage.mockResolvedValue(page);
 
     const result = await scroll({ direction: 'down', amount: 100 });
-    expect(result.content[0].text).toBe('Scrolled down by 100px');
+    expect(result.content[0].text).toBe('Scrolled down by 100px' + COMMITTED);
     expect(page.evaluate).toHaveBeenCalled();
     expect(input).toEqual([]);
   });
@@ -529,7 +536,7 @@ describe('modifier keys', () => {
 
     const result = await click({ x: 50, y: 60, modifiers: ['Control', 'Shift', 'Control'] });
 
-    expect(result.content[0].text).toBe('Clicked at viewport CSS px (50, 60) with Control+Shift held');
+    expect(result.content[0].text).toBe('Clicked at viewport CSS px (50, 60) with Control+Shift held' + COMMITTED);
     expect(input).toEqual(['keydown Control', 'keydown Shift', 'click 50,60', 'keyup Shift', 'keyup Control']);
   });
 
@@ -592,7 +599,7 @@ describe('modifier keys', () => {
     resolveRefMock.mockResolvedValue(boxed({ x: 10, y: 10, width: 10, height: 10 }));
 
     const result = await drag({ sourceRef: '1', targetRef: '2', modifiers: ['Shift'] });
-    expect(result.content[0].text).toBe('Dragged element ref=1 to ref=2 with Shift held');
+    expect(result.content[0].text).toBe('Dragged element ref=1 to ref=2 with Shift held' + COMMITTED);
     expect(input[0]).toBe('keydown Shift');
     expect(input[input.length - 1]).toBe('keyup Shift');
   });

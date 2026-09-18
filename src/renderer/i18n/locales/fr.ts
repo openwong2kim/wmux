@@ -181,6 +181,8 @@ export const fr = {
   'settings.sidebarPositionDesc': 'Gauche ou droite de la zone du terminal',
   'settings.sidebarAttentionFirst': 'Lignes en attente de vous en premier',
   'settings.sidebarAttentionFirstDesc': 'Épingler en haut de la barre latérale les espaces de travail dont l\'agent vous attend. Désactivé par défaut : les lignes restent où vous les avez déplacées. Tant que l\'option est activée, le réordonnancement par glisser-déposer est suspendu.',
+  'settings.sidebarShowPaneCoordinates': 'Afficher les coordonnées des volets',
+  'settings.sidebarShowPaneCoordinatesDesc': "Affiche dans la liste des agents la coordonnée générée automatiquement, de style w1-2, pour les volets que vous n'avez pas nommés. Activé par défaut. Un volet renommé affiche toujours son nom, quel que soit ce réglage.",
   'settings.sidebarLeft': 'Gauche',
   'settings.sidebarRight': 'Droite',
   'settings.updateReady': 'Mise à jour prête',

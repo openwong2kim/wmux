@@ -13,7 +13,7 @@ Settings → Browser picks one. It applies to every workspace.
 | Backend | What it is | When to use it |
 | --- | --- | --- |
 | `builtin` (default) | A webview inside the wmux window | Ordinary page work you want to *watch* in the same window as your panes |
-| `chrome` | A real Chrome instance wmux launches with its own profile directory | Sites that reject embedded browsers (Google sign-in), or when logins must persist |
+| `chrome` | A real Chrome instance wmux launches with its own profile directory — or, with the `live` profile, an attach to the Chrome you are already running | Sites that reject embedded browsers (Google sign-in), or when logins must persist |
 | `external` | Hand the URL to your normal browser and stop | Anything an agent should not be driving at all |
 
 `external` is not a degraded mode. It is the right answer when a site is hostile
@@ -40,17 +40,102 @@ account-A Chrome while workspace B drives account B.
 Blast radius is that one profile and that one account. This is the option to
 reach for when you want per-workspace accounts.
 
-### 3. Live Chrome — your real browser, and everything in it
+### 3. Live Chrome — your real browser, read wholly, written narrowly
 
 `Live Chrome (your browser)` attaches to the Chrome you are already running,
-with the tabs and logins you already have. There is no way to scope it to one
-tab or one profile: the agent gets the browser.
+with the tabs and logins you already have. What that grant covers is asymmetric,
+on purpose:
 
-Three separate consents gate it — you enable remote debugging once from the
-**Remote debugging** item in the `chrome://inspect` sidebar (Chrome 144+), you confirm the binding in
-wmux, and Chrome itself asks on every connection — because the grant is that
-large. Use it when you genuinely want an agent working inside your own session,
+- **Reads see the whole browser.** `browser_tabs list`, snapshots, screenshots,
+  text and data extraction, console, network, cookie and storage reads work on
+  any tab. Binding a workspace to Live Chrome IS that consent — the point of the
+  backend is an agent working inside a session you signed into yourself.
+- **Writes are confined to the agent's own tabs.** Navigating, clicking, typing,
+  pressing keys, hovering, dragging, evaluating JavaScript, setting cookies,
+  emulating, resizing, closing, uploading a file, answering a dialog, starting a
+  trace: each of those succeeds only on a tab wmux opened for that workspace, or
+  a tab you have explicitly lent it. Anything else fails before it touches the
+  page, with an error beginning `agent_window_scope:` that names the tab and how
+  to ask for it.
+
+Ownership is exact, not merely "wmux opened it": a tab opened for workspace A is
+a foreign tab from workspace B, and is refused the same way one of yours is.
+
+Three separate consents gate the attach itself — you enable remote debugging once
+from the **Remote debugging** item in the `chrome://inspect` sidebar
+(Chrome 144+), you confirm the binding in wmux, and Chrome itself asks on every
+connection — because even a read-only view of your whole browser is a large
+grant. Use it when you genuinely want an agent working inside your own session,
 and prefer option 2 when you do not.
+
+#### Lending the agent one of your tabs
+
+When the agent needs to act on a tab it did not open — a page you have already
+signed into and navigated to the right place — it asks:
+
+```
+browser_tabs action:"borrow" surfaceId:"<id from browser_tabs list>"
+```
+
+That raises the ordinary wmux permission prompt (the same dialog and Fleet
+approvals inbox every MCP permission request uses), reading
+`Agent in workspace <name> wants to control tab "<title>" (<origin>)`. You have
+60 seconds; if nobody answers, the request is **denied**. The three refusals are
+distinguishable to the agent, because its next move differs: `user_denied:`,
+`borrow_timeout:` and `borrow_pending:` (one request for that tab is already on
+screen — a second cannot be stacked on you).
+
+A grant covers one tab, for one workspace, for as long as the session lasts.
+`browser_tabs action:"return"` hands it back; changing that workspace's Chrome
+profile binding, quitting wmux, or Chrome disconnecting clears every grant.
+Teardown closes nothing on this backend — not a tab you lent, and not the
+agent's own tabs either, because on Live Chrome those are windows on your
+desktop. (An agent can still close a tab it owns, or one you lent it, by asking.)
+
+**You lend a tab, not a site.** The prompt names the origin so you know what you
+are handing over, but the grant follows the TAB: an agent that navigates a lent
+tab somewhere else keeps writing to it, which is usually the point (that is how
+a flow proceeds through a site). Return it when the job is done rather than
+leaving it lent, and prefer lending a tab you opened for the task over one that
+also holds something you care about.
+
+`browser_tabs list` labels every row `agent` (wmux opened it for this
+workspace), `borrowed` (you lent it) or `user` (everything else), and
+`scope:"agent"` / `scope:"user"` filters the list. The default is still every
+tab.
+
+#### Window grouping is best-effort; ownership is not
+
+The first tab a workspace opens asks Chrome for a new window, and later ones are
+opened with one of that workspace's own tabs activated, which is what makes
+Chrome place them beside it. That usually produces one "agent window" you can
+watch, minimise or move as a unit — but it is a request, not a guarantee, and
+**CDP has no command that moves an existing tab from one window to another**
+(neither the `Target` nor the `Browser` domain offers one). So a tab can end up
+in a window of its own.
+
+Nothing about the permission follows the window. A tab that landed somewhere
+unexpected is still that workspace's tab, and a tab in the agent's window that
+the agent did not open is still yours. Grouping is for your eyes; ownership is
+the recorded fact.
+
+#### The operator opt-out
+
+`liveWriteScope` in `browser-backend.json` (`%APPDATA%\wmux\browser-backend.json`
+on Windows, `~/Library/Application Support/wmux/` on macOS,
+`~/.config/wmux/` on Linux) takes `"agent"` (the default, described above) or
+`"all"`:
+
+```json
+{ "backend": "chrome", "liveWriteScope": "all" }
+```
+
+`"all"` restores the pre-policy behaviour: every live tab is writable. Be clear
+about which direction that moves — it is the **larger** grant of the two. Under
+`"agent"` a mistake costs one of the agent's own tabs; under `"all"` the blast
+radius is every session in the browser, every tab you have open, including the
+ones you would never have handed over if asked. It has no Settings toggle for
+the same reason: it should cost an edit to a file, not a click.
 
 > **Why your existing Chrome profiles are not in the list.** Since Chrome 136,
 > Chrome refuses `--remote-debugging-port` when the profile is the default user
@@ -69,7 +154,9 @@ An agent cannot complete a passkey, FIDO2, or security-key login. CDP's
 `WebAuthn` domain exists to *test* WebAuthn: it configures **virtual**
 authenticators, and has no command that drives the platform authenticator
 holding your real credential ([spec](https://chromedevtools.github.io/devtools-protocol/tot/WebAuthn/)).
-Sign in yourself when a site requires one; the session persists afterwards.
+Sign in yourself when a site requires one; the session persists afterwards. An
+agent can ask you to do it in place with `browser_request_help`, which puts a
+Done / Cancel bar on the pane and waits.
 
 ### Canvas-rendered interfaces
 
@@ -153,6 +240,12 @@ Live Chrome reads clean on the fingerprint above for a straightforward reason:
 Chrome is started normally, by the user, and remote debugging is turned on
 afterwards through Chrome's own UI. Nothing is being disguised — the browser
 genuinely is the user's, and the user genuinely allowed the connection.
+
+That consent is what the read grant rests on, and it is also why writes do not
+rest on it alone: agreeing to let an agent work in your browser is not the same
+as agreeing to let it type into the tab you happen to have open. See
+[Live Chrome](#3-live-chrome--your-real-browser-read-wholly-written-narrowly)
+above for what that means in practice.
 
 Enabling it, once:
 

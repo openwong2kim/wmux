@@ -1,3 +1,5 @@
+import type { PermissionMode } from './agentResume';
+
 /**
  * How often the per-host `/api/workspaces` liveness feed is refreshed (#1391).
  *
@@ -46,6 +48,92 @@ export interface RemotePaneSummary {
   agentName?: string;
   /** #1163 — host-side lifecycle snapshot for that agent. Same tolerance rule. */
   agentStatus?: RemoteAgentStatus;
+  /**
+   * #1342 — what the host knows about resuming this pane's agent conversation.
+   * Additive-optional, like the agent fields above: an older host omits it and
+   * the desktop simply offers no resume chip for that pane.
+   */
+  resume?: RemoteResumeInfo;
+  /**
+   * #1342 — OSC 133 shell state on the host (true = a foreground command owns
+   * the PTY). Absent when the host's shell emits no markers. Feeds the chip's
+   * "never type into a live agent" gate, exactly like the local map.
+   */
+  commandRunning?: boolean;
+  /**
+   * #1342 — host-side process truth for the pane's agent (true = observed
+   * alive, false = observed and gone, absent = never attributed). Second tier
+   * of the same gate.
+   */
+  agentProcessAlive?: boolean;
+}
+
+/**
+ * #1342 — the resume half of local/remote parity, as the host publishes it.
+ *
+ * Deliberately NOT a `ResumeBinding`: the binding's `transcriptPath` is a
+ * host-local filesystem path and must never cross the API, and `cwd` is
+ * replaced by the host's own verdict — the desktop cannot compare a path on
+ * another machine, so the host answers "does the recorded cwd still match this
+ * pane?" instead of shipping the path for the desktop to guess with.
+ */
+export interface RemoteResumeInfo {
+  /** Agent launcher slug ('claude' / 'codex') — the resume grammar's key. */
+  agent: string;
+  /** The conversation id the resume command would carry. */
+  sessionId: string;
+  /** Host verdict: the recorded origin cwd still matches the pane's cwd, so an
+   *  EXACT `--resume <id>` is safe. False → the cwd-relative fallback. */
+  cwdMatches: boolean;
+  /** Last-observed permission mode, when the host recorded one. */
+  permissionMode?: PermissionMode;
+}
+
+/**
+ * Shapes an agent slug and a conversation id may take.
+ *
+ * These are not cosmetic caps, they are the boundary that keeps the chip's
+ * "nothing runs until the operator presses Enter" promise. Both values are
+ * spliced into a command line that is TYPED into a terminal, so a value
+ * carrying `\r` (or `\n`) would submit itself and whatever followed it the
+ * instant the operator clicked — the one thing the chip must never do. The
+ * character sets below cannot express a newline, a quote, a shell
+ * metacharacter, or whitespace at all.
+ *
+ * The slug is additionally matched against a known launcher before anything
+ * is built (resumeGrammarFor), so this only has to stop the id.
+ */
+const RESUME_AGENT_RE = /^[a-z][a-z0-9-]{0,31}$/;
+const RESUME_SESSION_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+
+/** Trust-boundary parse for {@link RemoteResumeInfo}. Returns undefined for
+ *  anything that is not a complete, usable resume offer — a half-formed one
+ *  would render a chip that types a broken command. */
+export function parseRemoteResumeInfo(value: unknown): RemoteResumeInfo | undefined {
+  if (typeof value !== 'object' || value === null) return undefined;
+  const raw = value as Record<string, unknown>;
+  const agent = typeof raw.agent === 'string' ? raw.agent : '';
+  const sessionId = typeof raw.sessionId === 'string' ? raw.sessionId : '';
+  // Reject rather than sanitize: a truncated or stripped conversation id is
+  // not the conversation, so an offer that does not arrive intact is no offer.
+  if (!RESUME_AGENT_RE.test(agent) || !RESUME_SESSION_ID_RE.test(sessionId)) return undefined;
+  return {
+    agent,
+    sessionId,
+    cwdMatches: raw.cwdMatches === true,
+    ...(isPermissionMode(raw.permissionMode) ? { permissionMode: raw.permissionMode } : {}),
+  };
+}
+
+const PERMISSION_MODES: ReadonlySet<string> = new Set<PermissionMode>([
+  'bypassPermissions',
+  'acceptEdits',
+  'plan',
+  'default',
+]);
+
+function isPermissionMode(value: unknown): value is PermissionMode {
+  return typeof value === 'string' && PERMISSION_MODES.has(value);
 }
 
 /**

@@ -29,15 +29,18 @@ export interface AutoRejectedEntry {
 
 /**
  * The auto-reject deadline for an inbox row, or `undefined` when it has none.
- * A2A execute approvals expire on their own clock; an MCP prompt only has one
- * once the approval record carries `deadlineAt` (read structurally so this lane
- * does not depend on the field having landed).
+ * A2A execute approvals expire on their own clock; a browser help request
+ * carries main's own deadline (HelpRequests settles it as `timed_out`, so the
+ * countdown is backed by a real outcome); an MCP prompt only has one once the
+ * approval record carries `deadlineAt` (read structurally so this lane does not
+ * depend on the field having landed).
  */
 export function deadlineForItem(
   item: InboxItem,
   mcpDeadlineAt?: (promptId: string) => number | undefined,
 ): number | undefined {
   if (item.source === 'a2a') return item.expiresAt;
+  if (item.source === 'browserHelp') return item.deadlineAt;
   const at = mcpDeadlineAt?.(item.promptId);
   return typeof at === 'number' && Number.isFinite(at) ? at : undefined;
 }
@@ -90,5 +93,9 @@ export function appendAutoRejected(
 
 /** A short, source-appropriate label for the log line. */
 export function inboxItemLabel(item: InboxItem): string {
-  return item.source === 'a2a' ? item.taskId : item.clientName;
+  if (item.source === 'a2a') return item.taskId;
+  // A help request has no client or task name to borrow, and its prompt is
+  // agent-authored free text — the id is the only short, stable label.
+  if (item.source === 'browserHelp') return item.requestId;
+  return item.clientName;
 }

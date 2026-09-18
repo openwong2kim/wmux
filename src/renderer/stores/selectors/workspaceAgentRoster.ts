@@ -5,7 +5,7 @@ import { stashedPaneLiveness, type StashedLiveness } from '../../../shared/paneS
 import { remoteAgentKey } from '../../../shared/remoteHosts';
 import type { StoreState } from '../index';
 import { computePaneAutoName, paneDisplayName } from '../../utils/paneNaming';
-import { HOOK_RUNNING_TTL_MS, isHookRunning, pickStashedRepresentativeSurface } from './fleet';
+import { HOOK_RUNNING_TTL_MS, isHookRunning, pickStashedRepresentativeSurface, resolveRemoteAgent } from './fleet';
 
 /** One detected agent session, kept attached to the terminal surface that owns it. */
 export interface WorkspaceAgentRosterRow {
@@ -109,26 +109,19 @@ export function selectWorkspaceAgentRoster(
         const hostId = surface.remoteHostId;
         const sessionId = surface.remoteSessionId;
         if (!hostId || !sessionId) return;
-        // Search EVERY entry on the host, not just the first: multiple
-        // attached workspaces per host are a supported configuration (the
-        // dedup key is hostId:workspaceId), and a session in the host's
-        // second workspace must still find its pane + hostLabel.
-        // A STALE entry (host unreachable) keeps its last pane snapshot for the
-        // mirror, but its agent status is frozen at the last successful poll —
-        // counting it would report a disconnected agent as live (or as needing
-        // you) indefinitely. No live metadata, no row.
-        const attached = state.remoteWorkspaces.find(
-          (r) => r.hostId === hostId && !r.stale && r.panes.some((p) => p.sessionId === sessionId),
-        );
-        const pane = attached?.panes.find((p) => p.sessionId === sessionId);
-        if (!pane?.agentName) return;
-        const status: AgentStatus = pane.agentStatus ?? 'idle';
+        // #1343 — the resolution rules (every entry on the host, never a stale
+        // one) now live in fleet.ts, shared with selectFleetPanes so the
+        // sidebar roster and the Fleet cards cannot disagree about which
+        // remote sessions are agents.
+        const remoteAgent = resolveRemoteAgent(state.remoteWorkspaces, hostId, sessionId);
+        if (!remoteAgent) return;
+        const status: AgentStatus = remoteAgent.status;
         rows.push({
           workspaceId,
           paneId: leaf.id,
           surfaceId: surface.id,
           ptyId: remoteAgentKey(hostId, sessionId),
-          agentName: pane.agentName,
+          agentName: remoteAgent.agentName,
           paneName,
           surfaceTitle: nonEmpty(surface.title),
           surfaceIndex,
@@ -143,7 +136,7 @@ export function selectWorkspaceAgentRoster(
             state.activeWorkspaceId === workspaceId &&
             workspace.activePaneId === leaf.id &&
             leaf.activeSurfaceId === surface.id,
-          remote: { hostId, hostLabel: attached?.hostLabel ?? hostId },
+          remote: { hostId, hostLabel: remoteAgent.hostLabel },
         });
         return;
       }

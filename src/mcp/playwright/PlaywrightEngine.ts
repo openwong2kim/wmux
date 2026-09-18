@@ -6,6 +6,7 @@ import { isMac } from '../../shared/platform';
 import { formatMacosError, MACOS_ERRORS } from '../../shared/errors/macos';
 import type { BrowserBackend } from '../../shared/browserBackend';
 import { EXTERNAL_BACKEND_UNSUPPORTED_MESSAGE } from '../../shared/browserBackend';
+import { AgentWindowScopeError } from '../../shared/liveWriteScope';
 import {
   assertBrowserTargetScope,
   isWorkspaceScopeUnresolvedError,
@@ -40,6 +41,13 @@ interface CdpTargetInfo {
    * keep an unsaid target on the caller's own surface.
    */
   opener?: 'mine' | 'other';
+  /**
+   * Live Chrome only: whether the calling workspace may WRITE to this tab
+   * ('agent' = wmux opened it for this workspace, 'borrowed' = the user lent
+   * it). Main seeds only those two kinds into this list, so a live target that
+   * is ABSENT from it is one the agent may read but not drive.
+   */
+  owner?: 'agent' | 'borrowed' | 'user';
 }
 
 interface CdpInfoResponse {
@@ -79,6 +87,15 @@ interface CdpInfoResponse {
    * /json surface behind it.
    */
   wsEndpoint?: string;
+  /**
+   * Live Chrome only: the write-scope policy in force (the agent-window
+   * policy). 'agent' means writes are confined to the workspace's own tabs plus
+   * lent ones; 'all' is the operator opt-out that restores full write exposure.
+   * Absent on every other backend and on an older main — both read as "no gate
+   * to apply here", which is correct: a dedicated instance can only address tabs
+   * wmux opened.
+   */
+  liveWriteScope?: 'agent' | 'all';
   targets: CdpTargetInfo[];
 }
 
@@ -299,7 +316,19 @@ export class PlaywrightEngine {
     if (info.workspaceBackend) {
       this.workspaceBackend = info.workspaceBackend;
     }
+    // Same rule for the live write-scope marker: only a present value moves it.
+    // It is the ONE signal that tells this lane it is on Live Chrome and has a
+    // gate to apply — wsEndpoint cannot serve, because main withholds that from
+    // callers it will not hand an attach primitive to, and "withheld" would then
+    // read as "no policy".
+    if (info.liveWriteScope) {
+      this.liveWriteScope = info.liveWriteScope;
+    }
   }
+
+  /** The live write-scope policy as main last reported it. undefined until a
+   *  cdp.info response has said, and on every non-live backend. */
+  private liveWriteScope: 'agent' | 'all' | undefined;
 
   /**
    * Returns true if `url` is the wmux app shell (the main renderer window),
@@ -407,6 +436,10 @@ export class PlaywrightEngine {
     // Drop the cached backend marker for the same reason — it is re-learned
     // from the next cdp.info response (#517).
     this.workspaceBackend = undefined;
+    // Re-learned from the next cdp.info response, like the backend marker. A
+    // stale 'agent' would gate a builtin session; a stale 'all' would un-gate a
+    // live one, which is the direction that matters.
+    this.liveWriteScope = undefined;
     this.connectedWorkspaceId = undefined;
     if (s) {
       await s.detach().catch(() => { /* session may already be gone */ });
@@ -570,9 +603,20 @@ export class PlaywrightEngine {
    * verified workspace and optional surface in one required object makes a
    * dropped workspaceId a compile error at every tool call site.
    */
-  async getPageForScope(scope: BrowserTargetScope): Promise<Page | null> {
+  async getPageForScope(
+    scope: BrowserTargetScope,
+    // Live Chrome confines WRITES to the agent's own tabs plus lent ones, and
+    // this lane drives many of them (fill / select / upload / type) straight
+    // over CDP without main ever seeing the call — so the gate has to run here
+    // too. Default 'read' keeps every existing call site byte-identical; a
+    // mutating tool passes 'write' explicitly.
+    opts: { intent?: 'read' | 'write' } = {},
+  ): Promise<Page | null> {
     assertBrowserTargetScope(scope);
     const page = await this.getPage(scope.surfaceId, scope.workspaceId, scope.noSurface === true);
+    if (page && opts.intent === 'write') {
+      await this.assertLiveWriteAllowed(page, scope);
+    }
     // Chrome backend: main's webContents-side lifecycle capture cannot see
     // these tabs, so mirror navigations/closes engine-side (dogfood P1 — the
     // #1063 inline events went silent under 'chrome').
@@ -602,6 +646,71 @@ export class PlaywrightEngine {
     // place a re-send covers them all. A no-op when nothing is emulated.
     if (page) await reassertUserAgentEmulation(page);
     return page;
+  }
+
+  /**
+   * Refuse a write to a live tab this workspace does not own.
+   *
+   * Ownership is asked of MAIN, never decided here: main holds the map of which
+   * tabs wmux opened and which the user lent, and browser.cdp.info reports
+   * exactly those two kinds for the calling workspace. So a resolved target that
+   * is absent from that list is a tab the agent may read and must not drive -
+   * including a tab another workspace opened, which from here is indistinguish-
+   * able from the user's own, and should be.
+   *
+   * Only ever runs on live (the marker is absent elsewhere), and only for a
+   * write. A failure to READ the answer is a refusal: an ownership check that
+   * cannot be made is not a check.
+   *
+   * Cost, accepted rather than hidden: one cdp.info round trip plus a throwaway
+   * CDP session per gated write (and main answers it with a Target.getTargets of
+   * its own). A cached owned-id set would remove that, and would then have to be
+   * invalidated on every borrow, return, open and close, in a process that does
+   * not see most of them — a cache that goes stale in the permissive direction
+   * here hands an agent a tab the user took back. Measured need first, cache
+   * second.
+   */
+  private async assertLiveWriteAllowed(page: Page, scope: BrowserTargetScope): Promise<void> {
+    if (this.liveWriteScope !== 'agent') return;
+    // The label stands in for a method name: this lane covers a dozen mutating
+    // tools, and naming the wrong one would be worse than naming none.
+    const label = 'this tool call';
+    // No pinned surface and no readable target id leaves nothing to name, so the
+    // hint tells the agent where ids come from instead of inventing one.
+    const unknownId = scope.surfaceId ?? '<id from browser_tabs list>';
+    const targetId = await this.targetIdOf(page);
+    if (!targetId) throw new AgentWindowScopeError(label, unknownId);
+    let info: CdpInfoResponse;
+    try {
+      info = (await sendRpc('browser.cdp.info', { workspaceId: scope.workspaceId })) as CdpInfoResponse;
+    } catch {
+      throw new AgentWindowScopeError(label, targetId);
+    }
+    this.cacheShellUrl(info);
+    // The policy can have been switched to 'all' since the value was cached;
+    // this response is the current one, so honour it rather than the memory.
+    if (info.liveWriteScope !== 'agent') return;
+    const row = info.targets.find((t) => t.targetId === targetId || t.surfaceId === targetId);
+    if (row && row.owner !== 'user') return;
+    throw new AgentWindowScopeError(label, targetId);
+  }
+
+  /** A Page's CDP target id, over a throwaway session (client-side Pages expose
+   *  none). null when the page is gone or will not answer. */
+  private async targetIdOf(page: Page): Promise<string | null> {
+    try {
+      const session = await page.context().newCDPSession(page);
+      try {
+        const { targetInfo } = (await session.send('Target.getTargetInfo')) as {
+          targetInfo?: { targetId?: string };
+        };
+        return typeof targetInfo?.targetId === 'string' ? targetInfo.targetId : null;
+      } finally {
+        await session.detach().catch(() => { /* best-effort */ });
+      }
+    } catch {
+      return null;
+    }
   }
 
   /** Backend marker for tool-side path choices; resolves via one cdp.info
