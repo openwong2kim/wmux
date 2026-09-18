@@ -926,6 +926,7 @@ registerChannelLocalHandlers(() => daemonClient);
 // registered hosts/tokens live on disk in main, independent of the local
 // daemon connection. See remote.handler.ts for the push-routing contract.
 registerRemoteHandlers({
+  getWindow: () => mainWindow,
   store: new RemoteHostsStore(path.join(getWmuxDir(), 'remote-hosts.json')),
   attachments: new RemoteAttachmentsStore(path.join(getWmuxDir(), 'remote-attachments.json')),
 });

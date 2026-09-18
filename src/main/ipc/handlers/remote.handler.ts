@@ -16,12 +16,15 @@
 // endpoint (RemoteHostClient itself never exposes one either).
 
 import { app, ipcMain } from 'electron';
-import type { IpcMainInvokeEvent, WebContents } from 'electron';
+import type { BrowserWindow, IpcMainInvokeEvent, WebContents } from 'electron';
 import { IPC } from '../../../shared/constants';
 import { wrapHandler } from '../wrapHandler';
 import { RemoteHostClient } from '../../remote/RemoteHostClient';
 import type { RemoteHostsStore } from '../../remote/RemoteHostsStore';
 import type { RemoteAttachmentsStore } from '../../remote/RemoteAttachmentsStore';
+import { RemoteAttentionSubscriber } from '../../remote/RemoteAttentionSubscriber';
+import type { RemoteAttentionNotification } from '../../remote/remoteAttention';
+import { dispatchNotification } from '../../notification/dispatchNotification';
 import { parseRemoteAttachmentKey, parseWebUrl, remoteAttachmentKey, REMOTE_POLL_INTERVAL_MS } from '../../../shared/remoteHosts';
 import { normalizeWorkspaceColor } from '../../../shared/workspaceColors';
 import type {
@@ -56,12 +59,21 @@ type ProbeResult =
 
 export interface RegisterRemoteHandlersDeps {
   store: RemoteHostsStore;
+  /** Owner of the desktop notification surface. Null/absent means no window
+   *  yet (early boot, closed to the tray) — `dispatchNotification` falls back
+   *  to a direct OS toast, exactly as it does for local events. */
+  getWindow?: () => BrowserWindow | null;
   /** Persisted attach descriptors — what makes an attachment survive a
    *  renderer reload and an app restart. */
   attachments: RemoteAttachmentsStore;
   /** Test seam: how a RemoteHostClient is built for a host record. Defaults
    *  to `new RemoteHostClient(host, fetchImpl)`. */
   clientFactory?: (host: RemoteHost) => RemoteHostClient;
+  /** Test seam: how the per-host `/api/events` subscription is built. */
+  attentionSubscriberFactory?: (
+    host: RemoteHost,
+    onNotification: (hostLabel: string, n: RemoteAttentionNotification) => void,
+  ) => RemoteAttentionSubscriber;
   /** Test seam: fetch implementation for the `/api/config` add-time probe
    *  (runs before any RemoteHostClient exists, so it needs its own seam). */
   fetchImpl?: typeof fetch;
@@ -208,6 +220,11 @@ async function exchangePairCode(
 
 export function registerRemoteHandlers(deps: RegisterRemoteHandlersDeps): () => void {
   const { store, attachments } = deps;
+  const getWindow = deps.getWindow ?? (() => null);
+  const makeAttentionSubscriber =
+    deps.attentionSubscriberFactory ??
+    ((host: RemoteHost, onNotification: (hostLabel: string, n: RemoteAttentionNotification) => void) =>
+      new RemoteAttentionSubscriber({ host, onNotification, fetchImpl }));
   const fetchImpl: typeof fetch = deps.fetchImpl ?? fetch;
   const makeClient = deps.clientFactory ?? ((host: RemoteHost) => new RemoteHostClient(host, fetchImpl));
 
@@ -245,6 +262,53 @@ export function registerRemoteHandlers(deps: RegisterRemoteHandlersDeps): () => 
   }
   const pollSubscribers = new Map<number, PollSubscriber>();
   let pollTimer: ReturnType<typeof setInterval> | null = null;
+
+  // --- remote agent notifications (#1344) ---------------------------------
+  //
+  // One `/api/events` subscription per ATTACHED host, started and stopped with
+  // the attach roster: a registered-but-not-attached host is one the user is
+  // not watching, and subscribing to it would notify about panes that are
+  // nowhere on screen. Transitions land in `dispatchNotification`, the same
+  // entry point every local event uses, so remote notifications inherit the
+  // renderer's notification policy, the per-category mute, idle suppression
+  // and the toast dedup without a second copy of any of them.
+  const attentionSubs = new Map<string, RemoteAttentionSubscriber>(); // hostId -> sub
+
+  function onRemoteAttention(hostLabel: string, n: RemoteAttentionNotification): void {
+    const label = hostLabel || 'Remote';
+    dispatchNotification(
+      getWindow(),
+      // No local pty and no local workspace: the event names a REMOTE session
+      // id, and handing it over as either would make the toast click jump to
+      // whatever local surface happened to share the id.
+      null,
+      { type: n.type, title: `${label} · ${n.title}`, body: n.body, category: n.category },
+      { ptyId: null, workspaceId: null },
+    );
+  }
+
+  /** Reconcile live subscriptions against the attach roster. Idempotent. */
+  function syncAttentionSubs(): void {
+    const wanted = new Set<string>();
+    for (const a of attachments.list()) {
+      // A descriptor whose host is gone can never be restored either — it is
+      // waiting to be cascaded away, not a host to subscribe to.
+      if (store.get(a.hostId)) wanted.add(a.hostId);
+    }
+    for (const [hostId, sub] of [...attentionSubs.entries()]) {
+      if (wanted.has(hostId)) continue;
+      sub.stop();
+      attentionSubs.delete(hostId);
+    }
+    for (const hostId of wanted) {
+      if (attentionSubs.has(hostId)) continue;
+      const host = store.get(hostId);
+      if (!host) continue;
+      const sub = makeAttentionSubscriber(host, onRemoteAttention);
+      attentionSubs.set(hostId, sub);
+      sub.start();
+    }
+  }
 
   function attachKey(senderId: number, hostId: string, sessionId: string): string {
     return `${senderId}:${hostId}:${sessionId}`;
@@ -534,6 +598,7 @@ export function registerRemoteHandlers(deps: RegisterRemoteHandlersDeps): () => 
       try {
         attachments.removeByHost(hostId);
       } catch { /* see above — an orphan descriptor restores as a stale row */ }
+      syncAttentionSubs();
       allowInputCache.delete(hostId);
       const client = clients.get(hostId);
       if (client) {
@@ -675,6 +740,7 @@ export function registerRemoteHandlers(deps: RegisterRemoteHandlersDeps): () => 
       } catch {
         return false;
       }
+      syncAttentionSubs();
       return true;
     }));
 
@@ -687,7 +753,9 @@ export function registerRemoteHandlers(deps: RegisterRemoteHandlersDeps): () => 
         // `<hostId>:<workspaceId>` addresses a record, so a key that cannot
         // have been minted by the attach path deletes nothing.
         if (!parseRemoteAttachmentKey(k)) return false;
-        return attachments.remove(k);
+        const removed = attachments.remove(k);
+        syncAttentionSubs();
+        return removed;
       } catch {
         return false;
       }
@@ -798,8 +866,15 @@ export function registerRemoteHandlers(deps: RegisterRemoteHandlersDeps): () => 
     for (const client of clients.values()) client.detachAll();
     pollSubscribers.clear();
     syncPollTimer();
+    for (const sub of attentionSubs.values()) sub.stop();
+    attentionSubs.clear();
   };
   app.on('will-quit', onWillQuit);
+
+  // Restore after an app restart: the attach roster is on disk, so the
+  // subscriptions must come back with it rather than waiting for the user to
+  // re-attach something.
+  syncAttentionSubs();
 
   return () => {
     ipcMain.removeHandler(IPC.REMOTE_HOSTS_LIST);
