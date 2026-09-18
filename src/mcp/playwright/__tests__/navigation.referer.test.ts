@@ -36,6 +36,13 @@ vi.mock('../PlaywrightEngine', () => ({
 import { registerNavigationTools } from '../tools/navigation';
 import type { BrowserToolDeps } from '../browserScope';
 
+/**
+ * The trailer every mutating browser result now ends with (resultTrailer.ts).
+ * Spelled out here rather than imported: these assertions are exact on purpose,
+ * and the trailer is part of what they pin.
+ */
+const COMMITTED = '\n\neffect_state: committed';
+
 type ToolResult = { content: { type: 'text'; text: string }[]; isError?: boolean };
 type ToolHandler = (args: Record<string, unknown>) => Promise<ToolResult>;
 
@@ -94,7 +101,7 @@ describe('browser_navigate referer route (chrome backend)', () => {
     // The contradictory pair is exactly page.goto({ referer }); it must not run.
     expect(page.goto).not.toHaveBeenCalled();
     expect(res.isError).toBeUndefined();
-    expect(res.content[0].text).toBe('Navigated to https://to.test/landing');
+    expect(res.content[0].text).toBe('Navigated to https://to.test/landing' + COMMITTED);
   });
 
   it('reports the landing URL after a redirect, not the requested one', async () => {
@@ -107,7 +114,7 @@ describe('browser_navigate referer route (chrome backend)', () => {
 
     const res = await navigate({ url: 'https://to.test/landing' });
 
-    expect(res.content[0].text).toBe('Navigated to https://to.test/after-redirect');
+    expect(res.content[0].text).toBe('Navigated to https://to.test/after-redirect' + COMMITTED);
     expect(recordAction).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({ tool: 'browser_navigate', url: 'https://to.test/after-redirect' }),
@@ -124,7 +131,7 @@ describe('browser_navigate referer route (chrome backend)', () => {
     expect(page.goto).toHaveBeenCalledWith('https://to.test/first', {
       waitUntil: 'domcontentloaded',
     });
-    expect(res.content[0].text).toBe('Navigated to https://to.test/first');
+    expect(res.content[0].text).toBe('Navigated to https://to.test/first' + COMMITTED);
   });
 
   it('uses plain goto for a reload — refererFor sends none, so neither do we', async () => {

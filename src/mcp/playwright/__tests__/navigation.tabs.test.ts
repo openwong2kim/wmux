@@ -18,6 +18,13 @@ type ToolResult = {
 };
 type ToolHandler = (args: Record<string, unknown>) => Promise<ToolResult>;
 
+/**
+ * The trailer every mutating browser result now ends with (resultTrailer.ts).
+ * Spelled out here rather than imported: these assertions are exact on purpose,
+ * and the trailer is part of what they pin.
+ */
+const COMMITTED = '\n\neffect_state: committed';
+
 function collectTools(deps: BrowserToolDeps): Map<string, ToolHandler> {
   const tools = new Map<string, ToolHandler>();
   const server = {
@@ -138,7 +145,7 @@ describe('browser navigation MCP workspace contract', () => {
     expect(result.content[0].text).toContain('[browser events]');
     expect(result.content[0].text).toContain('https://example.com/redirect-hop');
     expect(result.content[0].text).not.toContain('- navigated: https://example.com/ (');
-    expect(result.content[1].text).toBe('Navigated to https://example.com/');
+    expect(result.content[1].text).toBe('Navigated to https://example.com/' + COMMITTED);
   });
 
   it('a plain navigation carries no events block — the lone self-echo is suppressed', async () => {
@@ -158,7 +165,7 @@ describe('browser navigation MCP workspace contract', () => {
 
     expect(result.isError).toBeUndefined();
     expect(result.content).toHaveLength(1);
-    expect(result.content[0].text).toBe('Navigated to https://example.com/');
+    expect(result.content[0].text).toBe('Navigated to https://example.com/' + COMMITTED);
   });
 
   it('does not issue a navigation RPC when workspace identity fails', async () => {
