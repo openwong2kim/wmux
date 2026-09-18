@@ -69,7 +69,9 @@ An agent cannot complete a passkey, FIDO2, or security-key login. CDP's
 `WebAuthn` domain exists to *test* WebAuthn: it configures **virtual**
 authenticators, and has no command that drives the platform authenticator
 holding your real credential ([spec](https://chromedevtools.github.io/devtools-protocol/tot/WebAuthn/)).
-Sign in yourself when a site requires one; the session persists afterwards.
+Sign in yourself when a site requires one; the session persists afterwards. An
+agent can ask you to do it in place with `browser_request_help`, which puts a
+Done / Cancel bar on the pane and waits.
 
 ### Canvas-rendered interfaces
 

@@ -262,6 +262,14 @@ export const FIRST_PARTY_METHODS: ReadonlySet<RpcMethod> = new Set<RpcMethod>([
   'browser.siteMemory.forget',
   // Site guide pointers, registered for the same packaged-build reason.
   'browser.siteGuides.match',
+  // browser_request_help. Same packaged-build reason as the two stores above:
+  // absent from this list, every call would be refused as an unconfirmed plugin
+  // in a packaged build while every dev build (enforcement off) looked fine —
+  // and the whole point of the tool is to work on the machine where a human is
+  // sitting in front of the browser.
+  'browser.help.request',
+  'browser.help.status',
+  'browser.help.cancel',
   // agent-to-agent
   'a2a.resolve.identity',
   'a2a.whoami',

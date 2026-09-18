@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { selectApprovalInbox, type ApprovalInboxState } from '../approvalInbox';
 import type { ApprovalPromptInfo } from '../../../../main/mcp/ApprovalQueue';
 import type { PendingExecuteApproval } from '../../slices/a2aSlice';
+import type { BrowserHelpRequestInfo } from '../../../../shared/browserHelp';
 
 // ─── Fixtures ──────────────────────────────────────────────────────────────
 
@@ -21,12 +22,28 @@ function a2aApproval(taskId: string): PendingExecuteApproval {
   };
 }
 
+function helpRequest(
+  requestId: string,
+  overrides: Partial<BrowserHelpRequestInfo> = {},
+): BrowserHelpRequestInfo {
+  return {
+    requestId,
+    workspaceId: 'ws-1',
+    surfaceId: 'surf-1',
+    prompt: 'Sign in, then press Done.',
+    deadlineAt: 1_700_000_300_000,
+    ...overrides,
+  };
+}
+
 function fixture(over: Partial<ApprovalInboxState> = {}): ApprovalInboxState {
   return {
     mcpPrompts: {},
     mcpPromptOrder: [],
     pendingExecuteApprovals: {},
     pendingExecuteApprovalOrder: [],
+    browserHelpRequests: {},
+    browserHelpOrder: [],
     ...over,
   };
 }
@@ -110,6 +127,58 @@ describe('selectApprovalInbox', () => {
     expect(items.map((i) => i.source)).toEqual(['a2a', 'mcp']);
     expect(items[0].key).toBe('a2a:approval-task-1');
     expect(items[1].key).toBe('mcp:p1');
+  });
+
+  it('emits a browser help request with its surface and main\'s deadline', () => {
+    const items = selectApprovalInbox(
+      fixture({
+        browserHelpRequests: { r1: helpRequest('r1') },
+        browserHelpOrder: ['r1'],
+      }),
+    );
+    expect(items).toHaveLength(1);
+    expect(items[0]).toEqual({
+      source: 'browserHelp',
+      key: 'help:r1',
+      requestId: 'r1',
+      prompt: 'Sign in, then press Done.',
+      surfaceId: 'surf-1',
+      deadlineAt: 1_700_000_300_000,
+    });
+  });
+
+  it('omits surfaceId when the request resolved none', () => {
+    const items = selectApprovalInbox(
+      fixture({
+        browserHelpRequests: { r1: helpRequest('r1', { surfaceId: undefined }) },
+        browserHelpOrder: ['r1'],
+      }),
+    );
+    expect(items[0]).not.toHaveProperty('surfaceId');
+  });
+
+  it('skips a help requestId present in the order but missing from the record', () => {
+    const items = selectApprovalInbox(
+      fixture({
+        browserHelpRequests: { r1: helpRequest('r1') },
+        browserHelpOrder: ['r1', 'r-gone'],
+      }),
+    );
+    expect(items.map((i) => i.key)).toEqual(['help:r1']);
+  });
+
+  it('orders A2A first, then browser help, then MCP', () => {
+    const items = selectApprovalInbox(
+      fixture({
+        pendingExecuteApprovals: { 'approval-task-1': a2aApproval('task-1') },
+        pendingExecuteApprovalOrder: ['approval-task-1'],
+        browserHelpRequests: { r1: helpRequest('r1') },
+        browserHelpOrder: ['r1'],
+        mcpPrompts: { p1: mcpPrompt('p1', ['meta.read']) },
+        mcpPromptOrder: ['p1'],
+      }),
+    );
+    expect(items.map((i) => i.source)).toEqual(['a2a', 'browserHelp', 'mcp']);
   });
 
   it('flags isCritical=true for a real critical capability (terminal.read)', () => {

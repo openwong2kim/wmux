@@ -885,7 +885,7 @@ const enforcementMode = resolveEnforcementMode({ isDev: isDevEnvironment });
 // Shared bounded audit sink for permission rejections, legacy milestones, and
 // #810's browser caller-scope decisions.
 const shadowRejectionLogger = new ShadowRejectionLogger();
-registerBrowserRpc(
+const browserHelpRequests = registerBrowserRpc(
   rpcRouter,
   () => mainWindow,
   webviewCdpManager,
@@ -901,6 +901,29 @@ registerBrowserRpc(
   () => sessionManager.readSiteMemoryEnabled(),
   // Site guide pointers' switch (default OFF), judged in the same place.
   () => sessionManager.readSiteGuidesEnabled(),
+);
+// browser_request_help — the renderer's Done / Cancel. Mirrors
+// PERMISSION_PROMPT_RESOLVE: a shape-validated invoke, and the AUTHORITATIVE
+// removal is the BROWSER_HELP_CLOSED push HelpRequests emits from inside its own
+// settle, so an optimistic local removal racing this is harmless. A stale or
+// already-settled id resolves `{ ok: false }` rather than throwing — the row may
+// have timed out under the operator's click.
+ipcMain.handle(
+  IPC.BROWSER_HELP_RESOLVE,
+  async (_event, payload: { requestId?: unknown; outcome?: unknown }) => {
+    if (
+      !payload ||
+      typeof payload.requestId !== 'string' ||
+      (payload.outcome !== 'continued' && payload.outcome !== 'cancelled')
+    ) {
+      return { ok: false, error: 'invalid browser help payload' };
+    }
+    const settled = await browserHelpRequests.resolveFromRenderer(
+      payload.requestId,
+      payload.outcome,
+    );
+    return { ok: settled };
+  },
 );
 registerA2aRpc(rpcRouter, () => mainWindow, claudeWorker, { getDaemonClient: () => daemonClient });
 registerA2aChannelRpc(rpcRouter, () => daemonClient, () => mainWindow);
