@@ -1,4 +1,9 @@
-# AI code review for OUTSIDE contributors only.
+# AI code review — three ways in, one job.
+#
+#   1. Automatic: outside-contributor PRs (pull_request_target).
+#   2. Comment:   a maintainer writes `/review` on any PR, including their own.
+#   3. Manual:    `gh workflow run ai-code-review.yml -f pr_number=N`
+#                 (add `--ref <branch>` to try the workflow before it is merged).
 #
 # Why pull_request_target: fork PRs get no secrets under `pull_request`, and the
 # LLM token lives in a secret. The action is fork-safe by construction — it
@@ -11,37 +16,78 @@ name: AI code review
 on:
   pull_request_target:
     types: [opened, synchronize, reopened, ready_for_review]
+  issue_comment:
+    types: [created]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: Pull request number to review (any author)
+        required: true
+        type: number
 
 # Least privilege: comment on the PR, read the base repo. Nothing else.
 permissions:
   contents: read
   pull-requests: write
 
-# A new push supersedes the review still running for the same PR.
+# A new trigger supersedes the review still running for the same PR.
 concurrency:
-  group: ai-code-review-${{ github.event.pull_request.number }}
+  group: ai-code-review-${{ github.event.pull_request.number || github.event.issue.number || inputs.pr_number }}
   cancel-in-progress: true
 
 jobs:
   review:
-    name: Review outside contribution
+    name: Review
     runs-on: ubuntu-latest
     timeout-minutes: 25
-    # Outside contributors only. OWNER / MEMBER / COLLABORATOR PRs are skipped —
-    # those get the deliberate 3-way review instead. Bots (dependabot) skipped.
+    # Automatic lane: outside contributors only. OWNER / MEMBER / COLLABORATOR
+    # PRs are skipped — those get the deliberate 3-way review, or `/review`.
+    # Comment lane: `/review` at the start of a PR comment, maintainers only,
+    # so outsiders cannot spend the token budget. Manual lane: anyone who can
+    # dispatch already has write access — no extra gate needed.
     if: >-
-      github.event.pull_request.draft == false &&
-      github.event.pull_request.user.type != 'Bot' &&
-      contains(
-        fromJSON('["CONTRIBUTOR","FIRST_TIME_CONTRIBUTOR","FIRST_TIMER","NONE"]'),
-        github.event.pull_request.author_association
-      )
+      (
+        github.event_name == 'pull_request_target' &&
+        github.event.pull_request.draft == false &&
+        github.event.pull_request.user.type != 'Bot' &&
+        contains(
+          fromJSON('["CONTRIBUTOR","FIRST_TIME_CONTRIBUTOR","FIRST_TIMER","NONE"]'),
+          github.event.pull_request.author_association
+        )
+      ) || (
+        github.event_name == 'issue_comment' &&
+        github.event.issue.pull_request &&
+        startsWith(github.event.comment.body, '/review') &&
+        contains(
+          fromJSON('["OWNER","MEMBER","COLLABORATOR"]'),
+          github.event.comment.author_association
+        )
+      ) || github.event_name == 'workflow_dispatch'
     steps:
+      # Comment and dispatch payloads carry no PR refs, so look them up. The
+      # action falls back to the event payload when these outputs are empty,
+      # which is what happens on the pull_request_target lane.
+      - name: Resolve PR refs (comment / manual lanes)
+        id: pr
+        if: github.event_name != 'pull_request_target'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.issue.number || inputs.pr_number }}
+        run: |
+          gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" \
+            --jq '"pr_number=\(.number)\nbase_ref=\(.base.ref)\nhead_sha=\(.head.sha)"' \
+            >> "$GITHUB_OUTPUT"
+
       # Pinned to the v1.12.5 commit. A tag can be moved; a SHA cannot. Bump it
       # deliberately after reading the diff — this action sees a repo secret.
       - name: Open Code Review
         uses: alibaba/open-code-review@189be5b024d3309dd10fdc8cd8ee31b2530c210b # v1.12.5
         with:
+          pr_number: ${{ steps.pr.outputs.pr_number }}
+          base_ref: ${{ steps.pr.outputs.base_ref }}
+          head_sha: ${{ steps.pr.outputs.head_sha }}
+
           # Z.ai coding plan speaks the Anthropic Messages protocol.
           llm_url: https://api.z.ai/api/anthropic
           llm_auth_token: ${{ secrets.GLM_API_KEY }}
@@ -54,7 +100,11 @@ jobs:
           effort: medium
           language: English
 
-          # Repeat pushes: update the one summary, skip comments that overlap a
+          # A requested review looks at the whole PR; the automatic lane stays
+          # incremental across pushes via checkpoints.
+          full_review: ${{ github.event_name != 'pull_request_target' && 'true' || 'false' }}
+
+          # Repeat runs: update the one summary, skip comments that overlap a
           # previous run, and close threads whose lines no longer exist.
           sticky_summary: 'true'
           incremental: 'true'
