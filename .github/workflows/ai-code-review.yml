@@ -33,7 +33,7 @@ permissions:
 
 # A new trigger supersedes the review still running for the same PR.
 concurrency:
-  group: ai-code-review-${{ github.event.pull_request.number || github.event.issue.number || inputs.pr_number }}
+  group: ai-code-review-${{ format('{0}', github.event.pull_request.number || github.event.issue.number || inputs.pr_number) }}
   cancel-in-progress: true
 
 jobs:
@@ -114,5 +114,6 @@ jobs:
           # Hard ceiling per run so a huge PR cannot drain the coding plan.
           max_tokens_budget: '1500000'
 
-          # Keep the inline lane for real defects; minor notes go to the summary.
-          route_severity_below: 'medium'
+          # at-or-below, so 'low' routes only low and keeps medium/high/critical
+          # inline — on a long diff the finding has to sit on the line it is about.
+          route_severity_below: 'low'
