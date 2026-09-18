@@ -1,6 +1,6 @@
 /** Opt-in Windows + WSL test: WMUX_TEST_WSL=1 npm run test:runtime.
- * Uses a fake Claude executable that runs the REAL per-launch hook/bridge.
- * No API calls, user Claude settings edits, or connection to the daily daemon.
+ * Uses fake Claude and Codex executables that run the REAL per-launch hook/bridge.
+ * No API calls, user agent settings edits, or connection to the daily daemon.
  */
 import fs from 'node:fs';
 import os from 'node:os';
@@ -24,7 +24,25 @@ payload = {'session_id': sid, 'cwd': os.getcwd(), 'transcript_path': os.getcwd()
 for entry in settings['hooks']['SessionStart']:
     for hook in entry['hooks']:
         subprocess.run(hook['command'], shell=True, input=json.dumps(payload), text=True, check=True)
-print('WMUX_FAKE_CLAUDE_READY ' + sid + ' cwd=' + os.getcwd(), flush=True)
+print('WMUX_FAKE_CLAUDE_READY ' + os.environ['WMUX_TEST_RUN'] + ' ' + sid + ' cwd=' + os.getcwd(), flush=True)
+for line in sys.stdin:
+    if line.strip() == 'quit': break
+`;
+
+const fakeCodex = `#!/usr/bin/python3
+import json, os, subprocess, sys
+args = sys.argv[1:]
+override = args[args.index('-c') + 1]
+assert override.startswith('notify=')
+notify = json.loads(override[len('notify='):])
+sid = args[args.index('resume') + 1] if 'resume' in args else args[args.index('--session-id') + 1]
+sessions = os.path.join(os.environ['CODEX_HOME'], 'sessions', '2026', '09', '18')
+os.makedirs(sessions, exist_ok=True)
+with open(os.path.join(sessions, 'rollout-2026-09-18T00-00-00-' + sid + '.jsonl'), 'w') as f:
+    f.write(json.dumps({'type': 'session_meta', 'payload': {'id': sid, 'source': 'cli'}}) + '\\n')
+payload = {'type': 'agent-turn-complete', 'thread-id': sid, 'turn-id': sid + '-turn', 'cwd': os.getcwd()}
+subprocess.run(notify + [json.dumps(payload)], check=True)
+print('WMUX_FAKE_CODEX_READY ' + os.environ['WMUX_TEST_RUN'] + ' ' + sid + ' cwd=' + os.getcwd(), flush=True)
 for line in sys.stdin:
     if line.strip() == 'quit': break
 `;
@@ -38,7 +56,8 @@ async function until<T>(read: () => T | Promise<T>, predicate: (value: T) => boo
 }
 
 describe.runIf(enabled)('WSL exact conversation recovery', () => {
-  it('captures two IDs in one Linux cwd, reattaches and restores both through two restarts', async () => {
+  it.each(['claude', 'codex'] as const)('captures two %s IDs in one Linux cwd and restores both through restarts', async (agent) => {
+    const readyMarker = `WMUX_FAKE_${agent.toUpperCase()}_READY`;
     const tag = randomUUID().slice(0, 8);
     const suffix = `-wsl-test-${tag}`;
     const wmuxDir = path.join(os.homedir(), `.wmux${suffix}`);
@@ -51,8 +70,8 @@ describe.runIf(enabled)('WSL exact conversation recovery', () => {
     const selectedArgs = ['-d', distro];
     const bundle = path.resolve(process.env.WMUX_TEST_DAEMON_BUNDLE || 'dist/daemon-bundle/index.js');
     expect(fs.existsSync(bundle)).toBe(true);
-    const fixture = path.join(scratch, 'claude'); fs.writeFileSync(fixture, fakeClaude);
-    execFileSync(wsl, [...selectedArgs, '--exec', '/bin/sh', '-c', 'set -eu; mkdir -p "$1/bin" "$2"; cp "$(wslpath -u "$3")" "$1/bin/claude"; chmod +x "$1/bin/claude"', 'wmux-test', linuxRoot, cwd, fixture], { timeout: 15_000 });
+    const fixture = path.join(scratch, agent); fs.writeFileSync(fixture, agent === 'claude' ? fakeClaude : fakeCodex);
+    execFileSync(wsl, [...selectedArgs, '--exec', '/bin/sh', '-c', 'set -eu; mkdir -p "$1/bin" "$2"; cp "$(wslpath -u "$3")" "$1/bin/$4"; chmod +x "$1/bin/$4"', 'wmux-test', linuxRoot, cwd, fixture, agent], { timeout: 15_000 });
     const processes: ChildProcess[] = [];
     const streams: net.Socket[] = [];
     let token = '';
@@ -114,11 +133,12 @@ describe.runIf(enabled)('WSL exact conversation recovery', () => {
     };
     const ids = [`wsl-${tag}-one`, `wsl-${tag}-two`];
     const conversations = [randomUUID(), randomUUID()];
-    const runClaude = async (id: string, command: string) => {
+    const runAgent = async (id: string, command: string) => {
       const terminal = await attach(id);
       const baseline = terminal.output().length;
-      terminal.socket.write(`PATH="$WMUX_WSL_BIN:${linuxRoot}/bin:$PATH" ${command}\r`);
-      await until(() => terminal.output().slice(baseline), (s) => s.includes('WMUX_FAKE_CLAUDE_READY'), 'Claude hook execution');
+      const runId = randomUUID(); // A restored scrollback marker must not satisfy this launch.
+      terminal.socket.write(`WMUX_TEST_RUN="${runId}" CODEX_HOME="${linuxRoot}/codex-home" PATH="$WMUX_WSL_BIN:${linuxRoot}/bin:$PATH" ${command}\r`);
+      await until(() => terminal.output().slice(baseline), (s) => s.includes(`${readyMarker} ${runId}`), `${agent} bridge execution`);
       return terminal;
     };
     try {
@@ -128,7 +148,7 @@ describe.runIf(enabled)('WSL exact conversation recovery', () => {
         expect(created.cwd).toBe(cwd);
         expect(created.wslTarget.distribution).toBe(distro);
         expect(created.args).toEqual(selectedArgs);
-        await runClaude(ids[i], `claude --session-id ${conversations[i]}`);
+        await runAgent(ids[i], `${agent} --session-id ${conversations[i]}`);
       }
       const captured = await until(list, (sessions) => ids.every((id, i) => sessions.find((s) => s.id === id)?.resumeBinding?.sessionId === conversations[i]), 'distinct captured IDs');
       for (const session of captured) expect(session.resumeBinding?.cwd, JSON.stringify({ cwd: session.cwd, bindingCwd: session.resumeBinding?.cwd })).toBe(cwd);
@@ -149,9 +169,9 @@ describe.runIf(enabled)('WSL exact conversation recovery', () => {
           expect(session.wslTarget).toEqual(target);
           expect(session.args).toEqual(selectedArgs);
           expect(session.resumeBinding?.sessionId).toBe(conversations[i]);
-          const resume = toResumeCommand('claude', session.resumeBinding, session.cwd);
-          expect(resume).toBe(`claude --resume ${conversations[i]}`);
-          await runClaude(ids[i], resume);
+          const resume = toResumeCommand(agent, session.resumeBinding, session.cwd);
+          expect(resume).toBe(`${agent} ${agent === 'claude' ? '--resume' : 'resume'} ${conversations[i]}`);
+          await runAgent(ids[i], resume);
         }
       }
       // A removed directory keeps the same pane and buffer across failed
@@ -170,7 +190,7 @@ describe.runIf(enabled)('WSL exact conversation recovery', () => {
         expect(s.state).toBe('suspended');
         expect(s.recoveryError).toContain('WSL could not open');
         expect(fs.existsSync(s.bufferDumpPath)).toBe(true);
-        expect(fs.readFileSync(s.bufferDumpPath, 'utf8')).toContain('WMUX_FAKE_CLAUDE_READY');
+        expect(fs.readFileSync(s.bufferDumpPath, 'utf8')).toContain(readyMarker);
       }
       await stop(); await start();
       expect((await list()).filter((s) => ids.includes(s.id))).toHaveLength(2);

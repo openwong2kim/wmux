@@ -1,4 +1,4 @@
-# WSL directories and Claude session recovery
+# WSL directories and agent session recovery
 
 On Windows, choose `C:\Windows\System32\wsl.exe` as the terminal shell. Select
 the WSL distribution in Settings, then set an absolute Linux startup directory, such as `/home/user/project`. `~` and
@@ -65,6 +65,37 @@ conversation once. Its SessionStart hook then records the exact ID for future
 recovery. A pane already running under the old daemon must be recreated under
 the updated daemon to receive the integration.
 
+## Codex resume
+
+Launch `codex` normally inside a new WSL pane. A pane-local launcher supplies
+Codex's `notify` command for that invocation. After a completed interactive
+turn, the notification carries its exact thread ID and Linux working directory
+through WSL interop to wmux's existing authenticated Windows Codex bridge.
+Resume can then type `codex resume <thread-id>`, including when several panes
+share the same project. Press Enter to execute the typed recovery command.
+
+Capture requires a completed turn; merely opening Codex does not emit this
+notification. Existing panes without a binding still offer `codex resume --last`.
+In a new pane, use `codex resume` to select the correct old conversation and
+complete one turn to bind it. The integration matches the reported UUID to its
+rollout filename under `CODEX_HOME/sessions/YYYY/MM/DD` and checks only the first
+`session_meta` record for a top-level CLI session. It does not guess the newest
+session in a shared directory. This rejects notifications from temporary title
+generation and subagents, which must not replace the pane’s conversation binding.
+It relies on Codex’s current rollout layout; missing or malformed metadata is
+ignored rather than bound to an unverified session.
+
+No Windows or Linux Codex settings are written. The launcher checks user,
+profile, system and ancestor project configuration (including `CODEX_HOME` and
+`--cd`) before injecting a per-launch override. If any of those layers or an
+explicit `-c`/`--config` argument configures `notify`, it launches Codex unchanged
+and reports that capture was not injected. This deliberately conservative check
+also preserves notifiers in profiles or project layers that Codex might not
+select or trust. Unreadable/malformed settings or an unavailable helper likewise
+leave the original launch intact. Linux Node and Python are not required by the
+integration: the small TOML guard and notification bridge use wmux's Windows
+runtime. User hooks and their trust settings are not changed or bypassed.
+
 ## Requirements and scope
 
 - WSL with Bash and Windows executable interop enabled. wmux starts Bash and
@@ -74,14 +105,13 @@ the updated daemon to receive the integration.
 - Exec units skip interactive startup files to keep output free of banners and
   prompt markers. Their commands must use the non-interactive Linux PATH (or set
   PATH explicitly); interactive panes still source `~/.bashrc`.
-- Claude must be installed on the Linux PATH. The integration uses a pane-local
-  PATH shim. An alias/function or absolute path that bypasses that shim, or a
-  later explicit `--settings` override, can bypass these hooks.
-- `WMUX_SHELL_INTEGRATION=0` disables the shell markers and Claude shim while
+- Claude/Codex must be installed on the Linux PATH. The integration uses pane-local
+  PATH shims. An alias/function or absolute path that bypasses a shim, or a
+  later explicit Claude `--settings` override, can bypass capture.
+- `WMUX_SHELL_INTEGRATION=0` disables the shell markers and agent shims while
   retaining the directory and normal Bash startup setup.
-- Directory restoration also applies to other programs in WSL. This change does
-  not implement new Codex hooks or Windows access to Linux transcript files for
-  the chat view.
+- Directory restoration also applies to other programs in WSL. This integration
+  does not provide Windows access to Linux transcript files for the chat view.
 
 ## Regression test
 
@@ -94,14 +124,24 @@ $env:WMUX_TEST_WSL = '1'
 npx vitest run --config vitest.runtime.config.ts src/daemon/__tests__/wslRecovery.runtime.test.ts
 ```
 
-The test starts a separate daemon with a unique data suffix. A fake Claude CLI
-runs the real per-launch hook and Windows bridge, without model requests or
-changes to global Claude settings. It checks two distinct IDs in one quoted,
+The test starts a separate daemon with a unique data suffix for each agent. Fake
+Claude and Codex CLIs run the real per-launch adapters and Windows bridges,
+without model requests or changes to global agent settings. It checks two distinct IDs in one quoted,
 Unicode Linux path, live detach/reattach, two daemon restarts, exact resume
 commands, pinned distribution/user, Linux home expansion and missing-directory
 failure. It also removes the project directory, verifies that failed retries and
 another restart retain both pane IDs and scrollback, restores the directory,
 and retries the same conversations. Set `WMUX_TEST_WSL_DISTRO` to exercise a specific installed distribution. Each test cleans up its own fixtures and daemon.
+
+On Linux/WSL or macOS, the optional real Codex CLI check uses a private config
+directory and a loopback model stub (no account or model requests). It verifies
+that a completed interactive turn fires `notify`, then resumes that exact thread
+and checks the next notification's ID. It has been exercised with Codex 0.154.0:
+
+```bash
+WMUX_TEST_CODEX_BINARY="$(command -v codex)" npx vitest run \
+  --config vitest.runtime.config.ts src/shared/__tests__/wslCodexIntegration.runtime.test.ts
+```
 
 To exercise Electron's packaged runtime too, set
 `WMUX_TEST_DAEMON_EXECUTABLE` to the built `wmux.exe` and `WMUX_TEST_DAEMON_BUNDLE` to its
