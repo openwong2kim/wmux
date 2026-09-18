@@ -232,7 +232,12 @@ export default function FleetView() {
   // workspace+pane+surface directly via the shared activation core.
   const jump = useCallback((card: FleetPane) => {
     const getState = () => useStore.getState();
-    if (card.ptyId) {
+    // #1343 — `!card.remote` is load-bearing: a remote row's ptyId is the
+    // SYNTHETIC `remote:{host}:{session}` key, which no local surface carries,
+    // so focusPaneByPtyId would fail its lookup and the click would silently do
+    // nothing. Remote rows take the pane/surface path below, as they did when
+    // they still had an empty ptyId.
+    if (card.ptyId && !card.remote) {
       // focusPaneByPtyId unstashes on the way (#977).
       focusPaneByPtyId(getState, card.ptyId);
     } else if (card.surfaceId) {

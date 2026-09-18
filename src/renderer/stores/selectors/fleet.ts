@@ -428,6 +428,13 @@ export function selectFleetPanes(state: FleetSelectorState): FleetPane[] {
       // invisible to every local PTY-keyed map below, so without this it lands
       // as an anonymous idle card. Resolve it against the attached host mirror
       // instead, with the same rules the sidebar roster uses.
+      //
+      // Keyed on the leaf's ACTIVE surface, like every other field on this row:
+      // this pass is one row per leaf, the roster is one row per surface. A
+      // remote session sitting on a BACKGROUND tab of a mixed leaf therefore
+      // reaches the roster but not this card, exactly as a background local
+      // agent's identity does. Only attention statuses are scanned across tabs,
+      // and a host snapshot carries none.
       const remoteAgent =
         surf?.surfaceType === 'remote-terminal'
           ? resolveRemoteAgent(state.remoteWorkspaces, surf.remoteHostId, surf.remoteSessionId)
