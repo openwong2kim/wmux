@@ -238,8 +238,20 @@ function harnessFor(mode: (typeof MODES)[number]): Harness {
       // because the user is looking at something else. Chrome throttles input
       // and rendering for such a window, which is the whole reason this mode is
       // measured separately.
-      const spare = (await browser.newPage()) as { bringToFront: () => Promise<void> };
-      await spare.bringToFront().catch(() => undefined);
+      //
+      // Bounded and swallowed, like everything else in here: this is the last
+      // await in setup, and an unbounded one would be the one way left for a
+      // loaded machine to blow the hook timeout — which is a FAILURE, and this
+      // whole gate exists so that a machine that cannot do headed Chrome skips
+      // instead. Losing the spare window only costs the mode its unfocused
+      // shape, so it is worth strictly less than the suite staying green.
+      await Promise.race([
+        (async () => {
+          const spare = (await browser.newPage()) as { bringToFront: () => Promise<void> };
+          await spare.bringToFront();
+        })().catch(() => undefined),
+        new Promise<void>((resolve) => setTimeout(resolve, 10_000)),
+      ]);
     }
   }
 
