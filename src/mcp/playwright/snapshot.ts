@@ -19,7 +19,7 @@ import {
   collectHoverTriggers,
   countHasSubmenuMarkers,
   formatHoverItems,
-  hoverMenusFooterLine,
+  hoverMenusNote,
   phaseOneMark,
   probeHoverSurfaces,
   type HoverCandidate,
@@ -2617,18 +2617,7 @@ export async function generateSnapshot(
   const footer = facts
     ? formatPageFactsFooter(facts, peekRecentPendingRequests(page), { hasFrameContent })
     : '';
-  // The hover line sits with the page facts rather than in the tree: it is a
-  // whole-page fact, and it is only worth saying when the items are NOT on the
-  // lines above — with probeHover already passed, it would tell the agent to
-  // pass a flag it just passed.
-  //
-  // Its COUNT comes from the rendered tree below rather than from the mark map,
-  // so a suppressed or truncated marker cannot leave the footer promising
-  // triggers the tree does not show. The map's size still pays the budget: it is
-  // an upper bound on that count, so reserving it can only over-reserve.
-  const wantHoverLine = options?.probeHover !== true;
-  const hoverReserve = wantHoverLine ? hoverMenusFooterLine(hoverSurfaces?.size ?? 0) : '';
-  const budget = Math.max(0, maxLength - note.length - footer.length - hoverReserve.length);
+  const budget = Math.max(0, maxLength - note.length - footer.length);
 
   // If the output exceeds the budget AND we are in 'ai' mode, strip
   // non-interactive nodes and regenerate.
@@ -2651,13 +2640,20 @@ export async function generateSnapshot(
     output = output.slice(0, budget) + '\n... (truncated)';
   }
 
-  const hoverLine = wantHoverLine ? hoverMenusFooterLine(countHasSubmenuMarkers(output)) : '';
-  output = note + output + footer + hoverLine;
+  output = note + output + footer;
 
   // Store the refMap for this page so resolveRef can use it without re-querying
   setPageRefs(page, refs);
 
-  const notes = [queryNote, filterNote, stripNote].filter((n) => n.length > 0);
+  // Counted from the RENDERED tree, not from the mark map: serialisation
+  // suppresses the marker on an already-expanded node and the length cap can
+  // strip marked lines, so the map's size would promise triggers the tree does
+  // not show. Joined with the other leading notes rather than appended, so it
+  // survives windowing on a long page — see hoverMenusNote.
+  const hoverNote =
+    options?.probeHover === true ? '' : hoverMenusNote(countHasSubmenuMarkers(output));
+
+  const notes = [queryNote, filterNote, stripNote, hoverNote].filter((n) => n.length > 0);
   return notes.length > 0 ? `${notes.join('\n')}\n${output}` : output;
 }
 

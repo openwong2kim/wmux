@@ -37,6 +37,8 @@ interface FakeOptions {
   afterQueue?: (index: number) => AfterReply[];
   /** Reply to the post-restore "did it close?" check. */
   closeReply?: (index: number) => AfterReply;
+  /** Did the pointer land on the anchor? `attempt` is 1-based. */
+  aimOk?: (index: number, attempt: number) => boolean;
   /** ms the virtual clock advances on every CDP send. */
   msPerSend?: number;
 }
@@ -55,6 +57,7 @@ function makeFake(options: FakeOptions = {}): Fake {
   const steps: Fake['steps'] = [];
   /** Per-candidate consumption state, keyed by the handle we gave it. */
   const pollsUsed = new Map<string, number>();
+  const aimsUsed = new Map<string, number>();
 
   const indexOf = (objectId: string): number => Number(objectId.replace('trigger-', ''));
 
@@ -77,7 +80,20 @@ function makeFake(options: FakeOptions = {}): Fake {
       const index = indexOf(objectId);
 
       if (mode === 'before') {
+        // The anchor rides along as the third argument: the trigger is what the
+        // reveal watch is scoped from, the anchor is what gets hovered.
+        expect(list[2]?.objectId).toBe(`anchor-${index}`);
         return { result: { objectId: `before-${index}` } };
+      }
+      if (mode === 'aim') {
+        const tries = (aimsUsed.get(objectId) ?? 0) + 1;
+        aimsUsed.set(objectId, tries);
+        const ok = options.aimOk ? options.aimOk(index, tries) : true;
+        return {
+          result: {
+            value: { url: URL_A, ok, vw: VIEWPORT.width, vh: VIEWPORT.height, bx: 100, by: 100, bw: 80, bh: 20 },
+          },
+        };
       }
       // Every `after` call must address the SAME hidden-element handle the
       // `before` call produced: a re-query would also pick up whatever the
@@ -130,6 +146,7 @@ function makeFake(options: FakeOptions = {}): Fake {
 function candidates(count: number): HoverCandidate[] {
   return Array.from({ length: count }, (_, i) => ({
     objectId: `trigger-${i}`,
+    anchorObjectId: `anchor-${i}`,
     backendNodeId: 100 + i,
     score: 10 - i,
     targets: [`#sub-${i}`],
@@ -229,7 +246,9 @@ describe('probeHoverSurfaces: the happy path', () => {
 
   it('skips a trigger with no a11y node — there would be no line to mark', async () => {
     const fake = makeFake();
-    const orphan: HoverCandidate[] = [{ objectId: 'trigger-0', score: 5, targets: [] }];
+    const orphan: HoverCandidate[] = [
+      { objectId: 'trigger-0', anchorObjectId: 'anchor-0', score: 5, targets: [] },
+    ];
     const outcome = await probeHoverSurfaces(fake.client, orphan, ctx());
     expect(outcome.probed).toBe(0);
     expect(fake.moves).toEqual([]);
@@ -385,6 +404,38 @@ describe('probeHoverSurfaces: the restore step', () => {
     expect(methods.lastIndexOf('Runtime.callFunctionOn')).toBeLessThan(
       methods.lastIndexOf('Input.dispatchMouseEvent'),
     );
+  });
+});
+
+describe('probeHoverSurfaces: the pointer has to actually land', () => {
+  it('[CRITICAL] reports nothing when something is covering the element it aimed at', async () => {
+    // The live-dogfood failure: the approach path crossed the nav, which opened
+    // an absolutely-positioned submenu over the account button below it. The
+    // hover never happened, and the read credited that submenu's items to the
+    // button.
+    const fake = makeFake({ aimOk: () => false });
+    const outcome = await probeHoverSurfaces(fake.client, candidates(1), ctx());
+
+    expect(outcome.revealed.size).toBe(0);
+    // It still counts as probed — the page was touched — and the pointer is off.
+    expect(outcome.probed).toBe(1);
+    expect(fake.moves[fake.moves.length - 1]).toEqual(NEUTRAL);
+  });
+
+  it('re-approaches once from the neutral point, which closes the intruder', async () => {
+    const fake = makeFake({ aimOk: (_i, attempt) => attempt >= 3 });
+    const outcome = await probeHoverSurfaces(fake.client, candidates(1), ctx());
+
+    // Aim, park + re-aim, re-approach + aim: three checks, and the reveal is
+    // only read once the pointer is genuinely on the anchor.
+    expect(fake.steps.filter((s) => s.mode === 'aim').length).toBe(3);
+    expect(outcome.revealed.get(100)?.items).toEqual(['Docs', 'API']);
+  });
+
+  it('does not read a reveal before the aim check passes', async () => {
+    const fake = makeFake({ aimOk: () => false });
+    await probeHoverSurfaces(fake.client, candidates(1), ctx());
+    expect(fake.steps.some((s) => s.mode === 'after')).toBe(false);
   });
 });
 
