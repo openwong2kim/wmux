@@ -350,9 +350,9 @@ GET /api/events?since=<cursor>     (Bearer)
 ## 5. Panes
 
 ```
-GET /api/config    → {allowInput, allowUpload, allowTranscript, gatedTools,
-                      gateEnabled?, protocolVersion, minProtocolVersion,
-                      serverVersion}
+GET /api/config    → {allowInput, allowUpload, allowTranscript, liveActivityPush,
+                      gatedTools, gateEnabled?, protocolVersion,
+                      minProtocolVersion, serverVersion}
 GET /api/sessions  → {sessions: [{id, cwd, cols, rows, state, agent, lastActivity,
                       workspace?, shell?, lastDetectedAgent?, cwdLeaf?,
                       liveness?, lastAssistantText?}]}
@@ -810,6 +810,15 @@ Notifications are sealed **on the machine that sends them**, before they reach
 the relay the project operates. The relay cannot read them; the Notification
 Service Extension decrypts on-device and rewrites the alert.
 
+**One exception, and it is not a notification body.** Live Activity updates
+(below) cannot be sealed: a Live Activity push never runs the Notification
+Service Extension, so there is no place on-device to decrypt an envelope. Those
+carry six plaintext integers — pending approvals, blocked panes, oldest blocked
+minutes, and the running/working/idle agent counts — and nothing else. No pane
+name, no workspace name, no question text, no preview. "The relay cannot read
+them" stays true of every notification **body**; what the relay can read on the
+Live Activity route is a set of counters.
+
 **The app owns the key.** At registration the phone generates an X25519 key
 pair, keeps the private half in the Keychain, and registers only the 32-byte
 public half. The daemon stores a public key and nothing secret, so the device
@@ -894,6 +903,61 @@ called, not to the one before it.
 
 A `410` from Apple makes the daemon forget your registration, so a reinstalled
 app must register again before it hears anything.
+
+---
+
+### Live Activity — the daemon drives the lock screen
+
+`GET /api/config` answers `liveActivityPush: true` on a daemon that can push
+Live Activity updates. A daemon that predates this omits the field, which reads
+as false: keep starting the activity locally there, exactly as before.
+
+```
+POST /api/live-activity-registration   (device credential, never the operator token)
+  body: {pushToStartToken?: hex,
+         activityToken?: hex | null,
+         apnsEnvironment?: 'development' | 'production'}
+  → 200 {ok: true}
+  → 400 {error: 'bad-token' | 'bad-apns-environment'}
+  → 403 {error: 'push-is-for-devices'}
+  → 409 {error: 'revoked' | 'not-found' | 'persist-failed'}
+  → 503 {error: 'push-unavailable'}
+```
+
+**This route MERGES; `/api/push-registration` replaces.** The difference is not
+cosmetic. The two tokens arrive at different moments — the push-to-start token
+at launch, the activity token only after the system has actually started an
+activity — so a wholesale replace would mean every call erased whichever token
+was not in hand. An omitted field is left as it was. `null` **removes** that
+token.
+
+`activityToken: null` is how you say "the activity is over" — your app ended it,
+or the person swiped it away. Send it; otherwise the daemon keeps pushing
+updates to a token Apple will eventually answer `410` for.
+
+**`apnsEnvironment` belongs to this route too**, and is not read from a push
+registration. A phone that refused notification permission has no push
+registration at all (Live Activities are a separate permission), and a push
+registration replaces wholesale, so a stage learned there cannot be relied on
+here. Same two words, same validation, same `400 bad-apns-environment`.
+
+**The push-to-start token is one per app, so it names one daemon.** iOS issues a
+single push-to-start token for the whole app, not one per server, so registering
+it with two daemons would have both of them starting activities and the app
+adopting whichever it saw first. Register it with the daemon you are paired with
+now. When that pairing changes, send `pushToStartToken: null` to the previous
+daemon on a best effort — one failed call is not worth blocking a re-pair.
+
+A `410` on this path **only forgets the token that earned it** — the activity
+token on a failed update, the push-to-start token on a failed start. Your push
+registration (§ above) is untouched. An activity token dies every time an
+activity ends, which is routine; treating that as "this device is gone" would
+switch approval notifications off several times a day.
+
+Content-state carries counters only — see the exception noted at the top of this
+section. When your app is in the foreground it should overwrite the activity
+with its own full local snapshot (agent rows included); the remote numbers are
+what the lock screen shows while your app is not running.
 
 ## 8. Photo upload
 
