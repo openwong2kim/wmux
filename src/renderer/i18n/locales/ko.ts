@@ -177,6 +177,7 @@ export const ko = {
   'fleet.approvals.from': '보낸 쪽',
   'fleet.approvals.to': '받는 쪽',
   'fleet.approvals.plugin': '플러그인',
+  'fleet.approvals.workspace': '워크스페이스',
   'fleet.approvals.enterApprove': '승인',
   'fleet.approvals.delDeny': '거부',
   'fleet.approvals.autoRejected': '자동 거부됨: {name}',

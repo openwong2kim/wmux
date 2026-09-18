@@ -171,15 +171,27 @@ describe('LiveChromeClient CDP', () => {
     // tabs against Chrome's own target list by that id).
     expect(await listP).toEqual([{ surfaceId: 't1', targetId: 't1', url: 'https://a.test/', title: 'A' }]);
 
+    // The workspace's FIRST tab asks Chrome for its own window (agent-window
+    // grouping); the window it actually landed in is then recorded. Both are
+    // best-effort and neither decides ownership — see LiveChromeClient.scope.
     const openP = client.openTab('https://b.test/');
     await tick();
-    expect(ws.sent[1]).toMatchObject({ method: 'Target.createTarget', params: { url: 'https://b.test/' } });
+    expect(ws.sent[1]).toMatchObject({
+      method: 'Target.createTarget',
+      params: { url: 'https://b.test/', newWindow: true },
+    });
     ws.reply({ targetId: 't9' });
+    await tick();
+    expect(ws.sent[2]).toMatchObject({
+      method: 'Browser.getWindowForTarget',
+      params: { targetId: 't9' },
+    });
+    ws.reply({ windowId: 11 });
     expect(await openP).toEqual({ surfaceId: 't9', targetId: 't9', url: 'https://b.test/' });
 
     const selP = client.selectSurface('t1');
     await tick();
-    expect(ws.sent[2]).toMatchObject({ method: 'Target.activateTarget', params: { targetId: 't1' } });
+    expect(ws.sent[3]).toMatchObject({ method: 'Target.activateTarget', params: { targetId: 't1' } });
     ws.reply({});
     expect(await selP).toBe(true);
 
@@ -189,7 +201,7 @@ describe('LiveChromeClient CDP', () => {
     // user's own t1 is not — a random user tab never becomes the default pin.
     const seedP = client.cdpInfoTargets();
     await tick();
-    expect(ws.sent[3]).toMatchObject({ method: 'Target.getTargets' });
+    expect(ws.sent[4]).toMatchObject({ method: 'Target.getTargets' });
     ws.reply({
       targetInfos: [
         { targetId: 't1', type: 'page', title: 'A', url: 'https://a.test/' },
@@ -197,7 +209,15 @@ describe('LiveChromeClient CDP', () => {
       ],
     });
     expect(await seedP).toEqual([
-      { surfaceId: 't9', targetId: 't9', workspaceId: undefined, url: 'https://b.test/', title: 'B' },
+      {
+        surfaceId: 't9',
+        targetId: 't9',
+        workspaceId: undefined,
+        url: 'https://b.test/',
+        title: 'B',
+        // Seeded rows now say whether this workspace may WRITE to the tab.
+        owner: 'agent',
+      },
     ]);
     expect((await client.endpoint()).wsEndpoint).toBe('ws://127.0.0.1:9333/devtools/browser/abc');
   });
@@ -214,10 +234,15 @@ describe('LiveChromeClient CDP', () => {
     await tick();
     const ws = FakeWebSocket.instances[0];
     ws.reply({ targetId: 'ta' });
+    // …then the best-effort window read that follows every open.
+    await tick();
+    ws.reply({ windowId: 11 });
     await openA;
     const openB = client.openTab('https://b.test/', 'ws-b');
     await tick();
     ws.reply({ targetId: 'tb' });
+    await tick();
+    ws.reply({ windowId: 12 });
     await openB;
 
     // tb has died in Chrome; ta belongs to ws-a.
@@ -225,7 +250,14 @@ describe('LiveChromeClient CDP', () => {
     await tick();
     ws.reply({ targetInfos: [{ targetId: 'ta', type: 'page', title: 'A', url: 'https://a.test/' }] });
     expect(await forA).toEqual([
-      { surfaceId: 'ta', targetId: 'ta', workspaceId: 'ws-a', url: 'https://a.test/', title: 'A' },
+      {
+        surfaceId: 'ta',
+        targetId: 'ta',
+        workspaceId: 'ws-a',
+        url: 'https://a.test/',
+        title: 'A',
+        owner: 'agent',
+      },
     ]);
 
     const forB = client.cdpInfoTargets('ws-b');

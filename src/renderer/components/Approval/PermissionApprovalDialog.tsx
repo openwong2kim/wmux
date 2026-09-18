@@ -37,6 +37,15 @@ export interface PermissionApprovalDialogProps {
   declaredCapabilities: readonly string[];
   /** Optional reason text from the plugin's mcp.declarePermissions call. */
   rationale?: string;
+  /**
+   * Headline, when the generic plugin one would be wrong. The live-Chrome tab
+   * borrow prompt sends the whole question here ("Agent in workspace X wants to
+   * control tab ..."), because there are no capabilities to group and the client
+   * is a workspace rather than a plugin. Absent keeps the plugin wording.
+   */
+  title?: string;
+  /** What is being asked. Absent (and 'plugin') keeps the plugin layout. */
+  kind?: 'plugin' | 'browser-borrow';
   /** Called when the user clicks Approve. */
   onApprove: () => void;
   /** Called when the user clicks Deny. */
@@ -100,12 +109,17 @@ export function PermissionApprovalDialogView(
             className="text-sm font-semibold font-mono"
             style={{ color: 'var(--text-main)' }}
           >
-            {t('permission.pluginTitle')}
+            {props.title ?? t('permission.pluginTitle')}
           </p>
         </div>
 
         <div className="text-xs font-mono" style={{ color: 'var(--text-sub)' }}>
-          <span style={{ color: 'var(--text-subtle)' }}>{t('permission.pluginLabel')}</span>{' '}
+          {/* The label names WHAT is asking. A borrow prompt is a workspace's
+              agent, not a plugin, and calling it one would misattribute the
+              request. */}
+          <span style={{ color: 'var(--text-subtle)' }}>
+            {t(props.kind === 'browser-borrow' ? 'permission.workspaceLabel' : 'permission.pluginLabel')}
+          </span>{' '}
           <span style={{ color: 'var(--text-main)' }}>{props.clientName}</span>
         </div>
 

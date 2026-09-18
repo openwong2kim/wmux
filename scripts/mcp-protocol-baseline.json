@@ -3,7 +3,7 @@
   "profiles": {
     "full": {
       "maxListBytes": 80000,
-      "wireResultSha256": "2ab57b079b71675ace621585da06624da1fa295e0158f707117aa85075b8b0d3",
+      "wireResultSha256": "574d52a4da6cb7e61c836a70cb36e4e60770862fd9e35e398a8cf3df99c0bbf3",
       "instructionSha256": "f18849bb1ea62bcf5a1e46a73d633c787b4e08e763cc04b01c4e557df8f833eb",
       "toolNames": [
         "browser_open",
@@ -26,7 +26,6 @@
         "browser_emulate",
         "browser_resize",
         "browser_wait",
-        "browser_request_help",
         "browser_file_upload",
         "browser_download",
         "browser_wait_for_download",

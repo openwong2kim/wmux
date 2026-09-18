@@ -168,6 +168,7 @@ export const zh = {
   // Permission approval dialog
   'permission.pluginTitle': '插件请求权限',
   'permission.pluginLabel': '插件：',
+  'permission.workspaceLabel': '工作区：',
 
   // Workspace
   'workspace.agentRunning': '智能体运行中',
@@ -841,6 +842,7 @@ export const zh = {
   'fleet.approvals.from': '来自',
   'fleet.approvals.to': '到',
   'fleet.approvals.plugin': '插件',
+  'fleet.approvals.workspace': '工作区',
   'fleet.approvals.enterApprove': '批准',
   'fleet.approvals.delDeny': '拒绝',
   'project.dialogTitle': '项目配置（wmux.json）',

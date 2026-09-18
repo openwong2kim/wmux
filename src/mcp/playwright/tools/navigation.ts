@@ -25,6 +25,7 @@ import { recordAction } from '../../browser-replay/actionRing';
 import { refererFor } from '../../../shared/referer';
 import { NavigationNotCommittedError, navigateFromPage } from '../link-navigation';
 import { getOpenerKey, noteOpenedSurface } from '../surfaceRouting';
+import { BORROW_RPC_TIMEOUT_MS } from '../../../shared/liveWriteScope';
 import {
   browserTabsError,
   isBrowserTabsResult,
@@ -55,18 +56,22 @@ const BROWSER_NAVIGATE_BACK_SHAPE = {
 
 export const BROWSER_TABS_SHAPE = {
   action: z
-    .enum(['list', 'new', 'select', 'close'])
+    .enum(['list', 'new', 'select', 'close', 'borrow', 'return'])
     .optional()
     .describe('Defaults to "list".'),
   surfaceId: z
     .string()
     .min(1)
     .optional()
-    .describe('Opaque ID from "list" or "new". Required for "select" and "close".'),
+    .describe('Opaque ID from "list" or "new". Required for "select", "close", "borrow" and "return".'),
   url: z
     .string()
     .optional()
     .describe('For "new".'),
+  scope: z
+    .enum(['agent', 'user', 'all'])
+    .optional()
+    .describe('For "list" on Live Chrome: "agent" = tabs you may write to, "user" = the rest, "all" (default) = both.'),
   tabId: z
     .never()
     .optional()
@@ -195,6 +200,9 @@ function publicTab(tab: BrowserTabDescriptor) {
   return {
     surfaceId: tab.surfaceId,
     paneId: tab.paneId,
+    // Live Chrome only: whether this workspace may WRITE to the tab. Absent on
+    // the other backends, where every addressable tab is one wmux opened.
+    ...(tab.owner !== undefined && { owner: tab.owner }),
     // Every rendered tab URL passes through here (list / new / select / close),
     // so this is the single place a credential in a query string or in
     // `scheme://user:pass@host` gets masked before the agent reads it.
@@ -224,6 +232,12 @@ function tabsToolSuccess(result: BrowserTabsSuccessResult) {
       break;
     case 'close':
       payload = { action: result.action, closed: publicTab(result.closed) };
+      break;
+    case 'borrow':
+      payload = { action: result.action, result: result.result, tab: publicTab(result.tab) };
+      break;
+    case 'return':
+      payload = { action: result.action, surfaceId: result.surfaceId, returned: result.returned };
       break;
   }
   return {
@@ -298,7 +312,7 @@ export function registerNavigationTools(server: McpServer, deps: BrowserToolDeps
               if (!resolvedCheck.valid && !resolvedCheck.unresolved) {
                 throw taggedFailure('invalid_params', `URL blocked: ${resolvedCheck.reason}`);
               }
-              const page = await engine.getPageForScope(scope);
+              const page = await engine.getPageForScope(scope, { intent: 'write' });
               if (!page) {
                 throw taggedFailure(
                   'not_supported',
@@ -444,7 +458,7 @@ export function registerNavigationTools(server: McpServer, deps: BrowserToolDeps
             // resolved page over Playwright (dogfood P2).
             const engine = PlaywrightEngine.getInstance();
             if ((await engine.resolveWorkspaceBackend(scope.workspaceId)) === 'chrome') {
-              const page = await engine.getPageForScope(scope);
+              const page = await engine.getPageForScope(scope, { intent: 'write' });
               if (!page) {
                 throw taggedFailure(
                   'not_supported',
@@ -503,12 +517,26 @@ export function registerNavigationTools(server: McpServer, deps: BrowserToolDeps
   // -----------------------------------------------------------------------
   server.tool(
     'browser_tabs',
-    'Manage browser surfaces in the calling workspace. Address one only by the opaque surfaceId from list or new, never by list position. select moves UI focus only and does NOT retarget the other browser tools, so pass surfaceId explicitly on follow-up calls. selected likewise reports UI focus (always false on the chrome backend), not tool targeting. list rows carry mine: true (you opened it), false (another agent did), or "unknown" (nobody claims it). Omitting surfaceId targets the surface YOU most recently opened; if you opened none, one no other agent opened, or a new one — so to act on any earlier tab pass its surfaceId explicitly.',
+    'Manage browser surfaces in the calling workspace. On Live Chrome you read every tab but write only to the tabs you opened plus tabs the user lends you: each list row carries owner "agent" / "borrowed" / "user", scope filters the list, borrow asks the user for one of their tabs (they may refuse, or not answer in time) and return gives it back. Address one only by the opaque surfaceId from list or new, never by list position. select moves UI focus only and does NOT retarget the other browser tools, so pass surfaceId explicitly on follow-up calls. selected likewise reports UI focus (always false on the chrome backend), not tool targeting. list rows carry mine: true (you opened it), false (another agent did), or "unknown" (nobody claims it). Omitting surfaceId targets the surface YOU most recently opened; if you opened none, one no other agent opened, or a new one — so to act on any earlier tab pass its surfaceId explicitly.',
     BROWSER_TABS_SHAPE,
-    async ({ action, surfaceId, url }) => {
+    async ({ action, surfaceId, url, scope }) => {
       const resolvedAction: BrowserTabsAction = action ?? 'list';
       try {
-        if ((resolvedAction === 'select' || resolvedAction === 'close') && !surfaceId) {
+        if (resolvedAction !== 'list' && scope !== undefined) {
+          return tabsToolError(
+            browserTabsError(
+              'BROWSER_TABS_INVALID_ARGUMENT',
+              `browser_tabs ${resolvedAction} does not accept scope.`,
+            ),
+          );
+        }
+        if (
+          (resolvedAction === 'select'
+            || resolvedAction === 'close'
+            || resolvedAction === 'borrow'
+            || resolvedAction === 'return')
+          && !surfaceId
+        ) {
           return tabsToolError(
             browserTabsError(
               'BROWSER_TABS_INVALID_ARGUMENT',
@@ -564,16 +592,27 @@ export function registerNavigationTools(server: McpServer, deps: BrowserToolDeps
           );
         }
 
-        const result = await sendRpc('browser.tabs', {
+        const tabsParams = {
           action: resolvedAction,
           workspaceId,
           ...(surfaceId && { surfaceId }),
           ...(url !== undefined && { url }),
+          ...(scope !== undefined && { scope }),
           // Only `new` opens something, but the key rides along on every action
           // so main can answer "is this one mine?" per row on `list` — as a
           // verdict; the key itself never comes back.
           openerKey: getOpenerKey(),
-        });
+        };
+        // `borrow` blocks on a human, so it cannot share the 10 s default: that
+        // capped the user's 60 s answer window at ten seconds and reported a
+        // prompt still on screen as "temporarily unavailable". Every other action
+        // keeps the default.
+        // Spread rather than a ternary over two calls: only borrow carries a
+        // timeout argument at all, and every other action reaches sendRpc with
+        // exactly the arguments it had before.
+        const tabsArgs: [typeof tabsParams, number?] =
+          resolvedAction === 'borrow' ? [tabsParams, BORROW_RPC_TIMEOUT_MS] : [tabsParams];
+        const result = await sendRpc('browser.tabs', ...tabsArgs);
         if (!isBrowserTabsResult(result)) {
           throw new Error('Invalid browser.tabs response from wmux main.');
         }

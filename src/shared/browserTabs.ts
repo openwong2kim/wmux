@@ -1,6 +1,25 @@
-export const BROWSER_TABS_ACTIONS = ['list', 'new', 'select', 'close'] as const;
+export const BROWSER_TABS_ACTIONS = ['list', 'new', 'select', 'close', 'borrow', 'return'] as const;
 
 export type BrowserTabsAction = (typeof BROWSER_TABS_ACTIONS)[number];
+
+/**
+ * Which rows `list` returns (live backend; ignored elsewhere, where every
+ * addressable tab is one wmux opened).
+ *
+ *  - 'agent' — the tabs this workspace may WRITE to: the ones it opened, plus
+ *    the ones the user lent it.
+ *  - 'user'  — everything else in the browser. Readable, not writable.
+ *  - 'all'   — both, which is what list has always returned.
+ */
+export const BROWSER_TABS_SCOPES = ['agent', 'user', 'all'] as const;
+
+export type BrowserTabsScope = (typeof BROWSER_TABS_SCOPES)[number];
+
+export const DEFAULT_BROWSER_TABS_SCOPE: BrowserTabsScope = 'all';
+
+export function isBrowserTabsScope(value: unknown): value is BrowserTabsScope {
+  return typeof value === 'string' && (BROWSER_TABS_SCOPES as readonly string[]).includes(value);
+}
 
 export interface BrowserTabDescriptor {
   /** Stable wmux browser-surface identity. Never a list index or CDP target id. */
@@ -25,6 +44,19 @@ export interface BrowserTabDescriptor {
    * connection's opener key.
    */
   opener?: 'mine' | 'other';
+  /**
+   * Live backend only: whether this workspace may WRITE to the tab.
+   *
+   * 'agent' — wmux opened it for this workspace. 'borrowed' — the user lent it.
+   * 'user' — somebody else's tab (the user's own, or another workspace's): it
+   * can be read and listed, and a write is refused with `agent_window_scope:`
+   * until the user lends it. Absent on the other backends, where every
+   * addressable tab is agent-owned by construction.
+   *
+   * Distinct from `opener`, which is about the CONNECTION that opened a tab and
+   * is only ever a routing default. This one is a permission.
+   */
+  owner?: 'agent' | 'borrowed' | 'user';
 }
 
 export const BROWSER_TABS_ERROR_CODES = [
@@ -41,6 +73,16 @@ export const BROWSER_TABS_ERROR_CODES = [
   'BROWSER_TAB_NOT_FOUND',
   'BROWSER_TAB_URL_BLOCKED',
   'BROWSER_TAB_CREATE_FAILED',
+  /**
+   * A borrow request was not granted. The message says which way:
+   * `user_denied:`, `borrow_timeout:` (nobody answered inside the deadline —
+   * a deny that says so) or `borrow_pending:` (one request for this tab is
+   * already on screen). TERMINAL for this call; the agent may ask again once
+   * the pending one is answered.
+   */
+  'BROWSER_TAB_BORROW_REFUSED',
+  /** borrow / return only mean something on the live backend. */
+  'BROWSER_TAB_BORROW_UNSUPPORTED',
 ] as const;
 
 export type BrowserTabsErrorCode = (typeof BROWSER_TABS_ERROR_CODES)[number];
@@ -61,7 +103,14 @@ export type BrowserTabsSuccessResult =
   // handle on the opened tab (it cannot be listed, selected, or closed).
   | { ok: true; action: 'new'; backend: 'external'; opened: true; url: string }
   | { ok: true; action: 'select'; tab: BrowserTabDescriptor }
-  | { ok: true; action: 'close'; closed: BrowserTabDescriptor };
+  | { ok: true; action: 'close'; closed: BrowserTabDescriptor }
+  // The user lent this tab to the calling workspace. `result` is always
+  // 'borrowed' on the success shape — every other outcome is an error result,
+  // because the agent cannot proceed on it.
+  | { ok: true; action: 'borrow'; result: 'borrowed'; tab: BrowserTabDescriptor }
+  // `returned: false` is not a failure: the workspace held no grant on that
+  // tab, which is the state `return` was asking for.
+  | { ok: true; action: 'return'; surfaceId: string; returned: boolean };
 
 export type BrowserTabsResult = BrowserTabsSuccessResult | BrowserTabsErrorResult;
 
@@ -108,6 +157,14 @@ export function isBrowserTabsResult(value: unknown): value is BrowserTabsResult 
         return isBrowserTabDescriptor(result['tab']);
       case 'close':
         return isBrowserTabDescriptor(result['closed']);
+      case 'borrow':
+        return result['result'] === 'borrowed' && isBrowserTabDescriptor(result['tab']);
+      case 'return':
+        return (
+          typeof result['surfaceId'] === 'string'
+          && result['surfaceId'].length > 0
+          && typeof result['returned'] === 'boolean'
+        );
       default:
         return false;
     }
