@@ -386,6 +386,16 @@ export const IPC = {
   // the pluginHost deadlock-break, or a coalesced sibling). Lets the renderer
   // approval-inbox remove the row. Payload: { promptId }.
   PERMISSION_PROMPT_CLOSED: 'permission:prompt-closed',
+  // browser_request_help — the agent hands one browser step to the human.
+  // Deliberately modelled on the permission-prompt trio above rather than the
+  // RPC_COMMAND path: an agent-authored prompt string is untrusted text with a
+  // Done/Cancel answer, so the channel that carries it stays structurally
+  // incapable of reaching anything else. Payloads: BrowserHelpRequestInfo on
+  // OPEN, `{ requestId, outcome }` on RESOLVE, `{ requestId }` on CLOSED.
+  // Timeouts are main's (HelpRequests holds the deadline), never the renderer's.
+  BROWSER_HELP_OPEN: 'browser:help-open',
+  BROWSER_HELP_RESOLVE: 'browser:help-resolve',
+  BROWSER_HELP_CLOSED: 'browser:help-closed',
   // #898 — main → renderer push, once at startup, when a Claude Code plugin
   // install is found whose bridge still forces a permission prompt. wmux
   // refreshes its OWN copy of the bridge but never the plugin's, so this tells

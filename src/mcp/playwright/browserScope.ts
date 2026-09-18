@@ -179,6 +179,12 @@ const WORKSPACE_LEVEL_BROWSER_METHODS: ReadonlySet<string> = new Set<string>([
   // outside this helper. Listed so it can never be the reason a surface is
   // opened.
   'browser.surface.adopt',
+  // A help request is addressed by requestId, and main looks it up by id rather
+  // than by surface. Polling the status of a request that already exists must
+  // never open a browser pane; only `browser.help.request` (absent here) is
+  // surface-acting.
+  'browser.help.status',
+  'browser.help.cancel',
 ]);
 
 /**

@@ -2,6 +2,8 @@ import { useRef, useState, useEffect, useCallback } from 'react';
 import BrowserToolbar from './BrowserToolbar';
 import { useT } from '../../hooks/useT';
 import { useStore } from '../../stores';
+import { selectHelpRequestForSurface } from '../../stores/slices/browserHelpSlice';
+import type { BrowserHelpOutcome } from '../../../shared/browserHelp';
 import {
   BROWSER_NAVIGATE_EVENT,
   isSafeBrowserUrl,
@@ -93,6 +95,22 @@ export default function BrowserPanel({ surfaceId, workspaceId, initialUrl, parti
   const discardedRef = useRef(false);
   const [inspecting, setInspecting] = useState(false);
   const [inspectInfo, setInspectInfo] = useState<string | null>(null);
+
+  // browser_request_help — the open ask for THIS surface, if any. The record is
+  // the stored object (selectHelpRequestForSurface returns it as-is), so a bare
+  // subscription re-renders only when the ask itself changes.
+  const helpRequest = useStore((s) => selectHelpRequestForSurface(s, surfaceId));
+  const removeBrowserHelpRequest = useStore((s) => s.removeBrowserHelpRequest);
+
+  // Answer the ask. The optimistic local removal pairs with the authoritative
+  // BROWSER_HELP_CLOSED push main emits from inside its own settle, and both are
+  // idempotent — the highlight main put on the page is cleared there too, so the
+  // bar never has to reach into the guest itself.
+  const resolveHelp = useCallback((outcome: BrowserHelpOutcome) => {
+    if (!helpRequest) return;
+    void window.electronAPI.browserHelp?.resolve(helpRequest.requestId, outcome);
+    removeBrowserHelpRequest(helpRequest.requestId);
+  }, [helpRequest, removeBrowserHelpRequest]);
 
   // Update nav state from webview
   const updateNavState = useCallback(() => {
@@ -526,6 +544,86 @@ export default function BrowserPanel({ surfaceId, workspaceId, initialUrl, parti
         onClose={onClose}
       />
 
+      {/* browser_request_help — the agent hands one step to the human.
+          FIRST of the event's two renditions (the Fleet inbox row is the
+          second); DESIGN.md's attention grammar caps it there, so there is no
+          titlebar chip and no modal. It sits in the inspector toast's slot for
+          the same reason that band does: a transient, compact ~30px strip, not a
+          36px chrome row — the terminals/page lose no lasting height. */}
+      {helpRequest && (
+        <div
+          data-browser-help-bar
+          role="status"
+          aria-label={t('browser.help.barLabel')}
+          className="flex items-center gap-2 px-3 shrink-0"
+          style={{
+            minHeight: 30,
+            backgroundColor: 'var(--bg-surface)',
+            borderBottom: '1px solid color-mix(in srgb, var(--text-main) 6%, transparent)',
+          }}
+        >
+          {/* Red = needs input, the one status-dot vocabulary. Monochrome, and
+              not an emoji. */}
+          <span
+            aria-hidden="true"
+            className="shrink-0 rounded-full"
+            style={{ width: 6, height: 6, backgroundColor: 'var(--accent-red)' }}
+          />
+          {/* Sans 13px: someone talking, not machine evidence. Rendered as a
+              text child, so an agent-authored prompt is text and only text —
+              never markup. */}
+          <span
+            data-browser-help-prompt
+            className="flex-1 truncate"
+            style={{ fontSize: 13, color: 'var(--text-main)' }}
+            title={helpRequest.prompt}
+          >
+            {helpRequest.prompt}
+          </span>
+          {/* Secondary = raised neutral (DESIGN.md). */}
+          <button
+            type="button"
+            data-browser-help-cancel
+            onClick={() => resolveHelp('cancelled')}
+            className="shrink-0 px-2.5 rounded-[5px] border transition-colors"
+            style={{
+              minHeight: 24,
+              minWidth: 24,
+              fontSize: 13,
+              color: 'var(--text-sub)',
+              backgroundColor: 'color-mix(in srgb, var(--text-main) 6%, transparent)',
+              borderColor: 'color-mix(in srgb, var(--text-main) 10%, transparent)',
+              boxShadow: 'inset 0 1px 0 color-mix(in srgb, var(--text-main) 6%, transparent)',
+              transitionDuration: '120ms',
+            }}
+          >
+            {t('browser.help.cancel')}
+          </button>
+          {/* The ONE solid warm fill on this surface — DESIGN.md "Primary
+              action = solid warm fill". */}
+          <button
+            type="button"
+            data-browser-help-done
+            onClick={() => resolveHelp('continued')}
+            className="shrink-0 px-2.5 rounded-[5px] font-semibold transition-colors"
+            style={{
+              minHeight: 24,
+              minWidth: 24,
+              fontSize: 13,
+              color: 'var(--bg-base)',
+              backgroundColor: 'var(--accent)',
+              // --surface-highlight, NOT --text-main: this inset sits on a
+              // saturated accent fill and models a light source above the
+              // control, so a text-main mix would invert it on the light themes
+              // and press a groove into the button (tokenDiscipline.test.ts).
+              boxShadow: 'inset 0 1px 0 color-mix(in srgb, var(--surface-highlight) 22%, transparent)',
+              transitionDuration: '120ms',
+            }}
+          >
+            {t('browser.help.done')}
+          </button>
+        </div>
+      )}
       {/* Inspector toast */}
       {inspectInfo && (
         <div
