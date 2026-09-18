@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 
 import {
+  LIVE_ACTIVITY_DEBOUNCE_MAX_WAIT_MS,
   LIVE_ACTIVITY_DEBOUNCE_MS,
   LIVE_ACTIVITY_START_STALE_SEC,
   LIVE_ACTIVITY_UPDATE_STALE_SEC,
@@ -38,6 +39,8 @@ interface Harness {
   setTargets: (t: LiveActivityTarget[]) => void;
   /** Fires the pending debounce, then drains the queue. */
   tick: () => Promise<void>;
+  /** Drains the queue WITHOUT firing the pending debounce. */
+  drain: () => Promise<void>;
   pendingTimers: number;
   setNow: (ms: number) => void;
 }
@@ -124,6 +127,9 @@ function harness(
       const run = fire;
       fire = null;
       run?.();
+      await transport.flush();
+    },
+    drain: async () => {
       await transport.flush();
     },
   };
@@ -297,6 +303,102 @@ describe('LiveActivityPusher — which event', () => {
       blockedPanes: 1,
       oldestBlockedMinutes: 7,
     });
+  });
+});
+
+describe('LiveActivityPusher — one start until its token comes back', () => {
+  const startOnly = (): LiveActivityTarget => ({
+    deviceId: 'dev-1',
+    liveActivity: { pushToStartToken: START },
+  });
+
+  it('★ approvals that move while the activity token is in flight do not re-start', async () => {
+    const h = harness({ targets: [startOnly()] });
+    h.setCounts(counts({ pendingApprovals: 1 }));
+    h.pusher.onApprovalsChanged();
+    await h.tick();
+    expect(h.calls).toHaveLength(1);
+    expect(h.calls[0].body.event).toBe('start');
+
+    // The token travels back through the PHONE — iOS wakes the app, the app
+    // reads it off the started activity and POSTs it here. Approvals keep
+    // moving meanwhile, and each move used to fire another start: a stack of
+    // activities on the lock screen, all of them this daemon's.
+    for (const pendingApprovals of [2, 3]) {
+      h.setNow(NOW + pendingApprovals * 1_000);
+      h.setCounts(counts({ pendingApprovals }));
+      h.pusher.onApprovalsChanged();
+      await h.tick();
+    }
+    expect(h.calls).toHaveLength(1);
+  });
+
+  it('★ …but once the start has gone stale, a fresh one is the only way back', async () => {
+    const h = harness({ targets: [startOnly()] });
+    h.setCounts(counts({ pendingApprovals: 1 }));
+    h.pusher.onApprovalsChanged();
+    await h.tick();
+    expect(h.calls).toHaveLength(1);
+
+    // Past the stale date the activity it started is no longer shown as
+    // current, so suppressing here would leave the lock screen with nothing.
+    h.setNow(NOW + (LIVE_ACTIVITY_START_STALE_SEC + 1) * 1_000);
+    h.setCounts(counts({ pendingApprovals: 2 }));
+    h.pusher.onApprovalsChanged();
+    await h.tick();
+    expect(h.calls).toHaveLength(2);
+    expect(h.calls[1].body.event).toBe('start');
+  });
+
+  it('the token arriving clears the suppression, so a later re-start is allowed', async () => {
+    const h = harness({ targets: [startOnly()] });
+    h.setCounts(counts({ pendingApprovals: 1 }));
+    h.pusher.onApprovalsChanged();
+    await h.tick();
+
+    // The app reported its activity token: this device now takes updates.
+    h.setTargets([withActivity()]);
+    h.setCounts(counts({ pendingApprovals: 2 }));
+    h.pusher.onApprovalsChanged();
+    await h.tick();
+    expect(h.calls).toHaveLength(2);
+    expect(h.calls[1].body.event).toBe('update');
+
+    // That activity ended and the app said so. A new approval must be able to
+    // start a new one immediately — the old start's memory is spent.
+    h.setTargets([startOnly()]);
+    h.setCounts(counts({ pendingApprovals: 3 }));
+    h.pusher.onApprovalsChanged();
+    await h.tick();
+    expect(h.calls).toHaveLength(3);
+    expect(h.calls[2].body.event).toBe('start');
+  });
+});
+
+describe('LiveActivityPusher — the debounce has a ceiling', () => {
+  it('★ a steady drip cannot hold the lock screen back forever', async () => {
+    const h = harness({ targets: [withActivity()] });
+    const step = LIVE_ACTIVITY_DEBOUNCE_MS - 100;
+    // Every arrival lands INSIDE the debounce window, so a plain trailing-edge
+    // timer is reset by each one and never fires — precisely the traffic where
+    // somebody is most obviously blocked. `drain` deliberately never fires the
+    // timer, so anything that goes out below went out on the ceiling alone.
+    const firstAt = step;
+    let elapsed = 0;
+    for (;;) {
+      elapsed += step;
+      h.setNow(NOW + elapsed);
+      h.setCounts(counts({ pendingApprovals: elapsed / step }));
+      h.pusher.onApprovalsChanged();
+      await h.drain();
+      if (elapsed - firstAt >= LIVE_ACTIVITY_DEBOUNCE_MAX_WAIT_MS) break;
+      expect(h.calls).toEqual([]);
+    }
+
+    expect(h.calls).toHaveLength(1);
+    expect(h.calls[0].body.contentState.pendingApprovals).toBe(elapsed / step);
+    // And no timer was re-armed: the ceiling flushes, it does not reschedule.
+    expect(h.pendingTimers).toBe(0);
   });
 });
 

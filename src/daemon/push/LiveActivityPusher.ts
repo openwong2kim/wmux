@@ -65,6 +65,17 @@ export interface LiveActivityPusherDeps {
 export const LIVE_ACTIVITY_DEBOUNCE_MS = 2_000;
 
 /**
+ * The ceiling on that settling.
+ *
+ * A trailing-edge debounce alone has no ceiling: approvals arriving every
+ * 1.9 seconds reset the timer forever and the lock screen never hears anything
+ * at all — the exact traffic pattern where somebody is most obviously blocked.
+ * Once the first event of a burst is this old, the next one flushes on the spot
+ * instead of pushing the deadline out again.
+ */
+export const LIVE_ACTIVITY_DEBOUNCE_MAX_WAIT_MS = 10_000;
+
+/**
  * A started activity that never receives its first update should retire itself
  * in five minutes rather than sit there claiming a stale count. The activity
  * token can take a moment to arrive — or, if iOS never wakes the app, never.
@@ -98,7 +109,21 @@ export class LiveActivityPusher {
    * what was sent is thrown away.
    */
   private readonly lastTimestamp = new Map<string, number>();
+  /**
+   * When a `start` was last put on the wire for a device that has no activity
+   * token yet, in epoch seconds. Deleted the moment a token shows up.
+   *
+   * The token comes back through the phone — the app has to be woken, read it
+   * off the started activity and POST it to the daemon — and the approval
+   * numbers can change several times before that round trip lands. Without this
+   * memory every one of those changes fires ANOTHER start, and iOS obliges:
+   * the lock screen ends up with a stack of activities all claiming to be the
+   * one activity this daemon shows.
+   */
+  private readonly startSentAt = new Map<string, number>();
   private debounceTimer: ReturnType<typeof setTimeout> | null = null;
+  /** When the burst the pending timer belongs to began. Null between bursts. */
+  private debounceStartedAt: number | null = null;
 
   constructor(deps: LiveActivityPusherDeps) {
     this.deps = deps;
@@ -117,9 +142,22 @@ export class LiveActivityPusher {
    */
   onApprovalsChanged(): void {
     if (!this.enabled) return;
+    const now = this.now();
+    if (this.debounceStartedAt === null) this.debounceStartedAt = now;
+    else if (now - this.debounceStartedAt >= LIVE_ACTIVITY_DEBOUNCE_MAX_WAIT_MS) {
+      // The ceiling. Send what we have NOW and do not arm another timer — a
+      // steady drip of approvals must not be able to hold the lock screen back
+      // indefinitely by resetting the deadline on every arrival.
+      if (this.debounceTimer) this.clearTimeoutImpl(this.debounceTimer);
+      this.debounceTimer = null;
+      this.debounceStartedAt = null;
+      this.deps.transport.enqueue(() => this.sendNow());
+      return;
+    }
     if (this.debounceTimer) this.clearTimeoutImpl(this.debounceTimer);
     this.debounceTimer = this.setTimeoutImpl(() => {
       this.debounceTimer = null;
+      this.debounceStartedAt = null;
       this.deps.transport.enqueue(() => this.sendNow());
     }, LIVE_ACTIVITY_DEBOUNCE_MS);
     this.debounceTimer.unref?.();
@@ -130,6 +168,7 @@ export class LiveActivityPusher {
     if (this.debounceTimer) {
       this.clearTimeoutImpl(this.debounceTimer);
       this.debounceTimer = null;
+      this.debounceStartedAt = null;
       this.deps.transport.enqueue(() => this.sendNow());
     }
     await this.deps.transport.flush();
@@ -154,7 +193,8 @@ export class LiveActivityPusher {
       remembered = undefined;
     }
 
-    const event = pickEvent(liveActivity, counts);
+    const nowSec = Math.floor(this.now() / 1000);
+    const event = pickEvent(liveActivity, counts, this.startSentAt.get(deviceId), nowSec);
     if (event === null) return;
 
     // WHAT MAY TRIGGER A SEND: the approval numbers only. The agent counts ride
@@ -173,7 +213,6 @@ export class LiveActivityPusher {
       event === 'start' ? liveActivity.pushToStartToken : liveActivity.activityToken;
     if (!apnsToken) return;
 
-    const nowSec = Math.floor(this.now() / 1000);
     const timestamp = Math.max(nowSec, (this.lastTimestamp.get(deviceId) ?? 0) + 1);
     this.lastTimestamp.set(deviceId, timestamp);
 
@@ -206,6 +245,10 @@ export class LiveActivityPusher {
 
     if (status === 200) {
       this.deps.transport.noteDelivered();
+      // An update or an end means an activity token was in hand, so whatever
+      // start is outstanding has landed and its suppression is spent.
+      if (event === 'start') this.startSentAt.set(deviceId, nowSec);
+      else this.startSentAt.delete(deviceId);
       if (event === 'end') {
         // The activity this token addressed no longer exists.
         this.lastSent.delete(deviceId);
@@ -227,6 +270,7 @@ export class LiveActivityPusher {
       // approval notifications alongside it would switch them off several times
       // a day, from a signal that means nothing of the sort.
       this.lastSent.delete(deviceId);
+      this.startSentAt.delete(deviceId);
       if (event === 'start') this.deps.forgetPushToStartToken(deviceId);
       else this.deps.forgetLiveActivityToken(deviceId);
       return;
@@ -257,10 +301,24 @@ export class LiveActivityPusher {
 function pickEvent(
   liveActivity: LiveActivityTarget['liveActivity'],
   counts: LiveActivityCounts,
+  startSentAt: number | undefined,
+  nowSec: number,
 ): LiveActivityEvent | null {
   if (liveActivity.activityToken) {
     return counts.pendingApprovals === 0 ? 'end' : 'update';
   }
-  if (counts.pendingApprovals > 0 && liveActivity.pushToStartToken) return 'start';
+  if (counts.pendingApprovals > 0 && liveActivity.pushToStartToken) {
+    // ONE start until its activity token comes back, or until the activity it
+    // started has gone stale anyway. The token arrives through the phone, and
+    // the numbers move while it is in flight — firing a start per change would
+    // stack activities on the lock screen, all of them this daemon's.
+    //
+    // After the stale window the previous activity has already stopped being
+    // shown as current, so a fresh start is the only way back.
+    if (startSentAt !== undefined && nowSec - startSentAt < LIVE_ACTIVITY_START_STALE_SEC) {
+      return null;
+    }
+    return 'start';
+  }
   return null;
 }
