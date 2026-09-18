@@ -90,6 +90,18 @@ const maxBytesParam = z
 
 // Module-scope parameter shapes: hoisted out of the per-registration path so
 // every createWmuxServer() instance shares one set of zod schema objects.
+/**
+ * Every Playwright-lane capture freezes CSS animations and transitions for
+ * the duration of the shot (Playwright rewinds finite animations to their end
+ * state and pauses infinite ones, then restores). Without it two captures of
+ * the same page a moment apart differ by whatever a spinner, a fade-in or a
+ * skeleton shimmer happened to be doing, and the agent reads that jitter as a
+ * page change. A capture is a measurement; time should not be one of its
+ * inputs. The webview RPC lane has no equivalent knob (capturePage is a plain
+ * framebuffer read) and is left as is.
+ */
+const FROZEN_CAPTURE = { animations: 'disabled' as const };
+
 const BROWSER_SNAPSHOT_SHAPE = {
   format: z
     .enum(['ai', 'aria'])
@@ -658,7 +670,7 @@ export function registerInspectionTools(server: McpServer, deps: BrowserToolDeps
 
   server.tool(
     'browser_screenshot',
-    'Screenshot the page or one element as a base64-encoded PNG. Requires browser_open first, even if a browser panel is already visible. A viewport capture states ONE scale (image px per viewport CSS px, device pixel ratio and any downscale already folded in) plus a screenshotScale JSON line: click with browser_click imageX/imageY, or divide by that scale yourself. fullPage and element captures are not in click coordinates at all.',
+    'Screenshot the page or one element as a base64-encoded PNG. Requires browser_open first, even if a browser panel is already visible. A viewport capture states ONE scale (image px per viewport CSS px, device pixel ratio and any downscale already folded in) plus a screenshotScale JSON line: click with browser_click imageX/imageY, or divide by that scale yourself. fullPage and element captures are not in click coordinates at all. CSS animations and transitions are frozen for the capture, so two shots of an unchanged page match.',
     BROWSER_SCREENSHOT_SHAPE,
     async ({ fullPage, ref, surfaceId, maxBytes, refs }) => withAutomationLease(deps, surfaceId, async (scope) => {
       const ceiling = clampScreenshotCeilingBytes(maxBytes);
@@ -706,7 +718,11 @@ export function registerInspectionTools(server: McpServer, deps: BrowserToolDeps
             // Read the viewport immediately before the capture: a resize
             // between the two would otherwise mislabel the image.
             const viewport = fullPage ? null : await readViewport(page);
-            const buf = await page.screenshot({ ...(fullPage && { fullPage: true }), type: 'png' });
+            const buf = await page.screenshot({
+              ...(fullPage && { fullPage: true }),
+              type: 'png',
+              ...FROZEN_CAPTURE,
+            });
             const scopeKey = browserScopeKey(scope);
             const memoKey = `${scopeKey}|${fullPage ? 'full' : 'viewport'}`;
             const fitted = await fitScreenshot(
@@ -720,6 +736,7 @@ export function registerInspectionTools(server: McpServer, deps: BrowserToolDeps
                   ...(fullPage && { fullPage: true }),
                   type: 'jpeg',
                   quality: rung.quality,
+                  ...FROZEN_CAPTURE,
                   // Playwright scales the whole capture, so the rung's factor
                   // is exactly the number stated back to the caller.
                   ...(rung.scale < 1 && { scale: 'css' as const }),
@@ -743,12 +760,12 @@ export function registerInspectionTools(server: McpServer, deps: BrowserToolDeps
             if (!el) {
               throw new Error(`Could not resolve ref="${ref}" to an element.`);
             }
-            const buffer = (await el.screenshot()) as Buffer;
+            const buffer = (await el.screenshot({ ...FROZEN_CAPTURE })) as Buffer;
             const fitted = await fitScreenshot(
               buffer.toString('base64'),
               { maxBytes: ceiling },
               shrinkViaPlaywright((rung) =>
-                el.screenshot({ type: 'jpeg', quality: rung.quality }) as Promise<Buffer>,
+                el.screenshot({ type: 'jpeg', quality: rung.quality, ...FROZEN_CAPTURE }) as Promise<Buffer>,
               ),
             );
             const basis = coordinateBasis('element', null);
