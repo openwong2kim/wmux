@@ -60,7 +60,13 @@ const RESUME_BY_LAUNCHER: Readonly<Record<string, ResumeGrammar>> = {
  * (permission stage) rather than via {@link toResumeCommand}.
  */
 export function resumeGrammarFor(agent: string): ResumeGrammar | undefined {
-  return RESUME_BY_LAUNCHER[agent];
+  // Own-property check, not a bare index: a plain object literal answers
+  // `constructor` / `toString` with something truthy off its prototype, and a
+  // slug now reaches here from ANOTHER machine (#1342). Without this, such a
+  // slug passes as a resumable agent and then has no `withId` to call.
+  return Object.prototype.hasOwnProperty.call(RESUME_BY_LAUNCHER, agent)
+    ? RESUME_BY_LAUNCHER[agent]
+    : undefined;
 }
 
 /**

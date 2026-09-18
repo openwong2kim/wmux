@@ -89,6 +89,23 @@ export interface RemoteResumeInfo {
   permissionMode?: PermissionMode;
 }
 
+/**
+ * Shapes an agent slug and a conversation id may take.
+ *
+ * These are not cosmetic caps, they are the boundary that keeps the chip's
+ * "nothing runs until the operator presses Enter" promise. Both values are
+ * spliced into a command line that is TYPED into a terminal, so a value
+ * carrying `\r` (or `\n`) would submit itself and whatever followed it the
+ * instant the operator clicked — the one thing the chip must never do. The
+ * character sets below cannot express a newline, a quote, a shell
+ * metacharacter, or whitespace at all.
+ *
+ * The slug is additionally matched against a known launcher before anything
+ * is built (resumeGrammarFor), so this only has to stop the id.
+ */
+const RESUME_AGENT_RE = /^[a-z][a-z0-9-]{0,31}$/;
+const RESUME_SESSION_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+
 /** Trust-boundary parse for {@link RemoteResumeInfo}. Returns undefined for
  *  anything that is not a complete, usable resume offer — a half-formed one
  *  would render a chip that types a broken command. */
@@ -97,12 +114,12 @@ export function parseRemoteResumeInfo(value: unknown): RemoteResumeInfo | undefi
   const raw = value as Record<string, unknown>;
   const agent = typeof raw.agent === 'string' ? raw.agent : '';
   const sessionId = typeof raw.sessionId === 'string' ? raw.sessionId : '';
-  if (!agent || !sessionId) return undefined;
-  // Capped for the same reason agentName is: another machine's output flows
-  // into rendered text and into a command preview.
+  // Reject rather than sanitize: a truncated or stripped conversation id is
+  // not the conversation, so an offer that does not arrive intact is no offer.
+  if (!RESUME_AGENT_RE.test(agent) || !RESUME_SESSION_ID_RE.test(sessionId)) return undefined;
   return {
-    agent: agent.slice(0, 64),
-    sessionId: sessionId.slice(0, 256),
+    agent,
+    sessionId,
     cwdMatches: raw.cwdMatches === true,
     ...(isPermissionMode(raw.permissionMode) ? { permissionMode: raw.permissionMode } : {}),
   };

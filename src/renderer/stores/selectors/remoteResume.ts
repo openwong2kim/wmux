@@ -38,12 +38,27 @@ export function selectRemoteResumePanesByKey(
   return byKey;
 }
 
-/** The resume-bearing snapshot for one remote session, or undefined. */
+/**
+ * The resume-bearing snapshot for one remote session, or undefined.
+ *
+ * Looked up directly rather than through the map above: this runs inside a
+ * zustand selector, which re-runs on EVERY store update (terminal output, hook
+ * events, agent status — none of them remote), and building a whole map to
+ * read one cell of it would do that work per mounted remote surface per store
+ * event. The returned value is the STORED pane object, so its identity is
+ * stable between polls and the subscription does not re-render on unrelated
+ * updates.
+ */
 export function selectRemoteResumePane(
   state: RemoteResumeState,
   hostId: string,
   sessionId: string,
 ): RemotePaneSummary | undefined {
   if (!hostId || !sessionId) return undefined;
-  return selectRemoteResumePanesByKey(state)[remoteAgentKey(hostId, sessionId)];
+  for (const attached of state.remoteWorkspaces) {
+    if (attached.stale || attached.hostId !== hostId) continue;
+    const pane = attached.panes.find((p) => p.sessionId === sessionId);
+    if (pane?.resume) return pane;
+  }
+  return undefined;
 }

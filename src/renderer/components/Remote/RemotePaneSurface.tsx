@@ -94,7 +94,12 @@ export default function RemotePaneSurface({ hostId, sessionId, surfaceId, shell,
           hostId={hostId}
           sessionId={sessionId}
           attachId={attachId}
-          readOnly={allowInput === false}
+          // Stricter than the mirror's own read-only rule below, deliberately:
+          // the mirror renders either way and a refused keystroke is visible,
+          // but a chip is an OFFER. Until the probe has answered `true`, this
+          // desktop does not know the host takes input, and an offer whose
+          // click is silently dropped is worse than no offer.
+          readOnly={allowInput !== true}
         />
         <RemoteMirrorTerminal
           attachId={attachId}

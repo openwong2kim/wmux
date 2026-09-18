@@ -27,16 +27,25 @@ export default function RemoteResumeChip(props: {
   sessionId: string;
   /** Live attach for the remote input path. Null while (re)attaching. */
   attachId: string | null;
-  /** The host was started without `--allow-input`. */
+  /** The host is not known to accept input — either it was started without
+   *  `--allow-input`, or the probe has not answered yet. */
   readOnly: boolean;
 }): React.ReactElement | null {
   const { hostId, sessionId, attachId, readOnly } = props;
   const pane = useStore((s) => selectRemoteResumePane(s, hostId, sessionId));
   const resume = pane?.resume;
   if (!resume || readOnly || !attachId) return null;
-  // No activity clock and no hook latch for a remote pane — the host reports no
-  // per-event stream, so tier 3 collapses to its status. The two authoritative
-  // tiers above it are exactly the ones the host does report.
+  // FAIL-CLOSED, and this is where the remote path must differ from the local
+  // one. A local pane that reports neither authoritative signal still has real
+  // evidence underneath — its own output stamps and its hook's turn latch — so
+  // falling through to the heuristic is a judgement, not a guess. A remote pane
+  // has none of that: no activity clock, no latch, nothing but what the host
+  // said. With both signals absent, `isPaneAgentBusy` would decide "not busy"
+  // from an empty tier 3 and type into whatever is running. So the chip
+  // requires the host to have actually answered.
+  if (typeof pane.commandRunning !== 'boolean' && typeof pane.agentProcessAlive !== 'boolean') {
+    return null;
+  }
   const busy = isPaneAgentBusy({
     activityAt: 0,
     agentClockMs: 0,
