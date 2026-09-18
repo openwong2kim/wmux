@@ -12,10 +12,20 @@
  * of those are one tool telling one caller in prose; this is the same answer
  * for all of them, in a form a caller can branch on.
  *
- * So every mutating result ends with two lines the agent can branch on:
+ * So the results of the tools that put INPUT on a page end with two lines the
+ * agent can branch on:
  *
  *   effect_state: none | committed | unknown
  *   error_code: <code>            (error results only)
+ *
+ * That is browser_click, browser_type, browser_fill, browser_press_key,
+ * browser_hover, browser_drag, browser_select, browser_scroll,
+ * browser_scroll_into_view, browser_navigate, browser_navigate_back,
+ * browser_file_upload, browser_download and browser_dialog. Tools that change
+ * something OTHER than the page's own state — browser_evaluate, browser_tabs,
+ * browser_open/close, browser_emulate, browser_resize, browser_highlight, the
+ * cookie and storage writes — are not covered yet; extending the contract to
+ * them is a follow-up, not a reason to word it as if they were.
  *
  * `none` means nothing was dispatched and a retry is free. `committed` means
  * the input reached the page. `unknown` means a dispatch went out and its
@@ -26,7 +36,7 @@
  * replacement, so a caller that reads the first line keeps reading the same
  * first line.
  *
- * Read-only tools (snapshot, screenshot, extract, console, network, cookies and
+ * Read-only tools (snapshot, screenshot, extract, console, network, cookie and
  * storage reads, wait) carry NO trailer — they have no effect to report, and a
  * trailer on them would train the agent to read one where it means nothing.
  *

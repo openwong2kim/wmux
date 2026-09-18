@@ -5,13 +5,12 @@ import type { Page } from 'playwright-core';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { PlaywrightEngine } from '../PlaywrightEngine';
-import { withAutomationLease } from '../automationLease';
+import { leasedMutation, withAutomationLease } from '../automationLease';
 import type { BrowserToolDeps } from '../browserScope';
 import { resolveRef } from '../snapshot';
 import { describeToolError } from '../toolError';
 import {
   EFFECT_TRAILER_NOTE,
-  createEffectProbe,
   taggedFailure,
   withEffectTrailer,
   type EffectProbe,
@@ -420,8 +419,8 @@ async function setInputFilesTagged(
 function describeUploadTimeout(message: string): string {
   return (
     `${message} The file may have reached the page anyway — the renderer can ` +
-    `finish the transfer after this call gives up. Check the page before ` +
-    `retrying; a blind retry can upload the same file twice.`
+    `finish the transfer after this call gives up, and a blind retry then uploads ` +
+    `the same file twice.`
   );
 }
 
@@ -591,8 +590,7 @@ export function registerFileTools(server: McpServer, deps: BrowserToolDeps): voi
     'browser_file_upload',
     'Upload files to a file input, by default the page\'s first one — pass selector to pick another. Paths MUST live under the uploads root (~/.wmux/uploads/, instance suffix applied); anything else is rejected so a malicious page cannot exfiltrate credentials or SSH keys. Size is not a limit on the selector path: the browser opens the path itself. A ref instead of a selector takes a slower path that cannot carry more than 50MB. Only a real <input type=file> is supported; a drop-zone-only uploader fails with "No file input element found".' + EFFECT_TRAILER_NOTE,
     BROWSER_FILE_UPLOAD_SHAPE,
-    async ({ paths, selector, ref, timeout, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
-      const effect = createEffectProbe();
+    async ({ paths, selector, ref, timeout, surfaceId }) => leasedMutation(deps, surfaceId, async (scope, effect) => {
       try {
         const page = await engine.getPageForScope(scope);
         if (!page) {
@@ -671,8 +669,7 @@ export function registerFileTools(server: McpServer, deps: BrowserToolDeps): voi
     'browser_download',
     'Click an element by ref and capture the resulting download. Returns the saved path plus the name and URL the browser had for it. timeout bounds the wait for the download to START, not to finish — a download that begins in time then runs for minutes still completes (measured: a 60s transfer succeeds under the 30s default). If the click navigates instead of downloading, which is what Chrome does with a cross-origin "download" link, the tab is put back where it was and the error says so.' + EFFECT_TRAILER_NOTE,
     BROWSER_DOWNLOAD_SHAPE,
-    async ({ ref, filename, timeout, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
-      const effect = createEffectProbe();
+    async ({ ref, filename, timeout, surfaceId }) => leasedMutation(deps, surfaceId, async (scope, effect) => {
       // Captured before the click so a stray navigation has somewhere to go
       // back to. Read outside the try: the catch needs it too.
       let originalUrl = '';
@@ -846,8 +843,7 @@ export function registerFileTools(server: McpServer, deps: BrowserToolDeps): voi
     'browser_dialog',
     'Pre-register a handler for the NEXT dialog (alert, confirm, prompt, beforeunload); it is accepted or dismissed automatically when it appears.' + EFFECT_TRAILER_NOTE,
     BROWSER_DIALOG_SHAPE,
-    async ({ accept, text, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
-      const effect = createEffectProbe();
+    async ({ accept, text, surfaceId }) => leasedMutation(deps, surfaceId, async (scope, effect) => {
       try {
         const page = await engine.getPageForScope(scope);
         if (!page) {

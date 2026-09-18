@@ -2,7 +2,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { Page } from 'playwright-core';
 import { z } from 'zod';
 import { PlaywrightEngine } from '../PlaywrightEngine';
-import { withAutomationLease } from '../automationLease';
+import { leasedMutation } from '../automationLease';
 import {
   browserScopeKey,
   frameRefFallbackMessage,
@@ -31,7 +31,6 @@ import { hasTouchEmulation, touchDragFor, touchTapFor } from '../touch-input';
 import { describeToolError } from '../toolError';
 import {
   EFFECT_TRAILER_NOTE,
-  createEffectProbe,
   taggedFailure,
   withEffectTrailer,
   type EffectState,
@@ -676,7 +675,8 @@ async function rpcFill(selector: string, value: string, scope: BrowserTargetScop
     throw taggedFailure(
       'element_not_interactable',
       `The element matching "${selector}" did not take focus, so typing would have gone into ` +
-        'whatever else the page has focused. Nothing was typed. Name a focusable field.',
+        'whatever else the page has focused. Nothing was typed — though the click that was ' +
+        'meant to focus it did reach the page. Name a focusable field.',
     );
   }
   // Select all existing text
@@ -1238,8 +1238,7 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
     'browser_click',
     'Click an element by ref (browser_snapshot) or smartRef (browser_smart_snapshot), or — when neither is available — at x/y. x/y are VIEWPORT CSS PIXELS; to click something you can see in a screenshot pass imageX/imageY instead and the pixels are divided by that capture\'s reported scale for you. A fullPage or element screenshot is in a different coordinate space and cannot be used for coordinates at all. Coordinates need a live page (chrome backend); the RPC lane is ref-only.' + EFFECT_TRAILER_NOTE,
     BROWSER_CLICK_SHAPE,
-    async ({ ref, smartRef, x, y, imageX, imageY, double, modifiers, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
-      const effect = createEffectProbe();
+    async ({ ref, smartRef, x, y, imageX, imageY, double, modifiers, surfaceId }) => leasedMutation(deps, surfaceId, async (scope, effect) => {
       try {
         // Image-space coordinates are viewport coordinates once divided by the
         // scale the last viewport screenshot of this surface reported (#1358).
@@ -1465,8 +1464,7 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
     'browser_type',
     'Type text into an element by ref, smartRef or CSS selector, replacing any existing value. Typing into a password field echoes "[redacted:password]" back — the text still went in.' + EFFECT_TRAILER_NOTE,
     BROWSER_TYPE_SHAPE,
-    async ({ ref, smartRef, selector, text, newline, submit, humanlike, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
-      const effect = createEffectProbe();
+    async ({ ref, smartRef, selector, text, newline, submit, humanlike, surfaceId }) => leasedMutation(deps, surfaceId, async (scope, effect) => {
       try {
         const addr: RefAddress = {
           ...(ref !== undefined && { ref }),
@@ -1565,8 +1563,7 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
     'browser_fill',
     'Fill multiple form fields at once, each by ref or smartRef.' + EFFECT_TRAILER_NOTE,
     BROWSER_FILL_SHAPE,
-    async ({ fields, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
-      const effect = createEffectProbe();
+    async ({ fields, surfaceId }) => leasedMutation(deps, surfaceId, async (scope, effect) => {
       try {
         const page = await engine.getPageForScope(scope).catch(allowScopedRpcFallback);
 
@@ -1633,7 +1630,10 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
         }
 
         // A form that took SOME of its fields dispatched; only one that took
-        // none of them can promise the page is untouched.
+        // none of them can promise the page is untouched. So a partial fill
+        // reads `committed`, and the "Filled 2/3" count plus the Errors block
+        // stay the per-field truth — the trailer has three states and none of
+        // them is "partly".
         const filledNothing = errors.length > 0 && filled === 0;
         return withEffectTrailer(
           {
@@ -1662,8 +1662,7 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
     'browser_press_key',
     'Press a keyboard key.' + EFFECT_TRAILER_NOTE,
     BROWSER_PRESS_KEY_SHAPE,
-    async ({ key, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
-      const effect = createEffectProbe();
+    async ({ key, surfaceId }) => leasedMutation(deps, surfaceId, async (scope, effect) => {
       try {
         const page = await engine.getPageForScope(scope).catch(allowScopedRpcFallback);
 
@@ -1699,8 +1698,7 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
     'browser_hover',
     'Hover over an element by ref.' + EFFECT_TRAILER_NOTE,
     BROWSER_HOVER_SHAPE,
-    async ({ ref, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
-      const effect = createEffectProbe();
+    async ({ ref, surfaceId }) => leasedMutation(deps, surfaceId, async (scope, effect) => {
       try {
         const page = await engine.getPageForScope(scope).catch(allowScopedRpcFallback);
         let touchNote = '';
@@ -1750,8 +1748,7 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
     'browser_drag',
     'Drag an element from sourceRef to targetRef, or through path points (chrome backend).' + EFFECT_TRAILER_NOTE,
     BROWSER_DRAG_SHAPE,
-    async ({ sourceRef, targetRef, path, modifiers, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
-      const effect = createEffectProbe();
+    async ({ sourceRef, targetRef, path, modifiers, surfaceId }) => leasedMutation(deps, surfaceId, async (scope, effect) => {
       try {
         // Same rule as browser_click's ref-vs-x/y: a path is the escape hatch
         // for surfaces with nothing to snapshot (a canvas, a slider track, a
@@ -1918,8 +1915,7 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
     'browser_select',
     'Select option(s) in a native <select> element by value. A custom dropdown (div/listbox) is not supported here — click its trigger, then click the option.' + EFFECT_TRAILER_NOTE,
     BROWSER_SELECT_SHAPE,
-    async ({ ref, values, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
-      const effect = createEffectProbe();
+    async ({ ref, values, surfaceId }) => leasedMutation(deps, surfaceId, async (scope, effect) => {
       try {
         const page = await engine.getPageForScope(scope).catch(allowScopedRpcFallback);
 
@@ -2000,8 +1996,7 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
     'browser_scroll_into_view',
     'Scroll an element into the visible viewport.' + EFFECT_TRAILER_NOTE,
     BROWSER_SCROLL_INTO_VIEW_SHAPE,
-    async ({ ref, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
-      const effect = createEffectProbe();
+    async ({ ref, surfaceId }) => leasedMutation(deps, surfaceId, async (scope, effect) => {
       try {
         const page = await engine.getPageForScope(scope).catch(allowScopedRpcFallback);
 
@@ -2047,8 +2042,7 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
     'browser_scroll',
     'Scroll the page, or a scrollable element when ref is given.' + EFFECT_TRAILER_NOTE,
     BROWSER_SCROLL_SHAPE,
-    async ({ direction, amount, ref, x, y, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
-      const effect = createEffectProbe();
+    async ({ direction, amount, ref, x, y, surfaceId }) => leasedMutation(deps, surfaceId, async (scope, effect) => {
       const px = amount ?? 500;
       const deltaX = direction === 'right' ? px : direction === 'left' ? -px : 0;
       const deltaY = direction === 'down' ? px : direction === 'up' ? -px : 0;
@@ -2124,12 +2118,16 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
           // RPC fallback
           if (ref) {
             const safeRef = sanitizeRef(ref, scope);
-            await effect.dispatch(() => rpcEval(`(() => {
+            const val = await effect.dispatch(() => rpcEval(`(() => {
               const el = document.querySelector('[data-wmux-ref="${safeRef}"]');
               if (!el) return 'not_found';
               el.scrollBy(${deltaX}, ${deltaY});
               return 'ok';
             })()`, scope));
+            // The answer was already there and was being dropped: without this
+            // the tool reported "Scrolled down by 500px (element ref=7)" for a
+            // ref the page no longer has — and now would call it committed.
+            if (val === 'not_found') throw refMissing(ref, page, 'none');
           } else {
             await effect.dispatch(() => rpcEval(`(() => {
               window.scrollBy(${deltaX}, ${deltaY});

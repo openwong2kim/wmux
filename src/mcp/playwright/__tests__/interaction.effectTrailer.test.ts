@@ -60,6 +60,7 @@ function tool(name: string): ToolHandler {
 const click = tool('browser_click');
 const fill = tool('browser_fill');
 const pressKey = tool('browser_press_key');
+const scroll = tool('browser_scroll');
 
 const text = (r: ToolResult) => r.content.map((c) => c.text).join('\n');
 
@@ -173,7 +174,7 @@ describe('effect trailer — none', () => {
     expect(trailer(result)).toEqual(['effect_state: none', 'error_code: invalid_params']);
   });
 
-  it('reports a workspace scope refusal as never dispatched', async () => {
+  it('reports a scope refusal the page lane raised as never dispatched', async () => {
     getPage.mockRejectedValue(
       new WorkspaceScopeUnresolvedError('browser tool workspace identity resolved to an empty id.'),
     );
@@ -182,6 +183,34 @@ describe('effect trailer — none', () => {
 
     expect(result.isError).toBe(true);
     expect(trailer(result)).toEqual(['effect_state: none', 'error_code: scope_refused']);
+  });
+
+  it('trailers a refusal raised by the LEASE, before the tool body ever runs', async () => {
+    // withAutomationLease resolves the workspace scope first, so this rejection
+    // never reaches the body's own catch. Every one of these tools promises a
+    // trailer in its description, so the escape hatch has to carry one too.
+    browserToolDeps.resolveWorkspaceId.mockResolvedValueOnce('');
+
+    const result = await click({ ref: '3' });
+
+    expect(result.isError).toBe(true);
+    expect(text(result)).toContain('WORKSPACE_SCOPE_UNRESOLVED');
+    expect(trailer(result)).toEqual(['effect_state: none', 'error_code: scope_refused']);
+    expect(getPage).not.toHaveBeenCalled();
+  });
+
+  it('reports a scroll whose ref the page no longer has, instead of claiming one', async () => {
+    // The RPC lane asked the page and the page said `not_found`; the answer used
+    // to be discarded, so the tool reported a scroll that never happened.
+    mockSendRpc.mockImplementation(async (method: string) =>
+      method === 'browser.evaluate' ? { value: 'not_found' } : {},
+    );
+
+    const result = await scroll({ direction: 'down', ref: '7' });
+
+    expect(result.isError).toBe(true);
+    expect(text(result)).not.toContain('Scrolled down');
+    expect(trailer(result)).toEqual(['effect_state: none', 'error_code: ref_not_found']);
   });
 
   it('reports a form where every field failed as never dispatched', async () => {
