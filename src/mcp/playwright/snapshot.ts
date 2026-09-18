@@ -14,7 +14,20 @@ import {
   redactPasswordParams,
 } from './redact';
 import { collectOcclusion, occlusionNote, type OcclusionInfo } from './occlusion';
+import {
+  HAS_SUBMENU_MARKER,
+  collectHoverTriggers,
+  countHasSubmenuMarkers,
+  formatHoverItems,
+  hoverMenusFooterLine,
+  phaseOneMark,
+  probeHoverSurfaces,
+  type HoverCandidate,
+  type HoverSurfaceMarks,
+} from './hoverSurfaces';
 import { collectPageFacts, formatPageFactsFooter } from './pageFacts';
+import { getLastPointer, setLastPointer } from './pointer-path';
+import { defaultStartPoint } from '../../shared/pointerPath';
 import { peekRecentPendingRequests } from './pageCapture';
 import { evaluateIsolated, isolatedProbeTarget } from './isolated-eval';
 import { ancestorContext } from '../../shared/browserReplay/actionTrace';
@@ -37,6 +50,13 @@ export interface SnapshotOptions {
   filter?: 'interactive';
   /** Keep only nodes matching this text, plus their ancestors. See queryMatcher. */
   q?: string;
+  /**
+   * Also hover the top hover triggers and list what each one reveals (phase 2
+   * in hoverSurfaces.ts). Off by default: it moves the real pointer and costs
+   * up to HOVER_PROBE_LIMITS.TOTAL_BUDGET_MS. Phase 1 — the `has-submenu`
+   * marker itself — runs either way and never touches the page.
+   */
+  probeHover?: boolean;
 }
 
 /**
@@ -66,6 +86,17 @@ function queryFilterNote(q: string): string {
  */
 export const DOM_LISTING_Q_NOTE =
   '(note: q ignored — the a11y tree was unavailable, returning the unfiltered DOM interactive listing)';
+
+/**
+ * Said when `probeHover` reaches a route that cannot honor it.
+ *
+ * The DOM listing still MARKS its triggers (the phase-1 scan runs in-page), but
+ * the probe needs remote handles and a CDP Input lane, which this route has
+ * neither of. Same honesty rule as DOM_LISTING_Q_NOTE: a caller who spent the
+ * flag and sees no items would otherwise read that as "these menus are empty".
+ */
+export const DOM_LISTING_PROBE_HOVER_NOTE =
+  '(note: probeHover ignored — the a11y tree was unavailable; triggers are still marked [has-submenu], but listing their items needs the a11y route)';
 
 /** CDP Accessibility.AXNode shape (subset of fields we use) */
 interface CdpAXNode {
@@ -1056,6 +1087,11 @@ interface SerializeCtx {
   /** Null when nothing is covering the page, which is the normal case. */
   occlusion: OcclusionInfo | null;
   /**
+   * backendDOMNodeId → the hover trigger it is. Null when the scan found
+   * nothing, which is the normal case on a page with no hover-only menus.
+   */
+  hoverSurfaces: HoverSurfaceMarks | null;
+  /**
    * backendDOMNodeId → the element's own `attr=value` label, for the page
    * target's document. Empty when the DOM pass could not run, or when the
    * caller asked for 'aria' (which mints no refs to carry it).
@@ -1181,15 +1217,30 @@ function serializeNode(
   ) {
     attrs.push('clickable');
   }
+  // A menu the page only shows on :hover is not in the tree, so a snapshot
+  // that lists the nav item and nothing under it reads as "this site has no
+  // such menu" — see hoverSurfaces.ts. `expanded="true"` above already says
+  // the surface is OPEN and its items are in the tree; adding `has-submenu`
+  // there would tell the agent to hover for what it can already see.
+  const hoverMark =
+    node.backendDOMNodeId !== undefined && node.expanded !== true
+      ? ctx.hoverSurfaces?.get(node.backendDOMNodeId)
+      : undefined;
+  if (hoverMark) attrs.push(HAS_SUBMENU_MARKER);
 
   const attrStr = attrs.length > 0 ? ' ' + attrs.join(' ') : '';
   const nameStr = name ? ` "${name}"` : '';
+  // The probe's findings, outside the attribute list: it is a list of names
+  // with its own separators, not an `attr=value` pair. Gated on the same
+  // `expanded` test as the marker — the items of an OPEN surface are already
+  // this node's children.
+  const hoverStr = formatHoverItems(hoverMark);
   // Only when the node really is a dead end. Chrome 141 always stops at the
   // iframe element, but a version or engine that inlines the child document
   // would turn this note into a lie.
   const frameStr = frameBoundaryNote(node);
 
-  let line = `${pad}- ${role}${nameStr}${attrStr}${frameStr}`;
+  let line = `${pad}- ${role}${nameStr}${attrStr}${hoverStr}${frameStr}`;
 
   // Recurse into children. In 'ai' format an InlineTextBox under one of the
   // parents it was measured to be a fragment of never gets that far — see
@@ -2245,10 +2296,72 @@ async function occlusionFor(page: Page, fallback: CdpClient): Promise<OcclusionI
   ).catch(() => null);
 }
 
+/**
+ * Collect the hover triggers, and optionally hover them.
+ *
+ * Same session choice as occlusionFor, and for the same reason: the scan runs
+ * in the page's isolated world when there is one, so the page can neither see
+ * it nor hook the DOM methods it uses.
+ *
+ * Returns null — not an empty map — when there is nothing to mark, so the
+ * common case allocates nothing and serialisation skips the lookup entirely.
+ */
+async function hoverSurfacesFor(
+  page: Page,
+  fallback: CdpClient,
+  occlusion: OcclusionInfo | null,
+  probe: boolean,
+): Promise<HoverSurfaceMarks | null> {
+  const isolated = await isolatedProbeTarget(page).catch(() => null);
+  const client = isolated?.client ?? fallback;
+  const collection = await collectHoverTriggers(client, isolated?.contextId).catch(() => null);
+  if (!collection) return null;
+  try {
+    // An overlay covers the page by the occlusion gate's own definition, so a
+    // trigger behind it cannot be hovered and its menu cannot be reached. The
+    // reachable set is reused rather than re-probed: it is the answer to
+    // exactly this question, already paid for.
+    const eligible: HoverCandidate[] = occlusion
+      ? collection.candidates.filter(
+          (c) => c.backendNodeId !== undefined && occlusion.reachable.has(c.backendNodeId),
+        )
+      : collection.candidates.filter((c) => c.backendNodeId !== undefined);
+    if (eligible.length === 0) return null;
+
+    const marks: HoverSurfaceMarks = new Map();
+    for (const candidate of eligible) {
+      marks.set(candidate.backendNodeId as number, phaseOneMark());
+    }
+
+    // Never while an overlay is up: the pointer would land on the layer, and
+    // the "did it close again?" check would be measuring the wrong thing.
+    if (probe && !occlusion) {
+      const viewport =
+        typeof (page as { viewportSize?: () => unknown }).viewportSize === 'function'
+          ? page.viewportSize() ?? undefined
+          : undefined;
+      const outcome = await probeHoverSurfaces(client, eligible, {
+        currentUrl: () =>
+          typeof (page as { url?: () => string }).url === 'function' ? page.url() : undefined,
+        pointerStart: getLastPointer(page) ?? defaultStartPoint(viewport),
+        onPointerMoved: (point) => setLastPointer(page, point),
+      }).catch(() => null);
+      for (const [backendNodeId, mark] of outcome?.revealed ?? []) {
+        marks.set(backendNodeId, mark);
+      }
+    }
+    return marks;
+  } finally {
+    await collection.release().catch(() => undefined);
+  }
+}
+
 /** The a11y tree plus the annotations that only a live CDP session can supply. */
 interface SnapshotSource {
   tree: AXNode | null;
   occlusion: OcclusionInfo | null;
+  /** Null when no hover trigger was found, which is the common case. */
+  hoverSurfaces: HoverSurfaceMarks | null;
   /** See SerializeCtx.ownLabels / editableRoots. Empty when `wantDomFacts` was false. */
   ownLabels: Map<number, string>;
   editableRoots: Set<number>;
@@ -2264,6 +2377,8 @@ async function getAccessibilityTree(
   wantDomFacts: boolean,
   /** The caller's `q`. See fetchAccessibilityTree's own `query` parameter. */
   query?: string,
+  /** The caller's `probeHover`. See SnapshotOptions.probeHover. */
+  probeHover = false,
 ): Promise<SnapshotSource> {
   // Sessions opened for out-of-process frames during the graft. Detached here
   // rather than inside the walk so one frame's cleanup cannot abort the rest.
@@ -2278,6 +2393,9 @@ async function getAccessibilityTree(
         // from is the DOM the a11y nodes were computed against. Its own
         // failures are swallowed inside — a missing label abstains.
         const domFacts = wantDomFacts ? await getDomFacts(client) : emptyDomFacts();
+        // Occlusion first, because the hover scan reads its verdict: a trigger
+        // behind an overlay is neither marked nor hovered.
+        const occlusion = await occlusionFor(page, client);
         return {
           tree,
           ownLabels: domFacts.ownLabels,
@@ -2291,10 +2409,14 @@ async function getAccessibilityTree(
           // frame, name), so minting one per snapshot would pile them up in the
           // renderer of a long-lived SPA. Falls back to this session, main
           // world, exactly as before, when there is no isolated world.
-          occlusion: await occlusionFor(page, client),
+          occlusion,
+          // Phase 1 is always on: it never touches the page, and a nav item
+          // whose submenu only exists on :hover reads as a nav item with
+          // nothing behind it (hoverSurfaces.ts).
+          hoverSurfaces: await hoverSurfacesFor(page, client, occlusion, probeHover),
         };
       },
-      { tree: null, occlusion: null, ...emptyDomFacts() },
+      { tree: null, occlusion: null, hoverSurfaces: null, ...emptyDomFacts() },
     );
   } finally {
     for (const extra of extraSessions) {
@@ -2330,10 +2452,11 @@ export async function generateSnapshot(
   // fallthroughs below — stamps the same generation onto the page.
   const identity = beginRefGeneration(page);
 
-  const { tree, occlusion, ownLabels, editableRoots } = await getAccessibilityTree(
+  const { tree, occlusion, hoverSurfaces, ownLabels, editableRoots } = await getAccessibilityTree(
     page,
     format === 'ai',
     options?.q,
+    options?.probeHover === true,
   );
 
   // A null tree (no CDP session / getFullAXTree threw / zero nodes) OR a root-only
@@ -2374,6 +2497,10 @@ export async function generateSnapshot(
       // on its own two DOM-listing branches: a full listing returned to a
       // caller who asked a question reads as the answer to that question.
       if (options?.q) domSnapshot = `${DOM_LISTING_Q_NOTE}\n${domSnapshot}`;
+      // Same reason, for the flag that costs the caller ~2.5 s of budget.
+      if (options?.probeHover) {
+        domSnapshot = `${DOM_LISTING_PROBE_HOVER_NOTE}\n${domSnapshot}`;
+      }
       // Leave the refMap empty so resolveRef falls through to the data-wmux-ref
       // locator the DOM expression just tagged.
       setPageRefs(page, []);
@@ -2433,6 +2560,7 @@ export async function generateSnapshot(
     refs,
     identity,
     occlusion,
+    hoverSurfaces,
     ownLabels,
     editableRoots,
     frameBudgetRemaining: Math.floor(maxLength * FRAME_BUDGET_SHARE),
@@ -2461,7 +2589,18 @@ export async function generateSnapshot(
   const footer = facts
     ? formatPageFactsFooter(facts, peekRecentPendingRequests(page), { hasFrameContent })
     : '';
-  const budget = Math.max(0, maxLength - note.length - footer.length);
+  // The hover line sits with the page facts rather than in the tree: it is a
+  // whole-page fact, and it is only worth saying when the items are NOT on the
+  // lines above — with probeHover already passed, it would tell the agent to
+  // pass a flag it just passed.
+  //
+  // Its COUNT comes from the rendered tree below rather than from the mark map,
+  // so a suppressed or truncated marker cannot leave the footer promising
+  // triggers the tree does not show. The map's size still pays the budget: it is
+  // an upper bound on that count, so reserving it can only over-reserve.
+  const wantHoverLine = options?.probeHover !== true;
+  const hoverReserve = wantHoverLine ? hoverMenusFooterLine(hoverSurfaces?.size ?? 0) : '';
+  const budget = Math.max(0, maxLength - note.length - footer.length - hoverReserve.length);
 
   // If the output exceeds the budget AND we are in 'ai' mode, strip
   // non-interactive nodes and regenerate.
@@ -2481,7 +2620,8 @@ export async function generateSnapshot(
     output = output.slice(0, budget) + '\n... (truncated)';
   }
 
-  output = note + output + footer;
+  const hoverLine = wantHoverLine ? hoverMenusFooterLine(countHasSubmenuMarkers(output)) : '';
+  output = note + output + footer + hoverLine;
 
   // Store the refMap for this page so resolveRef can use it without re-querying
   setPageRefs(page, refs);
@@ -2521,6 +2661,7 @@ export async function generateScopedSnapshot(
   const format = options?.format ?? 'ai';
   const depth = options?.depth ?? 10;
   const maxLength = options?.maxLength ?? 50_000;
+  const probeHover = options?.probeHover === true;
   // The number space is per document, not per scope: a node keeps the ref it
   // was given whether it was reached through a selector or the whole page.
   const identity = beginRefGeneration(page);
@@ -2528,6 +2669,7 @@ export async function generateScopedSnapshot(
   const found = await withCdpSession<{
     forest: AXNode[] | null;
     occlusion: OcclusionInfo | null;
+    hoverSurfaces: HoverSurfaceMarks | null;
     ownLabels: Map<number, string>;
     editableRoots: Set<number>;
   }>(
@@ -2537,7 +2679,7 @@ export async function generateScopedSnapshot(
       // listing, which owns the user-facing "No element matches selector:" error.
       const backendId = await resolveSelectorBackendId(client, selector);
       if (backendId === null) {
-        return { forest: null, occlusion: null, ...emptyDomFacts() };
+        return { forest: null, occlusion: null, hoverSurfaces: null, ...emptyDomFacts() };
       }
 
       // The subtree first, the whole document only if that route abstains
@@ -2546,7 +2688,7 @@ export async function generateScopedSnapshot(
       const built =
         (await fetchScopedTree(client, backendId)) ?? (await fetchAccessibilityTree(client));
       if (!built || isRootOnly(built.root)) {
-        return { forest: null, occlusion: null, ...emptyDomFacts() };
+        return { forest: null, occlusion: null, hoverSurfaces: null, ...emptyDomFacts() };
       }
 
       // Same DOM facts the page-level path reads, and for the same reason: a
@@ -2555,20 +2697,26 @@ export async function generateScopedSnapshot(
       // whatever the interactive test lets through (dogfood 2026-09-04).
       const domFacts = format === 'ai' ? await getDomFacts(client) : emptyDomFacts();
 
+      // Occlusion is a whole-page fact, so it is worth just as much inside a
+      // scope — a selector aimed at the page behind an overlay is exactly the
+      // case where the agent is about to click something inert.
+      const occlusion = await occlusionFor(page, client);
+
       return {
         forest: built.byBackendId.get(backendId) ?? null,
         ownLabels: domFacts.ownLabels,
         editableRoots: domFacts.editableRoots,
-        // Occlusion is a whole-page fact, so it is worth just as much inside a
-        // scope — a selector aimed at the page behind an overlay is exactly the
-        // case where the agent is about to click something inert.
-        occlusion: await occlusionFor(page, client),
+        occlusion,
+        // Same reasoning as occlusion: a `selector: "nav"` snapshot is exactly
+        // where a hover-only submenu is what the caller came for. The marks are
+        // keyed by backendDOMNodeId, so only the ones inside the scope render.
+        hoverSurfaces: await hoverSurfacesFor(page, client, occlusion, probeHover),
       };
     },
-    { forest: null, occlusion: null, ...emptyDomFacts() },
+    { forest: null, occlusion: null, hoverSurfaces: null, ...emptyDomFacts() },
   );
 
-  const { forest, occlusion, ownLabels, editableRoots } = found;
+  const { forest, occlusion, hoverSurfaces, ownLabels, editableRoots } = found;
   if (!forest || forest.length === 0) return null;
 
   // Same order as the page-level path: the caller's question narrows the tree
@@ -2611,6 +2759,7 @@ export async function generateScopedSnapshot(
     refs,
     identity,
     occlusion,
+    hoverSurfaces,
     ownLabels,
     editableRoots,
     frameBudgetRemaining: Math.floor(maxLength * FRAME_BUDGET_SHARE),
