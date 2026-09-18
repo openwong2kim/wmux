@@ -26,6 +26,7 @@ vi.mock('../PlaywrightEngine', () => ({
 }));
 
 import { registerInspectionTools } from '../tools/inspection';
+import { inputSchemaDeclaresMaxBytes, wrapHandlerWithResultCap } from '../../resultCap';
 import { CURSOR_EXPIRED_PREFIX, END_OF_CAPTURE_NOTE } from '../snapshotCursor';
 
 /**
@@ -57,6 +58,28 @@ registerInspectionTools(
 );
 const snapshot = tools.get('browser_snapshot');
 if (!snapshot) throw new Error('browser_snapshot failed to register');
+
+/**
+ * The same tool as the real lane composes it: src/mcp/index.ts wraps every
+ * handler with the dispatch-layer result cap at registration, so a window that
+ * overran the byte cap would come back with its middle elided.
+ */
+const cappedTools = new Map<string, ToolHandler>();
+registerInspectionTools(
+  {
+    tool: (name: string, _desc: string, schema: unknown, handler: ToolHandler) => {
+      cappedTools.set(
+        name,
+        wrapHandlerWithResultCap(handler, {
+          declaresMaxBytes: inputSchemaDeclaresMaxBytes(schema),
+        }) as ToolHandler,
+      );
+    },
+  } as never,
+  browserToolDeps as never,
+);
+const cappedSnapshot = cappedTools.get('browser_snapshot');
+if (!cappedSnapshot) throw new Error('browser_snapshot failed to register under the result cap');
 
 /** A drained-events block rides in its own content block at index 0. */
 function textOf(result: ToolResult): string {
@@ -139,6 +162,42 @@ describe('a truncated snapshot offers a cursor over the same capture', () => {
     }
     expect(text).toContain(END_OF_CAPTURE_NOTE);
     expect(text).not.toContain('truncated at line ');
+  });
+});
+
+describe('a window survives the dispatch-layer byte cap intact', () => {
+  it('never lets the cap elide the middle of a CJK window it promised to continue', async () => {
+    // ~2 000 Korean lines: ~3x the bytes of their character count, so a
+    // characters-only window would have been ~150 KB against the 64 KiB cap and
+    // come back with a hole in the middle — while its trailer still said
+    // "continue from line N".
+    const lines = [
+      'Page: 설정',
+      'URL: https://x.test/ko',
+      '',
+      'Interactive elements (use ref number for click/fill/type):',
+    ];
+    for (let i = 0; i < 2000; i++) {
+      lines.push(`  [ref=${i}] button name="${i}번째 행에 대한 아주 긴 설명이 붙은 작업 항목"`);
+    }
+    const ko = lines.join('\n');
+    mockSendRpc.mockResolvedValue({ value: ko });
+
+    const windows: string[] = [];
+    let next: string | undefined;
+    do {
+      const args = next ? { cursor: next, surfaceId: 'surf-ko' } : { surfaceId: 'surf-ko' };
+      const text = textOf(await cappedSnapshot(args));
+      // The cap's own marker: its presence would mean lines were dropped that no
+      // cursor can reach.
+      expect(text).not.toContain('bytes shown]');
+      windows.push(text);
+      next = cursorOf(text);
+    } while (next);
+
+    expect(windows.length).toBeGreaterThan(2);
+    const body = windows.map((w) => w.split('\n').slice(0, -1).join('\n')).join('\n');
+    expect(body).toBe(`[snapshot: full]\n${ko}`);
   });
 });
 

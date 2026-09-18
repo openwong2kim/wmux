@@ -17,7 +17,12 @@ import { nextRefFor, priorRefDescriptors, recordRefGeneration } from '../refDesc
 import { pageEvaluator, rpcEvaluator } from '../page-eval';
 import { formatSnapshotResult } from '../snapshotDiff';
 import { getSnapshotBaseline, setSnapshotBaseline, snapshotSurfaceKey } from '../snapshotCache';
-import { continueSnapshotCapture, cursorIgnoredNote, windowSnapshotText } from '../snapshotCursor';
+import {
+  capCaptureText,
+  continueSnapshotCapture,
+  cursorIgnoredNote,
+  windowSnapshotText,
+} from '../snapshotCursor';
 import { captureSnapshotListing } from '../snapshotListing';
 import { evaluateWithGesture } from '../user-gesture';
 import { evaluateIsolated } from '../isolated-eval';
@@ -604,6 +609,14 @@ export function registerInspectionTools(server: McpServer, deps: BrowserToolDeps
         // A route that mints no frame refs clears the surface, which is what
         // keeps a later DOM snapshot's tags resolvable.
         noteFrameRefsForScope(browserScopeKey(scope), page ?? null);
+
+        // Bound what everything downstream retains. deferTruncation hands back
+        // the whole assembled tree, and the aria lane has no interactive strip to
+        // shrink it, so without this cut the diff baseline and the repl listing
+        // would hold a very large document's tree per surface for the baseline
+        // TTL — they used to be bounded at maxLength. The cut leaves a line
+        // saying what it dropped, so the last window is honest about it.
+        text = capCaptureText(text);
 
         // Auto-diff: a repeat snapshot with the same attributes returns a diff
         // against the previous one when that is genuinely smaller (D1). The

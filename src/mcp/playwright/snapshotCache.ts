@@ -101,16 +101,17 @@ export interface SnapshotCapture {
   text: string;
   /** Page URL at capture time, for the same navigation guard the baselines use. */
   url?: string;
-  /** Whether `text` itself was cut at MAX_CAPTURE_CHARS. */
-  capped: boolean;
+  /** Last read, not creation: an actively-paged capture is not an abandoned one. */
   ts: number;
 }
 
 /**
  * Ceiling on a single stored capture. An `aria` snapshot of a very large
  * document can run to megabytes, and a cursor exists to page through it, not to
- * pin all of it in the MCP process for the TTL. Cut at a line boundary and
- * flagged, so the last window can say the tail was never captured.
+ * pin all of it in the MCP process for the TTL. Callers cut to it through
+ * capCaptureText (snapshotCursor.ts), which leaves a line naming what was
+ * dropped; the slice in putSnapshotCapture is only the backstop for a caller
+ * that did not.
  */
 export const MAX_CAPTURE_CHARS = 1_000_000;
 
@@ -159,19 +160,16 @@ export function putSnapshotCapture(
   const store = getCaptureStore();
   clearSnapshotCapturesFor(surfaceKey);
   let stored = text;
-  let capped = false;
   if (stored.length > MAX_CAPTURE_CHARS) {
     // Back up to a line boundary so no window can ever end mid-line.
     const cut = stored.lastIndexOf('\n', MAX_CAPTURE_CHARS);
     stored = stored.slice(0, cut > 0 ? cut : MAX_CAPTURE_CHARS);
-    capped = true;
   }
   const entry: SnapshotCapture = {
     id: randomBytes(8).toString('hex'),
     surfaceKey,
     text: stored,
     ...(url !== undefined && { url }),
-    capped,
     ts: Date.now(),
   };
   store.set(entry.id, entry);
@@ -192,6 +190,12 @@ export function getSnapshotCapture(captureId: string): SnapshotCapture | null {
     store.delete(captureId);
     return null;
   }
+  // Idle timeout, not a lifetime: a capture at the ceiling is a couple of dozen
+  // windows, and expiring a walk the agent is in the middle of would cost it
+  // exactly the re-snapshot this feature exists to avoid. Staleness is caught by
+  // the navigation drain and by the next snapshot of the surface — the TTL is
+  // only here to free a capture nobody came back for.
+  entry.ts = Date.now();
   return entry;
 }
 
@@ -203,7 +207,17 @@ function invalidateSnapshotCaptures(
   clearSnapshotCapturesFor(snapshotSurfaceKey(workspaceId, surfaceId));
 }
 
-/** Keep only a capture that already describes `currentUrl` (post-body drain). */
+/**
+ * Post-body drain: drop a capture that describes a URL other than `currentUrl`.
+ *
+ * Fail-OPEN where the baseline side above fails closed — a capture that carries
+ * no URL of its own is kept. The two differ because their failure modes do: a
+ * stale baseline silently reports a diff against a page that no longer exists,
+ * while a stale capture is text whose refs resolveRef rejects on its own
+ * navigation guard, and the TTL bounds it either way. Fail-closed here would
+ * have deleted the capture the very call that minted it just stored, on any lane
+ * that cannot name its URL — handing the agent a cursor already dead on arrival.
+ */
 function invalidateSnapshotCapturesIfStale(
   workspaceId: string | undefined,
   surfaceId: string | undefined,
@@ -213,7 +227,7 @@ function invalidateSnapshotCapturesIfStale(
   const surfaceKey = snapshotSurfaceKey(workspaceId, surfaceId);
   for (const [id, entry] of store) {
     if (entry.surfaceKey !== surfaceKey) continue;
-    if (entry.url !== undefined && currentUrl !== undefined && entry.url === currentUrl) continue;
+    if (entry.url === undefined || currentUrl === undefined || entry.url === currentUrl) continue;
     store.delete(id);
   }
 }

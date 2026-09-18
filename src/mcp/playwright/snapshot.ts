@@ -64,6 +64,19 @@ export interface SnapshotOptions {
 const ARIA_FILTER_NOTE = '(note: filter ignored for aria format — returning the full tree)';
 
 /**
+ * Said when the overflow retry below replaced the tree with its interactive-only
+ * strip, and ONLY for a `deferTruncation` caller.
+ *
+ * The strip has always been silent, and for the hard-cut callers it can stay
+ * that way: their result ends in `... (truncated)`, which claims nothing about
+ * completeness. A continuation cursor does claim it — the agent pages to "(end
+ * of capture)" and is entitled to read that as "that was the tree" — so on that
+ * lane the caveat has to travel with the capture.
+ */
+const OVERFLOW_STRIP_NOTE =
+  '(note: page over the size budget — non-interactive nodes dropped, so this capture is the interactive tree, not the whole one)';
+
+/**
  * Said on every `q` result. A snapshot that silently dropped most of the page
  * would read as a page that no longer has those elements, which is the reading
  * that sends an agent off to fix an imaginary problem.
@@ -2480,6 +2493,7 @@ export async function generateSnapshot(
 
   // If the output exceeds the budget AND we are in 'ai' mode, strip
   // non-interactive nodes and regenerate.
+  let stripNote = '';
   if (output.length > budget && format === 'ai') {
     const trimmed = stripNonInteractive(searched, editableRoots);
     if (trimmed) {
@@ -2488,6 +2502,7 @@ export async function generateSnapshot(
       // a retry that starts empty would truncate every frame at once.
       ctx.frameBudgetRemaining = Math.floor(maxLength * FRAME_BUDGET_SHARE);
       output = serializeTree(trimmed, ctx);
+      if (options?.deferTruncation) stripNote = OVERFLOW_STRIP_NOTE;
     }
   }
 
@@ -2502,7 +2517,7 @@ export async function generateSnapshot(
   // Store the refMap for this page so resolveRef can use it without re-querying
   setPageRefs(page, refs);
 
-  const notes = [queryNote, filterNote].filter((n) => n.length > 0);
+  const notes = [queryNote, filterNote, stripNote].filter((n) => n.length > 0);
   return notes.length > 0 ? `${notes.join('\n')}\n${output}` : output;
 }
 
@@ -2641,6 +2656,7 @@ export async function generateScopedSnapshot(
   const note = occlusion ? `${occlusionNote(occlusion)}\n` : '';
   const budget = Math.max(0, maxLength - note.length);
 
+  let stripNote = '';
   if (output.length > budget && format === 'ai') {
     const trimmed = searched
       .map((n) => stripNonInteractive(n, editableRoots))
@@ -2649,6 +2665,8 @@ export async function generateScopedSnapshot(
       refs.length = 0;
       ctx.frameBudgetRemaining = Math.floor(maxLength * FRAME_BUDGET_SHARE);
       output = serializeForest(trimmed, ctx);
+      // Same reason as the page-level path: only a capture claims completeness.
+      if (options?.deferTruncation) stripNote = OVERFLOW_STRIP_NOTE;
     }
   }
 
@@ -2664,7 +2682,7 @@ export async function generateScopedSnapshot(
   // so resolveRef must count matches inside the same element.
   setPageRefs(page, refs, selector);
 
-  const notes = [queryNote, filterNote].filter((n) => n.length > 0);
+  const notes = [queryNote, filterNote, stripNote].filter((n) => n.length > 0);
   return notes.length > 0 ? `${notes.join('\n')}\n${output}` : output;
 }
 

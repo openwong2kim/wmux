@@ -110,6 +110,29 @@ describe('browser_smart_snapshot continuation cursor', () => {
     expect(text).toContain('full');
   });
 
+  it('puts its caveats in the FIRST window, under the header line', async () => {
+    const first = textOf(await smart({ maxContentLength: 100000, surfaceId: 'smart-notes' }));
+    const head = first.split('\n').slice(0, 3);
+    expect(head[0]).toContain('[snapshot:');
+    // The RPC lane's "no diff on this backend" caveat is what the agent needs
+    // while reading window 1 — appended, it only reached the last one.
+    expect(head.join('\n')).toContain('no diff on this backend');
+  });
+
+  it('honours a raised maxBytes with bigger windows instead of ignoring it', async () => {
+    const small = textOf(await smart({ maxContentLength: 100000, surfaceId: 'smart-cap-small' }));
+    const large = textOf(
+      await smart({ maxContentLength: 100000, maxBytes: 524288, surfaceId: 'smart-cap-large' }),
+    );
+    expect(large.length).toBeGreaterThan(small.length);
+    // maxBytes is honoured, so it is NOT in the ignored-parameters list.
+    const token = cursorOf(small);
+    if (token) {
+      const cont = textOf(await smart({ cursor: token, maxBytes: 524288, surfaceId: 'smart-cap-small' }));
+      expect(cont).not.toContain('maxBytes');
+    }
+  });
+
   it('retires the capture when the surface is smart-snapshotted again', async () => {
     const token = cursorOf(textOf(await smart({ maxContentLength: 100000, surfaceId: 'smart-resnap' })));
     // A short page next: the result fits one window, so the old capture goes.
