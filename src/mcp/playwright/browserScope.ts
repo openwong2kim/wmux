@@ -1,5 +1,6 @@
 import type { RpcMethod } from '../../shared/rpc';
 import { sendRpc } from '../wmux-client';
+import { isAgentWindowScopeError } from '../../shared/liveWriteScope';
 // Cycle-safe: surfaceRouting imports the refusal type from here, and both
 // sides touch the other only from inside function bodies, never at module
 // evaluation time.
@@ -41,9 +42,16 @@ export function isWorkspaceScopeUnresolvedError(error: unknown): boolean {
  * A scope refusal may not fall back: on an older main that ignores workspaceId,
  * doing so would recreate the cross-workspace path the refusal was meant to
  * close.
+ *
+ * Nor may a live write-scope refusal. It is not a page-discovery failure at all:
+ * the page was found and this workspace is not allowed to write to it. Falling
+ * back would send the same write down the RPC lane, where main refuses it again
+ * — but the agent would have been told "no page resolved" instead of the one
+ * sentence that says how to fix it (ask the user to lend the tab).
  */
 export function allowScopedRpcFallback(error: unknown): null {
   if (isWorkspaceScopeUnresolvedError(error)) throw error;
+  if (isAgentWindowScopeError(error)) throw error;
   return null;
 }
 

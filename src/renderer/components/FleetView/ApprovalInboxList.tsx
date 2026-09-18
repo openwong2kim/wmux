@@ -208,7 +208,11 @@ export default function ApprovalInboxList({ items, focusedIdx, onResolve }: Appr
           >
             <div className="flex items-center gap-2 min-w-0">
               <span className="text-xs font-mono truncate" style={{ color: 'var(--text-main)' }}>
-                <span style={{ color: 'var(--text-subtle)' }}>{t('fleet.approvals.plugin')}: </span>
+                {/* A tab-borrow prompt comes from a workspace's agent, not from a
+                    plugin; labelling it one would misattribute the request. */}
+                <span style={{ color: 'var(--text-subtle)' }}>
+                  {t(item.kind === 'browser-borrow' ? 'fleet.approvals.workspace' : 'fleet.approvals.plugin')}:{' '}
+                </span>
                 {item.clientName}
               </span>
               <div className="flex-1" />
@@ -239,6 +243,15 @@ export default function ApprovalInboxList({ items, focusedIdx, onResolve }: Appr
                 </span>
               )}
             </div>
+
+            {/* The question itself, for a prompt that carries one. A borrow
+                declares no capabilities, so without this the row would say who
+                is asking and never what for. */}
+            {item.title && (
+              <div className="text-xs font-medium" style={{ color: 'var(--text-main)' }}>
+                {item.title}
+              </div>
+            )}
 
             {top && (
               <div className="text-xs font-medium" style={{ color: accent }}>

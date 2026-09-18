@@ -32,6 +32,11 @@ export type InboxItem =
       declaredCapabilities: string[];
       rationale?: string;
       isCritical: boolean;
+      /** What the prompt is asking for. Absent reads as a plugin declaring
+       *  capabilities — every prompt before the live-Chrome tab borrow. */
+      kind?: 'plugin' | 'browser-borrow';
+      /** The question, when the generic plugin headline would be wrong. */
+      title?: string;
     };
 
 /** Minimal store surface the selector reads — keeps the subscription narrow. */
@@ -80,6 +85,8 @@ export function selectApprovalInbox(state: ApprovalInboxState): InboxItem[] {
       declaredCapabilities: info.declaredCapabilities,
       rationale: info.rationale,
       isCritical,
+      ...(info.kind !== undefined && { kind: info.kind }),
+      ...(info.title !== undefined && { title: info.title }),
     });
   }
 

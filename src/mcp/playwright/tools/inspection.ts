@@ -1067,7 +1067,8 @@ export function registerInspectionTools(server: McpServer, deps: BrowserToolDeps
     BROWSER_HIGHLIGHT_SHAPE,
     async ({ ref, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
       try {
-        const page = await engine.getPageForScope(scope).catch(allowScopedRpcFallback);
+        // A write: the highlight is two inline styles written into the page.
+        const page = await engine.getPageForScope(scope, { intent: 'write' }).catch(allowScopedRpcFallback);
 
         if (page) {
           const el = await resolveRef(page, ref);

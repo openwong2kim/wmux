@@ -64,6 +64,13 @@ export interface CdpSocketOptions {
    * keeps its current behaviour.
    */
   connectErrorFor?: (reason: CdpConnectFailure, endpoint: string) => Promise<string> | string;
+  /**
+   * Fires when a socket that WAS open closed on us (browser quit, endpoint
+   * moved), not when close() was called. Callers that hold per-connection state
+   * use it to drop that state: LiveChromeClient clears its borrow grants, so a
+   * lent tab is never still lent across a Chrome restart.
+   */
+  onDisconnect?: () => void;
 }
 
 interface CdpFrame {
@@ -94,6 +101,7 @@ export class CdpSocket {
   private readonly connectNoticeAfterMs: number;
   private readonly onConnectPending?: (elapsedMs: number) => void;
   private readonly connectErrorFor?: (reason: CdpConnectFailure, endpoint: string) => Promise<string> | string;
+  private readonly onDisconnect?: () => void;
 
   constructor(
     private readonly resolveEndpoint: () => string,
@@ -106,6 +114,7 @@ export class CdpSocket {
     this.connectNoticeAfterMs = opts?.connectNoticeAfterMs ?? DEFAULT_CONNECT_NOTICE_MS;
     this.onConnectPending = opts?.onConnectPending;
     this.connectErrorFor = opts?.connectErrorFor;
+    this.onDisconnect = opts?.onDisconnect;
   }
 
   /** The message for a failed dial. Never throws: a diagnosis that itself
@@ -251,7 +260,15 @@ export class CdpSocket {
     ws.addEventListener('message', (ev: MessageEvent) => this.onMessage(ev));
     ws.addEventListener('close', () => {
       // Reject in-flight calls; the next send() re-resolves the endpoint.
-      if (this.ws === ws) this.detach(`${this.label}: connection closed`, false);
+      if (this.ws !== ws) return;
+      this.detach(`${this.label}: connection closed`, false);
+      // After the detach, so a subscriber that re-dials sees a clean socket.
+      // One bad subscriber must not take the close path down with it.
+      try {
+        this.onDisconnect?.();
+      } catch (err) {
+        console.warn(`[${this.label}] onDisconnect handler threw:`, err);
+      }
     });
     this.ws = ws;
     this.wsEndpoint = endpoint;

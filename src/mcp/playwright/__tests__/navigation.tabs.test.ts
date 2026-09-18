@@ -390,6 +390,136 @@ describe('browser navigation MCP workspace contract', () => {
     expect(mockSendRpc).not.toHaveBeenCalled();
   });
 
+  // ── Live-Chrome agent window: borrow / return / scope ────────────────────
+  //
+  // The policy is enforced in main (and again in the Playwright lane); what the
+  // tool owns is the argument contract and rendering the answer, including the
+  // owner label a row now carries.
+
+  it('a list row reports who may WRITE to the tab, not only who opened it', async () => {
+    mockSendRpc.mockResolvedValue({
+      ok: true,
+      action: 'list',
+      tabs: [
+        {
+          surfaceId: 'user-tab',
+          paneId: 'chrome:user-tab',
+          url: 'https://mail.example.com/',
+          title: 'Inbox',
+          selected: false,
+          owner: 'user',
+        },
+      ],
+    });
+
+    const result = await browserTabs({ action: 'list' });
+
+    expect(JSON.parse(result.content[0].text)).toEqual({
+      action: 'list',
+      tabs: [
+        {
+          surfaceId: 'user-tab',
+          paneId: 'chrome:user-tab',
+          url: 'https://mail.example.com/',
+          title: 'Inbox',
+          selected: false,
+          owner: 'user',
+          mine: 'unknown',
+        },
+      ],
+    });
+  });
+
+  it('passes the list scope through to main', async () => {
+    mockSendRpc.mockResolvedValue({ ok: true, action: 'list', tabs: [] });
+
+    await browserTabs({ action: 'list', scope: 'agent' });
+
+    expect(mockSendRpc).toHaveBeenCalledWith('browser.tabs', {
+      action: 'list',
+      workspaceId: 'ws-caller',
+      scope: 'agent',
+      openerKey: expect.any(String),
+    });
+  });
+
+  it('scope belongs to list alone, and is refused before the RPC elsewhere', async () => {
+    const result = await browserTabs({ action: 'close', surfaceId: 'surface-a', scope: 'agent' });
+
+    expect(result.content[0].text).toContain('[BROWSER_TABS_INVALID_ARGUMENT]');
+    expect(mockSendRpc).not.toHaveBeenCalled();
+  });
+
+  it('renders a granted borrow with the tab now marked borrowed', async () => {
+    mockSendRpc.mockResolvedValue({
+      ok: true,
+      action: 'borrow',
+      result: 'borrowed',
+      tab: {
+        surfaceId: 'user-tab',
+        paneId: 'chrome:user-tab',
+        url: 'https://mail.example.com/',
+        title: 'Inbox',
+        selected: false,
+        owner: 'borrowed',
+      },
+    });
+
+    const result = await browserTabs({ action: 'borrow', surfaceId: 'user-tab' });
+
+    expect(result.isError).toBeUndefined();
+    expect(JSON.parse(result.content[0].text)).toMatchObject({
+      action: 'borrow',
+      result: 'borrowed',
+      tab: { surfaceId: 'user-tab', owner: 'borrowed' },
+    });
+  });
+
+  it.each([
+    ['user_denied', 'user_denied: the user did not lend "user-tab".'],
+    ['borrow_timeout', 'borrow_timeout: nobody answered within the deadline.'],
+    ['borrow_pending', 'borrow_pending: the user is already being asked about "user-tab".'],
+  ])('surfaces a %s refusal verbatim, so the agent can tell them apart', async (_kind, message) => {
+    mockSendRpc.mockResolvedValue({
+      ok: false,
+      error: { code: 'BROWSER_TAB_BORROW_REFUSED', message },
+    });
+
+    const result = await browserTabs({ action: 'borrow', surfaceId: 'user-tab' });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('[BROWSER_TAB_BORROW_REFUSED]');
+    expect(result.content[0].text).toContain(message);
+  });
+
+  it('renders a return, including the no-op case', async () => {
+    mockSendRpc.mockResolvedValue({
+      ok: true,
+      action: 'return',
+      surfaceId: 'user-tab',
+      returned: false,
+    });
+
+    const result = await browserTabs({ action: 'return', surfaceId: 'user-tab' });
+
+    expect(result.isError).toBeUndefined();
+    expect(JSON.parse(result.content[0].text)).toEqual({
+      action: 'return',
+      surfaceId: 'user-tab',
+      returned: false,
+    });
+  });
+
+  it.each([['borrow'], ['return']])(
+    '%s without a surfaceId is refused before the RPC',
+    async (action) => {
+      const result = await browserTabs({ action });
+
+      expect(result.content[0].text).toContain('[BROWSER_TABS_INVALID_ARGUMENT]');
+      expect(mockSendRpc).not.toHaveBeenCalled();
+    },
+  );
+
   // #922 PR-C — the scope refusal must survive the catch-all.
   //
   // Folding browser.tabs into the caller-scope table changed how a refusal

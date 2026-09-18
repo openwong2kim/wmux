@@ -75,6 +75,9 @@ import { validateResolvedNavigationUrl } from '../../security/navigationPolicy';
 import { parseKeyPress } from './cdpKeys';
 import {
   BROWSER_TABS_ACTIONS,
+  BROWSER_TABS_SCOPES,
+  DEFAULT_BROWSER_TABS_SCOPE,
+  isBrowserTabsScope,
   browserTabsError,
   type BrowserTabsAction,
 } from '../../../shared/browserTabs';
@@ -91,6 +94,14 @@ import type {
 import type { BrowserBackendStore } from '../../browser-session/BrowserBackendStore';
 import type { ChromeBackendClient, ChromeLauncherRegistry } from '../../browser-session/ChromeLauncher';
 import { isLiveChromeReachable } from '../../browser-session/LiveChromeClient';
+import {
+  agentWindowScopeMessage,
+  DEFAULT_LIVE_WRITE_SCOPE,
+  LIVE_WRITE_RPC_METHODS,
+  type BorrowApprovalOutcome,
+  type BorrowApprovalRequester,
+  type LiveTabOwner,
+} from '../../../shared/liveWriteScope';
 import type { EnforcementMode } from '../../mcp/enforcementMode';
 import { isFirstPartyClient } from '../../mcp/firstParty';
 import { isLocalExternalWireContext } from '../../mcp/rpcProvenance';
@@ -737,6 +748,10 @@ export function registerBrowserRpc(
   // The persisted `siteGuidesEnabled` toggle, same lazy read. Absent hook or
   // null value means the default, which is OFF.
   readSiteGuidesEnabled: () => boolean | null = () => null,
+  // Live-Chrome agent window: asks the human to lend the agent one of THEIR
+  // tabs, through the existing MCP approval pipeline. Absent means nobody can
+  // be asked, so `browser_tabs borrow` refuses rather than granting silently.
+  requestBorrowApproval?: BorrowApprovalRequester,
 ): void {
   const getActivePartition = (): string => profileManager.getActiveProfile().partition;
 
@@ -766,6 +781,79 @@ export function registerBrowserRpc(
       throw new Error(`${method}: browser backend is 'chrome' but no Chrome launcher is wired in this build.`);
     }
     return chromeRegistry.forWorkspace(workspaceId);
+  };
+
+  // -- Live-Chrome agent window (write scope) --------------------------------
+  //
+  // On the live backend an agent READS the whole browser and WRITES only to the
+  // tabs it opened, plus the tabs the user lends it. Enforced in two places
+  // because there are two lanes: here, and in the MCP Playwright lane (which
+  // drives fill/select/upload over CDP without passing through main at all).
+  // Neither is a substitute for the other.
+
+  /** The operator setting, read lazily per call like every other one here. */
+  const liveWriteScopeSetting = () => backendStore?.liveWriteScope?.() ?? DEFAULT_LIVE_WRITE_SCOPE;
+
+  /**
+   * The write-scope policy in force for this caller, or null when there is none
+   * to apply: a non-chrome backend, a dedicated Chrome (where every addressable
+   * tab is one wmux opened), or the operator's 'all' opt-out.
+   *
+   * Resolving the client is what decides live-vs-dedicated — `writeScope` exists
+   * only on LiveChromeClient — so this never has to know about profile names.
+   */
+  const liveWritePolicy = (workspaceId: string | undefined) => {
+    if (backend() !== 'chrome' || !chromeRegistry) return null;
+    if (liveWriteScopeSetting() !== 'agent') return null;
+    return chromeRegistry.forWorkspace(workspaceId).writeScope ?? null;
+  };
+
+  /** Who owns a live tab, for the reply rows. 'agent' on every other backend:
+   *  there, an addressable tab is by construction one wmux opened. */
+  const liveOwnerOf = (
+    client: ChromeBackendClient,
+    surfaceId: string,
+    workspaceId: string | undefined,
+  ): LiveTabOwner => client.writeScope?.ownerOf(surfaceId, workspaceId) ?? 'agent';
+
+  /**
+   * Refuse a WRITE aimed at a live tab this workspace does not own, before the
+   * handler runs.
+   *
+   * Only a call that NAMES a surface is gated: a write with no surfaceId cannot
+   * be pointed at the user's tab, because the only thing main does with one on
+   * this backend is open a fresh tab (browser.navigate's chrome fallback) — and
+   * a tab wmux just opened is agent-owned. The MCP lane's default pin comes from
+   * browser.cdp.info, which lists owned and lent tabs only.
+   */
+  const guardLiveWrite = (
+    method: string,
+    params: Record<string, unknown>,
+    scope: string | undefined,
+  ): void => {
+    if (!LIVE_WRITE_RPC_METHODS.has(method)) return;
+    const surfaceId = typeof params['surfaceId'] === 'string' ? params['surfaceId'] : '';
+    if (!surfaceId) return;
+    // browser.cookies is a read on 'get' and a write on set/clear. The method is
+    // in the write set for the latter; letting the read through keeps live
+    // reads exactly as open as they were.
+    if (method === 'browser.cookies' && params['action'] === 'get') return;
+    const policy = liveWritePolicy(scope);
+    if (!policy) return;
+    // MIXED MODE: a manually opened builtin pane still exists under the chrome
+    // backend, and its surface is not a live Chrome tab at all — the live policy
+    // has nothing to say about it, and refusing it would break a pane the user
+    // opened themselves. Exact-match on the id (getTarget answers a default
+    // lookup too) and count a DISCARDED guest as builtin, since the handler is
+    // about to wake it. Both are pure lookups: no wake, no dispatch.
+    if (
+      webviewCdpManager.getTarget(surfaceId, scope)?.surfaceId === surfaceId
+      || webviewCdpManager.isDiscarded(surfaceId)
+    ) {
+      return;
+    }
+    if (policy.ownerOf(surfaceId, scope) !== 'user') return;
+    throw new Error(agentWindowScopeMessage(method, surfaceId));
   };
 
   /**
@@ -906,7 +994,7 @@ export function registerBrowserRpc(
    *  surfaceId is the launcher's STABLE id, never the CDP targetId (which
    *  Chrome may swap under the tab at any time). */
   const chromeTabDescriptor = (
-    t: { surfaceId: string; url: string; title?: string },
+    t: { surfaceId: string; url: string; title?: string; owner?: LiveTabOwner },
     callerKey?: string,
   ) => ({
     surfaceId: t.surfaceId,
@@ -915,7 +1003,24 @@ export function registerBrowserRpc(
     title: t.title ?? '',
     selected: false,
     ...withOpener(t.surfaceId, callerKey),
+    // Live only: whether this workspace may WRITE to the tab. `opener` above is
+    // about the calling CONNECTION and is only ever a routing default; this one
+    // is the permission, and the two disagree often (an agent's own tab opened
+    // by another connection is agent-owned but not "mine").
+    ...(t.owner !== undefined && { owner: t.owner }),
   });
+
+  /** Origin of a tab URL for the borrow prompt, '' when it has none
+   *  (about:blank, a chrome:// page). The human needs to see WHICH site they are
+   *  handing over, and a title alone does not say. */
+  const originOf = (url: string): string => {
+    try {
+      const parsed = new URL(url);
+      return parsed.origin === 'null' ? '' : parsed.origin;
+    } catch {
+      return '';
+    }
+  };
 
   const delegateExternal = async (url: string, method: string): Promise<ExternalOpenResult> => {
     await validateUrl(url, method);
@@ -1134,6 +1239,9 @@ export function registerBrowserRpc(
       // Before any work: a refused caller must not reach URL validation, the
       // external-backend delegate, or a wake. Throwing here is the whole point.
       const scope = scopeFor(method, params, ctx);
+      // Before URL validation, before the wake, before the lease: a write aimed
+      // at somebody else's live tab must not touch the page at all.
+      guardLiveWrite(method, params, scope);
       const surfaceId = typeof params['surfaceId'] === 'string' ? params['surfaceId'] : undefined;
       // Memory relief (#517 slice C): automation targeting a discarded guest
       // wakes it (renderer remounts + page reloads) before taking the lease,
@@ -1503,7 +1611,25 @@ export function registerBrowserRpc(
         ? params['surfaceId']
         : undefined;
     const url = typeof params['url'] === 'string' ? params['url'] : undefined;
-    if ((action === 'select' || action === 'close') && !surfaceId) {
+    const listScope = isBrowserTabsScope(params['scope'])
+      ? params['scope']
+      : DEFAULT_BROWSER_TABS_SCOPE;
+    if (params['scope'] !== undefined && !isBrowserTabsScope(params['scope'])) {
+      return browserTabsError(
+        'BROWSER_TABS_INVALID_ARGUMENT',
+        `browser_tabs scope must be one of ${BROWSER_TABS_SCOPES.join(', ')}.`,
+      );
+    }
+    if (action !== 'list' && params['scope'] !== undefined) {
+      return browserTabsError(
+        'BROWSER_TABS_INVALID_ARGUMENT',
+        `browser_tabs ${action} does not accept scope.`,
+      );
+    }
+    if (
+      (action === 'select' || action === 'close' || action === 'borrow' || action === 'return')
+      && !surfaceId
+    ) {
       return browserTabsError(
         'BROWSER_TABS_INVALID_ARGUMENT',
         `browser_tabs ${action} requires a surfaceId returned by browser_tabs list.`,
@@ -1552,8 +1678,27 @@ export function registerBrowserRpc(
         }
       }
       const targets = await launcher.listTargets(workspaceId);
+      // The label every row carries on live, and what borrow/return act on.
+      const ownerOf = (id: string) => liveOwnerOf(launcher, id, workspaceId);
       if (action === 'list') {
-        return { ok: true, action: 'list', tabs: targets.map((t) => chromeTabDescriptor(t, callerKey)) };
+        const rows = targets.map((t) => ({
+          ...t,
+          // Only live has a distinction to report. On a dedicated instance the
+          // field stays absent rather than being stamped 'agent' everywhere,
+          // which would imply a policy that backend does not have.
+          ...(launcher.writeScope && { owner: ownerOf(t.surfaceId) }),
+        }));
+        const filtered =
+          listScope === 'all' || !launcher.writeScope
+            ? rows
+            : rows.filter((t) =>
+                listScope === 'agent' ? t.owner !== 'user' : t.owner === 'user',
+              );
+        return {
+          ok: true,
+          action: 'list',
+          tabs: filtered.map((t) => chromeTabDescriptor(t, callerKey)),
+        };
       }
       const match =
         targets.find((t) => t.surfaceId === surfaceId) ??
@@ -1567,22 +1712,124 @@ export function registerBrowserRpc(
             'the Chrome tab that held this surface may have been replaced or closed by Chrome; open a new one.',
         );
       }
+      if (action === 'borrow' || action === 'return') {
+        const scopeApi = launcher.writeScope;
+        if (!scopeApi) {
+          return browserTabsError(
+            'BROWSER_TAB_BORROW_UNSUPPORTED',
+            `browser_tabs ${action} applies to Live Chrome only. On this backend every tab an ` +
+              'agent can address is one wmux opened, so there is nothing to lend.',
+          );
+        }
+        if (action === 'return') {
+          const returned = scopeApi.returnBorrow(match.surfaceId, workspaceId);
+          return { ok: true, action: 'return', surfaceId: match.surfaceId, returned };
+        }
+        // Already ours: answer with the grant rather than asking the user a
+        // question whose answer cannot change anything.
+        if (ownerOf(match.surfaceId) !== 'user') {
+          return {
+            ok: true,
+            action: 'borrow',
+            result: 'borrowed',
+            tab: chromeTabDescriptor({ ...match, owner: ownerOf(match.surfaceId) }, callerKey),
+          };
+        }
+        if (!requestBorrowApproval) {
+          return browserTabsError(
+            'BROWSER_TAB_BORROW_REFUSED',
+            'user_denied: there is no way to ask the user for this tab in this build, and a tab ' +
+              'is never lent without them saying so.',
+          );
+        }
+        // The pending slot is taken BEFORE the prompt opens, so a second
+        // request cannot slip in between the check and the dialog.
+        if (!scopeApi.beginBorrow(match.surfaceId, workspaceId)) {
+          return browserTabsError(
+            'BROWSER_TAB_BORROW_REFUSED',
+            `borrow_pending: the user is already being asked about "${match.surfaceId}". ` +
+              'Wait for that answer instead of asking again.',
+          );
+        }
+        let outcome: BorrowApprovalOutcome;
+        try {
+          outcome = await requestBorrowApproval({
+            workspaceId,
+            surfaceId: match.surfaceId,
+            title: match.title ?? '',
+            origin: originOf(match.url),
+          });
+        } catch {
+          // A prompt pipeline that failed did not produce a yes.
+          outcome = 'denied';
+        }
+        // Released on every outcome, recording the grant only on an explicit
+        // yes: a slot that leaked would leave the tab un-askable for the rest of
+        // the session.
+        scopeApi.settleBorrow(match.surfaceId, workspaceId, outcome === 'approved');
+        if (outcome === 'approved') {
+          return {
+            ok: true,
+            action: 'borrow',
+            result: 'borrowed',
+            tab: chromeTabDescriptor({ ...match, owner: 'borrowed' }, callerKey),
+          };
+        }
+        return browserTabsError(
+          'BROWSER_TAB_BORROW_REFUSED',
+          outcome === 'timeout'
+            ? `borrow_timeout: nobody answered within the deadline, so "${match.surfaceId}" stays ` +
+                'the user\'s. Ask again when they are at the keyboard.'
+            : `user_denied: the user did not lend "${match.surfaceId}".`,
+        );
+      }
       if (action === 'select') {
         // Live attach supports real tab focus; dedicated instances leave
         // focus to the automation itself (Playwright bringToFront) and echo.
         if (launcher.selectSurface) await launcher.selectSurface(match.surfaceId);
-        return { ok: true, action: 'select', tab: chromeTabDescriptor(match, callerKey) };
+        return {
+          ok: true,
+          action: 'select',
+          tab: chromeTabDescriptor(
+            { ...match, ...(launcher.writeScope && { owner: ownerOf(match.surfaceId) }) },
+            callerKey,
+          ),
+        };
       }
-      // action === 'close'
+      // action === 'close'. Closing a tab is a write, so it goes through the
+      // same gate the leased write RPCs do — browser_tabs must not be the way
+      // round the policy.
+      const closeOwner = ownerOf(match.surfaceId);
+      if (launcher.writeScope && liveWritePolicy(workspaceId) && closeOwner === 'user') {
+        return browserTabsError(
+          'BROWSER_TABS_SCOPE_REFUSED',
+          agentWindowScopeMessage('browser_tabs close', match.surfaceId),
+        );
+      }
       const closed = await launcher.closeSurface(match.surfaceId);
       if (!closed) {
         return browserTabsError('BROWSER_TABS_UNAVAILABLE', 'browser_tabs close: Chrome did not close the tab.');
       }
       // Descriptor first, then forget: the reply still reports who owned the
       // tab, and no later surface can inherit the ownership of a dead id.
-      const closedTab = chromeTabDescriptor(match, callerKey);
+      const closedTab = chromeTabDescriptor(
+        { ...match, ...(launcher.writeScope && { owner: closeOwner }) },
+        callerKey,
+      );
       surfaceOpeners.forget(match.surfaceId);
       return { ok: true, action: 'close', closed: closedTab };
+    }
+
+    // borrow / return are live-only. Every other backend reaches here, where
+    // there is no user tab to lend: builtin surfaces are wmux's own panes and an
+    // external open is fire-and-forget. Refusing is the honest answer — falling
+    // through to the renderer would have it reject an action it never heard of.
+    if (action === 'borrow' || action === 'return') {
+      return browserTabsError(
+        'BROWSER_TAB_BORROW_UNSUPPORTED',
+        `browser_tabs ${action} applies to Live Chrome only. On this backend every tab an agent ` +
+          'can address is one wmux opened, so there is nothing to lend.',
+      );
     }
 
     // #517 backend fork: 'new' is an open-shaped action, so external mode
@@ -1831,6 +2078,10 @@ export function registerBrowserRpc(
     // place for the two to differ. Called ONCE: `scopeFor` writes an audit
     // entry, and one decision should leave one record.
     const workspaceId = scopeFor('browser.close', params, ctx);
+    // Not a registerLeased method (it closes a surface rather than driving one),
+    // so it takes the live write gate itself. Closing somebody's tab is a write
+    // by any reading of the word.
+    guardLiveWrite('browser.close', params, workspaceId);
     // Chrome tabs live outside the renderer entirely, so the bridge send below
     // was a silent no-op for them — browser_close simply never worked on the
     // chrome backend. Close them here instead.
@@ -2329,6 +2580,12 @@ export function registerBrowserRpc(
         ...(disclose && ep.wsEndpoint && { wsEndpoint: ep.wsEndpoint }),
         ...(callerWorkspaceId && { targetsScoped: true }),
         workspaceBackend: 'chrome' as const,
+        // Live only: the write-scope policy in force, so the MCP lane can apply
+        // the SAME gate on the writes it drives over CDP without main seeing
+        // them. Disclosed unconditionally, unlike wsEndpoint/cdpPort — it is a
+        // policy fact, not an attach primitive, and a caller that cannot read it
+        // would silently skip the gate.
+        ...(launcher.writeScope && { liveWriteScope: liveWriteScopeSetting() }),
         // The two ids differ for dedicated instances: the engine matches the
         // registry on surfaceId and then dials CDP with targetId, so shipping
         // the CURRENT targetId here is what keeps a stable handle drivable
@@ -2341,6 +2598,10 @@ export function registerBrowserRpc(
           // surfaceId resolves to its own tab instead of the workspace's
           // newest. A verdict, never anyone's key.
           ...withOpener(t.surfaceId, callerOpenerKey),
+          // Live only: whether this workspace may write to the tab. The rows a
+          // live client seeds here are its own and its lent ones, so a target
+          // MISSING from this list is exactly the case the MCP lane refuses.
+          ...(t.owner !== undefined && { owner: t.owner }),
         })),
       };
     }

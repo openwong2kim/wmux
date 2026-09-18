@@ -582,7 +582,7 @@ export function registerFileTools(server: McpServer, deps: BrowserToolDeps): voi
     BROWSER_FILE_UPLOAD_SHAPE,
     async ({ paths, selector, ref, timeout, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
       try {
-        const page = await engine.getPageForScope(scope);
+        const page = await engine.getPageForScope(scope, { intent: 'write' });
         if (!page) {
           throw new Error('No browser page available. Call browser_open with a URL first to establish a CDP connection (required even if a browser panel is already visible).');
         }
@@ -657,7 +657,8 @@ export function registerFileTools(server: McpServer, deps: BrowserToolDeps): voi
       let originalUrl = '';
       let page: Awaited<ReturnType<typeof engine.getPageForScope>> = null;
       try {
-        page = await engine.getPageForScope(scope);
+        // A download starts with a CLICK, so this is a write.
+        page = await engine.getPageForScope(scope, { intent: 'write' });
         if (!page) {
           throw new Error('No browser page available. Call browser_open with a URL first to establish a CDP connection (required even if a browser panel is already visible).');
         }
@@ -818,7 +819,8 @@ export function registerFileTools(server: McpServer, deps: BrowserToolDeps): voi
     BROWSER_DIALOG_SHAPE,
     async ({ accept, text, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
       try {
-        const page = await engine.getPageForScope(scope);
+        // Answering a dialog (accept/dismiss, and prompt text) acts on the page.
+        const page = await engine.getPageForScope(scope, { intent: 'write' });
         if (!page) {
           throw new Error('No browser page available. Call browser_open with a URL first to establish a CDP connection (required even if a browser panel is already visible).');
         }

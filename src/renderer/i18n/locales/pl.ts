@@ -201,6 +201,7 @@ export const pl = {
   // Permission approval dialog
   'permission.pluginTitle': 'Wtyczka żąda uprawnień',
   'permission.pluginLabel': 'wtyczka:',
+  'permission.workspaceLabel': 'obszar roboczy:',
 
   // Workspace
   // Status labels sit in a narrow column beside a coloured dot, on a row that
@@ -466,6 +467,7 @@ export const pl = {
   'fleet.approvals.from': 'od',
   'fleet.approvals.to': 'do',
   'fleet.approvals.plugin': 'wtyczka',
+  'fleet.approvals.workspace': 'obszar roboczy',
   'fleet.approvals.enterApprove': 'zatwierdź',
   'fleet.approvals.delDeny': 'odrzuć',
   'fleet.approvals.autoRejected': 'auto-odrzucone: {name}',

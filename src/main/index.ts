@@ -97,6 +97,8 @@ import { getPluginTrustStore } from './mcp/PluginTrustStore';
 import { ShadowRejectionLogger } from './audit/shadowRejectionLog';
 import { LegacyTrafficCounter } from './audit/legacyTrafficCounter';
 import { ApprovalQueue } from './mcp/ApprovalQueue';
+import { createBorrowApprovalRequester } from './browser-session/liveBorrowApproval';
+import type { BorrowApprovalRequester } from '../shared/liveWriteScope';
 import { resolveEnforcementMode } from './mcp/enforcementMode';
 import { setConfiguredFirstPartyClients } from './mcp/firstParty';
 import { readConfiguredFirstPartyClients } from './mcp/firstPartyConfig';
@@ -901,7 +903,16 @@ registerBrowserRpc(
   () => sessionManager.readSiteMemoryEnabled(),
   // Site guide pointers' switch (default OFF), judged in the same place.
   () => sessionManager.readSiteGuidesEnabled(),
+  // Live Chrome: asking the human to lend the agent one of THEIR tabs. The
+  // requester needs the approval queue, which is built further down, so the read
+  // is deferred to call time — the same lazy-getter posture the enforcement mode
+  // above uses. Fail-closed while it is unset: a borrow nobody can be asked
+  // about is a borrow that does not happen.
+  (request) => (liveBorrowRequester ? liveBorrowRequester(request) : Promise.resolve('denied')),
 );
+
+/** Set once the ApprovalQueue exists (below). Read lazily by browser.rpc. */
+let liveBorrowRequester: BorrowApprovalRequester | null = null;
 registerA2aRpc(rpcRouter, () => mainWindow, claudeWorker, { getDaemonClient: () => daemonClient });
 registerA2aChannelRpc(rpcRouter, () => daemonClient, () => mainWindow);
 registerCompanyRpc(rpcRouter, () => mainWindow);
@@ -1181,6 +1192,16 @@ const approvalQueue = new ApprovalQueue(getPluginTrustStore(), {
   },
 });
 rpcRouter.setApprovalQueue(approvalQueue);
+// Live-Chrome tab borrowing asks through that same queue, so the prompt appears
+// in both of its renditions (the modal and the Fleet approvals inbox) with no new
+// UI. The workspace NAME comes from the renderer's mirror, which is the only
+// place main knows it; an unpopulated mirror falls back to the id, because a
+// prompt that says which workspace by id is still answerable.
+liveBorrowRequester = createBorrowApprovalRequester({
+  queue: approvalQueue,
+  workspaceName: (workspaceId) =>
+    getWorkspaceMirror().getEntries()?.find((e) => e.id === workspaceId)?.name ?? workspaceId,
+});
 
 ipcMain.handle(
   IPC.PERMISSION_PROMPT_RESOLVE,

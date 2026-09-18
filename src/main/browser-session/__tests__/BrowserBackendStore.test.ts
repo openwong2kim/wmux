@@ -39,4 +39,51 @@ describe('BrowserBackendStore (#517)', () => {
     writeFileSync(join(dir, 'browser-backend.json'), JSON.stringify({ backend: 'chrome-extension' }));
     expect(new BrowserBackendStore(dir).get()).toBe('builtin');
   });
+
+  // Live-Chrome agent window: 'all' is the LARGER grant (every logged-in tab in
+  // the user's browser), so every unclear input has to land on 'agent'.
+  describe('liveWriteScope', () => {
+    it("defaults to 'agent' — the narrow grant — with no file", () => {
+      expect(new BrowserBackendStore(dir).liveWriteScope()).toBe('agent');
+    });
+
+    it('reads a persisted opt-out', () => {
+      writeFileSync(
+        join(dir, 'browser-backend.json'),
+        JSON.stringify({ backend: 'chrome', liveWriteScope: 'all' }),
+      );
+      expect(new BrowserBackendStore(dir).liveWriteScope()).toBe('all');
+    });
+
+    it("an unknown value falls back to 'agent', not to the wider grant", () => {
+      writeFileSync(
+        join(dir, 'browser-backend.json'),
+        JSON.stringify({ backend: 'chrome', liveWriteScope: 'everything' }),
+      );
+      expect(new BrowserBackendStore(dir).liveWriteScope()).toBe('agent');
+    });
+
+    it('persists across a restart, and keeps the backend with it', () => {
+      const store = new BrowserBackendStore(dir);
+      store.set('chrome');
+      store.setLiveWriteScope('all');
+      const reloaded = new BrowserBackendStore(dir);
+      expect(reloaded.get()).toBe('chrome');
+      expect(reloaded.liveWriteScope()).toBe('all');
+    });
+
+    it('a later backend write does not silently drop the scope', () => {
+      const store = new BrowserBackendStore(dir);
+      store.setLiveWriteScope('all');
+      store.set('builtin');
+      expect(new BrowserBackendStore(dir).liveWriteScope()).toBe('all');
+    });
+
+    it('writes no scope key while the default stands (the file keeps its shape)', () => {
+      new BrowserBackendStore(dir).set('external');
+      expect(JSON.parse(readFileSync(join(dir, 'browser-backend.json'), 'utf8'))).toEqual({
+        backend: 'external',
+      });
+    });
+  });
 });

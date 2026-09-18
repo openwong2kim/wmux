@@ -54,10 +54,15 @@ describe('browser_fill RPC fallback workspace scope', () => {
       surfaceId: 'surface-1',
     });
 
-    expect(getPage).toHaveBeenCalledWith({
-      workspaceId: 'ws-test',
-      surfaceId: 'surface-1',
-    });
+    // The intent rides along: browser_fill writes, and on Live Chrome that is
+    // what confines it to the agent's own tabs.
+    expect(getPage).toHaveBeenCalledWith(
+      {
+        workspaceId: 'ws-test',
+        surfaceId: 'surface-1',
+      },
+      { intent: 'write' },
+    );
     expect(browserToolDeps.resolveWorkspaceId).toHaveBeenCalledTimes(1);
     // The password probe runs FIRST and on the same target: browser_fill has
     // to know whether a field is a credential before it fills it, because the

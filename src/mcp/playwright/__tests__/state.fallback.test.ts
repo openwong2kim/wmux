@@ -85,7 +85,11 @@ describe('browser_cookies RPC fallback', () => {
       workspaceId: 'ws-test',
       surfaceId: 's1',
     });
-    expect(getPage).toHaveBeenCalledWith({ workspaceId: 'ws-test', surfaceId: 's1' });
+    // A cookie read stays a read — the live write gate does not touch it.
+    expect(getPage).toHaveBeenCalledWith(
+      { workspaceId: 'ws-test', surfaceId: 's1' },
+      { intent: 'read' },
+    );
     expect(browserToolDeps.resolveWorkspaceId).toHaveBeenCalledTimes(1);
     expect(res.isError).toBeUndefined();
     expect(res.content[0].text).toContain('"value": "abc"');
