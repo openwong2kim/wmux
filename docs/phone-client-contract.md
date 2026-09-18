@@ -819,6 +819,13 @@ name, no workspace name, no question text, no preview. "The relay cannot read
 them" stays true of every notification **body**; what the relay can read on the
 Live Activity route is a set of counters.
 
+**One more plaintext field, and it is a name.** A `start` also carries
+`attributes.daemonName` — the daemon's **hostname**, cut to 64 characters — so
+the activity has something to call the machine it is reporting on. It reaches
+the relay and Apple in the clear, exactly as the counters do. Hostnames are
+often a person's name or an employer's, so this is the one identifying string on
+the route; it is sent only on a `start`, never on an update.
+
 **The app owns the key.** At registration the phone generates an X25519 key
 pair, keeps the private half in the Keychain, and registers only the 32-byte
 public half. The daemon stores a public key and nothing secret, so the device

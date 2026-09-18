@@ -241,6 +241,33 @@ describe('/live — validation', () => {
     await rejects(validBody({ apnsEnvironment: 'staging' }), 'bad-apns-environment');
   });
 
+  it('★ refuses an unknown TOP-LEVEL key, not just an unknown counter', async () => {
+    // The content-state allowlist only guards one nested object. What travels
+    // on this route is unsealed, so a daemon bug that invented a new top-level
+    // field — `paneName`, a `question` — would hand Apple plaintext the relay
+    // never agreed to carry. Same complaint as a non-object body, same reason.
+    await rejects(validBody({ paneName: 'api' }), 'body-not-object');
+    await rejects(validBody({ priority: 10 }), 'body-not-object');
+  });
+
+  it('★ refuses a negative counter — a tally of things cannot be below zero', async () => {
+    // The app subtracts these from one another to lay out its rows, so a
+    // negative one does not read as "odd", it draws a broken widget with
+    // nothing on the wire to say why.
+    await rejects(
+      validBody({ contentState: { pendingApprovals: -1, runningAgents: 1 } }),
+      'bad-content-state',
+    );
+    await rejects(
+      validBody({ contentState: { ...CONTENT_STATE, idleAgents: -2 } }),
+      'bad-content-state',
+    );
+    await rejects(
+      validBody({ contentState: { ...CONTENT_STATE, oldestBlockedMinutes: -5 } }),
+      'bad-content-state',
+    );
+  });
+
   it('refuses a body that is not an object at all', async () => {
     await rejects('123', 'body-not-object');
     await rejects('[]', 'body-not-object');

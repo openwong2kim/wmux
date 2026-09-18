@@ -166,6 +166,32 @@ export type LiveActivityEvent = (typeof ALLOWED_LIVE_EVENTS)[number];
  * failure with no signal anywhere.
  */
 const REQUIRED_COUNTS = ['pendingApprovals', 'runningAgents'] as const;
+
+/**
+ * The only top-level keys this route carries. Same reasoning as the content-
+ * state allowlist: what goes out on this route is UNSEALED, so "a field I do
+ * not understand" must be a refusal rather than a passthrough. A daemon bug
+ * that put a pane name in a new top-level key would otherwise reach Apple.
+ */
+const ALLOWED_LIVE_KEYS = new Set([
+  'apnsToken',
+  'apnsEnvironment',
+  'event',
+  'contentState',
+  'attributes',
+  'staleDate',
+  'dismissalDate',
+  'timestamp',
+]);
+
+/**
+ * A count is a tally of things, and a negative tally is a daemon bug. The app
+ * subtracts these from each other to lay out its rows, so a negative one does
+ * not render as "odd", it renders as a broken widget with no way to tell why.
+ */
+function isCount(value: unknown): value is number {
+  return Number.isInteger(value) && (value as number) >= 0;
+}
 /** Present or absent; the app defaults them. */
 const OPTIONAL_COUNTS = ['workingAgents', 'idleAgents', 'blockedPanes'] as const;
 /** Optional AND nullable: null is "nothing is blocked", which is not zero. */
@@ -198,6 +224,14 @@ export function validateLiveRequest(body: unknown): LiveValidationResult {
     return { ok: false, error: { status: 400, reason: 'body-not-object' } };
   }
   const raw = body as Record<string, unknown>;
+  for (const key of Object.keys(raw)) {
+    // `body-not-object` rather than a new reason: it is the same complaint —
+    // this is not the body shape the route accepts — and the reason string is
+    // deliberately about the SHAPE, never about the value that was wrong.
+    if (!ALLOWED_LIVE_KEYS.has(key)) {
+      return { ok: false, error: { status: 400, reason: 'body-not-object' } };
+    }
+  }
 
   const token = raw.apnsToken;
   if (typeof token !== 'string' || !DEVICE_TOKEN_PATTERN.test(token)) {
@@ -220,21 +254,21 @@ export function validateLiveRequest(body: unknown): LiveValidationResult {
   }
   const counts = state as Record<string, unknown>;
   for (const key of REQUIRED_COUNTS) {
-    if (!Number.isInteger(counts[key])) {
+    if (!isCount(counts[key])) {
       return { ok: false, error: { status: 400, reason: 'bad-content-state' } };
     }
     contentState[key] = counts[key] as number;
   }
   for (const key of OPTIONAL_COUNTS) {
     if (counts[key] === undefined) continue;
-    if (!Number.isInteger(counts[key])) {
+    if (!isCount(counts[key])) {
       return { ok: false, error: { status: 400, reason: 'bad-content-state' } };
     }
     contentState[key] = counts[key] as number;
   }
   for (const key of NULLABLE_COUNTS) {
     if (counts[key] === undefined) continue;
-    if (counts[key] !== null && !Number.isInteger(counts[key])) {
+    if (counts[key] !== null && !isCount(counts[key])) {
       return { ok: false, error: { status: 400, reason: 'bad-content-state' } };
     }
     contentState[key] = counts[key] as number | null;
