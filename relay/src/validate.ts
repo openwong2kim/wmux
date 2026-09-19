@@ -20,6 +20,10 @@ export const MAX_CIPHERTEXT_CHARS = 4000;
 
 /** APNs device tokens are 32 bytes of hex today; Apple reserves the right to grow them. */
 const DEVICE_TOKEN_PATTERN = /^[0-9a-fA-F]{64,200}$/;
+// ActivityKit tokens are longer than device tokens (160 hex characters
+// observed for a push-to-start token) and Apple documents no fixed length, so
+// the Live Activity route gets real headroom rather than the device-token cap.
+const LIVE_ACTIVITY_TOKEN_PATTERN = /^[0-9a-fA-F]{64,512}$/;
 
 /** Canonical base64 (RFC 4648 §4) with padding — what pushEnvelope emits. */
 const BASE64_PATTERN = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
@@ -234,7 +238,7 @@ export function validateLiveRequest(body: unknown): LiveValidationResult {
   }
 
   const token = raw.apnsToken;
-  if (typeof token !== 'string' || !DEVICE_TOKEN_PATTERN.test(token)) {
+  if (typeof token !== 'string' || !LIVE_ACTIVITY_TOKEN_PATTERN.test(token)) {
     return { ok: false, error: { status: 400, reason: 'bad-device-token' } };
   }
 

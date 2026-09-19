@@ -3665,7 +3665,10 @@ export class WebTerminalServer {
         return this.json(res, 500, { error: 'live-activity-registration-failed' });
       }
       if (result.ok) {
-        this.deps.liveActivityRegistered?.();
+        // Only a token that ADDS a way to reach the activity. A removal
+        // (`activityToken: null`) is the app saying the activity is over; re-running
+        // the decision then would start a fresh one the moment it was dismissed.
+        if (typeof b.activityToken === 'string') this.deps.liveActivityRegistered?.();
         return this.json(res, 200, { ok: true });
       }
       // `bad-token` / `bad-apns-environment` are the caller's fault; the rest

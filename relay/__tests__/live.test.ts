@@ -87,6 +87,13 @@ afterEach(() => {
 });
 
 describe('/live — the request that reaches Apple', () => {
+  it('accepts an ActivityKit token longer than a device token', async () => {
+    // A push-to-start token was observed at 160 hex characters, and Apple
+    // documents no fixed length — the device-token cap of 200 is too tight.
+    stubApns();
+    expect((await live(validBody({ apnsToken: 'c'.repeat(300) }))).status).toBe(200);
+  });
+
   it('★ is a liveactivity push on the activity topic, at priority 10', async () => {
     const calls = stubApns();
     expect((await live(validBody())).status).toBe(200);

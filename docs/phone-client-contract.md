@@ -350,7 +350,7 @@ GET /api/events?since=<cursor>     (Bearer)
 ## 5. Panes
 
 ```
-GET /api/config    → {allowInput, allowUpload, allowTranscript, liveActivityPush,
+GET /api/config    → {allowInput, allowUpload, allowTranscript, liveActivityPush?,
                       gatedTools, gateEnabled?, protocolVersion,
                       minProtocolVersion, serverVersion}
 GET /api/sessions  → {sessions: [{id, cwd, cols, rows, state, agent, lastActivity,
@@ -972,7 +972,7 @@ as false: keep starting the activity locally there, exactly as before.
 
 ```
 POST /api/live-activity-registration   (device credential, never the operator token)
-  body: {pushToStartToken?: hex,
+  body: {pushToStartToken?: hex | null,
          activityToken?: hex | null,
          apnsEnvironment?: 'development' | 'production'}
   → 200 {ok: true}

@@ -2597,6 +2597,9 @@ describe('WebTerminalServer', () => {
     // ★ `null` is NOT absence on this route: it is "the activity is over".
     expect((await post(token, { activityToken: null })).status).toBe(200);
     expect(liveActivityRegistrations.at(-1)).toEqual({ deviceId: 'dev-1', activityToken: null });
+    // ★ …and it must not re-run the decision, which would start a new activity
+    // the moment the old one was dismissed.
+    expect(liveActivityRegisteredCalls).toBe(before + 1);
 
     // The operator token names no device, so there is no activity to register.
     const asOperator = await post(info.token as string, { pushToStartToken });

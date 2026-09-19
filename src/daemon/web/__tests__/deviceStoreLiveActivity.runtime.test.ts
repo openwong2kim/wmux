@@ -72,6 +72,15 @@ describe('DeviceStore — live activity registration merges', () => {
     expect(s.liveActivityTargets()).toEqual([]);
   });
 
+  it('keeps an ActivityKit token longer than a device token', async () => {
+    const s = store();
+    const id = await paired(s);
+    // 160 hex characters observed for a push-to-start token; no fixed length.
+    const long = 'd'.repeat(300);
+    expect(s.registerLiveActivity(id, { pushToStartToken: long }).ok).toBe(true);
+    expect(s.liveActivityTargets()[0].liveActivity.pushToStartToken).toBe(long);
+  });
+
   it('a stage that is neither of Apple two words is refused', async () => {
     const s = store();
     const id = await paired(s);

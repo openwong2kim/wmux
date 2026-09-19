@@ -34,8 +34,8 @@ interface Harness {
   pusher: LiveActivityPusher;
   calls: Array<{ url: string; body: Record<string, any> }>;
   logs: Array<[string, string]>;
-  forgotActivity: string[];
-  forgotPushToStart: string[];
+  forgotActivity: Array<[string, string]>;
+  forgotPushToStart: Array<[string, string]>;
   setCounts: (c: LiveActivityCounts) => void;
   setTargets: (t: LiveActivityTarget[]) => void;
   /** Fires the pending debounce, then drains the queue. */
@@ -57,8 +57,8 @@ function harness(
 ): Harness {
   const calls: Array<{ url: string; body: Record<string, any> }> = [];
   const logs: Array<[string, string]> = [];
-  const forgotActivity: string[] = [];
-  const forgotPushToStart: string[] = [];
+  const forgotActivity: Array<[string, string]> = [];
+  const forgotPushToStart: Array<[string, string]> = [];
   const statuses = opts.statuses ?? [];
   let statusAt = 0;
   let current = opts.counts ?? counts();
@@ -92,11 +92,11 @@ function harness(
     transport,
     targets: () => targets,
     counts: () => current,
-    forgetLiveActivityToken: (id) => {
+    forgetLiveActivityToken: (id, token) => {
       if (opts.forgetThrows) throw new Error('device store unwritable');
-      forgotActivity.push(id);
+      forgotActivity.push([id, token]);
     },
-    forgetPushToStartToken: (id) => forgotPushToStart.push(id),
+    forgetPushToStartToken: (id, token) => forgotPushToStart.push([id, token]),
     ...(opts.daemonName ? { daemonName: () => opts.daemonName } : {}),
     log: (level, message) => logs.push([level, message]),
     now: () => now,
@@ -298,7 +298,7 @@ describe('LiveActivityPusher — which event', () => {
     expect(body.dismissalDate).toBe(Math.floor(NOW / 1000));
     expect(body.staleDate).toBeUndefined();
     // The activity is gone, so the token that addressed it is too.
-    expect(h.forgotActivity).toEqual(['dev-1']);
+    expect(h.forgotActivity).toEqual([['dev-1', ACTIVITY]]);
     expect(h.forgotPushToStart).toEqual([]);
   });
 
@@ -503,7 +503,7 @@ describe('LiveActivityPusher — 410 forgets exactly one token', () => {
     h.pusher.onApprovalsChanged();
     await h.tick();
 
-    expect(h.forgotActivity).toEqual(['dev-1']);
+    expect(h.forgotActivity).toEqual([['dev-1', ACTIVITY]]);
     // An activity token dies every time an activity ends. Treating that as
     // "this device is gone" would switch approval notifications off several
     // times a day, which is why `forgetPush` is not reachable from here at all.
@@ -530,7 +530,7 @@ describe('LiveActivityPusher — 410 forgets exactly one token', () => {
     h.pusher.onApprovalsChanged();
     await h.tick();
 
-    expect(h.forgotPushToStart).toEqual(['dev-1']);
+    expect(h.forgotPushToStart).toEqual([['dev-1', START]]);
     expect(h.forgotActivity).toEqual([]);
   });
 });

@@ -190,6 +190,8 @@ const DEVICE_NAME_MAX = 64;
  * be one the relay refuses.
  */
 const APNS_TOKEN_PATTERN = /^[0-9a-f]{64,200}$/;
+/** ActivityKit tokens: longer than a device token, no documented fixed length. */
+const LIVE_ACTIVITY_TOKEN_PATTERN = /^[0-9a-f]{64,512}$/;
 
 /** X25519 public key size. Mirrors PUSH_X25519_KEY_BYTES in pushEnvelope. */
 const PUSH_PUBLIC_KEY_BYTES = 32;
@@ -746,7 +748,7 @@ export class DeviceStore {
       if (raw === null) return null;
       if (typeof raw !== 'string') return 'bad';
       const token = raw.trim().toLowerCase();
-      return APNS_TOKEN_PATTERN.test(token) ? token : 'bad';
+      return LIVE_ACTIVITY_TOKEN_PATTERN.test(token) ? token : 'bad';
     };
 
     const pushToStart = readToken(input?.pushToStartToken);
@@ -1285,7 +1287,7 @@ function coerceLiveActivity(raw: unknown): DeviceLiveActivityRegistration | null
   const readToken = (value: unknown): string | undefined => {
     if (typeof value !== 'string') return undefined;
     const token = value.toLowerCase();
-    return APNS_TOKEN_PATTERN.test(token) ? token : undefined;
+    return LIVE_ACTIVITY_TOKEN_PATTERN.test(token) ? token : undefined;
   };
   const pushToStartToken = readToken(o['pushToStartToken']);
   const activityToken = readToken(o['activityToken']);
