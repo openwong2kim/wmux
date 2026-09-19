@@ -104,6 +104,58 @@ describe('WSL per-launch Claude integration', () => {
       expect(out).not.toContain('MOTD banner');
     });
 
+    // The lookup is BOUNDED, and the bound is the KILL, not the TERM: an
+    // interactive bash ignores SIGTERM. Measured here — with a plain `timeout`
+    // a startup file that goes back to waiting keeps the pane hanging past the
+    // budget; the follow-up KILL ends it and the honest 127 is reached
+    // (review: CodeRabbit). The fake `timeout` proves the shim actually routes
+    // through it, with a test-sized budget so nothing waits out the real one.
+    it('gives up on a startup file that hangs, instead of hanging the pane', () => {
+      const { dir, env } = homeWithInteractiveClaude();
+      const nvmBin = path.join(dir, 'nvm-bin'); fs.mkdirSync(nvmBin);
+      fs.writeFileSync(path.join(nvmBin, 'claude'), '#!/bin/sh\nprintf "claude ran"\n', { mode: 0o755 });
+      // Installed and reachable in principle — and never reached, because
+      // getting there means outliving a startup file that does not stop for a
+      // TERM.
+      fs.writeFileSync(path.join(dir, '.bashrc'), `while :; do sleep 1; done\nexport PATH="${nvmBin}:$PATH"\n`);
+      const fakeBin = path.join(dir, 'fake-bin'); fs.mkdirSync(fakeBin);
+      fs.writeFileSync(
+        path.join(fakeBin, 'timeout'),
+        // Keeps the shim's FLAGS and shrinks only its budget, so a shim that
+        // stopped passing -k would run unbounded here and hang this test —
+        // which is the regression worth catching.
+        '#!/bin/sh\nkflag=\n'
+          + 'while [ $# -gt 0 ] && [ "$1" != "/bin/bash" ]; do\n'
+          + '  if [ "$1" = "-k" ]; then kflag="-k 1"; shift; fi\n'
+          + '  shift\n'
+          + 'done\n'
+          + 'exec /usr/bin/timeout $kflag 1 "$@"\n',
+        { mode: 0o755 },
+      );
+
+      const started = Date.now();
+      try {
+        execFileSync('/bin/sh', [shimOf(dir), '--help'], {
+          env: { ...env, PATH: `${fakeBin}:${env.PATH}` },
+          stdio: 'pipe',
+          // A shim that lost its bound would hang this call, and execFileSync
+          // is synchronous — vitest cannot interrupt it, so the whole file
+          // would stall instead of failing. Kill it here and let the
+          // assertions below report what went wrong.
+          timeout: 20_000,
+          killSignal: 'SIGKILL',
+        });
+        throw new Error('expected failure');
+      } catch (error) {
+        expect((error as { status?: number }).status).toBe(127);
+        expect(String((error as { stderr?: Buffer }).stderr))
+          .toContain('claude is not installed in this WSL distribution');
+      }
+      // The startup file never ends on its own; anything slow here means the
+      // pane was waiting on it rather than on the bound.
+      expect(Date.now() - started).toBeLessThan(15_000);
+    });
+
     it('still says so when claude is installed nowhere', () => {
       const { dir, env } = homeWithInteractiveClaude();
       fs.writeFileSync(path.join(dir, '.bashrc'), 'export PATH="/usr/bin:/bin"\n');

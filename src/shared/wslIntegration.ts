@@ -41,7 +41,26 @@ if [ -z "$real" ]; then
   # LAST match wins so a .bashrc that echoes the marker itself cannot win over
   # the real one. stdin is closed so a prompt in a startup file cannot hang the
   # pane.
-  login_path=$(/bin/bash -ic 'printf "\\nWMUX_RESOLVED_PATH=%s\\n" "$PATH"' </dev/null 2>/dev/null \
+  #
+  # BOUNDED. Closing stdin stops a startup file that READS from the terminal,
+  # but not one that waits on something else — a network call, a lock, a sleep —
+  # and an unbounded substitution here would hang the exec pane instead of
+  # reaching the honest 127 below (review: CodeRabbit). A timeout leaves
+  # login_path empty, which is exactly the not-found path.
+  #
+  # -k, because the plain TERM is not a bound here: an INTERACTIVE bash ignores
+  # SIGTERM. Measured — it aborts whatever the startup file is waiting on and
+  # carries on to the end, which happens to answer, but a startup file that
+  # blocks again would keep the pane hanging on a timeout that already fired.
+  # The follow-up KILL cannot be ignored, so the lookup ends either way.
+  # \`timeout\` is coreutils and present on every distro wmux supports; where it
+  # somehow is not, the lookup still runs, because an unbounded best effort
+  # beats telling the user their installed claude does not exist.
+  wmux_bash=/bin/bash
+  command -v timeout >/dev/null 2>&1 && wmux_bash="timeout -k 1 10 /bin/bash"
+  # Unquoted on purpose: wmux_bash is a command plus its arguments.
+  # shellcheck disable=SC2086
+  login_path=$($wmux_bash -ic 'printf "\\nWMUX_RESOLVED_PATH=%s\\n" "$PATH"' </dev/null 2>/dev/null \
     | sed -n 's/^WMUX_RESOLVED_PATH=//p' | tail -n 1)
   if [ -n "$login_path" ]; then
     strip_shim "$login_path"
