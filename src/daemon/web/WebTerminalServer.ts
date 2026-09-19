@@ -502,6 +502,15 @@ interface WebTerminalServerDeps {
    */
   liveActivityPush?: () => boolean;
   /**
+   * A device's Live Activity tokens just changed. The pusher sends only when
+   * the approval numbers move, so without this an activity token that lands
+   * AFTER the numbers moved (the start went out at 1, a second approval
+   * arrived while the token was in flight) would leave the lock screen on the
+   * old number until the next approval event. The daemon re-runs the decision
+   * against the numbers as they are now.
+   */
+  liveActivityRegistered?: () => void;
+  /**
    * #1163 — the daemon's CANONICAL per-session agent state (the answer
    * daemon.getAgentName gives the desktop), for GET /api/workspaces. Resolved
    * per request: the reader is registered with the RPC handlers, which may run
@@ -3655,7 +3664,10 @@ export class WebTerminalServer {
         this.deps.log('warn', `[web] live activity registration threw: ${errMsg(err)}`);
         return this.json(res, 500, { error: 'live-activity-registration-failed' });
       }
-      if (result.ok) return this.json(res, 200, { ok: true });
+      if (result.ok) {
+        this.deps.liveActivityRegistered?.();
+        return this.json(res, 200, { ok: true });
+      }
       // `bad-token` / `bad-apns-environment` are the caller's fault; the rest
       // are ours or the operator's, and a device revoked mid-flight should hear
       // that rather than a generic 400.

@@ -427,6 +427,9 @@ async function restoreWebServer(sessionManager: DaemonSessionManager): Promise<v
         // the pusher is built later in main(), so this reads the module binding
         // per request rather than capturing a null forever.
         liveActivityPush: () => liveActivityPusher?.enabled === true,
+        // A token that lands after the numbers moved must catch the lock screen
+        // up now, not at the next approval event.
+        liveActivityRegistered: () => liveActivityPusher?.onApprovalsChanged(),
         setGateEnabled: (enabled) => {
           gateRuntimeOff = !enabled;
           log('info', `[gate] runtime escape: gate ${enabled ? 'on' : 'off'}`);
@@ -2627,6 +2630,8 @@ function registerRpcHandlers(
       gateEnabled: () => !gateRuntimeOff,
       // See the restore path — lazy, because the pusher is built after this.
       liveActivityPush: () => liveActivityPusher?.enabled === true,
+      // See the restore path.
+      liveActivityRegistered: () => liveActivityPusher?.onApprovalsChanged(),
       setGateEnabled: (enabled) => {
         gateRuntimeOff = !enabled;
         log('info', `[gate] runtime escape: gate ${enabled ? 'on' : 'off'}`);

@@ -405,6 +405,7 @@ describe('WebTerminalServer', () => {
   let pushRegistrations: Array<{ deviceId: string; apnsToken: string; publicKey: string }>;
   let liveActivityRegistrations: Array<{ deviceId: string } & Record<string, unknown>>;
   let liveActivityBox: { reason: string };
+  let liveActivityRegisteredCalls: number;
   let deviceTouchCalls: string[];
   let deviceBox: { mintThrows: boolean };
   let resizeCalls: Array<{ id: string; cols: number; rows: number }>;
@@ -453,6 +454,7 @@ describe('WebTerminalServer', () => {
     pushRegistrations = deps.pushRegistrations;
     liveActivityRegistrations = deps.liveActivityRegistrations;
     liveActivityBox = deps.liveActivityBox;
+    liveActivityRegisteredCalls = 0;
     deviceTouchCalls = deps.deviceTouchCalls;
     deviceBox = deps.deviceBox;
     resizeCalls = deps.resizeCalls;
@@ -477,6 +479,7 @@ describe('WebTerminalServer', () => {
       gateConfig: () => ({ gatedTools: ['Bash'] }),
       gateEnabled: () => gateArmed,
       liveActivityPush: () => liveActivityPushEnabled,
+      liveActivityRegistered: () => { liveActivityRegisteredCalls += 1; },
       setGateEnabled: (enabled) => { gateArmed = enabled; },
       agentState: (id) => agentStates[id],
       resumeState: (id) => resumeStates[id],
@@ -2584,8 +2587,12 @@ describe('WebTerminalServer', () => {
     // ★ The activity token arrives LATER, in its own call. What reaches the
     // store must carry only that field — an omitted one means "leave it", and
     // the store is the thing that merges.
+    const before = liveActivityRegisteredCalls;
     expect((await post(token, { activityToken })).status).toBe(200);
     expect(liveActivityRegistrations.at(-1)).toEqual({ deviceId: 'dev-1', activityToken });
+    // ★ …and the daemon hears about it, so numbers that moved while the token
+    // was in flight reach the lock screen now rather than at the next approval.
+    expect(liveActivityRegisteredCalls).toBe(before + 1);
 
     // ★ `null` is NOT absence on this route: it is "the activity is over".
     expect((await post(token, { activityToken: null })).status).toBe(200);
@@ -2635,6 +2642,8 @@ describe('WebTerminalServer', () => {
       expect(res.status, reason).toBe(409);
       expect((await res.json()).error).toBe(reason);
     }
+    // Nothing was stored, so there is nothing to catch up on.
+    expect(liveActivityRegisteredCalls).toBe(0);
     liveActivityBox.reason = '';
     expect((await post()).status).toBe(200);
   });

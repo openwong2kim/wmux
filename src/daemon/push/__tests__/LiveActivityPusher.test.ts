@@ -357,6 +357,30 @@ describe('LiveActivityPusher — one start until its token comes back', () => {
     expect(h.calls).toHaveLength(1);
   });
 
+  it('★ the activity token landing late carries the numbers that moved meanwhile', async () => {
+    const h = harness({ targets: [startOnly()] });
+    h.setCounts(counts({ pendingApprovals: 1 }));
+    h.pusher.onApprovalsChanged();
+    await h.tick();
+    // A second approval while the token is in flight: suppressed, no start.
+    h.setNow(NOW + 1_000);
+    h.setCounts(counts({ pendingApprovals: 2 }));
+    h.pusher.onApprovalsChanged();
+    await h.tick();
+    expect(h.calls).toHaveLength(1);
+
+    // The token arrives. The daemon re-runs the decision (the registration
+    // route's hook), and the lock screen moves 1 → 2 without waiting for a
+    // third approval.
+    h.setNow(NOW + 2_000);
+    h.setTargets([withActivity()]);
+    h.pusher.onApprovalsChanged();
+    await h.tick();
+    expect(h.calls).toHaveLength(2);
+    expect(h.calls[1].body.event).toBe('update');
+    expect(h.calls[1].body.contentState.pendingApprovals).toBe(2);
+  });
+
   it('★ …but once the start has gone stale, a fresh one is the only way back', async () => {
     const h = harness({ targets: [startOnly()] });
     h.setCounts(counts({ pendingApprovals: 1 }));
