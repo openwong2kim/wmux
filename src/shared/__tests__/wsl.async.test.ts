@@ -74,6 +74,20 @@ describe('a missing working directory', () => {
     expect((error as Error).message).not.toContain(WSL_CWD_MISSING_MARKER);
   });
 
+  // #1305 — the start-fresh promote asks for '~' and lets the distribution
+  // resolve it, because only it knows where home is. Pinned here so a later
+  // tightening of the path predicate cannot quietly remove the one action a
+  // pane with a missing directory has.
+  it("accepts '~' as the directory, which is what starting fresh asks for", async () => {
+    const resolved = resolveWslCwd('wsl.exe', '~', { distribution: 'Ubuntu', user: 'dev' });
+    finish(0, '/home/dev');
+    // The target is the distribution's OWN answer, not the one asked for.
+    expect(await resolved).toEqual({ cwd: '/home/dev', target: { distribution: 'Ubuntu', user: 'user' } });
+    // The probe is handed '~' verbatim: expanding it on the Windows side would
+    // name the Windows home.
+    expect(exec.mock.calls[0][1]).toContain('~');
+  });
+
   it('leaves every other failure as the retryable kind it was', async () => {
     const failed = resolveWslCwd('wsl.exe', '/home/dev/project', { distribution: 'Ubuntu', user: 'dev' });
     const caught = failed.catch((error: unknown) => error);
