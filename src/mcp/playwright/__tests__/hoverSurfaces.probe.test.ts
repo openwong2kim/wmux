@@ -328,6 +328,28 @@ describe('probeHoverSurfaces: the bounds', () => {
     expect(outcome.probed).toBeLessThan(HOVER_PROBE_LIMITS.MAX_TRIGGERS);
   });
 
+  it('spends a caller-supplied budget instead of the shipped one', async () => {
+    useVirtualClock();
+    // Same slow renderer both times. The only thing that changes is how much
+    // wall clock the caller is willing to pay, so any difference in how far
+    // the queue got is the override doing its job.
+    const slow = makeFake({ msPerSend: 400 });
+    const shipped = await probeHoverSurfaces(slow.client, candidates(6), ctx());
+
+    const generous = makeFake({ msPerSend: 400 });
+    const bought = await probeHoverSurfaces(
+      generous.client,
+      candidates(6),
+      ctx({ budgetMs: HOVER_PROBE_LIMITS.TOTAL_BUDGET_MS * 4 }),
+    );
+
+    // Without the override the second run is identical to the first — which is
+    // exactly the failure this guards: a real-Chrome test that needs an answer
+    // had no way to ask for one, so a slow runner read as a correctness bug.
+    expect(bought.probed).toBeGreaterThan(shipped.probed);
+    expect(bought.cancelled).toBe(false);
+  });
+
   it('[CRITICAL] does not wait forever on a renderer that never answers', async () => {
     // Runtime.callFunctionOn has no CDP timeout parameter, so a page running a
     // long task would hold the whole tool call open. Every round trip is raced

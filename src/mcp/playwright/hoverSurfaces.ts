@@ -1404,6 +1404,24 @@ export interface HoverProbeContext {
   onPointerMoved: (point: Point) => void;
   /** pathPoints' jitter source. A constant 0.5 yields a straight path. */
   rng?: () => number;
+  /**
+   * Wall-clock ceiling for THIS probe. Defaults to TOTAL_BUDGET_MS.
+   *
+   * The default is a user-facing latency promise, measured on a warm machine
+   * and repeated in `browser_snapshot`'s description. It is the caller's
+   * policy, not a property of this algorithm, and a caller that cares about
+   * the ANSWER rather than the latency may buy more time.
+   *
+   * That distinction is why this exists. The real-Chrome test asserts the
+   * probe finds both menus on the fixture page; inheriting the shipped budget
+   * there made a slow CI runner fail it as a correctness bug, when what had
+   * actually happened is the degradation this module documents and reports:
+   * the per-trigger slice was spent on the approach, `waitUntil` collapsed
+   * onto `slice`, and every trigger came back unanswered. The budget contract
+   * itself stays pinned deterministically by the virtual clock in
+   * hoverSurfaces.probe.test.ts, which is where it belongs.
+   */
+  budgetMs?: number;
 }
 
 export interface HoverProbeOutcome {
@@ -1554,7 +1572,7 @@ export async function probeHoverSurfaces(
   const revealed: HoverSurfaceMarks = new Map();
   const startUrl = ctx.currentUrl();
   const started = Date.now();
-  const deadline = started + HOVER_PROBE_LIMITS.TOTAL_BUDGET_MS;
+  const deadline = started + (ctx.budgetMs ?? HOVER_PROBE_LIMITS.TOTAL_BUDGET_MS);
   /** The one allowance past the deadline, for un-hovering. Not per trigger. */
   const graceDeadline = deadline + HOVER_PROBE_LIMITS.RESTORE_GRACE_MS;
   const step = String(hoverProbeStep);
