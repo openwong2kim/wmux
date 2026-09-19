@@ -11,7 +11,8 @@ const dirs: string[] = [];
 afterEach(() => { for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true }); });
 
 function fixture() {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-codex-'));
+  // Resolved once: macOS os.tmpdir() is a symlink, and Codex reports the real cwd.
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-codex-')));
   dirs.push(dir);
   const home = path.join(dir, 'home');
   const cwd = path.join(dir, "project ' with spaces 日本語");
@@ -103,6 +104,14 @@ describe.skipIf(process.platform === 'win32')('WSL Codex per-launch notify', () 
     const f = fixture();
     expect(f.run(args).args).toEqual(args);
     expect(fs.existsSync(f.resultPath)).toBe(false);
+  });
+
+  it('binds a reverted thread, whose rollout filename carries a rollout ID after the thread ID', () => {
+    const f = fixture();
+    const reverted = f.rollout.replace(/\.jsonl$/, '_99999999-8888-4777-8666-555555555555.jsonl');
+    fs.renameSync(f.rollout, reverted);
+    f.run();
+    expect(JSON.parse(fs.readFileSync(f.resultPath, 'utf8')).payload['thread-id']).toBe(SESSION_ID);
   });
 
   it.each(['temporary', 'subagent', 'mismatched', 'malformed'])('does not bind a %s notification as the conversation', (kind) => {

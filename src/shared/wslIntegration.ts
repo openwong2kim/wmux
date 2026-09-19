@@ -81,8 +81,10 @@ export WSLENV="\${WSLENV:+$WSLENV:}ELECTRON_RUN_AS_NODE/w"
 # Codex also notifies for temporary title-generation and subagent threads.
 # Only a saved top-level CLI session is a valid Resume target. Match the exact
 # reported UUID and inspect its first metadata record; never guess the newest.
+# thread/revert keeps the thread ID but writes rollout-<ts>-<id>_<rollout>.jsonl.
 id=$("$WMUX_WSL_NODE" "$WMUX_WSL_CODEX_CONFIG" --notification-id "\${1:-}") || exit 0
-for file in "\${CODEX_HOME:-$HOME/.codex}"/sessions/*/*/*/rollout-*-"$id".jsonl; do
+for file in "\${CODEX_HOME:-$HOME/.codex}"/sessions/*/*/*/rollout-*-"$id".jsonl \
+    "\${CODEX_HOME:-$HOME/.codex}"/sessions/*/*/*/rollout-*-"$id"_*.jsonl; do
   [ -f "$file" ] || continue
   IFS= read -r metadata < "$file" || continue
   if printf '%s' "$metadata" | "$WMUX_WSL_NODE" "$WMUX_WSL_CODEX_CONFIG" --is-resumable "$id"; then
