@@ -1,3 +1,172 @@
+## [3.58.0] — 2026-09-19
+
+### Added
+
+- The main window now remembers its size, position and maximized (or macOS fullscreen) state across launches, including the relaunch after an auto-update. A saved rectangle that no longer fits any connected display — monitor unplugged, laptop undocked, resolution changed — is discarded in favour of the default size rather than restoring the window off-screen.
+
+- Remote agents now appear in Fleet View and the titlebar vitals chip, with the
+  same host origin badge the sidebar roster shows. They stay out of the deck's
+  Fleet roster, which lists only agents this desktop can drive directly.
+
+- Desktop notifications for remote agents. A desktop attached to a remote host now raises a notification when a remote agent finishes a turn or starts waiting for input, instead of only showing it on the pane. The main process holds one `/api/events` subscription per attached host and routes its events through the same notification path as local ones, so the global settings, per-category mutes, idle suppression and dedup all apply unchanged; the host label prefixes the title. Reconnects replay nothing, so a dropped connection never produces a burst of banners.
+
+- **The lock-screen Live Activity keeps up even after the iOS app is closed.** The approval counter on the lock screen used to update only while the wmux app was alive in the background; once iOS or you closed it, the numbers froze. The daemon now drives the activity itself over APNs: it starts one when something needs your approval, updates it as approvals arrive or are answered, and ends it when the last one is done. A burst of changes goes out as one update, and updates carry only counts — how many approvals are pending, how many panes are blocked and for how long, and how many agents are running — plus the daemon's name. The push relay can read those counts; it still cannot read any notification text. A phone paired to an older daemon keeps updating the activity locally, as before. Requires the matching iOS app update. (#1411)
+
+- **Resume chip for remote-terminal tabs.** A tab mirroring a session on a
+  paired host now offers the same resume affordance a local tab has: the
+  conversation id, the exact `--resume` line, and a click that types it into
+  the remote pane. Continuing an agent session on another machine used to mean
+  finding the id on that machine and retyping it by hand. The host publishes
+  only what the chip needs — agent, conversation id, whether the recorded
+  working directory still matches, and the recorded permission mode — and never
+  the path to its own transcript file. The "never type into a live agent" gate
+  travels with it, so the chip stays hidden while the host says the agent is
+  still running, and the command is typed without a trailing Enter, exactly as
+  locally. The chip is not offered on a host serving without `--allow-input`,
+  which refuses every write anyway; a host running an older build simply shows
+  no chip.
+
+- **A truncated snapshot can now be continued instead of re-read.** When
+  `browser_snapshot` or `browser_smart_snapshot` has more page than fits one
+  result, it ends with a continuation token — pass it back as `cursor` and the
+  next lines of the *same* capture come back. No second read of the page, so
+  nothing moves under you and the ref numbers stay the ones you were already
+  holding; before this, the only ways past the cut were a narrower `selector`/`q`
+  or a bigger budget, and both re-captured the page and re-minted every ref.
+  Windows never split a line, and paging on until `(end of capture)` is how you
+  know you have read it all. A capture is retired by the next snapshot of that
+  surface, by a navigation, or after five idle minutes, and a cursor into one
+  that is gone says `cursor_expired:` rather than quietly serving a stale page.
+  (#1413)
+
+- **Every browser tool that acts on a page now says whether its action reached
+  it.** A click, type, fill, key press, hover, drag, select, scroll, navigation,
+  upload, download or dialog handler ends its result with two machine-readable
+  lines: `effect_state: none | committed | unknown`, plus an `error_code` from a
+  small fixed set when it failed. Before, a timeout said only "Timeout 30000ms
+  exceeded", which never distinguished an action that never went out from one
+  that may already have gone through — so an agent either retried and
+  double-submitted a form, or gave up on a flow that had actually worked. `none`
+  now means nothing was dispatched and a retry is free, `committed` means the
+  input reached the page, and `unknown` means a dispatch went out whose outcome
+  cannot be read from here — and an `unknown` result also says, in words, to
+  inspect the page before retrying. Read-only tools (snapshots, screenshots,
+  extraction, console, network, waits) carry no trailer, and every existing
+  message is unchanged: the two lines are added after it. (#1414)
+
+- **`browser_snapshot` can see menus that only exist on hover.** A nav item
+  whose submenu the site reveals on `:hover` — a mega-menu, an avatar or account
+  menu, a "more" (…) button — used to show up as a nav item with nothing behind
+  it, and the honest reading of that was "this site has no such menu". Such an
+  item's link is now marked `has-submenu`, worked out from the page's own
+  stylesheets and ARIA without touching the page, and a note at the top of the
+  snapshot says how many were found. Pass `probeHover:true` and wmux also hovers the top few
+  and lists what each one reveals — `[hover first: Docs | API | Pricing]` —
+  costing up to ~5 s and moving the pointer, which is why it is opt-in. The
+  pointer is put back afterwards and the menu is checked to have closed again;
+  if one stayed open, the line says so. How long a hover costs is up to the page
+  and the browser, so if the probe runs out of time before reaching every marked
+  trigger it says which ones it has no items for, rather than leaving them bare
+  for you to read as empty menus. Nothing is ever marked on a guess: a
+  form field, a disabled or inert control, and anything behind a modal overlay
+  are all left alone; so is a hover rule that merely nudges an icon that was
+  already on screen, and so is a nav item that shares its sibling's styling but
+  has no submenu of its own. (#1415)
+
+- **The browser can ask you to finish a step.** Login walls, CAPTCHAs, OTP
+  fields, payment confirmations and consent screens used to end a browser flow
+  outright — the agent had no way to say "I need you for this one thing", so it
+  looped on the page or gave up, and you never found out you were one keystroke
+  away from the rest of the run. Agents now have `browser_request_help`: a
+  compact **Done / Cancel** band appears on the browser pane, the pane comes into
+  view, a matching row lands in the Fleet inbox with a jump to the page, and the
+  agent waits. Press Done when you are through and it picks up exactly where it
+  stopped; press Cancel and it is told not to retry that step. The agent can also
+  hand over a condition ("resume once the URL contains /dashboard") and the wait
+  ends by itself, so you do not have to come back to the window to unblock it.
+  Requests carry a deadline wmux enforces, so nothing waits on you forever, and
+  one browser pane can only ever hold one open request. (#1416)
+
+- **Live Chrome: the agent writes only to its own tabs.** On the Live Chrome
+  attach an agent still reads your whole browser — that is what binding a
+  workspace to it consents to — but it can now only navigate, click, type into,
+  evaluate JavaScript in, set cookies on, resize or close the tabs wmux opened
+  for that workspace, plus tabs you explicitly lend it. Anything else is refused
+  before it touches the page, with an error that names the tab and how to ask for
+  it. Ownership is exact: one workspace's tabs are not another's to drive (#1417)
+
+- **Lending a tab.** `browser_tabs action:"borrow" surfaceId:"…"` asks you
+  through the ordinary wmux permission prompt — *"Agent in workspace X wants to
+  control tab "…" (origin)"* — with a 60-second deadline where no answer means
+  no. `action:"return"` hands it back, and every grant is dropped when Chrome
+  disconnects, when you change that workspace's Chrome profile, or when wmux
+  quits (#1417)
+
+- **A new `liveWriteScope` setting** in `browser-backend.json`, default `"agent"`.
+  `"all"` restores the previous behaviour, in which an agent may write to every
+  tab in your browser. It has no Settings toggle on purpose: it is the larger
+  grant of the two (#1417)
+
+### Changed
+
+- `browser_tabs list` now labels every row on Live Chrome as `agent` (wmux opened
+  it for this workspace), `borrowed` (you lent it) or `user`, and takes
+  `scope:"agent"` / `scope:"user"` to filter. The default still lists every tab
+  (#1417)
+
+- Agent tabs on Live Chrome now open in their own window where Chrome allows it,
+  so the agent's work is easier to watch and move as a unit. Grouping is
+  best-effort — Chrome offers no way to move an existing tab between windows — and
+  a tab that lands elsewhere is still that workspace's tab (#1417)
+
+- `docs/browser-backends.md` no longer says Live Chrome cannot be scoped; it
+  describes what reads and writes each cover, how lending works, and why `"all"`
+  is the bigger grant (#1417)
+
+### Fixed
+
+- The sidebar's "Show pane coordinates" setting is now translated in every
+  supported language instead of falling back to English outside en/pl.
+
+- **Browser screenshots no longer catch animations mid-frame.** Every
+  Playwright-lane capture — the page shot, each downscale rung and element
+  captures — freezes CSS animations and transitions for the duration of the
+  shot, so two screenshots of an unchanged page match instead of differing by
+  whatever a spinner or a fade-in was doing at that instant. The builtin
+  webview lane has no equivalent and is unchanged. (#1410)
+
+- **`browser_scroll` no longer reports scrolling an element that is no longer
+  there.** On the builtin backend it asked the page whether the ref still existed
+  and then discarded the answer, so a stale ref came back as "Scrolled down by
+  500px (element ref=7)". It now says the ref was not found, the same way
+  `browser_scroll_into_view` already did. (#1414)
+
+- **A help request can no longer bring someone else's surface to the front.** `browser_request_help` took whatever `surfaceId` the agent named and focused it; on builtin that could be another workspace's pane (with the Done/Cancel bar painted on it), on Live Chrome any of the user's tabs. Builtin now refuses a surface the workspace does not own, and live only raises tabs the workspace opened or was lent. Pending help requests are also capped at 8 per workspace.
+
+- **`browser_navigate_back` tells the truth when nothing moved.** A go-back with no history entry used to answer "Went back" with `effect_state: committed`; it now reports `none` and says so, and a go-back that failed mid-way reports `unknown`.
+
+- **`browser_cookies set/clear` are refused on Live Chrome under the agent-window policy.** Those calls change the whole browser profile — every tab and site, not the agent's tab — so owning one tab cannot authorise them. Reads are unchanged.
+
+- **The Live Chrome write refusal now carries `error_code: scope_refused`** instead of `unknown_error`, and element-state failures on a resolved ref are no longer misreported as `ref_not_found`.
+
+- **A snapshot cursor cannot be paged from a different surface**, so refs from one tab are never served to a call aimed at another.
+
+- **Borrow consent is harder to fool.** A late "Approve" no longer restores a borrow that was already revoked, and the tab title shown in the consent prompt is stripped of control characters, capped, and cannot forge the origin shown next to it.
+
+- **`liveWriteScope` edits in `browser-backend.json` take effect without a restart** and are no longer overwritten by the next backend setting change.
+
+- **Terminal tab shortcuts work with shifted bracket key values.** `Ctrl+Shift+[` and `Ctrl+Shift+]` now use physical bracket keys so Windows can switch tabs even when `KeyboardEvent.key` reports `{` or `}`. (#1424)
+
+- **WSL Codex panes capture the exact conversation for Resume.** A pane-local launcher forwards Codex's completed-turn notification through the existing Windows bridge, preserving the thread ID and Linux directory across restarts even when multiple panes share a project. Existing notification commands are preserved; no global Codex settings or hook trust settings are changed. New panes capture after a completed interactive turn; older unbound sessions can be selected once with `codex resume`. (#1425)
+
+- **A paired device can no longer see or answer the orchestrator brain's approvals.** Approval records are now refused for the brain pane where they are created, withheld from the `/api/approvals` list and from the approval event fan-out and its replay log, and answering one from a device gets the same "not found" as an unknown request. Until now nothing in the approvals pipeline excluded the brain: it was merely unlikely to raise a record, because of how its process happens to be spawned. That is a spawn profile, not a gate — any change to it would have put the orchestrator's own prompt text, tool name and tool input in front of every paired phone, and let one answer on its behalf. The desktop operator's view is unchanged. (#1428)
+
+- **A WSL exec pane finds a `claude` that only `~/.bashrc` puts on PATH.** Exec panes deliberately skip interactive startup files so no banner reaches the agent's output stream, which also skipped the PATH those files set — an nvm-installed `claude` was simply not there, and the pane died with `wmux: claude is not installed in this WSL distribution` even though the same install works in every interactive pane. The pane-local shim now asks an interactive shell for its PATH once, only after the ordinary lookup has failed, and discards that shell's own output. (#1429)
+
+- **Closing a pane while its WSL shell is still starting no longer starts it anyway.** In local (non-daemon) mode a WSL pane spends its first moments resolving the Linux directory, and until now nothing could reach that spawn: the only handle was the pty id, which the create had not returned yet. Closing the pane in that window started a whole shell just to kill it, and a window that went away before the create finished never killed it at all. The close now cancels the pending create by the surface it belongs to, before anything spawns. (#1429)
+
+- **A recovered WSL pane whose directory is gone has a way out.** Recovery keeps such a pane pending with a Retry button, which is the right default — but while the directory is missing every Retry fails identically, and the only remaining action was closing the pane and losing its id and its scrollback. The pane now says the directory no longer exists and offers **Start fresh in home** beside Retry: the same pane, the same saved buffer, opened in your home directory and running its original command instead of resuming a conversation that belonged to the directory that is gone. Never automatic. (#1429)
+
 ## [3.57.0] — 2026-09-18
 
 ### Added
