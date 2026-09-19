@@ -1909,7 +1909,7 @@ export class WebTerminalServer {
       return this.handleUpload(req, res);
     }
     if (req.method === 'GET' && p === '/api/approvals') {
-      return this.handleApprovalsList(res);
+      return this.handleApprovalsList(res, principal);
     }
     if (req.method === 'POST' && p.startsWith('/api/approvals/')) {
       return this.handleApprovalResolve(req, res, p.slice('/api/approvals/'.length), principal);
@@ -3568,7 +3568,7 @@ export class WebTerminalServer {
    * pending approval on two devices; the loser of that race gets a 409, and
    * without the settled record there is nothing to render but an error code.
    */
-  private handleApprovalsList(res: http.ServerResponse): void {
+  private handleApprovalsList(res: http.ServerResponse, principal: WebPrincipal): void {
     const approvals = this.deps.approvals;
     if (!approvals) return this.json(res, 503, { error: 'approvals unavailable' });
     let listed: { pending: ApprovalRequest[]; recentlyResolved: ApprovalRequest[] };
@@ -3586,10 +3586,33 @@ export class WebTerminalServer {
     // daemon-internal, but it means adding a field to ApprovalRequest puts it
     // on the pipe and not here — deliberately, since the allowlist exists so
     // registry internals cannot reach the network by default.
+    // #1397 — the brain pane is excluded for a device, exactly as it is from
+    // `/api/sessions` and the per-pane routes. A record is refused at the
+    // producer today (`HookIngest`), so this filter should never have anything
+    // to drop; it is here because the producer is one path and this route is
+    // what a device actually reads. Same credential split as
+    // `attachableSession`: the operator's own surfaces keep the full list.
+    const visible = (r: ApprovalRequest): boolean =>
+      principal.kind === 'operator' || !this.isBrainApproval(r.sessionId);
     return this.json(res, 200, {
-      pending: listed.pending.map(approvalWire),
-      recentlyResolved: listed.recentlyResolved.map(approvalWire),
+      pending: listed.pending.filter(visible).map(approvalWire),
+      recentlyResolved: listed.recentlyResolved.filter(visible).map(approvalWire),
     });
+  }
+
+  /**
+   * Does this approval name the orchestrator brain's own pane?
+   *
+   * A BRAIN filter, not `readableSession`'s brain-or-unknown one, and for the
+   * same reason `broadcastEvent` takes the flat one (#1402): an id the manager
+   * no longer knows is a pane that closed while its record was still listed,
+   * and treating that as "brain" would hide real approvals from a device.
+   * `isBrainPty` falls back to the id prefix, so a brain pane that has already
+   * gone is still recognised without its env.
+   */
+  private isBrainApproval(sessionId: string): boolean {
+    const managed = this.deps.sessionManager.getSession(sessionId);
+    return isBrainPty({ id: sessionId, env: managed?.meta.env });
   }
 
   /**
@@ -3642,6 +3665,13 @@ export class WebTerminalServer {
     // runs the tool (arbitrary Bash, a write, a subagent), which is exactly
     // what --allow-input governs. Gate it accordingly (review: Claude).
     const record = approvals.list().pending.find((r) => r.id === id);
+    // #1397 — a device may not answer the orchestrator brain's own prompt. The
+    // same 404 as an unknown id, and BEFORE the gate check below: a 403 here
+    // would confirm the record exists, which is half of what the exclusion is
+    // for. The operator path is untouched.
+    if (record && principal.kind === 'device' && this.isBrainApproval(record.sessionId)) {
+      return this.json(res, 404, { error: 'not-found' });
+    }
     if (record?.kind === 'awaiting_permission' && !this.mayInput(principal)) {
       return this.refuseInput(
         res,
@@ -3800,6 +3830,15 @@ export class WebTerminalServer {
   private publishApproval(e: ApprovalEvent): void {
     if (!e || typeof e !== 'object' || !e.request) return;
     const r = e.request;
+    // #1397 — the same producer-side gate `broadcastEvent` takes, for the same
+    // reason. This fan-out is not keyed by pane and is not keyed by principal:
+    // it writes to every open stream and lands in the replayable log that
+    // `/api/events` serves, whose backlog route takes no principal. So a
+    // delivery-side filter would still leave the brain's `toolName` and
+    // `toolInputSummary` — and a brain pane id a device can then try elsewhere
+    // — sitting in the replay window. FLAT, like the liveness gate: the desk
+    // drives the brain over RPC, not this fan-out.
+    if (this.isBrainApproval(r.sessionId)) return;
     this.publish('approval', {
       sessionId: r.sessionId,
       // NOT `id`: the envelope's own `id` is the replay cursor, and identity
