@@ -199,7 +199,9 @@ export default function TerminalComponent({ ptyId: externalPtyId, shell, cwd, on
         return;
       }
       if (cancelled) {
-        // 이미 unmount됨 — PTY 정리
+        // Already unmounted — clean the pty up. Reached only when the cancel
+        // below lost the race (the spawn had already happened), which is why
+        // both exist: one stops the spawn, this one undoes it.
         window.electronAPI.pty.dispose(result.data.id);
         return;
       }
@@ -225,7 +227,22 @@ export default function TerminalComponent({ ptyId: externalPtyId, shell, cwd, on
       }
     });
 
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+      // #1305 — the dispose above can only run once the create resolves, and a
+      // local-mode WSL create sits in a cwd probe first: closing the surface
+      // during that window spawned a whole shell just to kill it, and a window
+      // that goes away before the promise settles never killed it at all. Ask
+      // for the pending create to be dropped before it spawns. Best effort by
+      // design — a create that already spawned answers false and is handled by
+      // the dispose above.
+      // Optional-chain style guard, as at reportViewerVisibility: a packaged
+      // app updated under a running renderer can leave a preload that does not
+      // expose the method yet.
+      if (surfaceId && typeof window.electronAPI.pty.cancelCreate === 'function') {
+        void window.electronAPI.pty.cancelCreate(surfaceId);
+      }
+    };
   }, [externalPtyId, shell, cwd, deadPaneRecovery]); // onPtyCreated 제거 (stale closure 방지)
 
   // isVisible = workspace is shown AND this surface tab is the active one.

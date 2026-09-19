@@ -148,17 +148,47 @@ export class PTYManager {
     // pending window cancels the spawn instead of leaving an orphan PTY.
     const id = `pty-${++this.nextId}`;
     this.pendingCreates.add(id);
+    // #1305 — dispose(id) only helps someone who KNOWS the id, and the id is
+    // what the create has not returned yet. The surface is the handle the
+    // caller does have: it named the surface in the request, and it is the
+    // surface closing that wants the spawn cancelled. Latest pending create
+    // wins the mapping — a respawn on the same surface supersedes the one
+    // before it, which is the one a close should still cancel.
+    const surfaceId = options?.surfaceId;
+    if (surfaceId) this.pendingCreatesBySurface.set(surfaceId, id);
     try {
       const wsl = await resolveWslCwd(shell, options?.cwd, options?.wslTarget, undefined, options?.shellArgs);
       if (generation !== this.createGeneration || !this.pendingCreates.has(id)) throw new Error('PTY creation cancelled');
       return this.spawnPrepared({ ...options, shell }, wsl, id);
     } finally {
       this.pendingCreates.delete(id);
+      if (surfaceId && this.pendingCreatesBySurface.get(surfaceId) === id) {
+        this.pendingCreatesBySurface.delete(surfaceId);
+      }
     }
+  }
+
+  /**
+   * #1305 — cancel a create this surface still has in flight, before it spawns.
+   *
+   * True when one was pending and is now cancelled; false when there is nothing
+   * to cancel, which is the ordinary answer: a create that already resolved is
+   * the caller's own pty to `dispose`, and in daemon mode no local create was
+   * ever reserved. Cancelling is not the only guard, just the early one — a
+   * caller that loses this race still gets an id back and must dispose it.
+   */
+  cancelPendingCreate(surfaceId: string): boolean {
+    const id = this.pendingCreatesBySurface.get(surfaceId);
+    if (!id || !this.pendingCreates.has(id)) return false;
+    this.pendingCreates.delete(id);
+    this.pendingCreatesBySurface.delete(surfaceId);
+    return true;
   }
 
   /** Ids reserved by createAsync whose WSL probe has not finished yet. */
   private pendingCreates = new Set<string>();
+  /** #1305 — surfaceId → the id `pendingCreates` reserved for its newest create. */
+  private pendingCreatesBySurface = new Map<string, string>();
 
   private spawnPrepared(options?: {
     shell?: string;

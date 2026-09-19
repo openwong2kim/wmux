@@ -130,6 +130,13 @@ const electronAPI = {
     },
     dispose: (id: string) =>
       ipcRenderer.invoke(IPC.PTY_DISPOSE, id),
+    // #1305 — cancel a create this surface still has in flight. The id is what
+    // a create has not returned yet, so `dispose` cannot reach one; the surface
+    // is the handle the caller already has. Resolves false when there is
+    // nothing pending (it already spawned — dispose that id instead — or the
+    // pane is a daemon one, where the daemon holds its own pending guard).
+    cancelCreate: (surfaceId: string): Promise<boolean> =>
+      ipcRenderer.invoke(IPC.PTY_CANCEL_CREATE, surfaceId),
     // `supervision` (X8) is additive and present only on supervised daemon-mode
     // sessions — the renderer uses it to hydrate its supervision slice on boot
     // and daemon-reconnect. Absent in local mode and for unsupervised panes.

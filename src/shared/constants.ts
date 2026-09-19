@@ -9,6 +9,7 @@ export const IPC = {
   // route can tell "attached and watched" from "attached but nobody looking".
   PTY_SET_VIEWER_VISIBILITY: 'pty:setViewerVisibility',
   PTY_DISPOSE: 'pty:dispose',
+  PTY_CANCEL_CREATE: 'pty:cancel-create',
   PTY_DATA: 'pty:data',
   PTY_EXIT: 'pty:exit',
   PTY_LIST: 'pty:list',

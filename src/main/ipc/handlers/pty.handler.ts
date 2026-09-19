@@ -938,6 +938,14 @@ export function registerPTYHandlers(
     }));
   }
 
+  // pty:cancel-create (#1305) — registered in BOTH modes, because the renderer
+  // closing a surface does not know which one it is in. In daemon mode nothing
+  // local was ever reserved, so the manager simply answers false and the
+  // daemon's own `pendingCreates` guard keeps covering that path.
+  ipcMain.removeHandler(IPC.PTY_CANCEL_CREATE);
+  ipcMain.handle(IPC.PTY_CANCEL_CREATE, wrapHandler(IPC.PTY_CANCEL_CREATE, async (_event: Electron.IpcMainInvokeEvent, surfaceId: string) =>
+    typeof surfaceId === 'string' && surfaceId.length > 0 && ptyManager.cancelPendingCreate(surfaceId)));
+
   // pty:list
   ipcMain.removeHandler(IPC.PTY_LIST);
   if (useDaemon && daemonClient) {
@@ -1467,6 +1475,7 @@ export function registerPTYHandlers(
     ipcMain.removeHandler(IPC.PTY_RESIZE);
     ipcMain.removeAllListeners(IPC.PTY_SET_VIEWER_VISIBILITY);
     ipcMain.removeHandler(IPC.PTY_DISPOSE);
+    ipcMain.removeHandler(IPC.PTY_CANCEL_CREATE);
     ipcMain.removeHandler(IPC.PTY_LIST);
     ipcMain.removeHandler(IPC.PTY_PROMOTE);
     ipcMain.removeHandler(IPC.PTY_RECONNECT);
